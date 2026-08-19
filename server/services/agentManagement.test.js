@@ -41,6 +41,12 @@ const AGENT_TUI_SRC = normalizeEol(readFileSync(join(__dirname, 'agentTuiSpawnin
 const AGENT_LIFECYCLE_SRC = normalizeEol(readFileSync(join(__dirname, 'agentLifecycle.js'), 'utf-8'));
 const AGENT_MANAGEMENT_SRC = normalizeEol(readFileSync(join(__dirname, 'agentManagement.js'), 'utf-8'));
 
+// The lifecycle ledger is a real file writer (data/cos/run-events.jsonl). Mocked
+// so the sweep's telemetry lands in a spy instead of the developing install's
+// ledger — and so the orphan-boundary assertion below can read the envelope.
+const { appendRunEvent } = vi.hoisted(() => ({ appendRunEvent: vi.fn(async () => ({ appended: true })) }));
+vi.mock('./agentRunEventLog.js', () => ({ appendRunEvent }));
+
 vi.mock('./cos.js', () => ({
   updateTask: vi.fn().mockResolvedValue(true),
   addTask: vi.fn().mockResolvedValue({ id: 'sys-mocked' }),
@@ -1130,6 +1136,36 @@ describe('orphan retries resume what the dead run left behind', () => {
     resolveTaskResumePatch.mockResolvedValue({});
     activeAgents.clear();
     runnerAgents.clear();
+  });
+
+  // The sweep is the only place that knows an agent DIED rather than exited, so
+  // it is the only place that can put that distinction in the ledger (#4540).
+  it('records the reap in the lifecycle ledger, keyed by agent when no run id survived', async () => {
+    await cleanupOrphanedAgents();
+
+    expect(appendRunEvent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'run.orphan-recovered',
+      agentId: 'agent-dead',
+      taskId: 'task-1',
+      runId: undefined,
+      data: expect.objectContaining({ hasRunId: false, interruptedByRestart: false })
+    }));
+  });
+
+  // The sweep re-runs every 15 minutes and can re-observe the same dead agent if
+  // the completeAgent write never landed. The ledger's default id covers the
+  // wall-clock timestamp, so without an explicit natural key a retry would file
+  // a second "this agent died" fact for one death.
+  it('keys the reap on the agent life, so a repeated sweep dedupes', async () => {
+    await cleanupOrphanedAgents();
+    await cleanupOrphanedAgents();
+
+    const ids = appendRunEvent.mock.calls
+      .filter(([e]) => e.kind === 'run.orphan-recovered')
+      .map(([e]) => e.eventId);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(1);
+    expect(ids[0]).toContain('agent-dead');
   });
 
   it('hands the dead agent’s worktree metadata from the sweep to the retry handler', async () => {

@@ -15,6 +15,7 @@ import { connectTuiSessionViaRunner, getActiveAgentsFromRunner } from './cosRunn
 import { isInternalTaskId } from '../lib/taskParser.js';
 import { isAgentOwnedLocally, runnerAgents } from './agentState.js';
 import { getAgent } from './cosAgentLifecycle.js';
+import { appendRunEvent } from './agentRunEventLog.js';
 import * as shellService from './shell.js';
 
 /**
@@ -92,6 +93,27 @@ export async function syncRunnerAgents() {
       if (!recoveredRunId) {
         console.warn(`⚠️ Recovered agent ${agent.id} has no run id on record — its run stays open and unbilled`);
       }
+      // Record the re-adoption in the lifecycle ledger (#4540). No explicit
+      // idempotency key here, unlike the orphan sweep: `runnerAgents.set` above
+      // has already made this agent locally owned, so the `isAgentOwnedLocally`
+      // guard stops this branch re-firing within the process. A SECOND
+      // re-adoption therefore means a second server lifetime — a genuinely
+      // distinct recovery, which `recoveryCount` is supposed to count — and that
+      // count is what turns "this run has been running for nine
+      // hours" into "this run has survived three restarts". `hasRunId:false`
+      // is the durable trace of the unbilled-run warning above — today that
+      // warning only exists in a console line nothing retains.
+      await appendRunEvent({
+        kind: 'run.runner-recovered',
+        runId: recoveredRunId,
+        agentId: agent.id,
+        taskId: agent.taskId,
+        data: {
+          kind: agent.kind ?? null,
+          hasRunId: Boolean(recoveredRunId),
+          startedAt: agent.startedAt ?? null,
+        },
+      });
       if (agent.kind === 'tui' && agent.sessionId && !shellService.getSession(agent.sessionId)) {
         const session = connectTuiSessionViaRunner(agent);
         shellService.registerExternalSession(agent.sessionId, session.ptyProcess, {

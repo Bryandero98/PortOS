@@ -7,7 +7,7 @@ export const LLM_DRILL_TYPES = ['word-association', 'story-recall', 'verbal-flue
 export const MEMORY_DRILL_TYPES = ['memory-fill-blank', 'memory-sequence', 'memory-element-flash'];
 // Deterministic cognitive drills (no LLM). Mirror the server's
 // COGNITIVE_DRILL_TYPES in server/services/meatspacePostCognitive.js.
-export const COGNITIVE_DRILL_TYPES = ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time'];
+export const COGNITIVE_DRILL_TYPES = ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time', 'task-switching', 'go-no-go', 'flanker'];
 
 // Drill types valid elsewhere but not yet wired into the interactive POST
 // session drill picker. Multi-blank fill-in-the-blank is now wired end to end,
@@ -72,7 +72,7 @@ export const POST_TOPICS = [
     label: 'Mental Math',
     module: 'mental-math',
     surface: 'session',
-    drillTypes: ['doubling-chain', 'serial-subtraction', 'multiplication', 'powers', 'estimation'],
+    drillTypes: ['doubling-chain', 'serial-subtraction', 'multiplication', 'powers', 'estimation', 'applied-numeracy'],
   },
   {
     id: 'memory',
@@ -107,7 +107,7 @@ export const POST_TOPICS = [
     label: 'Cognitive',
     module: 'cognitive',
     surface: 'session',
-    drillTypes: ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time'],
+    drillTypes: ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time', 'task-switching', 'go-no-go', 'flanker'],
   },
   {
     id: 'morse',
@@ -264,6 +264,7 @@ export const DRILL_LABELS = {
   'multiplication': 'Multiplication',
   'powers': 'Powers',
   'estimation': 'Estimation',
+  'applied-numeracy': 'Applied Numeracy',
   'word-association': 'Word Association',
   'story-recall': 'Story Recall',
   'verbal-fluency': 'Verbal Fluency',
@@ -291,7 +292,45 @@ export const DRILL_LABELS = {
   'schulte-table': 'Schulte Table',
   'mental-rotation': 'Mental Rotation',
   'reaction-time': 'Reaction Time',
+  'task-switching': 'Task Switching',
+  'go-no-go': 'Go / No-Go',
+  'flanker': 'Flanker Control',
 };
+
+function parseAppliedNumeracyInput(value, question) {
+  const text = String(value ?? '').trim();
+  const match = text.match(/^(-?(?:\d+|\d+\.\d+|\d+\s*\/\s*-?\d+))\s*([a-zA-Z]+)?$/);
+  if (!match) return null;
+  const fraction = match[1].match(/^(-?\d+)\s*\/\s*(-?\d+)$/);
+  const numeric = fraction
+    ? Number(fraction[1]) / Number(fraction[2])
+    : Number(match[1]);
+  if (!Number.isFinite(numeric) || (fraction && Number(fraction[2]) === 0)) return null;
+  const suppliedUnit = match[2]?.toLowerCase() || null;
+  const unit = suppliedUnit ? (question.unitAliases?.[suppliedUnit] || suppliedUnit) : null;
+  return { numeric, unit };
+}
+
+// The client provides immediate training feedback from public generated metadata;
+// submitPostSession always reconstructs the seeded question server-side.
+export function appliedNumeracyAnswerCorrect(value, question = {}) {
+  const parsed = parseAppliedNumeracyInput(value, question);
+  if (!parsed) return false;
+  let expected = question.expected;
+  let actual = parsed.numeric;
+  if (question.unit) {
+    const suppliedFactor = question.unitOptions?.[parsed.unit];
+    const expectedFactor = question.unitOptions?.[question.unit];
+    if (!suppliedFactor || !expectedFactor) return false;
+    actual *= suppliedFactor;
+    expected *= expectedFactor;
+  } else if (parsed.unit) {
+    return false;
+  }
+  const tolerance = question.tolerance || {};
+  const margin = Math.max(tolerance.absolute || 0, Math.abs(expected) * (tolerance.relative || 0));
+  return Math.abs(actual - expected) <= margin + 1e-9;
+}
 
 // Human-readable label for a domain key. `other` collects drills whose type
 // isn't mapped to a DOMAINS bucket (e.g. legacy/removed drill types).

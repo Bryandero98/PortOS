@@ -191,7 +191,10 @@ export const reviewRecordSchema = z.object({
 // Opt-in post-clone agent actions for a captured GitHub repo URL. Keys derive
 // from REPO_INTAKE_KEYS so the wire contract can't drift from the normalizer
 // that reads it (server/lib/repoIntakeActions.js).
-export const repoIntakeSchema = z.object(optionalBooleanMap(REPO_INTAKE_KEYS));
+export const repoIntakeSchema = z.object(optionalBooleanMap(REPO_INTAKE_KEYS)).extend({
+  targetAppId: z.string().trim().min(1).max(200).optional(),
+  studyContext: z.string().trim().max(5000).optional()
+});
 const repoIntakeInputSchema = repoIntakeSchema.optional();
 
 // Capture input schema
@@ -203,9 +206,9 @@ export const captureInputSchema = z.object({
   // (vs a todo/reference). Creative notes are later batch-sendable into the
   // creative catalog as ingredients (see catalog brain-bridge ingest).
   creative: z.boolean().optional(),
-  // Post-clone agent actions for a bare GitHub repo URL. Ignored for every other
-  // capture — only a repo URL gets cloned, and only a clone can be scanned or
-  // studied (services/brain.js#createLinkFromUrl).
+  // Post-clone agent actions for a bare GitHub repo URL. `targetAppId` selects
+  // the managed app whose tracker receives repo-study issues; omitted means
+  // PortOS for backward compatibility. Ignored for every other capture.
   repoIntake: repoIntakeInputSchema
 });
 
@@ -540,6 +543,14 @@ const brainSyncChangeSchema = z.object({
 // Brain sync push schema (POST /api/brain/sync body)
 export const brainSyncPushSchema = z.object({
   changes: z.array(brainSyncChangeSchema).min(1).max(1000)
+});
+
+// Brain parity check body (POST /api/brain/reconcile/parity). `peerId` is the
+// LOCAL peer-registry id (the same id `/api/instances/peers/:id/sync` takes, so
+// the Instances card can pass the peer it already holds). Omitted runs the sweep
+// across every federating peer.
+export const brainParityCheckSchema = z.object({
+  peerId: z.string().min(1).max(200).optional()
 });
 
 // Brain bridge-sync body (POST /api/brain/bridge-sync). `refresh` forces a

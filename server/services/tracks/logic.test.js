@@ -71,6 +71,13 @@ describe('tracks logic', () => {
       expect(mergeTrackRecord(local, { ...local, title: 'New', updatedAt: '2099-01-01T00:00:00.000Z' }).remoteWins).toBe(true);
       expect(mergeTrackRecord(local, { ...local, title: 'Old', updatedAt: '2000-01-01T00:00:00.000Z' }).remoteWins).toBe(false);
     });
+
+    it('preserves a local concept when an older peer omits the additive field', () => {
+      const authored = buildTrackRecord({ title: 'Local', concept: 'A dusk-time pulse' }, { id: 'track-1', now: '2026-06-01T00:00:00.000Z' });
+      const remote = { ...authored, title: 'Remote', updatedAt: '2099-01-01T00:00:00.000Z' };
+      delete remote.concept;
+      expect(mergeTrackRecord(authored, remote).next.concept).toBe('A dusk-time pulse');
+    });
   });
 
   describe('render history', () => {
@@ -120,10 +127,12 @@ describe('tracks logic', () => {
     it('makeRender stamps the caller-supplied id + now', () => {
       const r = makeRender({
         audioFilename: 'a.wav', engine: 'musicgen', authoredPrompt: 'source prompt', instrumentalOnly: true,
+        executionProfile: 'cuda-bf16-component-offload',
       }, { id: 'render-7', now: '2026-03-03T00:00:00.000Z' });
       expect(r).toMatchObject({
         id: 'render-7', audioFilename: 'a.wav', engine: 'musicgen', authoredPrompt: 'source prompt',
-        instrumentalOnly: true, createdAt: '2026-03-03T00:00:00.000Z',
+        instrumentalOnly: true, executionProfile: 'cuda-bf16-component-offload',
+        createdAt: '2026-03-03T00:00:00.000Z',
       });
     });
 

@@ -37,6 +37,7 @@ const SCHEDULE = {
   tasks: {
     'layered-intelligence': { type: 'daily', taskMetadata: {}, providerId: 'global-claude' },
     'app-improvement': { type: 'rotation', taskMetadata: {} },
+    security: { type: 'weekly', taskMetadata: { fileIssues: false }, fileIssuesCapable: true, defaultFileIssues: false },
   },
 };
 
@@ -140,5 +141,17 @@ describe('AutomationTab per-app overrides', () => {
     const row = rowFor('app-improvement');
     fireEvent.click(within(row).getByRole('button', { name: /show provider and model overrides/i }));
     expect(within(row).queryByRole('button', { name: /configure behavior/i })).toBeNull();
+  });
+
+  it('Iss toggle PATCHes fileIssues on and forces the no-code posture', async () => {
+    await renderTab();
+    const row = rowFor('security');
+    fireEvent.click(within(row).getByRole('button', { name: /File issues only/i }));
+    await waitFor(() => expect(api.updateAppTaskTypeOverride).toHaveBeenCalledWith(
+      'app-1',
+      'security',
+      { taskMetadata: { fileIssues: true, useWorktree: false, openPR: false, simplify: false } },
+      { silent: true }
+    ));
   });
 });

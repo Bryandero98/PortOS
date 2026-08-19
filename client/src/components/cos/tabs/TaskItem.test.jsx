@@ -126,6 +126,52 @@ describe('TaskItem blocked reason', () => {
   });
 });
 
+describe('TaskItem unblock action', () => {
+  const blocked = {
+    id: 'sys-blocked-3',
+    description: 'Blocked task',
+    status: 'blocked',
+    metadata: { blockedReason: 'Max total spawns exceeded' },
+  };
+  const unblockButton = () =>
+    screen.getByRole('button', { name: `Unblock task ${blocked.id} and move it to pending` });
+
+  it('moves a blocked task to pending from the card itself', async () => {
+    const onRefresh = vi.fn();
+    render(<TaskItem task={blocked} isSystem onRefresh={onRefresh} providers={providers} />);
+
+    fireEvent.click(unblockButton());
+
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalledWith(
+      'sys-blocked-3',
+      { status: 'pending', type: 'internal' },
+      { silent: true }
+    ));
+    await waitFor(() => expect(onRefresh).toHaveBeenCalled());
+    expect(toast.success).toHaveBeenCalledWith('Task unblocked and moved to pending');
+  });
+
+  it('is offered only on blocked tasks, and never alongside Mark as blocked', () => {
+    const { unmount } = render(<TaskItem task={blocked} isSystem onRefresh={vi.fn()} providers={providers} />);
+    expect(screen.queryByRole('button', { name: 'Mark task as blocked' })).not.toBeInTheDocument();
+    unmount();
+
+    render(<TaskItem task={task} isSystem onRefresh={vi.fn()} providers={providers} />);
+    expect(screen.queryByRole('button', { name: /^Unblock task/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Mark task as blocked' })).toBeInTheDocument();
+  });
+
+  it('re-enables the button when the update fails so the user can retry', async () => {
+    api.updateCosTask.mockRejectedValue(new Error('network down'));
+    render(<TaskItem task={blocked} isSystem onRefresh={vi.fn()} providers={providers} />);
+
+    fireEvent.click(unblockButton());
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('network down'));
+    expect(unblockButton()).not.toBeDisabled();
+  });
+});
+
 describe('TaskItem block modal state (#4038)', () => {
   const openBlockModal = () =>
     fireEvent.click(screen.getByRole('button', { name: 'Mark task as blocked' }));
@@ -520,5 +566,137 @@ describe('TaskItem investigation approval hint (#3714)', () => {
     render(<TaskItem task={plain} isSystem onRefresh={vi.fn()} providers={providers} />);
     const approve = screen.getByRole('button', { name: 'Approve task sys-approve-plain' });
     expect(approve).not.toHaveAttribute('title');
+  });
+
+  it('names the schedule Require approval toggle on the APPROVE button', () => {
+    const gated = {
+      ...held,
+      id: 'sys-require-approval',
+      metadata: { requireApproval: true, approvalReason: 'config:requireApproval' },
+    };
+    render(<TaskItem task={gated} isSystem onRefresh={vi.fn()} providers={providers} />);
+    const approve = screen.getByRole('button', { name: /^Approve task sys-require-approval — / });
+    expect(approve).toHaveAttribute('title', expect.stringContaining('Require approval'));
+  });
+});
+
+// #4520: a task can be pinned to one federated instance. The row shows where it
+// will run; the editor changes it — but only on an install that actually has
+// more than one instance to choose between.
+describe('TaskItem federated instance pin (#4520)', () => {
+  const SELF = 'self-instance-id';
+  const PEER = 'peer-instance-id';
+  const instances = [
+    { instanceId: SELF, name: 'workstation', isSelf: true },
+    { instanceId: PEER, name: 'render-box', isSelf: false },
+  ];
+  const pinned = { ...task, metadata: { ...task.metadata, targetInstanceId: PEER } };
+
+  it('badges the pinned instance by name', () => {
+    render(<TaskItem task={pinned} providers={providers} instances={instances} onRefresh={vi.fn()} />);
+    expect(screen.getByText('render-box')).toBeTruthy();
+  });
+
+  it('badges a pin whose instance has left the registry, rather than hiding it', () => {
+    // The task nothing will ever run is exactly the one that must stay visible.
+    const orphaned = { ...task, metadata: { ...task.metadata, targetInstanceId: 'ghost-instance-id' } };
+    render(<TaskItem task={orphaned} providers={providers} instances={instances} onRefresh={vi.fn()} />);
+    expect(screen.getByText('unknown instance')).toBeTruthy();
+  });
+
+  it('shows no badge for an unpinned task', () => {
+    render(<TaskItem task={task} providers={providers} instances={instances} onRefresh={vi.fn()} />);
+    expect(screen.queryByText('render-box')).toBeNull();
+  });
+
+  it('saves a re-pin from the editor', async () => {
+    render(<TaskItem task={task} providers={providers} instances={instances} onRefresh={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText("Edit task"));
+    fireEvent.change(screen.getByLabelText('Run on'), { target: { value: PEER } });
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalled());
+    expect(api.updateCosTask.mock.calls[0][1].targetInstanceId).toBe(PEER);
+  });
+
+  it('sends null when the editor selects "Any instance" — the explicit unpin', async () => {
+    render(<TaskItem task={pinned} providers={providers} instances={instances} onRefresh={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText("Edit task"));
+    fireEvent.change(screen.getByLabelText('Run on'), { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalled());
+    expect(api.updateCosTask.mock.calls[0][1].targetInstanceId).toBeNull();
+  });
+
+  it('hides the picker AND withholds the field for an UNPINNED task on a single-instance install', async () => {
+    // Otherwise an edit made here would silently unpin a task another machine
+    // pinned — the field would ride along as `null` on every save.
+    render(<TaskItem task={task} providers={providers} instances={[{ instanceId: SELF, name: 'workstation', isSelf: true }]} onRefresh={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText("Edit task"));
+    expect(screen.queryByLabelText('Run on')).toBeNull();
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalled());
+    expect('targetInstanceId' in api.updateCosTask.mock.calls[0][1]).toBe(false);
+  });
+
+  it('still offers the picker for an ALREADY-pinned task after the last peer is removed', async () => {
+    // Hiding it there would leave the pin permanently unclearable and the task
+    // unrunnable on every instance.
+    render(<TaskItem task={pinned} providers={providers} instances={[{ instanceId: SELF, name: 'workstation', isSelf: true }]} onRefresh={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText("Edit task"));
+    fireEvent.change(screen.getByLabelText('Run on'), { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalled());
+    expect(api.updateCosTask.mock.calls[0][1].targetInstanceId).toBeNull();
+  });
+
+  it('hides the picker until the registry read lands, so an edit mid-load cannot unpin', async () => {
+    render(<TaskItem task={pinned} providers={providers} onRefresh={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText("Edit task"));
+    expect(screen.queryByLabelText('Run on')).toBeNull();
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalled());
+    expect('targetInstanceId' in api.updateCosTask.mock.calls[0][1]).toBe(false);
+  });
+});
+
+// A row must not claim a pin points at an "unknown instance" merely because the
+// registry read hasn't landed yet — `null` is not-fetched, `[]` is fetched-empty.
+describe('TaskItem instance registry — not-fetched vs fetched-empty (#4520)', () => {
+  const pinned = { ...task, metadata: { ...task.metadata, targetInstanceId: 'peer-instance-id' } };
+
+  it('renders no pin badge while the registry is still loading', () => {
+    render(<TaskItem task={pinned} providers={providers} onRefresh={vi.fn()} />);
+    expect(screen.queryByText('unknown instance')).toBeNull();
+  });
+
+  it('renders the orphaned-pin badge once the registry is known to be empty', () => {
+    render(<TaskItem task={pinned} providers={providers} instances={[]} onRefresh={vi.fn()} />);
+    expect(screen.getByText('unknown instance')).toBeTruthy();
+  });
+});
+
+// An orphaned pin must stay editable: without its own <option> the select falls
+// back to showing "Any instance" while still submitting the dead id, and the
+// server rejects every save with no visible cause.
+describe('TaskItem editing a pin whose instance has left the registry (#4520)', () => {
+  const instances = [
+    { instanceId: 'self-instance-id', name: 'workstation', isSelf: true },
+    { instanceId: 'peer-instance-id', name: 'render-box', isSelf: false },
+  ];
+  const orphaned = { ...task, metadata: { ...task.metadata, targetInstanceId: 'ghost-instance-id' } };
+
+  it('shows the dead pin as the selected option rather than a misleading "Any instance"', () => {
+    render(<TaskItem task={orphaned} providers={providers} instances={instances} onRefresh={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText('Edit task'));
+    expect(screen.getByLabelText('Run on').value).toBe('ghost-instance-id');
+  });
+
+  it('lets the user move the task to a live instance', async () => {
+    render(<TaskItem task={orphaned} providers={providers} instances={instances} onRefresh={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText('Edit task'));
+    fireEvent.change(screen.getByLabelText('Run on'), { target: { value: 'peer-instance-id' } });
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(api.updateCosTask).toHaveBeenCalled());
+    expect(api.updateCosTask.mock.calls[0][1].targetInstanceId).toBe('peer-instance-id');
   });
 });

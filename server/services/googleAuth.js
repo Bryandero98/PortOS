@@ -48,6 +48,19 @@ async function saveTokens(tokens) {
   console.log('📅 Google OAuth tokens saved');
 }
 
+async function persistRefreshedTokens(newTokens) {
+  const existing = (await getTokens()) || {};
+  await saveTokens({ ...existing, ...newTokens });
+  console.log('📅 Google OAuth tokens refreshed');
+}
+
+function attachTokenPersistence(client) {
+  client.on('tokens', (newTokens) => {
+    persistRefreshedTokens(newTokens)
+      .catch((err) => console.error(`❌ Failed to persist refreshed Google OAuth tokens: ${err.message}`));
+  });
+}
+
 export async function clearAuth() {
   await ensureAuthDir();
   await writeFile(TOKENS_FILE, '{}').catch(() => {});
@@ -90,12 +103,7 @@ export async function handleCallback(code) {
   oAuth2Client = client;
   oAuth2Client.setCredentials(tokens);
 
-  // Attach refresh listener so refreshed tokens are persisted
-  oAuth2Client.on('tokens', async (newTokens) => {
-    const existing = (await getTokens()) || {};
-    await saveTokens({ ...existing, ...newTokens });
-    console.log('📅 Google OAuth tokens refreshed');
-  });
+  attachTokenPersistence(oAuth2Client);
 
   console.log('📅 Google OAuth callback processed, tokens stored');
   return { success: true };
@@ -112,12 +120,7 @@ export async function getAuthenticatedClient() {
     oAuth2Client = createOAuth2Client(credentials);
     oAuth2Client.setCredentials(tokens);
 
-    // Listen for token refresh
-    oAuth2Client.on('tokens', async (newTokens) => {
-      const existing = (await getTokens()) || {};
-      await saveTokens({ ...existing, ...newTokens });
-      console.log('📅 Google OAuth tokens refreshed');
-    });
+    attachTokenPersistence(oAuth2Client);
   }
 
   return oAuth2Client;

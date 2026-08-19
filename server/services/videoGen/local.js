@@ -90,6 +90,20 @@ export * from './modeContract.js';
 export * from './eta.js';
 export { loadHistory, saveHistory, mutateVideoHistory, getHistoryItem };
 
+export async function updateHistoryItemPrompt(id, prompt) {
+  let result;
+  await mutateVideoHistory((history) => {
+    const item = history.find((h) => h.id === id);
+    if (!item) throw new ServerError('Not found', { status: 404, code: 'NOT_FOUND' });
+    const trimmedPrompt = typeof prompt === 'string' ? prompt.trim() : '';
+    if (trimmedPrompt) item.prompt = trimmedPrompt;
+    else delete item.prompt;
+    result = { id, prompt: trimmedPrompt };
+    return history;
+  });
+  return result;
+}
+
 // LoRA wrapper for the notapalindrome `mlx_video` runtime. The stock
 // `mlx_video.generate_av` CLI has no --lora flag, but the package ships an
 // LTX-aware LoRA subsystem (`mlx_video.lora`) — this helper imports generate_av,
@@ -1397,17 +1411,24 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // internally-created resize/still-clip temp files. Clean them up explicitly
   // before either throw so a missing ffmpeg or a failed still-encode doesn't
   // leak every resized temp file for the request into os.tmpdir().
-  const cleanupResizeTempFiles = async () => {
-    if (resizedSrcTempPath) await unlink(resizedSrcTempPath).catch(() => {});
-    if (resizedLastTempPath) await unlink(resizedLastTempPath).catch(() => {});
-    for (const p of resizedKeyframeTempPaths) await unlink(p).catch(() => {});
-    for (const p of icReferenceTempPaths) await unlink(p).catch(() => {});
+  const cleanupTempFiles = ({ includeUploads = false, includeUntrackedAudio = false } = {}) => {
+    const paths = [
+      resizedSrcTempPath,
+      resizedLastTempPath,
+      ...resizedKeyframeTempPaths,
+      ...icReferenceTempPaths,
+      ...(includeUploads ? [uploadedTempPath, ...uploadedTempPaths] : []),
+      ...(includeUntrackedAudio && audioFilePath && !uploadedTempPaths.includes(audioFilePath)
+        ? [audioFilePath]
+        : []),
+    ];
+    return Promise.all(paths.filter(Boolean).map((path) => unlink(path).catch(() => {})));
   };
   if (isIcLoraMode(mode) && icLoraSpecForMode(mode)?.referenceKind === 'image'
     && Array.isArray(icReferencePaths) && icReferencePaths.length) {
     const stillFfmpeg = ffmpeg || await findFfmpeg();
     if (!stillFfmpeg) {
-      await cleanupResizeTempFiles();
+      await cleanupTempFiles();
       throw new ServerError(
         'ffmpeg is required to prepare still references for Ingredients mode — install it (brew install ffmpeg) and retry.',
         { status: 400, code: 'IC_LORA_STILL_NEEDS_FFMPEG' },
@@ -1434,9 +1455,9 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
       // Unlike the resizeImage fallback (which degrades to the original), there is
       // no usable degradation here — a still handed straight to the pipeline fails
       // deep inside the VAE reshape. Fail loudly with the ffmpeg reason.
-      // cleanupResizeTempFiles() also unlinks clipPaths (already pushed into
+      // cleanupTempFiles() also unlinks clipPaths (already pushed into
       // icReferenceTempPaths above), plus any earlier resize temp files.
-      await cleanupResizeTempFiles();
+      await cleanupTempFiles();
       throw new ServerError(
         `Failed to prepare Ingredients reference ${basename(icReferencePaths[failedAt])}: ${encodes[failedAt].error.message}`,
         { status: 400, code: 'IC_LORA_STILL_PREP_FAILED' },
@@ -1537,15 +1558,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     console.log(`❌ Video generation buildArgs error [${jobId.slice(0, 8)}]: ${reason}`);
     broadcastSse(job, { type: 'error', error: reason });
     videoGenEvents.emit('failed', { generationId: jobId, error: reason });
-    if (resizedSrcTempPath) unlink(resizedSrcTempPath).catch(() => {});
-    if (resizedLastTempPath) unlink(resizedLastTempPath).catch(() => {});
-    for (const p of resizedKeyframeTempPaths) unlink(p).catch(() => {});
-    for (const p of icReferenceTempPaths) unlink(p).catch(() => {});
-    if (uploadedTempPath) unlink(uploadedTempPath).catch(() => {});
-    for (const p of uploadedTempPaths) unlink(p).catch(() => {});
-    if (audioFilePath && !uploadedTempPaths.includes(audioFilePath)) {
-      unlink(audioFilePath).catch(() => {});
-    }
+    void cleanupTempFiles({ includeUploads: true, includeUntrackedAudio: true });
     closeJobAfterDelay(jobs, jobId);
     throw err;
   }
@@ -1553,12 +1566,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   const heavyClaim = await claimHeavyLocalJob({ kind: 'local video generation', id: jobId });
   if (!heavyClaim.ok) {
     jobs.delete(jobId);
-    if (resizedSrcTempPath) await unlink(resizedSrcTempPath).catch(() => {});
-    if (resizedLastTempPath) await unlink(resizedLastTempPath).catch(() => {});
-    await Promise.all(resizedKeyframeTempPaths.map((path) => unlink(path).catch(() => {})));
-    await Promise.all(icReferenceTempPaths.map((path) => unlink(path).catch(() => {})));
-    if (uploadedTempPath) await unlink(uploadedTempPath).catch(() => {});
-    await Promise.all(uploadedTempPaths.map((path) => unlink(path).catch(() => {})));
+    await cleanupTempFiles({ includeUploads: true });
     throw new ServerError(heavyClaim.message, { status: 409, code: 'HEAVY_LOCAL_JOB_BUSY', context: { holder: heavyClaim.holder } });
   }
   const releaseHeavyClaim = () => heavyClaim.release()
@@ -1751,18 +1759,9 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     // Spawn failed, so proc.on('close') will never fire — clean up every
     // temp file we own here, including the multipart upload, otherwise
     // ENOENT/permission errors leak files in os.tmpdir().
-    if (resizedSrcTempPath) unlink(resizedSrcTempPath).catch(() => {});
-    if (resizedLastTempPath) unlink(resizedLastTempPath).catch(() => {});
-    for (const p of resizedKeyframeTempPaths) unlink(p).catch(() => {});
-    for (const p of icReferenceTempPaths) unlink(p).catch(() => {});
-    if (uploadedTempPath) unlink(uploadedTempPath).catch(() => {});
-    for (const p of uploadedTempPaths) unlink(p).catch(() => {});
-    // Defensive: a direct caller (bypassing the route) may pass audioFilePath
-    // without also threading it through uploadedTempPaths. Unlink it here too —
-    // double-unlink on the route's path is harmless (catch swallows ENOENT).
-    if (audioFilePath && !uploadedTempPaths.includes(audioFilePath)) {
-      unlink(audioFilePath).catch(() => {});
-    }
+    // Defensive cleanup includes audio passed directly without the route's
+    // uploadedTempPaths tracking. Duplicate unlinks remain harmless.
+    void cleanupTempFiles({ includeUploads: true, includeUntrackedAudio: true });
     closeJobAfterDelay(jobs, jobId);
   });
 
@@ -1846,23 +1845,9 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
       // Cleanup the resized temp images if we made them. Track via flags rather
       // than a path-prefix check — tmpdir() can return a symlinked path
       // (macOS /var → /private/var) so startsWith() can silently miss.
-      if (resizedSrcTempPath) await unlink(resizedSrcTempPath).catch(() => {});
-      if (resizedLastTempPath) await unlink(resizedLastTempPath).catch(() => {});
-      for (const p of resizedKeyframeTempPaths) await unlink(p).catch(() => {});
-      // The throwaway still→clip encodes for an image-kind IC reference. The
-      // ORIGINAL stills are gallery files (or route-staged uploads) and are NOT
-      // ours to remove — only these temp clips.
-      for (const p of icReferenceTempPaths) await unlink(p).catch(() => {});
-      // Cleanup the original multipart upload temp file too — without this,
-      // every i2v request leaves a file in os.tmpdir() forever.
-      if (uploadedTempPath) await unlink(uploadedTempPath).catch(() => {});
-      for (const p of uploadedTempPaths) await unlink(p).catch(() => {});
-      // Defensive: catch audioFilePath too in case a direct caller passed it
-      // without threading through uploadedTempPaths. Skip when the route
-      // already covered it (extraUploadedTempPaths.push(audioFilePath)).
-      if (audioFilePath && !uploadedTempPaths.includes(audioFilePath)) {
-        await unlink(audioFilePath).catch(() => {});
-      }
+      // Cleanup internally generated resize/reference files, route-staged
+      // uploads, and direct-call audio through the same ownership-aware helper.
+      await cleanupTempFiles({ includeUploads: true, includeUntrackedAudio: true });
 
       // A PortOS-fired SIGKILL (completion-teardown watchdog OR idle-stall
       // deadline) is a SUCCESS when the output file is already on disk and

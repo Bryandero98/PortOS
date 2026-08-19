@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router';
 vi.mock('../services/api', () => ({
   captureBrainThought: vi.fn(),
   getYoutubeIngestSettings: vi.fn(),
+  getApps: vi.fn(),
 }));
 // The ingest hook reaches for apiBrain directly (not through the `api` barrel),
 // so mock it separately — that keeps the REAL useYoutubeIngest/useSseJobSlot
@@ -28,7 +29,7 @@ class StubEventSource {
 }
 globalThis.EventSource = StubEventSource;
 
-import { captureBrainThought, getYoutubeIngestSettings } from '../services/api';
+import { captureBrainThought, getApps, getYoutubeIngestSettings } from '../services/api';
 import { startYoutubeIngest } from '../services/apiBrain.js';
 import toast from './ui/Toast';
 import QuickBrainCapture from './QuickBrainCapture';
@@ -62,6 +63,10 @@ describe('QuickBrainCapture', () => {
       defaultDownloadVideo: false,
       defaultIngestAudio: false,
     });
+    getApps.mockResolvedValue([
+      { id: 'portos-default', name: 'PortOS', repoPath: '/srv/portos' },
+      { id: 'app-example', name: 'Example App', repoPath: '/srv/example-app' },
+    ]);
     startYoutubeIngest.mockResolvedValue({ jobId: 'job-1' });
   });
 
@@ -112,7 +117,7 @@ describe('QuickBrainCapture', () => {
 
       type(REPO);
       expect(screen.getByLabelText('Scan for malware')).toBeInTheDocument();
-      expect(screen.getByLabelText('Study for PortOS ideas')).toBeInTheDocument();
+      expect(screen.getByLabelText('Study for app ideas')).toBeInTheDocument();
       expect(screen.getByText(/will be cloned locally/)).toBeInTheDocument();
       expect(screen.getByText('Will save as link and clone the repo')).toBeInTheDocument();
     });
@@ -134,11 +139,61 @@ describe('QuickBrainCapture', () => {
     it('sends the ticked actions with the capture', async () => {
       renderWidget();
       type(REPO);
-      fireEvent.click(screen.getByLabelText('Study for PortOS ideas'));
+      fireEvent.click(screen.getByLabelText('Study for app ideas'));
       fireEvent.click(screen.getByLabelText('Capture'));
 
       await waitFor(() => expect(captureBrainThought).toHaveBeenCalled());
-      expect(captureBrainThought.mock.calls[0][3].repoIntake).toEqual({ malwareScan: false, learn: true });
+      expect(captureBrainThought.mock.calls[0][3].repoIntake).toEqual({
+        malwareScan: false,
+        learn: true,
+        targetAppId: 'portos-default',
+      });
+    });
+
+    it('sends the selected managed app as the study target', async () => {
+      renderWidget();
+      type(REPO);
+      fireEvent.click(screen.getByLabelText('Study for app ideas'));
+      await waitFor(() => expect(screen.getByLabelText('File study issues against')).toBeInTheDocument());
+      fireEvent.change(screen.getByLabelText('File study issues against'), { target: { value: 'app-example' } });
+      fireEvent.click(screen.getByLabelText('Capture'));
+
+      await waitFor(() => expect(captureBrainThought).toHaveBeenCalled());
+      expect(captureBrainThought.mock.calls[0][3].repoIntake).toEqual({
+        malwareScan: false,
+        learn: true,
+        targetAppId: 'app-example',
+      });
+    });
+
+    it('sends optional study context with the repo study request', async () => {
+      renderWidget();
+      type(REPO);
+      fireEvent.click(screen.getByLabelText('Study for app ideas'));
+      fireEvent.change(screen.getByLabelText(/study context/i), {
+        target: { value: 'Look for the indexing approach and where it could fit in search.' },
+      });
+      fireEvent.click(screen.getByLabelText('Capture'));
+
+      await waitFor(() => expect(captureBrainThought).toHaveBeenCalled());
+      expect(captureBrainThought.mock.calls[0][3].repoIntake).toEqual({
+        malwareScan: false,
+        learn: true,
+        targetAppId: 'portos-default',
+        studyContext: 'Look for the indexing approach and where it could fit in search.',
+      });
+    });
+
+    it('clears study context when switching to another repo', async () => {
+      renderWidget();
+      type(REPO);
+      fireEvent.click(screen.getByLabelText('Study for app ideas'));
+      fireEvent.change(screen.getByLabelText(/study context/i), {
+        target: { value: 'Only for the first repo.' },
+      });
+
+      type('https://github.com/example-owner/another-repo');
+      await waitFor(() => expect(screen.getByLabelText(/study context/i)).toHaveValue(''));
     });
 
     it('remembers the choice across mounts', () => {

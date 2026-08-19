@@ -55,7 +55,13 @@ const CLAUDE_OLLAMA_MAX_OUTPUT_TOKENS = '65536';
 function claudeOllamaEnvDefaults(provider) {
   const command = String(provider?.command || '').split(/[\\/]/).pop()?.replace(/\.(?:cmd|exe)$/i, '').toLowerCase();
   return provider?.ollamaBacked === true && command === 'claude'
-    ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: CLAUDE_OLLAMA_MAX_OUTPUT_TOKENS }
+    ? {
+        CLAUDE_CODE_MAX_OUTPUT_TOKENS: CLAUDE_OLLAMA_MAX_OUTPUT_TOKENS,
+        // Claude Code omits the Anthropic-compatible `thinking` field when
+        // this is zero, which Ollama maps to Qwen's non-thinking mode. Do not
+        // set a value when enabled: Claude retains its normal adaptive budget.
+        ...(provider.thinking === false ? { MAX_THINKING_TOKENS: '0' } : {}),
+      }
     : {};
 }
 
@@ -69,7 +75,7 @@ function claudeOllamaEnvDefaults(provider) {
  * @param {object} options
  * @param {object|null} [options.before] - layered first, so `provider.envVars`
  *   overrides it (forgeTokenEnv, claudeSettingsEnv).
- * @param {{command?:string, envVars?:object, models?:string[], defaultModel?:string|null, ollamaBacked?:boolean, mtplxBacked?:boolean}|null} [options.provider]
+ * @param {{command?:string, envVars?:object, models?:string[], defaultModel?:string|null, ollamaBacked?:boolean, mtplxBacked?:boolean, llamaBacked?:boolean, orcarouterBacked?:boolean, thinking?:boolean}|null} [options.provider]
  * @param {string|null} [options.model] - the model being run this invocation,
  *   unioned into the OpenCode declared-models map. Omit when the site has no
  *   per-call model — `provider.defaultModel` is always declared regardless.

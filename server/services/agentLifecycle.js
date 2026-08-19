@@ -62,7 +62,7 @@ import { buildCliSpawnConfig, isClaudeCliProvider, isTuiProvider, getClaudeSetti
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
 import { releaseAppReviewMarker } from './appActivity.js';
 import { ensureInstanceId } from './instances.js';
-import { isClaimableBy, buildClaim, buildRelease, getClaimOwner } from './cosTaskClaim.js';
+import { isClaimableBy, buildClaim, buildRelease, getClaimOwner, getTargetInstance, isTargetedElsewhere } from './cosTaskClaim.js';
 import { resolveForgeTokenEnv } from './git.js';
 import { runnerAgents, pausedAgents, spawningTasks, useRunner, isTruthyMeta } from './agentState.js';
 import { withSpawnDedupGuard, withMapEntryCleanup, withUpdateInProgressGuard, SPAWN_DEDUP_SKIP, SPAWN_UPDATE_SKIP } from './agentGuards.js';
@@ -163,6 +163,15 @@ async function runAgentSpawn(task) {
     emitLog('error', `Failed to resolve instance identity for task ${task.id}: ${err?.message || err}`, { taskId: task.id });
     return null;
   }
+  // Targeted assignment guard (issue #4520). A task pinned to a specific
+  // federated instance runs ONLY there — every other peer passes over it, even
+  // when it is unclaimed and this instance is idle. Checked before the lease so
+  // the log names the standing decision rather than a transient claim. Unpinned
+  // tasks (the default) reach the opportunistic lease check unchanged.
+  if (isTargetedElsewhere(task.metadata, instanceId)) {
+    console.log(`📍 Task ${task.id} is assigned to instance ${getTargetInstance(task.metadata)} — skipping spawn on ${instanceId}`);
+    return null;
+  }
   if (!isClaimableBy(task.metadata, instanceId)) {
     console.log(`🔒 Task ${task.id} is claimed by instance ${getClaimOwner(task.metadata)} (live lease) — skipping spawn on ${instanceId}`);
     return null;
@@ -261,6 +270,14 @@ async function runAgentSpawn(task) {
     if (isRetryHeld(freshTask.metadata)) {
       console.log(`⏳ Task ${task.id} is held for its retry pointer — not spawning until cleanup releases it`);
       await cleanupOnError('retry held pending cleanup');
+      return null;
+    }
+    // Re-check the pin against the freshest record (#4520): the dequeued snapshot
+    // may predate a reassignment that synced in from a peer, and a task
+    // reassigned mid-dispatch must not be started here.
+    if (isTargetedElsewhere(freshTask.metadata, instanceId)) {
+      console.log(`📍 Task ${task.id} is assigned to instance ${getTargetInstance(freshTask.metadata)} — yielding on ${instanceId}`);
+      await cleanupOnError('assigned to another instance');
       return null;
     }
     // The task is persisted — honor a peer's claim that synced in since dispatch,
@@ -630,12 +647,25 @@ async function runAgentSpawn(task) {
     // bake a bare, Bedrock-invalid --model into the argv. Cached (5-min TTL), so
     // the spawn helper's own getClaudeSettingsEnv() call is effectively free.
     const cliSettingsEnv = isClaudeCliProvider(provider) ? await getClaudeSettingsEnv() : {};
+    // Task-level OpenCode/Ollama generation controls override provider defaults
+    // for this one run. The child-environment composer turns these into the
+    // dynamic `agent.build` config instead of mutating saved provider state.
+    const taskTemperature = task.metadata?.temperature === '' ? NaN : Number(task.metadata?.temperature);
+    const taskThinking = task.metadata?.thinking;
+    const runProvider = {
+      ...provider,
+      ...(Number.isFinite(taskTemperature) && taskTemperature >= 0 && taskTemperature <= 2
+        ? { temperature: taskTemperature }
+        : {}),
+      ...([true, false, 'true', 'false'].includes(taskThinking) ? { thinking: taskThinking } : {}),
+      ...(typeof task.metadata?.effort === 'string' ? { effort: task.metadata.effort } : {}),
+    };
     // Per-task reasoning-effort override (task form / schedule config). The
     // builders no-op it for providers without an effort control.
     const taskEffort = task.metadata?.effort || null;
     const cliConfig = isTui
-      ? buildTuiSpawnConfig(provider, selectedModel, { systemPromptFile, effort: taskEffort })
-      : buildCliSpawnConfig(provider, selectedModel, cliSettingsEnv, { systemPromptFile, effort: taskEffort });
+      ? buildTuiSpawnConfig(runProvider, selectedModel, { systemPromptFile, effort: taskEffort })
+      : buildCliSpawnConfig(runProvider, selectedModel, cliSettingsEnv, { systemPromptFile, effort: taskEffort });
 
     emitLog('success', `Spawning agent for task ${task.id}`, {
       agentId,
@@ -664,7 +694,7 @@ async function runAgentSpawn(task) {
         prompt,
         workspacePath,
         model: selectedModel,
-        provider,
+        provider: runProvider,
         runId,
         tuiConfig: cliConfig,
         agentDir,
@@ -677,7 +707,7 @@ async function runAgentSpawn(task) {
       });
     }
     if (useRunner) {
-      return await spawnViaRunner(agentId, task, { prompt, workspacePath, model: selectedModel, provider, runId, cliConfig, executionId: toolExecution.id, laneName });
+      return await spawnViaRunner(agentId, task, { prompt, workspacePath, model: selectedModel, provider: runProvider, runId, cliConfig, executionId: toolExecution.id, laneName });
     }
     // Direct spawn mode (fallback)
     return await spawnDirectly({
@@ -686,7 +716,7 @@ async function runAgentSpawn(task) {
       prompt,
       workspacePath,
       model: selectedModel,
-      provider,
+      provider: runProvider,
       runId,
       cliConfig,
       agentDir,

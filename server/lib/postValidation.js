@@ -46,6 +46,14 @@ const questionResultSchema = z.object({
   // Reaction-time drill only: player pressed before the stimulus appeared.
   // Always scored wrong server-side regardless of any client-supplied correct.
   falseStart: z.boolean().optional(),
+  // Executive-control drill evidence. These are server-recomputed from the
+  // seeded generated trial, but remain in the stored per-question record so
+  // progress/history can explain switch and congruency costs.
+  rule: z.enum(['color', 'shape', 'fill']).optional(),
+  switched: z.boolean().optional(),
+  incongruent: z.boolean().optional(),
+  congruent: z.boolean().optional(),
+  noGo: z.boolean().optional(),
   // Memory drill questions only: which chunk (memory-sequence) / element
   // (memory-element-flash) this answer attributes to, so submitPostSession can
   // merge per-chunk/per-element mastery (mergeMasteryFromSession in
@@ -72,7 +80,7 @@ const llmResponseSchema = z.object({
 });
 
 // Drill type configuration
-const MATH_DRILL_TYPES = ['doubling-chain', 'serial-subtraction', 'multiplication', 'powers', 'estimation'];
+const MATH_DRILL_TYPES = ['doubling-chain', 'serial-subtraction', 'multiplication', 'powers', 'estimation', 'applied-numeracy'];
 const LLM_DRILL_TYPES = ['word-association', 'story-recall', 'verbal-fluency', 'wit-comeback', 'pun-wordplay', 'compound-chain', 'bridge-word', 'double-meaning', 'idiom-twist', 'what-if', 'alternative-uses', 'story-prompt', 'invention-pitch', 'reframe'];
 const MEMORY_DRILL_TYPES = ['memory-fill-blank', 'memory-sequence', 'memory-element-flash'];
 // Memory drills supported by the POST runner (client-side scoring with string
@@ -100,8 +108,13 @@ const DRILL_TYPES = [...MATH_DRILL_TYPES, ...LLM_DRILL_TYPES, ...MEMORY_DRILL_TY
 // LLM/MEMORY/COGNITIVE types and falls through everything else to scoreDrill's
 // math-expression parser (computeExpectedFromPrompt) — a Morse task type would
 // pass validation there but silently mis-score as a failed math drill instead
-// of being rejected. Morse only ever posts through trainingEntrySchema below.
+// of being rejected. Morse and rhetoric only ever post through
+// trainingEntrySchema below.
 const MORSE_DRILL_TYPES = ['morse-copy', 'morse-head-copy', 'morse-send'];
+// Rhetoric is a standalone, self-assessed training surface. It never enters a
+// scored POST session or calls an LLM, but its rounds still use the shared
+// training log endpoint for streaks and progress reporting.
+const RHETORIC_DRILL_TYPES = ['rhetoric-meter', 'rhetoric-diacope', 'rhetoric-chiasmus', 'rhetoric-progressia', 'rhetoric-brainstorm'];
 
 const drillTypeConfigSchema = z.object({
   enabled: z.boolean().optional(),
@@ -114,7 +127,9 @@ const drillTypeConfigSchema = z.object({
   startValue: z.number().int().min(1).optional(),
   startRange: z.array(z.number()).length(2).optional(),
   timeLimitSec: z.number().int().min(10).max(600).optional(),
-  count: z.number().int().min(1).max(50).optional(),
+  // Executive-control generators support up to 60 trials. This shared config
+  // schema must accept every generated config on the scored-session round-trip.
+  count: z.number().int().min(1).max(60).optional(),
   maxDigits: z.number().int().min(1).max(4).optional(),
   // Progressive multiplication ladder (server/lib/postMultiplicationLadder.js).
   // `progressive` is the config toggle; `level`/`factors` are server-computed
@@ -134,6 +149,15 @@ const drillTypeConfigSchema = z.object({
   bases: z.array(z.number().int().min(2).max(20)).min(1).optional(),
   maxExponent: z.number().int().min(2).max(20).optional(),
   tolerancePct: z.number().min(1).max(50).optional(),
+  // Applied Numeracy uses an unsigned numeric replay key while the cognitive
+  // generators use bounded string seeds. This shared config must preserve both
+  // shapes on the request and scored-session round-trips.
+  seed: z.union([
+    z.string().max(100),
+    z.number().int().min(0).max(0xFFFFFFFF),
+  ]).optional(),
+  difficulty: z.number().int().min(1).max(3).optional(),
+  family: z.enum(['percentage', 'ratio', 'unit', 'rate', 'estimate', 'mixed']).optional(),
   // --- Cognitive drill knobs (n-back / digit-span / stroop) ---
   // Bounds match the generator clamps in meatspacePostCognitive.js so the UI /
   // API can't accept a value the generator will silently narrow. Exception:
@@ -142,13 +166,15 @@ const drillTypeConfigSchema = z.object({
   // keeps a conservative fixed floor of 6 and lets the generator clamp up.
   // (timeLimitSec above is validated but NOT enforced for these drill types —
   // they're self-paced/stimulus-driven; see PostCognitiveDrillRunner.jsx.)
-  // stimulusMs (n-back) / showMs (digit-span) are the presentation-speed knobs.
+  // stimulusMs (n-back / Go-No-Go) and showMs (digit-span) are the
+  // presentation-speed knobs. The lower bound covers Go/No-Go's brief signals;
+  // each generator still applies its drill-specific clamp.
   // The progressive ladder (default ON) drives them per rung; manual mode
   // (progressive off) exposes them in the config UI (issue #2095), so they must
-  // survive validation. Bounds mirror the generator clamps in
-  // meatspacePostCognitive.js (generateNBack / generateDigitSpan).
+  // survive validation. Bounds span the generator clamps in
+  // meatspacePostCognitive.js (generateNBack / generateGoNoGo).
   n: z.number().int().min(1).max(3).optional(),
-  stimulusMs: z.number().int().min(1000).max(5000).optional(),
+  stimulusMs: z.number().int().min(100).max(5000).optional(),
   showMs: z.number().int().min(400).max(4000).optional(),
   length: z.number().int().min(6).max(60).optional(),
   direction: z.enum(['forward', 'backward']).optional(),
@@ -162,7 +188,16 @@ const drillTypeConfigSchema = z.object({
   mode: z.enum(['simple', 'choice']).optional(),
   minDelayMs: z.number().int().min(300).max(5000).optional(),
   maxDelayMs: z.number().int().min(300).max(8000).optional(),
-  choices: z.number().int().min(2).max(4).optional()
+  choices: z.number().int().min(2).max(4).optional(),
+  ruleCount: z.number().int().min(2).max(3).optional(),
+  switchRatePct: z.number().int().min(0).max(100).optional(),
+  cueStimulusIntervalMs: z.number().int().min(100).max(2000).optional(),
+  responseDeadlineMs: z.number().int().min(500).max(5000).optional(),
+  noGoPct: z.number().int().min(5).max(80).optional(),
+  lureSimilarity: z.enum(['low', 'high']).optional(),
+  congruentPct: z.number().int().min(0).max(100).optional(),
+  flankerDistance: z.number().int().min(1).max(4).optional(),
+  flankerStrength: z.number().int().min(1).max(3).optional(),
 });
 
 // Task result within a session
@@ -204,6 +239,16 @@ const taskResultSchema = z.object({
   misses: z.number().int().min(0).optional(),
   falseAlarms: z.number().int().min(0).optional(),
   correctRejections: z.number().int().min(0).optional(),
+  omissions: z.number().int().min(0).optional(),
+  commissionErrors: z.number().int().min(0).optional(),
+  switchCostMs: z.number().nullable().optional(),
+  switchAccuracy: z.number().min(0).max(1).nullable().optional(),
+  repeatAccuracy: z.number().min(0).max(1).nullable().optional(),
+  congruencyCostMs: z.number().nullable().optional(),
+  congruentAccuracy: z.number().min(0).max(1).nullable().optional(),
+  incongruentAccuracy: z.number().min(0).max(1).nullable().optional(),
+  falseAlarmRate: z.number().min(0).max(1).nullable().optional(),
+  latencyDistributionMs: z.array(z.number().min(0)).max(500).optional(),
   hintUsed: z.boolean().optional(),
   confidence: z.number().min(0).max(1).nullable().optional(),
   inputMode: z.string().min(1).max(50).optional(),
@@ -241,6 +286,16 @@ export const postQuickSessionPlanSchema = z.object({
   selectedTypes: z.array(z.string().max(100)).max(50),
 });
 
+// A benchmark is a versioned, fixed-form assessment. It is deliberately
+// separate from the adaptive/Quick plan so benchmark history remains
+// comparable even when a user's normal POST configuration changes.
+export const postBenchmarkSchema = z.object({
+  protocolId: z.string().trim().min(1).max(100),
+  protocolVersion: z.number().int().min(1).max(100),
+  scorerVersion: z.string().trim().min(1).max(100),
+  formId: z.string().trim().min(1).max(100),
+});
+
 export const postSessionSubmitSchema = z.object({
   // Client-generated session id (uuid) — keys the idempotent upsert in
   // submitPostSession so a retry after a dropped response can't double-record.
@@ -253,6 +308,7 @@ export const postSessionSubmitSchema = z.object({
   tags: postTagsSchema.optional().default({}),
   startedAt: z.string().datetime().optional(),
   plan: postQuickSessionPlanSchema.optional(),
+  benchmark: postBenchmarkSchema.optional(),
 });
 
 // LLM drill type configuration
@@ -288,9 +344,12 @@ export const postConfigUpdateSchema = z.object({
     drillTypes: z.record(z.enum(LLM_DRILL_TYPES), llmDrillTypeConfigSchema).optional()
   }).optional(),
   // Deterministic cognitive drills — no provider, so no provider/model fields.
+  // Partial so an older browser's complete pre-executive-control map remains a
+  // valid patch after newer drill types are added to the enum (Zod 4 records
+  // with enum keys are otherwise exhaustive).
   cognitive: z.object({
     enabled: z.boolean().optional(),
-    drillTypes: z.record(z.enum(COGNITIVE_DRILL_TYPES), drillTypeConfigSchema).optional()
+    drillTypes: z.partialRecord(z.enum(COGNITIVE_DRILL_TYPES), drillTypeConfigSchema).optional()
   }).optional(),
   // Memory practice (issue #3252). Mirrors the other module blocks, plus an
   // `items` map so an INDIVIDUAL memorized text — e.g. the seeded Elements Song
@@ -590,8 +649,8 @@ export const trainingEntrySchema = z.object({
   // Training log entries also cover Morse (client-side scored, never a scored
   // POST session) — union in MORSE_DRILL_TYPES here rather than in the shared
   // DRILL_TYPES so postSessionSubmitSchema/postDrillRequestSchema can't accept
-  // a Morse type (see the MORSE_DRILL_TYPES comment above).
-  drillType: z.enum([...DRILL_TYPES, ...MORSE_DRILL_TYPES]),
+  // a Morse or rhetoric type (see the standalone-type comment above).
+  drillType: z.enum([...DRILL_TYPES, ...MORSE_DRILL_TYPES, ...RHETORIC_DRILL_TYPES]),
   questionCount: z.number().int().min(0),
   correctCount: z.number().int().min(0),
   totalMs: z.number().min(0),
@@ -610,13 +669,14 @@ export const trainingEntrySchema = z.object({
 const trainingAttemptSchema = z.object({
   id: z.string().min(1).max(200),
   module: z.string().min(1).max(100),
-  drillType: z.enum([...DRILL_TYPES, ...MORSE_DRILL_TYPES]),
+  drillType: z.enum([...DRILL_TYPES, ...MORSE_DRILL_TYPES, ...RHETORIC_DRILL_TYPES]),
   memoryItemId: z.string().min(1).max(200).nullable().optional(),
   difficulty: z.record(z.string(), z.unknown()).nullable().optional(),
   configVersion: z.string().max(100).nullable().optional(),
   questionCount: z.number().int().min(0),
   correctCount: z.number().int().min(0),
   latencyMs: z.number().min(0),
+  drillData: z.any().optional(),
   // Deterministic drills retain answer/latency detail for ladder/adaptive
   // evidence; wordplay keeps its established compact training-question shape.
   questions: z.array(z.union([questionResultSchema, trainingQuestionSchema])).max(500).optional(),
@@ -627,6 +687,29 @@ const trainingAttemptSchema = z.object({
   confidence: z.number().min(0).max(1).nullable().optional(),
   inputMode: z.string().min(1).max(50).optional().default('unknown'),
   scorerProvenance: z.string().min(1).max(100).optional().default('post-client'),
+  accuracy: z.number().min(0).max(1).nullable().optional(),
+  avgResponseMs: z.number().min(0).nullable().optional(),
+  answeredCount: z.number().int().min(0).optional(),
+  totalCount: z.number().int().min(0).optional(),
+  attemptCount: z.number().int().min(0).optional(),
+  errorCount: z.number().int().min(0).optional(),
+  medianMs: z.number().min(0).nullable().optional(),
+  bestMs: z.number().min(0).nullable().optional(),
+  span: z.number().int().min(0).optional(),
+  hits: z.number().int().min(0).optional(),
+  misses: z.number().int().min(0).optional(),
+  omissions: z.number().int().min(0).optional(),
+  commissionErrors: z.number().int().min(0).optional(),
+  falseAlarms: z.number().int().min(0).optional(),
+  correctRejections: z.number().int().min(0).optional(),
+  switchCostMs: z.number().nullable().optional(),
+  switchAccuracy: z.number().min(0).max(1).nullable().optional(),
+  repeatAccuracy: z.number().min(0).max(1).nullable().optional(),
+  congruencyCostMs: z.number().nullable().optional(),
+  congruentAccuracy: z.number().min(0).max(1).nullable().optional(),
+  incongruentAccuracy: z.number().min(0).max(1).nullable().optional(),
+  falseAlarmRate: z.number().min(0).max(1).nullable().optional(),
+  latencyDistributionMs: z.array(z.number().min(0)).max(500).optional(),
 }).superRefine((attempt, ctx) => {
   if (attempt.correctCount > attempt.questionCount) {
     ctx.addIssue({ code: 'custom', path: ['correctCount'], message: 'correctCount cannot exceed questionCount' });

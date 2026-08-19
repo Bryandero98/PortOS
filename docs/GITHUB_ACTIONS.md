@@ -21,9 +21,8 @@ workflow changes, unknown artifacts, or wide diffs.
 
 A short always-run list (`ALWAYS_RUN_TESTS` in the planner) is added to every
 plan, so no impact scope can drop it — currently
-`server/services/taskPromptDefaults.test.js` (cross-install prompt-upgrade) and
-`scripts/changelogFragments.test.js` (release-note fragment parse). A
-documentation-only PR therefore still runs the server job with those files
+`server/services/taskPromptDefaults.test.js` (cross-install prompt-upgrade). A
+documentation-only PR therefore still runs the server job with that file
 selected.
 
 ### Vitest runner tuning

@@ -4,7 +4,7 @@ import toast from '../components/ui/Toast';
 import { uuidv4 } from '../lib/uuid.js';
 import {
   LLM_DRILL_TYPES, MEMORY_DRILL_TYPES, DRILL_TO_DOMAIN, countLlmCorrect,
-  WORDPLAY_LLM_DRILL_TYPES, LLM_TRAINING_CORRECT_THRESHOLD,
+  WORDPLAY_LLM_DRILL_TYPES, LLM_TRAINING_CORRECT_THRESHOLD, appliedNumeracyAnswerCorrect,
 } from '../components/meatspace/post/constants';
 
 // sessionStorage key for the single in-progress run. Single-user tool → one
@@ -174,6 +174,7 @@ export function usePostSession() {
   const [runId, setRunId] = useState(restored?.runId ?? null);
   const [tags, setTags] = useState(restored?.tags ?? {}); // session tags captured at launch
   const [sessionPlan, setSessionPlan] = useState(restored?.sessionPlan ?? null);
+  const [benchmark, setBenchmark] = useState(restored?.benchmark ?? null);
   const [lastAnswer, setLastAnswer] = useState(null); // { correct, expected, answered } for training feedback
   // Seed the timing refs from the restored snapshot so a mid-drill refresh keeps
   // measuring elapsed time from the ORIGINAL question/drill start — otherwise the
@@ -204,6 +205,7 @@ export function usePostSession() {
     sessionStorage.setItem(RUN_STORAGE_KEY, JSON.stringify({
       runId, state, drills, currentDrillIndex, currentDrill, currentQuestionIndex,
       answers, drillResults, sessionScore, isTraining, tags, sessionPlan,
+      benchmark,
       // Persist the timing anchors (mutated synchronously on each question/drill
       // transition, just before the state change that fires this effect) so a
       // refresh resumes the clock instead of restarting it.
@@ -212,9 +214,9 @@ export function usePostSession() {
       runStartedAt: runStartedAtRef.current,
       runCompletedAt: runCompletedAtRef.current,
     }));
-  }, [runId, state, drills, currentDrillIndex, currentDrill, currentQuestionIndex, answers, drillResults, sessionScore, isTraining, tags, sessionPlan]);
+  }, [runId, state, drills, currentDrillIndex, currentDrill, currentQuestionIndex, answers, drillResults, sessionScore, isTraining, tags, sessionPlan, benchmark]);
 
-  const startSession = useCallback(async (drillConfigs, training = false, sessionTags = {}, plan = null) => {
+  const startSession = useCallback(async (drillConfigs, training = false, sessionTags = {}, plan = null, benchmarkMetadata = null) => {
     // drillConfigs: [{ type, config, timeLimitSec }]
     if (!drillConfigs?.length) {
       toast.error('No drills configured');
@@ -223,6 +225,7 @@ export function usePostSession() {
     setState(STATES.LOADING);
     setIsTraining(training);
     setSessionPlan(plan || null);
+    setBenchmark(training ? null : benchmarkMetadata || null);
     setDrills(drillConfigs);
     setCurrentDrillIndex(0);
     setDrillResults([]);
@@ -308,7 +311,8 @@ export function usePostSession() {
     if (!q) return;
     const responseMs = Date.now() - questionStartRef.current;
     const hasFillBlankAnswers = Array.isArray(q.answers) && q.answers.length > 0;
-    const isTextAnswer = typeof q.expected === 'string' || hasFillBlankAnswers;
+    const isAppliedNumeracy = currentDrill.type === 'applied-numeracy';
+    const isTextAnswer = typeof q.expected === 'string' || hasFillBlankAnswers || isAppliedNumeracy;
 
     // For estimation drills, check within tolerance
     let correct;
@@ -319,7 +323,9 @@ export function usePostSession() {
       correct = entries.length > 0 && entries.every(entry => entry.correct);
     } else if (isTextAnswer) {
       answered = value;
-      correct = value !== null && String(value).toLowerCase().trim() === String(q.expected).toLowerCase().trim();
+      correct = isAppliedNumeracy
+        ? appliedNumeracyAnswerCorrect(value, q)
+        : value !== null && String(value).toLowerCase().trim() === String(q.expected).toLowerCase().trim();
     } else if (currentDrill.type === 'estimation') {
       const raw = (value === null || String(value).trim() === '') ? null : Number(value);
       answered = (raw !== null && isNaN(raw)) ? null : raw;
@@ -333,10 +339,11 @@ export function usePostSession() {
 
     const answer = {
       prompt: q.prompt,
-      expected: q.expected,
+      expected: q.answerDisplay || q.expected,
       answered,
       correct,
       responseMs,
+      ...(q.method ? { method: q.method } : {}),
       ...memoryAttribution(q),
     };
 
@@ -403,10 +410,11 @@ export function usePostSession() {
       const answered = hasFillBlankAnswers ? buildFillBlankAnswerEntries(q, null) : null;
       return {
         prompt: q.prompt,
-        expected: q.expected,
+        expected: q.answerDisplay || q.expected,
         answered,
         correct: false,
         responseMs: 0,
+        ...(q.method ? { method: q.method } : {}),
         ...memoryAttribution(q)
       };
     });
@@ -522,7 +530,7 @@ export function usePostSession() {
           ? (r.responses || []).length
           : (r.questions || []).filter((question) => question?.answered != null).length;
         const inputMode = r.inputMode || (
-          isLlmDrill || MEMORY_DRILL_TYPES.includes(r.type)
+          isLlmDrill || MEMORY_DRILL_TYPES.includes(r.type) || r.type === 'applied-numeracy'
             ? 'text'
             : r.module === 'cognitive' ? 'interactive' : 'numeric'
         );
@@ -536,6 +544,7 @@ export function usePostSession() {
           questionCount,
           correctCount,
           latencyMs: r.totalMs || 0,
+          ...(r.drillData ? { drillData: r.drillData } : {}),
           correct: questionCount > 0 ? correctCount === questionCount : null,
           score: r.score !== undefined ? r.score : (questionCount > 0 ? (correctCount / questionCount) * 100 : null),
           completion: r.completion !== undefined ? r.completion : (questionCount > 0 ? answeredCount / questionCount : null),
@@ -543,6 +552,13 @@ export function usePostSession() {
           confidence: r.confidence ?? null,
           inputMode,
           scorerProvenance: isLlmDrill ? 'server-llm' : 'client-deterministic',
+          ...Object.fromEntries([
+            'accuracy', 'avgResponseMs', 'answeredCount', 'totalCount', 'attemptCount', 'errorCount',
+            'medianMs', 'bestMs', 'span', 'hits', 'misses', 'omissions', 'commissionErrors',
+            'falseAlarms', 'correctRejections', 'switchCostMs', 'switchAccuracy', 'repeatAccuracy',
+            'congruencyCostMs', 'congruentAccuracy', 'incongruentAccuracy', 'falseAlarmRate',
+            'latencyDistributionMs',
+          ].filter(key => r[key] !== undefined).map(key => [key, r[key]])),
           ...((questions || Array.isArray(r.questions)) ? { questions: questions || r.questions } : {}),
         };
       });
@@ -579,6 +595,7 @@ export function usePostSession() {
       tags: finalTags,
       startedAt: new Date(runStartedAtRef.current).toISOString(),
       ...(sessionPlan ? { plan: sessionPlan } : {}),
+      ...(benchmark ? { benchmark } : {}),
     }, { silent: true }).catch(err => {
       toast.error(`Failed to save session: ${err.message}`);
       setState(STATES.COMPLETE);
@@ -597,7 +614,7 @@ export function usePostSession() {
     toast.success(`POST complete — score: ${session.score}`);
     setState(STATES.SAVED);
     return session;
-  }, [drillResults, isTraining, tags, runId, sessionPlan]);
+  }, [drillResults, isTraining, tags, runId, sessionPlan, benchmark]);
 
   const reset = useCallback(() => {
     setState(STATES.IDLE);
@@ -615,6 +632,7 @@ export function usePostSession() {
     runCompletedAtRef.current = null;
     setTags({});
     setSessionPlan(null);
+    setBenchmark(null);
     setLastAnswer(null);
     clearRunSnapshot();
   }, []);
@@ -633,6 +651,7 @@ export function usePostSession() {
     isTraining,
     runId,
     sessionPlan,
+    benchmark,
     lastAnswer,
     startSession,
     submitAnswer,

@@ -115,6 +115,20 @@ export const isAntigravityProvider = (provider) => {
 };
 
 /**
+ * True when a provider is Cursor-Agent-flavored — the shipped
+ * `cursor-cli`/`cursor-tui` ids or any provider whose launch command basename is
+ * `cursor-agent` (never a bare `cursor`, which is the GUI editor). MIRROR of
+ * `isCursorProvider` in server/lib/providerModels.js — keep in lockstep.
+ * @param {{id?:string, command?:string}|null|undefined} provider
+ * @returns {boolean}
+ */
+export const isCursorProvider = (provider) => {
+  if (!provider) return false;
+  const id = String(provider.id || '').toLowerCase();
+  return id === 'cursor-cli' || id === 'cursor-tui' || commandBasename(provider.command) === 'cursor-agent';
+};
+
+/**
  * Whether the AI Providers page should offer a "Refresh Models" button for this
  * provider — i.e. whether the server has a model fetcher that can answer for it.
  *
@@ -184,6 +198,21 @@ export const filterSelectableModels = (models) =>
 export const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
 export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
+// OpenCode passes this through as `reasoningEffort` to its configured local
+// provider. Ollama's OpenAI-compatible API accepts this narrow ladder for
+// thinking models; the broader vendor-CLI ladders are not portable here.
+export const OPENCODE_OLLAMA_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
+// Cursor Agent. MIRROR of `CURSOR_EFFORT_LEVELS`. Cursor takes NO `--effort`
+// flag — the server folds the level into the model id as Cursor's own variant
+// syntax (`gpt-5[effort=max]`) — but the level is still user-pickable, so this
+// ladder drives the same selects as every other CLI's.
+export const CURSOR_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
+
+/** True when an OpenCode process provider is backed by the local Ollama daemon. */
+export const isOpencodeOllamaProvider = (provider) =>
+  (['opencode', 'opencode-tui'].includes(String(provider?.id || '').toLowerCase())
+    || commandBasename(provider?.command) === 'opencode')
+  && provider?.ollamaBacked === true;
 
 /**
  * Antigravity base-model ↔ effort-suffix split — MIRROR of
@@ -358,12 +387,14 @@ export const seedModelEffort = (provider, model, effort) => {
  */
 export const effortLevelsForProvider = (provider, model = null) => {
   if (!provider) return null;
+  if (isOpencodeOllamaProvider(provider)) return OPENCODE_OLLAMA_EFFORT_LEVELS;
   if (isCodexProvider(provider)) return CODEX_EFFORT_LEVELS;
   if (isAntigravityProvider(provider)) {
     const perModel = model ? antigravityModelEffortLevels(model, provider.models) : null;
     if (perModel === null) return ANTIGRAVITY_EFFORT_LEVELS;
     return perModel.length ? perModel : null;
   }
+  if (isCursorProvider(provider)) return CURSOR_EFFORT_LEVELS;
   const id = String(provider.id || '').toLowerCase();
   if (id.startsWith('claude-code') || commandBasename(provider.command) === 'claude') return CLAUDE_EFFORT_LEVELS;
   return null;
@@ -483,7 +514,7 @@ export const isVisionCapableCliProvider = (provider) =>
 export const isToolUseModel = (id) =>
   typeof id === 'string' && id.length > 0 &&
   // Mirror of TOOL_USE_RE in server/lib/localModelHeuristics.js — keep in lockstep.
-  /qwen|llama-?3\.[1-9]|llama-?4|mistral|mixtral|ministral|codestral|devstral|magistral|command-?r|command-?a|north-mini-code|firefunction|functionary|watt-tool|hermes|functiongemma|glm-?4|granite-?[34]|(?:^|[-_/:])gemma-?4|gpt-oss|nemotron|olmo-?3|lfm2|ornith|muse-glimmer|nex-n2|smollm2|deepseek-v3|deepseek-r1|deepseek-v4/i.test(id);
+  /qwen|llama-?3\.[1-9]|llama-?4|mistral|mixtral|ministral|codestral|devstral|magistral|command-?r|command-?a|north-mini-code|firefunction|functionary|watt-tool|hermes|functiongemma|glm-?4|granite-?[34]|(?:^|[-_/:])gemma-?4|gpt-oss|nemotron|olmo-?3|lfm2|ornith|muse-glimmer|nex-n2|smollm2|dflash|deepseek-v3|deepseek-r1|deepseek-v4/i.test(id);
 
 /**
  * Agent-picker tool-use annotation for a model id. Agent / CoS tasks (the CD
@@ -531,7 +562,7 @@ export const isToolUseModel = (id) =>
  * @returns {{toolCapable:boolean}|null}
  */
 export const localToolUseHint = (id, provider, toolUseIdsByProvider = null) =>
-  (localBackendForProvider(provider) || isOllamaBackedProvider(provider))
+  (localBackendForProvider(provider) || isOllamaBackedProvider(provider) || provider?.mtplxBacked === true || provider?.llamaBacked === true)
     && typeof id === 'string' && id.length > 0
     ? { toolCapable: toolUseIdsByProvider?.[provider?.id]?.has(id) === true || isToolUseModel(id) }
     : null;

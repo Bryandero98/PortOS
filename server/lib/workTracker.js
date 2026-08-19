@@ -21,6 +21,7 @@ import {
   REPO_STUDY_LABEL_CONTRACT,
 } from './dispatchLabels.js';
 import { getOriginInfo, readOriginRemoteUrl } from './gitRemote.js';
+import { getAuditFilingPreset, isAuditTaskType } from './auditCatalog.js';
 
 // Every selectable value (UI + Zod enum). `'auto'` is the default; the rest are
 // concrete sources.
@@ -323,13 +324,24 @@ ${jiraLabelContract}
  * (cosTaskGenerator.js), the on-commit reference-watch trigger
  * (referenceRepos.js), and the one-off `repo-study` (repoIntake.js).
  */
-export async function resolveTrackerFilingBlock(app, taskType) {
-  if (!TRACKER_FILING_TASK_TYPES.has(taskType)) return { trackerInstructions: '', workTracker: null };
+export async function resolveTrackerFilingBlock(app, taskType, options = {}) {
+  const { fileIssues = false, ...wordingOverrides } = options;
+  // Always-filing types (reference-watch, repo-study) keep filing unless they
+  // are ALSO an audit type that opted into do-work (`fileIssues === false`).
+  // Audit types (security, ux, data-safety, …) file only when fileIssues is on.
+  const alwaysPreset = TRACKER_FILING_PRESETS[taskType];
+  const auditPreset = getAuditFilingPreset(taskType);
+  const shouldFile = isAuditTaskType(taskType) ? fileIssues === true : Boolean(alwaysPreset);
+  const preset = alwaysPreset || auditPreset;
+  if (!shouldFile || !preset) return { trackerInstructions: '', workTracker: null };
   // Never throws — degrades to the PLAN.md block, which `isFileTracker` then
   // agrees with, so the flag and the instructions stay consistent.
   const workTracker = await resolveAppWorkTracker(app).catch(() => ({ resolved: 'plan' }));
   return {
-    trackerInstructions: formatTrackerInstructions(workTracker.resolved, TRACKER_FILING_PRESETS[taskType]),
+    trackerInstructions: formatTrackerInstructions(workTracker.resolved, {
+      ...preset,
+      ...wordingOverrides,
+    }),
     workTracker: workTracker.resolved,
     worktreeChangesExpected: isFileTracker(workTracker.resolved),
   };

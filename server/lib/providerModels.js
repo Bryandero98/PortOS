@@ -91,6 +91,18 @@ export const resolveCliModel = (model) => isConfiguredDefaultModel(model) ? null
 export const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
 export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
+// OpenCode forwards this narrow OpenAI-compatible ladder as `reasoningEffort`
+// to a local Ollama model. Keep it separate from vendor-CLI-only levels.
+export const OPENCODE_OLLAMA_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
+// Cursor Agent's ladder. Cursor has NO `--effort` flag — the level is a
+// parameter of the model id itself (`gpt-5[effort=max]`), folded in by
+// `foldCursorEffortIntoModel` — so `buildEffortArgs` deliberately emits nothing
+// for cursor while this ladder still drives every picker. The tier NAMES are
+// slashdo's documented `~effort=<level>` set (`low|medium|high|xhigh|max`), which
+// is what `--review-with cursor[gpt-5]~effort=max` parses; keeping them
+// identical is the point, since the same pin has to survive a round trip
+// through slashdo.
+export const CURSOR_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 
 // Effort values no CLI ladder accepts any more, kept ACCEPTED as stored/API
 // input so records saved under an older ladder still validate after an install
@@ -104,6 +116,7 @@ export const EFFORT_LEVELS = Object.freeze([...new Set([
   ...CODEX_EFFORT_LEVELS,
   ...CLAUDE_EFFORT_LEVELS,
   ...ANTIGRAVITY_EFFORT_LEVELS,
+  ...CURSOR_EFFORT_LEVELS,
   ...LEGACY_EFFORT_LEVELS,
 ])]);
 
@@ -269,6 +282,56 @@ export function isAntigravityProvider(provider) {
 }
 
 /**
+ * True when a provider is Cursor-Agent-flavored — the shipped `cursor-cli` /
+ * `cursor-tui` ids or any provider whose launch command basename is
+ * `cursor-agent` (path/exe tolerant). The provider-shaped companion to
+ * `isCursorCommand` in cursor.js; lives here (rather than there) for the same
+ * reason `isAntigravityProvider` does — so `effortLevelsForProvider` and
+ * `buildEffortArgs` can key on it without this dependency-light module importing
+ * a sibling vendor file that already imports IT.
+ *
+ * Deliberately never matches a bare `cursor` command: that is Cursor's GUI
+ * editor launcher, not the agent binary (see cursor.js).
+ * Mirrored in client/src/utils/providers.js — keep in lockstep.
+ * @param {{id?:string, command?:string}|null|undefined} provider
+ * @returns {boolean}
+ */
+export function isCursorProvider(provider) {
+  if (!provider) return false;
+  const id = String(provider.id || '').toLowerCase();
+  return id === 'cursor-cli' || id === 'cursor-tui' || commandBasename(provider.command) === 'cursor-agent';
+}
+
+/**
+ * Fold a reasoning-effort level into a Cursor model id using Cursor's own
+ * model-variant syntax, because `cursor-agent` has NO `--effort` flag and exits
+ * non-zero when passed one. Three cases, matching slashdo's fold in
+ * `lib/local-agent-review-loop.md` exactly (the same pin has to mean the same
+ * invocation whether PortOS or slashdo builds it):
+ *
+ *   - `gpt-5` + `max`                       → `gpt-5[effort=max]`
+ *   - `claude-opus-4-7[thinking=true]` + `high` → `claude-opus-4-7[thinking=true,effort=high]`
+ *   - a model that ALREADY names `effort=`  → returned unchanged (the explicit
+ *     variant the user typed wins over the ladder pin)
+ *
+ * Returns the model unchanged when there is no effort, and `null` when there is
+ * no model — an effort with nothing to attach to is dropped rather than emitted
+ * as a flag Cursor would reject.
+ * @param {string|null|undefined} model
+ * @param {string|null|undefined} effort
+ * @returns {string|null}
+ */
+export function foldCursorEffortIntoModel(model, effort) {
+  const id = typeof model === 'string' ? model.trim() : '';
+  if (!id) return null;
+  const level = typeof effort === 'string' ? effort.trim() : '';
+  if (!level) return id;
+  if (id.includes('effort=')) return id;
+  if (id.endsWith(']')) return `${id.slice(0, -1)},effort=${level}]`;
+  return `${id}[effort=${level}]`;
+}
+
+/**
  * The effort levels a provider's CLI accepts, or null when the provider has no
  * effort control (opencode, grok, kimi, HTTP API providers). Keyed on the
  * launch command basename (plus the shipped provider ids) so path-configured or
@@ -282,18 +345,25 @@ export function isAntigravityProvider(provider) {
  * `provider.models`. Omit it — or leave the catalog empty — to get the full
  * low/medium/high ladder. Returns null for an Antigravity model the catalog
  * says has no tiers at all (`claude-sonnet-4-6`), so no `--effort` is emitted.
+ *
+ * A ladder here does NOT imply an `--effort` flag: cursor advertises levels but
+ * carries them inside `--model` (`foldCursorEffortIntoModel`), so
+ * `buildEffortArgs` returns `[]` for it. Ask this function "can the user pick a
+ * level?", and `buildEffortArgs` "what argv does that level become?".
  * @param {{id?:string, command?:string, models?:unknown[]}|null|undefined} provider
  * @param {string|null} [model]
  * @returns {readonly string[]|null}
  */
 export function effortLevelsForProvider(provider, model = null) {
   if (!provider) return null;
+  if (isOpencodeProvider(provider) && provider.ollamaBacked === true) return OPENCODE_OLLAMA_EFFORT_LEVELS;
   if (isCodexProvider(provider)) return CODEX_EFFORT_LEVELS;
   if (isAntigravityProvider(provider)) {
     const perModel = model ? antigravityModelEffortLevels(model, provider.models) : null;
     if (perModel === null) return ANTIGRAVITY_EFFORT_LEVELS;
     return perModel.length ? perModel : null;
   }
+  if (isCursorProvider(provider)) return CURSOR_EFFORT_LEVELS;
   if (isClaudeProvider(provider)) return CLAUDE_EFFORT_LEVELS;
   return null;
 }
@@ -331,6 +401,12 @@ export function resolveCliEffort(effort, provider, model = null) {
   return EFFORT_RANK[below.length ? below[below.length - 1] : supported[0]];
 }
 
+// Codex's config key (set via `-c <key>=<value>`) that carries the reasoning
+// effort. Named for the same reason as CODEX_UPDATE_CHECK_KEY below: the string
+// is matched in one place, emitted in another, and read back by the error
+// analyzer when a config rejection has to be blamed on PortOS or on the user.
+export const CODEX_EFFORT_KEY = 'model_reasoning_effort';
+
 /**
  * True when the user has already baked an effort override into the provider's
  * args — claude's `--effort <level>` / `--effort=<level>` or a codex
@@ -348,7 +424,7 @@ export function hasEffortFlag(args) {
       const next = args[i + 1];
       return typeof next === 'string' && next.length > 0 && !next.startsWith('-');
     }
-    return a.startsWith('model_reasoning_effort=');
+    return a.startsWith(`${CODEX_EFFORT_KEY}=`);
   });
 }
 
@@ -359,6 +435,11 @@ export function hasEffortFlag(args) {
  * effort control, or a user-baked pin already sits in `existingArgs`). The one
  * home for both the detection AND the arg shape, so the two can't drift — spawn
  * builders just spread the result.
+ *
+ * **Cursor always gets `[]`, even though it HAS a ladder.** `cursor-agent`
+ * exposes no `--effort` flag and exits non-zero when handed one; its effort is a
+ * model-variant parameter, so cursor spawn builders fold the level into
+ * `--model` with `foldCursorEffortIntoModel` instead of spreading this.
  * @param {string|null|undefined} effort
  * @param {{id?:string, command?:string, models?:unknown[]}|null|undefined} provider
  * @param {unknown[]} [existingArgs]
@@ -368,8 +449,9 @@ export function hasEffortFlag(args) {
 export function buildEffortArgs(effort, provider, existingArgs = [], model = null) {
   const effectiveEffort = resolveCliEffort(effort, provider, model);
   if (!effectiveEffort || hasEffortFlag(existingArgs)) return [];
+  if (isCursorProvider(provider)) return []; // rides `--model`, not a flag — see above
   return isCodexProvider(provider)
-    ? ['-c', `model_reasoning_effort=${effectiveEffort}`]
+    ? ['-c', `${CODEX_EFFORT_KEY}=${effectiveEffort}`]
     : ['--effort', effectiveEffort];
 }
 
@@ -421,6 +503,33 @@ export function buildCodexStartupArgs(existingArgs = []) {
 }
 
 /**
+ * Every CLI config key PortOS itself injects as a `-c <key>=<value>` override.
+ * Exhaustive by construction — `buildEffortArgs` and `buildCodexStartupArgs`
+ * above are the only two builders that emit `-c`, and both key off the
+ * constants listed here.
+ *
+ * Read by the `cli-config-invalid` error analyzer (`agentErrorAnalysis.js`) to
+ * answer the only question that matters when a CLI refuses to start: did PortOS
+ * hand it that value, or was it already sitting in the user's own config file?
+ * Getting this wrong sends the user grepping PortOS source for a key PortOS
+ * never emits — the 2026-08-18 `service_tier` incident, where a newer install
+ * of the same CLI had written a variant the CLI on PATH rejects into the shared
+ * config file.
+ */
+export const PORTOS_CLI_CONFIG_KEYS = Object.freeze([CODEX_EFFORT_KEY, CODEX_UPDATE_CHECK_KEY]);
+
+/**
+ * True when `key` is a config key PortOS supplies via `-c` (see
+ * PORTOS_CLI_CONFIG_KEYS). Null-safe; comparison is exact, so a lookalike key
+ * from the user's config file is correctly reported as not-ours.
+ * @param {unknown} key
+ * @returns {boolean}
+ */
+export function isPortosSuppliedConfigKey(key) {
+  return typeof key === 'string' && PORTOS_CLI_CONFIG_KEYS.includes(key.trim());
+}
+
+/**
  * True when a provider command points at the OpenCode binary — matching the bare
  * `opencode` on PATH OR an absolute/relative path to it (`/opt/homebrew/bin/opencode`,
  * common when the service PATH can't resolve the CLI), with an optional Windows `.exe`
@@ -451,7 +560,7 @@ export function isOpencodeCommand(command) {
  * already-qualified id (`openai/gpt-4o`, `anthropic/claude-sonnet`), and blindly
  * prefixing `ollama/` would route it to the wrong backend. No-op for
  * non-local / non-OpenCode providers and empty models.
- * @param {{command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean}} provider
+ * @param {{command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean, llamaBacked?:boolean, orcarouterBacked?:boolean}} provider
  * @param {string|null|undefined} model
  * @returns {string|null|undefined}
  */
@@ -459,6 +568,9 @@ export function prefixOpencodeModel(provider, model) {
   const namespace = getOpencodeLocalProviderNamespace(provider);
   if (!isOpencodeCommand(provider?.command) || !namespace || !model) return model;
   const id = String(model);
+  if (namespace === 'orcarouter') {
+    return id.startsWith('orcarouter/orcarouter/') ? id : `orcarouter/${id}`;
+  }
   return id.startsWith(`${namespace}/`) ? id : `${namespace}/${id}`;
 }
 
@@ -467,12 +579,14 @@ export function prefixOpencodeModel(provider, model) {
  * opted into one. Structural markers avoid deriving a backend from an editable
  * display name or endpoint and preserve the legacy Ollama outcome if a malformed
  * record carries both markers.
- * @param {{ollamaBacked?:boolean, mtplxBacked?:boolean}|null|undefined} provider
- * @returns {'ollama'|'mtplx'|null}
+ * @param {{ollamaBacked?:boolean, mtplxBacked?:boolean, llamaBacked?:boolean, orcarouterBacked?:boolean}|null|undefined} provider
+ * @returns {'ollama'|'mtplx'|'llama'|'orcarouter'|null}
  */
 export function getOpencodeLocalProviderNamespace(provider) {
   if (provider?.ollamaBacked === true) return 'ollama';
   if (provider?.mtplxBacked === true) return 'mtplx';
+  if (provider?.llamaBacked === true) return 'llama';
+  if (provider?.orcarouterBacked === true) return 'orcarouter';
   return null;
 }
 

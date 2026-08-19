@@ -48,6 +48,7 @@
 
 import { isFalsyMeta, isTruthyMeta } from './agentState.js';
 import { TRACKER_FILING_TASK_TYPES, CONCRETE_WORK_TRACKERS } from '../lib/workTracker.js';
+import { isAuditTaskType } from '../lib/auditCatalog.js';
 
 // taskType → () => import('./path/to/hookModule.js'). A module may export either
 // or both hooks; a missing export means "no hook of that kind for this type".
@@ -121,10 +122,10 @@ export function resolveTaskHookType(task) {
  * TEMPLATE — its shipped prompt explicitly says "the operator customizes this prompt to
  * change what happens on each opened PR" (and it ships `readOnly:false`), i.e. it is
  * designed to be rewritten, commonly into a commit-pushing flow, so a type-level exemption
- * would be the wrong default for it. The four types here are complete tasks that finish
+ * would be the wrong default for it. The coordinator types here are complete tasks that finish
  * YOUR in-flight work via a git/gh/API side effect. CAVEAT: the exemption keys on the
  * SCHEDULED TYPE, not the actual per-install prompt, so an operator who rewrites one of
- * these four prompts to make source commits would have that customized run judged by exit
+ * these coordinator prompts to make source commits would have that customized run judged by exit
  * code instead of its commit (a telemetry-accuracy tradeoff, not a functional bug). A
  * per-task `noCommitCriterion` contract would remove that caveat but complicates the
  * migration's static type→bucket mapping; deferred as not worth it for the default case.
@@ -134,7 +135,7 @@ export function resolveTaskHookType(task) {
  * buckets these already poisoned on existing installs.
  */
 export const NON_COMMITTING_COORDINATOR_TASK_TYPES = new Set([
-  'branch-reconcile', 'issue-reconcile', 'branch-cleanup', 'jira-status-report',
+  'branch-reconcile', 'issue-reconcile', 'branch-cleanup', 'jira-status-report', 'release-check',
 ]);
 
 /**
@@ -246,6 +247,10 @@ export function declaresNoCommitCriterion(task) {
  */
 function isTrackerFilingDispatch(task) {
   const type = task?.metadata?.analysisType || task?.metadata?.taskAnalysisType || task?.taskType || null;
+  // Explicit fileIssues on an audit type wins — including turning ux (which
+  // still lives in TRACKER_FILING_TASK_TYPES for back-compat) into do-work.
+  if (isTruthyMeta(task?.metadata?.fileIssues)) return true;
+  if (isFalsyMeta(task?.metadata?.fileIssues) && isAuditTaskType(type)) return false;
   if (TRACKER_FILING_TASK_TYPES.has(type)) return true;
   return CONCRETE_WORK_TRACKERS.includes(task?.metadata?.workTracker);
 }

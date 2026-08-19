@@ -57,8 +57,8 @@ const syncCategoriesSchema = z.object({
   // Default Zod object parsing strips unknown keys, so every key in
   // DEFAULT_SYNC_CATEGORIES (server/services/instances.js) MUST appear
   // here — otherwise PATCH/PUT updates from the Instances UI silently
-  // no-op for the missing category. Same regression class as the
-  // universe + pipeline omission tracked in .changelog/NEXT.md.
+  // no-op for the missing category. Same regression class as a prior
+  // universe + pipeline sync-category omission (see .changelog/v2.7.0.md).
   mediaCollections: z.boolean().optional(),
   videoHistory: z.boolean().optional(),
   storyBuilder: z.boolean().optional(),
@@ -131,6 +131,14 @@ router.get('/', asyncHandler(async (req, res) => {
   // Redact each peer's stored proxy password (keep username + hasPassword) —
   // the browser never needs the secret. Mirrors providers' hasApiKey pattern.
   res.json({ self, peers: peers.map(instances.sanitizePeerForClient), syncStatus });
+}));
+
+// GET /api/instances/assignable — id/name pairs a CoS task may be pinned to
+// (#4520). Deliberately narrower than GET / above: no addresses, no sync state,
+// no peer that has yet to advertise a federation identity — just what the task
+// form's instance picker renders.
+router.get('/assignable', asyncHandler(async (req, res) => {
+  res.json({ instances: await instances.getAssignableInstances() });
 }));
 
 // GET /api/instances/sync-status — local sync sequences + checksums (used by peers during probe)

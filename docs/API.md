@@ -299,6 +299,9 @@ See [Agent Context (MCP)](./features/agent-context.md) for setup, transport head
 | GET | `/brain/settings` | Get Brain settings |
 | PUT | `/brain/settings` | Update Brain settings |
 | GET | `/brain/summary` | Get brain statistics summary |
+| GET | `/brain/reconcile/manifest` | Per-record parity manifest (`{ id, updatedAt, deleted }` per entity type) a peer audits against — ids and clocks only, no record bodies |
+| GET | `/brain/reconcile/parity` | Last stored parity report per peer (local read, no peer I/O) |
+| POST | `/brain/reconcile/parity` | Run the record-level parity audit — body `{ peerId? }`, omitted sweeps every federating peer |
 
 ### Brain Links
 
@@ -404,6 +407,10 @@ See [Agent Context (MCP)](./features/agent-context.md) for setup, transport head
 | GET | `/agents/activity/agent/:agentId` | Get agent's activity |
 | GET | `/agents/activity/agent/:agentId/stats` | Get agent statistics |
 | POST | `/agents/activity/cleanup` | Clean up old activity logs |
+| GET | `/agents/activity/run-events` | Read the append-only CoS run lifecycle ledger (filters: `runId`, `agentId`, `taskId`, `kind`, `since`, `limit`) |
+| GET | `/agents/activity/run-events/stats` | Ledger generation sizes and the retention bound |
+| GET | `/agents/activity/run-events/projections` | Current run status derived by replaying the ledger |
+| GET | `/agents/activity/run-events/run/:id` | One run's projection plus the events behind it |
 
 ### Notifications
 

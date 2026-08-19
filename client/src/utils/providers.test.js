@@ -42,6 +42,7 @@ import {
   resolveCliEffort,
   CLAUDE_EFFORT_LEVELS,
   CODEX_EFFORT_LEVELS,
+  CURSOR_EFFORT_LEVELS,
   ANTIGRAVITY_EFFORT_LEVELS,
   isConfiguredDefaultModel,
   configuredDefaultIn,
@@ -117,6 +118,7 @@ describe('effortLevelsForProvider (server mirror)', () => {
     ['path-configured agy', { id: 'custom', command: '/Users/x/.local/bin/agy' }, ANTIGRAVITY_EFFORT_LEVELS],
     ['claude code', { id: 'claude-code', command: 'claude' }, CLAUDE_EFFORT_LEVELS],
     ['codex', { id: 'codex', command: 'codex' }, CODEX_EFFORT_LEVELS],
+    ['OpenCode Ollama', { id: 'opencode-ollama', command: 'opencode', ollamaBacked: true }, ['low', 'medium', 'high']],
     ['grok (no effort control)', { id: 'grok-cli', command: 'grok' }, null],
     ['blank command is not claude', { id: 'ollama' }, null],
   ];
@@ -851,16 +853,26 @@ describe('supportsModelRefresh', () => {
       'antigravity-cli', 'antigravity-tui', 'cerebras', 'claude-code',
       'claude-code-bedrock', 'claude-ollama', 'claude-ollama-tui', 'cursor-cli',
       'cursor-tui', 'grok', 'lmstudio', 'mtplx', 'nvidia-kimi', 'ollama',
+      'opencode-llama-tui',
       'opencode-mtplx', 'opencode-mtplx-tui', 'opencode-ollama',
-      'opencode-ollama-tui',
+      'opencode-ollama-tui', 'opencode-orcarouter', 'opencode-orcarouter-tui',
+      'orcarouter',
     ]);
   });
 });
 
 describe('cursor providers', () => {
-  it('offers no effort ladder — cursor bakes the reasoning tier into the model id', () => {
-    expect(effortLevelsForProvider({ id: 'cursor-cli', command: 'cursor-agent' })).toBeNull();
-    expect(effortLevelsForProvider({ id: 'cursor-tui', command: 'cursor-agent' }, 'claude-opus-5-thinking-high')).toBeNull();
+  it('offers the cursor effort ladder — the level rides --model, not an --effort flag', () => {
+    expect(effortLevelsForProvider({ id: 'cursor-cli', command: 'cursor-agent' })).toBe(CURSOR_EFFORT_LEVELS);
+    expect(effortLevelsForProvider({ id: 'cursor-tui', command: 'cursor-agent' }, 'claude-opus-5-thinking-high')).toBe(
+      CURSOR_EFFORT_LEVELS,
+    );
+    // The GUI editor launcher is not the agent binary, so it keeps no ladder.
+    expect(effortLevelsForProvider({ id: 'custom', command: 'cursor' })).toBeNull();
+  });
+
+  it('keeps the cursor ladder in lockstep with the server', () => {
+    expect(CURSOR_EFFORT_LEVELS).toEqual(serverEffortLevelsForProvider({ id: 'cursor-cli', command: 'cursor-agent' }));
   });
 
   it('is not mistaken for a claude/codex/antigravity provider by its model ids', () => {
@@ -1126,3 +1138,4 @@ describe('AI Assignments option helpers', () => {
     });
   });
 });
+// @vitest-environment node

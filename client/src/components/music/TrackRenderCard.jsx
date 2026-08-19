@@ -10,7 +10,7 @@
  */
 
 import { useState } from 'react';
-import { Maximize2, Sparkles, Download, Trash2, CheckCircle2, Music2, Upload } from 'lucide-react';
+import { Maximize2, Sparkles, Download, Trash2, CheckCircle2, Music2, Upload, Film } from 'lucide-react';
 import InlineConfirmRow from '../ui/InlineConfirmRow';
 import { formatTimecode, timeAgo } from '../../utils/formatters';
 import { trackAudioUrl } from '../../services/api';
@@ -22,6 +22,7 @@ export default function TrackRenderCard({
   onSelect,
   onRemix,
   onDelete,
+  onSendToVideo,
 }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const { prompt, engine, modelId, durationSec, audioFilename, createdAt } = render;
@@ -101,6 +102,16 @@ export default function TrackRenderCard({
               title="Reuse these settings for a new render"
             >
               <Sparkles className="w-3 h-3" /> Remix
+            </button>
+          ) : null}
+          {onSendToVideo ? (
+            <button
+              type="button"
+              onClick={() => onSendToVideo(render)}
+              className="shrink-0 px-1.5 py-1 bg-port-accent/20 hover:bg-port-accent/40 text-port-accent text-[10px] rounded flex items-center justify-center gap-1"
+              title="Send this render to Audio-to-Video"
+            >
+              <Film className="w-3 h-3" /> <span className="truncate">Audio → Video</span>
             </button>
           ) : null}
           <a

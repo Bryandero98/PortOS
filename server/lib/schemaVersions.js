@@ -252,7 +252,9 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // tracks v5 = render-history entries gained `authoredPrompt` and the explicit
   // nullable `instrumentalOnly` decision. A <=v4 peer would strip both, then LWW
   // the ambiguous render back and make a later remix silently change vocal mode.
-  tracks: 5,
+  // tracks v6 = render history entries preserve the effective generation
+  // executionProfile. Older peers would strip the measured placement on sync.
+  tracks: 6,
   // v1 = creative ingredients catalog (Postgres tables: catalog_scraps,
   // catalog_ingredients, catalog_ingredient_sources, catalog_ingredient_refs).
   // v2 = `catalog_ingredients.search_tsv` expanded to also index the
@@ -573,7 +575,16 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // v5 fall back to `metadata.context`, so the reverse direction degrades
   // gracefully — the gate exists for the forward one. Per-category gate → only
   // cos-tasks sync pauses until the peer upgrades.
-  cosTasks: 5,
+  // v6 = `metadata.targetInstanceId`, the per-task pin to ONE federated instance
+  // (#4520). Same EXECUTION-semantics break as v3/v4/v5 — the pin rides the
+  // permissive `metadata` map, so a ≤v5 receiver validates and stores the task
+  // fine and then RUNS IT ANYWAY: its spawn guards only know the opportunistic
+  // claim/lease, so the laptop happily claims the task the user pinned to the
+  // GPU box, executes it with the wrong hardware/tooling, and LWW-pushes that
+  // run's state back onto the v6 peer — which by then had correctly passed over
+  // the task. Per-category gate → only cos-tasks sync pauses until the peer
+  // upgrades.
+  cosTasks: 6,
   // NOTE: `videoHistory` is intentionally NOT listed here. The version gate
   // rejects the ENTIRE snapshot/push payload on ANY ahead-mismatch (the
   // comparator walks the union of keys), so declaring a brand-new key would

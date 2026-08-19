@@ -18,6 +18,7 @@ import {
   buildMusicGenArgs,
   buildSidecarArgs,
   buildMinimaxInstrumentalLyrics,
+  ensureClosingSection,
   clampDuration,
   getMusicgenModel,
   getEngine,
@@ -140,9 +141,9 @@ describe('ENGINES backend registry', () => {
 
   it('declares MiniMax VRAM requirements per execution profile', () => {
     const engine = ENGINES['minimax-music3'];
-    expect(engine.executionProfile).toBe('cuda-bf16-single-gpu');
+    expect(engine.executionProfile).toBe('cuda-bf16-auto-experimental');
     expect(engine.vramProfiles[engine.executionProfile]).toMatchObject({
-      label: 'CUDA BF16 (single GPU)',
+      label: 'CUDA BF16 (experimental automatic placement)',
       minVramGb: null,
       recommendedVramGb: null,
     });
@@ -169,11 +170,12 @@ describe('VRAM readiness', () => {
       .toBe(MUSIC_VRAM_READINESS.UNKNOWN_SIZE);
   });
 
-  it('keeps an unmeasured CUDA execution profile unknown-size', () => {
+  it('keeps the experimental CUDA execution profile unknown-size', () => {
     expect(resolveEngineVramReadiness('minimax-music3', {
       status: 'available', maxVramGb: 80,
     })).toMatchObject({
       state: MUSIC_VRAM_READINESS.UNKNOWN_SIZE,
+      executionProfile: 'cuda-bf16-auto-experimental',
       minVramGb: null,
       recommendedVramGb: null,
       maxVramGb: 80,
@@ -239,7 +241,10 @@ describe('buildSidecarArgs', () => {
     });
     expect(args).toContain('MiniMaxAI/MiniMax-Music3');
     expect(args.slice(args.indexOf('--duration'), args.indexOf('--duration') + 2)).toEqual(['--duration', '300']);
-    expect(args.slice(args.indexOf('--lyrics'), args.indexOf('--lyrics') + 2)).toEqual(['--lyrics', 'Example lyrics']);
+    // A sheet with no closing section gets an [outro] cue appended so the model
+    // resolves its ending; the caller's words still lead the sheet.
+    expect(args.slice(args.indexOf('--lyrics'), args.indexOf('--lyrics') + 2))
+      .toEqual(['--lyrics', 'Example lyrics\n[outro]']);
   });
 
   it('pins the selected MLX checkpoint revision in the sidecar args', () => {
@@ -252,7 +257,10 @@ describe('buildSidecarArgs', () => {
       '--revision', '10aa4ca578d04c6f5256c1bc22fc8405a09602b5',
     ]);
     expect(args[0]).toMatch(/generate_minimax_music3_mlx\.py$/);
-    expect(args).toContain('--lyrics');
+    // MLX carries ensureOutro too — confirm the flag isn't scoped to the CUDA
+    // engine only, not just that a --lyrics flag exists.
+    expect(args.slice(args.indexOf('--lyrics'), args.indexOf('--lyrics') + 2))
+      .toEqual(['--lyrics', '[verse] Example\n[outro]']);
   });
   const base = {
     pythonPath: '/venv/bin/python3',
@@ -512,12 +520,18 @@ describe('generateMusic backend selection', () => {
     expect(res.filename).toMatch(/^music-gen-.*\.wav$/);
   });
 
-  it('blocks MiniMax when its CUDA profile has no measured VRAM floor', async () => {
+  it('returns an optional effective execution profile reported by a sidecar', async () => {
+    h.mockStdout = 'STAGE:done\nRESULT:{"durationSec":12.5,"executionProfile":"cuda-bf16-component-offload"}\n';
+    const result = await generateMusic({ prompt: 'warm cinematic pop' });
+    expect(result.executionProfile).toBe('cuda-bf16-component-offload');
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('blocks MiniMax while its experimental CUDA profile has no measured VRAM floor', async () => {
     await expect(generateMusic({
       prompt: 'warm cinematic pop',
-      lyrics: `[verse]\n${'word '.repeat(150)}\n[outro]`,
+      lyrics: '[verse]\nExample words\n[outro]',
       engine: 'minimax-music3',
-      durationMode: 'auto',
     })).rejects.toMatchObject({
       status: 503,
       code: 'PIPELINE_MUSIC_VRAM_UNKNOWN',
@@ -758,10 +772,27 @@ describe('instrumental lyrics fallback', () => {
     expect(sections(lyricsFor(60))).toBeLessThan(sections(lyricsFor(240)));
   });
 
-  it('never touches lyrics the caller actually supplied', () => {
+  it('preserves the caller\'s words but guarantees a closing section', () => {
+    // A caller sheet that resolves mid-phrase would make the model end abruptly;
+    // append the [outro] cue without disturbing any content the caller wrote.
     const words = '[verse]\nExample words here';
     const { args } = buildSidecarArgs({ ...base, engineId: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', lyrics: words });
+    expect(lyricsArg(args)).toBe(`${words}\n[outro]`);
+  });
+
+  it('does not duplicate a closing section the caller already supplied', () => {
+    // The cue is idempotent — a sheet that already ends on [outro] is untouched.
+    const words = '[intro]\n[verse]\nsing\n[outro]';
+    const { args } = buildSidecarArgs({ ...base, engineId: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', lyrics: words });
     expect(lyricsArg(args)).toBe(words);
+  });
+
+  it('still guarantees a closing section when the caller\'s outro is not the last one', () => {
+    // The failure mode this PR exists to fix: an outro earlier in the sheet is
+    // not a CLOSING section, so the model still resolves on the trailing content.
+    const words = '[outro]\n[chorus]\nbig finish';
+    const { args } = buildSidecarArgs({ ...base, engineId: 'minimax-music3', repo: 'MiniMaxAI/MiniMax-Music3', lyrics: words });
+    expect(lyricsArg(args)).toBe(`${words}\n[outro]`);
   });
 
   it('leaves ACE-Step empty — it renders an instrumental from empty lyrics itself', () => {
@@ -814,5 +845,52 @@ describe('buildMinimaxInstrumentalLyrics', () => {
 
   it('caps the sheet so a 5-minute render does not emit an unbounded tag wall', () => {
     expect(tags(buildMinimaxInstrumentalLyrics(300)).length).toBeLessThanOrEqual(14);
+  });
+});
+
+describe('ensureClosingSection', () => {
+  it('appends an [outro] cue to a sheet that has no closing section', () => {
+    expect(ensureClosingSection('[verse]\nhello world')).toBe('[verse]\nhello world\n[outro]');
+  });
+
+  it('returns a sheet that already closes on [outro] unchanged (idempotent)', () => {
+    const withOutro = '[intro]\n[verse]\nsing\n[outro]';
+    expect(ensureClosingSection(withOutro)).toBe(withOutro);
+  });
+
+  it('still appends a cue when an outro tag exists but is not the last section', () => {
+    // Only the LAST section counts as a closing section — an outro earlier in
+    // the sheet does not guarantee the model resolves there.
+    expect(ensureClosingSection('[outro]\n[chorus]\nbig finish')).toBe('[outro]\n[chorus]\nbig finish\n[outro]');
+  });
+
+  it('matches a closing section case-insensitively on the tag name', () => {
+    expect(ensureClosingSection('[VERSE]\n[OUTRO]')).toBe('[VERSE]\n[OUTRO]');
+  });
+
+  it('treats an outro with trailing words as a closing section', () => {
+    expect(ensureClosingSection('[verse]\nfinal\n[outro fade out]')).toBe('[verse]\nfinal\n[outro fade out]');
+  });
+
+  it('treats a padded tag as a closing section, matching the hasOutro parity in server/lib/musicDuration.js', () => {
+    expect(ensureClosingSection('[verse]\nfinal\n[ outro ]')).toBe('[verse]\nfinal\n[ outro ]');
+  });
+
+  it('does not treat a non-boundary lookalike as a closing section', () => {
+    // "outroduction" has no word boundary after "outro", so it is a different
+    // tag — matching the hasOutro detection in server/lib/musicDuration.js.
+    expect(ensureClosingSection('[outroduction]')).toBe('[outroduction]\n[outro]');
+    expect(ensureClosingSection('\n[final-outro]')).toBe('\n[final-outro]\n[outro]');
+  });
+
+  it('treats a leading bracketed tag as a closing section but not a bare unbracketed word', () => {
+    expect(ensureClosingSection('no tags at all\n[outro]')).toBe('no tags at all\n[outro]');
+    expect(ensureClosingSection('outro')).toBe('outro\n[outro]');
+  });
+
+  it('trims trailing whitespace before appending and emits a single cue', () => {
+    expect(ensureClosingSection('[verse]\nsing\n\n   ')).toBe('[verse]\nsing\n[outro]');
+    expect(ensureClosingSection('')).toBe('[outro]');
+    expect(ensureClosingSection('   \n  ')).toBe('[outro]');
   });
 });

@@ -15,8 +15,9 @@ import {
   reviewerLabel,
   sanitizeReviewerModelInput
 } from './constants';
+import { normalizeReviewerSlug } from '../../lib/reviewerPins';
 
-const normalizeReviewerValue = (value) => value === 'gemini' ? 'antigravity' : value;
+const normalizeReviewerValue = (value) => normalizeReviewerSlug(value);
 
 /**
  * Ordered multi-reviewer picker, rendered as one row per reviewer with the five
@@ -36,11 +37,14 @@ const normalizeReviewerValue = (value) => value === 'gemini' ? 'antigravity' : v
  *   agent invokes directly, `<reviewer> --model <id>`). Only rendered for
  *   MODEL_SELECTABLE_REVIEWERS. The option lists are OWNED BY THE CALLER (see
  *   `modelOptions`) so this component does no fetching.
- * - **Effort** → the reviewer's reasoning-effort tier. Unlike the others this
- *   maps to NO slashdo token (its entry grammar has no effort suffix) — it rides
- *   the invocation instead: `claude --effort high` / `codex -c
- *   model_reasoning_effort=high` for a CLI reviewer, `"effort"` in the
- *   `/api/code-review/local` body for a local one. Only rendered for
+ * - **Effort** → the reviewer's reasoning-effort tier, emitted as slashdo's
+ *   `~effort=<level>` entry suffix and, where PortOS spells the invocation out
+ *   itself, as the flag that CLI actually takes: `claude --effort high` /
+ *   `codex -c model_reasoning_effort=high`, `"effort"` in the
+ *   `/api/code-review/local` body for a local reviewer, and — for `cursor`,
+ *   whose CLI has no `--effort` flag at all — folded into the model id as
+ *   Cursor's own variant syntax (`--model gpt-5[effort=max]`), which needs the
+ *   row's Model cell filled in to have anything to attach to. Only rendered for
  *   EFFORT_SELECTABLE_REVIEWERS, and each row offers only the levels its own CLI
  *   accepts (`agy` rejects `--effort max`).
  * - **Optional** → the `~opt` non-blocking marker.
@@ -272,13 +276,20 @@ export default function ReviewerPicker({
     // something is stored, so a pin made before the model changed (or on another
     // machine) stays visible and clearable rather than vanishing behind the dash.
     if (!levels.length && !stored) return renderNoPinCell(`${subject}'s pinned model offers no reasoning-effort tiers`);
+    // Cursor's level is a PARAMETER OF ITS MODEL ID (`gpt-5[effort=max]`) — its
+    // CLI has no `--effort` flag — so a level with no Model pin has nothing to
+    // attach to and is dropped when the invocation is built. Say so here rather
+    // than let the row display a tier the review will not run at.
+    const cursorNeedsModel = normalizeReviewerValue(token) === 'cursor' && !models.get(token);
     return renderPinSelect({
       selectId: `${id}-effort-${token}`,
       value: stored,
       options: levels,
       onChange: (level) => setEffort(token, level),
       ariaLabel: `Reasoning effort for ${subject}`,
-      title: stored
+      title: cursorNeedsModel
+        ? `${subject} carries its reasoning effort inside the model id, so pin a Model too — a tier with no model is not passed to the CLI.`
+        : stored
         ? `${subject} reviews at ${stored} reasoning effort. Choose "default" to let it decide.`
         : `${subject} reasons at its own default. Pick a tier to make it think harder (slower, pricier) or lighter.`,
       staleSuffix: '(unsupported)',

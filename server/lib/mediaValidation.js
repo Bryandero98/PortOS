@@ -158,6 +158,16 @@ export const localLlmMigrateSchema = z.object({
 });
 export const localLlmInstallBackendSchema = z.object({ backend: localLlmBackendSchema });
 export const localLlmOllamaServiceSchema = z.object({ action: z.enum(['start', 'stop', 'enable', 'disable']) });
+export const localLlmLlamaServerStartSchema = z.object({
+  model: z.string().trim().min(1).max(500),
+  draftModel: z.string().trim().max(500).optional().nullable(),
+  specType: z.string().trim().max(100).optional().default('draft-dflash'),
+  port: z.coerce.number().int().min(1).max(65535).optional().default(8080),
+  host: z.string().trim().max(100).optional().default('127.0.0.1'),
+  ctxSize: z.coerce.number().int().min(512).max(1048576).optional().default(32768),
+  nGpuLayers: z.coerce.number().int().min(0).max(999).optional().default(99),
+  alias: z.string().trim().max(100).optional().default('dflash'),
+});
 export const localLlmHuggingFaceSearchSchema = z.object({
   backend: localLlmBackendSchema,
   q: z.string().max(160).optional().default(''),
@@ -175,6 +185,20 @@ export const localLlmTestSchema = localLlmPlaygroundOptionsSchema.extend({
   modelId: localLlmModelIdSchema,
   prompt: z.string().trim().min(1).max(50000),
 });
+// Measured local-model assessment (server/services/localModelAssessments.js). One
+// request runs ONE model across up to 5 nominal context sizes; the cap keeps a
+// single user click from turning into an unbounded, minutes-long provider job.
+// 131072 is the largest context any shipped local model advertises.
+export const localLlmAssessmentRunSchema = z.object({
+  backend: localLlmBackendSchema,
+  modelId: localLlmModelIdSchema,
+  contextTokens: z.array(z.coerce.number().int().min(64).max(131072)).min(1).max(5).optional(),
+});
+export const localLlmAssessmentIntentSchema = z.object({
+  intent: z.enum(['balanced', 'smartest', 'fastest', 'lightweight']).optional().default('balanced'),
+});
+export const localLlmAssessmentDeleteSchema = localLlmInstallSchema;
+
 export const localLlmCompareSchema = z.object({
   mode: z.enum(['round-robin', 'parallel']).optional().default('round-robin'),
   prompt: z.string().trim().min(1).max(50000),

@@ -35,6 +35,8 @@ import {
   ABILITY_GENERATION_SPEC, GENERATION_KEY_DEFS, CREATIVE_COMMISSION_ABILITIES,
   COMMISSION_RENDER_BACKEND_AUTO,
 } from '../../lib/creativeCommissionValidation.js';
+import { VIDEO_GEN_MODE } from '../videoGen/modes.js';
+import { buildVideoPromptGuidance } from './videoPromptGuidance.js';
 
 const isStr = (v) => typeof v === 'string';
 
@@ -79,7 +81,17 @@ function briefContext(commission, leadSentence) {
   if (brief.category) lines.push(`Category: ${brief.category}.`);
   if (brief.styleSpec) lines.push(`Style: ${brief.styleSpec}.`);
   const digest = renderFeedbackDigest(commission?.feedback, commission?.feedbackWindow ?? 5);
-  const constraints = {};
+  // Preserve the user's structured form choices alongside the prose brief.
+  // The planner uses targetAbility to receive a matching tool subset and sees
+  // generation as authoritative starting configuration rather than guessing
+  // renderer/model controls from the intent text.
+  const constraints = {
+    targetAbility: commission?.targetAbility,
+    generation: sanitizeGenerationFor(
+      CREATIVE_COMMISSION_ABILITIES.includes(commission?.targetAbility) ? commission.targetAbility : 'video',
+      commission?.generation,
+    ),
+  };
   if (brief.constraints?.universeId) constraints.universeId = brief.constraints.universeId;
   if (brief.constraints?.seriesId) constraints.seriesId = brief.constraints.seriesId;
   return { lines, digest, constraints };
@@ -89,6 +101,22 @@ function briefContext(commission, leadSentence) {
 // sanitizer applies (so the goal never quotes an out-of-range count).
 function genValue(commission, key) {
   return coerceGenerationValue(key, commission?.generation);
+}
+
+function videoPromptGuidanceFor(commission, {
+  defaultVideoModelId, effectiveVideoMode, effectiveVideoModelId,
+} = {}) {
+  const generation = commission?.generation;
+  const isCloudVideo = (effectiveVideoMode || generation?.videoMode) === VIDEO_GEN_MODE.GROK;
+  const hasExplicitLocalModel = generation?.videoMode === VIDEO_GEN_MODE.LOCAL && generation?.videoModelId;
+  const modelId = isCloudVideo ? undefined : (
+    (hasExplicitLocalModel ? generation.videoModelId : undefined)
+      || effectiveVideoModelId
+      || generation?.videoModelId
+      || generation?.model
+      || (typeof defaultVideoModelId === 'function' ? defaultVideoModelId() : undefined)
+  );
+  return buildVideoPromptGuidance(modelId);
 }
 
 /**
@@ -143,7 +171,12 @@ function buildVideoGeometryParams(commission, { defaultVideoModelId } = {}) {
     // (lib/creativeDirectorPrompts.js) and the teaser tool inherits. Neither set
     // ⇒ the install default, exactly as before.
     modelId: gen?.videoModelId || gen?.model || (typeof defaultVideoModelId === 'function' ? defaultVideoModelId() : undefined),
-    targetDurationSeconds: gen?.targetDurationSeconds || 10,
+    // Auto mode lets the planner choose a per-step duration; retain a valid
+    // project fallback for plans that omit one. Music-video commissions still
+    // use their legacy audio length as the manual fallback.
+    targetDurationSeconds: gen?.durationMode === 'auto'
+      ? 10
+      : (gen?.targetDurationSeconds || gen?.lengthSeconds || 10),
     // Only passed when the commission actually pinned a backend (#3135), so an
     // unpinned commission's createProject call is byte-identical to a hand-made
     // project's — both omit the arg and buildProjectRecord stores `null`, exactly
@@ -162,8 +195,11 @@ const videoAdapter = {
   label: 'Video',
   sanitizeGeneration: (raw) => sanitizeGenerationFor('video', raw),
   buildProjectParams: buildVideoGeometryParams,
-  buildDirective(commission) {
-    const { lines, digest, constraints } = briefContext(commission, 'Create a short-form video piece.');
+  buildDirective(commission, { defaultVideoModelId, effectiveVideoMode, effectiveVideoModelId } = {}) {
+    const duration = commission?.generation?.durationMode === 'auto'
+      ? ' Choose an appropriate duration between 5 and 600 seconds for the brief.' : '';
+    const { lines, digest, constraints } = briefContext(commission, `Create a short-form video piece.${duration}`);
+    lines.unshift(videoPromptGuidanceFor(commission, { defaultVideoModelId, effectiveVideoMode, effectiveVideoModelId }));
     return { goal: composeDirectiveGoal(lines, digest), deliverables: ['One rendered video matching the brief'], constraints };
   },
 };
@@ -196,10 +232,10 @@ const musicAdapter = {
     const lead = `Compose an original ~${secs}s music / audio piece. Use the music generation tools; do NOT plan a video or image render.`;
     const { lines, digest, constraints } = briefContext(commission, lead);
     const tastePrompt = renderMusicTasteRecipePrompt(tasteRecipe);
-    // Keep the bounded recipe + original-work constraint ahead of user-authored
-    // brief fields. composeDirectiveGoal truncates only the tail when the brief
-    // reaches its cap, so appending this would silently drop the authoritative
-    // taste prompt on long intents/styles before the audio job ever sees it.
+    // Keep the bounded recipe + original-work constraint ahead of the optional
+    // brief tags (genre / category / style). composeDirectiveGoal truncates only
+    // the tail, so appending this would leave the authoritative taste prompt last
+    // in line behind them if anything ever overran the goal budget.
     if (tastePrompt) lines.splice(1, 0, tastePrompt);
     return { goal: composeDirectiveGoal(lines, digest), deliverables: [`One ~${secs}s music track matching the brief`], constraints };
   },
@@ -210,9 +246,12 @@ const musicVideoAdapter = {
   label: 'Music video',
   sanitizeGeneration: (raw) => sanitizeGenerationFor('music-video', raw),
   buildProjectParams: buildVideoGeometryParams,
-  buildDirective(commission) {
-    const lead = 'Create a short-form music video: generate an original music bed AND a matching video scored to it.';
+  buildDirective(commission, { defaultVideoModelId, effectiveVideoMode, effectiveVideoModelId } = {}) {
+    const duration = commission?.generation?.durationMode === 'auto'
+      ? ' Choose an appropriate video duration between 5 and 600 seconds for the brief.' : '';
+    const lead = `Create a short-form music video:${duration} Generate an original music bed AND a matching video scored to it.`;
     const { lines, digest, constraints } = briefContext(commission, lead);
+    lines.unshift(videoPromptGuidanceFor(commission, { defaultVideoModelId, effectiveVideoMode, effectiveVideoModelId }));
     return {
       goal: composeDirectiveGoal(lines, digest),
       deliverables: ['One original music bed', 'One video matching the brief, scored to the music bed'],

@@ -95,7 +95,7 @@ export async function recordVerdict(entry, cosDir = PATHS.cos) {
  *     default branch (a revert), so what superseded the branch is gone.
  *
  * Note what is deliberately NOT a staleness signal: the CONTENT of a collision
- * path changing on the default branch. `.changelog/NEXT.md` is a collision path
+ * path changing on the default branch. `package-lock.json` is a collision path
  * on essentially every long-lived branch and is rewritten by every merge, so
  * content-hash invalidation would expire every entry within minutes and cache
  * nothing. Continued churn in a file the default branch already solved makes

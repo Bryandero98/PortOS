@@ -13,7 +13,7 @@ vi.mock('../eventScheduler.js', () => ({
 vi.mock('../../lib/timezone.js', () => ({ getUserTimezone: async () => 'UTC' }));
 
 const settingsEvents = new EventEmitter();
-vi.mock('../settings.js', () => ({ settingsEvents }));
+vi.mock('../settings.js', () => ({ settingsEvents, getSettings: async () => ({}) }));
 
 const listCommissionsMock = vi.fn();
 const getCommissionMock = vi.fn();

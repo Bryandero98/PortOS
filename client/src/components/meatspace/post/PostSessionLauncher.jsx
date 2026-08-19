@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router';
 import { Zap, History, Settings, Play, Brain, BookOpen, Dumbbell, Timer, Radio, Target, TrendingUp, TrendingDown, Minus, Compass, ArrowRight, ChevronRight, Layers } from 'lucide-react';
-import { getPostReviewReps, getPostRecommendations, getMorseProgress, getPostProgress, getMemoryItems, updatePostConfig } from '../../../services/api';
+import { getPostReviewReps, getPostRecommendations, getMorseProgress, getPostProgress, getPostBenchmarkProtocol, getMemoryItems, updatePostConfig } from '../../../services/api';
 import { FormField } from '../../ui/FormField';
 import Pill from '../../ui/Pill';
 import { enabledApiProviderFilter } from '../../../utils/providers';
@@ -64,6 +64,9 @@ export function cognitiveSummary(type, cfg) {
   if (type === 'stroop') return `${cfg.incongruentPct ?? 75}% conflict`;
   if (type === 'mental-rotation') return `${cfg.optionCount ?? 4} options`;
   if (type === 'reaction-time') return `${cfg.count ?? 15} trials (${cfg.mode ?? 'simple'})`;
+  if (type === 'task-switching') return `${cfg.ruleCount ?? 2} rules · ${cfg.switchRatePct ?? 50}% switch`;
+  if (type === 'go-no-go') return `${cfg.noGoPct ?? 25}% no-go · ${cfg.lureSimilarity ?? 'low'} similarity`;
+  if (type === 'flanker') return `${100 - (cfg.congruentPct ?? 60)}% conflict · strength ${cfg.flankerStrength ?? 2}`;
   return cfg.count ? `${cfg.count} trials` : '';
 }
 
@@ -120,6 +123,8 @@ export default function PostSessionLauncher({
   const [mode, setMode] = useState('test'); // 'test' | 'train'
   const [quickDurationMin, setQuickDurationMin] = useState(() => normalizeQuickDurationMinutes(config?.quickDurationMin));
   const [quickDurationSaveState, setQuickDurationSaveState] = useState('idle');
+  const [benchmarkState, setBenchmarkState] = useState('idle');
+  const [benchmarkError, setBenchmarkError] = useState(null);
 
   useEffect(() => {
     setQuickDurationMin(normalizeQuickDurationMinutes(config?.quickDurationMin));
@@ -277,6 +282,15 @@ export default function PostSessionLauncher({
     minDelayMs: cfg.minDelayMs,
     maxDelayMs: cfg.maxDelayMs,
     choices: cfg.choices,
+    ruleCount: cfg.ruleCount,
+    switchRatePct: cfg.switchRatePct,
+    cueStimulusIntervalMs: cfg.cueStimulusIntervalMs,
+    responseDeadlineMs: cfg.responseDeadlineMs,
+    noGoPct: cfg.noGoPct,
+    lureSimilarity: cfg.lureSimilarity,
+    congruentPct: cfg.congruentPct,
+    flankerDistance: cfg.flankerDistance,
+    flankerStrength: cfg.flankerStrength,
   });
 
   // Composed sessions (Full POST / Quick) honor `sessionModules` (issue #2100):
@@ -307,7 +321,9 @@ export default function PostSessionLauncher({
         startRange: cfg.startRange,
         bases: cfg.bases,
         maxExponent: cfg.maxExponent,
-        tolerancePct: cfg.tolerancePct
+        tolerancePct: cfg.tolerancePct,
+        difficulty: cfg.difficulty,
+        family: cfg.family,
       },
       timeLimitSec: cfg.timeLimitSec || 120
     }));
@@ -434,6 +450,30 @@ export default function PostSessionLauncher({
     });
   }
 
+  function handleBenchmarkSession() {
+    setBenchmarkState('loading');
+    setBenchmarkError(null);
+    getPostBenchmarkProtocol({ silent: true })
+      .then((protocol) => {
+        const form = protocol?.forms?.find(candidate => candidate.formId === protocol.nextFormId);
+        if (!form) throw new Error('No benchmark form is available');
+        const drillConfigs = form.tasks.map(task => ({
+          type: task.type,
+          domain: task.domain,
+          config: { ...task.config },
+          timeLimitSec: task.timeLimitSec,
+        }));
+        onStart(drillConfigs, buildCleanTags(tags), false, null, {
+          protocolId: protocol.protocolId,
+          protocolVersion: protocol.protocolVersion,
+          scorerVersion: protocol.scorerVersion,
+          formId: form.formId,
+        });
+      })
+      .catch(error => setBenchmarkError(error.message || 'Benchmark could not be loaded'))
+      .finally(() => setBenchmarkState('idle'));
+  }
+
   // Build a full-length (non-abbreviated) drill config for a single enabled
   // drill, shared by domain-focus and single-drill starts. `domainKey` overrides
   // the drill's own domain only for consistency with the caller's grouping.
@@ -450,6 +490,8 @@ export default function PostSessionLauncher({
         bases: cfg.bases,
         maxExponent: cfg.maxExponent,
         tolerancePct: cfg.tolerancePct,
+        difficulty: cfg.difficulty,
+        family: cfg.family,
       };
     } else if (source === 'cognitive') {
       focusConfig = cognitiveDrillConfig(cfg);
@@ -770,6 +812,24 @@ export default function PostSessionLauncher({
                 {mode === 'train' ? 'Full Training' : 'Full POST'}
               </button>
             </div>
+
+            {mode === 'test' && (
+              <div className="border-t border-port-border pt-3 space-y-2">
+                <button
+                  type="button"
+                  onClick={handleBenchmarkSession}
+                  disabled={benchmarkState === 'loading'}
+                  className="w-full flex items-center justify-center gap-2 px-6 py-2.5 bg-port-card border border-port-accent text-port-accent hover:bg-port-accent/10 disabled:opacity-50 disabled:cursor-not-allowed font-medium rounded-lg transition-colors"
+                >
+                  <Target size={17} />
+                  {benchmarkState === 'loading' ? 'Loading Benchmark...' : 'Fixed Benchmark POST'}
+                </button>
+                <p className="text-xs text-gray-500">
+                  Versioned two-drill battery with alternating forms for comparable progress.
+                </p>
+                {benchmarkError && <p className="text-xs text-port-error">{benchmarkError}</p>}
+              </div>
+            )}
 
             {/* Mode toggle — compact, on the same card as the starts it governs */}
             <div className="flex items-center gap-2">

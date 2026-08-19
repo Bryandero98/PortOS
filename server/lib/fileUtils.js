@@ -5,7 +5,7 @@
  */
 
 import { access, appendFile, chmod, mkdir, open, readFile, readdir, stat, writeFile, rename, unlink, copyFile } from 'fs/promises';
-import { existsSync, statSync, createReadStream } from 'fs';
+import { existsSync, statSync, createReadStream, watch as watchFileSystem } from 'fs';
 import { execFile } from './childProcess.js';
 import { promisify } from 'util';
 import { createHash, randomUUID } from 'crypto';
@@ -38,6 +38,53 @@ const WIN_RETRY_DELAY_MS = 10;
 const WIN_RENAME_LOCK_CODES = ['EPERM', 'EACCES', 'EEXIST'];
 // read failures with the same transient meaning on the reader side.
 const WIN_READ_LOCK_CODES = ['EPERM', 'EACCES', 'EBUSY'];
+const FILE_WATCH_FALLBACK_POLL_MS = 5000;
+
+/** Watch for a file to appear without repeatedly stat'ing its parent directory. */
+export function watchForFile(filePath, onDetected, { settleMs = 50, pollMs = FILE_WATCH_FALLBACK_POLL_MS } = {}) {
+  const targetName = basename(filePath);
+  const targetDir = dirname(filePath);
+  let closed = false;
+  let detected = false;
+  let settleTimer = null;
+  let pollTimer = null;
+
+  const notify = () => {
+    Promise.resolve(onDetected()).catch((err) => {
+      console.error(`❌ File watcher callback failed: ${err.message}`);
+    });
+  };
+  const close = (onClosed) => {
+    if (closed) return;
+    closed = true;
+    if (settleTimer) clearTimeout(settleTimer);
+    if (pollTimer) clearInterval(pollTimer);
+    if (onClosed) watcher.once('close', onClosed);
+    watcher.close();
+  };
+  const detect = (settle = true) => {
+    if (closed || detected || !existsSync(filePath)) return;
+    detected = true;
+    if (!settle) {
+      close(notify);
+      return;
+    }
+    settleTimer = setTimeout(() => {
+      settleTimer = null;
+      if (closed) return;
+      close(notify);
+    }, settleMs);
+  };
+  const watcher = watchFileSystem(targetDir, (_eventType, changedName) => {
+    if (changedName == null || changedName.toString() === targetName) detect();
+  });
+  // fs.watch is low-latency but best-effort: native backends can miss a file
+  // creation or atomic rename. Keep a deliberately relaxed fallback so a
+  // missed event cannot strand an agent indefinitely.
+  pollTimer = setInterval(() => detect(), pollMs);
+  detect(false);
+  return close;
+}
 
 // Cache __dirname calculation for services importing this module
 const __lib_filename = fileURLToPath(import.meta.url);

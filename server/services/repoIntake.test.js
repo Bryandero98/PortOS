@@ -103,6 +103,17 @@ describe('queueRepoStudy', () => {
     expect(taskData.context).toContain('--label area:<area> --label model:<tier> --label effort:<level>');
   });
 
+  it('files against the selected managed app', async () => {
+    const target = { id: 'app-2', name: 'Example App', repoPath: '/srv/example-app', workTracker: 'github' };
+    getAppById.mockImplementation(async id => id === target.id ? target : null);
+    await queueRepoStudy(LINK, target.id);
+    expect(getAppById).toHaveBeenCalledWith(target.id);
+    expect(addTask.mock.calls[0][0].app).toBe(target.id);
+    expect(addTask.mock.calls[0][0].context).toContain('Example App');
+    expect(addTask.mock.calls[0][0].context).toContain('inspected target-app files');
+    expect(addTask.mock.calls[0][0].context).not.toContain('current PortOS area vocabulary');
+  });
+
   // `analysisType` enrolls a task in taskSchedule's per-type consecutive-failure
   // ledger (agentFinalization.js), which auto-parks and notifies. A hand-queued
   // repo study has no schedule to park, so it must reach the no-commit gate via
@@ -119,6 +130,12 @@ describe('queueRepoStudy', () => {
     expect(taskData.workTracker).toBe('plan');
     expect(taskData.worktreeChangesExpected).toBe(true);
     expect(taskData.context).toContain('PLAN.md');
+  });
+
+  it('does not queue against an app archived after capture', async () => {
+    getAppById.mockResolvedValue({ ...APP, archived: true });
+    expect(await queueRepoStudy(LINK)).toEqual({ queued: false, reason: 'app-not-found' });
+    expect(addTask).not.toHaveBeenCalled();
   });
 
   it('degrades to the PLAN.md block when the origin lookup fails', async () => {
@@ -164,6 +181,17 @@ describe('buildRepoStudyContext', () => {
     expect(body).toMatch(/Clean-room/);
     expect(body).toMatch(/LICENSE/);
   });
+
+  it('includes requester context as guidance for the study', () => {
+    const body = buildRepoStudyContext(LINK, {
+      appName: 'PortOS',
+      repoPath: '/srv/portos',
+      trackerInstructions: 'FILE HERE',
+      studyContext: 'Look for indexing improvements and where they fit in search.',
+    });
+    expect(body).toContain('## Additional context from the requester');
+    expect(body).toContain('Look for indexing improvements and where they fit in search.');
+  });
 });
 
 describe('runRepoIntake', () => {
@@ -177,6 +205,11 @@ describe('runRepoIntake', () => {
     expect(addTask).toHaveBeenCalledTimes(1);
     expect(patch.malwareScan).toBeUndefined();
     expect(patch.repoStudy).toEqual({ taskId: 'task-abc', queuedAt: expect.any(String) });
+  });
+
+  it('passes requester context into the queued repo study', async () => {
+    await runRepoIntake(LINK, { learn: true, studyContext: 'Focus on the search architecture.' });
+    expect(addTask.mock.calls[0][0].context).toContain('Focus on the search architecture.');
   });
 
   it('stamps a queued scan as `queued`, so the UI does not link at a missing report', async () => {

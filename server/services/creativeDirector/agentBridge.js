@@ -175,7 +175,8 @@ export async function enqueueTreatmentTask(project) {
 // builder never imports the registry. Malformed plan output retries like the
 // treatment stage — the agent reads the 4xx error body and re-PATCHes.
 export async function enqueuePlanTask(project) {
-  const context = await buildPlanPrompt(project, { toolSpecs: getToolSpecs() });
+  const targetAbility = project?.directive?.constraints?.targetAbility || null;
+  const context = await buildPlanPrompt(project, { toolSpecs: getToolSpecs({ targetAbility }) });
   const built = await buildTaskRecord(project, 'plan', null, context);
   return persistAndEmit(built, project, 'plan', null);
 }

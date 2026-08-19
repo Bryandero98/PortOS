@@ -36,6 +36,16 @@ const OPENCODE_LOCAL_BASE_PROVIDERS = {
     name: 'MTPLX (local MTP)',
     options: { baseURL: 'http://127.0.0.1:8000/v1' },
   },
+  llama: {
+    npm: '@ai-sdk/openai-compatible',
+    name: 'llama.cpp (local)',
+    options: { baseURL: 'http://127.0.0.1:8080/v1' },
+  },
+  orcarouter: {
+    npm: '@ai-sdk/openai-compatible',
+    name: 'OrcaRouter',
+    options: { baseURL: 'https://api.orcarouter.ai/v1' },
+  },
 };
 
 const localProviderBase = (providerKey) => {
@@ -49,6 +59,7 @@ const localProviderBase = (providerKey) => {
 // config `models` map. Idempotent for an already-bare id. A slash-bearing model
 // id (`hf.co/user/model:tag`) retains every slash after the leading namespace.
 const stripProviderPrefix = (id, providerKey) =>
+  providerKey === 'orcarouter' ? id :
   typeof id === 'string' && id.startsWith(`${providerKey}/`)
     ? id.slice(providerKey.length + 1)
     : id;
@@ -57,7 +68,7 @@ const stripProviderPrefix = (id, providerKey) =>
  * Normalize an id or list of ids to the unique, non-empty, prefix-stripped bare
  * model ids that key the OpenCode `models` map.
  * @param {string|string[]|null|undefined} models
- * @param {'ollama'|'mtplx'} [providerKey='ollama']
+ * @param {'ollama'|'mtplx'|'llama'|'orcarouter'} [providerKey='ollama']
  * @returns {string[]}
  */
 export function toBareModelIds(models, providerKey = 'ollama') {
@@ -86,10 +97,10 @@ export function toBareModelIds(models, providerKey = 'ollama') {
  *
  * @param {string|string[]|null|undefined} models
  * @param {object|null} [base] - existing config to merge into (a fresh clone is made)
- * @param {'ollama'|'mtplx'} [providerKey='ollama']
+ * @param {'ollama'|'mtplx'|'llama'|'orcarouter'} [providerKey='ollama']
  * @returns {object} OpenCode config object
  */
-export function buildOpencodeConfig(models, base = null, providerKey = 'ollama') {
+export function buildOpencodeConfig(models, base = null, providerKey = 'ollama', generation = null) {
   const bareIds = toBareModelIds(models, providerKey);
   const config = (base && typeof base === 'object')
     ? structuredClone(base)
@@ -107,6 +118,31 @@ export function buildOpencodeConfig(models, base = null, providerKey = 'ollama')
       ...Object.fromEntries(bareIds.map((id) => [id, { name: id, tool_call: true }])),
     };
   }
+  // OpenCode applies generation controls to agents, not provider definitions.
+  // `build` is its primary coding agent for both `opencode run` and the TUI;
+  // unknown agent options are passed through to the provider, including
+  // Ollama's native `think` flag.
+  if (generation && providerKey === 'ollama') {
+    const temperature = Number.isFinite(Number(generation.temperature)) ? Number(generation.temperature) : 0.6;
+    // TASKS.md metadata is text, so a persisted task re-enters the lifecycle as
+    // `'true'`/`'false'`. Accept both wire forms without treating an absent or
+    // malformed value as an intentional override.
+    const thinking = generation.thinking === true || generation.thinking === 'true'
+      ? true
+      : generation.thinking === false || generation.thinking === 'false'
+        ? false
+        : undefined;
+    const effort = typeof generation.effort === 'string' && generation.effort.trim()
+      ? generation.effort.trim()
+      : undefined;
+    config.agent = { ...(config.agent && typeof config.agent === 'object' ? config.agent : {}) };
+    config.agent.build = {
+      ...(config.agent.build && typeof config.agent.build === 'object' ? config.agent.build : {}),
+      temperature,
+      ...(thinking === undefined ? {} : { think: thinking }),
+      ...(effort === undefined ? {} : { reasoningEffort: effort }),
+    };
+  }
   return config;
 }
 
@@ -117,17 +153,17 @@ export function buildOpencodeConfig(models, base = null, providerKey = 'ollama')
  *
  * @param {string|string[]|null|undefined} models
  * @param {object|null} [base] - existing config to merge into
- * @param {'ollama'|'mtplx'} [providerKey='ollama']
+ * @param {'ollama'|'mtplx'|'llama'|'orcarouter'} [providerKey='ollama']
  * @returns {string} JSON string for OPENCODE_CONFIG_CONTENT
  */
-export function buildOpencodeConfigContent(models, base = null, providerKey = 'ollama') {
-  return JSON.stringify(buildOpencodeConfig(models, base, providerKey));
+export function buildOpencodeConfigContent(models, base = null, providerKey = 'ollama', generation = null) {
+  return JSON.stringify(buildOpencodeConfig(models, base, providerKey, generation));
 }
 
 /**
  * Build dynamic env vars for an OpenCode local-provider spawn. Returns an
- * object with `OPENCODE_CONFIG_CONTENT` (models map declared) for Ollama- or
- * MTPLX-backed OpenCode providers, otherwise an empty object (caller keeps
+ * object with `OPENCODE_CONFIG_CONTENT` (models map declared) for Ollama-,
+ * MTPLX-, Llama-, or OrcaRouter-backed OpenCode providers, otherwise an empty object (caller keeps
  * existing env).
  *
  * The provider's already-stored `OPENCODE_CONFIG_CONTENT` is used as the base and
@@ -137,7 +173,7 @@ export function buildOpencodeConfigContent(models, base = null, providerKey = 'o
  * model, and the model being run this invocation — so whichever namespaced
  * `--model` the spawner passes is always accepted.
  *
- * @param {{command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean, models?:string[], defaultModel?:string|null, envVars?:object}} provider
+ * @param {{command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean, llamaBacked?:boolean, orcarouterBacked?:boolean, models?:string[], defaultModel?:string|null, apiKey?:string, orcarouterApiKey?:string, envVars?:object}} provider
  * @param {string|null|undefined} model - the model being run (may differ from defaultModel)
  * @returns {{OPENCODE_CONFIG_CONTENT?: string}} env vars to merge
  */
@@ -163,7 +199,16 @@ export function buildOpencodeEnvVars(provider, model) {
     provider?.defaultModel,
     model,
   ];
+  const config = buildOpencodeConfig(ids, base, providerKey, provider);
+  const apiKey = providerKey === 'orcarouter' ? (provider?.apiKey || provider?.orcarouterApiKey) : null;
+  if (apiKey) {
+    config.provider.orcarouter.options = {
+      ...config.provider.orcarouter.options,
+      apiKey,
+    };
+  }
   return {
-    OPENCODE_CONFIG_CONTENT: buildOpencodeConfigContent(ids, base, providerKey),
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+    ...(apiKey ? { ORCAROUTER_API_KEY: apiKey } : {}),
   };
 }

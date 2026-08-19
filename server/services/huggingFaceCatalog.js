@@ -8,6 +8,7 @@ import { readCachedRepoModel, writeCachedRepoModel } from './huggingFaceRepoCach
 import { LOCAL_LLM_CATEGORIES, isBackend } from '../lib/localLlmCatalog.js'
 import { ENGINES } from './pipeline/musicGen.js'
 import { fetchOllamaRegistryVariants } from './ollamaRegistryCatalog.js'
+import { reconcileFit } from '../lib/localModelAssessment.js'
 
 const HF_API_BASE = 'https://huggingface.co/api/models'
 const HF_TIMEOUT_MS = 12_000
@@ -512,7 +513,7 @@ function lmStudioParts(id) {
 // the repo name, e.g. `mlx-community/Foo-4bit`), so it must still match an installed
 // `mlx-community/Foo-4bit@4bit`. GGUF variants always carry a quant, so this never
 // loosens per-quant GGUF matching; it only adds the missing repo-level case.
-function installIdInstalled(backend, installId, repository, installedIds) {
+function installIdInstalled(backend, installId, installedIds) {
   if (backend === 'ollama') {
     const target = normalizeOllamaInstalled(installId)
     return installedIds.some((id) => normalizeOllamaInstalled(id) === target)
@@ -525,15 +526,16 @@ function installIdInstalled(backend, installId, repository, installedIds) {
 }
 
 function isInstalled(backend, result, installedIds) {
-  return installIdInstalled(backend, result.id, result.repository, installedIds)
+  return installIdInstalled(backend, result.id, installedIds)
 }
 
 // ---- MLX (Apple Silicon) ----------------------------------------------------
 // MLX is Apple's native ML format. It ships sharded `.safetensors` + a config
-// (no single GGUF), and is installable ONLY via LM Studio (`lms get <repo>`) on
-// Apple Silicon — Ollama's MLX path accelerates GGUF from its own registry and
-// can't pull arbitrary HF safetensors repos, so MLX is never surfaced for the
-// Ollama backend (the search gates the whole MLX query on lmstudio+Apple Silicon).
+// (no single GGUF). Live Hub discovery remains LM Studio-only: `lms get <repo>`
+// understands an arbitrary result, whereas Ollama requires a supported local
+// Safetensors import and a deliberate local model name. Curated Ollama imports
+// are declared in localLlmCatalog.js instead of making every search result look
+// one-click compatible.
 const MLX_PUBLISHER = 'mlx-community'
 const SAFETENSORS_RE = /\.safetensors$/i
 
@@ -568,12 +570,36 @@ function hasMlxSignal(model) {
     && hasSafetensors
 }
 
-// MTP/drafter checkpoints are auxiliary weights for speculative decoding, not
-// standalone chat models. Keep them out of the normal MLX install cards; the
-// catalog's complete target model is the safe one-click path.
+// Speculative-decoding drafter checkpoints (MTP heads, DFlash/DFlash2 block
+// drafters) are auxiliary weights, not standalone chat models: the drafter for
+// a 27B target is ~2B of sidecar that only produces text once an engine pairs
+// it with that target. PortOS orchestrates Ollama and LM Studio and does not
+// own that pairing (docs/research/2026-08-19-dflash2-speculative-decoding.md,
+// .../2026-08-16-qwen38-mlx-macos.md), so installing one hands the user a model
+// that cannot chat.
+//
+// `draft-model` / `drafter` is the publisher's own declaration that a repo is
+// non-standalone, and it is the only signal precise enough for the GGUF long
+// tail. Looser ones do not survive contact with real repos: an `mtp` or
+// `speculative-decoding` TAG also sits on complete models that merely preserve
+// their built-in MTP head (`unsloth/Qwen3.6-27B-MTP-GGUF`), so matching those
+// would hide mainstream one-click installs — a worse failure than this one.
+const DRAFTER_TAGS = new Set(['draft-model', 'drafter'])
+
+function hasDrafterTag(model) {
+  return tagsOf(model).some((tag) => DRAFTER_TAGS.has(tag))
+}
+
+// The MLX branch additionally matches the repo NAME. That space is curated
+// (mlx-community and Apple-Silicon republishers), where a `-MTP-`/`-DFlash-`
+// suffix reliably marks a sidecar — unlike the GGUF long tail above. `dflash`
+// joins the pre-existing `mtp`/`drafter` tokens because DFlash drafters ship as
+// MLX safetensors too (`jfan/Qwen3.8-27B-heretic-dflash`), and `\d*` covers the
+// DFlash2 generation.
+const MLX_DRAFTER_NAME_RE = /(?:^|[\/_-])(?:mtp|dflash\d*|drafter)(?:[\/_\-.]|$)/i
+
 function isMlxDrafter(model) {
-  const haystack = `${repoIdOf(model)} ${tagsOf(model).join(' ')} ${model?.pipeline_tag || ''}`
-  return /(?:^|[\/_-])(?:mtp|drafter)(?:[\/_\-.]|$)/i.test(haystack)
+  return hasDrafterTag(model) || MLX_DRAFTER_NAME_RE.test(repoIdOf(model))
 }
 
 // Build an MLX search result. Same shape as a GGUF result with `format: 'mlx'`,
@@ -611,7 +637,7 @@ function toMlxResult(model, requestedCategory, installedIds) {
     score: scoreModel(model, category, null),
     installable: true
   }
-  result.installed = installIdInstalled('lmstudio', repoId, repoId, installedIds)
+  result.installed = installIdInstalled('lmstudio', repoId, installedIds)
   return result
 }
 
@@ -897,7 +923,7 @@ function applyGgufVariants(result, model, { backend, usableBytes, installedIds, 
   if (variants.length === 0) return false
   // Per-quant installed state — Ollama tracks each quant separately, so the card
   // must gate Install on the *selected* variant, not one repo-wide flag.
-  for (const v of variants) v.installed = installIdInstalled(backend, v.installId, result.repository, installedIds)
+  for (const v of variants) v.installed = installIdInstalled(backend, v.installId, installedIds)
   applyChosenVariant(result, variants, { usableBytes, rewriteInstallId })
   return true
 }
@@ -921,7 +947,7 @@ function applyMlxVariant(result, model, { backend, usableBytes, installedIds }) 
     sizeBytes: Number.isFinite(result.sizeBytes) ? result.sizeBytes : null,
     size: formatBytes(result.sizeBytes) || result.size || (quant ? quant.toUpperCase() : 'MLX'),
     fit: classifyFit(result.sizeBytes, usableBytes),
-    installed: installIdInstalled(backend, result.id, result.repository, installedIds),
+    installed: installIdInstalled(backend, result.id, installedIds),
     recommended: true
   }
   result.format = 'mlx'
@@ -1006,10 +1032,11 @@ export async function searchHuggingFaceModels({ backend, query = '', category = 
   // surfaces MLX repos, not just hand-typed queries that happen to match one.
   const mlxSearch = normalizeText(query) || CATEGORY_SEARCH[requestedCategory]?.replace(/\bgguf\b/gi, 'mlx') || 'mlx'
   const fetchLimit = Math.max(limit * 3, 30)
-  // MLX is only installable via LM Studio on Apple Silicon (see toMlxResult), so
-  // run the extra MLX query only there — never for Ollama, non-Apple hosts, or
-  // the audio category. `appleSilicon` is injected by the route (default false),
-  // keeping the service deterministic for tests regardless of the test host.
+  // Arbitrary live MLX results are installable only through LM Studio (see
+  // toMlxResult); trusted Ollama imports come from the curated catalog. Run this
+  // discovery query only for LM Studio on Apple Silicon, never for Ollama,
+  // non-Apple hosts, or audio. `appleSilicon` is route-injected (default false),
+  // keeping tests deterministic regardless of their host.
   const wantMlx = appleSilicon && backend === 'lmstudio' && requestedCategory !== 'audio'
   const [ggufModelsRaw, mlxModelsRaw] = await Promise.all([
     fetchModels(search, fetchLimit, ggufOnly ? 'gguf' : null),
@@ -1042,6 +1069,9 @@ export async function searchHuggingFaceModels({ backend, query = '', category = 
     // for an audio-signal filter (relaxed off GGUF, but still audio-only) so a
     // non-audio query can't surface unrelated models mislabeled as audio.
     .filter((model) => (ggufOnly ? hasGgufSignal(model) : hasAudioSignal(model)))
+    // Drafter sidecars ship in GGUF too (`incoai/Qwen3.8-27B-DFlash2-GGUF`), and
+    // nothing about their listing says "not a chat model" except the tag.
+    .filter((model) => !hasDrafterTag(model))
     .map((model) => toResult(model, backend, requestedCategory, installedIds, installedAudio))
     .filter(Boolean)
     .filter((model) => {
@@ -1076,7 +1106,10 @@ export async function searchHuggingFaceModels({ backend, query = '', category = 
 // from the Ollama registry tags/manifests instead (see applyOllamaRegistryVariants).
 function catalogRepoForBackend(backend, id) {
   const raw = String(id || '')
-  if (backend === 'lmstudio') return raw.includes('/') ? raw.split('@')[0] : null
+  if (backend === 'lmstudio') {
+    const hfUrl = raw.match(/^https?:\/\/(?:www\.)?huggingface\.co\/([^/?#]+\/[^/?#]+)/i)
+    return hfUrl?.[1] || (raw.includes('/') ? raw.split('@')[0] : null)
+  }
   const m = raw.match(/^hf\.co\/(.+)$/i)
   return m ? m[1].split(':')[0] : null
 }
@@ -1123,7 +1156,7 @@ async function applyOllamaRegistryVariants(entry, { usableBytes, installedIds })
     .sort((a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0))
   // Per-quant installed state — Ollama tracks each `<name>:<tag>` build separately,
   // so the card gates Install on the selected variant (matches applyGgufVariants).
-  for (const v of variants) v.installed = installIdInstalled('ollama', v.installId, entry.repository, installedIds)
+  for (const v of variants) v.installed = installIdInstalled('ollama', v.installId, installedIds)
   // The discovered quant variants use exact `<name>:<tag>` ids that never include the
   // default `:latest` alias, so an already-installed default build matches none of them.
   // The card gates Install on the SELECTED variant's `installed` (LocalLlmTab uses
@@ -1223,4 +1256,72 @@ export async function enrichCatalogWithVariants(catalog, { backend, systemMemory
     await work
   }
   return catalog
+}
+
+// Does a stored measurement describe THIS installable variant?
+//
+// Ollama: the install id carries the quant in its tag, so the same normalization
+// `installed` uses is exactly right.
+//
+// LM Studio: the id is repo-level and the quant lives beside it on the record
+// (`quantization`). Both must agree — including "both absent". A record written
+// before `quantization` was captured therefore matches only a quant-less
+// variant, which is the honest answer: it cannot say which build it measured.
+function measurementMatches(backend, installId, measuredId, measurement) {
+  if (backend === 'ollama') return installIdInstalled(backend, installId, [measuredId])
+  const variant = lmStudioParts(installId)
+  const stored = lmStudioParts(measuredId)
+  if (variant.base !== stored.base) return false
+  const storedQuant = stored.quant || normalizeText(measurement?.quantization).toLowerCase()
+  return variant.quant === storedQuant
+}
+
+/**
+ * Fold MEASURED evidence into the estimated fit badge.
+ *
+ * `classifyFit` above answers from file size alone: weight bytes × 1.2 against a
+ * usable-memory budget. It never runs the model, so it cannot see a build that
+ * loads and then thrashes, nor one the backend refuses outright. Once an
+ * assessment exists for a model (`services/localModelAssessmentStore.js`) the
+ * measurement is the better answer, and where the two DISAGREE is the most
+ * useful thing this data can say — so both are kept on the variant.
+ *
+ * Matching shares `installIdInstalled`'s normalization for Ollama (casing and a
+ * trailing `:latest`), but is STRICTER about quantization than the installed
+ * flag is. `installIdInstalled` deliberately treats a quant-less id as matching
+ * any quant — right for "is this repo installed", wrong here: an LM Studio
+ * measurement is stored against a repo-level id, so a loose match would stamp
+ * one quant's measured verdict onto every quant of the repo. A measurement
+ * therefore only lands on a variant whose quant it actually names.
+ *
+ * Mutates in place (the catalog builders already do) and returns `models`.
+ *
+ * @param {Array<object>} models catalog/search results
+ * @param {{ backend: string, measured?: Record<string, object> }} options
+ *   `measured` comes from `getMeasuredFits(backend)`; `{}` means nothing has been
+ *   measured, which leaves every estimate exactly as it was.
+ */
+export function applyMeasuredFit(models, { backend, measured } = {}) {
+  const list = Array.isArray(models) ? models : []
+  const measuredIds = measured ? Object.keys(measured) : []
+  if (!measuredIds.length) return list
+  const measurementFor = (installId) => {
+    if (!installId) return null
+    const hit = measuredIds.find((id) => measurementMatches(backend, installId, id, measured[id]))
+    return hit ? measured[hit] : null
+  }
+  for (const model of list) {
+    // Audio/music entries install into the shared audio registry, not a local
+    // LLM backend, so a chat-model measurement can never describe them.
+    if (model?.category === 'audio') continue
+    const variants = Array.isArray(model?.variants) ? model.variants : []
+    for (const variant of variants) {
+      Object.assign(variant, reconcileFit(variant.fit, measurementFor(variant.installId)))
+    }
+    // Entries with no variant list (curated results without `?variants=1`) carry
+    // no estimated fit at all — a measurement is then the ONLY thing that can
+    // say anything, so surface it rather than leaving the card blank.
+    if (!variants.length) Object.assign(model, reconcileFit(model?.fit ?? null, measurementFor(model?.id)))
+  }
+  return list
 }

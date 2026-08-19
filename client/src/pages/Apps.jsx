@@ -698,11 +698,12 @@ export default function Apps() {
                         <button
                           onClick={() => handleBuild(app)}
                           disabled={building[app.id]}
+                          aria-busy={building[app.id]}
                           className="px-3 py-1.5 min-h-[40px] sm:min-h-0 bg-port-warning/20 text-port-warning enabled:hover:bg-port-warning/30 transition-colors rounded-lg text-xs flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
-                          aria-label={`Build production UI: ${app.buildCommand}`}
+                          aria-label={`${building[app.id] ? 'Building' : 'Build'} production UI: ${app.buildCommand}`}
                         >
                           <Hammer size={14} aria-hidden="true" className={building[app.id] ? 'animate-bounce' : ''} />
-                          {building[app.id] ? 'Building...' : 'Build'}
+                          {building[app.id] ? 'Building…' : 'Build'}
                         </button>
                       )}
                       {/* PM2-specific actions */}

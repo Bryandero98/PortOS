@@ -44,16 +44,15 @@ CI runs tests and linting. No version changes.
 git checkout main
 git pull
 
-# Make changes, then record a changelog fragment (do not edit NEXT.md by hand)
-npm run changelog:add -- fixed "Daily log no longer double-saves on blur."
-
-# Commit, push
+# Make changes, commit with a human-readable message (this becomes the
+# release-note source — no changelog file or fragment to write)
 git add [changed files]
 git commit -m "fix: daily log no longer double-saves on blur"
 git pull --rebase --autostash && git push
 ```
 
-See [`.changelog/README.md`](../.changelog/README.md) for the fragment convention.
+See [`.changelog/README.md`](../.changelog/README.md) — release notes are
+synthesized from commit history by `/do:release`, not staged during development.
 
 ### Creating a Release
 

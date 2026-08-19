@@ -64,6 +64,7 @@ import {
   saveBase64Upload,
   saveImageUpload,
   serveLocalFile,
+  watchForFile,
 } from './fileUtils.js';
 import { copyFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
@@ -1618,6 +1619,26 @@ describe('createCachedStore', () => {
     await writeFile(file, JSON.stringify({ n: 42 }));
     store.invalidateCache();
     expect((await store.load()).n).toBe(42);
+  });
+});
+
+describe('watchForFile', () => {
+  // Node 24's Windows libuv watcher can abort the worker in src/win/fs-event.c
+  // after a watched temp directory is removed, even after FSWatcher emits
+  // `close`. Linux covers the native integration; agentTuiSpawning tests cover
+  // the close-event and process-exit races with a platform-neutral watcher.
+  it.skipIf(process.platform === 'win32')('detects a newly written file with the event watcher and fallback poll', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'watch-file-test-'));
+    const target = join(dir, 'done.sentinel');
+    const detected = new Promise((resolve) => watchForFile(target, resolve, { settleMs: 0, pollMs: 10 }));
+    await new Promise((resolve) => setImmediate(resolve));
+    await writeFile(target, 'done');
+    await expect(detected).resolves.toBeUndefined();
+    // FSWatcher emits `close` before libuv's Windows endgame has fully released
+    // the directory handle. Let that native cleanup finish before removing the
+    // watched temp directory, or Node can abort in src/win/fs-event.c.
+    await new Promise((resolve) => setImmediate(resolve));
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 

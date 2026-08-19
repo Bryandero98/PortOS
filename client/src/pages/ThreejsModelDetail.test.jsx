@@ -484,3 +484,115 @@ describe('ThreejsModelDetail rig readiness fallbacks', () => {
     expect(screen.queryByText(/undefined/)).not.toBeInTheDocument();
   });
 });
+
+describe('ThreejsModelDetail clip inventory', () => {
+  beforeEach(resetMocks);
+
+  it('lists the clips the server inventoried, with role, duration and cue count', async () => {
+    getThreejsModel.mockResolvedValue({
+      ...baseRecord,
+      animation: {
+        animated: true,
+        clipCount: 1,
+        clips: [{ id: 'deploy', name: 'Deploy', role: 'deploy', durationSeconds: 2, sequenceCount: 3, cueCount: 1 }],
+      },
+    });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Animation clips')).toBeInTheDocument());
+    expect(screen.getByText('Deploy')).toBeInTheDocument();
+    expect(screen.getByText('2s · 3 sequences · 1 sound cue')).toBeInTheDocument();
+  });
+
+  // A record generated before the inventory shipped still has the clips in its
+  // spec, so the panel derives them rather than claiming the model is static.
+  it('derives the list from the spec when the record carries no inventory', async () => {
+    getThreejsModel.mockResolvedValue({
+      ...baseRecord,
+      animation: undefined,
+      spec: {
+        ...baseRecord.spec,
+        animation: {
+          cues: [],
+          clips: [{
+            id: 'retract',
+            name: 'Retract',
+            role: 'retract',
+            durationSeconds: 1,
+            sequences: [{ id: 'fold', cueId: null }],
+          }],
+        },
+      },
+    });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Animation clips')).toBeInTheDocument());
+    expect(screen.getByText('1s · 1 sequence')).toBeInTheDocument();
+  });
+
+  it('renders the clip-playback gate for a model whose clips will not play cleanly', async () => {
+    getThreejsModel.mockResolvedValue({
+      ...baseRecord,
+      animation: {
+        animated: true,
+        clipCount: 1,
+        warningCount: 1,
+        clips: [{ id: 'deploy', name: 'Deploy', role: 'deploy', durationSeconds: 2, sequenceCount: 1, cueCount: 0 }],
+        findings: [{
+          code: 'clip-start-pose-mismatch',
+          severity: 'warning',
+          message: 'clip Deploy is authored against a pose the assembly does not build',
+        }],
+      },
+    });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Clip playback')).toBeInTheDocument());
+    expect(screen.getByText(/clip Deploy is authored against a pose/)).toBeInTheDocument();
+    expect(screen.getByText('0 error · 1 warning · 0 note')).toBeInTheDocument();
+  });
+
+  // The gate also reports an articulation graph with no clip to play it, which
+  // by definition arrives on a model that declared no clips at all.
+  it('renders a clip finding raised against a model with no clips', async () => {
+    getThreejsModel.mockResolvedValue({
+      ...baseRecord,
+      animation: {
+        animated: false,
+        clipCount: 0,
+        warningCount: 1,
+        clips: [],
+        findings: [{
+          code: 'articulation-without-clips',
+          severity: 'warning',
+          message: 'the spec declares an articulation graph over 4 joints but no animation clip',
+        }],
+      },
+    });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Clip playback')).toBeInTheDocument());
+    expect(screen.getByText(/declares an articulation graph over 4 joints/)).toBeInTheDocument();
+  });
+
+  // A static assembly evaluates to an empty finding list, which is not a verdict
+  // about clips — it never declared any.
+  it('shows no clip-playback gate for a static assembly that was evaluated', async () => {
+    getThreejsModel.mockResolvedValue({
+      ...baseRecord,
+      animation: { animated: false, clipCount: 0, warningCount: 0, clips: [], findings: [] },
+    });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Rig readiness')).toBeInTheDocument());
+    expect(screen.queryByText('Clip playback')).not.toBeInTheDocument();
+  });
+
+  it('shows no clip panel for a static assembly', async () => {
+    getThreejsModel.mockResolvedValue({ ...baseRecord, animation: null });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Rig readiness')).toBeInTheDocument());
+    expect(screen.queryByText('Animation clips')).not.toBeInTheDocument();
+  });
+});

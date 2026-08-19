@@ -76,6 +76,24 @@ describe('declaresNoCommitCriterion', () => {
     // `worktreeChangesExpected` is a user-settable per-app taskMetadata override
     // accepted for EVERY task type; setting it there is asking to skip the TUI
     // clean-tree gate, not to disable success validation.
+    it('exempts an audit type that opted into file-issues', () => {
+      expect(declaresNoCommitCriterion(task({
+        analysisType: 'security',
+        fileIssues: true,
+        worktreeChangesExpected: false,
+      }))).toBe(true);
+    });
+
+    it('does not treat an audit type as tracker-filing when fileIssues is off', () => {
+      // ux is in TRACKER_FILING_TASK_TYPES for back-compat; an explicit
+      // fileIssues:false means this run is implementing, so the commit check stays.
+      expect(declaresNoCommitCriterion(task({
+        analysisType: 'ux',
+        fileIssues: false,
+        worktreeChangesExpected: false,
+      }))).toBe(false);
+    });
+
     it('does not exempt the flag alone, with no tracker-filing marker', () => {
       expect(declaresNoCommitCriterion(task({
         analysisType: 'security',

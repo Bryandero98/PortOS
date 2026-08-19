@@ -2,6 +2,32 @@ import { describe, expect, it } from 'vitest';
 import { sanitizeJob } from './sanitizeJob.js';
 
 describe('sanitizeJob', () => {
+  it('exposes safe video retry configuration fields', () => {
+    const sanitized = sanitizeJob({
+      id: 'video-job',
+      kind: 'video',
+      status: 'failed',
+      params: {
+        modelId: 'example-video-model',
+        textEncoderId: 'example-encoder',
+        chunks: 2,
+        chunkPrompts: ['opening', 'climax'],
+        contextFrames: 12,
+        loras: [{ filename: 'example-style.safetensors', scale: 0.8 }],
+        pythonPath: '/private/internal/python',
+      },
+    });
+
+    expect(sanitized.params).toEqual({
+      modelId: 'example-video-model',
+      textEncoderId: 'example-encoder',
+      chunks: 2,
+      chunkPrompts: ['opening', 'climax'],
+      contextFrames: 12,
+      loras: [{ filename: 'example-style.safetensors', scale: 0.8 }],
+    });
+  });
+
   it('exposes instrumental mode without leaking authored Music Studio text', () => {
     const job = sanitizeJob({
       id: 'job-1',

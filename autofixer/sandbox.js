@@ -348,7 +348,16 @@ export function validateProposedDiff(diff, opts = {}) {
  * an error shape instead.
  */
 export function execGit(gitArgs, cwd) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    // A missing cwd makes `spawn` fall back to `process.cwd()` — which for the
+    // autofixer suite is the PortOS checkout itself, so a fixture that lost its
+    // temp dir would `git init` / `git config` the developer's real repo.
+    // This is a caller bug, not a git failure, so it rejects rather than
+    // resolving with the `{ code: -1 }` shape reserved for spawn errors (#4554).
+    if (typeof cwd !== 'string' || cwd.trim() === '') {
+      reject(new Error(`execGit requires a working directory: git ${gitArgs.join(' ')}`));
+      return;
+    }
     const child = spawn('git', gitArgs, { cwd, windowsHide: true });
     let stdout = '';
     let stderr = '';
@@ -359,8 +368,10 @@ export function execGit(gitArgs, cwd) {
   });
 }
 
-/** True when repoPath is inside a git work tree. */
+/** True when repoPath is inside a git work tree. A missing path is a definite
+ * no — never a reason to ask git about the autofixer's own cwd (#4554). */
 export async function isGitRepo(repoPath) {
+  if (typeof repoPath !== 'string' || repoPath.trim() === '') return false;
   const { code, stdout } = await execGit(['rev-parse', '--is-inside-work-tree'], repoPath);
   return code === 0 && stdout.trim() === 'true';
 }
@@ -375,6 +386,9 @@ export async function isGitRepo(repoPath) {
  * @param {string} id        unique session id
  */
 export async function createDisposableWorktree(repoPath, parentDir, id) {
+  if (typeof repoPath !== 'string' || repoPath.trim() === '') {
+    return { error: 'no repo path — refusing to isolate against the autofixer\u2019s own working directory' };
+  }
   const path = join(parentDir, id);
   await mkdir(parentDir, { recursive: true }).catch(() => {});
   const { code, stderr } = await execGit(['worktree', 'add', '--detach', path, 'HEAD'], repoPath);

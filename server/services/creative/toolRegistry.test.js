@@ -92,6 +92,8 @@ import {
   getAllCreativeToolNames,
   getCreativeToolMetadata,
   filterDestructive,
+  getCommissionPlanError,
+  isToolAllowedForTargetAbility,
   assertCreativeToolIntegrity,
   dispatchCreativeTool,
 } from './toolRegistry.js';
@@ -135,6 +137,40 @@ describe('registry shape', () => {
       expect(typeof s.function.name).toBe('string');
       expect(s.function.parameters.type).toBe('object');
     }
+  });
+
+  it('limits a commission planner to tools for the selected UI output type', () => {
+    expect(getToolSpecs({ targetAbility: 'video' }).map((s) => s.function.name))
+      .toEqual(['media_enqueueVideoJob']);
+    expect(getToolSpecs({ targetAbility: 'image' }).map((s) => s.function.name))
+      .toEqual(['media_enqueueImageJob']);
+    expect(getToolSpecs({ targetAbility: 'music' }).map((s) => s.function.name))
+      .toEqual(['media_enqueueAudioJob']);
+    expect(getToolSpecs({ targetAbility: 'music-video' }).map((s) => s.function.name).sort())
+      .toEqual(['media_enqueueAudioJob', 'media_enqueueImageJob', 'media_enqueueVideoJob']);
+    expect(getToolSpecs({ targetAbility: 'series' }).every((s) =>
+      s.function.name.startsWith('pipeline_') || s.function.name.startsWith('universe_'))).toBe(true);
+  });
+
+  it('validates a commission plan against its selected lane and artifact count', () => {
+    const directive = { constraints: { targetAbility: 'image', generation: { imageCount: 2 } } };
+    expect(getCommissionPlanError({ steps: [
+      { toolName: 'media_enqueueImageJob' },
+      { toolName: 'media_enqueueImageJob' },
+    ] }, directive)).toBeNull();
+    expect(getCommissionPlanError({ steps: [{ toolName: 'media_enqueueVideoJob' }] }, directive))
+      .toMatch(/not allowed/);
+    expect(getCommissionPlanError({ steps: [{ toolName: 'media_enqueueImageJob' }] }, directive))
+      .toMatch(/exactly 2/);
+    expect(isToolAllowedForTargetAbility('pipeline_createSeries', 'series')).toBe(true);
+    expect(isToolAllowedForTargetAbility('media_enqueueVideoJob', 'series')).toBe(false);
+  });
+
+  it('rejects an unadvertised commission tool again at dispatch', async () => {
+    await expect(dispatchCreativeTool(
+      'media_enqueueVideoJob', { params: { prompt: 'p' } }, { targetAbility: 'image' },
+    )).rejects.toThrow(/not allowed for commission type image/);
+    expect(enqueueJob).not.toHaveBeenCalled();
   });
 
   it('hydrates catalog_searchIngredients from the voice tool\'s RESOLVED spec (custom types survive)', () => {

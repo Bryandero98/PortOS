@@ -14,6 +14,12 @@ import { LLM_DRILL_TYPES, MEMORY_DRILL_TYPES, POST_SUPPORTED_MEMORY_TYPES } from
 import { normalizeHistoricalPostLlmEvaluation, normalizePostLlmEvaluation } from '../lib/postLlmContracts.js';
 import { resolveTopicForDrillType, isTopicEnabled, isMemoryItemEnabled } from '../lib/postTopics.js';
 import { adaptDrillConfig, ADAPTIVE_SPECS, ADAPTIVE_DEFAULTS } from '../lib/postAdaptive.js';
+import {
+  APPLIED_NUMERACY_DRILL_TYPE,
+  APPLIED_NUMERACY_DIFFICULTIES,
+  generateAppliedNumeracyDrill,
+  scoreAppliedNumeracyDrill,
+} from '../lib/postAppliedNumeracy.js';
 import { resolveMultiplicationLevel, MASTERY_DEFAULTS } from '../lib/postMultiplicationLadder.js';
 import {
   POWERS_MASTERY_DEFAULTS,
@@ -47,6 +53,7 @@ import { getMorseProgress, MAX_KOCH_LEVEL } from './meatspacePostMorse.js';
 import { computePostStreaks, computeUnifiedStreak, normalizeYmd, recordDayKey, withDerivedDayKeys, ymdToUTC, ymdShift } from '../lib/postStreak.js';
 import { getUserTimezone, todayInTimezone, userLocalToday as localToday } from '../lib/timezone.js';
 import { getStoredPostSession, listPostSessions, saveStoredPostSession } from './postRunStore.js';
+import { ServerError } from '../lib/errorHandler.js';
 
 // Re-export the shared streak helper so existing importers of
 // `computePostStreaks` from this module keep working after it moved to
@@ -75,6 +82,74 @@ const CONFIG_FILE = join(MEATSPACE_DIR, 'post-config.json');
 // each route handler having to remember to bolt one on (#2015).
 export const postConfigEvents = new EventEmitter();
 
+// The first fixed benchmark battery is intentionally small and deterministic:
+// one seeded arithmetic drill plus one seeded executive-control drill. It is a
+// protocol, not a projection of the user's adaptive configuration, so later
+// forms can be added without changing the meaning of an existing result.
+export const POST_BENCHMARK_PROTOCOL = Object.freeze({
+  protocolId: 'post-foundation-battery',
+  protocolVersion: 1,
+  scorerVersion: 'post-deterministic-v1',
+  forms: Object.freeze([
+    Object.freeze({
+      formId: 'a',
+      tasks: Object.freeze([
+        Object.freeze({ type: 'doubling-chain', domain: 'mental-math', config: Object.freeze({ startValue: 5, steps: 8 }), timeLimitSec: 60 }),
+        Object.freeze({ type: 'task-switching', domain: 'cognitive', config: Object.freeze({ seed: 'post-foundation-a', count: 12, ruleCount: 2, switchRatePct: 50, cueStimulusIntervalMs: 700, incongruentPct: 50, responseDeadlineMs: 2200 }) }),
+      ]),
+    }),
+    Object.freeze({
+      formId: 'b',
+      tasks: Object.freeze([
+        Object.freeze({ type: 'doubling-chain', domain: 'mental-math', config: Object.freeze({ startValue: 7, steps: 8 }), timeLimitSec: 60 }),
+        Object.freeze({ type: 'task-switching', domain: 'cognitive', config: Object.freeze({ seed: 'post-foundation-b', count: 12, ruleCount: 2, switchRatePct: 50, cueStimulusIntervalMs: 700, incongruentPct: 50, responseDeadlineMs: 2200 }) }),
+      ]),
+    }),
+  ]),
+});
+
+const cloneBenchmarkProtocol = (protocol) => JSON.parse(JSON.stringify(protocol));
+
+export function getPostBenchmarkForm(formId) {
+  return POST_BENCHMARK_PROTOCOL.forms.find((form) => form.formId === formId) || null;
+}
+
+export async function getPostBenchmarkProtocol() {
+  const sessions = await getPostSessions();
+  const formIds = new Set(sessions
+    .filter((session) => session?.benchmark?.protocolId === POST_BENCHMARK_PROTOCOL.protocolId)
+    .slice(-POST_BENCHMARK_PROTOCOL.forms.length)
+    .map((session) => session.benchmark.formId));
+  const nextForm = POST_BENCHMARK_PROTOCOL.forms.find((form) => !formIds.has(form.formId))
+    || POST_BENCHMARK_PROTOCOL.forms[0];
+  return { ...cloneBenchmarkProtocol(POST_BENCHMARK_PROTOCOL), nextFormId: nextForm.formId };
+}
+
+function assertBenchmarkSession(benchmark, tasks, modules) {
+  if (!benchmark) return;
+  const form = benchmark.protocolId === POST_BENCHMARK_PROTOCOL.protocolId
+    && benchmark.protocolVersion === POST_BENCHMARK_PROTOCOL.protocolVersion
+    && benchmark.scorerVersion === POST_BENCHMARK_PROTOCOL.scorerVersion
+    ? getPostBenchmarkForm(benchmark.formId)
+    : null;
+  const expectedModules = form ? [...new Set(form.tasks.map((task) => task.domain))] : [];
+  const modulesMatch = expectedModules.length === modules.length
+    && expectedModules.every((module) => modules.includes(module));
+  const tasksMatch = form
+    && tasks.length === form.tasks.length
+    && form.tasks.every((expected, index) => {
+      const actual = tasks[index];
+      return actual?.type === expected.type
+        && Object.entries(expected.config).every(([key, value]) => actual.config?.[key] === value);
+    });
+  if (!form || !modulesMatch || !tasksMatch) {
+    throw new ServerError('Benchmark session does not match its registered protocol form', {
+      status: 400,
+      code: 'INVALID_BENCHMARK',
+    });
+  }
+}
+
 const DEFAULT_CONFIG = {
   mentalMath: {
     enabled: true,
@@ -88,7 +163,11 @@ const DEFAULT_CONFIG = {
       // a user turns the progressive ladder off.
       'multiplication': { enabled: true, count: 10, maxDigits: 2, progressive: true, timeLimitSec: 120 },
       'powers': { enabled: true, bases: [2, 3, 5], maxExponent: 10, count: 8, progressive: true, timeLimitSec: 90 },
-      'estimation': { enabled: true, count: 5, tolerancePct: 10, timeLimitSec: 120 }
+      'estimation': { enabled: true, count: 5, tolerancePct: 10, timeLimitSec: 120 },
+      // Pure, seeded everyday numeracy scenarios. No provider call or
+      // high-stakes domain is involved; the returned seed is stored with each
+      // session so the server can rebuild answer keys on submit.
+      'applied-numeracy': { enabled: true, count: 5, difficulty: 1, timeLimitSec: 150 }
     }
   },
   llmDrills: {
@@ -119,7 +198,12 @@ const DEFAULT_CONFIG = {
       'stroop': { enabled: true, progressive: true, count: 15, incongruentPct: 75 },
       'schulte-table': { enabled: true, progressive: true, size: 5 },
       'mental-rotation': { enabled: true, progressive: true, count: 8, rotationComplexity: 3, optionCount: 4 },
-      'reaction-time': { enabled: true, mode: 'simple', count: 15, minDelayMs: 1000, maxDelayMs: 3000, choices: 3 }
+      'reaction-time': { enabled: true, mode: 'simple', count: 15, minDelayMs: 1000, maxDelayMs: 3000, choices: 3 },
+      // Executive-control pack is opt-in for existing installs: additive config
+      // must not silently lengthen a user's established composed session.
+      'task-switching': { enabled: false, progressive: true, count: 18, ruleCount: 2, switchRatePct: 50, cueStimulusIntervalMs: 700, incongruentPct: 50, responseDeadlineMs: 2200 },
+      'go-no-go': { enabled: false, progressive: true, count: 20, noGoPct: 25, stimulusMs: 600, lureSimilarity: 'low', responseDeadlineMs: 1400 },
+      'flanker': { enabled: false, progressive: true, count: 20, congruentPct: 60, flankerDistance: 2, flankerStrength: 2, responseDeadlineMs: 1600 }
     }
   },
   // Memory practice (issue #3252). Present so the block's shape is discoverable
@@ -307,6 +391,7 @@ export async function submitPostSession(sessionData) {
   // metrics) can't persist stale client-sent values that stats aggregation
   // would then prefer over a questions[] derivation.
   const rawTasks = Array.isArray(sessionData.tasks) ? sessionData.tasks : [];
+  assertBenchmarkSession(sessionData.benchmark, rawTasks, sessionData.modules);
   const rescoredTasks = rawTasks.map(t => {
     const {
       score: _score, correct: _correct,
@@ -314,6 +399,11 @@ export async function submitPostSession(sessionData) {
       answeredCount: _ac, totalCount: _tc, attemptCount: _attempts, errorCount: _errors,
       medianMs: _med, bestMs: _best, span: _span,
       hits: _h, misses: _m, falseAlarms: _fa, correctRejections: _cr,
+      omissions: _omissions, commissionErrors: _commissionErrors,
+      switchCostMs: _switchCost, switchAccuracy: _switchAccuracy, repeatAccuracy: _repeatAccuracy,
+      congruencyCostMs: _congruencyCost, congruentAccuracy: _congruentAccuracy,
+      incongruentAccuracy: _incongruentAccuracy, falseAlarmRate: _falseAlarmRate,
+      latencyDistributionMs: _latencyDistribution,
       ...rest
     } = t || {};
 
@@ -356,7 +446,7 @@ export async function submitPostSession(sessionData) {
     // persisted alongside the blended score (issue #2094).
     if (COGNITIVE_DRILL_TYPES.includes(rest.type)) {
       const scored = scoreCognitiveDrill(rest.type, rest.drillData, rest.questions || []);
-      return { ...rest, ...scored };
+      return { ...rest, ...scored, scorerProvenance: 'server-deterministic' };
     }
 
     // Math drills: strip correct from individual questions and rescore
@@ -408,6 +498,7 @@ export async function submitPostSession(sessionData) {
     score: computeSessionScore(rescoredTasks, config.scoring?.weights),
     tags: sessionData.tags || {},
     ...(sessionData.plan ? { plan: sessionData.plan } : {}),
+    ...(sessionData.benchmark ? { benchmark: sessionData.benchmark } : {}),
   };
 
   const stored = await saveStoredPostSession(session);
@@ -463,6 +554,45 @@ export async function submitPostSession(sessionData) {
 // count as a genuine re-verification (mirrors COGNITIVE_MASTERY_DEFAULTS
 // minCompletion). Below it, the review is recorded as failed rather than passed.
 const MIN_REVIEW_COMPLETION = 0.75;
+const APPLIED_NUMERACY_MASTERY = { minSamples: 3, accuracy: 0.8, completion: 0.75 };
+
+/**
+ * Aggregate complexity-level evidence for Applied Numeracy. Its rungs measure
+ * representation changes, units, and multi-step transforms rather than larger
+ * operands, so retention can schedule a targeted rep at the earned level.
+ */
+export async function getAppliedNumeracyProgress() {
+  const sessions = await getPostSessions();
+  const buckets = Object.fromEntries([1, 2, 3].map(level => [level, { samples: 0, accuracy: 0, completion: 0 }]));
+  for (const session of sessions) {
+    for (const task of session.tasks || []) {
+      if (task.type !== APPLIED_NUMERACY_DRILL_TYPE) continue;
+      const level = APPLIED_NUMERACY_DIFFICULTIES.includes(task.config?.difficulty) ? task.config.difficulty : 1;
+      const accuracy = deriveTaskAccuracy(task);
+      const completion = deriveTaskCompletion(task);
+      if (accuracy == null) continue;
+      buckets[level].samples += 1;
+      buckets[level].accuracy += accuracy;
+      buckets[level].completion += completion ?? 1;
+    }
+  }
+  return {
+    levels: Object.entries(buckets).map(([level, bucket]) => {
+      const samples = bucket.samples;
+      const accuracy = samples ? bucket.accuracy / samples : 0;
+      const completion = samples ? bucket.completion / samples : 0;
+      return {
+        level: Number(level),
+        samples,
+        accuracy,
+        completion,
+        mastered: samples >= APPLIED_NUMERACY_MASTERY.minSamples
+          && accuracy >= APPLIED_NUMERACY_MASTERY.accuracy
+          && completion >= APPLIED_NUMERACY_MASTERY.completion,
+      };
+    }),
+  };
+}
 
 /**
  * Current mastered-but-inactive skills eligible for re-verification tracking:
@@ -476,7 +606,12 @@ const MIN_REVIEW_COMPLETION = 0.75;
 export async function getMasteredSkills() {
   const skills = [];
 
-  const mul = await getMultiplicationProgress();
+  const [mul, powers, cog, numeracy] = await Promise.all([
+    getMultiplicationProgress(),
+    getPowersProgress(),
+    getCognitiveProgress(),
+    getAppliedNumeracyProgress(),
+  ]);
   for (const rung of mul.levels || []) {
     if (rung.mastered && rung.level < mul.level) {
       skills.push({
@@ -491,7 +626,6 @@ export async function getMasteredSkills() {
     }
   }
 
-  const powers = await getPowersProgress();
   for (const rung of powers.levels || []) {
     if (rung.mastered && rung.level < powers.level) {
       skills.push({
@@ -506,7 +640,6 @@ export async function getMasteredSkills() {
     }
   }
 
-  const cog = await getCognitiveProgress();
   for (const [type, prog] of Object.entries(cog)) {
     if (!prog) continue;
     for (const rung of prog.levels || []) {
@@ -522,6 +655,18 @@ export async function getMasteredSkills() {
         });
       }
     }
+  }
+
+  for (const rung of numeracy.levels || []) {
+    if (!rung.mastered) continue;
+    skills.push({
+      skillId: `applied-numeracy:D${rung.level}`,
+      kind: APPLIED_NUMERACY_DRILL_TYPE,
+      label: `Applied Numeracy level ${rung.level}`,
+      drillType: APPLIED_NUMERACY_DRILL_TYPE,
+      module: 'mental-math',
+      difficulty: rung.level,
+    });
   }
 
   return skills;
@@ -559,6 +704,9 @@ export function getSessionSkillContext(session) {
       practicedSkillIds.add(`powers:L${cfg.level}`);
     } else if (cognitiveLadder(task.type) && Number.isInteger(cfg.level)) {
       practicedSkillIds.add(`cognitive:${task.type}:L${cfg.level}`);
+    } else if (task.type === APPLIED_NUMERACY_DRILL_TYPE) {
+      const difficulty = APPLIED_NUMERACY_DIFFICULTIES.includes(cfg.difficulty) ? cfg.difficulty : 1;
+      practicedSkillIds.add(`applied-numeracy:D${difficulty}`);
     } else if (task.memoryItemId) {
       for (const q of task.questions || []) {
         if (q?.chunkId) practicedSkillIds.add(`memory:${task.memoryItemId}:${q.chunkId}`);
@@ -625,6 +773,15 @@ export async function getPostReviewReps(now = new Date(), limit = 2) {
         module: 'cognitive',
         type: entry.drillType,
         config: { ...(entry.config || cognitiveLevelConfig(entry.drillType, entry.level)), level: entry.level, review: true, reviewSkillId: entry.skillId },
+      });
+    } else if (entry.kind === APPLIED_NUMERACY_DRILL_TYPE) {
+      reps.push({
+        skillId: entry.skillId,
+        label: entry.label,
+        state: entry.status === 'needs-refresh' ? 'needs-refresh' : 'due',
+        module: 'mental-math',
+        type: APPLIED_NUMERACY_DRILL_TYPE,
+        config: { count: 5, difficulty: entry.difficulty, review: true, reviewSkillId: entry.skillId },
       });
     }
   }
@@ -720,7 +877,9 @@ function trainingEntryTask(entry) {
   const correctCount = Number.isFinite(rawCorrectCount)
     ? Math.max(0, Math.min(questionCount, rawCorrectCount))
     : 0;
-  const accuracy = questionCount > 0 ? correctCount / questionCount : null;
+  const accuracy = typeof entry?.accuracy === 'number'
+    ? entry.accuracy
+    : questionCount > 0 ? correctCount / questionCount : null;
   return {
     id: entry?.id,
     module: entry?.module,
@@ -730,7 +889,9 @@ function trainingEntryTask(entry) {
     score: Number.isFinite(entry?.score) ? entry.score : (accuracy == null ? null : accuracy * 100),
     accuracy,
     completion: typeof entry?.completion === 'number' ? entry.completion : (questionCount > 0 ? 1 : null),
-    avgResponseMs: questionCount > 0 ? (entry?.totalMs || 0) / questionCount : null,
+    avgResponseMs: typeof entry?.avgResponseMs === 'number'
+      ? entry.avgResponseMs
+      : questionCount > 0 ? (entry?.totalMs || 0) / questionCount : null,
     totalMs: entry?.totalMs || 0,
     totalCount: questionCount,
   };
@@ -1665,12 +1826,22 @@ export function generateDrill(type, config = {}) {
       return generatePowers(config.bases, config.maxExponent, config.count, config.level, config.review);
     case 'estimation':
       return generateEstimation(config.count, config.tolerancePct);
+    case APPLIED_NUMERACY_DRILL_TYPE:
+      return generateAppliedNumeracyDrill({
+        ...config,
+        // The generator itself is pure for a seed. New runs get a seed once;
+        // it is stamped into the returned config and becomes the score key.
+        seed: config.seed ?? Math.floor(Math.random() * 0x100000000),
+      });
     case 'n-back':
     case 'digit-span':
     case 'stroop':
     case 'schulte-table':
     case 'mental-rotation':
     case 'reaction-time':
+    case 'task-switching':
+    case 'go-no-go':
+    case 'flanker':
       return generateCognitiveDrill(type, config);
     default:
       return null;
@@ -2105,6 +2276,9 @@ export function computeExpectedFromPrompt(prompt) {
 }
 
 export function scoreDrill(type, questions, timeLimitMs, config = {}) {
+  if (type === APPLIED_NUMERACY_DRILL_TYPE) {
+    return scoreAppliedNumeracyDrill(questions, timeLimitMs, config);
+  }
   if (!questions?.length) {
     return { score: 0, questions, accuracy: null, completion: null, avgResponseMs: null, answeredCount: 0, totalCount: 0 };
   }

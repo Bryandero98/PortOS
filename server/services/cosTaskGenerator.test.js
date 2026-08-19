@@ -42,6 +42,8 @@ import {
   resolveSwarmBlock,
   isCooldownExemptTask,
   emitOnDemandEmpty,
+  applyOnDemandConsent,
+  isConfiguredApprovalRequired,
   recordPerpetualTransient,
   buildJiraTicketTask,
   buildImprovementDedupSets,
@@ -72,27 +74,28 @@ describe('claim reviewer resolution', () => {
     expect(normalizeClaimReviewers({ reviewers: ['copilot'] }, ['copilot'])).toEqual(['codex']);
   });
 
-  it('keeps local reviewers and emits forge-specific, fail-closed service commands', () => {
-    const github = buildLocalReviewerInstructions('claim-issue', ['ollama'], { ollama: 'example-model' }, { ollama: 'high' });
-    expect(github).toContain('gh pr diff');
-    expect(github).not.toContain('$PR_NUMBER');
-    expect(github).toContain('--arg backend ollama');
-    expect(github).toContain('--arg model example-model');
-    expect(github).toContain('--arg effort high');
-    expect(github).toContain('run-local-code-review.mjs');
-    expect(github).not.toContain('localhost:5555');
-    expect(github).toContain('missing/empty findings is INCONCLUSIVE');
+  // The claim prompts run their local reviewers BEFORE the PR/MR is opened, so
+  // the diff has to come from the branch. A forge command (`gh pr diff` /
+  // `glab mr diff`) would resolve nothing at that point and the one review pass
+  // that must succeed would fail closed on every run.
+  it('resolves the review diff from the branch, never from an open PR/MR', () => {
+    const pinned = buildLocalReviewerInstructions(['ollama'], { ollama: 'example-model' }, { ollama: 'high' });
+    expect(pinned).toContain('git diff "origin/$DEFAULT_BRANCH...HEAD"');
+    expect(pinned).toContain('refs/remotes/origin/HEAD');
+    expect(pinned).toContain('${DEFAULT_BRANCH:-main}');
+    expect(pinned).not.toContain('gh pr diff');
+    expect(pinned).not.toContain('glab mr diff');
+    expect(pinned).toContain('--arg backend ollama');
+    expect(pinned).toContain('--arg model example-model');
+    expect(pinned).toContain('--arg effort high');
+    expect(pinned).toContain('run-local-code-review.mjs');
+    expect(pinned).not.toContain('localhost:5555');
+    expect(pinned).toContain('missing/empty findings is INCONCLUSIVE');
 
-    const gitlab = buildLocalReviewerInstructions('claim-issue-gitlab', ['lmstudio']);
-    expect(gitlab).toContain('glab mr list --source-branch');
-    expect(gitlab).toContain('glab mr diff "$MR_IID"');
-    expect(gitlab).not.toContain('$MR_NUMBER');
-    expect(gitlab).not.toContain('gh pr diff');
-
-    const generic = buildLocalReviewerInstructions('plan-task', ['ollama']);
-    expect(generic).toContain('command -v gh');
-    expect(generic).toContain('command -v glab');
-    expect(generic).not.toContain('<gh pr diff');
+    const bare = buildLocalReviewerInstructions(['lmstudio']);
+    expect(bare).toContain('git diff "origin/$DEFAULT_BRANCH...HEAD"');
+    expect(bare).toContain('--arg backend lmstudio');
+    expect(bare).not.toContain('--arg model');
   });
 });
 
@@ -163,19 +166,113 @@ describe('both on-demand engines stamp metadata.onDemand', () => {
   });
 });
 
-// #1650: once a peer's claim/lease is visible via task-record federation, a
-// task whose live lease belongs to ANOTHER instance must be skipped during
-// candidate selection — BEFORE the engine emits `task:ready` + trackSpawn.
-// Otherwise that peer-claimed task (often the highest-priority pick) consumes
-// this instance's spawn slot every cycle (the spawn guard then returns null,
-// spawning nothing) and starves later unclaimed tasks. Both spawn engines
-// (dequeueNextTask in cos.js, evaluateTasks here) must apply it, in both their
-// execute loops AND their dry-run plan.
-describe('peer-claim skip during candidate selection (#1650)', () => {
-  it('both engines import isHeldByOther from the shared claim module', () => {
+describe('applyOnDemandConsent', () => {
+  it('flips an approval-gated task to AUTO and drops the hold reason', () => {
+    const task = {
+      approvalRequired: true,
+      autoApproved: false,
+      approvalReason: 'safety-kind:publish',
+      metadata: { analysisType: 'release-check', approvalReason: 'safety-kind:publish' }
+    };
+    expect(applyOnDemandConsent(task)).toBe(task);
+    expect(task).toMatchObject({ approvalRequired: false, autoApproved: true });
+    expect(task.approvalReason).toBeUndefined();
+    expect(task.metadata.approvalReason).toBeUndefined();
+  });
+
+  it('leaves a requireApproval task gated so the schedule toggle still holds Run Now', () => {
+    const task = {
+      approvalRequired: true,
+      autoApproved: false,
+      approvalReason: 'config:requireApproval',
+      metadata: { analysisType: 'release-check', requireApproval: true }
+    };
+    applyOnDemandConsent(task);
+    expect(task).toMatchObject({
+      approvalRequired: true,
+      autoApproved: false,
+      approvalReason: 'config:requireApproval'
+    });
+  });
+
+  it('is a no-op on a missing task so callers can apply it unconditionally', () => {
+    expect(applyOnDemandConsent(null)).toBeNull();
+    expect(applyOnDemandConsent(undefined)).toBeUndefined();
+  });
+});
+
+describe('isConfiguredApprovalRequired', () => {
+  it('is true only for an explicit requireApproval: true', () => {
+    expect(isConfiguredApprovalRequired({ requireApproval: true })).toBe(true);
+    expect(isConfiguredApprovalRequired({ requireApproval: false })).toBe(false);
+    expect(isConfiguredApprovalRequired({ analysisType: 'release-check' })).toBe(false);
+    expect(isConfiguredApprovalRequired(undefined)).toBe(false);
+  });
+
+  it('both generators stamp approvalReason onto metadata so the hint survives COS-TASKS.md', () => {
+    const selfStart = GEN_SRC.indexOf('export async function generateSelfImprovementTaskForType');
+    const appStart = GEN_SRC.indexOf('export async function generateManagedAppImprovementTaskForType');
+    expect(GEN_SRC.slice(selfStart, selfStart + 2500)).toContain('stampApprovalReason(metadata, approval)');
+    expect(GEN_SRC.slice(appStart, appStart + 9000)).toContain('stampApprovalReason(metadata, approval)');
+  });
+
+  it('resolveConfidenceApproval consults the toggle before safety-kind and confidence', () => {
+    const start = GEN_SRC.indexOf('async function resolveConfidenceApproval');
+    expect(start).toBeGreaterThan(-1);
+    const body = GEN_SRC.slice(start, start + 1800);
+    const configIdx = body.indexOf('isConfiguredApprovalRequired(metadata)');
+    const safetyIdx = body.indexOf('safety.outwardFacing && requiresSafetyApproval');
+    expect(configIdx).toBeGreaterThan(-1);
+    expect(safetyIdx).toBeGreaterThan(configIdx);
+    expect(body).toContain("approvalReason: 'config:requireApproval'");
+  });
+});
+
+describe('both on-demand engines apply consent before addTask', () => {
+  // Run Now is the user's sign-off. Without this flip, a safety-kind or
+  // low-confidence type (release-check used to match `\brelease\b`) is
+  // persisted as APPROVAL, Priority 2 will not pick it, and force-spawn
+  // refuses it — so "Run Now" sits in awaiting-approve forever.
+  const engineBody = (src, engineFn) => {
+    const start = src.indexOf(engineFn);
+    expect(start, `${engineFn} must exist`).toBeGreaterThan(-1);
+    const next = src.indexOf('\nasync function ', start + 1);
+    return src.slice(start, next === -1 ? src.length : next);
+  };
+
+  it('evaluateTasks engine consents before canSpawn / addTask', () => {
+    const engine = engineBody(GEN_SRC, 'async function spawnPriority0OnDemand');
+    expect(engine.indexOf('applyOnDemandConsent(task)')).toBeGreaterThan(-1);
+    expect(engine.indexOf('applyOnDemandConsent(task)')).toBeLessThan(engine.indexOf('canSpawnTask(task)'));
+  });
+
+  it('dequeueNextTask engine consents before canSpawn / addTask', () => {
+    const engine = engineBody(COS_SRC, 'async function spawnDequeuePriority0OnDemand');
+    expect(engine.indexOf('applyOnDemandConsent(task)')).toBeGreaterThan(-1);
+    expect(engine.indexOf('applyOnDemandConsent(task)')).toBeLessThan(engine.indexOf('capacity.canSpawn(task)'));
+  });
+
+  it('idle-review steal path consents when it drains an on-demand request', () => {
+    const start = GEN_SRC.indexOf('async function generateManagedAppImprovementTask(app, state');
+    expect(start).toBeGreaterThan(-1);
+    const body = GEN_SRC.slice(start, start + 3500);
+    expect(body).toMatch(/selectionReason === 'on-demand'\) applyOnDemandConsent\(task\)/);
+  });
+});
+
+// #1650/#4520: a task this instance must not run — a live lease held by ANOTHER
+// instance, or a pin naming another instance — must be skipped during candidate
+// selection, BEFORE the engine emits `task:ready` + trackSpawn. Otherwise that
+// task (often the highest-priority pick) consumes this instance's spawn slot
+// every cycle (the spawn guard then returns null, spawning nothing) and starves
+// later runnable tasks. Both spawn engines (dequeueNextTask in cos.js,
+// evaluateTasks here) must apply it, in both their execute loops AND their
+// dry-run plan. `getSkipReason` answers both halves in one call.
+describe('not-runnable-here skip during candidate selection (#1650, #4520)', () => {
+  it('both engines import getSkipReason from the shared claim module', () => {
     expect(COS_SRC).toContain("from './cosTaskClaim.js'");
-    expect(COS_SRC).toMatch(/import\s*\{[^}]*isHeldByOther[^}]*\}\s*from\s*'\.\/cosTaskClaim\.js'/);
-    expect(GEN_SRC).toMatch(/import\s*\{[^}]*isHeldByOther[^}]*\}\s*from\s*'\.\/cosTaskClaim\.js'/);
+    expect(COS_SRC).toMatch(/import\s*\{[^}]*getSkipReason[^}]*\}\s*from\s*'\.\/cosTaskClaim\.js'/);
+    expect(GEN_SRC).toMatch(/import\s*\{[^}]*getSkipReason[^}]*\}\s*from\s*'\.\/cosTaskClaim\.js'/);
   });
 
   it('both engines resolve this instance id once per cycle via ensureInstanceId', () => {
@@ -183,18 +280,20 @@ describe('peer-claim skip during candidate selection (#1650)', () => {
     expect(GEN_SRC).toContain('const instanceId = await ensureInstanceId();');
   });
 
-  it('both engines skip peer-held tasks in their EXECUTE candidate loops', () => {
-    // Each engine must have the live-lease skip in BOTH the user-task and the
-    // auto-approved tiers — at least two execute-path skip sites per engine.
-    const cosSkips = COS_SRC.match(/if\s*\(isHeldByOther\(task\.metadata,\s*instanceId\)\)/g) || [];
-    const genSkips = GEN_SRC.match(/if\s*\(isHeldByOther\(task\.metadata,\s*instanceId\)\)/g) || [];
+  it('both engines skip not-runnable-here tasks in their EXECUTE candidate loops', () => {
+    // Each engine must have the skip in BOTH the user-task and the auto-approved
+    // tiers — at least two execute-path skip sites per engine.
+    const cosSkips = COS_SRC.match(/getSkipReason\(task\.metadata,\s*instanceId\);\n\s*if \(skipReason\)/g) || [];
+    const genSkips = GEN_SRC.match(/getSkipReason\(task\.metadata,\s*instanceId\);\n\s*if \(skipReason\)/g) || [];
     expect(cosSkips.length).toBeGreaterThanOrEqual(2);
     expect(genSkips.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('both engines pass heldByOther into their dry-run plan so it matches execute', () => {
-    expect(COS_SRC).toContain('heldByOther: (task) => isHeldByOther(task.metadata, instanceId)');
-    expect(GEN_SRC).toContain('heldByOther: (task) => isHeldByOther(task.metadata, instanceId)');
+  it('both engines pass notRunnableHere into their dry-run plan so it matches execute', () => {
+    // Covers BOTH reasons this instance passes over a task at spawn time: a
+    // peer's live lease (#1650) and a pin to another instance (#4520).
+    expect(COS_SRC).toContain('notRunnableHere: (task) => getSkipReason(task.metadata, instanceId) !== null');
+    expect(GEN_SRC).toContain('notRunnableHere: (task) => getSkipReason(task.metadata, instanceId) !== null');
   });
 });
 
@@ -258,24 +357,41 @@ describe('{reviewers} interpolation honors Code Review Defaults', () => {
   it('keeps local-LLM reviewers and appends their fail-closed invocation procedure', () => {
     expect(GEN_SRC).not.toContain('.filter((r) => !LOCAL_LLM_REVIEWERS.includes(r))');
     expect(GEN_SRC).toContain('buildReviewersCsv(promptReviewers, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels, promptReviewerEfforts)');
-    expect(GEN_SRC).toContain('appendLocalReviewerInstructions(promptTaskType, promptReviewers');
+    expect(GEN_SRC).toContain('buildLocalReviewerInstructions(promptReviewers');
+  });
+
+  it('keeps the reasoning-effort PROSE on every claim path (they emit no --review-with)', () => {
+    // `buildReviewerEffortNote` goes silent when it is handed a `--review-with`
+    // string carrying `~effort=<level>` — correct for a slashdo invocation, where
+    // the suffix already reaches the reviewer CLI. A claim prompt has no such
+    // invocation: the agent spawns each reviewer itself, so the CSV's suffix
+    // reaches no parser and the sentence is the pin's only route. No claim path
+    // may start passing `reviewWith` and mute itself.
+    // The models ride along because cursor's effort is a variant of its model id
+    // rather than a flag — without them a cursor pin would have no invocation to
+    // name (see `reviewerModelArg`).
+    expect(GEN_SRC).toContain('appendReviewerEffortBlock(reviewersList, promptReviewerEfforts, promptReviewerModels)');
+    expect(GEN_SRC).toContain('appendReviewerEffortBlock(list, reviewerEfforts, reviewerModels)');
+    expect(GEN_SRC).toContain('appendReviewerEffortBlock(promptReviewers, promptReviewerEfforts, promptReviewerModels)');
+    expect(GEN_SRC).not.toMatch(/buildReviewerEffortNote\([^)]*reviewWith/);
   });
 
   it('threads per-reviewer ~max round caps into the prompt CSV on both claim paths', () => {
-    // The `{reviewers}` token IS the flag string for the claim flows, so a
-    // configured cap only reaches slashdo if the CSV carries it. Both the
-    // scheduled path and buildClaimWorkTask resolve it with task-over-default
-    // precedence (unit-tested in validation.test.js).
+    // The `{reviewers}` token is the whole reviewer contract the claim agent
+    // gets — it runs each reviewer by hand, so a configured cap only reaches the
+    // run if the CSV carries it. Both the scheduled path and buildClaimWorkTask
+    // resolve it with task-over-default precedence (unit-tested in
+    // validation.test.js).
     expect(GEN_SRC).toContain('resolveReviewerMaxRounds(metadata.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds)');
     expect(GEN_SRC).toContain('resolveReviewerMaxRounds(reviewerMaxRounds ?? metadata.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds)');
     expect(GEN_SRC).toContain('buildReviewersCsv(reviewersList, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels, promptReviewerEfforts)');
   });
 
   it('threads per-reviewer model pins into the prompt CSV on both claim paths (#3133)', () => {
-    // Same argument as the caps above: `{reviewers}` IS the flag string for the
-    // claim flows, so a pinned model only reaches slashdo (as its `[<model>]`
-    // bracket) if the CSV carries it. Both paths resolve with task-over-default
-    // precedence off the Code Review Defaults' `<reviewer>Model` scalars.
+    // Same argument as the caps above: `{reviewers}` is the only place the claim
+    // prompt names a pinned model, so it only reaches the run if the CSV carries
+    // it. Both paths resolve with task-over-default precedence off the Code
+    // Review Defaults' `<reviewer>Model` scalars.
     //
     // All three prompt paths go through `resolveReviewerPins`, which resolves the
     // model map TOGETHER with the effort map and reconciles the two (#3728) — an
@@ -806,7 +922,7 @@ describe('selectDryRunAutoApproved', () => {
     const tasks = [task('1', { claimedBy: 'peer' }), task('2'), task('3', { claimedBy: 'peer' })];
     const out = await selectDryRunAutoApproved(tasks, {
       ...baseCtx,
-      heldByOther: (t) => t.metadata?.claimedBy === 'peer'
+      notRunnableHere: (t) => t.metadata?.claimedBy === 'peer'
     });
     expect(out.map(t => t.id)).toEqual(['2']);
   });
@@ -818,7 +934,7 @@ describe('selectDryRunAutoApproved', () => {
     const out = await selectDryRunAutoApproved(tasks, {
       ...baseCtx,
       perProjectLimit: 1,
-      heldByOther: (t) => t.metadata?.claimedBy === 'peer'
+      notRunnableHere: (t) => t.metadata?.claimedBy === 'peer'
     });
     expect(out.map(t => t.id)).toEqual(['2']);
   });

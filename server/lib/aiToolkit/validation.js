@@ -86,6 +86,10 @@ export const providerSchema = z.object({
   // Per-request context window (Ollama num_ctx). Lifts the ~4K default so long
   // prompts (e.g. a whole manuscript) aren't silently truncated. Null = unset.
   numCtx: z.number().int().min(512).max(1048576).nullable().optional(),
+  // Ollama generation controls. These are provider-level so the same local
+  // model keeps its defaults across API, CLI, and TUI launchers.
+  temperature: z.number().min(0).max(2).optional(),
+  thinking: z.boolean().optional(),
   // Planning-time context window (tokens) the editorial budgeter may assume for
   // this provider — distinct from numCtx (what we *ask Ollama for*). For cloud
   // providers numCtx stays null and this reflects the model's real ceiling.
@@ -100,6 +104,13 @@ export const providerSchema = z.object({
   // server. This is intentionally distinct from `ollamaBacked`: model weights
   // and runtime protocol configuration are not interchangeable.
   mtplxBacked: z.boolean().optional(),
+  // Marks an OpenCode CLI/TUI wrapper for a separately started local llama.cpp
+  // server (e.g. DFlash 2 speculative decoding).
+  llamaBacked: z.boolean().optional(),
+  // Marks an OpenCode CLI/TUI wrapper for the OrcaRouter OpenAI-compatible
+  // gateway. Its API key is read from the sibling `orcarouter` API record at
+  // spawn/refresh time and is never stored in this wrapper's config.
+  orcarouterBacked: z.boolean().optional(),
   // Explicit opt-in to attach the provider's API key to an arbitrary
   // (non-local, non-allowlisted) endpoint. Guards against SSRF / key
   // exfiltration to a hostile or mistyped host — see
@@ -108,7 +119,8 @@ export const providerSchema = z.object({
   envVars: z.record(z.string()).optional(),
   secretEnvVars: z.array(z.string()).optional(),
   headlessArgs: z.array(z.string()).optional(),
-  tuiPromptDelayMs: z.number().int().min(250).max(60000).optional()
+  tuiPromptDelayMs: z.number().int().min(250).max(60000).optional(),
+  tuiIdleTimeoutMs: z.number().int().min(1000).max(86400000).optional()
 });
 
 // PUT /api/providers/active — set the active provider by id. Constrain to the

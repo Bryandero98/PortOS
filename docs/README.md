@@ -34,13 +34,13 @@ Start with the [product surface map](./features/product-surfaces.md) for a compl
 
 App management: [app-wizard](./features/app-wizard.md) · [autofixer](./features/autofixer.md) · [browser](./features/browser.md) · [error-handling](./features/error-handling.md) · [jira-sprint-manager](./features/jira-sprint-manager.md)
 
-Chief of Staff: [chief-of-staff](./features/chief-of-staff.md) · [cos-agent-runner](./features/cos-agent-runner.md) · [cos-enhancement](./features/cos-enhancement.md) · [agent-context](./features/agent-context.md) · [agent-skills](./features/agent-skills.md) · [memory-system](./features/memory-system.md) · [claude-ollama](./features/claude-ollama.md) · [mtplx](./features/mtplx.md) · [prompt-manager](./features/prompt-manager.md)
+Chief of Staff: [chief-of-staff](./features/chief-of-staff.md) · [cos-agent-runner](./features/cos-agent-runner.md) · [cos-enhancement](./features/cos-enhancement.md) · [agent-context](./features/agent-context.md) · [agent-skills](./features/agent-skills.md) · [memory-system](./features/memory-system.md) · [claude-ollama](./features/claude-ollama.md) · [mtplx](./features/mtplx.md) · [dflash2](./features/dflash2.md) · [prompt-manager](./features/prompt-manager.md)
 
-Identity & self: [digital-twin](./features/digital-twin.md) · [identity-system](./features/identity-system.md) · [soul-system](./features/soul-system.md) · [post](./features/post.md) (insights design spike: [plans/2026-06-03](./plans/2026-06-03-cross-domain-insights-engine.md))
+Identity & self: [digital-twin](./features/digital-twin.md) · [identity-system](./features/identity-system.md) · [soul-system](./features/soul-system.md) · [privacy-center](./features/privacy-center.md) · [post](./features/post.md) (insights design spike: [plans/2026-06-03](./plans/2026-06-03-cross-domain-insights-engine.md))
 
 Knowledge: [brain-system](./features/brain-system.md) · [messages-security](./features/messages-security.md)
 
-Create: [writers-room](./features/writers-room.md) · [cybercity-v2](./features/cybercity-v2.md) · [sprite-export-contract](./features/sprite-export-contract.md) · [video-text-encoders](./features/video-text-encoders.md)
+Create: [writers-room](./features/writers-room.md) · [openworld](./features/openworld.md) · [sprite-export-contract](./features/sprite-export-contract.md) · [video-text-encoders](./features/video-text-encoders.md)
 
 Comms & voice: [openclaw-operator-chat](./features/openclaw-operator-chat.md) ([pre-build audit](./research/2026-03-31-openclaw-operator-chat-audit.md)) · [stacker-news](./features/stacker-news.md) · [voice](./features/voice.md)
 
@@ -55,5 +55,5 @@ Comms & voice: [openclaw-operator-chat](./features/openclaw-operator-chat.md) ([
 
 - **[themes/](./themes/README.md)** — UI theme specs and the theme integration contract.
 - **[examples/](./examples/README.md)** — copy-ready config examples (e.g. Claude Code → Ollama settings).
-- **[`.changelog/README.md`](../.changelog/README.md)** — how to write an unreleased changelog fragment (`npm run changelog:add`).
+- **[`.changelog/README.md`](../.changelog/README.md)** — how `/do:release` synthesizes release notes from the commit log, and the versioned-file format.
 - **media/** — screenshots and logo used by the root README.

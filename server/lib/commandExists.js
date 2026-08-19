@@ -25,5 +25,12 @@ export async function commandExists(cmd, args = ['--version'], { timeoutMs = 5_0
     ...(env === undefined ? {} : { env }),
     ...(cwd === undefined ? {} : { cwd }),
   };
-  return execFileAsync(cmd, args, options).then(() => true).catch(() => false);
+  // Some spawn failures (notably ENOEXEC for a broken text shim on macOS)
+  // are thrown synchronously by the child-process wrapper before it can
+  // return a promise. Start the call in a microtask so those failures follow
+  // the same false result as an ordinary rejected execFile promise.
+  return Promise.resolve()
+    .then(() => execFileAsync(cmd, args, options))
+    .then(() => true)
+    .catch(() => false);
 }

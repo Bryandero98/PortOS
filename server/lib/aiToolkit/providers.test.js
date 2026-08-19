@@ -37,6 +37,14 @@ describe('Provider Service', () => {
     expect(provider.type).toBe('cli');
   });
 
+  it('persists Ollama generation controls when creating a provider', async () => {
+    const provider = await providerService.createProvider({
+      name: 'Local Ollama', type: 'cli', command: 'opencode', ollamaBacked: true,
+      temperature: 0.6, thinking: false,
+    });
+    expect(provider).toMatchObject({ temperature: 0.6, thinking: false });
+  });
+
   it('should get all providers', async () => {
     await providerService.createProvider({
       name: 'Test Provider 1',
@@ -587,11 +595,51 @@ describe('Provider Service', () => {
       const antigravity = await providerService.getProviderById('antigravity-cli');
       expect(antigravity.models.length).toBeGreaterThan(1);
       expect(antigravity.models[0]).toBe('antigravity-configured-default');
+      expect(antigravity.models).toContain('gemini-3.7-flash-high');
       expect(antigravity.models).toContain('claude-sonnet-4-6');
       // The *Model keys are untouched: an install that never picks a model keeps
       // agy's own configured default (no --model flag), exactly as before.
       expect(antigravity.defaultModel).toBe('antigravity-configured-default');
       expect(antigravity.lightModel).toBe('antigravity-configured-default');
+    });
+
+    it('upgrades a prior-seeded Antigravity model list to include Gemini 3.7 models', async () => {
+      const priorModels = [
+        'antigravity-configured-default',
+        'gemini-3.6-flash-high',
+        'gemini-3.6-flash-medium',
+        'gemini-3.6-flash-low',
+        'gemini-3.5-flash-high',
+        'gemini-3.5-flash-medium',
+        'gemini-3.5-flash-low',
+        'gemini-3.1-pro-high',
+        'gemini-3.1-pro-low',
+        'claude-sonnet-4-6',
+        'claude-opus-4-6-thinking',
+        'gpt-oss-120b-medium',
+      ];
+      await writeProvidersFile({
+        activeProvider: 'antigravity-cli',
+        providers: {
+          'antigravity-cli': {
+            id: 'antigravity-cli',
+            name: 'Antigravity CLI',
+            type: 'cli',
+            command: 'agy',
+            contextWindow: 1048576,
+            models: [...priorModels],
+            defaultModel: 'antigravity-configured-default',
+            lightModel: 'antigravity-configured-default'
+          }
+        }
+      });
+
+      const antigravity = await providerService.getProviderById('antigravity-cli');
+      expect(antigravity.models).toContain('gemini-3.7-flash-high');
+      expect(antigravity.models).toContain('gemini-3.7-flash-medium');
+      expect(antigravity.models).toContain('gemini-3.7-flash-low');
+      expect(antigravity.models).toContain('gemini-3.6-flash-high');
+      expect(antigravity.defaultModel).toBe('antigravity-configured-default');
     });
 
     // A failed `agy models` probe must be distinguishable from a real fetch.
@@ -1206,6 +1254,52 @@ describe('Provider Service', () => {
       for (const [url] of fetchSpy.mock.calls) {
         expect(url).toBe('http://127.0.0.1:8000/v1/models');
       }
+    });
+  });
+
+  describe('OrcaRouter model refresh and sibling-key resolution', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('uses the sibling API key for OpenCode CLI/TUI model refresh without persisting it on wrappers', async () => {
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: 'orcarouter/auto' }, { id: 'anthropic/claude-sonnet-4.6' }] }),
+      });
+      vi.stubGlobal('fetch', fetchSpy);
+
+      await providerService.createProvider({
+        id: 'orcarouter',
+        name: 'OrcaRouter',
+        type: 'api',
+        endpoint: 'https://api.orcarouter.ai/v1',
+        apiKey: 'sk-orca-example',
+      });
+      const wrapper = await providerService.createProvider({
+        id: 'opencode-orcarouter',
+        name: 'OpenCode OrcaRouter',
+        type: 'cli',
+        command: 'opencode',
+        endpoint: 'https://api.orcarouter.ai/v1',
+        orcarouterBacked: true,
+        models: ['orcarouter/auto'],
+      });
+
+      const resolved = await providerService.getProviderById(wrapper.id);
+      expect(resolved.apiKey).toBe('sk-orca-example');
+      expect(Object.keys(resolved)).not.toContain('apiKey');
+
+      const updated = await providerService.refreshProviderModels(wrapper.id);
+      expect(updated.models).toEqual(['orcarouter/auto', 'anthropic/claude-sonnet-4.6']);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'https://api.orcarouter.ai/v1/models',
+        expect.objectContaining({ headers: { Authorization: 'Bearer sk-orca-example' } }),
+      );
+
+      const stored = (await providerService.getAllProviders()).providers.find(p => p.id === wrapper.id);
+      expect(stored.apiKey).toBe('');
+      expect(stored.models).toEqual(['orcarouter/auto', 'anthropic/claude-sonnet-4.6']);
     });
   });
 

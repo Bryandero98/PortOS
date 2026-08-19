@@ -347,7 +347,7 @@ describe('unreachableReviewerIncludes', () => {
   });
 
   it('maps every CLI reviewer onto the one shared local-agent loop', () => {
-    for (const slug of ['claude', 'codex', 'antigravity', 'grok']) {
+    for (const slug of ['claude', 'codex', 'antigravity', 'grok', 'cursor']) {
       expect(unreachableReviewerIncludes({ reviewers: [slug] }))
         .not.toContain(SLASHDO_REVIEWER_INCLUDES.localAgent);
     }

@@ -2,7 +2,14 @@ import { describe, it, expect } from 'vitest';
 import {
   ABILITY_ADAPTERS, getAbilityAdapter, buildCommissionDirective, buildRenderBackendPin,
 } from './abilityAdapters.js';
-import { CREATIVE_COMMISSION_ABILITIES, ABILITY_GENERATION_SPEC } from '../../lib/creativeCommissionValidation.js';
+import {
+  CREATIVE_COMMISSION_ABILITIES, ABILITY_GENERATION_SPEC,
+  COMMISSION_INTENT_MAX, COMMISSION_STYLE_SPEC_MAX, COMMISSION_BRIEF_TAG_MAX,
+} from '../../lib/creativeCommissionValidation.js';
+import { MAX_DIRECTIVE_GOAL_LEN } from './directive.js';
+import { buildVideoPromptGuidance, isMiniMaxVideoModel } from './videoPromptGuidance.js';
+
+const MAXED_INTENT = 'x'.repeat(COMMISSION_INTENT_MAX);
 
 describe('ability adapter registry', () => {
   it('has an adapter for every supported ability (and no extras)', () => {
@@ -33,7 +40,8 @@ describe('buildCommissionDirective — video (unchanged brief/feedback fold)', (
     expect(directive.goal).toContain('Genre: surrealism.');
     expect(directive.goal).toContain('Style: flat color, Magritte.');
     expect(directive.deliverables).toEqual(['One rendered video matching the brief']);
-    expect(directive.constraints).toEqual({ universeId: 'u-123' });
+    expect(directive.constraints).toMatchObject({ universeId: 'u-123', targetAbility: 'video' });
+    expect(directive.constraints.generation).toMatchObject({ quality: 'standard', videoMode: 'auto' });
   });
 
   it('folds recent feedback into the goal', () => {
@@ -47,30 +55,124 @@ describe('buildCommissionDirective — video (unchanged brief/feedback fold)', (
     expect(directive.goal).toContain('Recent dislikes: less horror.');
   });
 
-  it('omits absent constraints', () => {
-    expect(buildCommissionDirective({ targetAbility: 'video', brief: { intent: 'x' } }).constraints).toEqual({});
+  it('always carries the selected output and sanitized generation starting point', () => {
+    expect(buildCommissionDirective({ targetAbility: 'video', brief: { intent: 'x' } }).constraints)
+      .toMatchObject({ targetAbility: 'video', generation: { quality: 'standard', videoMode: 'auto' } });
   });
 
-  it('clamps the goal under the CD 5000-char cap with a large feedback window + long notes', () => {
+  it('clamps the goal under the directive cap with a large feedback window + long notes', () => {
     const feedback = Array.from({ length: 50 }, (_, i) => ({ rating: i % 2 === 0 ? 'up' : 'down', note: 'z'.repeat(1000) }));
     const directive = buildCommissionDirective({ targetAbility: 'video', brief: { intent: 'surreal' }, feedback, feedbackWindow: 50 });
-    expect(directive.goal.length).toBeLessThanOrEqual(4500);
+    expect(directive.goal.length).toBeLessThanOrEqual(MAX_DIRECTIVE_GOAL_LEN);
   });
 
   it('keeps the feedback digest even when the brief text is very long', () => {
     const directive = buildCommissionDirective({
       targetAbility: 'video',
-      brief: { intent: 'x'.repeat(2000), styleSpec: 'y'.repeat(3000) },
+      brief: { intent: 'x'.repeat(COMMISSION_INTENT_MAX * 2), styleSpec: 'y'.repeat(COMMISSION_STYLE_SPEC_MAX * 2) },
       feedback: [{ rating: 'down', note: 'less horror' }],
       feedbackWindow: 5,
     });
-    expect(directive.goal.length).toBeLessThanOrEqual(4500);
+    expect(directive.goal.length).toBeLessThanOrEqual(MAX_DIRECTIVE_GOAL_LEN);
     expect(directive.goal).toContain('Recent dislikes: less horror.');
   });
 
   it('falls back to the video adapter for an unknown ability', () => {
     const directive = buildCommissionDirective({ targetAbility: 'hologram', brief: { intent: 'x' } });
     expect(directive.goal).toContain('Create a short-form video piece.');
+  });
+
+  it('adds the generic shot recipe and MiniMax guidance for the selected model', () => {
+    const directive = buildCommissionDirective({
+      targetAbility: 'video',
+      brief: { intent: 'a courier crosses a rainy plaza' },
+      generation: { videoModelId: 'minimax_h3_8bit' },
+    });
+    expect(directive.goal).toContain('beginning, middle, and end');
+    expect(directive.goal).toContain('master timeline plus timestamped micro-beats');
+    expect(directive.goal).toContain('7000 characters');
+  });
+
+  it('keeps model-specific guidance off the generic path while retaining the shot recipe', () => {
+    expect(isMiniMaxVideoModel('ltx-2.5')).toBe(false);
+    expect(buildVideoPromptGuidance('ltx-2.5')).toContain('production-ready prompt');
+    expect(buildVideoPromptGuidance('ltx-2.5')).not.toContain('[Tracking shot]');
+  });
+
+  // A brief filled to the SCHEMA caps is the largest one a route or PATCH can
+  // store, so the system prefix AND the user's own words must both survive it:
+  // the clamp drops the tail, and the guidance is prepended, so an under-sized
+  // MAX_DIRECTIVE_GOAL_LEN would silently eat the brief instead of erroring.
+  it('carries a brief filled to the schema caps AND the MiniMax recipe', () => {
+    const intent = 'x'.repeat(COMMISSION_INTENT_MAX);
+    const styleSpec = 'y'.repeat(COMMISSION_STYLE_SPEC_MAX);
+    const directive = buildCommissionDirective({
+      targetAbility: 'video',
+      brief: { intent, styleSpec, genre: 'g'.repeat(COMMISSION_BRIEF_TAG_MAX), category: 'c'.repeat(COMMISSION_BRIEF_TAG_MAX) },
+      feedback: Array.from({ length: 50 }, (_, i) => ({ rating: i % 2 === 0 ? 'up' : 'down', note: 'z'.repeat(1000) })),
+      feedbackWindow: 50,
+      generation: { videoModelId: 'minimax_h3_cuda' },
+    });
+    expect(directive.goal).toContain('MiniMax H3 prompt template');
+    expect(directive.goal).toContain(intent);
+    expect(directive.goal).toContain(styleSpec);
+  });
+
+  it('uses the install default model when choosing model-specific guidance', () => {
+    const directive = buildCommissionDirective(
+      { targetAbility: 'video', brief: { intent: 'a quiet harbor' } },
+      { defaultVideoModelId: () => 'minimax_h3_8bit' },
+    );
+    expect(directive.goal).toContain('MiniMax H3 prompt template');
+  });
+
+  it('does not apply local-model guidance to a Grok-pinned commission', () => {
+    const directive = buildCommissionDirective(
+      { targetAbility: 'video', brief: { intent: 'a quiet harbor' }, generation: { videoMode: 'grok' } },
+      { defaultVideoModelId: () => 'minimax_h3_8bit' },
+    );
+    expect(directive.goal).not.toContain('MiniMax H3 prompt template');
+    expect(directive.goal).toContain('production-ready prompt');
+  });
+
+  it('honors the resolved settings-level cloud backend for auto mode', () => {
+    const directive = buildCommissionDirective(
+      { targetAbility: 'video', brief: { intent: 'a quiet harbor' } },
+      { defaultVideoModelId: () => 'minimax_h3_8bit', effectiveVideoMode: 'grok' },
+    );
+    expect(directive.goal).not.toContain('MiniMax H3 prompt template');
+  });
+
+  it('uses the resolved creative-agent target model before the install default', () => {
+    const directive = buildCommissionDirective(
+      { targetAbility: 'video', brief: { intent: 'a quiet harbor' } },
+      { defaultVideoModelId: () => 'ltx-2.5', effectiveVideoModelId: 'minimax_h3_8bit' },
+    );
+    expect(directive.goal).toContain('MiniMax H3 prompt template');
+  });
+
+  it('uses the resolved target model for auto mode even when the commission has a stale model', () => {
+    const directive = buildCommissionDirective(
+      {
+        targetAbility: 'video',
+        brief: { intent: 'a quiet harbor' },
+        generation: { videoMode: 'auto', videoModelId: 'minimax_h3_8bit' },
+      },
+      { effectiveVideoMode: 'local', effectiveVideoModelId: 'ltx-2.5' },
+    );
+    expect(directive.goal).not.toContain('MiniMax H3 prompt template');
+  });
+
+  it('keeps an explicitly pinned local commission model ahead of the target default', () => {
+    const directive = buildCommissionDirective(
+      {
+        targetAbility: 'video',
+        brief: { intent: 'a quiet harbor' },
+        generation: { videoMode: 'local', videoModelId: 'minimax_h3_8bit' },
+      },
+      { effectiveVideoMode: 'local', effectiveVideoModelId: 'ltx-2.5' },
+    );
+    expect(directive.goal).toContain('MiniMax H3 prompt template');
   });
 });
 
@@ -98,7 +200,8 @@ describe('per-ability directives steer the planner to the right tools', () => {
   it('music: preserves taste anchors and original-work constraints under the goal cap', () => {
     const d = buildCommissionDirective({
       targetAbility: 'music',
-      brief: { intent: 'x'.repeat(2000), styleSpec: 'y'.repeat(5000) },
+      // A brief filled to the schema caps — the largest a route or PATCH can store.
+      brief: { intent: MAXED_INTENT, styleSpec: 'y'.repeat(COMMISSION_STYLE_SPEC_MAX) },
       generation: { lengthSeconds: 45 },
     }, {
       tasteRecipe: {
@@ -108,7 +211,8 @@ describe('per-ability directives steer the planner to the right tools', () => {
         sourceVersion: 'music-taste-v1:example', sourceHash: 'example-hash',
       },
     });
-    expect(d.goal.length).toBeLessThanOrEqual(4500);
+    expect(d.goal.length).toBeLessThanOrEqual(MAX_DIRECTIVE_GOAL_LEN);
+    expect(d.goal).toContain(MAXED_INTENT);
     expect(d.goal).toContain('Example Artist');
     expect(d.goal).toContain('Create an original work');
     expect(d.goal).toContain('do not reproduce source tracks');
@@ -124,7 +228,7 @@ describe('per-ability directives steer the planner to the right tools', () => {
     const withU = buildCommissionDirective({ targetAbility: 'series', brief: { intent: 'noir', constraints: { universeId: 'u-9' } }, generation: { episodeCount: 2 } });
     expect(withU.goal).toContain('Create the series within the provided universe');
     expect(withU.goal).toContain('first 2 issues/episodes');
-    expect(withU.constraints).toEqual({ universeId: 'u-9' });
+    expect(withU.constraints).toMatchObject({ universeId: 'u-9', targetAbility: 'series', generation: { episodeCount: 2 } });
 
     const noU = buildCommissionDirective({ targetAbility: 'series', brief: { intent: 'noir' }, generation: { episodeCount: 1 } });
     expect(noU.goal).toContain('Invent a fitting universe');
@@ -136,7 +240,7 @@ describe('sanitizeGeneration — fills defaults and preserves only the type keys
     const g = getAbilityAdapter('video').sanitizeGeneration({ quality: 'high', aspectRatio: '9:16', targetDurationSeconds: 20, imageCount: 5, model: ' ltx ' });
     expect(g).toEqual({
       model: 'ltx', quality: 'high', aspectRatio: '9:16', targetDurationSeconds: 20,
-      videoMode: 'auto', videoModelId: null,
+      durationMode: 'manual', videoMode: 'auto', videoModelId: null,
     });
   });
 
@@ -173,6 +277,13 @@ describe('buildProjectParams — every type yields well-formed render settings',
     expect(p).toEqual({ aspectRatio: '1:1', quality: 'draft', modelId: 'ltx-default', targetDurationSeconds: 15 });
   });
 
+  it('lets the Creative Director choose the video length in auto mode', () => {
+    const commission = { targetAbility: 'video', generation: { durationMode: 'auto' }, brief: { intent: 'a drifting city' } };
+    const p = getAbilityAdapter('video').buildProjectParams(commission, ctx);
+    expect(p.targetDurationSeconds).toBe(10);
+    expect(buildCommissionDirective(commission).goal).toMatch(/choose an appropriate duration between 5 and 600 seconds/i);
+  });
+
   it('the pinned local video model becomes the project model', () => {
     // `project.modelId` is what the CD planner prompt reports to the LLM and what
     // the teaser tool inherits, so a videoModelId that stopped at
@@ -194,6 +305,11 @@ describe('buildProjectParams — every type yields well-formed render settings',
       expect(p.modelId).toBe('ltx-default');
       expect(typeof p.targetDurationSeconds).toBe('number');
     }
+  });
+
+  it('carries the music form length onto the owning project', () => {
+    const p = getAbilityAdapter('music').buildProjectParams({ generation: { lengthSeconds: 75 } }, ctx);
+    expect(p.targetDurationSeconds).toBe(75);
   });
 });
 

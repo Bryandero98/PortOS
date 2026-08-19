@@ -36,6 +36,14 @@ const styleByWords = new Map(FEDERATED_AUDIO_STYLES.map((value) => [words(value)
 const instrumentByWords = new Map(FEDERATED_AUDIO_INSTRUMENTS.map((value) => [words(value), value]));
 const AUDIO_PROMPT_RE = /^Instrumental ([a-z ]+) music with a ([a-z]+) mood, (slow|moderate|fast) tempo, (low|medium|high) energy(?:, featuring ([a-z ]+(?: and [a-z ]+){0,5}))?\. No vocals or spoken words\.$/;
 
+/**
+ * Render a validated audio profile into a canonical prompt string.
+ * Free-form text cannot cross the federation boundary (PII safety); consumers
+ * send validated enum profiles, which this function formats into deterministic prompt prose.
+ *
+ * @param {object} profile - Audio profile conforming to federatedMediaAudioProfileSchema.
+ * @returns {string|null} Canonical prompt string, or null if profile fails validation.
+ */
 export function renderFederatedMediaAudioPrompt(profile) {
   const parsed = federatedMediaAudioProfileSchema.safeParse(profile);
   if (!parsed.success) return null;
@@ -46,10 +54,15 @@ export function renderFederatedMediaAudioPrompt(profile) {
   return `Instrumental ${words(style)} music with a ${mood} mood, ${tempo} tempo, ${energy} energy${instrumentation}. No vocals or spoken words.`;
 }
 
-// Provider-side validation receives only the rendered text (not the local
-// profile) so older wire-v1 providers can still accept newer consumers. Parse
-// the canonical grammar back into fixed tokens and require an exact round trip;
-// arbitrary prose, names, lyrics, and redaction-sensitive fields fail closed.
+/**
+ * Validate that a prompt string conforms to the canonical federated audio grammar.
+ * Provider-side validation receives only the rendered text (not the local profile)
+ * so older wire-v1 providers can accept newer consumers. Parses the canonical grammar
+ * back into fixed tokens and requires an exact round trip.
+ *
+ * @param {any} value - Input string to test.
+ * @returns {boolean} True if input is a valid federated audio prompt string.
+ */
 export function isFederatedMediaAudioPrompt(value) {
   if (typeof value !== 'string') return false;
   const match = AUDIO_PROMPT_RE.exec(value);

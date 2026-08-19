@@ -12,8 +12,11 @@ vi.mock('./MusicGenPanel', () => ({ default: (props) => {
   return <div data-testid="gen-panel" />;
 } }));
 vi.mock('./ChiptunePanel', () => ({ default: () => <div data-testid="chiptune-panel" /> }));
-vi.mock('./TrackRenderCard', () => ({ default: ({ render: item, onRemix }) => (
-  <button type="button" data-testid="render-card" onClick={() => onRemix(item)}>Remix {item.id}</button>
+vi.mock('./TrackRenderCard', () => ({ default: ({ render: item, onRemix, onSendToVideo }) => (
+  <>
+    <button type="button" data-testid="render-card" onClick={() => onRemix(item)}>Remix {item.id}</button>
+    <button type="button" data-testid="send-to-video" onClick={() => onSendToVideo(item)}>Audio → Video {item.id}</button>
+  </>
 ) }));
 vi.mock('./TrackRenderModal', () => ({ default: () => null }));
 vi.mock('../songs/MidiVisualization.jsx', () => ({
@@ -53,6 +56,7 @@ const renderAt = (id) => render(
     <Routes>
       <Route path="/music/tracks/:id" element={<TracksManager />} />
       <Route path="/music/generate/:step" element={<LocationDisplay />} />
+      <Route path="/media/video" element={<LocationDisplay />} />
     </Routes>
   </MemoryRouter>,
 );
@@ -231,6 +235,24 @@ describe('<TracksManager> generative workflow hand-off', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remix render-legacy' }));
     await waitFor(() => expect(musicGenProps.current?.remix?.nonce).toBe(2));
     expect(musicGenProps.current.remix).not.toHaveProperty('instrumentalOnly');
+  });
+});
+
+describe('<TracksManager> Audio-to-Video hand-off', () => {
+  beforeEach(() => {
+    listTracks.mockResolvedValue([{ ...TRACK, renders: [{ id: 'render-1', audioFilename: 'example take.mp3' }] }]);
+    listAlbums.mockResolvedValue([]);
+    listMusicVideoProjects.mockResolvedValue([]);
+  });
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it('deep-links the selected render into the Media Gen Audio-to-Video form', async () => {
+    renderAt('track-1');
+    fireEvent.click(await screen.findByTestId('send-to-video'));
+    expect(screen.getByTestId('location')).toHaveTextContent('/media/video?mode=a2v&audioFilename=example%20take.mp3');
   });
 });
 

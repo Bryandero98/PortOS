@@ -47,6 +47,8 @@
       "models": [],
       "defaultModel": null,
       "ollamaBacked": true,
+      "temperature": 0.6,
+      "thinking": true,
       "timeout": 600000,
       "enabled": false,
       "envVars": {
@@ -66,6 +68,8 @@
       "models": [],
       "defaultModel": null,
       "ollamaBacked": true,
+      "temperature": 0.6,
+      "thinking": true,
       "timeout": 600000,
       "enabled": false,
       "envVars": {
@@ -146,6 +150,78 @@
       "secretEnvVars": [],
       "tuiPromptDelayMs": 2500
     },
+    "opencode-llama-tui": {
+      "id": "opencode-llama-tui",
+      "name": "OpenCode llama TUI",
+      "type": "tui",
+      "command": "opencode",
+      "args": [],
+      "endpoint": "http://127.0.0.1:8080/v1",
+      "models": ["dflash", "qwen3.8-27b-dflash2", "Muse-Glimmer-30B-DFlash2"],
+      "defaultModel": "dflash",
+      "llamaBacked": true,
+      "timeout": 600000,
+      "enabled": true,
+      "envVars": {
+        "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"allow\",\"provider\":{\"llama\":{\"npm\":\"@ai-sdk/openai-compatible\",\"name\":\"llama.cpp (local)\",\"options\":{\"baseURL\":\"http://127.0.0.1:8080/v1\"}}}}"
+      },
+      "secretEnvVars": [],
+      "tuiPromptDelayMs": 2500,
+      "tuiIdleTimeoutMs": 180000
+    },
+    "orcarouter": {
+      "id": "orcarouter",
+      "name": "OrcaRouter",
+      "type": "api",
+      "endpoint": "https://api.orcarouter.ai/v1",
+      "apiKey": "",
+      "models": ["orcarouter/auto"],
+      "defaultModel": "orcarouter/auto",
+      "lightModel": "orcarouter/auto",
+      "mediumModel": "orcarouter/auto",
+      "heavyModel": "orcarouter/auto",
+      "timeout": 300000,
+      "enabled": false,
+      "envVars": {},
+      "secretEnvVars": []
+    },
+    "opencode-orcarouter": {
+      "id": "opencode-orcarouter",
+      "name": "OpenCode OrcaRouter",
+      "type": "cli",
+      "command": "opencode",
+      "args": ["run"],
+      "endpoint": "https://api.orcarouter.ai/v1",
+      "models": ["orcarouter/auto"],
+      "defaultModel": "orcarouter/auto",
+      "orcarouterBacked": true,
+      "timeout": 600000,
+      "enabled": false,
+      "envVars": {
+        "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"allow\",\"provider\":{\"orcarouter\":{\"npm\":\"@ai-sdk/openai-compatible\",\"name\":\"OrcaRouter\",\"options\":{\"baseURL\":\"https://api.orcarouter.ai/v1\"}}}}"
+      },
+      "secretEnvVars": [],
+      "headlessArgs": []
+    },
+    "opencode-orcarouter-tui": {
+      "id": "opencode-orcarouter-tui",
+      "name": "OpenCode OrcaRouter TUI",
+      "type": "tui",
+      "command": "opencode",
+      "args": [],
+      "endpoint": "https://api.orcarouter.ai/v1",
+      "models": ["orcarouter/auto"],
+      "defaultModel": "orcarouter/auto",
+      "orcarouterBacked": true,
+      "timeout": 600000,
+      "enabled": false,
+      "envVars": {
+        "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"allow\",\"provider\":{\"orcarouter\":{\"npm\":\"@ai-sdk/openai-compatible\",\"name\":\"OrcaRouter\",\"options\":{\"baseURL\":\"https://api.orcarouter.ai/v1\"}}}}"
+      },
+      "secretEnvVars": [],
+      "tuiPromptDelayMs": 2500,
+      "tuiIdleTimeoutMs": 180000
+    },
     "codex": {
       "id": "codex",
       "name": "Codex CLI",
@@ -221,7 +297,7 @@
       "type": "tui",
       "command": "agy",
       "args": ["--dangerously-skip-permissions"],
-      "models": ["antigravity-configured-default","gemini-3.6-flash-high","gemini-3.6-flash-medium","gemini-3.6-flash-low","gemini-3.5-flash-high","gemini-3.5-flash-medium","gemini-3.5-flash-low","gemini-3.1-pro-high","gemini-3.1-pro-low","claude-sonnet-4-6","claude-opus-4-6-thinking","gpt-oss-120b-medium"],
+      "models": ["antigravity-configured-default","gemini-3.7-flash-high","gemini-3.7-flash-medium","gemini-3.7-flash-low","gemini-3.6-flash-high","gemini-3.6-flash-medium","gemini-3.6-flash-low","gemini-3.5-flash-high","gemini-3.5-flash-medium","gemini-3.5-flash-low","gemini-3.1-pro-high","gemini-3.1-pro-low","claude-sonnet-4-6","claude-opus-4-6-thinking","gpt-oss-120b-medium"],
       "defaultModel": "antigravity-configured-default",
       "lightModel": "antigravity-configured-default",
       "mediumModel": "antigravity-configured-default",
@@ -239,7 +315,7 @@
       "type": "cli",
       "command": "agy",
       "args": ["--print", "--dangerously-skip-permissions"],
-      "models": ["antigravity-configured-default","gemini-3.6-flash-high","gemini-3.6-flash-medium","gemini-3.6-flash-low","gemini-3.5-flash-high","gemini-3.5-flash-medium","gemini-3.5-flash-low","gemini-3.1-pro-high","gemini-3.1-pro-low","claude-sonnet-4-6","claude-opus-4-6-thinking","gpt-oss-120b-medium"],
+      "models": ["antigravity-configured-default","gemini-3.7-flash-high","gemini-3.7-flash-medium","gemini-3.7-flash-low","gemini-3.6-flash-high","gemini-3.6-flash-medium","gemini-3.6-flash-low","gemini-3.5-flash-high","gemini-3.5-flash-medium","gemini-3.5-flash-low","gemini-3.1-pro-high","gemini-3.1-pro-low","claude-sonnet-4-6","claude-opus-4-6-thinking","gpt-oss-120b-medium"],
       "defaultModel": "antigravity-configured-default",
       "lightModel": "antigravity-configured-default",
       "mediumModel": "antigravity-configured-default",
@@ -303,6 +379,8 @@
       "type": "api",
       "endpoint": "http://localhost:11434/v1",
       "apiKey": "",
+      "temperature": 0.6,
+      "thinking": true,
       "models": [],
       "defaultModel": null,
       "timeout": 300000,

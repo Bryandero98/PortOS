@@ -57,6 +57,7 @@ const {
   mergeCommissionsFromSync,
   pruneTombstonedCommissions,
   commissionStore,
+  MAX_RUN_PROMPT_LEN,
   ERR_VALIDATION,
   ERR_NOT_FOUND,
 } = await import('./store.js');
@@ -307,6 +308,18 @@ describe('recordCommissionRun', () => {
     expect(after.runs[0].id).toMatch(/^run-/);
   });
 
+  // The directive goal now carries a full instruction set, but a run's copy of it
+  // is an excerpt: it is retained MAX_PERSISTED_RUNS deep in a record rewritten
+  // whole on every mutation, AND handed to the audio enqueue as the music prompt.
+  it('stores the prompt as a bounded excerpt, not the whole directive goal', async () => {
+    const created = await createCommission(validInput());
+    const goal = 'p'.repeat(MAX_RUN_PROMPT_LEN * 3);
+    await recordCommissionRun(created.id, { status: 'started', projectId: 'cd-1', promptUsed: goal });
+    const after = await getCommission(created.id);
+    expect(after.runs[0].promptUsed.length).toBeLessThanOrEqual(MAX_RUN_PROMPT_LEN);
+    expect(after.runs[0].promptUsed.startsWith('ppp')).toBe(true);
+  });
+
   it('persists a manual trigger and defaults everything else to schedule', async () => {
     const created = await createCommission(validInput());
     await recordCommissionRun(created.id, { status: 'started', trigger: 'manual' });
@@ -346,9 +359,13 @@ describe('recordCommissionRun', () => {
       engine: 'musicgen', modelId: 'example-model', repo: 'example/model', durationSec: 45,
     });
     expect(sanitizeCommission({ ...after, runs: after.runs }).runs[0].tasteRecipe).toEqual(recipe);
-    expect(await getCommissionMusicContextForProject('cd-taste')).toMatchObject({
-      commissionId: created.id, runId: run.id, prompt: 'Original bounded directive',
-    });
+    const ctx = await getCommissionMusicContextForProject('cd-taste');
+    expect(ctx).toMatchObject({ commissionId: created.id, runId: run.id });
+    // The audio prompt carries the brief AND the recipe's authoritative anchors +
+    // original-work constraint, re-rendered from the run's own stored recipe.
+    expect(ctx.prompt).toContain('Original bounded directive');
+    expect(ctx.prompt).toContain('Example Artist');
+    expect(ctx.prompt).toContain('do not reproduce source tracks');
     await recordCommissionMusicOutput(created.id, run.id, {
       filename: 'music-gen-example.wav', durationSec: 45, engine: 'musicgen', modelId: 'example-model',
       recipeVersion: 1, sourceHash: 'example-hash', completedAt: '2026-08-16T00:00:00.000Z',
@@ -357,6 +374,35 @@ describe('recordCommissionRun', () => {
     expect(completed.runs[0].musicOutput).toMatchObject({
       filename: 'music-gen-example.wav', engine: 'musicgen', modelId: 'example-model', sourceHash: 'example-hash',
     });
+  });
+
+  // The music adapter composes the goal as lead + intent, THEN the taste recipe, so
+  // a brief long enough to fill the run-prompt excerpt pushes the recipe off the end.
+  // The render must still get the anchors and the original-work constraint.
+  it('keeps the taste anchors in the audio prompt when the brief overruns the excerpt', async () => {
+    const created = await createCommission({
+      ...validInput(),
+      targetAbility: 'music',
+      brief: { intent: 'ambient', musicTaste: { source: 'digital-twin' } },
+      generation: { lengthSeconds: 45 },
+    });
+    const recipe = {
+      version: 1, source: 'digital-twin', window: 'month', anchorCount: 1,
+      explorationPercent: 20, explorationCount: 0, explorationDirection: 'balanced',
+      anchors: [{ kind: 'artist', name: 'Example Artist', count: 3, source: 'observed' }],
+      statedContext: 'Example preference',
+      sourceVersion: 'music-taste-v1:example', sourceHash: 'example-hash',
+    };
+    await recordCommissionRun(created.id, {
+      status: 'started', projectId: 'cd-long', tasteRecipe: recipe,
+      musicGeneration: { engine: 'musicgen', modelId: 'example-model', repo: 'example/model', durationSec: 45 },
+      // A goal whose head alone would consume the entire excerpt budget.
+      promptUsed: `Compose an original ~45s music piece. ${'b'.repeat(MAX_RUN_PROMPT_LEN * 2)}`,
+    });
+    const ctx = await getCommissionMusicContextForProject('cd-long');
+    expect(ctx.prompt).toContain('Example Artist');
+    expect(ctx.prompt).toContain('do not reproduce source tracks');
+    expect(ctx.prompt.length).toBeLessThanOrEqual(MAX_RUN_PROMPT_LEN);
   });
 });
 

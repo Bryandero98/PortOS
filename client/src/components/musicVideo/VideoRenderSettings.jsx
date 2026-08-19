@@ -21,7 +21,7 @@ export default function VideoRenderSettings({ videoSettings, generating }) {
         onChange={(e) => change({ backend: e.target.value || null })}
         disabled={locked}
         title="Saved renderer for this project's scene videos"
-        className="bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50"
+        className="w-full max-w-full bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50 sm:w-auto"
       >
         <option value="">Install default</option>
         <option value="local">Local video</option>
@@ -49,7 +49,7 @@ export default function VideoRenderSettings({ videoSettings, generating }) {
             }}
             disabled={locked}
             title="Prompt motion uses the reference frame; audio reactive also conditions motion on this scene's song segment"
-            className="bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50"
+            className="w-full max-w-full bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50 sm:w-auto"
           >
             <option value="image">Prompt motion</option>
             <option value="audioReactive" disabled={!detectedAudioReactiveLora}>Audio reactive</option>
@@ -61,7 +61,7 @@ export default function VideoRenderSettings({ videoSettings, generating }) {
             onChange={(e) => change({ modelId: e.target.value })}
             disabled={locked || models.length === 0}
             title="Saved local image-to-video model for this project"
-            className="max-w-[240px] bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50"
+            className="w-full max-w-full bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50 sm:w-auto sm:max-w-[240px]"
           >
             <option value="">
               {defaultModel
@@ -81,7 +81,7 @@ export default function VideoRenderSettings({ videoSettings, generating }) {
                 onChange={(e) => change({ audioReactiveLora: e.target.value })}
                 disabled={locked || audioReactiveLoras.length === 0}
                 title="Saved audio-reactive LoRA version for this project"
-                className="max-w-[220px] bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50"
+                className="w-full max-w-full bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50 sm:w-auto sm:max-w-[220px]"
               >
                 {audioReactiveLoras.length === 0 && <option value="">No audio-reactive LoRA installed</option>}
                 {audioReactiveLoras.map((lora) => (
@@ -97,7 +97,7 @@ export default function VideoRenderSettings({ videoSettings, generating }) {
                 onChange={(e) => change({ audioReactiveScale: Number(e.target.value) })}
                 disabled={locked}
                 title="How strongly the song drives visible motion"
-                className="bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50"
+                className="w-full max-w-full bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50 sm:w-auto"
               >
                 <option value={1}>Reactive 1.0×</option>
                 <option value={1.2}>Reactive 1.2×</option>
@@ -128,7 +128,7 @@ export default function VideoRenderSettings({ videoSettings, generating }) {
             onChange={(e) => change({ grokDuration: Number(e.target.value) })}
             disabled={locked}
             title="Native duration for each Grok scene clip"
-            className="bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50"
+            className="w-full max-w-full bg-port-bg border border-port-border rounded px-1.5 py-1.5 text-sm disabled:opacity-50 sm:w-auto"
           >
             {GROK_VIDEO_DURATIONS.map((duration) => (
               <option key={duration} value={duration}>{duration}s clips</option>

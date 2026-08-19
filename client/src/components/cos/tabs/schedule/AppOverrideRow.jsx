@@ -6,7 +6,7 @@ import { isCronExpression, describeCron } from '../../../../utils/cronHelpers';
 import ToggleSwitch from '../../../ToggleSwitch';
 import { INTERVAL_LABELS, setMetadataOverride } from './scheduleConstants';
 
-const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalIntervalType, globalTaskMetadata, managedAgentOptions, override, onUpdate }) {
+const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalIntervalType, globalTaskMetadata, managedAgentOptions, fileIssuesCapable, defaultFileIssues, override, onUpdate }) {
   const [updating, setUpdating] = useState(false);
   const [cronEditing, setCronEditing] = useState(false);
   const isEnabled = override?.enabled === true;
@@ -43,7 +43,13 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
 
   const handleMetaToggle = async (field) => {
     setUpdating(true);
-    const taskMetadata = toggleAppMetadataOverride(override?.taskMetadata, globalTaskMetadata, field);
+    let taskMetadata = toggleAppMetadataOverride(override?.taskMetadata, globalTaskMetadata, field);
+    const nextFileIssues = field === 'fileIssues'
+      ? (taskMetadata?.fileIssues ?? globalTaskMetadata?.fileIssues ?? defaultFileIssues)
+      : null;
+    if (field === 'fileIssues' && nextFileIssues === true && taskMetadata) {
+      taskMetadata = { ...taskMetadata, useWorktree: false, openPR: false, simplify: false };
+    }
     await onUpdate(app.id, taskType, { taskMetadata }).catch(() => {});
     setUpdating(false);
   };
@@ -114,10 +120,28 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
         </div>
 
         <div className="flex items-center gap-1">
+          {fileIssuesCapable && (() => {
+            const effective = override?.taskMetadata?.fileIssues ?? globalTaskMetadata?.fileIssues ?? defaultFileIssues === true;
+            const hasOverride = override?.taskMetadata?.fileIssues !== undefined;
+            return (
+              <button
+                key="fileIssues"
+                onClick={() => handleMetaToggle('fileIssues')}
+                disabled={updating}
+                aria-pressed={effective}
+                aria-label={`File issues only: ${effective ? 'on' : 'off'}${hasOverride ? ' (app override)' : ' (inherited)'}`}
+                className={`text-xs px-2 py-1.5 rounded transition-colors shrink-0 min-h-[40px] min-w-[40px] border ${agentOptionButtonClass(effective, hasOverride)}`}
+                title={`File issues only: ${effective ? 'on' : 'off'}${hasOverride ? ' (app override)' : ' (inherited)'}`}
+              >
+                Iss
+              </button>
+            );
+          })()}
           {AGENT_OPTIONS.map(({ field, label, shortLabel }) => {
             const effective = override?.taskMetadata?.[field] ?? globalTaskMetadata?.[field] ?? false;
             const hasOverride = override?.taskMetadata?.[field] !== undefined;
-            const managed = managedAgentOptions?.includes(field);
+            const fileIssuesOn = (override?.taskMetadata?.fileIssues ?? globalTaskMetadata?.fileIssues ?? defaultFileIssues) === true;
+            const managed = managedAgentOptions?.includes(field) || (fileIssuesCapable && fileIssuesOn && ['useWorktree', 'openPR', 'simplify'].includes(field));
             const titleText = managed
               ? `${label}: managed internally by ${taskType}`
               : `${label}: ${effective ? 'on' : 'off'}${hasOverride ? ' (app override)' : ' (inherited)'}`;

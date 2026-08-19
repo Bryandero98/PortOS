@@ -12,7 +12,7 @@ import {
 import { asyncHandler } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
 import { agentContextSettingsSchema } from '../lib/agentContextValidation.js';
-import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, citySnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, federationSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, videoGenSettingsSchema, subscriptionCostsMapSchema, validateRequest } from '../lib/validation.js';
+import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, localLlmSettingsSchema, citySnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, federationSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, videoGenSettingsSchema, subscriptionCostsMapSchema, validateRequest } from '../lib/validation.js';
 
 const router = Router();
 
@@ -172,6 +172,9 @@ router.put('/', asyncHandler(async (req, res) => {
   }
   if (req.body?.embeddings !== undefined) {
     validateRequest(settingsEmbeddingsSchema.partial(), req.body.embeddings);
+  }
+  if (req.body?.localLlm !== undefined) {
+    validateRequest(localLlmSettingsSchema, req.body.localLlm);
   }
   // CyberCity snapshot capture config — validate the slice when present so a
   // malformed interval/cap can't reach disk and break the scheduler.

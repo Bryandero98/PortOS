@@ -48,6 +48,7 @@ export const cosConfigSchema = z.object({
   proactiveMode: z.boolean().optional(),
   autonomousJobsEnabled: z.boolean().optional(),
   autonomyLevel: z.enum(['standby', 'assistant', 'manager', 'yolo']).optional(),
+  autoApproveInvestigations: z.boolean().optional(),
   // Per-domain autonomy guardrails (#711): partial map of domainId → mode.
   // Partial is fine — updateConfig() merges it over the stored map.
   domainAutonomy: z.object(

@@ -5,6 +5,7 @@ import {
   postSessionSubmitSchema,
   postDrillRequestSchema,
   trainingEntrySchema,
+  trainingRunSubmitSchema,
   memoryItemCreateSchema,
   memoryScheduleSchema,
   memoryPracticeSchema,
@@ -13,8 +14,37 @@ import {
   POST_SUPPORTED_MEMORY_TYPES,
   POST_QUICK_DURATION_MINUTES,
   postQuickSessionPlanSchema,
+  postBenchmarkSchema,
 } from './postValidation.js';
 import { getTopic, POST_TOPICS } from './postTopics.js';
+
+describe('postBenchmarkSchema', () => {
+  it('accepts versioned benchmark metadata', () => {
+    expect(postBenchmarkSchema.parse({
+      protocolId: 'post-foundation-battery',
+      protocolVersion: 1,
+      scorerVersion: 'post-deterministic-v1',
+      formId: 'a',
+    })).toEqual({
+      protocolId: 'post-foundation-battery',
+      protocolVersion: 1,
+      scorerVersion: 'post-deterministic-v1',
+      formId: 'a',
+    });
+  });
+
+  it('keeps benchmark metadata optional for legacy sessions', () => {
+    expect(postSessionSubmitSchema.parse({
+      modules: ['mental-math'],
+      tasks: [{
+        module: 'mental-math',
+        type: 'doubling-chain',
+        questions: [{ prompt: '2 x 2', expected: 4, answered: 4, responseMs: 100 }],
+        totalMs: 100,
+      }],
+    }).benchmark).toBeUndefined();
+  });
+});
 
 describe('postConfigUpdateSchema llmDrills', () => {
   // Regression: the config UI (PostDrillConfig.jsx) exposed only 5 of the 14
@@ -72,6 +102,39 @@ describe('postConfigUpdateSchema llmDrills', () => {
   });
 });
 
+describe('postConfigUpdateSchema cognitive compatibility', () => {
+  it('accepts a legacy six-drill map after newer cognitive types are added', () => {
+    const legacyTypes = ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time'];
+    const drillTypes = Object.fromEntries(legacyTypes.map(type => [type, { enabled: true }]));
+    const parsed = postConfigUpdateSchema.parse({ cognitive: { enabled: true, drillTypes } });
+    expect(Object.keys(parsed.cognitive.drillTypes)).toEqual(legacyTypes);
+  });
+});
+
+describe('Applied Numeracy validation', () => {
+  it('accepts the persisted replay key and complexity configuration', () => {
+    const parsed = postConfigUpdateSchema.parse({
+      mentalMath: {
+        drillTypes: Object.fromEntries(
+          getTopic('math').drillTypes.map(type => [type, type === 'applied-numeracy'
+            ? { enabled: true, count: 5, difficulty: 3, family: 'unit', seed: 4443, timeLimitSec: 150 }
+            : { enabled: true, count: 5, timeLimitSec: 120 }])
+        ),
+      },
+    });
+    expect(parsed.mentalMath.drillTypes['applied-numeracy']).toMatchObject({ difficulty: 3, family: 'unit', seed: 4443 });
+  });
+
+  it('rejects an out-of-range seed, difficulty, or family', () => {
+    const withApplied = (entry) => ({
+      mentalMath: { drillTypes: Object.fromEntries(getTopic('math').drillTypes.map(type => [type, type === 'applied-numeracy' ? entry : { enabled: true }])) },
+    });
+    expect(() => postConfigUpdateSchema.parse(withApplied({ seed: -1 }))).toThrow();
+    expect(() => postConfigUpdateSchema.parse(withApplied({ difficulty: 4 }))).toThrow();
+    expect(() => postConfigUpdateSchema.parse(withApplied({ family: 'tax' }))).toThrow();
+  });
+});
+
 describe('Morse drill types stay scoped to the training log', () => {
   // Regression: MORSE_DRILL_TYPES must never be spliced into the shared
   // DRILL_TYPES array — that array also backs the *scored* session submit
@@ -98,6 +161,18 @@ describe('Morse drill types stay scoped to the training log', () => {
         module: 'morse', drillType, questionCount: 10, correctCount: 8, totalMs: 5000
       });
       expect(parsed.drillType).toBe(drillType);
+    }
+  });
+});
+
+describe('Rhetoric drill types stay scoped to the training log', () => {
+  it('accepts each standalone rhetoric exercise without making it a generatable POST drill', () => {
+    for (const drillType of ['rhetoric-meter', 'rhetoric-diacope', 'rhetoric-chiasmus', 'rhetoric-progressia', 'rhetoric-brainstorm']) {
+      const parsed = trainingEntrySchema.parse({
+        module: 'rhetoric', drillType, questionCount: 5, correctCount: 4, totalMs: 60000,
+      });
+      expect(parsed.drillType).toBe(drillType);
+      expect(() => postDrillRequestSchema.parse({ type: drillType })).toThrow();
     }
   });
 });
@@ -545,6 +620,38 @@ describe('drillTypeConfigSchema numeric bounds', () => {
     });
   });
 
+  it('accepts seeded executive-control difficulty knobs', () => {
+    const parsed = postDrillRequestSchema.parse({
+      type: 'task-switching',
+      config: {
+        seed: 'example-seed', ruleCount: 3, switchRatePct: 65,
+        cueStimulusIntervalMs: 350, incongruentPct: 80, responseDeadlineMs: 1600,
+        noGoPct: 40, lureSimilarity: 'high', congruentPct: 40,
+        flankerDistance: 1, flankerStrength: 3,
+      },
+    });
+    expect(parsed.config).toMatchObject({ seed: 'example-seed', ruleCount: 3, switchRatePct: 65, lureSimilarity: 'high', flankerStrength: 3 });
+  });
+
+  it('accepts the full Go/No-Go and Flanker generator ranges', () => {
+    const goNoGo = postDrillRequestSchema.parse({
+      type: 'go-no-go',
+      config: { count: 60, stimulusMs: 100, responseDeadlineMs: 500 },
+    });
+    const flanker = postDrillRequestSchema.parse({
+      type: 'flanker',
+      config: { count: 60, responseDeadlineMs: 500 },
+    });
+    expect(goNoGo.config).toMatchObject({ count: 60, stimulusMs: 100 });
+    expect(flanker.config.count).toBe(60);
+  });
+
+  it('rejects out-of-range executive-control knobs', () => {
+    expect(() => postDrillRequestSchema.parse({ type: 'task-switching', config: { ruleCount: 4 } })).toThrow();
+    expect(() => postDrillRequestSchema.parse({ type: 'go-no-go', config: { noGoPct: 0 } })).toThrow();
+    expect(() => postDrillRequestSchema.parse({ type: 'flanker', config: { flankerStrength: 4 } })).toThrow();
+  });
+
   it('rejects out-of-range interference and rotation complexity knobs', () => {
     expect(() => postDrillRequestSchema.parse({ type: 'stroop', config: { incongruentPct: 101 } })).toThrow();
     expect(() => postDrillRequestSchema.parse({ type: 'mental-rotation', config: { rotationComplexity: 4 } })).toThrow();
@@ -673,6 +780,27 @@ describe('postSessionSubmitSchema client-generated id (issue #2098)', () => {
 
   it('rejects a non-uuid id', () => {
     expect(() => postSessionSubmitSchema.parse({ ...baseBody(), id: 'not-a-uuid' })).toThrow();
+  });
+});
+
+describe('trainingRunSubmitSchema executive-control evidence (#4445)', () => {
+  it('preserves drill data and task-specific metrics for server rescoring', () => {
+    const parsed = trainingRunSubmitSchema.parse({
+      id: '33333333-3333-4333-8333-333333333333',
+      attempts: [{
+        id: 'attempt-1', module: 'cognitive', drillType: 'flanker',
+        difficulty: { seed: 'flanker' },
+        drillData: { type: 'flanker', config: { seed: 'flanker' }, trials: [] },
+        questionCount: 1, correctCount: 1, latencyMs: 400,
+        questions: [{ prompt: 'left-right', index: 0, answered: 'right', correct: true, responseMs: 400, congruent: false }],
+        accuracy: 1, completion: 1, congruencyCostMs: null,
+        incongruentAccuracy: 1, omissions: 0, commissionErrors: 0,
+        latencyDistributionMs: [400],
+      }],
+    });
+    expect(parsed.attempts[0]).toMatchObject({ drillType: 'flanker', accuracy: 1, incongruentAccuracy: 1, omissions: 0 });
+    expect(parsed.attempts[0].drillData.config.seed).toBe('flanker');
+    expect(parsed.attempts[0].questions[0].congruent).toBe(false);
   });
 });
 

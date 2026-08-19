@@ -39,6 +39,22 @@ export { canRefreshModels };
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SAMPLE_PATH = join(__dirname, 'defaults/providers.sample.json');
 
+// OpenCode OrcaRouter wrappers intentionally keep no key in their persisted
+// record. Attach the sibling API key only to execution-time copies, and make
+// the property non-enumerable so provider responses and provider writes cannot
+// accidentally expose or persist it.
+function withOrcaRouterApiKey(provider, providers) {
+  const siblingKey = providers?.orcarouter?.apiKey;
+  if (provider?.orcarouterBacked !== true || provider.apiKey || !siblingKey) return provider;
+  const executionProvider = { ...provider };
+  Object.defineProperty(executionProvider, 'apiKey', {
+    value: siblingKey,
+    enumerable: false,
+    configurable: true,
+  });
+  return executionProvider;
+}
+
 // Extensions Windows can launch directly, checked in cmd.exe's own resolution
 // preference. Deliberately excludes an extension-less match — npm ships a
 // POSIX shell-script stub alongside a package's `.cmd`/`.bat`/`.ps1` Windows
@@ -135,6 +151,7 @@ const TOOL_USE_RE = new RegExp([
   'olmo-?3',
   'lfm2', 'ornith', 'muse-glimmer', 'nex-n2',
   'smollm2',
+  'dflash',
   'deepseek-v3', 'deepseek-r1', 'deepseek-v4',
 ].join('|'), 'i');
 
@@ -165,11 +182,14 @@ const CODEX_MODEL_DEFAULTS = {
 };
 const ANTIGRAVITY_MODEL_KEYS = ['defaultModel', 'lightModel', 'mediumModel', 'heavyModel'];
 // agy exposes a per-session `--model` flag and lists its catalog via
-// `agy models`. This is the shipped fallback list (agy 2026-07) used to seed a
+// `agy models`. This is the shipped fallback list (agy 2026-08) used to seed a
 // fresh install and when the live `agy models` probe can't run; the AI Providers
 // "Refresh models" button replaces it with whatever the installed binary
 // reports, which is the authoritative list for that user's plan.
 const ANTIGRAVITY_MODELS = [
+  'gemini-3.7-flash-high',
+  'gemini-3.7-flash-medium',
+  'gemini-3.7-flash-low',
   'gemini-3.6-flash-high',
   'gemini-3.6-flash-medium',
   'gemini-3.6-flash-low',
@@ -188,6 +208,23 @@ const ANTIGRAVITY_MODELS = [
 // the task/schedule model pickers (which filter the sentinel out) can offer a
 // per-run override.
 const ANTIGRAVITY_MODEL_CATALOG = [ANTIGRAVITY_CONFIGURED_DEFAULT, ...ANTIGRAVITY_MODELS];
+const PRIOR_ANTIGRAVITY_MODEL_CATALOGS = [
+  // Prior 2026-07 catalog without gemini-3.7
+  [
+    ANTIGRAVITY_CONFIGURED_DEFAULT,
+    'gemini-3.6-flash-high',
+    'gemini-3.6-flash-medium',
+    'gemini-3.6-flash-low',
+    'gemini-3.5-flash-high',
+    'gemini-3.5-flash-medium',
+    'gemini-3.5-flash-low',
+    'gemini-3.1-pro-high',
+    'gemini-3.1-pro-low',
+    'claude-sonnet-4-6',
+    'claude-opus-4-6-thinking',
+    'gpt-oss-120b-medium',
+  ],
+];
 const CODEX_CONTEXT_WINDOW = 1_000_000;
 const GEMINI_CONTEXT_WINDOW = 1_048_576;
 const STALE_GENERIC_CONTEXT_WINDOW = 128_000;
@@ -309,12 +346,12 @@ function migrateAntigravityProviders(data) {
   return changed;
 }
 
-// Installs that already migrated to `agy` carry the sentinel-only model list
-// from before agy grew a `--model` flag. Widen it to the shipped catalog so the
-// task/schedule pickers have something to offer. Guarded on "sentinel-only" so a
-// user's own list (or one already refreshed from `agy models`) is never
-// overwritten, and the `*Model` keys are left alone so run behavior is unchanged
-// until the user actually picks a model.
+// Installs that carry the sentinel-only model list from before agy grew a
+// `--model` flag, or the prior shipped catalog before gemini-3.7 was released,
+// are widened/updated to the current shipped catalog so pickers have the new
+// model options. Guarded so a user's own customized list (or one already
+// refreshed from `agy models`) is never overwritten, and the `*Model` keys are
+// left alone so run behavior is unchanged until the user actually picks a model.
 function migrateAntigravityModelCatalog(data) {
   if (!data?.providers) return false;
   let changed = false;
@@ -326,7 +363,13 @@ function migrateAntigravityModelCatalog(data) {
     const isSentinelOnly = Array.isArray(provider.models)
       && provider.models.length === 1
       && provider.models[0] === ANTIGRAVITY_CONFIGURED_DEFAULT;
-    if (!isSentinelOnly) continue;
+
+    const isPriorSeededList = Array.isArray(provider.models)
+      && PRIOR_ANTIGRAVITY_MODEL_CATALOGS.some(
+        (prior) => prior.length === provider.models.length && prior.every((m, i) => m === provider.models[i]),
+      );
+
+    if (!isSentinelOnly && !isPriorSeededList) continue;
 
     provider.models = [...ANTIGRAVITY_MODEL_CATALOG];
     changed = true;
@@ -504,13 +547,15 @@ export function createProviderService(config = {}) {
 
     async getProviderById(id) {
       const data = await loadProviders();
-      return data.providers[id] || null;
+      const provider = data.providers[id];
+      return provider ? withOrcaRouterApiKey(provider, data.providers) : null;
     },
 
     async getActiveProvider() {
       const data = await loadProviders();
       if (!data.activeProvider) return null;
-      return data.providers[data.activeProvider] || null;
+      const provider = data.providers[data.activeProvider];
+      return provider ? withOrcaRouterApiKey(provider, data.providers) : null;
     },
 
     async setActiveProvider(id) {
@@ -548,6 +593,8 @@ export function createProviderService(config = {}) {
         fallbackProvider: providerData.fallbackProvider || null,
         fallbackModel: providerData.fallbackModel || null,
         numCtx: providerData.numCtx || null,
+        temperature: providerData.temperature,
+        thinking: providerData.thinking,
         contextWindow: providerData.contextWindow || null,
         timeout: providerData.timeout || 300000,
         enabled: providerData.enabled !== false,
@@ -558,6 +605,8 @@ export function createProviderService(config = {}) {
         // backend. Preserve this marker so OpenCode receives the `mtplx/`
         // namespace and model refresh probes its local endpoint.
         ...(providerData.mtplxBacked === true ? { mtplxBacked: true } : {}),
+        ...(providerData.llamaBacked === true ? { llamaBacked: true } : {}),
+        ...(providerData.orcarouterBacked === true ? { orcarouterBacked: true } : {}),
         // Explicit opt-in to send the API key to an arbitrary (non-local,
         // non-allowlisted) endpoint — see internal/endpointGuard.js. Only
         // persisted when true so existing keyless/local providers stay clean.
@@ -565,7 +614,8 @@ export function createProviderService(config = {}) {
         envVars: providerData.envVars || {},
         secretEnvVars: providerData.secretEnvVars || [],
         headlessArgs: providerData.headlessArgs || [],
-        tuiPromptDelayMs: providerData.tuiPromptDelayMs || 2500
+        tuiPromptDelayMs: providerData.tuiPromptDelayMs || 2500,
+        ...(providerData.tuiIdleTimeoutMs != null ? { tuiIdleTimeoutMs: providerData.tuiIdleTimeoutMs } : {})
       };
 
       data.providers[id] = provider;
@@ -616,7 +666,7 @@ export function createProviderService(config = {}) {
 
     async testProvider(id) {
       const data = await loadProviders();
-      const provider = data.providers[id];
+      const provider = withOrcaRouterApiKey(data.providers[id], data.providers);
 
       if (!provider) {
         return { success: false, error: 'Provider not found' };
@@ -750,7 +800,7 @@ export function createProviderService(config = {}) {
      */
     async fetchProviderModels(id) {
       const data = await loadProviders();
-      const provider = data.providers[id];
+      const provider = withOrcaRouterApiKey(data.providers[id], data.providers);
 
       if (!provider) {
         return null;
@@ -1038,6 +1088,16 @@ export function createProviderService(config = {}) {
      * @returns {Promise<string[]>}
      */
     async _fetchMtplxModels(provider) {
+      return this._refreshAPIProviderModels(provider);
+    },
+
+    /** Fetch the llama-server catalog for OpenCode llama CLI/TUI wrappers. */
+    async _fetchLlamaModels(provider) {
+      return this._refreshAPIProviderModels(provider);
+    },
+
+    /** Fetch the OrcaRouter catalog for its OpenCode CLI/TUI wrappers. */
+    async _fetchOrcaRouterModels(provider) {
       return this._refreshAPIProviderModels(provider);
     },
 

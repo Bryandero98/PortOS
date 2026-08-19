@@ -18,6 +18,7 @@ import {
 } from '../services/api';
 import toast from '../components/ui/Toast';
 import { copyToClipboard } from '../lib/clipboard';
+import { listThreejsClips } from '../lib/threejsAnimation';
 import { summarizeThreejsArticulation } from '../lib/threejsRig';
 import { timeAgo } from '../utils/formatters';
 import { seedModelEffort } from '../utils/providers';
@@ -201,6 +202,58 @@ function RigReadinessPanel({ rig, spec }) {
   );
 }
 
+/**
+ * What the spec declared it can PLAY. Prefers the inventory the server wrote at
+ * generation time and falls back to the spec's own clips, so a model generated
+ * before clips shipped reads as the static assembly it is rather than borrowing
+ * a verdict it was never given.
+ */
+function ClipInventoryPanel({ animation, spec }) {
+  const clips = Array.isArray(animation?.clips) && animation.clips.length > 0
+    ? animation.clips
+    : listThreejsClips(spec).map((clip) => ({
+      id: clip.id,
+      name: clip.name,
+      role: clip.role,
+      durationSeconds: clip.durationSeconds,
+      sequenceCount: clip.sequences?.length || 0,
+      cueCount: new Set((clip.sequences || []).map((sequence) => sequence.cueId).filter(Boolean)).size,
+    }));
+  if (clips.length === 0) return null;
+  return (
+    <section className="rounded-xl border border-port-border bg-port-card p-4">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-xs font-medium uppercase tracking-wide text-gray-400">Animation clips</h2>
+        <span className="text-xs text-gray-600">
+          {clips.length} clip{clips.length === 1 ? '' : 's'}
+        </span>
+      </div>
+      <div className="grid gap-2 md:grid-cols-2">
+        {clips.map((clip) => (
+          <div key={clip.id} className="rounded-lg border border-port-border bg-port-bg/50 p-2.5">
+            <div className="flex items-start justify-between gap-2">
+              <h3 className="text-xs font-medium text-gray-200">{clip.name}</h3>
+              <span className="rounded bg-port-border px-1.5 py-0.5 text-[9px] uppercase text-gray-400">{clip.role || 'custom'}</span>
+            </div>
+            <p className="mt-1 text-xs text-gray-500">
+              {clip.durationSeconds}s · {clip.sequenceCount} sequence{clip.sequenceCount === 1 ? '' : 's'}
+              {clip.cueCount > 0 ? ` · ${clip.cueCount} sound cue${clip.cueCount === 1 ? '' : 's'}` : ''}
+            </p>
+          </div>
+        ))}
+      </div>
+      <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-gray-500">
+        <Info className="mt-0.5 h-3 w-3 shrink-0" />
+        <span>
+          Clips are declared transforms over time, not a skeleton and not code — play or scrub them
+          in the preview. Sound cues are identifiers only: PortOS ships no audio and plays none,
+          and scrubbing never fires one.
+        </span>
+      </p>
+    </section>
+  );
+}
+
 export default function ThreejsModelDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -355,6 +408,15 @@ export default function ThreejsModelDetail() {
   const penetrationFindings = Array.isArray(record.penetration?.findings) ? record.penetration.findings : null;
   const materialFindings = Array.isArray(record.materialPlausibility?.findings)
     ? record.materialPlausibility.findings
+    : null;
+  // A clean verdict only means something for a model that declared clips —
+  // rendering "clips play cleanly" on every static model would be noise about a
+  // feature it never used. A finding is worth showing either way: the gate also
+  // reports an articulation graph that declares motion with no clip to play it,
+  // which by definition arrives on a model with no clips.
+  const animationFindings = Array.isArray(record.animation?.findings)
+    && (record.animation.animated || record.animation.findings.length > 0)
+    ? record.animation.findings
     : null;
   // Undecided contact is a note the reader is meant to judge, never something a
   // refinement is told to fix — so the footer only promises a refinement when
@@ -585,6 +647,26 @@ export default function ThreejsModelDetail() {
         <RigReadinessPanel
           rig={record.rig && typeof record.rig === 'object' ? record.rig : null}
           spec={record.spec}
+        />
+      )}
+
+      {record.spec && (
+        <ClipInventoryPanel
+          animation={record.animation && typeof record.animation === 'object' ? record.animation : null}
+          spec={record.spec}
+        />
+      )}
+
+      {animationFindings && (
+        <GatePanel
+          title="Clip playback"
+          findings={animationFindings}
+          cleanLabel="Clips open, hand over, and loop cleanly"
+          footer={`The schema already proves a clip is well formed, so this check asks whether it will actually play: a clip authored against a pose the assembly does not build jumps the instant it opens, a handover between sequences that do not meet jumps mid-clip, and a loop that ends somewhere else snaps on every repeat.${
+            animationFindings.length > 0
+              ? ' Refining without your own feedback will also ask for clips that start from the assembled pose and close their loops.'
+              : ''
+          }`}
         />
       )}
 

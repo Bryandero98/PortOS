@@ -26,13 +26,19 @@ import {
   CLAUDE_EFFORT_LEVELS,
   CODEX_EFFORT_LEVELS,
   ANTIGRAVITY_EFFORT_LEVELS,
+  CURSOR_EFFORT_LEVELS,
   EFFORT_LEVELS,
   isAntigravityProvider,
+  isCursorProvider,
+  foldCursorEffortIntoModel,
   effortLevelsForProvider,
   resolveCliEffort,
   hasEffortFlag,
   buildEffortArgs,
+  CODEX_EFFORT_KEY,
   CODEX_UPDATE_CHECK_KEY,
+  PORTOS_CLI_CONFIG_KEYS,
+  isPortosSuppliedConfigKey,
   hasCodexUpdateCheckConfig,
   buildCodexStartupArgs,
   isCodexProvider,
@@ -139,6 +145,19 @@ describe('providerModels', () => {
       expect(prefixOpencodeModel(mtplx, 'mtplx/mtplx')).toBe('mtplx/mtplx');
     });
 
+    it('namespaces a bare llama id under llama/ for llama-backed OpenCode providers', () => {
+      const llama = { command: 'opencode', llamaBacked: true };
+      expect(prefixOpencodeModel(llama, 'dflash')).toBe('llama/dflash');
+      expect(prefixOpencodeModel(llama, 'llama/dflash')).toBe('llama/dflash');
+    });
+
+    it('keeps the OrcaRouter stored id in the models map but double-prefixes the OpenCode argv id', () => {
+      const orca = { command: 'opencode', orcarouterBacked: true };
+      expect(prefixOpencodeModel(orca, 'orcarouter/auto')).toBe('orcarouter/orcarouter/auto');
+      expect(prefixOpencodeModel(orca, 'anthropic/claude-sonnet-4.6')).toBe('orcarouter/anthropic/claude-sonnet-4.6');
+      expect(prefixOpencodeModel(orca, 'orcarouter/orcarouter/auto')).toBe('orcarouter/orcarouter/auto');
+    });
+
     it('is idempotent — an already-namespaced id is returned unchanged', () => {
       expect(prefixOpencodeModel(oc, 'ollama/qwen2.5:7b')).toBe('ollama/qwen2.5:7b');
     });
@@ -171,6 +190,8 @@ describe('providerModels', () => {
     it('uses explicit markers and keeps Ollama as the malformed dual-marker fallback', () => {
       expect(getOpencodeLocalProviderNamespace({ ollamaBacked: true })).toBe('ollama');
       expect(getOpencodeLocalProviderNamespace({ mtplxBacked: true })).toBe('mtplx');
+      expect(getOpencodeLocalProviderNamespace({ llamaBacked: true })).toBe('llama');
+      expect(getOpencodeLocalProviderNamespace({ orcarouterBacked: true })).toBe('orcarouter');
       expect(getOpencodeLocalProviderNamespace({ ollamaBacked: true, mtplxBacked: true })).toBe('ollama');
       expect(getOpencodeLocalProviderNamespace({})).toBeNull();
     });
@@ -216,8 +237,21 @@ describe('providerModels', () => {
       expect(effortLevelsForProvider({ id: 'custom', command: '/Users/x/.local/bin/agy' })).toBe(ANTIGRAVITY_EFFORT_LEVELS);
     });
 
-    it('returns null for providers without an effort control (and does NOT default blank commands to claude)', () => {
+    it('offers the OpenAI-compatible ladder only for Ollama-backed OpenCode', () => {
+      expect(effortLevelsForProvider({ id: 'opencode-ollama', command: 'opencode', ollamaBacked: true }))
+        .toEqual(['low', 'medium', 'high']);
       expect(effortLevelsForProvider({ id: 'opencode-ollama', command: 'opencode' })).toBeNull();
+    });
+
+    it('returns the cursor ladder for cursor ids and the cursor-agent command', () => {
+      expect(effortLevelsForProvider({ id: 'cursor-cli', command: 'cursor-agent' })).toBe(CURSOR_EFFORT_LEVELS);
+      expect(effortLevelsForProvider({ id: 'cursor-tui' })).toBe(CURSOR_EFFORT_LEVELS);
+      expect(effortLevelsForProvider({ id: 'custom', command: '/Users/x/.local/bin/cursor-agent' })).toBe(CURSOR_EFFORT_LEVELS);
+      // A bare `cursor` is the GUI editor, not the agent — no ladder.
+      expect(effortLevelsForProvider({ id: 'custom', command: 'cursor' })).toBeNull();
+    });
+
+    it('returns null for providers without an effort control (and does NOT default blank commands to claude)', () => {
       expect(effortLevelsForProvider({ id: 'grok-cli', command: 'grok' })).toBeNull();
       expect(effortLevelsForProvider({ id: 'ollama' })).toBeNull();
       expect(effortLevelsForProvider(null)).toBeNull();
@@ -368,11 +402,62 @@ describe('providerModels', () => {
       expect(buildEffortArgs('max', { id: 'claude-code', command: 'claude' }, ['--effort', 'low'])).toEqual([]);
     });
 
+    it('NEVER emits --effort for cursor, at any level — the level rides --model', () => {
+      // `cursor-agent --effort <level>` exits non-zero. Cursor advertises a
+      // ladder so the level is pickable; `foldCursorEffortIntoModel` carries it.
+      const cursor = { id: 'cursor-cli', command: 'cursor-agent' };
+      for (const level of CURSOR_EFFORT_LEVELS) {
+        expect(buildEffortArgs(level, cursor), level).toEqual([]);
+      }
+      expect(buildEffortArgs('max', { id: 'cursor-tui' })).toEqual([]);
+      expect(buildEffortArgs('minimal', cursor)).toEqual([]);
+    });
+
     it('honors the per-model agy ladder when a model is supplied', () => {
       const agy = { id: 'antigravity-cli', command: 'agy', models: AGY_CATALOG };
       expect(buildEffortArgs('medium', agy, [], 'gemini-3.6-flash')).toEqual(['--effort', 'medium']);
       expect(buildEffortArgs('medium', agy, [], 'gemini-3.1-pro')).toEqual(['--effort', 'low']);
       expect(buildEffortArgs('high', agy, [], 'claude-sonnet-4-6')).toEqual([]);
+    });
+  });
+
+  describe('isCursorProvider', () => {
+    it('matches the shipped ids and the cursor-agent command, never the GUI `cursor`', () => {
+      expect(isCursorProvider({ id: 'cursor-cli' })).toBe(true);
+      expect(isCursorProvider({ id: 'cursor-tui' })).toBe(true);
+      expect(isCursorProvider({ id: 'custom', command: '/Users/x/.local/bin/cursor-agent' })).toBe(true);
+      expect(isCursorProvider({ id: 'custom', command: 'cursor-agent.exe' })).toBe(true);
+      expect(isCursorProvider({ id: 'custom', command: 'cursor' })).toBe(false);
+      expect(isCursorProvider({ id: 'codex', command: 'codex' })).toBe(false);
+      expect(isCursorProvider(null)).toBe(false);
+    });
+  });
+
+  describe('foldCursorEffortIntoModel', () => {
+    it('appends the variant to a bare model id', () => {
+      expect(foldCursorEffortIntoModel('gpt-5', 'max')).toBe('gpt-5[effort=max]');
+      expect(foldCursorEffortIntoModel(' gpt-5 ', ' high ')).toBe('gpt-5[effort=high]');
+    });
+
+    it('extends an existing variant bracket rather than opening a second one', () => {
+      expect(foldCursorEffortIntoModel('claude-opus-4-7[thinking=true]', 'high'))
+        .toBe('claude-opus-4-7[thinking=true,effort=high]');
+    });
+
+    it('leaves a model that already names an effort alone', () => {
+      expect(foldCursorEffortIntoModel('gpt-5[effort=low]', 'max')).toBe('gpt-5[effort=low]');
+      expect(foldCursorEffortIntoModel('claude-opus-4-7[thinking=true,effort=high]', 'low'))
+        .toBe('claude-opus-4-7[thinking=true,effort=high]');
+    });
+
+    it('returns the model unchanged with no effort, and null with no model', () => {
+      expect(foldCursorEffortIntoModel('gpt-5', null)).toBe('gpt-5');
+      expect(foldCursorEffortIntoModel('gpt-5', '')).toBe('gpt-5');
+      // Nothing to attach the variant to — the pin is dropped, not emitted as a
+      // flag cursor would reject.
+      expect(foldCursorEffortIntoModel('', 'max')).toBeNull();
+      expect(foldCursorEffortIntoModel(null, 'max')).toBeNull();
+      expect(foldCursorEffortIntoModel(undefined, undefined)).toBeNull();
     });
   });
 
@@ -500,6 +585,35 @@ describe('providerModels', () => {
     it('returns [] when the user already pinned the key (their value wins)', () => {
       expect(buildCodexStartupArgs(['-c', `${CODEX_UPDATE_CHECK_KEY}=true`])).toEqual([]);
       expect(buildCodexStartupArgs([`--config=${CODEX_UPDATE_CHECK_KEY}=true`])).toEqual([]);
+    });
+  });
+
+  // The `cli-config-invalid` analyzer asks this to decide whether a rejected
+  // config key came from a PortOS `-c` override or from the user's own CLI
+  // config file, and it names a different fix for each — so an emitter added
+  // without a row here would be blamed on the user (incident 2026-08-18).
+  describe('isPortosSuppliedConfigKey / PORTOS_CLI_CONFIG_KEYS', () => {
+    it('covers exactly the keys the -c builders emit', () => {
+      expect([...PORTOS_CLI_CONFIG_KEYS].sort()).toEqual([CODEX_EFFORT_KEY, CODEX_UPDATE_CHECK_KEY].sort());
+      // Guard against a third emitter appearing without a row: both builders
+      // that produce `-c` are asserted to use a listed key.
+      const emitted = [
+        ...buildEffortArgs('high', { command: 'codex' }),
+        ...buildCodexStartupArgs()
+      ].filter((a) => a.includes('='));
+      expect(emitted.length).toBeGreaterThan(0);
+      for (const pair of emitted) expect(isPortosSuppliedConfigKey(pair.split('=')[0])).toBe(true);
+    });
+
+    it('is false for keys that only ever live in the user config file', () => {
+      // Real 2026-08-18 rejection: written by a newer install of the same CLI.
+      expect(isPortosSuppliedConfigKey('service_tier')).toBe(false);
+      expect(isPortosSuppliedConfigKey('notify')).toBe(false);
+      // Lookalikes must not pass — the fix text hinges on an exact match.
+      expect(isPortosSuppliedConfigKey('model_reasoning_effort_override')).toBe(false);
+      expect(isPortosSuppliedConfigKey('')).toBe(false);
+      expect(isPortosSuppliedConfigKey(null)).toBe(false);
+      expect(isPortosSuppliedConfigKey(42)).toBe(false);
     });
   });
 

@@ -10,6 +10,14 @@ import { pinPlatform } from '../lib/testHelper.js';
 // service captures ENV_PATH = join(PATHS.root, '.env') at import time, so each
 // test sets `state.root` to a fresh temp dir and re-imports under resetModules.
 const state = vi.hoisted(() => ({ root: '' }));
+// Measured assessments feed the editorial recommendation (a model measured NOT
+// to run here must never be recommended). The store is disk-only, so it is
+// mocked here to a controllable map rather than re-rooting a data dir; keyed by
+// model id, exactly as `getMeasuredFits` returns it.
+const measured = vi.hoisted(() => ({ ollama: {}, lmstudio: {} }));
+vi.mock('./localModelAssessmentStore.js', () => ({
+  getMeasuredFits: async (backend) => measured[backend] || {},
+}));
 vi.mock('../lib/fileUtils.js', async () => {
   const fsMod = await import('fs');
   return {
@@ -19,10 +27,12 @@ vi.mock('../lib/fileUtils.js', async () => {
 });
 
 const mocks = vi.hoisted(() => ({
+  settings: { getSettings: vi.fn(async () => ({})) },
   ollama: {
     getInstalledModels: vi.fn(async () => []),
     getModelCapabilities: vi.fn(async () => []),
     pullModel: vi.fn(async (id) => ({ success: true, modelId: id })),
+    importModelFromHfSafetensors: vi.fn(async ({ modelId }) => ({ success: true, modelId })),
     deleteModel: vi.fn(async (id) => ({ success: true, modelId: id })),
     getLoadedModels: vi.fn(async () => []),
     getLastLoadedModelsError: vi.fn(() => null),
@@ -75,6 +85,7 @@ vi.mock('./providers.js', async () => {
     isOllamaBackedProvider: real.isOllamaBackedProvider
   };
 });
+vi.mock('./settings.js', () => mocks.settings);
 
 // child_process is mocked so the install/upgrade paths (spawn-based streaming +
 // execFile-based presence checks) are drivable. Defaults are benign for the rest
@@ -221,6 +232,17 @@ describe('localLlm', () => {
     it('routes Ollama install to pullModel', async () => {
       await svc.installModel('ollama', 'llama3.2');
       expect(mocks.ollama.pullModel).toHaveBeenCalledWith('llama3.2', undefined);
+    });
+    it('routes a curated Safetensors model through Ollama create instead of registry pull', async () => {
+      const onProgress = vi.fn();
+      await svc.installModel('ollama', 'orcarouter/qwen3.8-27b-uncensored-mlx:4bit', onProgress);
+      expect(mocks.ollama.importModelFromHfSafetensors).toHaveBeenCalledWith({
+        modelId: 'orcarouter/qwen3.8-27b-uncensored-mlx:4bit',
+        repo: 'orcarouter/Qwen3.8-27B-Uncensored-MLX',
+        subdir: '4-bit',
+        minVersion: '0.19.0'
+      }, onProgress);
+      expect(mocks.ollama.pullModel).not.toHaveBeenCalled();
     });
     it('routes Ollama delete to deleteModel', async () => {
       await svc.deleteModel('ollama', 'llama3.2');
@@ -786,6 +808,32 @@ describe('localLlm', () => {
       const s = await svc.getStatus();
       expect(s.ollama.latestVersion).toBeNull();
       expect(s.ollama.updateAvailable).toBe(false);
+    });
+  });
+
+  describe('getStatus editorial recommendation with measured evidence', () => {
+    const installed = [
+      { id: 'qwen3.6:35b', name: 'qwen3.6:35b', params: '35B' },
+      { id: 'gemma4:9b', name: 'gemma4:9b', params: '9B' },
+    ];
+    beforeEach(() => {
+      measured.ollama = {};
+      measured.lmstudio = {};
+      mocks.ollama.getStatus.mockResolvedValue({ available: true, baseUrl: 'x', version: '0.5.7', modelCount: 2, models: installed });
+    });
+    afterEach(() => { measured.ollama = {}; measured.lmstudio = {}; });
+
+    it('recommends the heuristic pick when nothing has been measured', async () => {
+      const s = await svc.getStatus();
+      expect(s.ollama.recommendations.editorial.id).toBe('qwen3.6:35b');
+      expect(s.ollama.recommendations.editorial.evidence).toBe('estimated');
+    });
+
+    it('refuses to recommend a model measured NOT to run on this machine', async () => {
+      measured.ollama = { 'qwen3.6:35b': { verdict: 'does-not-fit', stale: false } };
+      const s = await svc.getStatus();
+      expect(s.ollama.recommendations.editorial.id).toBe('gemma4:9b');
+      expect(s.ollama.recommendations.editorial.ruledOutByMeasurement).toEqual(['qwen3.6:35b']);
     });
   });
 });

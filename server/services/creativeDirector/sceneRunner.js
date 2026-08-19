@@ -213,6 +213,7 @@ export async function runSceneRender(project, scene) {
       // Geometry rides along in `shared` — grok.js reads it to derive the
       // project's aspect ratio for the base image.
       ...grokVideoJobParams(settings, { sourceImagePath, durationSeconds: scene.durationSeconds }),
+      creativeDirector: { projectId: project.id, sceneId: scene.sceneId },
     }
     : {
       ...shared,
@@ -233,6 +234,7 @@ export async function runSceneRender(project, scene) {
       // wall-clock per scene roughly in half. Project-level so every scene
       // in the project inherits the same setting.
       disableAudio: project.disableAudio === true,
+      creativeDirector: { projectId: project.id, sceneId: scene.sceneId },
     };
 
   if (useGrok) {

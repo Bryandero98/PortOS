@@ -235,6 +235,18 @@ describe('CoS Routes', () => {
       expect(response.status).toBe(200);
       expect(cos.updateConfig).toHaveBeenCalledWith(updates);
     });
+
+    it('accepts the investigation auto-approval setting', async () => {
+      const updates = { autoApproveInvestigations: true };
+      cos.updateConfig.mockResolvedValue(updates);
+
+      const response = await request(app)
+        .put('/api/cos/config')
+        .send(updates);
+
+      expect(response.status).toBe(200);
+      expect(cos.updateConfig).toHaveBeenCalledWith(updates);
+    });
   });
 
   describe('GET /api/cos/tasks', () => {

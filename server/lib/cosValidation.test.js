@@ -24,13 +24,14 @@ import {
   resolveReviewerEfforts,
   reviewerEffortsFromDefaults,
   reviewerEffortArgs,
+  reviewerModelArg,
   buildReviewerEffortNote,
   sanitizeTaskMetadata,
   codeReviewSettingsSchema,
   taskTemplateSettingsSchema,
 } from './cosValidation.js';
 import { LOCAL_AGENT_REVIEWERS } from './slashdoInvocation.js';
-import { EFFORT_LEVELS, CLAUDE_EFFORT_LEVELS, CODEX_EFFORT_LEVELS, ANTIGRAVITY_EFFORT_LEVELS } from './providerModels.js';
+import { EFFORT_LEVELS, CLAUDE_EFFORT_LEVELS, CODEX_EFFORT_LEVELS, ANTIGRAVITY_EFFORT_LEVELS, CURSOR_EFFORT_LEVELS } from './providerModels.js';
 
 describe('cosValidation effort field', () => {
   it('accepts every EFFORT_LEVELS value on create and rejects unknown values', () => {
@@ -54,6 +55,16 @@ describe('cosValidation effort field', () => {
     expect(updateCosTaskSchema.parse({ effort: 'high' }).effort).toBe('high');
     expect(updateCosTaskSchema.parse({}).effort).toBeUndefined();
     expect(updateCosTaskSchema.safeParse({ effort: 'bogus' }).success).toBe(false);
+  });
+});
+
+describe('cosValidation OpenCode Ollama generation overrides', () => {
+  it('accepts bounded temperature and explicit thinking, including false', () => {
+    expect(createCosTaskSchema.parse({ description: 'x', temperature: 0.25, thinking: false }))
+      .toMatchObject({ temperature: 0.25, thinking: false });
+    expect(createCosTaskSchema.safeParse({ description: 'x', temperature: 2.1 }).success).toBe(false);
+    expect(updateCosTaskSchema.parse({ thinking: null, temperature: null }))
+      .toMatchObject({ thinking: null, temperature: null });
   });
 });
 
@@ -156,6 +167,9 @@ describe('cosValidation reviewer CLI binaries', () => {
       expect(reviewerCliBinary(slug)).toBe(slug);
       expect(describeReviewerCli(slug)).toBe(`\`${slug}\``);
     }
+    expect(reviewerCliBinary('cursor')).toBe('cursor-agent');
+    expect(reviewerCliBinary('cursor-agent')).toBe('cursor-agent');
+    expect(describeReviewerCli('cursor')).toBe('`cursor-agent` (the `cursor` reviewer)');
   });
 
   it('returns null for reviewers that have no spawnable CLI', () => {
@@ -213,6 +227,10 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
     expect(reviewerEffortLevels('gemini')).toEqual(ANTIGRAVITY_EFFORT_LEVELS);
     expect(reviewerEffortLevels('ollama')).toEqual(LOCAL_LLM_EFFORT_LEVELS);
     expect(reviewerEffortLevels('lmstudio')).toEqual(LOCAL_LLM_EFFORT_LEVELS);
+    // cursor has a ladder even though `cursor-agent` takes no `--effort` flag:
+    // the level is a variant of its model id, folded in by `reviewerModelArg`.
+    expect(reviewerEffortLevels('cursor')).toEqual(CURSOR_EFFORT_LEVELS);
+    expect(reviewerEffortLevels('cursor-agent')).toEqual(CURSOR_EFFORT_LEVELS);
     // No effort control: copilot is a GitHub review, grok's CLI takes no flag,
     // and a `@username` reviewer is a person.
     expect(reviewerEffortLevels('copilot')).toBeNull();
@@ -222,7 +240,7 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
 
   it('EFFORT_SELECTABLE_REVIEWERS is exactly the reviewers with a non-empty ladder', () => {
     expect([...EFFORT_SELECTABLE_REVIEWERS].sort())
-      .toEqual(['antigravity', 'claude', 'codex', 'lmstudio', 'ollama']);
+      .toEqual(['antigravity', 'claude', 'codex', 'cursor', 'lmstudio', 'ollama']);
     for (const reviewer of REVIEWER_VALUES) {
       expect(EFFORT_SELECTABLE_REVIEWERS.includes(reviewer))
         .toBe((reviewerEffortLevels(reviewer) || []).length > 0);
@@ -279,6 +297,39 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
     expect(reviewerEffortArgs('claude', null)).toEqual([]);
   });
 
+  it('NEVER emits --effort for cursor, at any level — the CLI has no such flag', () => {
+    // `cursor-agent --effort high` exits non-zero. Cursor's ladder exists so the
+    // level can be PICKED; `reviewerModelArg` is what carries it. A regression
+    // here reaches an agent as a literal command line it runs verbatim.
+    for (const level of CURSOR_EFFORT_LEVELS) {
+      expect(reviewerEffortArgs('cursor', level), level).toEqual([]);
+      expect(reviewerEffortArgs('cursor-agent', level), level).toEqual([]);
+    }
+    expect(reviewerEffortArgs('cursor', 'minimal')).toEqual([]);
+  });
+
+  it('folds a cursor effort into --model, leaving every other reviewer id verbatim', () => {
+    // Cursor's native model-variant syntax, matching slashdo's own fold so the
+    // same pin means the same invocation on either side.
+    expect(reviewerModelArg('cursor', 'gpt-5', 'max')).toBe('gpt-5[effort=max]');
+    // An existing bracket gains an `,effort=` parameter, not a second bracket.
+    expect(reviewerModelArg('cursor', 'claude-opus-4-7[thinking=true]', 'high'))
+      .toBe('claude-opus-4-7[thinking=true,effort=high]');
+    // A model that already names its own effort wins over the ladder pin.
+    expect(reviewerModelArg('cursor', 'gpt-5[effort=low]', 'max')).toBe('gpt-5[effort=low]');
+    // No effort pinned, or one cursor's ladder rejects → the bare id.
+    expect(reviewerModelArg('cursor', 'gpt-5')).toBe('gpt-5');
+    expect(reviewerModelArg('cursor', 'gpt-5', 'minimal')).toBe('gpt-5');
+    // No model to attach the variant to → nothing at all.
+    expect(reviewerModelArg('cursor', '', 'max')).toBeNull();
+    expect(reviewerModelArg('cursor', null, 'max')).toBeNull();
+    // The alias resolves like every other lookup here.
+    expect(reviewerModelArg('cursor-agent', 'gpt-5', 'max')).toBe('gpt-5[effort=max]');
+    // Every other reviewer keeps its id verbatim — its effort rides its own flag.
+    expect(reviewerModelArg('codex', 'gpt-5.6-sol', 'high')).toBe('gpt-5.6-sol');
+    expect(reviewerModelArg('antigravity', 'Gemini 3.5 Flash (High)', 'high')).toBe('Gemini 3.5 Flash (High)');
+  });
+
   it('DROPS an out-of-ladder effort instead of clamping it, even from unnormalized input', () => {
     // The underlying `buildEffortArgs` clamps (agy `max` → `--effort high`), which
     // is right for a provider pin carried across providers but wrong for a reviewer
@@ -292,7 +343,7 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
     expect(reviewerEffortArgs('codex', ' HIGH ')).toEqual(['-c', 'model_reasoning_effort=high']);
   });
 
-  it('builds the slashdo-invocation note only for CLI reviewers carrying an effort', () => {
+  it('builds the hand-invocation note only for CLI reviewers carrying an effort', () => {
     const note = buildReviewerEffortNote(['codex', 'claude', 'copilot'], { codex: 'high', claude: 'low', copilot: 'high' });
     expect(note).toContain('`codex -c model_reasoning_effort=high`');
     expect(note).toContain('`claude --effort low`');
@@ -304,6 +355,56 @@ describe('per-reviewer reasoning effort (reviewerEfforts)', () => {
     // slashdo's local-model loop calls the backend itself, so there's no flag to
     // name for lmstudio/ollama in this path.
     expect(buildReviewerEffortNote(['ollama'], { ollama: 'high' })).toBe('');
+    // …including when it carries a MODEL pin too: a local reviewer names no
+    // binary, so there is no command line to print (a `null --model …` would be
+    // handed to an agent as something to run).
+    expect(buildReviewerEffortNote(['ollama'], { ollama: 'high' }, { reviewerModels: { ollama: 'qwen2.5:7b' } })).toBe('');
+    expect(buildReviewerEffortNote(['copilot'], { copilot: 'high' }, { reviewerModels: { copilot: 'x' } })).toBe('');
+  });
+
+  it('names cursor with its folded --model instead of an --effort it would reject', () => {
+    const note = buildReviewerEffortNote(['cursor'], { cursor: 'max' }, { reviewerModels: { cursor: 'gpt-5' } });
+    expect(note).toContain('`cursor-agent --model gpt-5[effort=max]`');
+    expect(note).not.toContain('--effort');
+    // No model to fold into: nothing is emitted rather than a bogus flag.
+    expect(buildReviewerEffortNote(['cursor'], { cursor: 'max' })).toBe('');
+    expect(buildReviewerEffortNote(['cursor'], { cursor: 'max' }, { reviewerModels: {} })).toBe('');
+    // A model with NO effort pin is not this sentence's business.
+    expect(buildReviewerEffortNote(['cursor'], {}, { reviewerModels: { cursor: 'gpt-5' } })).toBe('');
+    // The pin still round-trips through the emitted --review-with token, which
+    // suppresses the note exactly as it does for every other reviewer.
+    const reviewWith = buildReviewWithArgs(['cursor'], { reviewerModels: { cursor: 'gpt-5' }, reviewerEfforts: { cursor: 'max' } });
+    expect(reviewWith).toContain('cursor[gpt-5]~effort=max');
+    expect(buildReviewerEffortNote(['cursor'], { cursor: 'max' }, { reviewWith, reviewerModels: { cursor: 'gpt-5' } })).toBe('');
+  });
+
+  it('goes SILENT once the emitted --review-with carries the effort itself', () => {
+    // slashdo has parsed `~effort=<level>` since v3.31, and markSuffixes emits it —
+    // so on a pinned invocation the loop already runs the reviewer at that effort.
+    // Repeating it as prose tells the agent to pass the flag a second time, or to
+    // hand-run a reviewer `/do:pr` was about to run.
+    const reviewWith = buildReviewWithArgs(['codex', 'claude'], { reviewerEfforts: { codex: 'high', claude: 'low' } });
+    expect(reviewWith).toContain('codex~effort=high');
+    expect(buildReviewerEffortNote(['codex', 'claude'], { codex: 'high', claude: 'low' }, { reviewWith })).toBe('');
+    // An invocation that pins reviewers but NO effort leaves the note as the only
+    // carrier, and an absent/blank pin is the unpinned case.
+    const noEffort = buildReviewWithArgs(['codex', 'claude'], {});
+    expect(noEffort).not.toContain('~effort=');
+    expect(buildReviewerEffortNote(['codex'], { codex: 'high' }, { reviewWith: noEffort })).toContain('`codex -c model_reasoning_effort=high`');
+    expect(buildReviewerEffortNote(['codex'], { codex: 'high' }, { reviewWith: '' })).toContain('`codex -c model_reasoning_effort=high`');
+    // And a lone copilot can't carry an effort at all (no ladder — see the DROPS
+    // test above), which is why the lone-default suppression stays correct without
+    // an effort clause of its own in applySlashdoInvocation.
+    expect(buildReviewWithArgs(['copilot'], { reviewerEfforts: { copilot: 'high' } })).toBe('');
+  });
+
+  it('never claims --review-with lacks an effort suffix', () => {
+    // The note predates slashdo's `~effort=` support and used to justify itself
+    // with "`--review-with` has no effort suffix". It does have one — an agent
+    // reading that next to its own `codex~effort=high` token is being misled.
+    const note = buildReviewerEffortNote(['codex'], { codex: 'high' });
+    expect(note).not.toContain('has no effort suffix');
+    expect(note).toContain('Pass the flag yourself when you spawn the reviewer');
   });
 
   it('carries reviewerEfforts through the task schema and the metadata sanitizer', () => {
@@ -366,6 +467,13 @@ describe('client mirror of the reviewer effort ladders', () => {
 });
 
 describe('per-reviewer model pins', () => {
+  it('accepts Cursor Agent in the reviewer config and persists its model pin', () => {
+    const parsed = codeReviewSettingsSchema.parse({ reviewers: ['cursor-agent'], cursorModel: 'gpt-5' });
+    expect(parsed.reviewers).toEqual(['cursor']);
+    expect(parsed.cursorModel).toBe('gpt-5');
+    expect(reviewerModelsFromDefaults(parsed)).toEqual({ cursor: 'gpt-5' });
+  });
+
   it('keeps an antigravity model pin on the code-review settings slice', () => {
     // `agy --model <id>` is real (unlike the effort-only support PortOS assumed
     // before #3728), so the scalar has to survive the `.strict()` schema.

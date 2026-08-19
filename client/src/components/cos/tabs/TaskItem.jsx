@@ -16,7 +16,9 @@ import {
   AlertCircle,
   TrendingUp,
   Play,
-  Scale
+  Scale,
+  Unlock,
+  Server
 } from 'lucide-react';
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
@@ -27,6 +29,7 @@ import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
 import Modal from '../../ui/Modal';
 import CollapsibleText from '../../ui/CollapsibleText';
 import { extractCosTaskType } from '../../../lib/cosTaskType';
+import InstancePicker from '../InstancePicker';
 
 const statusIcons = {
   pending: <Clock size={16} aria-hidden="true" className="text-yellow-500" />,
@@ -46,7 +49,8 @@ const statusIcons = {
 // their own entries here rather than a parallel field.
 const APPROVAL_REASON_HINTS = {
   'investigation-loop:repeat-fingerprint': 'Held for you: this same failure cause was investigated within the last 24 hours and came back.',
-  'investigation-loop:failure-storm': 'Held for you: this hour is nearly out of investigation budget — failures are cascading, not isolated.'
+  'investigation-loop:failure-storm': 'Held for you: this hour is nearly out of investigation budget — failures are cascading, not isolated.',
+  'config:requireApproval': 'Held for you: this scheduled task type has Require approval turned on.'
 };
 
 const getTaskEditData = (task) => ({
@@ -54,7 +58,9 @@ const getTaskEditData = (task) => ({
   prompt: task.metadata?.prompt || '',
   context: task.metadata?.context || '',
   model: task.metadata?.model || '',
-  provider: task.metadata?.provider || ''
+  provider: task.metadata?.provider || '',
+  // '' = "Any instance" (#4520) — no pin, the opportunistic default.
+  targetInstanceId: task.metadata?.targetInstanceId || ''
 });
 
 export const taskRowId = (taskId, source) => `cos-task-${source}-${encodeURIComponent(taskId)}`;
@@ -66,7 +72,7 @@ function getSuccessRateStyle(rate) {
   return { bg: 'bg-port-error/15', text: 'text-port-error', label: 'low' };
 }
 
-export default function TaskItem({ task, isSystem, selected = false, onRefresh, providers, durations, dragHandleProps, apps, onEditingChange }) {
+export default function TaskItem({ task, isSystem, selected = false, onRefresh, providers, durations, dragHandleProps, apps, instances = null, onEditingChange }) {
   // System tasks are persisted in COS-TASKS.md. Every task
   // mutation must name that source; otherwise the API's user-queue default
   // searches TASKS.md and reports the system task as missing.
@@ -89,6 +95,24 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
   // task actually carries one, and is omitted from the PATCH otherwise rather
   // than writing an empty `prompt` key onto every task the user edits.
   const hasPromptField = typeof task.metadata?.prompt === 'string';
+  // `null` means the registry has not been read yet — distinct from a read that
+  // found nothing — so a row never flashes "unknown instance" before the list lands,
+  // and the editor never offers a picker built from a list it does not have.
+  const registryLoaded = instances !== null;
+  const knownInstances = instances || [];
+  const targetInstanceId = task.metadata?.targetInstanceId || '';
+  // Instance pinning (#4520) is only meaningful once this install federates.
+  // Below that the picker is hidden AND the field is withheld from the PATCH, so
+  // editing a task here can never silently clear a pin another machine set — with
+  // one exception: a task that ALREADY carries a pin always gets the picker, or
+  // removing the last peer would leave that pin permanently unclearable and the
+  // task unrunnable on every instance.
+  const canPinInstance = registryLoaded && (knownInstances.length > 1 || Boolean(targetInstanceId));
+  // A pin naming an instance that has left the registry still renders — silently
+  // dropping the badge would hide exactly the task nothing will ever run.
+  const targetInstanceName = targetInstanceId && registryLoaded
+    ? (knownInstances.find(i => i.instanceId === targetInstanceId)?.name || 'unknown instance')
+    : '';
   const taskPrompt = task.metadata?.prompt || '';
   const taskContext = task.metadata?.context || '';
   const taskModel = task.metadata?.model || '';
@@ -160,16 +184,27 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
     return null;
   }, [durations, task, task.status]);
 
-  const handleStatusChange = async (newStatus, blockedReasonText = '') => {
+  const handleStatusChange = async (newStatus, blockedReasonText = '', successMessage = `Task marked as ${newStatus}`) => {
     const updates = { status: newStatus, type: taskSource };
     if (newStatus === 'blocked' && blockedReasonText) {
       updates.blockedReason = blockedReasonText;
     }
     const result = await api.updateCosTask(task.id, updates, { silent: true }).catch(err => { toast.error(err.message); return null; });
     if (!result) return false;
-    toast.success(`Task marked as ${newStatus}`);
+    toast.success(successMessage);
     onRefresh();
     return true;
+  };
+
+  // Unblocking is the same status write the actionable-insights banner performs,
+  // offered here on the card itself so clearing a blocker doesn't require
+  // scrolling back to the banner at the top of the page. Gated while in flight so
+  // a double-click can't fire two writes.
+  const [unblocking, setUnblocking] = useState(false);
+  const handleUnblock = async () => {
+    setUnblocking(true);
+    await handleStatusChange('pending', '', 'Task unblocked and moved to pending');
+    setUnblocking(false);
   };
 
   const handleMarkBlocked = () => {
@@ -195,8 +230,15 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
   };
 
   const handleSave = async () => {
-    const { prompt, ...rest } = editData;
-    const payload = hasPromptField ? { ...rest, prompt, type: taskSource } : { ...rest, type: taskSource };
+    const { prompt, targetInstanceId: draftInstanceId, ...rest } = editData;
+    const payload = {
+      ...rest,
+      type: taskSource,
+      ...(hasPromptField ? { prompt } : {}),
+      // '' is the picker's "Any instance" → null, the explicit unpin the update
+      // schema preserves (absent would leave the pin untouched).
+      ...(canPinInstance ? { targetInstanceId: draftInstanceId || null } : {})
+    };
     const result = await api.updateCosTask(task.id, payload, { silent: true }).catch(err => {
       toast.error(err.message);
       return null;
@@ -215,7 +257,8 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
     (hasPromptField && editData.prompt !== (task.metadata?.prompt || '')) ||
     editData.context !== (task.metadata?.context || '') ||
     editData.model !== (task.metadata?.model || '') ||
-    editData.provider !== (task.metadata?.provider || '');
+    editData.provider !== (task.metadata?.provider || '') ||
+    editData.targetInstanceId !== targetInstanceId;
 
   const handleCancelEdit = () => {
     if (hasUnsavedEdits) {
@@ -317,6 +360,15 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
                 {apps.find(a => a.id === task.metadata.app).name}
               </span>
             )}
+            {targetInstanceName && (
+              <span
+                className="flex items-center gap-1 px-1.5 py-0.5 text-xs bg-port-accent-2/20 text-port-accent-2 rounded shrink-0"
+                title={`Pinned to instance ${targetInstanceId} — only that instance runs this task`}
+              >
+                <Server size={10} aria-hidden="true" />
+                {targetInstanceName}
+              </span>
+            )}
             {/* Duration estimate for pending tasks */}
             {durationEstimate && (
               <span
@@ -413,6 +465,14 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
                   </select>
                 )}
               </div>
+              {canPinInstance && (
+                <InstancePicker
+                  id={`task-target-instance-${idScope}-${task.id}`}
+                  value={editData.targetInstanceId}
+                  onChange={(next) => setEditData(d => ({ ...d, targetInstanceId: next }))}
+                  instances={knownInstances}
+                />
+              )}
               {isConfirmingDiscard(task.id) ? (
                 <ConfirmButtonPair
                   prompt="Discard unsaved changes?"
@@ -573,7 +633,7 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
         {/* Action buttons. Keep the delete confirmation here, next to the trash
             icon, rather than at the bottom of the card — a task with a lot of
             context would otherwise push the confirm row far below the fold. */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
           {!editing && (
             isConfirming(task.id) ? (
               <ConfirmButtonPair
@@ -597,6 +657,23 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
                     aria-label="Process task now"
                   >
                     <Play size={14} aria-hidden="true" />
+                  </button>
+                )}
+                {/* Labeled, not icon-only: this is the primary next action for a
+                    blocked task, and the icon-only affordance (clicking the status
+                    glyph) wasn't discoverable — the user had to go find the banner
+                    at the top of the page instead. */}
+                {task.status === 'blocked' && (
+                  <button
+                    type="button"
+                    onClick={handleUnblock}
+                    disabled={unblocking}
+                    className="flex items-center gap-1 px-2 py-1 min-h-[32px] text-xs font-medium text-port-success bg-port-success/10 hover:bg-port-success/20 rounded transition-colors disabled:opacity-50"
+                    title="Unblock and move to pending"
+                    aria-label={`Unblock task ${task.id} and move it to pending`}
+                  >
+                    <Unlock size={12} aria-hidden="true" />
+                    {unblocking ? 'Unblocking…' : 'Unblock'}
                   </button>
                 )}
                 {task.status !== 'blocked' && task.status !== 'completed' && (

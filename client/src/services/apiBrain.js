@@ -10,8 +10,9 @@ export const updateBrainSettings = (settings, options = {}) => request('/brain/s
 });
 
 // Brain - Capture & Inbox
-// `repoIntake` ({ malwareScan, learn }) is the capture box's post-clone agent
-// opt-in; the server ignores it unless the text is a bare GitHub repo URL.
+// `repoIntake` ({ malwareScan, learn, targetAppId, studyContext }) is the
+// capture box's post-clone agent opt-in; the server ignores it unless the text
+// is a bare GitHub repo URL.
 export const captureBrainThought = (text, providerOverride, modelOverride, { creative, repoIntake } = {}, options = {}) => request('/brain/capture', {
   method: 'POST',
   body: JSON.stringify({ text, providerOverride, modelOverride, creative, repoIntake }),
@@ -364,3 +365,15 @@ export const updateYoutubeIngestSettings = (settings, options = {}) => request('
 });
 export const youtubeIngestEventsUrl = (jobId) =>
   `/api/brain/youtube/ingest/${encodeURIComponent(jobId)}/events`;
+
+// --- Brain federation parity audit (#4519) ---
+// `getBrainParityReports` reads the last stored per-peer result (no peer I/O);
+// `runBrainParityCheck` performs the audit — pass a local peer id for one peer,
+// omit it to sweep every federating peer. `silent: true` is available for
+// callers that own their error UI.
+export const getBrainParityReports = (options = {}) => request('/brain/reconcile/parity', options);
+export const runBrainParityCheck = (peerId, options = {}) => request('/brain/reconcile/parity', {
+  method: 'POST',
+  body: JSON.stringify(peerId ? { peerId } : {}),
+  ...options
+});

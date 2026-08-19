@@ -27,6 +27,7 @@ vi.mock('../services/creativeDirector/planAdvance.js', () => ({
 }));
 vi.mock('../services/creative/toolRegistry.js', () => ({
   getAllCreativeToolMetadata: vi.fn(() => [{ id: 'universe_create', costClass: 'free', longRunning: false, destructive: false }]),
+  getCommissionPlanError: vi.fn(() => null),
 }));
 vi.mock('../lib/domainAutonomy.js', () => ({ getCreativeAutonomyMode: vi.fn(() => 'dry-run') }));
 vi.mock('../services/domainUsage.js', () => ({ getDomainBudgetStatus: vi.fn(async () => ({ withinBudget: false, exceeded: 'actions' })) }));
@@ -59,6 +60,7 @@ import * as autoCast from '../services/creativeDirector/autoCast.js';
 import * as hook from '../services/creativeDirector/completionHook.js';
 import * as firstPass from '../services/creativeDirector/firstPassGen.js';
 import * as firstPassMusicBed from '../services/creativeDirector/firstPassMusicGen.js';
+import * as creativeTools from '../services/creative/toolRegistry.js';
 import { CREATIVE_DIRECTOR_IDS_BATCH_MAX } from '../lib/creativeDirectorValidation.js';
 import creativeDirectorRoutes from './creativeDirector.js';
 
@@ -667,10 +669,22 @@ describe('creativeDirector routes', () => {
     const validStep = { stepId: 'create-series', toolName: 'pipeline_createSeries', args: { name: 'Nova' }, dependsOn: [] };
 
     it('accepts a word/hyphen stepId', async () => {
+      cdService.getProject.mockResolvedValue({ id: 'cd-1', directive: { goal: 'x', constraints: {} } });
       cdService.setPlan.mockResolvedValue({ id: 'cd-1', plan: { steps: [validStep] } });
       const r = await request(app).patch('/api/creative-director/cd-1/plan').send({ steps: [validStep] });
       expect(r.status).toBe(200);
       expect(cdService.setPlan).toHaveBeenCalled();
+    });
+
+    it('rejects a plan that violates commission output controls', async () => {
+      cdService.getProject.mockResolvedValue({
+        id: 'cd-1', directive: { goal: 'image', constraints: { targetAbility: 'image' } },
+      });
+      creativeTools.getCommissionPlanError.mockReturnValueOnce('Tool is not allowed for an image commission');
+      const r = await request(app).patch('/api/creative-director/cd-1/plan').send({ steps: [validStep] });
+      expect(r.status).toBe(400);
+      expect(r.body.code).toBe('INVALID_COMMISSION_PLAN');
+      expect(cdService.setPlan).not.toHaveBeenCalled();
     });
 
     it('400s on a stepId with a dot (unreferenceable by the result-reference grammar)', async () => {

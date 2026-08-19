@@ -59,6 +59,18 @@ describe('useVideoGenForm', () => {
     extractLastFrame.mockReset();
   });
 
+  it('loads a music-library render from an Audio-to-Video handoff URL', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(new Blob(['audio bytes'], { type: 'audio/mpeg' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = render({ url: '/media/video?mode=a2v&audioFilename=example%20take.mp3' });
+
+    await waitFor(() => expect(result.current.audioFile).toBeInstanceOf(File));
+    expect(result.current.mode).toBe('a2v');
+    expect(result.current.audioFile.name).toBe('example take.mp3');
+    expect(fetchMock).toHaveBeenCalledWith('/data/music/example%20take.mp3');
+    vi.unstubAllGlobals();
+  });
+
   it('seeds the model from status.defaultModel without clobbering a URL pick', async () => {
     const { result } = render();
     await waitFor(() => expect(result.current.modelId).toBe(MLX.id));

@@ -71,6 +71,15 @@ router.put('/post/config', asyncHandler(async (req, res) => {
 }));
 
 /**
+ * GET /api/meatspace/post/benchmark/protocol
+ * The next fixed-form benchmark and its versioned scoring contract.
+ */
+router.get('/post/benchmark/protocol', asyncHandler(async (req, res) => {
+  const protocol = await postService.getPostBenchmarkProtocol();
+  res.json(protocol);
+}));
+
+/**
  * GET /api/meatspace/post/sessions
  * Session history with optional date range
  */

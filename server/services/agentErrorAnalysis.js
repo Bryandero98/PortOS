@@ -24,12 +24,18 @@ import {
 } from '../lib/investigationTasks.js';
 import { investigationCircuitOpen, noteInvestigationFiled, readAllTasksFlat, recentInvestigationCreations } from './investigationTaskProducer.js';
 import { PRIMARY_CHECKOUT_MUTATED_CATEGORY, PRIMARY_CHECKOUT_MUTATED_ESCALATION, PRIMARY_CHECKOUT_MUTATED_REASON } from '../lib/primaryCheckoutGuard.js';
+import { isPortosSuppliedConfigKey } from '../lib/providerModels.js';
 
 // Max retries before blocking a task
 export const MAX_TASK_RETRIES = 3;
 
 // Longest redacted failure snippet folded into a human-facing investigation body.
 const SNIPPET_MAX_CHARS = 240;
+
+// Longest accepted-values list echoed back in a `cli-config-invalid` fix. Codex
+// enumerates every variant it accepts ("expected one of `minimal`, `low`, …"),
+// which is useful at a glance and unreadable at full length.
+const CONFIG_EXPECTED_MAX_CHARS = 120;
 
 // Machine-identity / network / PII fragments stripped before a captured failure
 // snippet (or any interpolated free text) lands in a human-facing — and possibly
@@ -123,8 +129,17 @@ export const ERROR_PATTERNS = [
   // accept, sitting in the global config). Deliberately does NOT echo the
   // matched path — it embeds the OS username (see Sensitive Data & Privacy in
   // CLAUDE.md).
+  //
+  // The rejected key can come from either side, and the fix text says which
+  // (see `extract`): PortOS injects only PORTOS_CLI_CONFIG_KEYS via `-c`, so
+  // any other key is already in the user's own config file. Second real
+  // incident, 2026-08-18: the Codex desktop app wrote `service_tier =
+  // "default"` into the shared `~/.codex/config.toml`, and the older
+  // `codex` on PATH — the one PortOS spawns — accepts only `fast` or `flex`.
+  // Blaming a PortOS override there burns an investigation cycle in the wrong
+  // repo.
   {
-    pattern: /(?:error loading )?config\.toml(?::\d+:\d+)?:\s*unknown (variant|field) `([^`]+)`(?:[\s\S]{0,200}?in `([^`]+)`)?/i,
+    pattern: /(?:error loading )?config\.toml(?::\d+:\d+)?:\s*unknown (variant|field) `([^`]+)`(?:,\s*expected ([^\n]+))?(?:[\s\S]{0,200}?in `([^`]+)`)?/i,
     category: 'cli-config-invalid',
     actionable: true,
     origin: 'runner', // fully structured — the CLI's own config-load rejection
@@ -132,13 +147,37 @@ export const ERROR_PATTERNS = [
     extract: (match) => {
       const kind = match[1].toLowerCase();
       const value = match[2];
-      const key = match[3] || null;
+      // The CLI already printed the values it WILL accept ("expected `fast` or
+      // `flex`"). Fold them into the fix so it is directly actionable, instead
+      // of "its own error message lists them" — which sends the reader back to
+      // a log the escalation card never shows. Redacted like every other
+      // free-text capture (this body can federate) and capped, since some keys
+      // enumerate a long ladder.
+      const expected =
+        redactFailureSnippet(match[3] || '')
+          .replace(/[.,;]+$/, '')
+          .slice(0, CONFIG_EXPECTED_MAX_CHARS) || null;
+      const key = match[4] || null;
       const keyRef = key ? `\`${key}\`` : 'the rejected key';
+      const accepts = expected ? ` This CLI version expects ${expected}.` : '';
+      // Provenance is the whole fix here. PortOS emits exactly two `-c` config
+      // keys (PORTOS_CLI_CONFIG_KEYS); anything else was already sitting in the
+      // user's own config file — commonly written there by a NEWER install of
+      // the same CLI sharing that file. Real incident 2026-08-18: the Codex
+      // desktop app wrote `service_tier = "default"` into `~/.codex/config.toml`
+      // and the older `codex` on PATH rejects that variant. Naming the wrong
+      // source costs a whole investigation cycle, so say which one it is.
+      const source = !key
+        ? `Look first in the CLI's own config file — for codex that is \`~/.codex/config.toml\` — then in the \`-c <key>=<value>\` overrides PortOS builds in server/lib/providerModels.js.`
+        : isPortosSuppliedConfigKey(key)
+          ? `PortOS supplies ${keyRef} itself as a \`-c <key>=<value>\` override, so the accepted values belong in that provider's ladder in server/lib/providerModels.js — editing the CLI config file will not help.`
+          : `PortOS never supplies ${keyRef}, so it is already in the CLI's own config file — for codex that is \`~/.codex/config.toml\`. Edit or delete that line, or upgrade this CLI to a version that accepts the value; a second, newer install of the same CLI sharing one config file is the usual source.`;
       return {
         message: `Provider CLI rejected its config: unknown ${kind} "${value}"${key ? ` for ${key}` : ''}`,
-        suggestedFix: `The CLI failed while LOADING its config, before the prompt was read, so every retry dies identically. Set ${keyRef} to a value this CLI version accepts (its own error message lists them) in the CLI's config file — for codex that is \`~/.codex/config.toml\`. If PortOS supplied the value as a \`-c <key>=<value>\` override instead, it is out of the provider's ladder in server/lib/providerModels.js.`,
+        suggestedFix: `The CLI failed while LOADING its config, before the prompt was read, so every retry dies identically. Set ${keyRef} to a value this CLI version accepts.${accepts} ${source}`,
         rejectedConfigKey: key,
-        rejectedConfigValue: value
+        rejectedConfigValue: value,
+        rejectedConfigExpected: expected
       };
     }
   },

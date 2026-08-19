@@ -4,11 +4,11 @@ Date: 2026-08-16
 
 ## Recommendation
 
-Recommend `lmstudio-community/Qwen3.8-27B-MLX-4bit` as PortOS's fast macOS
-install option for Qwen3.8 27B. It is a complete MLX checkpoint, is published
-by the LM Studio community for its Apple-Silicon MLX engine, and fits the
-existing LM Studio `lms get` installation path. The catalog exposes it only on
-Apple Silicon and marks it as **Fast on Apple Silicon**.
+Recommend the native Qwen3.8 27B MLX build through both supported local
+backends on Apple Silicon: `qwen3.8:27b-mlx` for Ollama and
+`mlx-community/Qwen3.8-27B-4bit` for LM Studio. Both are complete MLX
+checkpoints and fit the backends' existing installation paths. The catalog
+exposes them only on Apple Silicon and marks them as **Fast on Apple Silicon**.
 
 This is a format/runtime recommendation, not a promise of a fixed tokens-per-
 second improvement. MLX versus GGUF speed depends on the Mac, memory pressure,
@@ -25,8 +25,8 @@ LM Studio from its JavaScript server and does not own an MLX Python inference
 loop where replacing operators would have an effect.
 
 There is therefore no useful PortOS feature to add for `mlx.fast` itself. The
-native MLX model is the correct integration boundary; MLX/LM Studio own the
-operator implementation and can update it independently.
+native MLX model is the correct integration boundary; Ollama or LM Studio owns
+the operator implementation and can update it independently.
 
 ## Why the linked MTP repos are not catalog installs
 
@@ -54,22 +54,40 @@ install or launch `mlx-vlm`, MTPLX, or an MTP sidecar runtime on the user's
 behalf. The existing MTPLX integration remains an explicit, separately managed
 operator choice.
 
+## Uncensored evaluation variant
+
+PortOS also catalogs `orcarouter/Qwen3.8-27B-Uncensored-MLX` for explicit
+red-team and unrestricted local evaluation. The repository is gated on Hugging
+Face and publishes several quantizations under one repository. The shared
+catalog recommends it on both Apple-Silicon backends: PortOS downloads the
+self-contained 15.0 GB `4-bit/` checkpoint and imports it with `ollama create`,
+while LM Studio can select another available quantization. Users must accept
+the repository terms and configure a Hugging Face token before installing.
+
 ## PortOS behavior
 
+- Ollama on Apple Silicon: recommends and pulls the packaged
+  `qwen3.8:27b-mlx` model through Ollama's native MLX engine. It also offers the
+  curated OrcaRouter uncensored build, downloading its gated 4-bit Safetensors
+  directory and importing it under
+  `orcarouter/qwen3.8-27b-uncensored-mlx:4bit` with Ollama 0.19 or newer.
 - LM Studio on Apple Silicon: recommends and installs the complete 4-bit MLX
   target through the existing model-install endpoint.
 - LM Studio on Intel macOS and non-macOS hosts: hides the MLX recommendation;
   the existing GGUF catalog remains available.
-- Ollama: retains the existing Qwen3.8 GGUF entry. Ollama cannot install an
-  arbitrary Hugging Face MLX safetensors repository through this catalog.
-- Migration: a known LM Studio-only MLX entry is not guessed into an Ollama
-  model name.
+- Ollama on non-Apple hosts: hides the MLX recommendation; the existing GGUF
+  entry remains available.
+- Migration: the known backend-specific MLX ids map exactly so switching
+  backends installs the equivalent package instead of guessing a model name.
 
 ## Sources
 
 - [`mlx.core.fast` documentation](https://ml-explore.github.io/mlx/build/html/python/fast.html)
 - [MLX-LM](https://github.com/ml-explore/mlx-lm)
-- [Complete Qwen3.8 27B MLX 4-bit checkpoint](https://huggingface.co/lmstudio-community/Qwen3.8-27B-MLX-4bit)
+- [Ollama's MLX engine announcement](https://ollama.com/blog/mlx)
+- [Ollama Safetensors import](https://docs.ollama.com/import)
+- [Complete Qwen3.8 27B MLX 4-bit checkpoint](https://huggingface.co/mlx-community/Qwen3.8-27B-4bit)
+- [OrcaRouter Qwen3.8 27B Uncensored MLX](https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-MLX)
 - [Qwen3.8 27B MTP 4-bit drafter](https://huggingface.co/mlx-community/Qwen3.8-27B-MTP-4bit)
 - [Qwen3.8 27B MTP 8-bit drafter](https://huggingface.co/mlx-community/Qwen3.8-27B-MTP-8bit)
 - [MLX-VLM speculative decoding](https://github.com/Blaizzy/mlx-vlm)

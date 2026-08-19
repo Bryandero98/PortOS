@@ -11,23 +11,25 @@
 import { z } from 'zod';
 import { emptyToUndefined, emptyToNull } from './zodCompat.js';
 import { isPlainObject } from './objects.js';
-import { EFFORT_LEVELS, effortLevelsForProvider, buildEffortArgs, splitAntigravityModel } from './providerModels.js';
+import { EFFORT_LEVELS, effortLevelsForProvider, buildEffortArgs, foldCursorEffortIntoModel, splitAntigravityModel } from './providerModels.js';
 import { ANTIGRAVITY_COMMAND } from './antigravity.js';
+import { CURSOR_COMMAND } from './cursor.js';
 import { isValidSlashdoCommand } from './slashdoInvocation.js';
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
+import { AGENT_RUN_EVENT_KINDS, RUN_EVENT_READ_LIMITS } from './agentRunEvents.js';
 
 // =============================================================================
 // COS TASK SCHEMAS
 // =============================================================================
 
 // Reviewer choices for the Review Loop. `copilot` requests a native GitHub
-// Copilot review; `claude`/`antigravity`/`codex`/`grok` instruct the review-loop
+// Copilot review; `claude`/`antigravity`/`codex`/`grok`/`cursor` instruct the review-loop
 // follow-up agent to invoke the named CLI to critique the PR diff; `lmstudio`/`ollama`
 // route the diff through PortOS's local code-review endpoint
 // (`POST /api/code-review/local`) which runs the configured local LLM model.
 // Mirrored in client/src/components/cos/constants.js → REVIEWER_OPTIONS.
-export const REVIEWER_VALUES = ['copilot', 'claude', 'antigravity', 'codex', 'grok', 'lmstudio', 'ollama'];
-export const REVIEWER_ALIASES = { gemini: 'antigravity' };
+export const REVIEWER_VALUES = ['copilot', 'claude', 'antigravity', 'codex', 'grok', 'cursor', 'lmstudio', 'ollama'];
+export const REVIEWER_ALIASES = { gemini: 'antigravity', 'cursor-agent': 'cursor' };
 export const DEFAULT_REVIEWER = 'copilot';
 export const DEFAULT_REVIEWERS = ['copilot'];
 // Reviewers that resolve to a local-LLM backend (rather than a CLI or GitHub
@@ -44,13 +46,16 @@ export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama'];
 // local Ollama model. `antigravity` runs `agy --model <id>`; an effort-suffixed
 // agy id is reconciled with the effort pin by `pairReviewerModelsAndEfforts`.
 // `grok` runs `grok --model <id>` (slashdo's `grok[<model>]` bracket); it takes a
-// model but NO effort, which is why this roster and EFFORT_SELECTABLE_REVIEWERS
-// are genuinely different sets rather than two names for one list.
+// model but NO effort at all, which is why this roster and
+// EFFORT_SELECTABLE_REVIEWERS are genuinely different sets rather than two names
+// for one list. `cursor` runs `cursor-agent --model <id>` and DOES take an
+// effort — but as a parameter of the model id (`gpt-5[effort=max]`), not a flag,
+// so its pin rides this roster's `--model` rather than an `--effort` argv.
 // Copilot/local-LLM reviewers are excluded — the former has no CLI, the latter
 // get their model injected server-side by `POST /api/code-review/local`. Add a
 // reviewer here when its CLI gains model selection; the `<reviewer>Model`
 // settings scalar is generated from this roster (codeReviewSettingsSchema).
-export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude', 'antigravity', 'grok'];
+export const MODEL_CAPABLE_CLI_REVIEWERS = ['codex', 'claude', 'antigravity', 'grok', 'cursor'];
 // Every reviewer whose model the user can PICK in the UI: the model-capable CLIs
 // above (threaded into the follow-up prompt as `<reviewer> --model <id>`) plus the
 // local-LLM backends (whose id is injected server-side by
@@ -74,6 +79,7 @@ export const REVIEWER_CLI_BINARIES = {
   antigravity: ANTIGRAVITY_COMMAND,
   codex: 'codex',
   grok: 'grok',
+  cursor: CURSOR_COMMAND,
 };
 
 /**
@@ -383,7 +389,7 @@ function normalizeReviewerModel(raw, reviewer = null) {
 }
 
 // Reviewers whose slashdo `--review-with` entry accepts a `[<model>]` bracket
-// (`lib/multi-reviewer-loop.md`: codex/claude/agy/grok/ollama). PortOS's
+// (`lib/multi-reviewer-loop.md`: codex/claude/agy/grok/cursor/ollama). PortOS's
 // `lmstudio` reviewer has NO slashdo counterpart — it's served by
 // `POST /api/code-review/local`, which takes the model in its request body — so a
 // pinned lmstudio model never becomes a bracket, and `copilot`/`@login` entries
@@ -458,7 +464,12 @@ export const LOCAL_LLM_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 /**
  * Reviewer slug → the reasoning-effort ladder that reviewer accepts. Only
  * reviewers WITH an effort control appear: `copilot` is a GitHub review, `grok`'s
- * CLI takes no effort flag, and an `@username` reviewer is a person.
+ * CLI has no effort control of any kind, and an `@username` reviewer is a person.
+ *
+ * A ladder here means "the user can PICK a level", not "the CLI takes an
+ * `--effort` flag" — `cursor` accepts a level only as a variant baked into its
+ * model id, so it appears here while `reviewerEffortArgs` returns `[]` for it
+ * and `reviewerModelArg` folds the level into `--model` instead.
  *
  * Built once at module load and DERIVED from `effortLevelsForProvider` rather
  * than restated, so a reviewer's ladder here is exactly the one
@@ -482,7 +493,7 @@ export const REVIEWER_EFFORT_LEVELS = Object.freeze(Object.fromEntries(
 
 /**
  * Every reviewer the user can pick an effort for — the effort-capable CLIs
- * (`claude`, `codex`, `antigravity`) plus the local-LLM backends.
+ * (`claude`, `codex`, `antigravity`, `cursor`) plus the local-LLM backends.
  */
 export const EFFORT_SELECTABLE_REVIEWERS = Object.freeze(Object.keys(REVIEWER_EFFORT_LEVELS));
 
@@ -530,12 +541,12 @@ export function normalizeReviewerEffort(raw, reviewer) {
  * same emitted `--review-with` token as `normalizeReviewerModels` (e.g.
  * `{ codex: 'high', ollama: 'low' }`).
  *
- * Unlike the model pin, this never becomes part of a slashdo token: slashdo's
- * entry grammar has no effort suffix. It reaches a reviewer through the two
- * places PortOS actually controls the invocation — the review-loop follow-up
- * prompt's CLI command line (`codex -c model_reasoning_effort=high`, `claude
- * --effort high`) and the `reasoning_effort` field of the local reviewer's
- * `/api/code-review/local` request body.
+ * Three carriers, depending on who invokes the reviewer. On a slashdo invocation
+ * it rides the emitted token as `~effort=<level>` (`markSuffixes`), which slashdo
+ * turns into the reviewer's own flag. Where PortOS drives the invocation itself it
+ * is spelled out instead: the review-loop follow-up prompt's CLI command line
+ * (`codex -c model_reasoning_effort=high`, `claude --effort high`) and the
+ * `reasoning_effort` field of the local reviewer's `/api/code-review/local` body.
  *
  * An absent key means "let that reviewer use its own default effort", which is
  * NOT the same as a blank string, so an unusable value is DROPPED rather than
@@ -682,6 +693,12 @@ export function reviewerEffortsFromDefaults(defaults) {
  * for codex, `[]` for everything else. Delegates to `buildEffortArgs` so the flag
  * shape has exactly one home (the spawn builders use the same one).
  *
+ * **`cursor` is deliberately `[]` despite having a ladder.** `cursor-agent` has
+ * no `--effort` flag and exits non-zero on one, so its level rides `--model`
+ * instead — build that with `reviewerModelArg`. Anything that renders a cursor
+ * invocation must call BOTH, or it will silently drop the pin (or, worse,
+ * hand-roll the `--effort` this returns nothing for).
+ *
  * **Normalizes first, deliberately.** `buildEffortArgs` CLAMPS an out-of-ladder
  * value (`agy` + `max` → `--effort high`), which is right for a provider pin the
  * user set against a different provider, but wrong here: a reviewer effort is
@@ -706,33 +723,93 @@ export function reviewerEffortArgs(reviewer, effort) {
 }
 
 /**
- * Prose instruction carrying the per-reviewer effort pins into a **slashdo**
- * invocation — `/do:pr --review-with …`, where the model pin rides the token's
- * `[<model>]` bracket but the effort has nowhere to go: slashdo's entry grammar
- * (`<agent>[<model>](~opt|~max=<n>)*`) has no effort suffix, and inventing one
- * would just be a token its parser drops.
+ * The id a CLI reviewer's `--model` flag should carry, or `null` when there is
+ * no model to pin. The twin of `reviewerEffortArgs`: together they are the whole
+ * invocation a pinned reviewer needs, and the ONLY place that knows which of the
+ * two carries a cursor effort.
  *
- * So the effort is delivered the only way that actually reaches the nested CLI:
- * as an instruction to append the flag when the loop invokes it. Scoped to CLI
- * reviewers on purpose — slashdo's local-model loop calls the backend itself
- * rather than through PortOS's endpoint, so there is no flag to name for
- * `ollama`/`lmstudio` there (their effort still applies on the PortOS-driven
- * review-loop follow-up, which posts to `/api/code-review/local`).
+ * For every reviewer but `cursor` this is just the pinned id, threaded verbatim
+ * (the id is environment-specific free text — see `normalizeReviewerModels`).
+ * For `cursor` the effort is folded in as Cursor's native model variant
+ * (`gpt-5` + `max` → `gpt-5[effort=max]`), matching slashdo's own fold, because
+ * `cursor-agent` has no `--effort` flag. A cursor effort with no model pinned
+ * returns `null` — there is nothing to attach the variant to, and emitting a
+ * flag cursor rejects is worse than letting it use its default tier. (The picker
+ * says so on the row, so the dropped tier isn't silent to the user.)
+ *
+ * The extend-an-existing-bracket and leave-an-`effort=`-alone arms of the fold
+ * can't be reached by a STORED reviewer pin today — `normalizeReviewerModel`
+ * rejects `[`/`]`/`,` because they're structural in the emitted `--review-with`
+ * token. They serve the paths that don't go through that gate: a provider's own
+ * `defaultModel` and hand-written task metadata.
+ *
+ * @param {string} reviewer - reviewer slug
+ * @param {string|null|undefined} model - the pinned model id
+ * @param {string|null|undefined} [effort] - the pinned effort (cursor only)
+ * @returns {string|null}
+ */
+export function reviewerModelArg(reviewer, model, effort) {
+  const id = typeof model === 'string' ? model.trim() : '';
+  if (!id) return null;
+  const slug = typeof reviewer === 'string' ? reviewer.trim().toLowerCase() : '';
+  if ((REVIEWER_ALIASES[slug] ?? slug) !== 'cursor') return id;
+  const level = normalizeReviewerEffort(effort, 'cursor');
+  return level ? foldCursorEffortIntoModel(id, level) : id;
+}
+
+/**
+ * Prose instruction carrying the per-reviewer effort pins into a prompt whose
+ * agent spawns the reviewer CLI ITSELF — the claim flows (which run each
+ * configured reviewer by hand, no `--review-with` anywhere in the prompt) and a
+ * slashdo invocation that pins no reviewer list.
+ *
+ * **Not for an invocation that pins `--review-with`.** slashdo's entry grammar is
+ * `<agent>[<model>](~opt|~max=<n>|~effort=<level>)*`, and `markSuffixes` emits
+ * that `~effort=` suffix, so the pin already reaches the CLI the loop spawns.
+ * Restating it as prose there is worse than silent: the agent passes the flag a
+ * second time, or hand-runs a reviewer the loop was about to run. Pass the
+ * emitted `--review-with` text as `reviewWith` and this returns '' when it sees
+ * the suffix — one check, so a caller can't decide wrong.
+ *
+ * Scoped to CLI reviewers on purpose — `ollama`/`lmstudio` have no binary to
+ * name (their effort rides the `POST /api/code-review/local` body instead).
+ *
+ * `cursor` needs its MODEL to say anything at all: its level is a variant of the
+ * model id, never a flag, so pass `reviewerModels` — a cursor pin with no model
+ * emits nothing rather than an `--effort` its CLI rejects.
  *
  * @param {string[]} reviewers - the reviewer slugs the invocation emits
  * @param {Object<string, string>} [reviewerEfforts] - token-keyed effort pins
- * @returns {string} a single sentence, or '' when no reviewer carries an effort
+ * @param {Object} [options]
+ * @param {string} [options.reviewWith] - the `--review-with` text this prompt
+ *   emits, if any. A `~effort=` in it means slashdo already carries the pin.
+ * @param {Object<string, string>} [options.reviewerModels] - token-keyed model
+ *   pins, needed only to render a cursor invocation (see above)
+ * @returns {string} a single sentence, or '' when nothing is left to say
  */
-export function buildReviewerEffortNote(reviewers, reviewerEfforts = {}) {
+export function buildReviewerEffortNote(reviewers, reviewerEfforts = {}, { reviewWith = '', reviewerModels = {} } = {}) {
+  if (typeof reviewWith === 'string' && reviewWith.includes('~effort=')) return '';
   const efforts = normalizeReviewerEfforts(reviewerEfforts) || {};
+  const models = normalizeReviewerModels(reviewerModels) || {};
   const entries = (Array.isArray(reviewers) ? reviewers : [])
     .map((r) => {
+      // No binary, nothing to name: `lmstudio`/`ollama` reach their backend over
+      // HTTP, and copilot/@username aren't commands at all. Checked FIRST so no
+      // branch below can render a `null` command into a prompt.
+      const binary = reviewerCliBinary(r);
+      if (!binary) return null;
       const args = reviewerEffortArgs(r, efforts[r]);
-      return args.length ? `\`${reviewerCliBinary(r)} ${args.join(' ')}\`` : null;
+      if (args.length) return `\`${binary} ${args.join(' ')}\``;
+      // No effort ARGV, but the reviewer may still carry the level inside
+      // --model (cursor). Gated on the effort pin so this stays an effort note:
+      // a model-only pin is not this sentence's business.
+      if (!normalizeReviewerEffort(efforts[r], r)) return null;
+      const model = reviewerModelArg(r, models[r], efforts[r]);
+      return model ? `\`${binary} --model ${model}\`` : null;
     })
     .filter(Boolean);
   if (!entries.length) return '';
-  return `When the review loop invokes a reviewer CLI, add its pinned reasoning effort: ${entries.join(', ')}. \`--review-with\` has no effort suffix, so this is the only way it reaches the reviewer.`;
+  return `Invoke each reviewer CLI at its pinned reasoning effort: ${entries.join(', ')}. Pass the flag yourself when you spawn the reviewer — nothing else in this prompt applies it (a \`~effort=<level>\` suffix in a reviewer list is slashdo's own grammar, which only its \`--review-with\` parses).`;
 }
 
 /**
@@ -967,6 +1044,17 @@ const cosTaskDiagnosticsSchema = z.object({
 // permanent through the API.
 const effortInputSchema = z.preprocess(emptyToUndefined, z.enum(EFFORT_LEVELS).optional());
 const effortUpdateSchema = z.preprocess(emptyToNull, z.enum(EFFORT_LEVELS).nullable().optional());
+// Federated instance this task is PINNED to (#4520) — only that instance's CoS
+// evaluator claims and runs it. On create, '' from the picker's "Any instance"
+// option → undefined (no pin persisted). On update, ''/null must survive as null
+// so the route can clear an existing pin (absent-vs-cleared, CLAUDE.md).
+// Bounded-but-format-free on purpose: the id vocabulary is whatever the peers in
+// this install's registry advertise, and the route is what checks membership.
+const INSTANCE_ID_MAX_LENGTH = 128;
+const targetInstanceIdInputSchema = z.preprocess(emptyToUndefined, z.string().trim().min(1).max(INSTANCE_ID_MAX_LENGTH).optional());
+const targetInstanceIdUpdateSchema = z.preprocess(emptyToNull, z.string().trim().min(1).max(INSTANCE_ID_MAX_LENGTH).nullable().optional());
+const taskTemperatureInputSchema = z.number().min(0).max(2).optional();
+const taskTemperatureUpdateSchema = z.number().min(0).max(2).nullable().optional();
 
 // A bare slashdo command name (`plan-task`, `pr-better`). Shared by the task
 // schema and the quick-template schemas. `isValidSlashdoCommand` is the single
@@ -1007,7 +1095,10 @@ export const createCosTaskSchema = z.object({
   model: z.string().optional(),
   provider: z.string().optional(),
   effort: effortInputSchema,
+  temperature: taskTemperatureInputSchema,
+  thinking: z.boolean().optional(),
   app: z.string().optional(),
+  targetInstanceId: targetInstanceIdInputSchema,
   type: z.string().optional().default('user'),
   approvalRequired: z.boolean().optional(),
   screenshots: z.array(z.string()).optional(),
@@ -1117,7 +1208,10 @@ export const updateCosTaskSchema = z.object({
   model: z.string().optional(),
   provider: z.string().optional(),
   effort: effortUpdateSchema,
+  temperature: taskTemperatureUpdateSchema,
+  thinking: z.boolean().nullable().optional(),
   app: z.string().optional(),
+  targetInstanceId: targetInstanceIdUpdateSchema,
   blockedReason: z.string().optional(),
   type: z.string().optional().default('user'),
 });
@@ -1406,7 +1500,14 @@ const ALLOWED_TASK_METADATA_KEYS = [
   // type whose deliverable is outside the repo — e.g. a reference-watch run
   // against a GitHub/GitLab/JIRA work tracker files its proposals as issues and,
   // per the prompt, edits no application code, so a clean worktree is expected.
-  'worktreeChangesExpected'
+  'worktreeChangesExpected',
+  // Audit-type toggle: file tracker issues (no code) vs implement the fix.
+  // Dispatch stamps `noCodeOutput` when this is true. See server/lib/auditCatalog.js.
+  'fileIssues',
+  // Dispatch gate: when true, the generated system task is always awaiting-
+  // approve — including an explicit Run Now. Absent/false keeps the default
+  // (Run Now consents; unattended runs follow confidence/safety-kind).
+  'requireApproval'
 ];
 
 // pr-watcher author-gate values. 'self' = PRs opened by the gh-authenticated
@@ -1603,3 +1704,33 @@ export function sanitizeTaskMetadata(raw) {
   }
   return hasKeys ? { ...clean } : null;
 }
+
+// =============================================================================
+// CoS RUN EVENT LEDGER (read-only diagnostics, #4540)
+// =============================================================================
+
+// Query bounds for the read-only run-event diagnostics under
+// `/api/agents/activity/run-events`. `z.coerce` because these arrive as query
+// strings; the `limit` ceiling IS the ledger's own `RUN_EVENT_READ_LIMITS.max`
+// (imported, not copied — a literal here would drift into 400-ing requests the
+// service would happily serve, or clamping ones it would refuse).
+export const runEventsQuerySchema = z.object({
+  runId: z.string().min(1).max(128).optional(),
+  agentId: z.string().min(1).max(128).optional(),
+  taskId: z.string().min(1).max(128).optional(),
+  kind: z.enum(AGENT_RUN_EVENT_KINDS).optional(),
+  since: z.string().datetime().optional(),
+  limit: z.coerce.number().int().min(1).max(RUN_EVENT_READ_LIMITS.max).optional()
+}).strict();
+
+export const runEventProjectionsQuerySchema = z.object({
+  runId: z.string().min(1).max(128).optional(),
+  agentId: z.string().min(1).max(128).optional(),
+  limit: z.coerce.number().int().min(1).max(RUN_EVENT_READ_LIMITS.max).optional()
+}).strict();
+
+// A projection id is either a run id or the `agent:<agentId>` fallback key a
+// run that never got an id folds under (see `runEventKey`).
+export const runEventProjectionIdSchema = z.object({
+  id: z.string().min(1).max(140)
+});

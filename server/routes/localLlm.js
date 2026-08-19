@@ -22,16 +22,24 @@ import {
   localLlmOllamaServiceSchema,
   localLlmHuggingFaceSearchSchema,
   localLlmTestSchema,
-  localLlmCompareSchema
+  localLlmCompareSchema,
+  localLlmAssessmentRunSchema,
+  localLlmAssessmentIntentSchema,
+  localLlmAssessmentDeleteSchema,
+  localLlmLlamaServerStartSchema
 } from '../lib/validation.js'
+import { getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer } from '../services/llamaServerManager.js'
 import { getCatalog, searchCatalog, isBackend } from '../lib/localLlmCatalog.js'
 import { isAppleSilicon } from '../lib/platform.js'
-import { searchHuggingFaceModels, enrichCatalogWithVariants } from '../services/huggingFaceCatalog.js'
+import { searchHuggingFaceModels, enrichCatalogWithVariants, applyMeasuredFit } from '../services/huggingFaceCatalog.js'
+import { getMeasuredFits } from '../services/localModelAssessmentStore.js'
 import {
   getStatus, listModels, listVisionModels, listToolUseModels, installModel, deleteModel, switchBackend, migrateBackend, installBackend, upgradeBackend, controlOllamaServer,
   describeInstallProgress
 } from '../services/localLlm.js'
+import { getSettings } from '../services/settings.js'
 import { runLocalLlmTest, compareLocalLlmModels } from '../services/localLlmPlayground.js'
+import { getAssessmentReport, runAssessment, deleteAssessment } from '../services/localModelAssessments.js'
 import { listUserModels } from '../services/audioModels.js'
 import { ENGINES } from '../services/pipeline/musicGen.js'
 import { abortSignalFromResponse } from '../lib/requestAbort.js'
@@ -112,6 +120,10 @@ router.get('/catalog', asyncHandler(async (req, res) => {
   if (variants === '1' || variants === 'true') {
     await enrichCatalogWithVariants(models, { backend, systemMemoryBytes, installedIds: installedForVariants })
   }
+  // Measured evidence overrules the size estimate wherever a model has actually
+  // been run here. Disk-only read — a catalog listing must never trigger a
+  // measurement (AI Provider Usage Policy).
+  applyMeasuredFit(models, { backend, measured: await getMeasuredFits(backend).catch(() => ({})) })
   res.json({ backend, models, systemMemoryGb: Math.round(systemMemoryBytes / 1024 ** 3) })
 }))
 
@@ -139,11 +151,13 @@ router.get('/huggingface-search', asyncHandler(async (req, res) => {
   // fit verdicts. On unified-memory Macs this pool also backs the GPU, so a big
   // box can default to a higher-fidelity build than the old Q4-always pick.
   const systemMemoryBytes = os.totalmem()
-  // MLX models surface only on Apple Silicon (and only for LM Studio) — gate the
-  // extra MLX query on the host so non-Apple installs don't see un-installable
-  // results. Detected here at the route boundary; the service stays deterministic.
+  // Live Hugging Face MLX results surface only on Apple Silicon through LM Studio;
+  // packaged Ollama MLX tags live in the curated catalog above. Gate this extra
+  // Hub query so non-Apple installs don't see un-installable results. Detected at
+  // the route boundary so the service stays deterministic.
   const appleSilicon = isAppleSilicon()
   const models = await searchHuggingFaceModels({ backend, query: q, category, limit, installedIds: installed, installedAudioRepos, systemMemoryBytes, appleSilicon })
+  applyMeasuredFit(models, { backend, measured: await getMeasuredFits(backend).catch(() => ({})) })
   res.json({ backend, source: 'huggingface', models, systemMemoryGb: Math.round(systemMemoryBytes / 1024 ** 3), appleSilicon })
 }))
 
@@ -287,16 +301,31 @@ router.post('/migrate', asyncHandler(async (req, res) => {
 // Distinct from /catalog (disk-installed) — only flags what's eating VRAM
 // right now so the Memory Management panel can show what to unload before
 // kicking off a big diffusion render.
+//
+// sourceErrors stays the full failure list: a backend the user marked disabled
+// (localLlm.<id>.disabled — "PortOS will not expect this backend to be running")
+// is STILL probed, and a failed probe on a disabled-but-actually-running backend
+// must keep its "unknown residency" status so "Free everything" can't claim it
+// reclaimed a model it can't even see. The `disabled` field names the backends
+// the user opted out of availability warnings for, so the panel stays quiet
+// about them WITHOUT weakening that cleanup guard.
 router.get('/loaded', asyncHandler(async (_req, res) => {
+  const settings = await getSettings().catch(() => ({}))
+  const ollamaDisabled = Boolean(settings.localLlm?.ollama?.disabled)
+  const lmStudioDisabled = Boolean(settings.localLlm?.lmstudio?.disabled)
   const [ollama, lmstudio] = await Promise.all([
     getLoadedOllamaModels(),
     getLoadedLmStudioModels(true),
-  ])
+   ])
   const sourceErrors = [
-    ...(getOllamaResidencyError() ? ['ollama'] : []),
-    ...(getLmStudioResidencyError() ? ['lmstudio'] : []),
-  ]
-  res.json({ ollama, lmstudio, sourceErrors })
+     ...(getOllamaResidencyError() ? ['ollama'] : []),
+     ...(getLmStudioResidencyError() ? ['lmstudio'] : []),
+   ]
+  const disabled = [
+     ...(ollamaDisabled ? ['ollama'] : []),
+     ...(lmStudioDisabled ? ['lmstudio'] : []),
+   ]
+  res.json({ ollama, lmstudio, sourceErrors, disabled })
 }))
 
 // POST /api/local-llm/unload — body: { backend: 'ollama', modelId }.
@@ -388,6 +417,73 @@ router.post('/test/stream', asyncHandler(async (req, res) => {
 router.post('/compare', asyncHandler(async (req, res) => {
   const body = validateRequest(localLlmCompareSchema, req.body)
   res.json(await compareLocalLlmModels({ ...body, signal: abortSignalFromResponse(res) }))
+}))
+
+// === Measured local-model assessments ========================================
+// PortOS's catalog fit badge is a size estimate that never runs the model. These
+// endpoints back the measured alternative: run a model at several context sizes
+// and rank installed models on the evidence.
+//
+// The read/run split is the AI Provider Usage Policy boundary (root CLAUDE.md):
+// GET touches disk only and is safe to poll; POST /run is the ONLY path that
+// reaches a provider, and it fires solely from a deliberate user action whose
+// UI names the backend, model, and run count first. Do not add a boot hook, a
+// scheduler, or an "assess everything" sweep here.
+
+// GET /api/local-llm/assessments?intent=balanced — persisted results, the
+// intent-ranked recommendation, and which installed models have no evidence yet.
+// Zero LLM calls.
+router.get('/assessments', asyncHandler(async (req, res) => {
+  const { intent } = validateRequest(localLlmAssessmentIntentSchema, req.query)
+  res.json(await getAssessmentReport({ intent }))
+}))
+
+// POST /api/local-llm/assessments/run — measure ONE model. User-triggered only.
+// Long-running by nature (one bounded generation per context size), so the
+// client's abort signal is threaded through to stop mid-run on disconnect.
+router.post('/assessments/run', asyncHandler(async (req, res) => {
+  const { backend, modelId, contextTokens } = validateRequest(localLlmAssessmentRunSchema, req.body)
+  const io = req.app.get('io')
+  // Same `localLlm:progress` channel the pull/migrate paths use, so one banner
+  // renders every long local-LLM operation. The extra fields (`scope`, `backend`,
+  // `modelId`, `sampleIndex`/`sampleCount`) let a listener tell an assessment
+  // frame from a model pull streaming on the same event.
+  const onProgress = (frame) => io?.emit('localLlm:progress', frame)
+  res.json(await runAssessment({ backend, modelId, contextTokens, signal: abortSignalFromResponse(res), onProgress }))
+}))
+
+// POST /api/local-llm/assessments/delete — drop one stale measurement (e.g. after
+// a RAM upgrade or a backend update makes the recorded evidence misleading).
+// 404s when nothing was removed rather than reporting a phantom success.
+router.post('/assessments/delete', asyncHandler(async (req, res) => {
+  const { backend, modelId } = validateRequest(localLlmAssessmentDeleteSchema, req.body)
+  const result = await deleteAssessment(backend, modelId)
+  if (!result.deleted) throw new ServerError('No assessment recorded for that model', { status: 404, context: { backend, modelId } })
+  res.json({ success: true, backend, modelId })
+}))
+
+// === llama-server (DFlash 2 / Speculative Decoding) ==========================
+// GET /api/local-llm/llama-server/status — binary availability, process state, logs
+router.get('/llama-server/status', asyncHandler(async (_req, res) => {
+  res.json(await getLlamaServerStatus())
+}))
+
+// POST /api/local-llm/llama-server/start — launch llama-server
+router.post('/llama-server/start', asyncHandler(async (req, res) => {
+  const options = validateRequest(localLlmLlamaServerStartSchema, req.body)
+  res.json(await startLlamaServer(options))
+}))
+
+// POST /api/local-llm/llama-server/stop — stop managed llama-server
+router.post('/llama-server/stop', asyncHandler(async (_req, res) => {
+  res.json(await stopLlamaServer())
+}))
+
+// POST /api/local-llm/llama-server/install — install llama.cpp via Homebrew
+router.post('/llama-server/install', asyncHandler(async (req, res) => {
+  const io = req.app.get('io')
+  const onProgress = (data) => io?.emit('localLlm:progress', data)
+  res.json(await installLlamaServer({ onProgress }))
 }))
 
 export default router

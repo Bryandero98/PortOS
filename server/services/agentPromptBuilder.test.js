@@ -128,6 +128,15 @@ describe('composable skill template routing', () => {
     }))).toEqual(['security-audit', 'threejs-visual']);
   });
 
+  it('routes data-safety and dead-code audits to their own skill templates', () => {
+    expect(detectSkillTemplates(makeTask({
+      description: '[Improvement] Data and upgrade-safety audit',
+    }))).toEqual(['data-safety']);
+    expect(detectSkillTemplates(makeTask({
+      description: '[Improvement] Dead-code and duplication audit',
+    }))).toEqual(['simplify']);
+  });
+
   it('joins templates in routing order and tolerates an unavailable domain guide', async () => {
     const loadTemplate = vi.fn(async (name) => ({
       'security-audit': 'Security lifecycle guidance',
@@ -1047,12 +1056,12 @@ describe('buildLightContextPrompt', () => {
         '/r', null, isTruthyMeta, { isTui: true });
       expect(prompt).toMatch(/Read-Only Task/);
       expect(prompt).not.toMatch(/## Completion Workflow/);
-      // A read-only TUI agent must still be told to write .agent-done — the 2s
-      // sentinel poll is its only clean finalize/summary path (regression: the
+      // A read-only TUI agent must still be told to write .agent-done — the
+      // sentinel watcher is its only clean finalize/summary path (regression: the
       // read-only branch used to emit the bare notice with no sentinel, so
       // reference-watch runs never signaled completion).
       expect(prompt).toMatch(/\.agent-done/);
-      expect(prompt).toMatch(/polls this sentinel/);
+      expect(prompt).toMatch(/watches this sentinel/);
     });
 
     it('read-only on a non-TUI (CLI) provider gets the bare notice, no sentinel', () => {
@@ -1365,6 +1374,27 @@ describe('buildLightContextPrompt', () => {
       // `antigravity` names no executable — the invocation must say `agy`.
       expect(prompt).toMatch(/agy --effort low/);
       expect(prompt).not.toMatch(/antigravity --effort/);
+    });
+
+    it('folds a cursor effort into its --model — the follow-up must never print `cursor-agent --effort`', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          reviewLoopFollowUp: true,
+          reviewLoopPRUrl: 'https://github.com/o/r/pull/9',
+          reviewLoopPRBranch: 'b',
+          reviewLoopPRNumber: 9,
+          reviewLoopReviewers: ['cursor'],
+          reviewLoopReviewerModels: { cursor: 'gpt-5' },
+          reviewLoopReviewerEfforts: { cursor: 'max' },
+          sourceTaskId: 'task-src-cursor-effort',
+        }}),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta);
+      // This is a literal command line the agent runs; `cursor-agent --effort max`
+      // exits non-zero, so the level has to ride the model variant instead.
+      expect(prompt).toMatch(/cursor-agent --model gpt-5\[effort=max\]/);
+      expect(prompt).not.toMatch(/cursor-agent[^\n]*--effort/);
     });
 
     it('names a pinned local-LLM effort as an /api/code-review/local body key', () => {
@@ -2525,14 +2555,33 @@ describe('buildAgentPrompt — slashdo prompt-size controls', () => {
     warn.mockRestore();
   });
 
-  // The workflow drives its OWN review loop, so an effort pinned on the task has
-  // no other route to the reviewer CLI it spawns — `--review-with` carries a
-  // `[<model>]` bracket but has no effort suffix.
-  it('states a pinned reviewer effort in the slashdo section', async () => {
+  // A pinned reviewer list carries the effort as slashdo's own `~effort=<level>`
+  // suffix, so the section states it ONCE — on the pin. The prose instruction is
+  // for the unpinned case, where the workflow resolves reviewers itself.
+  it('carries a pinned reviewer effort on the --review-with token, not as prose', async () => {
     const prompt = await buildAgentPrompt(
       slashdoTask({ reviewers: ['codex'], reviewerEfforts: { codex: 'high' } }),
       {}, '/r', null, isTruthyMeta,
       { providerType: 'cli', providerId: 'codex' });
+    expect(prompt).toContain('codex~effort=high');
+    // Restating it would have the agent pass `-c model_reasoning_effort=high` a
+    // second time, on top of the one slashdo's loop already passes.
+    expect(prompt).not.toContain('Invoke each reviewer CLI at its pinned reasoning effort');
+  });
+
+  it('states the effort in prose when the section pins no reviewer list', async () => {
+    // Reviewers spanning every loop variant prune nothing, so no `--review-with`
+    // is emitted — the pin's only route to the CLI the workflow spawns is prose.
+    const prompt = await buildAgentPrompt(
+      slashdoTask({
+        reviewers: ['copilot', 'codex', 'ollama'],
+        usernames: ['octocat'],
+        reviewerEfforts: { codex: 'high' },
+      }),
+      {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+    // (the note's own prose mentions the flag — assert on the pin line instead)
+    expect(prompt).not.toContain('Run this workflow with');
     expect(prompt).toContain('`codex -c model_reasoning_effort=high`');
   });
 
@@ -2544,7 +2593,8 @@ describe('buildAgentPrompt — slashdo prompt-size controls', () => {
       slashdoTask({ reviewers: ['codex'], reviewerEfforts: { codex: 'high', claude: 'xhigh' } }),
       {}, '/r', null, isTruthyMeta,
       { providerType: 'cli', providerId: 'codex' });
-    expect(prompt).toContain('`codex -c model_reasoning_effort=high`');
+    expect(prompt).toContain('codex~effort=high');
+    expect(prompt).not.toContain('claude~effort=xhigh');
     expect(prompt).not.toContain('--effort xhigh');
   });
 

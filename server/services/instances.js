@@ -224,6 +224,36 @@ export async function ensureInstanceId() {
   return instanceId;
 }
 
+/**
+ * The instances this install can direct a CoS task at (#4520): this machine
+ * plus every peer that can actually RECEIVE the task. Two filters, both of
+ * which exist to stop a pin from stranding work:
+ *
+ * - `instanceId` must be set. A peer that has never completed a probe/connect
+ *   has no addressable federation identity yet, so nothing could ever match a
+ *   pin naming it.
+ * - The peer must be an enabled full-sync peer. CoS task replication only
+ *   sweeps `fullSync === true && enabled !== false` peers (see
+ *   sharing/peerCosSync.js) — pin a task to any other peer and it never leaves
+ *   this machine, while this machine skips it for being pinned elsewhere, so it
+ *   sits pending forever.
+ *
+ * Returns only the id/name/isSelf triple the picker needs; no addresses, no
+ * credentials, no sync state.
+ */
+export async function getAssignableInstances() {
+  const data = await loadData();
+  const assignable = [];
+  if (data.self?.instanceId) {
+    assignable.push({ instanceId: data.self.instanceId, name: data.self.name || 'This instance', isSelf: true });
+  }
+  for (const peer of data.peers || []) {
+    if (!peer.instanceId || peer.fullSync !== true || peer.enabled === false) continue;
+    assignable.push({ instanceId: peer.instanceId, name: peer.name || peer.address || peer.instanceId, isSelf: false });
+  }
+  return assignable;
+}
+
 export async function updateSelf(name, { defaultPeerFullSync } = {}) {
   return withData(async (data) => {
     if (!data.self) return null;

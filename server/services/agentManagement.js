@@ -31,6 +31,7 @@ import { resolveTaskTargetBranch } from '../lib/taskTargetBranch.js';
 import { syncRunnerAgents } from './agentRunnerSync.js';
 import { flushRunnerOutputBatcher } from './agentRunnerOutputBatchers.js';
 import { completeAgentRun } from './agentRunTracking.js';
+import { appendRunEvent } from './agentRunEventLog.js';
 import { committedDuringRun, toEpochMs } from '../lib/gitCommitProbe.js';
 import { dispatchRecoveredTaskOutputHook } from './agentFinalization.js';
 import { fileInvestigationTask } from './investigationTaskProducer.js';
@@ -945,6 +946,31 @@ export async function cleanupOrphanedAgents() {
         console.log(interrupted
           ? `🛑 Recovering agent ${agent.id} interrupted by a PortOS restart (PID ${agent.pid || 'unknown'} not running)`
           : `🧹 Cleaning up orphaned agent ${agent.id} (PID ${agent.pid || 'unknown'} not running)`);
+        // Record the reap in the lifecycle ledger BEFORE the run is closed
+        // (#4540), so the ordered stream reads "orphaned, then finalized" and a
+        // replay can tell an agent that died from one that exited. Emitted even
+        // when the agent record carries no `runId` — a survivor whose run id
+        // never landed is precisely the case the mutable records cannot explain,
+        // so it keys off the agent instead of disappearing.
+        await appendRunEvent({
+          kind: 'run.orphan-recovered',
+          // Explicit natural key rather than the content-derived default: this
+          // sweep runs every 15 minutes and can re-observe the same dead agent
+          // if the `completeAgent` write below ever fails to land, and the
+          // content hash covers the wall-clock `at`, so a retry would otherwise
+          // mint a second "this agent died" fact. An agent dies once per life,
+          // and `id + startedAt` names exactly that.
+          eventId: `orphan:${agent.id}:${agent.startedAt || 'unknown'}`,
+          runId: agent.metadata?.runId,
+          agentId: agent.id,
+          taskId: agent.taskId,
+          data: {
+            interruptedByRestart: interrupted,
+            pid: agent.pid ?? null,
+            hasRunId: Boolean(agent.metadata?.runId),
+            startedAt: agent.startedAt ?? null,
+          },
+        });
         const task = agent.taskId ? await getTaskById(agent.taskId).catch(() => null) : null;
         await dispatchRecoveredTaskOutputHook({
           agentId: agent.id,

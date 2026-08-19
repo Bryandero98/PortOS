@@ -39,10 +39,16 @@ import { classifySafetyKind, requiresSafetyApproval } from './taskLearning/safet
 import { generateProactiveTasks as generateMissionTasks } from './missions.js';
 import { isRecoveryTask } from './recoveryTasks.js';
 import { getCodeReviewDefaults } from './codeReview.js';
-import { isHeldByOther, getClaimOwner } from './cosTaskClaim.js';
+import { getSkipReason } from './cosTaskClaim.js';
 import { ensureInstanceId } from './instances.js';
 import { PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { resolveTrackerFilingBlock } from '../lib/workTracker.js';
+import {
+  isAuditTaskType,
+  isFileIssuesMode,
+  modeContractFor,
+  applyAuditModeWrapper,
+} from '../lib/auditCatalog.js';
 import { TIMED_COOLDOWN_BLOCKED_CATEGORIES } from '../lib/taskBlockCategories.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { shellQuote } from '../lib/shellQuote.js';
@@ -144,7 +150,7 @@ export function isCooldownExemptTask(task) {
  * @param {(appId: string) => Promise<boolean>} ctx.isOnCooldown - async cooldown probe
  * @param {(task: object) => boolean} [ctx.cooldownExempt] - true ⇒ skip the cooldown gate for this task
  * @param {(task: object) => boolean} [ctx.extraSkip] - true ⇒ task ineligible (engine-specific gate)
- * @param {(task: object) => boolean} [ctx.heldByOther] - true ⇒ a federated peer holds a live lease on this task (#1650); the execute path skips it before spawning, so the dry-run plan must too
+ * @param {(task: object) => boolean} [ctx.notRunnableHere] - true ⇒ this instance would pass over the task anyway: it is pinned to another instance (#4520) or a federated peer holds a live lease on it (#1650). The execute path skips it before spawning, so the dry-run plan must too
  * @returns {Promise<object[]>} the tasks execute mode would spawn, in order
  */
 export async function selectDryRunAutoApproved(autoApproved, ctx) {
@@ -156,7 +162,7 @@ export async function selectDryRunAutoApproved(autoApproved, ctx) {
     isOnCooldown,
     cooldownExempt = () => false,
     extraSkip = () => false,
-    heldByOther = () => false
+    notRunnableHere = () => false
   } = ctx;
 
   const counts = { ...spawnProjectCounts };
@@ -165,7 +171,7 @@ export async function selectDryRunAutoApproved(autoApproved, ctx) {
 
   for (const task of autoApproved) {
     if (spawned >= availableSlots) break;
-    if (heldByOther(task)) continue;
+    if (notRunnableHere(task)) continue;
     if (exceedsMaxSpawns(task)) continue;
     if (extraSkip(task)) continue;
     const appId = task.metadata?.app;
@@ -343,7 +349,7 @@ export function resolveSwarmBlock(promptTaskType, count) {
 2. From that queue pick up to ${n} issues that are **mutually independent** — no shared files/subsystems likely to collide on merge, no parent/child or dependency links; prefer issues that touch disjoint areas. **Under-fill is fine:** if fewer than ${n} independent issues exist, run a smaller swarm and say so. **If only ONE is eligible, just run the single-issue flow below and say so** — a one-agent swarm is pure overhead.
 
 ## Phase B — Fan out (one subagent per picked issue)
-For EACH picked issue, spawn a subagent that runs the single-issue **Phases 2–6 below** for that one issue — claim (own \`claim/issue-<num>\` worktree + assignee + \`in-progress\` label) → verify → implement → changelog → open the ${pr} → run the review gate ({reviewers}) — **but with NO merge and NO Phase 7 cleanup** (the orchestrator owns those; each agent opens its ${pr} the equivalent of \`--no-merge\`). Because each agent claims through the normal Phase 2 assignee marker + race read-back, two agents can never ship the same issue.
+For EACH picked issue, spawn a subagent that runs the single-issue **Phases 2–6 below** for that one issue — claim (own \`claim/issue-<num>\` worktree + assignee + \`in-progress\` label) → verify → implement → run the LOCAL reviewers before anything is opened → changelog → open the ${pr} → run the ${pr}-side review gate ({reviewers}) — **but with NO merge and NO Phase 7 cleanup** (the orchestrator owns those; each agent opens its ${pr} the equivalent of \`--no-merge\`). Because each agent claims through the normal Phase 2 assignee marker + race read-back, two agents can never ship the same issue.
 
 **Each fan-out agent gets its OWN scratch subdirectory — the scratchpad root is off-limits.** Every agent in this run shares one session scratchpad path, and every agent runs these byte-identical instructions, so left to themselves two agents pick the same obvious filename (\`pr-body.md\`) and silently clobber each other — last writer wins, the command still exits 0, and the wrong text lands on the wrong ${pr}. So: **each fan-out agent writes ALL temp files under \`<scratchpad>/issue-<num>/\` (its own issue number), and NEVER writes to the scratchpad root** (the root stays the orchestrator's). That covers ${pr} body drafts, review notes, diff dumps, test output — every scratch artifact, not just the body file. Create the directory before first use (\`mkdir -p\`). Filenames inside it may be as obvious as you like; the directory is what makes them unique. **If your environment gives you no scratchpad path at all**, use \`$(mktemp -d)/issue-<num>\` instead — never a path inside the source repo or inside your worktree, where it would show up as untracked cruft or get swept into a commit.
 
@@ -480,8 +486,10 @@ export async function buildClaimWorkTask(app, {
   // Per-reviewer model pins (slashdo's `[<model>]` bracket) and reasoning efforts
   // ride the same explicit-option → task metadata → Code Review Defaults
   // precedence, and resolve together so the two describe one invocation (an agy
-  // model id can carry its effort as a suffix). The efforts carry no
-  // `--review-with` token, so they land as an appended instruction below.
+  // model id can carry its effort as a suffix). The claim prompt runs its
+  // reviewers by hand rather than through `--review-with`, so the effort also
+  // lands as an appended instruction below — the CSV's `~effort=` suffix is
+  // slashdo grammar nothing in this flow parses.
   const { reviewerModels: promptReviewerModels, reviewerEfforts: promptReviewerEfforts } = resolveReviewerPins({
     reviewerModels: reviewerModels ?? metadata.reviewerModels,
     reviewerEfforts: reviewerEfforts ?? metadata.reviewerEfforts,
@@ -508,8 +516,8 @@ export async function buildClaimWorkTask(app, {
     + appendTargetWorkItemBlock(promptTaskType, targetRef)
     + appendPrefetchedIssueContext(promptTaskType, targetRef, issueContext)
     + appendClaimOverrideContext(overrideContext)
-    + appendReviewerEffortBlock(reviewersList, promptReviewerEfforts)
-    + appendLocalReviewerInstructions(promptTaskType, reviewersList, promptReviewerModels, promptReviewerEfforts);
+    + appendReviewerEffortBlock(reviewersList, promptReviewerEfforts, promptReviewerModels)
+    + buildLocalReviewerInstructions(reviewersList, promptReviewerModels, promptReviewerEfforts);
 
   // Mirror the scheduler: inherit the delegated flow's isolation posture so the
   // JIRA route runs in a CoS-managed worktree rather than the live checkout.
@@ -529,7 +537,8 @@ export async function buildClaimWorkTask(app, {
  *
  * Returns BOTH pieces because the two travel differently: `csv` fills the
  * template's `{reviewers}` placeholder, while `effortBlock` is appended prose —
- * `--review-with` has no effort suffix to carry it.
+ * the claim agent spawns each reviewer CLI itself, so no `--review-with` parser
+ * ever reads the CSV's `~effort=` suffix.
  */
 async function resolveClaimReviewerPrompt() {
   const codeReviewDefaults = await getCodeReviewDefaults().catch(() => null);
@@ -544,8 +553,8 @@ async function resolveClaimReviewerPrompt() {
   const { reviewerModels, reviewerEfforts } = resolveReviewerPins(null, codeReviewDefaults);
   return {
     csv: buildReviewersCsv(list, codeReviewDefaults?.usernames, codeReviewDefaults?.optionalReviewers, codeReviewDefaults?.reviewerMaxRounds, reviewerModels, reviewerEfforts),
-    effortBlock: appendReviewerEffortBlock(list, reviewerEfforts),
-    localReviewerBlock: appendLocalReviewerInstructions('claim-issue-jira', list, reviewerModels, reviewerEfforts),
+    effortBlock: appendReviewerEffortBlock(list, reviewerEfforts, reviewerModels),
+    localReviewerBlock: buildLocalReviewerInstructions(list, reviewerModels, reviewerEfforts),
   };
 }
 
@@ -691,11 +700,16 @@ const appendTargetWorkItemBlock = (promptTaskType, ref) => {
  * the same blank-line separator. APPENDED rather than substituted into a
  * `{...}` placeholder because a new placeholder would be silently dropped by
  * every install whose customized claim template predates it (the same reason
- * `swarmBlock` is prepended) — and because there is no `--review-with` suffix to
- * carry it, so it has to be prose. Empty when no reviewer in the list pins one.
+ * `swarmBlock` is prepended) — and prose because the claim agent invokes each
+ * reviewer CLI directly: this flow emits no `--review-with`, so the CSV's
+ * `~effort=` suffix reaches no parser. Empty when no reviewer in the list pins one.
+ *
+ * The MODELS ride along because cursor's effort is a variant of its model id
+ * rather than a flag — without them a pinned `cursor[<id>]~effort=<level>` would
+ * have no invocation to name here at all.
  */
-const appendReviewerEffortBlock = (reviewers, reviewerEfforts) => {
-  const note = buildReviewerEffortNote(reviewers, reviewerEfforts);
+const appendReviewerEffortBlock = (reviewers, reviewerEfforts, reviewerModels) => {
+  const note = buildReviewerEffortNote(reviewers, reviewerEfforts, { reviewerModels });
   return note ? `\n\n${note}` : '';
 };
 
@@ -704,17 +718,35 @@ const appendReviewerEffortBlock = (reviewers, reviewerEfforts) => {
  * This is prose rather than a template placeholder so customized legacy claim
  * prompts receive the safety fix too. Empty/malformed responses are explicitly
  * inconclusive and can never be mistaken for a clean review.
+ *
+ * The diff is resolved from the BRANCH, never from `gh pr diff` / `glab mr diff`:
+ * every claim prompt now runs its local reviewers before the PR/MR is opened
+ * (that is the whole point of the pre-PR review phase), so a forge command that
+ * needs an open PR would fail on the one review pass that has to succeed.
  */
-export function buildLocalReviewerInstructions(promptTaskType, reviewers, reviewerModels = {}, reviewerEfforts = {}) {
+export function buildLocalReviewerInstructions(reviewers, reviewerModels = {}, reviewerEfforts = {}) {
   const localReviewers = (reviewers || []).filter((reviewer) => LOCAL_LLM_REVIEWERS.includes(reviewer));
   if (!localReviewers.length) return '';
 
-  const gitlabDiff = `MR_IID="$(glab mr list --source-branch "$(git branch --show-current)" -F json | jq -er '.[0].iid)'"\nglab mr diff "$MR_IID"`;
-  const diffCommand = promptTaskType === 'claim-issue-gitlab'
-    ? gitlabDiff
-    : promptTaskType === 'claim-issue'
-      ? 'gh pr diff'
-      : `if command -v gh >/dev/null 2>&1 && gh pr view --json url -q .url >/dev/null 2>&1; then\n  gh pr diff\nelif command -v glab >/dev/null 2>&1; then\n  ${gitlabDiff.replace(/\n/g, '\n  ')}\nelse\n  echo "No supported forge CLI can resolve the current branch's review diff" >&2\n  exit 1\nfi`;
+  // Forge-agnostic and PR-free: the branch's own diff against the default
+  // branch's remote ref. Same `DEFAULT_BRANCH` idiom (and name) the claim prompts'
+  // own worktree blocks use, re-resolved here because this procedure runs as a
+  // self-contained snippet.
+  //
+  // `origin/HEAD` is NOT reliably present — a clone made with `--single-branch`,
+  // or a worktree whose remote never had `set-head` run, simply has no such ref.
+  // Falling straight to `main` there would review a repo whose default is
+  // `master`/`develop` against a ref that does not exist, and the fail-closed
+  // wrapper would then block every local-LLM reviewer — and with them the PR — on
+  // a repo that is perfectly healthy. So ask the remote (`set-head --auto`) before
+  // falling back, and keep `main` only as the last resort.
+  const diffCommand = [
+    'DEFAULT_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed \'s@^origin/@@\')"',
+    '[ -n "$DEFAULT_BRANCH" ] || { git remote set-head origin --auto >/dev/null 2>&1; DEFAULT_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed \'s@^origin/@@\')"; }',
+    'DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"',
+    'git fetch origin "$DEFAULT_BRANCH" >/dev/null 2>&1',
+    'git diff "origin/$DEFAULT_BRANCH...HEAD"',
+  ].join('\n');
   const reviewScript = shellQuote(join(PATHS.root, 'server/scripts/run-local-code-review.mjs'));
   const commands = localReviewers.map((reviewer) => {
     const pinned = {
@@ -731,10 +763,6 @@ export function buildLocalReviewerInstructions(promptTaskType, reviewers, review
 
   return `\n\n## Local Reviewer Procedure\n\nRun each configured local reviewer in its listed order using the command below. Only a successfully extracted non-empty \`.findings\` string is a review result. Timeout, transport failure, malformed JSON, an error response, or missing/empty findings is INCONCLUSIVE: do not merge or substitute a self-review.\n\n${commands}`;
 }
-
-const appendLocalReviewerInstructions = (promptTaskType, reviewers, reviewerModels, reviewerEfforts) => (
-  buildLocalReviewerInstructions(promptTaskType, reviewers, reviewerModels, reviewerEfforts)
-);
 
 /**
  * Build a one-off "implement THIS JIRA ticket" task for `app` — the per-card
@@ -1049,6 +1077,7 @@ async function spawnPriority0OnDemand(ctx) {
         task = await generateSelfImprovementTaskForType(request.taskType, state);
       }
 
+      applyOnDemandConsent(task);
       if (task && canSpawnTask(task)) {
         // Mark this a MANUAL (on-demand) run so its perpetual drain continues in
         // the on-demand lane (see perpetualRefillPlan in cos.js). BOTH on-demand
@@ -1090,12 +1119,14 @@ async function spawnPriority1UserTasks(ctx) {
   const { pendingUserTasks, availableSlots, perProjectLimit, tasksToSpawn, canSpawnTask, trackSpawn, instanceId } = ctx;
   for (const task of pendingUserTasks) {
     if (tasksToSpawn.length >= availableSlots) break;
-    // A federated peer holds a live lease on this task (#1650) — it's being
-    // worked on the other machine. Skip it during candidate selection so it
-    // doesn't consume this cycle's spawn slot (the spawn guard would return
-    // null anyway) and starve later unclaimed tasks.
-    if (isHeldByOther(task.metadata, instanceId)) {
-      emitLog('debug', `Skipping user task ${task.id} — live lease held by peer instance ${getClaimOwner(task.metadata)}`, { taskId: task.id });
+    // Not runnable here: the task is pinned to another instance (#4520), or a
+    // federated peer holds a live lease on it (#1650) and is working it on the
+    // other machine. Skip it during candidate selection so it doesn't consume
+    // this cycle's spawn slot (the spawn guard would return null anyway) and
+    // starve later runnable tasks.
+    const skipReason = getSkipReason(task.metadata, instanceId);
+    if (skipReason) {
+      emitLog('debug', `Skipping user task ${task.id} — ${skipReason}`, { taskId: task.id });
       continue;
     }
     if (await blockIfExceedsMaxSpawns(task, 'user')) continue;
@@ -1127,8 +1158,9 @@ async function spawnPriority2AutoApproved(ctx) {
   if (tasksToSpawn.length < autonomousSlotCeiling && cosTaskData.exists && cosAutonomyMode !== 'execute') {
     if (cosAutonomyMode === 'dry-run') {
       // Log only the tasks execute mode would ACTUALLY spawn — applying the same
-      // peer-lease / max-spawns / cooldown / per-project gates against virtual
-      // capacity — rather than every auto-approved task regardless of eligibility.
+      // instance-pin / peer-lease / max-spawns / cooldown / per-project gates
+      // against virtual capacity — rather than every auto-approved task
+      // regardless of eligibility.
       const wouldSpawn = await selectDryRunAutoApproved(cosTaskData.autoApproved || [], {
         availableSlots: autonomousSlotCeiling,
         alreadySpawned: tasksToSpawn.length,
@@ -1136,7 +1168,7 @@ async function spawnPriority2AutoApproved(ctx) {
         spawnProjectCounts,
         isOnCooldown: (appId) => isAppOnCooldown(appId, state.config.appReviewCooldownMs),
         cooldownExempt: isCooldownExemptTask,
-        heldByOther: (task) => isHeldByOther(task.metadata, instanceId)
+        notRunnableHere: (task) => getSkipReason(task.metadata, instanceId) !== null
       });
       for (const task of wouldSpawn) {
         emitLog('info', `[dry-run] CoS auto-run would spawn system task: ${task.id}`, { taskId: task.id, domainAutonomy: 'cos' });
@@ -1147,11 +1179,12 @@ async function spawnPriority2AutoApproved(ctx) {
     for (const task of autoApproved) {
       if (tasksToSpawn.length >= autonomousSlotCeiling) break;
 
-      // A federated peer holds a live lease on this task (#1650) — skip it
-      // during candidate selection so it doesn't consume an autonomous slot
-      // the spawn guard would just reject.
-      if (isHeldByOther(task.metadata, instanceId)) {
-        emitLog('debug', `Skipping system task ${task.id} — live lease held by peer instance ${getClaimOwner(task.metadata)}`, { taskId: task.id });
+      // Pinned to another instance (#4520), or a federated peer holds a live
+      // lease on it (#1650) — skip it during candidate selection so it doesn't
+      // consume an autonomous slot the spawn guard would just reject.
+      const skipReason = getSkipReason(task.metadata, instanceId);
+      if (skipReason) {
+        emitLog('debug', `Skipping system task ${task.id} — ${skipReason}`, { taskId: task.id });
         continue;
       }
 
@@ -1816,9 +1849,26 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
  * to spread into task objects — `safetyKind` + `approvalReason` surface WHY a
  * high-confidence task still needs approval on the task record and in the UI.
  */
+export function isConfiguredApprovalRequired(metadata) {
+  return metadata?.requireApproval === true;
+}
+
 async function resolveConfidenceApproval(state, taskTypeKey, logLabel, metadata = {}) {
   const safety = classifySafetyKind({ taskTypeKey, metadata });
   const safetyConfig = state?.config?.safetyKindApproval ?? {};
+
+  // Explicit per-type/per-app toggle wins over every automatic gate. The user
+  // turned "Require approval" on for this scheduled type; do not second-guess
+  // that with confidence or a Run Now consent flip.
+  if (isConfiguredApprovalRequired(metadata)) {
+    emitLog('info', `🔒 ${logLabel} requires approval (task metadata requireApproval)`, {}, '[Approval]');
+    return {
+      autoApproved: false,
+      approvalRequired: true,
+      safetyKind: safety.kind,
+      approvalReason: 'config:requireApproval'
+    };
+  }
 
   // Safety-kind override runs BEFORE (and independent of) the confidence gate.
   if (safety.outwardFacing && requiresSafetyApproval(safety.kind, safetyConfig)) {
@@ -1846,6 +1896,35 @@ async function resolveConfidenceApproval(state, taskTypeKey, logLabel, metadata 
     safetyKind: safety.kind,
     ...(confidence.autoApprove ? {} : { approvalReason: `confidence:${confidence.tier}` })
   };
+}
+
+/**
+ * Clicking Run (or a refill of that run) is the user's consent. Safety-kind
+ * and confidence gates exist so UNATTENDED queue-path work can't ship
+ * irreversible actions on its own — they must not re-hold a task the user
+ * just asked to run, or "Run Now" lands in awaiting-approve and never
+ * auto-spawns (Priority 2 only picks AUTO tasks; force-spawn refuses
+ * APPROVAL tasks).
+ *
+ * `metadata.requireApproval` is the escape hatch: a type the user marked
+ * "always ask" (e.g. release-check when they want to review the merge)
+ * keeps the hold even on Run Now.
+ */
+export function applyOnDemandConsent(task) {
+  if (!task) return task;
+  if (isConfiguredApprovalRequired(task.metadata)) return task;
+  task.approvalRequired = false;
+  task.autoApproved = true;
+  if ('approvalReason' in task) delete task.approvalReason;
+  // The hint TaskItem reads lives on metadata — COS-TASKS.md only persists
+  // that bag. Clear both so a consented Run Now does not keep a stale reason.
+  if (task.metadata && 'approvalReason' in task.metadata) delete task.metadata.approvalReason;
+  return task;
+}
+
+function stampApprovalReason(metadata, approval) {
+  if (approval?.approvalReason) metadata.approvalReason = approval.approvalReason;
+  else delete metadata.approvalReason;
 }
 
 /**
@@ -1891,6 +1970,7 @@ export async function generateSelfImprovementTaskForType(taskType, state) {
   }
 
   const approval = await resolveConfidenceApproval(state, `self-improve:${taskType}`, `Task self-improve:${taskType}`, metadata);
+  stampApprovalReason(metadata, approval);
 
   const task = {
     id: `self-improve-${taskType}-${Date.now().toString(36)}`,
@@ -2087,7 +2167,11 @@ async function generateManagedAppImprovementTask(app, state, { ignoreTaskId = nu
   // with the literal {prData}/{referenceData} markers and never poll. The
   // recordExecution + activity bump above already accounted for the idle
   // spawn; the per-type generator does not record execution itself.
-  return generateManagedAppImprovementTaskForType(nextType, app, state, { ignoreTaskId });
+  const task = await generateManagedAppImprovementTaskForType(nextType, app, state, { ignoreTaskId });
+  // Idle-review can steal a queued on-demand request for this app. That
+  // request is still a user Run — apply the same consent as Priority 0.
+  if (selectionReason === 'on-demand') applyOnDemandConsent(task);
+  return task;
 }
 
 /**
@@ -2783,9 +2867,11 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
   const swarmBlock = resolveSwarmBlock(promptTaskType, metadata.swarmCount);
 
   return `${swarmBlock}${promptTemplate}`
-    // {trackerInstructions} FIRST — the injected block itself carries
-    // {appName}/{repoPath} placeholders that the replacers below expand. This
+    // {modeInstructions} before {trackerInstructions}: the file-issues mode
+    // contract itself carries {trackerInstructions}. Then tracker before
+    // {appName}/{repoPath} — the injected block carries those too. This
     // ordering is load-bearing (mirrors triggerReferenceAnalysis).
+    .replace(/\{modeInstructions\}/g, () => blocks.modeInstructions || '')
     .replace(/\{trackerInstructions\}/g, () => blocks.trackerInstructions)
     .replace(/\{appName\}/g, app.name)
     .replace(/\{repoPath\}/g, app.repoPath)
@@ -2815,10 +2901,10 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
     // step — appending here too would print the same sentence twice and give one
     // instruction two owners to drift apart.
     + (/\{reviewers\}/.test(promptTemplate)
-        ? appendReviewerEffortBlock(promptReviewers, promptReviewerEfforts)
+        ? appendReviewerEffortBlock(promptReviewers, promptReviewerEfforts, promptReviewerModels)
         : '')
     + (/\{reviewers\}/.test(promptTemplate)
-        ? appendLocalReviewerInstructions(promptTaskType, promptReviewers, promptReviewerModels, promptReviewerEfforts)
+        ? buildLocalReviewerInstructions(promptReviewers, promptReviewerModels, promptReviewerEfforts)
         : '');
 }
 
@@ -2938,9 +3024,10 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   if (referenceWatch.skip) return null;
   const referenceDataBlock = referenceWatch.block;
 
-  // Tracker-filing types (reference-watch / ux): the {trackerInstructions} block
-  // for the app's resolved work tracker.
-  const trackerFiling = await resolveTrackerFilingBlock(app, taskType);
+  // Tracker-filing types (reference-watch, or an audit type with fileIssues):
+  // the {trackerInstructions} block for the app's resolved work tracker.
+  const fileIssues = isFileIssuesMode(taskType, metadata);
+  const trackerFiling = await resolveTrackerFilingBlock(app, taskType, { fileIssues });
   if (trackerFiling.workTracker) {
     // Traceability + deliverable posture, derived from the SAME resolved tracker
     // that selected the {trackerInstructions} block above so the flag can't drift
@@ -2973,11 +3060,14 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   }
   const planConstraintBlock = buildPlanConstraintBlock(metadata.planId);
 
+  const modeInstructions = isAuditTaskType(taskType) ? modeContractFor(fileIssues) : '';
   const description = await buildImprovementTaskDescription({
-    promptTemplate, app, promptTaskType, metadata,
+    promptTemplate: applyAuditModeWrapper(promptTemplate, modeInstructions),
+    app, promptTaskType, metadata,
     blocks: {
       referenceData: referenceDataBlock,
       trackerInstructions: trackerFiling.trackerInstructions,
+      modeInstructions,
       prData: prDataBlock,
       inFlightBranches: inFlightBranchesBlock,
       zombieIssues: zombieIssuesBlock,
@@ -2988,9 +3078,19 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   });
 
   applyAppWorktreeDefault(metadata, app);
+  // File-issues posture wins over app worktree/PR defaults — the deliverable
+  // is tracker items, so a managed worktree or an implied PR is the wrong shape.
+  if (fileIssues) {
+    metadata.fileIssues = true;
+    metadata.noCodeOutput = true;
+    metadata.useWorktree = false;
+    metadata.openPR = false;
+    metadata.simplify = false;
+  }
   applyProviderModelPins(metadata, interval, hookOverride);
 
   const approval = await resolveConfidenceApproval(state, `app-improve:${taskType}`, `Task app-improve:${taskType} for ${app.name}`, metadata);
+  stampApprovalReason(metadata, approval);
 
   // All gates passed — stamp the buildTaskInput hook's metadata bag, record the
   // rotation-pointer advance, and emit the generation log. Deferred from the top

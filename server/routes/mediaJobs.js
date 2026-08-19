@@ -14,6 +14,7 @@ import { refineMediaPrompt } from '../services/mediaPromptRefiner.js';
 import { promptFromMedia } from '../services/mediaPromptFromMedia.js';
 import { CODEX_EFFORT_LEVELS } from '../lib/providerModels.js';
 import { sanitizeJob } from '../services/mediaJobQueue/sanitizeJob.js';
+import { validateVideoRetryParams } from '../services/videoGen/prepareParams.js';
 
 const router = Router();
 
@@ -204,14 +205,34 @@ const RETRY_OVERRIDE_SCHEMA = z.object({
   ),
   width: z.number().int().min(64).max(4096).optional(),
   height: z.number().int().min(64).max(4096).optional(),
-  steps: z.number().int().min(1).max(200).optional(),
+  steps: z.number().int().min(1).max(200).nullable().optional(),
   guidance: z.number().min(0).max(30).optional(),
-  guidanceScale: z.number().min(0).max(30).optional(),
+  guidanceScale: z.number().min(0).max(30).nullable().optional(),
   cfgScale: z.number().min(0).max(30).optional(),
-  seed: z.number().int().optional(),
-  numFrames: z.number().int().min(1).max(2000).optional(),
-  fps: z.number().int().min(1).max(120).optional(),
+  seed: z.number().int().min(0).nullable().optional(),
+  numFrames: z.number().int().min(1).max(1024).optional(),
+  fps: z.number().int().min(1).max(60).optional(),
+  tiling: z.enum(['auto', 'none', 'spatial', 'temporal']).optional(),
+  disableAudio: z.boolean().optional(),
+  imageStrength: z.number().min(0).max(1).nullable().optional(),
+  textEncoderId: z.string().max(64).optional().transform(emptyToUndef),
+  chunks: z.number().int().min(1).max(8).optional(),
+  chunkPrompts: z.array(z.string().max(8000)).max(8).optional(),
+  contextFrames: z.number().int().min(0).max(64).optional(),
+  loras: z.array(z.object({
+    filename: z.string().min(1).max(255).regex(/^[^/\\]+\.safetensors$/i, 'filename must be a bare .safetensors basename'),
+    name: z.string().max(200).optional(),
+    scale: z.number().min(0).max(2).optional(),
+  })).max(8).optional(),
 }).partial();
+
+const VIDEO_RETRY_BOUNDS_SCHEMA = z.object({
+  width: z.number().int().min(64).max(2048).optional(),
+  height: z.number().int().min(64).max(2048).optional(),
+  seed: z.number().int().min(0).nullable().optional(),
+  numFrames: z.number().int().min(1).max(1024).optional(),
+  fps: z.number().int().min(1).max(60).optional(),
+}).passthrough();
 
 const retryBodySchema = z.object({
   params: RETRY_OVERRIDE_SCHEMA.optional(),
@@ -257,6 +278,17 @@ router.post('/:id/retry', asyncHandler(async (req, res) => {
     ),
   );
   const params = { ...job.params, ...overrides };
+  if (job.kind === 'video') {
+    const bounds = VIDEO_RETRY_BOUNDS_SCHEMA.safeParse(rawOverrides);
+    if (!bounds.success) throw new ServerError('Video retry settings are outside the supported range', { status: 400, code: 'VALIDATION_ERROR' });
+  }
+  for (const key of ['seed', 'steps', 'guidanceScale', 'imageStrength']) {
+    if (rawOverrides[key] === null) delete params[key];
+  }
+  if (rawOverrides.chunks === 1) delete params.chunkPrompts;
+  // Grok video jobs use `mode` as the cloud-dispatch discriminator, not the
+  // local semantic mode validated by prepareParams.
+  if (job.kind === 'video' && params.mode !== 'grok') await validateVideoRetryParams(params);
   // Reset Codex effort to the shipped default: dropping the key lets codex.js's
   // fallback (CODEX_IMAGEGEN_DEFAULT_EFFORT) take over, which a merged sentinel
   // string could not do (it would fail the CODEX_EFFORT_LEVELS validation).

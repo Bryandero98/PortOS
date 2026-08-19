@@ -166,6 +166,25 @@ describe('Apps row action hierarchy', () => {
 
     expect(screen.queryByRole('button', { name: /More actions/ })).toBeNull();
   });
+
+  it('labels the build action as in progress while the build is running', async () => {
+    let resolveBuild;
+    api.getApps.mockResolvedValue([{ ...APPS[0], buildCommand: 'npm run build' }]);
+    api.buildApp.mockImplementation(() => new Promise(resolve => { resolveBuild = resolve; }));
+    const user = userEvent.setup();
+    render(<MemoryRouter><Apps /></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Example App details' }));
+    await user.click(await screen.findByRole('button', { name: 'Build production UI: npm run build' }));
+
+    const buildingButton = screen.getByRole('button', { name: 'Building production UI: npm run build' });
+    expect(buildingButton).toBeDisabled();
+    expect(buildingButton).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByText('Building…')).toBeTruthy();
+
+    await act(async () => { resolveBuild({ success: true }); });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Build production UI: npm run build' })).toBeEnabled());
+  });
 });
 
 describe('Apps archived filter', () => {

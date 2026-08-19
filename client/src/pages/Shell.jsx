@@ -45,6 +45,7 @@ export default function Shell() {
     sendCtrlB,
     sendCtrlC,
     sendNavKey,
+    scrollPage,
     restartSession,
     stopSession,
     startNewSession,
@@ -208,6 +209,7 @@ export default function Shell() {
               sendCtrlC={sendCtrlC}
               handlePaste={handlePaste}
               sendNavKey={sendNavKey}
+              scrollPage={scrollPage}
               showPasteInput={showPasteInput}
               setShowPasteInput={setShowPasteInput}
               pasteInputRef={pasteInputRef}
@@ -291,6 +293,7 @@ export default function Shell() {
               sendCtrlC={sendCtrlC}
               handlePaste={handlePaste}
               sendNavKey={sendNavKey}
+              scrollPage={scrollPage}
               showPasteInput={showPasteInput}
               setShowPasteInput={setShowPasteInput}
               pasteInputRef={pasteInputRef}

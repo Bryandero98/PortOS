@@ -28,7 +28,7 @@ import { PAUSED_BLOCKED_CATEGORIES, USER_DECISION_BLOCKED_CATEGORIES } from '../
 import { splitTaskPromptFields } from '../lib/cosTaskPrompt.js';
 import { loadState, withStateLock, ROOT_DIR } from './cosState.js';
 import { cosEvents } from './cosEvents.js';
-import { CLAIM_METADATA_KEYS } from './cosTaskClaim.js';
+import { CLAIM_METADATA_KEYS, TARGET_INSTANCE_KEY, getTargetInstance } from './cosTaskClaim.js';
 import { mergeTaskLists } from './cosTaskMerge.js';
 import { canChallenge, getChallengeCount, buildChallengePatch, buildChallengeResolutionPatch, classifyRecheckOutcome, MAX_CHALLENGES_PER_TASK } from './cosChallenge.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
@@ -68,7 +68,7 @@ const isTerminalTaskStatus = (status) => status === 'completed' || status === 'b
 // with the #4153 split so the task editor can edit the agent-facing payload the
 // same way it edits the human note — deliberately WITHOUT re-classification, so
 // a multi-line note edit can't overwrite the payload (see `splitTaskPromptFields`).
-const LEGACY_DIRECT_FIELDS = ['context', 'prompt', 'model', 'provider', 'effort', 'app'];
+const LEGACY_DIRECT_FIELDS = ['context', 'prompt', 'model', 'provider', 'effort', 'temperature', 'thinking', 'app'];
 
 // Equality for metadata values across a fresh markdown re-parse: primitives by
 // ===, arrays/objects (reviewers[], screenshots[], …) by JSON since the two
@@ -330,7 +330,17 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     if (taskData.model) metadata.model = taskData.model;
     if (taskData.provider) metadata.provider = taskData.provider;
     if (taskData.effort) metadata.effort = taskData.effort;
+    if (taskData.temperature !== undefined) metadata.temperature = taskData.temperature;
+    if (taskData.thinking !== undefined) metadata.thinking = taskData.thinking;
     if (taskData.app) metadata.app = taskData.app;
+    // Pin this task to ONE federated instance (#4520): only that instance's CoS
+    // evaluator claims and runs it, every other peer passes over it. Absent —
+    // the default — leaves the opportunistic first-claim-wins behavior intact.
+    // Normalized through the same reader the spawn guards use, so a blank or
+    // whitespace-only value stores as unpinned rather than as a target no
+    // instance can ever match.
+    const targetInstance = getTargetInstance(taskData);
+    if (targetInstance) metadata[TARGET_INSTANCE_KEY] = targetInstance;
     // Tags a task dispatched by the voice code-agent tool so the proactive
     // speech layer can announce its completion (see voice/proactiveTriggers.js).
     if (taskData.voiceDispatch === true) metadata.voiceDispatch = true;

@@ -143,6 +143,29 @@ describe('formatTrackerInstructions — ux preset (#3273)', () => {
   });
 });
 
+describe('resolveTrackerFilingBlock — fileIssues audit types', () => {
+  it('files for an audit type only when fileIssues is on', async () => {
+    const { resolveTrackerFilingBlock } = await import('./workTracker.js');
+    const app = { repoPath: '/tmp/example-repo', workTracker: 'plan' };
+    const off = await resolveTrackerFilingBlock(app, 'security', { fileIssues: false });
+    expect(off.trackerInstructions).toBe('');
+    expect(off.workTracker).toBeNull();
+
+    const on = await resolveTrackerFilingBlock(app, 'data-safety', { fileIssues: true });
+    expect(on.workTracker).toBe('plan');
+    expect(on.trackerInstructions).toContain('[data-safety-…]');
+    expect(on.trackerInstructions).toContain('data-safety-audit');
+  });
+
+  it('still files always-filing types (reference-watch) without fileIssues', async () => {
+    const { resolveTrackerFilingBlock } = await import('./workTracker.js');
+    const app = { repoPath: '/tmp/example-repo', workTracker: 'plan' };
+    const block = await resolveTrackerFilingBlock(app, 'reference-watch');
+    expect(block.workTracker).toBe('plan');
+    expect(block.trackerInstructions).toContain('[ref-watch-…]');
+  });
+});
+
 describe('formatTrackerInstructions — repo-study complete labels', () => {
   const repoStudy = TRACKER_FILING_PRESETS['repo-study'];
 

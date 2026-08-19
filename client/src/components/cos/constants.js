@@ -189,8 +189,9 @@ export const STATE_MESSAGES = {
   ideating: "Analyzing options...",
 };
 
-// Agent option toggles for task metadata (useWorktree, openPR, simplify).
+// Agent option toggles for task metadata (useWorktree, openPR, simplify, requireApproval).
 export const AGENT_OPTIONS = [
+  { field: 'requireApproval', label: 'Require approval', shortLabel: 'Apr', description: 'Queue as awaiting-approve and do not auto-run — including Run Now — until you approve. Off (default): Run Now starts immediately; scheduled runs still follow the confidence and safety gates.' },
   { field: 'useWorktree', label: 'Worktree', shortLabel: 'WT', description: 'Work in an isolated git worktree on a feature branch. If unchecked, commits directly to the default branch.' },
   { field: 'openPR', label: 'Open PR', shortLabel: 'PR', description: 'Open a pull request to the default branch (implies worktree). Choose whether PortOS reviews and merges it, merges on green CI, or leaves it open. If unchecked with worktree enabled, auto-merges to the default branch on completion.' },
   { field: 'simplify', label: 'Run /simplify', shortLabel: '/s', description: 'Review code for reuse and quality before committing' }
@@ -224,7 +225,7 @@ export function pinnedPrCompletion(metadata) {
 }
 
 // Reviewer choices for the Review Loop. `copilot` requests a GitHub Copilot
-// review via the native reviewer API; CLI reviewers (claude/antigravity/codex/grok)
+// review via the native reviewer API; CLI reviewers (claude/antigravity/codex/grok/cursor)
 // instruct the follow-up agent to invoke the named CLI; local-LLM reviewers
 // (lmstudio/ollama) route the diff through PortOS's `POST /api/code-review/local`
 // endpoint, which runs the model configured on the AI Providers → Code Review
@@ -236,6 +237,7 @@ export const REVIEWER_OPTIONS = [
   { value: 'antigravity', label: 'Antigravity', description: 'Antigravity CLI (agy) reviews the PR diff' },
   { value: 'codex', label: 'Codex', description: 'Codex CLI reviews the PR diff (optional model tier on AI Providers → Code Review Defaults)' },
   { value: 'grok', label: 'Grok', description: 'Grok Build CLI (grok) reviews the PR diff' },
+  { value: 'cursor', label: 'Cursor Agent', description: 'Cursor Agent CLI (cursor-agent) reviews the PR diff' },
   { value: 'lmstudio', label: 'LM Studio', description: 'Local LM Studio model reviews the diff (set model on AI Providers)' },
   { value: 'ollama', label: 'Ollama', description: 'Local Ollama model reviews the diff (set model on AI Providers)' }
 ];
@@ -377,7 +379,7 @@ export const DEFAULT_REVIEW_STOP_MODE = 'all';
 // server's normalizeReviewers): prefers `reviewers`, falls back to legacy
 // single `reviewer`, defaults to `['copilot']`.
 const REVIEWER_VALUES = REVIEWER_OPTIONS.map(o => o.value);
-const REVIEWER_ALIASES = { gemini: 'antigravity' };
+const REVIEWER_ALIASES = { gemini: 'antigravity', 'cursor-agent': 'cursor' };
 export function normalizeReviewers(meta) {
   const raw = meta && typeof meta === 'object' && !Array.isArray(meta) ? meta : {};
   const source = Array.isArray(raw.reviewers)

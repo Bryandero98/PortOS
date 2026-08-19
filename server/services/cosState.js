@@ -58,6 +58,9 @@ export const DEFAULT_CONFIG = {
   proactiveMode: true,
   autonomousJobsEnabled: true,
   autonomyLevel: 'standby',
+  // Investigation tasks normally hold only failure loops for a human. This
+  // opt-in also admits those loop/storm investigations unattended.
+  autoApproveInvestigations: false,
   // Per-domain autonomy guardrails (#711). Each domain is off | dry-run | execute.
   // Default is `execute` for every domain, reproducing pre-#711 behavior so no
   // migration is needed — an install with no stored value reads `execute`.

@@ -6,6 +6,7 @@ const PARAM_ALLOWLIST = new Set([
   'prompt', 'negativePrompt', 'modelId', 'model', 'effort',
   'width', 'height', 'numFrames', 'fps', 'steps', 'guidanceScale',
   'seed', 'tiling', 'disableAudio', 'mode', 'imageStrength',
+  'textEncoderId', 'chunks', 'chunkPrompts', 'contextFrames', 'loras',
   'cfgScale', 'guidance', 'quantize',
   'runId', 'runtime', 'datasetId', 'characterId', 'characterName',
   'triggerWord', 'rank', 'baseModelId', 'spriteRef', 'spriteWalk',

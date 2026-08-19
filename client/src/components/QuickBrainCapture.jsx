@@ -104,6 +104,7 @@ export default function QuickBrainCapture() {
     });
     if (result) {
       toast.success(result.message || 'Captured');
+      repoIntake.setStudyContext('');
     }
     submittingRef.current = false;
     setIsSubmitting(false);
@@ -217,6 +218,11 @@ export default function QuickBrainCapture() {
         idPrefix="quick-brain-repo"
         repo={repoIntake.repo}
         options={repoIntake.options}
+        managedApps={repoIntake.managedApps}
+        targetAppId={repoIntake.targetAppId}
+        onTargetAppChange={repoIntake.setTargetAppId}
+        studyContext={repoIntake.studyContext}
+        onStudyContextChange={repoIntake.setStudyContext}
         onToggle={repoIntake.toggle}
       />
 

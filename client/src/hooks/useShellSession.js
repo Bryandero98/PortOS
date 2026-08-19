@@ -9,6 +9,7 @@ import { useSocket } from './useSocket';
 import { useThemeContext } from '../components/ThemeContext';
 import { buildTerminalTheme, parseCssColorToHex } from '../lib/terminalTheme';
 import { attachDictationBridge } from '../lib/terminalDictation';
+import { attachTerminalTouchScroll, scrollTerminalPage } from '../lib/terminalScroll';
 import { readFileAsBase64 } from '../utils/fileUpload';
 import * as api from '../services/api';
 import toast from '../components/ui/Toast';
@@ -223,6 +224,13 @@ export function useShellSession({ isFullscreen } = {}) {
     emitShellInput(`\x1b${appCursor ? 'O' : '['}${key.code}`, { focus: false });
   }, [emitShellInput]);
 
+  // Scroll the VIEW by one screenful — distinct from the arrow keys above, which
+  // drive whatever the TUI does with a cursor key. `direction` is -1 for up, 1 for
+  // down; lib/terminalScroll.js owns why this can't just be term.scrollPages().
+  const scrollPage = useCallback((direction) => {
+    scrollTerminalPage(termInstanceRef.current, direction);
+  }, []);
+
   // Initialize terminal once
   useEffect(() => {
     if (!terminalRef.current || termInstanceRef.current) return;
@@ -245,6 +253,12 @@ export function useShellSession({ isFullscreen } = {}) {
 
     term.open(terminalRef.current);
 
+    // xterm binds no touch handlers of its own, so without this a swipe over the
+    // terminal does nothing — see lib/terminalScroll.js. Attached here rather than in
+    // its own effect: it has no reactive deps, so its lifetime is exactly the
+    // terminal instance's (unlike the dictation bridge, which needs emitShellInput).
+    const detachTouchScroll = attachTerminalTouchScroll(term);
+
     requestAnimationFrame(() => {
       fitAddon.fit();
     });
@@ -253,6 +267,7 @@ export function useShellSession({ isFullscreen } = {}) {
     fitAddonRef.current = fitAddon;
 
     return () => {
+      detachTouchScroll();
       term.dispose();
       termInstanceRef.current = null;
       fitAddonRef.current = null;
@@ -866,6 +881,7 @@ export function useShellSession({ isFullscreen } = {}) {
     sendCtrlB,
     sendCtrlC,
     sendNavKey,
+    scrollPage,
     restartSession,
     stopSession,
     startNewSession,

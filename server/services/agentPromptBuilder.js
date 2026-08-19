@@ -17,7 +17,7 @@ import { getActiveProvider } from './providers.js';
 import { runPromptThroughProvider } from '../lib/promptRunner.js';
 import { readJSONFile, PATHS, tryReadFile, expandHome } from '../lib/fileUtils.js';
 import { loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js';
-import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, resolveReviewerConfig, reviewerEffortArgs, buildReviewerEffortNote, resolveKeyedReviewers, buildReviewWithArgs, buildReviewersCsv } from '../lib/validation.js';
+import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, resolveReviewerConfig, reviewerEffortArgs, reviewerModelArg, buildReviewerEffortNote, resolveKeyedReviewers, buildReviewWithArgs, buildReviewersCsv } from '../lib/validation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { doneSentinelName } from '../lib/agentSentinel.js';
 import { canTypeSlashCommands, agentOwnsPrWorkflow, resolveSlashdoInvocation, buildSlashdoSection, oversizedBodyPointer, unreachableReviewerIncludes, SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
@@ -109,6 +109,14 @@ PortOS launched you autonomously. Nobody is watching this session and nothing ca
  * Order matters — first match wins, so more specific patterns come first.
  */
 const SKILL_MATCHERS = [
+  {
+    skill: 'data-safety',
+    keywords: ['data-safety', 'upgrade-safety', 'schema parity', 'schemaversion', 'seed file', 'data.reference']
+  },
+  {
+    skill: 'simplify',
+    keywords: ['dead code', 'unused export', 'duplication', 'copy-paste', 'unreferenced']
+  },
   {
     skill: 'security-audit',
     keywords: ['security', 'audit', 'vulnerability', 'xss', 'injection', 'owasp', 'cve', 'penetration', 'hardening', 'sanitize', 'authorization']
@@ -610,7 +618,11 @@ async function applySlashdoInvocation(task, {
   // explicit naming: nothing defaults to either suffix, so both are deliberate
   // choices, and dropping one would silently turn a non-blocking review blocking
   // or spend an unbudgeted number of rounds. `buildReviewWithArgs` makes the same
-  // exemption for its lone-default suppression — keep the two in step.
+  // exemption for its lone-default suppression — keep the two in step. It carries a
+  // third clause for a copilot `~effort=`; there is deliberately none here, because
+  // copilot has no effort ladder at all (`REVIEWER_EFFORT_LEVELS` is keyed off
+  // `reviewerCliBinary`, and copilot names no binary), so `normalizeReviewerEfforts`
+  // drops the pin long before either function sees it.
   const taskPinnedReviewer = (Array.isArray(task.metadata?.reviewers) && task.metadata.reviewers.length > 0)
     || (typeof task.metadata?.reviewer === 'string' && !!task.metadata.reviewer);
   const optionalDefaultReviewer = resolvedOptional.some(t => t.toLowerCase() === DEFAULT_REVIEWER);
@@ -645,11 +657,13 @@ async function applySlashdoInvocation(task, {
   const reviewWith = skipIncludes.length
     ? buildReviewersCsv(resolvedReviewers, resolvedUsernames, resolvedOptional, resolvedMaxRounds, resolvedModels, resolvedEfforts)
     : '';
-  // Unlike `reviewWith` this is NOT gated on pruning: the workflow drives its own
-  // review loop, so a pinned effort has no other route to the reviewer CLI it
-  // spawns — the `/do:pr` completion step further down the prompt is a different
-  // invocation entirely, and for a slashdo-backed task usually isn't reached.
-  const reviewerEffortNote = buildReviewerEffortNote(resolvedReviewers, resolvedEfforts);
+  // Gated on the PIN, not on pruning. When `reviewWith` is emitted, each token
+  // carries `~effort=<level>` and slashdo's loop applies it — the note would only
+  // have the agent pass the flag twice. When nothing is pinned, the workflow
+  // resolves reviewers itself and the note is the pin's only route to the CLI it
+  // spawns (the `/do:pr` completion step further down is a different invocation
+  // entirely, and for a slashdo-backed task usually isn't reached).
+  const reviewerEffortNote = buildReviewerEffortNote(resolvedReviewers, resolvedEfforts, { reviewWith, reviewerModels: resolvedModels });
   const section = buildSlashdoSection(resolved, body, { bodyPath, reviewWith, reviewerEffortNote });
   return { ...task, description: `${task.description}\n\n${section}` };
 }
@@ -764,7 +778,8 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   // Optional per-reviewer reasoning-effort pins, same two sources as the models.
   // A CLI reviewer's effort becomes a flag on the command line the agent runs
   // (`--effort high` for claude/agy, `-c model_reasoning_effort=high` for codex —
-  // `reviewerEffortArgs` owns that shape); a local-LLM reviewer's becomes the
+  // `reviewerEffortArgs` owns that shape, and returns nothing for cursor, whose
+  // level is folded into `--model` by `reviewerModelArg`); a local-LLM reviewer's becomes the
   // `reasoning_effort` field of its `/api/code-review/local` body (below). There is
   // no slashdo `--review-with` suffix for effort, which is why it rides the
   // invocation rather than `equivArgs`.
@@ -788,7 +803,11 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
       // reason: the user configures the id their environment needs (a Bedrock-form id
       // on a Bedrock box, an installed Ollama model for an Ollama-backed `claude`).
       if (MODEL_CAPABLE_CLI_REVIEWERS.includes(r) && typeof reviewerModelMap[r] === 'string' && reviewerModelMap[r]) {
-        flags.push(`--model ${reviewerModelMap[r]}`);
+        // `reviewerModelArg` (not the raw id) because cursor carries its
+        // reasoning effort INSIDE the model id — `gpt-5[effort=max]` — so the
+        // pinned pair must render as ONE `--model`, never a `--effort` cursor
+        // rejects. Every other reviewer gets the id back verbatim.
+        flags.push(`--model ${reviewerModelArg(r, reviewerModelMap[r], reviewerEffortMap[r])}`);
       }
       const effortArgs = reviewerEffortArgs(r, reviewerEffortMap[r]);
       if (effortArgs.length) flags.push(effortArgs.join(' '));
@@ -1425,7 +1444,7 @@ export function buildProgrammaticOutputCompletionSection(sentinelPath) {
     '## Completion (Reasoning-Only Task)',
     'This is a reasoning task, not a code change. The worktree you are in is **discarded on exit** — any commits, pushes, or PRs are thrown away and have no effect. Do NOT run `/do:push`, `/do:pr`, `git commit`, `git push`, or open a pull request.',
     '',
-    `When you have finished reasoning, write your result to \`${sentinelPath}\` in the exact payload format described in your task instructions, then stop. PortOS polls this sentinel every 2s, finalizes the run, and closes the session for you — do NOT run \`/quit\` and do NOT wait for anything after writing the sentinel.`
+    `When you have finished reasoning, write your result to \`${sentinelPath}\` in the exact payload format described in your task instructions, then stop. PortOS watches this sentinel and finalizes the run shortly after it appears — do NOT run \`/quit\` and do NOT wait for anything after writing the sentinel.`
   ].join('\n');
 }
 
@@ -1434,8 +1453,8 @@ export function buildProgrammaticOutputCompletionSection(sentinelPath) {
  * scan stage). The agent must NOT commit/push/modify source; its real output is
  * recorded elsewhere DURING the run (a tracker issue, PLAN.md, a report).
  *
- * A TUI agent still needs a `.agent-done` sentinel to signal completion — the 2s
- * sentinel poll in `spawnTuiAgent` is the primary finalize path and the channel
+ * A TUI agent still needs a `.agent-done` sentinel to signal completion — the
+ * sentinel watcher in `spawnTuiAgent` is the primary finalize path and the channel
  * that ingests the run summary. Without it a read-only TUI run relies on shell
  * exit, so the resolution summary is not captured cleanly (the bug this
  * repairs). CLI/API read-only agents complete on process exit and never poll a
@@ -1447,7 +1466,7 @@ export function buildReadOnlyCompletionSection({ isTui = false, sentinelPath = n
   return [
     notice,
     '',
-    `When you have finished, write a short markdown summary of what you found (and where you recorded it) to \`${sentinelPath}\`, then stop. PortOS polls this sentinel every 2s, finalizes the run, and closes the session for you — do NOT run \`/quit\` and do NOT wait for anything after writing the sentinel.`
+    `When you have finished, write a short markdown summary of what you found (and where you recorded it) to \`${sentinelPath}\`, then stop. PortOS watches this sentinel and finalizes the run shortly after it appears — do NOT run \`/quit\` and do NOT wait for anything after writing the sentinel.`
   ].join('\n');
 }
 
@@ -1459,7 +1478,7 @@ export function buildReadOnlyCompletionSection({ isTui = false, sentinelPath = n
  * nothing to commit or push, and telling the agent to run `/do:push` just makes it
  * load that skill for no reason (and can contradict the task prompt's own
  * "on a 200 your task is complete"). A TUI agent still writes a `.agent-done`
- * sentinel so the 2s poll finalizes it promptly instead of waiting for a runtime
+ * sentinel so the watcher finalizes it promptly instead of waiting for a runtime
  * reaper.
  */
 export function buildActionOutputCompletionSection({ isTui = false, sentinelPath = null } = {}) {
@@ -1468,7 +1487,7 @@ export function buildActionOutputCompletionSection({ isTui = false, sentinelPath
   return [
     notice,
     '',
-    `Your task is complete once that request succeeds. Then write a one-line summary to \`${sentinelPath}\` and stop — PortOS polls this sentinel every 2s, finalizes the run, and closes the session for you. Do NOT run \`/quit\` and do NOT wait for anything after writing the sentinel.`
+    `Your task is complete once that request succeeds. Then write a one-line summary to \`${sentinelPath}\` and stop — PortOS watches this sentinel and finalizes the run shortly after it appears. Do NOT run \`/quit\` and do NOT wait for anything after writing the sentinel.`
   ].join('\n');
 }
 
@@ -1741,7 +1760,7 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
   // both prompt paths emit byte-identical workflows. (Background: TUI owns
   // its own `/simplify` → `/do:pr|/do:push` → sentinel sequence because the
   // slashdo submodule mounts those commands at project level. Writing the
-  // sentinel is the done signal — PortOS finalizes via the 2s poll and kills
+  // sentinel is the done signal — PortOS finalizes via the watcher and kills
   // the session, so the prompt does NOT ask the agent to `/quit` (it's a UI
   // command the agent can't invoke). See `buildTuiCompletionSection` below.)
   const tuiCompletionCommand = willOpenPR ? '/do:pr' : '/do:push';
@@ -2126,10 +2145,6 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
 
   const taskSections = [];
   const contractSections = [];
-  // Alias preserving the original single-list flow below: task-block pushes go
-  // to `taskSections`, then `sections` is repointed at `contractSections` for
-  // the operating-contract blocks.
-  let sections = taskSections;
 
   // --- Task block --------------------------------------------------------
   // cwd is set by the spawner and the agent knows its own id from the
@@ -2138,35 +2153,30 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // suppressed in buildTaskBlock since cwd already reveals it. Shared with the
   // full path via buildTaskBlock.
   const taskBlock = buildTaskBlock(task, { screenshotsAsList: true });
-  sections.push(taskBlock.description);
-  if (taskBlock.targetApp) sections.push(taskBlock.targetApp);
+  taskSections.push(taskBlock.description);
+  if (taskBlock.targetApp) taskSections.push(taskBlock.targetApp);
 
   // The task's prompt payload + human note as one block (#4153), so the split is
   // invisible here and a legacy `metadata.context`-as-prompt still renders.
   const context = taskContextBlock(task);
   if (context) {
-    sections.push(context.includes('\n')
+    taskSections.push(context.includes('\n')
       ? `### Context\n\n${context.trimEnd()}`
       : `### Context\n${context}`);
   }
 
-  if (taskBlock.screenshots) sections.push(taskBlock.screenshots);
-  if (taskBlock.attachments) sections.push(taskBlock.attachments);
-
-  // Everything below is the PortOS operating contract (not task content) —
-  // route it to `contractSections` so the split path can lift it into the
-  // system prompt.
-  sections = contractSections;
+  if (taskBlock.screenshots) taskSections.push(taskBlock.screenshots);
+  if (taskBlock.attachments) taskSections.push(taskBlock.attachments);
 
   // --- Unattended run ----------------------------------------------------
   // First contract section, and unconditional: the light path is the one that
   // actually stalled on an approval gate, and "no human will answer you" is not
   // something the agent can infer from CLAUDE.md or its cwd.
-  sections.push(UNATTENDED_RUN_RULE);
+  contractSections.push(UNATTENDED_RUN_RULE);
 
   // --- Worktree ----------------------------------------------------------
   if (worktreeInfo) {
-    sections.push([
+    contractSections.push([
       '## Git Worktree',
       `- **Branch**: \`${worktreeInfo.branchName}\`${isWorktreeOnExistingBranch ? ' *(pre-existing PR branch)*' : ''}`,
       `- **Path**: \`${worktreeInfo.worktreePath}\``,
@@ -2184,7 +2194,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   const pipelineCtx = task.metadata?.pipeline;
   if (pipelineCtx?.previousStageAgentId) {
     const prevOutput = join(AGENTS_DIR, pipelineCtx.previousStageAgentId, 'output.txt');
-    sections.push([
+    contractSections.push([
       '## Pipeline Context',
       `Stage ${pipelineCtx.currentStage + 1} of ${pipelineCtx.stages.length}: "${pipelineCtx.stages[pipelineCtx.currentStage]?.name}"`,
       `Previous stage: "${pipelineCtx.stages[pipelineCtx.currentStage - 1]?.name}"`,
@@ -2196,7 +2206,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
 
   // --- JIRA --------------------------------------------------------------
   if (task.metadata?.jiraTicketId) {
-    sections.push([
+    contractSections.push([
       '## JIRA',
       `- **Ticket**: ${task.metadata.jiraTicketId} (${task.metadata.jiraTicketUrl})`,
       task.metadata.jiraBranch ? `- **Branch**: \`${task.metadata.jiraBranch}\` — commit here; do NOT switch branches.` : null,
@@ -2213,7 +2223,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // path above and never reaches the other two, so a fix applied only there is
   // no fix at all for anything a subscription-quota job can run.
   if (noCodeOutput) {
-    sections.push(buildActionOutputCompletionSection({
+    contractSections.push(buildActionOutputCompletionSection({
       isTui,
       sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
     }));
@@ -2221,24 +2231,24 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
     // Reasoning-only task: the sentinel payload (shape set by the task-type
     // output hook) is the sole output; the worktree is discarded on exit. Wins
     // over the isTui / CLI push-and-PR completion workflows below.
-    sections.push(buildProgrammaticOutputCompletionSection(resolveSentinelPath(worktreeInfo, workspaceDir, agentId)));
+    contractSections.push(buildProgrammaticOutputCompletionSection(resolveSentinelPath(worktreeInfo, workspaceDir, agentId)));
   } else if (claimFlow) {
-    sections.push(buildClaimFlowCompletionSection({
+    contractSections.push(buildClaimFlowCompletionSection({
       isTui,
       sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
     }));
   } else if (isReadOnly) {
-    sections.push(buildReadOnlyCompletionSection({
+    contractSections.push(buildReadOnlyCompletionSection({
       isTui,
       sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
     }));
   } else if (isReviewLoopFollowUp) {
-    sections.push(buildReviewLoopFollowUpSection(task.metadata || {}, { verbose: false, localAgentLoopBody, forgeCli: resolvedForgeCli }));
+    contractSections.push(buildReviewLoopFollowUpSection(task.metadata || {}, { verbose: false, localAgentLoopBody, forgeCli: resolvedForgeCli }));
     if (isTui) {
       const sentinelPath = resolveSentinelPath(worktreeInfo, workspaceDir, agentId);
       const branchName = worktreeInfo?.branchName || task.metadata?.reviewLoopPRBranch || null;
       const sentinelTail = branchName ? `   ## Branch\n   ${branchName}` : '   ## Branch\n   <branch name>';
-      sections.push([
+      contractSections.push([
         '## Completion Handoff',
         'When finished with the follow-up steps above, write the completion sentinel to signal PortOS that you are done:',
         '',
@@ -2246,7 +2256,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       ].join('\n'));
     }
   } else if (isTui) {
-    sections.push(buildTuiCompletionSection({
+    contractSections.push(buildTuiCompletionSection({
       willOpenPR, prCompletion, simplifyEnabled, slashdoFree: tuiSlashdoFree, ownsPrWorkflow,
       sentinelPath: resolveSentinelPath(worktreeInfo, workspaceDir, agentId),
       branchName: worktreeInfo?.branchName || null,
@@ -2256,7 +2266,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
       forgeCli: resolvedForgeCli
     }));
   } else {
-    sections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies, forgeCli: resolvedForgeCli }));
+    contractSections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion, hasSlashdo, ownsPrWorkflow, simplifyEnabled, leavePrOpen: leavesPrForHuman(task), reviewers: lightReviewers, usernames: lightReviewerUsernames, optionalReviewers: lightOptionalReviewers, reviewerMaxRounds: lightReviewerMaxRounds, reviewerModels: lightReviewerModels, reviewerEfforts: lightReviewerEfforts, reviewStopMode: lightReviewStopMode, reviewerApplies: lightReviewerApplies, forgeCli: resolvedForgeCli }));
   }
 
   // The manual workflow's step 4 points here — it must follow the completion
@@ -2264,7 +2274,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // so a dangling "step 4" cross-reference and an orphaned Review Loop section
   // are both unrepresentable.
   if (ownsPrWorkflow) {
-    sections.push(buildInlineReviewLoopSection({
+    contractSections.push(buildInlineReviewLoopSection({
       taskId: task.id,
       branchName: worktreeInfo?.branchName || null,
       runsReviewLoop: inlineSection === 'review-loop',
@@ -2381,9 +2391,12 @@ function resolveReviewInvocation({ willOpenPR, runsReviewLoop, reviewers, userna
   const reviewArgs = willOpenPR
     ? (runsReviewLoop ? buildReviewWithArgs(reviewers, { stopMode: reviewStopMode, reviewerApplies, usernames: reviewUsernames, optionalReviewers, reviewerMaxRounds, reviewerModels, reviewerEfforts }) : '--review-with none')
     : '';
-  // Effort pins can't ride `--review-with` (no suffix for them in slashdo's
-  // grammar), so they're stated as an instruction on the invocation instead.
-  const effortNote = willOpenPR && runsReviewLoop ? buildReviewerEffortNote(reviewers, reviewerEfforts) : '';
+  // Effort pins ride the emitted `--review-with` tokens as `~effort=<level>`, so
+  // the prose note is suppressed whenever that suffix is present — it only speaks
+  // for an invocation that pins no reviewer list (see buildReviewerEffortNote).
+  const effortNote = willOpenPR && runsReviewLoop
+    ? buildReviewerEffortNote(reviewers, reviewerEfforts, { reviewWith: reviewArgs, reviewerModels })
+    : '';
   return { reviewUsernames, reviewArgs, effortNote };
 }
 
@@ -2396,7 +2409,7 @@ function resolveReviewInvocation({ willOpenPR, runsReviewLoop, reviewers, userna
  */
 function buildSentinelWriteSteps(stepNumber, sentinelPath, sentinelTail) {
   return [
-    `${stepNumber}. Write a short markdown summary (~5–15 lines) to the completion sentinel, then stop — this sentinel is the done signal. PortOS polls it every 2s, finalizes the run, and closes the session for you. Do NOT run \`/quit\` (it's a UI command, not something you can invoke) and do NOT wait for anything after writing the sentinel.`,
+    `${stepNumber}. Write a short markdown summary (~5–15 lines) to the completion sentinel, then stop — this sentinel is the done signal. PortOS watches it and finalizes the run shortly after it appears. Do NOT run \`/quit\` (it's a UI command, not something you can invoke) and do NOT wait for anything after writing the sentinel.`,
     '',
     '   ```bash',
     `   cat > "${sentinelPath}" <<'EOF'`,
@@ -2445,10 +2458,15 @@ function buildTuiCompletionSection({ willOpenPR, prCompletion = PR_COMPLETIONS.M
   const reviewerArg = (reviewArgs ? ` ${reviewArgs}` : '') + mergeArg;
   const copilotOnly = reviewers.length === 1 && reviewers[0] === DEFAULT_REVIEWER && reviewUsernames.length === 0;
   const reviewerListLabel = [...reviewers, ...reviewUsernames.map(u => `@${u}`)].join(', ');
+  // Ordering matters to the agent: `/do:pr` partitions the list and runs every
+  // local reviewer BEFORE it creates the PR, so the PR opens against an
+  // already-review-clean branch and only the cloud-side reviewers (Copilot,
+  // `@login`) plus CI remain. Saying "after the PR opens" of the whole list had
+  // agents expecting — and sometimes hand-rolling — a post-PR local pass.
   const reviewSuffix = willOpenPR && runsReviewLoop
     ? (copilotOnly
         ? ' — `/do:pr` runs the Copilot review loop after the PR opens.'
-        : ` — \`/do:pr\` runs the review loop for ${reviewerListLabel} in order after the PR opens.`)
+        : ` — \`/do:pr\` runs the review loop for ${reviewerListLabel} in order: local reviewers before it opens the PR, then the PR-side reviewers (Copilot / \`@login\`) once it is open.`)
     : (willOpenPR ? ' — external review is disabled for this task.' : '');
   // Reached only for a Claude TUI (a non-Claude one took the slashdoFree branch
   // above), so `/simplify` — a Claude Code built-in — is invokable here.
@@ -2707,8 +2725,8 @@ function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR
           : `and drives the review loop for ${[...reviewers, ...reviewUsernames.map(u => `@${u}`)].join(', ')} in order until clean.`)
       : 'with external review disabled.';
     lines.push(`${step++}. \`/do:pr${reviewerArg}\` — commits your changes, pushes the branch, and opens a pull request against the default branch ${completionNote}`);
-    // Effort pins have no `--review-with` suffix to ride, so they're stated as an
-    // instruction on the invocation instead (see buildReviewerEffortNote).
+    // Empty whenever the emitted `--review-with` already carries `~effort=<level>`
+    // (see buildReviewerEffortNote) — this speaks only for an unpinned invocation.
     if (effortNote) lines.push(`   ${effortNote}`);
     // Merge steps follow — review-gated with a loop, CI-gated without one — unless
     // this PR is a human's to land (JIRA-tracked; see lib/prDisposition.js).

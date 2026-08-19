@@ -50,9 +50,11 @@ export * from './validation.js';
 // same objects — same identity, so the collision detector is satisfied.
 export * from './sharedSchemas.js';
 export * from './threejsModel.js';
+export * from './threejsModelAnimation.js';
 export * from './threejsModelCoverage.js';
 export * from './threejsModelFamilies.js';
 export * from './threejsModelPenetration.js';
+export * from './threejsModelPlayerSource.js';
 export * from './threejsModelRig.js';
 
 // === Story & narrative ===
@@ -141,6 +143,7 @@ export * as providerVendors from './providerVendors.js';
 export * from './providerTranscriptUsage.js';
 export * from './quotaBurnConfig.js';
 export * from './quotaBurnPresets.js';
+export * from './auditCatalog.js';
 export * from './quotaBurnValidation.js';
 export * from './quotaReset.js';
 export * from './quotaWindows.js';
@@ -183,6 +186,7 @@ export * from './zipWriter.js';
 // === Process execution ===
 export * from './agentGuard/index.js';
 export * from './agentOutputMarkers.js';
+export * from './agentRunEvents.js';
 export * from './agentSentinel.js';
 export * from './bareUrl.js';
 export * from './bashResolver.js';
@@ -269,6 +273,7 @@ export * from './huggingfaceModel.js';
 export * from './localLlmCatalog.js';
 export * from './localLlmDisk.js';
 export * from './localModelHeuristics.js';
+export * from './localModelAssessment.js';
 export * from './ollamaContext.js';
 export * from './loraDataset.js';
 export * from './issueLength.js';
@@ -285,6 +290,7 @@ export * from './providerFamilies.js';
 export * from './personaTraitBlend.js';
 export * from './pipelineIssueOrder.js';
 export * from './postAdaptive.js';
+export * from './postAppliedNumeracy.js';
 export * from './postMultiplicationLadder.js';
 export * from './postPowersLadder.js';
 export * from './postProgression.js';
@@ -298,6 +304,7 @@ export * from './markdownText.js';
 export * from './renderSlot.js';
 export * from './renderTargets.js';
 export * from './telegramClient.js';
+export * from './tempPathGuard.js';
 export * from './textUtils.js';
 export * from './vaultCrypto.js';
 

@@ -14,17 +14,25 @@ vi.mock('../../services/api', () => ({
   upgradeLocalLlmBackend: vi.fn(),
   controlOllamaService: vi.fn(),
   installAudioModel: vi.fn(),
+  patchSettingsSlice: vi.fn(),
+  getLlamaServerStatus: vi.fn().mockResolvedValue({ installed: false, running: false }),
+  startLlamaServer: vi.fn(),
+  stopLlamaServer: vi.fn(),
+  installLlamaServer: vi.fn().mockResolvedValue({ success: true }),
 }));
 vi.mock('../../services/socket', () => ({
   default: { on: vi.fn(), off: vi.fn() },
 }));
 // The memory panel owns its own 5s poll + voice/TTS endpoints — irrelevant here.
 vi.mock('./MemoryManagement.jsx', () => ({ default: () => <div data-testid="memory-management" /> }));
+// Same for the assessments panel — it fetches its own report on mount and is
+// covered by LocalModelAssessments.test.jsx.
+vi.mock('./LocalModelAssessments.jsx', () => ({ default: () => <div data-testid="local-model-assessments" /> }));
 vi.mock('../ui/Toast', () => ({
   default: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
 }));
 
-import { getLocalLlmStatus, getLocalLlmCatalog } from '../../services/api';
+import { getLocalLlmStatus, getLocalLlmCatalog, patchSettingsSlice } from '../../services/api';
 import { LocalLlmTab } from './LocalLlmTab';
 
 // A realistically long HF model id — the shape that got ellipsised to
@@ -61,9 +69,40 @@ beforeEach(() => {
     lmstudio: { installed: false, available: false, modelCount: 0, models: [] },
   });
   getLocalLlmCatalog.mockResolvedValue({ models: [] });
+  patchSettingsSlice.mockResolvedValue({});
+});
+
+describe('LocalLlmTab backend disable state', () => {
+  it('suppresses the offline warning and persists the intentional disabled state', async () => {
+    getLocalLlmStatus.mockResolvedValue({
+      backend: 'lmstudio',
+      ollama: { installed: true, available: true, modelCount: 0, models: [] },
+      lmstudio: { installed: true, available: false, disabled: false, modelCount: 0, models: [] },
+    });
+    getLocalLlmStatus.mockResolvedValueOnce({
+      backend: 'lmstudio',
+      ollama: { installed: true, available: true, modelCount: 0, models: [] },
+      lmstudio: { installed: true, available: false, disabled: false, modelCount: 0, models: [] },
+    }).mockResolvedValue({
+      backend: 'lmstudio',
+      ollama: { installed: true, available: true, modelCount: 0, models: [] },
+      lmstudio: { installed: true, available: false, disabled: true, modelCount: 0, models: [] },
+    });
+    await renderTab();
+    expect(screen.getByText(/LM Studio isn't running/)).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle('Mark LM Studio as intentionally disabled'));
+    await waitFor(() => expect(patchSettingsSlice).toHaveBeenCalledWith('localLlm.lmstudio', { disabled: true }));
+    await waitFor(() => expect(screen.queryByText(/LM Studio isn't running/)).toBeNull());
+    expect(screen.getByText('Disabled')).toBeInTheDocument();
+  });
 });
 
 describe('LocalLlmTab installed models', () => {
+  it('links to the shared Ollama generation controls', async () => {
+    await renderTab();
+    expect(screen.getByRole('link', { name: /temperature and thinking defaults/i }).getAttribute('href')).toBe('/ai');
+  });
+
   it('lets a long model id wrap instead of truncating it', async () => {
     await renderTab();
     const name = screen.getByText(LONG_ID);
@@ -89,6 +128,30 @@ describe('LocalLlmTab installed models', () => {
 });
 
 describe('LocalLlmTab recommendations', () => {
+  it('links a gated curated model to Hugging Face so its terms can be accepted', async () => {
+    getLocalLlmCatalog.mockResolvedValue({
+      models: [{
+        id: 'orcarouter/qwen3.8-27b-uncensored-mlx:4bit',
+        key: 'qwen3.8-27b-uncensored-mlx',
+        name: 'Qwen3.8 27B Uncensored MLX',
+        category: 'general',
+        recommendedFor: ['general'],
+        params: '27B',
+        size: '15 GB',
+        description: 'A gated local evaluation model.',
+        repository: 'orcarouter/Qwen3.8-27B-Uncensored-MLX',
+        gated: true,
+        capabilities: ['chat'],
+      }],
+    });
+
+    await renderTab();
+
+    const termsLink = await screen.findByRole('link', { name: 'Accept terms' });
+    expect(termsLink).toHaveAttribute('href', 'https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-MLX');
+    expect(termsLink).toHaveAttribute('target', '_blank');
+  });
+
   it('highlights the flagship general model and surfaces it in its coding use-case filter', async () => {
     getLocalLlmCatalog.mockResolvedValue({
       models: [{
@@ -148,5 +211,127 @@ describe('LocalLlmTab runtime context window', () => {
     withContext({ runtime: null, applied: null, agentMinimum: 65536 });
     await renderTab();
     expect(screen.queryByTitle(/Loaded models are running at/)).toBeNull();
+  });
+});
+
+describe('LocalLlmTab measured fit badge', () => {
+  const catalogEntry = (overrides = {}) => ({
+    key: 'example-14b',
+    id: 'example-model:14b',
+    name: 'Example 14B',
+    params: '14B',
+    description: 'An example instruct model.',
+    category: 'general',
+    size: '9 GB',
+    sizeBytes: 9_000_000_000,
+    source: 'catalog',
+    ...overrides,
+  });
+
+  it('marks a measured verdict as measured and keeps the estimate it overruled in the tooltip', async () => {
+    getLocalLlmCatalog.mockResolvedValue({
+      models: [catalogEntry({
+        fit: 'too-large',
+        fitSource: 'measured',
+        estimatedFit: 'comfortable',
+        measuredFit: 'too-large',
+        disagrees: true,
+        assessedAt: '2026-01-02T00:00:00.000Z',
+      })],
+    });
+    await renderTab();
+
+    const badge = await screen.findByText(/exceeds RAM \(measured\)/);
+    expect(badge).toBeInTheDocument();
+    expect(badge.getAttribute('title')).toMatch(/Measured on this machine/);
+    // The disagreement is the point — the reader must see what the estimate claimed.
+    expect(badge.getAttribute('title')).toMatch(/fits comfortably/);
+  });
+
+  it('labels an unmeasured verdict as the estimate it is', async () => {
+    getLocalLlmCatalog.mockResolvedValue({ models: [catalogEntry({ fit: 'comfortable', fitSource: 'estimated', estimatedFit: 'comfortable', measuredFit: null })] });
+    await renderTab();
+
+    const badge = await screen.findByText('fits comfortably');
+    expect(badge.getAttribute('title')).toMatch(/Estimated fit/);
+    expect(badge.textContent).not.toMatch(/measured/);
+  });
+
+  it('renders the measurement-only verdict the size estimate can never produce', async () => {
+    // No amount of free RAM fixes a backend refusing a model, so `incompatible`
+    // only ever comes from a real run.
+    getLocalLlmCatalog.mockResolvedValue({ models: [catalogEntry({ fit: 'incompatible', fitSource: 'measured', estimatedFit: 'comfortable', measuredFit: 'incompatible', disagrees: true })] });
+    await renderTab();
+
+    expect(await screen.findByText(/backend refused it \(measured\)/)).toBeInTheDocument();
+  });
+});
+
+describe('LocalLlmTab llama-server management', () => {
+  it('renders start form and launches server when llama-server is installed', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValueOnce({
+      installed: true,
+      running: false,
+      managed: false,
+    });
+    startLlamaServer.mockResolvedValueOnce({ success: true, pid: 12345 });
+
+    await renderTab();
+
+    expect(await screen.findByText(/Launch Speculative Decoding Server/)).toBeInTheDocument();
+    const modelInput = screen.getByPlaceholderText(/models\/Qwen3\.8-27B-Instruct/);
+    fireEvent.change(modelInput, { target: { value: 'models/my-model.gguf' } });
+
+    const startBtn = screen.getByRole('button', { name: /Start Speculative Server/ });
+    fireEvent.click(startBtn);
+
+    await waitFor(() => {
+      expect(startLlamaServer).toHaveBeenCalledWith(expect.objectContaining({
+        model: 'models/my-model.gguf',
+      }));
+    });
+  });
+
+  it('renders install button and triggers install when llama-server is not installed', async () => {
+    const { getLlamaServerStatus, installLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValueOnce({
+      installed: false,
+      running: false,
+      managed: false,
+    });
+
+    await renderTab();
+
+    const installBtn = await screen.findByRole('button', { name: /Install llama\.cpp/ });
+    expect(installBtn).toBeInTheDocument();
+    fireEvent.click(installBtn);
+
+    await waitFor(() => {
+      expect(installLlamaServer).toHaveBeenCalled();
+    });
+  });
+
+  it('renders running badge and stops server when llama-server is managed', async () => {
+    const { getLlamaServerStatus, stopLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValueOnce({
+      installed: true,
+      running: true,
+      managed: true,
+      pid: 9999,
+      endpoint: 'http://127.0.0.1:8080/v1',
+      config: { model: 'models/base.gguf', draftModel: 'models/draft.gguf', specType: 'draft-dflash' },
+    });
+    stopLlamaServer.mockResolvedValueOnce({ success: true });
+
+    await renderTab();
+
+    expect(await screen.findByText(/Running \(PID 9999\)/)).toBeInTheDocument();
+    const stopBtn = screen.getByRole('button', { name: /Stop Server/ });
+    fireEvent.click(stopBtn);
+
+    await waitFor(() => {
+      expect(stopLlamaServer).toHaveBeenCalled();
+    });
   });
 });

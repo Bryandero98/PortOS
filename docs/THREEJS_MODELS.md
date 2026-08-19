@@ -7,8 +7,10 @@ procedural Three.js scene with:
 - a validated, bounded JSON scene spec rather than model-authored executable
   JavaScript;
 - a live in-browser orbit/zoom preview using PortOS's existing Three.js stack,
-  with explode-to-disassemble and click-to-identify part picking;
-- deterministic download/copy of a standalone `THREE.Group` factory;
+  with explode-to-disassemble, click-to-identify part picking, and a timeline
+  for any animation clips the spec declares;
+- deterministic download/copy of a standalone `THREE.Group` factory, with a
+  clip player over the same data;
 - gallery-image lineage, run attribution, detail inventory, and honest
   single-view limitations.
 
@@ -58,6 +60,107 @@ Explode and the picker share one definition of "a part"
 The exported standalone factory carries the same information —
 `buildThreejsFactorySource()` writes `partId` and `explodeWithParent` into each
 node's `userData` — so a consumer outside PortOS can build the same disassembly.
+
+## Animation clips
+
+A spec may declare an optional `animation` block: named **clips** (deploy,
+retract, assemble, destroy, idle) built from named **sequences**, each carrying
+one part from one authored endpoint to another inside a bounded time window.
+Absent means the model is a static assembly — every spec written before clips
+shipped keeps parsing, rendering, and exporting unchanged.
+
+Clips are data, never code. A sequence names an easing (`linear`, `easeIn`,
+`easeOut`, `easeInOut`) rather than supplying a curve, and drives only
+`position`, `rotationDegrees`, `scale`, `opacity`, and `visible`. Materials,
+lights, the camera, and geometry parameters are not animatable, so playback can
+never change what the model *is*. Nothing is skinned: this is declared motion
+over the existing part hierarchy, not a skeleton or a bind pose.
+
+The schema rejects the ways a clip can be meaningless rather than letting the
+runtime paper over them: a window that ends before it starts or outruns its
+clip, a sequence whose endpoints are equal, two sequences driving one part's
+channel at overlapping times, a sequence pointed at a part that does not exist,
+and an unknown easing. `visible` is a **step**, not a fade — the part holds
+`from` for the whole window and takes `to` the instant the sequence ends — so a
+part that should appear mid-clip is authored as its own short sequence ending at
+that moment.
+
+Evaluation is a pure function of (clip, time) in
+`client/src/lib/threejsAnimation.js`: each part+channel resolves from the one
+sequence that owns the instant — the window containing it, else the most recent
+window behind it (whose `to` still holds), else the next window ahead. So
+scrubbing, playing, and a test all produce the same pose, and a part no sequence
+drives renders exactly as authored.
+
+### Sound cues
+
+A sequence may name a `cueId` pointing at an entry in `animation.cues` — an
+identifier and a kind (`latch`, `servo`, `hydraulic`, …), never a filename, a
+URL, or audio data. PortOS ships no audio and plays none; the preview forwards
+crossed cues to an optional `onCue` callback so a host can map them to its own
+sounds. **Playback fires cues; scrubbing never does** — that split is the entire
+reason a cue is data rather than embedded audio. A cue may only ride a sequence
+that changes position, rotation, or scale: a sound needs movement to
+synchronize to, and the schema rejects one attached to a fade.
+
+### The playback gate
+
+The schema proves a clip is well *formed*; `summarizeThreejsAnimation()`
+(`server/lib/threejsModelAnimation.js`) reports the ways a well-formed clip
+still plays badly, as advisory `warning` findings stored on the record beside
+the clip inventory:
+
+- **`clip-start-pose-mismatch`** — the first sequence on a part+channel starts
+  from a pose the assembly does not build, so the model jumps the instant the
+  clip opens.
+- **`clip-sequence-jump`** — a following sequence starts somewhere other than
+  where the previous one on that channel ended.
+- **`loop-does-not-close`** — a `loop: true` clip whose end pose differs from
+  its start pose, so it snaps on every repeat.
+- **`idle-clip-does-not-loop`** — a role `idle` clip authored as a one-shot.
+- **`unfired-cue`** — a declared cue no sequence fires.
+- **`clip-holds-still`** — motion finishes in the first half of the window with
+  more than 1.5s of dead tail left.
+- **`articulation-without-clips`** — a spec with a real articulation graph (2+
+  joints) and no `animation` at all. Deliberately narrow: a static object
+  declares no joints and gets no finding, so nothing pushes every model toward
+  motion it never showed.
+
+Nothing here rejects a generation — a static assembly is a complete answer and
+a stylized clip is the author's to keep. `buildThreejsAnimationFeedback()` turns
+the findings into refinement feedback, so a refinement the user did not steer
+asks for clips that open from the assembled pose and close their loops alongside
+the coverage, cross-section, penetration, and material asks.
+
+### The exported player
+
+The exported standalone factory carries the validated `animation` block in
+`userData.sculptRuntime` alongside the node map, plus a player over both:
+
+```js
+import { createExampleCrateModel, createSculptAnimationPlayer } from './example-crate.js';
+
+const root = createExampleCrateModel();
+const player = createSculptAnimationPlayer(root, { onCue: (event) => playMySound(event.cue) });
+player.setClip('deploy');
+player.play();
+// from your own render loop:
+player.update(deltaSeconds);
+```
+
+The player takes `update(deltaSeconds)` from the host's existing render loop
+rather than owning a `requestAnimationFrame` loop, so it cannot keep ticking
+after the consumer stops using it. `seek()` scrubs silently and `update()` is
+the only thing that fires cues — the same split the preview makes. `restore()`
+puts the authored assembly back, and a model with no clips yields a working
+no-op player (`clips: []`), so a static assembly needs no branch at the call
+site.
+
+Its source is a fixed string (`server/lib/threejsModelPlayerSource.js`) spliced
+into the emitted module: still no provider-authored code on the export path,
+only PortOS code over provider-authored data. Its pose semantics mirror
+`client/src/lib/threejsAnimation.js` exactly, so a clip poses identically in the
+preview and in a consumer's own scene — change one and change the other.
 
 ## Geometry vocabulary
 

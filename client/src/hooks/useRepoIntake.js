@@ -1,7 +1,9 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLocalStorageBool } from './useLocalStorageBool.js';
 import { parseBareUrl } from '../lib/bareUrl.js';
 import { parseGitHubUrl } from '../lib/githubRepoUrl.js';
+import * as api from '../services/api.js';
+import { PORTOS_APP_ID } from '../lib/appIdentity.js';
 
 /**
  * The Brain capture boxes' "this URL is a GitHub repo" state.
@@ -35,7 +37,8 @@ export function capturedGitHubRepo(text) {
 
 /**
  * @param {string} text the current capture text
- * @returns {{ repo: object|null, options: object, toggle: (key: string) => void,
+ * @returns {{ repo: object|null, options: object, studyContext: string,
+ *   setStudyContext: (context: string) => void, toggle: (key: string) => void,
  *   intakeFor: (text: string) => object|undefined }}
  *   `repo` is the parsed `{ owner, repo }` (null when the text isn't a bare repo
  *   URL) — both the panel and the host's hint read it, so the text is parsed
@@ -47,15 +50,46 @@ export function capturedGitHubRepo(text) {
 export function useRepoIntake(text) {
   const [malwareScan, setMalwareScan] = useLocalStorageBool(STORAGE_KEYS.malwareScan, false);
   const [learn, setLearn] = useLocalStorageBool(STORAGE_KEYS.learn, false);
+  const [managedApps, setManagedApps] = useState([{ id: PORTOS_APP_ID, name: 'PortOS' }]);
+  const [targetAppId, setTargetAppId] = useState(PORTOS_APP_ID);
+  const [studyContext, setStudyContext] = useState('');
 
   const repo = useMemo(() => capturedGitHubRepo(text), [text]);
+  const repoKey = repo ? `${repo.owner}/${repo.repo}` : null;
   const options = useMemo(() => ({ malwareScan, learn }), [malwareScan, learn]);
   const setters = { malwareScan: setMalwareScan, learn: setLearn };
+
+  useEffect(() => {
+    setStudyContext('');
+  }, [repoKey]);
+
+  useEffect(() => {
+    if (!repo || !learn || typeof api.getApps !== 'function') return;
+    api.getApps({ silent: true }).then((apps) => {
+      const eligible = (Array.isArray(apps) ? apps : [])
+        .filter(app => app?.id && app.repoPath && !app.archived)
+        .sort((a, b) => (a.id === PORTOS_APP_ID ? -1 : b.id === PORTOS_APP_ID ? 1 : a.name.localeCompare(b.name)));
+      if (eligible.length) {
+        setManagedApps(eligible);
+        setTargetAppId(current => eligible.some(app => app.id === current) ? current : eligible[0].id);
+      }
+    }).catch(() => {});
+  }, [repo, learn]);
 
   return {
     repo,
     options,
+    managedApps,
+    targetAppId,
+    setTargetAppId,
+    studyContext,
+    setStudyContext,
     toggle: (key) => setters[key](v => !v),
-    intakeFor: (submitted) => (capturedGitHubRepo(submitted) ? { ...options } : undefined),
+    intakeFor: (submitted) => (capturedGitHubRepo(submitted)
+      ? { ...options, ...(learn ? {
+        targetAppId,
+        ...(studyContext.trim() ? { studyContext: studyContext.trim() } : {}),
+      } : {}) }
+      : undefined),
   };
 }

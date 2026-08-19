@@ -76,6 +76,11 @@ describe('providerSchema', () => {
     expect(providerSchema.safeParse({ ...minimalProvider, mtplxBacked: 'true' }).success).toBe(false);
   });
 
+  it('accepts the explicit OrcaRouter marker and rejects a non-boolean value', () => {
+    expect(providerSchema.safeParse({ ...minimalProvider, orcarouterBacked: true }).success).toBe(true);
+    expect(providerSchema.safeParse({ ...minimalProvider, orcarouterBacked: 'true' }).success).toBe(false);
+  });
+
   describe('endpoint empty-string/null → undefined coercion', () => {
     it('coerces endpoint: "" to undefined so the URL check is skipped for CLI providers', () => {
       const r = providerSchema.safeParse({ ...minimalProvider, endpoint: '' });
@@ -136,6 +141,18 @@ describe('providerSchema', () => {
 
     it('accepts null (unset)', () => {
       expect(providerSchema.safeParse({ ...minimalProvider, numCtx: null }).success).toBe(true);
+    });
+  });
+
+  describe('Ollama generation controls', () => {
+    it('accepts temperature and thinking mode within their safe bounds', () => {
+      const result = providerSchema.safeParse({ ...minimalProvider, temperature: 0.6, thinking: false });
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({ temperature: 0.6, thinking: false });
+    });
+
+    it('rejects an out-of-range Ollama temperature', () => {
+      expect(providerSchema.safeParse({ ...minimalProvider, temperature: 2.1 }).success).toBe(false);
     });
   });
 

@@ -31,7 +31,7 @@ import {
   __resetCodeReviewDefaultsCache,
   __resetReviewerCliInstalledCache,
 } from './codeReview.js'
-import { MODEL_SELECTABLE_REVIEWERS } from '../lib/cosValidation.js'
+import { MODEL_SELECTABLE_REVIEWERS, EFFORT_SELECTABLE_REVIEWERS } from '../lib/cosValidation.js'
 
 // Minimal stand-ins for the deps resolveReviewLoopOptions is handed by its
 // callers (agentCliSpawning / agentCompletionCleanup) — kept trivial so the
@@ -62,15 +62,12 @@ describe('codeReview helpers', () => {
   })
 
   describe('pickCodeReviewDefaults', () => {
-    // Every effort-capable reviewer reports `null` when nothing is configured;
-    // spread rather than pasted so the roster only has to change in one place.
-    const NO_EFFORTS = {
-      claudeEffort: null,
-      codexEffort: null,
-      antigravityEffort: null,
-      lmstudioEffort: null,
-      ollamaEffort: null,
-    }
+    // Every effort-capable reviewer reports `null` when nothing is configured.
+    // Derived from the roster for the same reason NO_MODELS below is: the keys
+    // `pickCodeReviewDefaults` emits come from that roster too, so a hand-listed
+    // copy would need editing in lockstep with every future addition (`cursor`
+    // joined when its ladder landed) and says nothing extra when it is.
+    const NO_EFFORTS = Object.fromEntries(EFFORT_SELECTABLE_REVIEWERS.map((r) => [`${r}Effort`, null]))
     // Same for every model-selectable reviewer — `antigravity` joined the roster
     // when agy's `--model` became pinnable (#3728), `grok` when `grok --model`
     // did (#3729). Derived from the roster, because `pickCodeReviewDefaults`
@@ -166,6 +163,7 @@ describe('codeReview helpers', () => {
         claudeModel: 'qwen2.5:7b',
         antigravityModel: 'gemini-3.6-flash',
         grokModel: 'grok-code-fast-1',
+        cursorModel: null,
         ...NO_EFFORTS,
       })
     })
@@ -201,8 +199,8 @@ describe('codeReview helpers', () => {
       const probed = []
       commandExistsMock.impl = async (binary) => { probed.push(binary); return binary !== 'agy' }
       const out = await getReviewerCliInstalled()
-      expect(out).toEqual({ claude: true, antigravity: false, codex: true, grok: true })
-      expect(probed.sort()).toEqual(['agy', 'claude', 'codex', 'grok'])
+      expect(out).toEqual({ claude: true, antigravity: false, codex: true, grok: true, cursor: true })
+      expect(probed.sort()).toEqual(['agy', 'claude', 'codex', 'cursor-agent', 'grok'])
     })
 
     it('caches the result within the TTL — a second call does not re-probe', async () => {
@@ -210,7 +208,7 @@ describe('codeReview helpers', () => {
       commandExistsMock.impl = async () => { calls += 1; return true }
       await getReviewerCliInstalled()
       await getReviewerCliInstalled()
-      expect(calls).toBe(4) // one probe per CLI reviewer, only on the first call
+      expect(calls).toBe(5) // one probe per CLI reviewer, only on the first call
     })
 
     it('probes with the longer 15s timeout these heavier agentic CLIs need', async () => {

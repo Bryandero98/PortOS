@@ -85,6 +85,7 @@ export const GENERATION_KEY_DEFS = Object.freeze({
   quality: { type: 'enum', values: CREATIVE_COMMISSION_QUALITIES, default: 'standard' },
   aspectRatio: { type: 'enum', values: CREATIVE_COMMISSION_ASPECT_RATIOS, default: '16:9' },
   targetDurationSeconds: { type: 'int', min: 5, max: 600, default: 10 },
+  durationMode: { type: 'enum', values: ['auto', 'manual'], default: 'manual' },
   imageCount: { type: 'int', min: 1, max: 6, default: 1 },
   lengthSeconds: { type: 'int', min: 5, max: 600, default: 30 },
   episodeCount: { type: 'int', min: 1, max: 6, default: 1 },
@@ -113,10 +114,10 @@ export const GENERATION_KEY_DEFS = Object.freeze({
 // it too). `music` and `series` carry neither — a series' per-issue renders are
 // pinned on the pipeline series/stage records, not here.
 const ABILITY_GENERATION_KEYS = Object.freeze({
-  video: ['quality', 'aspectRatio', 'targetDurationSeconds', 'videoMode', 'videoModelId'],
+  video: ['quality', 'aspectRatio', 'targetDurationSeconds', 'durationMode', 'videoMode', 'videoModelId'],
   image: ['quality', 'aspectRatio', 'imageCount', 'imageMode', 'imageModelId'],
   music: ['lengthSeconds'],
-  'music-video': ['quality', 'aspectRatio', 'targetDurationSeconds', 'videoMode', 'videoModelId', 'imageMode', 'imageModelId'],
+  'music-video': ['quality', 'aspectRatio', 'targetDurationSeconds', 'durationMode', 'videoMode', 'videoModelId', 'imageMode', 'imageModelId'],
   series: ['episodeCount'],
 });
 
@@ -148,7 +149,16 @@ function generationFieldSchema(def) {
 }
 
 export const COMMISSION_NAME_MAX = 200;
-export const COMMISSION_INTENT_MAX = 2000;
+// The intent goes to the PLANNING LLM verbatim (via the CD directive `goal`), so
+// it is sized to hold a full instruction set — a prompting framework, causation
+// and camera rules, an audio policy, and a worked sample prompt — not a line of
+// mood. For scale: MiniMax H3's documented 7000-character ceiling applies to the
+// RENDER prompt the director writes downstream, and a brief that TEACHES how to
+// write that prompt needs several times its length. Raising this also means
+// raising MAX_DIRECTIVE_GOAL_LEN (services/creativeCommissions/directive.js).
+export const COMMISSION_INTENT_MAX = 20000;
+export const COMMISSION_STYLE_SPEC_MAX = 5000;
+export const COMMISSION_BRIEF_TAG_MAX = 120;
 export const COMMISSION_MUSIC_TASTE_ANCHOR_MAX = 5;
 export const COMMISSION_MUSIC_TASTE_PERCENT_MAX = 100;
 export const COMMISSION_MUSIC_TASTE_ENGINE_MAX = 64;
@@ -188,9 +198,9 @@ export const creativeCommissionMusicTasteUpdateSchema = z.object({
 // CD project's styleSpec; `constraints` scopes the run to a universe/series.
 export const creativeCommissionBriefSchema = z.object({
   intent: z.string().trim().min(1).max(COMMISSION_INTENT_MAX),
-  genre: z.string().trim().max(120).nullable().optional(),
-  category: z.string().trim().max(120).nullable().optional(),
-  styleSpec: z.string().max(5000).default(''),
+  genre: z.string().trim().max(COMMISSION_BRIEF_TAG_MAX).nullable().optional(),
+  category: z.string().trim().max(COMMISSION_BRIEF_TAG_MAX).nullable().optional(),
+  styleSpec: z.string().max(COMMISSION_STYLE_SPEC_MAX).default(''),
   constraints: z.object({
     universeId: z.string().max(120).nullable().optional(),
     seriesId: z.string().max(120).nullable().optional(),
@@ -348,9 +358,9 @@ export const creativeCommissionCreateSchema = z.object({
 // omitted key stays omitted and the merge preserves the stored value.
 export const creativeCommissionBriefUpdateSchema = z.object({
   intent: z.string().trim().min(1).max(COMMISSION_INTENT_MAX).optional(),
-  genre: z.string().trim().max(120).nullable().optional(),
-  category: z.string().trim().max(120).nullable().optional(),
-  styleSpec: z.string().max(5000).optional(),
+  genre: z.string().trim().max(COMMISSION_BRIEF_TAG_MAX).nullable().optional(),
+  category: z.string().trim().max(COMMISSION_BRIEF_TAG_MAX).nullable().optional(),
+  styleSpec: z.string().max(COMMISSION_STYLE_SPEC_MAX).optional(),
   constraints: z.object({
     universeId: z.string().max(120).nullable().optional(),
     seriesId: z.string().max(120).nullable().optional(),

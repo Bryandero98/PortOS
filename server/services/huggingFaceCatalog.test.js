@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { searchHuggingFaceModels, enrichCatalogWithVariants } from './huggingFaceCatalog.js'
+import { searchHuggingFaceModels, enrichCatalogWithVariants, applyMeasuredFit } from './huggingFaceCatalog.js'
 import { __resetOllamaRegistryCache } from './ollamaRegistryCatalog.js'
 
 // The disk cache resolves its file from the REAL PATHS.data, and fetchRepoModel
@@ -678,6 +678,52 @@ describe('huggingFaceCatalog', () => {
       expect(results.some((r) => r.repository === drafterRepo)).toBe(false)
     })
 
+    it('does not offer a GGUF speculative-decoding drafter as an installable model', async () => {
+      const drafterRepo = 'incoai/Qwen3.8-27B-DFlash2-GGUF'
+      const files = [{ rfilename: 'Qwen3.8-27B-DFlash2-Q4_K_M.gguf', size: 1_400_000_000 }]
+      fetch.mockImplementation(urlRouter([
+        ['filter=mlx', []],
+        ['filter=gguf', [{ modelId: drafterRepo, downloads: 9000, tags: ['gguf', 'dflash2', 'speculative-decoding', 'draft-model'], siblings: files }]],
+        [(u) => u.includes('blobs=true'), { id: drafterRepo, siblings: files }],
+      ]))
+
+      const results = await searchHuggingFaceModels({ backend: 'ollama', query: 'qwen3.8', appleSilicon: true })
+
+      expect(results.some((r) => r.repository === drafterRepo)).toBe(false)
+    })
+
+    // The narrow `draft-model`/`drafter` tag is the whole point: an `mtp` or
+    // `speculative-decoding` tag also sits on complete models that merely keep
+    // their built-in MTP head, and filtering on those would hide mainstream
+    // one-click installs.
+    it('still offers a complete GGUF model that only preserves its own MTP head', async () => {
+      const targetRepo = 'unsloth/Qwen3.6-27B-MTP-GGUF'
+      const files = [{ rfilename: 'Qwen3.6-27B-MTP-Q4_K_M.gguf', size: 17_000_000_000 }]
+      fetch.mockImplementation(urlRouter([
+        ['filter=mlx', []],
+        ['filter=gguf', [{ modelId: targetRepo, downloads: 90000, tags: ['gguf', 'mtp', 'speculative-decoding'], siblings: files }]],
+        [(u) => u.includes('blobs=true'), { id: targetRepo, siblings: files }],
+      ]))
+
+      const results = await searchHuggingFaceModels({ backend: 'ollama', query: 'qwen3.6', appleSilicon: true })
+
+      expect(results.some((r) => r.repository === targetRepo)).toBe(true)
+    })
+
+    it('does not offer a DFlash drafter published as MLX safetensors', async () => {
+      const drafterRepo = 'jfan/Qwen3.8-27B-heretic-dflash'
+      fetch.mockImplementation(urlRouter([
+        ['filter=mlx', [mlxListing(drafterRepo, ['model.safetensors'])]],
+        ['filter=gguf', []],
+      ]))
+
+      const results = await searchHuggingFaceModels({
+        backend: 'lmstudio', query: 'qwen3.8', appleSilicon: true
+      })
+
+      expect(results.some((r) => r.repository === drafterRepo)).toBe(false)
+    })
+
     it('does not surface MLX on a non-Apple host even for LM Studio', async () => {
       const mlxRepo = 'mlx-community/Hidden-On-Intel-4bit'
       fetch.mockImplementation(urlRouter([
@@ -766,8 +812,8 @@ describe('huggingFaceCatalog', () => {
       expect(catalog[0].sizeBytes).toBe(8_000_000_000)
     })
 
-    it('enriches a curated LM Studio MLX entry with one installed native-format variant', async () => {
-      const repo = 'lmstudio-community/Qwen3.8-27B-MLX-4bit'
+    it('enriches the curated MLX Community Qwen entry with one installed native-format variant', async () => {
+      const repo = 'mlx-community/Qwen3.8-27B-4bit'
       fetch.mockResolvedValueOnce(blobs(repo, {
         'model-00001-of-00003.safetensors': 5_400_000_000,
         'model-00002-of-00003.safetensors': 5_300_000_000,
@@ -797,6 +843,36 @@ describe('huggingFaceCatalog', () => {
         installed: true,
         recommended: true
       })])
+    })
+
+    it('enriches an exact Hugging Face URL while keeping it as the LM Studio install id', async () => {
+      const repo = 'orcarouter/Qwen3.8-27B-Uncensored-MLX'
+      const url = `https://huggingface.co/${repo}`
+      fetch.mockResolvedValueOnce(blobs(repo, {
+        '4-bit/model-00001-of-00002.safetensors': 7_000_000_000,
+        '4-bit/model-00002-of-00002.safetensors': 7_000_000_000,
+      }))
+
+      const catalog = [{
+        id: url,
+        key: 'qwen3.8-27b-uncensored-mlx',
+        name: 'Qwen3.8 27B Uncensored MLX',
+        category: 'general',
+        format: 'mlx',
+        size: 'varies'
+      }]
+      await enrichCatalogWithVariants(catalog, {
+        backend: 'lmstudio',
+        systemMemoryBytes: 128 * 1024 ** 3,
+        installedIds: []
+      })
+
+      expect(fetch).toHaveBeenCalledWith(
+        expect.stringContaining(`/api/models/${repo}?blobs=true`),
+        expect.any(Object)
+      )
+      expect(catalog[0]).toMatchObject({ id: url, repository: repo, format: 'mlx' })
+      expect(catalog[0].variants).toEqual([expect.objectContaining({ installId: url })])
     })
 
     it('enriches an Ollama hf.co curated id and keeps the hf.co install ids', async () => {
@@ -1217,5 +1293,107 @@ describe('huggingFaceCatalog', () => {
       expect(blobCalls).toBe(1)
       expect(catalogs.every((c) => c[0].format === 'gguf')).toBe(true)
     })
+  })
+})
+
+describe('applyMeasuredFit', () => {
+  // Ollama's HF install ids and the assessment's recorded model id are the same
+  // string modulo case and a `:latest` tag, so matching must go through the same
+  // normalization that decides `installed`.
+  const ollamaModel = () => ({
+    id: 'hf.co/example-org/Example-14B-GGUF:Q4_K_M',
+    variants: [
+      { quant: 'Q4_K_M', installId: 'hf.co/example-org/Example-14B-GGUF:Q4_K_M', fit: 'comfortable' },
+      { quant: 'Q8_0', installId: 'hf.co/example-org/Example-14B-GGUF:Q8_0', fit: 'tight' }
+    ]
+  })
+
+  it('replaces the estimate with the measurement and keeps the disagreement', () => {
+    const models = [ollamaModel()]
+    applyMeasuredFit(models, {
+      backend: 'ollama',
+      measured: {
+        'hf.co/example-org/example-14b-gguf:Q4_K_M': {
+          fit: 'too-large', verdict: 'does-not-fit', assessedAt: '2026-01-02T00:00:00.000Z', stale: false
+        }
+      }
+    })
+    expect(models[0].variants[0]).toMatchObject({
+      fit: 'too-large', fitSource: 'measured', estimatedFit: 'comfortable', disagrees: true
+    })
+    // The unmeasured sibling quant keeps its estimate untouched.
+    expect(models[0].variants[1]).toMatchObject({ fit: 'tight', fitSource: 'estimated', measuredFit: null })
+  })
+
+  it('leaves every estimate alone when nothing has been measured', () => {
+    const models = [ollamaModel()]
+    applyMeasuredFit(models, { backend: 'ollama', measured: {} })
+    expect(models[0].variants.map((v) => v.fit)).toEqual(['comfortable', 'tight'])
+    expect(models[0].variants[0].fitSource).toBeUndefined()
+  })
+
+  it('keeps the estimate when the measurement is stale, but still reports it', () => {
+    const models = [ollamaModel()]
+    applyMeasuredFit(models, {
+      backend: 'ollama',
+      measured: {
+        'hf.co/example-org/Example-14B-GGUF:Q4_K_M': { fit: 'too-large', verdict: 'does-not-fit', stale: true, staleReason: 'installed memory 32 → 64' }
+      }
+    })
+    expect(models[0].variants[0]).toMatchObject({ fit: 'comfortable', fitSource: 'estimated', measuredFit: 'too-large', stale: true })
+  })
+
+  it('lands an LM Studio measurement only on the quant it actually measured', () => {
+    // LM Studio ids are repo-level, so the measured quant travels beside the
+    // record. Without that check one quant's verdict would stamp every quant of
+    // the repo — which is exactly what the `installed` flag's looser matching does.
+    const models = [{
+      id: 'example-org/Example-14B-GGUF',
+      variants: [
+        { quant: 'Q4_K_M', installId: 'example-org/Example-14B-GGUF@Q4_K_M', fit: 'comfortable' },
+        { quant: 'Q8_0', installId: 'example-org/Example-14B-GGUF@Q8_0', fit: 'comfortable' }
+      ]
+    }]
+    applyMeasuredFit(models, {
+      backend: 'lmstudio',
+      measured: { 'example-org/Example-14B-GGUF': { fit: 'tight', verdict: 'fits', stale: false, quantization: 'Q4_K_M' } }
+    })
+    expect(models[0].variants[0]).toMatchObject({ fit: 'tight', fitSource: 'measured' })
+    expect(models[0].variants[1]).toMatchObject({ fit: 'comfortable', fitSource: 'estimated' })
+  })
+
+  it('declines to decorate a quantized variant from a record that never captured a quant', () => {
+    // Records written before `quantization` was stored cannot say WHICH build ran,
+    // so they must decorate nothing rather than guess — absent is not a wildcard.
+    const models = [{
+      id: 'example-org/Example-14B-GGUF',
+      variants: [{ quant: 'Q4_K_M', installId: 'example-org/Example-14B-GGUF@Q4_K_M', fit: 'comfortable' }]
+    }]
+    applyMeasuredFit(models, {
+      backend: 'lmstudio',
+      measured: { 'example-org/Example-14B-GGUF': { fit: 'tight', verdict: 'fits', stale: false, quantization: null } }
+    })
+    expect(models[0].variants[0]).toMatchObject({ fit: 'comfortable', fitSource: 'estimated' })
+  })
+
+  it('annotates a variant-less entry, where the measurement is the only evidence there is', () => {
+    const models = [{ id: 'example-model:14b' }]
+    applyMeasuredFit(models, {
+      backend: 'ollama',
+      measured: { 'example-model:14b': { fit: 'comfortable', verdict: 'fits', stale: false } }
+    })
+    expect(models[0]).toMatchObject({ fit: 'comfortable', fitSource: 'measured', estimatedFit: null, disagrees: false })
+  })
+
+  it('never applies a chat-model measurement to an audio entry', () => {
+    // Audio/music models install into the shared audio registry, not a local LLM
+    // backend — a same-named chat measurement could not describe them.
+    const models = [{ id: 'example-model:14b', category: 'audio', fit: 'comfortable' }]
+    applyMeasuredFit(models, {
+      backend: 'ollama',
+      measured: { 'example-model:14b': { fit: 'too-large', verdict: 'does-not-fit', stale: false } }
+    })
+    expect(models[0].fit).toBe('comfortable')
+    expect(models[0].fitSource).toBeUndefined()
   })
 })

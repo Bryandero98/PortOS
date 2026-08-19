@@ -4,9 +4,12 @@ import { request } from '../lib/testHelper.js';
 import localLlmRoutes from './localLlm.js';
 import { runLocalLlmTest, compareLocalLlmModels } from '../services/localLlmPlayground.js';
 import { listModels, listVisionModels, listToolUseModels } from '../services/localLlm.js';
-import { enrichCatalogWithVariants } from '../services/huggingFaceCatalog.js';
+import { enrichCatalogWithVariants, applyMeasuredFit } from '../services/huggingFaceCatalog.js';
+import { getMeasuredFits } from '../services/localModelAssessmentStore.js';
+import { runAssessment } from '../services/localModelAssessments.js';
 import { getLoadedModels, unloadModel } from '../services/ollamaManager.js';
-import { getLoadedModels as getLoadedLmStudioModels } from '../services/lmStudioManager.js';
+import { getLoadedModels as getLoadedLmStudioModels, getLastLoadedModelsError as getLmStudioResidencyError } from '../services/lmStudioManager.js';
+import { getSettings } from '../services/settings.js';
 import { localLlmCompareSchema, localLlmTestSchema } from '../lib/validation.js';
 import { errorEvents } from '../lib/errorHandler.js';
 
@@ -52,6 +55,32 @@ vi.mock('../services/lmStudioManager.js', () => ({
 vi.mock('../services/huggingFaceCatalog.js', () => ({
   searchHuggingFaceModels: vi.fn(async () => []),
   enrichCatalogWithVariants: vi.fn(async (catalog) => catalog),
+  applyMeasuredFit: vi.fn((models) => models),
+}));
+
+// Measured assessments are folded into the catalog fit badge. Disk-only in
+// production; mocked here so a catalog listing test never touches the store.
+vi.mock('../services/localModelAssessmentStore.js', () => ({
+  getMeasuredFits: vi.fn(async () => ({})),
+}));
+
+vi.mock('../services/localModelAssessments.js', () => ({
+  getAssessmentReport: vi.fn(async () => ({ ranked: [], excluded: [] })),
+  runAssessment: vi.fn(async () => ({ verdict: 'fits' })),
+  deleteAssessment: vi.fn(async () => ({ deleted: true })),
+}));
+
+vi.mock('../services/llamaServerManager.js', () => ({
+  getLlamaServerStatus: vi.fn(async () => ({ installed: true, running: false })),
+  startLlamaServer: vi.fn(async () => ({ success: true, pid: 123 })),
+  stopLlamaServer: vi.fn(async () => ({ success: true })),
+  installLlamaServer: vi.fn(async () => ({ success: true, message: 'installed' })),
+}));
+
+// /loaded reads getSettings() to honor a user's intentionally-disabled backends,
+// so mock it (defaults to no backends disabled; the disabled-case test flips it).
+vi.mock('../services/settings.js', () => ({
+  getSettings: vi.fn(async () => ({})),
 }));
 
 function makeApp() {
@@ -245,8 +274,8 @@ describe('local LLM memory-management routes', () => {
   });
 
   it('GET /loaded reports models both local backends currently have resident', async () => {
-    // Mirror the real getLoadedModels() field set so the fixture documents the
-    // pass-through contract and would catch any future field-stripping.
+      // Mirror the real getLoadedModels() field set so the fixture documents the
+      // pass-through contract and would catch any future field-stripping.
     const resident = { id: 'llama3.2', name: 'llama3.2', size: 4096, sizeVram: 4096, expiresAt: null };
     const lmStudioResident = { id: 'example/lmstudio', state: 'loaded' };
     getLoadedModels.mockResolvedValue([resident]);
@@ -255,10 +284,50 @@ describe('local LLM memory-management routes', () => {
     const res = await request(makeApp()).get('/api/local-llm/loaded');
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ollama: [resident], lmstudio: [lmStudioResident], sourceErrors: [] });
+    expect(res.body).toEqual({ ollama: [resident], lmstudio: [lmStudioResident], sourceErrors: [], disabled: [] });
     expect(getLoadedModels).toHaveBeenCalledTimes(1);
     expect(getLoadedLmStudioModels).toHaveBeenCalledWith(true);
-  });
+     });
+
+  it('GET /loaded keeps a failed disabled backend in sourceErrors but names it disabled', async () => {
+      // "Mark disabled" only silences the availability NAG — it is not evidence the
+      // backend holds no memory. So /loaded must still probe a disabled backend AND
+      // still surface its failed residency in sourceErrors (the panel's
+      // "Free everything" guard keys off that), while separately naming it in
+      // `disabled` so the banner can stay quiet about it.
+    getSettings.mockResolvedValueOnce({ localLlm: { lmstudio: { disabled: true } } });
+    getLmStudioResidencyError.mockReturnValueOnce('LM Studio is unavailable');
+    getLoadedLmStudioModels.mockResolvedValue([{ id: 'example/lmstudio', state: 'loaded' }]);
+
+    const res = await request(makeApp()).get('/api/local-llm/loaded');
+
+    expect(res.status).toBe(200);
+       // Residency is honored — the backend is still probed…
+    expect(getLoadedLmStudioModels).toHaveBeenCalledWith(true);
+    expect(res.body.lmstudio).toEqual([{ id: 'example/lmstudio', state: 'loaded' }]);
+       // …and its failed probe keeps the "unknown residency" status sourceErrors so
+       // "Free everything" can't claim it freed a model it never saw.
+    expect(res.body.sourceErrors).toContain('lmstudio');
+       // The disabled flag is the signal the panel uses to hold the banner.
+    expect(res.body.disabled).toEqual(['lmstudio']);
+    expect(getSettings).toHaveBeenCalled();
+      });
+
+  it('GET /loaded still reports an enabled backend whose residency probe fails', async () => {
+      // An enabled backend that fails its residency probe surfaces in sourceErrors
+      // and is NOT in `disabled`, so the panel both shows the nag and keeps its
+      // "excluded from Free everything" guard.
+    getSettings.mockResolvedValueOnce({});
+    getLmStudioResidencyError.mockReturnValueOnce('LM Studio is unavailable');
+
+    const res = await request(makeApp()).get('/api/local-llm/loaded');
+
+    expect(res.status).toBe(200);
+    expect(res.body.sourceErrors).toContain('lmstudio');
+       // An enabled backend is not in the disabled list.
+    expect(res.body.disabled).not.toContain('lmstudio');
+    expect(getLoadedLmStudioModels).toHaveBeenCalledWith(true);
+      });
 
   it('POST /unload evicts a resident model and echoes the service result', async () => {
     // Real unloadModel() success shape is { unloaded: true, model } — NOT modelId
@@ -358,5 +427,82 @@ describe('local LLM capability routes', () => {
 
     expect(vision.body.models.map((m) => m.id)).toEqual(['qwen2.5-vl:7b']);
     expect(tools.body.models.map((m) => m.id)).toEqual(['phi4-mini:latest']);
+  });
+});
+
+describe('measured assessments wiring', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('folds measured evidence into the catalog fit badge', async () => {
+    getMeasuredFits.mockResolvedValue({ 'example-model:14b': { fit: 'too-large', verdict: 'does-not-fit', stale: false } });
+    const res = await request(makeApp()).get('/api/local-llm/catalog?backend=ollama');
+
+    expect(res.status).toBe(200);
+    expect(getMeasuredFits).toHaveBeenCalledWith('ollama');
+    // The overlay runs against the SAME backend the listing was built for —
+    // an LM Studio measurement must never decorate an Ollama card.
+    expect(applyMeasuredFit).toHaveBeenCalledWith(res.body.models, {
+      backend: 'ollama',
+      measured: { 'example-model:14b': { fit: 'too-large', verdict: 'does-not-fit', stale: false } },
+    });
+  });
+
+  it('still serves the catalog when the assessments store cannot be read', async () => {
+    // A broken measurement file must not take the install picker down with it.
+    getMeasuredFits.mockRejectedValue(new Error('disk on fire'));
+    const res = await request(makeApp()).get('/api/local-llm/catalog?backend=ollama');
+    expect(res.status).toBe(200);
+    expect(applyMeasuredFit).toHaveBeenCalledWith(expect.anything(), { backend: 'ollama', measured: {} });
+  });
+
+  it('forwards assessment progress to the shared localLlm:progress socket event', async () => {
+    runAssessment.mockImplementation(async ({ onProgress }) => {
+      onProgress({ scope: 'assessment', backend: 'ollama', modelId: 'example-model:14b', event: 'start', sampleIndex: 1, sampleCount: 3 });
+      return { verdict: 'fits' };
+    });
+    const app = makeApp();
+    const res = await request(app)
+      .post('/api/local-llm/assessments/run')
+      .send({ backend: 'ollama', modelId: 'example-model:14b' });
+
+    expect(res.status).toBe(200);
+    expect(app.get('io').emit).toHaveBeenCalledWith('localLlm:progress', {
+      scope: 'assessment', backend: 'ollama', modelId: 'example-model:14b', event: 'start', sampleIndex: 1, sampleCount: 3,
+    });
+  });
+});
+
+describe('llama-server routes', () => {
+  it('GET /api/local-llm/llama-server/status returns status', async () => {
+    const res = await request(makeApp()).get('/api/local-llm/llama-server/status');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ installed: true, running: false });
+  });
+
+  it('POST /api/local-llm/llama-server/start launches server with valid payload', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/llama-server/start')
+      .send({ model: 'models/Qwen3.8-27B.gguf', draftModel: 'models/DFlash.gguf' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, pid: 123 });
+  });
+
+  it('POST /api/local-llm/llama-server/start rejects invalid payload', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/llama-server/start')
+      .send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /api/local-llm/llama-server/stop stops server', async () => {
+    const res = await request(makeApp()).post('/api/local-llm/llama-server/stop');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true });
+  });
+
+  it('POST /api/local-llm/llama-server/install triggers install', async () => {
+    const res = await request(makeApp()).post('/api/local-llm/llama-server/install');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, message: 'installed' });
   });
 });

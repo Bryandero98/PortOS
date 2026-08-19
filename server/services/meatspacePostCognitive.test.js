@@ -9,6 +9,9 @@ import {
   generateSchulteTable,
   generateMentalRotation,
   generateReactionTime,
+  generateTaskSwitching,
+  generateGoNoGo,
+  generateFlanker,
   generateCognitiveDrill,
   scoreCognitiveDrill,
   rotateCells,
@@ -79,11 +82,14 @@ describe('cognitive drill generators', () => {
     expect(generateCognitiveDrill('schulte-table').type).toBe('schulte-table');
     expect(generateCognitiveDrill('mental-rotation').type).toBe('mental-rotation');
     expect(generateCognitiveDrill('reaction-time').type).toBe('reaction-time');
+    expect(generateCognitiveDrill('task-switching').type).toBe('task-switching');
+    expect(generateCognitiveDrill('go-no-go').type).toBe('go-no-go');
+    expect(generateCognitiveDrill('flanker').type).toBe('flanker');
     expect(generateCognitiveDrill('nope')).toBeNull();
   });
 
-  it('exposes exactly the six shipped cognitive types', () => {
-    expect(COGNITIVE_DRILL_TYPES).toEqual(['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time']);
+  it('exposes exactly the nine shipped cognitive types', () => {
+    expect(COGNITIVE_DRILL_TYPES).toEqual(['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time', 'task-switching', 'go-no-go', 'flanker']);
   });
 
   it('schulte-table shuffles 1..size*size into every cell exactly once', () => {
@@ -165,6 +171,37 @@ describe('cognitive drill generators', () => {
       expect(trial.target).toBeGreaterThanOrEqual(0);
       expect(trial.target).toBeLessThan(4);
     }
+  });
+
+  it('executive-control generators reproduce the same trials from the same seed', () => {
+    for (const generate of [generateTaskSwitching, generateGoNoGo, generateFlanker]) {
+      const first = generate({ seed: 'example-seed', count: 12 });
+      const second = generate({ seed: 'example-seed', count: 12 });
+      expect(second).toEqual(first);
+      expect(generate({ seed: 'different-seed', count: 12 }).trials).not.toEqual(first.trials);
+    }
+  });
+
+  it('task switching applies rule-count, switch-rate, cue, conflict, and deadline levers', () => {
+    const drill = generateTaskSwitching({ seed: 'switch', count: 10, ruleCount: 3, switchRatePct: 50, cueStimulusIntervalMs: 400, incongruentPct: 60, responseDeadlineMs: 1200 });
+    expect(drill.config).toMatchObject({ ruleCount: 3, switchRatePct: 50, cueStimulusIntervalMs: 400, incongruentPct: 60, responseDeadlineMs: 1200 });
+    expect(drill.rules).toHaveLength(3);
+    expect(drill.trials.filter(trial => trial.switched)).toHaveLength(5);
+    expect(drill.trials.filter(trial => trial.incongruent)).toHaveLength(6);
+  });
+
+  it('go/no-go applies no-go frequency, stimulus duration, lure similarity, and deadline levers', () => {
+    const drill = generateGoNoGo({ seed: 'inhibit', count: 20, noGoPct: 35, stimulusMs: 350, lureSimilarity: 'high', responseDeadlineMs: 900 });
+    expect(drill.config).toMatchObject({ noGoPct: 35, stimulusMs: 350, lureSimilarity: 'high', responseDeadlineMs: 900 });
+    expect(drill.trials.filter(trial => trial.kind === 'no-go')).toHaveLength(7);
+    expect(new Set(drill.trials.map(trial => trial.symbol))).toEqual(new Set(['●', '◉']));
+  });
+
+  it('flanker applies congruency, distance, strength, and deadline levers', () => {
+    const drill = generateFlanker({ seed: 'flank', count: 20, congruentPct: 40, flankerDistance: 1, flankerStrength: 3, responseDeadlineMs: 1000 });
+    expect(drill.config).toMatchObject({ congruentPct: 40, flankerDistance: 1, flankerStrength: 3, responseDeadlineMs: 1000 });
+    expect(drill.trials.filter(trial => trial.congruent)).toHaveLength(8);
+    expect(drill.trials.filter(trial => !trial.congruent).every(trial => trial.target !== trial.flanker)).toBe(true);
   });
 });
 
@@ -462,5 +499,65 @@ describe('cognitive drill scorers (recompute the answer key, never trust client)
       { index: 0, answered: 0, responseMs: 400 },
     ]);
     expect(wrong.questions[0].correct).toBe(false);
+  });
+
+  it('task switching regenerates the seeded answer key and records switch cost + omissions', () => {
+    const drillData = generateTaskSwitching({ seed: 'score-switch', count: 8, switchRatePct: 50, incongruentPct: 50 });
+    const answers = drillData.trials.map((trial, index) => {
+      const values = { color: ['blue', 'orange'], shape: ['circle', 'triangle'], fill: ['solid', 'outline'] }[trial.rule];
+      const expected = values.indexOf(trial.stimulus[trial.rule]) === 0 ? 'left' : 'right';
+      return { index, answered: expected, correct: false, responseMs: trial.switched ? 800 : 400 };
+    });
+    // Stored trial data is advisory; scoring reconstructs it from config.seed.
+    drillData.trials = drillData.trials.map(() => ({ rule: 'color', stimulus: { color: 'orange' } }));
+    const result = scoreCognitiveDrill('task-switching', drillData, answers);
+    expect(result.score).toBeGreaterThan(80);
+    expect(result.accuracy).toBe(1);
+    expect(result.switchCostMs).toBe(400);
+    expect(result.switchAccuracy).toBe(1);
+    expect(result.repeatAccuracy).toBe(1);
+    expect(result.omissions).toBe(0);
+    expect(result.latencyDistributionMs).toHaveLength(8);
+  });
+
+  it('go/no-go records false alarms, omissions, balanced accuracy, and latency distribution', () => {
+    const drillData = generateGoNoGo({ seed: 'score-inhibit', count: 10, noGoPct: 30 });
+    const perfect = drillData.trials.map((trial, index) => ({ index, answered: trial.kind === 'go' ? 'go' : null, responseMs: trial.kind === 'go' ? 350 : 0 }));
+    const result = scoreCognitiveDrill('go-no-go', drillData, perfect);
+    expect(result).toMatchObject({ score: 100, accuracy: 1, falseAlarms: 0, omissions: 0, commissionErrors: 0 });
+    expect(result.correctRejections).toBe(3);
+    expect(result.latencyDistributionMs).toHaveLength(7);
+
+    const alwaysPress = scoreCognitiveDrill('go-no-go', drillData, drillData.trials.map((_, index) => ({ index, answered: 'go', correct: true, responseMs: 250 })));
+    expect(alwaysPress.falseAlarms).toBe(3);
+    expect(alwaysPress.commissionErrors).toBe(3);
+    expect(alwaysPress.falseAlarmRate).toBe(1);
+    expect(alwaysPress.score).toBe(50);
+  });
+
+  it('flanker regenerates targets and records congruency cost + interference accuracy', () => {
+    const drillData = generateFlanker({ seed: 'score-flank', count: 10, congruentPct: 50 });
+    const answers = drillData.trials.map((trial, index) => ({ index, answered: trial.target, correct: false, responseMs: trial.congruent ? 300 : 700 }));
+    drillData.trials = drillData.trials.map(() => ({ target: 'left', flanker: 'left', congruent: true }));
+    const result = scoreCognitiveDrill('flanker', drillData, answers);
+    expect(result.accuracy).toBe(1);
+    expect(result.congruencyCostMs).toBe(400);
+    expect(result.congruentAccuracy).toBe(1);
+    expect(result.incongruentAccuracy).toBe(1);
+    expect(result.omissions).toBe(0);
+  });
+
+  it('keeps an early exit distinct from timed omissions', () => {
+    const drillData = generateFlanker({ seed: 'partial-flank', count: 8, congruentPct: 50 });
+    const answers = drillData.trials.slice(0, 3).map((trial, index) => ({
+      index,
+      answered: index === 2 ? null : trial.target,
+      responseMs: index === 2 ? drillData.config.responseDeadlineMs : 300,
+    }));
+    const result = scoreCognitiveDrill('flanker', drillData, answers);
+    expect(result.totalCount).toBe(8);
+    expect(result.completion).toBe(3 / 8);
+    expect(result.omissions).toBe(1);
+    expect(result.questions.slice(3).every(question => !question.attempted)).toBe(true);
   });
 });

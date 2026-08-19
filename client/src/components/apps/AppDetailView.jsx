@@ -416,11 +416,12 @@ export default function AppDetailView() {
               <button
                 onClick={handleBuild}
                 disabled={buildLoading}
+                aria-busy={buildLoading}
                 className="px-2 py-1 bg-port-warning/20 text-port-warning enabled:hover:bg-port-warning/30 transition-colors rounded-lg border border-port-border flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
-                aria-label={`Build production UI: ${app.buildCommand}`}
+                aria-label={`${buildLoading ? 'Building' : 'Build'} production UI: ${app.buildCommand}`}
               >
                 <Hammer size={14} className={buildLoading ? 'animate-bounce' : ''} />
-                <span className="text-xs">{buildLoading ? 'Building...' : 'Build'}</span>
+                <span className="text-xs">{buildLoading ? 'Building…' : 'Build'}</span>
               </button>
             )}
             {app.hasDeployScript && (

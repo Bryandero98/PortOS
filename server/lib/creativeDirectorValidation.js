@@ -51,6 +51,12 @@ export const creativeDirectorCastMemberSchema = z.object({
   summary: z.string().max(500).optional(),
 });
 
+// Kept clear of the commission scheduler's MAX_DIRECTIVE_GOAL_LEN, so a goal it
+// composes from a maxed-out commission brief also validates on the HTTP path.
+// That ordering is asserted in services/creativeCommissions/directive.test.js —
+// this module can't import the service to derive it.
+export const CREATIVE_DIRECTOR_GOAL_MAX = 32000;
+
 // Production directive (CDO Phase 2, #2184) — the brief the planner agent turns
 // into a plan. `goal` is the free-text intent ("produce a 6-issue noir comic in
 // universe X with covers and a teaser trailer"); `deliverables` is the checklist
@@ -59,13 +65,19 @@ export const creativeDirectorCastMemberSchema = z.object({
 // constraint values — the plan advance loop gates each tool call at dispatch, so
 // the directive is context for the planner, not an enforcement surface itself.
 export const creativeDirectorDirectiveSchema = z.object({
-  goal: z.string().min(1).max(5000),
+  goal: z.string().min(1).max(CREATIVE_DIRECTOR_GOAL_MAX),
   deliverables: z.array(z.string().min(1).max(200)).max(20).default([]),
   constraints: z.object({
     universeId: z.string().max(120).nullable().optional(),
     seriesId: z.string().max(120).nullable().optional(),
     formats: z.array(z.string().min(1).max(64)).max(20).optional(),
     budgetCap: z.number().int().min(0).max(100000).nullable().optional(),
+    // Structured commission provenance for the planner. The output type is the
+    // same enum the commission form selected; generation is the already-
+    // sanitized set of form choices. They are context/locking inputs, not a
+    // second mutable configuration surface.
+    targetAbility: z.enum(['video', 'image', 'music', 'music-video', 'series']).optional(),
+    generation: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
   }).default({}),
 });
 
@@ -517,4 +529,3 @@ export const importerCommitSchema = z.object({
   // Defaults to false to preserve the additive merge behavior.
   replaceMode: z.boolean().optional().default(false),
 }).strict();
-

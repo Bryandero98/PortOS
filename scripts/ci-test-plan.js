@@ -100,17 +100,8 @@ export const WINDOWS_CONTRACT_TESTS = [
 // so it is never scoped out. The file runs in ~150ms and imports only prompt
 // data, which is cheap enough to pay on every PR including documentation-only
 // ones, where the alternative is reasoning per-scope about what can reach it.
-//
-// `changelogFragments.test.js` is here for the same reason. It guards that every
-// fragment in `.changelog/next/` parses — a typo'd filename means that entry
-// silently misses the release notes. But a PR that only adds a fragment is a
-// documentation-only change under DOCUMENTATION_RULES, so the impact scope
-// selects nothing that reaches it, and the guard would first fire on the
-// post-merge full run: after the bad name has already landed. It runs 33 tests
-// in ~90ms over pure filesystem helpers.
 export const ALWAYS_RUN_TESTS = [
   'server/services/taskPromptDefaults.test.js',
-  'scripts/changelogFragments.test.js',
 ];
 
 const DB_RISK_RULES = [

@@ -31,9 +31,9 @@ export default function ProjectToolbar({
   const noAudio = !project.trackId && !project.uploadedAudioFilename;
   const nextVersion = (project.version || 1) + 1;
   return (
-    <div className="flex items-start justify-between gap-2 flex-wrap">
-      <h2 className="text-lg font-semibold shrink-0">{project.name}</h2>
-      <div className="min-w-0 flex flex-1 flex-wrap items-center justify-end gap-2">
+    <div className="flex min-w-0 flex-wrap items-start gap-2">
+      <h2 className="w-full text-lg font-semibold sm:w-auto sm:shrink-0">{project.name}</h2>
+      <div className="flex min-w-0 w-full flex-1 flex-wrap items-center justify-start gap-2 sm:w-auto sm:justify-end">
         <button onClick={onAnalyze} disabled={busy.analyzing || noAudio}
           title={noAudio ? 'Link a track first' : 'Analyze beat grid'}
           className="flex items-center gap-1 bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm min-h-[44px] sm:min-h-0 disabled:opacity-50">

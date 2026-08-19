@@ -404,7 +404,11 @@ async function runPlanStep(project, step) {
   console.log(`▶️  CD plan ${projectId}: dispatching step "${step.stepId}" (${step.toolName})`);
   // Outside the request lifecycle — catch so a throw becomes a settle, never an
   // unhandled rejection.
-  const dispatch = await dispatchCreativeTool(resolvedStep.toolName, resolvedStep.args, { projectId })
+  const targetAbility = project.directive?.constraints?.targetAbility;
+  const dispatch = await dispatchCreativeTool(resolvedStep.toolName, resolvedStep.args, {
+    projectId,
+    ...(targetAbility ? { targetAbility } : {}),
+  })
     .catch((err) => ({ ok: false, threw: true, error: err.message }));
   return settlePlanStepDispatch(projectId, resolvedStep, run?.runId, dispatch);
 }

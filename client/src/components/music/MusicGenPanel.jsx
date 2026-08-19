@@ -30,7 +30,7 @@ import toast from '../ui/Toast';
 import { analyzeMusicLyrics } from '../../lib/musicDuration.js';
 import { formatDurationSec } from '../../utils/formatters.js';
 import {
-  listMusicEngines, generateMusic, installAudioModel, removeAudioModel, getActiveProcessing, getMediaJob, getTrack, cancelMediaJob,
+  listMusicEngines, getInstances, generateMusic, installAudioModel, removeAudioModel, getActiveProcessing, getMediaJob, getTrack, cancelMediaJob,
 } from '../../services/api';
 import { formatDownloadGb } from '../../utils/formatters';
 import RuntimeInstallModal from '../install/RuntimeInstallModal';
@@ -87,11 +87,46 @@ function supportsAutoDuration(engine) {
   return engine?.autoDuration === true;
 }
 
+function formatExecutionProfile(profile) {
+  if (profile === 'cuda-bf16-full') return 'CUDA BF16 (full GPU)';
+  if (profile === 'cuda-bf16-component-offload') return 'CUDA BF16 (component offload)';
+  return profile || '';
+}
+
+const REMOTE_AUDIO_OPTIONS = Object.freeze({
+  style: ['ambient', 'cinematic', 'classical', 'electronic', 'folk', 'hip-hop', 'jazz', 'metal', 'orchestral', 'pop', 'rock', 'synthwave'],
+  mood: ['bright', 'calm', 'dark', 'dreamy', 'energetic', 'hopeful', 'melancholic', 'mysterious', 'playful', 'tense', 'triumphant', 'warm'],
+  tempo: ['slow', 'moderate', 'fast'],
+  energy: ['low', 'medium', 'high'],
+});
+
+const DEFAULT_REMOTE_PROFILE = Object.freeze({
+  style: 'ambient',
+  mood: 'calm',
+  tempo: 'moderate',
+  energy: 'medium',
+  instruments: [],
+});
+
+const formatRemoteOption = (value) => value.replaceAll('-', ' ');
+
+function remoteModelsForPeer(peer) {
+  const allowed = new Set((peer?.mediaProvider?.audioModels || [])
+    .filter((model) => model?.engine && model?.modelId)
+    .map((model) => `${model.engine}\u0000${model.modelId}`));
+  return (peer?.mediaProviderStatus?.snapshot?.capabilities || [])
+    .filter((model) => model?.kind === 'audio' && allowed.has(`${model.engine}\u0000${model.modelId}`));
+}
+
 export default function MusicGenPanel({ track, title = '', artistId = '', artist = '', albumId = '', prompt, lyrics, onGenerated, remix }) {
   const [engines, setEngines] = useState([]);
+  const [peers, setPeers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [engineId, setEngineId] = useState('');
   const [modelId, setModelId] = useState('');
+  const [mediaProviderPeerId, setMediaProviderPeerId] = useState('');
+  const [remoteModelKey, setRemoteModelKey] = useState('');
+  const [remoteProfile, setRemoteProfile] = useState(() => ({ ...DEFAULT_REMOTE_PROFILE }));
   const [durationSec, setDurationSec] = useState(null);
   const [durationMode, setDurationMode] = useState('auto');
   // Lyric text and vocal intent are independent: a lyricless prompt can still
@@ -182,6 +217,14 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   useEffect(() => { loadEngines(); }, []);
 
   useEffect(() => {
+    let canceled = false;
+    getInstances({ silent: true }).then((data) => {
+      if (!canceled && Array.isArray(data?.peers)) setPeers(data.peers);
+    }).catch(() => {});
+    return () => { canceled = true; };
+  }, []);
+
+  useEffect(() => {
     if (!isGenerating) return undefined;
     const startedAt = activeJob?.startedAt ? Date.parse(activeJob.startedAt) : Date.now();
     setGenerationElapsedSec(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
@@ -200,19 +243,41 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   // engine's default id. Use that effective option for readiness and generation
   // too, so the first paint cannot briefly disable an otherwise ready engine.
   const selectedModelId = selectedModel?.id || modelId;
+  const selectedRemotePeer = useMemo(
+    () => peers.find((peer) => peer.id === mediaProviderPeerId) || null,
+    [mediaProviderPeerId, peers],
+  );
+  const remoteModels = useMemo(() => remoteModelsForPeer(selectedRemotePeer), [selectedRemotePeer]);
+  const selectedRemoteModel = remoteModels.find((model) => `${model.engine}\u0000${model.modelId}` === remoteModelKey) || remoteModels[0] || null;
+  const isRemote = Boolean(selectedRemotePeer);
+  const generationEngine = isRemote ? selectedRemoteModel : engine;
   const selectedModelReady = !engine?.fixedModelInstall
     ? true
     : engine?.modelReadyById
       ? engine.modelReadyById[selectedModelId] === true
       : engine.modelReady === true;
-  const autoDurationAvailable = supportsAutoDuration(engine);
+  const autoDurationAvailable = supportsAutoDuration(generationEngine);
   const hasLyrics = typeof lyrics === 'string' && lyrics.trim().length > 0;
-  const conditioningLyrics = engine?.lyrics && !instrumentalOnly ? lyrics : '';
+  const conditioningLyrics = generationEngine?.lyrics && !instrumentalOnly && !isRemote ? lyrics : '';
   const lyricDuration = useMemo(() => analyzeMusicLyrics(conditioningLyrics, {
-    minDurationSec: Math.max(60, engine?.defaultDurationSec || 60),
-    maxDurationSec: engine?.maxDurationSec || 300,
-  }), [conditioningLyrics, engine?.defaultDurationSec, engine?.maxDurationSec]);
+    minDurationSec: Math.max(60, generationEngine?.defaultDurationSec || 60),
+    maxDurationSec: generationEngine?.maxDurationSec || 300,
+  }), [conditioningLyrics, generationEngine?.defaultDurationSec, generationEngine?.maxDurationSec]);
   const usingAutoDuration = autoDurationAvailable && durationMode === 'auto';
+
+  useEffect(() => {
+    const next = remoteModels[0];
+    setRemoteModelKey(next ? `${next.engine}\u0000${next.modelId}` : '');
+  }, [selectedRemotePeer?.id, remoteModels]);
+
+  useEffect(() => {
+    if (!selectedRemoteModel) return;
+    setDurationSec((current) => current == null
+      || current < selectedRemoteModel.minDurationSec
+      || current > selectedRemoteModel.maxDurationSec
+      ? selectedRemoteModel.defaultDurationSec
+      : current);
+  }, [selectedRemoteModel?.engine, selectedRemoteModel?.modelId]);
 
   // A render-level choice must not leak into another track in the master-detail
   // editor. Each destination starts in the backward-compatible vocal-capable mode.
@@ -253,9 +318,19 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
     setDurationSec((d) => (d == null ? engine.defaultDurationSec : d));
   }, [engine?.id, engine?.models]);
 
-  const canGenerate = !!engine?.ready && selectedModelReady && !!prompt?.trim() && !isGenerating;
+  const remoteReady = isRemote
+    && selectedRemotePeer?.status === 'online'
+    && selectedRemotePeer?.mediaProviderStatus?.state === 'ready'
+    && selectedRemotePeer?.mediaProviderStatus?.snapshot?.queue?.accepting === true
+    && selectedRemoteModel?.ready === true;
+  const canGenerate = (isRemote ? remoteReady : !!engine?.ready && selectedModelReady)
+    && !!prompt?.trim() && !isGenerating;
   const selectedModelSizeGb = engine?.modelSizeGbById?.[selectedModelId] ?? null;
-  const setup = engineSetupState(engine, selectedModelReady, selectedModelSizeGb);
+  const setup = isRemote ? null : engineSetupState(engine, selectedModelReady, selectedModelSizeGb);
+  const activeRender = track?.renders?.find((render) => render.audioFilename === track.audioFilename);
+  const effectiveExecutionProfile = activeRender && activeRender.engine === engine?.id
+    ? activeRender.executionProfile
+    : null;
 
   // `target` is the engine record to install for — passed explicitly by the
   // post-runtime chain, which holds a fresher record than component state does.
@@ -309,16 +384,19 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   };
 
   const handleGenerate = async () => {
-    if (!engine) return;
+    if (!generationEngine) return;
     if (!prompt?.trim()) { toast.error('Add a generation prompt first'); return; }
     setGenerating(true);
     const body = {
       prompt: prompt.trim(),
-      engine: engine.id,
-      modelId: selectedModelId,
-      instrumentalOnly,
+      engine: generationEngine.id || generationEngine.engine,
+      modelId: isRemote ? generationEngine.modelId : selectedModelId,
+      instrumentalOnly: isRemote ? true : instrumentalOnly,
     };
-    if (engine.lyrics) {
+    if (isRemote) {
+      body.mediaProviderPeerId = selectedRemotePeer.id;
+      body.remoteMusicProfile = remoteProfile;
+    } else if (engine.lyrics) {
       // Keep authored lyrics available to the track record even when the server
       // deliberately excludes them from this render's engine conditioning.
       body.lyrics = lyrics || '';
@@ -400,7 +478,8 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   if (engines.length === 0) return <div className="text-xs text-gray-500">No music generators available.</div>;
 
   const selectedUserModel = engine?.models?.find((m) => m.id === modelId && m.userAdded);
-  const showRuntimeInstallHint = !!engine && (!engine.ready || !selectedModelReady) && (!!prompt?.trim() || userSelectedEngine);
+  const showRuntimeInstallHint = !isRemote && !!engine && (!engine.ready || !selectedModelReady) && (!!prompt?.trim() || userSelectedEngine);
+  const remoteStatus = selectedRemotePeer?.mediaProviderStatus;
 
   return (
     <div className="space-y-2 border border-port-border rounded-lg p-3 bg-port-bg/40">
@@ -408,35 +487,105 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
         <Wand2 size={14} className="text-port-accent" /> Generate audio on-device
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
-        <label className="block">
-          <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Engine</span>
-          <select
-            value={engineId}
-            onChange={(e) => {
-              setUserSelectedEngine(true);
-              setEngineId(e.target.value);
-            }}
-            className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
-          >
-            {engines.map((e) => (
-              <option key={e.id} value={e.id}>{e.name}{e.platformSupported === false ? ' (unavailable on this host)' : e.cudaRequired && e.cudaState !== 'available' ? ' (CUDA unavailable)' : e.vramState === 'insufficient' ? ' (insufficient VRAM)' : e.vramState === 'unknown-size' ? ' (VRAM unknown)' : e.ready ? '' : ' (setup required)'}</option>
+      <label className="block">
+        <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Generation target</span>
+        <select
+          aria-label="Generation target"
+          value={mediaProviderPeerId}
+          onChange={(e) => setMediaProviderPeerId(e.target.value)}
+          className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
+        >
+          <option value="">This instance</option>
+          {peers.filter((peer) => peer.mediaProvider?.enabled === true).map((peer) => {
+            const status = peer.mediaProviderStatus;
+            const suffix = status?.state === 'ready' ? '' : ` (${status?.state || 'checking'})`;
+            return <option key={peer.id} value={peer.id}>{peer.name || peer.address || 'Federated peer'}{suffix}</option>;
+          })}
+        </select>
+      </label>
+
+      {isRemote ? (
+        <div className="space-y-2 rounded-lg border border-port-accent/30 bg-port-accent/5 p-2">
+          <label className="block">
+            <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Remote audio model</span>
+            <select
+              aria-label="Remote audio model"
+              value={selectedRemoteModel ? `${selectedRemoteModel.engine}\u0000${selectedRemoteModel.modelId}` : ''}
+              onChange={(e) => setRemoteModelKey(e.target.value)}
+              className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
+            >
+              {remoteModels.length === 0 ? <option value="">No allowlisted models discovered</option> : remoteModels.map((model) => (
+                <option key={`${model.engine}\u0000${model.modelId}`} value={`${model.engine}\u0000${model.modelId}`}>
+                  {model.modelName} — {model.ready ? 'ready' : model.unavailableReason || 'unavailable'}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="text-[11px] text-gray-400">
+            {remoteStatus?.state === 'ready' && remoteStatus.snapshot?.queue
+              ? `${remoteStatus.snapshot.queue.running} running · ${remoteStatus.snapshot.queue.queued} queued`
+              : remoteStatus?.state === 'stale'
+                ? 'Capacity is stale; remote generation is blocked until the peer reports fresh status.'
+                : 'Remote generation requires a ready, authenticated peer with fresh capacity.'}
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            {(['style', 'mood', 'tempo', 'energy']).map((field) => (
+              <label key={field} className="block">
+                <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">{field}</span>
+                <select
+                  aria-label={`Remote ${field}`}
+                  value={remoteProfile[field]}
+                  onChange={(e) => setRemoteProfile((current) => ({ ...current, [field]: e.target.value }))}
+                  className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
+                >
+                  {REMOTE_AUDIO_OPTIONS[field].map((option) => <option key={option} value={option}>{formatRemoteOption(option)}</option>)}
+                </select>
+              </label>
             ))}
-          </select>
-        </label>
-        <label className="block">
-          <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Model</span>
-          <select
-            value={modelId}
-            onChange={(e) => setModelId(e.target.value)}
-            className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
-          >
-            {(engine?.models || []).map((m) => (
-              <option key={m.id} value={m.id}>{m.name}{m.userAdded ? ' (installed)' : ''}</option>
-            ))}
-          </select>
-        </label>
-      </div>
+          </div>
+          <p className="text-[10px] text-gray-500">Only this fixed musical profile crosses the peer boundary; your prompt and lyrics remain on this instance.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-2">
+          <label className="block">
+            <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Engine</span>
+            <select
+              value={engineId}
+              onChange={(e) => {
+                setUserSelectedEngine(true);
+                setEngineId(e.target.value);
+              }}
+              className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
+            >
+              {engines.map((e) => (
+                <option key={e.id} value={e.id}>{e.name}{e.platformSupported === false ? ' (unavailable on this host)' : e.cudaRequired && e.cudaState !== 'available' ? ' (CUDA unavailable)' : e.vramState === 'insufficient' ? ' (insufficient VRAM)' : e.vramState === 'unknown-size' ? ' (VRAM unknown)' : e.ready ? '' : ' (setup required)'}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Model</span>
+            <select
+              value={modelId}
+              onChange={(e) => setModelId(e.target.value)}
+              className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
+            >
+              {(engine?.models || []).map((m) => (
+                <option key={m.id} value={m.id}>{m.name}{m.userAdded ? ' (installed)' : ''}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
+
+      {effectiveExecutionProfile ? (
+        <p className="text-[11px] text-gray-400">
+          Active render profile: <span className="text-gray-300">{formatExecutionProfile(effectiveExecutionProfile)}</span>
+        </p>
+      ) : engine?.executionProfile ? (
+        <p className="text-[11px] text-gray-500">
+          Execution profile: {engine.vramProfileLabel || formatExecutionProfile(engine.executionProfile)}
+        </p>
+      ) : null}
 
       <div className={autoDurationAvailable ? 'grid grid-cols-2 gap-2' : undefined}>
         {autoDurationAvailable ? (
@@ -455,14 +604,14 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
         ) : null}
         <label className="block">
           <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">
-            Duration (s){engine ? ` — ${engine.minDurationSec}–${engine.maxDurationSec}` : ''}
+            Duration (s){generationEngine ? ` — ${generationEngine.minDurationSec}–${generationEngine.maxDurationSec}` : ''}
           </span>
           <input
             id="musicgen-duration"
             type="number"
             value={usingAutoDuration ? lyricDuration.suggestedDurationSec : (durationSec ?? '')}
-            min={engine?.minDurationSec}
-            max={engine?.maxDurationSec}
+            min={generationEngine?.minDurationSec}
+            max={generationEngine?.maxDurationSec}
             disabled={usingAutoDuration}
             onChange={(e) => {
               setDurationMode('manual');
@@ -488,7 +637,7 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
             <p className="mt-1 text-gray-500">No structured lyric sections detected. Add tags such as [intro], [verse], [chorus], and [outro] so MiniMax can pace the composition more reliably.</p>
           ) : null}
           {lyricDuration.sectionCount > 0 && !lyricDuration.hasOutro && lyricDuration.hasLyrics ? (
-            <p className="mt-1 text-gray-500">No [outro] section detected. Auto leaves extra room, but an explicit [outro] marker gives the ending clearer structure.</p>
+            <p className="mt-1 text-gray-500">No [outro] section detected. PortOS appends a closing cue for you, but adding your own [outro] marker gives you control over exactly where the ending lands.</p>
           ) : null}
           {lyricDuration.isCapped ? (
             <p className="mt-1 text-port-warning">These lyrics estimate beyond MiniMax’s five-minute limit, so the final lines may still need to be shortened or split into another render.</p>
@@ -526,9 +675,9 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
           <input
             id="musicgen-instrumental-only"
             type="checkbox"
-            checked={instrumentalOnly}
+            checked={isRemote || instrumentalOnly}
             onChange={(event) => setInstrumentalOnly(event.target.checked)}
-            disabled={isGenerating}
+            disabled={isGenerating || isRemote}
             aria-describedby="musicgen-instrumental-only-hint"
             className="h-4 w-4 accent-port-accent"
           />
@@ -537,9 +686,11 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
           </label>
         </div>
         <p id="musicgen-instrumental-only-hint" className="mt-1 text-[11px] text-gray-500">
-          {instrumentalOnly
+          {isRemote
+            ? 'Remote audio is instrumental-only; your prompt and lyrics remain on this instance.'
+            : instrumentalOnly
             ? `An explicit no-vocals instruction will be added${hasLyrics ? '; saved lyrics will not condition this render' : ''}.`
-            : engine?.lyrics && hasLyrics
+            : generationEngine?.lyrics && hasLyrics
               ? 'This engine will use the track’s lyrics as conditioning.'
               : 'No lyric text will condition this render, but vocals may still follow the prompt unless instrumental mode is enabled.'}
         </p>
@@ -550,13 +701,13 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
           type="button"
           onClick={handleGenerate}
           disabled={!canGenerate}
-          title={!prompt?.trim() ? 'Add a generation prompt' : !engine?.ready ? 'Complete engine setup first' : !selectedModelReady ? 'Install the selected model first' : track?.id ? 'Generate audio' : 'Generate and create a standalone track'}
+          title={!prompt?.trim() ? 'Add a generation prompt' : isRemote && !remoteReady ? 'Wait for the remote peer to report ready capacity' : !isRemote && !engine?.ready ? 'Complete engine setup first' : !isRemote && !selectedModelReady ? 'Install the selected model first' : track?.id ? 'Generate audio' : 'Generate and create a standalone track'}
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
         >
           {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
           {isGenerating ? 'Generating…' : track?.id ? 'Generate' : 'Generate track'}
         </button>
-        {selectedUserModel ? (
+        {!isRemote && selectedUserModel ? (
           <button
             type="button"
             onClick={() => handleRemoveModel(selectedUserModel.id)}
@@ -571,7 +722,7 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
         <div role="status" className="rounded-lg border border-port-accent/30 bg-port-accent/10 px-3 py-2">
           <div className="flex items-center justify-between gap-3 text-xs">
             <span className="text-gray-300">
-              {activeJob?.status === 'queued' ? `Queued${activeJob.position ? ` · position ${activeJob.position}` : ''}` : engine?.cudaRequired ? 'Processing on the GPU' : 'Rendering audio'}
+              {activeJob?.status === 'queued' ? `Queued${activeJob.position ? ` · position ${activeJob.position}` : ''}` : generationEngine?.cudaRequired ? 'Processing on the GPU' : 'Rendering audio'}
             </span>
             <span className="font-mono tabular-nums text-port-accent">
               {Math.floor(generationElapsedSec / 60)}:{String(generationElapsedSec % 60).padStart(2, '0')} elapsed
@@ -581,9 +732,9 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
             <div className="h-full w-1/3 animate-pulse rounded-full bg-port-accent" />
           </div>
           <p className="mt-1.5 text-[11px] text-gray-500">
-            {engine?.id === 'minimax-music3'
+            {generationEngine?.id === 'minimax-music3'
               ? 'MiniMax Music 3 does not report an exact percentage yet; a 60-second track can take tens of minutes on a 24 GB GPU.'
-              : engine?.id === 'minimax-music3-mlx'
+              : generationEngine?.id === 'minimax-music3-mlx'
                 ? 'MiniMax Music 3 MLX does not report an exact percentage yet; the first render includes model loading.'
                 : 'Generation is still active. Longer requested durations take more time.'}
           </p>

@@ -320,6 +320,11 @@ export default function TracksManager() {
     applyRenderResult(res, targetId);
   };
 
+  const sendRenderToVideo = (render) => {
+    if (!render?.audioFilename) return;
+    navigate(`/media/video?mode=a2v&audioFilename=${encodeURIComponent(render.audioFilename)}`);
+  };
+
   const deleteRender = async (render) => {
     const targetId = persisted?.id;
     if (!targetId) return;
@@ -597,6 +602,7 @@ export default function TracksManager() {
                           onSelect={selectRender}
                           onRemix={remixRender}
                           onDelete={deleteRender}
+                          onSendToVideo={sendRenderToVideo}
                         />
                       ))}
                     </div>
@@ -692,6 +698,7 @@ export default function TracksManager() {
           onSelect={selectRender}
           onRemix={remixRender}
           onDelete={deleteRender}
+          onSendToVideo={sendRenderToVideo}
         />
       ) : null}
     </div>
