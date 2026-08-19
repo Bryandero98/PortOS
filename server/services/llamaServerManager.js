@@ -226,6 +226,20 @@ export async function stopLlamaServer() {
 }
 
 /**
+ * Runs `brew link --overwrite llama.cpp`, resolving true/false on exit
+ * rather than rejecting — a failed link attempt should fall through to the
+ * caller's own error message, not replace it with a `brew link` failure.
+ */
+function linkLlamaCpp(env) {
+  return new Promise((resolve) => {
+    const spawnOpts = safeChildProcessOptions({ env, shell: false, stdio: 'ignore' });
+    const child = spawn('brew', ['link', '--overwrite', 'llama.cpp'], spawnOpts);
+    child.on('error', () => resolve(false));
+    child.on('exit', (code) => resolve(code === 0));
+  });
+}
+
+/**
  * Installs llama.cpp via Homebrew.
  */
 export async function installLlamaServer({ onProgress = () => {} } = {}) {
@@ -258,13 +272,29 @@ export async function installLlamaServer({ onProgress = () => {} } = {}) {
       reject(new ServerError(`Failed to run brew: ${err.message}`, { status: 500 }));
     });
     child.on('exit', async (code) => {
-      const binaryPath = await findCommandOnPath('llama-server');
-      const installed = Boolean(binaryPath) && await commandExists(binaryPath);
+      let binaryPath = await findCommandOnPath('llama-server');
+      let installed = Boolean(binaryPath) && await commandExists(binaryPath);
+
+      // `brew install` exits 0 without linking when the keg is already
+      // installed but unlinked ("Warning: llama.cpp X is already installed,
+      // it's just not linked."). Link it explicitly rather than leaving that
+      // warning as a dead end for the caller.
+      if (!installed && code === 0) {
+        onProgress({ event: 'progress', message: 'llama.cpp keg is installed but not linked — linking…' });
+        const linked = await linkLlamaCpp(env);
+        if (linked) {
+          binaryPath = await findCommandOnPath('llama-server');
+          installed = Boolean(binaryPath) && await commandExists(binaryPath);
+        }
+      }
+
       if (installed) {
         onProgress({ event: 'complete', message: 'llama.cpp installed successfully' });
         resolve({ success: true, message: 'llama.cpp installed successfully' });
       } else {
-        const msg = code === 0 ? 'brew completed but llama-server was not found on PATH' : `brew install llama.cpp failed (exit code ${code})`;
+        const msg = code === 0
+          ? 'brew completed but llama-server was not found on PATH — try running `brew link --overwrite llama.cpp` manually'
+          : `brew install llama.cpp failed (exit code ${code})`;
         reject(new ServerError(msg, { status: 500 }));
       }
     });
