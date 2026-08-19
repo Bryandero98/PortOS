@@ -432,21 +432,11 @@ function OpenWorldInner() {
 
   const v = useCallback((key, live) => (playbackProps && key in playbackProps ? playbackProps[key] : live), [playbackProps]);
 
-  if (loading) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 openworld-themed" style={{ background: openWorldPalette.background }}>
-        <div className="font-pixel text-cyan-400 text-lg tracking-widest animate-pulse" style={{ textShadow: '0 0 12px rgba(6,182,212,0.5)' }}>
-          ENTERING OPENWORLD
-        </div>
-        <div className="w-48 h-1 bg-gray-800 rounded-full overflow-hidden">
-          <div className="h-full bg-cyan-500 rounded-full animate-pulse" style={{ width: '60%', boxShadow: '0 0 8px rgba(6,182,212,0.5)' }} />
-        </div>
-        <div className="font-pixel text-[10px] text-cyan-500/40 tracking-wider">
-          LOADING WORLD...
-        </div>
-      </div>
-    );
-  }
+  // Keep the scene and app shell mounted while the initial data bundle arrives. The route's
+  // Suspense boundary already covers the lazy OpenWorld chunk; replacing the entire page here
+  // created a second full-screen loader after the first one, then remounted WebGL once the API
+  // calls settled. Empty/default props are safe for every landmark, and OpenWorldScene's own
+  // warm-up keeps the first data-driven layout cheap while the real values stream in.
 
   return (
     <OpenWorldPaletteProvider palette={openWorldPalette}>
