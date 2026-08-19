@@ -1,5 +1,48 @@
 import { describe, it, expect } from 'vitest';
-import { commissionToCron, renderFeedbackDigest, composeDirectiveGoal } from './directive.js';
+import {
+  commissionToCron, renderFeedbackDigest, composeDirectiveGoal,
+  MAX_DIRECTIVE_GOAL_LEN, MAX_SYSTEM_PREFIX_LEN,
+} from './directive.js';
+import { CREATIVE_DIRECTOR_GOAL_MAX } from '../../lib/creativeDirectorValidation.js';
+import {
+  renderMusicTasteRecipePrompt,
+  MUSIC_TASTE_RECIPE_MAX_CONTEXT, MUSIC_TASTE_RECIPE_MAX_SOURCE_VERSION,
+} from './musicTasteRecipe.js';
+import { COMMISSION_MUSIC_TASTE_ANCHOR_MAX } from '../../lib/creativeCommissionValidation.js';
+import { buildVideoPromptGuidance } from './videoPromptGuidance.js';
+
+// The goal budget is derived from the brief caps, but two of its terms are prose
+// the derivation can only ALLOW FOR: the system prefix an adapter prepends, and
+// the CD schema cap the composed goal has to pass on the HTTP path. Neither can
+// be imported into directive.js (the first is prose, the second would invert the
+// lib→service direction), so they are pinned here instead of left to a comment.
+describe('directive goal budget invariants', () => {
+  it('stays under the Creative Director schema cap for the goal', () => {
+    expect(MAX_DIRECTIVE_GOAL_LEN).toBeLessThanOrEqual(CREATIVE_DIRECTOR_GOAL_MAX);
+  });
+
+  it('reserves enough prefix room for the longest system text an adapter prepends', () => {
+    // The two candidates, each built at ITS OWN caps so growing one fails here
+    // rather than silently eating the user's brief at compose time.
+    const guidance = buildVideoPromptGuidance('minimax_h3_8bit');
+    const tastePrompt = renderMusicTasteRecipePrompt({
+      version: 1,
+      sourceVersion: 'v'.repeat(MUSIC_TASTE_RECIPE_MAX_SOURCE_VERSION),
+      sourceHash: 'h'.repeat(64),
+      statedContext: 'x'.repeat(MUSIC_TASTE_RECIPE_MAX_CONTEXT),
+      explorationPercent: 20,
+      explorationDirection: 'balanced',
+      anchors: Array.from({ length: COMMISSION_MUSIC_TASTE_ANCHOR_MAX }, (_, i) => ({
+        kind: 'track', name: `n${i}${'a'.repeat(119)}`, artist: `r${i}${'b'.repeat(119)}`, count: 3, source: 'observed',
+      })),
+    });
+    // + a lead sentence, the longest of which is the music-video one.
+    const longestLead = 300;
+    expect(Math.max(guidance.length, tastePrompt.length) + longestLead)
+      .toBeLessThanOrEqual(MAX_SYSTEM_PREFIX_LEN);
+  });
+});
+
 
 describe('commissionToCron', () => {
   it('composes a DAILY cron from HH:MM', () => {
@@ -115,8 +158,8 @@ describe('composeDirectiveGoal', () => {
   it('reserves room for the digest and clamps the brief so the whole goal stays under the CD cap', () => {
     // A huge brief must not truncate away the digest (appended last, but reserved
     // for) — otherwise ratings stop steering the run.
-    const goal = composeDirectiveGoal(['x'.repeat(6000)], 'Recent dislikes: less horror.');
-    expect(goal.length).toBeLessThanOrEqual(4500);
+    const goal = composeDirectiveGoal(['x'.repeat(MAX_DIRECTIVE_GOAL_LEN + 1500)], 'Recent dislikes: less horror.');
+    expect(goal.length).toBeLessThanOrEqual(MAX_DIRECTIVE_GOAL_LEN);
     expect(goal).toContain('Recent dislikes: less horror.');
   });
 });

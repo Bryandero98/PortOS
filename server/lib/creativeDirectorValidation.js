@@ -51,6 +51,12 @@ export const creativeDirectorCastMemberSchema = z.object({
   summary: z.string().max(500).optional(),
 });
 
+// Kept clear of the commission scheduler's MAX_DIRECTIVE_GOAL_LEN, so a goal it
+// composes from a maxed-out commission brief also validates on the HTTP path.
+// That ordering is asserted in services/creativeCommissions/directive.test.js —
+// this module can't import the service to derive it.
+export const CREATIVE_DIRECTOR_GOAL_MAX = 32000;
+
 // Production directive (CDO Phase 2, #2184) — the brief the planner agent turns
 // into a plan. `goal` is the free-text intent ("produce a 6-issue noir comic in
 // universe X with covers and a teaser trailer"); `deliverables` is the checklist
@@ -59,7 +65,7 @@ export const creativeDirectorCastMemberSchema = z.object({
 // constraint values — the plan advance loop gates each tool call at dispatch, so
 // the directive is context for the planner, not an enforcement surface itself.
 export const creativeDirectorDirectiveSchema = z.object({
-  goal: z.string().min(1).max(5000),
+  goal: z.string().min(1).max(CREATIVE_DIRECTOR_GOAL_MAX),
   deliverables: z.array(z.string().min(1).max(200)).max(20).default([]),
   constraints: z.object({
     universeId: z.string().max(120).nullable().optional(),

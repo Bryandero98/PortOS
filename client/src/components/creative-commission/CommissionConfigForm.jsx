@@ -20,7 +20,14 @@ import {
   WEEKDAYS, inputCls, labelCls, describeSchedule,
   ABILITY_OPTIONS, GENERATION_FIELDS_BY_ABILITY, mergeGenerationForAbility,
   backendFieldsForAbility, RENDER_BACKEND_AUTO,
+  COMMISSION_NAME_MAX, COMMISSION_INTENT_MAX, COMMISSION_STYLE_SPEC_MAX, COMMISSION_BRIEF_TAG_MAX,
 } from './commissionForm.js';
+
+// Multi-line so the field reads as room for DIRECTION rather than a tagline.
+const INTENT_PLACEHOLDER = `something surreal, dreamlike, unsettlingly beautiful
+
+Describe the cause, not the effect: physics and emotion, not adjectives.
+One causal beat per shot, in order. Diegetic audio only, no music.`;
 
 export default function CommissionConfigForm({ form, patchForm, saving, onSave, onCancel, saveLabel = 'Save' }) {
   return (
@@ -33,7 +40,7 @@ export default function CommissionConfigForm({ form, patchForm, saving, onSave, 
             id="commission-name"
             className={inputCls}
             value={form.name}
-            maxLength={200}
+            maxLength={COMMISSION_NAME_MAX}
             onChange={(e) => patchForm(['name'], e.target.value)}
             placeholder="Nightly Surreal"
           />
@@ -80,12 +87,20 @@ export default function CommissionConfigForm({ form, patchForm, saving, onSave, 
           <label className={labelCls} htmlFor="commission-intent">Intent</label>
           <textarea
             id="commission-intent"
-            className={`${inputCls} min-h-[70px]`}
+            className={`${inputCls} min-h-[180px] leading-relaxed`}
             value={form.brief.intent}
-            maxLength={2000}
+            maxLength={COMMISSION_INTENT_MAX}
             onChange={(e) => patchForm(['brief', 'intent'], e.target.value)}
-            placeholder="something surreal, dreamlike, unsettlingly beautiful"
+            placeholder={INTENT_PLACEHOLDER}
           />
+          <div className="flex items-start justify-between gap-3 mt-1">
+            <p className="text-xs text-gray-500">
+              What to make, and the standing craft direction for how to make it.
+            </p>
+            <span className="text-xs text-gray-500 shrink-0 tabular-nums">
+              {form.brief.intent.length}/{COMMISSION_INTENT_MAX}
+            </span>
+          </div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
@@ -94,7 +109,7 @@ export default function CommissionConfigForm({ form, patchForm, saving, onSave, 
               id="commission-genre"
               className={inputCls}
               value={form.brief.genre}
-              maxLength={120}
+              maxLength={COMMISSION_BRIEF_TAG_MAX}
               onChange={(e) => patchForm(['brief', 'genre'], e.target.value)}
               placeholder="surrealism"
             />
@@ -105,7 +120,7 @@ export default function CommissionConfigForm({ form, patchForm, saving, onSave, 
               id="commission-style"
               className={inputCls}
               value={form.brief.styleSpec}
-              maxLength={5000}
+              maxLength={COMMISSION_STYLE_SPEC_MAX}
               onChange={(e) => patchForm(['brief', 'styleSpec'], e.target.value)}
               placeholder="flat color, Magritte"
             />

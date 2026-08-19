@@ -7,6 +7,17 @@
  * Kept side-effect-free so both surfaces map record ↔ form identically.
  */
 
+// Client mirror of the server's brief field caps
+// (server/lib/creativeCommissionValidation.js). The intent is roomy on purpose:
+// it reaches the planning LLM verbatim, so it holds a whole instruction set —
+// framework, rules, a sample prompt — not a one-line mood. Keep these in step
+// with the server: a client cap BELOW the schema's truncates the user's brief at
+// the textarea silently, with no error to explain where the tail went.
+export const COMMISSION_NAME_MAX = 200;
+export const COMMISSION_INTENT_MAX = 20000;
+export const COMMISSION_STYLE_SPEC_MAX = 5000;
+export const COMMISSION_BRIEF_TAG_MAX = 120;
+
 export const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 export const inputCls = 'w-full bg-port-bg border border-port-border rounded px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-port-accent';

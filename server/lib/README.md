@@ -41,8 +41,8 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `brainValidation.js` | Brain/memory route schemas (search, ingest, edit). |
 | `catalogValidation.js` | Creative ingredients catalog route schemas (scraps, ingredients, links, relations, tags, revisions, sync envelope). |
 | `cosValidation.js` | Chief-of-Staff task/job/loop/learning schemas, the Review-Loop reviewer vocabulary + helpers (`normalizeReviewers`/`buildReviewWithArgs`), the Code-Review settings slice, and the task-metadata sanitizer. |
-| `creativeCommissionValidation.js` | Creative Commission (Autonomous Creation Engine) create/update + brief/schedule/generation schemas. |
-| `creativeDirectorValidation.js` | Creative Director project/treatment/scene + Create-Suite importer schemas. |
+| `creativeCommissionValidation.js` | Creative Commission (Autonomous Creation Engine) create/update + brief/schedule/generation schemas. Brief field caps are mirrored by the commission form in `client/src/components/creative-commission/commissionForm.js` (parity: `creativeCommissionValidation.mirror.test.js`). |
+| `creativeDirectorValidation.js` | Creative Director project/treatment/scene + Create-Suite importer schemas. `CREATIVE_DIRECTOR_GOAL_MAX` is mirrored in `client/src/lib/creativeDirectorPlan.js` (parity: `creativeDirectorValidation.mirror.test.js`). |
 | `digitalTwinValidation.js` | Digital twin document/category schemas. |
 | `genomeValidation.js` | Genome upload + search schemas. |
 | `identityValidation.js` | Identity section + chronotype + scheduling schemas. |

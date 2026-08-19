@@ -70,7 +70,7 @@ import {
 import { emitRecordUpdated, emitRecordDeleted, autoSubscribeRecordToAllPeers } from '../sharing/recordEvents.js';
 import { commissionToCron } from './directive.js';
 import { getAbilityAdapter } from './abilityAdapters.js';
-import { normalizeMusicTasteConfig, sanitizeMusicTasteRecipe } from './musicTasteRecipe.js';
+import { normalizeMusicTasteConfig, sanitizeMusicTasteRecipe, renderMusicTasteRecipePrompt } from './musicTasteRecipe.js';
 import {
   recordFeedback,
   listFeedbackForCommission,
@@ -86,6 +86,39 @@ export const commissionEvents = new EventEmitter();
 export const TYPE = 'creative-commissions';
 export const COMMISSIONS_SCHEMA_VERSION = 1;
 export const MAX_PERSISTED_RUNS = 50;
+// A run's `promptUsed` is an EXCERPT of the directive goal, not a copy of it.
+// Two things read it, and neither wants the whole brief: the run ledger keeps
+// MAX_PERSISTED_RUNS of them in a record that is rewritten whole on every
+// mutation and shipped entire by the list route, and
+// `getCommissionMusicContextForProject` hands it to the audio enqueue as the
+// authoritative music PROMPT. Since the goal now carries a full instruction set
+// (COMMISSION_INTENT_MAX), an uncapped copy would put a planning brief into a
+// render payload. 4000 keeps both at roughly their pre-instruction-set size.
+export const MAX_RUN_PROMPT_LEN = 4000;
+const clampRunPrompt = (value) => (typeof value === 'string' && value.length > MAX_RUN_PROMPT_LEN
+  ? `${value.slice(0, MAX_RUN_PROMPT_LEN - 1)}…`
+  : value);
+
+/**
+ * The authoritative audio prompt for a taste-enabled music run.
+ *
+ * `promptUsed` is a HEAD excerpt of the directive goal, and the music adapter
+ * composes that goal as lead + intent, THEN the taste recipe — so once the intent
+ * fills the excerpt, the recipe's anchors and its original-work constraint fall off
+ * the end and the render loses them. Re-render the recipe from the run's own stored
+ * `tasteRecipe` and reserve room for it, the same reserve-then-clamp shape
+ * `composeDirectiveGoal` uses for the feedback digest: the bounded, authoritative
+ * part is never what truncation eats.
+ */
+function composeMusicRunPrompt(run) {
+  const brief = isStr(run?.promptUsed) ? run.promptUsed : '';
+  const taste = renderMusicTasteRecipePrompt(run?.tasteRecipe);
+  // Short goals still carry the recipe verbatim in the excerpt — don't say it twice.
+  if (!taste || brief.includes(taste)) return brief;
+  const reserve = taste.length + 1; // +1 for the joining space
+  const head = clampRunPrompt(brief.slice(0, Math.max(0, MAX_RUN_PROMPT_LEN - reserve)));
+  return `${head} ${taste}`.trim();
+}
 // Feedback is kept inline on the commission record (not a separate federated
 // store) — Phase 1's store shape reserved `feedback[]` precisely so Phase 2 adds
 // the rate surface without a schema change. Capped like runs so a long-lived
@@ -153,6 +186,9 @@ function sanitizeMusicOutput(raw) {
 function sanitizeRunHistoryEntry(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
   const next = { ...raw };
+  // Also on READ, so a ledger written before the cap (or by a peer) shrinks the
+  // first time it is loaded instead of riding along forever.
+  if (isStr(raw.promptUsed)) next.promptUsed = clampRunPrompt(raw.promptUsed);
   if ('tasteRecipe' in raw) {
     const tasteRecipe = sanitizeMusicTasteRecipe(raw.tasteRecipe);
     if (tasteRecipe) next.tasteRecipe = tasteRecipe;
@@ -715,7 +751,7 @@ export async function recordCommissionRun(id, runEntry) {
       // scheduled, which is what they were.
       trigger: runEntry.trigger === 'manual' ? 'manual' : 'schedule',
       projectId: runEntry.projectId || null,
-      promptUsed: isStr(runEntry.promptUsed) ? runEntry.promptUsed : null,
+      promptUsed: isStr(runEntry.promptUsed) ? clampRunPrompt(runEntry.promptUsed) : null,
       reason: isStr(runEntry.reason) ? runEntry.reason : null,
       error: isStr(runEntry.error) ? runEntry.error : null,
       ...(tasteRecipe ? { tasteRecipe } : {}),
@@ -743,7 +779,7 @@ export async function getCommissionMusicContextForProject(projectId) {
     return {
       commissionId: commission.id,
       runId: run.id,
-      prompt: run.promptUsed,
+      prompt: composeMusicRunPrompt(run),
       tasteRecipe: run.tasteRecipe,
       musicGeneration: run.musicGeneration,
     };
