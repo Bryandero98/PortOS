@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router';
 import { AlertTriangle } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
@@ -15,7 +16,6 @@ import {
   TIMEOUT_INPUT_MIN_MS,
   TIMEOUT_INPUT_MAX_MS,
   TIMEOUT_INPUT_STEP_MS,
-  formatDateTime,
 } from '../utils/formatters';
 import SettingsTabsHeader from '../components/settings/SettingsTabsHeader';
 import EffortSelect from '../components/cos/EffortSelect';
@@ -93,7 +93,6 @@ export default function AIProviders() {
   const [editingProvider, setEditingProvider] = useState(null);
   const [testResults, setTestResults] = useState({});
   const [refreshing, setRefreshing] = useState({});
-  const [runs, setRuns] = useState([]);
   const [showRunPanel, setShowRunPanel] = useState(false);
   const [runPrompt, setRunPrompt] = useState('');
   const [selectedWorkspace, setSelectedWorkspace] = useState('');
@@ -113,11 +112,6 @@ export default function AIProviders() {
     loadData();
   }, []);
 
-  const loadRuns = useCallback(async () => {
-    const runsData = await api.getRuns(20).catch(() => ({ runs: [] }));
-    setRuns(runsData.runs || []);
-  }, []);
-
   useEffect(() => {
     if (!activeRun) return;
 
@@ -127,7 +121,6 @@ export default function AIProviders() {
 
     const handleComplete = (_metadata) => {
       setActiveRun(null);
-      loadRuns();
     };
 
     socket.on(`run:${activeRun}:data`, handleData);
@@ -137,19 +130,18 @@ export default function AIProviders() {
       socket.off(`run:${activeRun}:data`, handleData);
       socket.off(`run:${activeRun}:complete`, handleComplete);
     };
-  }, [activeRun, loadRuns]);
+  }, [activeRun]);
 
   const loadData = async () => {
     setLoading(true);
     setLoadError(false);
     let providersFailed = false;
-    const [providersData, appsData, runsData, statusData, opencodeData] = await Promise.all([
+    const [providersData, appsData, statusData, opencodeData] = await Promise.all([
       api.getProviders().catch(() => {
         providersFailed = true;
         return null;
       }),
       api.getApps().catch(() => []),
-      api.getRuns(20).catch(() => ({ runs: [] })),
       api.getProviderStatuses().catch(() => ({ providers: {} })),
       api.getOpenCodeInstallStatus({ silent: true }).catch(() => null),
     ]);
@@ -168,7 +160,6 @@ export default function AIProviders() {
         : null);
     }
     setApps(appsData);
-    setRuns(runsData.runs || []);
     setStatuses(statusData.providers || {});
     setOpenCodeInstallStatus(opencodeData && typeof opencodeData.installed === 'boolean'
       ? opencodeData
@@ -854,37 +845,13 @@ export default function AIProviders() {
         )}
       </div>
 
-      {/* Recent Runs */}
-      {runs.length > 0 && (
-        <div className="mt-8">
-          <h2 className="text-xl font-bold text-white mb-4">Recent Runs</h2>
-          <div className="space-y-2">
-            {runs.map(run => (
-              <div
-                key={run.id}
-                className="bg-port-card border border-port-border rounded-lg p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
-              >
-                <div className="flex items-start sm:items-center gap-3 min-w-0">
-                  <span className={`w-2 h-2 rounded-full shrink-0 mt-1.5 sm:mt-0 ${
-                    run.success === true ? 'bg-port-success' :
-                    run.success === false ? 'bg-port-error' :
-                    'bg-port-warning animate-pulse'
-                  }`} />
-                  <div className="min-w-0">
-                    <p className="text-sm text-white break-words">{run.prompt}</p>
-                    <p className="text-xs text-gray-500 break-words">
-                      {run.providerName} • {run.workspaceName || 'No workspace'} • {formatDateTime(run.startTime)}
-                    </p>
-                  </div>
-                </div>
-                <div className="text-sm text-gray-400 shrink-0 pl-5 sm:pl-0">
-                  {run.duration ? `${(run.duration / 1000).toFixed(1)}s` : 'Running...'}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* Full run history lives on the Chief of Staff → Runs tab; this page
+          only configures providers. */}
+      <div className="mt-8">
+        <Link to="/cos/runs" className="text-sm text-port-accent hover:underline">
+          View AI run history →
+        </Link>
+      </div>
 
       {/* Provider Form Modal */}
       {showForm && (

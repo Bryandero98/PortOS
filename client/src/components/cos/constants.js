@@ -11,7 +11,8 @@ import {
   Bot,
   Flame,
   Newspaper,
-  ChartGantt
+  ChartGantt,
+  Play
 } from 'lucide-react';
 import { normalizeReviewerSlug } from '../../lib/reviewerPins';
 import { inPlaceClipName } from '../../utils/animationClips';
@@ -21,6 +22,7 @@ export const TABS = [
   { id: 'tasks', label: 'Tasks', icon: FileText },
   { id: 'agents', label: 'Agents', icon: Cpu },
   { id: 'jobs', label: 'System Tasks', icon: Bot },
+  { id: 'runs', label: 'Runs', icon: Play },
   { id: 'schedule', label: 'Schedule', icon: Clock },
   { id: 'workflow', label: 'Timeline', icon: ChartGantt },
   { id: 'digest', label: 'Digest', icon: Calendar },

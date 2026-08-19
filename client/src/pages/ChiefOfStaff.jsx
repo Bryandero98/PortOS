@@ -40,6 +40,11 @@ import {
 } from '../components/cos';
 import { resolveDynamicAvatar } from '../components/cos/constants';
 
+// The Runs tab (full AI run history + its log modal) is lazy-loaded so its weight
+// stays out of the eager CoS chunk every /cos/* visit pays for — same reason the
+// avatars below are not re-exported from the components/cos barrel.
+const RunsTab = lazy(() => import('../components/cos/tabs/RunsTab'));
+
 // Three.js-based avatars lazy-loaded so the R3F stack isn't bundled unless the
 // user's chosen avatar style actually needs it.
 const LAZY_AVATARS = {
@@ -969,6 +974,13 @@ export default function ChiefOfStaff() {
         {activeTab === 'jobs' && (
           <div role="tabpanel" id="tabpanel-jobs" aria-labelledby="tab-jobs">
             <JobsTab />
+          </div>
+        )}
+        {activeTab === 'runs' && (
+          <div role="tabpanel" id="tabpanel-runs" aria-labelledby="tab-runs">
+            <Suspense fallback={<div className="flex items-center justify-center py-12"><BrailleSpinner text="Loading runs" /></div>}>
+              <RunsTab />
+            </Suspense>
           </div>
         )}
         {activeTab === 'schedule' && (

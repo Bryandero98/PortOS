@@ -2,11 +2,11 @@
 
 import { describe, it, expect, vi } from 'vitest';
 
-// RunsHistoryPage pulls in the API barrel transitively; stub it so importing the
+// RunsTab pulls in the API barrel transitively; stub it so importing the
 // module for the pure-helper test doesn't drag real HTTP wrappers into scope.
-vi.mock('../services/api', () => ({}));
+vi.mock('../../../services/api', () => ({}));
 
-import { runLogProcessName } from './RunsHistoryPage';
+import { runLogProcessName } from './RunsTab';
 
 describe('runLogProcessName', () => {
   it('maps cos-agent runs to the portos-cos process', () => {

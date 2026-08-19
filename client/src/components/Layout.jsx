@@ -200,6 +200,7 @@ const navItems = [
       { to: '/cos/health', label: 'Health', icon: Activity },
       { to: '/cos/learning', label: 'Learning', icon: GraduationCap },
       { to: '/cos/memory', label: 'Memory', icon: Brain },
+      { to: '/cos/runs', label: 'Runs', icon: Play },
       { to: '/cos/schedule', label: 'Schedule', icon: Clock },
       { to: '/agents', label: 'Social Agents', icon: Users },
       { to: '/cos/productivity', label: 'Streaks', icon: Flame },
@@ -255,7 +256,6 @@ const navItems = [
     icon: Terminal,
     children: [
       { to: '/devtools/agents', label: 'AI Agents', icon: Cpu },
-      { to: '/devtools/runs', label: 'AI Runs', icon: Play },
       { to: '/ambient', label: 'Ambient', icon: Sparkles },
       { href: '//:5560', label: 'Autofixer', icon: Wrench, external: true, dynamicHost: true },
       { to: '/browser', label: 'Browser', icon: Globe },

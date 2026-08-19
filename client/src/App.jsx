@@ -16,7 +16,6 @@ const Ambient = lazyWithReload(() => import('./pages/Ambient'));
 // DevTools pages are large (~2300 lines total) so lazy load them
 const AIProviders = lazyWithReload(() => import('./pages/AIProviders'));
 const HistoryPage = lazyWithReload(() => import('./pages/DevTools').then(m => ({ default: m.HistoryPage })));
-const RunsHistoryPage = lazyWithReload(() => import('./pages/DevTools').then(m => ({ default: m.RunsHistoryPage })));
 const RunnerPage = lazyWithReload(() => import('./pages/DevTools').then(m => ({ default: m.RunnerPage })));
 const UsagePage = lazyWithReload(() => import('./pages/DevTools').then(m => ({ default: m.UsagePage })));
 const ProcessesPage = lazyWithReload(() => import('./pages/DevTools').then(m => ({ default: m.ProcessesPage })));
@@ -255,7 +254,7 @@ export default function App() {
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />
           <Route path="apps" element={<Apps />} />
-          <Route path="devtools" element={<Navigate to="/devtools/runs" replace />} />
+          <Route path="devtools" element={<Navigate to="/devtools/agents" replace />} />
           <Route path="devtools/datadog" element={<DataDog />} />
           <Route path="devtools/flows" element={<FlowsDoc />} />
           <Route path="devtools/github" element={<GitHub />} />
@@ -263,7 +262,9 @@ export default function App() {
           <Route path="devtools/image-clean" element={<ImageClean />} />
           <Route path="devtools/quota-burn" element={<QuotaBurn />} />
           <Route path="devtools/quota-burn/:familyId" element={<QuotaBurn />} />
-          <Route path="devtools/runs" element={<RunsHistoryPage />} />
+          {/* AI run history moved under the Chief of Staff (/cos/runs); keep old
+              links and bookmarks working. */}
+          <Route path="devtools/runs" element={<RedirectWithSearch to="/cos/runs" />} />
           <Route path="devtools/runner" element={<RunnerPage />} />
           {/* Submodules moved onto the managed-app detail page (one tab per repo).
               Keeps old links/bookmarks working by landing on PortOS's own tab. */}

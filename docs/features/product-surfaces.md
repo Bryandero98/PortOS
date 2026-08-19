@@ -14,7 +14,7 @@ PortOS is a local-first operating system for a developer's machines, work, and p
 
 - **Chief of Staff** — Submit work, schedule automations, monitor tasks, and review operational decisions. See [Chief of Staff](./chief-of-staff.md), [Agent Runner](./cos-agent-runner.md), [Agent Skills](./agent-skills.md), and [CoS Enhancement](./cos-enhancement.md).
 - **Feature Agents, Review Hub, and workspace contexts** — Create durable agents for a feature area, collect approvals and alerts, and give agents the right repository context.
-- **Prompt Manager, AI Runner, AI Runs, and AI Agents** — Configure reusable prompts; run a provider directly; and inspect active or past model work. See [Prompt Manager](./prompt-manager.md) and [Claude on Ollama](./claude-ollama.md).
+- **Prompt Manager, AI Runner, and AI Agents** — Configure reusable prompts; run a provider directly; and inspect active model work. Past and in-flight AI runs are listed on the Chief of Staff's Runs tab (`/cos/runs`). See [Prompt Manager](./prompt-manager.md) and [Claude on Ollama](./claude-ollama.md).
 - **Autofixer** — Detect and repair managed-process failures with controlled retries. See [Autofixer](./autofixer.md).
 
 ## Create stories, media, and music

@@ -1,14 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate, useSearchParams } from 'react-router';
 import { Trash2, RotateCcw, MessageSquarePlus, ScrollText, Square } from 'lucide-react';
-import * as api from '../services/api';
-import { formatTime, formatRuntime, formatBytes, formatDateTime } from '../utils/formatters';
-import BrailleSpinner from '../components/BrailleSpinner';
-import PageSkeleton from '../components/ui/PageSkeleton';
-import Banner from '../components/ui/Banner';
-import ProcessLogModal from '../components/ui/ProcessLogModal';
-import { writeClipboardSilently } from '../lib/clipboard';
-import { clickableProps } from '../lib/a11yKeyboard.js';
+import * as api from '../../../services/api';
+import { formatTime, formatRuntime, formatBytes, formatDateTime } from '../../../utils/formatters';
+import BrailleSpinner from '../../BrailleSpinner';
+import Banner from '../../ui/Banner';
+import ProcessLogModal from '../../ui/ProcessLogModal';
+import { writeClipboardSilently } from '../../../lib/clipboard';
+import { clickableProps } from '../../../lib/a11yKeyboard.js';
 
 // Map an AI run's source to the PM2 process whose system log holds the full
 // context for that run. CoS-agent runs are driven by the `portos-cos` process;
@@ -17,8 +16,10 @@ export function runLogProcessName(source) {
   return source === 'cos-agent' ? 'portos-cos' : 'portos-server';
 }
 
-export function RunsHistoryPage() {
+export default function RunsTab() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const deepLinkRunId = searchParams.get('run');
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState(null);
@@ -84,12 +85,7 @@ export function RunsHistoryPage() {
     });
   };
 
-  const toggleExpand = async (id) => {
-    if (expandedId === id) {
-      setExpandedId(null);
-      return;
-    }
-
+  const expandRun = useCallback(async (id) => {
     setExpandedId(id);
 
     // Load full prompt and output if not already loaded
@@ -103,7 +99,26 @@ export function RunsHistoryPage() {
         [id]: { prompt, output }
       }));
     }
+  }, [expandedDetails]);
+
+  const toggleExpand = (id) => {
+    if (expandedId === id) {
+      setExpandedId(null);
+      return;
+    }
+    expandRun(id);
   };
+
+  // Open the run named by `?run=<id>` on entry — the Local LLM Playground links
+  // straight at a run it just finished. One-shot: switching CoS tabs drops the
+  // param, and the user stays free to collapse the row afterwards.
+  const deepLinkOpened = useRef(false);
+  useEffect(() => {
+    if (deepLinkOpened.current || !deepLinkRunId || loading) return;
+    if (!runs.some(run => run.id === deepLinkRunId)) return;
+    deepLinkOpened.current = true;
+    expandRun(deepLinkRunId);
+  }, [deepLinkRunId, loading, runs, expandRun]);
 
   const handleContinue = (run) => {
     const details = expandedDetails[run.id] || {};
@@ -169,7 +184,11 @@ export function RunsHistoryPage() {
   };
 
   if (loading) {
-    return <PageSkeleton label="Loading runs history" titleWidthClass="w-48" showAction={false} cards={4} sidebar={false} />;
+    return (
+      <div className="flex items-center justify-center py-12">
+        <BrailleSpinner text="Loading runs" />
+      </div>
+    );
   }
 
   const failedCount = runs.filter(r => r.success === false).length;
@@ -185,7 +204,7 @@ export function RunsHistoryPage() {
   return (
     <div className="space-y-4 lg:space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <h1 className="text-lg sm:text-2xl font-bold text-white">AI Runs History</h1>
+        <h2 className="text-lg sm:text-xl font-bold text-white">Recent Runs</h2>
         {failedCount > 0 && (
           <button
             onClick={handleClearFailed}
@@ -526,5 +545,3 @@ export function RunsHistoryPage() {
     </div>
   );
 }
-
-export default RunsHistoryPage;
