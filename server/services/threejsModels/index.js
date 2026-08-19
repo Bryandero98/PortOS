@@ -19,6 +19,7 @@ import {
 import { buildThreejsAnimationFeedback, summarizeThreejsAnimation } from '../../lib/threejsModelAnimation.js';
 import { buildThreejsCoverageFeedback, evaluateThreejsPartCoverage } from '../../lib/threejsModelCoverage.js';
 import { buildThreejsPenetrationFeedback, evaluateThreejsPenetration } from '../../lib/threejsModelPenetration.js';
+import { buildThreejsPhysicalAuditFeedback, evaluateThreejsPhysicalAudit } from '../../lib/threejsModelPhysicalAudit.js';
 import { evaluateThreejsRigReadiness } from '../../lib/threejsModelRig.js';
 import { GENERAL_FAMILY_ID } from '../../lib/threejsModelFamilies.js';
 import { resolveCliEffort } from '../../lib/providerModels.js';
@@ -117,6 +118,9 @@ async function executeGeneration({
     // still renders, and from the hero angle it still looks right, so the
     // finding is recorded and fed back rather than thrown away.
     const penetration = evaluateThreejsPenetration(spec);
+    // And likewise for deterministic physical-conformance audits: floating parts,
+    // swallowed geometry, coplanar z-fighting surfaces, and unprovenanced clip transitions.
+    const physicalAudit = evaluateThreejsPhysicalAudit(spec);
     // And likewise for a spec whose materials parse cleanly but describe the
     // wrong substance — metalness 0.9 oak, transmission 1.0 steel. Advisory by
     // construction: a stylized model is entitled to break the priors, so the
@@ -146,6 +150,7 @@ async function executeGeneration({
         coverage,
         flatness,
         penetration,
+        physicalAudit,
         rig,
         animation,
         materialPlausibility,
@@ -170,6 +175,9 @@ async function executeGeneration({
     }
     if (penetration.errorCount > 0 || penetration.warningCount > 0) {
       console.warn(`⚠️ Three.js model ${id} cross-part penetration: ${penetration.errorCount} error, ${penetration.warningCount} warning finding(s) over ${penetration.comparedPairCount} compared pair(s)`);
+    }
+    if (physicalAudit.errorCount > 0 || physicalAudit.warningCount > 0) {
+      console.warn(`⚠️ Three.js model ${id} physical audit: ${physicalAudit.errorCount} error, ${physicalAudit.warningCount} warning finding(s) across ${physicalAudit.evaluatedPoseCount} pose(s)`);
     }
     if (materialPlausibility.warningCount > 0) {
       console.warn(`⚠️ Three.js model ${id} material plausibility: ${materialPlausibility.warningCount} of ${materialPlausibility.matchedMaterialCount} recognized material(s) carry values their substance does not support`);
@@ -246,6 +254,7 @@ export async function startGeneration(id, {
     buildThreejsCoverageFeedback(current.coverage),
     buildThreejsFlatnessFeedback(current.flatness),
     buildThreejsPenetrationFeedback(current.penetration),
+    buildThreejsPhysicalAuditFeedback(current.physicalAudit),
     buildThreejsMaterialFeedback(current.materialPlausibility),
     buildThreejsAnimationFeedback(current.animation),
   ].filter(Boolean).join('\n\n');

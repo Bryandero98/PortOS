@@ -235,6 +235,55 @@ describe('ThreejsModelDetail cross-part penetration gate', () => {
   });
 });
 
+describe('ThreejsModelDetail physical audit gate', () => {
+  beforeEach(resetMocks);
+
+  it('lists the physical audit finding and says an unsteered refinement will target physical conformance defects', async () => {
+    getThreejsModel.mockResolvedValue({
+      ...baseRecord,
+      physicalAudit: {
+        errorCount: 0,
+        warningCount: 1,
+        noteCount: 0,
+        evaluatedPartCount: 2,
+        evaluatedPoseCount: 1,
+        findings: [{
+          code: 'floating-part',
+          severity: 'warning',
+          partIds: ['orb'],
+          message: 'Part "Floating Orb" floats unattached in space.',
+        }],
+      },
+    });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Physical audit')).toBeInTheDocument());
+    expect(screen.getByText('Part "Floating Orb" floats unattached in space.')).toBeInTheDocument();
+    expect(screen.getByText('0 error · 1 warning · 0 note')).toBeInTheDocument();
+    expect(screen.getByText(/target physical conformance defects/)).toBeInTheDocument();
+  });
+
+  it('reports physical compliance on a clean pass', async () => {
+    getThreejsModel.mockResolvedValue({
+      ...baseRecord,
+      physicalAudit: { errorCount: 0, warningCount: 0, noteCount: 0, findings: [] },
+    });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Physical audit')).toBeInTheDocument());
+    expect(screen.getByText('Assembly satisfies physical attachment, exposure, and coplanarity rules')).toBeInTheDocument();
+    expect(screen.queryByText(/target physical conformance defects/)).not.toBeInTheDocument();
+  });
+
+  it('hides the section for a record generated before the gate existed', async () => {
+    getThreejsModel.mockResolvedValue({ ...baseRecord, physicalAudit: null });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Example Beacon')).toBeInTheDocument());
+    expect(screen.queryByText('Physical audit')).not.toBeInTheDocument();
+  });
+});
+
 describe('ThreejsModelDetail material plausibility gate', () => {
   beforeEach(resetMocks);
 
