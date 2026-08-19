@@ -332,7 +332,7 @@ function ConversationDetail({
               </Link>
             ) : (
               <Link
-                to="/settings/contacts"
+                to="/messages/contacts"
                 className="inline-flex items-center gap-1.5 rounded border border-port-border bg-port-bg px-2.5 py-1.5 text-xs text-gray-200 hover:border-port-accent"
               >
                 <Users size={12} />
@@ -573,7 +573,7 @@ export default function IMessageTab() {
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <Link
-            to="/settings/contacts"
+            to="/messages/contacts"
             className="inline-flex items-center gap-1.5 rounded border border-port-border bg-port-card px-3 py-1.5 text-xs text-gray-300 hover:border-port-accent"
           >
             <Users size={12} />
