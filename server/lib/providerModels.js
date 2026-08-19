@@ -71,25 +71,20 @@ export const resolveCliModel = (model) => isConfiguredDefaultModel(model) ? null
 // Reasoning-effort levels — Claude Code (`--effort <level>`), Antigravity
 // (`--effort <level>`) and Codex (`-c model_reasoning_effort=<level>`) all
 // accept a per-invocation override of how hard the model thinks. Value sets
-// verified against claude CLI v2.1.x (`--help`), codex-cli 0.130 (its config
-// enum, read straight off codex's own rejection message: `none`, `minimal`,
-// `low`, `medium`, `high`, `xhigh`) and agy (`--help`: "Reasoning effort for
-// the current CLI session (low|medium|high)"). Mirrored in
+// verified against claude CLI v2.1.x (`--help`), current Codex CLI config
+// values (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) and agy
+// (`--help`: "Reasoning effort for the current CLI session (low|medium|high)"). Mirrored in
 // client/src/utils/providers.js — keep in sync.
 //
-// Codex does NOT accept `max`/`ultra`. Listing them here emitted
-// `-c model_reasoning_effort=max`, which codex rejects while LOADING ITS CONFIG
-// — before the prompt is ever read — so the agent died at startup with "unknown
-// variant `max`, expected one of …" and burned every retry. `resolveCliEffort`
-// clamps those levels to `xhigh` instead, which also degrades gracefully if a
-// future codex does add them.
+// `ultra` remains accepted as a legacy stored value and resolves to the
+// strongest supported level, `max`, when sent to Codex.
 //
 // `none` is a real codex variant but is deliberately NOT offered: it means "do
 // not reason at all", which no PortOS effort control should be able to select.
 // ---------------------------------------------------------------------------
 
 export const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
-export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
+export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 // OpenCode forwards this narrow OpenAI-compatible ladder as `reasoningEffort`
 // to a local Ollama model. Keep it separate from vendor-CLI-only levels.
@@ -379,7 +374,7 @@ const EFFORT_RANK = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 
  * accepts, or null when the flag should be omitted entirely (no override set,
  * provider has no effort control, or the value isn't a known effort at all).
  * An out-of-range value is clamped to the nearest supported level at or below
- * it (`ultra`→`max` on claude, `max`/`ultra`→`xhigh` on codex,
+ * it (`ultra`→`max` on claude/codex,
  * `xhigh`/`max`/`ultra`→`high` on agy), falling back to the provider's weakest
  * level when nothing sits below it (`minimal`→`low`) — rather than being
  * dropped.

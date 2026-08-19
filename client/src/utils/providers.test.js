@@ -94,11 +94,8 @@ describe('resolveCliEffort (server mirror)', () => {
     ['codex-only ultra clamps on claude', 'ultra', CLAUDE, 'max'],
     ['codex-only minimal clamps on claude', 'minimal', CLAUDE, 'low'],
     ['codex accepts its whole ladder', 'minimal', CODEX, 'minimal'],
-    // codex's config enum stops at `xhigh`; `-c model_reasoning_effort=max`
-    // makes it fail while loading its config, so the picker must never show a
-    // level the run can't use.
-    ['max clamps to codex xhigh', 'max', CODEX, 'xhigh'],
-    ['ultra clamps to codex xhigh', 'ultra', CODEX, 'xhigh'],
+    ['codex accepts max', 'max', CODEX, 'max'],
+    ['legacy ultra resolves to codex max', 'ultra', CODEX, 'max'],
     ['unknown value yields no flag', 'bogus', AGY, null],
     ['effort-less provider yields no flag', 'high', GROK, null],
     ['unset yields no flag', '', AGY, null],
