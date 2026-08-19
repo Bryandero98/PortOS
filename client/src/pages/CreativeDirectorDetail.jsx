@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router';
-import { ArrowLeft, Play, Pause, RefreshCw, SlidersHorizontal } from 'lucide-react';
+import { ArrowLeft, Play, Pause, RefreshCw, SlidersHorizontal, Square } from 'lucide-react';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import toast from '../components/ui/Toast';
 import {
   getCreativeDirectorProject,
   startCreativeDirectorProject,
   pauseCreativeDirectorProject,
+  stopCreativeDirectorProject,
   resumeCreativeDirectorProject,
 } from '../services/apiCreativeDirector.js';
 import OverviewTab from '../components/creative-director/OverviewTab.jsx';
@@ -154,11 +155,14 @@ export default function CreativeDirectorDetail() {
 
   const handleAction = async (kind) => {
     // Map action → past-tense label and optimistic status up-front.
-    const successMessages = { start: 'Started', pause: 'Paused', resume: 'Resumed' };
+    const successMessages = {
+      start: 'Started', pause: 'Paused', resume: 'Resumed',
+      stop: 'Stopped — agent, tasks and queued renders torn down',
+    };
     // Optimistic status: start kicks off planning or rendering depending on
     // whether a treatment exists; the 5s poll will correct it if the server
     // resolves to a different status (e.g. planning → rendering).
-    const optimisticStatus = kind === 'pause' ? 'paused'
+    const optimisticStatus = (kind === 'pause' || kind === 'stop') ? 'paused'
       : kind === 'resume' ? (project?.treatment ? 'rendering' : 'planning')
       : kind === 'start' ? (project?.treatment ? 'rendering' : 'planning')
       : null;
@@ -166,6 +170,7 @@ export default function CreativeDirectorDetail() {
       if (kind === 'start') await startCreativeDirectorProject(id, { silent: true });
       else if (kind === 'pause') await pauseCreativeDirectorProject(id, { silent: true });
       else if (kind === 'resume') await resumeCreativeDirectorProject(id, { silent: true });
+      else if (kind === 'stop') await stopCreativeDirectorProject(id, { silent: true });
       toast.success(successMessages[kind] || kind);
       if (optimisticStatus) setProject((p) => p ? { ...p, status: optimisticStatus } : p);
     } catch (err) {
@@ -229,6 +234,15 @@ export default function CreativeDirectorDetail() {
             {!['paused', 'complete', 'failed', 'draft'].includes(project.status) && (
               <button onClick={() => handleAction('pause')} className="flex items-center gap-1 px-2 py-1 bg-port-card border border-port-border rounded text-xs">
                 <Pause className="w-3 h-3" /> Pause
+              </button>
+            )}
+            {!['complete', 'failed', 'draft'].includes(project.status) && (
+              <button
+                onClick={() => handleAction('stop')}
+                title="Stop: kill the running agent, retire its queued tasks, and cancel pending renders. Pause only stops NEW work being queued."
+                className="flex items-center gap-1 px-2 py-1 bg-port-card border border-port-border rounded text-xs hover:text-port-error"
+              >
+                <Square className="w-3 h-3" /> Stop
               </button>
             )}
           </div>

@@ -98,10 +98,18 @@ export const initCosAfterSpawner = ({ spawnerReady, initCos }) =>
 /**
  * Legacy INLINE commission feedback is split into the federated store BEFORE the
  * per-commission crons are armed (#2686), so a fire reads the federated view.
- * Both are best-effort and neither blocks boot.
+ * The commission→project back-pointer is backfilled here too: the dispatch path
+ * only consults a commission when the project names one, so a project minted
+ * before the back-pointer existed would keep running on the provider frozen at
+ * its fire — and would be invisible to the commission's stop.
+ *
+ * All best-effort; none of them blocks boot, and none makes an LLM call.
  */
-export const armCommissionScheduler = ({ backfillCommissionFeedback, startCommissionScheduler }) => {
+export const armCommissionScheduler = ({
+  backfillCommissionFeedback, backfillProjectCommissionIds, startCommissionScheduler,
+}) => {
   bestEffort(backfillCommissionFeedback(), logFailure('Commission feedback backfill failed'));
+  bestEffort(backfillProjectCommissionIds(), logFailure('Commission back-pointer backfill failed'));
   bestEffort(startCommissionScheduler(), logFailure('Creative Commission scheduler init failed'));
 };
 

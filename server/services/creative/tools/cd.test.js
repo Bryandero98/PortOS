@@ -35,6 +35,15 @@ describe('cd_produceVideoFromIssue — render pin inheritance', () => {
     expect(options()).toEqual({ renderBackend: { video: { mode: 'grok' } }, modelId: 'wan-2.2' });
   });
 
+  it("inherits the calling project's owning commission, so the teaser is stoppable with it", async () => {
+    // The teaser is a SEPARATE project. Without the back-pointer it is invisible
+    // to the commission's stop, and would keep generating after the user paused
+    // or deleted the commission that asked for it.
+    getProject.mockResolvedValue({ id: 'cd-1', commissionId: 'commission-1' });
+    await run({ issueId: 'iss-1' }, { projectId: 'cd-1' });
+    expect(options()).toEqual({ commissionId: 'commission-1' });
+  });
+
   it('an unpinned calling project contributes nothing (byte-identical to before)', async () => {
     getProject.mockResolvedValue({ id: 'cd-1' });
     await run({ issueId: 'iss-1' }, { projectId: 'cd-1' });

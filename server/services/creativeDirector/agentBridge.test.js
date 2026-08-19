@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   getToolSpecs: vi.fn(),
   getSettings: vi.fn(),
   recordRun: vi.fn(),
+  commissionStagePin: vi.fn(),
 }));
 
 vi.mock('../cos.js', () => ({
@@ -25,6 +26,7 @@ vi.mock('../../lib/creativeDirectorPrompts.js', () => ({
 vi.mock('../creative/toolRegistry.js', () => ({ getToolSpecs: mocks.getToolSpecs }));
 vi.mock('../settings.js', () => ({ getSettings: mocks.getSettings }));
 vi.mock('./local.js', () => ({ recordRun: mocks.recordRun }));
+vi.mock('../creativeCommissions/projectControl.js', () => ({ commissionStagePin: mocks.commissionStagePin }));
 
 const { enqueueTreatmentTask, enqueuePlanTask, enqueueEvaluateTask } = await import('./agentBridge.js');
 
@@ -38,6 +40,54 @@ beforeEach(() => {
   mocks.recordRun.mockResolvedValue();
   mocks.addTask.mockResolvedValue();
   mocks.getSettings.mockResolvedValue({});
+  mocks.commissionStagePin.mockResolvedValue(null);
+});
+
+describe('Creative Director agent bridge — commission-owned projects', () => {
+  const commissioned = { ...project, commissionId: 'commission-1', modelOverrides: {
+    // The stale snapshot a pre-change fire froze onto the project. The commission
+    // is the standing job definition, so its CURRENT pin must win over it —
+    // otherwise switching the commission's provider leaves a wedged project
+    // handing its planner task to the old one forever.
+    plan: { providerId: 'claude-ollama-tui', model: 'qwen3.6:35b' },
+    treatment: { providerId: 'claude-ollama-tui', model: 'qwen3.6:35b' },
+  } };
+
+  it("resolves the owning commission's pin LIVE, overriding the snapshot on the project", async () => {
+    mocks.commissionStagePin.mockResolvedValue({ providerId: 'lmstudio-tui', model: 'qwen3.6:35b' });
+
+    await enqueuePlanTask(commissioned);
+
+    expect(mocks.commissionStagePin).toHaveBeenCalledWith('commission-1');
+    const [task] = mocks.addTask.mock.calls[0];
+    expect(task.metadata).toMatchObject({
+      provider: 'lmstudio-tui', providerId: 'lmstudio-tui', model: 'qwen3.6:35b',
+    });
+  });
+
+  it('falls back to the project/global assignment when the commission pins nothing', async () => {
+    mocks.commissionStagePin.mockResolvedValue(null);
+    mocks.getSettings.mockResolvedValue({ creativeDirector: { plan: { providerId: 'global-agent' } } });
+
+    await enqueuePlanTask({ ...commissioned, modelOverrides: {} });
+
+    const [task] = mocks.addTask.mock.calls[0];
+    expect(task.metadata).toMatchObject({ providerId: 'global-agent' });
+  });
+
+  it('never looks up a commission for a bare project', async () => {
+    await enqueuePlanTask(project);
+    expect(mocks.commissionStagePin).not.toHaveBeenCalled();
+  });
+
+  it('does not stall the dispatch when the commission lookup fails', async () => {
+    mocks.commissionStagePin.mockRejectedValue(new Error('store down'));
+
+    await enqueuePlanTask(commissioned);
+
+    const [task] = mocks.addTask.mock.calls[0];
+    expect(task.metadata).toMatchObject({ providerId: 'claude-ollama-tui' });
+  });
 });
 
 describe('Creative Director agent bridge model assignments', () => {

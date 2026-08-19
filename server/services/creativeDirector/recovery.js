@@ -25,14 +25,14 @@
  *      fresh evaluate task, runs the stitch, etc.
  */
 
-import { listProjects, updateScene, updatePlanStep, updateRun, updateProject } from './local.js';
+import { listProjects, updateScene, updatePlanStep, updateProject } from './local.js';
 import { listJobs, cancelJob } from '../mediaJobQueue/index.js';
-import { updateTask } from '../cos.js';
+import { inflightRuns, ownedLiveJobs, retireRuns } from './stopProject.js';
 
 // Boot-time coordination: cos.start() (entered from cos.init() when
 // alwaysOn/autoStart is configured) calls resetOrphanedTasks(), which
 // would respawn stale CD treatment/evaluate tasks BEFORE
-// recoverInFlightProjects() has had a chance to retire them via updateTask.
+// recoverInFlightProjects() has had a chance to retire them via retireRuns.
 // Two concurrent agents would then race on the same project. Expose a
 // promise that cos.start() awaits before its resetOrphanedTasks call,
 // so the order is always:
@@ -111,42 +111,21 @@ export async function recoverInFlightProjects() {
     if (resetCount) {
       console.log(`🔄 CD recovery: ${project.id} reset ${resetCount} stuck scene(s) to pending`);
     }
-    // Reap stale `running` agent-run rows AND retire the underlying CoS
-    // task. The agent task behind each run died with the previous process,
-    // but cos.js#resetOrphanedTasks would otherwise see `in_progress` task
-    // rows on boot and respawn them — racing the fresh treatment/evaluate
-    // task this recovery path will cause to enqueue. Mark the task failed
-    // first so the orphan-task reset finds nothing to retry.
-    //
-    // taskType MUST be 'internal' here — CD treatment/evaluate tasks are
-    // added by agentBridge#persistAndEmit via `addTask(record, 'internal',
-    // …)`. Passing 'cos' would write to the wrong file AND, per
-    // cos.js#updateTask, strip approval flags from internal task entries
-    // (only 'internal' preserves them), silently auto-approving unrelated
-    // internal tasks across a CD recovery cycle.
-    //
-    // status MUST be one of generateTasksMarkdown's supported terminal
-    // values (pending/in_progress/blocked/completed) — writing 'failed'
-    // would make the parser drop the task from COS-TASKS.md entirely on
-    // the next write. Use 'completed' with a metadata audit note so the
-    // task is properly retired (preventing orphan re-spawn) without
-    // being silently deleted.
-    const staleRuns = (project.runs || []).filter((r) => r.status === 'running');
-    for (const run of staleRuns) {
-      if (run.taskId) {
-        await updateTask(run.taskId, {
-          status: 'completed',
-          metadata: { interruptedByRestart: 'true', recoveredAt: completedAt },
-        }, 'internal')
-          .catch((e) => console.log(`⚠️ CD recovery: retire internal task ${run.taskId} for ${project.id} failed: ${e.message}`));
-      }
-      await updateRun(project.id, run.runId, {
-        status: 'failed',
-        completedAt,
-        failureReason: 'interrupted by restart',
-      }).catch((e) => console.log(`⚠️ CD recovery: reap run ${run.runId} of ${project.id} failed: ${e.message}`));
-    }
+    // Reap stale `running` agent-run rows AND retire the underlying CoS task.
+    // The agent task behind each run died with the previous process, but
+    // cos.js#resetOrphanedTasks would otherwise see `in_progress` task rows on
+    // boot and respawn them — racing the fresh treatment/evaluate task this
+    // recovery path will cause to enqueue. `retireRuns` owns that contract (the
+    // `'internal'` taskType and the supported terminal status are load-bearing —
+    // its comments carry the why); we only supply the audit stamp. Nothing can be
+    // alive to kill here: this runs at boot, in a process that just started.
+    const staleRuns = inflightRuns(project).filter((r) => r.status === 'running');
     if (staleRuns.length) {
+      await retireRuns(project.id, {
+        runs: staleRuns,
+        reason: 'interrupted by restart',
+        taskMetadata: { interruptedByRestart: 'true', recoveredAt: completedAt },
+      });
       console.log(`🔄 CD recovery: ${project.id} reaped ${staleRuns.length} stale running run(s)`);
     }
     // Cancel any media-queue jobs owned by this project that
@@ -179,10 +158,7 @@ export async function recoverInFlightProjects() {
     // a Phase-2 plan render step tags media jobs `creative-director:<id>` (the
     // registry's resolveOwner). Both must be canceled so the reset step's fresh
     // dispatch doesn't race a doomed sibling for the same output.
-    const orphaned = listJobs()
-      .filter((j) => typeof j.owner === 'string'
-        && (j.owner.startsWith(`cd:${project.id}:`) || j.owner === `creative-director:${project.id}`))
-      .filter((j) => j.status === 'queued' || j.status === 'running')
+    const orphaned = ownedLiveJobs(listJobs(), project.id)
       .filter((j) => {
         const qa = new Date(j.queuedAt || 0).getTime();
         return qa > 0 && qa < recoveryStartedAt;

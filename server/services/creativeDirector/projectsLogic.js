@@ -151,7 +151,7 @@ export function buildProjectRecord(input, { id, now, collectionId }) {
   const {
     name, aspectRatio, quality, modelId, targetDurationSeconds,
     styleSpec = '', startingImageFile = null, userStory = null,
-    disableAudio = true, autoAcceptScenes = false, sourceIssueId = null,
+    disableAudio = true, autoAcceptScenes = false, sourceIssueId = null, commissionId = null,
     cast = [], generateFirstPass = false, directive = null,
     modelOverrides = {}, renderBackend = null,
   } = input;
@@ -187,6 +187,16 @@ export function buildProjectRecord(input, { id, now, collectionId }) {
     // The stitch step uses it to look up `stages.audio.music` and mix it into
     // the final cut. Bare CD projects leave this null and skip the audio-mux.
     sourceIssueId,
+    // Optional back-pointer to the Creative Commission whose fire minted this
+    // project. Load-bearing, not decorative: it is how a commission finds the
+    // work it spawned in order to STOP it (pause/delete) and how agentBridge
+    // resolves the commission's CURRENT provider pin at dispatch instead of a
+    // snapshot frozen at fire time. The run ledger cannot serve that role — it is
+    // capped at MAX_PERSISTED_RUNS, so a long-wedged project falls out of it, and
+    // a project a plan step spawns INDIRECTLY (bridgeFromIssue) never enters it.
+    // Additive: the whole record round-trips through the JSONB column verbatim
+    // (sanitizeProjectForSync / mergeProjectRecord), so no schema-version bump.
+    commissionId,
     collectionId,
     timelineProjectId: null,
     finalVideoId: null,

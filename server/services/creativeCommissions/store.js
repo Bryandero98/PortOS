@@ -693,7 +693,11 @@ export async function updateCommission(id, patch) {
     return next;
   });
   if (!merged) throw makeErr(`Commission not found: ${id}`, ERR_NOT_FOUND);
-  commissionEvents.emit('commission:changed', { id, action: 'update' });
+  // Carry the patched key set: the project reconciler only cares about
+  // `enabled` and `assignment`, so a brief/schedule edit skips its project
+  // lookup entirely. Absent (other emitters) must mean "reconcile" — we cannot
+  // prove a change was irrelevant — never "skip".
+  commissionEvents.emit('commission:changed', { id, action: 'update', fields: Object.keys(patch) });
   // Push the brief change to subscribed peers (the schedule/runs/assignment are
   // stripped from the wire, so only the brief travels).
   emitRecordUpdated(CREATIVE_COMMISSION_KIND, id);
