@@ -33,6 +33,7 @@ import {
   isApiProvider,
   isProcessProvider,
   isOllamaBackedProvider,
+  isOrcaRouterBackedProvider,
   isGrokBuildCli,
   isKimiProvider,
   isCodexProvider,
@@ -429,6 +430,19 @@ describe('provider type predicates', () => {
     expect(isProcessProvider(tui)).toBe(true);
     expect(isProcessProvider(api)).toBe(false);
   });
+
+  it('isOrcaRouterBackedProvider matches only the orcarouterBacked marker', () => {
+    expect(isOrcaRouterBackedProvider({ id: 'opencode-orcarouter', orcarouterBacked: true })).toBe(true);
+    expect(isOrcaRouterBackedProvider({ id: 'opencode-orcarouter-tui', orcarouterBacked: true })).toBe(true);
+    // A renamed wrapper that keeps the marker still inherits the sibling key.
+    expect(isOrcaRouterBackedProvider({ id: 'my-orca', orcarouterBacked: true })).toBe(true);
+    // The sibling API provider itself is NOT orcarouter-backed (it owns the key).
+    expect(isOrcaRouterBackedProvider({ id: 'orcarouter', type: 'api' })).toBe(false);
+    // An ollama-backed OpenCode wrapper shares the form shape but not the marker.
+    expect(isOrcaRouterBackedProvider({ id: 'opencode-ollama', ollamaBacked: true })).toBe(false);
+    expect(isOrcaRouterBackedProvider(null)).toBe(false);
+    expect(isOrcaRouterBackedProvider(undefined)).toBe(false);
+   });
 
   it('isOllamaBackedProvider matches the marker or an Ollama base URL', () => {
     // explicit marker (Claude Ollama CLI + TUI samples carry this)

@@ -388,5 +388,81 @@ describe('Local num_ctx field', () => {
 
     await screen.findByLabelText('Planning Window');
     expect(screen.queryByLabelText('Local num_ctx')).toBeNull();
-  });
+   });
+});
+
+describe('OpenCode OrcaRouter key hint', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getRuns.mockResolvedValue({ runs: [] });
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getOpenCodeInstallStatus.mockResolvedValue({ installed: true, npmAvailable: true });
+   });
+
+  // The OpenCode wrapper carries no key of its own — the card must point the
+  // user at the sibling `orcarouter` API provider, not a key field that's absent.
+  it('points a keyless OpenCode wrapper at the sibling OrcaRouter API key', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [
+        {
+         id: 'opencode-orcarouter',
+         name: 'OpenCode OrcaRouter',
+         type: 'cli',
+         command: 'opencode',
+         enabled: true,
+         orcarouterBacked: true,
+         models: ['orcarouter/auto'],
+         defaultModel: 'orcarouter/auto',
+        },
+        { id: 'orcarouter', name: 'OrcaRouter', type: 'api', enabled: false, hasApiKey: false },
+       ],
+      activeProvider: 'opencode-orcarouter',
+     });
+
+    renderPage();
+
+    const hint = await screen.findByText(/API key is inherited from/);
+    expect(hint).toBeInTheDocument();
+    expect(screen.getByText(/OrcaRouter key: not set/)).toBeInTheDocument();
+   });
+
+  it('reports the inherited key as set when the sibling API provider has one', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [
+        {
+         id: 'opencode-orcarouter-tui',
+         name: 'OpenCode OrcaRouter TUI',
+         type: 'tui',
+         command: 'opencode',
+         enabled: true,
+         orcarouterBacked: true,
+         models: ['orcarouter/auto'],
+         defaultModel: 'orcarouter/auto',
+        },
+        { id: 'orcarouter', name: 'OrcaRouter', type: 'api', enabled: false, hasApiKey: true },
+       ],
+      activeProvider: 'opencode-orcarouter-tui',
+     });
+
+    renderPage();
+
+    expect(await screen.findByText(/API key is inherited from/)).toBeInTheDocument();
+    expect(screen.getByText('OrcaRouter key: set')).toBeInTheDocument();
+   });
+
+  // A non-orcarouter-backed provider must never see the inheritance hint.
+  it('does not show the hint for a non-orcarouter-backed provider', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [
+        { id: 'orca', name: 'My Orca', type: 'cli', command: 'claude', enabled: true, models: [] },
+       ],
+      activeProvider: 'orca',
+     });
+
+    renderPage();
+
+    expect(await screen.findByText('My Orca')).toBeInTheDocument();
+    expect(screen.queryByText(/API key is inherited from/)).not.toBeInTheDocument();
+   });
 });
