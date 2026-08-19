@@ -472,8 +472,12 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // release-check READS the changelog rather than writing it, so its fix is the
   // mirror image: an unreleased set that lives in uncollected fragments must not
   // read as "not enough work accumulated for a release".
-  it('release-check counts uncollected changelog fragments, preserving the outgoing default', () => {
+  it('release-check v9 reconciles missing releases before evaluating readiness, preserving the v8 default', () => {
     const current = DEFAULT_TASK_PROMPTS['release-check'];
+    expect(PROMPT_VERSIONS['release-check']).toBe(9);
+    expect(current).toContain('Reconcile Missing Releases');
+    expect(current).toContain('Unpublished release detected');
+    expect(current).toContain('--latest=false');
     expect(current).toContain('per-branch fragments');
     expect(current).toContain('assembled');
     // release-check is a generic {appName} prompt — it runs against managed apps,
@@ -486,10 +490,10 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('never substitute a production database');
 
     const previous = PREVIOUS_DEFAULT_PROMPTS['release-check'];
-    const outgoing = previous[previous.length - 1];
-    expect(outgoing).toContain('per-branch fragments');
-    expect(outgoing).not.toContain('database-backed test suite');
-    expect(outgoing).not.toBe(current);
+    const v8 = previous[previous.length - 1];
+    expect(v8).toContain('database-backed test suite');
+    expect(v8).not.toContain('Reconcile Missing Releases');
+    expect(v8).not.toBe(current);
   });
 
   // refresh-local-llm-catalog is the one PortOS-ONLY prompt in this set (it

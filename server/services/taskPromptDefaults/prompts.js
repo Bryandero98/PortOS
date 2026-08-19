@@ -1339,7 +1339,24 @@ Then search for release documentation. Check your CLAUDE.md context (already pro
 
 If no documentation specifies a release flow, fall back to: source=dev, target=main.
 
-## Step 1: Evaluate Readiness
+## Step 1: Reconcile Missing Releases
+
+BEFORE evaluating unreleased work, check for existing release tags that lack a corresponding GitHub Release:
+1. \`git -C {repoPath} fetch --tags origin\`
+2. List all version tags (e.g., \`v*\`) on \`<TARGET_BRANCH>\` / \`origin\` and list published GitHub Releases:
+   \`\`\`bash
+   gh release list --repo <OWNER>/<REPO> --limit 100
+   \`\`\`
+3. Compare every release tag \`vX.Y.Z\` against published GitHub Releases. If a tag \`vX.Y.Z\` exists but has no corresponding GitHub Release:
+   - Report the missing release version explicitly: "Unpublished release detected: vX.Y.Z".
+   - Locate the changelog body for \`vX.Y.Z\` (e.g., \`.changelog/vX.Y.Z.md\` or \`.changelog/vX.Y.x.md\`).
+   - Check if a newer version tag or release exists.
+   - Publish the missing release using \`gh release create "vX.Y.Z"\`:
+     - Use \`.changelog/vX.Y.Z.md\` (or the assembled changelog for that version) as the release body (\`--notes-file\` or \`--body-file\`).
+     - Pass \`--latest=false\` if a newer version tag or release is already published, so backfilling an old version never displaces the current Latest release. Pass \`--latest\` only if \`vX.Y.Z\` is the newest version.
+4. Report any missing releases reconciled before proceeding to Step 2.
+
+## Step 2: Evaluate Readiness
 
 Using the changelog location discovered in Step 0:
 - Read the current changelog (e.g., \`.changelog/NEXT.md\` or \`.changelog/v*.x.md\`)
@@ -1348,7 +1365,7 @@ Using the changelog location discovered in Step 0:
 
 Count substantive entries (lines starting with "###" or "- **" under Features, Fixes, Improvements sections) across the **assembled** unreleased notes — the staged file plus any uncollected fragments. If fewer than 2 substantive entries exist, stop and report: "Not enough work accumulated for a release." Do NOT create a PR.
 
-## Step 2: Verify Clean State
+## Step 3: Verify Clean State
 
 Run these checks on \`<SOURCE_BRANCH>\` (stop if any fail):
 1. \`git -C {repoPath} fetch origin\` and ensure \`<SOURCE_BRANCH>\` is up to date
@@ -1361,7 +1378,7 @@ Run these checks on \`<SOURCE_BRANCH>\` (stop if any fail):
    environmental blocker and stop before creating the release PR.
 3. Run the project's build (use the command from release docs)
 
-## Step 3: Create or Find PR
+## Step 4: Create or Find PR
 
 Check for existing PR: \`gh pr list --repo <OWNER>/<REPO> --base <TARGET_BRANCH> --head <SOURCE_BRANCH> --state open --json number,url\`
 
@@ -1369,7 +1386,7 @@ If a PR exists, use it. If not, create one following the project's documented re
 
 Capture the PR number as \`<PR_NUM>\` and URL.
 
-## Step 4: Wait for Copilot Review
+## Step 5: Wait for Copilot Review
 
 Copilot review is triggered automatically on push. Poll every 15 seconds until the review appears:
 \`\`\`bash
@@ -1378,9 +1395,9 @@ gh api repos/<OWNER>/<REPO>/pulls/<PR_NUM>/reviews --jq '.[] | select(.user.logi
 
 Wait until you see APPROVED or CHANGES_REQUESTED. Timeout after 5 minutes of polling.
 
-## Step 5: Address Feedback Loop (max 5 iterations)
+## Step 6: Address Feedback Loop (max 5 iterations)
 
-### 5a. Fetch unresolved review threads
+### 6a. Fetch unresolved review threads
 
 Use gh api graphql (JSON input to avoid shell escaping issues with GraphQL variables):
 
@@ -1388,9 +1405,9 @@ Use gh api graphql (JSON input to avoid shell escaping issues with GraphQL varia
 echo '{"query":"query{repository(owner:\\"<OWNER>\\",name:\\"<REPO>\\"){pullRequest(number:<PR_NUM>){reviewThreads(first:100){nodes{id,isResolved,comments(first:10){nodes{body,path,line,author{login}}}}}}}}"}' | gh api graphql --input -
 \`\`\`
 
-### 5b. If no unresolved threads: skip to Step 6 (Merge).
+### 6b. If no unresolved threads: skip to Step 7 (Merge).
 
-### 5c. If unresolved threads exist, evaluate each one:
+### 6c. If unresolved threads exist, evaluate each one:
 
 For each comment, read the referenced file and critically evaluate the suggestion:
 - **If the suggestion is valid and improves the code**: apply the fix
@@ -1401,20 +1418,20 @@ Either way, resolve every thread — the goal is zero unresolved threads before 
 After evaluating all threads:
 - If any code changes were made: run the project's test suite to verify, then commit and push using \`/do:push\` (or manually: stage specific files, conventional commit prefix, \`git pull --rebase && git push\`)
 
-### 5d. Resolve ALL threads via GraphQL mutation (both fixed and dismissed):
+### 6d. Resolve ALL threads via GraphQL mutation (both fixed and dismissed):
 
 For each thread, use the thread node id from 5a:
 \`\`\`bash
 echo '{"query":"mutation{resolveReviewThread(input:{threadId:\\"THREAD_NODE_ID\\"}){thread{isResolved}}}"}' | gh api graphql --input -
 \`\`\`
 
-### 5e. Wait for new Copilot review if code was pushed (repeat Step 4)
+### 6e. Wait for new Copilot review if code was pushed (repeat Step 5)
 
-If you pushed changes in 5c, the push automatically triggers a new Copilot review. Poll for it, then loop back to 5a. If no code changes were made (all threads were false positives), skip straight to Step 6.
+If you pushed changes in 6c, the push automatically triggers a new Copilot review. Poll for it, then loop back to 6a. If no code changes were made (all threads were false positives), skip straight to Step 7.
 
 If after 5 iterations there are still unresolved threads, stop and report what remains.
 
-## Step 6: Merge
+## Step 7: Merge
 
 Only merge when Copilot's most recent review has NO unresolved threads:
 \`\`\`bash
@@ -1423,7 +1440,7 @@ gh pr merge <PR_NUM> --merge
 
 If merge fails (e.g., branch protections), try: \`gh pr merge <PR_NUM> --merge --admin\`
 
-## Step 7: Report
+## Step 8: Report
 
 Summarize:
 - Version released
