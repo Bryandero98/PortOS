@@ -570,12 +570,36 @@ function hasMlxSignal(model) {
     && hasSafetensors
 }
 
-// MTP/drafter checkpoints are auxiliary weights for speculative decoding, not
-// standalone chat models. Keep them out of the normal MLX install cards; the
-// catalog's complete target model is the safe one-click path.
+// Speculative-decoding drafter checkpoints (MTP heads, DFlash/DFlash2 block
+// drafters) are auxiliary weights, not standalone chat models: the drafter for
+// a 27B target is ~2B of sidecar that only produces text once an engine pairs
+// it with that target. PortOS orchestrates Ollama and LM Studio and does not
+// own that pairing (docs/research/2026-08-19-dflash2-speculative-decoding.md,
+// .../2026-08-16-qwen38-mlx-macos.md), so installing one hands the user a model
+// that cannot chat.
+//
+// `draft-model` / `drafter` is the publisher's own declaration that a repo is
+// non-standalone, and it is the only signal precise enough for the GGUF long
+// tail. Looser ones do not survive contact with real repos: an `mtp` or
+// `speculative-decoding` TAG also sits on complete models that merely preserve
+// their built-in MTP head (`unsloth/Qwen3.6-27B-MTP-GGUF`), so matching those
+// would hide mainstream one-click installs — a worse failure than this one.
+const DRAFTER_TAGS = new Set(['draft-model', 'drafter'])
+
+function hasDrafterTag(model) {
+  return tagsOf(model).some((tag) => DRAFTER_TAGS.has(tag))
+}
+
+// The MLX branch additionally matches the repo NAME. That space is curated
+// (mlx-community and Apple-Silicon republishers), where a `-MTP-`/`-DFlash-`
+// suffix reliably marks a sidecar — unlike the GGUF long tail above. `dflash`
+// joins the pre-existing `mtp`/`drafter` tokens because DFlash drafters ship as
+// MLX safetensors too (`jfan/Qwen3.8-27B-heretic-dflash`), and `\d*` covers the
+// DFlash2 generation.
+const MLX_DRAFTER_NAME_RE = /(?:^|[\/_-])(?:mtp|dflash\d*|drafter)(?:[\/_\-.]|$)/i
+
 function isMlxDrafter(model) {
-  const haystack = `${repoIdOf(model)} ${tagsOf(model).join(' ')} ${model?.pipeline_tag || ''}`
-  return /(?:^|[\/_-])(?:mtp|drafter)(?:[\/_\-.]|$)/i.test(haystack)
+  return hasDrafterTag(model) || MLX_DRAFTER_NAME_RE.test(repoIdOf(model))
 }
 
 // Build an MLX search result. Same shape as a GGUF result with `format: 'mlx'`,
@@ -1045,6 +1069,9 @@ export async function searchHuggingFaceModels({ backend, query = '', category = 
     // for an audio-signal filter (relaxed off GGUF, but still audio-only) so a
     // non-audio query can't surface unrelated models mislabeled as audio.
     .filter((model) => (ggufOnly ? hasGgufSignal(model) : hasAudioSignal(model)))
+    // Drafter sidecars ship in GGUF too (`incoai/Qwen3.8-27B-DFlash2-GGUF`), and
+    // nothing about their listing says "not a chat model" except the tag.
+    .filter((model) => !hasDrafterTag(model))
     .map((model) => toResult(model, backend, requestedCategory, installedIds, installedAudio))
     .filter(Boolean)
     .filter((model) => {
