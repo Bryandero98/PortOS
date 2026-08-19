@@ -205,7 +205,20 @@ export function createPortOSProviderRoutes(aiToolkit) {
     send({ type: 'stage', stage: 'install', message: `Installing ${runtime.label}.` });
     emit({ type: 'log', message: `Running ${describeRuntimeInstall(runtime.id)}.` });
     installLog.start();
-    child = spawnRuntimeInstaller(runtime.id);
+    // `spawn` can throw synchronously (a rejected argv shape, an OS-level spawn
+    // refusal). Two things must happen here that letting it bubble would not do:
+    // release the reservation — or every later install answers "another install
+    // is already running" until PortOS restarts — and report the failure as a
+    // terminal SSE frame, since the headers are already flushed and the error
+    // middleware can no longer send JSON to this response.
+    try {
+      child = spawnRuntimeInstaller(runtime.id);
+    } catch (err) {
+      finished = true;
+      if (runtimeInstallInFlight === reservation) runtimeInstallInFlight = null;
+      emit({ type: 'error', message: `${runtime.label} installer failed to start: ${err.message}` });
+      return safeEnd();
+    }
     runtimeInstallInFlight = child;
 
     const onLine = (line) => {

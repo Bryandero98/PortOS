@@ -117,6 +117,31 @@ describe('Provider runtime installer routes', () => {
     expect(installer.spawnRuntimeInstaller).not.toHaveBeenCalled();
   });
 
+  // A synchronous spawn failure must report through the already-open stream and
+  // release the one-install-at-a-time lock — otherwise the client sees a
+  // truncated stream and every later install answers "another install is
+  // already running" until the server restarts.
+  it('reports a spawn failure as a stream error and releases the install lock', async () => {
+    installer.getProviderRuntimeStatus.mockResolvedValue(statusOf('codex'));
+    installer.spawnRuntimeInstaller.mockImplementationOnce(() => { throw new Error('spawn EAGAIN'); });
+
+    const failed = await request(app()).post('/api/providers/runtimes/install?runtime=codex');
+    expect(failed.status).toBe(200);
+    expect(failed.text).toContain('Codex CLI installer failed to start: spawn EAGAIN');
+
+    // A second attempt must reach the spawn again rather than being refused.
+    const child = makeChild();
+    installer.spawnRuntimeInstaller.mockReturnValueOnce(child);
+    const responsePromise = request(app()).post('/api/providers/runtimes/install?runtime=codex').then((response) => response);
+    await vi.waitFor(() => expect(installer.spawnRuntimeInstaller).toHaveBeenCalledTimes(2));
+    child.stdout.end();
+    child.stderr.end();
+    child.emit('close', 1);
+    const response = await responsePromise;
+
+    expect(response.text).not.toContain('Another runtime install is already running');
+  });
+
   // The runtime is a request value, so an unknown id must be rejected before a
   // child is spawned — the installer table is the only source of commands.
   it('rejects an unknown runtime without probing or spawning', async () => {
