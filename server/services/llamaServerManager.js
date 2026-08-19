@@ -264,7 +264,11 @@ function linkLlamaCpp(env) {
     child.stdout?.on('data', collect);
     child.stderr?.on('data', collect);
     child.on('error', (err) => resolve({ linked: false, output: err.message }));
-    child.on('exit', (code) => resolve({ linked: code === 0, output: output.trim() }));
+    // 'close' rather than 'exit': 'exit' fires the moment the process ends, with
+    // stdio possibly still buffered, which would hand back a truncated (often
+    // empty) `output` exactly when a failure needs explaining. `brew link` is a
+    // short, single-process command, so waiting for the pipes to close is safe.
+    child.on('close', (code) => resolve({ linked: code === 0, output: output.trim() }));
   });
 }
 
@@ -297,7 +301,15 @@ export async function installLlamaServer({ onProgress = () => {} } = {}) {
     child.stderr?.on('data', (d) => {
       onProgress({ event: 'progress', message: d.toString().trim() });
     });
+    // `error` and `exit` can both fire for one child (an `error` raised after a
+    // successful spawn is followed by the process's own exit). Without this
+    // guard the exit path would still emit a `complete` progress event to the
+    // UI after the request had already been rejected — the client would render
+    // "installed successfully" alongside a 500.
+    let settled = false;
     child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
       reject(new ServerError(`Failed to run brew: ${err.message}`, { status: 500 }));
     });
     // Async listener on a child-process event: it runs outside the Express
@@ -305,6 +317,8 @@ export async function installLlamaServer({ onProgress = () => {} } = {}) {
     // unguarded throw here would surface as an unhandled rejection while the
     // install request hung forever. Route every failure to `reject`.
     child.on('exit', async (code) => {
+      if (settled) return;
+      settled = true;
       try {
         let binaryPath = resolveLlamaServerBinary();
         let linkOutput = '';

@@ -18,6 +18,14 @@ function fakeSpawnProcess() {
   return child;
 }
 
+// A real child emits 'exit' and then 'close' (once stdio has flushed). Mirror
+// both so the mocks stay honest for either listener: `brew install` is awaited
+// on 'exit', while the `brew link` step waits for 'close' to capture output.
+function endProcess(child, code) {
+  child.emit('exit', code);
+  child.emit('close', code);
+}
+
 describe('llamaServerManager', () => {
   beforeEach(() => {
     _resetLlamaServerStateForTests();
@@ -134,7 +142,7 @@ describe('llamaServerManager', () => {
     fakeChild.stderr = new EventEmitter();
 
     vi.spyOn(childProcess, 'spawn').mockImplementation(() => {
-      setTimeout(() => fakeChild.emit('exit', 0), 10);
+      setTimeout(() => endProcess(fakeChild, 0), 10);
       return fakeChild;
     });
 
@@ -159,7 +167,7 @@ describe('llamaServerManager', () => {
     vi.spyOn(childProcess, 'spawn').mockImplementation((cmd, args) => {
       spawnCalls.push({ cmd, args });
       const child = args[0] === 'install' ? installChild : linkChild;
-      setTimeout(() => child.emit('exit', 0), 10);
+      setTimeout(() => endProcess(child, 0), 10);
       return child;
     });
 
@@ -187,9 +195,9 @@ describe('llamaServerManager', () => {
       setTimeout(() => {
         if (args[0] === 'link') {
           child.stderr.emit('data', Buffer.from('Error: Could not symlink bin/llama-server'));
-          child.emit('exit', 1);
+          endProcess(child, 1);
         } else {
-          child.emit('exit', 0);
+          endProcess(child, 0);
         }
       }, 10);
       return child;
@@ -208,7 +216,7 @@ describe('llamaServerManager', () => {
     vi.spyOn(childProcess, 'spawn').mockImplementation((cmd, args) => {
       if (args[0] === 'link') throw new Error('spawn EACCES');
       const child = fakeSpawnProcess();
-      setTimeout(() => child.emit('exit', 0), 10);
+      setTimeout(() => endProcess(child, 0), 10);
       return child;
     });
 
@@ -221,7 +229,7 @@ describe('llamaServerManager', () => {
 
     vi.spyOn(childProcess, 'spawn').mockImplementation(() => {
       const child = fakeSpawnProcess();
-      setTimeout(() => child.emit('exit', 0), 10);
+      setTimeout(() => endProcess(child, 0), 10);
       return child;
     });
 
