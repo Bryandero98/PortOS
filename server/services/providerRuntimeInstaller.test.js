@@ -92,7 +92,8 @@ describe('provider runtime installer', () => {
     const findCommand = vi.fn(async () => null);
     const statuses = await getProviderRuntimeStatuses({ findCommand, probeCommand: async () => false });
 
-    expect(Object.keys(statuses).sort()).toEqual(PROVIDER_RUNTIMES.map((runtime) => runtime.id).sort());
+    const published = PROVIDER_RUNTIMES.flatMap((runtime) => [runtime.id, ...runtime.aliases]);
+    expect(Object.keys(statuses).sort()).toEqual(published.sort());
     expect(statuses.agy.installed).toBe(false);
     // Five rows install through npm and two through curl — one PATH scan each.
     expect(findCommand.mock.calls.filter(([command]) => command === 'npm')).toHaveLength(1);
@@ -150,6 +151,26 @@ describe('provider runtime installer', () => {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: !IS_WIN,
     }));
+  });
+
+  // A provider may be configured with any command spelling its vendor accepts
+  // (`antigravity` as well as `agy`), and the card looks its runtime up by that
+  // command — so every alias the vendor matches must resolve the same row.
+  it('resolves an aliased command to its canonical runtime', async () => {
+    expect(PROVIDER_RUNTIMES.find((runtime) => runtime.id === 'agy').aliases).toContain('antigravity');
+    for (const runtime of PROVIDER_RUNTIMES) {
+      const vendor = PROVIDER_VENDORS.find((row) => row.inferredCommand === runtime.command);
+      for (const alias of runtime.aliases) {
+        expect(vendor.matchCommand(alias)).toBe(true);
+        expect(getProviderRuntime(alias)).toBe(runtime);
+      }
+    }
+
+    const statuses = await getProviderRuntimeStatuses({ findCommand: async () => null, probeCommand: async () => false });
+    // Same object under both spellings, and its id stays canonical so the
+    // install POST names the runtime the table knows.
+    expect(statuses.antigravity).toBe(statuses.agy);
+    expect(statuses.antigravity.id).toBe('agy');
   });
 
   // #3618's rule: a vendor is one row. A new coding-agent CLI must not land in

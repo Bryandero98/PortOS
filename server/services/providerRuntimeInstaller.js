@@ -123,6 +123,10 @@ const RUNTIME_ROWS = [
   {
     vendor: 'antigravity',
     label: 'Antigravity CLI',
+    // `agy` is the canonical binary, but `isAntigravityCommand` also accepts a
+    // provider configured as `antigravity` — publish that spelling too so such a
+    // card still finds its runtime. Pinned by the alias test.
+    aliases: ['antigravity'],
     // Antigravity ships a single compiled binary, not an npm package.
     install: { kind: 'script', url: 'https://antigravity.google/cli/install.sh' },
     docsUrl: 'https://antigravity.google/docs/cli/install',
@@ -148,12 +152,18 @@ const vendorCommand = (vendorId) => {
  * card looks its runtime up straight from its `command` with no second mapping.
  */
 export const PROVIDER_RUNTIMES = Object.freeze(RUNTIME_ROWS.map((row) => Object.freeze({
+  aliases: [],
   ...row,
   id: vendorCommand(row.vendor),
   command: vendorCommand(row.vendor),
 })));
 
-const RUNTIMES_BY_ID = new Map(PROVIDER_RUNTIMES.map((runtime) => [runtime.id, runtime]));
+// Keyed by the canonical id AND by every accepted alias spelling of the same
+// binary, so a provider configured as `antigravity` resolves the `agy` row.
+const RUNTIMES_BY_ID = new Map(PROVIDER_RUNTIMES.flatMap((runtime) => [
+  [runtime.id, runtime],
+  ...runtime.aliases.map((alias) => [alias, runtime]),
+]));
 
 // id → { at, status }
 const statusCache = new Map();
@@ -215,14 +225,21 @@ async function probeRuntimeStatus(runtime, findCommand, probeCommand) {
 export async function getProviderRuntimeStatus(id, { findCommand, probeCommand, fresh = false } = {}) {
   const runtime = getProviderRuntime(id);
   if (!runtime) return null;
-  const cached = statusCache.get(id);
+  // Keyed by the canonical id, so an alias spelling shares the same entry
+  // instead of probing the same binary twice.
+  const cached = statusCache.get(runtime.id);
   if (!fresh && cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.status;
   const status = await probeRuntimeStatus(runtime, findCommand || findCommandOnPath, probeCommand || commandExists);
-  statusCache.set(id, { at: Date.now(), status });
+  statusCache.set(runtime.id, { at: Date.now(), status });
   return status;
 }
 
-/** Every runtime's status, keyed by id — one round trip for the Providers page. */
+/**
+ * Every runtime's status, keyed by id — one round trip for the Providers page.
+ * An aliased runtime appears under every accepted spelling of its command,
+ * sharing one status object: the page looks a card's runtime up by the command
+ * the provider is configured with, which may be an alias.
+ */
 export async function getProviderRuntimeStatuses(deps = {}) {
   // One PATH scan per distinct binary for the whole batch: five rows resolve
   // `npm` and two resolve `curl`, and the resolver hits the filesystem.
@@ -230,7 +247,11 @@ export async function getProviderRuntimeStatuses(deps = {}) {
   const statuses = await Promise.all(
     PROVIDER_RUNTIMES.map((runtime) => getProviderRuntimeStatus(runtime.id, { ...deps, findCommand })),
   );
-  return Object.fromEntries(statuses.map((status) => [status.id, status]));
+  const byId = new Map(statuses.map((status) => [status.id, status]));
+  return Object.fromEntries(PROVIDER_RUNTIMES.flatMap((runtime) => {
+    const status = byId.get(runtime.id);
+    return [[runtime.id, status], ...runtime.aliases.map((alias) => [alias, status])];
+  }));
 }
 
 function memoizePerBatch(findCommand) {
