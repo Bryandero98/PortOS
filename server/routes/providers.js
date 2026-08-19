@@ -8,11 +8,13 @@ import { createLineReader } from '../lib/streamLines.js';
 import { onClientDisconnect, openSseStream } from '../lib/sseDownload.js';
 import { createInstallLogger } from '../lib/installLogger.js';
 import {
-  getOpenCodeInstallStatus,
-  OPENCODE_NPM_PACKAGE,
-  spawnOpenCodeInstaller,
-  stopOpenCodeInstaller,
-} from '../services/opencodeInstaller.js';
+  describeRuntimeInstall,
+  getProviderRuntime,
+  getProviderRuntimeStatus,
+  getProviderRuntimeStatuses,
+  spawnRuntimeInstaller,
+  stopRuntimeInstaller,
+} from '../services/providerRuntimeInstaller.js';
 
 /**
  * The CoS Agent Runner's exec allowlist, published read-only so the AI
@@ -31,10 +33,11 @@ import {
  */
 const RUNNER_ALLOWED_COMMANDS = [...ALLOWED_COMMANDS].sort();
 
-// One npm global install may write the same package prefix at a time. This is
-// a lightweight re-entrancy guard for a double-click or a second browser tab;
-// its child stays in the route so a client disconnect can terminate it.
-let opencodeInstallInFlight = null;
+// One global CLI install at a time — npm's global prefix and the vendor
+// install scripts all write the same bin directory. This is a lightweight
+// re-entrancy guard for a double-click or a second browser tab; its child stays
+// in the route so a client disconnect can terminate it.
+let runtimeInstallInFlight = null;
 
 /**
  * Sanitize a provider object for client responses.
@@ -121,24 +124,39 @@ export function createPortOSProviderRoutes(aiToolkit) {
     res.json({ providers: providers.map(presentProvider) });
   }));
 
-  // OpenCode is a local coding CLI, not an LLM service PortOS can silently
-  // bootstrap. These endpoints only expose availability and service an
-  // explicit click from the Providers page. They intentionally return no
-  // resolved filesystem paths, which could disclose the host account name.
-  router.get('/opencode/installation', asyncHandler(async (_req, res) => {
-    res.json(await getOpenCodeInstallStatus());
+  // A CLI/TUI provider is only usable if its runtime binary is on PortOS's
+  // PATH. These are local coding tools, not LLM services PortOS may silently
+  // bootstrap, so this endpoint only reports availability and the companion
+  // install endpoint services an explicit click from the Providers page. Both
+  // intentionally return no resolved filesystem paths, which could disclose the
+  // host account name.
+  router.get('/runtimes', asyncHandler(async (_req, res) => {
+    res.json({ runtimes: await getProviderRuntimeStatuses() });
   }));
 
-  // Installing a global CLI mutates host state, so this stays a POST even
-  // though the response is SSE-encoded. The client reads it with fetch rather
-  // than EventSource: EventSource would auto-reconnect after a dropped stream
-  // and could launch another non-idempotent npm install.
-  //
-  // The fixed command is npm install --global --ignore-scripts=false
-  // opencode-ai@latest; no request input reaches a shell or package argument.
-  router.post('/opencode/install', asyncHandler(async (req, res) => {
+  /**
+   * Install one provider runtime, streaming the installer's output as SSE.
+   *
+   * Installing a global CLI mutates host state, so this stays a POST even
+   * though the response is SSE-encoded. The client reads it with fetch rather
+   * than EventSource: EventSource would auto-reconnect after a dropped stream
+   * and could launch another non-idempotent install.
+   *
+   * The request names a runtime *id* only. The command, package, and URL all
+   * come from the installer's fixed table, so no request input ever reaches a
+   * shell word.
+   */
+  const streamRuntimeInstall = async (req, res, runtimeId) => {
+    // Table lookup only (no I/O), so an unknown id is a plain 400 instead of a
+    // stream that only says "no" once the modal is up. The real probe waits
+    // until the disconnect handler is registered below.
+    const row = getProviderRuntime(runtimeId);
+    if (!row) {
+      throw new ServerError('Unknown provider runtime', { status: 400, code: 'UNKNOWN_RUNTIME', context: { runtime: String(runtimeId || '') } });
+    }
+
     const { send, safeEnd } = openSseStream(res);
-    const installLog = createInstallLogger({ installer: 'OpenCode CLI', target: 'npm global prefix' });
+    const installLog = createInstallLogger({ installer: row.label, target: `${row.command} on PortOS's PATH` });
     const emit = (event) => { installLog.onEvent(event); send(event); };
     let child = null;
     let finished = false;
@@ -151,50 +169,54 @@ export function createPortOSProviderRoutes(aiToolkit) {
       clientGone = true;
       installLog.cancel();
       if (finished) return;
-      if (child) stopOpenCodeInstaller(child);
-      if (reservation && opencodeInstallInFlight === reservation) opencodeInstallInFlight = null;
+      if (child) stopRuntimeInstaller(child);
+      if (reservation && runtimeInstallInFlight === reservation) runtimeInstallInFlight = null;
       safeEnd();
     });
 
-    const status = await getOpenCodeInstallStatus();
+    // Un-cached: the user may have just installed this CLI in a terminal, and a
+    // stale "not installed" would run a redundant install.
+    const runtime = await getProviderRuntimeStatus(row.id, { fresh: true });
     if (clientGone) return safeEnd();
-    if (status.installed) {
-      send({ type: 'log', message: 'OpenCode is already available to PortOS.' });
+    if (runtime.installed) {
+      send({ type: 'log', message: `${runtime.label} is already available to PortOS.` });
       send({ type: 'complete', message: 'Already installed — nothing to do.' });
       return safeEnd();
     }
-    if (!status.npmAvailable) {
-      send({ type: 'error', message: 'npm is not available on PortOS\'s PATH, so OpenCode cannot be installed from this page.' });
+    if (!runtime.installable) {
+      send({ type: 'error', message: runtime.blockedReason || `PortOS cannot install ${runtime.label} on this host.` });
       return safeEnd();
     }
-    if (opencodeInstallInFlight) {
-      send({ type: 'error', message: 'Another OpenCode install is already running. Wait for it to finish or restart PortOS.' });
+    if (runtimeInstallInFlight) {
+      send({ type: 'error', message: 'Another runtime install is already running. Wait for it to finish or restart PortOS.' });
       return safeEnd();
     }
 
     // Reserve synchronously before spawning so two requests that finish their
-    // status probe together cannot launch competing global npm installs.
+    // status probe together cannot launch competing installs into the same bin
+    // directory.
     reservation = {};
-    opencodeInstallInFlight = reservation;
+    runtimeInstallInFlight = reservation;
     if (clientGone) {
-      opencodeInstallInFlight = null;
+      runtimeInstallInFlight = null;
       return safeEnd();
     }
 
-    send({ type: 'stage', stage: 'install', message: 'Installing OpenCode CLI with npm.' });
-    emit({ type: 'log', message: `Running npm install --global ${OPENCODE_NPM_PACKAGE}.` });
+    send({ type: 'stage', stage: 'install', message: `Installing ${runtime.label}.` });
+    emit({ type: 'log', message: `Running ${describeRuntimeInstall(runtime.id)}.` });
     installLog.start();
-    child = spawnOpenCodeInstaller();
-    opencodeInstallInFlight = child;
+    child = spawnRuntimeInstaller(runtime.id);
+    runtimeInstallInFlight = child;
 
     const onLine = (line) => {
       const text = line.trimEnd();
       if (text) emit({ type: 'log', message: text });
     };
-    // `--no-progress` suppresses npm's usual redraws. Keep the default
-    // newline-only reader as a defensive second layer: a lifecycle child that
-    // still writes bare carriage returns cannot turn every redraw into a
-    // browser log frame and a full modal re-render.
+    // npm runs with `--no-progress`, which suppresses its usual redraws. Keep
+    // the default newline-only reader as a defensive second layer: a lifecycle
+    // child (or a vendor install script's own progress bar) that still writes
+    // bare carriage returns cannot turn every redraw into a browser log frame
+    // and a full modal re-render.
     const stdoutReader = createLineReader(onLine);
     const stderrReader = createLineReader(onLine);
     child.stdout.on('data', stdoutReader.push);
@@ -202,12 +224,12 @@ export function createPortOSProviderRoutes(aiToolkit) {
     child.on('error', (err) => {
       if (finished) return;
       finished = true;
-      if (opencodeInstallInFlight === child) opencodeInstallInFlight = null;
-      emit({ type: 'error', message: `OpenCode installer failed to start: ${err.message}` });
+      if (runtimeInstallInFlight === child) runtimeInstallInFlight = null;
+      emit({ type: 'error', message: `${runtime.label} installer failed to start: ${err.message}` });
       safeEnd();
     });
-    // The post-install PATH check is deliberately stronger than npm's exit
-    // code. A successful global write whose bin directory is absent from PM2's
+    // The post-install PATH check is deliberately stronger than the installer's
+    // exit code. A successful write whose bin directory is absent from PM2's
     // PATH would otherwise recreate the same opaque agent-start failure.
     child.on('close', async (code) => {
       if (finished) return;
@@ -215,23 +237,43 @@ export function createPortOSProviderRoutes(aiToolkit) {
         stdoutReader.flush();
         stderrReader.flush();
         finished = true;
-        if (opencodeInstallInFlight === child) opencodeInstallInFlight = null;
-        const installed = code === 0 && (await getOpenCodeInstallStatus()).installed;
+        if (runtimeInstallInFlight === child) runtimeInstallInFlight = null;
+        // `fresh` is load-bearing: the pre-install probe cached "not installed"
+        // seconds ago, and re-reading it would fail a CLI that now works.
+        const installed = code === 0 && (await getProviderRuntimeStatus(runtime.id, { fresh: true })).installed;
         if (installed) {
-          emit({ type: 'complete', message: 'OpenCode is installed and available to PortOS.' });
+          emit({ type: 'complete', message: `${runtime.label} is installed and available to PortOS.` });
         } else if (code === 0) {
-          emit({ type: 'error', message: 'npm completed, but OpenCode is not runnable by PortOS. Restart PortOS or reinstall OpenCode so its postinstall script can complete, then try again.' });
+          emit({ type: 'error', message: `The installer finished, but PortOS still cannot run \`${runtime.command}\`. Its bin directory may be missing from PortOS's PATH — restart PortOS, then try again.` });
         } else {
-          emit({ type: 'error', message: `OpenCode installer exited with code ${code}.` });
+          emit({ type: 'error', message: `${runtime.label} installer exited with code ${code}.` });
         }
         safeEnd();
       } catch (err) {
         // Child-process completion runs outside Express's request lifecycle.
-        console.error(`❌ OpenCode install completion check failed: ${err.message}`);
-        emit({ type: 'error', message: `OpenCode install completion check failed: ${err.message}` });
+        console.error(`❌ ${runtime.label} install completion check failed: ${err.message}`);
+        emit({ type: 'error', message: `${runtime.label} install completion check failed: ${err.message}` });
         safeEnd();
       }
     });
+  };
+
+  // `runtime` rides in the query string because the shared RuntimeInstallModal
+  // already appends it there for every BYO-runtime installer.
+  router.post('/runtimes/install', asyncHandler(async (req, res) => {
+    await streamRuntimeInstall(req, res, req.query.runtime);
+  }));
+
+  // Back-compat for a client build that predates the generalized routes (a
+  // deployed `client/dist` can lag the server across an upgrade). Both mirror
+  // the old OpenCode-only response shape exactly.
+  router.get('/opencode/installation', asyncHandler(async (_req, res) => {
+    const status = await getProviderRuntimeStatus('opencode');
+    res.json({ installed: status.installed, npmAvailable: status.installable });
+  }));
+
+  router.post('/opencode/install', asyncHandler(async (req, res) => {
+    await streamRuntimeInstall(req, res, 'opencode');
   }));
 
   // Provider status routes MUST be defined before toolkit routes,

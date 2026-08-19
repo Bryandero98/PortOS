@@ -65,6 +65,10 @@ PortOS is designed for personal/developer use on trusted networks. It implements
 | DELETE | `/providers/:id` | Delete provider |
 | POST | `/providers/:id/test` | Test provider connectivity |
 | PUT | `/providers/active` | Set active provider |
+| GET | `/providers/runtimes` | Per-runtime install status (`claude`, `codex`, `opencode`, `grok`, `kimi`, `agy`, `cursor-agent`): is the binary runnable here, and can PortOS install it? Booleans and labels only — never resolved filesystem paths. 60s TTL cache. Ollama / LM Studio are absent on purpose — Settings → Local LLM owns their install. |
+| POST | `/providers/runtimes/install?runtime=<id>` | Install one runtime from the installer's fixed table, streaming installer output as SSE. Rejects any id not in the table. |
+| GET | `/providers/opencode/installation` | **Legacy alias**, kept so a stale client bundle still renders: `{ installed, npmAvailable }` for the `opencode` runtime. New code uses `/providers/runtimes`. |
+| POST | `/providers/opencode/install` | **Legacy alias** for `/providers/runtimes/install?runtime=opencode`. |
 
 ### AI Runs
 

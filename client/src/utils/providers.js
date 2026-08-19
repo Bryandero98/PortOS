@@ -805,6 +805,27 @@ export const isRunnerAllowedCommand = (command, allowedCommands) => {
 };
 
 /**
+ * The key a CLI/TUI provider's runtime is published under in the `runtimes` map
+ * from `GET /api/providers/runtimes` — the binary it spawns, basename-normalized
+ * so a provider pinned to an absolute path still matches.
+ *
+ * Deliberately NOT a client-side copy of the runtime table: the server owns
+ * which runtimes exist and how they install, and a key with no entry in the
+ * fetched map simply renders no install widget. That's the right default for a
+ * custom command PortOS has no installer for.
+ *
+ * API providers have no runtime here — the two fronted by a local app resolve
+ * through `localBackendForProvider` (which also matches a renamed provider by
+ * its endpoint) and get their install state from the local-LLM status.
+ */
+export const providerRuntimeKey = (provider) => {
+  if (!isProcessProvider(provider)) return null;
+  const command = provider?.command;
+  if (typeof command !== 'string' || command.trim() === '') return null;
+  return runnerCommandBaseName(command.trim());
+};
+
+/**
  * Whether `provider` is served by an Ollama daemon rather than its nominal
  * cloud/CLI backend: the built-in `ollama` API provider itself (id match), an
  * `api`-type provider whose `endpoint` points at Ollama, or the Claude-Ollama

@@ -32,6 +32,7 @@ import {
   isCliProvider,
   isApiProvider,
   isProcessProvider,
+  providerRuntimeKey,
   isOllamaBackedProvider,
   isOrcaRouterBackedProvider,
   isGrokBuildCli,
@@ -1149,4 +1150,30 @@ describe('AI Assignments option helpers', () => {
     });
   });
 });
+
+describe('providerRuntimeKey', () => {
+  // The key is what a provider card looks its runtime up by in the server's
+  // `runtimes` map, so a path-qualified or Windows command must normalize to
+  // the same bare binary name the server publishes.
+  it('normalizes a process provider command to its bare binary name', () => {
+    expect(providerRuntimeKey({ type: 'cli', command: 'codex' })).toBe('codex');
+    expect(providerRuntimeKey({ type: 'tui', command: '/opt/homebrew/bin/opencode' })).toBe('opencode');
+    expect(providerRuntimeKey({ type: 'cli', command: 'C:\\tools\\claude.exe' })).toBe('claude');
+    expect(providerRuntimeKey({ type: 'cli', command: '  agy  ' })).toBe('agy');
+  });
+
+  // API providers have no CLI runtime — the two fronted by a local app resolve
+  // through localBackendForProvider instead, so this must not claim a key for
+  // every cloud provider id.
+  it('has no runtime key for an API provider', () => {
+    expect(providerRuntimeKey({ type: 'api', id: 'lmstudio', endpoint: 'http://localhost:1234/v1' })).toBeNull();
+    expect(providerRuntimeKey({ type: 'api', id: 'cerebras' })).toBeNull();
+  });
+
+  it('returns null when there is nothing to look up', () => {
+    expect(providerRuntimeKey(null)).toBeNull();
+    expect(providerRuntimeKey({ type: 'cli', command: '   ' })).toBeNull();
+  });
+});
+
 // @vitest-environment node

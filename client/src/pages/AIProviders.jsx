@@ -4,7 +4,7 @@ import { AlertTriangle } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
-import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, supportsModelRefresh, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, isOrcaRouterBackedProvider } from '../utils/providers';
+import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, supportsModelRefresh, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, isOrcaRouterBackedProvider, providerRuntimeKey } from '../utils/providers';
 import useLocalModels from '../hooks/useLocalModels';
 import BrailleSpinner from '../components/BrailleSpinner';
 import EmptyState from '../components/EmptyState';
@@ -22,6 +22,12 @@ import EffortSelect from '../components/cos/EffortSelect';
 import Modal from '../components/ui/Modal';
 import { FormField } from '../components/ui/FormField';
 import RuntimeInstallModal from '../components/install/RuntimeInstallModal';
+import ProviderRuntimeStatus from '../components/providers/ProviderRuntimeStatus';
+
+// The two local apps an API provider can front. Their installer lives on the
+// Local LLM settings tab (it starts the service too), so the provider card
+// links there instead of offering an install of its own.
+const LOCAL_APP_LABELS = { ollama: 'Ollama', lmstudio: 'LM Studio' };
 
 // One phrasing for "this command isn't on the CoS Agent Runner's allowlist",
 // shared by the provider-card badge tooltip and the editor's inline banner.
@@ -103,14 +109,31 @@ export default function AIProviders() {
   const [sampleProviders, setSampleProviders] = useState([]);
   const [loadingSamples, setLoadingSamples] = useState(false);
   const [addingSample, setAddingSample] = useState({});
-  // `null` means the availability endpoint was not reached (for example, an
-  // older server during an upgrade), distinct from a confirmed missing CLI.
-  const [opencodeInstallStatus, setOpenCodeInstallStatus] = useState(null);
-  const [showOpenCodeInstaller, setShowOpenCodeInstaller] = useState(false);
+  // CLI availability per provider card, keyed by `providerRuntimeKey`. An empty
+  // map means the endpoint was not reached (for example, an older server during
+  // an upgrade) — distinct from a confirmed missing CLI — and simply renders no
+  // install widgets.
+  const [runtimes, setRuntimes] = useState({});
+  // The runtime whose install modal is open (`null` = closed).
+  const [installingRuntime, setInstallingRuntime] = useState(null);
+  // Ollama / LM Studio install state (and the model lists the editor's pickers
+  // fold in) — fetched once here rather than inside ProviderForm so opening the
+  // editor doesn't re-request it.
+  const localModels = useLocalModels();
 
   useEffect(() => {
     loadData();
   }, []);
+
+  // Probing the CLIs costs a `--version` child process each, so this stays OFF
+  // the critical path: the page paints from the provider list and the install
+  // badges appear when the probes land.
+  const loadRuntimes = useCallback(async () => {
+    const data = await api.getProviderRuntimes({ silent: true }).catch(() => null);
+    setRuntimes(data?.runtimes && typeof data.runtimes === 'object' ? data.runtimes : {});
+  }, []);
+
+  useEffect(() => { loadRuntimes(); }, [loadRuntimes]);
 
   useEffect(() => {
     if (!activeRun) return;
@@ -136,14 +159,13 @@ export default function AIProviders() {
     setLoading(true);
     setLoadError(false);
     let providersFailed = false;
-    const [providersData, appsData, statusData, opencodeData] = await Promise.all([
+    const [providersData, appsData, statusData] = await Promise.all([
       api.getProviders().catch(() => {
         providersFailed = true;
         return null;
       }),
       api.getApps().catch(() => []),
       api.getProviderStatuses().catch(() => ({ providers: {} })),
-      api.getOpenCodeInstallStatus({ silent: true }).catch(() => null),
     ]);
     if (providersFailed || !providersData) {
       setLoadError(true);
@@ -161,9 +183,6 @@ export default function AIProviders() {
     }
     setApps(appsData);
     setStatuses(statusData.providers || {});
-    setOpenCodeInstallStatus(opencodeData && typeof opencodeData.installed === 'boolean'
-      ? opencodeData
-      : null);
     setLoading(false);
   };
 
@@ -316,9 +335,22 @@ export default function AIProviders() {
     }
   };
 
-  const handleOpenCodeInstallComplete = () => {
-    toast.success('OpenCode CLI installed and ready to test');
-    loadData();
+  const handleRuntimeInstallComplete = () => {
+    toast.success(`${installingRuntime?.label || 'Runtime'} installed and ready to test`);
+    // Only the CLI's availability changed — the provider records did not.
+    loadRuntimes();
+  };
+
+  // The install widget's data for one card: a CLI provider's binary comes from
+  // the server's runtime table; an API provider fronted by a local app takes the
+  // local-LLM status, which counts an installed app with no CLI shim on PATH.
+  const runtimeForProvider = (provider) => {
+    const backend = isApiProvider(provider) ? localBackendForProvider(provider) : null;
+    if (!backend) return runtimes[providerRuntimeKey(provider)] || null;
+    const installed = localModels.installed?.[backend];
+    // `null` = status not fetched — never offer an install from an unknown state.
+    if (typeof installed !== 'boolean') return null;
+    return { id: backend, label: LOCAL_APP_LABELS[backend], installed, installable: false, manageUrl: '/settings/local-llm' };
   };
 
   const selectedRunProvider = providers.find(p => p.id === activeProviderId);
@@ -370,39 +402,6 @@ export default function AIProviders() {
           </button>
         </div>
       </div>
-
-      {opencodeInstallStatus && (
-        <div className={`rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
-          opencodeInstallStatus.installed
-            ? 'border-port-success/40 bg-port-success/5'
-            : 'border-port-warning/40 bg-port-warning/5'
-        }`}>
-          <div className="min-w-0">
-            <h2 className="text-base font-semibold text-white">OpenCode CLI</h2>
-            {opencodeInstallStatus.installed ? (
-              <p className="mt-1 text-sm text-port-success">Available on PortOS&apos;s PATH. OpenCode CLI and TUI providers can run.</p>
-            ) : (
-              <>
-                <p className="mt-1 text-sm text-gray-300">Required by OpenCode CLI and TUI providers. Install it here before sending an OpenCode agent task.</p>
-                {!opencodeInstallStatus.npmAvailable && (
-                  <p className="mt-1 text-xs text-port-warning">npm is not available on PortOS&apos;s PATH, so this host cannot install OpenCode from the page.</p>
-                )}
-              </>
-            )}
-          </div>
-          {!opencodeInstallStatus.installed && (
-            <button
-              type="button"
-              onClick={() => setShowOpenCodeInstaller(true)}
-              disabled={!opencodeInstallStatus.npmAvailable}
-              className="min-h-[44px] shrink-0 px-4 py-2 rounded-lg text-sm font-medium bg-port-accent text-white hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed"
-              title={opencodeInstallStatus.npmAvailable ? 'Install OpenCode CLI with npm' : 'npm is required to install OpenCode from this page'}
-            >
-              Install OpenCode
-            </button>
-          )}
-        </div>
-      )}
 
       {/* Sample Providers Panel */}
       {showSamples && (
@@ -654,6 +653,12 @@ export default function AIProviders() {
                       )}
                     </div>
 
+                    <ProviderRuntimeStatus
+                      className="mt-2"
+                      runtime={runtimeForProvider(provider)}
+                      onInstall={setInstallingRuntime}
+                    />
+
                     {provider.enabled && statuses[provider.id]?.available === false && (
                       <div className="mt-2 text-xs rounded border border-port-error/40 bg-port-error/10 px-3 py-2 text-port-error space-y-1">
                         <p className="break-words">
@@ -859,6 +864,7 @@ export default function AIProviders() {
           key={editingProvider?.id || 'new'}
           provider={editingProvider}
           allProviders={providers}
+          localModels={localModels}
           runnerAllowedCommands={runnerAllowedCommands}
           onEditProvider={(providerToEdit) => {
             setEditingProvider(providerToEdit);
@@ -869,22 +875,22 @@ export default function AIProviders() {
         />
       )}
       <RuntimeInstallModal
-        open={showOpenCodeInstaller}
-        runtime="opencode"
-        label="OpenCode CLI"
-        onClose={() => setShowOpenCodeInstaller(false)}
-        onComplete={handleOpenCodeInstallComplete}
-        installUrlBase="/api/providers/opencode/install"
+        open={Boolean(installingRuntime)}
+        runtime={installingRuntime?.id}
+        label={installingRuntime?.label}
+        onClose={() => setInstallingRuntime(null)}
+        onComplete={handleRuntimeInstallComplete}
+        installUrlBase="/api/providers/runtimes/install"
         streamMethod="POST"
         flushMs={250}
-        description="Installing the OpenCode CLI with npm. This downloads the current OpenCode package."
+        description={`Installing ${installingRuntime?.label} from ${installingRuntime?.method === 'script' ? "the vendor's official install script" : 'its global npm package'}.`}
       />
       </div>
     </div>
   );
 }
 
-function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders = [], runnerAllowedCommands = null }) {
+function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders = [], localModels = { ollama: [], lmstudio: [], ctxById: {} }, runnerAllowedCommands = null }) {
   const [formData, setFormData] = useState({
     name: provider?.name || '',
     type: provider?.type || 'cli',
@@ -920,7 +926,7 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
   // Live installed Ollama/LM Studio models, folded into the model pickers so a
   // local provider shows what's actually installed — not just the stale `models`
   // list stored on the provider record (the "Command R+ / Gemma missing" bug).
-  const localModels = useLocalModels();
+  // Passed down from the page, which already holds this status for the cards.
   const liveModelsFor = (p) => {
     const backend = localBackendForProvider(p);
     return backend ? localModels[backend] : [];

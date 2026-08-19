@@ -6,11 +6,13 @@ const api = vi.hoisted(() => ({
   getProviders: vi.fn(),
   getApps: vi.fn(),
   getProviderStatuses: vi.fn(),
-  getOpenCodeInstallStatus: vi.fn(),
+  getProviderRuntimes: vi.fn(),
   getSampleProviders: vi.fn(),
   createProvider: vi.fn(),
   updateProvider: vi.fn(),
 }));
+
+const localModels = vi.hoisted(() => ({ value: { ctxById: {}, installed: { ollama: null, lmstudio: null } } }));
 
 const toast = vi.hoisted(() => ({
   success: vi.fn(),
@@ -30,13 +32,15 @@ vi.mock('../services/socket', () => ({
   },
 }));
 vi.mock('../hooks/useLocalModels', () => ({
-  default: () => ({ ctxById: {} }),
+  default: () => localModels.value,
 }));
 vi.mock('../components/settings/SettingsTabsHeader', () => ({
   default: () => <div data-testid="settings-tabs-header" />,
 }));
 vi.mock('../components/install/RuntimeInstallModal', () => ({
-  default: ({ open, streamMethod, flushMs }) => open ? <div data-testid="opencode-install-modal" data-stream-method={streamMethod} data-flush-ms={flushMs} /> : null,
+  default: ({ open, runtime, streamMethod, flushMs }) => open
+    ? <div data-testid="runtime-install-modal" data-runtime={runtime} data-stream-method={streamMethod} data-flush-ms={flushMs} />
+    : null,
 }));
 
 import AIProviders from './AIProviders';
@@ -47,46 +51,138 @@ const renderPage = () => render(
   </MemoryRouter>
 );
 
+// One entry of the `runtimes` map from GET /api/providers/runtimes.
+const missingRuntime = {
+  id: 'opencode',
+  label: 'OpenCode CLI',
+  command: 'opencode',
+  installed: false,
+  method: 'npm',
+  installable: true,
+  blockedReason: null,
+  docsUrl: 'https://opencode.ai/docs',
+};
+
 describe('AIProviders page load error handling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getApps.mockResolvedValue([]);
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
-    api.getOpenCodeInstallStatus.mockResolvedValue({ installed: false, npmAvailable: true });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    localModels.value = { ctxById: {}, installed: { ollama: null, lmstudio: null } };
   });
 
-  it('offers an in-page OpenCode install when the CLI is missing', async () => {
-    api.getProviders.mockResolvedValue({ providers: [], activeProvider: null });
+  it('offers an install button on the card of a provider whose CLI is missing', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{ id: 'opencode-ollama', name: 'OpenCode Ollama', type: 'cli', command: 'opencode', args: ['run'], enabled: true }],
+      activeProvider: null,
+    });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: { opencode: missingRuntime } });
 
     renderPage();
 
-    expect(await screen.findByText('OpenCode CLI')).toBeInTheDocument();
-    const install = screen.getByRole('button', { name: 'Install OpenCode' });
+    const install = await screen.findByRole('button', { name: /Install OpenCode CLI/ });
     expect(install).toBeEnabled();
     fireEvent.click(install);
-    const modal = screen.getByTestId('opencode-install-modal');
+    const modal = screen.getByTestId('runtime-install-modal');
+    expect(modal).toHaveAttribute('data-runtime', 'opencode');
     expect(modal).toHaveAttribute('data-stream-method', 'POST');
     expect(modal).toHaveAttribute('data-flush-ms', '250');
   });
 
-  it('reports OpenCode as ready instead of offering another install', async () => {
-    api.getProviders.mockResolvedValue({ providers: [], activeProvider: null });
-    api.getOpenCodeInstallStatus.mockResolvedValue({ installed: true, npmAvailable: true });
+  // An absolute path in `command` is a legitimate config — the widget must
+  // still find its runtime rather than silently dropping the install button.
+  it('matches a runtime through a path-qualified command', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{ id: 'codex-pinned', name: 'Codex (pinned)', type: 'cli', command: '/opt/bin/codex', args: [], enabled: true }],
+      activeProvider: null,
+    });
+    api.getProviderRuntimes.mockResolvedValue({
+      runtimes: { codex: { ...missingRuntime, id: 'codex', label: 'Codex CLI', command: 'codex' } },
+    });
 
     renderPage();
 
-    expect(await screen.findByText(/Available on PortOS's PATH/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Install OpenCode' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /Install Codex CLI/ })).toBeEnabled();
   });
 
-  it('explains why the install action is unavailable without npm', async () => {
-    api.getProviders.mockResolvedValue({ providers: [], activeProvider: null });
-    api.getOpenCodeInstallStatus.mockResolvedValue({ installed: false, npmAvailable: false });
+  it('reports an installed runtime instead of offering another install', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{ id: 'opencode-ollama', name: 'OpenCode Ollama', type: 'cli', command: 'opencode', args: ['run'], enabled: true }],
+      activeProvider: null,
+    });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: { opencode: { ...missingRuntime, installed: true } } });
+
+    renderPage();
+
+    expect(await screen.findByText(/installed/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Install OpenCode CLI/ })).not.toBeInTheDocument();
+  });
+
+  it('explains why the install action is unavailable and links the vendor instructions', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{ id: 'opencode-ollama', name: 'OpenCode Ollama', type: 'cli', command: 'opencode', args: ['run'], enabled: true }],
+      activeProvider: null,
+    });
+    api.getProviderRuntimes.mockResolvedValue({
+      runtimes: {
+        opencode: {
+          ...missingRuntime,
+          installable: false,
+          blockedReason: "npm is not available on PortOS's PATH, so this host cannot install OpenCode CLI from this page.",
+        },
+      },
+    });
 
     renderPage();
 
     expect(await screen.findByText(/npm is not available on PortOS's PATH/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Install OpenCode' })).toBeDisabled();
+    // No dead Install button — the vendor's own instructions are the way out.
+    expect(screen.queryByRole('button', { name: /Install OpenCode CLI/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Install instructions/ })).toHaveAttribute('href', 'https://opencode.ai/docs');
+  });
+
+  // Ollama / LM Studio keep their real installer on the Local LLM tab, so the
+  // provider card links there instead of streaming an install of its own — and
+  // reads their state from the local-LLM status, which counts an installed app
+  // with no CLI shim on PATH.
+  it('links a locally-managed app to its own settings tab', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{ id: 'lmstudio', name: 'LM Studio', type: 'api', endpoint: 'http://localhost:1234/v1', enabled: true }],
+      activeProvider: null,
+    });
+    localModels.value = { ctxById: {}, installed: { ollama: null, lmstudio: false } };
+
+    renderPage();
+
+    expect(await screen.findByRole('link', { name: /Install LM Studio/ })).toHaveAttribute('href', '/settings/local-llm');
+  });
+
+  // `null` means the local-LLM status has not answered yet — offering an
+  // install from that state would flash a wrong CTA on every page load.
+  it('offers nothing for a local app whose status has not been fetched', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{ id: 'lmstudio', name: 'LM Studio', type: 'api', endpoint: 'http://localhost:1234/v1', enabled: true }],
+      activeProvider: null,
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('LM Studio')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Install LM Studio/ })).not.toBeInTheDocument();
+  });
+
+  it('shows no install widget for a command PortOS has no installer for', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{ id: 'custom', name: 'Custom CLI', type: 'cli', command: 'my-agent', args: [], enabled: true }],
+      activeProvider: null,
+    });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: { opencode: missingRuntime } });
+
+    renderPage();
+
+    expect(await screen.findByText('Custom CLI')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Install/ })).not.toBeInTheDocument();
   });
 
   it('renders provider list when api.getProviders succeeds with data', async () => {
@@ -153,7 +249,7 @@ describe('handleAddSample error handling', () => {
     vi.clearAllMocks();
     api.getApps.mockResolvedValue([]);
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
-    api.getOpenCodeInstallStatus.mockResolvedValue({ installed: false, npmAvailable: true });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
     api.getProviders.mockResolvedValue({
       providers: [],
       activeProvider: null,
@@ -189,7 +285,7 @@ describe('handleAddAllSamples partial failure handling', () => {
     vi.clearAllMocks();
     api.getApps.mockResolvedValue([]);
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
-    api.getOpenCodeInstallStatus.mockResolvedValue({ installed: false, npmAvailable: true });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
     api.getProviders.mockResolvedValue({
       providers: [],
       activeProvider: null,
@@ -234,7 +330,7 @@ describe('CoS Agent Runner allowlist warning', () => {
     vi.clearAllMocks();
     api.getApps.mockResolvedValue([]);
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
-    api.getOpenCodeInstallStatus.mockResolvedValue({ installed: false, npmAvailable: true });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
   });
 
   it('badges a provider whose command is off the published allowlist', async () => {
@@ -333,7 +429,7 @@ describe('Local num_ctx field', () => {
     vi.clearAllMocks();
     api.getApps.mockResolvedValue([]);
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
-    api.getOpenCodeInstallStatus.mockResolvedValue({ installed: false, npmAvailable: true });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
   });
 
   const openEditorFor = async (provider) => {
@@ -387,7 +483,7 @@ describe('OpenCode OrcaRouter key hint', () => {
     vi.clearAllMocks();
     api.getApps.mockResolvedValue([]);
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
-    api.getOpenCodeInstallStatus.mockResolvedValue({ installed: true, npmAvailable: true });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
    });
 
   // The OpenCode wrapper carries no key of its own — the card must point the
