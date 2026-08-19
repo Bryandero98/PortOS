@@ -16,21 +16,23 @@ import ContactsTab from '../components/messages/ContactsTab';
 
 // Exported for the nav-manifest tab-coverage guard (server/lib/navManifest.test.js).
 // `fullBleed: true` — tab owns internal scroll/height; Messages skips padded overflow wrapper.
+// `needsAccounts: true` — tab renders the account list, so it waits for that fetch.
 export const TABS = [
-  { id: 'inbox', label: 'Inbox', icon: Mail },
-  { id: 'drafts', label: 'Drafts', icon: Mail },
+  { id: 'inbox', label: 'Inbox', icon: Mail, needsAccounts: true },
+  { id: 'drafts', label: 'Drafts', icon: Mail, needsAccounts: true },
   { id: 'imessage', label: 'iMessage', icon: MessageSquare, fullBleed: true },
   { id: 'contacts', label: 'Contacts', icon: Users },
-  { id: 'sync', label: 'Sync', icon: RefreshCw },
-  { id: 'config', label: 'Config', icon: Settings },
+  { id: 'sync', label: 'Sync', icon: RefreshCw, needsAccounts: true },
+  { id: 'config', label: 'Config', icon: Settings, needsAccounts: true },
 ];
 
 const FULL_BLEED_TAB_IDS = new Set(TABS.filter((t) => t.fullBleed).map((t) => t.id));
 
-// Tabs that render the account list wait for it. iMessage and Contacts read
-// neither — gating them on the accounts fetch would serialize their own
-// requests behind an unrelated one and flash a skeleton for no reason.
-const ACCOUNT_TAB_IDS = new Set(['inbox', 'drafts', 'sync', 'config']);
+// iMessage and Contacts read no account data, so gating them on the accounts
+// fetch would only serialize their own requests behind an unrelated one and
+// flash a skeleton for nothing. Derived from TABS so a new tab declares its
+// own need rather than having to be remembered in a second list.
+const ACCOUNT_TAB_IDS = new Set(TABS.filter((t) => t.needsAccounts).map((t) => t.id));
 
 export default function Messages() {
   const navigate = useNavigate();
