@@ -7,6 +7,7 @@ import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
 // rendering WebGL in jsdom. The scene stub records the props it received so the assertions
 // can read them directly.
 const sceneProps = { current: null };
+const openWorldDataState = vi.hoisted(() => ({ loading: false }));
 vi.mock('../components/openworld/OpenWorldScene', () => ({
   default: (props) => {
     sceneProps.current = props;
@@ -32,7 +33,7 @@ vi.mock('../hooks/useOpenWorldData', () => ({
     apps: [], cosAgents: [], cosStatus: {}, eventLogs: [], agentMap: new Map(),
     reviewCounts: {}, instances: {}, systemHealth: null, notificationCounts: {},
     backupStatus: null, cosTasks: [], healthMetrics: null, voiceState: null,
-    character: null, aiActivity: null, loading: false, connected: true,
+    character: null, aiActivity: null, loading: openWorldDataState.loading, connected: true,
   }),
 }));
 vi.mock('../hooks/useOpenWorldPlayback', () => ({
@@ -80,7 +81,17 @@ const renderAt = (path) => render(
 describe('OpenWorld — fast travel wiring', () => {
   beforeEach(() => {
     sceneProps.current = null;
+    openWorldDataState.loading = false;
     localStorage.clear();
+  });
+
+  it('keeps the scene mounted while the initial data bundle is loading', () => {
+    openWorldDataState.loading = true;
+
+    renderAt('/openworld');
+
+    expect(screen.getByTestId('scene')).toBeInTheDocument();
+    expect(screen.queryByText('ENTERING OPENWORLD')).not.toBeInTheDocument();
   });
 
   it('hands the scene no region on the plain overview route', () => {
