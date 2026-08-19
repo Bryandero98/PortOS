@@ -707,7 +707,7 @@ The configured reviewers for this task, in order, are \`{reviewers}\`. Split the
 
 6. **Merge immediately via \`gh pr merge\`** — NEVER a local merge and NEVER \`--auto\`. Prefer a true merge commit so Git retains the branch tip, but fall back when the repository disallows that method:
    \`\`\`bash
-   PR_URL=$(gh pr view <num> --json url -q .url)
+   PR_URL=$(gh pr view --json url -q .url)   # no number: resolves the PR from the checked-out branch
    gh pr merge "$PR_URL" --merge --delete-branch || {
      [ "$(gh pr view "$PR_URL" --json state -q .state)" = "MERGED" ] || \
        gh pr merge "$PR_URL" --squash --delete-branch || \
@@ -846,7 +846,7 @@ Every local reviewer's fixes are already committed, so the PR opens against fini
 4. **Let required CI finish and go green** — \`gh pr checks <pr-number> --required --watch --fail-fast\` (scope the wait to REQUIRED checks so an optional job can't stall a merge branch protection would allow). A red required check is not merge-eligible: fix it and re-push (same 3-round cap), or, if it stays red, stop exactly as the review-stuck cleanup above does.
 5. **Merge immediately via \`gh pr merge\`** — NEVER a local \`git merge\` and NEVER \`--auto\`, which can return successfully while leaving the PR queued and OPEN. Prefer a true merge commit, with squash/rebase fallbacks for repositories that disallow it:
    \`\`\`bash
-   PR_URL=$(gh pr view <pr-num> --json url -q .url)
+   PR_URL=$(gh pr view --json url -q .url)   # no number: resolves the PR from the checked-out branch
    gh pr merge "$PR_URL" --merge --delete-branch || {
      [ "$(gh pr view "$PR_URL" --json state -q .state)" = "MERGED" ] || \
        gh pr merge "$PR_URL" --squash --delete-branch || \

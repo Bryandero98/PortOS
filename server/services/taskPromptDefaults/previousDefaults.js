@@ -4072,7 +4072,120 @@ The configured reviewers for this task, in order, are \`{reviewers}\`. \`claude\
 
 ## Phase 7 — Report
 
-Generate a short summary: the ticket KEY + summary worked, the MR/PR URL, the ticket's FINAL JIRA status (confirm it is "In Review"), reviewers run, and any status transition that failed and why.`
+Generate a short summary: the ticket KEY + summary worked, the MR/PR URL, the ticket's FINAL JIRA status (confirm it is "In Review"), reviewers run, and any status transition that failed and why.`,
+    // v11 default prompt — reviews ran against the MR/PR diff after it was opened
+    `[Claim Issue: {appName}] Claim and ship the next ready JIRA ticket
+
+Pick the next ready JIRA ticket assigned to me in the current sprint, move it to **In Progress**, **create your own worktree at \`claim/<KEY>\`**, implement it, open a merge/pull request that references the ticket, move the ticket to **In Review**, and clean up. This is the \`/claim --issues\` flow for JIRA: same self-managed worktree and no-local-merge cleanup, but the work source is the app's **JIRA** project (via the PortOS JIRA API) and the ticket *status* — not an assignee/label — is the claim. **YOU pick the ticket in Phase 1.** Do NOT modify files in the source repo directly; ALL editing happens inside the worktree you create.
+
+All PortOS API calls below are relative to this base URL: ${PORTOS_API_URL}
+
+**How claiming works.** A ticket is "in flight" when (a) a \`claim/<KEY>\` or \`cos/<task>/<KEY>/<agent>\` ref exists across local branches, remote branches, or open MR/PR source refs, OR (b) its JIRA status is anything other than a not-started status (so "In Progress", "In Review", "Done", etc. are already taken). Moving the ticket to **In Progress** + the \`claim/<KEY>\` branch ARE the claim, visible to every other agent and to the human looking at the sprint board.
+
+## Phase 1 — Pick the target ticket
+
+Run steps 1–5 in order.
+
+1. Resolve the app's JIRA config: GET ${PORTOS_API_URL}/api/apps and find the app whose \`id\` is \`{appId}\`. Read \`jira.enabled\`, \`jira.instanceId\`, and \`jira.projectKey\`. If \`jira.enabled\` is not true or either id is missing, exit cleanly — this task only works against JIRA-configured apps.
+2. Fetch my current-sprint tickets: GET ${PORTOS_API_URL}/api/jira/instances/<instanceId>/my-sprint-tickets/<projectKey>. This returns the tickets assigned to me in the active sprint.
+3. Build the in-flight set from git refs:
+   \`\`\`bash
+   cd {repoPath}
+   git fetch --prune 2>/dev/null
+   git branch -a --no-color --format='%(refname:short)'
+   \`\`\`
+   For each ref (after stripping any leading \`origin/\` / \`upstream/\` prefix), extract the ticket KEY **only when the ref matches** \`claim/<KEY>\` (the segment after \`claim/\`) or \`cos/<task>/<KEY>/<agent>\` (the \`<KEY>\` third segment). A KEY looks like \`PROJ-1234\`.
+4. **Pick the target ticket:** walk the sprint tickets and pick the FIRST where ALL of the following are true (prefer higher priority — Blocker/Highest/High — then oldest):
+   - Its status is a not-started status (e.g. "To Do", "Open", "Backlog", "Selected for Development", "Ready"). Skip tickets already "In Progress", "In Review", "Done", or any closed/resolved status — those are claimed or finished.
+   - Its KEY is NOT in the in-flight set from step 3.
+   - It has enough of a summary/description to act on. A ticket that merely leaves a design choice unstated is still eligible — you'll decide the reading in Phase 3, not skip it here. Skip only a ticket with essentially no actionable content (bare title, no description or acceptance criteria).
+   - It is NOT an Epic (issue type "Epic", or a title ending in "(epic)"). Leave epics for a human to split.
+5. **If no eligible ticket exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure. If a ticket is in the sprint but too vague or blocked to start, create a Review Hub todo (POST ${PORTOS_API_URL}/api/review/todo with title "[<KEY>] Needs clarification" or "[<KEY>] Blocked" and a description of what's missing) instead of claiming it.
+
+Capture the ticket KEY as \`KEY\`, its summary, and its full description — you'll reuse them in the branch, the MR/PR, and the commit trailer.
+
+## Phase 2 — Claim (In Progress + worktree)
+
+First move the ticket to **In Progress** (this is the claim, and it must happen BEFORE you start coding), then create the worktree. Transition names vary per project workflow, so resolve the id dynamically:
+
+1. GET ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/transitions to list available transitions.
+2. Pick the transition whose target status best matches "In Progress" (e.g. "In Progress", "Start Progress", "Start Work"); match case-insensitively. If none clearly matches, pick the transition that moves the ticket out of the To Do / Backlog column.
+3. POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/transition with body {"transitionId": "<id>"}. If this fails (the status is unreachable), the ticket may have been claimed concurrently — return to Phase 1 and pick the next eligible ticket.
+
+Then create the worktree on a branch named \`claim/<KEY>\`. Do all editing inside the worktree, NEVER in the source repo's working tree:
+
+\`\`\`bash
+KEY=<picked-key>
+DEFAULT_BRANCH="$(git -C {repoPath} symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+DEFAULT_BRANCH="\${DEFAULT_BRANCH:-main}"
+WORKTREE="{worktreesRoot}/claim-\${KEY}"
+mkdir -p "{worktreesRoot}"
+git -C {repoPath} fetch origin "\${DEFAULT_BRANCH}"
+git -C {repoPath} worktree add --no-track -b "claim/\${KEY}" "\${WORKTREE}" "origin/\${DEFAULT_BRANCH}"
+cd "\${WORKTREE}"
+\`\`\`
+
+**If \`git worktree add\` fails because the \`claim/<KEY>\` branch already exists** (a concurrent run won the race), do NOT force or reuse it — that branch IS another run's claim. Move the ticket back to its prior status if you transitioned it, treat the ticket as in-flight, return to Phase 1, and pick the next eligible ticket. Stash \`WORKTREE\` — you'll need it for Phase 6 cleanup.
+
+## Phase 3 — Verify still valid
+
+Re-read the ticket (GET ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>) before writing any code. **Every exit from this phase must leave a CONVERGING status on the ticket — Done/Closed, or a held status backed by a Review Hub todo.** Transitioning back to a not-started status is NOT an exit: Phase 1's not-started-only filter makes the ticket immediately re-eligible again, so the next pass re-picks it and burns another no-op run — every pass, forever.
+
+- **Already fixed, superseded, or duplicated by another ticket** — a comment says so, or the change it asks for is already on the default branch. Post a ticket comment naming the PR/MR, commit, or ticket that already delivered it (POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/comments), transition the ticket to **Done/Closed**, remove the worktree, and return to Phase 1. **Evidence gate: if you cannot name the PR/MR, commit, or ticket that delivered it, this branch does NOT apply** — closing on a hunch destroys live work, which is far worse than one wasted pass. Treat the ticket as real work and continue to Phase 4.
+- **Stale reference** — the ticket names a function, file, or component that no longer exists (\`grep -rn\` the named identifiers; if they're gone, it's stale). Post a ticket comment naming what you searched for and what you found instead, create a Review Hub todo (POST ${PORTOS_API_URL}/api/review/todo with title "[<KEY>] Stale reference" and what a human must re-scope), and transition the ticket to a **Blocked/On Hold status if the workflow has one — NOT back to a not-started status**; if the workflow has no held status, leave it **In Progress** so Phase 1's filter excludes it. Then remove the worktree and return to Phase 1.
+
+(A too-large scope is NOT in this list — it has its own park path below.)
+
+**A genuinely too-large ticket needs parking so the queue converges.** If the work is bigger than one coherent claim — it would touch files far outside the ticket's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to ship first, splitting the omnibus is a human call: create a Review Hub todo (POST ${PORTOS_API_URL}/api/review/todo with title "[<KEY>] Needs clarification" and the split you'd suggest), transition the ticket to a **Blocked/On Hold status if the workflow has one — NOT back to a not-started status**, which would re-queue it under Phase 1 (ticket selection never consults Review Hub todos, so a not-started ticket is immediately re-eligible and the run would re-park it every pass); if the workflow has no held status, leave it **In Progress**. Phase 1's not-started-only filter keeps a non-not-started ticket out of the ready queue, and the Review Hub todo is the durable human signal — together they let the claim run converge. Then remove the worktree and exit.
+
+**Ambiguity is NOT a release trigger — decide, don't defer.** If the ticket is merely open to more than one reasonable reading, or leaves a design choice unstated, do NOT bail to a "Needs clarification" todo. Pick the most reasonable interpretation, record the approach you chose in a ticket comment (POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/comments) so the decision is on the record, and implement it. The user would rather iterate on top of a shipped best-guess than have the ticket parked waiting on a decision they didn't ask to make. Reserve the "Needs clarification" todo for cases where proceeding would be **destructive or irreversible**, or genuinely requires the human: specific hardware/credentials you don't have, or a judgment only they can make. In those cases only, create the todo (POST ${PORTOS_API_URL}/api/review/todo with title "[<KEY>] Needs clarification" and what a human must resolve), transition the ticket to a **Blocked/On Hold status if the workflow has one — NOT back to a not-started status** (which would re-queue it under Phase 1, since ticket selection never consults Review Hub todos); if the workflow has no held status, leave it **In Progress** so Phase 1's not-started-only filter excludes it. Then remove the worktree and **exit — do NOT proceed to Phase 4**.
+
+Do NOT leave an *unexplained* ticket in "In Progress" with no branch — that is the zombie to avoid. A deliberate park above is different: it always carries a Review Hub todo saying why (and a Blocked/On Hold status where the workflow supports one), so it reads as intentionally held, not abandoned.
+
+## Phase 4 — Implement
+
+Write the code, tests, and any docs the ticket requires. Follow the repo conventions in CLAUDE.md (no try/catch in route handlers, functional programming, Zod validation, Tailwind tokens, reactive UI updates). Run the relevant test suite as you go.
+
+**Roll discovered backbone work INTO this MR/PR** — small supporting helpers, refactors, and tests the fix depends on belong here, not a follow-up. Only defer genuinely-large adjacent work.
+
+Commit with a conventional message referencing the ticket so the trail is grep-able:
+
+\`\`\`
+<type>: <one-line description> (<KEY>)
+\`\`\`
+
+## Phase 5 — Open the MR/PR and move to In Review
+
+The audit trail is the merged MR/PR + \`git log\`. Detect the forge from the git origin and use the matching CLI (\`gh\` for GitHub, \`glab\` for GitLab).
+
+1. If the repo maintains a changelog, record a one-line entry **following the convention that repo documents** — read its \`CLAUDE.md\` and changelog README (e.g. \`.changelog/README.md\`) first. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge; use that flow when it's documented. Fall back to appending to the unreleased section (\`.changelog/NEXT.md\`, or \`## Unreleased\` in \`CHANGELOG.md\`) in the repo's existing prose style only when no convention is documented. Otherwise skip it.
+2. Push the branch: \`git push -u origin "claim/\${KEY}"\`
+3. Open the MR/PR. Reference the JIRA \`KEY\` in the title and description (there is NO \`Closes\` auto-close for JIRA). Summarize what shipped + a short test plan.
+   - GitHub: \`gh pr create --fill --head "claim/\${KEY}"\` (then edit the body to mention \`KEY\` if \`--fill\` didn't).
+   - GitLab: \`glab mr create --fill --source-branch "claim/\${KEY}" --target-branch "\${DEFAULT_BRANCH}" --yes\`.
+   Capture the MR/PR URL as \`PR_URL\`.
+4. **Move the ticket to "In Review" — REQUIRED, not optional. Do not finish while it is still "In Progress":**
+   - GET ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/transitions again (transitions change once In Progress).
+   - Pick the transition whose target status best matches "In Review" (e.g. "In Review", "Code Review", "Review", "Ready for Review"); match case-insensitively.
+   - POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/transition with body {"transitionId": "<id>"}.
+5. Add the MR/PR link to the ticket: POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/comments with body {"comment": "Implementation complete. MR/PR: \${PR_URL}\\n\\nReady for code review."}. **If you shipped only PART of the ticket's scope** (a valuable slice with real work remaining), make the comment a \`Done ✓ / Remaining ▢\` summary so the remaining scope is not lost when a human lands the MR/PR; when that remainder is a clean, separable chunk, ALSO file a new follow-up ticket for it (POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets with a summary + a description referencing \`KEY\`, plus equivalent labels \`model-light|model-medium|model-heavy\`, \`effort-low|effort-medium|effort-high|effort-xhigh|effort-max\`, \`good-first-issue\`, \`help-wanted\` when independently justified) so it re-enters the sprint queue. If a transition in step 4 failed (status unreachable), say so in this comment AND in the Phase 6 summary — do not silently drop it.
+
+## Phase 6 — Review and clean up
+
+The configured reviewers for this task, in order, are \`{reviewers}\`. \`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` invoke a local-CLI critique; \`lmstudio\` / \`ollama\` use the appended Local Reviewer Procedure. Run each in order.
+
+1. **Self-review your diff for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix findings in the same diff. Claude Code runs this as the three-agent \`/simplify\` pass; on other CLIs, do the equivalent by hand.
+2. **Run each configured reviewer.** Invoke CLI reviewers headless against the MR/PR diff and local LLM reviewers through the appended endpoint procedure. Apply fixes, run tests, and re-push — capped at 3 rounds — then advance. A missing CLI, timeout, transport failure, malformed response, or empty response is UNSATISFIED, not clean. Do NOT substitute your own self-review; comment on the MR/PR naming the failure and stop.
+3. **Leave the MR/PR open for a human to land.** Unlike the GitHub/GitLab issue flows, this flow does NOT auto-merge — the ticket is "In Review" and a human reviews + merges. After the reviewers finish, run the worktree-only cleanup so the source checkout is left clean:
+   \`\`\`bash
+   cd {repoPath}
+   git worktree remove "\${WORKTREE}"
+   \`\`\`
+   Leave the local \`claim/<KEY>\` branch and the open MR/PR in place. **Do NOT \`git merge\`, \`gh pr merge\`, \`glab mr merge\`, or \`git pull\`** — landing the change and moving the ticket to Done is the human's call.
+
+## Phase 7 — Report
+
+Generate a short summary: the ticket KEY + summary worked, the MR/PR URL, the ticket's FINAL JIRA status (confirm it is "In Review"), reviewers run, and any status transition that failed and why.`,
   ],
 
  'claim-issue-gitlab': [
@@ -5551,6 +5664,134 @@ If \`git branch -d\` refuses, use \`-D\` — the MR is confirmed merged, so the 
 **Reconcile the issue — did this MR FULLY satisfy its scope?**
 - **Yes (full)** — the \`Closes #\${NUM}\` line already auto-closed it on merge to the default branch; if it's somehow still open, close it (\`glab issue close "\${NUM}"\`) and remove the label (\`glab issue update "\${NUM}" --unlabel in-progress\`).
 - **No — the remainder is a clean, separable chunk** — close THIS issue with a summarizing note (shipped ✓ / moved to #NEW), remove \`in-progress\`, and file ONE tightly-scoped follow-up for the remainder: \`glab issue create --title "…" --label plan --description "…\\n\\nRefs #\${NUM}"\` (carry over any \`area:*\` labels the issue had).
+- **No — the remainder is a continuation of the same scope** — keep the issue OPEN, post a \`Done ✓ / Remaining ▢\` note, and release the claim so the queue re-picks it: \`glab issue update "\${NUM}" --unassign --unlabel in-progress\`.
+
+NEVER leave the issue OPEN with \`in-progress\` still on it — that strands it as a zombie (the claim queue skips \`in-progress\`, so the remaining scope is never re-picked). **Do NOT \`git pull\`** from inside this phase — the work is already integrated on GitLab via \`glab mr merge\`; leave the user's working tree alone.`,
+    // v13 default prompt — reviews ran against the MR/PR diff after it was opened
+    `[Claim Issue: {appName}] Claim and ship the next open GitLab issue
+
+Pick the next available unclaimed open GitLab issue, **create your own worktree at \`claim/issue-<num>\`**, implement the fix, ship a merge request (MR) that closes the issue, and clean up. This is the \`/claim --issues\` flow for GitLab — same in-flight scan, same branch naming, same no-local-merge cleanup, but the work source is the repo's **GitLab** issue tracker and the forge CLI is \`glab\` (not \`gh\`). **YOU pick the issue in Phase 1 — the scheduler does not reserve one for you.** Picking at execution time and immediately claiming (worktree + assignee + label) **narrows** the window for two concurrent runs to collide on the same issue — it does NOT eliminate it. Do NOT modify files in the source repo directly; ALL editing happens inside the worktree you create.
+
+{issueAuthorFilter}
+
+**How claiming works.** An issue is "in flight" when its number appears as the issue-position segment in either a \`claim/issue-<num>\` ref (the human/TUI pattern) or a \`cos/<task>/issue-<num>/<agent>\` ref (the CoS sub-agent pattern) across local branches, remote branches, or open MR source-branch refs — OR the issue is already assigned to someone OR carries an \`in-progress\` label. The \`claim/issue-<num>\` branch + the assignee/\`in-progress\` markers you set ARE the claim, visible to every other agent (including parallel machines).
+
+## Phase 1 — Pick the target issue
+
+Run steps 1–5 in order.
+
+1. cd into the repo root ({repoPath}) and confirm GitLab is the forge and \`glab\` is authenticated: \`glab auth status\` and \`glab repo view\`. If \`glab\` is not authenticated or the remote is not GitLab, exit cleanly — this task only works against GitLab issue trackers.
+2. List candidate open issues, honoring the author filter described above. Fetch a JSON page and order **oldest-first** (GitLab returns newest-first by default; sort client-side by \`created_at\` since the page is bounded):
+   \`\`\`bash
+   git fetch --prune 2>/dev/null
+   # Owner-only mode (default): add  --author <owner>  (resolve <owner> from the project namespace).
+   glab issue list --per-page 100 -F json
+   # Any-author mode: run the SAME command WITHOUT --author.
+   \`\`\`
+3. Build the in-flight set. Collect every branch/MR source ref:
+   \`\`\`bash
+   git branch -a --no-color --format='%(refname:short)'
+   glab mr list --per-page 100 -F json   # read each MR's source_branch
+   \`\`\`
+   For each ref (after stripping any leading \`origin/\` prefix), extract the issue number **only when the ref matches** \`claim/issue-<num>\` (number after \`claim/issue-\`) or \`cos/<task>/issue-<num>/<agent>\` (the \`issue-<num>\` third segment). Do NOT flag an issue just because its bare number appears elsewhere in a ref.
+4. **Pick the target issue:** walk the candidate list oldest-first and pick the FIRST issue where ALL of the following are true:
+   - Its number (\`iid\`) is NOT in the in-flight set.
+   - It has NO assignees (an assignee means another machine/human already claimed it).
+   - It does NOT carry any of these blocking labels: \`in-progress\`, \`blocked\`, \`needs-input\`, \`future\`, \`wontfix\`, \`question\`, \`discussion\`.
+   - It is NOT a tracking/umbrella **epic** — recognized by an \`epic\` label, a title ending in "(epic)", OR a title beginning with an \`[epic]\` bracket or \`Epic:\` tag (e.g. "[Epic] …" / "Epic: …", case-insensitive). Leave epics for a human to split. **The bare \`plan\` label is NOT a skip signal** — it marks the claimable queue, not a blocker.
+5. **If no eligible issue exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure.
+
+Capture the issue number (GitLab \`iid\`) as \`NUM\`, its title, and its full description — you'll reuse them in the MR and the \`Closes #<num>\` line.
+
+## Phase 2 — Claim (worktree + markers)
+
+Detect the default branch first (forge-agnostic), then create the worktree on \`claim/issue-<num>\` and set the cross-machine claim markers. Do all editing inside the worktree, NEVER in the source repo's working tree.
+
+\`\`\`bash
+NUM=<picked-number>
+DEFAULT_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+DEFAULT_BRANCH="\${DEFAULT_BRANCH:-main}"
+WORKTREE="{worktreesRoot}/claim-issue-\${NUM}"
+mkdir -p {worktreesRoot}
+git fetch origin "\${DEFAULT_BRANCH}"
+git worktree add --no-track -b "claim/issue-\${NUM}" "\${WORKTREE}" "origin/\${DEFAULT_BRANCH}"
+# Cross-machine claim markers (best-effort — do not abort the run if these fail).
+# Resolve your own username first — glab's --assignee wants a username (the
+# \`@me\` gh-ism isn't universally supported), falling back to @me if the lookup fails:
+ME="$(glab api user 2>/dev/null | sed -n 's/.*"username":"\\([^"]*\\)".*/\\1/p')"
+glab issue update "\${NUM}" --assignee "\${ME:-@me}" 2>/dev/null
+glab issue update "\${NUM}" --label in-progress 2>/dev/null
+cd "\${WORKTREE}"
+\`\`\`
+
+**If \`git worktree add\` fails because the \`claim/issue-<num>\` branch already exists** (a concurrent run won the race), do NOT force or reuse it — that branch IS another run's claim. Treat the issue as in-flight, return to Phase 1, and pick the next eligible issue; if nothing else is eligible, exit cleanly. Stash \`WORKTREE\` — you'll need it for Phase 7 cleanup.
+
+## Phase 3 — Verify still valid
+
+Read the full issue (\`glab issue view "\${NUM}"\`) before writing any code. **Every exit from this phase must leave a CONVERGING outcome on the issue — closed, or labeled \`needs-input\`.** Phase 1 step 4 skips both, so an autonomous drain stops re-picking the item. Releasing an issue OPEN and unlabeled is NOT an exit: the work detector still reports it actionable, so the next pass re-picks it and burns another no-op agent — every pass, forever.
+
+- **Already fixed, superseded, or closed-then-reopened-for-tracking** — a note says so, or the change it asks for is already on the default branch. **Close it:** post a note naming the MR/commit (or issue) that already delivered it (\`glab issue note "\${NUM}" -m "..."\`), then \`glab issue close "\${NUM}"\` and clear the markers (\`glab issue update "\${NUM}" --unassign --unlabel in-progress\`). Remove the worktree and return to Phase 1. **Evidence gate: if you cannot name the MR, commit, or issue that delivered it, this branch does NOT apply** — closing on a hunch destroys live work, which is far worse than one wasted pass. Treat the issue as real work and continue to Phase 4.
+- **Stale reference** — the request names a function, file, or component that no longer exists (\`grep -rn\` the named identifiers; if they're gone, the issue is stale). Post a note naming what you searched for and what you found instead, **tag it \`needs-input\`** (\`glab issue update "\${NUM}" --label needs-input\`), release the claim markers (\`glab issue update "\${NUM}" --unassign --unlabel in-progress\`), remove the worktree, and return to Phase 1. Re-scoping a stale issue against today's code is a human call — and the label is what keeps the drain off it in the meantime.
+
+(A too-large scope is NOT in this list — it has its own park path below.)
+
+**A genuinely too-large issue needs parking so the drain converges.** If the work is bigger than one coherent claim — it would touch files far outside the issue's scope (>5 unrelated files) — and you can't carve a valuable standalone slice to partial-ship via Phase 5's \`Refs\` path, post a brief note naming the split you'd suggest, **tag it \`needs-input\`** (\`glab issue update "\${NUM}" --label needs-input\`), release the claim markers (\`glab issue update "\${NUM}" --unassign --unlabel in-progress\`), remove the worktree, and exit — splitting an omnibus issue is a human call, and parking it stops a perpetual drain from re-picking the same un-shippable issue every pass (Phase 1 step 4 skips \`needs-input\`).
+
+**Ambiguity is NOT a release trigger — decide, don't defer.** If the issue is merely open to more than one reasonable reading, or leaves a design choice unstated, do NOT bail to \`needs-input\`. Pick the most reasonable interpretation, record the approach you chose in a brief issue note (\`glab issue note "\${NUM}" -m "..."\`) so the decision is on the record, and implement it. The user would rather iterate on top of a shipped best-guess than have the issue parked waiting on a decision they didn't ask to make. Reserve \`needs-input\` — which pulls the issue out of the autonomous queue — for the narrow cases where proceeding would be **destructive or irreversible**, or genuinely requires the human: specific hardware/credentials you don't have, or a judgment only they can make. In those cases only, post the explaining note, **tag it \`needs-input\`** (\`glab issue update "\${NUM}" --label needs-input\`), release the claim markers (\`glab issue update "\${NUM}" --unassign --unlabel in-progress\`), remove the worktree, and exit cleanly. **That label is what lets an autonomous drain converge** — Phase 1 step 4 skips \`needs-input\` issues. Never leave a half-claimed issue.
+
+## Phase 4 — Implement
+
+Write the code, tests, and any docs the issue requires. Follow the repo conventions in CLAUDE.md. Run the relevant test suite as you go.
+
+**Roll discovered backbone work INTO this MR** — small supporting helpers, refactors, and tests that the fix depends on belong here, not a follow-up. Only defer genuinely-large adjacent work; when you do, file a NEW issue (\`glab issue create\`) tagged \`plan\` that references this one (\`Related to #<num>\`). Choose independent dispatch hints (\`model:light|medium|heavy\`, \`effort:low|medium|high|xhigh|max\`) and contributor labels (\`good first issue\`, \`help wanted\`) only when justified; omit an axis rather than guessing; create each missing label immediately before applying it; use repeated \`--label\` flags; do not prefix the title with \`[category]\` / \`[model:…]\`.
+
+Commit with a conventional message referencing the issue:
+
+\`\`\`
+<type>: <one-line description> (#<num>)
+\`\`\`
+
+## Phase 5 — Open the merge request
+
+This flow ships GitLab issues — it does NOT touch PLAN.md. The audit trail is the merged MR + \`git log\`.
+
+1. If the repo maintains a changelog, record a one-line entry **following the convention that repo documents** — read its \`CLAUDE.md\` and changelog README (e.g. \`.changelog/README.md\`) first. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge; use that flow when it's documented. Fall back to appending to the unreleased section (\`.changelog/NEXT.md\`, or \`## Unreleased\` in \`CHANGELOG.md\`) in the repo's existing prose style only when no convention is documented. If the repo has no changelog, skip this.
+2. Push the branch: \`git push -u origin "claim/issue-\${NUM}"\`
+3. Open the MR with \`glab mr create --fill --source-branch "claim/issue-\${NUM}" --target-branch "\${DEFAULT_BRANCH}" --yes\`. **Choose the issue trailer deliberately:** if this MR FULLY satisfies the issue's scope, the description MUST contain \`Closes #\${NUM}\` so the merge auto-closes it; if you deliberately shipped only PART of the issue (a valuable slice with real scope remaining), use \`Refs #\${NUM}\` instead (NOT \`Closes\`) and add a \`## Remaining\` section listing what's left — Phase 7 reconciles the issue so it is never stranded. Summarize what shipped + a short test plan (pass \`--description\` if \`--fill\` didn't capture it).
+
+## Phase 6 — Review and ship
+
+The configured reviewers for this task, in order, are \`{reviewers}\`. \`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` invoke a local-CLI critique; \`lmstudio\` / \`ollama\` use the appended Local Reviewer Procedure. Run each in order before merging.
+
+1. **Self-review your diff for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix findings in the same diff BEFORE the reviewers run. Claude Code runs this as the three-agent \`/simplify\` pass; on other CLIs, do the equivalent review by hand.
+2. **Wait for each configured reviewer's valid findings BEFORE merging.** Invoke CLI reviewers headless against the MR diff; invoke local LLM reviewers through the appended endpoint procedure. Apply fixes, run tests, and re-push — capped at 3 rounds — then advance. A missing CLI, timeout, transport failure, malformed response, or empty response is UNSATISFIED, not clean. Do NOT substitute your own self-review or merge; comment on the MR naming the failure and stop.
+
+   **Review-stuck cleanup** (after 3 unresolved rounds): post one summarizing MR note (\`glab mr note\`), then run the worktree-only cleanup (\`cd {repoPath} && git worktree remove "\${WORKTREE}"\`). Leave the local branch, the open MR, the assignee, and the \`in-progress\` label in place so the human picks up cold. Do NOT run Phase 7.
+3. **Merge immediately via \`glab mr merge\`** — NEVER a local \`git merge\`. \`glab mr merge\` takes the **MR IID**, which is NOT the issue number — resolve it from the source branch first, merge, then verify remote state:
+   \`\`\`bash
+   MR_IID="$(glab mr list --source-branch "claim/issue-\${NUM}" -F json | sed -n 's/.*"iid":\\([0-9]\\{1,\\}\\).*/\\1/p' | head -1)"
+   glab mr merge "\${MR_IID}" --yes --remove-source-branch || {
+     glab mr view "\${MR_IID}" -F json | jq -e 'select((.state | ascii_downcase) == "merged")' >/dev/null ||        glab mr merge "\${MR_IID}" --yes --squash --remove-source-branch
+   }
+   glab mr view "\${MR_IID}" -F json | jq -er 'select((.state | ascii_downcase) == "merged") | .state'
+   \`\`\`
+   The verification command must succeed and print a merged state. An opened/closed state or missing value is not success; investigate CI, review, and branch protection, then retry. Do not enter Phase 7 until the forge confirms the MR is merged.
+
+## Phase 7 — Clean up (post-merge ONLY)
+
+This phase runs only after the MR merged via Phase 6. From the **source repo** (cd back to {repoPath} first):
+
+\`\`\`bash
+cd {repoPath}
+git worktree remove "\${WORKTREE}"
+git branch -d "claim/issue-\${NUM}"
+\`\`\`
+
+If \`git branch -d\` refuses, fetch the default branch and re-check the MR's merged state. Retry \`-d\` only when Git proves the branch integrated; otherwise leave it for reconciliation. Never force-delete with \`-D\`.
+
+**Reconcile the issue — did this MR FULLY satisfy its scope?**
+- **Yes (full)** — the \`Closes #\${NUM}\` line already auto-closed it on merge to the default branch; if it's somehow still open, close it (\`glab issue close "\${NUM}"\`) and remove the label (\`glab issue update "\${NUM}" --unlabel in-progress\`).
+- **No — the remainder is a clean, separable chunk** — close THIS issue with a summarizing note (shipped ✓ / moved to #NEW), remove \`in-progress\`, and file ONE tightly-scoped follow-up for the remainder: \`glab issue create --title "…" --label plan [--label model:<tier>] [--label effort:<level>] [--label "good first issue"] [--label "help wanted"] --description "…\\n\\nRefs #\${NUM}"\` (carry over any \`area:*\` labels the issue had; choose the optional labels independently and only when justified — a leftover mechanical sweep is not a good first issue).
 - **No — the remainder is a continuation of the same scope** — keep the issue OPEN, post a \`Done ✓ / Remaining ▢\` note, and release the claim so the queue re-picks it: \`glab issue update "\${NUM}" --unassign --unlabel in-progress\`.
 
 NEVER leave the issue OPEN with \`in-progress\` still on it — that strands it as a zombie (the claim queue skips \`in-progress\`, so the remaining scope is never re-picked). **Do NOT \`git pull\`** from inside this phase — the work is already integrated on GitLab via \`glab mr merge\`; leave the user's working tree alone.`,
