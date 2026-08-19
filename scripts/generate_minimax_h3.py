@@ -14,6 +14,7 @@ Each `--image` needs its own `--anchor`, in the same order.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import shutil
@@ -21,6 +22,7 @@ import subprocess
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _runner_common import (  # noqa: E402
@@ -145,6 +147,217 @@ def install_key_prefix_map(rules: list[tuple[str, str]]) -> None:
         return original(self, key)
 
     MiniMaxH3TextEncoder._wanted = _wanted
+
+
+def torch_image_stack_available() -> bool:
+    """Whether the pinned runtime's own `AutoProcessor` path can load at all.
+
+    transformers 5 dropped the numpy image processors: every class the auto path
+    resolves is torchvision-backed, and importing one without torch raises rather
+    than degrading. The MLX runtime lock deliberately ships neither
+    (`requirements-minimax-h3-mlx.lock.txt`), so this is False for a stock PortOS
+    install and True only if the user added torch to that venv themselves.
+    """
+    return all(importlib.util.find_spec(module) is not None for module in ("torch", "torchvision"))
+
+
+def load_pil_image_processor(processor_dir: Path):
+    """Load the PIL-backed sibling of the image processor the checkpoint declares.
+
+    transformers keeps a `…Pil` twin of each torchvision image processor for
+    exactly the environment this runner lives in. The checkpoint names its class
+    in `preprocessor_config.json` — `Qwen2VLImageProcessorFast` for H3 — and the
+    `Fast` suffix is transformers-5-deprecated on the base name, so the twin is
+    derived off the stripped name rather than hardcoded to one checkpoint.
+    """
+    config_path = processor_dir / "preprocessor_config.json"
+    if not config_path.is_file():
+        raise RuntimeError(f"Checkpoint processor config is missing: {config_path}")
+    declared = json.loads(config_path.read_text(encoding="utf-8")).get("image_processor_type")
+    if not declared:
+        raise RuntimeError(f"{config_path} names no image_processor_type, so a keyframe cannot be encoded.")
+
+    import transformers
+
+    name = declared.removesuffix("Fast") + "Pil"
+    processor_class = getattr(transformers, name, None)
+    if processor_class is None:
+        raise RuntimeError(
+            f"transformers {transformers.__version__} exposes no {name}, the PIL-backed twin of the "
+            f"checkpoint's {declared}. Install torch and torchvision into the MiniMax H3 runtime venv "
+            "to condition on a keyframe with this transformers version."
+        )
+    return processor_class.from_pretrained(str(processor_dir))
+
+
+def install_pil_image_processor() -> None:
+    """Let an image-conditioned render work in a runtime with no PyTorch.
+
+    The pinned port reads its vision inputs from
+    `AutoProcessor.from_pretrained(<checkpoint>/processor).image_processor`, and
+    transformers 5's auto path builds the WHOLE Qwen3-VL processor — video
+    processor included — before handing back the one sub-processor the encoder
+    uses. That video processor is torchvision-backed, so with the MLX lock's
+    torch-free venv every keyframed render died in `from_pretrained` with
+    "Qwen3VLVideoProcessor requires the Torchvision library"; text-only renders
+    never touch the property and kept working, which is why image-to-video was
+    the only broken mode.
+
+    Binding the PIL twin to the single attribute the encoder reads loads nothing
+    it doesn't use and — deliberately, like the key-prefix map above — leaves the
+    pinned checkout untouched, because it is verified clean before this runs.
+    """
+    from minimax_h3_mlx.text_encoder import MiniMaxH3TextEncoder
+
+    if not isinstance(getattr(MiniMaxH3TextEncoder, "processor", None), property):
+        raise RuntimeError(
+            "The pinned MiniMax H3 runtime no longer exposes MiniMaxH3TextEncoder.processor, so a "
+            "keyframe cannot be encoded without PyTorch. Render text-only, install torch and "
+            "torchvision into the runtime venv, or update PortOS for the new pin."
+        )
+
+    def processor(self):
+        if self._processor is None:
+            # Resolved from the encoder's own model dir rather than a captured
+            # path, so a composed text-encoder shim root keeps pointing at the
+            # processor it linked through.
+            self._processor = SimpleNamespace(
+                image_processor=load_pil_image_processor(self._model_dir.parent / "processor"),
+            )
+        return self._processor
+
+    MiniMaxH3TextEncoder.processor = property(processor)
+
+
+def install_vision_weight_sanitizer() -> None:
+    """Put the loaded vision tower into the layout MLX's conv3d reads.
+
+    The pinned port loads Qwen3-VL's weights straight out of the safetensors into
+    the mlx-vlm module tree, which skips the `sanitize()` mlx-vlm applies through
+    its own loader. Only one tensor cares: `patch_embed.proj.weight` ships in
+    torch's `(C_out, C_in, kD, kH, kW)` and MLX's conv3d wants `C_in` last, so an
+    unsanitized load reaches the first keyframe as
+    "[conv] Expect the input channels ... to match". Text-only renders never build
+    the tower, which is why only image conditioning saw it.
+
+    The correction is mlx-vlm's OWN `sanitize`, called on the module's loaded
+    parameters rather than reimplemented here: its shape check already treats a
+    correctly-laid-out tensor as a no-op, so this stays right if a later pin (or a
+    later mlx-vlm) starts handing the tower a sanitized weight.
+    """
+    from minimax_h3_mlx.text_encoder import MiniMaxH3TextEncoder
+
+    original = getattr(MiniMaxH3TextEncoder, "_load_weights", None)
+    if original is None:
+        raise RuntimeError(
+            "The pinned MiniMax H3 runtime no longer exposes MiniMaxH3TextEncoder._load_weights, "
+            "so its vision tower cannot be laid out for MLX. Render text-only, or update PortOS "
+            "for the new pin."
+        )
+
+    def _load_weights(self, model_dir, dtype, verbose):
+        original(self, model_dir, dtype, verbose)
+        sanitize_vision_weights(self.vision)
+
+    MiniMaxH3TextEncoder._load_weights = _load_weights
+
+
+def sanitize_vision_weights(vision) -> None:
+    """Run mlx-vlm's `sanitize` over an already-loaded vision module, in place."""
+    if vision is None:
+        return
+    import mlx.core as mx
+    from mlx.utils import tree_flatten, tree_unflatten
+
+    sanitized = vision.sanitize(dict(tree_flatten(vision.parameters())))
+    vision.update(tree_unflatten(list(sanitized.items())))
+    mx.eval(vision.parameters())
+
+
+# The merge the pinned port performs instead of a scatter. Asserted before the
+# replacement below is installed, so the day upstream fixes this the patch says
+# so loudly rather than shadowing a working implementation forever.
+PINNED_BROADCAST_MERGE = "mx.where(image_mask[..., None], hidden.astype(inputs_embeds.dtype)[None], inputs_embeds)"
+
+
+def install_vision_embed_merge() -> None:
+    """Scatter a keyframe's vision rows into the tokens that stand for them.
+
+    `<|image_pad|>` rows are a minority of the request — the port's own
+    `build_request` wraps them in vision-start/end markers, a `<Picture N>:` label
+    and then the whole prompt — but the pinned encode merges them with
+    `mx.where(image_mask, hidden, inputs_embeds)`, which broadcasts and therefore
+    only lines up when the sequence is nothing BUT image tokens. Any real
+    prompt + keyframe pair dies in `[broadcast_shapes]` before a single DiT step.
+
+    The replacement re-runs the pinned encode's own steps and swaps that one line
+    for mlx-vlm's `merge_input_ids_with_image_features`, the scatter this is
+    modelled on (it also raises when the token and feature counts disagree, which
+    the broadcast could never check). A text-only request never reaches the merge,
+    so it is handed straight back to the pinned implementation untouched.
+    """
+    import inspect
+
+    from minimax_h3_mlx.text_encoder import MiniMaxH3TextEncoder
+
+    original = getattr(MiniMaxH3TextEncoder, "encode", None)
+    if original is None:
+        raise RuntimeError(
+            "The pinned MiniMax H3 runtime no longer exposes MiniMaxH3TextEncoder.encode, so a "
+            "keyframe cannot be merged into the prompt. Render text-only, or update PortOS for "
+            "the new pin."
+        )
+    if PINNED_BROADCAST_MERGE not in inspect.getsource(original):
+        raise RuntimeError(
+            "The pinned MiniMax H3 runtime no longer merges keyframe embeddings the way PortOS "
+            "corrects for; re-check the pin before rendering with a keyframe."
+        )
+
+    def encode(self, prompt: str, images: list | None = None):
+        # A text-only request never reaches the merge, so it goes back to the
+        # pinned implementation before this even imports what the fix needs.
+        if not images:
+            return original(self, prompt, images)
+
+        import mlx.core as mx
+        import numpy as np
+        from mlx_vlm.models.qwen3_vl.language import LanguageModel
+        from mlx_vlm.models.qwen3_vl.qwen3_vl import Model
+
+        if self.vision is None:
+            raise ValueError("This encoder was built with `load_vision=False`; it cannot take images.")
+
+        input_ids, token_tags, vision_inputs = self.build_request(prompt, images)
+        pixel_values, grid_np = vision_inputs
+        grid_thw = mx.array(grid_np.astype(np.int32))
+        hidden, deepstack_embeds = self.vision(
+            mx.array(pixel_values).astype(self.dtype), grid_thw, output_hidden_states=True
+        )
+        inputs_embeds = self.language.embed_tokens(input_ids)
+        # H3 emits no `<|video_pad|>`: its keyframes are image tokens that the DiT
+        # layout later tags as video rows, so both token ids the merge ORs over are
+        # the image one.
+        inputs_embeds, image_mask = Model.merge_input_ids_with_image_features(
+            hidden.astype(inputs_embeds.dtype),
+            inputs_embeds,
+            input_ids,
+            self.image_token_id,
+            self.image_token_id,
+        )
+        position_ids, _ = LanguageModel.get_rope_index(
+            self, input_ids, image_grid_thw=grid_thw, video_grid_thw=None, attention_mask=None
+        )
+        hidden_states = self._hidden_states(
+            input_ids,
+            position_ids,
+            inputs_embeds=inputs_embeds,
+            visual_pos_masks=image_mask[..., 0],
+            deepstack_visual_embeds=deepstack_embeds,
+        )
+        mx.eval(hidden_states)
+        return hidden_states, token_tags
+
+    MiniMaxH3TextEncoder.encode = encode
 
 
 def write_final_norm_shard(path: Path, key: str, hidden_size: int) -> None:
@@ -357,6 +570,15 @@ def main() -> int:
 
     from minimax_h3_mlx.media import save_mp4
     from minimax_h3_mlx.pipeline import MiniMaxH3Pipeline
+
+    # The three keyframe-path corrections, installed before the pipeline is built
+    # so the encoder is already patched when it loads and first reads a keyframe.
+    # Only an image-conditioned render needs them, and only it ever hit the bugs.
+    if images:
+        install_vision_weight_sanitizer()
+        install_vision_embed_merge()
+        if not torch_image_stack_available():
+            install_pil_image_processor()
 
     # Substituted prompt conditioner. H3 reads the unnormalized hidden state
     # after Qwen3-VL language layer 49, so any checkpoint carrying the same

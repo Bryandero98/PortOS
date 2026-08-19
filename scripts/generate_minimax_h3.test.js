@@ -498,4 +498,246 @@ describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
     ].join('\n')}`);
     expect(output.trim()).toBe('10');
   });
+
+  // Keyframe conditioning is the one path with no torch under it: the MLX lock
+  // ships neither torch nor torchvision, and transformers 5 routes every auto
+  // image-processor load through them. Text-only renders never touch it, which
+  // is why image-to-video was the only mode that failed.
+  it('reads the runtime for the torch stack the auto processor needs', () => {
+    const output = runPython(`${importRunner}\n${[
+      'import json',
+      'present = {"torch": object(), "torchvision": object(), "numpy": object()}',
+      'def fake_find_spec(name):',
+      '    return present.get(name)',
+      'runner.importlib.util.find_spec = fake_find_spec',
+      'both = runner.torch_image_stack_available()',
+      'present.pop("torchvision")',
+      'vision_only = runner.torch_image_stack_available()',
+      'present.pop("torch")',
+      'neither = runner.torch_image_stack_available()',
+      'print(json.dumps([both, vision_only, neither]))',
+    ].join('\n')}`);
+    // torch alone is not enough: it is the torchvision-backed video processor
+    // that `AutoProcessor.from_pretrained` builds and dies on.
+    expect(JSON.parse(output)).toEqual([true, false, false]);
+  });
+
+  it('loads the PIL twin of the image processor the checkpoint declares', () => {
+    const output = runPython(`${importRunner}\n${[
+      'import json, sys, tempfile, types',
+      'loaded = {}',
+      'class FakePil:',
+      '    @classmethod',
+      '    def from_pretrained(cls, path):',
+      '        loaded["path"] = path',
+      '        return "pil-image-processor"',
+      'transformers = types.ModuleType("transformers")',
+      'transformers.__version__ = "5.14.1"',
+      'transformers.Qwen2VLImageProcessorPil = FakePil',
+      'sys.modules["transformers"] = transformers',
+      'with tempfile.TemporaryDirectory() as temp:',
+      '    processor = Path(temp) / "processor"',
+      '    processor.mkdir()',
+      // The checkpoint names the torchvision class; the twin is derived off the
+      // `Fast`-stripped base name rather than hardcoded to one checkpoint.
+      '    (processor / "preprocessor_config.json").write_text(json.dumps({"image_processor_type": "Qwen2VLImageProcessorFast"}))',
+      '    result = runner.load_pil_image_processor(processor)',
+      '    print(json.dumps({"result": result, "path": loaded["path"] == str(processor)}))',
+    ].join('\n')}`);
+    expect(JSON.parse(output)).toEqual({ result: 'pil-image-processor', path: true });
+  });
+
+  it.each([
+    ['{}', /names no image_processor_type/],
+    ['{"image_processor_type": "InventedImageProcessor"}', /exposes no InventedImageProcessorPil/],
+  ])('refuses a processor config it cannot resolve a PIL twin from (%s)', (config, expected) => {
+    const output = runPython(`${importRunner}\n${[
+      'import sys, tempfile, types',
+      'transformers = types.ModuleType("transformers")',
+      'transformers.__version__ = "5.14.1"',
+      'sys.modules["transformers"] = transformers',
+      'with tempfile.TemporaryDirectory() as temp:',
+      '    processor = Path(temp) / "processor"',
+      '    processor.mkdir()',
+      `    (processor / "preprocessor_config.json").write_text(${JSON.stringify(config)})`,
+      '    try:',
+      '        runner.load_pil_image_processor(processor)',
+      '    except RuntimeError as exc:',
+      '        print(str(exc))',
+      '    else:',
+      '        raise SystemExit("an unresolvable processor config was accepted")',
+    ].join('\n')}`);
+    expect(output).toMatch(expected);
+  });
+
+  // The encoder reads exactly one thing off its processor, so the twin is bound
+  // to that one attribute: building the rest is what pulls in the video
+  // processor nothing here uses.
+  it('binds the PIL twin to the only sub-processor the pinned encoder reads', () => {
+    const output = runPython(`${importRunner}\n${[
+      'import json, sys, types',
+      'class FakeEncoder:',
+      '    def __init__(self, model_dir):',
+      '        self._model_dir = Path(model_dir)',
+      '        self._processor = None',
+      '    @property',
+      '    def processor(self):',
+      '        raise AssertionError("the pinned auto-processor property must not run")',
+      'module = types.ModuleType("minimax_h3_mlx.text_encoder")',
+      'module.MiniMaxH3TextEncoder = FakeEncoder',
+      'sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
+      'sys.modules["minimax_h3_mlx.text_encoder"] = module',
+      'seen = []',
+      'runner.load_pil_image_processor = lambda directory: seen.append(directory) or "pil-image-processor"',
+      'runner.install_pil_image_processor()',
+      'encoder = FakeEncoder("/checkpoint/text_encoder")',
+      'first = encoder.processor',
+      'print(json.dumps({',
+      '    "image_processor": first.image_processor,',
+      '    "cached": encoder.processor is first,',
+      '    "loads": [str(p) for p in seen],',
+      '}))',
+    ].join('\n')}`);
+    const result = JSON.parse(output);
+    expect(result.image_processor).toBe('pil-image-processor');
+    // One load per encoder — the pinned property memoizes on `_processor` and
+    // the twin has to keep doing that or every keyframe re-reads the config.
+    expect(result.cached).toBe(true);
+    // Resolved off the encoder's own model dir, so a composed text-encoder shim
+    // root keeps pointing at the processor it linked through.
+    expect(result.loads).toEqual([join('/checkpoint', 'processor')]);
+  });
+
+  it('refuses to bind a twin onto a pin with no processor property', () => {
+    const output = runPython(`${importRunner}\n${[
+      'import sys, types',
+      'class Bare: pass',
+      'module = types.ModuleType("minimax_h3_mlx.text_encoder")',
+      'module.MiniMaxH3TextEncoder = Bare',
+      'sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
+      'sys.modules["minimax_h3_mlx.text_encoder"] = module',
+      'try:',
+      '    runner.install_pil_image_processor()',
+      'except RuntimeError as exc:',
+      '    print(str(exc))',
+      'else:',
+      '    raise SystemExit("a pin with no processor property was accepted")',
+    ].join('\n')}`);
+    expect(output).toMatch(/no longer exposes MiniMaxH3TextEncoder\.processor/);
+  });
+
+  // mlx-vlm's loader sanitizes `patch_embed.proj.weight` into MLX's conv layout;
+  // the pinned port loads the safetensors itself and skips it, so the tower gets
+  // torch's `(C_out, C_in, kD, kH, kW)` and conv3d rejects the first keyframe.
+  it('sanitizes the vision tower after the pinned load, not instead of it', () => {
+    const output = runPython(`${importRunner}\n${[
+      'import json, sys, types',
+      'order = []',
+      'class FakeEncoder:',
+      '    def _load_weights(self, model_dir, dtype, verbose):',
+      '        order.append(("pinned load", str(model_dir), str(dtype), verbose))',
+      '        self.vision = "vision-tower"',
+      'module = types.ModuleType("minimax_h3_mlx.text_encoder")',
+      'module.MiniMaxH3TextEncoder = FakeEncoder',
+      'sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
+      'sys.modules["minimax_h3_mlx.text_encoder"] = module',
+      'runner.sanitize_vision_weights = lambda vision: order.append(("sanitize", vision))',
+      'runner.install_vision_weight_sanitizer()',
+      'FakeEncoder()._load_weights(Path("/checkpoint/text_encoder"), "bfloat16", False)',
+      'print(json.dumps(order))',
+    ].join('\n')}`);
+    // The pinned load runs first and unchanged — the correction is applied to
+    // what it produced, so a pin that starts loading a sanitized weight keeps
+    // working (mlx-vlm's own shape check makes the second pass a no-op).
+    expect(JSON.parse(output)).toEqual([
+      ['pinned load', join('/checkpoint', 'text_encoder'), 'bfloat16', false],
+      ['sanitize', 'vision-tower'],
+    ]);
+  });
+
+  it('refuses to sanitize a pin with no _load_weights hook', () => {
+    const output = runPython(`${importRunner}\n${[
+      'import sys, types',
+      'class Bare: pass',
+      'module = types.ModuleType("minimax_h3_mlx.text_encoder")',
+      'module.MiniMaxH3TextEncoder = Bare',
+      'sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
+      'sys.modules["minimax_h3_mlx.text_encoder"] = module',
+      'try:',
+      '    runner.install_vision_weight_sanitizer()',
+      'except RuntimeError as exc:',
+      '    print(str(exc))',
+      'else:',
+      '    raise SystemExit("a pin with no _load_weights hook was accepted")',
+    ].join('\n')}`);
+    expect(output).toMatch(/no longer exposes MiniMaxH3TextEncoder\._load_weights/);
+  });
+
+  it('leaves the vision tower alone when the encoder built none', () => {
+    const output = runPython(`${importRunner}\n${[
+      'runner.sanitize_vision_weights(None)',
+      'print("ok")',
+    ].join('\n')}`);
+    // Reached on a text-only encoder (`load_vision=False`); importing mlx to
+    // sanitize nothing would cost a load the run does not need.
+    expect(output.trim()).toBe('ok');
+  });
+
+  // The pinned encode merges the keyframe's vision rows with a BROADCAST, which
+  // only lines up when the request is nothing but image tokens — every real
+  // prompt + keyframe pair dies in `[broadcast_shapes]`. The correction is
+  // asserted against the pin so it retires itself if upstream ever fixes it.
+  it.each([
+    ['inputs_embeds = mx.where(image_mask[..., None], hidden.astype(inputs_embeds.dtype)[None], inputs_embeds)', null],
+    ['inputs_embeds = merge(image_mask, hidden, inputs_embeds)', /no longer merges keyframe embeddings/],
+  ])('installs the scatter only over a pin that still merges by broadcast (%s)', (merge, expected) => {
+    const output = runPython(`${importRunner}\n${[
+      'import importlib.util, sys, tempfile, types',
+      'with tempfile.TemporaryDirectory() as temp:',
+      // inspect.getsource needs a real file, so the stand-in pin is written out
+      // and imported rather than declared inline.
+      '    pin = Path(temp) / "pinned_text_encoder.py"',
+      '    pin.write_text("\\n".join([',
+      '        "class MiniMaxH3TextEncoder:",',
+      '        "    def encode(self, prompt, images=None):",',
+      // Carried as a comment: the stand-in only has to look like the pin to
+      // `inspect.getsource`, not run its body.
+      `        "        # ${merge}",`,
+      '        "        return (\'pinned\', prompt, images)",',
+      '    ]))',
+      '    spec = importlib.util.spec_from_file_location("minimax_h3_mlx.text_encoder", pin)',
+      '    module = importlib.util.module_from_spec(spec)',
+      '    sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
+      '    sys.modules["minimax_h3_mlx.text_encoder"] = module',
+      '    spec.loader.exec_module(module)',
+      '    try:',
+      '        runner.install_vision_embed_merge()',
+      '    except RuntimeError as exc:',
+      '        print("REFUSED", str(exc))',
+      '    else:',
+      // A text-only request has no merge to correct, so it must come back from
+      // the pinned implementation untouched.
+      '        print("INSTALLED", module.MiniMaxH3TextEncoder().encode("a prompt"))',
+    ].join('\n')}`);
+    if (expected) expect(output).toMatch(expected);
+    else expect(output.trim()).toBe("INSTALLED ('pinned', 'a prompt', None)");
+  });
+
+  it('refuses to correct a pin with no encode hook', () => {
+    const output = runPython(`${importRunner}\n${[
+      'import sys, types',
+      'class Bare: pass',
+      'module = types.ModuleType("minimax_h3_mlx.text_encoder")',
+      'module.MiniMaxH3TextEncoder = Bare',
+      'sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
+      'sys.modules["minimax_h3_mlx.text_encoder"] = module',
+      'try:',
+      '    runner.install_vision_embed_merge()',
+      'except RuntimeError as exc:',
+      '    print(str(exc))',
+      'else:',
+      '    raise SystemExit("a pin with no encode hook was accepted")',
+    ].join('\n')}`);
+    expect(output).toMatch(/no longer exposes MiniMaxH3TextEncoder\.encode/);
+  });
 });
