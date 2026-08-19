@@ -300,25 +300,32 @@ export async function installLlamaServer({ onProgress = () => {} } = {}) {
     child.on('error', (err) => {
       reject(new ServerError(`Failed to run brew: ${err.message}`, { status: 500 }));
     });
+    // Async listener on a child-process event: it runs outside the Express
+    // lifecycle AND outside this Promise executor's own throw path, so an
+    // unguarded throw here would surface as an unhandled rejection while the
+    // install request hung forever. Route every failure to `reject`.
     child.on('exit', async (code) => {
-      let binaryPath = resolveLlamaServerBinary();
-      let linkOutput = '';
+      try {
+        let binaryPath = resolveLlamaServerBinary();
+        let linkOutput = '';
 
-      // `brew install` exits 0 without linking when the keg is already
-      // installed but unlinked ("Warning: llama.cpp X is already installed,
-      // it's just not linked."). Link it explicitly rather than leaving that
-      // warning as a dead end for the caller.
-      if (!binaryPath && code === 0) {
-        onProgress({ event: 'progress', message: 'llama.cpp keg is installed but not linked — linking…' });
-        const { linked, output } = await linkLlamaCpp(env);
-        linkOutput = output;
-        if (linked) binaryPath = resolveLlamaServerBinary();
-      }
+        // `brew install` exits 0 without linking when the keg is already
+        // installed but unlinked ("Warning: llama.cpp X is already installed,
+        // it's just not linked."). Link it explicitly rather than leaving that
+        // warning as a dead end for the caller.
+        if (!binaryPath && code === 0) {
+          onProgress({ event: 'progress', message: 'llama.cpp keg is installed but not linked — linking…' });
+          const { linked, output } = await linkLlamaCpp(env);
+          linkOutput = output;
+          if (linked) binaryPath = resolveLlamaServerBinary();
+        }
 
-      if (binaryPath) {
-        onProgress({ event: 'complete', message: `llama.cpp installed successfully (${binaryPath})` });
-        resolve({ success: true, message: 'llama.cpp installed successfully', binaryPath });
-      } else {
+        if (binaryPath) {
+          onProgress({ event: 'complete', message: `llama.cpp installed successfully (${binaryPath})` });
+          resolve({ success: true, message: 'llama.cpp installed successfully' });
+          return;
+        }
+
         // A `brew link` conflict can list every clashing file, so cap what
         // rides along into the error message.
         const hint = linkOutput
@@ -328,6 +335,8 @@ export async function installLlamaServer({ onProgress = () => {} } = {}) {
           ? `brew completed but llama-server was not found on PATH — ${hint}`
           : `brew install llama.cpp failed (exit code ${code})`;
         reject(new ServerError(msg, { status: 500 }));
+      } catch (err) {
+        reject(new ServerError(`Failed to verify the llama.cpp install: ${err.message}`, { status: 500 }));
       }
     });
   });

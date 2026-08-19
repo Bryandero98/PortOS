@@ -198,6 +198,23 @@ describe('llamaServerManager', () => {
     await expect(installLlamaServer()).rejects.toThrow(/Could not symlink bin\/llama-server/);
   });
 
+  it('rejects instead of hanging when the link spawn throws synchronously', async () => {
+    // The exit listener is async and lives inside a Promise executor, so an
+    // unguarded throw would escape as an unhandled rejection while the install
+    // request never settled.
+    vi.spyOn(commandExistsModule, 'commandExists').mockImplementation(async (cmd) => cmd === 'brew');
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(null);
+
+    vi.spyOn(childProcess, 'spawn').mockImplementation((cmd, args) => {
+      if (args[0] === 'link') throw new Error('spawn EACCES');
+      const child = fakeSpawnProcess();
+      setTimeout(() => child.emit('exit', 0), 10);
+      return child;
+    });
+
+    await expect(installLlamaServer()).rejects.toThrow(/Failed to verify the llama\.cpp install: spawn EACCES/);
+  });
+
   it('rejects with a `brew link` hint when linking does not resolve the binary', async () => {
     vi.spyOn(commandExistsModule, 'commandExists').mockImplementation(async (cmd) => cmd === 'brew');
     vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(null);
