@@ -253,10 +253,10 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // declared the reviewer unavailable, and merged its PR on a self-review. Every
   // claim/plan prompt that enumerates the CLI reviewers must name the binary.
   it.each([
-    ['plan-task', 15],
-    ['claim-issue', 14],
-    ['claim-issue-gitlab', 13],
-    ['claim-issue-jira', 11],
+    ['plan-task', 16],
+    ['claim-issue', 15],
+    ['claim-issue-gitlab', 14],
+    ['claim-issue-jira', 12],
   ])('%s v%d names the antigravity reviewer\'s `agy` binary, preserving the pre-`agy` default', (key, version) => {
     const current = DEFAULT_TASK_PROMPTS[key];
     expect(PROMPT_VERSIONS[key]).toBe(version);
@@ -278,6 +278,45 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(preAgy).toBeDefined();
     expect(preAgy).not.toContain('is UNSATISFIED, not clean');
     expect(preAgy).not.toBe(current);
+  });
+
+  // Every reviewer that can read a working tree now runs BEFORE the PR/MR is
+  // opened; only the ones that genuinely need an open PR — `@<login>` reviewers
+  // and any auto-requested review bot — plus CI run after it. Opening first made
+  // every reviewer finding a follow-up commit on an already-public PR, and it
+  // pointed the local-LLM reviewers at a `gh pr diff` that could not exist yet.
+  it.each([
+    ['plan-task', 16],
+    ['claim-issue', 15],
+    ['claim-issue-gitlab', 14],
+    ['claim-issue-jira', 12],
+  ])('%s v%d reviews locally before it opens the PR/MR', (key, version) => {
+    const current = DEFAULT_TASK_PROMPTS[key];
+    expect(PROMPT_VERSIONS[key]).toBe(version);
+
+    // The configured list is split by WHERE a reviewer can run.
+    expect(current).toContain('LOCAL reviewers');
+    expect(current).toMatch(/\*\*(PR|MR)-SIDE reviewers/);
+    // …and the local half reads the branch, never a diff that needs an open PR.
+    expect(current).toMatch(/BRANCH diff, not an? (PR|MR|MR\/PR) diff/);
+
+    // Ordering is the whole point: inside the ship phase, the local review step
+    // precedes the create command. Sliced from the review heading because
+    // plan-task's Phase 3b opens an unrelated clarification PR much earlier.
+    const shipSection = current.slice(current.indexOf('Review locally'));
+    const localIdx = shipSection.indexOf('Run each LOCAL reviewer');
+    const createIdx = shipSection.search(/gh pr create|glab mr create/);
+    expect(localIdx).toBeGreaterThan(-1);
+    expect(createIdx).toBeGreaterThan(localIdx);
+
+    // The two stored prompt types keep their pre-split body so an install
+    // holding it is recognized as non-customized and auto-upgraded.
+    const previous = PREVIOUS_DEFAULT_PROMPTS[key];
+    if (previous) {
+      const preSplit = previous.find((p) => !p.includes('LOCAL reviewers'));
+      expect(preSplit).toBeDefined();
+      expect(preSplit).not.toBe(current);
+    }
   });
 
   // A branch created from a remote default-branch ref normally inherits that

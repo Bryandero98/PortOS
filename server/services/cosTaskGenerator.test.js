@@ -74,27 +74,28 @@ describe('claim reviewer resolution', () => {
     expect(normalizeClaimReviewers({ reviewers: ['copilot'] }, ['copilot'])).toEqual(['codex']);
   });
 
-  it('keeps local reviewers and emits forge-specific, fail-closed service commands', () => {
-    const github = buildLocalReviewerInstructions('claim-issue', ['ollama'], { ollama: 'example-model' }, { ollama: 'high' });
-    expect(github).toContain('gh pr diff');
-    expect(github).not.toContain('$PR_NUMBER');
-    expect(github).toContain('--arg backend ollama');
-    expect(github).toContain('--arg model example-model');
-    expect(github).toContain('--arg effort high');
-    expect(github).toContain('run-local-code-review.mjs');
-    expect(github).not.toContain('localhost:5555');
-    expect(github).toContain('missing/empty findings is INCONCLUSIVE');
+  // The claim prompts run their local reviewers BEFORE the PR/MR is opened, so
+  // the diff has to come from the branch. A forge command (`gh pr diff` /
+  // `glab mr diff`) would resolve nothing at that point and the one review pass
+  // that must succeed would fail closed on every run.
+  it('resolves the review diff from the branch, never from an open PR/MR', () => {
+    const pinned = buildLocalReviewerInstructions(['ollama'], { ollama: 'example-model' }, { ollama: 'high' });
+    expect(pinned).toContain('git diff "origin/$DEFAULT_BRANCH...HEAD"');
+    expect(pinned).toContain('refs/remotes/origin/HEAD');
+    expect(pinned).toContain('${DEFAULT_BRANCH:-main}');
+    expect(pinned).not.toContain('gh pr diff');
+    expect(pinned).not.toContain('glab mr diff');
+    expect(pinned).toContain('--arg backend ollama');
+    expect(pinned).toContain('--arg model example-model');
+    expect(pinned).toContain('--arg effort high');
+    expect(pinned).toContain('run-local-code-review.mjs');
+    expect(pinned).not.toContain('localhost:5555');
+    expect(pinned).toContain('missing/empty findings is INCONCLUSIVE');
 
-    const gitlab = buildLocalReviewerInstructions('claim-issue-gitlab', ['lmstudio']);
-    expect(gitlab).toContain('glab mr list --source-branch');
-    expect(gitlab).toContain('glab mr diff "$MR_IID"');
-    expect(gitlab).not.toContain('$MR_NUMBER');
-    expect(gitlab).not.toContain('gh pr diff');
-
-    const generic = buildLocalReviewerInstructions('plan-task', ['ollama']);
-    expect(generic).toContain('command -v gh');
-    expect(generic).toContain('command -v glab');
-    expect(generic).not.toContain('<gh pr diff');
+    const bare = buildLocalReviewerInstructions(['lmstudio']);
+    expect(bare).toContain('git diff "origin/$DEFAULT_BRANCH...HEAD"');
+    expect(bare).toContain('--arg backend lmstudio');
+    expect(bare).not.toContain('--arg model');
   });
 });
 
@@ -356,7 +357,7 @@ describe('{reviewers} interpolation honors Code Review Defaults', () => {
   it('keeps local-LLM reviewers and appends their fail-closed invocation procedure', () => {
     expect(GEN_SRC).not.toContain('.filter((r) => !LOCAL_LLM_REVIEWERS.includes(r))');
     expect(GEN_SRC).toContain('buildReviewersCsv(promptReviewers, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels, promptReviewerEfforts)');
-    expect(GEN_SRC).toContain('appendLocalReviewerInstructions(promptTaskType, promptReviewers');
+    expect(GEN_SRC).toContain('buildLocalReviewerInstructions(promptReviewers');
   });
 
   it('keeps the reasoning-effort PROSE on every claim path (they emit no --review-with)', () => {
