@@ -70,7 +70,7 @@ import {
 import { emitRecordUpdated, emitRecordDeleted, autoSubscribeRecordToAllPeers } from '../sharing/recordEvents.js';
 import { commissionToCron } from './directive.js';
 import { getAbilityAdapter } from './abilityAdapters.js';
-import { normalizeMusicTasteConfig, sanitizeMusicTasteRecipe } from './musicTasteRecipe.js';
+import { normalizeMusicTasteConfig, sanitizeMusicTasteRecipe, renderMusicTasteRecipePrompt } from './musicTasteRecipe.js';
 import {
   recordFeedback,
   listFeedbackForCommission,
@@ -98,6 +98,27 @@ export const MAX_RUN_PROMPT_LEN = 4000;
 const clampRunPrompt = (value) => (typeof value === 'string' && value.length > MAX_RUN_PROMPT_LEN
   ? `${value.slice(0, MAX_RUN_PROMPT_LEN - 1)}…`
   : value);
+
+/**
+ * The authoritative audio prompt for a taste-enabled music run.
+ *
+ * `promptUsed` is a HEAD excerpt of the directive goal, and the music adapter
+ * composes that goal as lead + intent, THEN the taste recipe — so once the intent
+ * fills the excerpt, the recipe's anchors and its original-work constraint fall off
+ * the end and the render loses them. Re-render the recipe from the run's own stored
+ * `tasteRecipe` and reserve room for it, the same reserve-then-clamp shape
+ * `composeDirectiveGoal` uses for the feedback digest: the bounded, authoritative
+ * part is never what truncation eats.
+ */
+function composeMusicRunPrompt(run) {
+  const brief = isStr(run?.promptUsed) ? run.promptUsed : '';
+  const taste = renderMusicTasteRecipePrompt(run?.tasteRecipe);
+  // Short goals still carry the recipe verbatim in the excerpt — don't say it twice.
+  if (!taste || brief.includes(taste)) return brief;
+  const reserve = taste.length + 1; // +1 for the joining space
+  const head = clampRunPrompt(brief.slice(0, Math.max(0, MAX_RUN_PROMPT_LEN - reserve)));
+  return `${head} ${taste}`.trim();
+}
 // Feedback is kept inline on the commission record (not a separate federated
 // store) — Phase 1's store shape reserved `feedback[]` precisely so Phase 2 adds
 // the rate surface without a schema change. Capped like runs so a long-lived
@@ -758,7 +779,7 @@ export async function getCommissionMusicContextForProject(projectId) {
     return {
       commissionId: commission.id,
       runId: run.id,
-      prompt: run.promptUsed,
+      prompt: composeMusicRunPrompt(run),
       tasteRecipe: run.tasteRecipe,
       musicGeneration: run.musicGeneration,
     };
