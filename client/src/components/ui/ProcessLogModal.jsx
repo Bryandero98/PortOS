@@ -3,7 +3,7 @@
  *
  * Built so an operator who doesn't know where the system logs live can open the
  * relevant log straight from wherever an error surfaced (e.g. a failed AI run in
- * RunsHistoryPage). Fetches a static tail via `getProcessLogs` (not the live SSE
+ * the CoS Runs tab). Fetches a static tail via `getProcessLogs` (not the live SSE
  * stream — a past failure's context is already written), with a process picker,
  * a tail-length selector, and a manual refresh.
  *

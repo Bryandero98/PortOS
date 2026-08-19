@@ -5,7 +5,6 @@ import { MemoryRouter } from 'react-router';
 const api = vi.hoisted(() => ({
   getProviders: vi.fn(),
   getApps: vi.fn(),
-  getRuns: vi.fn(),
   getProviderStatuses: vi.fn(),
   getOpenCodeInstallStatus: vi.fn(),
   getSampleProviders: vi.fn(),
@@ -52,7 +51,6 @@ describe('AIProviders page load error handling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getApps.mockResolvedValue([]);
-    api.getRuns.mockResolvedValue({ runs: [] });
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
     api.getOpenCodeInstallStatus.mockResolvedValue({ installed: false, npmAvailable: true });
   });
@@ -154,7 +152,6 @@ describe('handleAddSample error handling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getApps.mockResolvedValue([]);
-    api.getRuns.mockResolvedValue({ runs: [] });
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
     api.getOpenCodeInstallStatus.mockResolvedValue({ installed: false, npmAvailable: true });
     api.getProviders.mockResolvedValue({
@@ -191,7 +188,6 @@ describe('handleAddAllSamples partial failure handling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getApps.mockResolvedValue([]);
-    api.getRuns.mockResolvedValue({ runs: [] });
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
     api.getOpenCodeInstallStatus.mockResolvedValue({ installed: false, npmAvailable: true });
     api.getProviders.mockResolvedValue({
@@ -237,7 +233,6 @@ describe('CoS Agent Runner allowlist warning', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getApps.mockResolvedValue([]);
-    api.getRuns.mockResolvedValue({ runs: [] });
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
     api.getOpenCodeInstallStatus.mockResolvedValue({ installed: false, npmAvailable: true });
   });
@@ -337,7 +332,6 @@ describe('Local num_ctx field', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getApps.mockResolvedValue([]);
-    api.getRuns.mockResolvedValue({ runs: [] });
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
     api.getOpenCodeInstallStatus.mockResolvedValue({ installed: false, npmAvailable: true });
   });
@@ -392,7 +386,6 @@ describe('OpenCode OrcaRouter key hint', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getApps.mockResolvedValue([]);
-    api.getRuns.mockResolvedValue({ runs: [] });
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
     api.getOpenCodeInstallStatus.mockResolvedValue({ installed: true, npmAvailable: true });
    });

@@ -66,7 +66,7 @@ PortOS is designed for personal/developer use on trusted networks. It implements
 | POST | `/providers/:id/test` | Test provider connectivity |
 | PUT | `/providers/active` | Set active provider |
 
-### AI Runs (DevTools)
+### AI Runs
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
