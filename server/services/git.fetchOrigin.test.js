@@ -121,4 +121,17 @@ describe('getRemoteBranches fetch freshness window & deduplication', () => {
     expect(fetchCalls).toHaveLength(1);
     expect(fetchCalls[0][0]).toEqual(['fetch', 'origin']);
   });
+
+  it('bypasses freshness window when getRemoteBranches is called with force option', async () => {
+    execGitMock.mockResolvedValue({ stdout: 'origin/main|2026-08-19|author\n', stderr: '', exitCode: 0 });
+
+    await getRemoteBranches('/repo-forced');
+    const callsFirst = execGitMock.mock.calls.filter(c => c[0][0] === 'fetch');
+    expect(callsFirst).toHaveLength(1);
+
+    // Second call with force = true
+    await getRemoteBranches('/repo-forced', { force: true });
+    const callsSecond = execGitMock.mock.calls.filter(c => c[0][0] === 'fetch');
+    expect(callsSecond).toHaveLength(2);
+  });
 });

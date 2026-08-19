@@ -145,10 +145,10 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
 
   const loadGitInfo = useCallback(() => loadGitData({ includeRemote: false }), [loadGitData]);
 
-  const loadRemoteBranches = useCallback(async () => {
+  const loadRemoteBranches = useCallback(async (opts = {}) => {
     if (!repoPath) return;
     setLoadingRemote(true);
-    const result = await api.getRemoteBranches(repoPath).catch(() => null);
+    const result = await api.getRemoteBranches(repoPath, opts).catch(() => null);
     if (result) {
       setRemoteBranches(result.branches || []);
       setDefaultBranch(result.defaultBranch || 'main');
@@ -769,7 +769,7 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
                   </div>
                 )}
                 <button
-                  onClick={loadRemoteBranches}
+                  onClick={() => loadRemoteBranches({ force: true })}
                   disabled={loadingRemote}
                   className={`text-xs ${touchBtnCls} text-port-accent hover:underline disabled:opacity-50`}
                 >

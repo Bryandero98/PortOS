@@ -916,9 +916,9 @@ export async function ensureLatest(dir) {
  * Returns branches that exist on origin, indicating whether each has been
  * fully merged into the default branch and whether a local copy exists.
  */
-export async function getRemoteBranches(dir) {
-  // Fetch latest refs if not fresh within window
-  if (!isFetchFresh(dir)) {
+export async function getRemoteBranches(dir, { force = false } = {}) {
+  // Fetch latest refs if forced or not fresh within window
+  if (force || !isFetchFresh(dir)) {
     if (activeFetches.has(dir)) {
       await activeFetches.get(dir);
     } else {
