@@ -925,6 +925,13 @@ export async function mergeCommissionsFromSync(remoteRecords, { source = { via: 
   if (!Array.isArray(remoteRecords)) return { applied: false, count: 0 };
   const store = commissionStore();
   let changed = 0;
+  // Commissions whose tombstone arrived in THIS batch. The batch event below
+  // carries no id, so the project reconciler can't act on it — but a delete the
+  // user performed on another machine still has to stop the work THIS machine is
+  // running for that commission (the projects live here; only the brief travels).
+  // Collected on the transition only: re-emitting for an already-tombstoned record
+  // on every sync would re-stop a project the user had since resumed.
+  const newlyDeleted = [];
   for (const remote of remoteRecords) {
     const id = remote?.id;
     if (!isStr(id) || !COMMISSION_ID_RE.test(id)) continue;
@@ -938,12 +945,14 @@ export async function mergeCommissionsFromSync(remoteRecords, { source = { via: 
       }
       await store.writeRaw(id, next);
       await setSyncBaseHash(CREATIVE_COMMISSION_KIND, next.id, contentHashForRecord(CREATIVE_COMMISSION_KIND, next));
+      if (next.deleted === true && local?.deleted !== true) newlyDeleted.push(id);
       return true;
     });
     if (applied) changed += 1;
   }
   await flushBaseHashes();
   if (changed > 0) commissionEvents.emit('commission:changed', { action: 'merge' });
+  for (const id of newlyDeleted) commissionEvents.emit('commission:changed', { id, action: 'delete' });
   return changed === 0 ? { applied: false, count: 0 } : { applied: true, count: changed };
 }
 

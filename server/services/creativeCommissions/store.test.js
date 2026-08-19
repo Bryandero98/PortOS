@@ -222,6 +222,39 @@ describe('createCommission', () => {
   });
 });
 
+describe('mergeCommissionsFromSync — synced tombstone stops local work', () => {
+  const capture = async (fn) => {
+    const seen = [];
+    const onChange = (e) => seen.push(e);
+    commissionEvents.on('commission:changed', onChange);
+    try { await fn(); } finally { commissionEvents.off('commission:changed', onChange); }
+    return seen;
+  };
+
+  it('emits a per-id delete when a tombstone arrives, so the receiver stops the projects IT owns', async () => {
+    // Only the brief travels; the projects live on whichever machine minted them.
+    // The batch 'merge' event carries no id, so without this the reconciler no-ops
+    // and a commission deleted on another machine keeps generating here forever.
+    const created = await createCommission(validInput());
+    const events = await capture(() => mergeCommissionsFromSync([{
+      ...created, deleted: true, deletedAt: '2030-01-01T00:00:00.000Z',
+      briefUpdatedAt: '2030-01-01T00:00:00.000Z', updatedAt: '2030-01-01T00:00:00.000Z',
+    }]));
+    expect(events).toContainEqual({ id: created.id, action: 'delete' });
+  });
+
+  it('does NOT re-emit for a tombstone it already holds — a re-sync must not re-stop resumed work', async () => {
+    const created = await createCommission(validInput());
+    const tombstone = {
+      ...created, deleted: true, deletedAt: '2030-01-01T00:00:00.000Z',
+      briefUpdatedAt: '2030-01-01T00:00:00.000Z', updatedAt: '2030-01-01T00:00:00.000Z',
+    };
+    await mergeCommissionsFromSync([tombstone]);
+    const events = await capture(() => mergeCommissionsFromSync([tombstone]));
+    expect(events.filter((e) => e.action === 'delete')).toEqual([]);
+  });
+});
+
 describe('updateCommission — changed-field event payload', () => {
   // The project reconciler (creativeCommissions/projectControl.js) keys on this
   // payload to decide whether to tear down a commission's in-flight LLM stages.

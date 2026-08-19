@@ -232,6 +232,13 @@ export async function reconcileCommissionProjects({ id, action, fields } = {}) {
   }
   const commission = await readCommission(id);
   if (!commission) return { action: 'noop' };
+  // Tombstoned, but reached here on some action other than 'delete' (a restore
+  // that lost the LWW, a hand-fired event). Deleted outranks everything else:
+  // restarting a dead commission's stages would re-dispatch work the user removed.
+  if (commission.deleted) {
+    await stopCommissionProjects(id, { reason: 'Creative commission deleted', commission });
+    return { action: 'stopped' };
+  }
   if (commission.enabled === false) {
     await stopCommissionProjects(id, { reason: 'Creative commission paused', commission });
     return { action: 'stopped' };

@@ -315,6 +315,19 @@ describe('reconcileCommissionProjects', () => {
     expect(retireRunsMock).not.toHaveBeenCalled();
   });
 
+  it('stops (never restarts) a TOMBSTONED commission reached on a non-delete action', async () => {
+    // A restore that lost the LWW, or a synced tombstone arriving as an update:
+    // deleted outranks everything, or we re-dispatch work the user removed.
+    readRawMock.mockResolvedValue(commission({ deleted: true, enabled: true }));
+    listProjectsByCommissionIdMock.mockResolvedValue([wedged()]);
+
+    const result = await reconcileCommissionProjects({ id: 'commission-1', action: 'update', fields: ['assignment'] });
+
+    expect(result).toEqual({ action: 'stopped' });
+    expect(stopProjectMock).toHaveBeenCalledWith('cd-1', expect.objectContaining({ reason: 'Creative commission deleted' }));
+    expect(retireRunsMock).not.toHaveBeenCalled();
+  });
+
   it('restarts (never stops) the stages of an enabled commission whose provider changed', async () => {
     readRawMock.mockResolvedValue(commission());
     listProjectsByCommissionIdMock.mockResolvedValue([wedged()]);
