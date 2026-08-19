@@ -221,9 +221,9 @@ router.post('/sync', asyncHandler(async (req, res) => {
 
 // POST /api/git/remote-branches - Get remote branches with merge status
 router.post('/remote-branches', asyncHandler(async (req, res) => {
-  const { path } = req.body;
+  const { path, force } = req.body;
   assertAllowedWorkspace(path);
-  const result = await git.getRemoteBranches(path);
+  const result = await git.getRemoteBranches(path, { force });
   res.json(result);
 }));
 
