@@ -21,12 +21,13 @@ const CLI_REVIEWER_LIST = new Intl.ListFormat('en', { style: 'long', type: 'conj
   .format(MODEL_CAPABLE_CLI_REVIEWERS.map(reviewerLabel));
 
 // Global Code Review Defaults — the chain the Review Loop uses when a task or
-// task-type config didn't pin its own reviewers. Lives at the top of the AI
-// Providers page so adding a new provider and pointing reviews at it stay in
-// the same flow. Every per-reviewer control (model, `~opt`, `~max`) now lives in
-// the shared ReviewerPicker table (#3133), so this panel owns only the fetch of
-// the model option lists (via useReviewerModelOptions) and the save.
-export default function CodeReviewDefaultsPanel() {
+// task-type config didn't pin its own reviewers. Owns the Settings › Code
+// Reviewers tab (it used to sit at the top of the AI Providers page, where it
+// buried the provider list under a table most visits didn't need). Every
+// per-reviewer control (model, `~opt`, `~max`) lives in the shared
+// ReviewerPicker table (#3133), so this tab owns only the fetch of the model
+// option lists (via useReviewerModelOptions) and the save.
+export default function CodeReviewersTab() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);

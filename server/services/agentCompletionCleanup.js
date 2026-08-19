@@ -353,7 +353,7 @@ async function runCompletionCleanupSteps({ agentId, task, agent, agentState, eff
     // expected?") off a different expression than the one finalize used, and the
     // two silently disagree the moment a run's check throws or its finalize does.
     // Merge per-task reviewer metadata with the user's Code Review Defaults
-    // (AI Providers → Code Review Defaults panel). Settings I/O is cached
+    // (Settings → Code Reviewers page). Settings I/O is cached
     // inside the resolver, so this is effectively free even when invoked
     // from a tight CoS sweep.
     const reviewOptions = await resolveReviewLoopOptions(task?.metadata, { normalize: normalizeReviewers, isTruthyMeta });

@@ -36,9 +36,6 @@ vi.mock('../hooks/useLocalModels', () => ({
 vi.mock('../components/settings/SettingsTabsHeader', () => ({
   default: () => <div data-testid="settings-tabs-header" />,
 }));
-vi.mock('../components/providers/CodeReviewDefaultsPanel', () => ({
-  default: () => <div data-testid="code-review-defaults-panel" />,
-}));
 vi.mock('../components/install/RuntimeInstallModal', () => ({
   default: ({ open, streamMethod, flushMs }) => open ? <div data-testid="opencode-install-modal" data-stream-method={streamMethod} data-flush-ms={flushMs} /> : null,
 }));

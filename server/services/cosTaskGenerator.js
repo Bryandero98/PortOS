@@ -2833,7 +2833,7 @@ async function resolvePrWatcherBlock(app, taskType, metadata, taskSchedule) {
 async function buildImprovementTaskDescription({ promptTemplate, app, promptTaskType, metadata, blocks }) {
   // Resolve the `{reviewers}` the agent is told to run. When the task itself
   // didn't pin reviewers, fall back to the user's PortOS Code Review Defaults
-  // (AI Providers → Code Review Defaults) rather than the hardcoded `copilot` —
+  // (Settings → Code Reviewers) rather than the hardcoded `copilot` —
   // otherwise scheduled tasks like claim-issue, whose prompt drives the review
   // loop directly, would always tell the agent to use Copilot regardless of the
   // user's configured reviewers. Settings I/O failures degrade to the hardcoded
