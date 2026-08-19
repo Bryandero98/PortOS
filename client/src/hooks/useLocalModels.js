@@ -16,12 +16,20 @@ import { getLocalLlmStatus } from '../services/apiLocalLlm';
  * `ctxById` maps each installed model id to its native context window (tokens)
  * so pickers can show a "(32K ctx)" parenthetical without a second fetch.
  *
- * @returns {{ ollama: string[], lmstudio: string[], recommendations: { ollama: object|null, lmstudio: object|null }, ctxById: Record<string, number>, loading: boolean }}
+ * `installed` is the server's per-backend "is the app here at all" verdict —
+ * which counts a macOS LM Studio bundle with no `lms` shim and a running server
+ * with no CLI, so callers must NOT re-derive it from a bare binary probe. It
+ * stays `null` until the fetch resolves (and after a failed one), so a caller
+ * can tell "not fetched" from a confirmed `false` and never offers an install
+ * for an app it simply hasn't heard about yet.
+ *
+ * @returns {{ ollama: string[], lmstudio: string[], installed: { ollama: boolean|null, lmstudio: boolean|null }, recommendations: { ollama: object|null, lmstudio: object|null }, ctxById: Record<string, number>, loading: boolean }}
  */
 export default function useLocalModels() {
   const [state, setState] = useState({
     ollama: [],
     lmstudio: [],
+    installed: { ollama: null, lmstudio: null },
     recommendations: { ollama: null, lmstudio: null },
     ctxById: {},
     loading: true,
@@ -39,9 +47,13 @@ export default function useLocalModels() {
           const id = m.id || m.name;
           if (id && Number(m.contextLength) > 0) ctxById[id] = m.contextLength;
         }
+        const installedFlag = (backend) => (
+          typeof status?.[backend]?.installed === 'boolean' ? status[backend].installed : null
+        );
         setState({
           ollama: ids(status?.ollama?.models),
           lmstudio: ids(status?.lmstudio?.models),
+          installed: { ollama: installedFlag('ollama'), lmstudio: installedFlag('lmstudio') },
           recommendations: {
             ollama: status?.ollama?.recommendations?.editorial || null,
             lmstudio: status?.lmstudio?.recommendations?.editorial || null,
