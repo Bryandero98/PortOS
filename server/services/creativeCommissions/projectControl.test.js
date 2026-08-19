@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
+import { RUN_TERMINAL_STATUSES } from '../../lib/creativeDirectorPresets.js';
 
 // The raw store read (tombstone-inclusive) these paths run on.
 const readRawMock = vi.fn(async () => null);
@@ -31,15 +32,23 @@ const retireRunsMock = vi.fn(async () => ({ runs: 1, tasks: 1, agents: 1 }));
 vi.mock('../creativeDirector/stopProject.js', () => ({
   stopProject: (...a) => stopProjectMock(...a),
   retireRuns: (...a) => retireRunsMock(...a),
-  // The real (pure) filter — the restart path must narrow to the LLM stages, and a
-  // stubbed pass-through would hide it sweeping up plan-step render runs too.
+  // A stand-in for the real pure filter — the restart path must narrow to the LLM
+  // stages, and a pass-through stub would hide it sweeping up plan-step render
+  // runs. It reads the terminal set from the same presets leaf the real one does,
+  // so it cannot drift if RUN_TERMINAL_STATUSES gains a value. (Importing the real
+  // module here isn't an option: stopProject.js pulls in creativeDirector/local.js
+  // and with it the whole provider graph this suite deliberately mocks away.)
   inflightRuns: (project, kinds) => (project?.runs || []).filter((r) => r
-    && r.status !== 'completed' && r.status !== 'failed'
+    && !RUN_TERMINAL_STATUSES.has(r.status)
     && (!kinds || kinds.includes(r.kind))),
 }));
 
 const advanceMock = vi.fn(async () => {});
 vi.mock('../creativeDirector/planAdvance.js', () => ({ advanceAfterPlanStepSettled: (...a) => advanceMock(...a) }));
+// The legacy scene-loop counterpart. A directive-less project (a teaser a plan
+// step spawned) must go here instead — advanceAfterPlanStepSettled no-ops on it.
+const advanceSceneMock = vi.fn(async () => {});
+vi.mock('../creativeDirector/completionHook.js', () => ({ advanceAfterSceneSettled: (...a) => advanceSceneMock(...a) }));
 
 const {
   ledgerProjectIds,
@@ -58,7 +67,12 @@ const commission = (over = {}) => ({
   ...over,
 });
 
-const project = (over = {}) => ({ id: 'cd-1', status: 'planning', runs: [], ...over });
+// A commission fire always mints a directive-driven project; the legacy
+// scene-loop shape reaches this module only via a plan step's teaser (which
+// inherits the same commissionId), so it gets its own fixture below.
+const project = (over = {}) => ({
+  id: 'cd-1', status: 'planning', runs: [], directive: { goal: 'g' }, ...over,
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -71,15 +85,19 @@ beforeEach(() => {
 
 describe('ledgerProjectIds', () => {
   it('returns distinct ids newest-first and drops run rows that minted nothing', () => {
+    // Three DISTINCT ids in ledger (oldest→newest) order, so the expectation is
+    // asymmetric: a forward walk would yield ['cd-a','cd-b','cd-c'] and fail. A
+    // two-id fixture reads the same in both directions and pins nothing.
     const ids = ledgerProjectIds({
       runs: [
         { projectId: 'cd-a' },
         { status: 'skipped', projectId: null },
         { projectId: 'cd-b' },
-        { projectId: 'cd-a' }, // a re-run against the same project
+        { projectId: 'cd-a' }, // a re-run against the same project — dedupes
+        { projectId: 'cd-c' },
       ],
     });
-    expect(ids).toEqual(['cd-a', 'cd-b']);
+    expect(ids).toEqual(['cd-c', 'cd-a', 'cd-b']);
   });
 
   it('tolerates a commission with no run history', () => {
@@ -98,6 +116,11 @@ describe('commissionStagePin', () => {
     readRawMock.mockResolvedValue(commission({ assignment: {} }));
     expect(await commissionStagePin('commission-1')).toBeNull();
     expect(getProviderByIdMock).not.toHaveBeenCalled();
+  });
+
+  it('omits the model when only a provider is pinned — never ships model:null into task metadata', async () => {
+    readRawMock.mockResolvedValue(commission({ assignment: { providerId: 'lmstudio-tui', model: null } }));
+    expect(await commissionStagePin('commission-1')).toEqual({ providerId: 'lmstudio-tui' });
   });
 
   it('inherits the default for an unknown commission', async () => {
@@ -225,6 +248,25 @@ describe('restartCommissionStages', () => {
     expect(result.restarted).toEqual(['cd-1']);
   });
 
+  it('hands a directive-LESS project to the scene loop — the plan loop no-ops on it and would strand the retired stage', async () => {
+    // A plan step's `cd_produceVideoFromIssue` teaser inherits commissionId but has
+    // no directive. advanceAfterPlanStepSettled returns immediately on such a
+    // project, so routing it there would retire the stage and re-dispatch nothing.
+    readRawMock.mockResolvedValue(commission());
+    listProjectsByCommissionIdMock.mockResolvedValue([{
+      id: 'cd-teaser',
+      status: 'rendering',
+      directive: null,
+      runs: [{ runId: 'r1', kind: 'treatment', taskId: 't1', status: 'running' }],
+    }]);
+
+    await restartCommissionStages('commission-1');
+
+    expect(retireRunsMock).toHaveBeenCalled();
+    expect(advanceSceneMock).toHaveBeenCalledExactlyOnceWith('cd-teaser');
+    expect(advanceMock).not.toHaveBeenCalled();
+  });
+
   it('restarts a PAUSED project’s stage but never auto-resumes the project', async () => {
     readRawMock.mockResolvedValue(commission());
     listProjectsByCommissionIdMock.mockResolvedValue([project({
@@ -322,13 +364,29 @@ describe('backfillProjectCommissionIds', () => {
     listIdsMock.mockResolvedValue(['commission-1']);
     readRawMock.mockResolvedValue(commission({ runs: [{ projectId: 'cd-old' }, { projectId: 'cd-new' }] }));
     getProjectsByIdsMock.mockResolvedValue([
-      { id: 'cd-old', status: 'planning' },
+      {
+        id: 'cd-old',
+        status: 'planning',
+        // What the OLD fire path wrote, plus a hand-set evaluation pin.
+        modelOverrides: {
+          treatment: { providerId: 'claude-ollama-tui' },
+          plan: { providerId: 'claude-ollama-tui' },
+          evaluation: { providerId: 'vision-api' },
+        },
+      },
       { id: 'cd-new', status: 'planning', commissionId: 'commission-1' }, // already stamped
     ]);
 
     const result = await backfillProjectCommissionIds();
 
-    expect(updateProjectMock).toHaveBeenCalledExactlyOnceWith('cd-old', { commissionId: 'commission-1' });
+    // Stamps the back-pointer AND drops the stale snapshot — a per-project pin now
+    // outranks the commission's, so leaving it would keep the project stuck on the
+    // provider it was minted with, which is the whole bug. `evaluation` survives:
+    // the commission never wrote it.
+    expect(updateProjectMock).toHaveBeenCalledExactlyOnceWith('cd-old', {
+      commissionId: 'commission-1',
+      modelOverrides: { evaluation: { providerId: 'vision-api' } },
+    });
     expect(result).toEqual({ stamped: 1 });
   });
 

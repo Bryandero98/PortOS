@@ -353,7 +353,9 @@ describe('creativeDirector routes', () => {
       const r = await request(app).post('/api/creative-director/cd-1/resume');
       expect(r.status).toBe(200);
       expect(r.body.ok).toBe(true);
-      expect(cdService.updateProject).toHaveBeenCalledWith('cd-1', { status: 'rendering' });
+      // Resume must also CLEAR the reason: a stop parks the project with one, and
+      // the overview/plan tabs render any non-empty failureReason in a red banner.
+      expect(cdService.updateProject).toHaveBeenCalledWith('cd-1', { status: 'rendering', failureReason: null });
       expect(hook.startCreativeDirectorProject).toHaveBeenCalledWith('cd-1');
     });
   });

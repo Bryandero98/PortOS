@@ -412,7 +412,12 @@ router.post('/:id/resume', asyncHandler(async (req, res) => {
     throw new ServerError('Project is not paused', { status: 400, code: 'INVALID_STATE' });
   }
   const restored = project.treatment ? 'rendering' : 'planning';
-  await updateProject(project.id, { status: restored });
+  // Clear the reason too. A stop parks the project as `paused` WITH a
+  // `failureReason` (that's what explains why it stopped), and the overview/plan
+  // tabs render any non-empty failureReason in a red "FAILURE REASON" box — so
+  // without this the resumed project runs its whole next pass under a banner
+  // reporting the stop the user just undid.
+  await updateProject(project.id, { status: restored, failureReason: null });
   startCreativeDirectorProject(project.id).catch((e) => console.log(`⚠️ CD resume failed: ${e.message}`));
   res.json({ ok: true });
 }));

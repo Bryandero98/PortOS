@@ -288,7 +288,14 @@ export function mergeProjectRecord(local, remoteRaw) {
   if (!remote) return { next: null, inserted: false, remoteWins: false, changed: false };
   if (!local) return { next: remote, inserted: true, remoteWins: true, changed: true };
   const remoteWins = compareNewerWins(remote.updatedAt, local.updatedAt);
-  const next = remoteWins ? remote : local;
+  // `commissionId` is machine-local — syncWire strips it, so a winning remote
+  // never carries one. Re-attach the receiver's own value (mirrors
+  // preserveLocalCommissionFields) or a peer's edit would silently orphan this
+  // project from the commission that owns it, leaving it unstoppable from the
+  // commission page and stuck on the provider it was dispatched with.
+  const next = remoteWins
+    ? { ...remote, ...(local.commissionId ? { commissionId: local.commissionId } : {}) }
+    : local;
   const changed = JSON.stringify(next) !== JSON.stringify(local);
   return { next, inserted: false, remoteWins, changed };
 }

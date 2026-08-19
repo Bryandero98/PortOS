@@ -63,14 +63,22 @@ export function inflightRuns(project, kinds = null) {
 
 /**
  * Media jobs this project owns that are still live. Pure over the passed-in list.
- * Matches BOTH owner conventions, exactly like recovery.js: the scene loop tags
- * renders `cd:<projectId>:<sceneId>`, a Phase-2 plan render step tags them
- * `creative-director:<projectId>`.
+ *
+ * A CD project claims its media jobs three different ways, and a stop that misses
+ * one leaves that render burning GPU after the user asked it to stop:
+ *   - `owner: "cd:<projectId>:<sceneId>"`      — the scene loop's per-scene render
+ *   - `owner: "creative-director:<projectId>"`  — a Phase-2 plan render step
+ *   - `params.creativeDirector.projectId`      — first-pass seed frames
+ *     (firstPassGen.js#enqueueFirstPassSceneFrames), which carry NO owner at all;
+ *     this is the tag completionHook's findPendingSeedFrameJob keys on. A
+ *     10-scene project enqueues ten of these up front, so omitting them is the
+ *     difference between "Stop" cancelling the queue and cancelling nothing.
  */
 export function ownedLiveJobs(jobs, projectId) {
-  return (jobs || []).filter((j) => typeof j?.owner === 'string'
-    && (j.owner.startsWith(`cd:${projectId}:`) || j.owner === `creative-director:${projectId}`)
-    && (j.status === 'queued' || j.status === 'running'));
+  const ownedBy = (j) => (typeof j?.owner === 'string'
+      && (j.owner.startsWith(`cd:${projectId}:`) || j.owner === `creative-director:${projectId}`))
+    || j?.params?.creativeDirector?.projectId === projectId;
+  return (jobs || []).filter((j) => ownedBy(j) && (j.status === 'queued' || j.status === 'running'));
 }
 
 /**

@@ -690,18 +690,28 @@ export async function updateCommission(id, patch) {
         ? nowIso : current.briefUpdatedAt,
     });
     await store.writeRaw(id, next);
-    return next;
+    // The keys whose VALUE actually changed — not the keys the patch mentioned.
+    // The commission editor posts the whole form on every save (its `assignment`
+    // rides along even when the user only fixed a typo in the brief), so a
+    // patch-key list would tell the project reconciler "the provider changed" on
+    // every single save and it would kill a healthy in-flight agent each time.
+    const changedFields = Object.keys(next).filter(
+      (k) => JSON.stringify(next[k]) !== JSON.stringify(current[k]),
+    );
+    return { next, changedFields };
   });
   if (!merged) throw makeErr(`Commission not found: ${id}`, ERR_NOT_FOUND);
-  // Carry the patched key set: the project reconciler only cares about
-  // `enabled` and `assignment`, so a brief/schedule edit skips its project
-  // lookup entirely. Absent (other emitters) must mean "reconcile" — we cannot
-  // prove a change was irrelevant — never "skip".
-  commissionEvents.emit('commission:changed', { id, action: 'update', fields: Object.keys(patch) });
+  const { next: mergedRecord, changedFields } = merged;
+  // Carry the CHANGED key set: the project reconciler only cares about `enabled`
+  // and `assignment`, so an edit that touched neither skips its project lookup —
+  // and, more importantly, never tears down a healthy in-flight agent stage.
+  // Absent (other emitters) must mean "reconcile" — we cannot prove a change was
+  // irrelevant — never "skip".
+  commissionEvents.emit('commission:changed', { id, action: 'update', fields: changedFields });
   // Push the brief change to subscribed peers (the schedule/runs/assignment are
   // stripped from the wire, so only the brief travels).
   emitRecordUpdated(CREATIVE_COMMISSION_KIND, id);
-  return merged;
+  return mergedRecord;
 }
 
 export async function deleteCommission(id) {

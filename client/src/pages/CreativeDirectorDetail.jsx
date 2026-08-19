@@ -3,6 +3,8 @@ import { useParams, useNavigate, useSearchParams, Link } from 'react-router';
 import { ArrowLeft, Play, Pause, RefreshCw, SlidersHorizontal, Square } from 'lucide-react';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import toast from '../components/ui/Toast';
+import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
+import { useConfirmDelete } from '../hooks/useConfirmDelete';
 import {
   getCreativeDirectorProject,
   startCreativeDirectorProject,
@@ -153,6 +155,11 @@ export default function CreativeDirectorDetail() {
     refetchPoll();
   }, [id, refetchPoll]);
 
+  // Stop is destructive and irreversible (SIGKILLs a live agent, cancels queued
+  // GPU renders) and sits beside Pause, so it takes the same two-step confirm
+  // every other destructive action in the app uses.
+  const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
+
   const handleAction = async (kind) => {
     // Map action → past-tense label and optimistic status up-front.
     const successMessages = {
@@ -237,13 +244,25 @@ export default function CreativeDirectorDetail() {
               </button>
             )}
             {!['complete', 'failed', 'draft'].includes(project.status) && (
-              <button
-                onClick={() => handleAction('stop')}
-                title="Stop: kill the running agent, retire its queued tasks, and cancel pending renders. Pause only stops NEW work being queued."
-                className="flex items-center gap-1 px-2 py-1 bg-port-card border border-port-border rounded text-xs hover:text-port-error"
-              >
-                <Square className="w-3 h-3" /> Stop
-              </button>
+              isConfirming(project.id) ? (
+                <ConfirmButtonPair
+                  prompt="Stop?"
+                  confirmText="Stop"
+                  ariaLabel={`Confirm stop project ${project.name}`}
+                  onConfirm={() => confirmDelete(() => handleAction('stop'))}
+                  onCancel={cancelDelete}
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => requestDelete(project.id)}
+                  title="Stop: kill the running agent, retire its queued tasks, and cancel pending renders. Pause only stops NEW work being queued."
+                  aria-label={`Stop project ${project.name}`}
+                  className="flex items-center gap-1 px-2 py-1 bg-port-card border border-port-border rounded text-xs hover:text-port-error"
+                >
+                  <Square className="w-3 h-3" /> Stop
+                </button>
+              )
             )}
           </div>
         </div>

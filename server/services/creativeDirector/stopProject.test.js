@@ -96,16 +96,22 @@ describe('retireRuns', () => {
 });
 
 describe('ownedLiveJobs', () => {
-  it('matches both owner conventions and only live jobs', () => {
+  it('matches all three ownership conventions and only live jobs', () => {
     const jobs = [
       { id: 'j1', owner: 'cd-1', status: 'queued' },                    // not an owner form
       { id: 'j2', owner: 'cd:cd-1:scene-1', status: 'queued' },
       { id: 'j3', owner: 'creative-director:cd-1', status: 'running' },
       { id: 'j4', owner: 'cd:cd-1:scene-2', status: 'completed' },      // terminal
       { id: 'j5', owner: 'cd:cd-2:scene-1', status: 'queued' },         // other project
-      { id: 'j6', status: 'queued' },                                   // ownerless
+      { id: 'j6', status: 'queued' },                                   // ownerless, untagged
+      // First-pass seed frames carry NO owner — they're tagged in params. A
+      // 10-scene project enqueues ten of these up front, so missing them means
+      // "Stop" cancels nothing on exactly the projects with the most queued work.
+      { id: 'j7', status: 'queued', params: { creativeDirector: { projectId: 'cd-1', sceneId: 's1' } } },
+      { id: 'j8', status: 'running', params: { creativeDirector: { projectId: 'cd-2' } } }, // other project
+      { id: 'j9', status: 'completed', params: { creativeDirector: { projectId: 'cd-1' } } }, // terminal
     ];
-    expect(ownedLiveJobs(jobs, 'cd-1').map((j) => j.id)).toEqual(['j2', 'j3']);
+    expect(ownedLiveJobs(jobs, 'cd-1').map((j) => j.id)).toEqual(['j2', 'j3', 'j7']);
   });
 });
 

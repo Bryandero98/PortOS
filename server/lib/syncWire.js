@@ -207,19 +207,34 @@ export function sanitizeRecordForWire(kind, record) {
     case 'artist':
     case 'album':
     case 'track':
-    case 'creativeDirectorProject':
+    case 'creativeDirectorProject': {
+      // Whole-record LWW like the group below, with ONE machine-local field
+      // stripped: `commissionId`, the back-pointer to the Creative Commission
+      // whose fire minted this project. It must not travel, for the same reason
+      // the commission's own `schedule`/`runs`/`assignment` don't (see the
+      // creativeCommission case): a commission federates its BRIEF only and lands
+      // DORMANT on the receiver, so only the minting machine runs it. If the
+      // back-pointer rode the wire, a peer holding a synced copy of both records
+      // would resolve the commission's projects to ANOTHER machine's live work —
+      // and pausing or deleting the commission there would park a project whose
+      // agent, CoS task, and queued renders are running on the other machine,
+      // with no local process to actually stop. Stripping keeps the fan-out
+      // machine-local by construction. `mergeProjectRecord` re-attaches the
+      // receiver's own value so a remote LWW win can't erase it.
+      const { deleted: _d, deletedAt: _da, commissionId: _c, ...rest } = record;
+      return { ...rest, ...sanitizeSoftDeleteFields(record) };
+    }
     case 'moodBoard':
     case 'writersRoomFolder':
     case 'writersRoomExercise':
     case 'commissionFeedback': {
-      // Persona/music/creative-director/mood-board records: like mediaCollection,
+      // Persona/music/mood-board records: like mediaCollection,
       // no `ephemeral` flag — always wire-syncable when present. Strip-then-tail-
       // re-add the soft-delete pair for byte-stable checksums. The whole record
       // is LWW-overwritten on merge (no item-union), so the wire form converges
       // byte-for-byte and feeds the conflict-journal content hash directly (no
-      // scalar narrowing in contentHashForRecord). A creativeDirectorProject is
-      // larger than a persona (treatment/scenes/runs) but follows the same whole-
-      // record LWW contract; a moodBoard (name/description/items) is the same.
+      // scalar narrowing in contentHashForRecord). A moodBoard
+      // (name/description/items) follows the same whole-record LWW contract.
       // Writers Room folders + exercises (#1645) are also body-less whole-record
       // LWW kinds with no ephemeral counters — they wire identically (no liveMode
       // A commissionFeedback (#2686: one reaction — commissionId/runId/rating/

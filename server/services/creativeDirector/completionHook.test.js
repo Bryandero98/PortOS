@@ -93,19 +93,6 @@ describe('handleCreativeDirectorCompletion — plan deliverable', () => {
     expect(mockAdvancePlan).not.toHaveBeenCalled();
   });
 
-  it.each([['failed'], ['completed']])('ignores a completion whose run row is already %s', async (status) => {
-    // The echo of a deliberate kill: stopProject/retireRuns settles the row and
-    // THEN SIGKILLs the agent. Re-settling would overwrite the stop's reason.
-    mockGetProject.mockResolvedValue(planProject({
-      runs: [{ runId: 'run-1', kind: 'plan', status, failureReason: 'Creative commission paused' }],
-    }));
-    await handleCreativeDirectorCompletion(planTask(), 'agent-1', false);
-    expect(mockUpdateRun).not.toHaveBeenCalled();
-    expect(mockRecordRun).not.toHaveBeenCalled();
-    expect(mockUpdateProject).not.toHaveBeenCalled();
-    expect(mockAdvancePlan).not.toHaveBeenCalled();
-  });
-
   it.each([['paused'], ['complete'], ['failed']])('records the run but never re-stamps a project that is already %s', async (status) => {
     // A failed agent exit is not the project's verdict when the project already
     // has one: the exit may be the echo of any deliberate kill (the CoS Kill

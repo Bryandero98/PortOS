@@ -44,16 +44,12 @@ beforeEach(() => {
 });
 
 describe('Creative Director agent bridge — commission-owned projects', () => {
-  const commissioned = { ...project, commissionId: 'commission-1', modelOverrides: {
-    // The stale snapshot a pre-change fire froze onto the project. The commission
-    // is the standing job definition, so its CURRENT pin must win over it —
-    // otherwise switching the commission's provider leaves a wedged project
-    // handing its planner task to the old one forever.
-    plan: { providerId: 'claude-ollama-tui', model: 'qwen3.6:35b' },
-    treatment: { providerId: 'claude-ollama-tui', model: 'qwen3.6:35b' },
-  } };
+  // A project minted by a commission fire carries NO modelOverrides — the fire
+  // stamps only the back-pointer, and the boot backfill strips the snapshot the
+  // old fire path used to write. So the commission's live pin is what applies.
+  const commissioned = { ...project, commissionId: 'commission-1', modelOverrides: {} };
 
-  it("resolves the owning commission's pin LIVE, overriding the snapshot on the project", async () => {
+  it("resolves the owning commission's pin LIVE, so an edited provider reaches a project already in flight", async () => {
     mocks.commissionStagePin.mockResolvedValue({ providerId: 'lmstudio-tui', model: 'qwen3.6:35b' });
 
     await enqueuePlanTask(commissioned);
@@ -65,11 +61,32 @@ describe('Creative Director agent bridge — commission-owned projects', () => {
     });
   });
 
+  it("lets a hand-set per-project pin BEAT the commission's — the models drawer must not be a silent no-op", async () => {
+    mocks.commissionStagePin.mockResolvedValue({ providerId: 'lmstudio-tui', model: 'qwen3.6:35b' });
+
+    await enqueuePlanTask({ ...commissioned, modelOverrides: { plan: { providerId: 'drawer-choice-tui' } } });
+
+    const [task] = mocks.addTask.mock.calls[0];
+    expect(task.metadata).toMatchObject({ providerId: 'drawer-choice-tui' });
+    // And it doesn't even pay for the lookup it isn't going to use.
+    expect(mocks.commissionStagePin).not.toHaveBeenCalled();
+  });
+
+  it('consults the commission when the project pins a DIFFERENT stage', async () => {
+    mocks.commissionStagePin.mockResolvedValue({ providerId: 'lmstudio-tui' });
+
+    // An evaluation-only override leaves `plan` to the commission.
+    await enqueuePlanTask({ ...commissioned, modelOverrides: { evaluation: { providerId: 'vision-api' } } });
+
+    const [task] = mocks.addTask.mock.calls[0];
+    expect(task.metadata).toMatchObject({ providerId: 'lmstudio-tui' });
+  });
+
   it('falls back to the project/global assignment when the commission pins nothing', async () => {
     mocks.commissionStagePin.mockResolvedValue(null);
     mocks.getSettings.mockResolvedValue({ creativeDirector: { plan: { providerId: 'global-agent' } } });
 
-    await enqueuePlanTask({ ...commissioned, modelOverrides: {} });
+    await enqueuePlanTask(commissioned);
 
     const [task] = mocks.addTask.mock.calls[0];
     expect(task.metadata).toMatchObject({ providerId: 'global-agent' });
@@ -82,11 +99,12 @@ describe('Creative Director agent bridge — commission-owned projects', () => {
 
   it('does not stall the dispatch when the commission lookup fails', async () => {
     mocks.commissionStagePin.mockRejectedValue(new Error('store down'));
+    mocks.getSettings.mockResolvedValue({ creativeDirector: { plan: { providerId: 'global-agent' } } });
 
     await enqueuePlanTask(commissioned);
 
     const [task] = mocks.addTask.mock.calls[0];
-    expect(task.metadata).toMatchObject({ providerId: 'claude-ollama-tui' });
+    expect(task.metadata).toMatchObject({ providerId: 'global-agent' });
   });
 });
 

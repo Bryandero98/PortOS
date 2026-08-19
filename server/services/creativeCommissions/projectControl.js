@@ -138,10 +138,22 @@ export async function restartCommissionStages(commissionId, commission) {
   const projects = await commissionProjects(commissionId, commission);
   if (!projects.length) return { restarted: [], checked: 0 };
 
-  const [{ inflightRuns, retireRuns }, { advanceAfterPlanStepSettled }] = await Promise.all([
+  const [{ inflightRuns, retireRuns }, { advanceAfterPlanStepSettled }, { advanceAfterSceneSettled }] = await Promise.all([
     import('../creativeDirector/stopProject.js'),
     import('../creativeDirector/planAdvance.js'),
+    import('../creativeDirector/completionHook.js'),
   ]);
+  // Which advance loop owns a project depends on its shape, and BOTH shapes can
+  // carry a commissionId: a commission fire mints a directive project, but a plan
+  // step's `cd_produceVideoFromIssue` mints a legacy scene-loop teaser that
+  // inherits the same back-pointer. Handing a directive-less project to
+  // advanceAfterPlanStepSettled is a silent no-op (it returns on `!project.directive`),
+  // which would leave the stage we just retired with nothing to re-dispatch it —
+  // wedged until a manual Resume. Same branch as recovery.js and
+  // agentManagement.js#settleOrphanedCreativeDirectorRun.
+  const advance = (project) => (project.directive
+    ? advanceAfterPlanStepSettled(project.id)
+    : advanceAfterSceneSettled(project.id));
   const reason = 'Creative commission provider changed';
   const restarted = [];
   for (const project of projects) {
@@ -151,7 +163,7 @@ export async function restartCommissionStages(commissionId, commission) {
       .catch((e) => console.error(`❌ Commission ${commissionId}: retire runs on ${project.id} failed: ${e.message}`));
     restarted.push(project.id);
     if (!ADVANCING_PROJECT_STATUSES.has(project.status)) continue;
-    await advanceAfterPlanStepSettled(project.id)
+    await advance(project)
       .catch((e) => console.error(`❌ Commission ${commissionId}: advance ${project.id} failed: ${e.message}`));
   }
   if (restarted.length) {
@@ -241,16 +253,29 @@ export function registerCommissionProjectReconciler() {
 }
 
 /**
- * One-shot boot backfill: stamp `commissionId` onto the projects a commission
- * spawned BEFORE the back-pointer existed, reading it out of the run ledger.
+ * One-shot boot backfill for projects minted BEFORE the back-pointer existed.
+ * Reads the commission's run ledger and, for each project it still names:
  *
- * Without this, an install upgrading with a project already wedged keeps the old
- * behavior for exactly the projects that need the fix most — the dispatch path
- * only consults a commission when the project names one, so a stuck project would
- * go on handing its planner task to the provider frozen at fire time even after
- * the user re-pointed the commission. The ledger is capped, so this recovers what
- * it still remembers; anything already evicted stays unlinked (nothing else can
- * recover it, and a fresh fire mints a correctly-stamped project).
+ *   1. stamps `commissionId`, and
+ *   2. CLEARS the `modelOverrides.{treatment,plan}` snapshot the old fire path
+ *      wrote onto it.
+ *
+ * Both halves are needed, and (2) is the one that actually unsticks the user's
+ * problem. The dispatch path only consults a commission when the project names
+ * one — so without (1) a wedged project keeps its frozen provider forever. But a
+ * per-project pin now outranks the commission's (it means "the user chose this in
+ * the models drawer"), and every pre-change project carries one purely because
+ * the fire wrote it — so without (2) the stamp would land and the stale snapshot
+ * would still win, leaving the project exactly as stuck as before.
+ *
+ * The trade-off is deliberate: on a pre-change project we cannot distinguish the
+ * machine-written snapshot from a drawer edit made on top of it, and clearing is
+ * the only choice that honors the commission going forward. A user who wants a
+ * per-project override can re-set it in the drawer, where it will now stick.
+ *
+ * The ledger is capped, so this recovers what it still remembers; anything
+ * already evicted stays unlinked (nothing else can recover it, and a fresh fire
+ * mints a correctly-stamped project with no snapshot at all).
  *
  * Pure data movement, no LLM. Idempotent: a project that already carries the
  * back-pointer is skipped, so a re-run writes nothing. Best-effort — a failure
@@ -271,7 +296,11 @@ export async function backfillProjectCommissionIds() {
     const projects = await getProjectsByIds(legacyIds).catch(() => []);
     for (const project of projects) {
       if (!project || project.commissionId) continue;
-      const ok = await updateProject(project.id, { commissionId })
+      // Drop only the stages the old fire path owned; a hand-set `evaluation` pin
+      // was never written by it, so it survives.
+      const overrides = { ...(project.modelOverrides || {}) };
+      for (const stage of COMMISSION_PINNED_STAGES) delete overrides[stage];
+      const ok = await updateProject(project.id, { commissionId, modelOverrides: overrides })
         .then(() => true)
         .catch((e) => { console.error(`❌ Commission back-pointer backfill: ${project.id} failed: ${e.message}`); return false; });
       if (ok) stamped += 1;

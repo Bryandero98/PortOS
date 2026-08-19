@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Creative Director API wrapper — batch-by-id fetch (#4148).
  *
@@ -76,7 +77,6 @@ describe('getCreativeDirectorProjectsByIds', () => {
     expect(request.mock.calls[0][1]).toEqual({ silent: true });
   });
 });
-// @vitest-environment node
 
 describe('stopCreativeDirectorProject', () => {
   it('POSTs the stop route — the hard counterpart to pause', async () => {
