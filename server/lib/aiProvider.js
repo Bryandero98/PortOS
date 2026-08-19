@@ -207,7 +207,7 @@ async function postChatCompletion(provider, model, prompt, { temperature, max_to
  * one toast id so "loading model → calling → done" updates the same toast.
  *
  * Pass `appId` and/or `workspacePath` when the call originates on behalf of a
- * managed app or CoS-agent workspace — the CyberCity AI Core aims its activity
+ * managed app or CoS-agent workspace — the OpenWorld AI Core aims its activity
  * beam at that building (falling back to a generic radial beam when neither is
  * supplied). Output token counts from the provider are reported on completion
  * so the beam's thickness can track tokens/sec.

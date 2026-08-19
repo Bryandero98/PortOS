@@ -3,18 +3,18 @@
  * validation.js, issue #1831).
  *
  * Covers LoRA training config + run params, the local-LLM (Ollama / LM Studio)
- * backend management routes, CyberCity snapshot config/query, and the media-
+ * backend management routes, OpenWorld snapshot config/query, and the media-
  * collection bulk add/remove payloads. validation.js re-exports everything here
  * (flat) so existing deep imports keep working; the barrel surfaces it as the
  * `mediaValidation` namespace.
  */
 import { z } from 'zod';
 
-// CyberCity snapshot pipeline (issue #877): how often to capture a city-state
+// OpenWorld snapshot pipeline (issue #877): how often to capture a city-state
 // frame and how many to retain. Validated as a settings slice on PUT /api/settings;
 // service-side defaults (DEFAULT_SNAPSHOT_CONFIG) fill any absent field so an
-// install with no `citySnapshots` key still captures.
-export const citySnapshotConfigSchema = z.object({
+// install with no `openWorldSnapshots` key still captures.
+export const openWorldSnapshotConfigSchema = z.object({
   enabled: z.boolean().optional(),
   intervalMinutes: z.number().int().min(1).max(1440).optional(),
   maxSnapshots: z.number().int().min(10).max(100000).optional()
@@ -124,9 +124,9 @@ export const startTrainingRunSchema = z.object({
   acknowledgeCaptionLeak: z.boolean().optional(),
 });
 
-// Query for GET /api/city/snapshots — `since` (ISO timestamp) and `limit`
+// Query for GET /api/openworld/snapshots — `since` (ISO timestamp) and `limit`
 // (most-recent N) both arrive as strings on the query string.
-export const citySnapshotsQuerySchema = z.object({
+export const openWorldSnapshotsQuerySchema = z.object({
   since: z.string().datetime().optional(),
   limit: z.coerce.number().int().min(1).max(100000).optional()
 });

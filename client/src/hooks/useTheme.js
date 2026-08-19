@@ -7,9 +7,9 @@ import {
   normalizeThemeId,
 } from '../themes/portosThemes';
 import {
-  STORAGE_KEY as CITY_SETTINGS_KEY,
-  TIME_OF_DAY_AUTO_EVENT as CITY_TIME_OF_DAY_AUTO_EVENT,
-} from './useCitySettings';
+  STORAGE_KEY as OPEN_WORLD_SETTINGS_KEY,
+  TIME_OF_DAY_AUTO_EVENT as OPEN_WORLD_TIME_OF_DAY_AUTO_EVENT,
+} from './useOpenWorldSettings';
 import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage.js';
 import { getSettings, updateSettings } from '../services/apiSystem.js';
 
@@ -37,19 +37,19 @@ const loadTheme = () => {
   return normalized;
 };
 
-const resetCityTimeOfDayOverride = () => {
-  const raw = safeReadStorage(CITY_SETTINGS_KEY);
-  let citySettings = {};
+const resetOpenWorldTimeOfDayOverride = () => {
+  const raw = safeReadStorage(OPEN_WORLD_SETTINGS_KEY);
+  let openWorldSettings = {};
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') citySettings = parsed;
+      if (parsed && typeof parsed === 'object') openWorldSettings = parsed;
     } catch {
-      // Corrupt city settings — start from an empty object rather than bail.
+      // Corrupt OpenWorld settings — start from an empty object rather than bail.
     }
   }
-  safeWriteStorage(CITY_SETTINGS_KEY, JSON.stringify({ ...citySettings, timeOfDay: 'auto' }));
-  window.dispatchEvent(new Event(CITY_TIME_OF_DAY_AUTO_EVENT));
+  safeWriteStorage(OPEN_WORLD_SETTINGS_KEY, JSON.stringify({ ...openWorldSettings, timeOfDay: 'auto' }));
+  window.dispatchEvent(new Event(OPEN_WORLD_TIME_OF_DAY_AUTO_EVENT));
 };
 
 export default function useTheme() {
@@ -75,7 +75,7 @@ export default function useTheme() {
           applyTheme(serverTheme);
           setThemeId(serverTheme);
           safeWriteStorage(STORAGE_KEY, serverTheme);
-          resetCityTimeOfDayOverride();
+          resetOpenWorldTimeOfDayOverride();
         }
       })
       .catch((err) => {
@@ -97,7 +97,7 @@ export default function useTheme() {
     applyTheme(normalized);
     setThemeId(normalized);
     safeWriteStorage(STORAGE_KEY, normalized);
-    resetCityTimeOfDayOverride();
+    resetOpenWorldTimeOfDayOverride();
     // Silent — the theme is already applied locally; a failed sync only warrants
     // a console warning, not a toast on every theme switch.
     updateSettings({ theme: normalized }, { silent: true })

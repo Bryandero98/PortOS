@@ -4,16 +4,16 @@
 // a real destination with a name, a one-line pitch, and a door back into the 2D app.
 //
 // Geography is NOT re-declared here. Each region names a parcel in the master town plan
-// (`cityPlan.js` PARCELS) and reads its anchor/footprint from there, so moving a district on
+// (`openWorldPlan.js` PARCELS) and reads its anchor/footprint from there, so moving a district on
 // the plan moves its fast-travel marker too — the same no-drift rule the mini-map follows.
 //
 // No React / three.js imports so the registry stays unit-testable in node (mirrors
-// cityMiniMap.js / cityFocusCamera.js). `OPEN_WORLD_REGIONS` is ALSO the source of truth for
+// openWorldMiniMap.js / openWorldFocusCamera.js). `OPEN_WORLD_REGIONS` is ALSO the source of truth for
 // the `/openworld/region/:regionId` nav-manifest entries — `server/lib/navManifest.test.js`
 // scrapes the `id:` values out of this array and fails if a region has no ⌘K / voice command
 // (or vice versa), so a new region can't ship unreachable.
 
-import { PARCELS } from './cityPlan';
+import { PARCELS } from './openWorldPlan';
 
 // Ordered for the fast-travel list: the two places you look at most first, then a clockwise
 // sweep of the outer districts, then the far shore. `parcel` keys into PARCELS for geography;
@@ -21,7 +21,7 @@ import { PARCELS } from './cityPlan';
 //
 // `district` marks a region whose real extent is DATA-DRIVEN — the downtown and archive grids
 // grow with the install's app count, so their PARCELS footprint is only a nominal size. It
-// names the district key in `computeCityLayout`'s output, which the camera uses to measure the
+// names the district key in `computeOpenWorldLayout`'s output, which the camera uses to measure the
 // buildings actually on the ground instead of framing a fixed rectangle and clipping the
 // outer towers.
 export const OPEN_WORLD_REGIONS = [
@@ -96,4 +96,12 @@ export function regionArrivalPoint(region) {
   if (!region) return null;
   const [x, , z] = region.anchor;
   return { x, z: z + region.d / 2 + REGION_ARRIVAL_SETBACK };
+}
+
+// The arrival point is also the physical location of a region's warp pad. Keeping the
+// pad and the walking spawn on one projection prevents a diegetic warp from landing the
+// player somewhere different from the marker they walked to.
+export function regionWarpPadPosition(region) {
+  const arrival = regionArrivalPoint(region);
+  return arrival ? [arrival.x, 0.12, arrival.z] : null;
 }

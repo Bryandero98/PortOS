@@ -123,7 +123,7 @@ router.get('/health/details', asyncHandler(async (req, res) => {
   // Process status summary from PM2. Processes whose exit is expected (a desktop
   // app the user closed) are excluded from the FAILURE-bearing counts: a quit game
   // window would otherwise force overallHealth to 'critical' below and light up
-  // the dashboard widget and the CyberCity HUD until the PM2 entry is manually
+  // the dashboard widget and the OpenWorld HUD until the PM2 entry is manually
   // cleared. `expectedExit` describes a process's exit *semantics*, not its
   // liveness — so `online` counts every process, exempt or not, or a *running*
   // desktop app would sit in `total` and in no status bucket at all and the

@@ -286,7 +286,7 @@ export async function annotateExpectedExit(processes) {
  * `overallStatus` of `online` / `stopped` / `not_started` / `unknown`; native
  * projects (Xcode, iOS, macOS) report `n/a` since they have no detectable
  * runtime. Each unique PM2_HOME is queried at most once. This is the shared
- * primitive behind both `getAppStatusSummary()` (counts) and the CyberCity
+ * primitive behind both `getAppStatusSummary()` (counts) and the OpenWorld
  * snapshot pipeline (per-building status), so the two never drift.
  *
  * Absent-vs-empty rule (CLAUDE.md): `listProcessesStrict(home)` returns `null`
@@ -327,7 +327,7 @@ export async function getAppStatuses() {
   return apps.map(app => {
     const managed = usesPm2(app.type);
     // repoPath is carried so callers can map an agent's workspacePath back to its
-    // app (the CyberCity snapshot's agent-assignment mapping, mirroring the
+    // app (the OpenWorld snapshot's agent-assignment mapping, mirroring the
     // client's agentMap) without a second apps read.
     const base = { id: app.id, name: app.name, type: app.type, repoPath: app.repoPath };
     if (!managed) {

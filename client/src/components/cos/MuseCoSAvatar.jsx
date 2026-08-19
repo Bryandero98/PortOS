@@ -56,7 +56,7 @@ function GLBAvatar({ state, speaking }) {
 
     // Fit into a fixed height so different models render consistently. Centered
     // vertically rather than resting its feet on the ground glow (the way the
-    // mini-character and CyberCity player do): this is a fixed portrait frame,
+    // mini-character and OpenWorld player do): this is a fixed portrait frame,
     // so the body reads best balanced on the camera's look-at point.
     fitModelToHeight(scene, { targetHeight: TARGET_HEIGHT, yOffset: VERTICAL_LIFT });
   }, [scene]);

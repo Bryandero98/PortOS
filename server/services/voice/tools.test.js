@@ -1502,7 +1502,7 @@ describe('ui_describe_visually', () => {
   it('captures + describes the screen and returns the description', async () => {
     const ctx = {
       sideEffects: [],
-      state: { ui: { path: '/cybercity' } },
+      state: { ui: { path: '/openworld' } },
       captureScreenshot: async () => 'data:image/jpeg;base64,abc',
       describeImage: async (dataUrl, prompt) => {
         expect(dataUrl).toBe('data:image/jpeg;base64,abc');
@@ -1513,7 +1513,7 @@ describe('ui_describe_visually', () => {
     const r = await dispatchTool('ui_describe_visually', { question: 'what is on this chart?' }, ctx);
     expect(r.ok).toBe(true);
     expect(r.content).toBe('A neon skyline with three towers.');
-    expect(r.path).toBe('/cybercity');
+    expect(r.path).toBe('/openworld');
   });
   it('surfaces a vision-model error', async () => {
     const ctx = {
@@ -1571,7 +1571,7 @@ describe('new tool intent routing', () => {
   });
   it('routes visual-description utterances to the vision group', () => {
     expect(classifyIntent("what's on this chart?").has('vision')).toBe(true);
-    expect(classifyIntent('describe the cybercity').has('vision')).toBe(true);
+    expect(classifyIntent('describe the openworld').has('vision')).toBe(true);
   });
   it('routes catalog lookups to the catalog group', () => {
     expect(classifyIntent('find my character Mira').has('catalog')).toBe(true);

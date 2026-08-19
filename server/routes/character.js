@@ -47,7 +47,7 @@ const addEventSchema = z.object({
 });
 
 // `?skills=0` / `?metrics=0` opt out of each derived registry's domain fan-out, for consumers
-// that only read the persisted fields plus the age level — notably the CyberCity HUD, which
+// that only read the persisted fields plus the age level — notably the OpenWorld HUD, which
 // polls this route every 15s and renders only `level`. Both default to ON, so an unaware
 // caller still gets the full sheet.
 //

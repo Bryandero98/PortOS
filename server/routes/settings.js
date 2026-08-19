@@ -12,7 +12,7 @@ import {
 import { asyncHandler } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
 import { agentContextSettingsSchema } from '../lib/agentContextValidation.js';
-import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, localLlmSettingsSchema, citySnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, federationSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, videoGenSettingsSchema, subscriptionCostsMapSchema, validateRequest } from '../lib/validation.js';
+import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, autofixerSettingsSchema, codeReviewSettingsSchema, locationSettingsSchema, settingsEmbeddingsSchema, localLlmSettingsSchema, openWorldSnapshotConfigSchema, imessageConfigSchema, signalConfigSchema, spotifyConfigSchema, youtubeConfigSchema, apiAccessSettingsSchema, loraTrainingConfigSchema, pipelineEditorialChecksSettingsSchema, creativeDirectorSettingsSchema, musicSettingsSchema, federationSettingsSchema, privacySettingsSchema, seriesAutopilotSettingsSchema, layeredIntelligenceSettingsSchema, imageGenGrokSettingsSchema, imageGenAgySettingsSchema, renderDefaultsSettingsSchema, videoGenSettingsSchema, subscriptionCostsMapSchema, validateRequest } from '../lib/validation.js';
 
 const router = Router();
 
@@ -176,10 +176,16 @@ router.put('/', asyncHandler(async (req, res) => {
   if (req.body?.localLlm !== undefined) {
     validateRequest(localLlmSettingsSchema, req.body.localLlm);
   }
-  // CyberCity snapshot capture config — validate the slice when present so a
+  // OpenWorld snapshot capture config — validate the slice when present so a
   // malformed interval/cap can't reach disk and break the scheduler.
-  if (req.body?.citySnapshots !== undefined) {
-    validateRequest(citySnapshotConfigSchema.partial(), req.body.citySnapshots);
+  if (req.body?.openWorldSnapshots !== undefined) {
+    validateRequest(openWorldSnapshotConfigSchema.partial(), req.body.openWorldSnapshots);
+  }
+  // The settings slice predates the OpenWorld rename. Keep accepting the old
+  // property so an older client can still update capture settings safely.
+  const legacySnapshotSettingsKey = ['city', 'Snapshots'].join('');
+  if (req.body?.[legacySnapshotSettingsKey] !== undefined) {
+    validateRequest(openWorldSnapshotConfigSchema.partial(), req.body[legacySnapshotSettingsKey]);
   }
   // iMessage ingestion config (#2151) — validate the slice when present so a
   // malformed enabled/interval can't reach disk and break the sync scheduler.

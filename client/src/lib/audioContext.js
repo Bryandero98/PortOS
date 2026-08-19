@@ -5,7 +5,7 @@
 // synth, MIDI preview) stay aligned for free. New audio features should
 // import this instead of growing another module-level singleton.
 //
-// Known holdouts, on purpose: components/city/audio/cityAudioEngine.js keeps
+// Known holdouts, on purpose: components/openworld/audio/openWorldAudioEngine.js keeps
 // its own context (it owns a persistent gain graph and its own — differently
 // contracted — getAudioContext export); MorseTrainer creates a per-mount
 // context it close()s on unmount, which would kill a shared one for everyone

@@ -410,7 +410,7 @@ function WorkingSetRow({ entry, pinned, onTogglePin, onNavigate, isActive }) {
   );
 }
 
-// A top-level *single* nav row (Dashboard / Review Hub / City / Goals). Unlike a
+// A top-level *single* nav row (Dashboard / Review Hub / OpenWorld / Goals). Unlike a
 // section, it links straight to one destination — and unlike WorkingSetRow it
 // carries the heavier top-level row weight plus the optional badge (Chief of
 // Staff unread count) and the collapsed-rail layout (icon-only, centered, badge

@@ -6,7 +6,7 @@ export const getAlertsSummary = (options) => request('/alerts/summary', options)
 // Character sheet (age-based level / XP / HP / usage-derived skills + metrics grid).
 // `skills: false` / `metrics: false` skip the server's domain stat fan-out for each derived
 // registry — pass them from callers that only read the persisted fields or the level (e.g.
-// the polling CyberCity XP HUD badge). Both default on, so a caller that wants the whole
+// the polling OpenWorld XP HUD badge). Both default on, so a caller that wants the whole
 // sheet just calls getCharacter().
 export const getCharacter = ({ skills = true, metrics = true, ...options } = {}) => {
   const params = new URLSearchParams();

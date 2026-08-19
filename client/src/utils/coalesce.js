@@ -1,5 +1,5 @@
 // Collapse a burst of rapid calls into a single trailing invocation on a short tick.
-// CyberCity subscribes to many socket events (CoS agent spawn/complete, AI status, task
+// OpenWorld subscribes to many socket events (CoS agent spawn/complete, AI status, task
 // changes, …); when several fire at once — e.g. a wave of agents spawning — a handler that
 // triggers a full refetch per event would fan out N identical refreshes. Wrapping that
 // handler in `coalesce` runs it once on the trailing edge instead.

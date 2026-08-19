@@ -7,7 +7,7 @@
  * `skills` (#2674) and the `metrics` grid (#2676). Most of the signals below feed BOTH —
  * Wordsmith and `recordsCreated` are the same three reads, Mentalist and `postStreakDays` are
  * the same two, and so on. Letting each registry call the getters itself would have doubled
- * the fan-out of a route the CyberCity HUD polls every 15s, so the reads moved here and both
+ * the fan-out of a route the OpenWorld HUD polls every 15s, so the reads moved here and both
  * registries now take a `read` function instead of importing the getters directly.
  *
  * **Per-request, never module-level.** `createSignalContext()` mints a fresh cache per
