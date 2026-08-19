@@ -725,11 +725,24 @@ export function buildLocalReviewerInstructions(reviewers, reviewerModels = {}, r
   if (!localReviewers.length) return '';
 
   // Forge-agnostic and PR-free: the branch's own diff against the default
-  // branch's remote ref. `origin/HEAD` resolves the default branch on GitHub and
-  // GitLab alike, falling back to `main` when the symbolic ref is missing. Same
-  // `DEFAULT_BRANCH` idiom (and name) the claim prompts' own worktree blocks use,
-  // re-resolved here because this procedure runs as a self-contained snippet.
-  const diffCommand = 'DEFAULT_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed \'s@^origin/@@\')"\nDEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"\ngit fetch origin "$DEFAULT_BRANCH" >/dev/null 2>&1\ngit diff "origin/$DEFAULT_BRANCH...HEAD"';
+  // branch's remote ref. Same `DEFAULT_BRANCH` idiom (and name) the claim prompts'
+  // own worktree blocks use, re-resolved here because this procedure runs as a
+  // self-contained snippet.
+  //
+  // `origin/HEAD` is NOT reliably present — a clone made with `--single-branch`,
+  // or a worktree whose remote never had `set-head` run, simply has no such ref.
+  // Falling straight to `main` there would review a repo whose default is
+  // `master`/`develop` against a ref that does not exist, and the fail-closed
+  // wrapper would then block every local-LLM reviewer — and with them the PR — on
+  // a repo that is perfectly healthy. So ask the remote (`set-head --auto`) before
+  // falling back, and keep `main` only as the last resort.
+  const diffCommand = [
+    'DEFAULT_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed \'s@^origin/@@\')"',
+    '[ -n "$DEFAULT_BRANCH" ] || { git remote set-head origin --auto >/dev/null 2>&1; DEFAULT_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed \'s@^origin/@@\')"; }',
+    'DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"',
+    'git fetch origin "$DEFAULT_BRANCH" >/dev/null 2>&1',
+    'git diff "origin/$DEFAULT_BRANCH...HEAD"',
+  ].join('\n');
   const reviewScript = shellQuote(join(PATHS.root, 'server/scripts/run-local-code-review.mjs'));
   const commands = localReviewers.map((reviewer) => {
     const pinned = {
