@@ -298,6 +298,8 @@ export default function App() {
           <Route path="templates" element={<Templates />} />
           <Route path="security" element={<Security />} />
           <Route path="settings" element={<Navigate to="/settings/backup" replace />} />
+          {/* Legacy /settings/contacts → Comms Messages → Contacts tab */}
+          <Route path="settings/contacts" element={<Navigate to="/messages/contacts" replace />} />
           <Route path="settings/:tab" element={<Settings />} />
           <Route path="local-llm/playground" element={<LocalLlmPlayground />} />
           <Route path="uploads" element={<Uploads />} />

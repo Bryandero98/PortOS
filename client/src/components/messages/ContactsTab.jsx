@@ -16,9 +16,9 @@ import {
   importContactToTribe,
 } from '../../services/api';
 
-// Settings → Contacts (#2415). Opt-in read of macOS AddressBook → local cache
+// Comms → Contacts (#2415). Opt-in read of macOS AddressBook → local cache
 // for iMessage name resolution + Tribe phone/email fill. Never writes Contacts.
-export function ContactsTab() {
+export default function ContactsTab() {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState(null);
   const [setup, setSetup] = useState(null);
@@ -284,5 +284,3 @@ export function ContactsTab() {
     </div>
   );
 }
-
-export default ContactsTab;

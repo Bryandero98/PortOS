@@ -1,5 +1,5 @@
 import { useNavigate, useParams } from 'react-router';
-import { Mail, RefreshCw, Settings, MessageSquare } from 'lucide-react';
+import { Mail, RefreshCw, Settings, MessageSquare, Users } from 'lucide-react';
 import { useState, useEffect, useCallback } from 'react';
 import * as api from '../services/api';
 import PageSkeleton from '../components/ui/PageSkeleton';
@@ -12,6 +12,7 @@ import ConfigTab from '../components/messages/ConfigTab';
 import DraftsTab from '../components/messages/DraftsTab';
 import SyncTab from '../components/messages/SyncTab';
 import IMessageTab from '../components/messages/IMessageTab';
+import ContactsTab from '../components/messages/ContactsTab';
 
 // Exported for the nav-manifest tab-coverage guard (server/lib/navManifest.test.js).
 // `fullBleed: true` — tab owns internal scroll/height; Messages skips padded overflow wrapper.
@@ -19,11 +20,17 @@ export const TABS = [
   { id: 'inbox', label: 'Inbox', icon: Mail },
   { id: 'drafts', label: 'Drafts', icon: Mail },
   { id: 'imessage', label: 'iMessage', icon: MessageSquare, fullBleed: true },
+  { id: 'contacts', label: 'Contacts', icon: Users },
   { id: 'sync', label: 'Sync', icon: RefreshCw },
   { id: 'config', label: 'Config', icon: Settings },
 ];
 
 const FULL_BLEED_TAB_IDS = new Set(TABS.filter((t) => t.fullBleed).map((t) => t.id));
+
+// Tabs that render the account list wait for it. iMessage and Contacts read
+// neither — gating them on the accounts fetch would serialize their own
+// requests behind an unrelated one and flash a skeleton for no reason.
+const ACCOUNT_TAB_IDS = new Set(['inbox', 'drafts', 'sync', 'config']);
 
 export default function Messages() {
   const navigate = useNavigate();
@@ -81,12 +88,14 @@ export default function Messages() {
         return <SyncTab accounts={accountList} onRefresh={fetchAccounts} />;
       case 'imessage':
         return <IMessageTab />;
+      case 'contacts':
+        return <ContactsTab />;
       default:
         return <InboxTab accounts={accounts} />;
     }
   };
 
-  if (loading) {
+  if (loading && ACCOUNT_TAB_IDS.has(activeTab)) {
     return (
       <PageSkeleton
         header="bar"
@@ -110,7 +119,7 @@ export default function Messages() {
         icon={Mail}
         title="Messages"
         subtitle="Unified email and messaging management"
-        actions={(
+        actions={loading ? null : (
           <span className="text-sm text-gray-500">
             {accounts === null ? 'Accounts unavailable' : `${accounts.length} accounts`}
           </span>
