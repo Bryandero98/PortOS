@@ -23,6 +23,7 @@
     "error-handling": "9afba2e99b90a8d5771c75e7f0615d96",
     "typing": "1f2758ce0bb62d789a21aec241549531",
     "release-check": "afa9039cfbff21d77d601dc74eb5b81f",
+    "stash-cleanup": "f9de8b10937919ceb6656fbdb70179c4",
     "jira-sprint-manager": "3e63c8a3bdf0d5a05a30faaa2dc07980",
     "do-replan": "35660eb7b43e4259a6a9253ed288a1db",
     "jira-status-report": "9d374a9d8ccb92c5c8fd0aa9899e79a5",
@@ -63,6 +64,7 @@
     "ux": 1,
     "data-safety": 1,
     "simplify": 1,
+    "stash-cleanup": 1,
     "release-check": 9
   },
   "REFERENCE_WATCH_AUDITED_VERSION": 3,

@@ -1448,6 +1448,45 @@ Summarize:
 - Number of review iterations needed
 - Any unresolved issues`,
 
+  'stash-cleanup': `[Improvement: {appName}] Git Stash Cleanup
+
+Repository: {repoPath}
+
+Audit every entry in \`git stash list\` for {appName} and clear out anything that is stale, superseded, or unrecoverable — without losing real unlanded work. This never produces a commit; it is a working-tree hygiene pass.
+
+## Step 0: Handle a mid-flight conflict first
+
+Run \`git status\` (\`cd {repoPath}\` first). If it shows unmerged paths (a \`git stash pop\` left the tree conflicted), resolve that BEFORE touching the rest of the stash list:
+
+1. For each conflicted file, read the conflict markers and compare the stashed side against the current HEAD/\`main\` side for that region.
+2. If the stashed side is fully superseded — HEAD already contains the same change or a superset of it (verify by grepping the file for the added identifiers/lines and reading the surrounding code, not just eyeballing the diff) — resolve with \`git checkout --ours <file>\` and \`git add <file>\`.
+3. If the stashed side adds anything HEAD does not already have, STOP. Do not attempt to hand-merge two live versions of the same logic. Leave the conflict markers in place, note exactly which file(s) and which lines are in conflict, and report it — this needs a human to resolve.
+4. Once every conflicted file is resolved (or none were conflicted), confirm \`git status\` is clean before continuing to Step 1. A conflict resolved this way produces no diff against HEAD by construction, so there is nothing to commit.
+
+If Step 0 stopped on an unresolved conflict, skip the rest of this task and go straight to Step 3 (Report).
+
+## Step 1: Triage every remaining stash
+
+Run \`git stash list\`. For each \`stash@{N}\`:
+
+1. \`git stash show -p stash@{N} --stat\` for an overview, then the full \`git stash show -p stash@{N}\` for the patch.
+2. For every changed symbol or section in the patch, check whether current \`main\`/HEAD already contains the same change or a superset of it — grep the target file(s) for the added identifiers, read the surrounding code, and compare. If the stash's message references a branch name, also check \`git branch -a\` and \`git log --all --oneline\` for whether that branch was already merged or deleted (a strong signal the stash is redundant leftover cruft).
+3. Classify each stash:
+   - **SUPERSEDED** — the change (or a superset of it) already exists on \`main\`. Safe to drop.
+   - **STALE/ABANDONED** — old WIP, exploratory scratch, lockfile-only diff noise, a reference to a file that no longer exists in the repo, or a change that contradicts current architecture/policy (check this repo's CLAUDE.md before assuming). Safe to drop.
+   - **REAL UNLANDED WORK** — a coherent change that is not on \`main\` and is not obviously abandoned. Do NOT drop it. Note what it does, which files it touches, and how stale the underlying branch/context looks.
+4. Before diffing two stashes independently, check for duplicates: \`diff <(git stash show -p stash@{A}) <(git stash show -p stash@{B})\`. Identical stashes are one unit — classify and act on them together.
+
+## Step 2: Act
+
+- Drop every stash classified SUPERSEDED or STALE/ABANDONED: \`git stash drop stash@{N}\`. Re-run \`git stash list\` after each drop, since indices shift.
+- Leave every stash classified REAL UNLANDED WORK in place. Do not apply, pop, or drop it.
+- Only run \`git stash clear\` once you have classified the ENTIRE list and confirmed nothing in it is REAL UNLANDED WORK.
+
+## Step 3: Report
+
+Summarize: how many stashes were reviewed, how many were dropped (grouped by reason: superseded vs. stale/abandoned), and — for anything classified REAL UNLANDED WORK — what it is, which files it touches, and a recommendation (recover as a branch, cherry-pick specific hunks, or leave it for the user to decide). When in doubt about whether a stash is safe to drop, leave it in the stash and say so in the report rather than dropping it.`,
+
   'jira-sprint-manager': `[Improvement: {appName}] JIRA Sprint Manager
 
 Triage and implement JIRA tickets for {appName}:

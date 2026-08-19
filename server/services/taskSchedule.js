@@ -210,6 +210,13 @@ export const SELF_IMPROVEMENT_TASK_TYPES = [
   // copy-paste drift — distinct from `code-quality` (which is the broader DRY /
   // long-function / TODO pass). Defaults to file-issues.
   'simplify',
+  // Audits `git stash list` for {appName} and drops entries already superseded
+  // by (or a subset of) current `main`/HEAD, or that are stale/abandoned scratch
+  // work — without discarding real unlanded work. On-demand only (no cadence
+  // makes sense for something the user notices ad hoc); non-committing
+  // coordinator posture, since a cleared stash is a repo-hygiene side effect,
+  // never a commit. See DEFAULT_TASK_PROMPTS['stash-cleanup'].
+  'stash-cleanup',
   // PortOS-only: researches the current best local LLMs per category and
   // refreshes the bundled suggested-models catalog (server/lib/localLlmCatalog.js)
   // + the editorial family ranking (server/lib/localModelHeuristics.js), opening a
@@ -402,6 +409,14 @@ export const DEFAULT_TASK_INTERVALS = {
   // live main checkout so its branch/ref checks describe the real release flow;
   // a CoS worktree hides that checkout and creates an irrelevant task branch.
   'release-check':       { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { ...NON_COMMITTING_COORDINATOR_METADATA } },
+  // stash-cleanup triages `git stash list` and drops what's superseded/stale,
+  // leaving real unlanded work in place for the user to recover by hand. It
+  // runs in the app's live checkout (never a CoS worktree — a stash is a
+  // property of the checkout it was taken in) and, like the other coordinators,
+  // ships no code of its own. On-demand only: unlike branch/issue reconcile,
+  // there's no useful cadence for a stash a user hasn't necessarily touched
+  // since the last run — they trigger it when they notice stash clutter.
+  'stash-cleanup':       { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { ...NON_COMMITTING_COORDINATOR_METADATA } },
   'pr-reviewer':         { type: INTERVAL_TYPES.CUSTOM, intervalMs: 7200000, enabled: false, weekdaysOnly: true, providerId: null, model: null, prompt: null, taskMetadata: { readOnly: true, pipeline: { stages: [{ name: 'Security Scan', promptKey: 'pr-reviewer-security', readOnly: true }, { name: 'Code Review & Merge', promptKey: 'pr-reviewer-review', readOnly: false }] } } },
   'code-reviewer-a':     { ...CODE_REVIEWER_INTERVAL },
   'code-reviewer-b':     { ...CODE_REVIEWER_INTERVAL },
@@ -498,7 +513,8 @@ export const MANAGED_AGENT_OPTIONS = {
   // claim-work delegates to one of the above prompt bodies, each of which
   // creates its own worktree + PR — so the same lock applies to the router.
   'claim-work': ['useWorktree', 'openPR', 'claimFlow'],
-  'release-check': ['useWorktree', 'openPR', 'worktreeChangesExpected']
+  'release-check': ['useWorktree', 'openPR', 'worktreeChangesExpected'],
+  'stash-cleanup': ['useWorktree', 'openPR', 'worktreeChangesExpected']
 };
 
 // Strip managed-agent fields from a per-app override map before merging on top
@@ -2250,6 +2266,7 @@ export const TASK_TYPE_DESCRIPTIONS = {
   'ux': 'UX/design audit — file issues (default) or implement fixes',
   'data-safety': 'Data/upgrade-safety audit — file issues (default) or implement fixes',
   'simplify': 'Dead-code/duplication audit — file issues (default) or implement removals',
+  'stash-cleanup': 'Triage git stash list — drop entries superseded by or stale relative to main, leave real unlanded work in place',
   'refresh-local-llm-catalog': "Refresh PortOS's bundled suggested local-model catalog + editorial ranking (PortOS repo only)",
   'layered-intelligence': "Read this app's goals + telemetry, ask a reasoning model for one improvement, and file one deduplicated tracker issue — no code, no agent"
 };
