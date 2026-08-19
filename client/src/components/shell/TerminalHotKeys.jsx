@@ -1,4 +1,4 @@
-import { OctagonX, ChevronsLeft, ClipboardPaste, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, CornerDownLeft } from 'lucide-react';
+import { OctagonX, ChevronsLeft, ClipboardPaste, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, CornerDownLeft, ChevronsUp, ChevronsDown } from 'lucide-react';
 import ShellImageDrop from './ShellImageDrop';
 
 // Hot buttons for arrow / Enter entry — handy on touch devices and for driving TUI
@@ -15,6 +15,16 @@ export const NAV_KEYS = [
   { label: 'Enter', Icon: CornerDownLeft, seq: '\r' },
 ];
 
+// Scrolling the VIEW is deliberately separate from the arrow keys above: an arrow
+// drives whatever the focused app does with a cursor key (history, menu selection),
+// while these move what you are looking at. They are the only pointer-free way to
+// scroll at all — xterm 6 binds no touch handlers, and a TUI's alternate screen has
+// no scrollback either. Mechanism in `lib/terminalScroll.js`.
+export const SCROLL_KEYS = [
+  { label: 'Scroll up', Icon: ChevronsUp, direction: -1 },
+  { label: 'Scroll down', Icon: ChevronsDown, direction: 1 },
+];
+
 // Touch-friendly TUI-driving controls shared by the inline quick-commands toolbar
 // and the fullscreen control bar: Ctrl+B/C, Paste (+ fallback paste input), Photo,
 // and the arrow / Enter hot buttons. The Ctrl+B/C / Paste text labels collapse
@@ -22,7 +32,7 @@ export const NAV_KEYS = [
 //
 // `popoverPlacement` is which way the Photo composer opens — 'above' for the
 // fullscreen bar, which is pinned to the bottom of the viewport.
-export default function TerminalHotKeys({ sendCtrlB, sendCtrlC, handlePaste, sendNavKey, showPasteInput, setShowPasteInput, pasteInputRef, handlePasteInputEvent, sendImage, popoverPlacement = 'below' }) {
+export default function TerminalHotKeys({ sendCtrlB, sendCtrlC, handlePaste, sendNavKey, scrollPage, showPasteInput, setShowPasteInput, pasteInputRef, handlePasteInputEvent, sendImage, popoverPlacement = 'below' }) {
   return (
     <>
       <button
@@ -64,6 +74,18 @@ export default function TerminalHotKeys({ sendCtrlB, sendCtrlC, handlePaste, sen
         />
       )}
       <ShellImageDrop onSend={sendImage} placement={popoverPlacement} />
+      <div className="w-px h-6 bg-port-border shrink-0" />
+      {SCROLL_KEYS.map((key) => (
+        <button
+          key={key.label}
+          onClick={() => scrollPage(key.direction)}
+          className="flex items-center justify-center px-2.5 py-1.5 bg-port-card hover:bg-port-border text-gray-300 hover:text-white rounded text-xs font-mono transition-colors border border-port-border min-h-[40px] min-w-[40px] shrink-0"
+          title={`${key.label} one screen`}
+          aria-label={`${key.label} one screen`}
+        >
+          <key.Icon size={14} />
+        </button>
+      ))}
       <div className="w-px h-6 bg-port-border shrink-0" />
       {/* Arrow / Enter hot buttons — touch-friendly TUI nav + shell history */}
       {NAV_KEYS.map((key) => (
