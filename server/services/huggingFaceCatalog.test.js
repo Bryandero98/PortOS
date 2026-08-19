@@ -678,6 +678,52 @@ describe('huggingFaceCatalog', () => {
       expect(results.some((r) => r.repository === drafterRepo)).toBe(false)
     })
 
+    it('does not offer a GGUF speculative-decoding drafter as an installable model', async () => {
+      const drafterRepo = 'incoai/Qwen3.8-27B-DFlash2-GGUF'
+      const files = [{ rfilename: 'Qwen3.8-27B-DFlash2-Q4_K_M.gguf', size: 1_400_000_000 }]
+      fetch.mockImplementation(urlRouter([
+        ['filter=mlx', []],
+        ['filter=gguf', [{ modelId: drafterRepo, downloads: 9000, tags: ['gguf', 'dflash2', 'speculative-decoding', 'draft-model'], siblings: files }]],
+        [(u) => u.includes('blobs=true'), { id: drafterRepo, siblings: files }],
+      ]))
+
+      const results = await searchHuggingFaceModels({ backend: 'ollama', query: 'qwen3.8', appleSilicon: true })
+
+      expect(results.some((r) => r.repository === drafterRepo)).toBe(false)
+    })
+
+    // The narrow `draft-model`/`drafter` tag is the whole point: an `mtp` or
+    // `speculative-decoding` tag also sits on complete models that merely keep
+    // their built-in MTP head, and filtering on those would hide mainstream
+    // one-click installs.
+    it('still offers a complete GGUF model that only preserves its own MTP head', async () => {
+      const targetRepo = 'unsloth/Qwen3.6-27B-MTP-GGUF'
+      const files = [{ rfilename: 'Qwen3.6-27B-MTP-Q4_K_M.gguf', size: 17_000_000_000 }]
+      fetch.mockImplementation(urlRouter([
+        ['filter=mlx', []],
+        ['filter=gguf', [{ modelId: targetRepo, downloads: 90000, tags: ['gguf', 'mtp', 'speculative-decoding'], siblings: files }]],
+        [(u) => u.includes('blobs=true'), { id: targetRepo, siblings: files }],
+      ]))
+
+      const results = await searchHuggingFaceModels({ backend: 'ollama', query: 'qwen3.6', appleSilicon: true })
+
+      expect(results.some((r) => r.repository === targetRepo)).toBe(true)
+    })
+
+    it('does not offer a DFlash drafter published as MLX safetensors', async () => {
+      const drafterRepo = 'jfan/Qwen3.8-27B-heretic-dflash'
+      fetch.mockImplementation(urlRouter([
+        ['filter=mlx', [mlxListing(drafterRepo, ['model.safetensors'])]],
+        ['filter=gguf', []],
+      ]))
+
+      const results = await searchHuggingFaceModels({
+        backend: 'lmstudio', query: 'qwen3.8', appleSilicon: true
+      })
+
+      expect(results.some((r) => r.repository === drafterRepo)).toBe(false)
+    })
+
     it('does not surface MLX on a non-Apple host even for LM Studio', async () => {
       const mlxRepo = 'mlx-community/Hidden-On-Intel-4bit'
       fetch.mockImplementation(urlRouter([
