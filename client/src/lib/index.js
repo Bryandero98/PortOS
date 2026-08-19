@@ -143,6 +143,7 @@ export * from './streakGlyph.js';
 export * from './syncCounts.js';
 export * from './tabNotation.js';
 export * from './terminalDictation.js';
+export * from './terminalScroll.js';
 export * from './terminalTheme.js';
 export * from './threejsAnimation.js';
 export * from './threejsExplode.js';
