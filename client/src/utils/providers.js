@@ -825,6 +825,21 @@ export const isOllamaBackedProvider = (provider) => {
 };
 
 /**
+* True when a provider is an OpenCode wrapper that front-ends the OrcaRouter
+* gateway (the shipped `opencode-orcarouter` / `opencode-orcarouter-tui`
+* presets, or any renamed wrapper carrying the `orcarouterBacked` marker).
+*
+* These wrappers deliberately carry NO key of their own: at spawn time the
+* server attaches the key from the sibling `orcarouter` API provider
+* (`server/lib/aiToolkit/providers.js` `withOrcaRouterApiKey`), so the one place
+* a user actually pastes the key is the `orcarouter` API provider, not this
+* form. MIRROR of the `orcarouterBacked` marker the server keys on — keep in
+* lockstep with `server/lib/providerModels.js#getOpencodeLocalProviderNamespace`.
+* @param {{id?:string,orcarouterBacked?:boolean}} provider
+*/
+export const isOrcaRouterBackedProvider = (provider) => provider?.orcarouterBacked === true;
+
+/**
  * Check if a provider is the Grok Build CLI/TUI (the `grok` command harness).
  * Mirrors the Grok detection in `knownProviderContextWindow`: matches the shipped
  * `grok-cli` / `grok-tui` samples or any process provider whose command basename

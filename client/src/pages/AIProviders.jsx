@@ -3,7 +3,7 @@ import { AlertTriangle } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
-import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, supportsModelRefresh, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider } from '../utils/providers';
+import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, supportsModelRefresh, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, isOrcaRouterBackedProvider } from '../utils/providers';
 import useLocalModels from '../hooks/useLocalModels';
 import BrailleSpinner from '../components/BrailleSpinner';
 import EmptyState from '../components/EmptyState';
@@ -41,7 +41,30 @@ function GrokUploadWarning({ className = '' }) {
       <pre className="mt-1.5 whitespace-pre rounded bg-port-bg/60 px-2 py-1.5 font-mono text-[11px] text-port-warning">{`[harness]
 disable_codebase_upload = true`}</pre>
     </div>
-  );
+   );
+}
+
+// The OpenCode OrcaRouter wrappers (opencode-orcarouter / -tui) keep no key of
+// their own — at spawn time the server copies the key from the sibling
+// `orcarouter` API provider. This answers "where do I put the API key?" from the
+// card/form: it's on the API provider, not here.
+function OrcaRouterKeyHint({ sibling, className = '' }) {
+  const hasKey = Boolean(sibling?.hasApiKey);
+  return (
+    <div className={`text-xs rounded-md border border-port-border bg-port-bg/60 px-2.5 py-2 leading-relaxed ${className}`}>
+      <span className="text-gray-300">
+        API key is inherited from the <code className="font-mono">OrcaRouter</code> API provider
+        {" "}at run time — this wrapper has no key field of its own.
+      </span>
+      <div className="mt-1">
+        {hasKey ? (
+          <span className="text-port-success">OrcaRouter key: set</span>
+        ) : (
+          <span className="text-port-warning">OrcaRouter key: not set — Edit the OrcaRouter API provider to paste one</span>
+        )}
+      </div>
+    </div>
+   );
 }
 
 export default function AIProviders() {
@@ -730,9 +753,16 @@ export default function AIProviders() {
                       )}
                     </div>
 
-                    {isGrokBuildCli(provider) && <GrokUploadWarning className="mt-2" />}
+                      {isGrokBuildCli(provider) && <GrokUploadWarning className="mt-2" />}
 
-                    {testResults[provider.id] && !testResults[provider.id].testing && (
+                       {isOrcaRouterBackedProvider(provider) && (
+                         <OrcaRouterKeyHint
+                          sibling={providers.find(p => p.id === 'orcarouter')}
+                          className="mt-2"
+                          />
+                        )}
+
+                      {testResults[provider.id] && !testResults[provider.id].testing && (
                       <div className={`mt-2 text-sm ${testResults[provider.id].success ? 'text-port-success' : 'text-port-error'}`}>
                         {testResults[provider.id].success
                           ? `✓ Available${testResults[provider.id].version ? ` (${testResults[provider.id].version})` : ''}`
@@ -1611,7 +1641,14 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [], runnerAllo
             <span className="text-sm text-gray-400">Enabled</span>
           </label>
 
-          {isGrokBuildCli({ type: formData.type, command: formData.command }) && <GrokUploadWarning />}
+           {isGrokBuildCli({ type: formData.type, command: formData.command }) && <GrokUploadWarning />}
+
+           {isOrcaRouterBackedProvider(provider) && (
+             <OrcaRouterKeyHint
+              sibling={allProviders.find(p => p.id === 'orcarouter')}
+             />
+           )}
+
 
           <div className="flex justify-end gap-3 pt-4">
             <button
