@@ -128,6 +128,22 @@ export async function getProjectsByIds(ids, { includeDeleted = false } = {}) {
   return result.rows.map(rowToProject);
 }
 
+/**
+ * Every LIVE project a given Creative Commission spawned, oldest first. The
+ * commission↔project link the stop/re-pin paths run on: the commission's own run
+ * ledger is capped (MAX_PERSISTED_RUNS) and never sees a project a plan step
+ * spawned indirectly, so a wedged project can fall out of it entirely.
+ */
+export async function listProjectsByCommissionId(commissionId) {
+  if (!commissionId) return [];
+  const result = await query(
+    `SELECT id, data FROM creative_director_projects
+     WHERE deleted = FALSE AND data->>'commissionId' = $1 ORDER BY created_at ASC`,
+    [commissionId],
+  );
+  return result.rows.map(rowToProject);
+}
+
 /** Live project ids (or all when includeDeleted) — used by tombstone GC sweeps. */
 export async function listProjectIds({ includeDeleted = false } = {}) {
   const result = includeDeleted

@@ -135,6 +135,7 @@ import { writersRoomStore } from './writersRoom/store.js';
 import { mediaCollectionStore } from './mediaCollections.js';
 import { loraDatasetStore } from './loraDatasets.js';
 import { commissionStore, backfillAllCommissionFeedback } from './creativeCommissions/store.js';
+import { backfillProjectCommissionIds } from './creativeCommissions/projectControl.js';
 import { outcomesStore as liOutcomesStore } from './layeredIntelligenceOutcomes.js';
 import * as gameStore from './games/store.js';
 
@@ -372,6 +373,7 @@ const startBackgroundServices = ({ spawnerReady }) => {
   // bootstrapSequence.js.
   armCommissionScheduler({
     backfillCommissionFeedback: backfillAllCommissionFeedback,
+    backfillProjectCommissionIds,
     startCommissionScheduler
   });
   // Initialize OpenWorld snapshot scheduler — records periodic city-state frames

@@ -15,6 +15,10 @@ vi.mock('../services/creativeDirector/local.js', () => ({
   updateScene: vi.fn(),
 }));
 
+vi.mock('../services/creativeDirector/stopProject.js', () => ({
+  stopProject: vi.fn(async (id) => ({ projectId: id, stopped: true, runs: 1, tasks: 1, agents: 1, jobs: 2 })),
+}));
+
 vi.mock('../services/creativeDirector/completionHook.js', () => ({
   startCreativeDirectorProject: vi.fn(async () => undefined),
   advanceAfterSceneSettled: vi.fn(async () => undefined),
@@ -58,6 +62,7 @@ vi.mock('../services/creativeDirector/firstPassMusicGen.js', () => ({
 import * as cdService from '../services/creativeDirector/local.js';
 import * as autoCast from '../services/creativeDirector/autoCast.js';
 import * as hook from '../services/creativeDirector/completionHook.js';
+import * as stop from '../services/creativeDirector/stopProject.js';
 import * as firstPass from '../services/creativeDirector/firstPassGen.js';
 import * as firstPassMusicBed from '../services/creativeDirector/firstPassMusicGen.js';
 import * as creativeTools from '../services/creative/toolRegistry.js';
@@ -72,6 +77,34 @@ describe('creativeDirector routes', () => {
     app.use(express.json());
     app.use('/api/creative-director', creativeDirectorRoutes);
     vi.clearAllMocks();
+  });
+
+  describe('stop', () => {
+    it('POST /:id/stop tears down the in-flight work and reports the counts', async () => {
+      cdService.getProject.mockResolvedValueOnce({ id: 'cd-1', status: 'planning' });
+      const r = await request(app).post('/api/creative-director/cd-1/stop');
+      expect(r.status).toBe(200);
+      expect(stop.stopProject).toHaveBeenCalledWith('cd-1', { reason: 'Stopped by user' });
+      expect(r.body).toMatchObject({ stopped: true, tasks: 1, jobs: 2 });
+    });
+
+    it('POST /:id/stop 404s for an unknown project', async () => {
+      cdService.getProject.mockResolvedValueOnce(null);
+      const r = await request(app).post('/api/creative-director/nope/stop');
+      expect(r.status).toBe(404);
+      expect(stop.stopProject).not.toHaveBeenCalled();
+    });
+
+    it('DELETE /:id stops BEFORE tombstoning — otherwise the orphan sweep respawns agents for a deleted project', async () => {
+      const order = [];
+      stop.stopProject.mockImplementationOnce(async () => { order.push('stop'); return { stopped: true }; });
+      cdService.deleteProject.mockImplementationOnce(async () => { order.push('delete'); return { ok: true }; });
+
+      const r = await request(app).delete('/api/creative-director/cd-1');
+
+      expect(r.status).toBe(200);
+      expect(order).toEqual(['stop', 'delete']);
+    });
   });
 
   describe('GET /', () => {
@@ -320,7 +353,9 @@ describe('creativeDirector routes', () => {
       const r = await request(app).post('/api/creative-director/cd-1/resume');
       expect(r.status).toBe(200);
       expect(r.body.ok).toBe(true);
-      expect(cdService.updateProject).toHaveBeenCalledWith('cd-1', { status: 'rendering' });
+      // Resume must also CLEAR the reason: a stop parks the project with one, and
+      // the overview/plan tabs render any non-empty failureReason in a red banner.
+      expect(cdService.updateProject).toHaveBeenCalledWith('cd-1', { status: 'rendering', failureReason: null });
       expect(hook.startCreativeDirectorProject).toHaveBeenCalledWith('cd-1');
     });
   });

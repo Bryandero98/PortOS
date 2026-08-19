@@ -137,6 +137,12 @@ export async function produceVideoFromIssue(issueId, options = {}) {
     // pin at the project boundary. Absent ⇒ null, i.e. today's behavior for the
     // manual writers-room / pipeline send paths.
     renderBackend: options.renderBackend || null,
+    // Same boundary problem as the render pin above, for the OTHER half: the
+    // teaser is a separate project, so without the owning commission's id it is
+    // invisible to that commission's stop and its live provider resolution — a
+    // paused or deleted commission would leave this project running. Absent ⇒
+    // null, i.e. today's behavior for the manual writers-room / pipeline paths.
+    commissionId: options.commissionId || null,
   });
 
   let started;

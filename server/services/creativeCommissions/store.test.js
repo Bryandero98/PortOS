@@ -57,6 +57,7 @@ const {
   mergeCommissionsFromSync,
   pruneTombstonedCommissions,
   commissionStore,
+  commissionEvents,
   MAX_RUN_PROMPT_LEN,
   ERR_VALIDATION,
   ERR_NOT_FOUND,
@@ -218,6 +219,84 @@ describe('createCommission', () => {
   it('rejects an invalid schedule before persisting', async () => {
     await expect(createCommission({ ...validInput(), schedule: { kind: 'DAILY' } })).rejects.toThrow();
     expect(records.size).toBe(0);
+  });
+});
+
+describe('mergeCommissionsFromSync — synced tombstone stops local work', () => {
+  const capture = async (fn) => {
+    const seen = [];
+    const onChange = (e) => seen.push(e);
+    commissionEvents.on('commission:changed', onChange);
+    try { await fn(); } finally { commissionEvents.off('commission:changed', onChange); }
+    return seen;
+  };
+
+  it('emits a per-id delete when a tombstone arrives, so the receiver stops the projects IT owns', async () => {
+    // Only the brief travels; the projects live on whichever machine minted them.
+    // The batch 'merge' event carries no id, so without this the reconciler no-ops
+    // and a commission deleted on another machine keeps generating here forever.
+    const created = await createCommission(validInput());
+    const events = await capture(() => mergeCommissionsFromSync([{
+      ...created, deleted: true, deletedAt: '2030-01-01T00:00:00.000Z',
+      briefUpdatedAt: '2030-01-01T00:00:00.000Z', updatedAt: '2030-01-01T00:00:00.000Z',
+    }]));
+    expect(events).toContainEqual({ id: created.id, action: 'delete' });
+  });
+
+  it('does NOT re-emit for a tombstone it already holds — a re-sync must not re-stop resumed work', async () => {
+    const created = await createCommission(validInput());
+    const tombstone = {
+      ...created, deleted: true, deletedAt: '2030-01-01T00:00:00.000Z',
+      briefUpdatedAt: '2030-01-01T00:00:00.000Z', updatedAt: '2030-01-01T00:00:00.000Z',
+    };
+    await mergeCommissionsFromSync([tombstone]);
+    const events = await capture(() => mergeCommissionsFromSync([tombstone]));
+    expect(events.filter((e) => e.action === 'delete')).toEqual([]);
+  });
+});
+
+describe('updateCommission — changed-field event payload', () => {
+  // The project reconciler (creativeCommissions/projectControl.js) keys on this
+  // payload to decide whether to tear down a commission's in-flight LLM stages.
+  // The commission editor posts the WHOLE form on every save — its `assignment`
+  // rides along even when the user only fixed a typo — so a patch-key list here
+  // would read as "the provider changed" on every save and SIGKILL a healthy
+  // planner agent mid-run, every time.
+  const captureFields = async (id, patch) => {
+    let fields;
+    const onChange = (e) => { if (e?.action === 'update') fields = e.fields; };
+    commissionEvents.on('commission:changed', onChange);
+    try { await updateCommission(id, patch); } finally { commissionEvents.off('commission:changed', onChange); }
+    return fields;
+  };
+
+  it('omits assignment when the patch resends the SAME pin', async () => {
+    const created = await createCommission(validInput());
+    await updateCommission(created.id, { assignment: { providerId: 'claude-tui', model: 'sonnet' } });
+    // Exactly what the editor sends when the user edits only the brief.
+    const fields = await captureFields(created.id, {
+      name: created.name,
+      brief: { intent: 'a typo fix' },
+      assignment: { providerId: 'claude-tui', model: 'sonnet' },
+    });
+    expect(fields).toContain('brief');
+    expect(fields).not.toContain('assignment');
+    expect(fields).not.toContain('enabled');
+  });
+
+  it('reports assignment when the pin genuinely changes', async () => {
+    const created = await createCommission(validInput());
+    await updateCommission(created.id, { assignment: { providerId: 'claude-tui', model: 'sonnet' } });
+    const fields = await captureFields(created.id, {
+      assignment: { providerId: 'lmstudio-tui', model: 'qwen3' },
+    });
+    expect(fields).toContain('assignment');
+  });
+
+  it('reports enabled when the commission is paused', async () => {
+    const created = await createCommission(validInput());
+    const fields = await captureFields(created.id, { enabled: false });
+    expect(fields).toContain('enabled');
   });
 });
 

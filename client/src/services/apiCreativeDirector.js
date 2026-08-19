@@ -37,6 +37,13 @@ export const pauseCreativeDirectorProject = (id, options = {}) => request(`/crea
   method: 'POST',
   ...options,
 });
+// The hard counterpart to pause: kills the live agent, retires the CoS tasks
+// behind the in-flight runs (the orphan sweep respawns them otherwise), settles
+// the runs, and cancels the queued renders. Resolves to the teardown counts.
+export const stopCreativeDirectorProject = (id, options = {}) => request(`/creative-director/${encodeURIComponent(id)}/stop`, {
+  method: 'POST',
+  ...options,
+});
 export const resumeCreativeDirectorProject = (id, options = {}) => request(`/creative-director/${encodeURIComponent(id)}/resume`, {
   method: 'POST',
   ...options,

@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   getToolSpecs: vi.fn(),
   getSettings: vi.fn(),
   recordRun: vi.fn(),
+  commissionStagePin: vi.fn(),
 }));
 
 vi.mock('../cos.js', () => ({
@@ -25,6 +26,7 @@ vi.mock('../../lib/creativeDirectorPrompts.js', () => ({
 vi.mock('../creative/toolRegistry.js', () => ({ getToolSpecs: mocks.getToolSpecs }));
 vi.mock('../settings.js', () => ({ getSettings: mocks.getSettings }));
 vi.mock('./local.js', () => ({ recordRun: mocks.recordRun }));
+vi.mock('../creativeCommissions/projectControl.js', () => ({ commissionStagePin: mocks.commissionStagePin }));
 
 const { enqueueTreatmentTask, enqueuePlanTask, enqueueEvaluateTask } = await import('./agentBridge.js');
 
@@ -38,6 +40,72 @@ beforeEach(() => {
   mocks.recordRun.mockResolvedValue();
   mocks.addTask.mockResolvedValue();
   mocks.getSettings.mockResolvedValue({});
+  mocks.commissionStagePin.mockResolvedValue(null);
+});
+
+describe('Creative Director agent bridge — commission-owned projects', () => {
+  // A project minted by a commission fire carries NO modelOverrides — the fire
+  // stamps only the back-pointer, and the boot backfill strips the snapshot the
+  // old fire path used to write. So the commission's live pin is what applies.
+  const commissioned = { ...project, commissionId: 'commission-1', modelOverrides: {} };
+
+  it("resolves the owning commission's pin LIVE, so an edited provider reaches a project already in flight", async () => {
+    mocks.commissionStagePin.mockResolvedValue({ providerId: 'lmstudio-tui', model: 'qwen3.6:35b' });
+
+    await enqueuePlanTask(commissioned);
+
+    expect(mocks.commissionStagePin).toHaveBeenCalledWith('commission-1');
+    const [task] = mocks.addTask.mock.calls[0];
+    expect(task.metadata).toMatchObject({
+      provider: 'lmstudio-tui', providerId: 'lmstudio-tui', model: 'qwen3.6:35b',
+    });
+  });
+
+  it("lets a hand-set per-project pin BEAT the commission's — the models drawer must not be a silent no-op", async () => {
+    mocks.commissionStagePin.mockResolvedValue({ providerId: 'lmstudio-tui', model: 'qwen3.6:35b' });
+
+    await enqueuePlanTask({ ...commissioned, modelOverrides: { plan: { providerId: 'drawer-choice-tui' } } });
+
+    const [task] = mocks.addTask.mock.calls[0];
+    expect(task.metadata).toMatchObject({ providerId: 'drawer-choice-tui' });
+    // And it doesn't even pay for the lookup it isn't going to use.
+    expect(mocks.commissionStagePin).not.toHaveBeenCalled();
+  });
+
+  it('consults the commission when the project pins a DIFFERENT stage', async () => {
+    mocks.commissionStagePin.mockResolvedValue({ providerId: 'lmstudio-tui' });
+
+    // An evaluation-only override leaves `plan` to the commission.
+    await enqueuePlanTask({ ...commissioned, modelOverrides: { evaluation: { providerId: 'vision-api' } } });
+
+    const [task] = mocks.addTask.mock.calls[0];
+    expect(task.metadata).toMatchObject({ providerId: 'lmstudio-tui' });
+  });
+
+  it('falls back to the project/global assignment when the commission pins nothing', async () => {
+    mocks.commissionStagePin.mockResolvedValue(null);
+    mocks.getSettings.mockResolvedValue({ creativeDirector: { plan: { providerId: 'global-agent' } } });
+
+    await enqueuePlanTask(commissioned);
+
+    const [task] = mocks.addTask.mock.calls[0];
+    expect(task.metadata).toMatchObject({ providerId: 'global-agent' });
+  });
+
+  it('never looks up a commission for a bare project', async () => {
+    await enqueuePlanTask(project);
+    expect(mocks.commissionStagePin).not.toHaveBeenCalled();
+  });
+
+  it('does not stall the dispatch when the commission lookup fails', async () => {
+    mocks.commissionStagePin.mockRejectedValue(new Error('store down'));
+    mocks.getSettings.mockResolvedValue({ creativeDirector: { plan: { providerId: 'global-agent' } } });
+
+    await enqueuePlanTask(commissioned);
+
+    const [task] = mocks.addTask.mock.calls[0];
+    expect(task.metadata).toMatchObject({ providerId: 'global-agent' });
+  });
 });
 
 describe('Creative Director agent bridge model assignments', () => {

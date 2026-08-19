@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Creative Director API wrapper — batch-by-id fetch (#4148).
  *
@@ -76,4 +77,22 @@ describe('getCreativeDirectorProjectsByIds', () => {
     expect(request.mock.calls[0][1]).toEqual({ silent: true });
   });
 });
-// @vitest-environment node
+
+describe('stopCreativeDirectorProject', () => {
+  it('POSTs the stop route — the hard counterpart to pause', async () => {
+    const { stopCreativeDirectorProject } = await import('./apiCreativeDirector.js');
+    request.mockResolvedValue({ stopped: true, runs: 1, tasks: 1, agents: 1, jobs: 0 });
+
+    const out = await stopCreativeDirectorProject('cd-1', { silent: true });
+
+    expect(request).toHaveBeenCalledWith('/creative-director/cd-1/stop', { method: 'POST', silent: true });
+    expect(out.stopped).toBe(true);
+  });
+
+  it('encodes the id', async () => {
+    const { stopCreativeDirectorProject } = await import('./apiCreativeDirector.js');
+    request.mockResolvedValue({});
+    await stopCreativeDirectorProject('cd/../1');
+    expect(request.mock.calls[0][0]).toBe('/creative-director/cd%2F..%2F1/stop');
+  });
+});

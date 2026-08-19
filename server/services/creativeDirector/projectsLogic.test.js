@@ -352,6 +352,26 @@ describe('sanitizeProjectForSync', () => {
 });
 
 describe('mergeProjectRecord (LWW, tombstone-aware)', () => {
+  it('re-attaches the local commissionId when a remote wins — the wire never carries one', () => {
+    // syncWire strips commissionId, so every inbound record lacks it. Without the
+    // re-attach, a peer's edit winning the LWW would silently orphan the project
+    // from the commission that owns it: unstoppable from the commission page and
+    // stuck on whatever provider it was dispatched with.
+    const local = { id: 'cd-1', updatedAt: '2026-01-01T00:00:00.000Z', commissionId: 'commission-1' };
+    const remote = { id: 'cd-1', updatedAt: '2026-06-01T00:00:00.000Z', name: 'Renamed' };
+    const { next, remoteWins } = mergeProjectRecord(local, remote);
+    expect(remoteWins).toBe(true);
+    expect(next.name).toBe('Renamed');
+    expect(next.commissionId).toBe('commission-1');
+  });
+
+  it('does not invent a commissionId when the local record has none', () => {
+    const local = { id: 'cd-1', updatedAt: '2026-01-01T00:00:00.000Z' };
+    const remote = { id: 'cd-1', updatedAt: '2026-06-01T00:00:00.000Z', name: 'Renamed' };
+    const { next } = mergeProjectRecord(local, remote);
+    expect(next).not.toHaveProperty('commissionId');
+  });
+
   const at = (iso, extra = {}) => ({ id: 'cd-1', name: 'P', updatedAt: iso, ...extra });
   it('inserts when there is no local counterpart', () => {
     const { next, inserted, remoteWins } = mergeProjectRecord(null, at('2026-06-23T00:00:00.000Z'));

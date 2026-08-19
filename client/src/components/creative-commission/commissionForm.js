@@ -18,6 +18,20 @@ export const COMMISSION_INTENT_MAX = 20000;
 export const COMMISSION_STYLE_SPEC_MAX = 5000;
 export const COMMISSION_BRIEF_TAG_MAX = 120;
 
+// Pause and Delete are real STOPS, not just "skip the next tick": the server also
+// tears down the Creative Director projects the commission already spawned
+// (server/services/creativeCommissions/projectControl.js). Both surfaces must say
+// so — a user watching a retry loop has no other way to know it just ended — and
+// both must say it the same way, which is why the strings live here.
+export const COMMISSION_STOP_COPY = Object.freeze({
+  pausedToast: 'Commission paused — stopping any generation still in flight',
+  resumedToast: 'Schedule resumed',
+  deletedToast: 'Commission deleted — stopping any generation still in flight',
+  pauseTitle: 'Pause — stops the schedule and any generation still in flight',
+  resumeTitle: 'Resume the schedule',
+  deleteTitle: 'Delete commission — also stops any generation still in flight',
+});
+
 export const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 export const inputCls = 'w-full bg-port-bg border border-port-border rounded px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-port-accent';

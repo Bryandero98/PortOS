@@ -24,11 +24,25 @@ import { recordRun } from './local.js';
 import { DELIVERABLE_KINDS, deliverableMark } from './deliverableGate.js';
 
 // Treatment and production planning are CoS tasks, so unlike scene evaluation
-// they need a CLI/TUI provider with an agent harness. Resolution prefers the
-// project's own `modelOverrides.<kind>` pin (per-project CD provider/model
-// pins) and falls back to the global `settings.creativeDirector.<kind>` AI
-// Assignment — only adding a pin when one is set, preserving the system-default
-// behavior for existing installations.
+// they need a CLI/TUI provider with an agent harness. Resolution order:
+//
+//   1. The project's OWN `modelOverrides.<kind>` pin — a deliberate per-project
+//      choice the user made in the CD models drawer. Most specific, so it wins.
+//   2. The OWNING CREATIVE COMMISSION's current pin, read live. A commission is a
+//      standing job definition and its project is one execution of it, so an edit
+//      to the commission has to reach the executions still running. Snapshotting
+//      the pin onto the project at fire time (what this used to do) froze it: the
+//      user could switch the commission to a different provider and watch the
+//      wedged project keep handing its planner task to the old one forever — AND
+//      it occupied tier 1, so a later drawer edit could never be distinguished
+//      from the machine-written snapshot. The fire no longer writes that snapshot
+//      (and the boot backfill clears the ones it already wrote), so a value in
+//      tier 1 now means "the user chose this", nothing else.
+//   3. The global `settings.creativeDirector.<kind>` AI Assignment.
+//
+// Only adds a pin when one is set, preserving the system-default behavior for
+// existing installations. A commission lookup failure falls through rather than
+// stalling the dispatch.
 async function getStageAssignment(kind, project) {
   // Scene evaluation is a direct vision API call (apiProviderTypes) resolved
   // separately, NOT a CoS agent pin — injecting its api-type provider into the
@@ -37,8 +51,20 @@ async function getStageAssignment(kind, project) {
   // `creativeDirector.evaluate` settings key; the eval pin lives under
   // `creativeDirector.evaluation`.)
   if (kind === 'evaluate') return {};
-  const settings = await getSettings().catch(() => ({}));
-  const assignment = resolveStagePin(kind, project, settings);
+  // Only consult the commission when the project does NOT carry its own pin for
+  // this stage — a drawer choice is the user's explicit override and must win.
+  const projectPin = project?.modelOverrides?.[kind]?.providerId ? project.modelOverrides[kind] : null;
+  const [settings, commissionPin] = await Promise.all([
+    getSettings().catch(() => ({})),
+    // Lazy + only for a commission-owned project, so the CD graph doesn't take a
+    // static dependency on the commission store for the common bare project.
+    (!projectPin && project?.commissionId)
+      ? import('../creativeCommissions/projectControl.js')
+        .then(({ commissionStagePin }) => commissionStagePin(project.commissionId))
+        .catch(() => null)
+      : null,
+  ]);
+  const assignment = commissionPin || resolveStagePin(kind, project, settings);
   if (!assignment.providerId && !assignment.model) return {};
   return {
     ...(assignment.providerId ? { provider: assignment.providerId, providerId: assignment.providerId } : {}),

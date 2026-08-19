@@ -209,24 +209,27 @@ describe('initCosAfterSpawner', () => {
 });
 
 describe('armCommissionScheduler', () => {
-  it('splits legacy inline feedback before arming the per-commission crons', () => {
+  it('runs both backfills before arming the per-commission crons', () => {
     const { calls, step } = createRecorder();
     armCommissionScheduler({
-      backfillCommissionFeedback: step('backfill', () => Promise.resolve()),
+      backfillCommissionFeedback: step('feedback', () => Promise.resolve()),
+      backfillProjectCommissionIds: step('backpointer', () => Promise.resolve()),
       startCommissionScheduler: step('arm', () => Promise.resolve())
     });
-    expect(calls).toEqual(['backfill', 'arm']);
+    expect(calls).toEqual(['feedback', 'backpointer', 'arm']);
   });
 
-  it('arms the scheduler even if the backfill fails, and logs both', async () => {
+  it('arms the scheduler even if both backfills fail, and logs each', async () => {
     const arm = vi.fn(() => Promise.reject(new Error('cron boom')));
     armCommissionScheduler({
       backfillCommissionFeedback: () => Promise.reject(new Error('backfill boom')),
+      backfillProjectCommissionIds: () => Promise.reject(new Error('backpointer boom')),
       startCommissionScheduler: arm
     });
     await flush();
     expect(arm).toHaveBeenCalledTimes(1);
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Commission feedback backfill failed'));
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Commission back-pointer backfill failed'));
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Creative Commission scheduler init failed'));
   });
 });

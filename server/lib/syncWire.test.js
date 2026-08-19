@@ -45,6 +45,28 @@ describe('syncWire', () => {
     });
   });
 
+  describe('creativeDirectorProject — machine-local commissionId', () => {
+    it('strips commissionId from the wire so a peer never resolves another machine\'s projects', () => {
+      // A commission federates its BRIEF only and lands DORMANT on the receiver;
+      // only the minting machine runs it. If the project's back-pointer travelled,
+      // pausing/deleting that dormant commission on the peer would park a project
+      // whose agent, CoS task and queued renders live on the OTHER machine — with
+      // no local process able to stop them.
+      const wire = sanitizeRecordForWire('creativeDirectorProject', {
+        id: 'cd-1', name: 'P', status: 'planning', commissionId: 'commission-1',
+      });
+      expect(wire).not.toHaveProperty('commissionId');
+      expect(wire).toMatchObject({ id: 'cd-1', name: 'P', status: 'planning' });
+    });
+
+    it('still carries the rest of the record', () => {
+      const wire = sanitizeRecordForWire('creativeDirectorProject', {
+        id: 'cd-1', name: 'P', treatment: { logline: 'l' }, deleted: false,
+      });
+      expect(wire).toMatchObject({ id: 'cd-1', name: 'P', treatment: { logline: 'l' } });
+    });
+  });
+
   describe('sanitizeRecordForWire', () => {
     it('returns null for non-objects', () => {
       expect(sanitizeRecordForWire('universe', null)).toBeNull();

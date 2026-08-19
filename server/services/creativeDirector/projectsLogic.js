@@ -151,7 +151,7 @@ export function buildProjectRecord(input, { id, now, collectionId }) {
   const {
     name, aspectRatio, quality, modelId, targetDurationSeconds,
     styleSpec = '', startingImageFile = null, userStory = null,
-    disableAudio = true, autoAcceptScenes = false, sourceIssueId = null,
+    disableAudio = true, autoAcceptScenes = false, sourceIssueId = null, commissionId = null,
     cast = [], generateFirstPass = false, directive = null,
     modelOverrides = {}, renderBackend = null,
   } = input;
@@ -187,6 +187,22 @@ export function buildProjectRecord(input, { id, now, collectionId }) {
     // The stitch step uses it to look up `stages.audio.music` and mix it into
     // the final cut. Bare CD projects leave this null and skip the audio-mux.
     sourceIssueId,
+    // Optional back-pointer to the Creative Commission whose fire minted this
+    // project. Load-bearing, not decorative: it is how a commission finds the
+    // work it spawned in order to STOP it (pause/delete) and how agentBridge
+    // resolves the commission's CURRENT provider pin at dispatch instead of a
+    // snapshot frozen at fire time. The run ledger cannot serve that role — it is
+    // capped at MAX_PERSISTED_RUNS, so a long-wedged project falls out of it, and
+    // a project a plan step spawns INDIRECTLY (bridgeFromIssue) never enters it.
+    // SERVER-MANAGED — deliberately NOT in the public create/update schema (same
+    // rule as `generateFirstPass` above). `POST /api/creative-director` would
+    // otherwise let any caller bind an unrelated project to an existing
+    // commission, inheriting that commission's provider pin and getting stopped
+    // when it is paused or deleted. Only the scheduler's fire and the
+    // bridgeFromIssue teaser path set it, and both call the service directly.
+    // Additive: the whole record round-trips through the JSONB column verbatim
+    // (sanitizeProjectForSync / mergeProjectRecord), so no schema-version bump.
+    commissionId,
     collectionId,
     timelineProjectId: null,
     finalVideoId: null,
@@ -278,7 +294,14 @@ export function mergeProjectRecord(local, remoteRaw) {
   if (!remote) return { next: null, inserted: false, remoteWins: false, changed: false };
   if (!local) return { next: remote, inserted: true, remoteWins: true, changed: true };
   const remoteWins = compareNewerWins(remote.updatedAt, local.updatedAt);
-  const next = remoteWins ? remote : local;
+  // `commissionId` is machine-local — syncWire strips it, so a winning remote
+  // never carries one. Re-attach the receiver's own value (mirrors
+  // preserveLocalCommissionFields) or a peer's edit would silently orphan this
+  // project from the commission that owns it, leaving it unstoppable from the
+  // commission page and stuck on the provider it was dispatched with.
+  const next = remoteWins
+    ? { ...remote, ...(local.commissionId ? { commissionId: local.commissionId } : {}) }
+    : local;
   const changed = JSON.stringify(next) !== JSON.stringify(local);
   return { next, inserted: false, remoteWins, changed };
 }

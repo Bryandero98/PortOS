@@ -31,6 +31,7 @@ import CommissionConfigForm from '../components/creative-commission/CommissionCo
 import RenderHistory from '../components/creative-commission/RenderHistory.jsx';
 import {
   toForm, toPayload, patchFormState, validateForm, describeSchedule, describeAssignment,
+  COMMISSION_STOP_COPY,
 } from '../components/creative-commission/commissionForm.js';
 import {
   getCommission, updateCommission, deleteCommission,
@@ -230,7 +231,7 @@ export default function CreativeCommissionDetail() {
   const handleDelete = async () => {
     try {
       await deleteCommission(id, { silent: true });
-      toast.success('Commission deleted');
+      toast.success(COMMISSION_STOP_COPY.deletedToast);
       navigate('/creative-commission');
     } catch (e) {
       toast.error(e?.message || 'Delete failed');
@@ -278,6 +279,7 @@ export default function CreativeCommissionDetail() {
     setForm((prev) => ({ ...prev, enabled: next }));
     try {
       await updateCommission(id, { enabled: next }, { silent: true });
+      toast.success(next ? COMMISSION_STOP_COPY.resumedToast : COMMISSION_STOP_COPY.pausedToast);
     } catch (e) {
       setCommission((prev) => ({ ...prev, enabled: !next }));
       setForm((prev) => ({ ...prev, enabled: !next }));
@@ -367,7 +369,7 @@ export default function CreativeCommissionDetail() {
             </button>
             <button
               onClick={toggleEnabled}
-              title={commission.enabled ? 'Pause' : 'Resume'}
+              title={commission.enabled ? COMMISSION_STOP_COPY.pauseTitle : COMMISSION_STOP_COPY.resumeTitle}
               aria-label={commission.enabled ? 'Pause commission' : 'Resume commission'}
               className="p-2 text-gray-400 hover:text-gray-100"
             >
@@ -384,7 +386,7 @@ export default function CreativeCommissionDetail() {
               <button
                 type="button"
                 onClick={() => requestDelete(commission.id)}
-                title="Delete commission"
+                title={COMMISSION_STOP_COPY.deleteTitle}
                 aria-label={`Delete commission ${commission.name}`}
                 className="p-2 text-gray-400 hover:text-port-error"
               >

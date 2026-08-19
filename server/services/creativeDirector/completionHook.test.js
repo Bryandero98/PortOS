@@ -78,6 +78,32 @@ describe('handleCreativeDirectorCompletion — plan deliverable', () => {
     expect(mockAdvancePlan).toHaveBeenCalledWith('cd-1');
   });
 
+  it.each([['failed'], ['completed']])('ignores a completion whose run row is already %s', async (status) => {
+    // The echo of a deliberate kill: stopProject/retireRuns settles the row and
+    // THEN SIGKILLs the agent. Without the guard the `!success` branch below would
+    // flip the whole project to `failed`, clobbering the stop's `paused` + reason
+    // (or killing a project being restarted under a new provider).
+    mockGetProject.mockResolvedValue(planProject({
+      runs: [{ runId: 'run-1', kind: 'plan', status, failureReason: 'Creative commission paused' }],
+    }));
+    await handleCreativeDirectorCompletion(planTask(), 'agent-1', false);
+    expect(mockUpdateRun).not.toHaveBeenCalled();
+    expect(mockRecordRun).not.toHaveBeenCalled();
+    expect(mockUpdateProject).not.toHaveBeenCalled();
+    expect(mockAdvancePlan).not.toHaveBeenCalled();
+  });
+
+  it.each([['paused'], ['complete'], ['failed']])('records the run but never re-stamps a project that is already %s', async (status) => {
+    // A failed agent exit is not the project's verdict when the project already
+    // has one: the exit may be the echo of any deliberate kill (the CoS Kill
+    // button, the idle/max-runtime reapers, a stop). Flipping a paused project to
+    // `failed` here would clobber its reason and make it un-Resumable.
+    mockGetProject.mockResolvedValue(planProject({ status }));
+    await handleCreativeDirectorCompletion(planTask(), 'agent-1', false);
+    expect(mockUpdateRun).toHaveBeenCalledWith('cd-1', 'run-1', expect.objectContaining({ status: 'failed' }));
+    expect(mockUpdateProject).not.toHaveBeenCalled();
+  });
+
   it('marks a plan run COMPLETED when the plan did land', async () => {
     mockGetProject.mockResolvedValue(planProject({ plan: { steps: [{ stepId: 'a' }], replanRounds: 0 } }));
     await handleCreativeDirectorCompletion(planTask(), 'agent-1', true);
