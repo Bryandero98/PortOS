@@ -595,8 +595,12 @@ function hasDrafterTag(model) {
 // suffix reliably marks a sidecar — unlike the GGUF long tail above. `dflash`
 // joins the pre-existing `mtp`/`drafter` tokens because DFlash drafters ship as
 // MLX safetensors too (`jfan/Qwen3.8-27B-heretic-dflash`), and `\d*` covers the
-// DFlash2 generation.
-const MLX_DRAFTER_NAME_RE = /(?:^|[\/_-])(?:mtp|dflash\d*|drafter)(?:[\/_\-.]|$)/i
+// DFlash2 generation. `dspark` is the same sidecar class from DeepSeek's
+// drafter family — `mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-DSpark-bf16`
+// declares `mlx` + `dspark` + `speculative-decoding` but no `draft-model` tag, so
+// the tag predicate alone would offer a 30B target's drafter as a one-click
+// install (docs/research/2026-08-19-dspark-vs-dflash2.md).
+const MLX_DRAFTER_NAME_RE = /(?:^|[\/_-])(?:mtp|dflash\d*|dspark|drafter)(?:[\/_\-.]|$)/i
 
 function isMlxDrafter(model) {
   return hasDrafterTag(model) || MLX_DRAFTER_NAME_RE.test(repoIdOf(model))

@@ -724,6 +724,22 @@ describe('huggingFaceCatalog', () => {
       expect(results.some((r) => r.repository === drafterRepo)).toBe(false)
     })
 
+    // Real listing: `mlx` + `dspark` + `speculative-decoding` tags, no
+    // `draft-model` tag — so only the repo-name match keeps it out.
+    it('does not offer a DSpark drafter published as MLX safetensors', async () => {
+      const drafterRepo = 'mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-DSpark-bf16'
+      fetch.mockImplementation(urlRouter([
+        ['filter=mlx', [mlxListing(drafterRepo, ['model.safetensors'])]],
+        ['filter=gguf', []],
+      ]))
+
+      const results = await searchHuggingFaceModels({
+        backend: 'lmstudio', query: 'nemotron', appleSilicon: true
+      })
+
+      expect(results.some((r) => r.repository === drafterRepo)).toBe(false)
+    })
+
     it('does not surface MLX on a non-Apple host even for LM Studio', async () => {
       const mlxRepo = 'mlx-community/Hidden-On-Intel-4bit'
       fetch.mockImplementation(urlRouter([

@@ -22,17 +22,36 @@ const BACKENDS = [
 ];
 const labelFor = (id) => BACKENDS.find((b) => b.id === id)?.label || id;
 
-const DFLASH_PRESETS = [
+// llama.cpp exposes one `--spec-type` per drafter family. `draft-dspark` merged
+// upstream on 2026-07-28 (ggml-org/llama.cpp#25173) and works on a stock
+// `brew install llama.cpp`; `draft-dflash` covers DFlash v1, while the DFlash 2
+// modules are still an open PR (#27342) and need a from-source build. Hence the
+// DSpark presets lead — see docs/research/2026-08-19-dspark-vs-dflash2.md.
+const SPEC_DECODE_PRESETS = [
+  {
+    id: 'qwen3.8-27b-dspark',
+    label: 'Qwen 3.8 27B + DSpark Drafter (Recommended — stock llama.cpp)',
+    model: 'models/Qwen3.8-27B-Instruct-Q4_K_M.gguf',
+    draftModel: 'models/Qwen3.8-27B-DSpark-bf16.gguf',
+    specType: 'draft-dspark',
+  },
+  {
+    id: 'qwen3-8b-dspark',
+    label: 'Qwen 3 8B + DSpark Drafter (small target)',
+    model: 'models/Qwen3-8B-Instruct-Q4_K_M.gguf',
+    draftModel: 'models/dspark_qwen3_8b_block7-bf16.gguf',
+    specType: 'draft-dspark',
+  },
   {
     id: 'qwen3.8-27b',
-    label: 'Qwen 3.8 27B + DFlash 2 Drafter (Recommended)',
+    label: 'Qwen 3.8 27B + DFlash 2 Drafter (needs llama.cpp PR #27342 build)',
     model: 'models/Qwen3.8-27B-Instruct-Q4_K_M.gguf',
     draftModel: 'models/Qwen3.8-27B-DFlash2-Q4_K_M.gguf',
     specType: 'draft-dflash',
   },
   {
     id: 'muse-glimmer-30b',
-    label: 'Muse-Glimmer 30B + DFlash 2 Drafter',
+    label: 'Muse-Glimmer 30B + DFlash 2 Drafter (needs llama.cpp PR #27342 build)',
     model: 'models/Muse-Glimmer-30B-Instruct-Q4_K_M.gguf',
     draftModel: 'models/Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf',
     specType: 'draft-dflash',
@@ -42,7 +61,7 @@ const DFLASH_PRESETS = [
     label: 'Custom GGUF / Manual Paths',
     model: '',
     draftModel: '',
-    specType: 'draft-dflash',
+    specType: 'draft-dspark',
   },
 ];
 
@@ -411,7 +430,7 @@ export function LocalLlmTab() {
   const [llamaForm, setLlamaForm] = useState({
     model: '',
     draftModel: '',
-    specType: 'draft-dflash',
+    specType: 'draft-dspark',
     port: 8080,
     host: '127.0.0.1',
     ctxSize: 32768,
@@ -771,7 +790,7 @@ export function LocalLlmTab() {
   };
 
   const handlePresetSelect = (presetId) => {
-    const preset = DFLASH_PRESETS.find((p) => p.id === presetId);
+    const preset = SPEC_DECODE_PRESETS.find((p) => p.id === presetId);
     if (!preset) return;
     if (preset.id !== 'custom') {
       setLlamaForm((prev) => ({
@@ -940,7 +959,7 @@ export function LocalLlmTab() {
         </div>
 
         <p className="text-xs text-gray-400 leading-relaxed">
-          DFlash 2 enables multi-token speculative drafting (yielding 2.5–3× speedups on local models like Qwen 2.5 / Qwen 3.8 and Muse-Glimmer). You can launch and manage a local <code className="text-gray-300">llama-server</code> with DFlash 2 speculative drafting directly from PortOS and connect using the <strong className="text-white">OpenCode llama TUI</strong> provider.
+          Speculative decoding pairs a small drafter with your target model for 2–3× faster generation at identical output. You can launch and manage a local <code className="text-gray-300">llama-server</code> from PortOS and connect using the <strong className="text-white">OpenCode llama TUI</strong> provider. <strong className="text-white">DSpark</strong> (<code className="text-gray-300">draft-dspark</code>) works on a stock <code className="text-gray-300">brew install llama.cpp</code>; the DFlash 2 presets need a from-source build of an unmerged llama.cpp branch.
         </p>
 
         {llamaStatus?.running ? (
@@ -952,7 +971,7 @@ export function LocalLlmTab() {
                   <p><span className="text-gray-500">Base Model:</span> <code className="text-gray-300">{llamaStatus.config.model}</code></p>
                 )}
                 {llamaStatus.config?.draftModel && (
-                  <p><span className="text-gray-500">DFlash Drafter:</span> <code className="text-port-accent">{llamaStatus.config.draftModel}</code> ({llamaStatus.config.specType || 'draft-dflash'})</p>
+                  <p><span className="text-gray-500">Drafter:</span> <code className="text-port-accent">{llamaStatus.config.draftModel}</code> ({llamaStatus.config.specType || 'draft-dflash'})</p>
                 )}
               </div>
               {llamaStatus.managed ? (
@@ -981,10 +1000,10 @@ export function LocalLlmTab() {
                   id="llama-preset-select"
                   aria-label="Preset"
                   onChange={(e) => handlePresetSelect(e.target.value)}
-                  defaultValue="qwen3.8-27b"
+                  defaultValue="qwen3.8-27b-dspark"
                   className="bg-port-card border border-port-border rounded px-2 py-1 text-xs text-port-accent focus:outline-none"
                 >
-                  {DFLASH_PRESETS.map((p) => (
+                  {SPEC_DECODE_PRESETS.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.label}
                     </option>
