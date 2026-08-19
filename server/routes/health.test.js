@@ -262,7 +262,7 @@ describe('System Health Routes', () => {
   });
 
   // A quit desktop app must not drive overallHealth to 'critical' — that lights
-  // up the dashboard widget and the CyberCity HUD until the PM2 entry is cleared
+  // up the dashboard widget and the OpenWorld HUD until the PM2 entry is cleared
   // by hand. This is the widest-blast-radius consumer of `errored` (#2991).
   describe('GET /health/details — desktop (GUI) process exemption', () => {
     beforeEach(() => {

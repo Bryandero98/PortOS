@@ -80,7 +80,7 @@ import { startPrivacyRecheckScheduler } from './privacyRecheckScheduler.js';
 import { startQuotaBurnScheduler } from './quotaBurnRunner.js';
 import { startSeriesAutopilotScheduler } from './seriesAutopilotScheduler.js';
 import { startCommissionScheduler } from './creativeCommissions/scheduler.js';
-import { startCitySnapshotScheduler } from './citySnapshotScheduler.js';
+import { startOpenWorldSnapshotScheduler } from './openWorldSnapshotScheduler.js';
 import { startImessageScheduler } from './imessageScheduler.js';
 import { startSignalScheduler } from './signalScheduler.js';
 import { startSpotifyScheduler } from './spotifyScheduler.js';
@@ -374,9 +374,9 @@ const startBackgroundServices = ({ spawnerReady }) => {
     backfillCommissionFeedback: backfillAllCommissionFeedback,
     startCommissionScheduler
   });
-  // Initialize CyberCity snapshot scheduler — records periodic city-state frames
+  // Initialize OpenWorld snapshot scheduler — records periodic city-state frames
   // for the historical timeline scrubber (issue #877).
-  startCitySnapshotScheduler().catch(err => console.error(`❌ City snapshot scheduler init failed: ${err.message}`));
+  startOpenWorldSnapshotScheduler().catch(err => console.error(`❌ OpenWorld snapshot scheduler init failed: ${err.message}`));
   // Initialize iMessage sync scheduler — OFF by default; only polls chat.db when
   // the user opts in via Settings → iMessage (needs macOS Full Disk Access) (#2151).
   startImessageScheduler().catch(err => console.error(`❌ iMessage sync scheduler init failed: ${err.message}`));

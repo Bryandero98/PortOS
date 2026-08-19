@@ -44,8 +44,8 @@ const OPEN_WORLD_REGION_COMMANDS = [
 export const NAV_COMMANDS = [
   { id: 'nav.dashboard', path: '/', label: 'Dashboard', section: 'Main', aliases: ['dashboard', 'home'], keywords: ['overview', 'start'] },
   { id: 'nav.review-hub', path: '/review', label: 'Review Hub', section: 'Main', aliases: ['review', 'review-hub'] },
-  { id: 'nav.cybercity', path: '/openworld', label: 'OpenWorld', section: 'Main', aliases: ['openworld', 'open world', 'open-world', 'city', 'cybercity'], keywords: ['3d', 'visualization', 'cybercity', 'game', 'map', 'explore'] },
-  { id: 'nav.cybercity.settings', path: '/openworld/settings', label: 'OpenWorld Settings', section: 'Main', aliases: ['openworld settings', 'open world settings', 'world settings', 'city settings', 'cybercity settings', 'city-settings', 'cybercity-config'], keywords: ['cybercity', 'openworld', 'settings', '3d', 'configure', 'world style', 'low poly'] },
+  { id: 'nav.cybercity', path: '/openworld', label: 'OpenWorld', section: 'Main', aliases: ['openworld', 'open world', 'open-world', 'city'], keywords: ['3d', 'visualization', 'game', 'map', 'explore'] },
+  { id: 'nav.cybercity.settings', path: '/openworld/settings', label: 'OpenWorld Settings', section: 'Main', aliases: ['openworld settings', 'open world settings', 'world settings', 'city settings', 'city-settings', 'openworld-config'], keywords: ['openworld', 'settings', '3d', 'configure', 'world style', 'low poly'] },
   ...OPEN_WORLD_REGION_COMMANDS,
   { id: 'nav.apps', path: '/apps', label: 'Apps', section: 'Main', aliases: ['apps'] },
   // Submodules are per-app (a tab on the app detail page), so this entry is

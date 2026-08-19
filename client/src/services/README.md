@@ -134,7 +134,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiOpenClaw.js` | File browser / picker backend. |
 | `apiPalette.js` | Command-palette manifest + action dispatch. |
 | `apiVoice.js` | Voice synthesis / processing. |
-| `apiCity.js` | CyberCity snapshots — historical city-state series for the timeline scrubber (GET /snapshots, GET /config, POST /capture). |
+| `apiOpenWorld.js` | OpenWorld snapshots — historical world-state series for the timeline scrubber (GET /snapshots, GET /config, POST /capture). |
 | `apiPrivacy.js` | Privacy Center — encrypted PII Vault + Trusted Organizations registry (status, vault CRUD + reveal, org CRUD, org holdings replace-set) + Digital Twin social-account cross-link + household subjects (subject CRUD, consent audit, and a `subjectId` scope passed in each wrapper's trailing `options`). |
 
 ## Browser-facing (DOM, voice, build) — not pure API wrappers

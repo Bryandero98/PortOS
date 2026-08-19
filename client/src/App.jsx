@@ -195,10 +195,10 @@ const MEDIA_3D_PREFIX = /^\/media\/3d/;
 // is what a bookmark, a typed URL, or a half-remembered path lands on — alias it
 // rather than letting the catch-all swallow it (issue #3793).
 const ANNOTATE_PREFIX = /^\/annotate/;
-// CyberCity became OpenWorld. Bookmarks, pinned sidebar entries, stored palette
+// The old city page became OpenWorld. Bookmarks, pinned sidebar entries, stored palette
 // history, and peers' deep links all still say /city — alias the whole prefix
 // (including /city/settings and /city/apps/:appId) rather than 404ing them.
-const CITY_PREFIX = /^\/city/;
+const LEGACY_CITY_PREFIX = /^\/city/;
 
 // Normalize a tab-less /creative-director/:id URL to its overview tab while
 // preserving any query string + hash. A bare `<Navigate to="overview">` would
@@ -350,8 +350,8 @@ export default function App() {
           <Route path="openworld/settings" element={<OpenWorld />} />
           <Route path="openworld/apps/:appId" element={<OpenWorld />} />
           <Route path="openworld/region/:regionId" element={<OpenWorld />} />
-          <Route path="city" element={<PrefixRedirect from={CITY_PREFIX} to="/openworld" />} />
-          <Route path="city/*" element={<PrefixRedirect from={CITY_PREFIX} to="/openworld" />} />
+          <Route path="city" element={<PrefixRedirect from={LEGACY_CITY_PREFIX} to="/openworld" />} />
+          <Route path="city/*" element={<PrefixRedirect from={LEGACY_CITY_PREFIX} to="/openworld" />} />
           <Route path="data" element={<DataManager />} />
           <Route path="character" element={<CharacterSheet />} />
           <Route path="ask" element={<Ask />} />

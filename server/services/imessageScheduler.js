@@ -2,7 +2,7 @@
  * iMessage Sync Scheduler (#2151)
  *
  * Registers an interval job that periodically runs the incremental iMessage
- * ingestion (see imessageSync.js). Mirrors the citySnapshotScheduler pattern.
+ * ingestion (see imessageSync.js). Mirrors the openWorldSnapshotScheduler pattern.
  *
  * OFF by default: the scheduler is only registered when the user has opted in via
  * Settings → iMessage (`settings.imessage.enabled`). Reading chat.db needs macOS

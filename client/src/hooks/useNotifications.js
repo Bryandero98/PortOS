@@ -69,9 +69,9 @@ export function useNotifications() {
     socket.on('notifications:count', handleCount);
     socket.on('notifications:cleared', handleCleared);
 
-    // notifications:* is a shared namespace; CyberCity's useCityData also
+    // notifications:* is a shared namespace; OpenWorld's useOpenWorldData also
     // subscribes. The server keeps a per-socket Set with no ref count, so
-    // emitting notifications:unsubscribe here would also remove CyberCity's
+    // emitting notifications:unsubscribe here would also remove OpenWorld's
     // events. Just drop the listeners; disconnect cleans up Set membership.
     return () => {
       socket.off('notifications:added', handleAdded);

@@ -53,7 +53,7 @@ describe('useNavWorkingSet', () => {
   it('migrates the whole legacy /city subtree to /openworld', () => {
     // The 3D world moved from /city to /openworld. App.jsx redirects the browser URL, but
     // the STORED path is what pinned/recent resolve against — without a migration a pinned
-    // "City" row stops matching the manifest and silently vanishes on upgrade.
+    // "OpenWorld" row stops matching the manifest and silently vanishes on upgrade.
     localStorage.setItem(PINNED_KEY, JSON.stringify(['/city', '/city/settings', '/city/apps/portos']));
     const { result } = renderHook(() => useNavWorkingSet(resolveNavEntry), { wrapper });
 

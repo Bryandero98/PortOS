@@ -262,7 +262,7 @@ export const PORTOS_AREA_LABELS = Object.freeze([
   'area:story-builder',
   'area:writers-room',
   'area:create',
-  'area:cybercity',
+  'area:openworld',
   'area:brain',
   'area:cos-agents',
   'area:identity',

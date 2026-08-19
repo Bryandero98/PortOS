@@ -1,7 +1,7 @@
 # client/src/utils/ — pure formatting & compute helpers
 
 Lightweight, mostly-pure helpers used by pages, components, and hooks: formatters, time math,
-small functional utilities, the CyberCity scene-compute functions, and a few thin
+small functional utilities, the OpenWorld scene-compute functions, and a few thin
 browser-storage / file-read / module-loading helpers. **Before writing a helper here, grep
 this catalog first** — many domain patterns already have one. When you add a new module, add
 it to `index.js` AND add a row here.
@@ -57,50 +57,50 @@ grep -i "what you want to do" client/src/utils/README.md
 |---|---|
 | `fileUpload` | Pure screenshot/attachment upload helpers: base64 read (`readFileAsBase64`) and image validation (`validateImageFile`). Also the shared upload constants — `JSON_UPLOAD_MAX_FILE_SIZE` (max file size / wire limit, mirrors `server/lib/uploadLimits.js`), `ATTACHMENT_MAX_FILE_SIZE`, `ALLOWED_ATTACHMENT_EXTENSIONS`, and the `accept` strings `ATTACHMENT_ACCEPT` / `IMAGE_ACCEPT` / `UPLOAD_IMAGE_ACCEPT`. The actual upload orchestration (`processScreenshotUploads` / `processAttachmentUploads` and their single-file variants) does network I/O and lives in `services/apiMedia.js` — import those from there, not from here. |
 
-## CyberCity — character & avatar
+## OpenWorld — character & avatar
 
 | Module | Purpose |
 |---|---|
-| `characterXp` | Character HUD badge math: `computeAgeView` (age-based level + progress to next birthday), `diffXp` (XP-gain / birthday burst diff), `birthDateCta` (missing-birth-date call to action), plus the legacy `levelFromXP` XP-curve lookup used by `cityArtifacts`. |
+| `characterXp` | Character HUD badge math: `computeAgeView` (age-based level + progress to next birthday), `diffXp` (XP-gain / birthday burst diff), `birthDateCta` (missing-birth-date call to action), plus the legacy `levelFromXP` XP-curve lookup used by `openWorldArtifacts`. |
 
-## CyberCity — scene compute helpers
+## OpenWorld — scene compute helpers
 
-Pure `compute*` functions that turn PortOS state into 3D-scene descriptors for the City
+Pure `compute*` functions that turn PortOS state into 3D-scene descriptors for the OpenWorld
 districts. One module per district/feature; each exports a `compute<Feature>` entry point plus
 its tunable constants and placement helpers.
 
 | Module | Purpose |
 |---|---|
-| `cityActivityHeatmap` | Calendar activity → per-tile heat levels (`computeActivityHeatmap`, `tileLevel`). |
-| `cityAgentMotion` | Agent orbit/trail motion math (`computeAgentOrbit`, `computeAgentTrailPoints`, trail colors). |
-| `cityAiCore` | AI-ops core: model tiers, beam thickness, and `computeAiCore` / `computeAiCoreBeams` from live AI status events. |
-| `cityArtifacts` | Earned-artifact milestones (level/goal/streak) → placed artifact descriptors (`computeArtifacts`). |
-| `cityBackupVault` | Backup-vault health/alerting state and color (`computeBackupVault`, `vaultHealth`). |
-| `cityChronotype` | Chronotype energy curve by hour → brightness/tempo modifiers (`computeChronotypeEnergy`). |
-| `cityDataHarbor` | Data Harbor pier district: DB table silos + data/ domain racks from /api/city/introspection (`computeDataHarbor`). |
-| `cityDistrictLayout` | Shared district layout math: auto-columns, grid placement, tallying, metric→height scaling. |
-| `cityEasterEggs` | Unlockable easter eggs from context (date/character/goals) → placements (`computeEasterEggs`). |
-| `cityFederation` | Sync-peer reachability horizon: status color/opacity, bridge state, peer placement (`computeFederationHorizon`). |
-| `cityFilter` | Status-filter definitions and app-filtering result (`computeFilterResult`). |
-| `cityFocusCamera` | Pure camera-framing math for OpenWorld's camera targets: orbital `position`/`target` framing one borough (`computeFocusCamera`) or a whole fast-travel region (`computeRegionCamera`) for a given aspect ratio + HUD safe area. |
-| `cityFocusState` | Resolve the `/openworld/apps/:appId` route param + app list into `{ hasFocus, focusedApp, notFound }`, deferring the not-found flag until apps finish loading (`resolveCityFocus`). |
-| `cityFlowLines` | Inter-building flow-line connections between active/agent nodes (`computeFlowConnections`). |
-| `cityGoalMonuments` | Goal monuments & forest: stall detection, milestone segments, placement (`computeGoalMonuments`, `computeGoalForest`). |
-| `cityHealthTower` | Health-metric tower segments from the latest health entry (`computeHealthTower`). |
-| `cityInteriorWindows` | Per-building interior-mapping window grid + selection predicate for InteriorMappingMaterial panes (`computeWindowGrid`, `buildingHasInteriorWindows`, `INTERIOR_WINDOW`). |
-| `cityJiraDistrict` | Jira ticket district: ticket state, sprint structures, placement (`computeJiraDistrict`). |
-| `cityMemoryDistrict` | Brain-graph memory district: category clustering, bridges, placement (`computeMemoryDistrict`). |
-| `cityMiniMap` | Mini-map projection of building positions into 2D bounds, plus opt-in waterfront geography (bay/shoreline/harbor) read from `cityPlan` (`computeMiniMap`, `projectPoint`, `geographyWorldPoints`, `projectGeography`). |
-| `cityPhotoMode` | Photo-mode camera presets, the demand-loop fly stepper, postcard stats, and screenshot filename (`getPreset`, `cyclePreset`, `stepFly`). |
-| `cityPlan` | Master town plan: district parcels, shoreline/bay, plaza, transit loop, street network (`PARCELS`, `WORLD`, `computeStreets`, `computeStreetProps`, `isInWater`). |
-| `openWorldRegions` | OpenWorld fast-travel registry: named regions over the `cityPlan` parcels, each mapped to the PortOS page it visualizes (`OPEN_WORLD_REGIONS`, `getRegion`, `listRegions`, `searchRegions`, `regionArrivalPoint`, `regionPath`). |
-| `cityPlayerRig` | Exploration player-rig math: third-person follow camera, boom collision, damping, facing, avatar state (`thirdPersonCamera`, `resolveBoom`, `dampAngle`, `moveFacing`, `avatarState`). |
-| `cityRenderBudget` | Pure Auto-quality render-budget state machine: p75 frame-time windows, hysteresis, cooldown, warm-up/gap rejection (`createRenderBudget`, `recordFrame`, `restartWarmup`, `resetRenderBudget`, `getEffectiveTier`, `QUALITY_TIERS`, `DEFAULT_RENDER_BUDGET_CONFIG`). |
-| `cityRooftops` | Deterministic rooftop fixture kits (antenna/tank/AC/dish) per app name (`computeRooftopKit`). |
-| `cityProductivity` | Productivity monument from streak/velocity tiers (`computeProductivityMonument`). |
-| `citySeasonalDecor` | Season/holiday resolution → seasonal decoration placements (`computeSeasonalDecor`). |
-| `citySoundscape` | Ambient soundscape: mood/energy classification, chord selection (`computeSoundscape`), and the manual mood override (`applyMoodOverride`). |
-| `cityTaskFlowRiver` | Task-flow river width/speed from backlog & throughput (`computeTaskFlowRiver`). |
-| `cityTaskQueue` | Task-queue state/color from status counts (`computeTaskQueue`). |
-| `cityTimeline` | Activity-log density bins and timeline buckets (`computeActivityDensity`, `buildTimelineBuckets`). |
-| `cityVoiceMarker` | Voice-agent marker state/color/label from voice status (`computeVoiceMarker`). |
+| `openWorldActivityHeatmap` | Calendar activity → per-tile heat levels (`computeActivityHeatmap`, `tileLevel`). |
+| `openWorldAgentMotion` | Agent orbit/trail motion math (`computeAgentOrbit`, `computeAgentTrailPoints`, trail colors). |
+| `openWorldAiCore` | AI-ops core: model tiers, beam thickness, and `computeAiCore` / `computeAiCoreBeams` from live AI status events. |
+| `openWorldArtifacts` | Earned-artifact milestones (level/goal/streak) → placed artifact descriptors (`computeArtifacts`). |
+| `openWorldBackupVault` | Backup-vault health/alerting state and color (`computeBackupVault`, `vaultHealth`). |
+| `openWorldChronotype` | Chronotype energy curve by hour → brightness/tempo modifiers (`computeChronotypeEnergy`). |
+| `openWorldDataHarbor` | Data Harbor pier district: DB table silos + data/ domain racks from /api/openworld/introspection (`computeDataHarbor`). |
+| `openWorldDistrictLayout` | Shared district layout math: auto-columns, grid placement, tallying, metric→height scaling. |
+| `openWorldEasterEggs` | Unlockable easter eggs from context (date/character/goals) → placements (`computeEasterEggs`). |
+| `openWorldFederation` | Sync-peer reachability horizon: status color/opacity, bridge state, peer placement (`computeFederationHorizon`). |
+| `openWorldFilter` | Status-filter definitions and app-filtering result (`computeFilterResult`). |
+| `openWorldFocusCamera` | Pure camera-framing math for OpenWorld's camera targets: orbital `position`/`target` framing one borough (`computeFocusCamera`) or a whole fast-travel region (`computeRegionCamera`) for a given aspect ratio + HUD safe area. |
+| `openWorldFocusState` | Resolve the `/openworld/apps/:appId` route param + app list into `{ hasFocus, focusedApp, notFound }`, deferring the not-found flag until apps finish loading (`resolveOpenWorldFocus`). |
+| `openWorldFlowLines` | Inter-building flow-line connections between active/agent nodes (`computeFlowConnections`). |
+| `openWorldGoalMonuments` | Goal monuments & forest: stall detection, milestone segments, placement (`computeGoalMonuments`, `computeGoalForest`). |
+| `openWorldHealthTower` | Health-metric tower segments from the latest health entry (`computeHealthTower`). |
+| `openWorldInteriorWindows` | Per-building interior-mapping window grid + selection predicate for InteriorMappingMaterial panes (`computeWindowGrid`, `buildingHasInteriorWindows`, `INTERIOR_WINDOW`). |
+| `openWorldJiraDistrict` | Jira ticket district: ticket state, sprint structures, placement (`computeJiraDistrict`). |
+| `openWorldMemoryDistrict` | Brain-graph memory district: category clustering, bridges, placement (`computeMemoryDistrict`). |
+| `openWorldMiniMap` | Mini-map projection of building positions into 2D bounds, plus opt-in waterfront geography (bay/shoreline/harbor) read from `openWorldPlan` (`computeMiniMap`, `projectPoint`, `geographyWorldPoints`, `projectGeography`). |
+| `openWorldPhotoMode` | Photo-mode camera presets, the demand-loop fly stepper, postcard stats, and screenshot filename (`getPreset`, `cyclePreset`, `stepFly`). |
+| `openWorldPlan` | Master town plan: district parcels, shoreline/bay, plaza, transit loop, street network (`PARCELS`, `WORLD`, `computeStreets`, `computeStreetProps`, `isInWater`). |
+| `openWorldRegions` | OpenWorld fast-travel registry: named regions over the `openWorldPlan` parcels, each mapped to the PortOS page it visualizes (`OPEN_WORLD_REGIONS`, `getRegion`, `listRegions`, `searchRegions`, `regionArrivalPoint`, `regionPath`). |
+| `openWorldPlayerRig` | Exploration player-rig math: third-person follow camera, boom collision, damping, facing, avatar state (`thirdPersonCamera`, `resolveBoom`, `dampAngle`, `moveFacing`, `avatarState`). |
+| `openWorldRenderBudget` | Pure Auto-quality render-budget state machine: p75 frame-time windows, hysteresis, cooldown, warm-up/gap rejection (`createRenderBudget`, `recordFrame`, `restartWarmup`, `resetRenderBudget`, `getEffectiveTier`, `QUALITY_TIERS`, `DEFAULT_RENDER_BUDGET_CONFIG`). |
+| `openWorldRooftops` | Deterministic rooftop fixture kits (antenna/tank/AC/dish) per app name (`computeRooftopKit`). |
+| `openWorldProductivity` | Productivity monument from streak/velocity tiers (`computeProductivityMonument`). |
+| `openWorldSeasonalDecor` | Season/holiday resolution → seasonal decoration placements (`computeSeasonalDecor`). |
+| `openWorldSoundscape` | Ambient soundscape: mood/energy classification, chord selection (`computeSoundscape`), and the manual mood override (`applyMoodOverride`). |
+| `openWorldTaskFlowRiver` | Task-flow river width/speed from backlog & throughput (`computeTaskFlowRiver`). |
+| `openWorldTaskQueue` | Task-queue state/color from status counts (`computeTaskQueue`). |
+| `openWorldTimeline` | Activity-log density bins and timeline buckets (`computeActivityDensity`, `buildTimelineBuckets`). |
+| `openWorldVoiceMarker` | Voice-agent marker state/color/label from voice status (`computeVoiceMarker`). |

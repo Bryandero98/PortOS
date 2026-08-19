@@ -47,7 +47,7 @@ const ICONS = {
  *   for background ops so a systematically-failing provider in a fan-out job (e.g.
  *   the multi-goal check-in) yields one notification instead of N stacked toasts.
  *
- * `appId`/`workspacePath` let the CyberCity AI Core aim its activity beam at the
+ * `appId`/`workspacePath` let the OpenWorld AI Core aim its activity beam at the
  * originating building; ops with neither get the generic radial beam. Token counts
  * (`tokens` / `tokensPerSec`) arrive later via the `complete` phase's `extra`.
  */

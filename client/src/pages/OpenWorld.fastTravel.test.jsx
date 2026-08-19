@@ -7,13 +7,13 @@ import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
 // rendering WebGL in jsdom. The scene stub records the props it received so the assertions
 // can read them directly.
 const sceneProps = { current: null };
-vi.mock('../components/city/CityScene', () => ({
+vi.mock('../components/openworld/OpenWorldScene', () => ({
   default: (props) => {
     sceneProps.current = props;
     return <div data-testid="scene" />;
   },
 }));
-vi.mock('../components/city/CityHud', () => ({
+vi.mock('../components/openworld/OpenWorldHud', () => ({
   default: ({ onOpenFastTravel, activeRegion, onEnterPhotoMode }) => (
     <div>
       <button type="button" onClick={onOpenFastTravel}>hud-fast-travel</button>
@@ -22,28 +22,28 @@ vi.mock('../components/city/CityHud', () => ({
     </div>
   ),
 }));
-vi.mock('../components/city/CityScanlines', () => ({ default: () => null }));
-vi.mock('../components/city/CityPhotoOverlay', () => ({ default: () => null }));
-vi.mock('../components/city/CityPlaybackOverlay', () => ({ default: () => null }));
-vi.mock('../components/city/CitySettingsDrawer', () => ({ default: () => null }));
+vi.mock('../components/openworld/OpenWorldScanlines', () => ({ default: () => null }));
+vi.mock('../components/openworld/OpenWorldPhotoOverlay', () => ({ default: () => null }));
+vi.mock('../components/openworld/OpenWorldPlaybackOverlay', () => ({ default: () => null }));
+vi.mock('../components/openworld/OpenWorldSettingsDrawer', () => ({ default: () => null }));
 
-vi.mock('../hooks/useCityData', () => ({
-  useCityData: () => ({
+vi.mock('../hooks/useOpenWorldData', () => ({
+  useOpenWorldData: () => ({
     apps: [], cosAgents: [], cosStatus: {}, eventLogs: [], agentMap: new Map(),
     reviewCounts: {}, instances: {}, systemHealth: null, notificationCounts: {},
     backupStatus: null, cosTasks: [], healthMetrics: null, voiceState: null,
     character: null, aiActivity: null, loading: false, connected: true,
   }),
 }));
-vi.mock('../hooks/useCityPlayback', () => ({
-  useCityPlayback: () => ({
+vi.mock('../hooks/useOpenWorldPlayback', () => ({
+  useOpenWorldPlayback: () => ({
     active: false, currentFrame: null, snapshots: [], frameIndex: 0, stats: null,
     playing: false, speed: 1, loading: false, error: null,
     enter: vi.fn(), exit: vi.fn(), seek: vi.fn(), step: vi.fn(),
     togglePlay: vi.fn(), cycleSpeed: vi.fn(),
   }),
 }));
-vi.mock('../hooks/useCityAudio', () => ({ default: () => ({ playSfx: vi.fn(), isAudioReady: false }) }));
+vi.mock('../hooks/useOpenWorldAudio', () => ({ default: () => ({ playSfx: vi.fn(), isAudioReady: false }) }));
 vi.mock('../hooks/useAutoRefetch', () => ({ useAutoRefetch: () => ({ data: null }) }));
 // Only the endpoints this page polls. `useAutoRefetch` is stubbed above so none of them
 // actually fire — the mock exists to keep the real api module (and its socket import) out
@@ -55,7 +55,7 @@ vi.mock('../services/api', () => ({
   getChronotype: vi.fn(async () => null),
   getMemoryGraph: vi.fn(async () => null),
   getBrainInbox: vi.fn(async () => null),
-  getCityIntrospection: vi.fn(async () => null),
+  getOpenWorldIntrospection: vi.fn(async () => null),
   getMySprintTickets: vi.fn(async () => []),
 }));
 

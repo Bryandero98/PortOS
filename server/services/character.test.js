@@ -430,7 +430,7 @@ describe('shared signal context (read-once, #2676)', () => {
   it('hands BOTH registries the same context, so shared signals are read once', async () => {
     // The load-bearing assertion of #2676: six of the nine domain signals feed both the
     // skills and the metrics. If each registry minted its own context they would each read
-    // those six, doubling the fan-out of a route the CyberCity HUD polls every 15s.
+    // those six, doubling the fan-out of a route the OpenWorld HUD polls every 15s.
     const { createSignalContext } = await import('./characterSignals.js');
     const { getCharacterSkills } = await import('./characterSkills.js');
     const { getCharacterMetrics } = await import('./characterMetrics.js');
@@ -444,7 +444,7 @@ describe('shared signal context (read-once, #2676)', () => {
   });
 
   it('does not mint a context at all when both registries are skipped', async () => {
-    // The cheap path (CyberCity HUD, askService, city snapshots) must stay free of any
+    // The cheap path (OpenWorld HUD, askService, city snapshots) must stay free of any
     // domain-signal machinery.
     const { createSignalContext } = await import('./characterSignals.js');
     vi.mocked(createSignalContext).mockClear();
