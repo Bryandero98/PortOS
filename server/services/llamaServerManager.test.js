@@ -11,6 +11,13 @@ import * as commandExistsModule from '../lib/commandExists.js';
 import * as childProcess from '../lib/childProcess.js';
 import { EventEmitter } from 'events';
 
+function fakeSpawnProcess() {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  return child;
+}
+
 describe('llamaServerManager', () => {
   beforeEach(() => {
     _resetLlamaServerStateForTests();
@@ -136,5 +143,49 @@ describe('llamaServerManager', () => {
     vi.spyOn(commandExistsModule, 'commandExists').mockResolvedValue(false);
 
     await expect(installLlamaServer()).rejects.toThrow(/Homebrew was not found/i);
+  });
+
+  it('links an already-installed-but-unlinked keg after `brew install` exits 0', async () => {
+    // brew is present; llama-server is NOT on PATH until after the link step.
+    vi.spyOn(commandExistsModule, 'commandExists').mockImplementation(async (cmd) => cmd === 'brew');
+    const findSpy = vi.spyOn(processEnv, 'findCommandOnPath').mockResolvedValue(null);
+
+    const installChild = fakeSpawnProcess();
+    const linkChild = fakeSpawnProcess();
+    const spawnCalls = [];
+    vi.spyOn(childProcess, 'spawn').mockImplementation((cmd, args) => {
+      spawnCalls.push({ cmd, args });
+      const child = args[0] === 'install' ? installChild : linkChild;
+      setTimeout(() => child.emit('exit', 0), 10);
+      return child;
+    });
+
+    const resultPromise = installLlamaServer();
+
+    // Once `brew link` resolves, the binary shows up on PATH.
+    setTimeout(() => {
+      findSpy.mockResolvedValue('/opt/homebrew/bin/llama-server');
+      commandExistsModule.commandExists.mockImplementation(async () => true);
+    }, 15);
+
+    const result = await resultPromise;
+    expect(result.success).toBe(true);
+    expect(spawnCalls).toEqual([
+      { cmd: 'brew', args: ['install', 'llama.cpp'] },
+      { cmd: 'brew', args: ['link', '--overwrite', 'llama.cpp'] },
+    ]);
+  });
+
+  it('rejects with a `brew link` hint when linking does not resolve the binary', async () => {
+    vi.spyOn(commandExistsModule, 'commandExists').mockImplementation(async (cmd) => cmd === 'brew');
+    vi.spyOn(processEnv, 'findCommandOnPath').mockResolvedValue(null);
+
+    vi.spyOn(childProcess, 'spawn').mockImplementation(() => {
+      const child = fakeSpawnProcess();
+      setTimeout(() => child.emit('exit', 0), 10);
+      return child;
+    });
+
+    await expect(installLlamaServer()).rejects.toThrow(/brew link --overwrite llama\.cpp/i);
   });
 });
