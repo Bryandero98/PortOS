@@ -406,6 +406,9 @@ export default function ThreejsModelDetail() {
   const coverageFindings = Array.isArray(record.coverage?.findings) ? record.coverage.findings : null;
   const flatnessFindings = Array.isArray(record.flatness?.findings) ? record.flatness.findings : null;
   const penetrationFindings = Array.isArray(record.penetration?.findings) ? record.penetration.findings : null;
+  const physicalAuditFindings = Array.isArray(record.physicalAudit?.findings)
+    ? record.physicalAudit.findings
+    : null;
   const materialFindings = Array.isArray(record.materialPlausibility?.findings)
     ? record.materialPlausibility.findings
     : null;
@@ -422,6 +425,7 @@ export default function ThreejsModelDetail() {
   // refinement is told to fix — so the footer only promises a refinement when
   // there is an actual defect above it.
   const penetrationDefects = countSeverities(penetrationFindings || []);
+  const physicalAuditDefects = countSeverities(physicalAuditFindings || []);
   const coverageErrors = countSeverities(coverageFindings || []).error;
   // Only present when the generation ran with a family — a record generated
   // under `general` (or before families shipped) has no checklist to render.
@@ -623,6 +627,19 @@ export default function ThreejsModelDetail() {
           footer={`Parts modelled inside each other look correct from the hero angle and fall apart the moment the model is orbited, so this check compares every unrelated pair by volume. Parts parented together or declared as attachments are exempt — embedding is what those relationships are for.${
             penetrationDefects.error + penetrationDefects.warning > 0
               ? ' Refining without your own feedback will also ask for each part to get its own volume.'
+              : ''
+          }`}
+        />
+      )}
+
+      {physicalAuditFindings && (
+        <GatePanel
+          title="Physical audit"
+          findings={physicalAuditFindings}
+          cleanLabel="Assembly satisfies physical attachment, exposure, and coplanarity rules"
+          footer={`This check inspects the model across resting and animation poses to detect floating parts, swallowed geometry, z-fighting coplanar surfaces, and unprovenanced appearing geometry.${
+            physicalAuditDefects.error + physicalAuditDefects.warning > 0
+              ? ' Refining without your own feedback will also target physical conformance defects.'
               : ''
           }`}
         />
