@@ -14,9 +14,10 @@ vi.mock('../components/city/CityScene', () => ({
   },
 }));
 vi.mock('../components/city/CityHud', () => ({
-  default: ({ onOpenFastTravel, activeRegion }) => (
+  default: ({ onOpenFastTravel, activeRegion, onEnterPhotoMode }) => (
     <div>
       <button type="button" onClick={onOpenFastTravel}>hud-fast-travel</button>
+      <button type="button" onClick={onEnterPhotoMode}>hud-photo</button>
       <span data-testid="hud-region">{activeRegion?.id || 'none'}</span>
     </div>
   ),
@@ -139,12 +140,22 @@ describe('OpenWorld — fast travel wiring', () => {
     expect(screen.queryByLabelText('Search regions')).not.toBeInTheDocument();
   });
 
-  it('does not teleport the player while flying the overview camera', () => {
+  it('arms no arrival point until something is actually warped to', () => {
+    renderAt('/openworld');
+    expect(sceneProps.current.playerTeleport).toBeNull();
+  });
+
+  it(`arms the walking player's arrival point on every warp, exploring or not`, () => {
+    // PlayerController mounts only in exploration mode and applies the current token on
+    // mount, so arming it from the orbital overview is what makes "warp, then Tab in"
+    // land at the region rather than the old spawn.
     renderAt('/openworld');
     act(() => { fireEvent.keyDown(window, { key: 'm' }); });
     fireEvent.click(screen.getByLabelText('Travel to Memory Quarter'));
-    // Exploration mode is off, so there is no player rig to move.
-    expect(sceneProps.current.playerTeleport).toBeNull();
+
+    const teleport = sceneProps.current.playerTeleport;
+    expect(teleport).toMatchObject({ x: expect.any(Number), z: expect.any(Number) });
+    expect(teleport.token).toBe(1);
   });
 
   it('teleports the player when warping on foot', () => {
@@ -159,7 +170,6 @@ describe('OpenWorld — fast travel wiring', () => {
   });
 
   it('bumps the teleport token when the same region is picked twice', () => {
-    localStorage.setItem('portos-city-settings', JSON.stringify({ explorationMode: true }));
     renderAt('/openworld');
 
     act(() => { fireEvent.keyDown(window, { key: 'm' }); });
@@ -170,6 +180,19 @@ describe('OpenWorld — fast travel wiring', () => {
     fireEvent.click(screen.getByLabelText('Travel to Memory Quarter'));
     // Same destination, new warp — a plain {x,z} identity check would have swallowed this.
     expect(sceneProps.current.playerTeleport.token).toBe(2);
+  });
+
+  it('does not bank an M keypress while photo mode owns the camera', () => {
+    // The panel is hidden in photo/playback mode; a live binding there would spring it
+    // open the moment the user returned to the live view.
+    renderAt('/openworld');
+    fireEvent.click(screen.getByText('hud-photo'));
+    act(() => { fireEvent.keyDown(window, { key: 'm' }); });
+    expect(screen.queryByLabelText('Search regions')).not.toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: 'Escape' }); // leave photo mode
+    act(() => {});
+    expect(screen.queryByLabelText('Search regions')).not.toBeInTheDocument();
   });
 
   it('tells the HUD which region is active', () => {

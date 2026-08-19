@@ -181,30 +181,24 @@ function OpenWorldInner() {
   // camera (CityFocusCamera) and, on foot, the player rig. Only the panel's open/closed
   // state is local — the destination itself always lives in the URL.
   const [fastTravelOpen, setFastTravelOpen] = useState(false);
-  // Carries a monotonic token so PlayerController can tell "warp again to the same place"
-  // from a re-render with equal coordinates. Not derived from the region id for that reason.
+  // The walking player's arrival point for the latest warp, carrying a monotonic token so
+  // PlayerController can tell "warp again to the same place" from a re-render with equal
+  // coordinates — which is why it isn't derived from the region id. Set on every warp, not
+  // only while exploring: PlayerController mounts only in exploration mode and applies the
+  // current token on mount, so arming it unconditionally also means warping in the orbital
+  // overview and THEN dropping in (Tab) lands you at the region you were looking at,
+  // instead of back at your old spawn.
   const [playerTeleport, setPlayerTeleport] = useState(null);
 
   const handleTravelToRegion = useCallback((region) => {
     if (!region?.id) return;
     navigate(regionPath(region.id));
-    // Exploring on foot? Move the player too — otherwise a warp would fly a camera the
-    // walking player isn't attached to and nothing would appear to happen.
-    if (settings?.explorationMode) {
-      const arrival = regionArrivalPoint(region);
-      if (arrival) setPlayerTeleport(prev => ({ ...arrival, token: (prev?.token ?? 0) + 1 }));
-    }
+    const arrival = regionArrivalPoint(region);
+    if (arrival) setPlayerTeleport(prev => ({ ...arrival, token: (prev?.token ?? 0) + 1 }));
     playSfx?.('dataPulse');
-  }, [navigate, settings?.explorationMode, playSfx]);
+  }, [navigate, playSfx]);
 
-  // M opens the fast-travel map. Deliberately open-only, not a toggle: the panel is a
-  // <Modal>, which owns Esc/backdrop dismissal — and the shared shortcut hook suppresses
-  // itself while any `aria-modal` dialog is up, so a toggle binding could never have fired
-  // the close half anyway. The hook also drops ⌘/Ctrl/Alt chords, auto-repeat, and
-  // keystrokes typed into a field, so the HUD filter and the panel's own search box keep
-  // their letters.
   const openFastTravel = useCallback(() => setFastTravelOpen(true), []);
-  useKeyboardShortcuts(true, { m: openFastTravel, M: openFastTravel });
 
   // Photo mode (roadmap 3.3): a cinematic capture mode with framing presets and a postcard
   // screenshot. The in-canvas CityPhotoCamera registers its capture function here via a ref so
@@ -221,6 +215,16 @@ function OpenWorldInner() {
   // Transport state lives in the hook; the page swaps the current frame's data
   // into the scene props below. Mutually exclusive with photo mode.
   const playback = useCityPlayback();
+
+  // M opens the fast-travel map. Deliberately open-only, not a toggle: the panel is a
+  // <Modal>, which owns Esc/backdrop dismissal — and the shared shortcut hook suppresses
+  // itself while any `aria-modal` dialog is up, so a toggle binding could never have
+  // fired the close half anyway. The hook also drops ⌘/Ctrl/Alt chords, auto-repeat, and
+  // keystrokes typed into a field, so the HUD filter and the panel's own search box keep
+  // their letters. Inactive in photo and playback mode: those own the camera and hide the
+  // panel, so a live binding there would only bank an "open" that springs the panel the
+  // moment the user returns to the live view.
+  useKeyboardShortcuts(!photoMode && !playback.active, { m: openFastTravel, M: openFastTravel });
 
   // Entering photo mode leaves exploration + playback; they're mutually exclusive modes.
   const enterPhotoMode = useCallback(() => {

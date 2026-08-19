@@ -44,10 +44,10 @@ export const regionPath = (id) => `${OPEN_WORLD_REGION_PREFIX}/${id}`;
 const REGIONS_BY_ID = new Map(OPEN_WORLD_REGIONS.map((r) => [r.id, r]));
 
 // A region with its geography resolved from the master town plan: `anchor` is the ground
-// center [x, y, z], `w`/`d` the parcel footprint, `label` the plan's label when the registry
-// doesn't override it. Returns null for an unknown id (and for a region naming a parcel that
-// no longer exists — a plan rename should fail loudly in the tests, not silently render at
-// the origin).
+// center [x, y, z], `w`/`d` the parcel footprint. The registry's `label` is what the UI
+// shows; the plan's own label rides along as `planLabel` for anything that wants the
+// in-world signage wording. Returns null for an unknown id — and for a region naming a
+// parcel that no longer exists, which the tests fail on rather than rendering at the origin.
 export function getRegion(id) {
   const region = REGIONS_BY_ID.get(id);
   if (!region) return null;
@@ -66,17 +66,6 @@ export function getRegion(id) {
 // from the plan are dropped rather than rendered at [0,0,0].
 export function listRegions() {
   return OPEN_WORLD_REGIONS.map((r) => getRegion(r.id)).filter(Boolean);
-}
-
-// Resolver for the `/openworld/region/:regionId` route param, mirroring resolveCityFocus:
-// a bad id is a 404 the UI can report, an absent id is simply "no region focused". Unlike
-// building focus there's no loading race — the registry is static — so `notFound` is
-// immediate.
-export function resolveRegion(regionId) {
-  const hasRegion = typeof regionId === 'string' && regionId.length > 0;
-  if (!hasRegion) return { hasRegion: false, region: null, notFound: false };
-  const region = getRegion(regionId);
-  return { hasRegion: true, region, notFound: !region };
 }
 
 // Case/punctuation-insensitive lookup over labels + aliases, for the fast-travel filter box.

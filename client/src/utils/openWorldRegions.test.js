@@ -6,7 +6,6 @@ import {
   listRegions,
   regionArrivalPoint,
   regionPath,
-  resolveRegion,
   searchRegions,
   REGION_ARRIVAL_SETBACK,
 } from './openWorldRegions';
@@ -52,10 +51,13 @@ describe('getRegion', () => {
     expect(region.planLabel).toBe(PARCELS.memory.label);
   });
 
-  it('returns null for an unknown id', () => {
+  it('returns null for an absent or unknown id', () => {
+    // This IS the route contract: /openworld/region/:regionId hands the raw param
+    // straight to getRegion, and a null means "stay on the overview".
     expect(getRegion('atlantis')).toBeNull();
     expect(getRegion('')).toBeNull();
     expect(getRegion(undefined)).toBeNull();
+    expect(getRegion(null)).toBeNull();
   });
 });
 
@@ -65,27 +67,6 @@ describe('listRegions', () => {
     expect(list).toHaveLength(OPEN_WORLD_REGIONS.length);
     expect(list.map((r) => r.id)).toEqual(OPEN_WORLD_REGIONS.map((r) => r.id));
     for (const region of list) expect(Array.isArray(region.anchor)).toBe(true);
-  });
-});
-
-describe('resolveRegion', () => {
-  it('reports no region for an absent param', () => {
-    expect(resolveRegion(undefined)).toEqual({ hasRegion: false, region: null, notFound: false });
-    expect(resolveRegion('')).toEqual({ hasRegion: false, region: null, notFound: false });
-  });
-
-  it('resolves a real id', () => {
-    const { hasRegion, region, notFound } = resolveRegion('data-harbor');
-    expect(hasRegion).toBe(true);
-    expect(notFound).toBe(false);
-    expect(region.id).toBe('data-harbor');
-  });
-
-  it('flags an unknown id as not found rather than silently showing the overview', () => {
-    const { hasRegion, region, notFound } = resolveRegion('nowhere');
-    expect(hasRegion).toBe(true);
-    expect(region).toBeNull();
-    expect(notFound).toBe(true);
   });
 });
 

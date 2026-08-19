@@ -480,6 +480,12 @@ export const resolveWorldStyle = (style) => (
 // The style's definition, always a real one.
 export const getWorldStyle = (style) => WORLD_STYLE_DEFS[resolveWorldStyle(style)];
 
+// OpenWorld renders just two times of day — day and night — and follows the active
+// theme's mode by default ('auto'). The user can still force 'day'/'night'. Legacy
+// stored values (sunrise/noon/sunset/midnight) are treated as 'auto' so existing
+// installs pick up theme coupling without a migration. Returns the daytime flag plus
+// the concrete preset key the sky/lights/ground consume, taken from the world style's
+// own pair — so picking 'cyber' restores the established noon/moonlit-night look exactly.
 export const resolveCityTimeOfDay = (setting, themeIsDay, worldStyle) => {
   const daytime = setting === 'day' ? true
     : setting === 'night' ? false
