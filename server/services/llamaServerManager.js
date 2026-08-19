@@ -47,11 +47,30 @@ async function probeEndpoint(endpoint) {
 }
 
 /**
+ * Resolves the `llama-server` executable on the child-process PATH.
+ *
+ * Deliberately a filesystem probe only — `findCommandOnPath` already requires a
+ * regular file carrying the execute bit, which is all "is it installed?" means.
+ * Do NOT re-add a `commandExists`-style `llama-server --version` probe on top:
+ * llama.cpp registers its ggml backends (Metal included) at process start, so
+ * the first launch after `brew link` — a cold binary, a loaded machine — blows
+ * past `commandExists`'s 5s bound. That made the probe report "not installed"
+ * for an installed, working binary, and because the timeout killed the process
+ * before it finished warming, every retry from the UI failed the same way:
+ * "brew completed but llama-server was not found on PATH".
+ *
+ * @returns {string|null} absolute path, or null when it is not on PATH
+ */
+function resolveLlamaServerBinary() {
+  return findCommandOnPath('llama-server');
+}
+
+/**
  * Returns current status of llama-server (binary availability, running state, config, logs).
  */
 export async function getLlamaServerStatus() {
-  const binaryPath = await findCommandOnPath('llama-server');
-  const installed = Boolean(binaryPath) && await commandExists(binaryPath);
+  const binaryPath = resolveLlamaServerBinary();
+  const installed = Boolean(binaryPath);
 
   const host = currentConfig?.host || '127.0.0.1';
   const port = currentConfig?.port || 8080;
@@ -78,8 +97,8 @@ export async function getLlamaServerStatus() {
  * Starts llama-server with the specified model and options.
  */
 export async function startLlamaServer(options = {}) {
-  const binaryPath = await findCommandOnPath('llama-server');
-  if (!binaryPath || !(await commandExists(binaryPath))) {
+  const binaryPath = resolveLlamaServerBinary();
+  if (!binaryPath) {
     throw new ServerError(
       'llama-server binary was not found on PATH. Install it via Homebrew (`brew install llama.cpp`) or build from source.',
       { status: 400 }
@@ -226,16 +245,30 @@ export async function stopLlamaServer() {
 }
 
 /**
- * Runs `brew link --overwrite llama.cpp`, resolving true/false on exit
+ * Runs `brew link --overwrite llama.cpp`, resolving `{ linked, output }` on exit
  * rather than rejecting — a failed link attempt should fall through to the
- * caller's own error message, not replace it with a `brew link` failure.
+ * caller's own error message, not replace it with a `brew link` failure. The
+ * captured output is what makes a failure diagnosable ("Could not symlink…",
+ * a permissions error on the prefix); discarding it left the caller guessing.
  */
 function linkLlamaCpp(env) {
   return new Promise((resolve) => {
-    const spawnOpts = safeChildProcessOptions({ env, shell: false, stdio: 'ignore' });
+    const spawnOpts = safeChildProcessOptions({
+      env,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     const child = spawn('brew', ['link', '--overwrite', 'llama.cpp'], spawnOpts);
-    child.on('error', () => resolve(false));
-    child.on('exit', (code) => resolve(code === 0));
+    let output = '';
+    const collect = (chunk) => { output += chunk.toString(); };
+    child.stdout?.on('data', collect);
+    child.stderr?.on('data', collect);
+    child.on('error', (err) => resolve({ linked: false, output: err.message }));
+    // 'close' rather than 'exit': 'exit' fires the moment the process ends, with
+    // stdio possibly still buffered, which would hand back a truncated (often
+    // empty) `output` exactly when a failure needs explaining. `brew link` is a
+    // short, single-process command, so waiting for the pipes to close is safe.
+    child.on('close', (code) => resolve({ linked: code === 0, output: output.trim() }));
   });
 }
 
@@ -268,34 +301,56 @@ export async function installLlamaServer({ onProgress = () => {} } = {}) {
     child.stderr?.on('data', (d) => {
       onProgress({ event: 'progress', message: d.toString().trim() });
     });
+    // `error` and `exit` can both fire for one child (an `error` raised after a
+    // successful spawn is followed by the process's own exit). Without this
+    // guard the exit path would still emit a `complete` progress event to the
+    // UI after the request had already been rejected — the client would render
+    // "installed successfully" alongside a 500.
+    let settled = false;
     child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
       reject(new ServerError(`Failed to run brew: ${err.message}`, { status: 500 }));
     });
+    // Async listener on a child-process event: it runs outside the Express
+    // lifecycle AND outside this Promise executor's own throw path, so an
+    // unguarded throw here would surface as an unhandled rejection while the
+    // install request hung forever. Route every failure to `reject`.
     child.on('exit', async (code) => {
-      let binaryPath = await findCommandOnPath('llama-server');
-      let installed = Boolean(binaryPath) && await commandExists(binaryPath);
+      if (settled) return;
+      settled = true;
+      try {
+        let binaryPath = resolveLlamaServerBinary();
+        let linkOutput = '';
 
-      // `brew install` exits 0 without linking when the keg is already
-      // installed but unlinked ("Warning: llama.cpp X is already installed,
-      // it's just not linked."). Link it explicitly rather than leaving that
-      // warning as a dead end for the caller.
-      if (!installed && code === 0) {
-        onProgress({ event: 'progress', message: 'llama.cpp keg is installed but not linked — linking…' });
-        const linked = await linkLlamaCpp(env);
-        if (linked) {
-          binaryPath = await findCommandOnPath('llama-server');
-          installed = Boolean(binaryPath) && await commandExists(binaryPath);
+        // `brew install` exits 0 without linking when the keg is already
+        // installed but unlinked ("Warning: llama.cpp X is already installed,
+        // it's just not linked."). Link it explicitly rather than leaving that
+        // warning as a dead end for the caller.
+        if (!binaryPath && code === 0) {
+          onProgress({ event: 'progress', message: 'llama.cpp keg is installed but not linked — linking…' });
+          const { linked, output } = await linkLlamaCpp(env);
+          linkOutput = output;
+          if (linked) binaryPath = resolveLlamaServerBinary();
         }
-      }
 
-      if (installed) {
-        onProgress({ event: 'complete', message: 'llama.cpp installed successfully' });
-        resolve({ success: true, message: 'llama.cpp installed successfully' });
-      } else {
+        if (binaryPath) {
+          onProgress({ event: 'complete', message: `llama.cpp installed successfully (${binaryPath})` });
+          resolve({ success: true, message: 'llama.cpp installed successfully' });
+          return;
+        }
+
+        // A `brew link` conflict can list every clashing file, so cap what
+        // rides along into the error message.
+        const hint = linkOutput
+          ? `brew link said: ${linkOutput.slice(0, 500)}`
+          : 'try running `brew link --overwrite llama.cpp` manually';
         const msg = code === 0
-          ? 'brew completed but llama-server was not found on PATH — try running `brew link --overwrite llama.cpp` manually'
+          ? `brew completed but llama-server was not found on PATH — ${hint}`
           : `brew install llama.cpp failed (exit code ${code})`;
         reject(new ServerError(msg, { status: 500 }));
+      } catch (err) {
+        reject(new ServerError(`Failed to verify the llama.cpp install: ${err.message}`, { status: 500 }));
       }
     });
   });
