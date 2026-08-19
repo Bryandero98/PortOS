@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeFocusCamera, BOROUGH_GROUND_RADIUS, CITY_CAMERA_FOV_DEG, computeRegionCamera } from './cityFocusCamera';
+import { computeFocusCamera, BOROUGH_GROUND_RADIUS, CITY_CAMERA_FOV_DEG, computeRegionCamera, CITY_MAX_ORBIT_DISTANCE } from './cityFocusCamera';
 
 const building = { x: 12, z: -24, height: 6 };
 
@@ -112,6 +112,78 @@ describe('computeRegionCamera', () => {
     for (const bad of [undefined, {}, { anchor: null }, { anchor: [NaN, 0, NaN], w: NaN, d: NaN }]) {
       const { position, target } = computeRegionCamera({ region: bad, aspect: 16 / 9 });
       for (const n of [...position, ...target]) expect(Number.isFinite(n)).toBe(true);
+    }
+  });
+});
+
+import { listRegions } from './openWorldRegions';
+
+describe('framing stays inside the orbit-distance ceiling', () => {
+  // CityScene hands CITY_MAX_ORBIT_DISTANCE straight to OrbitControls as maxDistance. A fly
+  // that ended beyond it would be yanked back the instant the controls re-enabled, so the
+  // framing math must never return a farther distance than the controls will keep.
+  const VIEWPORTS = [
+    ['desktop', 16 / 9, { right: 0.28, bottom: 0 }],
+    ['narrow phone', 390 / 780, { right: 0, bottom: 0.5 }],
+    ['degenerate', 0.2, { right: 0.9, bottom: 0.9 }],
+  ];
+
+  it('every real region frames within the ceiling on every viewport', () => {
+    const over = [];
+    for (const region of listRegions()) {
+      for (const [name, aspect, hudSafe] of VIEWPORTS) {
+        const { distance } = computeRegionCamera({ region, aspect, fovDeg: 50, hudSafe });
+        if (distance > CITY_MAX_ORBIT_DISTANCE) over.push(`${region.id} @ ${name}: ${distance.toFixed(1)}`);
+      }
+    }
+    expect(over).toEqual([]);
+  });
+
+  it('clamps rather than exceeding the ceiling for an absurdly large region', () => {
+    const { distance } = computeRegionCamera({
+      region: { anchor: [0, 0, 0], w: 5000, d: 5000 }, aspect: 0.4, fovDeg: 50,
+    });
+    expect(distance).toBe(CITY_MAX_ORBIT_DISTANCE);
+  });
+
+  it('clamps the borough focus camera too — they share the optics', () => {
+    const { distance } = computeFocusCamera({
+      building: { x: 0, z: 0, height: 100000 }, aspect: 0.4, fovDeg: 50,
+    });
+    expect(distance).toBe(CITY_MAX_ORBIT_DISTANCE);
+  });
+});
+
+describe('computeRegionCamera — data-driven districts', () => {
+  const parcel = { anchor: [0, 0, 0], w: 60, d: 60 };
+
+  it('widens and re-centers on live layout bounds that outgrew the parcel', () => {
+    const nominal = computeRegionCamera({ region: parcel, aspect: 16 / 9 });
+    const grown = computeRegionCamera({
+      region: parcel,
+      bounds: { minX: -90, maxX: 90, minZ: -40, maxZ: 40 },
+      aspect: 16 / 9,
+    });
+    expect(grown.radius).toBeGreaterThan(nominal.radius);
+    // Re-centered on the live cloud, which here is symmetric about the parcel anchor.
+    expect(grown.target[2]).toBeCloseTo(0, 6);
+  });
+
+  it('keeps the parcel as a floor so a near-empty install does not zoom into one tower', () => {
+    const nominal = computeRegionCamera({ region: parcel, aspect: 16 / 9 });
+    const tiny = computeRegionCamera({
+      region: parcel,
+      bounds: { minX: -6, maxX: 6, minZ: -6, maxZ: 6 },
+      aspect: 16 / 9,
+    });
+    expect(tiny.radius).toBe(nominal.radius);
+  });
+
+  it('ignores partial or non-finite bounds rather than producing NaNs', () => {
+    for (const bounds of [null, undefined, {}, { minX: 0, maxX: 10 }, { minX: NaN, maxX: 1, minZ: 0, maxZ: 1 }]) {
+      const { position, target, radius } = computeRegionCamera({ region: parcel, bounds, aspect: 16 / 9 });
+      for (const n of [...position, ...target, radius]) expect(Number.isFinite(n)).toBe(true);
+      expect(radius).toBe(computeRegionCamera({ region: parcel, aspect: 16 / 9 }).radius);
     }
   });
 });

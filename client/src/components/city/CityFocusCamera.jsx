@@ -3,6 +3,7 @@ import { useThree, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { smoothstep } from '../../utils/easing';
 import { computeFocusCamera, computeRegionCamera } from '../../utils/cityFocusCamera';
+import { computeDistrictBounds } from '../../utils/cityMiniMap';
 
 // In-canvas camera controller for OpenWorld's two URL-addressed camera targets: a single
 // building (`/openworld/apps/:appId`, issue #2593) and a whole fast-travel region
@@ -41,6 +42,14 @@ export default function CityFocusCamera({ focusedAppId, focusedRegion, positions
     () => (focusedRegion?.anchor ? `region:${focusedRegion.id}` : null),
     [focusedRegion?.anchor, focusedRegion?.id],
   );
+  // A data-driven region (downtown / the archive grid) is framed by what's actually placed,
+  // not by its nominal parcel — those grids grow with the install's app count, so a fixed
+  // rectangle clips the outer towers on a big install. Static regions pass null and keep the
+  // parcel footprint.
+  const regionBounds = useMemo(
+    () => (focusedRegion?.district ? computeDistrictBounds(positions, focusedRegion.district) : null),
+    [focusedRegion?.district, positions],
+  );
   const animRef = useRef(null);
   const controlsWasEnabledRef = useRef(true);
 
@@ -57,7 +66,11 @@ export default function CityFocusCamera({ focusedAppId, focusedRegion, positions
     const pos = wantFocus ? positions?.get?.(focusedAppId) : null;
     // Focus wanted but the layout position isn't ready yet → hold and retry next frame.
     if (wantFocus && !pos) return;
-    // Regions come straight from the static plan, so there is no equivalent wait.
+    // A static region comes straight from the plan, so there is no equivalent wait — but a
+    // data-driven one must wait for the layout, or the first fly frames the nominal parcel
+    // and never re-flies once the real bounds arrive. `positions` present with null bounds
+    // is a genuinely EMPTY district (no archived apps yet), which correctly uses the parcel.
+    if (!wantFocus && active && focusedRegion?.district && !positions) return;
     const wantRegion = !wantFocus && active && regionKey !== null;
     const key = wantFocus ? focusedAppId : wantRegion ? regionKey : null;
 
@@ -79,7 +92,7 @@ export default function CityFocusCamera({ focusedAppId, focusedRegion, positions
         const fovDeg = camera.isPerspectiveCamera ? camera.fov : undefined;
         const framed = wantFocus
           ? computeFocusCamera({ building: pos, aspect, fovDeg, hudSafe })
-          : computeRegionCamera({ region: focusedRegion, aspect, fovDeg, hudSafe });
+          : computeRegionCamera({ region: focusedRegion, bounds: regionBounds, aspect, fovDeg, hudSafe });
         endPos = new THREE.Vector3(...framed.position);
         endTarget = new THREE.Vector3(...framed.target);
       }

@@ -18,12 +18,18 @@ import { PARCELS } from './cityPlan';
 // Ordered for the fast-travel list: the two places you look at most first, then a clockwise
 // sweep of the outer districts, then the far shore. `parcel` keys into PARCELS for geography;
 // `appPath` is the 2D PortOS page the region visualizes (null for pure set dressing).
+//
+// `district` marks a region whose real extent is DATA-DRIVEN — the downtown and archive grids
+// grow with the install's app count, so their PARCELS footprint is only a nominal size. It
+// names the district key in `computeCityLayout`'s output, which the camera uses to measure the
+// buildings actually on the ground instead of framing a fixed rectangle and clipping the
+// outer towers.
 export const OPEN_WORLD_REGIONS = [
-  { id: 'downtown', parcel: 'downtown', label: 'Downtown', blurb: 'Every managed app, one tower each.', appPath: '/apps', aliases: ['downtown', 'apps district', 'app towers'] },
+  { id: 'downtown', parcel: 'downtown', district: 'downtown', label: 'Downtown', blurb: 'Every managed app, one tower each.', appPath: '/apps', aliases: ['downtown', 'apps district', 'app towers'] },
   { id: 'ai-core', parcel: 'aiCore', label: 'AI Core Plaza', blurb: 'The reactor at the center — live AI provider activity.', appPath: '/ai', aliases: ['ai core', 'core plaza', 'the core', 'reactor'] },
   { id: 'task-queue', parcel: 'taskQueue', label: 'Task Queue', blurb: 'Chief of Staff work stacked up and moving.', appPath: '/cos/tasks', aliases: ['task queue', 'queue', 'cos queue'] },
   { id: 'wellness', parcel: 'health', label: 'Wellness Tower', blurb: 'System vitals — CPU, memory, disk.', appPath: '/system-resources/overview', aliases: ['wellness tower', 'health tower', 'vitals tower'] },
-  { id: 'archive', parcel: 'warehouse', label: 'Archive District', blurb: 'Cold storage for archived apps.', appPath: '/apps', aliases: ['archive district', 'warehouse', 'cold storage'] },
+  { id: 'archive', parcel: 'warehouse', district: 'warehouse', label: 'Archive District', blurb: 'Cold storage for archived apps.', appPath: '/apps', aliases: ['archive district', 'warehouse', 'cold storage'] },
   { id: 'quiet-corner', parcel: 'easterEggs', label: 'Quiet Corner', blurb: 'The odd little things the world keeps to itself.', appPath: null, aliases: ['quiet corner', 'easter eggs'] },
   { id: 'productivity', parcel: 'productivity', label: 'Productivity Terrace', blurb: 'Streaks, throughput, and the activity heatmap.', appPath: '/insights/overview', aliases: ['productivity terrace', 'productivity', 'streak district'] },
   { id: 'backup-vault', parcel: 'backupVault', label: 'Backup Vault', blurb: 'The sealed door — last backup and its health.', appPath: '/settings/backup', aliases: ['backup vault', 'the vault'] },

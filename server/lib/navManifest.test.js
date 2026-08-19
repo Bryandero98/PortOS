@@ -289,13 +289,38 @@ describe('nav contract — OpenWorld regions match the registry labels and alias
   });
 
   it('every registry alias is addressable as a nav alias', () => {
+    // The registry authors aliases in human phrasing ("memory quarter"); the manifest
+    // registers them kebab-cased, because that is the form resolveNavCommand matches on.
+    const kebab = (a) => a.replace(/\s+/g, '-');
     const missing = readRegistry().flatMap((r) => {
       const cmd = navByPath.get(`/openworld/region/${r.id}`);
       if (!cmd) return [];
       const navAliases = new Set(cmd.aliases || []);
-      return r.aliases.filter((a) => !navAliases.has(a)).map((a) => `${r.id}: "${a}"`);
+      return r.aliases.filter((a) => !navAliases.has(kebab(a))).map((a) => `${r.id}: "${a}"`);
     });
     expect(missing).toEqual([]);
+  });
+
+  it('every region alias actually RESOLVES to its own region', () => {
+    // Parity with the registry is not enough on its own: resolveNavCommand normalizes its
+    // input to kebab-case, so a space-separated alias never matches exactly and instead
+    // falls through to the substring tiers — which is how "memory quarter" resolved to
+    // /brain/memory and "voice beacon" to /settings/voice while every parity check passed.
+    // Assert the behavior users actually get, phrased the way they'd say it.
+    const wrong = readRegistry().flatMap((r) => {
+      const want = `/openworld/region/${r.id}`;
+      return r.aliases
+        .map((alias) => ({ alias, got: resolveNavCommand(alias)?.path ?? null }))
+        .filter(({ got }) => got !== want)
+        .map(({ alias, got }) => `${r.id}: "${alias}" → ${got ?? 'NULL'} (want ${want})`);
+    });
+    expect(wrong).toEqual([]);
+  });
+
+  it('resolves a region by its label as spoken', () => {
+    for (const r of readRegistry()) {
+      expect(resolveNavCommand(r.label)?.path).toBe(`/openworld/region/${r.id}`);
+    }
   });
 });
 

@@ -10,6 +10,15 @@
 // Vertical field of view of the city camera (matches CityScene's <Canvas camera={{ fov: 50 }}>).
 export const CITY_CAMERA_FOV_DEG = 50;
 
+// How far the orbital camera may sit from its target. CityScene passes this straight to
+// OrbitControls as `maxDistance`, and every framing helper here clamps to it — the two MUST
+// be the same number. When they weren't, a fast-travel warp to a big district on a phone
+// computed ~218 units while the controls capped at 120, so OrbitControls yanked the camera
+// in the moment the fly handed control back and the region never fit the frame.
+// Sized to fit the widest region (60-unit Downtown) on a narrow portrait viewport, where the
+// horizontal extent — not the HUD — is what forces the camera back.
+export const CITY_MAX_ORBIT_DISTANCE = 240;
+
 // Ground-footprint radius of a single borough: the process ring (BOROUGH_PARAMS.processRingRadius
 // = 3) plus a process building's half-footprint and a little breathing room. Buildings never spread
 // wider than this on the ground, so a sphere of this radius (grown by the tower height) bounds the
@@ -88,7 +97,10 @@ function frameFromRadius({ centerX, centerZ, targetY, radius, aspect, fovDeg, hu
   // Distance so the bounding sphere fits both the (HUD-reduced) vertical and horizontal extents.
   const distV = radius / (halfV * usableH);
   const distH = radius / (halfH * usableW);
-  const distance = Math.max(distV, distH);
+  // Clamped to the ceiling the controls enforce: a fly that ended beyond it would be snapped
+  // back by OrbitControls the instant it re-enabled. A subject too large to fit at the cap is
+  // framed as well as the cap allows — imperfect, but stable instead of jarring.
+  const distance = Math.min(CITY_MAX_ORBIT_DISTANCE, Math.max(distV, distH));
 
   // Pan the framed region so the subject sits in the clear area: push it left of a right-edge panel
   // and up above a bottom-edge panel. Panning moves camera + target by the same world delta.
@@ -132,14 +144,29 @@ const REGION_TARGET_Y = 3;
 
 // Compute the establishing camera for one fast-travel region.
 //   region  — { anchor: [x, y, z], w, d } (from openWorldRegions.getRegion).
+//   bounds  — optional { minX, maxX, minZ, maxZ } of what is ACTUALLY on the ground for a
+//             data-driven district (downtown / the archive grid, whose extent grows with the
+//             install's app count). When given it supersedes the parcel's nominal w/d, so a
+//             big install frames its real skyline instead of clipping the outer towers; the
+//             parcel is still the floor, so a near-empty install doesn't zoom into one tower.
 //   aspect / fovDeg / hudSafe — as computeFocusCamera.
 // Returns { position:[x,y,z], target:[x,y,z], distance, radius }.
-export function computeRegionCamera({ region, aspect = 1, fovDeg = CITY_CAMERA_FOV_DEG, hudSafe } = {}) {
+export function computeRegionCamera({ region, bounds, aspect = 1, fovDeg = CITY_CAMERA_FOV_DEG, hudSafe } = {}) {
   const anchor = Array.isArray(region?.anchor) ? region.anchor : [];
-  const cx = finiteOr(anchor[0], 0);
-  const cz = finiteOr(anchor[2], 0);
-  const w = Math.max(0, finiteOr(region?.w, 0));
-  const d = Math.max(0, finiteOr(region?.d, 0));
+  let cx = finiteOr(anchor[0], 0);
+  let cz = finiteOr(anchor[2], 0);
+  let w = Math.max(0, finiteOr(region?.w, 0));
+  let d = Math.max(0, finiteOr(region?.d, 0));
+
+  const hasBounds = [bounds?.minX, bounds?.maxX, bounds?.minZ, bounds?.maxZ].every(Number.isFinite);
+  if (hasBounds) {
+    // Center on the live cloud and take the larger of live vs nominal on each axis — a grid
+    // that has outgrown its parcel widens the shot, one that hasn't keeps the parcel's.
+    cx = (bounds.minX + bounds.maxX) / 2;
+    cz = (bounds.minZ + bounds.maxZ) / 2;
+    w = Math.max(w, bounds.maxX - bounds.minX + BOROUGH_GROUND_RADIUS * 2);
+    d = Math.max(d, bounds.maxZ - bounds.minZ + BOROUGH_GROUND_RADIUS * 2);
+  }
 
   const radius = Math.max(MIN_REGION_RADIUS, Math.hypot(w, d) / 2) * REGION_FRAMING_MARGIN;
 

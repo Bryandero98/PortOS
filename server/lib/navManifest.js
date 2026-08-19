@@ -11,6 +11,12 @@ import { PORTOS_APP_ID } from './appIdentity.js';
 // imported because a server lib can't reach into client code; navManifest.test.js scrapes
 // the registry and fails on drift in the paths, the labels, AND the aliases.
 // Written as [id, label, aliases] tuples so the axis that varies is the only thing repeated.
+//
+// Aliases are authored in the human phrasing the fast-travel search box uses ("memory
+// quarter") and registered KEBAB-CASED, because resolveNavCommand normalizes its input to
+// kebab before matching: a space-separated alias can never be hit. Registering them raw
+// didn't just fail to resolve — the fallback tiers matched a substring against an unrelated
+// command, so "memory quarter" landed on /brain/memory and "voice beacon" on /settings/voice.
 const OPEN_WORLD_REGION_COMMANDS = [
   ['downtown', 'Downtown', ['downtown', 'apps district', 'app towers']],
   ['ai-core', 'AI Core Plaza', ['ai core', 'core plaza', 'the core', 'reactor']],
@@ -31,7 +37,7 @@ const OPEN_WORLD_REGION_COMMANDS = [
   path: `/openworld/region/${id}`,
   label,
   section: 'Main',
-  aliases,
+  aliases: aliases.map((a) => a.replace(/\s+/g, '-')),
   keywords: ['openworld', 'fast travel', 'warp', 'region', 'teleport'],
 }));
 

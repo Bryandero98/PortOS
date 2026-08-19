@@ -50,6 +50,7 @@ import CityPhotoCamera from './CityPhotoCamera';
 import CityDepthOfField from './CityDepthOfField';
 import CityAdaptiveQuality from './CityAdaptiveQuality';
 import { cityDayMix, getTimeOfDayPreset } from './cityConstants';
+import { CITY_MAX_ORBIT_DISTANCE } from '../../utils/cityFocusCamera';
 import { CityPaletteProvider } from './CityPaletteContext';
 import ErrorBoundary from '../ErrorBoundary';
 import { useVisibilityEvent } from '../../hooks/useVisibilityEvent';
@@ -357,7 +358,9 @@ export default function CityScene({ apps, agentMap, onBuildingClick, onToggleCam
           keyPanSpeed={24}
           maxPolarAngle={Math.PI / 2.2}
           minDistance={5}
-          maxDistance={120}
+          // Shared with the framing math (see CITY_MAX_ORBIT_DISTANCE) so a fast-travel fly
+          // never ends past a distance the controls would immediately snap back.
+          maxDistance={CITY_MAX_ORBIT_DISTANCE}
           enableDamping
           dampingFactor={0.05}
           mouseButtons={{ LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE }}
