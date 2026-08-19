@@ -190,13 +190,12 @@ export const filterSelectableModels = (models) =>
  * Claude Code and agy take `--effort <level>`, Codex takes
  * `-c model_reasoning_effort=<level>`.
  *
- * Codex's ladder stops at `xhigh`: its config enum is
- * `none|minimal|low|medium|high|xhigh`, and `-c model_reasoning_effort=max`
- * makes codex fail while LOADING ITS CONFIG, killing the agent at startup.
- * `resolveCliEffort` clamps `max`/`ultra` down to `xhigh` for codex.
+ * Codex's config enum includes `max` alongside
+ * `none|minimal|low|medium|high|xhigh`. `ultra` is retained only as a legacy
+ * stored value and resolves to `max` when sent to codex.
  */
 export const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
-export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
+export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 // OpenCode passes this through as `reasoningEffort` to its configured local
 // provider. Ollama's OpenAI-compatible API accepts this narrow ladder for

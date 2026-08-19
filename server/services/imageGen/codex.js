@@ -190,9 +190,9 @@ export async function generateImage({
   // effort instead of the promised cheap `low` default. Fall back to the default
   // so the low-effort guarantee holds even for garbage input.
   // `resolveCliEffort` (rather than a bare `CODEX_EFFORT_LEVELS.includes`) so a
-  // level saved when codex's ladder was wider — `max`/`ultra`, which codex
-  // rejects at config load — clamps DOWN to `xhigh` instead of collapsing to the
-  // cheap default and silently rendering at a fraction of the requested effort.
+  // legacy `ultra` value resolves to Codex's strongest supported level instead
+  // of collapsing to the cheap default and silently rendering at a fraction of
+  // the requested effort.
   const requestedEffort = (typeof effort === 'string' && effort.trim()) ? effort.trim() : CODEX_IMAGEGEN_DEFAULT_EFFORT;
   const effectiveEffort = resolveCliEffort(requestedEffort, { command: 'codex' }) || CODEX_IMAGEGEN_DEFAULT_EFFORT;
 

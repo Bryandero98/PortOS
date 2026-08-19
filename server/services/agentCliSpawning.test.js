@@ -394,18 +394,12 @@ describe('buildCliSpawnConfig', () => {
       expect(config.args).toContain('model_reasoning_effort=xhigh');
     });
 
-    // Regression for the 2026-08-17 incident: codex's config enum stops at
-    // `xhigh`, so a task dispatched at `effort:max` used to spawn
-    // `codex -c model_reasoning_effort=max`, which codex rejects while LOADING
-    // its config — before the prompt is read, so every retry died identically.
-    // The TUI builder has the twin of this assertion; the CLI builder is the one
-    // that actually shipped the bad argv.
-    it('clamps max/ultra down to xhigh for codex rather than emitting a value it rejects', () => {
-      for (const effort of ['max', 'ultra']) {
-        const config = buildCliSpawnConfig({ id: 'codex', command: 'codex' }, 'gpt-5.4', {}, { effort });
-        expect(config.args).toContain('model_reasoning_effort=xhigh');
-        expect(config.args.join(' ')).not.toContain(`model_reasoning_effort=${effort}`);
-      }
+    it('passes max to codex and resolves legacy ultra to max', () => {
+      const codex = { id: 'codex', command: 'codex' };
+      const maxConfig = buildCliSpawnConfig(codex, 'gpt-5.4', {}, { effort: 'max' });
+      expect(maxConfig.args).toContain('model_reasoning_effort=max');
+      const legacyConfig = buildCliSpawnConfig(codex, 'gpt-5.4', {}, { effort: 'ultra' });
+      expect(legacyConfig.args).toContain('model_reasoning_effort=max');
     });
 
     it('adds --effort for claude', () => {

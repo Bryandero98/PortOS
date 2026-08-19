@@ -385,15 +385,10 @@ describe('providerModels', () => {
         .toEqual(['-c', 'model_reasoning_effort=xhigh']);
     });
 
-    // Regression: codex's config enum stops at `xhigh`, and it rejects an
-    // unknown variant while LOADING ITS CONFIG — the agent dies at startup
-    // ("unknown variant `max`, expected one of …") before the prompt is read,
-    // then burns all three retries. A dispatch label of `effort:max` must clamp,
-    // never pass through.
-    it('never emits a level codex rejects (max/ultra clamp to xhigh)', () => {
+    it('emits max for codex and resolves legacy ultra to max', () => {
       const codex = { id: 'codex', command: 'codex' };
-      expect(buildEffortArgs('max', codex)).toEqual(['-c', 'model_reasoning_effort=xhigh']);
-      expect(buildEffortArgs('ultra', codex)).toEqual(['-c', 'model_reasoning_effort=xhigh']);
+      expect(buildEffortArgs('max', codex)).toEqual(['-c', 'model_reasoning_effort=max']);
+      expect(buildEffortArgs('ultra', codex)).toEqual(['-c', 'model_reasoning_effort=max']);
     });
 
     it('returns [] when unset, unsupported, or already baked into existing args', () => {
@@ -484,6 +479,7 @@ describe('providerModels', () => {
       expect(resolveCliEffort('high', { id: 'claude-code', command: 'claude' })).toBe('high');
       expect(resolveCliEffort('minimal', { id: 'codex', command: 'codex' })).toBe('minimal');
       expect(resolveCliEffort('xhigh', { id: 'codex', command: 'codex' })).toBe('xhigh');
+      expect(resolveCliEffort('max', { id: 'codex', command: 'codex' })).toBe('max');
     });
 
     it('clamps codex-only values to the claude equivalents on a claude provider', () => {
