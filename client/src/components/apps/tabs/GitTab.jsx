@@ -108,22 +108,42 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
   const [cleaningUp, setCleaningUp] = useState(false);
   const [cleanupConfirm, setCleanupConfirm] = useState(false);
 
-  const loadGitInfo = useCallback(async () => {
+  const loadGitData = useCallback(async (opts = {}) => {
     if (!repoPath) return;
+    const { includeRemote = true } = opts;
     setLoading(true);
-    const [info, branchesResult] = await Promise.all([
+    if (includeRemote) setLoadingRemote(true);
+
+    const promises = [
       api.getGitInfo(repoPath).catch(() => null),
       api.getBranches(repoPath).catch(() => ({ branches: [] }))
-    ]);
+    ];
+    if (includeRemote) {
+      promises.push(api.getRemoteBranches(repoPath).catch(() => null));
+    }
+
+    const [info, branchesResult, remoteResult] = await Promise.all(promises);
+
     let comparison = null;
     if (info?.baseBranch && info?.devBranch) {
       comparison = await api.getBranchComparison(repoPath, info.baseBranch, info.devBranch).catch(() => null);
     }
+
     setGitInfo(info);
-    setBranches(branchesResult.branches || []);
+    setBranches(branchesResult?.branches || []);
     setBranchComparison(comparison);
     setLoading(false);
+
+    if (includeRemote) {
+      if (remoteResult) {
+        setRemoteBranches(remoteResult.branches || []);
+        setDefaultBranch(remoteResult.defaultBranch || 'main');
+      }
+      setLoadingRemote(false);
+    }
   }, [repoPath]);
+
+  const loadGitInfo = useCallback(() => loadGitData({ includeRemote: false }), [loadGitData]);
 
   const loadRemoteBranches = useCallback(async () => {
     if (!repoPath) return;
@@ -137,9 +157,8 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
   }, [repoPath]);
 
   useEffect(() => {
-    loadGitInfo();
-    loadRemoteBranches();
-  }, [loadGitInfo, loadRemoteBranches]);
+    loadGitData({ includeRemote: true });
+  }, [loadGitData]);
 
   const loadDiff = async () => {
     if (!repoPath) return;
@@ -181,7 +200,7 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
       }
       toast.success(`Branches updated — ${parts.join(', ')}`);
     }
-    await loadGitInfo();
+    await loadGitData({ includeRemote: true });
   };
 
   const handleReleasePR = async () => {

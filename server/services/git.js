@@ -186,10 +186,33 @@ export async function getRemote(dir) {
  */
 const FETCH_MAX_ATTEMPTS = 4;
 const FETCH_RETRY_DELAY_MS = 250;
+const FETCH_FRESHNESS_MS = 15000;
+
+const lastFetchTimes = new Map();
+const activeFetches = new Map();
+
+export function recordFetchSuccess(dir) {
+  if (dir) lastFetchTimes.set(dir, Date.now());
+}
+
+export function isFetchFresh(dir, windowMs = FETCH_FRESHNESS_MS) {
+  if (!dir) return false;
+  const last = lastFetchTimes.get(dir);
+  if (!last) return false;
+  return (Date.now() - last) < windowMs;
+}
+
+export function clearFetchCache() {
+  lastFetchTimes.clear();
+  activeFetches.clear();
+}
 
 function fetchOriginAttempt(dir, attempt) {
   return execGit(['fetch', 'origin'], dir).then(
-    () => true,
+    () => {
+      recordFetchSuccess(dir);
+      return true;
+    },
     (err) => {
       // A concurrent fetch that already wrote the exact refs this one wanted is
       // a SUCCESS reported as a failure — git exits non-zero on the lost
@@ -197,7 +220,10 @@ function fetchOriginAttempt(dir, attempt) {
       // right commits. Retrying re-runs a whole network fetch to learn there is
       // nothing to do, and on a busy repo every attempt loses the same race, so
       // the caller surfaced a red error for work that had actually completed.
-      if (isBenignConcurrentFetchRefRace(err.message)) return true;
+      if (isBenignConcurrentFetchRefRace(err.message)) {
+        recordFetchSuccess(dir);
+        return true;
+      }
       // Another PortOS surface or agent may advance the same remote ref mid-fetch.
       if (attempt >= FETCH_MAX_ATTEMPTS || !isGitLockError(err.message)) throw err;
       return sleep(FETCH_RETRY_DELAY_MS).then(() => fetchOriginAttempt(dir, attempt + 1));
@@ -838,6 +864,7 @@ export async function ensureLatest(dir) {
   if (fetchResult.stderr?.includes('fatal')) {
     return { success: false, branch: currentBranch, conflict: false, error: `fetch failed: ${fetchResult.stderr}` };
   }
+  recordFetchSuccess(dir);
 
   // Check if remote tracking branch exists
   const remoteRef = await execGit(['rev-parse', `origin/${currentBranch}`], dir, { ignoreExitCode: true });
@@ -890,8 +917,25 @@ export async function ensureLatest(dir) {
  * fully merged into the default branch and whether a local copy exists.
  */
 export async function getRemoteBranches(dir) {
-  // Fetch latest refs
-  await execGit(['fetch', 'origin', '--prune'], dir, { ignoreExitCode: true });
+  // Fetch latest refs if not fresh within window
+  if (!isFetchFresh(dir)) {
+    if (activeFetches.has(dir)) {
+      await activeFetches.get(dir);
+    } else {
+      const fetchPromise = execGit(['fetch', 'origin', '--prune'], dir, { ignoreExitCode: true })
+        .then(res => {
+          if (res.exitCode === 0 || isBenignConcurrentFetchRefRace(res.stderr || res.stdout || '')) {
+            recordFetchSuccess(dir);
+          }
+          return res;
+        })
+        .finally(() => {
+          activeFetches.delete(dir);
+        });
+      activeFetches.set(dir, fetchPromise);
+      await fetchPromise;
+    }
+  }
 
   // Detect default branch
   const { baseBranch } = await getRepoBranches(dir);
