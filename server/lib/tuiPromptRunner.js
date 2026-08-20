@@ -68,6 +68,7 @@ import {
   createInputReadyTracker,
   detectMissingTuiBinary,
   createSelfClearingSignalGate,
+  SUBMIT_KEY,
 } from './tuiHandshake.js';
 import { buildCliChildEnv } from './cliChildEnv.js';
 import { isCodexCommand } from './codex.js';
@@ -717,7 +718,7 @@ ${prompt}`;
           // unsent. Tracked in submitEnterTimer so finish()'s cleanupTimers()
           // cancels pending retries if the run ends first.
           submitEnterTimer = scheduleSubmitEnters(
-            () => { try { ptyProcess.write('\r'); } catch { /* PTY may have already exited */ } },
+            () => { try { ptyProcess.write(SUBMIT_KEY); } catch { /* PTY may have already exited */ } },
             () => finalized
           );
         }

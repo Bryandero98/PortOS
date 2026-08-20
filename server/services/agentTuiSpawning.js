@@ -57,6 +57,7 @@ import {
   PASTE_RETRY_BASE_DELAY_MS,
   extractVerifiablePromptPrefix,
   isPasteConfirmed,
+  SUBMIT_KEY,
 } from '../lib/tuiHandshake.js';
 import { injectTuiModelAndEffort } from '../lib/providerVendors.js';
 import { agentGuardEnv } from '../lib/agentGuard/index.js';
@@ -370,7 +371,7 @@ function createPasteRetryController({
       // window (issue #1229 review).
       markPromptSubmitted();
       submitEnterTimer = scheduleSubmitEnters(
-        () => shellService.writeToSession(sessionId, '\r'),
+        () => shellService.writeToSession(sessionId, SUBMIT_KEY),
         () => isFinalized()
       );
     };
@@ -1385,7 +1386,7 @@ export async function spawnTuiAgent({
       // Send Enter once.
       if (inputReady.needsTrust && !trustAccepted) {
         trustAccepted = true;
-        shellService.writeToSession(sessionId, '\r');
+        shellService.writeToSession(sessionId, SUBMIT_KEY);
         appendLine(`📟 Auto-confirmed ${tuiConfig.command} folder-trust prompt for session ${sessionId.slice(0, 8)}`);
         return;
       }

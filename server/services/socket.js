@@ -642,7 +642,7 @@ export function initSocket(io) {
       if (sessionId) {
         socket.emit('shell:started', { sessionId });
         if (initialCommand) {
-          setTimeout(() => shellService.writeToSession(sessionId, initialCommand + '\n'), 200);
+          setTimeout(() => shellService.submitToSession(sessionId, initialCommand), 200);
         }
       } else {
         socket.emit('shell:error', { error: 'Failed to create shell session' });
