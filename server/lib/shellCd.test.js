@@ -82,4 +82,11 @@ describe('quoteForShell', () => {
       .toBe('"C:\\Program Files\\claude.cmd"');
     expect(quoteForShell('arg"with space', 'cmd', 'argument')).toBe('"argwith space"');
   });
+
+  it('preserves a trailing backslash in cmd.exe tokens', () => {
+    const slash = String.fromCharCode(92);
+    const path = ['C:', 'work', ''].join(slash);
+    expect(quoteForShell(path, 'cmd', 'argument'))
+      .toBe(`"C:${slash}work${slash}${slash}"`);
+  });
 });

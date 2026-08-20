@@ -295,7 +295,7 @@ describe('agent TUI spawning', () => {
       type: 'tui',
       command: 'codex',
       args: []
-    }, 'codex-configured-default');
+    }, 'codex-configured-default', { shell: '/bin/zsh' });
 
     expect(config.command).toBe('codex');
     expect(config.args).toEqual(['--dangerously-bypass-approvals-and-sandbox', '-c', 'check_for_update_on_startup=false']);
@@ -341,7 +341,7 @@ describe('agent TUI spawning', () => {
       args: ['--dangerously-skip-permissions', '--add-dir', '/tmp/with space'],
       tuiPromptDelayMs: 1000,
       tuiMaxRuntimeMs: 7200000
-    }, 'claude-sonnet');
+    }, 'claude-sonnet', { shell: '/bin/zsh' });
 
     expect(config.args).toEqual([
       '--dangerously-skip-permissions',
@@ -415,7 +415,11 @@ describe('agent TUI spawning', () => {
   });
 
   it('omits the --model flag when model is null/empty', () => {
-    const config = buildTuiSpawnConfig({ id: 'codex-tui', command: 'codex', type: 'tui', args: [] }, null);
+    const config = buildTuiSpawnConfig(
+      { id: 'codex-tui', command: 'codex', type: 'tui', args: [] },
+      null,
+      { shell: '/bin/zsh' },
+    );
     expect(config.args).toEqual(['--dangerously-bypass-approvals-and-sandbox', '-c', 'check_for_update_on_startup=false']);
     expect(config.commandLine).toBe('codex --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false');
   });

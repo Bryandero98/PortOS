@@ -69,8 +69,9 @@ export function quoteForShell(value, flavor = 'posix', position = 'argument') {
   const text = String(value ?? '');
   switch (flavor) {
     case 'cmd':
-      // cmd.exe has no escape for an embedded double quote.
-      return `"${text.replace(/"/g, '')}"`;
+      // cmd.exe has no escape for an embedded double quote. Double a trailing
+      // backslash so the Windows argv parser does not consume the closing quote.
+      return `"${text.replace(/"/g, '').replace(/\\+$/, run => `${run}${run}`)}"`;
     case 'powershell': {
       const quoted = `'${text.replace(/'/g, "''")}'`;
       return position === 'command' ? `& ${quoted}` : quoted;
