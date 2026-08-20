@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import sharp from 'sharp';
 import {
   gradientVariance, meanLuma, scoreFrame, pickBestFrame, decodeGreyscaleFrame,
   RECENCY_WEIGHT, MIN_SIGNAL_VARIANCE,
@@ -166,6 +167,36 @@ describe('decodeGreyscaleFrame', () => {
   });
 });
 
+describe('decodeGreyscaleFrame — against the real sharp', () => {
+  const rgbaPng = async (width, height) => {
+    const raw = Buffer.alloc(width * height * 4);
+    for (let i = 0; i < width * height; i++) {
+      raw[i * 4] = (i * 7) % 256;
+      raw[i * 4 + 1] = (i * 13) % 256;
+      raw[i * 4 + 2] = (i * 29) % 256;
+      raw[i * 4 + 3] = i % 2 ? 255 : 40; // varying alpha
+    }
+    return sharp(raw, { raw: { width, height, channels: 4 } }).png().toBuffer();
+  };
+
+  it('decodes an RGBA source to exactly one byte per pixel', async () => {
+    // The `channels !== 1` guard would silently drop EVERY candidate and revert
+    // the whole feature to the end seek if a real decode ever landed
+    // interleaved data. Every other test in this repo runs the scorer against a
+    // stand-in, so this is the only place that claim is actually checked.
+    const width = 12;
+    const height = 9;
+    const frame = await decodeGreyscaleFrame(await rgbaPng(width, height));
+    expect(frame).toMatchObject({ width, height });
+    expect(frame.data.length).toBe(width * height);
+    expect(scoreFrame(frame, { recency: 1 }).usable).toBe(true);
+  });
+
+  it('returns null for bytes that are not an image', async () => {
+    await expect(decodeGreyscaleFrame(Buffer.from('not an image'))).resolves.toBeNull();
+  });
+});
+
 describe('pickBestFrame', () => {
   it('picks the sharpest candidate, not the last one', async () => {
     const paths = ['/t/a.png', '/t/b.png', '/t/c.png'];
@@ -212,5 +243,13 @@ describe('pickBestFrame', () => {
     const impl = vi.fn(fakeSharp({ '/t/a.png': SHARP }));
     await pickBestFrame(['/t/a.png', null, '', undefined], { sharpImpl: impl });
     expect(impl).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the index in the array as passed, not in a filtered copy', async () => {
+    // The caller turns `index` into the anchor's time offset against this same
+    // array, so renumbering around skipped entries would mis-report the offset.
+    const sharpImpl = fakeSharp({ '/t/c.png': SHARP });
+    const best = await pickBestFrame([null, '', '/t/c.png'], { sharpImpl });
+    expect(best).toMatchObject({ path: '/t/c.png', index: 2 });
   });
 });

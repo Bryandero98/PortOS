@@ -41,7 +41,10 @@ import sharp from 'sharp';
 // recency bonus biases toward the cut but cannot bound the window on its own.
 export const TAIL_WINDOW_SECONDS = 1.0;
 export const CANDIDATE_FPS = 12;
-export const MAX_CANDIDATES = 12;
+// Derived, never an independent number: the ffmpeg-side cap (`-frames:v`)
+// truncates from the NEWEST end, which is exactly the frames the recency term
+// prefers. If the two ever disagreed, the cap would silently discard the pick.
+export const MAX_CANDIDATES = Math.round(TAIL_WINDOW_SECONDS * CANDIDATE_FPS);
 
 // Gradient variance that maps to a focus of 1.0. Real sharp frames land in the
 // low thousands, so this leaves headroom without clamping ordinary content.
@@ -145,19 +148,21 @@ export function scoreFrame(frame, { recency = 1 } = {}) {
  * candidate, and must never abort a render the user already paid GPU time for.
  */
 export async function decodeGreyscaleFrame(path, { sharpImpl = sharp } = {}) {
-  // `removeAlpha()` before `greyscale()` matters: greyscale PRESERVES alpha, so
-  // an RGBA source decodes to 2 interleaved channels. The buffer would still be
-  // ≥ width×height bytes, so the shape check below would pass while
-  // gradientVariance read alpha samples as neighbouring pixels and meanLuma
-  // averaged only the first half of the image.
+  // On sharp 0.35.3 `.greyscale().raw()` already lands ONE channel even for an
+  // RGBA source (verified: byte-identical with and without removeAlpha). The
+  // explicit `removeAlpha()` makes that a stated requirement rather than an
+  // incidental property, and the channel check below is the backstop if it ever
+  // stops holding: an interleaved buffer is still ≥ width×height bytes, so the
+  // shape check alone would pass while gradientVariance read alpha samples as
+  // neighbouring pixels and meanLuma averaged half the image.
   const decoded = await sharpImpl(path).removeAlpha().greyscale().raw()
     .toBuffer({ resolveWithObject: true })
     .catch(() => null);
   if (!decoded?.info) return null;
   const { width, height, channels } = decoded.info;
-  // Belt and braces for a sharp stand-in (or a future format) that lands more
-  // than one channel here anyway — interleaved data must never reach the
-  // scorer, and a null simply drops this candidate.
+  // Interleaved data must never reach the scorer; a null simply drops this
+  // candidate. `channels == null` means the decoder didn't report it, which is
+  // not evidence of a problem — sentinel discipline, not `!channels`.
   if (channels != null && channels !== 1) return null;
   const frame = { width, height, data: decoded.data };
   return isFrame(frame) ? frame : null;
@@ -165,19 +170,26 @@ export async function decodeGreyscaleFrame(path, { sharpImpl = sharp } = {}) {
 
 /**
  * Score every candidate path (given in timeline order, oldest first) and
- * return the best one, or null when nothing decoded or nothing clears the
- * usability floor. The returned `index` is the candidate's position in the
- * input array, which is what lets the caller name the offset it picked.
+ * return the best one, or null when nothing decoded or every candidate is
+ * degenerate. The returned `index` is the candidate's position in the input
+ * array AS PASSED — non-string entries are skipped, not renumbered — because
+ * the caller derives the anchor's time offset from it.
  */
 export async function pickBestFrame(paths, { sharpImpl = sharp } = {}) {
-  const list = Array.isArray(paths) ? paths.filter((p) => typeof p === 'string' && p) : [];
+  const list = Array.isArray(paths) ? paths : [];
   if (!list.length) return null;
   let best = null;
+  // Indices are positions in the CALLER's array, never in a filtered copy —
+  // the caller derives the anchor's time offset from `index` against that same
+  // array, so a renumbering here would silently mis-report the offset. Skipped
+  // entries are holes in the timeline, not a reason to shift the rest.
+  //
   // Decoded sequentially on purpose: only the SCORE outlives each frame, so
   // one raw buffer is live at a time. Decoding the whole window at once would
   // hold width × height bytes per candidate simultaneously, which scales with
   // the render resolution for no wall-clock that matters next to a GPU render.
   for (let i = 0; i < list.length; i++) {
+    if (typeof list[i] !== 'string' || !list[i]) continue;
     // eslint-disable-next-line no-await-in-loop
     const frame = await decodeGreyscaleFrame(list[i], { sharpImpl });
     if (!frame) continue;

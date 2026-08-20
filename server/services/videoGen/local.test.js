@@ -197,6 +197,10 @@ vi.mock('../../lib/ffmpeg.js', async () => ({
   // The real builder is pure and covered by ffmpeg.test.js; keep it real here
   // so the chain tests assert on the argv that actually reaches ffmpeg.
   buildTrimConcatArgs: (await vi.importActual('../../lib/ffmpeg.js')).buildTrimConcatArgs,
+  // Also real: it spawns through the mocked lib/childProcess.js, so the anchor
+  // tests still read the argv off the shared spawn mock. Stubbing it would hide
+  // the very args they assert on.
+  runFfmpegProcess: (await vi.importActual('../../lib/ffmpeg.js')).runFfmpegProcess,
   // Report the setparams filter as available so the chain tests assert on the
   // fully-tagged argv (the degraded, container-flags-only shape is covered in
   // ffmpeg.test.js).
@@ -424,12 +428,13 @@ describe('extractLastFrame — anchor selection', () => {
       join(tmpdir(), `anchorcand-${ID}`),
       { recursive: true, force: true },
     );
-    // Sidecar names the offset the anchor actually came from, measured back
-    // from the NEWEST candidate rather than a nominal window start: 9 of the 12
-    // decoded frames follow index 2, so at 12fps the pick sits 0.75s from the
-    // end of the tail that was actually scanned.
+    // Sidecar names the offset the anchor actually came from, derived from the
+    // candidates actually decoded rather than a nominal window start. The fps
+    // grid stops one interval short of EOF, so index 2 of 12 at 12fps sits
+    // (12−2)/12 = 0.83s from the end — not 0.75s, which would be the distance
+    // to the newest CANDIDATE rather than to the cut.
     const sidecar = JSON.parse(vi.mocked(writeFile).mock.calls.at(-1)[1]);
-    expect(sidecar).toMatchObject({ filename: ANCHOR, extractedAt: '-0.75s' });
+    expect(sidecar).toMatchObject({ filename: ANCHOR, extractedAt: '-0.83s' });
   });
 
   it('reads back exactly the candidate files it told ffmpeg to write', async () => {
@@ -451,6 +456,73 @@ describe('extractLastFrame — anchor selection', () => {
     expect(scanned).toEqual([1, 2, 3].map((n) => outPattern.replace('%03d', String(n).padStart(3, '0'))));
     // Enumeration stops at the first gap instead of inventing a full window.
     expect(scanned).toHaveLength(3);
+  });
+
+  it('reports the offset against the candidates it got, not a nominal window', async () => {
+    // The short-clip case the offset arithmetic exists for: `-sseof` clamps to
+    // the file start, so a sub-window clip yields fewer candidates and a
+    // TAIL_WINDOW_SECONDS-derived offset would name a time the frame does not
+    // have. (3 − 1) / 12fps = 0.17s from the cut.
+    await seedHistory();
+    fsState.missOnce = [ANCHOR];
+    fsState.candidateCount = 3;
+    anchorPick.best = {
+      path: join(tmpdir(), `anchorcand-${ID}`, 'cand-002.png'),
+      index: 1,
+      focus: 0.6,
+      quality: 0.6,
+      score: 0.65,
+      usable: true,
+    };
+    const { writeFile } = await import('fs/promises');
+
+    await extractLastFrame(ID);
+
+    const sidecar = JSON.parse(vi.mocked(writeFile).mock.calls.at(-1)[1]);
+    expect(sidecar).toMatchObject({ extractedAt: '-0.17s' });
+  });
+
+  it.each([
+    ['re-scans', 'last-frame-unscanned', true],
+    ['serves', '-0.42s', false],
+    ['serves', 'last-frame', false],
+  ])('%s a cached anchor whose sidecar says %s', async (_verb, extractedAt, rescans) => {
+    // A one-off ffmpeg or tmpdir failure used to pin the degraded end-seek frame
+    // to this clip forever behind the size>0 cache hit. The sidecar marker is
+    // what makes THAT attempt provisional — and the other two rows are the
+    // bypass probe: without the marker the cache must still short-circuit, or
+    // every click re-spawns ffmpeg and the cache stops existing.
+    const { tryReadFile } = await import('../../lib/fileUtils.js');
+    await seedHistory();
+    vi.mocked(tryReadFile).mockResolvedValueOnce(
+      JSON.stringify({ filename: ANCHOR, extractedAt }),
+    );
+    anchorPick.best = null;
+    fsState.candidateCount = 0; // the scan still can't produce anything
+
+    await extractLastFrame(ID);
+
+    // statSync reports a healthy non-zero file in every row; only the marker
+    // decides whether the scan runs anyway.
+    expect((await ffmpegSpawns()).length > 0).toBe(rescans);
+  });
+
+  it.each([
+    ['a scan that ran and found nothing usable', 12, 'last-frame'],
+    ['a scan that could not run at all', 0, 'last-frame-unscanned'],
+  ])('marks the fallback anchor from %s as %s', async (_label, count, expected) => {
+    // Only the second is provisional: a degenerate tail is a property of the
+    // clip and must stay cached, or every click re-spawns ffmpeg for nothing.
+    await seedHistory();
+    fsState.missOnce = [ANCHOR];
+    fsState.candidateCount = count;
+    anchorPick.best = null;
+    const { writeFile } = await import('fs/promises');
+
+    await extractLastFrame(ID);
+
+    const sidecar = JSON.parse(vi.mocked(writeFile).mock.calls.at(-1)[1]);
+    expect(sidecar).toMatchObject({ extractedAt: expected });
   });
 
   it('falls back to the end seek when no candidate is usable', async () => {

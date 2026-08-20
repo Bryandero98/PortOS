@@ -17,7 +17,7 @@ import { join, basename } from 'path';
 import { tmpdir, totalmem } from 'os';
 import { randomUUID } from 'crypto';
 import { promisify } from 'util';
-import { ensureDir, PATHS, UUID_RE } from '../../lib/fileUtils.js';
+import { ensureDir, PATHS, UUID_RE, tryReadFile } from '../../lib/fileUtils.js';
 import { spawnDetached } from '../../lib/detachedSpawn.js';
 import { killWithEscalation } from '../../lib/killWithEscalation.js';
 import { createLineReader } from '../../lib/streamLines.js';
@@ -31,7 +31,7 @@ import { getVideoModels, getDefaultVideoModelId, getTextEncoderRepo } from '../.
 import {
   findFfmpeg, safeUnder, generateThumbnail, optimizeForStreaming, upscaleVideo2x,
   extractEvaluationFrames, probeFrameCount, trimVideoFromFrame,
-  hasAudioStream, buildTrimConcatArgs, bt709TagFilter,
+  hasAudioStream, buildTrimConcatArgs, bt709TagFilter, runFfmpegProcess,
 } from '../../lib/ffmpeg.js';
 import {
   TAIL_WINDOW_SECONDS, CANDIDATE_FPS, MAX_CANDIDATES, pickBestFrame,
@@ -2594,6 +2594,12 @@ async function setHistoryItemsHidden(ids, hidden) {
   }).catch(() => {});
 }
 
+// Sidecar `extractedAt` marking an anchor produced by the end-seek fallback
+// because the candidate scan could not run — as opposed to a scan that ran and
+// found the tail genuinely degenerate, which is a stable property of the clip.
+// The former is provisional and re-scanned on the next call; the latter is not.
+const UNSCANNED_ANCHOR = 'last-frame-unscanned';
+
 // Decode the tail-window candidates for `extractLastFrame` into a temp dir and
 // return their paths in timeline order (oldest first).
 //
@@ -2609,18 +2615,21 @@ async function decodeTailCandidates(ffmpeg, videoPath, candidateDir) {
   await rm(candidateDir, { recursive: true, force: true }).catch(() => {});
   await ensureDir(candidateDir);
   const outPattern = join(candidateDir, 'cand-%03d.png');
-  await new Promise((resolve) => {
-    const proc = spawn(ffmpeg, [
+  // Through the catalog helper rather than a hand-rolled spawn: it already
+  // translates spawn errors into a reason string instead of an unhandled
+  // 'error' event, matching every other extraction path in this file.
+  const scan = await runFfmpegProcess({
+    bin: ffmpeg,
+    args: [
       '-sseof', `-${TAIL_WINDOW_SECONDS.toFixed(2)}`, '-i', videoPath,
       '-vf', `fps=${CANDIDATE_FPS}`, '-vsync', 'vfr',
       '-frames:v', String(MAX_CANDIDATES), '-y', outPattern,
-    ], safeChildProcessOptions({ stdio: 'ignore' }));
-    proc.on('close', () => resolve());
-    proc.on('error', (err) => {
-      console.log(`⚠️ Anchor candidate scan failed to spawn: ${err.message}`);
-      resolve();
-    });
+    ],
+    stderrTailBytes: 0,
   });
+  if (!scan.ok && scan.reason?.startsWith('spawn failed: ')) {
+    console.log(`⚠️ Anchor candidate scan failed to spawn: ${scan.reason.slice('spawn failed: '.length)}`);
+  }
   // The muxer numbers sequentially from 1, so the first gap is the end of the
   // run — enumerate by name rather than reading the directory back. The exit
   // code is deliberately not consulted: a partial run still wrote usable
@@ -2727,8 +2736,21 @@ export async function extractLastFrame(historyId) {
     await writeFile(sidecarPath, JSON.stringify(meta, null, 2), { flag: 'wx' }).catch(() => {});
   };
 
+  // A cached anchor the fallback produced WITHOUT a scan is provisional: serving
+  // it from the size>0 hit would pin a one-off ffmpeg or tmpdir failure to this
+  // clip permanently, with no retry short of deleting the file by hand. An
+  // absent or unparseable sidecar is NOT evidence of that — legacy files have
+  // none — so only the explicit marker triggers a re-scan.
+  const cachedIsProvisional = async () => {
+    const raw = await tryReadFile(sidecarPath);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw.toString());
+    return parsed?.extractedAt === UNSCANNED_ANCHOR;
+  };
+
   const cachedSize = safeStatSize(framePath);
-  if (cachedSize != null && cachedSize > 0) {
+  if (cachedSize != null && cachedSize > 0
+      && !await cachedIsProvisional().catch(() => false)) {
     await writeSidecar();
     return { filename: frameFilename, path: `/data/images/${frameFilename}` };
   }
@@ -2768,18 +2790,25 @@ export async function extractLastFrame(historyId) {
   // UUID/`upload-<uuid8>` above, so the recursive remove can't escape tmpdir.
   await rm(candidateDir, { recursive: true, force: true }).catch(() => {});
 
+  // Both extraction paths below know the truth about this anchor, so they must
+  // be able to REPLACE a sidecar written by an earlier attempt — `wx` alone
+  // would leave a stale provisional marker in place and re-scan forever.
+  if (best || !candidates.length) await unlink(sidecarPath).catch(() => {});
+
   if (installed) {
-    // Offset back from the NEWEST candidate, not from a nominal window start:
-    // `-sseof` clamps to the file start on a clip shorter than the window, so
-    // deriving this from TAIL_WINDOW_SECONDS would state an offset the frame
-    // does not have. Measured against the candidates actually decoded, this is
-    // exact in both cases.
-    const offset = (candidates.length - 1 - best.index) / CANDIDATE_FPS;
+    // Offset derived from the candidates actually decoded, not from a nominal
+    // window start: `-sseof` clamps to the file start on a clip shorter than
+    // the window, so TAIL_WINDOW_SECONDS would name an offset the frame does
+    // not have. The fps grid stops one interval short of EOF, so the newest
+    // candidate is ~1/CANDIDATE_FPS from the end, not at it — hence
+    // `length - index` rather than `length - 1 - index`. Accurate to within
+    // one sampling interval, which is what the sidecar claims.
+    const offset = (candidates.length - best.index) / CANDIDATE_FPS;
     await writeSidecar(`-${offset.toFixed(2)}s`);
     console.log(`🎞️ Anchor frame ${best.index + 1}/${candidates.length} at -${offset.toFixed(2)}s (focus ${best.focus.toFixed(2)}): ${frameFilename}`);
     return { filename: frameFilename, path: `/data/images/${frameFilename}` };
   }
-  if (candidates.length) {
+  if (candidates.length && !best) {
     console.log(`⚠️ No usable anchor among ${candidates.length} tail candidates for ${item.id.slice(0, 8)} — falling back to the end seek`);
   }
 
@@ -2807,7 +2836,11 @@ export async function extractLastFrame(historyId) {
           if (writtenSize === 0) await unlink(framePath).catch(() => {});
           return reject(new ServerError('Failed to extract last frame', { status: 500, code: 'FFMPEG_FAILED' }));
         }
-        await writeSidecar();
+        // A scan that RAN and found nothing usable is a property of the clip —
+        // cache it. A scan that could not run at all (no candidates decoded) is
+        // transient, and the old code would have pinned this degraded frame
+        // forever behind the size>0 cache hit. Mark it so the next call retries.
+        await writeSidecar(candidates.length ? 'last-frame' : UNSCANNED_ANCHOR);
         console.log(`🎞️ Anchor frame via end-seek fallback: ${frameFilename}`);
         resolve({ filename: frameFilename, path: `/data/images/${frameFilename}` });
       } catch (err) {
