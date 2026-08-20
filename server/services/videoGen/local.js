@@ -12,7 +12,7 @@
 
 import { execFile, spawn } from '../../lib/childProcess.js';
 import { existsSync, statSync } from 'fs';
-import { unlink, writeFile, copyFile, rm, rename } from 'fs/promises';
+import { unlink, writeFile, copyFile, rm } from 'fs/promises';
 import { join, basename } from 'path';
 import { tmpdir, totalmem } from 'os';
 import { randomUUID } from 'crypto';
@@ -2640,7 +2640,12 @@ async function decodeTailCandidates(ffmpeg, videoPath, candidateDir) {
     if (!existsSync(p)) break;
     paths.push(p);
   }
-  return paths;
+  // `complete` = the run reached EOF, which is what lets the caller read the
+  // newest candidate as "one grid interval before the cut". A truncated run
+  // numbers from the OLDEST frame just the same, so without this the caller
+  // cannot tell "short clip" (candidates end at EOF) from "ffmpeg died partway"
+  // (candidates end wherever it stopped) and would name the wrong offset.
+  return { paths, complete: scan.ok };
 }
 
 // Extract a continuation anchor frame from the tail of a video as a PNG into
@@ -2760,10 +2765,10 @@ export async function extractLastFrame(historyId) {
   // Everything here degrades to the single-seek fallback below rather than
   // throwing: this runs mid-chain, and a scan failure must not lose a render.
   const candidateDir = join(tmpdir(), `anchorcand-${item.id}`);
-  const candidates = await decodeTailCandidates(ffmpeg, videoPath, candidateDir)
+  const { paths: candidates, complete: scanComplete } = await decodeTailCandidates(ffmpeg, videoPath, candidateDir)
     .catch((err) => {
       console.log(`⚠️ Anchor candidate scan failed: ${err.message}`);
-      return [];
+      return { paths: [], complete: false };
     });
   const best = candidates.length
     ? await pickBestFrame(candidates).catch((err) => {
@@ -2771,20 +2776,26 @@ export async function extractLastFrame(historyId) {
         return null;
       })
     : null;
-  // Copy through a temp name and rename into place. `copyFile` is not atomic,
-  // and a truncated non-zero PNG at framePath would be served forever by the
-  // size>0 cache hit above — the fallback's own guard only unlinks at exactly
-  // zero bytes.
+  // Copy straight to framePath and verify the result, rather than staging a
+  // `.tmp` alongside it: PATHS.images is enumerated by the peer media-library
+  // manifest, which skips only `.json`, so a staging file there would federate
+  // as an image asset. A short copy is caught by the size check and unlinked,
+  // so a truncated PNG can't be served forever by the size>0 cache hit above.
+  // (A hard crash mid-copy can still leave one — the same exposure the fallback
+  // ffmpeg write below has always had, not a new class.)
+  const expectedSize = best ? safeStatSize(best.path) : null;
   const installed = best
-    ? await copyFile(best.path, `${framePath}.tmp`)
-      .then(() => rename(`${framePath}.tmp`, framePath))
-      .then(() => true)
-      .catch(async (err) => {
+    ? await copyFile(best.path, framePath).then(() => {
+        const written = safeStatSize(framePath);
+        if (written && (expectedSize == null || written === expectedSize)) return true;
+        console.log(`⚠️ Anchor install wrote ${written ?? 'nothing'} of ${expectedSize ?? '?'} bytes — discarding`);
+        return false;
+      }).catch((err) => {
         console.log(`⚠️ Anchor install failed: ${err.message}`);
-        await unlink(`${framePath}.tmp`).catch(() => {});
         return false;
       })
     : false;
+  if (best && !installed) await unlink(framePath).catch(() => {});
   // Drop the whole candidate dir either way — they're temp decodes and the
   // winner is already copied into data/images/ by now. `item.id` is validated
   // UUID/`upload-<uuid8>` above, so the recursive remove can't escape tmpdir.
@@ -2792,8 +2803,10 @@ export async function extractLastFrame(historyId) {
 
   // Both extraction paths below know the truth about this anchor, so they must
   // be able to REPLACE a sidecar written by an earlier attempt — `wx` alone
-  // would leave a stale provisional marker in place and re-scan forever.
-  if (best || !candidates.length) await unlink(sidecarPath).catch(() => {});
+  // would leave a stale provisional marker in place and re-scan forever. This
+  // is the extraction path (the cache hit already returned), so an unconditional
+  // drop is right: whatever is written next is authoritative.
+  await unlink(sidecarPath).catch(() => {});
 
   if (installed) {
     // Offset derived from the candidates actually decoded, not from a nominal
@@ -2803,9 +2816,15 @@ export async function extractLastFrame(historyId) {
     // candidate is ~1/CANDIDATE_FPS from the end, not at it — hence
     // `length - index` rather than `length - 1 - index`. Accurate to within
     // one sampling interval, which is what the sidecar claims.
+    // Only meaningful when the run reached EOF. A truncated scan's candidates
+    // end wherever ffmpeg stopped, so the distance to the cut is unknown —
+    // name the candidate instead of inventing a time.
     const offset = (candidates.length - best.index) / CANDIDATE_FPS;
-    await writeSidecar(`-${offset.toFixed(2)}s`);
-    console.log(`🎞️ Anchor frame ${best.index + 1}/${candidates.length} at -${offset.toFixed(2)}s (focus ${best.focus.toFixed(2)}): ${frameFilename}`);
+    const where = scanComplete
+      ? `-${offset.toFixed(2)}s`
+      : `tail-candidate ${best.index + 1}/${candidates.length}`;
+    await writeSidecar(where);
+    console.log(`🎞️ Anchor frame ${best.index + 1}/${candidates.length} at ${where} (focus ${best.focus.toFixed(2)}): ${frameFilename}`);
     return { filename: frameFilename, path: `/data/images/${frameFilename}` };
   }
   if (candidates.length && !best) {
@@ -2837,10 +2856,11 @@ export async function extractLastFrame(historyId) {
           return reject(new ServerError('Failed to extract last frame', { status: 500, code: 'FFMPEG_FAILED' }));
         }
         // A scan that RAN and found nothing usable is a property of the clip —
-        // cache it. A scan that could not run at all (no candidates decoded) is
-        // transient, and the old code would have pinned this degraded frame
-        // forever behind the size>0 cache hit. Mark it so the next call retries.
-        await writeSidecar(candidates.length ? 'last-frame' : UNSCANNED_ANCHOR);
+        // cache it. Everything else reaching here is transient (the scan could
+        // not run, or a winner was found and the install failed), and caching it
+        // would pin this degraded frame forever behind the size>0 cache hit.
+        // Key on what actually happened, not merely on candidate count.
+        await writeSidecar(candidates.length && !best ? 'last-frame' : UNSCANNED_ANCHOR);
         console.log(`🎞️ Anchor frame via end-seek fallback: ${frameFilename}`);
         resolve({ filename: frameFilename, path: `/data/images/${frameFilename}` });
       } catch (err) {
