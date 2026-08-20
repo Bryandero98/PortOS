@@ -249,6 +249,28 @@ describe('cleanupMerged', () => {
     expect(git.deleteBranch).not.toHaveBeenCalled();
   });
 
+  it('will not reap a shipped claim whose worktree is dirty, or one still tracking a live remote', async () => {
+    git.isBranchMergedInto.mockResolvedValue(true);
+    execGit.mockResolvedValue({ stdout: ' M server/index.js', exitCode: 0 }); // dirty
+    const dirty = await cleanupMerged('/repo', 'main', [
+      { branch: 'claim/issue-1', worktreePath: '/repo/data/cos/worktrees/claim-issue-1', worktreeAgeMs: 60 * 1000, upstreamGone: true }
+    ]);
+    // Completion releases the claim HOLD; it never overrides the dirty gate, which
+    // is the one that protects uncommitted work.
+    expect(dirty.cleaned).toEqual([]);
+    expect(dirty.skipped).toEqual([{ branch: 'claim/issue-1', reason: 'worktree-dirty' }]);
+
+    execGit.mockResolvedValue({ stdout: '', exitCode: 0 }); // clean
+    const live = await cleanupMerged('/repo', 'main', [
+      // No completion proof — the branch was never pushed, its remote ref is still
+      // on origin, or the remote could not be read. The grace window still applies.
+      { branch: 'claim/issue-2', worktreePath: '/repo/data/cos/worktrees/claim-issue-2', worktreeAgeMs: 60 * 1000, upstreamGone: false }
+    ]);
+    expect(live.cleaned).toEqual([]);
+    expect(live.skipped[0]).toMatchObject({ branch: 'claim/issue-2', reason: 'worktree-human-claim' });
+    expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
+  });
+
   it('omits retryAt for holds that do NOT lift on a clock', async () => {
     git.isBranchMergedInto.mockResolvedValue(true);
     const res = await cleanupMerged('/repo', 'main', [
@@ -282,6 +304,18 @@ describe('worktreeProtectionReason', () => {
     expect(worktreeProtectionReason({ path: '/x/claim-foo', ageMs: null, staleClaimIdleMs })).toBe('worktree-human-claim');
     // locked always wins even when stale
     expect(worktreeProtectionReason({ path: '/x/claim-foo', locked: true, ageMs: 3 * 24 * 60 * 60 * 1000, staleClaimIdleMs })).toBe('worktree-locked');
+  });
+
+  // The gate's own claimComplete semantics are covered in worktreeOwnership.test.js.
+  // What only THIS pair can get wrong is staying mirrored: the expiry helper must
+  // report no deadline for a hold the reason helper has already released, or a
+  // caller parks waiting out a window that is no longer running.
+  it('keeps the reason and expiry helpers mirrored for a released claim', () => {
+    const fresh = { path: '/x/claim-foo', ageMs: 60 * 1000, staleClaimIdleMs: 24 * 60 * 60 * 1000 };
+    expect(worktreeProtectionReason(fresh)).toBe('worktree-human-claim');
+    expect(worktreeProtectionExpiresAt(fresh)).toEqual(expect.any(String));
+    expect(worktreeProtectionReason({ ...fresh, claimComplete: true })).toBeNull();
+    expect(worktreeProtectionExpiresAt({ ...fresh, claimComplete: true })).toBeNull();
   });
 });
 
@@ -663,6 +697,56 @@ describe('reconcile', () => {
     const res = await reconcile('/repo');
     expect(res.inFlight.map((i) => i.branch)).toEqual(['claim/issue-42', 'feature/new-thing', 'scratch-thing']);
     expect(res.inFlight.every((i) => i.state === 'NEEDS_PR')).toBe(true);
+  });
+
+  // The regression this whole `upstreamGone` path exists for: four claims whose
+  // PRs had merged (deleting their remote branches) sat with their worktrees
+  // intact, and every run reported "cleaned 0 / merged branches held back" for a
+  // week because the claim grace window outranked the fact that they were done.
+  it('cleans a SHIPPED claim end to end instead of parking on the grace window', async () => {
+    git.getBranches.mockResolvedValue([
+      { name: 'claim/issue-4348', isDefault: false, current: false, tracking: 'origin/claim/issue-4348', merged: true }
+    ]);
+    wt.listWorktrees.mockResolvedValue([
+      { path: '/repo/data/cos/worktrees/claim-issue-4348', branch: 'refs/heads/claim/issue-4348' }
+    ]);
+    execGh.mockResolvedValue('[]');
+    // ls-remote reports origin has only main — the claim's remote branch was
+    // deleted when its PR merged. Everything else (status, etc.) reads clean.
+    execGit.mockImplementation(async (args) => args[0] === 'ls-remote'
+      ? { stdout: 'abc123\trefs/heads/main\n', exitCode: 0 }
+      : { stdout: '', exitCode: 0 });
+    git.isBranchMergedInto.mockResolvedValue(true);
+
+    const res = await reconcile('/repo');
+    expect(res.cleaned).toEqual(['claim/issue-4348']);
+    expect(res.skipped).toEqual([]);
+    // Nothing left to report as held back — the park reason must be "quiet repo",
+    // not "waiting on a protected worktree".
+    expect(describeIdleReconcilePark(res.skipped, res.wip).reason).toBe('no-in-flight-branches');
+    expect(wt.forceRemoveWorktreeDir).toHaveBeenCalledWith('/repo', '/repo/data/cos/worktrees/claim-issue-4348', expect.any(Object));
+  });
+
+  // The fail-safe half of the same signal: "we could not read origin" must never
+  // read as "the remote branch is gone", or an unreachable network would start
+  // reaping claim worktrees that were never shipped.
+  it('does NOT treat an unreadable remote as proof a claim shipped', async () => {
+    git.getBranches.mockResolvedValue([
+      { name: 'claim/issue-4348', isDefault: false, current: false, tracking: 'origin/claim/issue-4348', merged: true }
+    ]);
+    wt.listWorktrees.mockResolvedValue([
+      { path: '/repo/data/cos/worktrees/claim-issue-4348', branch: 'refs/heads/claim/issue-4348' }
+    ]);
+    execGh.mockResolvedValue('[]');
+    execGit.mockImplementation(async (args) => args[0] === 'ls-remote'
+      ? { stdout: '', exitCode: 1 } // ls-remote failed → listRemoteHeads returns null
+      : { stdout: '', exitCode: 0 });
+    git.isBranchMergedInto.mockResolvedValue(true);
+
+    const res = await reconcile('/repo');
+    expect(res.cleaned).toEqual([]);
+    expect(res.skipped[0]).toMatchObject({ branch: 'claim/issue-4348', reason: 'worktree-human-claim' });
+    expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
   });
 
   it('cleans merged, returns in-flight + wip partitions', async () => {

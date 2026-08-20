@@ -24,6 +24,23 @@ describe('worktree ownership', () => {
     expect(worktreeOwnershipReason({ ...input, allowStaleClaim: true })).toBeNull();
   });
 
+  it('releases a completed claim at any age, but keeps an explicit lock', () => {
+    // The grace window guards a claim session that may still be working. A claim
+    // the caller has proven complete has no such session, so it must not wait it
+    // out — that wait is what parked finished claims for a week.
+    const fresh = { path: `${COS_ROOT}/claim-issue-42`, ageMs: 60_000, staleClaimIdleMs: 7 * 24 * 60 * 60 * 1000, allowStaleClaim: true };
+    expect(worktreeOwnershipReason(fresh)).toBe('worktree-human-claim');
+    expect(worktreeOwnershipReason({ ...fresh, claimComplete: true })).toBeNull();
+    // Unknown age no longer blocks it either — completion is proof, age is a proxy.
+    expect(worktreeOwnershipReason({ ...fresh, ageMs: null, claimComplete: true })).toBeNull();
+    // A lock is a deliberate human hold and still outranks completion.
+    expect(worktreeOwnershipReason({ ...fresh, claimComplete: true, locked: true })).toBe('worktree-locked');
+    // Completion says nothing about agent trees — they keep their own gates.
+    expect(worktreeOwnershipReason({
+      path: `${COS_ROOT}/agent-live`, claimComplete: true, activeAgentIds: new Set(['agent-live'])
+    })).toBe('worktree-active-agent');
+  });
+
   it('fails closed when agent liveness is unknown and permits an explicitly non-agent root', () => {
     expect(worktreeOwnershipReason({
       path: `${COS_ROOT}/agent-unknown`,

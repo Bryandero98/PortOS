@@ -225,15 +225,17 @@ async function getOpenPrsByHead(repoPath) {
  *   - locked            → the user explicitly `git worktree lock`ed it
  *   - human `/claim`    → a `claim-<slug>` worktree self-cleaned by the /claim flow,
  *                         UNLESS it is an abandoned one older than `staleClaimIdleMs`
- *                         (`ageMs` supplied) — those are reaped (see STALE_CLAIM_IDLE_MS)
+ *                         (`ageMs` supplied) — those are reaped (see STALE_CLAIM_IDLE_MS) —
+ *                         or a `claimComplete` one, which is reaped at any age
  *   - active CoS agent  → an agent (`agent-<id>`) is currently running in it
  * Sibling worktrees (`next-issue-*`, etc.) whose basename is none of these fall
  * through to null and are cleaned normally.
  *
- * @param {{ path:string, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number, staleClaimIdleMs?:number }} input
+ * @param {{ path:string, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number, staleClaimIdleMs?:number, claimComplete?:boolean }} input
+ *   `claimComplete` — see the SHIPPED_CLAIM note on `cleanupMerged`.
  * @returns {string|null}
  */
-export function worktreeProtectionReason({ path, locked, activeAgentIds, ageMs, staleClaimIdleMs = STALE_CLAIM_IDLE_MS }) {
+export function worktreeProtectionReason({ path, locked, activeAgentIds, ageMs, staleClaimIdleMs = STALE_CLAIM_IDLE_MS, claimComplete = false }) {
   if (!path) return null;
   return worktreeOwnershipReason({
     path,
@@ -242,6 +244,7 @@ export function worktreeProtectionReason({ path, locked, activeAgentIds, ageMs, 
     allowStaleClaim: true,
     ageMs,
     staleClaimIdleMs,
+    claimComplete,
   });
 }
 
@@ -254,10 +257,10 @@ export function worktreeProtectionReason({ path, locked, activeAgentIds, ageMs, 
  * merged branch was held back but WHEN it stops being held. Policy lives in
  * worktreeOwnership.js; this only supplies this caller's defaults.
  *
- * @param {{ path:string|null, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number|null, staleClaimIdleMs?:number }} input
+ * @param {{ path:string|null, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number|null, staleClaimIdleMs?:number, claimComplete?:boolean }} input
  * @returns {string|null} ISO timestamp
  */
-export function worktreeProtectionExpiresAt({ path, locked, activeAgentIds, ageMs, staleClaimIdleMs = STALE_CLAIM_IDLE_MS }) {
+export function worktreeProtectionExpiresAt({ path, locked, activeAgentIds, ageMs, staleClaimIdleMs = STALE_CLAIM_IDLE_MS, claimComplete = false }) {
   if (!path) return null;
   return worktreeHoldExpiresAt({
     path,
@@ -266,6 +269,7 @@ export function worktreeProtectionExpiresAt({ path, locked, activeAgentIds, ageM
     allowStaleClaim: true,
     ageMs,
     staleClaimIdleMs,
+    claimComplete,
   });
 }
 
@@ -346,10 +350,11 @@ export function resolveLiveOwnerReason({ branch, path, locked, activeAgentIds, a
   // claim flow has no durable local agent id for this branch, so treating the
   // directory's existence as liveness hides clean, open-PR claims after the
   // claim agent has exited — exactly the branches branch-reconcile exists to
-  // finish. Cleanup still uses worktreeProtectionReason and keeps every claim
-  // worktree protected; this dispatch-side exception only applies after the
-  // classifier has established that the tree is clean. A lock remains an
-  // explicit hold even for a claim worktree.
+  // finish. Cleanup makes the same call through worktreeProtectionReason, which
+  // holds a claim worktree until it is stale or provably shipped; this
+  // dispatch-side exception only applies after the classifier has established
+  // that the tree is clean. A lock remains an explicit hold even for a claim
+  // worktree.
   if (reason === 'worktree-human-claim') return locked ? 'worktree-locked' : null;
   return reason;
 }
@@ -629,20 +634,24 @@ async function worktreeAgeMs(worktreePath) {
  * always-protected set. Effectful (git + gh).
  *
  * @param {string} repoPath
- * @param {{ defaultBranch:string, activeAgentIds?:Set<string> }} ctx - `activeAgentIds`
- *   distinguishes a live agent's worktree from an abandoned one (see
+ * @param {{ defaultBranch:string, activeAgentIds?:Set<string>, remoteHeads?:Map<string,string>|null }} ctx
+ *   `activeAgentIds` distinguishes a live agent's worktree from an abandoned one (see
  *   `isAbandonedAgentWorktree`); omitting it leaves every agent worktree protected.
+ *   `remoteHeads` is `listRemoteHeads`' answer when the caller already has it;
+ *   omitted, this reads it itself, and `null` (unreadable remote) is carried
+ *   through as "we could not ask" rather than "the remote is empty".
  * @returns {Promise<object[]>} one entry per candidate branch:
- *   { branch, tip, hasUpstream, tracking, isMerged, hasWorktree, worktreePath, worktreeDirty,
- *     dirtyPaths, behind, ahead, collisionPaths, abandonedAgentWorktree, openPr }
+ *   { branch, tip, hasUpstream, tracking, upstreamGone, isMerged, hasWorktree, worktreePath,
+ *     worktreeDirty, dirtyPaths, behind, ahead, collisionPaths, abandonedAgentWorktree, openPr }
  */
-export async function gatherBranchState(repoPath, { defaultBranch, activeAgentIds = null }) {
+export async function gatherBranchState(repoPath, { defaultBranch, activeAgentIds = null, remoteHeads: providedRemoteHeads } = {}) {
   const protectedSet = new Set([...PROTECTED_BRANCHES, defaultBranch]);
 
-  const [branches, worktrees, prsByHeadOrNull] = await Promise.all([
+  const [branches, worktrees, prsByHeadOrNull, remoteHeads] = await Promise.all([
     getBranches(repoPath),
     listWorktrees(repoPath).catch(() => []),
-    getOpenPrsByHead(repoPath)
+    getOpenPrsByHead(repoPath),
+    providedRemoteHeads === undefined ? listRemoteHeads(repoPath) : providedRemoteHeads
   ]);
   // null = the forge could not be read (see getOpenPrsByHead). Carried onto every
   // input so the classifier can refuse to conclude "no PR" from an unread forge.
@@ -662,6 +671,7 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
 
   const inputs = [];
   for (const b of candidates) {
+    const upstreamName = upstreamBranchName(b.tracking);
     const wt = worktreeByBranch.get(b.name) || null;
     const worktreePath = wt?.path || null;
     const worktreeLocked = Boolean(wt?.locked);
@@ -686,6 +696,14 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
       // fact: a branch may track a remote branch called something else, and the
       // remote-side delete has to name the right ref.
       tracking: b.tracking || null,
+      // This branch was pushed, and the ref it tracks is no longer on origin —
+      // the tell that its PR merged with `--delete-branch`. Read from
+      // `listRemoteHeads`, not `%(upstream:track)`'s `[gone]`: that marker is
+      // computed against `refs/remotes/origin/*`, which this module already
+      // documents as too stale to act on (see listRemoteHeads). An unreadable
+      // remote (`null`) yields false — "we could not ask" must not read as
+      // "the remote branch is gone". See the SHIPPED_CLAIM note on cleanupMerged.
+      upstreamGone: Boolean(remoteHeads) && upstreamName !== null && !remoteHeads.has(upstreamName),
       isMerged,
       hasWorktree: Boolean(worktreePath),
       worktreePath,
@@ -754,6 +772,23 @@ export function describeIdleReconcilePark(skipped = [], heldLive = []) {
  * A failed gate skips the branch (with a reason) — never a force-delete of
  * unmerged or dirty work.
  *
+ * SHIPPED_CLAIM: a `claim-*` worktree holds for STALE_CLAIM_IDLE_MS on the chance
+ * a claim session is still using it. That grace is pointless once the claim has
+ * demonstrably SHIPPED, and holding anyway is what left four finished claims
+ * parked for a week while every run reported "cleaned 0" and parked on "merged
+ * branches held back" — the exact stall this reconcile exists to clear.
+ *
+ * The proof is a trio, and this function establishes all three in order:
+ *   1. `stillMerged` — re-verified against the default branch just above.
+ *   2. `upstreamGone` — the branch was pushed and its remote ref is no longer on
+ *      origin, i.e. its PR merged with `--delete-branch`.
+ *   3. clean worktree — the dirty gate below, which `claimComplete` never
+ *      overrides; completion releases the claim HOLD, never the dirty guard.
+ * Together they say the /claim flow finished everything except its own teardown,
+ * so nothing recoverable remains and the tree is reaped at any age. `upstreamGone`
+ * is the discriminator the age window was standing in for: a claim still being
+ * worked either has no upstream yet or has one that still exists.
+ *
  * @param {string} repoPath
  * @param {string} defaultBranch
  * @param {object[]} merged - gathered inputs whose state === 'MERGED'
@@ -777,7 +812,15 @@ export async function cleanupMerged(repoPath, defaultBranch, merged, { activeAge
       // an active CoS agent workspace — even if its branch is merged and clean. An
       // abandoned claim worktree (merged + clean + older than STALE_CLAIM_IDLE_MS)
       // falls through and IS reaped; that's the "cleaned 0 forever" leak this fixes.
-      const gate = { path: b.worktreePath, locked: b.worktreeLocked, activeAgentIds, ageMs: b.worktreeAgeMs };
+      // A SHIPPED claim (see SHIPPED_CLAIM above) skips the wait entirely —
+      // `stillMerged` is proven above, the dirty gate below is still ahead of it.
+      const gate = {
+        path: b.worktreePath,
+        locked: b.worktreeLocked,
+        activeAgentIds,
+        ageMs: b.worktreeAgeMs,
+        claimComplete: b.upstreamGone,
+      };
       const protectedReason = worktreeProtectionReason(gate);
       if (protectedReason) {
         // Carry WHEN the hold lifts when it lifts on a clock (a claim worktree
@@ -857,7 +900,11 @@ export async function reconcile(repoPath = PATHS.root, { cleanup = true, reapRem
   }
 
   const defaultBranch = await getDefaultBranch(repoPath).catch(() => 'main') || 'main';
-  const inputs = await gatherBranchState(repoPath, { defaultBranch, activeAgentIds });
+  // Read origin's branch list once for the whole cycle: the gather needs it to
+  // tell a shipped claim from a live one, and a repo with no origin has no
+  // remote to ask (null → nothing reads as gone, which is the safe direction).
+  const remoteHeads = origin?.hasOrigin ? await listRemoteHeads(repoPath) : null;
+  const inputs = await gatherBranchState(repoPath, { defaultBranch, activeAgentIds, remoteHeads });
   // A gh failure AFTER a passing probe (a blip mid-cycle, or an unparseable
   // page) is still "we could not ask" — surface it so the caller retries next
   // tick instead of parking on an in-flight set built from unknown PR state.
