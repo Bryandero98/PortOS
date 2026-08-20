@@ -27,6 +27,11 @@ export const refreshProviderModels = (id, options) => request(`/providers/${id}/
 // after an explicit Providers-page click; the status payload carries booleans
 // and labels only — never local executable paths.
 export const getProviderRuntimes = (options) => request('/providers/runtimes', options);
+// Per-provider requirements checklist for providers backed by a LOCAL daemon
+// (llama.cpp, Ollama, LM Studio, MTPLX): is it installed, is it running, is it
+// serving the model this provider asks for. Keyed by provider id; providers
+// with no local dependency are absent from the map.
+export const getProviderReadiness = (options) => request('/providers/readiness', options);
 
 // Provider status (usage limits, availability)
 export const getProviderStatuses = () => request('/providers/status');

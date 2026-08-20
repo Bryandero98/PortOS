@@ -6,6 +6,7 @@ import * as api from '../services/api';
 import socket from '../services/socket';
 import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, supportsModelRefresh, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, isOrcaRouterBackedProvider, providerRuntimeKey } from '../utils/providers';
 import useLocalModels from '../hooks/useLocalModels';
+import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import BrailleSpinner from '../components/BrailleSpinner';
 import EmptyState from '../components/EmptyState';
 import Banner from '../components/ui/Banner';
@@ -23,6 +24,7 @@ import Modal from '../components/ui/Modal';
 import { FormField } from '../components/ui/FormField';
 import RuntimeInstallModal from '../components/install/RuntimeInstallModal';
 import ProviderRuntimeStatus from '../components/providers/ProviderRuntimeStatus';
+import ProviderReadiness from '../components/providers/ProviderReadiness';
 
 // The two local apps an API provider can front. Their installer lives on the
 // Local LLM settings tab (it starts the service too), so the provider card
@@ -114,6 +116,11 @@ export default function AIProviders() {
   // an upgrade) — distinct from a confirmed missing CLI — and simply renders no
   // install widgets.
   const [runtimes, setRuntimes] = useState({});
+  // Local-daemon requirements per provider (llama.cpp / Ollama / LM Studio /
+  // MTPLX), keyed by provider id. Providers with no local dependency are absent
+  // from the map, and an empty map means the endpoint was not reached — both
+  // render no checklist.
+  const [readiness, setReadiness] = useState({});
   // The runtime whose install modal is open (`null` = closed).
   const [installingRuntime, setInstallingRuntime] = useState(null);
   // Ollama / LM Studio install state (and the model lists the editor's pickers
@@ -194,10 +201,20 @@ export default function AIProviders() {
     if (statusData?.providers) setStatuses(statusData.providers);
   }, []);
 
-  useEffect(() => {
-    const id = setInterval(refreshStatuses, 20000);
-    return () => clearInterval(id);
-  }, [refreshStatuses]);
+  // Local-daemon readiness (is llama-server / Ollama actually up and serving the
+  // model this provider names?). Off the critical path like the runtime probes,
+  // and re-polled on the same cadence as the status map so starting a daemon
+  // from the Local LLM tab clears the card's checklist on its own.
+  const loadReadiness = useCallback(async () => {
+    const data = await api.getProviderReadiness({ silent: true }).catch(() => null);
+    setReadiness(data?.readiness && typeof data.readiness === 'object' ? data.readiness : {});
+  }, []);
+
+  // `useAutoRefetch` rather than a raw interval so both polls pause while the
+  // tab is hidden — a readiness tick costs one HTTP probe per distinct local
+  // endpoint, which a backgrounded settings tab should not keep spending.
+  const pollCards = useCallback(() => Promise.all([refreshStatuses(), loadReadiness()]), [refreshStatuses, loadReadiness]);
+  useAutoRefetch(pollCards, 20000, { pollOnly: true });
 
   // Clear a provider's bench (runtime unavailability) so the next call retries it.
   // Note: if the underlying cause persists (e.g. an invalid model id), the very
@@ -347,6 +364,11 @@ export default function AIProviders() {
   const runtimeForProvider = (provider) => {
     const backend = isApiProvider(provider) ? localBackendForProvider(provider) : null;
     if (!backend) return runtimes[providerRuntimeKey(provider)] || null;
+    // The readiness checklist covers this same backend in more detail, and knows
+    // the difference between "not installed" and "installed but not started".
+    // Rendering both put a green "LM Studio installed" pill directly above
+    // "Install LM Studio" — so wherever the checklist has an answer, it wins.
+    if (readiness[provider.id]?.kind === backend) return null;
     const installed = localModels.installed?.[backend];
     // `null` = status not fetched — never offer an install from an unknown state.
     if (typeof installed !== 'boolean') return null;
@@ -658,6 +680,8 @@ export default function AIProviders() {
                       runtime={runtimeForProvider(provider)}
                       onInstall={setInstallingRuntime}
                     />
+
+                    <ProviderReadiness className="mt-2" readiness={readiness[provider.id]} />
 
                     {provider.enabled && statuses[provider.id]?.available === false && (
                       <div className="mt-2 text-xs rounded border border-port-error/40 bg-port-error/10 px-3 py-2 text-port-error space-y-1">

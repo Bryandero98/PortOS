@@ -29,6 +29,7 @@ import {
   localLlmLlamaServerStartSchema
 } from '../lib/validation.js'
 import { getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer } from '../services/llamaServerManager.js'
+import { resetProviderReadinessCache } from '../services/providerReadiness.js'
 import { getCatalog, searchCatalog, isBackend } from '../lib/localLlmCatalog.js'
 import { isAppleSilicon } from '../lib/platform.js'
 import { searchHuggingFaceModels, enrichCatalogWithVariants, applyMeasuredFit } from '../services/huggingFaceCatalog.js'
@@ -468,22 +469,33 @@ router.get('/llama-server/status', asyncHandler(async (_req, res) => {
   res.json(await getLlamaServerStatus())
 }))
 
+// Each of the three actions below changes exactly what the provider-readiness
+// probes remember — is the binary there, is something answering — so each drops
+// those caches. Without it the Providers page keeps reporting "llama.cpp setup
+// incomplete" for up to a cache TTL after the user fixed it right here.
+
 // POST /api/local-llm/llama-server/start — launch llama-server
 router.post('/llama-server/start', asyncHandler(async (req, res) => {
   const options = validateRequest(localLlmLlamaServerStartSchema, req.body)
-  res.json(await startLlamaServer(options))
+  const result = await startLlamaServer(options)
+  resetProviderReadinessCache()
+  res.json(result)
 }))
 
 // POST /api/local-llm/llama-server/stop — stop managed llama-server
 router.post('/llama-server/stop', asyncHandler(async (_req, res) => {
-  res.json(await stopLlamaServer())
+  const result = await stopLlamaServer()
+  resetProviderReadinessCache()
+  res.json(result)
 }))
 
 // POST /api/local-llm/llama-server/install — install llama.cpp via Homebrew
 router.post('/llama-server/install', asyncHandler(async (req, res) => {
   const io = req.app.get('io')
   const onProgress = (data) => io?.emit('localLlm:progress', data)
-  res.json(await installLlamaServer({ onProgress }))
+  const result = await installLlamaServer({ onProgress })
+  resetProviderReadinessCache()
+  res.json(result)
 }))
 
 export default router
