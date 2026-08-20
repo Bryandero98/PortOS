@@ -16,7 +16,8 @@ import {
   recoverAlphaFrame, despillKeyFrame, imageDistance, selectCycleIndices, selectAmbientLoopIndices,
   alphaBbox, rootX, robustBottomRow, alignFrames, packStrip, validateFrames, buildContrastSheet,
   rootBandForManifest, ROOT_BAND_TORSO, ROOT_BAND_HIP, ALIGN_OP_TORSO_X,
-  prepareWalkAnchorChromaInput, WALK_PHASES, WALK_CELL_SIZE, WALK_FRAME_COUNT,
+  decodeTransparentSpriteSource, prepareWalkAnchorChromaInput,
+  WALK_PHASES, WALK_CELL_SIZE, WALK_FRAME_COUNT,
 } from './walkPostprocess.js';
 import { keyChannelSplit } from './chromaKey.js';
 
@@ -92,6 +93,27 @@ describe('sampleBorderKey / validateMeasuredKey', () => {
     expect(isUsableMeasuredKey([0, 0, 0], MAGENTA)).toBe(false);
     // The lopsided "red with a little blue" case stays rejected (spread 155).
     expect(isUsableMeasuredKey([255, 0, 100], MAGENTA)).toBe(false);
+  });
+});
+
+describe('decodeTransparentSpriteSource', () => {
+  it('recovers a uniform near-opaque chroma matte', async () => {
+    const width = 20; const height = 20;
+    const rgba = Buffer.alloc(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        const [r, g, b] = x >= 5 && x < 15 && y >= 5 && y < 15
+          ? [30, 110, 60]
+          : [255, 0, 255];
+        rgba[i] = r; rgba[i + 1] = g; rgba[i + 2] = b; rgba[i + 3] = 254;
+      }
+    }
+    const source = join(TEST_ROOT, 'uniform-near-opaque.png');
+    await sharp(rgba, { raw: { width, height, channels: 4 } }).png().toFile(source);
+    const result = await decodeTransparentSpriteSource(source, MAGENTA, '#FF00FF');
+    expect(result.data[3]).toBe(0);
+    expect(result.data[(10 * width + 10) * 4 + 3]).toBe(255);
   });
 });
 

@@ -93,3 +93,13 @@ export function hasMeaningfulAlpha(data, alphaThreshold = 250) {
   }
   return false;
 }
+
+/** Whether an RGBA buffer's alpha channel varies between pixels. */
+export function hasAlphaVariation(data) {
+  if (data.length < 4) return false;
+  const first = data[3];
+  for (let i = 7; i < data.length; i += 4) {
+    if (data[i] !== first) return true;
+  }
+  return false;
+}

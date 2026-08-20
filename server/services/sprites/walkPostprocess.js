@@ -24,7 +24,7 @@ import { join } from 'path';
 import { readdir, writeFile } from 'fs/promises';
 import { createHash } from 'crypto';
 import {
-  hasMeaningfulAlpha,
+  hasAlphaVariation,
   median,
   sampleBorderKey as sampleBorderKeyShared,
 } from '../../lib/borderKey.js';
@@ -128,7 +128,7 @@ export const sha256Buffer = (buf) => createHash('sha256').update(buf).digest('he
 export async function decodeTransparentSpriteSource(src, split, keyHex) {
   const frame = await decodeRgbaFrame(src);
   const { data } = frame;
-  if (hasMeaningfulAlpha(data, 255)) return despillKeyFrame(frame, split);
+  if (hasAlphaVariation(data)) return despillKeyFrame(frame, split);
   const measured = sampleBorderKey(frame);
   validateMeasuredKey(measured, split, keyHex);
   return despillKeyFrame(recoverAlphaFrame(frame, measured, split), split);

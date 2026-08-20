@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   detectSolidBorderColor,
+  hasAlphaVariation,
   hasMeaningfulAlpha,
   median,
   sampleBorderKey,
@@ -43,5 +44,10 @@ describe('borderKey', () => {
     expect(hasMeaningfulAlpha(almostOpaque.data)).toBe(true);
     expect(hasMeaningfulAlpha(almostOpaque.data, 255)).toBe(true);
     expect(hasMeaningfulAlpha(makeFrame(2, 1, () => [0, 0, 0, 255]).data)).toBe(false);
+  });
+
+  it('keeps uniform near-opaque alpha out of the variation path', () => {
+    expect(hasAlphaVariation(makeFrame(2, 1, () => [0, 0, 0, 254]).data)).toBe(false);
+    expect(hasAlphaVariation(makeFrame(2, 1, (x) => [0, 0, 0, x ? 255 : 254]).data)).toBe(true);
   });
 });
