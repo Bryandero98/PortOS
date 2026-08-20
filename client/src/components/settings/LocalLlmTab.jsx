@@ -65,6 +65,12 @@ const SPEC_DECODE_PRESETS = [
   },
 ];
 
+// The select mounts on this preset, so the form has to be seeded from it too —
+// otherwise the recommended preset reads as chosen while the required model path
+// is still empty, and Start sits disabled with nothing the user can act on.
+const DEFAULT_SPEC_PRESET_ID = 'qwen3.8-27b-dspark';
+const findSpecPreset = (id) => SPEC_DECODE_PRESETS.find((p) => p.id === id);
+
 const btnClass = 'flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded transition-colors disabled:opacity-50';
 
 const CATEGORY_LABELS = {
@@ -427,15 +433,19 @@ export function LocalLlmTab() {
 
   const [llamaStatus, setLlamaStatus] = useState(null);
   const [llamaLoading, setLlamaLoading] = useState(false);
-  const [llamaForm, setLlamaForm] = useState({
-    model: '',
-    draftModel: '',
-    specType: 'draft-dspark',
-    port: 8080,
-    host: '127.0.0.1',
-    ctxSize: 32768,
-    nGpuLayers: 99,
-    alias: 'dflash',
+  const [llamaPresetId, setLlamaPresetId] = useState(DEFAULT_SPEC_PRESET_ID);
+  const [llamaForm, setLlamaForm] = useState(() => {
+    const preset = findSpecPreset(DEFAULT_SPEC_PRESET_ID);
+    return {
+      model: preset?.model || '',
+      draftModel: preset?.draftModel || '',
+      specType: preset?.specType || 'draft-dspark',
+      port: 8080,
+      host: '127.0.0.1',
+      ctxSize: 32768,
+      nGpuLayers: 99,
+      alias: 'dflash',
+    };
   });
   const [showLlamaAdvanced, setShowLlamaAdvanced] = useState(false);
   const [showLlamaLogs, setShowLlamaLogs] = useState(false);
@@ -734,9 +744,15 @@ export function LocalLlmTab() {
     });
   };
 
+  const activeSpecPreset = findSpecPreset(llamaPresetId);
+  // The Custom preset intentionally ships empty paths, so Start stays disabled
+  // until a path is typed — say so instead of leaving a dead button.
+  const llamaModelMissing = !llamaForm.model.trim();
+
   const handleStartLlama = async (e) => {
     e?.preventDefault?.();
-    if (!llamaForm.model?.trim()) {
+    // Submitting with Enter bypasses the disabled button, so re-check here.
+    if (llamaModelMissing) {
       toast.error('Please specify a base model path (e.g. models/Qwen3.8-27B-Instruct-Q4_K_M.gguf)');
       return;
     }
@@ -790,8 +806,9 @@ export function LocalLlmTab() {
   };
 
   const handlePresetSelect = (presetId) => {
-    const preset = SPEC_DECODE_PRESETS.find((p) => p.id === presetId);
+    const preset = findSpecPreset(presetId);
     if (!preset) return;
+    setLlamaPresetId(preset.id);
     if (preset.id !== 'custom') {
       setLlamaForm((prev) => ({
         ...prev,
@@ -1000,7 +1017,7 @@ export function LocalLlmTab() {
                   id="llama-preset-select"
                   aria-label="Preset"
                   onChange={(e) => handlePresetSelect(e.target.value)}
-                  defaultValue="qwen3.8-27b-dspark"
+                  value={llamaPresetId}
                   className="bg-port-card border border-port-border rounded px-2 py-1 text-xs text-port-accent focus:outline-none"
                 >
                   {SPEC_DECODE_PRESETS.map((p) => (
@@ -1021,19 +1038,19 @@ export function LocalLlmTab() {
                   type="text"
                   value={llamaForm.model}
                   onChange={(e) => setLlamaForm((prev) => ({ ...prev, model: e.target.value }))}
-                  placeholder="models/Qwen3.8-27B-Instruct-Q4_K_M.gguf"
+                  placeholder={activeSpecPreset?.model || 'models/your-target-Q4_K_M.gguf'}
                   className="w-full bg-port-card border border-port-border rounded px-2.5 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
                 />
               </div>
               <div>
-                <label htmlFor="llama-draft-model" className="text-[11px] text-gray-400 block mb-1">DFlash 2 Draft Model (Optional)</label>
+                <label htmlFor="llama-draft-model" className="text-[11px] text-gray-400 block mb-1">Draft Model (Optional)</label>
                 <input
                   id="llama-draft-model"
-                  aria-label="DFlash 2 Draft Model (Optional)"
+                  aria-label="Draft Model (Optional)"
                   type="text"
                   value={llamaForm.draftModel}
                   onChange={(e) => setLlamaForm((prev) => ({ ...prev, draftModel: e.target.value }))}
-                  placeholder="models/Qwen3.8-27B-DFlash2-Q4_K_M.gguf"
+                  placeholder={activeSpecPreset?.draftModel || 'models/your-drafter.gguf'}
                   className="w-full bg-port-card border border-port-border rounded px-2.5 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
                 />
               </div>
@@ -1070,7 +1087,7 @@ export function LocalLlmTab() {
                     aria-label="GPU Layers (-ngl)"
                     type="number"
                     value={llamaForm.nGpuLayers}
-                    onChange={(e) => setLlamaForm((prev) => ({ ...prev, nGpuLayers: parseInt(e.target.value, 10) ?? 99 }))}
+                    onChange={(e) => setLlamaForm((prev) => ({ ...prev, nGpuLayers: parseInt(e.target.value, 10) || 99 }))}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>
@@ -1088,7 +1105,7 @@ export function LocalLlmTab() {
               </div>
             )}
 
-            <div className="flex items-center justify-between gap-2 pt-1">
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
               <button
                 type="button"
                 onClick={() => setShowLlamaAdvanced((prev) => !prev)}
@@ -1097,14 +1114,22 @@ export function LocalLlmTab() {
                 {showLlamaAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                 {showLlamaAdvanced ? 'Hide options' : 'Advanced options (port, ctx, GPU layers)'}
               </button>
-              <button
-                type="submit"
-                disabled={llamaLoading || !llamaForm.model.trim()}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
-              >
-                {llamaLoading ? <BrailleSpinner /> : <Power size={13} />}
-                Start Speculative Server
-              </button>
+              <div className="flex items-center gap-2">
+                {llamaModelMissing && (
+                  <span className="text-[11px] text-port-warning text-right">
+                    Enter a Target Base Model path to enable Start
+                  </span>
+                )}
+                <button
+                  type="submit"
+                  disabled={llamaLoading || llamaModelMissing}
+                  title={llamaModelMissing ? 'Target Base Model (GGUF Path) is required before the server can start' : 'Launch llama-server with these settings'}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent text-xs font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                >
+                  {llamaLoading ? <BrailleSpinner /> : <Power size={13} />}
+                  Start Speculative Server
+                </button>
+              </div>
             </div>
           </form>
         ) : (
