@@ -35,6 +35,26 @@ export const getAgentActivityByAgent = (agentId, options = {}) => {
 export const getAgentActivityStats = (agentId, days = 7) =>
   request(`/agents/activity/agent/${agentId}/stats?days=${days}`);
 
+// CoS run event ledger (#4540) — read-only diagnostics over the append-only
+// lifecycle stream. Every one of these is a GET: the ledger is written by the
+// server's own lifecycle boundaries and has no client-facing mutation.
+const runEventQuery = (filters = {}) => {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, value);
+  }
+  const query = params.toString();
+  return query ? `?${query}` : '';
+};
+export const getRunEvents = (filters = {}, options = {}) =>
+  request(`/agents/activity/run-events${runEventQuery(filters)}`, options);
+export const getRunEventStats = (options = {}) =>
+  request('/agents/activity/run-events/stats', options);
+export const getRunEventProjections = (filters = {}, options = {}) =>
+  request(`/agents/activity/run-events/projections${runEventQuery(filters)}`, options);
+export const getRunEventDiagnostic = (id, options = {}) =>
+  request(`/agents/activity/run-events/run/${encodeURIComponent(id)}`, options);
+
 // Chief of Staff
 export const getCosStatus = () => request('/cos');
 export const startCos = (options = {}) => request('/cos/start', { method: 'POST', ...options });

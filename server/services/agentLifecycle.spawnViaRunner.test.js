@@ -88,6 +88,12 @@ vi.mock('./agentWorktreeCleanup.js', () => ({
 vi.mock('./agentCompletionCleanup.js', () => ({ runAgentCompletionCleanup: vi.fn() }));
 vi.mock('./agentSummaryExtraction.js', () => ({ extractFinalSummary: vi.fn() }));
 vi.mock('./agentManagement.js', () => ({ handleOrphanedTask: vi.fn() }));
+
+// The lifecycle ledger is a real file writer (data/cos/run-events.jsonl) — mocked
+// so handoff telemetry lands in a spy rather than the developing install's
+// ledger, and so the boundary assertions below can read the envelope (#4540).
+const { appendRunEvent } = vi.hoisted(() => ({ appendRunEvent: vi.fn(async () => ({ appended: true })) }));
+vi.mock('./agentRunEventLog.js', () => ({ appendRunEvent }));
 vi.mock('./agentPromptBuilder.js', () => ({ buildAgentPrompt: vi.fn(), getAppWorkspace: vi.fn() }));
 // The real classification of a `spawn-rejected` reason (non-actionable, so the
 // task is budgeted a retry rather than blocked) is pinned in
@@ -252,5 +258,55 @@ describe('spawnViaRunner — the runner rejects the spawn', () => {
     expect(finalizeAgent).not.toHaveBeenCalled();
     expect(releaseRetryHold).not.toHaveBeenCalled();
     expect(runnerAgents.has('agent-1')).toBe(true);
+  });
+});
+
+// ─── Lifecycle ledger — the handoff boundary (#4540) ─────────────────────────
+
+describe('spawnViaRunner — records who owns the process', () => {
+  const handoffs = () => appendRunEvent.mock.calls.map(([e]) => e).filter((e) => e.kind === 'run.handoff');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    runnerAgents.clear();
+  });
+
+  it('records the handoff only AFTER the runner accepted the spawn', async () => {
+    // `runnerAgents` — the map that says which process owns this run — is
+    // in-memory and gone on the next restart. This is the only durable record
+    // that the answer was ever "the CoS Runner".
+    vi.mocked(spawnAgentViaRunner).mockResolvedValueOnce({ pid: 4242 });
+
+    await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
+
+    expect(handoffs()).toEqual([expect.objectContaining({
+      runId: 'run-1',
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      data: expect.objectContaining({ to: 'cos-runner', accepted: true, pid: 4242, providerId: 'grok-cli' })
+    })]);
+  });
+
+  it('records a REFUSED handoff as its own boundary', async () => {
+    // "The runner would not take it" and "it ran and failed" collapse into the
+    // same terminal record; only the ledger can still tell them apart.
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(new Error(REJECTION));
+
+    await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
+
+    expect(handoffs()).toEqual([expect.objectContaining({
+      data: expect.objectContaining({ to: 'none', accepted: false, reason: REJECTION })
+    })]);
+  });
+
+  it('keys the handoff on the run, so a retried spawn cannot double-count it', async () => {
+    vi.mocked(spawnAgentViaRunner).mockResolvedValue({ pid: 4242 });
+
+    await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
+    await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
+
+    const ids = handoffs().map((e) => e.eventId);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(1);
   });
 });

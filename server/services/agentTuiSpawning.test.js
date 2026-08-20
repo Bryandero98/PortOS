@@ -52,6 +52,12 @@ vi.mock('./agentErrorAnalysis.js', () => ({
   resolveFailedTaskUpdate: vi.fn().mockResolvedValue({ status: 'failed' })
 }));
 
+// The lifecycle ledger is a real file writer (data/cos/run-events.jsonl) — mocked
+// so first-output telemetry lands in a spy rather than the developing install's
+// ledger, and because this suite's fileUtils mock carries no PATHS.cos (#4540).
+const { appendRunEvent } = vi.hoisted(() => ({ appendRunEvent: vi.fn(async () => ({ appended: true })) }));
+vi.mock('./agentRunEventLog.js', () => ({ appendRunEvent }));
+
 vi.mock('./agentRunTracking.js', () => ({
   completeAgentRun: vi.fn().mockResolvedValue(undefined)
 }));

@@ -50,6 +50,7 @@ import { createToolExecution, startExecution, completeExecution, errorExecution 
 import { determineLane, acquire, release } from './executionLanes.js';
 import { analyzeAgentFailure } from './agentErrorAnalysis.js';
 import { createAgentRun } from './agentRunTracking.js';
+import { appendRunEvent } from './agentRunEventLog.js';
 import { committedDuringRun, toEpochMs } from '../lib/gitCommitProbe.js';
 import { capturePrimaryCheckoutState } from '../lib/primaryCheckoutGuard.js';
 import { buildAgentPrompt, getAppWorkspace, inlinePrLifecycleSection, isClaimFlowTask } from './agentPromptBuilder.js';
@@ -866,6 +867,24 @@ export async function spawnViaRunner(agentId, task, opts) {
     const message = err?.message || String(err);
     clearTimeout(agentInfo.initializationTimeout);
     runnerAgents.delete(agentId);
+    // A handoff that the runner REFUSED (#4540). Recorded as its own boundary
+    // rather than left to the failure the finalize below records: "the run
+    // never started because the runner would not take it" and "the run started
+    // and failed" produce the same terminal record today, and only the ledger
+    // can still tell them apart afterwards.
+    await appendRunEvent({
+      kind: 'run.handoff',
+      runId,
+      agentId,
+      taskId: task.id,
+      eventId: `handoff:${agentId}:${runId || 'no-run'}:rejected`,
+    // `accepted: false` mirrors what the finalize below already concludes. Note
+    // that the runner spawn path cannot currently tell an explicit refusal from
+    // an ambiguous transport failure (a lost acknowledgement for a spawn the
+    // runner DID accept) — a pre-existing conflation this event inherits rather
+    // than introduces. Tracked in #4615.
+      data: { to: 'none', accepted: false, reason: message },
+    });
     releaseAgentLane({ agentId, success: false, exitCode: 1, executionId, laneName, errorExecutionMessage: message });
     // Finalize through the SAME chokepoint every other ending uses (#3632).
     // Finalizing the agent alone — which is all this used to do — left the TASK
@@ -916,6 +935,26 @@ export async function spawnViaRunner(agentId, task, opts) {
     cosEvents.emit('agent:error', { agentId, taskId: task.id, error: message });
     return null;
   }
+
+  // Ownership of the process now sits with the CoS Runner, not this server
+  // (#4540). This is the boundary the in-memory `runnerAgents` map forgets on
+  // every restart — after which "which process should I look in for this run"
+  // has no recorded answer at all.
+  //
+  // Recorded the instant the runner accepts, BEFORE the pid persist below: the
+  // handoff has already happened by then, and a failed `updateAgent` would
+  // otherwise leave a live runner-owned process with no record of who owns it —
+  // precisely the orphan this ledger exists to explain. The natural key is the
+  // run: a run is handed to the runner exactly once, so a retried spawn cannot
+  // double-count it.
+  await appendRunEvent({
+    kind: 'run.handoff',
+    runId,
+    agentId,
+    taskId: task.id,
+    eventId: `handoff:${agentId}:${runId || 'no-run'}:cos-runner`,
+    data: { to: 'cos-runner', accepted: true, pid: result.pid ?? null, providerId: provider.id, laneName: laneName ?? null },
+  });
 
   // Store PID in persisted state for zombie detection
   await updateAgent(agentId, { pid: result.pid });

@@ -64,6 +64,7 @@ import { composeProviderEnv } from '../lib/cliChildEnv.js';
 import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
 import { isOllamaBackedProvider } from './providers.js';
 import { execFile } from '../lib/childProcess.js';
+import { appendRunEvent } from './agentRunEventLog.js';
 
 // Agent-specific timing/lifecycle constants (not shared with the one-shot
 // runner — agents stay alive much longer and write a sentinel file when done).
@@ -558,6 +559,34 @@ export async function spawnTuiAgent({
   // read-at-most-once invariant at the helper.
   let sentinelIngested = false;
   let hasStartedWorking = false;
+  // Guards the once-per-run `run.output` boundary (#4540). Kept separate from
+  // `firstOutputAt` / `hasStartedWorking`: both of those are also set by paths
+  // with no real output behind them, and a run that never spoke is exactly the
+  // run this boundary must not vouch for.
+  let firstOutputRecorded = false;
+  /**
+   * Record the run's first observed output, once. Called from the live PTY
+   * stream and from the exit-tail fallback — a durable runner can deliver a
+   * short-lived agent's entire output as `outputTail` on `tui:exit`, and that
+   * output is no less real for having lost the race with process exit.
+   *
+   * Not awaited: the live caller is on the hot output path, and
+   * `appendRunEvent` is a serialized queue that never rejects — blocking a
+   * terminal repaint on a telemetry write would be the wrong trade. The
+   * explicit key makes the append idempotent however the two callers race.
+   */
+  const recordFirstOutput = (source) => {
+    if (firstOutputRecorded) return;
+    firstOutputRecorded = true;
+    appendRunEvent({
+      kind: 'run.output',
+      runId,
+      agentId,
+      taskId: task.id,
+      eventId: `output:${agentId}:${runId || 'no-run'}:first`,
+      data: { source },
+    });
+  };
   let promptSentAt = null;
   // When the submit-Enter is first written (NOT when the paste starts). Provider
   // signal handling keys on this so a startup banner is not treated as a signal
@@ -1021,6 +1050,7 @@ export async function spawnTuiAgent({
       const now = Date.now();
       lastOutputAt = now;
       if (firstOutputAt === null) firstOutputAt = lastOutputAt;
+      recordFirstOutput('tui-pty');
 
       if (!hasStartedWorking) {
         hasStartedWorking = true;
@@ -1088,6 +1118,7 @@ export async function spawnTuiAgent({
     if (!receivedTuiOutput && typeof outputTail === 'string' && outputTail) {
       receivedTuiOutput = true;
       pushRaw(outputTail.slice(-16 * 1024));
+      recordFirstOutput('tui-exit-tail');
     }
     // A host restart reaches here as a plain PTY exit (pm2's TreeKill walks
     // portos-server's descendants), which the `success` reading below would
@@ -1172,6 +1203,20 @@ export async function spawnTuiAgent({
     const reason = useDurableRunner && /^Command executable unavailable:/i.test(message)
       ? 'command-not-found'
       : useDurableRunner ? 'spawn-rejected' : 'spawn-error';
+    if (useDurableRunner) {
+      // A handoff the runner REFUSED (#4540), recorded like the CLI path's. A
+      // LOCAL PTY that won't open is a host problem, not a handoff, so it is
+      // deliberately not recorded here.
+      await appendRunEvent({
+        kind: 'run.handoff',
+        runId,
+        agentId,
+        taskId: task.id,
+        eventId: `handoff:${agentId}:${runId || 'no-run'}:rejected`,
+        // Same refusal-vs-lost-acknowledgement conflation as the CLI path (#4615).
+        data: { to: 'none', accepted: false, kind: 'tui', reason: message },
+      });
+    }
     await finish({
       success: false,
       exitCode: 1,
@@ -1181,6 +1226,20 @@ export async function spawnTuiAgent({
     return null;
   }
   sessionId = session.sessionId;
+  if (useDurableRunner) {
+    // A durable TUI's PTY lives in the CoS Runner, not this server — the same
+    // ownership transfer `spawnViaRunner` records for CLI agents (#4540).
+    // Without it, the longest-lived runs in the system are the only ones whose
+    // ledger never says who owns their process.
+    await appendRunEvent({
+      kind: 'run.handoff',
+      runId,
+      agentId,
+      taskId: task.id,
+      eventId: `handoff:${agentId}:${runId || 'no-run'}:cos-runner`,
+      data: { to: 'cos-runner', accepted: true, kind: 'tui', providerId: provider.id, sessionId: session.sessionId ?? null },
+    });
+  }
 
   // A durable runner can emit tui:exit before its spawn POST response reaches
   // this process. handleExit() then finalizes the run while createAgentTuiSession
