@@ -24,7 +24,12 @@ def simplify(points, faces, ratio=None, **kw):
     return points, list(range(max(1, int(round(len(faces) * (1.0 - ratio))))))
 `;
 
-const stubPostprocess = ({ backend = 'metal', hasDr = true }) => `_BACKEND = ${backend === null ? 'None' : `'${backend}'`}
+const stubPostprocess = ({ backend = 'metal', hasDr = true }) => `import os
+# Recorded AT IMPORT TIME. The real module imports torch, and
+# PYTORCH_ENABLE_MPS_FALLBACK is only honored if it is set before that happens —
+# so capturing it here is what makes the ordering testable without torch.
+ENV_AT_IMPORT = os.environ.get('PYTORCH_ENABLE_MPS_FALLBACK')
+_BACKEND = ${backend === null ? 'None' : `'${backend}'`}
 _HAS_DR = ${hasDr ? 'True' : 'False'}
 _HAS_FLEX_GEMM = True
 CALLS = []
@@ -38,7 +43,7 @@ def to_glb(**kw):
 // Mirrors the shape of upstream generate.py's Metal bake branch: derive a ratio
 // from the 200K clamp, simplify, then hand the result to to_glb with the same
 // clamp as `decimation_target`.
-const FAKE_GENERATE = `import argparse, json, fast_simplification, o_voxel.postprocess
+const FAKE_GENERATE = `import argparse, json, os, fast_simplification, o_voxel.postprocess
 p = argparse.ArgumentParser()
 p.add_argument("image")
 p.add_argument("--output", default="out")
@@ -58,6 +63,8 @@ print("RESULT " + json.dumps({
     "texture_size": a.texture_size,
     "seed": a.seed,
     "steps": a.steps,
+    "mps_fallback_at_o_voxel_import": o_voxel.postprocess.ENV_AT_IMPORT,
+    "mps_fallback_now": os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK"),
 }))
 `;
 
@@ -103,6 +110,31 @@ describe.skipIf(!pyBin)('trellis2GenerateRunner', () => {
 
     expect(run(['--', join(dir, 'generate.py'), '--texture-size', '4096']).trim())
       .toBe('local-import-ok:4096');
+  });
+
+  it('sets PYTORCH_ENABLE_MPS_FALLBACK before anything can import torch', () => {
+    // Regression guard, and the bug it guards is not hypothetical: this adapter
+    // imports o_voxel.postprocess (which imports torch) to install the decimation
+    // patch. generate.py sets this flag at ITS module top, which is too late once
+    // the adapter has already initialized torch — and MPS has no segment_reduce
+    // kernel, so every render died ~3 minutes in with NotImplementedError from the
+    // first sampler step. Asserting on the value the stub captured AT IMPORT is what
+    // makes the ordering, not just the final value, the thing under test.
+    writeStubs();
+    const r = resultOf(run(['--decimation-target', '1000000', '--', join(dir, 'generate.py'), 'a.png']));
+    expect(r.mps_fallback_at_o_voxel_import).toBe('1');
+    expect(r.mps_fallback_now).toBe('1');
+  });
+
+  it('lets an explicit caller env win over the preamble defaults', () => {
+    // setdefault, not assignment — otherwise the adapter would silently override a
+    // deliberate choice by whoever spawned it.
+    writeStubs();
+    const r = resultOf(run(
+      ['--', join(dir, 'generate.py'), 'a.png'],
+      { env: { PYTORCH_ENABLE_MPS_FALLBACK: '0' } },
+    ));
+    expect(r.mps_fallback_at_o_voxel_import).toBe('0');
   });
 
   it('passes upstream arguments through untouched after the `--` separator', () => {

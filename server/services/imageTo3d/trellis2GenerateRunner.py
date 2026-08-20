@@ -58,8 +58,35 @@ bare-``torch`` baseline, i.e. ~1.1s once per process against a multi-minute
 render.
 """
 
-import argparse
+# ---------------------------------------------------------------------------
+# ENV PREAMBLE — must run before ANY import that can pull torch.
+#
+# This adapter is now the process entry point, so it inherits an ordering
+# constraint that used to be generate.py's alone. generate.py sets these with
+# `setdefault` at ITS module top and documents why: "MPS fallback MUST be set
+# before torch is imported anywhere (including transitively via flex_gemm).
+# Without this, segment_reduce and a few other ops crash instead of falling back
+# to CPU."
+#
+# When the adapter fronted only the 4K path and did nothing before `runpy`, that
+# held automatically. It no longer does: `_patch_decimation_target` imports
+# `o_voxel.postprocess`, which imports torch — so by the time generate.py ran its
+# own setdefault, torch was already initialized and the flag was inert. The
+# observable failure was `NotImplementedError: aten::segment_reduce is not
+# currently implemented for the MPS device`, raised from the classifier-free
+# guidance std() inside the first sampler step, i.e. every MPS render died ~3
+# minutes in having produced nothing.
+#
+# `setdefault`, not assignment, so an explicit caller-supplied value still wins —
+# and so this stays consistent with generate.py rather than fighting it.
 import os
+
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+os.environ.setdefault("ATTN_BACKEND", "sdpa")
+os.environ.setdefault("SPARSE_ATTN_BACKEND", "sdpa")
+# ---------------------------------------------------------------------------
+
+import argparse
 import runpy
 import sys
 from pathlib import Path
