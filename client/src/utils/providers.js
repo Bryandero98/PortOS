@@ -1047,12 +1047,22 @@ const defaultEnvVarSet = (provider, name) => {
   return value !== '';
 };
 
+const inheritedCredentialMissing = (provider, keySetFor) => {
+  if (!isOrcaRouterBackedProvider(provider) || providerHasStoredKey(provider)) return null;
+  const rawState = typeof keySetFor === 'function'
+    ? keySetFor('orcarouter')
+    : defaultKeySetFor(provider, 'orcarouter');
+  return normalizeCredentialState(rawState) === false
+    ? { code: 'inheritedApiKey', label: 'OrcaRouter API provider has no API key' }
+    : null;
+};
+
 const credentialMissing = (provider, { keySetFor = null, envVarSet = null } = {}) => {
   const source = credentialSource(provider);
   if (source.kind === 'none' || !source.ref) return null;
 
   if (source.kind === 'env') {
-    return credentialEnvVars(provider)
+    const missing = credentialEnvVars(provider)
       .map((name) => {
         const rawState = typeof envVarSet === 'function' ? envVarSet(name) : defaultEnvVarSet(provider, name);
         return normalizeCredentialState(rawState) === false
@@ -1060,18 +1070,20 @@ const credentialMissing = (provider, { keySetFor = null, envVarSet = null } = {}
           : null;
       })
       .filter(Boolean);
+    const inherited = inheritedCredentialMissing(provider, keySetFor);
+    if (inherited) missing.push(inherited);
+    return missing.length > 0 ? missing : null;
   }
 
+  if (source.kind === 'inherited') {
+    return inheritedCredentialMissing(provider, keySetFor);
+  }
   const rawState = typeof keySetFor === 'function'
     ? keySetFor(source.ref)
     : defaultKeySetFor(provider, source.ref);
-  if (normalizeCredentialState(rawState) !== false) return null;
-
-  if (source.kind === 'stored') return { code: 'apiKey', label: 'API key is not set' };
-  if (source.kind === 'inherited') {
-    return { code: 'inheritedApiKey', label: 'OrcaRouter API provider has no API key' };
-  }
-  return { code: 'envVar', label: `${source.ref} environment variable is not set` };
+  return normalizeCredentialState(rawState) === false
+    ? { code: 'apiKey', label: 'API key is not set' }
+    : null;
 };
 
 /**
@@ -1117,10 +1129,9 @@ export const PROVIDER_CARD_STATE = Object.freeze({
  * server/lib/providerPrerequisites.js, and `getFallbackProvider` skips a
  * provider whose CLI that same computation found missing — so a card blocked on
  * an uninstalled binary is no longer a routing candidate that dies at spawn
- * time on a raw ENOENT. (Routing acts only on that finding; a missing stored
- * key still shows here but stays presentation-only, because a provider can
- * authenticate through a secret env var — issue #4612, which also covers
- * DETECTING those env-var credentials so this stops over-reporting them.)
+ * time on a raw ENOENT. (Routing acts only on that finding; stored, inherited,
+ * and env-var credential findings stay presentation-only, and the browser now
+ * derives known env-var gaps without over-reporting redacted values.)
  *
  * This function consumes the published list and adds what the browser alone
  * can see (the local-app runtime shape and sanitized env-credential state

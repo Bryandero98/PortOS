@@ -387,14 +387,6 @@ export default function AIProviders() {
         if (!referenced) return false;
         return typeof referenced.hasApiKey === 'boolean' ? referenced.hasApiKey : null;
       },
-      envVarSet: (name) => {
-        if (!Object.hasOwn(provider.envVars || {}, name)) return null;
-        const value = provider.envVars[name];
-        // Secret values arrive as `***`; only an explicitly empty configured
-        // value is a definite missing credential.
-        if (value === '***' || typeof value !== 'string') return null;
-        return value !== '';
-      },
     })]));
     // The default provider floats to the top of whichever section it sits in, so
     // "which one runs by default" stays a one-glance answer after grouping.

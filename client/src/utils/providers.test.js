@@ -1341,6 +1341,18 @@ describe('providerCardState', () => {
     });
   });
 
+  it('keeps the inherited-key check when an Orca wrapper also has an env credential', () => {
+    const wrapper = cli({
+      id: 'opencode-orcarouter',
+      orcarouterBacked: true,
+      envVars: { OPENROUTER_API_KEY: 'token-example' },
+    });
+    expect(providerCardState(wrapper, { keySetFor: () => false }).missing).toEqual([{
+      code: 'inheritedApiKey',
+      label: 'OrcaRouter API provider has no API key',
+    }]);
+  });
+
   it('blocks an env-credential provider whose configured value is empty, naming the variable', () => {
     const readiness = providerCardState(cli({
       id: 'claude-code-bedrock',
