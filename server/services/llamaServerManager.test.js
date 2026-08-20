@@ -11,6 +11,7 @@ import * as processEnv from '../lib/processEnv.js';
 import * as commandExistsModule from '../lib/commandExists.js';
 import * as childProcess from '../lib/childProcess.js';
 import * as platform from '../lib/platform.js';
+import * as openAiModelsProbe from '../lib/openAiModelsProbe.js';
 import * as pm2Module from './pm2.js';
 import { PORTS } from '../lib/ports.js';
 import { EventEmitter } from 'events';
@@ -63,6 +64,12 @@ describe('llamaServerManager', () => {
     // The host may have an unrelated listener on the requested port (8080 is
     // especially common), so lifecycle tests pin the port-discovery result.
     vi.spyOn(platform, 'isPortInUse').mockResolvedValue(false);
+
+    // Status and start both probe the endpoint over the network. On a developer
+    // machine that is running PortOS's own llama-server the probe answers for
+    // real on :5568 and every lifecycle test reports "already running", so pin
+    // it unreachable for the same reason the port probe above is pinned.
+    vi.spyOn(openAiModelsProbe, 'probeOpenAiModels').mockResolvedValue({ reachable: false });
 
     vi.spyOn(pm2Module, 'execPm2').mockImplementation(async (args) => {
       execPm2Calls.push(args);

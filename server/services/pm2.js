@@ -42,6 +42,27 @@ function isJsScript(script) {
 }
 
 /**
+ * PM2 exports a managed process's own `pm2_env` into that process's environment
+ * as lowercase config keys, and the PM2 CLI reads those keys back as config —
+ * where they outrank an explicit CLI flag. Since PortOS itself runs under PM2,
+ * every `pm2 start` it spawns would otherwise inherit *portos-server's* config.
+ *
+ * That is how a loaded, serving llama-server kept dying: it was handed
+ * portos-server's 4GB `max_memory_restart`, so PM2's memory watchdog (which
+ * fires regardless of `--no-autorestart`) killed the 25GB model process seconds
+ * after every successful load, forever. `exec_mode` and `watch` leak the same
+ * way — verified by starting a process with each key set in the environment.
+ */
+const INHERITED_PM2_CONFIG_KEYS = ['max_memory_restart', 'exec_mode', 'watch'];
+
+/** Drop the PM2 config keys PM2 injected into our own environment. */
+function withoutInheritedPm2Config(env) {
+  const clean = { ...env };
+  for (const key of INHERITED_PM2_CONFIG_KEYS) delete clean[key];
+  return clean;
+}
+
+/**
  * Spawn PM2 CLI via local binary (node pm2/bin/pm2).
  * Always uses the local PM2 binary to avoid depending on a global pm2 install.
  * On Windows this also skips the pm2.cmd shim, dropping the cmd.exe -> pm2.cmd
@@ -60,7 +81,12 @@ function isJsScript(script) {
 export function spawnPm2(pm2Args, opts = {}) {
   // windowsHide comes from lib/childProcess.js. Re-asserting it here would also
   // outrank a caller's explicit opt-out, which the wrapper deliberately honors.
-  const child = spawn(process.execPath, [PM2_BIN, ...pm2Args], opts);
+  // The env sanitize applies to a caller-supplied env too — it inherits
+  // `process.env`, so it carries the same injected keys.
+  const child = spawn(process.execPath, [PM2_BIN, ...pm2Args], {
+    ...opts,
+    env: withoutInheritedPm2Config(opts.env || process.env),
+  });
   // Default error handler — prevents an uncaught EventEmitter 'error' crash
   // when no caller attaches its own handler. Callers that do attach their own
   // 'error' listener receive the event too (multiple listeners are additive).
