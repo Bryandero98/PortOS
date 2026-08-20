@@ -123,7 +123,7 @@ export const forceCosEvaluate = (options = {}) => request('/cos/evaluate', { met
 export const forceSpawnTask = (taskId, options = {}) => request(`/cos/tasks/${taskId}/spawn`, { method: 'POST', ...options });
 export const getCosHealth = () => request('/cos/health');
 export const forceHealthCheck = (options = {}) => request('/cos/health/check', { method: 'POST', ...options });
-export const getCosAgents = () => request('/cos/agents');
+export const getCosAgents = (options) => request('/cos/agents', options);
 export const getCosAgentDates = () => request('/cos/agents/history');
 export const getCosAgentsByDate = (date) => request(`/cos/agents/history/${date}`);
 export const getCosAgent = (id) => request(`/cos/agents/${id}`);

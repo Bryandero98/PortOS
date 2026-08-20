@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
 import { Play, ChevronDown, ChevronRight } from 'lucide-react';
 import toast from '../../ui/Toast';
@@ -38,7 +38,7 @@ function SectionGlyph({ status }) {
   return <MicroGlyph variant={spec.variant} state={spec.state} animated={spec.animated} size={13} />;
 }
 
-export default function TasksTab({ tasks, onRefresh, providers, apps }) {
+export default function TasksTab({ tasks, agents = [], onRefresh, providers, apps }) {
   const [searchParams] = useSearchParams();
   const [userTasksLocal, setUserTasksLocal] = useState([]);
   const [durations, setDurations] = useState(null);
@@ -71,14 +71,30 @@ export default function TasksTab({ tasks, onRefresh, providers, apps }) {
     task.id === selectedTaskId && source === selectedTaskSource
   );
 
+  // Task ids a live agent is already working. spawnAgentForTask registers its
+  // agent as running BEFORE flipping the task off 'pending', so between those
+  // two writes a task reads 'pending' on the task list and 'running' on the
+  // agent list — and the row showed up under Pending AND as an active agent.
+  // Defense in depth, not the whole fix: ChiefOfStaff now subscribes to the
+  // store's task events so the flip lands in ~400ms instead of a 30s poll. This
+  // settles the render from whichever of the two signals arrived first, so the
+  // split is right even when an event is delayed or dropped.
+  const spawningTaskIds = useMemo(() => new Set(
+    agents.filter(a => a.status === 'running' && a.taskId).map(a => a.taskId)
+  ), [agents]);
+  const isSpawning = useCallback(
+    (task) => task.status === 'pending' && spawningTaskIds.has(task.id),
+    [spawningTaskIds]
+  );
+
   // Split tasks by status for system tasks
   const pendingSystemTasks = useMemo(() =>
-    cosTasks.filter(t => t.status === 'pending'),
-    [cosTasks]
+    cosTasks.filter(t => t.status === 'pending' && !isSpawning(t)),
+    [cosTasks, isSpawning]
   );
   const activeSystemTasks = useMemo(() =>
-    cosTasks.filter(t => t.status === 'in_progress'),
-    [cosTasks]
+    cosTasks.filter(t => t.status === 'in_progress' || isSpawning(t)),
+    [cosTasks, isSpawning]
   );
   const blockedSystemTasks = useMemo(() =>
     cosTasks.filter(t => t.status === 'blocked'),
@@ -91,12 +107,12 @@ export default function TasksTab({ tasks, onRefresh, providers, apps }) {
 
   // Split user tasks by status (only pending tasks are sortable)
   const pendingUserTasksLocal = useMemo(() =>
-    userTasksLocal.filter(t => t.status === 'pending'),
-    [userTasksLocal]
+    userTasksLocal.filter(t => t.status === 'pending' && !isSpawning(t)),
+    [userTasksLocal, isSpawning]
   );
   const activeUserTasksLocal = useMemo(() =>
-    userTasksLocal.filter(t => t.status === 'in_progress'),
-    [userTasksLocal]
+    userTasksLocal.filter(t => t.status === 'in_progress' || isSpawning(t)),
+    [userTasksLocal, isSpawning]
   );
   const blockedUserTasksLocal = useMemo(() =>
     userTasksLocal.filter(t => t.status === 'blocked'),
@@ -255,7 +271,7 @@ export default function TasksTab({ tasks, onRefresh, providers, apps }) {
                 </div>
                 <div className="p-2 space-y-1.5">
                   {activeUserTasksLocal.map(task => (
-                    <TaskItem key={task.id} task={task} selected={isTaskSelected(task, 'user')} onRefresh={onRefresh} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
+                    <TaskItem key={task.id} task={task} spawning={isSpawning(task)} selected={isTaskSelected(task, 'user')} onRefresh={onRefresh} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
                   ))}
                 </div>
               </div>
@@ -345,7 +361,7 @@ export default function TasksTab({ tasks, onRefresh, providers, apps }) {
                 </div>
                 <div className="p-2 space-y-1.5">
                   {activeSystemTasks.map(task => (
-                    <TaskItem key={task.id} task={task} isSystem selected={isTaskSelected(task, 'internal')} onRefresh={onRefresh} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
+                    <TaskItem key={task.id} task={task} isSystem spawning={isSpawning(task)} selected={isTaskSelected(task, 'internal')} onRefresh={onRefresh} providers={providers} durations={durations} apps={apps} instances={assignableInstances} />
                   ))}
                 </div>
               </div>

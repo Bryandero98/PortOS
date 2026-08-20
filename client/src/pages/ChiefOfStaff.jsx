@@ -5,6 +5,7 @@ import { useLocalStorageBool } from '../hooks/useLocalStorageBool';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { useValidTab } from '../hooks/useValidTab';
 import * as api from '../services/api';
+import { coalesce } from '../utils/coalesce';
 import { Play, Pause, Square, Clock, CheckCircle, AlertCircle, Cpu, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Brain, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import BrailleSpinner from '../components/BrailleSpinner';
@@ -107,6 +108,9 @@ export default function ChiefOfStaff() {
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const tabsRef = useRef(null);
+  // Monotonic counter for queue-state writes, so a slow fetchData cannot overwrite
+  // a fresher fetchQueue result (see both functions below).
+  const queueSeqRef = useRef(0);
   const socket = useSocket();
 
   // Derive avatar style from server config, with optional dynamic override
@@ -140,6 +144,7 @@ export default function ChiefOfStaff() {
   }, []);
 
   const fetchData = useCallback(async () => {
+    const queueSeq = queueSeqRef.current;
     const [statusData, tasksData, agentsData, healthData, providersData, appsData, learningSummaryData, insightsData] = await Promise.all([
       api.getCosStatus().catch(() => null),
       api.getCosTasks().catch(() => ({ user: null, cos: null })),
@@ -153,8 +158,15 @@ export default function ChiefOfStaff() {
       api.getCosActionableInsights({ silent: true }).catch(() => null)
     ]);
     setStatus(statusData);
-    setTasks(tasksData);
-    setAgents(agentsData);
+    // fetchData is the SLOW read (8 endpoints, one of which runs a server health
+    // check), so a queue refresh started later routinely resolves first. Its task
+    // payload would then be clobbered by this older, pre-flip one — restoring the
+    // pending-AND-active render this change exists to remove. Drop only the queue
+    // half of a superseded read; the rest of the batch has no fresher writer.
+    if (queueSeqRef.current === queueSeq) {
+      setTasks(tasksData);
+      setAgents(agentsData);
+    }
     // `getCosHealth` above reads the *pre-check* persisted health, while the
     // getCosActionableInsights call in this same batch triggers a fresh server
     // health check (cos.runHealthCheck) that emits `cos:health:check` — the
@@ -196,6 +208,24 @@ export default function ChiefOfStaff() {
     setActiveAgentMeta(runningAgent?.metadata || null);
   }, [deriveAgentState]);
 
+  // A cheap, read-only refresh of just the queue — the task lists plus the agent
+  // list the Tasks tab reads to tell an already-spawning task from a waiting one.
+  // Deliberately NOT fetchData: that batch also pulls actionable insights, whose
+  // endpoint runs a health check that auto-restarts errored PM2 processes (see
+  // the note below), which must never ride the store's per-mutation task stream.
+  const fetchQueue = useCallback(async () => {
+    const [tasksData, agentsData] = await Promise.all([
+      api.getCosTasks({ silent: true }).catch(() => null),
+      api.getCosAgents({ silent: true }).catch(() => null)
+    ]);
+    if (tasksData) setTasks(tasksData);
+    if (Array.isArray(agentsData)) setAgents(agentsData);
+    // Supersede any fetchData still in flight — see the guard in fetchData. Bumped
+    // even when both reads failed: a failed refresh still means this queue state
+    // is newer than whatever an older, slower batch is about to report.
+    queueSeqRef.current += 1;
+  }, []);
+
   // NOTE: there is deliberately no on-demand "refresh just the banner insights"
   // path. The /cos/actionable-insights endpoint runs a health check that
   // AUTO-RESTARTS errored PM2 processes (see server/services/cosHealthMonitor.js)
@@ -216,6 +246,7 @@ export default function ChiefOfStaff() {
 
   // Reduced polling since most updates come via socket events
   useAutoRefetch(fetchData, 30_000, { pollOnly: true });
+
 
   useEffect(() => {
     if (!socket) return;
@@ -247,6 +278,26 @@ export default function ChiefOfStaff() {
       setTasks(prev => ({ ...prev, user: data }));
     };
     socket.on('cos:tasks:user:changed', handleTasksUserChanged);
+
+    // System (COS-TASKS.md) tasks change on their own file-watcher event, and
+    // scheduled/on-demand CoS work IS an internal task — so without this handler
+    // a freshly queued scheduled task only appeared once the 30s poll came
+    // around. Same full-list payload as the user event, so swap it in directly.
+    const handleTasksCosChanged = (data) => {
+      setTasks(prev => ({ ...prev, cos: data }));
+    };
+    socket.on('cos:tasks:cos:changed', handleTasksCosChanged);
+
+    // The store's own per-mutation event, which fires the instant a task is added
+    // or its status flips — ahead of the debounced file watcher above. It carries
+    // one task rather than the list, and also fires for writes with nothing to
+    // show here (every running task's federation lease heartbeat), so it drives
+    // one coalesced queue refresh rather than a fetch per event. This is what
+    // collapses the pending→in_progress lag: 'cos:agent:spawned' fires BEFORE
+    // spawnAgentForTask flips the task off 'pending', so the fetch it triggers
+    // always reads the task as still-queued.
+    const refreshQueue = coalesce(fetchQueue, 400);
+    socket.on('cos:tasks:changed', refreshQueue);
 
     const handleAgentSpawned = (data) => {
       setAgentState('coding');
@@ -349,6 +400,8 @@ export default function ChiefOfStaff() {
       socket.off('connect', subscribe);
       socket.off('cos:status', handleCosStatus);
       socket.off('cos:tasks:user:changed', handleTasksUserChanged);
+      socket.off('cos:tasks:cos:changed', handleTasksCosChanged);
+      socket.off('cos:tasks:changed', refreshQueue);
       socket.off('cos:agent:spawned', handleAgentSpawned);
       socket.off('cos:agent:updated', handleAgentUpdated);
       socket.off('cos:agent:output', handleAgentOutput);
@@ -356,8 +409,9 @@ export default function ChiefOfStaff() {
       socket.off('cos:health:check', handleHealthCheck);
       socket.off('cos:log', handleCosLog);
       socket.off('apps:changed', handleAppsChanged);
+      refreshQueue.cancel();
     };
-  }, [socket, fetchData]);
+  }, [socket, fetchData, fetchQueue]);
 
   const handleStart = async () => {
     const result = await api.startCos({ silent: true }).catch(err => {
@@ -967,7 +1021,7 @@ export default function ChiefOfStaff() {
                 tabs that don't surface this data. */}
             <ActionableInsightsBanner insights={insights} onTaskUnblocked={handleTaskUnblocked} onRefresh={fetchData} />
             <QuickSummary />
-            <TasksTab tasks={tasks} onRefresh={fetchData} providers={providers} apps={apps} />
+            <TasksTab tasks={tasks} agents={agents} onRefresh={fetchData} providers={providers} apps={apps} />
           </div>
         )}
         {activeTab === 'agents' && (

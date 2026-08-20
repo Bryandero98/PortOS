@@ -72,11 +72,15 @@ function getSuccessRateStyle(rate) {
   return { bg: 'bg-port-error/15', text: 'text-port-error', label: 'low' };
 }
 
-export default function TaskItem({ task, isSystem, selected = false, onRefresh, providers, durations, dragHandleProps, apps, instances = null, onEditingChange }) {
+export default function TaskItem({ task, isSystem, spawning = false, selected = false, onRefresh, providers, durations, dragHandleProps, apps, instances = null, onEditingChange }) {
   // System tasks are persisted in COS-TASKS.md. Every task
   // mutation must name that source; otherwise the API's user-queue default
   // searches TASKS.md and reports the system task as missing.
   const taskSource = isSystem ? 'internal' : 'user';
+  // A spawning task is still persisted as 'pending' but is already running —
+  // show the running glyph, not the queued clock. See spawnAgentForTask's
+  // registration ordering for why the two disagree.
+  const displayStatus = spawning ? 'in_progress' : task.status;
   const idScope = isSystem ? 'sys' : 'user';
   const requiresApproval = isSystem && task.approvalRequired;
   // Name the hold's reason on the APPROVE button so "why is this one waiting on
@@ -149,7 +153,7 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
   // Calculate duration estimate for pending tasks
   // Uses P80 estimate when available for more realistic time predictions
   const durationEstimate = useMemo(() => {
-    if (!durations || task.status !== 'pending') return null;
+    if (!durations || displayStatus !== 'pending') return null;
 
     // Queue reads return raw parsed tasks without taskType. Supply the queue
     // source so this estimate stays in the same bucket the server records.
@@ -182,7 +186,7 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
     }
 
     return null;
-  }, [durations, task, task.status]);
+  }, [durations, task, displayStatus]);
 
   const handleStatusChange = async (newStatus, blockedReasonText = '', successMessage = `Task marked as ${newStatus}`) => {
     const updates = { status: newStatus, type: taskSource };
@@ -348,9 +352,9 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
             }
           }}
           className="mt-0.5 hover:scale-110 transition-transform"
-          aria-label={`Status: ${task.status}. Click to mark as ${task.status === 'completed' || task.status === 'blocked' ? 'pending' : 'completed'}`}
+          aria-label={`Status: ${displayStatus}. Click to mark as ${task.status === 'completed' || task.status === 'blocked' ? 'pending' : 'completed'}`}
         >
-          {statusIcons[task.status]}
+          {statusIcons[displayStatus]}
         </button>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -645,6 +649,12 @@ export default function TaskItem({ task, isSystem, selected = false, onRefresh, 
               />
             ) : (
               <>
+                {/* Deliberately gated on the PERSISTED status, not `displayStatus`:
+                    an agent record stuck at `running` (the zombie state
+                    cleanupZombieAgents exists to clear) would otherwise take this
+                    row's only recovery affordance away with it. forceSpawnTask
+                    refuses a task a live agent already holds, so a click during a
+                    real spawn gets an honest error rather than a duplicate run. */}
                 {task.status === 'pending' && !task.approvalRequired && (
                   <button
                     onClick={async () => {

@@ -597,6 +597,12 @@ async function runAgentSpawn(task) {
 
     emitLog('info', `Agent ${agentId} initializing...${worktreeInfo ? ' (worktree)' : ''}${jiraBranchName ? ` (JIRA: ${jiraTicket?.ticketId})` : ''}`, { agentId, taskId: task.id });
 
+    // NOTE: the agent is already registered as `running` above, so until this
+    // write lands the task still reads `pending` — one task, two live states.
+    // Readers that pair the task list with the agent list must reconcile that
+    // (forceSpawnTask's live-agent refusal, activeProcessing's queued count, the
+    // CoS Tasks tab). Widening this gap widens their window.
+    //
     // Mark the task as in_progress, increment the total spawn count, and refresh
     // the federation claim (issue #1563). The claim was already acquired up front
     // (above); re-stamping it here renews the lease at the moment the agent
