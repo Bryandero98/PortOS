@@ -28,6 +28,7 @@
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { statSync } from 'fs';
+import { rm } from 'fs/promises';
 import { expandHome } from './fileUtils.js';
 
 /**
@@ -59,6 +60,11 @@ export function creativeDirectorScratchCwd(agentId) {
     throw new Error('creativeDirectorScratchCwd requires a non-empty agentId');
   }
   return join(tmpdir(), 'portos-cd-cwd', agentId);
+}
+
+/** Best-effort: missing dirs are a no-op (`force: true`). */
+export async function removeCreativeDirectorScratchCwd(agentId) {
+  await rm(creativeDirectorScratchCwd(agentId), { recursive: true, force: true });
 }
 
 /**

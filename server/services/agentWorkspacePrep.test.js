@@ -12,7 +12,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('./cosEvents.js', () => ({ emitLog: vi.fn() }));
-vi.mock('../lib/execGit.js', () => ({ execGit: vi.fn() }));
+vi.mock('../lib/execGit.js', () => ({
+  execGit: vi.fn().mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 }),
+}));
 vi.mock('./cos.js', () => ({
   updateTask: vi.fn().mockResolvedValue({}),
   addTask: vi.fn().mockResolvedValue({}),
@@ -54,6 +56,7 @@ vi.mock('../lib/fileUtils.js', async (importOriginal) => {
 import { prepareAgentWorkspace, resolveTaskExistingBranch } from './agentWorkspacePrep.js';
 import { updateTask, getAgents } from './cos.js';
 import { ensureLatest } from './git.js';
+import { execGit } from '../lib/execGit.js';
 import { detectConflicts } from './taskConflict.js';
 import { getAppWorkspace } from './agentPromptBuilder.js';
 import { createWorktree, adoptWorktree, findAdoptableWorktreeForBranch } from './worktreeManager.js';
@@ -75,6 +78,7 @@ describe('prepareAgentWorkspace — Creative Director scratch cwd (#4650)', () =
     expect(r.workspacePath).not.toBe(PATHS.root);
     expect(r.worktreeInfo).toBeNull();
     expect(ensureDir).toHaveBeenCalledWith(r.workspacePath);
+    expect(execGit).toHaveBeenCalledWith(['init'], r.workspacePath);
     expect(ensureLatest).not.toHaveBeenCalled();
     expect(createWorktree).not.toHaveBeenCalled();
     expect(detectConflicts).not.toHaveBeenCalled();

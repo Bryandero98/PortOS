@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { posixPath } from './testHelper.js';
 
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { tmpdir, homedir } from 'os';
 import { join } from 'path';
-import { resolveSpawnCwd, withSpawnCwdEnv, usesCreativeDirectorScratchCwd, creativeDirectorScratchCwd, resolveAgentCliCwd } from './spawnCwd.js';
+import { resolveSpawnCwd, withSpawnCwdEnv, usesCreativeDirectorScratchCwd, creativeDirectorScratchCwd, resolveAgentCliCwd, removeCreativeDirectorScratchCwd } from './spawnCwd.js';
 import { PATHS } from './fileUtils.js';
 import { collectServerSources, readServerSource } from './testHelper.js';
 
@@ -186,6 +186,16 @@ describe('Creative Director scratch cwd (#4650)', () => {
       task: { metadata: {} },
       agentId: 'agent-cd-2',
     })).toBe(PATHS.root);
+  });
+
+  it('removeCreativeDirectorScratchCwd deletes the scratch dir and is a no-op when missing', async () => {
+    const dir = creativeDirectorScratchCwd('agent-cd-rm');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'leftover.txt'), 'x');
+    expect(existsSync(dir)).toBe(true);
+    await removeCreativeDirectorScratchCwd('agent-cd-rm');
+    expect(existsSync(dir)).toBe(false);
+    await expect(removeCreativeDirectorScratchCwd('agent-cd-rm')).resolves.toBeUndefined();
   });
 });
 
