@@ -348,7 +348,9 @@ const collectNonReliefDescendants = (part) => {
   const walk = (children) => {
     for (const child of children || []) {
       if (child.explodeWithParent === true) continue;
-      descendants.push({ id: child.id, name: child.name || child.id });
+      if (child.geometry) {
+        descendants.push({ id: child.id, name: child.name || child.id });
+      }
       walk(child.children);
     }
   };

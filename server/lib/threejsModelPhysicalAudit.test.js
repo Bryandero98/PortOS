@@ -110,6 +110,34 @@ describe('threejsModelPhysicalAudit', () => {
     expect(res.findings.filter((finding) => finding.code === 'nonuniform-parent-scale')).toHaveLength(0);
   });
 
+  it('traverses empty organizational groups but reports only geometry-bearing descendants', () => {
+    const res = evaluateThreejsPhysicalAudit({
+      name: 'Organizational Group Spec',
+      parts: [{
+        id: 'body',
+        name: 'Body',
+        geometry: { type: 'box', width: 2, height: 1, depth: 1 },
+        scale: [3, 1, 0.2],
+        children: [{
+          id: 'rig',
+          name: 'Rig',
+          children: [{
+            id: 'head',
+            name: 'Head',
+            geometry: { type: 'sphere', radius: 0.5 },
+          }],
+        }],
+      }],
+    });
+
+    const finding = res.findings.find((item) => item.code === 'nonuniform-parent-scale');
+    expect(finding).toMatchObject({
+      partIds: ['body', 'head'],
+      affectedDescendantNames: ['Head'],
+    });
+    expect(finding.message).not.toContain('Rig');
+  });
+
   it('checks animated scale channel endpoints against nested parts', () => {
     const res = evaluateThreejsPhysicalAudit({
       name: 'Animated Scale Spec',
