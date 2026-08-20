@@ -4,10 +4,12 @@
  *
  * Worktree operations are destructive: adoption moves a directory and reapers
  * remove one. The callers therefore share this pure gate instead of carrying
- * slightly different copies of "managed root, agent id, claim, liveness, lock".
- * Callers can explicitly opt into the differences that are intentional: a
- * reaper may include `.claude/worktrees/`, and stale claims may be reclaimed
- * only by branch reconciliation.
+ * slightly different copies of "managed root, agent id, lock, liveness, claim".
+ * That list is also the ORDER the gate applies them in, which is itself policy —
+ * see `worktreeOwnershipReason` for why the claim comes last. Callers can
+ * explicitly opt into the differences that are intentional: a reaper may
+ * include `.claude/worktrees/`, stale claims may be reclaimed only by branch
+ * reconciliation, and only the dispatch side reads a live claim as unowned.
  */
 
 import { win32 } from 'path';

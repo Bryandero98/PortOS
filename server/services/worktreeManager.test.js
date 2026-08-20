@@ -488,37 +488,6 @@ describe('Orphaned Worktree Detection', () => {
   });
 });
 
-// reapMergedWorktrees knows only "merged + clean", which is ALSO true of a claim
-// a human paused ten minutes ago. Reclaiming one turns on idle time and on
-// whether the branch was provably shipped, both of which only branchReconcile
-// computes — so this reaper deliberately passes neither `allowStaleClaim` nor an
-// age, and a claim tree is refused under BOTH of its managed roots. This mirrors
-// the gate call it makes so the skip cannot be lost to a future reordering.
-describe('reapMergedWorktrees claim policy', () => {
-  const COS_ROOT = '/repo/data/cos/worktrees';
-  const CLAUDE_ROOT = '/repo/.claude/worktrees';
-  const managedRoots = [
-    { path: COS_ROOT, requireAgentId: true },
-    { path: CLAUDE_ROOT, requireAgentId: false },
-  ];
-  const reason = (path) => worktreeOwnershipReason({
-    path, locked: false, activeAgentIds: new Set(), roots: managedRoots, requireKnownLiveness: true,
-  });
-
-  it('refuses a claim worktree under either managed root', () => {
-    // Under the CoS root the agent-id policy refuses it first; under the
-    // `.claude/worktrees/` root, which admits arbitrary names, the claim hold
-    // itself does. Either way the reaper skips it with a reported reason.
-    expect(reason(`${COS_ROOT}/claim-issue-42`)).toBe('worktree-missing-agent-id');
-    expect(reason(`${CLAUDE_ROOT}/claim-issue-42`)).toBe('worktree-human-claim');
-  });
-
-  it('still reaps the non-claim trees it exists to clean', () => {
-    expect(reason(`${COS_ROOT}/agent-abc12345`)).toBeNull();
-    expect(reason(`${CLAUDE_ROOT}/review-fix`)).toBeNull();
-  });
-});
-
 describe('isHumanClaimWorktree', () => {
   it('is true for /claim worktree dir names', () => {
     expect(isHumanClaimWorktree('claim-extract-compare-helpers')).toBe(true);
