@@ -345,6 +345,21 @@ describe.skipIf(!pyBin)('trellis2RestoreFillHoles', () => {
     expect(out).toMatch(/def simplify\(self, target=1000000\):\n\s+return\n/);
   });
 
+  it('finds the stub when the interpreter default codec is not UTF-8', () => {
+    // The Windows-only failure this pins: UPSTREAM_STUB contains an en dash, and a
+    // locale-default read (cp1252 on a Windows runner) mangles it so the literal match
+    // fails and the patcher reports "upstream changed the patch". PYTHONUTF8=0 plus a
+    // legacy locale reproduces that on any platform; without an explicit encoding= in
+    // the patcher this test fails here too.
+    writeFileSync(basePath(), STUBBED);
+    const out = execFileSync(pyBin, [trellis2FillHolesScript(), dir], {
+      encoding: 'utf8',
+      env: { ...process.env, PYTHONUTF8: '0', LC_ALL: 'C', LANG: 'C' },
+    });
+    expect(out).toMatch(/now gated/);
+    expect(readNormalized()).toContain('PORTOS_TRELLIS2_FILL_HOLES');
+  });
+
   it('finds and replaces the stub in a CRLF file', () => {
     // The Windows condition, reproduced on any platform. The patcher matches
     // UPSTREAM_STUB literally and that literal contains \n, so it only works because

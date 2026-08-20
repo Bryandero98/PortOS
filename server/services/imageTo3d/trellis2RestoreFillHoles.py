@@ -55,7 +55,13 @@ def main():
     if not path.exists():
         raise SystemExit(f"not found: {path}")
 
-    source = path.read_text()
+    # encoding="utf-8" is load-bearing, not hygiene. UPSTREAM_STUB contains an EN DASH,
+    # and `read_text()` without an explicit codec uses the LOCALE default — cp1252 on a
+    # Windows runner — which mangles it to "â€”" so the literal match silently fails and
+    # this reports "upstream changed the patch". That failed only on Windows CI and
+    # nowhere else. Same reason on the write side: round-tripping through cp1252 would
+    # corrupt every non-ASCII byte in the file we are rewriting.
+    source = path.read_text(encoding="utf-8")
 
     if GATE_ENV in source:
         print(f"[portos] fill_holes gate already present in {path.name}")
@@ -73,7 +79,7 @@ def main():
     # which stay stubbed deliberately: neither has the independent at-scale
     # evidence fill_holes has, and `simplify` additionally interacts with the
     # decimation-target override in trellis2GenerateRunner.py.
-    path.write_text(source.replace(UPSTREAM_STUB, GATED, 1))
+    path.write_text(source.replace(UPSTREAM_STUB, GATED, 1), encoding="utf-8")
     print(f"[portos] fill_holes is now gated on ${GATE_ENV} in {path.name}")
 
 

@@ -378,7 +378,9 @@ def _enable_fill_holes(generate_dir):
             / "mesh" / "base.py")
     if not base.exists():
         raise AdapterContractError(f"--fill-holes requested but {base} is missing")
-    if FILL_HOLES_ENV not in base.read_text():
+    # Explicit codec for the same reason the patcher needs one: a locale-default read
+    # of a UTF-8 source mangles non-ASCII and can turn a present gate into an absent one.
+    if FILL_HOLES_ENV not in base.read_text(encoding="utf-8"):
         raise AdapterContractError(
             "--fill-holes was requested but trellis2/representations/mesh/base.py "
             "still carries the unconditional mps_compat stub. Repair the TRELLIS.2 "
