@@ -111,7 +111,7 @@ describe('Media3D — models & install', () => {
     getImageTo3dTargets.mockResolvedValue({
       targets: [target({
         installed: true,
-        textureBake: { quality: 'fallback', missing: ['mtldiffrast'], help: 'Install the Metal Toolchain.' },
+        degraded: { label: 'degraded textures', help: 'Install the Metal Toolchain.', repairable: true },
       })],
     });
     renderAt();
@@ -126,9 +126,8 @@ describe('Media3D — models & install', () => {
     getImageTo3dTargets.mockResolvedValue({
       targets: [target({
         installed: true,
-        textureBake: {
-          quality: 'fallback', missing: ['mtldiffrast'], repairable: false,
-          blocker: 'requires-xcode', help: 'Install Xcode from the App Store.',
+        degraded: {
+          label: 'degraded textures', help: 'Install Xcode from the App Store.', repairable: false,
         },
       })],
     });
@@ -138,14 +137,37 @@ describe('Media3D — models & install', () => {
     expect(screen.queryByRole('button', { name: /install/i })).toBeNull();
   });
 
-  it('stays plain Ready when the bake probe could not determine anything', async () => {
-    // A probe that failed must not cry wolf about an install that is probably fine.
+  // The degraded projection is normalized server-side, so a target degraded for an
+  // entirely different reason (Pixal3D with no NATTEN) renders through the same path
+  // with no per-target UI branch.
+  it('renders a non-TRELLIS degradation through the same badge and Repair button', async () => {
     getImageTo3dTargets.mockResolvedValue({
-      targets: [target({ installed: true, textureBake: { quality: 'unknown', missing: [] } })],
+      targets: [target({
+        id: 'pixal3dCuda',
+        label: 'Pixal3D (CUDA)',
+        installed: true,
+        degraded: { label: 'NAF fallback', help: 'NATTEN is missing.', repairable: true },
+      })],
+    });
+    renderAt();
+    expect(await screen.findByText(/NAF fallback/i)).toBeInTheDocument();
+    expect(screen.getByText('NATTEN is missing.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /repair install/i })).toBeInTheDocument();
+    // Must NOT leak the other lane's copy.
+    expect(screen.queryByText(/metal toolchain/i)).toBeNull();
+  });
+
+  it('stays plain Ready when the server reports no degradation', async () => {
+    // The server owns the unknown-vs-degraded distinction (a probe that merely failed
+    // must not cry wolf) and expresses it by OMITTING `degraded`. Asserting on the
+    // absence of that field is what actually exercises the component; a `textureBake`
+    // fixture would not, since nothing here reads it.
+    getImageTo3dTargets.mockResolvedValue({
+      targets: [target({ installed: true })],
     });
     renderAt();
     expect(await screen.findByText(/ready/i)).toBeInTheDocument();
-    expect(screen.queryByText(/degraded textures/i)).toBeNull();
+    expect(screen.queryByText(/degraded/i)).toBeNull();
     expect(screen.queryByRole('button', { name: /install/i })).toBeNull();
   });
 

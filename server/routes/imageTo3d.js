@@ -3,14 +3,7 @@ import { createReadStream } from 'node:fs';
 import { z } from 'zod';
 import { asyncHandler, ServerError, sendErrorResponse } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
-import {
-  getTarget,
-  listTargets,
-  detectHostCapabilities,
-  unavailableReason,
-  unavailableReasonLabel,
-  IMAGE_TO_3D_TARGET_IDS,
-} from '../services/imageTo3d/targets.js';
+import { getTarget, listTargets, detectHostCapabilities, unavailableReason, unavailableReasonLabel, IMAGE_TO_3D_TARGET_IDS, renderOptionSupportFor } from '../services/imageTo3d/targets.js';
 import { getTargetAdapter } from '../services/imageTo3d/adapters.js';
 import {
   listModels,
@@ -252,10 +245,27 @@ router.get('/models', asyncHandler(async (_req, res) => {
   res.json(await listModels());
 }));
 
+/**
+ * Attach the target's render-option support to a model response.
+ *
+ * Projected at the response boundary, never stored: the detail view loads a RECORD
+ * rather than the target list, and still has to know which per-run knobs this record's
+ * target honors. Derived from the descriptor on every read, so it cannot go stale.
+ *
+ * Applied to EVERY response that returns a model, not just the GET. The client does
+ * `setRecord(next)` with the POST body, so a create/re-render response that omitted the
+ * field would blank it — flipping the disabled Quality control and its hint back on
+ * until the next poll restored them.
+ */
+const withRenderSupport = (model) => {
+  const supportsRenderOptions = renderOptionSupportFor(model.target);
+  return supportsRenderOptions ? { ...model, supportsRenderOptions } : model;
+};
+
 router.post('/models', asyncHandler(async (req, res) => {
   const input = validateRequest(createModelSchema, req.body);
   const model = await createModel(input);
-  res.status(202).json(model);
+  res.status(202).json(withRenderSupport(model));
 }));
 
 router.get('/models/:id/asset', asyncHandler(async (req, res) => {
@@ -287,7 +297,7 @@ router.get('/models/:id/asset', asyncHandler(async (req, res) => {
 router.get('/models/:id', asyncHandler(async (req, res) => {
   const model = await getModel(req.params.id);
   if (!model) throw new ServerError('Image-to-3D model not found', { status: 404, code: 'NOT_FOUND' });
-  res.json(model);
+  res.json(withRenderSupport(model));
 }));
 
 router.post('/models/:id/generate', asyncHandler(async (req, res) => {
@@ -295,7 +305,7 @@ router.post('/models/:id/generate', asyncHandler(async (req, res) => {
   // only and are recorded on its run entry.
   const options = validateRequest(renderOptionsSchema, req.body ?? {});
   const model = await startGeneration(req.params.id, { options });
-  res.status(202).json(model);
+  res.status(202).json(withRenderSupport(model));
 }));
 
 router.delete('/models/:id', asyncHandler(async (req, res) => {
