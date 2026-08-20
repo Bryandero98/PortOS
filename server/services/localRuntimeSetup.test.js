@@ -112,10 +112,16 @@ describe('describeRuntimeSetup', () => {
 });
 
 describe('runLocalRuntimeSetup', () => {
-  it('does nothing when the endpoint already answers', async () => {
+  it('does nothing when the endpoint already answers — on ANY platform', async () => {
+    // Pinned to a platform this runtime cannot be installed on: a daemon that
+    // answers is running, and the macOS-only gate must not turn that into
+    // "MTPLX runs only on macOS". (Left unpinned this passed on a macOS dev box
+    // and failed on the Linux CI runner, which is how the ordering bug surfaced.)
+    const restore = pinPlatform('linux');
     probe.probeOpenAiModels.mockResolvedValueOnce(reachable());
 
     const result = await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1' });
+    restore();
 
     expect(result).toMatchObject({ success: true, message: expect.stringMatching(/already running/) });
     expect(streaming.runStreamingCommand).not.toHaveBeenCalled();
@@ -157,6 +163,7 @@ describe('runLocalRuntimeSetup', () => {
   });
 
   it('refuses a host that cannot run the runtime at all', async () => {
+    probe.probeOpenAiModels.mockResolvedValueOnce(unreachable);
     const restore = pinPlatform('win32');
     const result = await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1' });
     restore();

@@ -287,13 +287,18 @@ export async function runLocalRuntimeSetup(kind, { endpoint, emit = () => {}, is
   const row = SETUP_ROWS[kind];
   const runtime = LOCAL_RUNTIMES[kind];
   if (!row || !runtime) return { success: false, error: `PortOS has no automatic setup for \`${String(kind)}\`.` };
-  if (!platformSupported(row)) return { success: false, error: row.unsupportedReason };
 
+  // The reachability probe comes BEFORE the platform gate on purpose: a daemon
+  // that is already answering is running whatever this host's platform is, and
+  // "MTPLX runs only on macOS" is a false report about a server the user can
+  // see working. The gate is about what PortOS may INSTALL, not about what is
+  // already up.
   const target = endpoint || runtime.defaultBaseUrl;
   const probe = await probeOpenAiModels(target, { timeoutMs: PROBE_TIMEOUT_MS });
   if (probe.reachable) {
     return { success: true, message: `${runtime.label} is already running at ${target} — nothing to do.` };
   }
+  if (!platformSupported(row)) return { success: false, error: row.unsupportedReason };
 
   // Same two signals `providerReadiness.js` uses: the binary on PATH, plus LM
   // Studio's macOS app bundle, which serves without ever putting `lms` there.
