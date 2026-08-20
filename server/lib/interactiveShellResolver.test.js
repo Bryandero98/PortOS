@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { resolveInteractiveShellWith } from './interactiveShellResolver.js';
 
 // Windows env fixture. `exists` is driven per-test so the whole preference
@@ -12,10 +12,10 @@ const WIN_ENV = {
 };
 const PS5 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 const onlyExists = (...paths) => (p) => paths.includes(p);
-// readdir is stubbed by default so the suite never depends on what the host
-// machine happens to have installed under Program Files.
+// readdir and the PATH lookup are stubbed by default so the suite never depends
+// on what the host machine happens to have installed.
 const win = (opts = {}) => resolveInteractiveShellWith({
-  platform: 'win32', env: WIN_ENV, readdir: () => ['7'], ...opts,
+  platform: 'win32', env: WIN_ENV, readdir: () => ['7'], findOnPath: () => null, ...opts,
 });
 
 describe('resolveInteractiveShellWith on Windows', () => {
@@ -48,9 +48,21 @@ describe('resolveInteractiveShellWith on Windows', () => {
     expect(win({ exists: onlyExists(PS5) })).toBe(PS5);
   });
 
-  it('falls back to the WindowsApps pwsh launcher when no versioned dir exists', () => {
-    const launcher = 'C:\\Users\\example\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe';
-    expect(win({ exists: onlyExists(launcher, PS5) })).toBe(launcher);
+  it('finds a pwsh installed anywhere on PATH (scoop, choco, the Store shim)', () => {
+    // Those installs have no %ProgramFiles%\PowerShell\<n> directory, so the
+    // versioned scan misses them entirely.
+    const scoop = 'C:\\Users\\example\\scoop\\shims\\pwsh.exe';
+    expect(win({
+      exists: onlyExists(PS5),
+      findOnPath: (name) => (name === 'pwsh.exe' ? scoop : null),
+    })).toBe(scoop);
+  });
+
+  it('does not scan PATH when a versioned pwsh install already answered', () => {
+    const versioned = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+    const findOnPath = vi.fn(() => 'C:\\other\\pwsh.exe');
+    expect(win({ exists: onlyExists(versioned), findOnPath })).toBe(versioned);
+    expect(findOnPath).not.toHaveBeenCalled();
   });
 
   it('uses COMSPEC only when no PowerShell exists at all', () => {

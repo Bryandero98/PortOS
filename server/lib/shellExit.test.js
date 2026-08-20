@@ -32,9 +32,13 @@ describe('buildRunThenExitCommand', () => {
 
   it('falls back to the platform default when the session records no shell', () => {
     // Matches detectShellFlavor's own fallback — an externally-registered PTY
-    // hands us no shell binary.
+    // hands us no shell binary. On Windows that default is PowerShell, where
+    // `&` is a *parse error* in 5.1 and backgrounds the command as a job in
+    // pwsh 7, so this must not fall back to the cmd form.
     expect(buildRunThenExitCommand('claude', undefined)).toBe(
-      process.platform === 'win32' ? 'claude & exit' : 'claude; exit $?',
+      process.platform === 'win32'
+        ? '$LASTEXITCODE = 1; claude; exit $LASTEXITCODE'
+        : 'claude; exit $?',
     );
   });
 });

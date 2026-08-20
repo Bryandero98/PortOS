@@ -5,6 +5,7 @@ import { withSpawnCwdEnv } from '../lib/spawnCwd.js';
 import { scheduleSubmitEnters, SUBMIT_KEY } from '../lib/tuiHandshake.js';
 import { buildCdCommand } from '../lib/shellCd.js';
 import { resolveInteractiveShell } from '../lib/interactiveShellResolver.js';
+import { buildRunThenExitCommand } from '../lib/shellExit.js';
 
 // Store active shell sessions (persist across socket reconnects)
 const shellSessions = new Map();
@@ -119,14 +120,8 @@ export function buildSafeEnv(env = process.env, platform = process.platform) {
 
 /**
  * The shell a session runs when the caller doesn't name one.
- *
- * Exported so a caller that must render a command in this shell's dialect
- * (agentTuiSpawning's run-then-exit line) can ask for the same answer the
- * session will get, rather than re-deriving it and drifting.
- *
- * @returns {string} shell binary path (or bare name, on POSIX)
  */
-export function getDefaultShell() {
+function getDefaultShell() {
   return resolveInteractiveShell();
 }
 
@@ -241,6 +236,14 @@ export function createShellSession(socket, options = {}) {
   releaseExternalViews(socket, sessionId);
   broadcastSessionList();
   if (options.initialCommand) {
+    // `exitWithCommand` wraps the command so the shell dies with it, carrying its
+    // status out (an agent-TUI shell exists only to host one CLI). Rendered HERE
+    // rather than by the caller because only this function knows which shell the
+    // session actually got, and the wrapper is dialect-specific — see
+    // lib/shellExit.js. Same reason changeSessionDirectory renders its own `cd`.
+    const initialCommand = options.exitWithCommand
+      ? buildRunThenExitCommand(options.initialCommand, shell)
+      : options.initialCommand;
     // onInitialCommandSent fires at the exact moment the command is injected,
     // regardless of which branch sent it. The agent-TUI spawner uses this to
     // start observing claude's input-readiness ONLY after the real command is
@@ -248,7 +251,7 @@ export function createShellSession(socket, options = {}) {
     // prematurely satisfy its bracketed-paste gate.
     const sendInitial = () => {
       options.onInitialCommandSent?.();
-      submitToSession(sessionId, options.initialCommand);
+      submitToSession(sessionId, initialCommand);
     };
     if (options.waitForPromptReady) {
       // Inject the command only once the shell can ACTUALLY run commands. A fixed
@@ -266,12 +269,13 @@ export function createShellSession(socket, options = {}) {
       // sighting is unambiguous. Instant-prompt keystroke buffering replays the
       // probe into the real shell, so this is theme- and shell-agnostic. A
       // bounded fallback still injects the command if the probe never round-trips.
-      // NOTE: the probe is POSIX (`printf`). The only caller of waitForPromptReady
-      // is the agent-TUI path, which is developer-machine (mac/linux) only; on a
-      // Windows shell (PowerShell or cmd.exe) `printf` isn't a command, so the
-      // probe errors out, the marker never appears, and the command injects on the
-      // bounded fallback below (slower, never broken). A Windows port would need a
-      // dialect-aware probe — see #4638.
+      // NOTE: the probe is still POSIX-only (`printf`), unlike the `cd` and
+      // run-then-exit lines, which are rendered per dialect. On a Windows shell
+      // (PowerShell or cmd.exe) `printf` isn't a command, so the probe errors
+      // out, the marker never appears, and the command injects on the bounded
+      // fallback below — i.e. every Windows agent-TUI spawn waits the full 8s
+      // and then injects blind, which is exactly what the probe exists to avoid.
+      // Never broken, just slow and unproven. Making it dialect-aware is #4638.
       let sent = false;
       let sub = null;
       let exitSub = null;

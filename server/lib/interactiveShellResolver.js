@@ -27,19 +27,20 @@
  *
  * Resolution order (Windows):
  *   1. PORTOS_SHELL override — explicit escape hatch, always wins.
- *   2. PowerShell 7+ (`pwsh.exe`), highest major version installed.
- *   3. Windows PowerShell 5.1 (`powershell.exe`) — ships with Windows, so this
+ *   2. PowerShell 7+ (`pwsh.exe`) at its versioned install dirs, newest major.
+ *   3. Any other `pwsh.exe` on PATH — scoop, chocolatey, a custom prefix, or
+ *      the winget/Store launcher shim under `WindowsApps`.
+ *   4. Windows PowerShell 5.1 (`powershell.exe`) — ships with Windows, so this
  *      is the realistic floor; it crosses drives too, it just loads the user's
  *      profile (slower start) and is stuck on the older engine.
- *   4. `COMSPEC` / `cmd.exe` — only if no PowerShell exists at all.
+ *   5. `COMSPEC` / `cmd.exe` — only if no PowerShell exists at all.
  *
  * On POSIX the choice was never broken: PORTOS_SHELL, else `SHELL`, else zsh.
- *
- * Self-contained: no imports out to other PortOS modules.
  */
 
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
+import { findCommandOnPath } from './processEnv.js';
 
 /**
  * `%ProgramFiles%\PowerShell\<major>\pwsh.exe` for every installed major
@@ -47,7 +48,7 @@ import { join } from 'path';
  * PowerShell 8 is picked up without a code change, and so a box with both 7 and
  * 8 gets the newer one.
  */
-function pwshVersionDirs(env, readdir) {
+function pwshCandidatePaths(env, readdir) {
   const roots = [env.ProgramFiles, env['ProgramFiles(x86)']].filter(Boolean);
   const found = [];
   for (const root of roots) {
@@ -69,17 +70,26 @@ function pwshVersionDirs(env, readdir) {
   return found;
 }
 
-function windowsShellCandidates(env, readdir) {
-  const candidates = pwshVersionDirs(env, readdir);
-  // winget/Store installs put a `pwsh.exe` launcher here; it is on PATH but the
-  // versioned directory above may not exist (or may be a different install).
-  if (env.LOCALAPPDATA) {
-    candidates.push(join(env.LOCALAPPDATA, 'Microsoft', 'WindowsApps', 'pwsh.exe'));
-  }
+// Probed in order and short-circuited, so the PATH scan only runs on a box with
+// no versioned PowerShell 7 install.
+function resolveWindowsShell(env, exists, readdir, findOnPath) {
+  const versioned = pwshCandidatePaths(env, readdir).find(exists);
+  if (versioned) return versioned;
+
+  // Covers every non-standard pwsh install — scoop, chocolatey, a custom
+  // prefix, and the winget/Store launcher shim under WindowsApps — rather than
+  // hard-coding one more directory per packaging tool.
+  const onPath = findOnPath('pwsh.exe', { env });
+  if (onPath) return onPath;
+
   // Windows PowerShell 5.1 — present on every supported Windows.
-  const systemRoot = env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows';
-  candidates.push(join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'));
-  return candidates;
+  const ps5 = join(
+    env.SystemRoot || 'C:\\Windows',
+    'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
+  );
+  if (exists(ps5)) return ps5;
+
+  return env.COMSPEC || 'cmd.exe';
 }
 
 /**
@@ -91,6 +101,7 @@ function windowsShellCandidates(env, readdir) {
  * @param {NodeJS.ProcessEnv} [deps.env] - environment to read
  * @param {(path: string) => boolean} [deps.exists] - filesystem probe
  * @param {(dir: string) => string[]} [deps.readdir] - directory listing; may throw
+ * @param {(name: string, opts: object) => string|null} [deps.findOnPath] - PATH lookup
  * @returns {string} shell binary path (or bare name, on POSIX)
  */
 export function resolveInteractiveShellWith({
@@ -98,19 +109,22 @@ export function resolveInteractiveShellWith({
   env = process.env,
   exists = existsSync,
   readdir = readdirSync,
+  findOnPath = findCommandOnPath,
 } = {}) {
-  // The override wins on every platform, but only if it actually resolves —
-  // a stale path in `.env` must not strand every session on a shell that
-  // cannot spawn. Bare names (`fish`, `pwsh`) are passed through unchecked and
-  // left to PATH, since `exists` can't see them.
+  // The override wins on every platform, but only if it actually resolves — a
+  // stale path in `.env` must not strand every session on a shell that cannot
+  // spawn. Bare names (`fish`, `pwsh`) are passed through unchecked and left to
+  // PATH, since `exists` can't see them.
   const override = (env.PORTOS_SHELL || '').trim();
-  if (override && (!/[\\/]/.test(override) || exists(override))) return override;
+  if (override) {
+    if (!/[\\/]/.test(override) || exists(override)) return override;
+    // Silently auto-detecting past a typo'd override leaves the user with no
+    // signal at all about why their setting had no effect.
+    console.warn(`🐚 PORTOS_SHELL='${override}' does not exist — auto-detecting instead`);
+  }
 
   if (platform !== 'win32') return env.SHELL || '/bin/zsh';
-
-  const found = windowsShellCandidates(env, readdir).find(exists);
-  if (found) return found;
-  return env.COMSPEC || 'cmd.exe';
+  return resolveWindowsShell(env, exists, readdir, findOnPath);
 }
 
 let cached;

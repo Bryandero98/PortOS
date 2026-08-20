@@ -12,9 +12,6 @@ vi.mock('./shell.js', () => ({
   getSession: vi.fn(),
   getSessionProcess: vi.fn(),
   registerExternalSession: vi.fn(),
-  // The spawner asks for the session's shell so it can render the run-then-exit
-  // line in that shell's dialect (lib/shellExit.js).
-  getDefaultShell: vi.fn(() => '/bin/zsh'),
 }));
 
 vi.mock('./cosRunnerClient.js', () => ({
@@ -653,26 +650,12 @@ describe('spawnTuiAgent runtime', () => {
     runSpawn();
     await flushMicrotasks();
 
+    // The raw command plus the flag — the run-then-exit wrapper is rendered by
+    // shell.js, which is the only place that knows the session's shell dialect.
+    // Its rendering is covered by shell.test.js and lib/shellExit.test.js.
     expect(shellService.createShellSession).toHaveBeenCalledWith(
       null,
-      expect.objectContaining({ initialCommand: 'codex; exit $?', shell: '/bin/zsh' }),
-    );
-  });
-
-  it('writes the run-then-exit line in the dialect of the shell it also pins on the session', async () => {
-    // The shell is resolved once and passed down, so the line can never be
-    // rendered for a different shell than the one that receives it. Under
-    // PowerShell the POSIX `exit $?` reports success as 1 (see lib/shellExit.js).
-    vi.mocked(shellService.getDefaultShell).mockReturnValueOnce('C:\\Program Files\\PowerShell\\7\\pwsh.exe');
-    runSpawn();
-    await flushMicrotasks();
-
-    expect(shellService.createShellSession).toHaveBeenCalledWith(
-      null,
-      expect.objectContaining({
-        initialCommand: '$LASTEXITCODE = 1; codex; exit $LASTEXITCODE',
-        shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
-      }),
+      expect.objectContaining({ initialCommand: 'codex', exitWithCommand: true }),
     );
   });
 
