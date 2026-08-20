@@ -23,18 +23,24 @@
  *               cut as possible. Without it the scorer drifts toward the calm
  *               middle of the window and continuity loosens.
  *
- * `quality` (focus − exposure) is what the usability floor tests, NOT `score`
- * — otherwise the free recency bonus on the last candidate could lift a black
- * frame over the floor.
+ * Usability is a SEPARATE question from ranking. `usable` gates on raw gradient
+ * variance alone, so only a mathematically degenerate frame (a solid fill, a
+ * fully faded one) is rejected outright and a dark-but-real low-key tail still
+ * qualifies. Exposure shapes the RANKING, not the gate.
  */
 
 import sharp from 'sharp';
 
-// Tail window the candidates are decoded from, and how densely. ~12 frames
-// across the final 1.75s: dense enough that a blur burst doesn't cover every
-// candidate, sparse enough that the decode stays well under a second.
-export const TAIL_WINDOW_SECONDS = 1.75;
-export const CANDIDATE_FPS = 7;
+// Tail window the candidates are decoded from, and how densely.
+//
+// The window is deliberately capped at the reach of the single `-sseof -1.0`
+// seek this replaces. Focus tends to be HIGHEST at the oldest candidate (motion,
+// and therefore blur, accumulates toward the cut), so a wider window would let
+// the scorer routinely anchor further from the cut than the old behavior did —
+// widening the backward jump at every chain seam instead of tightening it. The
+// recency bonus biases toward the cut but cannot bound the window on its own.
+export const TAIL_WINDOW_SECONDS = 1.0;
+export const CANDIDATE_FPS = 12;
 export const MAX_CANDIDATES = 12;
 
 // Gradient variance that maps to a focus of 1.0. Real sharp frames land in the
@@ -42,9 +48,21 @@ export const MAX_CANDIDATES = 12;
 export const FOCUS_SCALE = 20000;
 export const EXPOSURE_WEIGHT = 0.6;
 export const RECENCY_WEIGHT = 0.15;
-// Below this, the whole tail is unusable (black, or uniformly featureless) and
-// the caller should degrade rather than anchor on it.
-export const USABLE_QUALITY_FLOOR = 0.05;
+
+// Gradient variance below which a frame carries no signal at all — a solid
+// fill, a fully faded frame, or a decode that produced nothing.
+//
+// This, NOT the composite score, is what `usable` gates on. Gating on a
+// score that includes the exposure penalty would reject a legitimately dark,
+// low-key tail (mean luma 0.12 alone costs ~0.46 of quality) and silently
+// revert every night scene to the unscored end seek. Same property
+// `imageFrameStats.js` commits to: reject only the mathematically degenerate
+// case, never dark-but-real content. Exposure still does its job in the
+// RANKING, where a fade-to-black loses to its neighbours.
+//
+// 0.25 is (0.5 levels)^2 — half of one 8-bit level, below the smallest
+// difference an encoder can represent, mirroring `SOLID_FILL_STDEV_EPSILON`.
+export const MIN_SIGNAL_VARIANCE = 0.25;
 
 const clamp01 = (n) => (n < 0 ? 0 : (n > 1 ? 1 : n));
 
@@ -110,13 +128,14 @@ export function scoreFrame(frame, { recency = 1 } = {}) {
   const r = clamp01(Number.isFinite(recency) ? recency : 0);
   const quality = focus - EXPOSURE_WEIGHT * exposurePenalty;
   return {
+    variance,
     focus,
     luma,
     exposurePenalty,
     recency: r,
     quality,
     score: quality + RECENCY_WEIGHT * r,
-    usable: quality >= USABLE_QUALITY_FLOOR,
+    usable: variance >= MIN_SIGNAL_VARIANCE,
   };
 }
 
@@ -126,11 +145,20 @@ export function scoreFrame(frame, { recency = 1 } = {}) {
  * candidate, and must never abort a render the user already paid GPU time for.
  */
 export async function decodeGreyscaleFrame(path, { sharpImpl = sharp } = {}) {
-  const decoded = await sharpImpl(path).greyscale().raw()
+  // `removeAlpha()` before `greyscale()` matters: greyscale PRESERVES alpha, so
+  // an RGBA source decodes to 2 interleaved channels. The buffer would still be
+  // ≥ width×height bytes, so the shape check below would pass while
+  // gradientVariance read alpha samples as neighbouring pixels and meanLuma
+  // averaged only the first half of the image.
+  const decoded = await sharpImpl(path).removeAlpha().greyscale().raw()
     .toBuffer({ resolveWithObject: true })
     .catch(() => null);
   if (!decoded?.info) return null;
-  const { width, height } = decoded.info;
+  const { width, height, channels } = decoded.info;
+  // Belt and braces for a sharp stand-in (or a future format) that lands more
+  // than one channel here anyway — interleaved data must never reach the
+  // scorer, and a null simply drops this candidate.
+  if (channels != null && channels !== 1) return null;
   const frame = { width, height, data: decoded.data };
   return isFrame(frame) ? frame : null;
 }

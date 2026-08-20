@@ -12,7 +12,7 @@
 
 import { execFile, spawn } from '../../lib/childProcess.js';
 import { existsSync, statSync } from 'fs';
-import { unlink, writeFile, copyFile, rm } from 'fs/promises';
+import { unlink, writeFile, copyFile, rm, rename } from 'fs/promises';
 import { join, basename } from 'path';
 import { tmpdir, totalmem } from 'os';
 import { randomUUID } from 'crypto';
@@ -2611,7 +2611,7 @@ async function decodeTailCandidates(ffmpeg, videoPath, candidateDir) {
   const outPattern = join(candidateDir, 'cand-%03d.png');
   await new Promise((resolve) => {
     const proc = spawn(ffmpeg, [
-      '-sseof', `-${TAIL_WINDOW_SECONDS}`, '-i', videoPath,
+      '-sseof', `-${TAIL_WINDOW_SECONDS.toFixed(2)}`, '-i', videoPath,
       '-vf', `fps=${CANDIDATE_FPS}`, '-vsync', 'vfr',
       '-frames:v', String(MAX_CANDIDATES), '-y', outPattern,
     ], safeChildProcessOptions({ stdio: 'ignore' }));
@@ -2646,9 +2646,9 @@ async function decodeTailCandidates(ffmpeg, videoPath, candidateDir) {
 // and in a multi-chunk chain the next chunk inherits that blur as the scene's
 // actual content, compounding through every subsequent hop.
 //
-// When no candidate clears the usability floor (a genuinely black or
-// featureless tail), this falls back to the original single-seek behavior and
-// says so: a degraded anchor still beats failing the chain.
+// When no candidate carries any signal at all (a genuinely black or flat
+// tail) or nothing decodes, this falls back to the original single-seek
+// behavior and says so: a degraded anchor still beats failing the chain.
 export async function extractLastFrame(historyId) {
   // Keep this service safe for callers outside the route layer too. Shared
   // gallery uploads deliberately use `upload-<uuid8>` ids, while generated
@@ -2749,9 +2749,17 @@ export async function extractLastFrame(historyId) {
         return null;
       })
     : null;
+  // Copy through a temp name and rename into place. `copyFile` is not atomic,
+  // and a truncated non-zero PNG at framePath would be served forever by the
+  // size>0 cache hit above — the fallback's own guard only unlinks at exactly
+  // zero bytes.
   const installed = best
-    ? await copyFile(best.path, framePath).then(() => true).catch((err) => {
+    ? await copyFile(best.path, `${framePath}.tmp`)
+      .then(() => rename(`${framePath}.tmp`, framePath))
+      .then(() => true)
+      .catch(async (err) => {
         console.log(`⚠️ Anchor install failed: ${err.message}`);
+        await unlink(`${framePath}.tmp`).catch(() => {});
         return false;
       })
     : false;
@@ -2761,9 +2769,12 @@ export async function extractLastFrame(historyId) {
   await rm(candidateDir, { recursive: true, force: true }).catch(() => {});
 
   if (installed) {
-    // Candidate i sits i/CANDIDATE_FPS into a window that starts
-    // TAIL_WINDOW_SECONDS before EOF, so this is its offset from the end.
-    const offset = TAIL_WINDOW_SECONDS - best.index / CANDIDATE_FPS;
+    // Offset back from the NEWEST candidate, not from a nominal window start:
+    // `-sseof` clamps to the file start on a clip shorter than the window, so
+    // deriving this from TAIL_WINDOW_SECONDS would state an offset the frame
+    // does not have. Measured against the candidates actually decoded, this is
+    // exact in both cases.
+    const offset = (candidates.length - 1 - best.index) / CANDIDATE_FPS;
     await writeSidecar(`-${offset.toFixed(2)}s`);
     console.log(`🎞️ Anchor frame ${best.index + 1}/${candidates.length} at -${offset.toFixed(2)}s (focus ${best.focus.toFixed(2)}): ${frameFilename}`);
     return { filename: frameFilename, path: `/data/images/${frameFilename}` };

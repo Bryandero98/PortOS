@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   gradientVariance, meanLuma, scoreFrame, pickBestFrame, decodeGreyscaleFrame,
-  RECENCY_WEIGHT, USABLE_QUALITY_FLOOR,
+  RECENCY_WEIGHT, MIN_SIGNAL_VARIANCE,
 } from './frameQuality.js';
 
 // Deterministic synthetic frames — a real clip's tail can't be checked into
@@ -78,23 +78,34 @@ describe('scoreFrame', () => {
     expect(sharp.usable).toBe(true);
   });
 
-  it('rejects a fade-to-black frame even with the full recency bonus', () => {
-    const black = scoreFrame(BLACK, { recency: 1 });
-    expect(black.exposurePenalty).toBe(1);
-    expect(black.quality).toBeLessThan(USABLE_QUALITY_FLOOR);
-    expect(black.usable).toBe(false);
+it.each([
+    ['a faded-to-black frame', BLACK],
+    ['a blown highlight', WHITE],
+    ['a well-exposed but featureless frame', FLAT_GREY],
+  ])('rejects %s even with the full recency bonus', (_label, frame) => {
+    const scored = scoreFrame(frame, { recency: 1 });
+    expect(scored.variance).toBeLessThan(MIN_SIGNAL_VARIANCE);
+    expect(scored.usable).toBe(false);
   });
 
-  it('rejects a blown highlight the same way it rejects black', () => {
-    expect(scoreFrame(WHITE, { recency: 1 }).usable).toBe(false);
+  it('ranks a fade-to-black below a mid-grey frame of equal detail', () => {
+    // Exposure is what demotes a fade — the gate above only catches the FLAT
+    // case, so the ranking has to carry a dim-but-textured frame.
+    const dimmed = { ...SHARP, data: SHARP.data.map((v) => Math.round(v * 0.1)) };
+    expect(scoreFrame(dimmed, { recency: 1 }).score)
+      .toBeLessThan(scoreFrame(SHARP, { recency: 1 }).score);
   });
 
-  it('rejects a well-exposed but featureless frame', () => {
-    // Perfect exposure alone must not qualify — a flat grey carries nothing
-    // for the next chunk to condition on.
-    const flat = scoreFrame(FLAT_GREY, { recency: 1 });
-    expect(flat.exposurePenalty).toBeLessThan(0.01);
-    expect(flat.usable).toBe(false);
+  it('accepts a legitimately dark low-key frame', () => {
+    // The regression this guards: gating usability on the composite score
+    // rejected every night scene (mean luma 0.12 alone costs ~0.46 of quality)
+    // and silently reverted them to the unscored end seek. Only mathematically
+    // degenerate frames may be rejected — same contract as imageFrameStats.js.
+    const lowKey = { ...SHARP, data: SHARP.data.map((v) => Math.round(v * 0.12)) };
+    const scored = scoreFrame(lowKey, { recency: 0 });
+    expect(scored.luma).toBeLessThan(0.2);
+    expect(scored.quality).toBeLessThan(0);
+    expect(scored.usable).toBe(true);
   });
 
   it('breaks a tie between identical frames in favour of the later one', () => {
@@ -115,13 +126,19 @@ describe('scoreFrame', () => {
 
 // Minimal sharp stand-in: maps a path to a canned raw greyscale decode, or
 // throws for paths meant to model a partial/absent file.
-const fakeSharp = (byPath) => (path) => ({
+const fakeSharp = (byPath, { channels = 1, honorRemoveAlpha = true } = {}) => (path) => ({
+  alphaRemoved: false,
+  removeAlpha() { this.alphaRemoved = true; return this; },
   greyscale() { return this; },
   raw() { return this; },
   async toBuffer() {
     const frame = byPath[path];
     if (!frame) throw new Error(`ENOENT: ${path}`);
-    return { data: Buffer.from(frame.data), info: { width: frame.width, height: frame.height } };
+    const reported = honorRemoveAlpha && this.alphaRemoved ? 1 : channels;
+    return {
+      data: Buffer.from(frame.data),
+      info: { width: frame.width, height: frame.height, channels: reported },
+    };
   },
 });
 
@@ -129,6 +146,23 @@ describe('decodeGreyscaleFrame', () => {
   it('returns null on a decode failure rather than throwing', async () => {
     const sharpImpl = fakeSharp({});
     await expect(decodeGreyscaleFrame('/tmp/missing.png', { sharpImpl })).resolves.toBeNull();
+  });
+
+  it('strips alpha before greyscaling so the buffer is single-channel', async () => {
+    // sharp's greyscale() PRESERVES alpha: an RGBA source would land 2
+    // interleaved channels, and the scorer would read alpha samples as
+    // neighbouring pixels. removeAlpha() is what collapses it to one.
+    const sharpImpl = fakeSharp({ '/t/rgba.png': SHARP }, { channels: 2 });
+    await expect(decodeGreyscaleFrame('/t/rgba.png', { sharpImpl })).resolves.toMatchObject({
+      width: SHARP.width,
+    });
+  });
+
+  it('drops a candidate that still decodes to more than one channel', async () => {
+    // The shape check alone cannot catch this — an interleaved buffer is still
+    // ≥ width×height bytes.
+    const sharpImpl = fakeSharp({ '/t/rgba.png': SHARP }, { channels: 2, honorRemoveAlpha: false });
+    await expect(decodeGreyscaleFrame('/t/rgba.png', { sharpImpl })).resolves.toBeNull();
   });
 });
 
@@ -148,7 +182,7 @@ describe('pickBestFrame', () => {
     expect(best.recency).toBe(1);
   });
 
-  it('returns null when every candidate is unusable', async () => {
+  it('returns null when every candidate is degenerate', async () => {
     const paths = ['/t/a.png', '/t/b.png'];
     const sharpImpl = fakeSharp({ '/t/a.png': BLACK, '/t/b.png': BLACK });
     await expect(pickBestFrame(paths, { sharpImpl })).resolves.toBeNull();

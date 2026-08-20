@@ -240,9 +240,16 @@ vi.mock('../../lib/hfCache.js', () => ({
 // cache MISS on a path that then exists after ffmpeg writes it — which is the
 // only way to reach extractLastFrame's extraction path at all, since a
 // stat-everything mock otherwise short-circuits on the cache hit.
-const fsState = vi.hoisted(() => ({ missOnce: [] }));
+const fsState = vi.hoisted(() => ({ missOnce: [], candidateCount: null }));
 vi.mock('fs', () => ({
-  existsSync: vi.fn(() => true),
+  // `candidateCount` caps how many anchor candidates 'exist', so a test can
+  // model ffmpeg writing fewer frames than the window asked for.
+  existsSync: vi.fn((p) => {
+    const s = String(p);
+    if (fsState.candidateCount == null || !s.includes('anchorcand-')) return true;
+    const n = s.match(/cand-(\d+)\.png$/);
+    return n ? Number(n[1]) <= fsState.candidateCount : true;
+  }),
   statSync: vi.fn((p) => {
     const i = fsState.missOnce.findIndex((frag) => String(p).includes(frag));
     if (i >= 0) { fsState.missOnce.splice(i, 1); return undefined; }
@@ -349,6 +356,7 @@ beforeEach(async () => {
 afterEach(() => {
   settingsState.acceptedModelTerms = [];
   fsState.missOnce = [];
+  fsState.candidateCount = null;
   anchorPick.best = null;
   vi.clearAllMocks();
 });
@@ -392,33 +400,57 @@ describe('extractLastFrame — anchor selection', () => {
       score: 0.82,
       usable: true,
     };
-    const { copyFile, writeFile, rm } = await import('fs/promises');
+    const { copyFile, rename, writeFile, rm } = await import('fs/promises');
 
     await expect(extractLastFrame(ID)).resolves.toEqual({
       filename: ANCHOR,
       path: `/data/images/${ANCHOR}`,
     });
 
-    // The winner is installed under the NEW cache name, not the legacy one.
-    expect(vi.mocked(copyFile)).toHaveBeenCalledWith(
-      anchorPick.best.path,
-      join(MOCK_PATHS.images, ANCHOR),
-    );
+    // The winner is installed under the NEW cache name, not the legacy one —
+    // and through a temp file, so a truncated copy can never be cached as a
+    // non-zero PNG that the size>0 hit would then serve forever.
+    const dest = join(MOCK_PATHS.images, ANCHOR);
+    expect(vi.mocked(copyFile)).toHaveBeenCalledWith(anchorPick.best.path, `${dest}.tmp`);
+    expect(vi.mocked(rename)).toHaveBeenCalledWith(`${dest}.tmp`, dest);
     // One decode pass over the tail window; the single-seek fallback must NOT
     // have run — that would mean the scored pick was thrown away.
     const spawns = await ffmpegSpawns();
     expect(spawns).toHaveLength(1);
-    expect(spawns[0]).toEqual(expect.arrayContaining(['-sseof', '-1.75', '-vf', 'fps=7']));
+    expect(spawns[0]).toEqual(expect.arrayContaining(['-sseof', '-1.00', '-vf', 'fps=12']));
     expect(spawns[0]).not.toContain('-vframes');
     // Temp candidates are cleaned up rather than left in tmpdir.
     expect(vi.mocked(rm)).toHaveBeenCalledWith(
       join(tmpdir(), `anchorcand-${ID}`),
       { recursive: true, force: true },
     );
-    // Sidecar names the offset the anchor actually came from — candidate 3 of
-    // a 7fps window that starts 1.75s before EOF sits 1.46s from the end.
+    // Sidecar names the offset the anchor actually came from, measured back
+    // from the NEWEST candidate rather than a nominal window start: 9 of the 12
+    // decoded frames follow index 2, so at 12fps the pick sits 0.75s from the
+    // end of the tail that was actually scanned.
     const sidecar = JSON.parse(vi.mocked(writeFile).mock.calls.at(-1)[1]);
-    expect(sidecar).toMatchObject({ filename: ANCHOR, extractedAt: '-1.46s' });
+    expect(sidecar).toMatchObject({ filename: ANCHOR, extractedAt: '-0.75s' });
+  });
+
+  it('reads back exactly the candidate files it told ffmpeg to write', async () => {
+    // The enumerator builds `cand-NNN.png` names by hand rather than reading the
+    // directory, so nothing else checks that they match the pattern ffmpeg
+    // actually received. A typo in the pattern or the padding would produce zero
+    // candidates in production with every other test still green — derive the
+    // expectation from the argv so the two sides can't drift apart.
+    await seedHistory();
+    fsState.missOnce = [ANCHOR];
+    fsState.candidateCount = 3; // ffmpeg only managed three frames
+    const { pickBestFrame } = await import('../../lib/frameQuality.js');
+
+    await extractLastFrame(ID);
+
+    const outPattern = (await ffmpegSpawns())[0].at(-1);
+    expect(outPattern).toContain('%03d');
+    const [scanned] = vi.mocked(pickBestFrame).mock.calls.at(-1);
+    expect(scanned).toEqual([1, 2, 3].map((n) => outPattern.replace('%03d', String(n).padStart(3, '0'))));
+    // Enumeration stops at the first gap instead of inventing a full window.
+    expect(scanned).toHaveLength(3);
   });
 
   it('falls back to the end seek when no candidate is usable', async () => {
@@ -901,8 +933,8 @@ describe('generateChainedVideo — continuation strategy (context window vs last
     anchorPick.best = best;
     // One hop → one anchor cache check; miss it so extraction actually runs.
     fsState.missOnce = ['anchor-'];
-    const { copyFile } = await import('fs/promises');
-    vi.mocked(copyFile).mockClear();
+    const { rename } = await import('fs/promises');
+    vi.mocked(rename).mockClear();
 
     const { renders, innerJobIds } = await runChain({
       modelId: 'ltx23_unified',
@@ -911,9 +943,9 @@ describe('generateChainedVideo — continuation strategy (context window vs last
     }, 2);
 
     expect(flagValue(renders[1], '--image')).toBeTruthy();
-    // A scored winner is installed under the new cache name; the fallback lets
-    // ffmpeg write that path directly, so there is no copy.
-    const installedAnchor = vi.mocked(copyFile).mock.calls
+    // A scored winner is renamed into place under the new cache name; the
+    // fallback lets ffmpeg write that path directly, so there is no install.
+    const installedAnchor = vi.mocked(rename).mock.calls
       .some(([, dest]) => dest === join(MOCK_PATHS.images, `anchor-${innerJobIds[0]}.png`));
     expect(installedAnchor).toBe(!!best);
   });
