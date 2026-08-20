@@ -16,7 +16,7 @@
  *
  * Full story in docs/PORTS.md.
  */
-import { beforeAll, describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -28,19 +28,23 @@ const read = (rel) => readFileSync(join(REPO_ROOT, rel), 'utf8');
 
 /** Every `app.use('/data…', …)` mount declared by the server. */
 function serverDataMounts(source) {
-  return [...source.matchAll(/app\.use\(\s*'(\/data(?:\/[^']*)?)'/g)].map(([, path]) => path);
+  return [...source.matchAll(/app\.use\(\s*['"](\/data(?:\/[^'"]*)?)['"]/g)].map(([, path]) => path);
 }
 
 /**
- * The dev server's REAL proxy contexts — the config is a plain factory, so this
- * asks it rather than regexing the source. That matters: a regex over the file
- * cannot tell a plain prefix from a `^`-anchored regex key, which is exactly
- * the distinction the assertions below turn on.
+ * Every proxy context in the dev server config.
+ *
+ * Read out of the source text rather than by importing the config and calling
+ * it: this suite runs on the SERVER test runner, whose CI job installs only the
+ * server's dependencies, so `import('../client/vite.config.js')` dies on
+ * `@vitejs/plugin-react` with ERR_MODULE_NOT_FOUND (it passes locally, where
+ * every workspace is installed — don't "improve" it back into an import).
+ * The capture keeps a leading `^` because that character is what makes a
+ * context a regex, and telling those apart is the whole point below.
  */
-async function devProxyContexts() {
-  const { default: defineConfigFn } = await import('../client/vite.config.js');
-  const config = await defineConfigFn({ mode: 'development', command: 'serve' });
-  return Object.keys(config.server.proxy);
+function devProxyContexts(source) {
+  const proxyBlock = source.slice(source.indexOf('proxy: {'));
+  return [...proxyBlock.matchAll(/['"](\^?\/[^'"]*)['"]\s*:\s*\{/g)].map(([, context]) => context);
 }
 
 /**
@@ -53,10 +57,8 @@ const proxyMatches = (context, url) =>
   (context[0] === '^' && new RegExp(context).test(url)) || url.startsWith(context);
 
 describe('vite dev proxy vs the server and the client router', () => {
-  // `server/index.js` boots the app on import, so its mounts stay a source read.
   const mounts = serverDataMounts(read('server/index.js'));
-  let contexts;
-  beforeAll(async () => { contexts = await devProxyContexts(); });
+  const contexts = devProxyContexts(read('client/vite.config.js'));
 
   it('finds the mounts and the proxy contexts it is comparing', () => {
     // A regex that silently matched nothing would make every assertion below
