@@ -56,12 +56,19 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
   const [editingPrompt, setEditingPrompt] = useState(false);
   const [promptValue, setPromptValue] = useState(config.prompt || '');
   // Comma-separated free text, committed to taskMetadata.issueExcludeLabels
-  // (an array) on blur.
+  // (an array) on blur. Routes through setUpdating like every other handler
+  // in this file so RunTaskButton (client/src/CLAUDE.md's "gate on in-flight
+  // saves, not just the form" rule) can't fire against the pre-edit list
+  // while this PATCH is still in flight.
   const excludeLabelsDraft = useFieldDraft(
     (config.taskMetadata?.issueExcludeLabels || []).join(', '),
-    (next) => onUpdate(taskType, {
-      taskMetadata: { ...(config.taskMetadata || {}), issueExcludeLabels: next.split(',').map((s) => s.trim()).filter(Boolean) }
-    })
+    async (next) => {
+      setUpdating(true);
+      await onUpdate(taskType, {
+        taskMetadata: { ...(config.taskMetadata || {}), issueExcludeLabels: next.split(',').map((s) => s.trim()).filter(Boolean) }
+      });
+      setUpdating(false);
+    }
   );
   // Provider/model/effort pins are shared with the schedule card's quick
   // controls — same optimistic write + rollback, one implementation.

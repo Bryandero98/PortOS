@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 
 // The two hooks are the component's only API callers — stub them so the test
 // exercises the config controls, not the network.
@@ -32,7 +32,7 @@ const BASE_CONFIG = {
   status: {},
 };
 
-function renderControls({ taskMetadata, onUpdate = vi.fn(), taskType = 'feature-ideas', config: extraConfig = {} } = {}) {
+function renderControls({ taskMetadata, onUpdate = vi.fn(), taskType = 'feature-ideas', config: extraConfig = {}, setUpdating = () => {} } = {}) {
   render(
     <GlobalConfigControls
       taskType={taskType}
@@ -43,7 +43,7 @@ function renderControls({ taskMetadata, onUpdate = vi.fn(), taskType = 'feature-
       providers={[]}
       apps={[]}
       updating={false}
-      setUpdating={() => {}}
+      setUpdating={setUpdating}
       allTaskTypes={['feature-ideas']}
     />
   );
@@ -186,6 +186,31 @@ describe('GlobalConfigControls — issue exclude labels', () => {
     expect(onUpdate).toHaveBeenCalledWith('claim-work', {
       taskMetadata: { issueExcludeLabels: [] }
     });
+  });
+
+  it('gates RunTaskButton on the in-flight save (setUpdating around the commit)', async () => {
+    let resolveUpdate;
+    const onUpdate = vi.fn(() => new Promise((resolve) => { resolveUpdate = resolve; }));
+    const setUpdating = vi.fn();
+    renderControls({
+      taskType: 'claim-issue',
+      taskMetadata: { issueExcludeLabels: [] },
+      onUpdate,
+      setUpdating,
+    });
+    const input = screen.getByLabelText('Leave issues with these labels for humans');
+
+    fireEvent.change(input, { target: { value: 'good first issue' } });
+    fireEvent.blur(input);
+
+    // setUpdating(true) must fire BEFORE the PATCH resolves, not after — a
+    // caller that gates RunTaskButton on it needs the disable to take effect
+    // while onUpdate is still in flight.
+    expect(setUpdating).toHaveBeenCalledWith(true);
+    expect(setUpdating).not.toHaveBeenCalledWith(false);
+
+    await act(async () => { resolveUpdate(); await Promise.resolve(); });
+    expect(setUpdating).toHaveBeenLastCalledWith(false);
   });
 });
 

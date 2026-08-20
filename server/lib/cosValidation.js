@@ -1536,12 +1536,20 @@ export const ISSUE_AUTHOR_FILTERS = ['self', 'collaborators', 'owner', 'any'];
 // an arbitrary label dump.
 export const MAX_ISSUE_EXCLUDE_LABELS = 20;
 
+// Per-entry length cap. GitHub caps a label name at 50 chars; GitLab allows up
+// to 255. Cap at GitLab's (larger) limit rather than GitHub's — a GitHub
+// label can never exceed 50 anyway, so the wider cap is a no-op there, while
+// capping at 50 would silently truncate a valid long GitLab label to a prefix
+// that never matches the real label, making the exclusion silently no-op.
+const MAX_ISSUE_EXCLUDE_LABEL_LENGTH = 255;
+
 /**
  * Normalize a raw `issueExcludeLabels` list: keep only non-empty strings,
- * trim, cap length per entry (GitHub's own label name limit), case-
- * insensitively dedupe (labels are compared lowercased at read time), and cap
- * the list at MAX_ISSUE_EXCLUDE_LABELS. Unlike reviewer usernames, label text
- * is free-form ("good first issue") so no character-class restriction is
+ * trim, cap length per entry (GitLab's label name limit — the larger of the
+ * two forges', see MAX_ISSUE_EXCLUDE_LABEL_LENGTH), case-insensitively
+ * dedupe (labels are compared lowercased at read time), and cap the list at
+ * MAX_ISSUE_EXCLUDE_LABELS. Unlike reviewer usernames, label text is
+ * free-form ("good first issue") so no character-class restriction is
  * applied beyond trimming. Non-array input → [].
  */
 export function normalizeIssueExcludeLabels(list) {
@@ -1550,7 +1558,7 @@ export function normalizeIssueExcludeLabels(list) {
   const out = [];
   for (const raw of list) {
     if (typeof raw !== 'string') continue;
-    const trimmed = raw.trim().slice(0, 50);
+    const trimmed = raw.trim().slice(0, MAX_ISSUE_EXCLUDE_LABEL_LENGTH);
     if (!trimmed) continue;
     const key = trimmed.toLowerCase();
     if (seen.has(key)) continue;
