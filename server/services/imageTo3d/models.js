@@ -371,6 +371,7 @@ async function beginRender(record, adapter, sourcePath, caps, requestOptions) {
           // which decides if its force-opaque pass should apply.
           detail: options.detail,
           alphaMode: options.alphaMode,
+          normalMap: options.normalMap,
           startedAt,
           completedAt: null,
           error: null,

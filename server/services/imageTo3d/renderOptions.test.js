@@ -18,17 +18,17 @@ import {
 
 describe('normalizeRenderOptions', () => {
   it('defaults to unset steps/seed with keying enabled', () => {
-    expect(normalizeRenderOptions()).toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null });
-    expect(normalizeRenderOptions({})).toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null });
+    expect(normalizeRenderOptions()).toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null, normalMap: true });
+    expect(normalizeRenderOptions({})).toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null, normalMap: true });
   });
 
   it('keeps valid values and collapses invalid ones to the unset sentinel', () => {
     expect(normalizeRenderOptions({ steps: 24, seed: 0, keyBackground: false }))
-      .toEqual({ steps: 24, seed: 0, keyBackground: false, detail: 'auto', alphaMode: null });
+      .toEqual({ steps: 24, seed: 0, keyBackground: false, detail: 'auto', alphaMode: null, normalMap: true });
     expect(normalizeRenderOptions({ steps: RENDER_STEPS_MAX + 1, seed: RENDER_SEED_MAX + 1 }))
-      .toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null });
+      .toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null, normalMap: true });
     expect(normalizeRenderOptions({ steps: 12.5, seed: '42' }))
-      .toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null });
+      .toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null, normalMap: true });
   });
 });
 
@@ -118,6 +118,26 @@ describe('detail tier and alpha mode', () => {
     // normalization impossible to opt out of.
     expect(normalizeRenderOptions().alphaMode).toBeNull();
     expect(normalizeRenderOptions({ alphaMode: 'OPAQUE' }).alphaMode).toBe('OPAQUE');
+  });
+});
+
+describe('normalMap', () => {
+  it('is the one option that defaults ON', () => {
+    // Every other knob defaults to "unset" so the subprocess picks. This one defaults
+    // on because it recovers detail the bake decimation discards for ~2s on a
+    // multi-minute render, and cannot fail the render.
+    expect(normalizeRenderOptions().normalMap).toBe(true);
+  });
+
+  it('honors an explicit false — the only way to express "off"', () => {
+    expect(normalizeRenderOptions({ normalMap: false }).normalMap).toBe(false);
+  });
+
+  it('treats a non-boolean as the default rather than as off', () => {
+    // A missing/garbage value must not silently disable a quality default.
+    for (const bad of [undefined, null, 'false', 0]) {
+      expect(normalizeRenderOptions({ normalMap: bad }).normalMap).toBe(true);
+    }
   });
 });
 

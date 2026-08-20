@@ -143,7 +143,7 @@ export const IMAGE_TO_3D_TARGETS = Object.freeze({
     // Upstream's CUDA entrypoint takes no pipeline-type override and PortOS's
     // runner for it emits no alpha-mode flag, so both controls are declared
     // unsupported rather than rendered as settings the runner would drop.
-    supportsRenderOptions: Object.freeze({ detail: false, alphaMode: false }),
+    supportsRenderOptions: Object.freeze({ detail: false, alphaMode: false, normalMap: false }),
     upstream: 'https://github.com/microsoft/TRELLIS.2',
     weightsRepo: 'microsoft/TRELLIS.2-4B',
     installNotes:
@@ -197,7 +197,7 @@ export const IMAGE_TO_3D_TARGETS = Object.freeze({
     // that OOMs mid-render. Exposing it needs a VRAM-safety story first — until
     // then the honest answer is that the runner does not honor a caller's choice.
     // `alphaMode: false` because its runner emits no such flag.
-    supportsRenderOptions: Object.freeze({ steps: false, detail: false, alphaMode: false }),
+    supportsRenderOptions: Object.freeze({ steps: false, detail: false, alphaMode: false, normalMap: false }),
     installNotes:
       'Creating a dedicated `pixal3d` conda environment (kept separate so Pixal3D\u2019s '
       + 'pinned dependencies cannot disturb the TRELLIS.2 target), cloning both repos, '

@@ -105,6 +105,20 @@ export const isValidDecimationTarget = (value) => (
 export const TRELLIS2_ALPHA_MODES = ['OPAQUE', 'auto', 'BLEND', 'MASK'];
 
 /**
+ * Cap on the source mesh the normal-map bake samples from.
+ *
+ * The bake builds a BVH over the pre-decimation mesh, and at `1024_cascade` that is
+ * ~22.7M faces — beyond any published Apple-Silicon result (mtlbvh's fix commit
+ * reports a clean run at 8.6M; its regression test covers 498K). Above this the
+ * source is decimated to the cap for the bake ONLY, which still leaves ~8x the
+ * geometry of the exported mesh, so nearly all the recoverable relief survives.
+ *
+ * A documented ceiling rather than an attempt to find the real limit at the cost of
+ * someone's render.
+ */
+export const TRELLIS2_NORMAL_SOURCE_FACE_CAP = 8000000;
+
+/**
  * Emit the runner's PortOS-only flags, terminated by `--`.
  *
  * The separator is load-bearing: everything after it is handed to upstream's own
@@ -118,7 +132,8 @@ export const TRELLIS2_ALPHA_MODES = ['OPAQUE', 'auto', 'BLEND', 'MASK'];
  * @param {{decimationTarget?: number|null, fillHoles?: boolean, remesh?: boolean,
  *          meshClusterRefineIterations?: number|null,
  *          meshClusterSmoothStrength?: number|null,
- *          alphaMode?: string|null}} [opts]
+ *          alphaMode?: string|null, normalMap?: boolean,
+ *          normalMapMaxSourceFaces?: number|null}} [opts]
  * @returns {string[]}
  */
 export function trellis2MeshQualityArgs({
@@ -128,6 +143,8 @@ export function trellis2MeshQualityArgs({
   meshClusterRefineIterations = null,
   meshClusterSmoothStrength = null,
   alphaMode = null,
+  normalMap = false,
+  normalMapMaxSourceFaces = null,
 } = {}) {
   if (decimationTarget !== null && !isValidDecimationTarget(decimationTarget)) {
     throw new Error(
@@ -149,6 +166,11 @@ export function trellis2MeshQualityArgs({
     ...(meshClusterSmoothStrength !== null
       ? ['--mesh-cluster-smooth-strength', String(meshClusterSmoothStrength)] : []),
     ...(alphaMode !== null ? ['--alpha-mode', alphaMode] : []),
+    ...(normalMap ? ['--normal-map'] : []),
+    // Only meaningful alongside --normal-map; emitted independently so an explicit
+    // cap is still recorded in the argv the run entry reflects.
+    ...(normalMapMaxSourceFaces !== null
+      ? ['--normal-map-max-source-faces', String(normalMapMaxSourceFaces)] : []),
     '--',
   ];
 }

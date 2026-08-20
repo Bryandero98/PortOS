@@ -41,10 +41,13 @@ export default function ImageTo3dRenderOptions({
   onDetailChange,
   alphaMode = '',
   onAlphaModeChange,
+  normalMap = true,
+  onNormalMapChange,
   disabled = false,
   stepsSupported = true,
   detailSupported = true,
   alphaModeSupported = true,
+  normalMapSupported = true,
 }) {
   return (
     <div className="flex flex-col gap-2">
@@ -125,16 +128,37 @@ export default function ImageTo3dRenderOptions({
           />
         </FormField>
         <div className="flex items-end pb-1.5">
-          <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-gray-300">
-            <input
-              type="checkbox"
-              checked={keyBackground}
-              onChange={(e) => onKeyBackgroundChange(e.target.checked)}
-              disabled={disabled}
-              className="h-3.5 w-3.5 rounded border-port-border bg-port-bg accent-port-accent disabled:opacity-40"
-            />
-            Key out solid background
-          </label>
+          <div className="flex flex-col gap-1.5">
+            <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-gray-300">
+              <input
+                type="checkbox"
+                checked={keyBackground}
+                onChange={(e) => onKeyBackgroundChange(e.target.checked)}
+                disabled={disabled}
+                className="h-3.5 w-3.5 rounded border-port-border bg-port-bg accent-port-accent disabled:opacity-40"
+              />
+              Key out solid background
+            </label>
+            {/* Defaults on: it recovers shading detail the bake decimation discards
+                for ~2s on a multi-minute render, and cannot fail the render. The
+                control exists so a bad map is recoverable, not because it is a
+                routine choice. */}
+            <label
+              className="inline-flex cursor-pointer items-center gap-2 text-xs text-gray-300"
+              title={normalMapSupported
+                ? 'Bake a normal map from the full-resolution mesh so lighting keeps detail the exported triangles no longer carry'
+                : 'This model does not bake a normal map'}
+            >
+              <input
+                type="checkbox"
+                checked={normalMapSupported ? normalMap : false}
+                onChange={(e) => onNormalMapChange(e.target.checked)}
+                disabled={disabled || !normalMapSupported}
+                className="h-3.5 w-3.5 rounded border-port-border bg-port-bg accent-port-accent disabled:opacity-40"
+              />
+              Bake normal map
+            </label>
+          </div>
         </div>
       </div>
       <p className="text-xs leading-relaxed text-gray-500">

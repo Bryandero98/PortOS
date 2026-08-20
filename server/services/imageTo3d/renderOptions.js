@@ -17,6 +17,8 @@
  *    what every lane did before the knob existed.
  *  - `alphaMode: null` → don't instruct the exporter, and keep PortOS's
  *    force-opaque normalization.
+ *  - `normalMap: true` (the default) → bake a tangent-space normal map from the
+ *    pre-decimation mesh, so shading keeps detail the triangles no longer carry.
  */
 
 import { randomInt } from 'node:crypto';
@@ -87,9 +89,9 @@ export const isValidRenderSeed = (value) => intInRange(value, 0, RENDER_SEED_MAX
  * collapse to the unset sentinel (`null`) rather than throwing — the route
  * schema is the loud gate; this is the internal-caller normalizer.
  * @param {{steps?: number|null, seed?: number|null, keyBackground?: boolean,
- *          detail?: string, alphaMode?: string|null}} [input]
+ *          detail?: string, alphaMode?: string|null, normalMap?: boolean}} [input]
  * @returns {{steps: number|null, seed: number|null, keyBackground: boolean,
- *            detail: string, alphaMode: string|null}}
+ *            detail: string, alphaMode: string|null, normalMap: boolean}}
  */
 export function normalizeRenderOptions(input = {}) {
   return {
@@ -102,6 +104,11 @@ export function normalizeRenderOptions(input = {}) {
     // `alphaMode` stays null-when-unset, because "don't ask the exporter" is a
     // genuinely different instruction from any of the concrete modes.
     alphaMode: isValidAlphaMode(input.alphaMode) ? input.alphaMode : null,
+    // Defaults ON, unlike every other knob here. It recovers shading detail the bake
+    // decimation discards, measured at ~2s against a multi-minute render, and it
+    // cannot fail a render (the bake is wrapped and degrades to no map). So the
+    // useful default is on, with this as the escape hatch if a map ever looks wrong.
+    normalMap: input.normalMap !== false,
   };
 }
 
@@ -166,7 +173,8 @@ export function validateRenderOptions(label, { steps = null, seed = null } = {})
  * everything is honored, so existing targets need no entry.
  *
  * @param {object} options
- * @param {{steps?: boolean, detail?: boolean, alphaMode?: boolean}} [support]
+ * @param {{steps?: boolean, detail?: boolean, alphaMode?: boolean,
+ *          normalMap?: boolean}} [support]
  * @returns {object}
  */
 export function honorTargetRenderSupport(options, support) {
@@ -179,5 +187,6 @@ export function honorTargetRenderSupport(options, support) {
     // subprocess never received.
     ...(support.detail === false ? { detail: DEFAULT_DETAIL_TIER } : {}),
     ...(support.alphaMode === false ? { alphaMode: null } : {}),
+    ...(support.normalMap === false ? { normalMap: false } : {}),
   };
 }

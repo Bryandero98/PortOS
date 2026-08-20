@@ -124,6 +124,8 @@ def _parse_adapter_args(argv):
     parser.add_argument("--mesh-cluster-smooth-strength", type=float, default=None)
     parser.add_argument("--alpha-mode", default=None,
                         choices=["OPAQUE", "auto", "BLEND", "MASK"])
+    parser.add_argument("--normal-map", action="store_true")
+    parser.add_argument("--normal-map-max-source-faces", type=int, default=None)
     known, rest = parser.parse_known_args(argv)
     if rest and rest[0] == "--":
         rest = rest[1:]
@@ -184,11 +186,19 @@ def _patch_decimation_target(target):
 
     def simplify(points, faces, ratio=None, **kwargs):
         n_faces = len(faces)
-        # At or under target already -> upstream would still call us (its own
-        # guard compares against 200K, not against `target`), so no-op rather
-        # than decimate a mesh that is already small enough.
+        # generate.py prints "Simplifying mesh: N -> ~200,000 faces" BEFORE calling
+        # this, unconditionally and from its own hardcoded clamp. That line is now a
+        # lie, so say what actually happens — otherwise the log reads as though the
+        # detail was discarded on exactly the renders where it was kept.
         if n_faces <= target:
+            print(f"[portos] keeping all {n_faces:,} faces (target {target:,}) "
+                  "- ignore the '-> ~200,000 faces' line above", flush=True)
+            # Upstream would still call us here (its guard compares against 200K, not
+            # against `target`), so no-op rather than decimate a mesh already small
+            # enough.
             return points, faces
+        print(f"[portos] decimating {n_faces:,} -> {target:,} faces "
+              "- ignore the '-> ~200,000 faces' line above", flush=True)
         return original_simplify(points, faces, 1.0 - (target / n_faces), **kwargs)
 
     fast_simplification.simplify = simplify
@@ -201,6 +211,94 @@ def _patch_decimation_target(target):
         if kwargs.get("decimation_target") == UPSTREAM_DECIMATION_CLAMP:
             kwargs["decimation_target"] = target
         return original_to_glb(*args, **kwargs)
+
+    o_voxel.postprocess.to_glb = to_glb
+
+
+# Filled in by the simplify interception above; read by the normal-map bake. A
+# module-level dict rather than a parameter because the producer (a patched
+# third-party function) and the consumer (a patched third-party function) cannot
+# pass anything to each other directly.
+_CAPTURED = {}
+
+
+def _patch_capture_source_mesh():
+    """Record the mesh generate.py hands to `fast_simplification.simplify`.
+
+    That call is the ONLY place the pre-decimation mesh is observable: generate.py
+    simplifies first and passes the result to `to_glb`, so `to_glb`'s own notion of
+    "original" is already the decimated mesh and holds no high-resolution surface to
+    sample from.
+
+    Installed independently of the decimation patch. Bundling the capture into that
+    wrapper made `--normal-map` silently degrade to a no-op unless
+    `--decimation-target` happened to be passed too — a dependency between two
+    unrelated flags that nothing in the CLI expressed.
+    """
+    import fast_simplification
+
+    # Installed BEFORE the decimation patch, which matters twice over:
+    #   * `pristine` is then the genuine unpatched callable. The bake uses it to
+    #     enforce its own source-face cap; going through the decimation wrapper
+    #     instead would retarget that to the viewer mesh's face count and flatten
+    #     the very detail the bake exists to recover.
+    #   * this wrapper ends up INNERMOST, so it still observes the full mesh —
+    #     the decimation wrapper only rewrites the ratio, never the vertices or
+    #     faces it forwards.
+    pristine = fast_simplification.simplify
+    _CAPTURED["simplify"] = pristine
+
+    def simplify(points, faces, *args, **kwargs):
+        _CAPTURED["source"] = (points, faces)
+        return pristine(points, faces, *args, **kwargs)
+
+    fast_simplification.simplify = simplify
+
+
+def _patch_normal_map(max_source_faces, verbose=True):
+    """Bake a tangent-space normal map onto the exported mesh after `to_glb`.
+
+    Wraps `to_glb` rather than running after generate.py finishes, because the
+    in-memory trimesh object is the last point where the material can be given a
+    texture — once generate.py has called `.export()`, adding one means rewriting
+    the GLB container.
+
+    A bake failure must NOT fail the render: the mesh and its base colour are
+    already correct at this point, and a normal map is an enhancement. So this
+    logs and returns the un-augmented GLB, which is exactly today's output.
+    """
+    import o_voxel.postprocess
+
+    original_to_glb = o_voxel.postprocess.to_glb
+
+    def to_glb(*args, **kwargs):
+        glb = original_to_glb(*args, **kwargs)
+        source = _CAPTURED.get("source")
+        if source is None:
+            print("[portos] normal map skipped - no pre-decimation mesh was captured "
+                  "(the render never went through the simplify path)", flush=True)
+            return glb
+        try:
+            # INSIDE the guard, deliberately. The bake module pulls numpy, torch,
+            # mtlbvh, mtldiffrast and PIL; on an install missing any of them an
+            # ImportError raised out here would kill a render that had already
+            # produced a correct mesh and texture. Import failure is just one more
+            # reason the enhancement is unavailable.
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from trellis2NormalBake import bake_normal_map, DEFAULT_MAX_SOURCE_FACES
+            return bake_normal_map(
+                glb,
+                source[0],
+                source[1],
+                texture_size=kwargs.get("texture_size", 2048),
+                max_source_faces=max_source_faces or DEFAULT_MAX_SOURCE_FACES,
+                simplify=_CAPTURED.get("simplify"),
+                verbose=verbose,
+            )
+        except Exception as exc:  # noqa: BLE001 - see docstring: never fail the render
+            print(f"[portos] normal map bake failed ({type(exc).__name__}: {exc}) - "
+                  "exporting without it", flush=True)
+            return glb
 
     o_voxel.postprocess.to_glb = to_glb
 
@@ -272,6 +370,10 @@ def main():
         sys.path.insert(0, trellis_root)
 
     _patch_texture_size_choices()
+    # Before the decimation patch — see _patch_capture_source_mesh for why both the
+    # pristine-callable and the innermost-wrapper properties depend on this order.
+    if adapter.normal_map:
+        _patch_capture_source_mesh()
     if adapter.decimation_target is not None:
         _patch_decimation_target(adapter.decimation_target)
     _patch_to_glb_quality(
@@ -280,6 +382,8 @@ def main():
         mesh_cluster_smooth_strength=adapter.mesh_cluster_smooth_strength,
         alpha_mode=adapter.alpha_mode,
     )
+    if adapter.normal_map:
+        _patch_normal_map(adapter.normal_map_max_source_faces)
     if adapter.fill_holes:
         _enable_fill_holes(generate_dir)
 

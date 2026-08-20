@@ -918,6 +918,7 @@ export function runTrellis2Generate({
   fillHoles = false,
   remesh = false,
   alphaMode = null,
+  normalMap = false,
   onProgress,
   spawnImpl = spawn,
   exists = existsSync,
@@ -948,6 +949,7 @@ export function runTrellis2Generate({
       fillHoles,
       remesh,
       alphaMode,
+      normalMap,
     },
   });
   // Force-opaque normalization is skipped exactly when the caller asked the

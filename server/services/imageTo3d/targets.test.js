@@ -336,10 +336,10 @@ describe('renderOptionSupportFor', () => {
     // resolutions — they are picked from the card's VRAM, so honoring a caller's
     // choice could hand a 12 GB card a config that OOMs mid-render.
     expect(renderOptionSupportFor('pixal3dCuda'))
-      .toEqual({ steps: false, detail: false, alphaMode: false });
+      .toEqual({ steps: false, detail: false, alphaMode: false, normalMap: false });
     // Upstream's CUDA entrypoint takes no pipeline-type override at all.
     expect(renderOptionSupportFor('trellis2Cuda'))
-      .toEqual({ detail: false, alphaMode: false });
+      .toEqual({ detail: false, alphaMode: false, normalMap: false });
   });
 
   it('returns null for a target that honors every knob, and for an unknown id', () => {

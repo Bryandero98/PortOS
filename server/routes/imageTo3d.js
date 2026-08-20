@@ -37,6 +37,7 @@ const renderOptionsSchema = z.object({
   // normalizer would silently discard.
   detail: z.enum([...DETAIL_TIERS]).optional(),
   alphaMode: z.enum([...ALPHA_MODES]).optional(),
+  normalMap: z.boolean().optional(),
 });
 
 const createModelSchema = z.object({

@@ -37,6 +37,7 @@ export default function Media3DDetail() {
   const [keyBackground, setKeyBackground] = useState(true);
   const [detail, setDetail] = useState('auto');
   const [alphaMode, setAlphaMode] = useState('');
+  const [normalMap, setNormalMap] = useState(true);
   const optionsSeededFor = useRef(null);
 
   const load = useCallback(async ({ initial = false } = {}) => {
@@ -78,6 +79,7 @@ export default function Media3DDetail() {
     setKeyBackground(fields.keyBackground);
     setDetail(fields.detail);
     setAlphaMode(fields.alphaMode);
+    setNormalMap(fields.normalMap);
   }, [record]);
 
   const handleRegenerate = useCallback(async () => {
@@ -85,7 +87,7 @@ export default function Media3DDetail() {
     setBusy(true);
     const next = await generateImageTo3dModel(
       id,
-      renderOptionsBody({ steps, seed, keyBackground, detail, alphaMode }),
+      renderOptionsBody({ steps, seed, keyBackground, detail, alphaMode, normalMap }),
       { silent: true },
     ).catch((err) => {
       toast.error(err?.message || 'Could not start the render.');
@@ -189,6 +191,9 @@ export default function Media3DDetail() {
           onDetailChange={setDetail}
           alphaMode={alphaMode}
           onAlphaModeChange={setAlphaMode}
+          normalMapSupported={record.supportsRenderOptions?.normalMap !== false}
+          normalMap={normalMap}
+          onNormalMapChange={setNormalMap}
           disabled={busy || isGenerating}
         />
       </div>

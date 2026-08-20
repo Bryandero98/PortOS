@@ -208,6 +208,28 @@ describe.skipIf(!pyBin)('trellis2GenerateRunner', () => {
     expect(r.to_glb[0]).not.toHaveProperty('alpha_mode');
   });
 
+  it('captures the pre-decimation mesh for the normal bake without --decimation-target', () => {
+    // --normal-map used to silently no-op unless --decimation-target happened to be
+    // passed too, because the capture lived inside the decimation patch. Nothing in
+    // the CLI expressed that dependency.
+    writeStubs();
+    const out = run(['--normal-map', '--', join(dir, 'generate.py'), 'a.png']);
+    expect(out).not.toMatch(/no pre-decimation mesh was captured/);
+    // Bake runs against the stub's fake mesh and fails; that must not fail the render.
+    expect(resultOf(out).to_glb).toHaveLength(1);
+  });
+
+  it('never fails the render when the normal bake throws', () => {
+    // The mesh and its base colour are already correct by then — a normal map is an
+    // enhancement, so a bake failure degrades to today's output rather than losing
+    // a render the user already waited minutes for.
+    writeStubs();
+    const out = run(['--normal-map', '--decimation-target', '1000000',
+      '--', join(dir, 'generate.py'), 'a.png']);
+    expect(out).toMatch(/normal map bake failed|normal map:/);
+    expect(resultOf(out).to_glb[0].exported).toBe(1000000);
+  });
+
   it('fails loudly when --fill-holes is asked for but the gate is absent', () => {
     // Must not degrade to "render without hole filling" — that is exactly the
     // output the flag exists to avoid, so silence here would be a lie.

@@ -97,6 +97,30 @@ def compute_uv_tangents(vertices, faces, uvs):
     return out.astype(np.float32)
 
 
+def decoder_to_export_space(arr):
+    """Apply the axis swap `to_glb` performs on its way out.
+
+    `o_voxel.postprocess.to_glb` converts to glTF's Y-up before returning:
+
+        vertices[:, 1], vertices[:, 2] = vertices[:, 2], -vertices[:, 1]
+
+    and does the same to its normals. So the mesh this module receives is already in
+    export space while the captured source mesh is still in decoder space. Sampling
+    one against the other without this produces a unit-length but essentially random
+    normal map — measured on the reference render as a mean tangent-space z of ~0.06
+    where a correct map sits near +0.9, with every mapped texel carrying tilt.
+
+    Applied to the source (429K vertices) rather than to the per-texel query positions
+    (2.6M) because it is the cheaper side, and to the source NORMALS too, so the
+    encoded orientation is expressed in the same frame the exported mesh lives in.
+    """
+    out = np.array(arr, dtype=np.float32, copy=True)
+    y = out[:, 1].copy()
+    out[:, 1] = out[:, 2]
+    out[:, 2] = -y
+    return out
+
+
 def _extract_mesh(glb):
     """Pull the single UV-mapped mesh out of whatever to_glb returned.
 
@@ -133,9 +157,12 @@ def bake_normal_map(
     pass).
     """
     import torch
-    import mtlbvh
+    import o_voxel.postprocess as pp
     import mtldiffrast.torch as dr
     from PIL import Image
+
+    if not (getattr(pp, '_HAS_DR', False) and getattr(pp, '_BVH', None)):
+        raise RuntimeError('normal bake needs the Metal rasterizer and BVH backends')
 
     mesh, uvs = _extract_mesh(glb)
     lo_v = np.asarray(mesh.vertices, dtype=np.float32)
@@ -151,16 +178,32 @@ def bake_normal_map(
         src_f = np.asarray(src_f, dtype=np.int32)
 
     # The source's own smooth normals are what gets encoded. Face normals would give a
-    # faceted map that reads as decoder noise at this triangle density.
-    src_vn = compute_vertex_normals(src_v, src_f)
+    # faceted map that reads as decoder noise at this triangle density. Computed in
+    # decoder space, then both mesh and normals are moved into export space so the
+    # BVH and the query positions agree.
+    src_vn = decoder_to_export_space(compute_vertex_normals(src_v, src_f))
+    src_v = decoder_to_export_space(src_v)
 
-    device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
-    ctx = dr.MtlRasterizeContext()
+    # Mirror o_voxel's own device choice rather than reaching for MPS. Its comment
+    # states the reasoning: on the Metal path "all GPU compute goes through Metal
+    # kernels directly (mtldiffrast, mtlbvh, cumesh, flex_gemm) [and] CPU tensors on
+    # Apple Silicon unified memory are directly GPU-accessible — no MPS overhead
+    # needed", so it runs this whole stage on CPU tensors. Using MPS here would also
+    # mix devices against the BVH, which is the failure mode trellis-mac's own
+    # comments repeatedly warn about.
+    device = torch.device('cpu') if getattr(pp, '_BACKEND', None) == 'metal' else torch.device('cuda')
+    ctx = dr.MtlRasterizeContext() if getattr(pp, '_BACKEND', None) == 'metal' \
+        else dr.RasterizeCudaContext()
 
     # Rasterize the EXPORTED mesh in UV space, exactly as the colour bake does: UVs to
     # clip space, z=0, w=1. Chunked over faces with the same face-id-in-alpha trick, so
     # a large atlas does not allocate one giant intermediate.
-    uv_t = torch.as_tensor(uvs, device=device)
+    # `to_glb` also flips V on its way out (`uvs[:, 1] = 1 - uvs[:, 1]`) to reconcile
+    # glTF's bottom-up V with PNG's top-down rows. Its own base-colour bake rasterized
+    # with the UNflipped UVs, so this has to undo the flip or the normal map comes out
+    # mirrored vertically against the base colour it accompanies.
+    uv_t = torch.as_tensor(uvs, device=device).clone()
+    uv_t[:, 1] = 1.0 - uv_t[:, 1]
     lo_f_t = torch.as_tensor(lo_f, device=device, dtype=torch.int32)
     uv_clip = torch.cat([
         uv_t * 2 - 1,
@@ -180,8 +223,15 @@ def bake_normal_map(
     # Per-texel geometry of the low-res surface: position (where to sample the source),
     # plus the tangent frame the result has to be expressed in.
     lo_v_t = torch.as_tensor(lo_v, device=device)
-    lo_vn_t = torch.as_tensor(compute_vertex_normals(lo_v, lo_f), device=device)
-    lo_vt_t = torch.as_tensor(compute_uv_tangents(lo_v, lo_f, uvs), device=device)
+    # Prefer the normals `to_glb` already produced and converted — they are what a
+    # renderer will actually shade with, so the tangent basis must be built from them
+    # rather than from a re-derivation that can disagree at seams.
+    lo_vn = np.asarray(mesh.vertex_normals, dtype=np.float32) \
+        if getattr(mesh, 'vertex_normals', None) is not None \
+        else compute_vertex_normals(lo_v, lo_f)
+    lo_vn_t = torch.as_tensor(lo_vn, device=device)
+    lo_vt_t = torch.as_tensor(
+        compute_uv_tangents(lo_v, lo_f, uv_t.cpu().numpy()), device=device)
     pos = dr.interpolate(lo_v_t.unsqueeze(0), rast, lo_f_t)[0][0][mask]
     n_lo = torch.nn.functional.normalize(
         dr.interpolate(lo_vn_t.unsqueeze(0), rast, lo_f_t)[0][0][mask], dim=-1)
@@ -192,7 +242,9 @@ def bake_normal_map(
     t_lo = torch.nn.functional.normalize(t_lo - n_lo * (t_lo * n_lo).sum(-1, keepdim=True), dim=-1)
     b_lo = torch.cross(n_lo, t_lo, dim=-1)
 
-    bvh = mtlbvh.MtlBVH(torch.as_tensor(src_v), torch.as_tensor(src_f))
+    # The SAME BVH class o_voxel uses (cumesh auto-selects Metal vs CUDA), so this
+    # pass cannot diverge from the base-colour bake's notion of the surface.
+    bvh = pp._BVH(torch.as_tensor(src_v, device=device), torch.as_tensor(src_f, device=device))
     src_vn_t = torch.as_tensor(src_vn, device=pos.device)
     src_f_t = torch.as_tensor(src_f, device=pos.device, dtype=torch.long)
 
@@ -204,6 +256,16 @@ def bake_normal_map(
         # high-resolution orientation the exported triangles can no longer express.
         n_hi = torch.nn.functional.normalize(
             (src_vn_t[src_f_t[face_id.long()]] * uvw.unsqueeze(-1)).sum(dim=1), dim=-1)
+        # Re-orient into the low-res normal's hemisphere. The O-Voxel decoder
+        # deliberately produces open surfaces and non-manifold geometry, so its face
+        # winding is not globally consistent and area-weighted vertex normals point
+        # inward across whole patches. Measured on the reference render: median
+        # dot(n_hi, n_lo) was +0.976 while the MEAN was +0.127, i.e. most texels were
+        # right and a large minority were inverted. The exported surface defines
+        # outward here by construction, so agreeing with it is not a heuristic — a
+        # tangent-space normal in the opposite hemisphere encodes nothing meaningful.
+        flip = torch.where((n_hi * n_lo[sl]).sum(-1, keepdim=True) < 0, -1.0, 1.0)
+        n_hi = n_hi * flip
         # Project into the low-res tangent basis.
         out[sl] = torch.stack([
             (n_hi * t_lo[sl]).sum(-1),

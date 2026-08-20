@@ -5,6 +5,7 @@ import {
   TRELLIS2_DECIMATION_HIGH,
   TRELLIS2_DECIMATION_MAX,
   TRELLIS2_DECIMATION_UPSTREAM_CLAMP,
+  TRELLIS2_NORMAL_SOURCE_FACE_CAP,
   isValidDecimationTarget,
   selectTrellis2DecimationTarget,
   trellis2FillHolesScript,
@@ -89,6 +90,21 @@ describe('trellis2MeshQualityArgs', () => {
     // for `false` would make the subprocess reject the whole invocation.
     expect(trellis2MeshQualityArgs({ fillHoles: false, remesh: false, alphaMode: null }))
       .toEqual(['--']);
+  });
+
+  it('emits the normal-map flags only when asked', () => {
+    expect(trellis2MeshQualityArgs({ normalMap: true })).toEqual(['--normal-map', '--']);
+    expect(trellis2MeshQualityArgs({ normalMap: false })).toEqual(['--']);
+    expect(trellis2MeshQualityArgs({ normalMap: true, normalMapMaxSourceFaces: 8000000 }))
+      .toEqual(['--normal-map', '--normal-map-max-source-faces', '8000000', '--']);
+  });
+
+  it('keeps the normal source cap at or under the evidence ceiling', () => {
+    // The bake builds a BVH over the pre-decimation mesh. The cap is what keeps that
+    // inside sizes with a published Apple-Silicon result behind them.
+    expect(TRELLIS2_NORMAL_SOURCE_FACE_CAP).toBeLessThanOrEqual(TRELLIS2_DECIMATION_MAX);
+    // And well above the viewer mesh, or the bake would have no detail to recover.
+    expect(TRELLIS2_NORMAL_SOURCE_FACE_CAP).toBeGreaterThan(TRELLIS2_DECIMATION_HIGH * 4);
   });
 
   it('throws rather than clamping an out-of-range decimation target', () => {

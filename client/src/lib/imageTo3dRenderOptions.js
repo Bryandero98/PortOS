@@ -62,7 +62,7 @@ export const ALPHA_MODE_PRESETS = [
  * seed → the server rolls a fresh random one for that run. Range/int validation
  * is the server's job — the route 400s with a readable message.
  */
-export function renderOptionsBody({ steps, seed, keyBackground, detail, alphaMode }) {
+export function renderOptionsBody({ steps, seed, keyBackground, detail, alphaMode, normalMap }) {
   return {
     ...(steps !== '' && { steps: Number(steps) }),
     ...(seed !== '' && { seed: Number(seed) }),
@@ -72,6 +72,9 @@ export function renderOptionsBody({ steps, seed, keyBackground, detail, alphaMod
     // they are, unlike alphaMode below.
     ...(detail && detail !== 'auto' && { detail }),
     ...(alphaMode !== '' && alphaMode != null && { alphaMode }),
+    // Sent always, not omitted-when-default: the server default is TRUE, so omitting
+    // it could not express "off".
+    normalMap,
   };
 }
 
@@ -93,6 +96,8 @@ export function fieldsFromRun(run) {
     // the same defaults a fresh form starts at.
     detail: DETAIL_PRESETS.some((p) => p.value === run?.detail) ? run.detail : 'auto',
     alphaMode: typeof run?.alphaMode === 'string' ? run.alphaMode : '',
+    // A run predating the field has none; default to on, matching the server.
+    normalMap: typeof run?.normalMap === 'boolean' ? run.normalMap : true,
   };
 }
 
