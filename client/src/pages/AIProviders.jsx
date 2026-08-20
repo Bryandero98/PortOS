@@ -338,8 +338,10 @@ export default function AIProviders() {
     const readinessById = Object.fromEntries(providers.map(p => [p.id, providerReadiness(p, {
       runtime: runtimeById[p.id],
       status: statuses[p.id],
-      // `null` when the sibling isn't in the list at all — unknown, not missing.
-      orcaRouterKeySet: byId.orcarouter ? Boolean(byId.orcarouter.hasApiKey) : null,
+      // `providers` is the authoritative list, so a sibling that is absent from
+      // it was deleted — the wrapper has no key to inherit, which is `false`,
+      // not "unknown". (Nothing here runs before the list loads.)
+      orcaRouterKeySet: Boolean(byId.orcarouter?.hasApiKey),
     })]));
     // The default provider floats to the top of whichever section it sits in, so
     // "which one runs by default" stays a one-glance answer after grouping.

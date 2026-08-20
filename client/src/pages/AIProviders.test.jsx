@@ -632,6 +632,27 @@ describe('readiness grouping', () => {
     expect(screen.queryByRole('button', { name: new RegExp('^Disabled') })).not.toBeInTheDocument();
   });
 
+  // The provider list is authoritative: no sibling means the wrapper has no key
+  // to inherit at spawn time, which is a missing prerequisite, not "unknown".
+  it('files an OrcaRouter wrapper whose sibling was deleted under Needs setup', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'opencode-orcarouter',
+        name: 'OpenCode OrcaRouter',
+        type: 'cli',
+        command: 'opencode',
+        enabled: true,
+        orcarouterBacked: true,
+      }],
+      activeProvider: null,
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('NEEDS SETUP')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: new RegExp('^Needs setup') })).toBeInTheDocument();
+  });
+
   it('badges an enabled-but-benched provider with its reason', async () => {
     api.getProviders.mockResolvedValue({
       providers: [{ id: 'claude', name: 'Claude', type: 'cli', command: 'claude', enabled: true }],

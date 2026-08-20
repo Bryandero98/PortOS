@@ -34,6 +34,7 @@ import {
   isProcessProvider,
   providerRuntimeKey,
   providerReadiness,
+  isPrivateNetworkEndpoint,
   PROVIDER_READINESS,
   isOllamaBackedProvider,
   isOrcaRouterBackedProvider,
@@ -1213,6 +1214,25 @@ describe('providerReadiness', () => {
       .toBe(PROVIDER_READINESS.READY);
   });
 
+  // A LAN box or a tailnet peer running LM Studio / Ollama serves keylessly, and
+  // PortOS is a tailnet-first product — flagging those as unconfigured would be
+  // a false alarm on a supported deployment.
+  it.each([
+    ['http://192.168.1.50:1234/v1'],
+    ['http://10.0.0.4:11434/v1'],
+    ['http://100.101.102.103:11434/v1'],
+    ['http://desk-machine.ts.net:1234/v1'],
+    ['http://nas:11434/v1'],
+  ])('does not demand a key from the private-network endpoint %s', (endpoint) => {
+    expect(providerReadiness({ id: 'lan', type: 'api', endpoint, enabled: true }).state)
+      .toBe(PROVIDER_READINESS.READY);
+  });
+
+  it('still demands a key from a public endpoint', () => {
+    expect(providerReadiness({ id: 'cloud', type: 'api', endpoint: 'https://api.example.com/v1', enabled: true }).state)
+      .toBe(PROVIDER_READINESS.BLOCKED);
+  });
+
   it('blocks an OrcaRouter wrapper when the sibling API provider holds no key', () => {
     const wrapper = cli({ id: 'opencode-orcarouter', orcarouterBacked: true });
     expect(providerReadiness(wrapper, { orcaRouterKeySet: false }).missing)
@@ -1247,6 +1267,36 @@ describe('providerReadiness', () => {
       { runtime: { label: 'LM Studio', installed: false } },
     );
     expect(readiness.missing.map(m => m.code)).toEqual(['runtime', 'apiKey']);
+  });
+});
+
+describe('isPrivateNetworkEndpoint', () => {
+  it.each([
+    'http://localhost:11434/v1',
+    'http://127.0.0.1:1234',
+    '192.168.1.5:1234/v1',
+    'http://172.16.4.4:11434',
+    'http://172.31.255.1:11434',
+    'http://100.64.0.1:11434',
+    'http://host.local:1234',
+    'http://box.internal/v1',
+    'http://ollama',
+  ])('treats %s as inside the private network', (endpoint) => {
+    expect(isPrivateNetworkEndpoint(endpoint)).toBe(true);
+  });
+
+  it.each([
+    'https://api.example.com/v1',
+    'https://example.com:8443/v1',
+    // 172.32 is outside RFC1918 (which stops at 172.31), and 100.128 is above
+    // the Tailscale CGNAT range — both are public space.
+    'http://172.32.0.1:11434',
+    'http://100.128.0.1:11434',
+    'http://9.9.9.9/v1',
+    '',
+    null,
+  ])('treats %s as public', (endpoint) => {
+    expect(isPrivateNetworkEndpoint(endpoint)).toBe(false);
   });
 });
 

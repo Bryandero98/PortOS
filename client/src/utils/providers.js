@@ -678,6 +678,42 @@ const LOCAL_ENDPOINT_RE = /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?
 export const isLocalEndpoint = (endpoint) =>
   typeof endpoint === 'string' && LOCAL_ENDPOINT_RE.test(endpoint.trim());
 
+// Hosts inside the trust boundary, where an unauthenticated OpenAI-compatible
+// server is a normal setup rather than a misconfiguration: RFC1918 LAN ranges,
+// link-local, and the Tailscale CGNAT range 100.64.0.0/10 (PortOS is a
+// tailnet-first product — an API provider pointed at another machine's Ollama
+// is a first-class configuration, not an edge case).
+const PRIVATE_IP_RE = /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/;
+
+/**
+ * Is this endpoint inside the private network — loopback, a LAN/tailnet address,
+ * a `.local`/`.ts.net`/`.internal` name, or a bare single-label host?
+ *
+ * Used to decide whether a missing API key is actually a missing prerequisite.
+ * The server only attaches an `Authorization` header when a key is stored, so a
+ * keyless call to a private OpenAI-compatible server (LM Studio on the desk
+ * machine, Ollama on a tailnet peer) works exactly as configured — reporting it
+ * as "needs setup" would be a false alarm on a supported deployment. A public
+ * endpoint with no key stays flagged: that one really is misconfigured.
+ *
+ * A host that cannot be parsed reads as NOT private, keeping the stricter of
+ * the two answers for input we don't understand.
+ */
+export const isPrivateNetworkEndpoint = (endpoint) => {
+  if (isLocalEndpoint(endpoint)) return true;
+  if (typeof endpoint !== 'string' || !endpoint.trim()) return false;
+  const trimmed = endpoint.trim();
+  // A scheme-less endpoint ("192.168.1.5:1234/v1") is still a host — give the
+  // parser one so it doesn't read the leading segment as a scheme.
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  if (!URL.canParse(candidate)) return false;
+  const host = new URL(candidate).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (PRIVATE_IP_RE.test(host)) return true;
+  if (/\.(local|internal|lan|home\.arpa|ts\.net)$/.test(host)) return true;
+  // A single-label host resolves only inside the local network (`http://nas:11434`).
+  return !host.includes('.') && !host.includes(':');
+};
+
 export const isLikelyLargeContextProvider = (provider) => {
   if (isProcessProvider(provider)) return true;
   return isApiProvider(provider) && !isLocalEndpoint(provider.endpoint);
@@ -911,8 +947,12 @@ export const PROVIDER_READINESS = Object.freeze({
  *                      means the provider is benched after a failure.
  *   orcaRouterKeySet — whether the sibling `orcarouter` API provider holds the
  *                      key an OpenCode OrcaRouter wrapper inherits at spawn
- *                      time. `null` = unknown (sibling not in the list), and
- *                      like `runtime` must not be reported as missing.
+ *                      time. `false` covers BOTH "sibling has no key" and
+ *                      "sibling was deleted" — the server injects the key only
+ *                      when that provider exists and holds one, so either way
+ *                      the wrapper cannot authenticate. `null` is for a caller
+ *                      that genuinely cannot tell (no provider list yet) and,
+ *                      like `runtime`, is never reported as missing.
  *
  * `blocked` outranks `disabled`: a provider whose CLI isn't installed can't be
  * enabled at all, so it belongs in the "needs setup" bucket whichever way its
@@ -927,9 +967,11 @@ export const providerReadiness = (provider, { runtime = null, status = null, orc
   if (runtime && runtime.installed === false) {
     missing.push({ code: 'runtime', label: `${runtime.label || 'Runtime'} is not installed` });
   }
-  // API providers auth solely via the stored key. A local endpoint (Ollama, LM
-  // Studio) needs none, so its absence is not a missing prerequisite there.
-  if (isApiProvider(provider) && provider?.hasApiKey !== true && !isLocalEndpoint(provider?.endpoint)) {
+  // API providers auth solely via the stored key — but only an endpoint outside
+  // the private network actually needs one. The server attaches `Authorization`
+  // only when a key is stored, so a keyless call to loopback, a LAN box, or a
+  // tailnet peer running LM Studio / Ollama works exactly as configured.
+  if (isApiProvider(provider) && provider?.hasApiKey !== true && !isPrivateNetworkEndpoint(provider?.endpoint)) {
     missing.push({ code: 'apiKey', label: 'API key is not set' });
   }
   // The OpenCode OrcaRouter wrappers carry no key of their own — theirs lives
