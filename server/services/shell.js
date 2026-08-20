@@ -250,8 +250,29 @@ export function createShellSession(socket, options = {}) {
     // start observing claude's input-readiness ONLY after the real command is
     // in flight — so the readiness probe's own shell activity (below) can't
     // prematurely satisfy its bracketed-paste gate.
+    //
+    // For the waitForPromptReady path, `sendInitial` runs from the probe's
+    // `ptyProcess.onData` listener (below), registered AFTER the main output
+    // listener above that dispatches `session.onData` via `runHook`/
+    // `session.hookQueue`. node-pty invokes same-event listeners in
+    // registration order, but `runHook` only QUEUES the caller's onData
+    // handler as a microtask — it doesn't run it inline. So calling
+    // `options.onInitialCommandSent?.()` synchronously here would fire it
+    // BEFORE the caller's onData handler has actually processed the very
+    // chunk that proved the probe round-tripped, even though that handler was
+    // enqueued first. A consumer gating output on "has the command been
+    // injected yet" (see agentTuiSpawning.js's commandInjected) would then
+    // misread the probe's own echoed marker as post-injection output. Routing
+    // this callback through the SAME `session.hookQueue` guarantees it runs
+    // only after that chunk's onData handler has finished — while the actual
+    // PTY write below stays synchronous/immediate, unaffected.
     const sendInitial = () => {
-      options.onInitialCommandSent?.();
+      const session = shellSessions.get(sessionId);
+      if (session && options.onInitialCommandSent) {
+        runHook('onInitialCommandSent', session, options.onInitialCommandSent);
+      } else {
+        options.onInitialCommandSent?.();
+      }
       submitToSession(sessionId, initialCommand);
     };
     if (options.waitForPromptReady) {
