@@ -70,7 +70,9 @@ describe('llamaServerManager', () => {
       if (action === 'start') {
         const nameIdx = args.indexOf('--name');
         const name = nameIdx !== -1 ? args[nameIdx + 1] : args[1];
-        pm2State = { name, status: 'online', pid: 12345 };
+        const dashIdx = args.indexOf('--');
+        const procArgs = dashIdx !== -1 ? args.slice(dashIdx + 1) : [];
+        pm2State = { name, status: 'online', pid: 12345, args: procArgs };
         return { stdout: '', stderr: '' };
       }
       if (action === 'delete') {
@@ -84,6 +86,11 @@ describe('llamaServerManager', () => {
     });
 
     vi.spyOn(pm2Module, 'getAppStatus').mockImplementation(async (name) => {
+      if (pm2State && pm2State.name === name) return pm2State;
+      return { name, status: 'not_found', pm2_env: null };
+    });
+
+    vi.spyOn(pm2Module, 'getAppStatusStrict').mockImplementation(async (name) => {
       if (pm2State && pm2State.name === name) return pm2State;
       return { name, status: 'not_found', pm2_env: null };
     });
@@ -206,7 +213,7 @@ describe('llamaServerManager', () => {
       if (args[0] === 'logs') return { stdout: '', stderr: 'error: unknown spec type' };
       return { stdout: '', stderr: '' };
     });
-    vi.spyOn(pm2Module, 'getAppStatus').mockResolvedValue({ name: LLAMA_APP, status: 'errored' });
+    vi.spyOn(pm2Module, 'getAppStatusStrict').mockResolvedValue({ name: LLAMA_APP, status: 'errored' });
 
     await expect(startLlamaServer({ model: modelPath, specType: 'draft-nope' })).rejects.toThrow(
       /llama-server exited immediately/i
@@ -222,6 +229,45 @@ describe('llamaServerManager', () => {
 
     const status = await getLlamaServerStatus();
     expect(status.managed).toBe(false);
+  });
+
+  it('recovers launch configuration from PM2 args after server restarts', async () => {
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+    pm2State = {
+      name: LLAMA_APP,
+      status: 'online',
+      pid: 98765,
+      args: ['-m', modelPath, '--model-draft', draftPath, '--port', '8090', '--host', '127.0.0.1'],
+    };
+
+    const status = await getLlamaServerStatus();
+    expect(status.managed).toBe(true);
+    expect(status.pid).toBe(98765);
+    expect(status.port).toBe(8090);
+    expect(status.endpoint).toBe('http://127.0.0.1:8090/v1');
+    expect(status.config?.model).toBe(modelPath);
+    expect(status.config?.draftModel).toBe(draftPath);
+  });
+
+  it('surfaces unknown/degraded state when PM2 read fails', async () => {
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/opt/homebrew/bin/llama-server');
+    vi.spyOn(pm2Module, 'getAppStatusStrict').mockResolvedValue(null);
+
+    const status = await getLlamaServerStatus();
+    expect(status.managed).toBeNull();
+    expect(status.lastExitError).toBe('Failed to read PM2 status');
+  });
+
+  it('propagates error when stopping PM2 process fails', async () => {
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+    pm2State = { name: LLAMA_APP, status: 'online', pid: 12345 };
+
+    vi.spyOn(pm2Module, 'execPm2').mockImplementation(async (args) => {
+      if (args[0] === 'delete') throw new Error('PM2 daemon down');
+      return { stdout: '', stderr: '' };
+    });
+
+    await expect(stopLlamaServer()).rejects.toThrow(/Failed to stop llama-server: PM2 daemon down/);
   });
 
   it('installs llama.cpp via Homebrew when brew is available', async () => {

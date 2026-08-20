@@ -16,7 +16,7 @@ import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { isPortInUse } from '../lib/platform.js';
 import { PORTS } from '../lib/ports.js';
 import { ServerError } from '../lib/errorHandler.js';
-import { execPm2, getAppStatus } from './pm2.js';
+import { execPm2, getAppStatusStrict, clearJlistCache } from './pm2.js';
 
 export const LLAMA_APP = 'portos-llama-server';
 
@@ -71,14 +71,54 @@ async function assertModelFileExists(label, modelPath) {
 }
 
 /**
+ * Reconstructs the launch config from PM2 process args if PortOS restarted
+ * while the PM2 process remained online.
+ */
+function parseConfigFromArgs(args) {
+  if (!args) return null;
+  const list = Array.isArray(args) ? args : String(args).split(' ');
+  const getArg = (flag) => {
+    const idx = list.indexOf(flag);
+    return idx !== -1 && idx + 1 < list.length ? list[idx + 1] : null;
+  };
+
+  const model = getArg('-m') || getArg('--model');
+  if (!model) return null;
+
+  const draftModel = getArg('--model-draft') || getArg('--spec-draft-model') || getArg('-md');
+  const specType = getArg('--spec-type') || 'draft-dflash';
+  const port = getArg('--port') ? Number(getArg('--port')) : PORTS.LLAMA_SERVER;
+  const host = getArg('--host') || '127.0.0.1';
+  const ctxSize = getArg('--ctx-size') ? Number(getArg('--ctx-size')) : 32768;
+  const nGpuLayers = getArg('-ngl') !== null ? Number(getArg('-ngl')) : 99;
+  const alias = getArg('--alias') || 'dflash';
+
+  return {
+    model,
+    draftModel,
+    specType,
+    port,
+    host,
+    ctxSize,
+    nGpuLayers,
+    alias,
+  };
+}
+
+/**
  * Returns current status of llama-server (binary availability, running state, config, logs).
  */
 export async function getLlamaServerStatus() {
   const binaryPath = resolveLlamaServerBinary();
   const installed = Boolean(binaryPath);
 
-  const pm2Status = await getAppStatus(LLAMA_APP).catch(() => null);
+  const pm2Status = await getAppStatusStrict(LLAMA_APP);
+  const isReadFailed = pm2Status === null;
   const isManagedActive = Boolean(pm2Status && pm2Status.status === 'online');
+
+  if (!currentConfig && isManagedActive && pm2Status?.args) {
+    currentConfig = parseConfigFromArgs(pm2Status.args);
+  }
 
   const host = currentConfig?.host || '127.0.0.1';
   const port = currentConfig?.port ?? PORTS.LLAMA_SERVER;
@@ -87,13 +127,22 @@ export async function getLlamaServerStatus() {
   const reachable = await probeEndpoint(endpoint);
 
   let logs = [...recentLogs];
-  if (logs.length === 0 && (isManagedActive || pm2Status?.status)) {
+  if (isManagedActive || (pm2Status && pm2Status.status !== 'not_found')) {
     try {
       const pm2LogsResult = await execPm2(['logs', LLAMA_APP, '--nostream', '--lines', String(MAX_LOG_LINES)]);
       const combined = (pm2LogsResult.stdout || '') + '\n' + (pm2LogsResult.stderr || '');
       const parsedLines = combined.split('\n').map((l) => l.trimEnd()).filter(Boolean);
       if (parsedLines.length > 0) {
-        logs = parsedLines.slice(-MAX_LOG_LINES);
+        const seen = new Set(logs);
+        for (const line of parsedLines) {
+          if (!seen.has(line)) {
+            logs.push(line);
+            seen.add(line);
+          }
+        }
+        if (logs.length > MAX_LOG_LINES) {
+          logs = logs.slice(-MAX_LOG_LINES);
+        }
       }
     } catch {
       // Ignore PM2 log retrieval errors
@@ -103,14 +152,14 @@ export async function getLlamaServerStatus() {
   return {
     installed,
     running: isManagedActive || reachable,
-    managed: isManagedActive,
+    managed: isReadFailed ? null : isManagedActive,
     pid: isManagedActive ? (pm2Status?.pid || null) : null,
     host,
     port,
     endpoint,
     config: isManagedActive ? currentConfig : null,
     recentLogs: logs,
-    lastExitError,
+    lastExitError: isReadFailed ? 'Failed to read PM2 status' : lastExitError,
   };
 }
 
@@ -126,7 +175,7 @@ export async function startLlamaServer(options = {}) {
     );
   }
 
-  const pm2Status = await getAppStatus(LLAMA_APP).catch(() => null);
+  const pm2Status = await getAppStatusStrict(LLAMA_APP);
   if (pm2Status && pm2Status.status === 'online') {
     throw new ServerError(`llama-server is already running with PID ${pm2Status.pid}`, { status: 409 });
   }
@@ -193,6 +242,7 @@ export async function startLlamaServer(options = {}) {
 
   // Delete stale PM2 entry so our own previous instance doesn't count as a collision
   await execPm2(['delete', LLAMA_APP]).catch(() => {});
+  clearJlistCache();
 
   await execPm2([
     'start', binaryPath,
@@ -202,17 +252,19 @@ export async function startLlamaServer(options = {}) {
     '--',
     ...args,
   ]);
+  clearJlistCache();
 
   // Wait a short beat and verify probe
   const startTime = Date.now();
   let online = false;
   let currentProc = null;
   while (Date.now() - startTime < STARTUP_WAIT_TIMEOUT_MS) {
-    currentProc = await getAppStatus(LLAMA_APP).catch(() => null);
+    await sleep(500);
+    clearJlistCache();
+    currentProc = await getAppStatusStrict(LLAMA_APP);
     if (currentProc && (currentProc.status === 'errored' || currentProc.status === 'stopped' || currentProc.status === 'not_found')) {
       break;
     }
-    await sleep(500);
     online = await probeEndpoint(endpoint);
     if (online) break;
   }
@@ -232,13 +284,14 @@ export async function startLlamaServer(options = {}) {
     lastExitError = `PM2 status: ${currentProc.status}`;
 
     await execPm2(['delete', LLAMA_APP]).catch(() => {});
+    clearJlistCache();
     throw new ServerError(
       `llama-server exited immediately${lastExitError ? ` (${lastExitError})` : ''}.${tail ? ` Last output: ${tail}` : ''}`,
       { status: 500, code: 'LLAMA_SERVER_EXITED' }
     );
   }
 
-  const finalProc = await getAppStatus(LLAMA_APP).catch(() => null);
+  const finalProc = await getAppStatusStrict(LLAMA_APP);
 
   return {
     success: true,
@@ -255,7 +308,7 @@ export async function startLlamaServer(options = {}) {
  * Stops the managed llama-server process.
  */
 export async function stopLlamaServer() {
-  const pm2Status = await getAppStatus(LLAMA_APP).catch(() => null);
+  const pm2Status = await getAppStatusStrict(LLAMA_APP);
   const isManaged = Boolean(pm2Status && pm2Status.status === 'online');
 
   if (!isManaged) {
@@ -273,7 +326,12 @@ export async function stopLlamaServer() {
   }
 
   appendLog(`Stopping ${LLAMA_APP}`);
-  await execPm2(['delete', LLAMA_APP]).catch(() => {});
+  try {
+    await execPm2(['delete', LLAMA_APP]);
+    clearJlistCache();
+  } catch (err) {
+    throw new ServerError(`Failed to stop llama-server: ${err.message}`, { status: 500 });
+  }
   currentConfig = null;
 
   return { success: true, message: 'llama-server stopped' };
