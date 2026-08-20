@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
+import { AlertTriangle } from 'lucide-react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Bounds, OrbitControls, useBounds } from '@react-three/drei';
 import * as THREE from 'three';
@@ -16,6 +17,7 @@ import {
 import { buildPartSelectionIndex, computeExplodeLayout, isReliefPart } from '../../lib/threejsExplode';
 import { summarizeThreejsArticulation } from '../../lib/threejsRig';
 import ThreejsClipTransport from './ThreejsClipTransport';
+import ErrorBoundary from '../ErrorBoundary';
 import {
   createRenderBudget,
   getEffectiveTier,
@@ -476,6 +478,32 @@ function useClipPlayback({ clip, cuesById, onCue }) {
   return { timeSeconds, playing, speed, setSpeed, togglePlay, stop, setPlayhead, duration };
 }
 
+// The spec this preview builds geometry from is LLM-generated, so a malformed
+// one can throw inside geometry construction — three.js is not defensive about
+// a NaN radius or a missing vertex array. Without a boundary that throw escapes
+// to the router and blanks the whole page; this is the same inline panel
+// GlbViewer shows for a mesh that cannot load, for the same reason.
+function SpecRenderFailure({ error }) {
+  return (
+    // `.port-media-overlay` (not a hardcoded `bg-black/NN`) because the panel
+    // floats over a surface whose backdrop is a user-picked colour — a day theme
+    // remaps hardcoded light ink to dark and the heading goes near-invisible.
+    <div
+      data-testid="threejs-spec-error"
+      className="port-media-overlay absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center"
+    >
+      <AlertTriangle className="h-6 w-6 text-port-error" aria-hidden="true" />
+      <p className="text-sm font-medium">This model spec could not be rendered</p>
+      <p className="max-w-sm text-xs text-port-text-muted">
+        The generated spec produced geometry three.js could not build. Regenerate the model, or edit the spec and try again.
+      </p>
+      <p className="max-w-full break-all font-mono text-[10px] leading-snug text-port-text-muted">
+        {String(error?.message || error || '')}
+      </p>
+    </div>
+  );
+}
+
 export default function ThreejsModelPreview({ spec, family = null, className = '', onCue = null }) {
   const [background, setBackground] = useState(() => spec?.background || '#000000');
   const [explode, setExplode] = useState(0);
@@ -510,6 +538,11 @@ export default function ThreejsModelPreview({ spec, family = null, className = '
   // model change must start a fresh measurement window instead of borrowing the
   // previous model's pressure history.
   const modelSignature = useMemo(() => JSON.stringify(spec), [spec]);
+  // A render failure is stored WITH the spec signature it belongs to, so
+  // regenerating the model drops the panel without an effect — and one spec's
+  // bad geometry never sticks to the next one.
+  const [failure, setFailure] = useState(null);
+  const specError = failure?.signature === modelSignature ? failure.error : null;
   const effectiveTier = qualityMode === 'auto' ? autoTier : fixedTier;
   const quality = PREVIEW_QUALITY[effectiveTier];
   const handleAutoTierChange = useCallback((tier) => {
@@ -589,35 +622,50 @@ export default function ThreejsModelPreview({ spec, family = null, className = '
       className={`relative overflow-hidden bg-port-bg ${className}`}
       style={transparent ? checkerboardStyle : undefined}
     >
-      <Canvas
-        key={`${spec.name}-${spec.schemaVersion}-${transparent ? 'transparent' : background}-${auditCamera}-${auditMode}`}
-        shadows={quality.shadows}
-        camera={{ position: auditCameraPosition, fov: spec.camera.fov, near: 0.01, far: 10_000 }}
-        dpr={quality.dpr}
-        // The colour-management half of the render profile the export stamps on
-        // every model. outputColorSpace and toneMapping come from r3f own
-        // defaults for linear={false} flat={false} — so neither flag is passed
-        // here — while exposure is the one r3f leaves to three, stated outright
-        // rather than inherited so the exported claim stays true.
-        gl={{ alpha: transparent, toneMappingExposure: THREEJS_RENDER_PROFILE.toneMappingExposure }}
-      >
-        <PreviewAdaptiveQuality
-          enabled={qualityMode === 'auto'}
-          resetToken={modelSignature}
-          onTierChange={handleAutoTierChange}
-        />
-        <ProceduralScene
-          spec={spec}
-          background={background}
-          layout={layout}
-          selection={selection}
-          selectedId={selectedId}
-          onSelect={handleSelect}
-          auditMode={auditMode}
-          pose={pose}
-          clipId={clip?.id || null}
-        />
-      </Canvas>
+      {specError ? (
+        <SpecRenderFailure error={specError} />
+      ) : (
+        /* Anything thrown inside an r3f `<Canvas>` is caught by the Canvas and
+           re-thrown from its OWN render, so with no boundary here the nearest one
+           is the router's errorElement and the whole route becomes "PortOS could
+           not load this page". `fallback={null}` degrades the scene (the shared
+           boundary's documented r3f mode) while `onError` hands the failure to
+           this component, which owns the DOM chrome and swaps in the panel. */
+        <ErrorBoundary
+          fallback={null}
+          onError={(error) => setFailure({ signature: modelSignature, error })}
+        >
+          <Canvas
+            key={`${spec.name}-${spec.schemaVersion}-${transparent ? 'transparent' : background}-${auditCamera}-${auditMode}`}
+            shadows={quality.shadows}
+            camera={{ position: auditCameraPosition, fov: spec.camera.fov, near: 0.01, far: 10_000 }}
+            dpr={quality.dpr}
+            // The colour-management half of the render profile the export stamps on
+            // every model. outputColorSpace and toneMapping come from r3f own
+            // defaults for linear={false} flat={false} — so neither flag is passed
+            // here — while exposure is the one r3f leaves to three, stated outright
+            // rather than inherited so the exported claim stays true.
+            gl={{ alpha: transparent, toneMappingExposure: THREEJS_RENDER_PROFILE.toneMappingExposure }}
+          >
+            <PreviewAdaptiveQuality
+              enabled={qualityMode === 'auto'}
+              resetToken={modelSignature}
+              onTierChange={handleAutoTierChange}
+            />
+            <ProceduralScene
+              spec={spec}
+              background={background}
+              layout={layout}
+              selection={selection}
+              selectedId={selectedId}
+              onSelect={handleSelect}
+              auditMode={auditMode}
+              pose={pose}
+              clipId={clip?.id || null}
+            />
+          </Canvas>
+        </ErrorBoundary>
+      )}
       <div className="port-media-overlay absolute left-2 top-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 rounded-lg px-2 py-1.5 text-[10px]">
         <span className="mr-1 whitespace-nowrap text-port-text-muted">Background</span>
         <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Preview background">
