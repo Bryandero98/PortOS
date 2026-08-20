@@ -84,16 +84,19 @@ const stubPin = (classBody, preamble = []) => [
 
 // The merge correction guards itself with `inspect.getsource`, which needs a
 // real file — so that stand-in is written out and imported rather than declared
-// inline. The merge itself is carried as a COMMENT: the stub only has to look
-// like the pin to `getsource`, not run its body.
+// inline. Each `encodeBody` entry is a PYTHON expression evaluated against the
+// already-imported runner, so the line under test comes from the runner's own
+// constant instead of a copy that could drift from it. The result is carried as
+// a COMMENT: the stub only has to look like the pin to `getsource`, not run.
 const filePin = (encodeBody) => [
-  'import importlib.util, sys, tempfile, types',
+  'import atexit, importlib.util, shutil, sys, tempfile, types',
   'temp = tempfile.mkdtemp()',
+  'atexit.register(shutil.rmtree, temp, True)',
   'pin = Path(temp) / "pinned_text_encoder.py"',
   'pin.write_text("\\n".join([',
   '    "class MiniMaxH3TextEncoder:",',
   '    "    def encode(self, prompt, images=None):",',
-  ...encodeBody.map((line) => `    ${JSON.stringify(`        # ${line}`)},`),
+  ...encodeBody.map((expr) => `    "        # " + ${expr},`),
   '    "        return (\'pinned\', prompt, images)",',
   ']))',
   'spec = importlib.util.spec_from_file_location("minimax_h3_mlx.text_encoder", pin)',
@@ -103,9 +106,6 @@ const filePin = (encodeBody) => [
   'spec.loader.exec_module(module)',
   'MiniMaxH3TextEncoder = module.MiniMaxH3TextEncoder',
 ].join('\n');
-
-// The line the correction replaces, mirrored from the runner's own constant.
-const PINNED_MERGE = 'inputs_embeds = mx.where(image_mask[..., None], hidden.astype(inputs_embeds.dtype)[None], inputs_embeds)';
 
 describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
   it('defaults the MLX runner to nine sigma points for eight forwards', () => {
@@ -715,7 +715,7 @@ describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
   // the pinned body with that one line swapped, so it is guarded twice: by the
   // line it replaces, and by a digest over the whole body it copied.
   it('corrects a pin that still merges by broadcast, and hands its text-only path back', () => {
-    const output = runPython(`${importRunner}\n${filePin([PINNED_MERGE])}\n${[
+    const output = runPython(`${importRunner}\n${filePin(["runner.PINNED_BROADCAST_MERGE"])}\n${[
       'import hashlib, inspect',
       'runner.PINNED_ENCODE_DIGEST = hashlib.sha256(',
       '    inspect.getsource(MiniMaxH3TextEncoder.encode).encode("utf-8")',
@@ -730,10 +730,10 @@ describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
 
   it.each([
     // Upstream fixed the merge: the correction has to retire, not shadow it.
-    [[PINNED_MERGE.replace('mx.where', 'masked_scatter')], 'digest-of-this-pin', /no longer merges keyframe embeddings/],
+    [['runner.PINNED_BROADCAST_MERGE.replace("mx.where", "masked_scatter")'], 'digest-of-this-pin', /no longer merges keyframe embeddings/],
     // The merge is untouched but something else in the body moved — the copy is
     // stale in a way matching one line could never see.
-    [[PINNED_MERGE], `"${'0'.repeat(64)}"`, /changed MiniMaxH3TextEncoder\.encode outside the merge/],
+    [['runner.PINNED_BROADCAST_MERGE'], `"${'0'.repeat(64)}"`, /changed MiniMaxH3TextEncoder\.encode outside the merge/],
   ])('refuses a pin the copied encode no longer matches (%j)', (body, digest, expected) => {
     const output = runPython(`${importRunner}\n${filePin(body)}\n${[
       'import hashlib, inspect',
