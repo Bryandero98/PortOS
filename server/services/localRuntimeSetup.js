@@ -184,7 +184,7 @@ const SETUP_ROWS = Object.freeze({
       // `installBackend` already registers the Homebrew service / runs the
       // vendor script on Linux and starts the daemon afterwards, so it covers
       // both steps for this runtime.
-      const result = await installBackend('ollama', (p) => emit(p.message));
+      const result = await installBackend('ollama', (p) => { if (p?.message) emit(p.message); });
       return result.success ? { success: true, note: result.note } : result;
     },
     async start({ emit }) {
@@ -196,7 +196,7 @@ const SETUP_ROWS = Object.freeze({
 
   lmstudio: Object.freeze({
     async install({ emit }) {
-      const result = await installBackend('lmstudio', (p) => emit(p.message));
+      const result = await installBackend('lmstudio', (p) => { if (p?.message) emit(p.message); });
       return result.success ? { success: true, note: result.note } : result;
     },
     async start({ emit }) {
@@ -213,7 +213,7 @@ const SETUP_ROWS = Object.freeze({
 
   llama: Object.freeze({
     async install({ emit }) {
-      const result = await installLlamaServer({ onProgress: (p) => emit(p.message) })
+      const result = await installLlamaServer({ onProgress: (p) => { if (p?.message) emit(p.message); } })
         .catch((err) => ({ success: false, error: err.message }));
       return result.success
         ? { success: true, note: 'Choose a GGUF model on Settings → Local LLM to start llama-server — PortOS does not pick weights for you.' }

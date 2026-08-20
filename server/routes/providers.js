@@ -318,7 +318,7 @@ export function createPortOSProviderRoutes(aiToolkit) {
     const data = await providerService.getAllProviders();
     // RAW record on purpose — a sanitized copy redacts the secret env values a
     // custom base URL can live in, which would resolve the wrong endpoint.
-    const provider = data.providers.find((row) => row.id === providerId);
+    const provider = (data.providers || []).find((row) => row.id === providerId);
     if (!provider) {
       throw new ServerError('Unknown provider', { status: 404, code: 'UNKNOWN_PROVIDER', context: { provider: providerId } });
     }
@@ -335,10 +335,15 @@ export function createPortOSProviderRoutes(aiToolkit) {
     const installLog = createInstallLogger({ installer: runtime.label, target: runtime.endpoint });
     let clientGone = false;
     let holdsLock = false;
+    // Closing the modal stops the WAIT, not the work: unlike the CLI installer
+    // above there is no single child to SIGTERM (a step may be mid-`brew
+    // install`), so the lock stays held until the setup actually settles —
+    // releasing it here would let a second click start a competing install
+    // into the same prefix. `isCancelled` makes that window short: the setup
+    // bails before its next step rather than running to the end.
     onClientDisconnect(req, res, () => {
       clientGone = true;
       installLog.cancel();
-      if (holdsLock) runtimeSetupInFlight = false;
       safeEnd();
     });
 
@@ -346,12 +351,9 @@ export function createPortOSProviderRoutes(aiToolkit) {
       send({ type: 'error', message: 'Another local-runtime setup is already running. Wait for it to finish.' });
       return safeEnd();
     }
+    if (clientGone) return safeEnd();
     runtimeSetupInFlight = true;
     holdsLock = true;
-    if (clientGone) {
-      runtimeSetupInFlight = false;
-      return safeEnd();
-    }
 
     send({ type: 'stage', stage: 'setup', message: `Setting up ${runtime.label} for ${runtime.endpoint}.` });
     installLog.start();

@@ -102,6 +102,26 @@ describe('POST /api/providers/readiness/setup', () => {
     expect(frames(response.text).at(-1)).toEqual({ type: 'error', message: 'brew exploded' });
   });
 
+  it('refuses a second concurrent setup rather than racing two installers', async () => {
+    let release;
+    setupService.runLocalRuntimeSetup.mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => resolve({ success: true, message: 'done' });
+    }));
+    const server = app([CLAUDE_OLLAMA]);
+
+    // `.then()` is what starts the request — the builder is lazy, so a bare
+    // call would never take the lock and the race under test wouldn't happen.
+    const first = request(server).post('/api/providers/readiness/setup?provider=claude-ollama').then((r) => r);
+    // Let the first request take the lock before the second one asks for it.
+    await vi.waitFor(() => expect(setupService.runLocalRuntimeSetup).toHaveBeenCalled());
+    const second = await request(server).post('/api/providers/readiness/setup?provider=claude-ollama');
+
+    expect(frames(second.text).at(-1).type).toBe('error');
+    expect(frames(second.text).at(-1).message).toMatch(/already running/);
+    release();
+    expect(frames((await first).text).at(-1)).toEqual({ type: 'complete', message: 'done' });
+  });
+
   it('rejects a stale page whose card named a different runtime', async () => {
     const response = await request(app([CLAUDE_OLLAMA]))
       .post('/api/providers/readiness/setup?provider=claude-ollama&runtime=mtplx');
