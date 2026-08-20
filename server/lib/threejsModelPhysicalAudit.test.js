@@ -138,6 +138,27 @@ describe('threejsModelPhysicalAudit', () => {
     expect(finding.message).not.toContain('Rig');
   });
 
+  it('caps descendant names in feedback-sized finding messages', () => {
+    const res = evaluateThreejsPhysicalAudit({
+      name: 'Many Descendants Spec',
+      parts: [{
+        id: 'root',
+        name: 'Root',
+        geometry: { type: 'box', width: 2, height: 1, depth: 1 },
+        scale: [3, 1, 0.2],
+        children: Array.from({ length: 9 }, (_, index) => ({
+          id: `child-${index + 1}`,
+          name: `Child ${index + 1}`,
+          geometry: { type: 'sphere', radius: 0.1 },
+        })),
+      }],
+    });
+
+    const finding = res.findings.find((item) => item.code === 'nonuniform-parent-scale');
+    expect(finding.message).toContain('(+1 more)');
+    expect(finding.message).not.toContain('Child 9');
+  });
+
   it('checks animated scale channel endpoints against nested parts', () => {
     const res = evaluateThreejsPhysicalAudit({
       name: 'Animated Scale Spec',

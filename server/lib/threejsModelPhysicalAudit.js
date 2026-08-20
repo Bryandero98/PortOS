@@ -341,7 +341,7 @@ const getScaleAnisotropy = (scale) => {
 
 const formatScale = (scale) => `[${scale.map((value) => Number(value.toFixed(4))).join(', ')}]`;
 
-const formatNames = (names) => names.map((name) => `"${name}"`).join(', ');
+const formatNames = (names) => listSpecNames(names.map((name) => `"${name}"`));
 
 const collectNonReliefDescendants = (part) => {
   const descendants = [];
