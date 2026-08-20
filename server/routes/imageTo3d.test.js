@@ -73,6 +73,7 @@ vi.mock('../services/imageTo3d/models.js', () => ({
   startGeneration: vi.fn(),
   deleteModel: vi.fn(),
   getModelAsset: vi.fn(),
+  getModelFullMesh: vi.fn(),
 }));
 
 import * as targets from '../services/imageTo3d/targets.js';
@@ -173,16 +174,28 @@ describe('image-to-3d routes', () => {
       models.getModel.mockResolvedValue(record('pixal3dCuda'));
       models.createModel.mockResolvedValue(record('pixal3dCuda'));
       models.startGeneration.mockResolvedValue(record('pixal3dCuda'));
+      // Read from the registry rather than restated, so adding a knob to a
+      // descriptor does not need an edit here to stay honest.
+      const expected = targets.renderOptionSupportFor('pixal3dCuda');
 
       const get = await request(app).get('/api/image-to-3d/models/image3d-1');
-      expect(get.body.supportsRenderOptions).toEqual({ steps: false });
+      expect(get.body.supportsRenderOptions).toEqual(expected);
 
       const created = await request(app).post('/api/image-to-3d/models')
         .send({ filename: 'example.png', name: 'x' });
-      expect(created.body.supportsRenderOptions).toEqual({ steps: false });
+      expect(created.body.supportsRenderOptions).toEqual(expected);
 
       const regen = await request(app).post('/api/image-to-3d/models/image3d-1/generate').send({});
-      expect(regen.body.supportsRenderOptions).toEqual({ steps: false });
+      expect(regen.body.supportsRenderOptions).toEqual(expected);
+    });
+
+    it('tells the client the detail control is unusable on a VRAM-derived lane', () => {
+      // Pixal3D picks 1024/1536 from the card's VRAM, so a rendered-but-ignored
+      // Detail control would be a lie about what the render will do.
+      expect(targets.renderOptionSupportFor('pixal3dCuda').detail).toBe(false);
+      expect(targets.renderOptionSupportFor('trellis2Cuda').detail).toBe(false);
+      // The MPS lane is the one that honors it.
+      expect(targets.renderOptionSupportFor('trellis2')).toBeNull();
     });
 
     it('omits the field for a target that honors every knob', async () => {
@@ -492,5 +505,38 @@ describe('image-to-3d model records', () => {
     models.getModelAsset.mockRejectedValue(new ServerError('not ready', { status: 409, code: 'MODEL_NOT_READY' }));
     const res = await request(makeApp()).get('/api/image-to-3d/models/image3d-1/asset');
     expect(res.status).toBe(409);
+  });
+
+  it('GET /models/:id/full-mesh streams the pre-decimation OBJ', async () => {
+    const tmp = join(tmpdir(), `it-full-${process.pid}.obj`);
+    await writeFile(tmp, 'v 0 0 0\nf 1 1 1\n');
+    models.getModelFullMesh.mockResolvedValue({ path: tmp, filename: 'beacon-full.obj' });
+    const res = await request(makeApp()).get('/api/image-to-3d/models/image3d-1/full-mesh');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/model\/obj/);
+    expect(res.headers['content-disposition']).toMatch(/beacon-full\.obj/);
+    await rm(tmp, { force: true });
+  });
+
+  it('GET /models/:id/full-mesh 404s when the sidecar was never written', async () => {
+    // A missing OBJ is NOT a broken record — older renders simply have none, so it
+    // must not read as the model being unavailable.
+    const { ServerError } = await import('../lib/errorHandler.js');
+    models.getModelFullMesh.mockRejectedValue(
+      new ServerError('no full mesh', { status: 404, code: 'FULL_MESH_MISSING' }),
+    );
+    const res = await request(makeApp()).get('/api/image-to-3d/models/image3d-1/full-mesh');
+    expect(res.status).toBe(404);
+    expect(res.body?.error?.code || res.body?.code).toBe('FULL_MESH_MISSING');
+  });
+
+  it('routes /full-mesh to its own handler with the record id', async () => {
+    // Deliberately NOT claiming this proves route ordering: Express's `:id` matches a
+    // single path segment, so `/models/x/full-mesh` can never match `/models/:id`
+    // regardless of registration order. What it does pin is that the id is parsed
+    // from the right segment and reaches the handler.
+    models.getModelFullMesh.mockRejectedValue(new Error('boom'));
+    await request(makeApp()).get('/api/image-to-3d/models/image3d-1/full-mesh');
+    expect(models.getModelFullMesh).toHaveBeenCalledWith('image3d-1');
   });
 });

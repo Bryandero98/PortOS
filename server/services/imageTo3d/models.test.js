@@ -72,7 +72,7 @@ import { claimHeavyLocalJob } from '../../lib/heavyJobClaim.js';
 import { prepareSourceImage } from './sourceKeying.js';
 import * as store from './db.js';
 import {
-  createModel, startGeneration, getModelAsset, recoverInterruptedModels, deleteModel,
+  createModel, startGeneration, getModelAsset, getModelFullMesh, recoverInterruptedModels, deleteModel,
 } from './models.js';
 
 const draftRecord = () => ({
@@ -291,6 +291,45 @@ describe('image-to-3D model orchestration', () => {
     const asset = await getModelAsset('image3d-example');
     expect(posixPath(asset.path)).toMatch(/image-to-3d\/image3d-example\/model\.glb$/);
     expect(asset.filename).toBe('my-beacon.glb');
+  });
+
+  describe('getModelFullMesh', () => {
+    const ready = () => ({
+      ...draftRecord(),
+      status: 'ready',
+      name: 'My Beacon',
+      assetPath: '/data/image-to-3d/image3d-example/model.glb',
+    });
+
+    it('returns the OBJ sidecar when it is on disk', async () => {
+      store.getModel.mockResolvedValueOnce(ready());
+      const mesh = await getModelFullMesh('image3d-example', { exists: async () => true });
+      expect(posixPath(mesh.path)).toMatch(/image-to-3d\/image3d-example\/model\.obj$/);
+      expect(mesh.filename).toBe('my-beacon-full.obj');
+    });
+
+    it('404s when the sidecar was never written, rather than claiming the record is broken', async () => {
+      // Every readiness check the GLB passes can pass while the OBJ is absent — it
+      // is an upstream side-effect file, not something the pipeline guarantees. So
+      // this has to be its own probe rather than a read of `status`.
+      store.getModel.mockResolvedValueOnce(ready());
+      await expect(getModelFullMesh('image3d-example', { exists: async () => false }))
+        .rejects.toMatchObject({ status: 404, code: 'FULL_MESH_MISSING' });
+    });
+
+    it('409s before a render has produced anything, without probing disk', async () => {
+      store.getModel.mockResolvedValueOnce({ ...draftRecord(), status: 'generating' });
+      const exists = vi.fn(async () => true);
+      await expect(getModelFullMesh('image3d-example', { exists }))
+        .rejects.toMatchObject({ status: 409, code: 'MODEL_NOT_READY' });
+      expect(exists).not.toHaveBeenCalled();
+    });
+
+    it('404s on an unknown record', async () => {
+      store.getModel.mockResolvedValueOnce(null);
+      await expect(getModelFullMesh('nope', { exists: async () => true }))
+        .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+    });
   });
 });
 

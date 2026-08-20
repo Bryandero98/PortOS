@@ -17,7 +17,7 @@
 
 import { randomUUID } from 'crypto';
 import { join } from 'node:path';
-import { rm } from 'node:fs/promises';
+import { rm, access } from 'node:fs/promises';
 import { ServerError } from '../../lib/errorHandler.js';
 import { PATHS, resolveGalleryImage, ensureDir } from '../../lib/fileUtils.js';
 import { claimHeavyLocalJob } from '../../lib/heavyJobClaim.js';
@@ -40,6 +40,9 @@ const activeOperations = new Set();
 // spawns (executeRender) and drained in its `finally`.
 const activeRenders = new Map();
 
+/** Injectable existence probe — `access` resolves/rejects rather than returning. */
+const pathExists = (p) => access(p).then(() => true, () => false);
+
 const trimRuns = (runs) => runs.slice(-MAX_RUNS);
 const cleanError = (error) => String(error?.message || error || 'Render failed').slice(0, 2_000);
 
@@ -49,6 +52,17 @@ const assetUrl = (id) => `/data/image-to-3d/${id}/model.glb`;
 const recordDir = (id) => join(PATHS.imageTo3d, id);
 /** The on-disk destination the runner writes the GLB to. */
 const assetDiskPath = (id) => join(recordDir(id), 'model.glb');
+/**
+ * The full-resolution mesh `generate.py` writes alongside the GLB.
+ *
+ * This is the decoder's mesh BEFORE the bake-time decimation — 22.7M faces on a
+ * `1024_cascade` render where the GLB carries ~1M — so it is the only place the
+ * discarded detail still exists. It is plain `v`/`f` OBJ: no UVs, no normals, no
+ * material, and often several hundred MB. That is why it is a separate download
+ * rather than the served asset: the 3D page has to load something a browser can
+ * actually render.
+ */
+const fullMeshDiskPath = (id) => join(recordDir(id), 'model.obj');
 /** Where a background-keyed copy of the source lands (never the gallery file). */
 const keyedSourcePath = (id) => join(recordDir(id), 'source-keyed.png');
 
@@ -352,6 +366,12 @@ async function beginRender(record, adapter, sourcePath, caps, requestOptions) {
           steps: options.steps,
           seed: options.seed,
           keyBackground: options.keyBackground,
+          // Recorded so the detail view can render the knobs this run actually
+          // used — and so the viewer knows whether transparency was requested,
+          // which decides if its force-opaque pass should apply.
+          detail: options.detail,
+          alphaMode: options.alphaMode,
+          normalMap: options.normalMap,
           startedAt,
           completedAt: null,
           error: null,
@@ -378,6 +398,34 @@ export async function getModelAsset(id) {
     throw new ServerError('This model has no generated mesh yet', { status: 409, code: 'MODEL_NOT_READY' });
   }
   return { path: assetDiskPath(id), filename: `${slugifyForFilename(model.name)}.glb` };
+}
+
+/**
+ * Resolve a ready record's full-resolution OBJ for download.
+ *
+ * Separate from `getModelAsset` because its absence is NOT an error state of the
+ * record: every readiness check the GLB passes can pass while the OBJ is missing,
+ * since it is an upstream side-effect file rather than something PortOS's pipeline
+ * guarantees. A render from before this was exposed, a `--no-texture` run, or an
+ * upstream that stops writing it all land here — and each is a plain 404 on the
+ * download, not a sign the model is broken. Hence the explicit `exists` probe
+ * rather than reusing the record's `status`.
+ */
+export async function getModelFullMesh(id, { exists = pathExists } = {}) {
+  const model = await store.getModel(id);
+  if (!model) throw new ServerError('Image-to-3D model not found', { status: 404, code: 'NOT_FOUND' });
+  if (model.status !== 'ready' || !model.assetPath) {
+    throw new ServerError('This model has no generated mesh yet', { status: 409, code: 'MODEL_NOT_READY' });
+  }
+  const path = fullMeshDiskPath(id);
+  if (!await exists(path)) {
+    throw new ServerError(
+      'This render has no full-resolution mesh on disk. Only renders that kept the '
+      + 'upstream OBJ sidecar have one; re-render to produce it.',
+      { status: 404, code: 'FULL_MESH_MISSING' },
+    );
+  }
+  return { path, filename: `${slugifyForFilename(model.name)}-full.obj` };
 }
 
 export async function recoverInterruptedModels() {

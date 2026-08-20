@@ -80,6 +80,19 @@ export const IMAGE_TO_3D_TARGETS = Object.freeze({
       diskGb: 15,
       python: '3.11',
     }),
+    // Maps the shared abstract detail tiers onto this port's own `--pipeline-type`
+    // values. `auto` is absent deliberately: it means "derive from unified memory"
+    // and is resolved by the runner, not by a lookup here.
+    //
+    // The 512 tier is genuinely fast rather than merely smaller — upstream's own
+    // benchmark is ~3m20s of generate+bake on an M4 Pro, against 13–20 minutes
+    // measured for 1024_cascade on a 64 GB M5 Max. It is worth exposing as a
+    // preview tier even on a host whose memory qualifies for max.
+    detailTiers: Object.freeze({
+      fast: '512',
+      balanced: '1024',
+      max: '1024_cascade',
+    }),
     upstream: 'https://github.com/microsoft/TRELLIS.2',
     // Community MPS port that makes the CUDA-only upstream run on Apple Silicon.
     port: 'https://github.com/shivampkumar/trellis-mac',
@@ -127,6 +140,10 @@ export const IMAGE_TO_3D_TARGETS = Object.freeze({
       diskGb: 15,
       python: '3.10',
     }),
+    // Upstream's CUDA entrypoint takes no pipeline-type override and PortOS's
+    // runner for it emits no alpha-mode flag, so both controls are declared
+    // unsupported rather than rendered as settings the runner would drop.
+    supportsRenderOptions: Object.freeze({ detail: false, alphaMode: false, normalMap: false }),
     upstream: 'https://github.com/microsoft/TRELLIS.2',
     weightsRepo: 'microsoft/TRELLIS.2-4B',
     installNotes:
@@ -173,7 +190,14 @@ export const IMAGE_TO_3D_TARGETS = Object.freeze({
     // `steps` and drops it. Declared here so the UI disables the Quality control rather
     // than offering a setting that silently does nothing, and so the run entry records
     // `steps: null` instead of a value that never applied.
-    supportsRenderOptions: Object.freeze({ steps: false }),
+    // `detail: false` even though this lane DOES have 1024/1536 resolutions, and
+    // that is deliberate rather than an oversight. Its tier is chosen from the
+    // card's actual VRAM by `selectPixal3dRenderBudget` (1536 wants up to ~36 GB),
+    // so letting a request override it would hand a 12 GB card a configuration
+    // that OOMs mid-render. Exposing it needs a VRAM-safety story first — until
+    // then the honest answer is that the runner does not honor a caller's choice.
+    // `alphaMode: false` because its runner emits no such flag.
+    supportsRenderOptions: Object.freeze({ steps: false, detail: false, alphaMode: false, normalMap: false }),
     installNotes:
       'Creating a dedicated `pixal3d` conda environment (kept separate so Pixal3D\u2019s '
       + 'pinned dependencies cannot disturb the TRELLIS.2 target), cloning both repos, '

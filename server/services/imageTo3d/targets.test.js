@@ -13,6 +13,7 @@ import {
   detectHostCapabilities,
   renderOptionSupportFor,
 } from './targets.js';
+import { DEFAULT_DETAIL_TIER, DETAIL_TIERS } from './renderOptions.js';
 
 // A host that can run TRELLIS.2's local-MPS lane, and one that can't.
 const APPLE_128GB = { appleSilicon: true, unifiedMemoryGb: 128, cuda: false, cudaProbe: 'absent' };
@@ -331,15 +332,40 @@ describe('renderOptionSupportFor', () => {
   it('reports the unsupported knobs a target declares', () => {
     // Pixal3D's runner drops `steps`; the descriptor is what tells the UI to disable
     // the control and `beginRender` to record null instead of the requested value.
-    expect(renderOptionSupportFor('pixal3dCuda')).toEqual({ steps: false });
+    // `detail` is declared unsupported even though the lane HAS 1024/1536
+    // resolutions — they are picked from the card's VRAM, so honoring a caller's
+    // choice could hand a 12 GB card a config that OOMs mid-render.
+    expect(renderOptionSupportFor('pixal3dCuda'))
+      .toEqual({ steps: false, detail: false, alphaMode: false, normalMap: false });
+    // Upstream's CUDA entrypoint takes no pipeline-type override at all.
+    expect(renderOptionSupportFor('trellis2Cuda'))
+      .toEqual({ detail: false, alphaMode: false, normalMap: false });
   });
 
   it('returns null for a target that honors every knob, and for an unknown id', () => {
     // Absent must mean "all supported", so existing targets need no descriptor entry
     // and an unknown id can't be mistaken for "supports nothing".
     expect(renderOptionSupportFor('trellis2')).toBeNull();
-    expect(renderOptionSupportFor('trellis2Cuda')).toBeNull();
     expect(renderOptionSupportFor('nope')).toBeNull();
     expect(renderOptionSupportFor(undefined)).toBeNull();
+  });
+
+  // Guards the contract between the abstract tier and each lane's own vocabulary:
+  // a target that declares detail support must be able to resolve every tier, and
+  // one that declares it unsupported must not carry a half-filled mapping.
+  it('pairs detail support with a complete tier mapping', () => {
+    for (const id of IMAGE_TO_3D_TARGET_IDS) {
+      const target = IMAGE_TO_3D_TARGETS[id];
+      const supportsDetail = target.supportsRenderOptions?.detail !== false;
+      if (supportsDetail) {
+        expect(target.detailTiers, id).toBeDefined();
+        // Every non-auto tier must map, or picking it would silently fall back.
+        for (const tier of DETAIL_TIERS.filter((t) => t !== DEFAULT_DETAIL_TIER)) {
+          expect(target.detailTiers[tier], `${id}.${tier}`).toBeTruthy();
+        }
+      } else {
+        expect(target.detailTiers, id).toBeUndefined();
+      }
+    }
   });
 });

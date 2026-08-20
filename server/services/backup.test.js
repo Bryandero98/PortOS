@@ -109,6 +109,38 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 const overridable = DEFAULT_EXCLUDES.filter(e => e.overridable).map(e => e.path);
 const nonOverridable = DEFAULT_EXCLUDES.filter(e => !e.overridable).map(e => e.path);
 
+describe('DEFAULT_EXCLUDES anchoring', () => {
+  // These are rsync FILTER patterns, not globs: an unanchored pattern matches at
+  // ANY depth, so `model.obj` would drop a file of that name anywhere under data/.
+  // That is a silent data-loss bug rather than a style nit, which is why it gets a
+  // test rather than a convention.
+  it('anchors every default exclude at the data root', () => {
+    const unanchored = DEFAULT_EXCLUDES.filter((e) => !e.path.startsWith('/'));
+    expect(unanchored.map((e) => e.path)).toEqual([]);
+  });
+
+  it('gives every default exclude a reason a user can act on', () => {
+    // The reason string is surfaced in the backup UI; a blank one makes an
+    // overridable exclude undecidable for whoever is looking at the toggle.
+    for (const entry of DEFAULT_EXCLUDES) {
+      expect(entry.reason, entry.path).toBeTruthy();
+      expect(typeof entry.overridable, entry.path).toBe('boolean');
+    }
+  });
+
+  it('excludes the TRELLIS.2 full-resolution mesh sidecar, overridably', () => {
+    // ~1 GB per render of a file PortOS never serves. Overridable because it is
+    // the only copy of the geometry the bake decimation discards.
+    const entry = DEFAULT_EXCLUDES.find((e) => e.path === '/image-to-3d/*/model.obj');
+    expect(entry).toBeDefined();
+    expect(entry.overridable).toBe(true);
+    // Scoped to the sidecar only — the served GLB and keyed source stay backed up.
+    const paths = DEFAULT_EXCLUDES.map((e) => e.path);
+    expect(paths).not.toContain('/image-to-3d/');
+    expect(paths.some((x) => x.includes('model.glb'))).toBe(false);
+  });
+});
+
 describe('computeEffectiveExcludes', () => {
   it('includes every DEFAULT_EXCLUDES path when nothing is disabled', () => {
     const result = computeEffectiveExcludes({ excludePaths: [], disabledDefaultExcludes: [] });

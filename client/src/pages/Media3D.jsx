@@ -200,6 +200,9 @@ export default function Media3D() {
   const [steps, setSteps] = useState('');
   const [seed, setSeed] = useState('');
   const [keyBackground, setKeyBackground] = useState(true);
+  const [detail, setDetail] = useState('auto');
+  const [alphaMode, setAlphaMode] = useState('');
+  const [normalMap, setNormalMap] = useState(false);
   // Existing image-to-3D records (newest-first) so the page doubles as a library:
   // each links to its `/3d/:id` detail view.
   const [records, setRecords] = useState([]);
@@ -296,7 +299,7 @@ export default function Media3D() {
         name: nameFromImageFilename(selectedImage.filename),
         filename: selectedImage.filename,
         target: selectedTarget.id,
-        ...renderOptionsBody({ steps, seed, keyBackground }),
+        ...renderOptionsBody({ steps, seed, keyBackground, detail, alphaMode, normalMap }),
       },
       { silent: true },
     ).catch((err) => {
@@ -304,7 +307,8 @@ export default function Media3D() {
       return null;
     });
     if (created && mountedRef.current) { setModelId(created.id); setGenerating(true); patchRecord(created); }
-  }, [selectedImage, selectedTarget, steps, seed, keyBackground, updateParams, mountedRef, patchRecord]);
+  }, [selectedImage, selectedTarget, steps, seed, keyBackground, detail, alphaMode, normalMap,
+    updateParams, mountedRef, patchRecord]);
 
   // Why the Generate action is blocked, or null when it's ready to run. The runner
   // (POST create → on-device render → landed .glb) is wired, so the terminal state
@@ -398,6 +402,15 @@ export default function Media3D() {
 
           <ImageTo3dRenderOptions
             stepsSupported={selectedTarget?.supportsRenderOptions?.steps !== false}
+            detailSupported={selectedTarget?.supportsRenderOptions?.detail !== false}
+            alphaModeSupported={selectedTarget?.supportsRenderOptions?.alphaMode !== false}
+            detail={detail}
+            onDetailChange={setDetail}
+            alphaMode={alphaMode}
+            onAlphaModeChange={setAlphaMode}
+            normalMapSupported={selectedTarget?.supportsRenderOptions?.normalMap !== false}
+            normalMap={normalMap}
+            onNormalMapChange={setNormalMap}
             steps={steps}
             onStepsChange={setSteps}
             seed={seed}

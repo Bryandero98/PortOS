@@ -10,21 +10,25 @@ import {
   renderOptionArgs,
   validateRenderOptions,
   honorTargetRenderSupport,
+  ALPHA_MODES,
+  DEFAULT_DETAIL_TIER,
+  DETAIL_TIERS,
+  RENDER_OPTION_KEYS,
 } from './renderOptions.js';
 
 describe('normalizeRenderOptions', () => {
   it('defaults to unset steps/seed with keying enabled', () => {
-    expect(normalizeRenderOptions()).toEqual({ steps: null, seed: null, keyBackground: true });
-    expect(normalizeRenderOptions({})).toEqual({ steps: null, seed: null, keyBackground: true });
+    expect(normalizeRenderOptions()).toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null, normalMap: false });
+    expect(normalizeRenderOptions({})).toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null, normalMap: false });
   });
 
   it('keeps valid values and collapses invalid ones to the unset sentinel', () => {
     expect(normalizeRenderOptions({ steps: 24, seed: 0, keyBackground: false }))
-      .toEqual({ steps: 24, seed: 0, keyBackground: false });
+      .toEqual({ steps: 24, seed: 0, keyBackground: false, detail: 'auto', alphaMode: null, normalMap: false });
     expect(normalizeRenderOptions({ steps: RENDER_STEPS_MAX + 1, seed: RENDER_SEED_MAX + 1 }))
-      .toEqual({ steps: null, seed: null, keyBackground: true });
+      .toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null, normalMap: false });
     expect(normalizeRenderOptions({ steps: 12.5, seed: '42' }))
-      .toEqual({ steps: null, seed: null, keyBackground: true });
+      .toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null, normalMap: false });
   });
 });
 
@@ -83,6 +87,67 @@ describe('validateRenderOptions', () => {
   it('names the caller in the error, so a lane-specific builder reads as the thrower', () => {
     expect(() => validateRenderOptions('buildPixal3dGenerateArgs', { steps: 999 }))
       .toThrow(/^buildPixal3dGenerateArgs:/);
+  });
+});
+
+describe('detail tier and alpha mode', () => {
+  it('defaults detail to the auto sentinel, not null', () => {
+    // 'auto' is a choosable value ("derive from host"), so a run entry recording it
+    // is the truth rather than an absence.
+    expect(normalizeRenderOptions().detail).toBe(DEFAULT_DETAIL_TIER);
+    expect(DETAIL_TIERS).toContain(DEFAULT_DETAIL_TIER);
+  });
+
+  it.each(DETAIL_TIERS)('keeps the valid tier %s', (tier) => {
+    expect(normalizeRenderOptions({ detail: tier }).detail).toBe(tier);
+  });
+
+  it.each(['ultra', '1024_cascade', '', null, 7])('collapses invalid tier %s to auto', (bad) => {
+    // Notably '1024_cascade' — a lane's concrete pipeline value is NOT a tier, and
+    // letting it through would leak one lane's vocabulary into the shared API.
+    expect(normalizeRenderOptions({ detail: bad }).detail).toBe(DEFAULT_DETAIL_TIER);
+  });
+
+  it.each(ALPHA_MODES)('keeps the valid alpha mode %s', (mode) => {
+    expect(normalizeRenderOptions({ alphaMode: mode }).alphaMode).toBe(mode);
+  });
+
+  it('keeps alphaMode null when unset, which is distinct from OPAQUE', () => {
+    // null = "don't instruct the exporter, and keep the force-opaque normalization".
+    // OPAQUE = "the exporter should emit OPAQUE". Collapsing them would make the
+    // normalization impossible to opt out of.
+    expect(normalizeRenderOptions().alphaMode).toBeNull();
+    expect(normalizeRenderOptions({ alphaMode: 'OPAQUE' }).alphaMode).toBe('OPAQUE');
+  });
+});
+
+describe('normalMap', () => {
+  it('defaults OFF, like every other quality knob that can lose a render', () => {
+    // Opt-in for the same reason --fill-holes is: the bake runs before the GLB is
+    // exported and builds a BVH beyond its dependency's tested sizes, so a segfault /
+    // OOM / GPU-watchdog kill there destroys a multi-minute render. No Python guard
+    // catches those. An earlier revision defaulted this ON on the strength of a
+    // "cannot fail a render" claim that was false.
+    expect(normalizeRenderOptions().normalMap).toBe(false);
+  });
+
+  it('requires an explicit true — the only way to opt in', () => {
+    expect(normalizeRenderOptions({ normalMap: true }).normalMap).toBe(true);
+    expect(normalizeRenderOptions({ normalMap: false }).normalMap).toBe(false);
+  });
+
+  it('treats a non-boolean as off rather than as opted-in', () => {
+    // Fail safe: a garbage or truthy-string value must not enable a pass that can
+    // take the render down with it.
+    for (const bad of [undefined, null, 'true', 1, {}]) {
+      expect(normalizeRenderOptions({ normalMap: bad }).normalMap).toBe(false);
+    }
+  });
+});
+
+describe('RENDER_OPTION_KEYS', () => {
+  it('matches exactly what normalizeRenderOptions returns', () => {
+    expect(RENDER_OPTION_KEYS).toEqual(Object.keys(normalizeRenderOptions()));
   });
 });
 

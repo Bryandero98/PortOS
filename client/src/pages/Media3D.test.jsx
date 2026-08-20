@@ -221,6 +221,29 @@ describe('Media3D — generation workspace', () => {
     expect(await screen.findByTestId('glb-viewer')).toHaveTextContent('/data/image-to-3d/m1/model.glb');
   });
 
+  it('sends per-run options chosen after mount, not the values captured at mount', async () => {
+    // Guards a stale-closure class of bug: handleGenerate is a useCallback, and a new
+    // option added to its body without extending its dependency array silently sends
+    // the mount-time default. Found exactly that way on both the create and re-render
+    // paths — the existing create assertion used objectContaining and could not see it.
+    createImageTo3dModel.mockResolvedValue({ id: 'm3', status: 'generating', runs: [] });
+    getImageTo3dModel.mockResolvedValue({ id: 'm3', status: 'generating', runs: [] });
+    renderAt('/3d?image=example-robot.png');
+    await screen.findByRole('button', { name: /Generate 3D/i });
+
+    fireEvent.change(screen.getByLabelText(/detail/i), { target: { value: 'fast' } });
+    fireEvent.change(screen.getByLabelText(/transparency/i), { target: { value: 'BLEND' } });
+    // Defaults off, so clicking it turns the bake ON — which is also the direction
+    // that matters here: an opt-in the user selected must survive to the request.
+    fireEvent.click(screen.getByLabelText(/bake normal map/i));
+    fireEvent.click(screen.getByRole('button', { name: /Generate 3D/i }));
+
+    await waitFor(() => expect(createImageTo3dModel).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: 'fast', alphaMode: 'BLEND', normalMap: true }),
+      expect.anything(),
+    ));
+  });
+
   it('surfaces the render error (e.g. the Hugging Face auth guidance) on failure', async () => {
     createImageTo3dModel.mockResolvedValue({ id: 'm2', status: 'generating', runs: [] });
     getImageTo3dModel.mockResolvedValue({

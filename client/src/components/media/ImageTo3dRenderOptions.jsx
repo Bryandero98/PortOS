@@ -1,5 +1,7 @@
 import FormField from '../ui/FormField';
-import { SEED_MAX, STEPS_PRESETS } from '../../lib/imageTo3dRenderOptions';
+import {
+  ALPHA_MODE_PRESETS, DETAIL_PRESETS, SEED_MAX, STEPS_PRESETS,
+} from '../../lib/imageTo3dRenderOptions';
 
 // Per-run sampler knobs for image-to-3D generation, shared by the /3d
 // workspace and the /3d/:id detail page. Controlled, with per-field props
@@ -9,12 +11,21 @@ import { SEED_MAX, STEPS_PRESETS } from '../../lib/imageTo3dRenderOptions';
 //
 // Not every target honors every knob — Pixal3D's upstream CLI has no per-phase step
 // override — so `stepsSupported={false}` disables the Quality control and says why,
-// rather than offering a setting the runner silently drops.
+// rather than offering a setting the runner silently drops. `detailSupported` and
+// `alphaModeSupported` do the same for the other two: the TRELLIS.2 CUDA lane takes
+// no pipeline-type override at all, and Pixal3D derives its resolution from VRAM
+// (overriding it could hand a small card a config that OOMs mid-render).
+//
+// Detail and Transparency sit on their own row above the sampler knobs because they
+// change what gets built, while steps/seed/keying change how it is sampled.
 //
 // Value conventions (see lib/imageTo3dRenderOptions.js for the body mapping):
 //  - steps: '' = pipeline default, else a preset number string.
 //  - seed:  '' = a fresh random seed every render; a value pins this run.
 //  - keyBackground: key a solid-color backdrop to transparency before render.
+//  - detail: 'auto' = derive the pipeline tier from hardware, else a named tier.
+//  - alphaMode: '' = leave PortOS's force-opaque normalization on (the default);
+//    any explicit value turns it off so a transparent subject can stay transparent.
 
 const FIELD_LABEL_CLASS = 'mb-1 block text-xs text-gray-400';
 const FIELD_INPUT_CLASS = 'w-full rounded-md border border-port-border bg-port-bg px-2 py-1.5 text-xs text-gray-200 disabled:opacity-40';
@@ -26,11 +37,60 @@ export default function ImageTo3dRenderOptions({
   onSeedChange,
   keyBackground,
   onKeyBackgroundChange,
+  detail = 'auto',
+  onDetailChange,
+  alphaMode = '',
+  onAlphaModeChange,
+  normalMap = true,
+  onNormalMapChange,
   disabled = false,
   stepsSupported = true,
+  detailSupported = true,
+  alphaModeSupported = true,
+  normalMapSupported = true,
 }) {
   return (
     <div className="flex flex-col gap-2">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <FormField
+          label="Detail"
+          labelClassName={FIELD_LABEL_CLASS}
+          hint={detailSupported
+            ? undefined
+            : 'This model picks its own resolution from your hardware'}
+        >
+          <select
+            id="image-to-3d-detail"
+            value={detailSupported ? detail : 'auto'}
+            onChange={(e) => onDetailChange(e.target.value)}
+            disabled={disabled || !detailSupported}
+            className={FIELD_INPUT_CLASS}
+          >
+            {DETAIL_PRESETS.map((preset) => (
+              <option key={preset.value} value={preset.value}>{preset.label}</option>
+            ))}
+          </select>
+        </FormField>
+        <FormField
+          label="Transparency"
+          labelClassName={FIELD_LABEL_CLASS}
+          hint={alphaModeSupported
+            ? undefined
+            : 'This model always exports a solid material'}
+        >
+          <select
+            id="image-to-3d-alpha-mode"
+            value={alphaModeSupported ? alphaMode : ''}
+            onChange={(e) => onAlphaModeChange(e.target.value)}
+            disabled={disabled || !alphaModeSupported}
+            className={FIELD_INPUT_CLASS}
+          >
+            {ALPHA_MODE_PRESETS.map((preset) => (
+              <option key={preset.value || 'default'} value={preset.value}>{preset.label}</option>
+            ))}
+          </select>
+        </FormField>
+      </div>
       <div className="grid gap-3 sm:grid-cols-3">
         <FormField
           label="Quality"
@@ -68,16 +128,44 @@ export default function ImageTo3dRenderOptions({
           />
         </FormField>
         <div className="flex items-end pb-1.5">
-          <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-gray-300">
-            <input
-              type="checkbox"
-              checked={keyBackground}
-              onChange={(e) => onKeyBackgroundChange(e.target.checked)}
-              disabled={disabled}
-              className="h-3.5 w-3.5 rounded border-port-border bg-port-bg accent-port-accent disabled:opacity-40"
-            />
-            Key out solid background
-          </label>
+          <div className="flex flex-col gap-1.5">
+            <label
+              htmlFor="image-to-3d-key-background"
+              className="inline-flex cursor-pointer items-center gap-2 text-xs text-gray-300"
+            >
+              <input
+                id="image-to-3d-key-background"
+                type="checkbox"
+                checked={keyBackground}
+                onChange={(e) => onKeyBackgroundChange(e.target.checked)}
+                disabled={disabled}
+                className="h-3.5 w-3.5 rounded border-port-border bg-port-bg accent-port-accent disabled:opacity-40"
+              />
+              Key out solid background
+            </label>
+            {/* Opt-in, not default-on. It recovers shading detail the decimation
+                discards, but the bake runs before the GLB is written and builds a BVH
+                over a mesh larger than its dependency's tests cover — a hard crash
+                there (segfault / OOM / GPU watchdog) loses the whole render, which no
+                Python guard can catch. */}
+            <label
+              htmlFor="image-to-3d-normal-map"
+              className="inline-flex cursor-pointer items-center gap-2 text-xs text-gray-300"
+              title={normalMapSupported
+                ? 'Recover shading detail the decimation discards, by baking a normal map from the full-resolution mesh. Adds time, and on a very large mesh can crash the render outright — retry without it if a render dies during texture baking.'
+                : 'This model does not bake a normal map'}
+            >
+              <input
+                id="image-to-3d-normal-map"
+                type="checkbox"
+                checked={normalMapSupported ? normalMap : false}
+                onChange={(e) => onNormalMapChange(e.target.checked)}
+                disabled={disabled || !normalMapSupported}
+                className="h-3.5 w-3.5 rounded border-port-border bg-port-bg accent-port-accent disabled:opacity-40"
+              />
+              Bake normal map
+            </label>
+          </div>
         </div>
       </div>
       <p className="text-xs leading-relaxed text-gray-500">
