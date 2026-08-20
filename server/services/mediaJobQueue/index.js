@@ -9,8 +9,8 @@
  * an immediate `queued` ack and watch progress via SSE.
  *
  * Lanes: GPU jobs drain serially through `running`; cloud CLI jobs use the
- * bounded `cloudRunning` lane; federated audio uses `remoteRunning` so work on
- * another machine never occupies this machine's GPU slot.
+ * bounded `cloudRunning` lane; federated audio/image/video use `remoteRunning`
+ * so work on another machine never occupies this machine's GPU slot.
  *
  * Scope: gates `videoGen/local#generateVideo` (always),
  * `imageGen/local#generateImage` (when imageGen mode === 'local'), and
@@ -57,12 +57,23 @@ const isCloudImageJob = (j) =>
   (j.kind === 'image' && CLOUD_IMAGE_GEN_MODES.includes(j.params?.mode))
   || (j.kind === 'video' && j.params?.mode === IMAGE_GEN_MODE.GROK);
 
+// The federatable kinds and the adapter each one dispatches to, in one map so
+// the two cannot drift apart. Kinds are listed explicitly rather than inferred
+// from the marker alone: a 'training' job has no federated contract, so a marker
+// on one is corrupt state that must keep taking the local path, not a routing
+// instruction.
+const REMOTE_MEDIA_MODULES = {
+  audio: () => import('../audioGen/remote.js'),
+  image: () => import('../imageGen/remote.js'),
+  video: () => import('../videoGen/remote.js'),
+};
+
 // Presence, not truthiness of individual nested fields, selects the remote
 // adapter. Persisted queue state is user-editable; a malformed marker must fail
-// closed in audioGen/remote rather than accidentally falling through to a local
-// engine with a remote-only model id.
+// closed in the kind's remote module rather than accidentally falling through to
+// a local engine with a remote-only model id.
 export const isRemoteMediaJob = (job) =>
-  job?.kind === 'audio' && job.params?.remoteMedia !== undefined;
+  Object.hasOwn(REMOTE_MEDIA_MODULES, job?.kind ?? '') && job.params?.remoteMedia !== undefined;
 
 const jobLane = (job) => {
   if (isRemoteMediaJob(job)) return 'remote';
@@ -144,10 +155,14 @@ export const JOB_STATUSES = Object.freeze(['queued', 'running', 'completed', 'fa
 // of provider-dispatch truth — used by the watchdog, runJob, and cancelJob
 // so a new provider addition is one edit instead of three.
 function getGenModuleForJob(job) {
+  // The remote check comes FIRST for every federatable kind: a remote job's
+  // params deliberately carry no local runtime fields (mode, pythonPath), so a
+  // later local branch would happily claim it and render a second time on this
+  // machine.
+  if (isRemoteMediaJob(job)) return REMOTE_MEDIA_MODULES[job.kind]();
   if (job.kind === 'video' && job.params?.mode === IMAGE_GEN_MODE.GROK) return import('../videoGen/grok.js');
   if (job.kind === 'video') return import('../videoGen/local.js');
   if (job.kind === 'training') return import('../loraTraining/index.js');
-  if (isRemoteMediaJob(job)) return import('../audioGen/remote.js');
   if (job.kind === 'audio') return import('../audioGen/local.js');
   if (job.kind === 'image' && job.params?.mode === IMAGE_GEN_MODE.CODEX) return import('../imageGen/codex.js');
   if (job.kind === 'image' && job.params?.mode === IMAGE_GEN_MODE.GROK) return import('../imageGen/grok.js');
@@ -173,6 +188,10 @@ async function jobHasSurvivingTrainer(runId) {
 // here so the seam stays in one place instead of accreting into runJob.
 // Mutates safeParams in place.
 async function resolveLiveParams(job, safeParams) {
+  // A remote job renders on the peer's runtime, so this machine's pythonPath is
+  // neither used nor meaningful — resolving it would only emit a confusing
+  // re-resolution log line for a render that never touches local Python.
+  if (isRemoteMediaJob(job)) return;
   // mflux training runs in the same venv as local image renders, so the
   // live settings pythonPath wins there too. flux2 training resolves its
   // own venv (resolveFlux2Python) inside runTraining — skip it here.
@@ -402,7 +421,7 @@ export async function initMediaJobQueue() {
               },
             },
           });
-          console.log(`🔁 media-job [${j.id.slice(0, 8)}] remote audio interrupted — re-enqueued for reconciliation`);
+          console.log(`🔁 media-job [${j.id.slice(0, 8)}] remote ${j.kind} interrupted — re-enqueued for reconciliation`);
           continue;
         }
         // #1332: a LoRA trainer is a detached child (spawnDetached) that can
@@ -993,6 +1012,17 @@ async function runJob(job) {
   try {
     const mod = await getGenModuleForJob(job);
     if (!mod) throw new Error(`Unknown job kind: ${job.kind}`);
+    // A cancel that arrived while this job was still queued lives on the
+    // persisted marker, not on any in-memory adapter state. Re-stamp it for
+    // every remote kind so the adapter starts already knowing it must recover
+    // the provider job and cancel it rather than import its result.
+    if (isRemoteMediaJob(job)) {
+      safeParams.remoteMedia = {
+        ...(safeParams.remoteMedia && typeof safeParams.remoteMedia === 'object'
+          ? safeParams.remoteMedia : {}),
+        cancelRequested: job.params?.remoteMedia?.cancelRequested === true,
+      };
+    }
     if (job.kind === 'video' && safeParams.chunks > 1) {
       await mod.generateChainedVideo({ ...safeParams, jobId: job.id });
     } else if (job.kind === 'video') {
@@ -1000,13 +1030,6 @@ async function runJob(job) {
     } else if (job.kind === 'training') {
       await mod.runTraining({ ...safeParams, jobId: job.id });
     } else if (job.kind === 'audio') {
-      if (isRemoteMediaJob(job)) {
-        safeParams.remoteMedia = {
-          ...(safeParams.remoteMedia && typeof safeParams.remoteMedia === 'object'
-            ? safeParams.remoteMedia : {}),
-          cancelRequested: job.params?.remoteMedia?.cancelRequested === true,
-        };
-      }
       await mod.generateAudio({ ...safeParams, jobId: job.id });
     } else {
       await mod.generateImage({ ...safeParams, jobId: job.id });
