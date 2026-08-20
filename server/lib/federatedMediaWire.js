@@ -55,6 +55,32 @@ export function renderFederatedMediaAudioPrompt(profile) {
 }
 
 /**
+ * The prompt a finished media job actually rendered from.
+ *
+ * A routed job's top-level `params.prompt` is deliberately blank — that is what
+ * makes it unrenderable by a build rolled back past `remoteMedia` (#4683) — so
+ * anything recording what was rendered (completion hooks, the public queue
+ * projection) must read the marker instead. Audio renders it from the
+ * fixed-vocabulary profile, since free-form personal text never reaches an audio
+ * provider at all; image and video carry the submitted prompt itself.
+ *
+ * Returns `null` only when there is no prompt to report, so callers can tell
+ * "nothing was recorded" apart from "rendered with an empty prompt".
+ *
+ * @param {object} job - A media job (or anything with `.params`).
+ * @returns {string|null}
+ */
+export function effectiveJobPrompt(job) {
+  const marker = job?.params?.remoteMedia;
+  if (marker) {
+    const audioPrompt = renderFederatedMediaAudioPrompt(marker.profile);
+    if (audioPrompt) return audioPrompt;
+    if (typeof marker.request?.prompt === 'string') return marker.request.prompt;
+  }
+  return typeof job?.params?.prompt === 'string' ? job.params.prompt : null;
+}
+
+/**
  * Validate that a prompt string conforms to the canonical federated audio grammar.
  * Provider-side validation receives only the rendered text (not the local profile)
  * so older wire-v1 providers can accept newer consumers. Parses the canonical grammar

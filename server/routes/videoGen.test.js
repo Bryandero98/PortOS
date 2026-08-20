@@ -1958,6 +1958,37 @@ describe('videoGen routes', () => {
       expect(r.body.activeJob.params.prompt).toBe('P running');
     });
 
+    it('resumes a federated render from its marker, not the blanked local fields', async () => {
+      // The routed job's top-level prompt/model are blanked so a downgraded
+      // build fails closed (#4683). Without reading through to the wire
+      // request, a reload mid-render would repopulate the form with an empty
+      // prompt and the LOCAL default model instead of the peer's.
+      mediaJobQueue.listJobs.mockImplementation(listJobsByFilter([{
+        id: 'remote-running',
+        kind: 'video',
+        status: 'running',
+        position: 1,
+        params: {
+          prompt: '',
+          modelId: null,
+          pythonPath: null,
+          remoteMedia: {
+            wireVersion: 1,
+            peerId: federatedPeerId,
+            request: {
+              kind: 'video', engine: 'local', modelId: 'ltx2', prompt: 'a slow pan across a harbour',
+            },
+          },
+        },
+      }]));
+      const r = await request(app).get('/api/video-gen/active');
+      expect(r.status).toBe(200);
+      expect(r.body.activeJob.params.prompt).toBe('a slow pan across a harbour');
+      expect(r.body.activeJob.params.modelId).toBe('ltx2');
+      // The marker itself stays off this surface — it carries peer routing state.
+      expect(r.body.activeJob.params).not.toHaveProperty('remoteMedia');
+    });
+
     // Selection of the newest queued (not oldest) matches /cancel's fallback
     // selection — see the surrounding comment in routes/videoGen.js. Diverging
     // would mean Cancel from a resumed-queued page targets a different job.
@@ -2293,12 +2324,12 @@ describe('videoGen routes', () => {
       });
 
       const [{ params }] = mediaJobQueue.enqueueJob.mock.calls[0];
-      // Blank top-level prompt + no pythonPath: an older build that cannot read
-      // `remoteMedia` hits generateVideo's "Prompt is required" guard and fails
-      // closed instead of re-rendering this job on local hardware.
-      expect(params.prompt).toBe('');
-      expect(params).not.toHaveProperty('pythonPath');
+      // Prompt and dials ride only inside the versioned marker; no local render
+      // input is carried over at all. enqueueJob owns blanking the rest (#4683)
+      // — its own suites cover that, and enqueueJob is mocked here.
+      expect(params).toEqual({ remoteMedia: expect.objectContaining({ peerId: federatedPeerId }) });
       expect(params.remoteMedia.request.prompt).toBe('a slow pan across a harbour');
+      expect(params.remoteMedia.request.modelId).toBe('ltx2');
     });
 
     it('requires an explicit provider model instead of falling back to a local default', async () => {

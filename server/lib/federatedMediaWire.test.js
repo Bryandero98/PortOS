@@ -3,6 +3,7 @@ import {
   federatedMediaAudioProfileSchema,
   federatedMediaProviderStatusSchema,
   federatedMediaProviderJobSchema,
+  effectiveJobPrompt,
   isFederatedMediaAudioPrompt,
   normalizeRequestedMediaKinds,
   renderFederatedMediaAudioPrompt,
@@ -144,5 +145,46 @@ describe('federated media privacy-safe audio profiles', () => {
       subject: 'alice@example.com',
     }).success).toBe(false);
     expect(renderFederatedMediaAudioPrompt({ ...profile, mood: 'a named person' })).toBeNull();
+  });
+});
+
+describe('effectiveJobPrompt', () => {
+  it('reads a routed job through to the wire request, not the blanked params', () => {
+    // A routed job's top-level prompt is blank on purpose (#4683). Anything
+    // recording what was rendered must read the marker, or it files a finished
+    // render with no prompt at all.
+    expect(effectiveJobPrompt({
+      kind: 'image',
+      params: {
+        prompt: '',
+        remoteMedia: { wireVersion: 1, request: { kind: 'image', modelId: 'dev', prompt: 'a lighthouse at dusk' } },
+      },
+    })).toBe('a lighthouse at dusk');
+  });
+
+  it('renders an audio job from its fixed-vocabulary profile', () => {
+    expect(effectiveJobPrompt({
+      kind: 'audio',
+      params: {
+        prompt: '',
+        remoteMedia: {
+          wireVersion: 1,
+          profile: { style: 'ambient', mood: 'calm', tempo: 'slow', energy: 'low', instruments: [] },
+          request: { engine: 'remote-audio', modelId: 'example/model' },
+        },
+      },
+    })).toBe('Instrumental ambient music with a calm mood, slow tempo, low energy. No vocals or spoken words.');
+  });
+
+  it('returns a local job\'s own prompt untouched', () => {
+    expect(effectiveJobPrompt({ kind: 'image', params: { prompt: 'a fox' } })).toBe('a fox');
+  });
+
+  it('distinguishes no prompt at all from a legitimately empty one', () => {
+    expect(effectiveJobPrompt({ kind: 'image', params: {} })).toBeNull();
+    expect(effectiveJobPrompt(undefined)).toBeNull();
+    // An img2img render genuinely has no text — that is an empty string, not
+    // "nothing was recorded".
+    expect(effectiveJobPrompt({ kind: 'image', params: { prompt: '' } })).toBe('');
   });
 });

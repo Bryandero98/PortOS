@@ -480,13 +480,13 @@ router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
       mediaProviderPeerId: _peerId, mediaProviderEngine: _engine,
       mode: _mode, cloudModel: _cloudModel, ...jobParams
     } = params;
-    // The conditioning prompt rides ONLY inside the versioned marker. An older
-    // build that cannot route `remoteMedia` therefore falls through to a local
-    // render with no prompt and no configured backend, rather than quietly
-    // re-rendering this job for real on local hardware.
+    // The prompt and model ride only inside the versioned marker: enqueueJob
+    // normalizes any job carrying one into the downgrade-safe shape, so this
+    // render cannot be re-run for real by a build rolled back past
+    // `remoteMedia`. Contract: services/federatedMedia/routedJobParams.js.
     const queued = enqueueJob({
       kind: 'image',
-      params: { ...jobParams, prompt: '', remoteMedia },
+      params: { ...jobParams, remoteMedia },
     });
     return res.json(queuedImageResponse({
       ...queued,

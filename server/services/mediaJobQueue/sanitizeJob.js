@@ -1,4 +1,5 @@
-import { renderFederatedMediaAudioPrompt } from '../../lib/federatedMediaWire.js';
+import { effectiveJobPrompt } from '../../lib/federatedMediaWire.js';
+import { isRemoteMediaJob } from './remoteMediaJob.js';
 
 // Public projection of a media job. Keep worker-only paths and subprocess
 // details out of both the queue API and the processing dashboard.
@@ -32,18 +33,27 @@ export function sanitizeJob(job) {
   // in top-level params — that is what makes an older build (which cannot route
   // the marker) fail closed instead of quietly re-rendering the job locally.
   // Rebuild the prompt for the public projection without exposing private peer
-  // routing state. Audio renders it from the fixed-vocabulary profile (free-form
-  // personal text never reaches an audio provider at all); image and video carry
-  // the submitted prompt itself.
-  const remotePrompt = renderFederatedMediaAudioPrompt(job.params?.remoteMedia?.profile)
-    ?? (typeof job.params?.remoteMedia?.request?.prompt === 'string'
-      ? job.params.remoteMedia.request.prompt : null);
-  if (safeParams && remotePrompt) {
-    safeParams.prompt = remotePrompt;
+  // routing state.
+  const remotePrompt = effectiveJobPrompt(job);
+  // The model id is nulled in top-level params for the same reason (#4683), so
+  // rebuild it from the marker too — the Render Queue's model badge reads
+  // `params.modelId`, and every routed kind (audio included: routes/music.js
+  // requires an explicit `modelId` for a peer render) carries it on the wire
+  // request. This branch is now the ONLY source of a routed job's model id.
+  const routed = isRemoteMediaJob(job);
+  const remoteModelId = job.params?.remoteMedia?.request?.modelId;
+  if (safeParams && routed) {
+    if (remotePrompt) safeParams.prompt = remotePrompt;
+    if (typeof remoteModelId === 'string' && remoteModelId) safeParams.modelId = remoteModelId;
   }
   return {
     id: job.id,
     kind: job.kind,
+    // Where this job renders. Job metadata, not a render input, so it rides on
+    // the envelope rather than inside `params` — the PARAM_ALLOWLIST above stays
+    // an exact description of what a projected `params` can contain. The UI
+    // needs it because a peer render must not wear the local model badge.
+    renderer: routed ? 'remote' : 'local',
     owner: job.owner,
     status: job.status,
     queuedAt: job.queuedAt,

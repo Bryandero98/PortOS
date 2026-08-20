@@ -55,8 +55,11 @@ describe('sanitizeJob', () => {
       kind: 'audio',
       status: 'queued',
       params: {
+        // Blank/nulled by routedJobParams, exactly as the queue persists it —
+        // if the fixture carried the model id here too, the marker rebuild
+        // below could stop working and this test would still pass.
         prompt: '',
-        modelId: 'example/model',
+        modelId: null,
         remoteMedia: {
           wireVersion: 1,
           peerId: '00000000-0000-4000-8000-000000000001',
@@ -79,19 +82,21 @@ describe('sanitizeJob', () => {
       prompt: 'Instrumental orchestral music with a triumphant mood, moderate tempo, high energy, featuring brass and strings. No vocals or spoken words.',
       modelId: 'example/model',
     });
+    expect(sanitized.renderer).toBe('remote');
     expect(sanitized.params).not.toHaveProperty('remoteMedia');
   });
 
-  it('restores an image/video remote job prompt from its marker, not from params', () => {
+  it('restores an image/video remote job prompt and model from its marker, not from params', () => {
     const sanitized = sanitizeJob({
       id: 'job-image',
       kind: 'image',
       status: 'running',
       params: {
-        // Blank on purpose: the prompt lives only inside the versioned marker so
-        // an older build that cannot route it fails closed instead of rendering.
+        // Blank/nulled on purpose: the prompt and the model live only inside
+        // the versioned marker so an older build that cannot route it fails
+        // closed instead of rendering (#4683).
         prompt: '',
-        modelId: 'dev',
+        modelId: null,
         width: 512,
         height: 512,
         remoteMedia: {
@@ -116,5 +121,39 @@ describe('sanitizeJob', () => {
       height: 512,
     });
     expect(sanitized.params).not.toHaveProperty('remoteMedia');
+    // Job metadata, not a render input — the Render Queue badges this
+    // 'remote / dev' rather than claiming a local render produced it.
+    expect(sanitized.renderer).toBe('remote');
+    expect(sanitized.params).not.toHaveProperty('renderer');
+  });
+
+  it('reports a local job as locally rendered', () => {
+    const sanitized = sanitizeJob({
+      id: 'job-local',
+      kind: 'image',
+      status: 'running',
+      params: { prompt: 'a lighthouse at dusk', modelId: 'dev' },
+    });
+
+    expect(sanitized.params).toEqual({ prompt: 'a lighthouse at dusk', modelId: 'dev' });
+    expect(sanitized.renderer).toBe('local');
+  });
+
+  it('reports a training job carrying a stray marker as local — training has no federated contract', () => {
+    const sanitized = sanitizeJob({
+      id: 'job-training',
+      kind: 'training',
+      status: 'running',
+      params: {
+        runId: 'run-1',
+        runtime: 'mflux',
+        modelId: 'dev',
+        remoteMedia: { wireVersion: 1, request: { modelId: 'peer-model' } },
+      },
+    });
+
+    expect(sanitized.renderer).toBe('local');
+    // The marker must not rewrite a local training job's model either.
+    expect(sanitized.params.modelId).toBe('dev');
   });
 });

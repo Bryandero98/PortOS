@@ -45,6 +45,8 @@ import { trainingEvents } from '../loraTraining/events.js';
 import { audioGenEvents } from '../audioGen/events.js';
 import { getSettings } from '../settings.js';
 import { IMAGE_GEN_MODE, CLOUD_IMAGE_GEN_MODES } from '../imageGen/modes.js';
+import { REMOTE_MEDIA_MODULES, isRemoteMediaJob } from './remoteMediaJob.js';
+import { routedJobParams } from '../federatedMedia/routedJobParams.js';
 
 // Cloud-CLI jobs (Codex/Grok/Agy images, Grok videos) share one parallel lane —
 // each render
@@ -57,29 +59,27 @@ const isCloudImageJob = (j) =>
   (j.kind === 'image' && CLOUD_IMAGE_GEN_MODES.includes(j.params?.mode))
   || (j.kind === 'video' && j.params?.mode === IMAGE_GEN_MODE.GROK);
 
-// The federatable kinds and the adapter each one dispatches to, in one map so
-// the two cannot drift apart. Kinds are listed explicitly rather than inferred
-// from the marker alone: a 'training' job has no federated contract, so a marker
-// on one is corrupt state that must keep taking the local path, not a routing
-// instruction.
-const REMOTE_MEDIA_MODULES = {
-  audio: () => import('../audioGen/remote.js'),
-  image: () => import('../imageGen/remote.js'),
-  video: () => import('../videoGen/remote.js'),
-};
-
-// Presence, not truthiness of individual nested fields, selects the remote
-// adapter. Persisted queue state is user-editable; a malformed marker must fail
-// closed in the kind's remote module rather than accidentally falling through to
-// a local engine with a remote-only model id.
-export const isRemoteMediaJob = (job) =>
-  Object.hasOwn(REMOTE_MEDIA_MODULES, job?.kind ?? '') && job.params?.remoteMedia !== undefined;
+// The federated-kind map and its predicate live in ./remoteMediaJob.js so light
+// consumers (sanitizeJob, route handlers) can ask "is this routed?" without
+// pulling the queue in. Re-exported here because that is where callers have
+// always found it.
+export { isRemoteMediaJob };
 
 const jobLane = (job) => {
   if (isRemoteMediaJob(job)) return 'remote';
   if (isCloudImageJob(job)) return 'cloud';
   return 'gpu';
 };
+
+// Boot restoration is the second way a job enters the queue, so it needs the
+// same routed-job normalization enqueueJob applies (#4683). A job written by a
+// build older than that fix still carries the top-level model id a legacy
+// dispatcher would render from; re-normalizing on restore (and letting the boot
+// persist write the safe shape back) means upgrading and then rolling back
+// cannot resurrect a locally-renderable routed job.
+const restoredParams = (job) => (isRemoteMediaJob(job)
+  ? routedJobParams({ params: job.params })
+  : job.params);
 
 const JOBS_FILE = join(PATHS.data, 'media-jobs.json');
 const COMPLETED_TTL_MS = 24 * 60 * 60 * 1000;
@@ -413,13 +413,16 @@ export async function initMediaJobQueue() {
             ...j,
             status: 'queued',
             cancelRequested: marker?.cancelRequested === true,
-            params: {
-              ...j.params,
-              remoteMedia: {
-                ...(marker && typeof marker === 'object' && !Array.isArray(marker) ? marker : {}),
-                reconcile: true,
+            params: restoredParams({
+              ...j,
+              params: {
+                ...j.params,
+                remoteMedia: {
+                  ...(marker && typeof marker === 'object' && !Array.isArray(marker) ? marker : {}),
+                  reconcile: true,
+                },
               },
-            },
+            }),
           });
           console.log(`🔁 media-job [${j.id.slice(0, 8)}] remote ${j.kind} interrupted — re-enqueued for reconciliation`);
           continue;
@@ -458,9 +461,12 @@ export async function initMediaJobQueue() {
           safeUnlinkUpload(p);
         }
       } else if (j.status === 'queued') {
-        queue.push({ ...j });
+        queue.push({ ...j, params: restoredParams(j) });
       } else {
-        archive.push(j);
+        // The archive needs it too: a rolled-back build restores these rows,
+        // shows them in the Render Queue's recent reel, and its Retry hands the
+        // stored params straight to a local render.
+        archive.push({ ...j, params: restoredParams(j) });
       }
     }
     // Re-attach jobs resume ahead of everything else (they were mid-flight), so
@@ -1062,17 +1068,24 @@ export function enqueueJob({ kind, params, owner = null }) {
     throw new Error(`enqueueJob: invalid kind '${kind}'`);
   }
   const id = randomUUID();
+  // Every routed job is normalized HERE rather than at each caller (#4683): the
+  // downgrade contract only holds if it is unbypassable, and a future enqueue
+  // site that forgets the helper would ship a job a rolled-back build renders
+  // locally for real. See services/federatedMedia/routedJobParams.js.
+  const safeParams = isRemoteMediaJob({ kind, params })
+    ? routedJobParams({ params })
+    : params;
   const job = {
     id,
     kind,
     owner,
     status: 'queued',
     queuedAt: new Date().toISOString(),
-    params,
+    params: safeParams,
     // position counts "where you sit in your lane" — a running job in the
     // same lane occupies slot 1, then same-lane queued jobs follow.
     position: (() => {
-      const candidate = { kind, params };
+      const candidate = { kind, params: safeParams };
       const lane = jobLane(candidate);
       const laneQueue = queue.filter((j) => jobLane(j) === lane);
       const liveCount = lane === 'cloud'

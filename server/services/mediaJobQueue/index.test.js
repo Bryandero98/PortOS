@@ -880,6 +880,123 @@ describe('Audio kind (#1928)', () => {
     await waitFor(() => mediaJobQueue.getJob(remote.jobId)?.status === 'completed');
   });
 
+  // #4683 — the downgrade contract is enforced HERE, not at each routed enqueue
+  // site, so a future caller that forgets to blank the local render fields can't
+  // ship a job a build rolled back past `remoteMedia` would render for real.
+  it('normalizes any enqueued job carrying a marker into the downgrade-safe shape', async () => {
+    stubs.generateImageRemote.mockImplementation(() => new Promise(() => {}));
+    // Deliberately hostile input: a caller that passed the local render fields
+    // straight through, exactly as a forgotten normalization would.
+    const remote = mediaJobQueue.enqueueJob({
+      kind: 'image',
+      params: {
+        prompt: 'a harbour',
+        modelId: 'dev',
+        pythonPath: '/usr/bin/python3',
+        width: 512,
+        remoteMedia: remoteImageMediaParams(),
+      },
+    });
+
+    const { params } = mediaJobQueue.getJob(remote.jobId);
+    expect(params.prompt).toBe('');
+    expect(params.modelId).toBeNull();
+    expect(params.pythonPath).toBeNull();
+    // Surviving job params and the marker itself ride through untouched, and
+    // the job still routes to the remote adapter on this build.
+    expect(params.width).toBe(512);
+    expect(params.remoteMedia.request.prompt).toBe('a harbour');
+    await waitFor(() => stubs.generateImageRemote.mock.calls.length === 1);
+    expect(stubs.generateImage).not.toHaveBeenCalled();
+  });
+
+  it('re-normalizes a routed job restored from a snapshot an older build wrote', async () => {
+    // Boot restoration is the second way a job enters the queue. A record
+    // persisted before #4683 still carries the top-level model id a legacy
+    // dispatcher would render from, so upgrading and then rolling back would
+    // otherwise resurrect a locally-renderable job.
+    writeFileSync(join(tempDataDir, 'media-jobs.json'), JSON.stringify({
+      jobs: [
+        {
+          id: 'aaaaaaaa-0000-4000-8000-000000000001',
+          kind: 'image',
+          status: 'queued',
+          queuedAt: '2026-08-01T00:00:00.000Z',
+          params: {
+            prompt: 'a harbour', modelId: 'dev', pythonPath: '/usr/bin/python3',
+            remoteMedia: remoteImageMediaParams(),
+          },
+        },
+        {
+          id: 'aaaaaaaa-0000-4000-8000-000000000002',
+          kind: 'image',
+          status: 'running',
+          queuedAt: '2026-08-01T00:00:00.000Z',
+          params: {
+            prompt: 'a harbour', modelId: 'dev', pythonPath: '/usr/bin/python3',
+            remoteMedia: remoteImageMediaParams(),
+          },
+        },
+      ],
+    }));
+    stubs.generateImageRemote.mockImplementation(() => new Promise(() => {}));
+    await importFresh();
+    await mediaJobQueue.initMediaJobQueue();
+
+    for (const id of ['aaaaaaaa-0000-4000-8000-000000000001', 'aaaaaaaa-0000-4000-8000-000000000002']) {
+      const { params } = mediaJobQueue.getJob(id);
+      expect(params.prompt).toBe('');
+      expect(params.modelId).toBeNull();
+      expect(params.pythonPath).toBeNull();
+      expect(params.remoteMedia.request.prompt).toBe('a harbour');
+    }
+    // The interrupted running job still gets its reconcile flag.
+    expect(mediaJobQueue.getJob('aaaaaaaa-0000-4000-8000-000000000002').params.remoteMedia.reconcile).toBe(true);
+  });
+
+  it('re-normalizes an ARCHIVED routed job too — the recent reel is a retry surface', async () => {
+    // A rolled-back build restores archived rows, shows them in the Render
+    // Queue's recent reel, and its Retry hands the stored params straight to a
+    // local render. Leaving the archive un-normalized would keep #4683 open
+    // through that path.
+    writeFileSync(join(tempDataDir, 'media-jobs.json'), JSON.stringify({
+      jobs: [{
+        id: 'bbbbbbbb-0000-4000-8000-000000000001',
+        kind: 'image',
+        status: 'failed',
+        error: 'peer unreachable',
+        queuedAt: new Date(Date.now() - 60_000).toISOString(),
+        // Inside the archive's 24h retention window, or the boot prune drops it.
+        completedAt: new Date().toISOString(),
+        params: {
+          prompt: 'a harbour', modelId: 'dev', pythonPath: '/usr/bin/python3',
+          remoteMedia: remoteImageMediaParams(),
+        },
+      }],
+    }));
+    await importFresh();
+    await mediaJobQueue.initMediaJobQueue();
+
+    const { params, status } = mediaJobQueue.getJob('bbbbbbbb-0000-4000-8000-000000000001');
+    expect(status).toBe('failed');
+    expect(params.prompt).toBe('');
+    expect(params.modelId).toBeNull();
+    expect(params.pythonPath).toBeNull();
+    expect(params.remoteMedia.request.prompt).toBe('a harbour');
+  });
+
+  it('leaves a training job carrying a stray marker on the local path', () => {
+    // Bypass probe for the normalization above: `training` has no federated
+    // contract, so a marker on one is corrupt state — blanking its params would
+    // destroy a real local run.
+    const job = mediaJobQueue.enqueueJob({
+      kind: 'training',
+      params: { runId: 'run-1', runtime: 'mflux', modelId: 'dev', remoteMedia: remoteImageMediaParams() },
+    });
+
+    expect(mediaJobQueue.getJob(job.jobId).params.modelId).toBe('dev');
+  });
+
   it('persists cancellation intent before signaling a running remote adapter', async () => {
     stubs.generateAudioRemote.mockImplementation(() => new Promise(() => {}));
     const remote = mediaJobQueue.enqueueJob({
