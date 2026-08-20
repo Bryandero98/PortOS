@@ -52,6 +52,14 @@ const CONTROL_TIMEOUT_MS = 60 * 1000;
  * loads a multi-gigabyte MLX checkpoint before it binds, so this is sized for a
  * cold model load rather than for a socket coming up.
  */
+/**
+ * Parked on a detached daemon's `error` once this module stops watching it. An
+ * EventEmitter `error` with NO listener throws, which outside the request
+ * lifecycle takes the PortOS process down — so the watchers are replaced, never
+ * merely removed. Module-scope, so it closes over nothing.
+ */
+const IGNORE_ERROR = () => {};
+
 const START_TIMEOUT_MS = 3 * 60 * 1000;
 const START_POLL_MS = 1_500;
 
@@ -99,25 +107,36 @@ async function startDaemon({ command, args, endpoint, emit, isCancelled = () => 
   };
   child.stdout?.on('data', onData);
   child.stderr?.on('data', onData);
+  // Outside the request lifecycle: an unhandled 'error' on a child is a process
+  // crash, and the exit code is what turns "still waiting" into a real reason.
+  const onError = (err) => { exited = `failed to start: ${err.message}`; };
+  const onExit = (code, signal) => {
+    if (exited === null) exited = `exited early (${signal || `code ${code}`})`;
+  };
+  child.on('error', onError);
+  child.on('exit', onExit);
   /**
-   * Stop forwarding, but keep DRAINING: a daemon whose stdout pipe fills up
-   * blocks on its next write, and `resume()` on a listener-less stream discards
-   * what it reads. Dropping the listener also releases `emit`'s closure over the
-   * SSE response, which would otherwise be retained for the daemon's lifetime.
+   * Detach from the daemon, which outlives this request.
+   *
+   * Keep DRAINING: a daemon whose stdout pipe fills up blocks on its next
+   * write, and `resume()` on a listener-less stream discards what it reads.
+   *
+   * Drop EVERY listener, not just `onData`: they share one closure scope, so
+   * any one of them left attached to a long-lived child pins that scope — and
+   * `emit` in it — which holds the SSE response open for the daemon's whole
+   * lifetime. `IGNORE_ERROR` takes the `error` slot back so a later crash
+   * cannot throw on an emitter with no listener.
    */
   const stopStreaming = () => {
     for (const stream of [child.stdout, child.stderr]) {
       stream?.off('data', onData);
       stream?.resume();
     }
+    child.off('error', onError);
+    child.off('exit', onExit);
+    child.on('error', IGNORE_ERROR);
     child.unref();
   };
-  // Outside the request lifecycle: an unhandled 'error' on a child is a process
-  // crash, and the exit code is what turns "still waiting" into a real reason.
-  child.on('error', (err) => { exited = `failed to start: ${err.message}`; });
-  child.on('exit', (code, signal) => {
-    if (exited === null) exited = `exited early (${signal || `code ${code}`})`;
-  });
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

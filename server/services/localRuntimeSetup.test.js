@@ -42,6 +42,7 @@ const fakeChild = () => {
     stdout: stream(),
     stderr: stream(),
     on: vi.fn((event, fn) => { handlers[event] = fn; }),
+    off: vi.fn(),
     unref: vi.fn(),
     emitEvent: (event, ...args) => handlers[event]?.(...args),
   };
@@ -241,6 +242,37 @@ describe('runLocalRuntimeSetup', () => {
     expect(args).toEqual(['serve', '--port', '8010']);
     expect(daemon.unref).toHaveBeenCalled();
     expect(result).toMatchObject({ success: true, message: expect.stringContaining('http://127.0.0.1:8010/v1') });
+  });
+
+  it('detaches every listener from the daemon it leaves running', async () => {
+    // The daemon outlives the request. Any listener still attached pins the
+    // closure scope holding `emit` — and through it the SSE response — for the
+    // daemon's whole lifetime. The `error` slot is REPLACED rather than left
+    // empty: an EventEmitter `error` with no listener throws, and outside the
+    // request lifecycle that takes the process down.
+    const daemon = fakeChild();
+    child.spawn.mockReturnValue(daemon);
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    probe.probeOpenAiModels
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(reachable(['mtplx']))
+      .mockResolvedValueOnce(reachable(['mtplx']));
+    const restore = pinPlatform('darwin');
+
+    await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1' });
+    restore();
+
+    const detached = daemon.off.mock.calls.map(([event]) => event);
+    expect(detached).toContain('error');
+    expect(detached).toContain('exit');
+    for (const stream of [daemon.stdout, daemon.stderr]) {
+      expect(stream.off).toHaveBeenCalledWith('data', expect.any(Function));
+      // …and keep draining, so a full pipe can't block the daemon's next write.
+      expect(stream.resume).toHaveBeenCalled();
+    }
+    // A no-op error listener is parked in place of the one that was removed.
+    expect(daemon.on.mock.calls.filter(([event]) => event === 'error')).toHaveLength(2);
   });
 
   it('reports a daemon that died on startup instead of waiting out the timeout', async () => {

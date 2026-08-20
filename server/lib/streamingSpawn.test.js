@@ -57,3 +57,22 @@ describe('runStreamingCommand', () => {
     expect(result).toEqual({ success: true });
   });
 });
+
+describe('runStreamingCommand — stream separation', () => {
+  it('keeps stdout and stderr lines intact when partial chunks interleave', async () => {
+    // One buffer shared by both streams splices a half-written stdout line into
+    // the next stderr chunk: the caller sees `OUT-ERR-one` and loses both real
+    // lines. `server/lib/README.md` states the rule this pins — one line reader
+    // per stream.
+    const lines = [];
+    const result = await runStreamingCommand(
+      NODE,
+      ['-e', 'process.stdout.write("OUT-"); process.stderr.write("ERR-"); process.stdout.write("one\\n"); process.stderr.write("two\\n")'],
+      (line) => lines.push(line),
+    );
+
+    expect(result).toEqual({ success: true });
+    expect(lines).toContain('OUT-one');
+    expect(lines).toContain('ERR-two');
+  });
+});

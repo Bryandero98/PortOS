@@ -21,6 +21,7 @@
 
 import { spawn } from './childProcess.js';
 import { safeChildProcessEnv, safeChildProcessOptions } from './processEnv.js';
+import { createLineReader } from './streamLines.js';
 
 /** Char budget for the recent-output tail attached to a failure message. */
 const TAIL_BUDGET = 1024;
@@ -42,7 +43,6 @@ export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env
       stdio: ['ignore', 'pipe', 'pipe'],
     }));
 
-    let buffer = '';
     let settled = false;
     const tail = []; // recent non-empty lines, capped by char budget for the error message
     let tailChars = 0;
@@ -76,22 +76,23 @@ export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env
       }, timeoutMs)
       : null;
 
-    const onData = (chunk) => {
-      buffer += chunk.toString();
-      let nl;
-      while ((nl = buffer.indexOf('\n')) !== -1) {
-        safeLine(buffer.slice(0, nl).trim());
-        buffer = buffer.slice(nl + 1);
-      }
-    };
+    // ONE reader per stream — never a shared buffer. Chunks arrive on arbitrary
+    // byte boundaries, so a single carry shared by stdout and stderr splices a
+    // half-written stdout line onto the next stderr chunk: `npm install` writing
+    // `added 42 ` and a warning arriving mid-line yields one corrupt line and
+    // loses both real ones. (Inherited from the hand-rolled splitter this was
+    // extracted from; `streamLines.js` carries the rule.)
+    const stdoutReader = createLineReader((line) => safeLine(line.trim()));
+    const stderrReader = createLineReader((line) => safeLine(line.trim()));
 
-    child.stdout?.on('data', onData);
-    child.stderr?.on('data', onData);
+    child.stdout?.on('data', stdoutReader.push);
+    child.stderr?.on('data', stderrReader.push);
     child.on('error', (err) => finish({ success: false, error: err.message }));
     // 'close' rather than 'exit': 'exit' can fire with stdio still buffered,
     // which would drop the very lines the failure message needs.
     child.on('close', (code) => {
-      safeLine(buffer.trim());
+      stdoutReader.flush();
+      stderrReader.flush();
       if (code === 0) return finish({ success: true });
       const detail = tail.join(' — ').trim();
       finish({ success: false, error: detail ? `exit ${code}: ${detail}` : `exited with code ${code}` });
