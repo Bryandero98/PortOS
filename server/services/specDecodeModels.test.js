@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { homedir, tmpdir } from 'os';
+import { isAbsolute, join } from 'path';
 import { Readable } from 'stream';
 import {
   downloadSpecDecodeModel,
@@ -137,6 +137,45 @@ describe('downloadSpecDecodeModel', () => {
     expect(await readdir(dir)).toEqual([]);
   });
 
+  // The slot is claimed before the Hugging Face round trip: a second click
+  // landing inside that window would otherwise clear the in-flight check and
+  // start a parallel multi-gigabyte transfer of the same file.
+  it('refuses a second request that arrives while the repo is still being resolved', async () => {
+    stubPreset();
+    let releaseMetadata;
+    vi.spyOn(huggingfaceLora, 'fetchHuggingfaceModel').mockImplementation(
+      () => new Promise((resolve) => { releaseMetadata = () => resolve(siblings('Example-Q4_K_M.gguf')); }),
+    );
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => '2' },
+      body: Readable.toWeb(Readable.from([Buffer.from('gg')])),
+    });
+
+    const first = downloadSpecDecodeModel({ presetId: 'test-preset', role: 'model' });
+    await vi.waitFor(() => expect(releaseMetadata).toBeTypeOf('function'));
+
+    await expect(downloadSpecDecodeModel({ presetId: 'test-preset', role: 'model' }))
+      .rejects.toThrow(/already downloading/);
+
+    releaseMetadata();
+    await expect(first).resolves.toMatchObject({ success: true });
+  });
+
+  // …and the claim is released when that resolution fails, or the file could
+  // never be retried without restarting the server.
+  it('releases the claim when resolving the repo fails', async () => {
+    stubPreset();
+    vi.spyOn(huggingfaceLora, 'fetchHuggingfaceModel').mockRejectedValue(new Error('HF unreachable'));
+
+    await expect(downloadSpecDecodeModel({ presetId: 'test-preset', role: 'model' }))
+      .rejects.toThrow(/HF unreachable/);
+
+    const status = await getSpecDecodePresetStatus();
+    expect(status.every((p) => !p.model?.downloading && !p.draftModel?.downloading)).toBe(true);
+  });
+
   it('short-circuits when the weights are already on disk', async () => {
     stubPreset();
     await writeFile(join(dir, 'base.gguf'), 'already here');
@@ -164,6 +203,16 @@ describe('downloadSpecDecodeModel', () => {
 
 describe('resolveSpecModelPath', () => {
   it('resolves a relative launcher path to an absolute one', () => {
-    expect(resolveSpecModelPath('models/base.gguf')).toBe(join(process.cwd(), 'models/base.gguf'));
+    const resolved = resolveSpecModelPath('models/base.gguf');
+    expect(isAbsolute(resolved)).toBe(true);
+    expect(resolved.endsWith(join('models', 'base.gguf'))).toBe(true);
+  });
+
+  // `spawn` performs no shell expansion, so a `~` path has to be expanded here
+  // or the launcher and the downloader disagree about which file they mean.
+  it('expands a leading ~ rather than passing it through literally', () => {
+    const resolved = resolveSpecModelPath('~/models/base.gguf');
+    expect(resolved.startsWith(homedir())).toBe(true);
+    expect(resolved).not.toContain('~');
   });
 });

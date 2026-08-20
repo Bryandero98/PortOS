@@ -336,9 +336,19 @@ const llamaReady = (overrides = {}) => ({
 });
 
 describe('LocalLlmTab llama-server management', () => {
+  // `vi.clearAllMocks()` clears calls but NOT queued `mockResolvedValueOnce`
+  // values or implementations, so a test that queues one more than the
+  // component consumes leaks it into the next test's first status read. Reset
+  // the mock outright here and give it a sane standing default.
+  beforeEach(async () => {
+    const { getLlamaServerStatus } = await import('../../services/api');
+    getLlamaServerStatus.mockReset();
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
+  });
+
   it('renders start form and launches server when llama-server is installed', async () => {
     const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce(llamaReady());
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
     startLlamaServer.mockResolvedValueOnce({ success: true, pid: 12345 });
 
     await renderTab();
@@ -361,13 +371,15 @@ describe('LocalLlmTab llama-server management', () => {
   // otherwise Start is disabled while the UI reads as fully configured.
   it('seeds the form from the mounted preset so Start is immediately usable', async () => {
     const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce(llamaReady());
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
     startLlamaServer.mockResolvedValueOnce({ success: true, pid: 4242 });
 
     await renderTab();
 
     await screen.findByText(/Launch Speculative Decoding Server/);
-    expect(screen.queryByText(/Enter a Target Base Model path to enable Start/)).toBeNull();
+    // Same effect-ordering caveat as above, from the other side: wait for the
+    // seeded form rather than asserting the warning is already gone.
+    await waitFor(() => expect(screen.queryByText(/Enter a Target Base Model path to enable Start/)).toBeNull());
 
     const startBtn = screen.getByRole('button', { name: /Start Speculative Server/ });
     expect(startBtn).not.toBeDisabled();
@@ -384,7 +396,7 @@ describe('LocalLlmTab llama-server management', () => {
 
   it('explains why Start is disabled once the model path is cleared', async () => {
     const { getLlamaServerStatus } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce(llamaReady());
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
 
     await renderTab();
 
@@ -399,7 +411,7 @@ describe('LocalLlmTab llama-server management', () => {
 
   it('swaps the preset and repoints both model paths', async () => {
     const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce(llamaReady());
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
     startLlamaServer.mockResolvedValueOnce({ success: true, pid: 7 });
 
     await renderTab();
@@ -423,7 +435,7 @@ describe('LocalLlmTab llama-server management', () => {
   // moment you clear it to retype, so the default is applied at launch instead.
   it('lets an advanced number field sit empty while retyping and defaults it at launch', async () => {
     const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce(llamaReady());
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
     startLlamaServer.mockResolvedValueOnce({ success: true, pid: 21 });
 
     await renderTab();
@@ -442,7 +454,7 @@ describe('LocalLlmTab llama-server management', () => {
 
   it('keeps an explicit -ngl 0 rather than treating it as unset', async () => {
     const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce(llamaReady());
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
     startLlamaServer.mockResolvedValueOnce({ success: true, pid: 22 });
 
     await renderTab();
@@ -459,7 +471,7 @@ describe('LocalLlmTab llama-server management', () => {
 
   it('drops the preset label to Custom once a preset-supplied path is hand-edited', async () => {
     const { getLlamaServerStatus } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce(llamaReady());
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
 
     await renderTab();
 
@@ -478,7 +490,7 @@ describe('LocalLlmTab llama-server management', () => {
   // stated way to fix it.
   it('offers a download button for a preset GGUF that is not on disk', async () => {
     const { getLlamaServerStatus, downloadSpecDecodeModel } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce(llamaReady({ presets: specPresets({ baseExists: false }) }));
+    getLlamaServerStatus.mockResolvedValue(llamaReady({ presets: specPresets({ baseExists: false }) }));
     downloadSpecDecodeModel.mockResolvedValueOnce({ success: true, path: 'models/Qwen3.8-27B-Instruct-Q4_K_M.gguf' });
 
     await renderTab();
@@ -494,15 +506,46 @@ describe('LocalLlmTab llama-server management', () => {
     });
   });
 
-  it('blocks Start while a preset GGUF is missing and names the fix', async () => {
-    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce(llamaReady({ presets: specPresets({ baseExists: false }) }));
+  // A dropped request (reload, proxy idle timeout) does not stop the transfer —
+  // reporting it as a failure sends the user hunting a problem that isn't there.
+  it('reports a lost request as still-running when the server is still downloading', async () => {
+    const { getLlamaServerStatus, downloadSpecDecodeModel } = await import('../../services/api');
+    const toast = (await import('../ui/Toast')).default;
+    const downloading = specPresets({ baseExists: false });
+    downloading[0].model.downloading = true;
+    // No queued `…Once` values anywhere in this block: a refresh from a
+    // finished test can land during the next one and eat a queued entry, which
+    // is how this suite went order-dependent. Flip on call count instead.
+    let statusCalls = 0;
+    getLlamaServerStatus.mockImplementation(async () => {
+      statusCalls += 1;
+      return llamaReady({ presets: statusCalls === 1 ? specPresets({ baseExists: false }) : downloading });
+    });
+    downloadSpecDecodeModel.mockRejectedValueOnce(new Error('Failed to fetch'));
 
     await renderTab();
 
-    const startBtn = await screen.findByRole('button', { name: /Start Speculative Server/ });
-    expect(startBtn).toBeDisabled();
-    expect(screen.getByText('Download the base model to enable Start')).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /^Download$/ }));
+
+    await waitFor(() => {
+      expect(toast.warning).toHaveBeenCalledWith(expect.stringMatching(/still running in the background/));
+    });
+    expect(toast.error).not.toHaveBeenCalled();
+    // Mount + the catch's check + the finally's refresh.
+    await waitFor(() => expect(getLlamaServerStatus).toHaveBeenCalledTimes(3));
+  });
+
+  it('blocks Start while a preset GGUF is missing and names the fix', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue(llamaReady({ presets: specPresets({ baseExists: false }) }));
+
+    await renderTab();
+
+    // `findBy…` on the warning itself: the form is seeded from the presets in
+    // an effect, so the Start button can render a tick before the gate that
+    // disables it — asserting the button first makes this order-dependent.
+    expect(await screen.findByText('Download the base model to enable Start')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Start Speculative Server/ })).toBeDisabled();
     expect(startLlamaServer).not.toHaveBeenCalled();
   });
 
@@ -510,7 +553,7 @@ describe('LocalLlmTab llama-server management', () => {
   // row must send the user somewhere rather than offering an action that 400s.
   it('links out when a drafter has no automatic Hugging Face source', async () => {
     const { getLlamaServerStatus } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce(llamaReady());
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
 
     await renderTab();
 
@@ -523,7 +566,7 @@ describe('LocalLlmTab llama-server management', () => {
 
   it('renders install button and triggers install when llama-server is not installed', async () => {
     const { getLlamaServerStatus, installLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce({ installed: false, running: false, managed: false, presets: specPresets() });
+    getLlamaServerStatus.mockResolvedValue({ installed: false, running: false, managed: false, presets: specPresets() });
 
     await renderTab();
 
@@ -538,7 +581,7 @@ describe('LocalLlmTab llama-server management', () => {
 
   it('renders running badge and stops server when llama-server is managed', async () => {
     const { getLlamaServerStatus, stopLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce({
+    getLlamaServerStatus.mockResolvedValue({
       installed: true,
       running: true,
       managed: true,

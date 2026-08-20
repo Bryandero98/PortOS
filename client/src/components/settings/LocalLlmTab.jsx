@@ -426,8 +426,9 @@ export function LocalLlmTab() {
     return getLlamaServerStatus({ silent: true })
       .then((res) => {
         if (res) setLlamaStatus(res);
+        return res;
       })
-      .catch(() => {});
+      .catch(() => null);
   }, []);
 
   const loadStatus = useCallback(() => {
@@ -504,20 +505,33 @@ export function LocalLlmTab() {
     }));
   }, [llamaStatus?.presets]);
 
-  // Byte progress for an in-flight GGUF download. Frames only update a row this
-  // tab already opened — an unknown key means another tab owns that transfer,
-  // and its row renders from the server-reported `downloading` flag instead.
+  // Byte progress for an in-flight GGUF download. Frames are adopted no matter
+  // who started the transfer — a reload mid-download, or a second tab, would
+  // otherwise sit on whatever byte count the last status fetch happened to
+  // carry and read as frozen. A terminal frame drops the row back to the
+  // server's own view of the file, which the refresh below re-reads.
   useEffect(() => {
     const handleDownloadProgress = (frame) => {
       if (!frame?.presetId || !frame?.role) return;
       const key = downloadKey(frame.presetId, frame.role);
-      setLlamaDownloads((prev) => (prev[key]
-        ? { ...prev, [key]: { received: frame.received || 0, total: frame.total || 0 } }
-        : prev));
+      if (frame.event === 'complete' || frame.event === 'error') {
+        setLlamaDownloads((prev) => {
+          if (!prev[key]) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+        loadLlamaStatus();
+        return;
+      }
+      setLlamaDownloads((prev) => ({
+        ...prev,
+        [key]: { received: frame.received || 0, total: frame.total || 0 },
+      }));
     };
     socket.on('llamaServer:download', handleDownloadProgress);
     return () => socket.off('llamaServer:download', handleDownloadProgress);
-  }, []);
+  }, [loadLlamaStatus]);
   // Debounce so typing in the search box doesn't fire a request per keystroke.
   //
   // `activeCategory` is a trigger for the Hugging Face source ONLY — the live
@@ -801,7 +815,20 @@ export function LocalLlmTab() {
         ? `${res.path} is already on disk`
         : `${res?.path || 'Model'} downloaded`);
     } catch (err) {
-      toast.error(err?.message || 'Download failed');
+      // A multi-gigabyte transfer outlives plenty of things that can drop this
+      // request — a reload, a proxy's idle timeout. The download itself keeps
+      // running server-side, so ask the server before calling it a failure:
+      // reporting "Download failed" over a transfer that is still going is the
+      // one message guaranteed to send the user looking for a problem that
+      // isn't there.
+      const status = await loadLlamaStatus();
+      const stillRunning = status?.presets
+        ?.find((p) => p.id === presetId)?.[role]?.downloading;
+      if (stillRunning) {
+        toast.warning('Download still running in the background — this page lost the request, not the transfer.');
+      } else {
+        toast.error(err?.message || 'Download failed');
+      }
     } finally {
       setLlamaDownloads((prev) => {
         const next = { ...prev };

@@ -188,18 +188,22 @@ export async function downloadSpecDecodeModel({ presetId, role, onProgress = () 
   if (inFlight.has(destPath)) {
     throw new ServerError(`${source.path} is already downloading`, { status: 409, code: 'SPEC_DOWNLOAD_IN_FLIGHT' });
   }
-
-  const token = await getHfToken();
-  const headers = buildHfAuthHeaders(token);
-  onProgress({ event: 'start', presetId, role, path: source.path, message: `Resolving ${source.repo} on Hugging Face…` });
-  const model = await fetchHuggingfaceModel(source.repo, { token });
-  const file = pickGgufSibling(model, { file: source.file, quant: source.quant, repo: source.repo });
-
+  // Claim the slot BEFORE the first await. Resolving the repo on Hugging Face
+  // takes a round trip, and a second click (or a second tab) landing inside that
+  // window would clear the check above and start a parallel multi-gigabyte
+  // transfer of the same file. Everything after this point runs inside the
+  // try/finally so the claim is always released.
   const state = { presetId, role, received: 0, total: 0 };
   inFlight.set(destPath, state);
+
   let lastEmit = 0;
-  console.log(`⬇️  Downloading speculative-decoding weights ${source.repo}/${file} → ${source.path}`);
   try {
+    const token = await getHfToken();
+    const headers = buildHfAuthHeaders(token);
+    onProgress({ event: 'start', presetId, role, path: source.path, message: `Resolving ${source.repo} on Hugging Face…` });
+    const model = await fetchHuggingfaceModel(source.repo, { token });
+    const file = pickGgufSibling(model, { file: source.file, quant: source.quant, repo: source.repo });
+    console.log(`⬇️  Downloading speculative-decoding weights ${source.repo}/${file} → ${source.path}`);
     const { bytes } = await streamToFile({
       url: buildHfResolveUrl(source.repo, 'main', file),
       headers,
