@@ -149,6 +149,46 @@ describe('GlobalConfigControls — branch-reconcile batch size', () => {
   });
 });
 
+describe('GlobalConfigControls — issue exclude labels', () => {
+  it('is hidden for a task type without the issue author filter', () => {
+    renderControls({ taskType: 'feature-ideas' });
+    expect(screen.queryByLabelText('Leave issues with these labels for humans')).toBeNull();
+  });
+
+  it('seeds the input from the configured labels and commits a parsed list on blur', () => {
+    const onUpdate = renderControls({
+      taskType: 'claim-issue',
+      taskMetadata: { issueAuthorFilter: 'self', issueExcludeLabels: ['good first issue'] },
+      onUpdate: vi.fn().mockResolvedValue(undefined),
+    });
+    const input = screen.getByLabelText('Leave issues with these labels for humans');
+    expect(input).toHaveValue('good first issue');
+
+    fireEvent.change(input, { target: { value: 'good first issue, help wanted' } });
+    fireEvent.blur(input);
+
+    expect(onUpdate).toHaveBeenCalledWith('claim-issue', {
+      taskMetadata: { issueAuthorFilter: 'self', issueExcludeLabels: ['good first issue', 'help wanted'] }
+    });
+  });
+
+  it('commits an empty array when the input is cleared', () => {
+    const onUpdate = renderControls({
+      taskType: 'claim-work',
+      taskMetadata: { issueExcludeLabels: ['good first issue'] },
+      onUpdate: vi.fn().mockResolvedValue(undefined),
+    });
+    const input = screen.getByLabelText('Leave issues with these labels for humans');
+
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.blur(input);
+
+    expect(onUpdate).toHaveBeenCalledWith('claim-work', {
+      taskMetadata: { issueExcludeLabels: [] }
+    });
+  });
+});
+
 describe('GlobalConfigControls — require approval', () => {
   it('toggles requireApproval on the task metadata', () => {
     const onUpdate = renderControls({ taskType: 'release-check', taskMetadata: { useWorktree: false, openPR: false } });

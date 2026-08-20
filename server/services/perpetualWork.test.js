@@ -97,6 +97,20 @@ describe('perpetualWork', () => {
       expect(isActionableIssue(null)).toBe(false);
       expect(isActionableIssue({ title: 'no number' })).toBe(false);
     });
+
+    it('rejects an issue carrying a configured excludeLabels entry', () => {
+      const excludeLabels = new Set(['good first issue']);
+      expect(isActionableIssue({ ...base, labels: [{ name: 'good first issue' }] }, new Set(), excludeLabels)).toBe(false);
+    });
+
+    it('accepts an excluded-label issue when no excludeLabels set is passed', () => {
+      expect(isActionableIssue({ ...base, labels: [{ name: 'good first issue' }] })).toBe(true);
+    });
+
+    it('still rejects the fixed NON_ACTIONABLE_ISSUE_LABELS set when an excludeLabels set is active', () => {
+      const excludeLabels = new Set(['good first issue']);
+      expect(isActionableIssue({ ...base, labels: [{ name: 'blocked' }] }, new Set(), excludeLabels)).toBe(false);
+    });
   });
 
   describe('titleMarksEpic', () => {

@@ -4,6 +4,7 @@ import CronInput from '../../../CronInput';
 import { AGENT_OPTIONS, BRANCHES_PER_AGENT_DEFAULT, BRANCHES_PER_AGENT_OPTIONS, BRANCHES_PER_AGENT_TASK_TYPES, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES, toggleAppMetadataOverride, agentOptionButtonClass } from '../../constants';
 import { isCronExpression, describeCron } from '../../../../utils/cronHelpers';
 import ToggleSwitch from '../../../ToggleSwitch';
+import useFieldDraft from '../../../../hooks/useFieldDraft';
 import { INTERVAL_LABELS, setMetadataOverride } from './scheduleConstants';
 
 const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalIntervalType, globalTaskMetadata, managedAgentOptions, fileIssuesCapable, defaultFileIssues, override, onUpdate }) {
@@ -69,6 +70,19 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
   // the absent key, distinct from a stored 0.
   const handleSwarmCountChange = (raw) => handleOverrideChange('swarmCount', raw === '' ? '' : Number(raw));
   const handleBranchesPerAgentChange = (raw) => handleOverrideChange('branchesPerAgent', raw === '' ? '' : Number(raw));
+
+  // Comma-separated free text for the issueExcludeLabels override — an array
+  // field, so it doesn't fit the scalar '' = inherit select pattern the other
+  // overrides use. An empty box clears the override (inherits the global
+  // list), matching every other override field here.
+  const excludeLabelsDraft = useFieldDraft(
+    (override?.taskMetadata?.issueExcludeLabels || []).join(', '),
+    (next) => {
+      const trimmed = next.trim();
+      const value = trimmed === '' ? '' : trimmed.split(',').map((s) => s.trim()).filter(Boolean);
+      return handleOverrideChange('issueExcludeLabels', value);
+    }
+  );
 
   return (
     <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 py-2 px-3 rounded hover:bg-port-card/30">
@@ -193,6 +207,20 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
+        )}
+
+        {ISSUE_AUTHOR_FILTER_TASK_TYPES.has(taskType) && (
+          <input
+            type="text"
+            value={excludeLabelsDraft.value}
+            onChange={excludeLabelsDraft.onChange}
+            onBlur={excludeLabelsDraft.onBlur}
+            disabled={updating}
+            aria-label={`Labels to leave for humans for ${app.name}`}
+            title={`Comma-separated labels to skip when auto-claiming (blank inherits: ${(globalTaskMetadata?.issueExcludeLabels || []).join(', ') || 'none'})`}
+            placeholder="Inherit"
+            className="bg-port-card border border-port-border rounded px-2 py-1.5 text-xs text-white min-w-[140px] min-h-[40px]"
+          />
         )}
 
         {SWARM_TASK_TYPES.has(taskType) && (

@@ -254,8 +254,8 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // claim/plan prompt that enumerates the CLI reviewers must name the binary.
   it.each([
     ['plan-task', 16],
-    ['claim-issue', 15],
-    ['claim-issue-gitlab', 14],
+    ['claim-issue', 16],
+    ['claim-issue-gitlab', 15],
     ['claim-issue-jira', 12],
   ])('%s v%d names the antigravity reviewer\'s `agy` binary, preserving the pre-`agy` default', (key, version) => {
     const current = DEFAULT_TASK_PROMPTS[key];
@@ -287,8 +287,8 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // pointed the local-LLM reviewers at a `gh pr diff` that could not exist yet.
   it.each([
     ['plan-task', 16],
-    ['claim-issue', 15],
-    ['claim-issue-gitlab', 14],
+    ['claim-issue', 16],
+    ['claim-issue-gitlab', 15],
     ['claim-issue-jira', 12],
   ])('%s v%d reviews locally before it opens the PR/MR', (key, version) => {
     const current = DEFAULT_TASK_PROMPTS[key];

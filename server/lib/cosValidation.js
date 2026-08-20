@@ -1528,6 +1528,39 @@ export const PR_AUTHOR_FILTERS = ['any', 'self', 'others'];
 // vocabulary.
 export const ISSUE_AUTHOR_FILTERS = ['self', 'collaborators', 'owner', 'any'];
 
+// `issueExcludeLabels` — extra labels a user wants left for human contributors
+// (e.g. `good first issue`) rather than auto-claimed by claim-issue/claim-work.
+// Unioned with the fixed NON_ACTIONABLE_ISSUE_LABELS set at read time
+// (perpetualWork.js#isActionableIssue) — never replacing it. Capped well below
+// GitHub/GitLab's own per-issue label limits; this is a short curated list, not
+// an arbitrary label dump.
+export const MAX_ISSUE_EXCLUDE_LABELS = 20;
+
+/**
+ * Normalize a raw `issueExcludeLabels` list: keep only non-empty strings,
+ * trim, cap length per entry (GitHub's own label name limit), case-
+ * insensitively dedupe (labels are compared lowercased at read time), and cap
+ * the list at MAX_ISSUE_EXCLUDE_LABELS. Unlike reviewer usernames, label text
+ * is free-form ("good first issue") so no character-class restriction is
+ * applied beyond trimming. Non-array input → [].
+ */
+export function normalizeIssueExcludeLabels(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of list) {
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim().slice(0, 50);
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+    if (out.length >= MAX_ISSUE_EXCLUDE_LABELS) break;
+  }
+  return out;
+}
+
 // claim-issue `--swarm` fan-out size. Mirrors slashdo `/do:next --swarm=<N>`,
 // which clamps N to 1..6 and treats bare `--swarm` as 3. Here a swarmCount of
 // 0 (or absent) means swarm OFF (the default one-issue-per-run flow); a value
@@ -1670,6 +1703,14 @@ export function sanitizeTaskMetadata(raw) {
   // arbitrary string the claim flow would silently treat as "owner".
   if (Object.prototype.hasOwnProperty.call(raw, 'issueAuthorFilter') && ISSUE_AUTHOR_FILTERS.includes(raw.issueAuthorFilter)) {
     clean.issueAuthorFilter = raw.issueAuthorFilter;
+    hasKeys = true;
+  }
+  // `issueExcludeLabels` — like `usernames`/`optionalReviewers` above, an
+  // explicitly empty array is KEPT (not dropped): `[]` is a meaningful "no
+  // extra exclusions for this task/type" choice that must override a global
+  // default's non-empty list, not silently inherit it.
+  if (Array.isArray(raw.issueExcludeLabels)) {
+    clean.issueExcludeLabels = normalizeIssueExcludeLabels(raw.issueExcludeLabels);
     hasKeys = true;
   }
   // `swarmCount` turns claim-issue `--swarm` fan-out on (2..6 parallel agents)

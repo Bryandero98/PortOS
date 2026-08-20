@@ -66,7 +66,7 @@ describe('Apps Task-Type Routes', () => {
       const response = await request(app).get('/api/apps/app-001/work-items');
 
       expect(response.status).toBe(200);
-      expect(listWorkItems).toHaveBeenCalledWith(expect.objectContaining({ id: 'app-001' }), { issueAuthorFilter: 'any' });
+      expect(listWorkItems).toHaveBeenCalledWith(expect.objectContaining({ id: 'app-001' }), { issueAuthorFilter: 'any', issueExcludeLabels: [] });
       // Echoed back so the picker's select shows what was actually scanned.
       expect(response.body.issueAuthorFilter).toBe('any');
       expect(response.body.items).toEqual([{ ref: '7', title: 'Fix the thing' }]);
@@ -75,7 +75,7 @@ describe('Apps Task-Type Routes', () => {
 
     it('defaults to the self boundary when nothing is configured', async () => {
       await request(app).get('/api/apps/app-001/work-items');
-      expect(listWorkItems).toHaveBeenCalledWith(expect.anything(), { issueAuthorFilter: 'self' });
+      expect(listWorkItems).toHaveBeenCalledWith(expect.anything(), { issueAuthorFilter: 'self', issueExcludeLabels: [] });
     });
 
     it('lets an explicit query filter override the configured one', async () => {
@@ -84,7 +84,7 @@ describe('Apps Task-Type Routes', () => {
       const response = await request(app).get('/api/apps/app-001/work-items?issueAuthorFilter=owner');
 
       expect(response.status).toBe(200);
-      expect(listWorkItems).toHaveBeenCalledWith(expect.anything(), { issueAuthorFilter: 'owner' });
+      expect(listWorkItems).toHaveBeenCalledWith(expect.anything(), { issueAuthorFilter: 'owner', issueExcludeLabels: [] });
     });
 
     it('ignores an out-of-vocabulary filter rather than passing it through', async () => {
@@ -92,7 +92,16 @@ describe('Apps Task-Type Routes', () => {
 
       await request(app).get('/api/apps/app-001/work-items?issueAuthorFilter=everyone');
 
-      expect(listWorkItems).toHaveBeenCalledWith(expect.anything(), { issueAuthorFilter: 'any' });
+      expect(listWorkItems).toHaveBeenCalledWith(expect.anything(), { issueAuthorFilter: 'any', issueExcludeLabels: [] });
+    });
+
+    it('passes the app\'s configured issueExcludeLabels through to the picker', async () => {
+      resolveClaimWorkMetadata.mockResolvedValue({ metadata: { issueAuthorFilter: 'self', issueExcludeLabels: ['good first issue'] }, interval: {} });
+
+      const response = await request(app).get('/api/apps/app-001/work-items');
+
+      expect(response.status).toBe(200);
+      expect(listWorkItems).toHaveBeenCalledWith(expect.anything(), { issueAuthorFilter: 'self', issueExcludeLabels: ['good first issue'] });
     });
 
     it('returns 404 for an unknown app', async () => {

@@ -940,6 +940,23 @@ describe('validation.js', () => {
         .toEqual({ useWorktree: true });
     });
 
+    it('should normalize issueExcludeLabels: trim, dedupe case-insensitively, cap length, keep an explicit empty list', () => {
+      expect(sanitizeTaskMetadata({ issueExcludeLabels: ['good first issue'] }))
+        .toEqual({ issueExcludeLabels: ['good first issue'] });
+      expect(sanitizeTaskMetadata({ issueExcludeLabels: [' good first issue ', 'Good First Issue'] }))
+        .toEqual({ issueExcludeLabels: ['good first issue'] });
+      // Explicitly empty is KEPT (a task/type override of "no extra exclusions"),
+      // same discipline as optionalReviewers/usernames above.
+      expect(sanitizeTaskMetadata({ issueExcludeLabels: [] })).toEqual({ issueExcludeLabels: [] });
+      // Non-string entries and a non-array value are dropped/ignored.
+      expect(sanitizeTaskMetadata({ issueExcludeLabels: ['ok', 42, null, ''] }))
+        .toEqual({ issueExcludeLabels: ['ok'] });
+      expect(sanitizeTaskMetadata({ issueExcludeLabels: 'good first issue' })).toBeNull();
+      // Caps at MAX_ISSUE_EXCLUDE_LABELS (20).
+      const many = Array.from({ length: 25 }, (_, i) => `label-${i}`);
+      expect(sanitizeTaskMetadata({ issueExcludeLabels: many }).issueExcludeLabels).toHaveLength(20);
+    });
+
     it('should accept swarmCount 0 + 2..6 and drop 1/out-of-range/non-integer', () => {
       // 0 is an explicit "off" (kept so a per-app override can disable swarm).
       expect(sanitizeTaskMetadata({ swarmCount: 0 })).toEqual({ swarmCount: 0 });

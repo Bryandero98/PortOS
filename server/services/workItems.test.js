@@ -46,6 +46,18 @@ describe('listWorkItems', () => {
     expect(out.items).toHaveLength(2);
   });
 
+  it('passes a non-empty issueExcludeLabels through to the detector, omits it when empty', async () => {
+    resolveAppWorkTracker.mockResolvedValue({ resolved: 'github', source: 'origin' });
+    detectActionableWork.mockResolvedValue({ actionable: false, count: 0, reason: 'no-open-issues' });
+
+    await listWorkItems(app, { issueExcludeLabels: ['good first issue'] });
+    expect(detectActionableWork).toHaveBeenCalledWith('claim-issue', app, { issueExcludeLabels: ['good first issue'] });
+
+    detectActionableWork.mockClear();
+    await listWorkItems(app, { issueExcludeLabels: [] });
+    expect(detectActionableWork).toHaveBeenCalledWith('claim-issue', app, {});
+  });
+
   it('routes PLAN.md apps to the plan-task detector', async () => {
     resolveAppWorkTracker.mockResolvedValue({ resolved: 'plan', source: 'fallback' });
     detectActionableWork.mockResolvedValue({ actionable: true, count: 1, reason: 'actionable-plan-items', items: [{ ref: 'do-thing', title: 'Do the thing' }] });

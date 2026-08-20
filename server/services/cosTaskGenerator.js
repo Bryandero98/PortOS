@@ -43,6 +43,7 @@ import { getSkipReason } from './cosTaskClaim.js';
 import { ensureInstanceId } from './instances.js';
 import { PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { resolveTrackerFilingBlock } from '../lib/workTracker.js';
+import { NON_ACTIONABLE_ISSUE_LABELS } from './perpetualWork.js';
 import {
   isAuditTaskType,
   isFileIssuesMode,
@@ -288,6 +289,22 @@ export function resolveIssueAuthorFilterBlock(promptTaskType, mode = 'self') {
   return blocks[ISSUE_AUTHOR_FILTERS.includes(mode) ? mode : 'self'];
 }
 
+/**
+ * Resolve the {issueExcludeLabels} directive for the GitHub/GitLab claim-issue
+ * prompt bodies' Phase 1 step 4 blocking-label check. Renders the fixed
+ * `NON_ACTIONABLE_ISSUE_LABELS` set (perpetualWork.js — MUST stay in sync with
+ * the perpetual-drain detector) plus any app-configured `issueExcludeLabels`
+ * extras (e.g. `good first issue`), so the LIVE claim agent honors the same
+ * exclusions the perpetual detector applies — not just the perpetual drain.
+ * With no configured extras this renders identically to the prior static
+ * prompt text.
+ */
+export function resolveIssueExcludeLabelsBlock(extraLabels = []) {
+  const extras = Array.isArray(extraLabels) ? extraLabels.filter((l) => typeof l === 'string' && l.trim()) : [];
+  const all = [...NON_ACTIONABLE_ISSUE_LABELS, ...extras];
+  return all.map((l) => `\`${l}\``).join(', ');
+}
+
 // Per-forge nouns/commands for the swarm directive. The orchestration shape is
 // forge-agnostic (partition → fan-out → serialized merge); only the PR/MR noun
 // and the merge command differ between GitHub (`gh`) and GitLab (`glab`).
@@ -496,6 +513,7 @@ export async function buildClaimWorkTask(app, {
   }, codeReviewDefaults);
   const reviewersCsv = buildReviewersCsv(reviewersList, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels, promptReviewerEfforts);
   const issueAuthorFilterBlock = resolveIssueAuthorFilterBlock(promptTaskType, resolvedAuthorFilter);
+  const issueExcludeLabelsBlock = resolveIssueExcludeLabelsBlock(metadata.issueExcludeLabels);
   // Swarm mode (`/do:next --swarm`) is prepended (not an in-template
   // placeholder) so it stays an opt-in orchestration wrapper that needs no
   // prompt-default version bump; empty when swarmCount is off or the tracker
@@ -513,6 +531,7 @@ export async function buildClaimWorkTask(app, {
     // interpreted as a backreference (see the scheduler's same-pattern note).
     .replace(/\{reviewers\}/g, () => reviewersCsv)
     .replace(/\{issueAuthorFilter\}/g, () => issueAuthorFilterBlock)
+    .replace(/\{issueExcludeLabels\}/g, () => issueExcludeLabelsBlock)
     + appendTargetWorkItemBlock(promptTaskType, targetRef)
     + appendPrefetchedIssueContext(promptTaskType, targetRef, issueContext)
     + appendClaimOverrideContext(overrideContext)
@@ -2424,6 +2443,7 @@ async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, i
   const { detectActionableWork } = await import('./perpetualWork.js');
   const detection = await detectActionableWork(promptTaskType, app, {
     issueAuthorFilter: metadata.issueAuthorFilter || 'self',
+    issueExcludeLabels: metadata.issueExcludeLabels || [],
     // A detector that counts in-flight work must skip the task whose completion
     // triggered this refill — it is already recorded, just not yet marked done.
     ignoreTaskId
@@ -2860,6 +2880,9 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
   // from `metadata` (default 'self', the slashdo `/do:next --self` security
   // boundary — only claim issues you filed).
   const issueAuthorFilterBlock = resolveIssueAuthorFilterBlock(promptTaskType, metadata.issueAuthorFilter || 'self');
+  // {issueExcludeLabels} directive — merged + normalized by sanitizeTaskMetadata
+  // the same way, so read it straight from `metadata`.
+  const issueExcludeLabelsBlock = resolveIssueExcludeLabelsBlock(metadata.issueExcludeLabels);
   // Swarm directive — prepended (see buildClaimWorkTask note). swarmCount was
   // merged (global → per-app override) + value-constrained by
   // sanitizeTaskMetadata, so read it from `metadata`. Empty for non-issue
@@ -2883,6 +2906,7 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
     // the {referenceData}/{prData} comment below for why this form is needed.
     .replace(/\{reviewers\}/g, () => reviewersCsv)
     .replace(/\{issueAuthorFilter\}/g, () => issueAuthorFilterBlock)
+    .replace(/\{issueExcludeLabels\}/g, () => issueExcludeLabelsBlock)
     // Use a replacer function — String.replace with a replacement STRING
     // interprets `$&`, `$1`, etc. as backreferences. Commit subjects/authors
     // legitimately contain `$` (env-var docs, prices, awk snippets) and
