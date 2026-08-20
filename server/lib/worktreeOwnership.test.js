@@ -18,10 +18,31 @@ describe('worktree ownership', () => {
     expect(worktreeOwnershipReason({ ...options, path: `${COS_ROOT}/agent-locked`, locked: true })).toBe('worktree-locked');
   });
 
-  it('keeps human claims unless the stale-claim caller explicitly permits reclamation', () => {
+  it('keeps human claims unless the caller explicitly permits reclamation', () => {
     const input = { path: `${COS_ROOT}/claim-issue-42`, ageMs: 8_000, staleClaimIdleMs: 7_000 };
     expect(worktreeOwnershipReason(input)).toBe('worktree-human-claim');
+    // A reaper may take an ABANDONED claim once its window lapses…
     expect(worktreeOwnershipReason({ ...input, allowStaleClaim: true })).toBeNull();
+    // …and the dispatch side never treats the directory as an owner at all,
+    // regardless of age (it reads the tree as a claim MARKER, not a process).
+    expect(worktreeOwnershipReason({ ...input, ageMs: 1, allowLiveClaim: true })).toBeNull();
+  });
+
+  it('tests the claim LAST, so every unconditional hold outranks it', () => {
+    // The ordering IS the precedence: a claim tree that is also locked / also
+    // running an agent reports that hold, not 'worktree-human-claim'. Callers
+    // therefore never have to re-derive "a lock beats a claim" from the slug.
+    const claim = `${COS_ROOT}/claim-issue-42`;
+    expect(worktreeOwnershipReason({ path: claim, locked: true })).toBe('worktree-locked');
+    expect(worktreeOwnershipReason({ path: claim, activeAgentIds: new Set(['claim-issue-42']) }))
+      .toBe('worktree-active-agent');
+    // …and the exceptions cannot reach past them either.
+    expect(worktreeOwnershipReason({
+      path: claim, locked: true, allowLiveClaim: true, allowStaleClaim: true, ageMs: 8_000, staleClaimIdleMs: 7_000
+    })).toBe('worktree-locked');
+    // A root that demands an agent id refuses the claim basename on that ground.
+    expect(worktreeOwnershipReason({ path: claim, roots: [{ path: COS_ROOT, requireAgentId: true }] }))
+      .toBe('worktree-missing-agent-id');
   });
 
   it('fails closed when agent liveness is unknown and permits an explicitly non-agent root', () => {
@@ -59,9 +80,9 @@ describe('worktreeHoldExpiresAt', () => {
   });
 
   it('gives no expiry to a claim tree that is ALSO locked', () => {
-    // The slug still reads 'worktree-human-claim' (first match wins), but the
-    // lock outlives the window — deriving a date from the slug alone would
-    // promise a lift that never happens.
+    // The lock outlives the window, and the gate now says so structurally: a
+    // locked claim tree reports 'worktree-locked', never the claim slug, so
+    // there is no window here to date.
     expect(claim({ locked: true })).toBeNull();
   });
 

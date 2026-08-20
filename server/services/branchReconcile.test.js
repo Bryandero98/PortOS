@@ -450,10 +450,22 @@ describe('resolveLiveOwnerReason', () => {
   it('reports dispatch-side ownership while cleanup keeps claim worktrees protected', () => {
     expect(resolveLiveOwnerReason({ path: '/wt/agent-aaaaaaaa', activeAgentIds: live })).toBe('worktree-active-agent');
     expect(resolveLiveOwnerReason({ path: '/wt/agent-bbbbbbbb', locked: true, activeAgentIds: live })).toBe('worktree-locked');
-    // A claim directory identifies the claim, but not a live process. The
-    // cleanup-side protection remains covered by worktreeProtectionReason.
+    // A claim directory identifies the claim, but not a live process — this side
+    // passes allowLiveClaim. The cleanup-side protection remains covered by
+    // worktreeProtectionReason. A lock still wins, structurally: the gate tests
+    // it before the claim, so no slug rewriting happens here.
     expect(resolveLiveOwnerReason({ path: '/wt/claim-fix-thing', activeAgentIds: live })).toBeNull();
     expect(resolveLiveOwnerReason({ path: '/wt/claim-fix-thing', locked: true, activeAgentIds: live })).toBe('worktree-locked');
+  });
+
+  it('lets a LIVE owner outrank the claim exception, not the other way round', () => {
+    // activeAgentIds holds `agent-<id>` keys, so a claim basename can only land
+    // there out of contract — but the gate tests liveness BEFORE the claim, so
+    // if one ever did, the branch is held rather than dispatched. That is the
+    // intended direction: never hand a branch to an agent while something says
+    // a process still owns it.
+    expect(resolveLiveOwnerReason({ path: '/wt/claim-fix-thing', activeAgentIds: new Set(['claim-fix-thing']) }))
+      .toBe('worktree-active-agent');
   });
 
   it('is null for a free worktree, a dead agent, and no worktree at all', () => {
@@ -1600,9 +1612,9 @@ describe('worktreeProtectionExpiresAt', () => {
   });
 
   it('gives no expiry to a claim worktree that is ALSO locked', () => {
-    // The reason slug says 'worktree-human-claim' (first match wins), but the
-    // lock outlives the grace window — deriving the date from the slug alone
-    // would promise a lift that never happens.
+    // The lock outlives the grace window, and the gate reports it as such: it
+    // tests the lock BEFORE the claim, so a locked claim tree reads
+    // 'worktree-locked' and there is no window here to date.
     expect(worktreeProtectionExpiresAt({ path: CLAIM, ageMs: 2 * DAY, locked: true })).toBeNull();
   });
 
