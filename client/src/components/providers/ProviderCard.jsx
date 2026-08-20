@@ -3,7 +3,7 @@
  *
  * Lives here rather than inline on the page because the page also owns the
  * provider EDITOR, the sample-provider panel and the ad-hoc runner — the card
- * is ~250 lines of its own and was already three `map`s deep once the page
+ * is ~300 lines of its own and was already three `map`s deep once the page
  * started grouping cards by their card state.
  *
  * The card renders no derivation of its own: `cardState`, `runtime` and
