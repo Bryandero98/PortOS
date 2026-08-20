@@ -167,6 +167,26 @@ describe.skipIf(!pyBin)('trellis2GenerateRunner', () => {
     expect(r.to_glb[0].exported).toBe(1000000);
   });
 
+  it('raises a retuned upstream clamp instead of silently letting it win', () => {
+    // An equality check against 200000 would no-op here and to_glb would re-decimate
+    // to 300000 — a silent quality regression with nothing failing.
+    writeStubs();
+    writeFileSync(join(dir, 'generate.py'),
+      FAKE_GENERATE.replace('min(200000, len(faces))', 'min(300000, len(faces))'));
+    const out = run(['--decimation-target', '1000000', '--', join(dir, 'generate.py'), 'a.png']);
+    expect(out).toMatch(/not the expected 200,000/);
+    expect(resultOf(out).to_glb[0].decimation_target).toBe(1000000);
+  });
+
+  it('never lowers a target that is already above ours', () => {
+    // Only ever raises: a caller asking for MORE than we would must not be cut down.
+    writeStubs();
+    writeFileSync(join(dir, 'generate.py'),
+      FAKE_GENERATE.replace('min(200000, len(faces))', '5000000'));
+    const r = resultOf(run(['--decimation-target', '1000000', '--', join(dir, 'generate.py'), 'a.png']));
+    expect(r.to_glb[0].decimation_target).toBe(5000000);
+  });
+
   it('no-ops the simplify call when the mesh is already under target', () => {
     writeStubs();
     // 30M target against a 22.7M-face mesh: upstream still calls simplify (its own

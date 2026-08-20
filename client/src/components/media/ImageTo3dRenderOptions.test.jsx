@@ -35,13 +35,14 @@ describe('ImageTo3dRenderOptions', () => {
   it('leaves Seed and the keying toggle usable when only steps are unsupported', () => {
     setup({ stepsSupported: false });
     expect(screen.getByLabelText('Seed')).toBeEnabled();
-    expect(screen.getByRole('checkbox')).toBeEnabled();
+    expect(screen.getByRole('checkbox', { name: /key out solid background/i })).toBeEnabled();
   });
 
   it('disables everything when the whole form is disabled', () => {
     setup({ disabled: true });
     expect(screen.getByLabelText('Quality')).toBeDisabled();
     expect(screen.getByLabelText('Seed')).toBeDisabled();
-    expect(screen.getByRole('checkbox')).toBeDisabled();
+    // Both checkboxes, not just the keying one — `disabled` must reach every control.
+    for (const box of screen.getAllByRole('checkbox')) expect(box).toBeDisabled();
   });
 });

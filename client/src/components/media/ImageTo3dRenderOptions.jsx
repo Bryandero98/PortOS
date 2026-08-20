@@ -129,8 +129,12 @@ export default function ImageTo3dRenderOptions({
         </FormField>
         <div className="flex items-end pb-1.5">
           <div className="flex flex-col gap-1.5">
-            <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-gray-300">
+            <label
+              htmlFor="image-to-3d-key-background"
+              className="inline-flex cursor-pointer items-center gap-2 text-xs text-gray-300"
+            >
               <input
+                id="image-to-3d-key-background"
                 type="checkbox"
                 checked={keyBackground}
                 onChange={(e) => onKeyBackgroundChange(e.target.checked)}
@@ -144,12 +148,14 @@ export default function ImageTo3dRenderOptions({
                 control exists so a bad map is recoverable, not because it is a
                 routine choice. */}
             <label
+              htmlFor="image-to-3d-normal-map"
               className="inline-flex cursor-pointer items-center gap-2 text-xs text-gray-300"
               title={normalMapSupported
                 ? 'Bake a normal map from the full-resolution mesh so lighting keeps detail the exported triangles no longer carry'
                 : 'This model does not bake a normal map'}
             >
               <input
+                id="image-to-3d-normal-map"
                 type="checkbox"
                 checked={normalMapSupported ? normalMap : false}
                 onChange={(e) => onNormalMapChange(e.target.checked)}

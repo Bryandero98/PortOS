@@ -307,7 +307,8 @@ export default function Media3D() {
       return null;
     });
     if (created && mountedRef.current) { setModelId(created.id); setGenerating(true); patchRecord(created); }
-  }, [selectedImage, selectedTarget, steps, seed, keyBackground, updateParams, mountedRef, patchRecord]);
+  }, [selectedImage, selectedTarget, steps, seed, keyBackground, detail, alphaMode, normalMap,
+    updateParams, mountedRef, patchRecord]);
 
   // Why the Generate action is blocked, or null when it's ready to run. The runner
   // (POST create → on-device render → landed .glb) is wired, so the terminal state

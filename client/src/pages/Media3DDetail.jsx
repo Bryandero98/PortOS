@@ -95,7 +95,7 @@ export default function Media3DDetail() {
     });
     if (mountedRef.current) setBusy(false);
     if (next && mountedRef.current) setRecord(next);
-  }, [busy, record?.status, id, steps, seed, keyBackground, mountedRef]);
+  }, [busy, record?.status, id, steps, seed, keyBackground, detail, alphaMode, normalMap, mountedRef]);
 
   const handleDelete = useCallback(async () => {
     const ok = await deleteImageTo3dModel(id, { silent: true }).then(() => true).catch((err) => {

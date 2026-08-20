@@ -95,9 +95,9 @@ from pathlib import Path
 UPSTREAM_TEXTURE_SIZES = [512, 1024, 2048]
 PORTOS_TEXTURE_SIZES = [*UPSTREAM_TEXTURE_SIZES, 4096]
 
-# The constant `generate.py` clamps its bake mesh to. Asserted, not assumed: if
-# upstream retunes it, the interception below is measuring against the wrong
-# baseline and must be revisited rather than silently applied.
+# The constant `generate.py` clamps its bake mesh to. Used for REPORTING drift, not
+# as a matching condition — the to_glb interception raises any lower target, so a
+# retuned upstream clamp still gets overridden instead of silently winning.
 UPSTREAM_DECIMATION_CLAMP = 200000
 
 # Must match `GATE_ENV` in trellis2RestoreFillHoles.py, which installs the gate
@@ -208,7 +208,19 @@ def _patch_decimation_target(target):
     original_to_glb = o_voxel.postprocess.to_glb
 
     def to_glb(*args, **kwargs):
-        if kwargs.get("decimation_target") == UPSTREAM_DECIMATION_CLAMP:
+        incoming = kwargs.get("decimation_target")
+        # Raise ANY lower target, rather than matching upstream's constant exactly.
+        # An equality check against 200000 looked tighter but was silently fragile:
+        # generate.py passes `min(200000, len(faces))`, so it already sends a smaller
+        # value for a small mesh, and if upstream ever retunes the clamp the override
+        # would stop applying and to_glb would quietly re-decimate — a silent quality
+        # regression with no failing test behind it.
+        if isinstance(incoming, int) and incoming < target:
+            if incoming not in (UPSTREAM_DECIMATION_CLAMP, len(kwargs.get("faces", ()))):
+                # Not fatal, but worth surfacing: it means upstream's clamp moved.
+                print(f"[portos] note: to_glb was given decimation_target={incoming:,}, "
+                      f"not the expected {UPSTREAM_DECIMATION_CLAMP:,} - raising it to "
+                      f"{target:,} anyway", flush=True)
             kwargs["decimation_target"] = target
         return original_to_glb(*args, **kwargs)
 
