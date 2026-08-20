@@ -5,17 +5,6 @@ import { request } from '../lib/testHelper.js';
 
 const readinessService = vi.hoisted(() => ({ getProviderReadinessMap: vi.fn() }));
 vi.mock('../services/providerReadiness.js', () => readinessService);
-// The runtime installer probes real binaries at import time in some paths; the
-// readiness route never touches it, so keep it inert here.
-vi.mock('../services/providerRuntimeInstaller.js', () => ({
-  getProviderRuntime: vi.fn(),
-  getProviderRuntimeStatus: vi.fn(),
-  getProviderRuntimeStatuses: vi.fn().mockResolvedValue({}),
-  spawnRuntimeInstaller: vi.fn(),
-  stopRuntimeInstaller: vi.fn(),
-  describeRuntimeInstall: vi.fn(),
-}));
-
 import { createPortOSProviderRoutes } from './providers.js';
 
 // A provider whose real base URL lives in an env var the user marked secret —

@@ -6,13 +6,13 @@
  */
 
 import { stat } from 'fs/promises';
-import { isAbsolute, resolve } from 'path';
+import { resolve } from 'path';
 import { spawn } from '../lib/childProcess.js';
 import { commandExists } from '../lib/commandExists.js';
 import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
 import { killProcessTree } from '../lib/bufferedSpawn.js';
-import { fetchWithTimeout } from '../lib/fetchWithTimeout.js';
-import { sleep } from '../lib/fileUtils.js';
+import { expandHome, sleep } from '../lib/fileUtils.js';
+import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { ServerError } from '../lib/errorHandler.js';
 
 const IS_WIN = process.platform === 'win32';
@@ -37,20 +37,13 @@ function appendLog(line) {
 
 /**
  * Probes whether an OpenAI-compatible endpoint responds at the given host/port.
+ * Shares one implementation with the readiness checklist — the timeout bug this
+ * used to carry (a `timeout` key inside the fetch init object, which is not a
+ * fetch option, leaving a 500ms poll loop on the 15s default) came from having
+ * two copies of the same probe.
  */
-async function probeEndpoint(endpoint) {
-  try {
-    const url = `${endpoint.replace(/\/+$/, '')}/models`;
-    // The bound is `fetchWithTimeout`'s THIRD argument — a `timeout` key inside
-    // the init object is not a fetch option and was silently ignored, leaving
-    // this probe on the 15s default. That mattered on the start path, where the
-    // probe runs in a 500ms poll loop against a port nothing has bound yet.
-    const res = await fetchWithTimeout(url, { method: 'GET' }, PROBE_TIMEOUT_MS);
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
+const probeEndpoint = async (endpoint) =>
+  (await probeOpenAiModels(endpoint, { timeoutMs: PROBE_TIMEOUT_MS })).reachable;
 
 /**
  * Resolves the `llama-server` executable on the child-process PATH.
@@ -82,11 +75,12 @@ function resolveLlamaServerBinary() {
  * is one line deep in the server log.
  *
  * Relative paths resolve against the server's cwd, which is the cwd the child
- * inherits — so this checks the same file llama-server would open.
+ * inherits, and `~` is expanded here AND in the argv below — `spawn` does no
+ * shell expansion, so a tilde path must be expanded once for both or the check
+ * and the launch disagree about which file they mean.
  */
 async function assertModelFileExists(label, modelPath) {
-  const resolved = isAbsolute(modelPath) ? modelPath : resolve(process.cwd(), modelPath);
-  const stats = await stat(resolved).catch(() => null);
+  const stats = await stat(resolve(expandHome(modelPath))).catch(() => null);
   if (stats?.isFile()) return;
   throw new ServerError(
     `${label} was not found at \`${modelPath}\`. Download the GGUF first — the Local LLM tab lists the base/drafter pairs — or point this field at a file you already have.`,
@@ -159,11 +153,18 @@ export async function startLlamaServer(options = {}) {
     throw new ServerError(`Port ${port} is already in use by an active server at ${endpoint}`, { status: 409 });
   }
 
-  const args = ['-m', model.trim()];
+  // Validate the weights before building the launch line, and hand `spawn` the
+  // EXPANDED paths: it performs no shell expansion, so a `~/models/…` argv entry
+  // would reach llama.cpp as a literal directory named `~`.
   await assertModelFileExists('The base model', model.trim());
-  if (draftModel && typeof draftModel === 'string' && draftModel.trim()) {
-    await assertModelFileExists('The drafter model', draftModel.trim());
-    args.push('--draft-model', draftModel.trim());
+  const draftPath = typeof draftModel === 'string' && draftModel.trim()
+    ? draftModel.trim()
+    : null;
+  if (draftPath) await assertModelFileExists('The drafter model', draftPath);
+
+  const args = ['-m', expandHome(model.trim())];
+  if (draftPath) {
+    args.push('--draft-model', expandHome(draftPath));
     if (specType) args.push('--spec-type', specType.trim());
   }
   if (port) args.push('--port', String(port));

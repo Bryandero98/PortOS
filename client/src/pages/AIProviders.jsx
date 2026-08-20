@@ -6,6 +6,7 @@ import * as api from '../services/api';
 import socket from '../services/socket';
 import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, supportsModelRefresh, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, isOrcaRouterBackedProvider, providerRuntimeKey } from '../utils/providers';
 import useLocalModels from '../hooks/useLocalModels';
+import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import BrailleSpinner from '../components/BrailleSpinner';
 import EmptyState from '../components/EmptyState';
 import Banner from '../components/ui/Banner';
@@ -209,15 +210,11 @@ export default function AIProviders() {
     setReadiness(data?.readiness && typeof data.readiness === 'object' ? data.readiness : {});
   }, []);
 
-  useEffect(() => { loadReadiness(); }, [loadReadiness]);
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      refreshStatuses();
-      loadReadiness();
-    }, 20000);
-    return () => clearInterval(id);
-  }, [refreshStatuses, loadReadiness]);
+  // `useAutoRefetch` rather than a raw interval so both polls pause while the
+  // tab is hidden — a readiness tick costs one HTTP probe per distinct local
+  // endpoint, which a backgrounded settings tab should not keep spending.
+  const pollCards = useCallback(() => Promise.all([refreshStatuses(), loadReadiness()]), [refreshStatuses, loadReadiness]);
+  useAutoRefetch(pollCards, 20000, { pollOnly: true });
 
   // Clear a provider's bench (runtime unavailability) so the next call retries it.
   // Note: if the underlying cause persists (e.g. an invalid model id), the very
@@ -367,6 +364,11 @@ export default function AIProviders() {
   const runtimeForProvider = (provider) => {
     const backend = isApiProvider(provider) ? localBackendForProvider(provider) : null;
     if (!backend) return runtimes[providerRuntimeKey(provider)] || null;
+    // The readiness checklist covers this same backend in more detail, and knows
+    // the difference between "not installed" and "installed but not started".
+    // Rendering both put a green "LM Studio installed" pill directly above
+    // "Install LM Studio" — so wherever the checklist has an answer, it wins.
+    if (readiness[provider.id]?.kind === backend) return null;
     const installed = localModels.installed?.[backend];
     // `null` = status not fetched — never offer an install from an unknown state.
     if (typeof installed !== 'boolean') return null;

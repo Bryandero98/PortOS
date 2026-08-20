@@ -1,10 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   LOCAL_RUNTIMES,
+  localBackendForProvider,
   localRuntimeForProvider,
   localRuntimeKind,
   normalizeOpenAiBaseUrl,
 } from './localProviderRuntime.js';
+import { opencodeLocalBaseUrl } from './opencodeConfig.js';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 const opencodeConfig = (namespace, baseURL) => JSON.stringify({
   permission: 'allow',
@@ -43,6 +49,17 @@ describe('localRuntimeKind', () => {
     expect(localRuntimeKind({ type: 'api', id: 'ollama', endpoint: 'http://localhost:11434/v1' })).toBe('ollama');
     expect(localRuntimeKind({ type: 'api', id: 'x', endpoint: 'http://localhost:1234/v1' })).toBe('lmstudio');
     expect(localRuntimeKind({ type: 'api', id: 'x', name: 'LM Studio local' })).toBe('lmstudio');
+  });
+
+  it('does NOT claim a peer machine daemon as a local runtime', () => {
+    // A provider pointed at another box on the LAN/tailnet used to match on the
+    // bare port, so the card offered to install Ollama HERE for a daemon that
+    // lives — and may simply be switched off — over there.
+    expect(localRuntimeKind({ type: 'api', id: 'x', endpoint: 'http://192.0.2.10:11434/v1' })).toBeNull();
+    expect(localRuntimeKind({ type: 'api', id: 'x', endpoint: 'http://192.0.2.10:1234/v1' })).toBeNull();
+    // Every loopback / bind-all spelling still resolves.
+    expect(localRuntimeKind({ type: 'api', id: 'x', endpoint: 'http://0.0.0.0:1234' })).toBe('lmstudio');
+    expect(localRuntimeKind({ type: 'api', id: 'x', endpoint: 'http://[::1]:1234/v1' })).toBe('lmstudio');
   });
 
   it('returns null for a remote provider and for junk input', () => {
@@ -106,5 +123,52 @@ describe('localRuntimeForProvider', () => {
 
   it('returns null for providers with no local dependency', () => {
     expect(localRuntimeForProvider({ command: 'claude', type: 'cli' })).toBeNull();
+  });
+
+  it('takes the canonical default from the OpenCode provider table, not a second copy', () => {
+    // These are the base URLs a spawned OpenCode actually talks to; probing a
+    // hand-typed duplicate would eventually check a port nothing is on.
+    expect(LOCAL_RUNTIMES.llama.defaultBaseUrl).toBe(opencodeLocalBaseUrl('llama'));
+    expect(LOCAL_RUNTIMES.ollama.defaultBaseUrl).toBe(opencodeLocalBaseUrl('ollama'));
+    expect(LOCAL_RUNTIMES.mtplx.defaultBaseUrl).toBe(opencodeLocalBaseUrl('mtplx'));
+  });
+
+  it('honors the env override the backend managers themselves read', () => {
+    // A user who relocated Ollama via OLLAMA_HOST reaches it fine everywhere
+    // else in PortOS; the card must not answer "not responding — install it".
+    vi.stubEnv('OLLAMA_HOST', 'localhost:11500');
+    const runtime = localRuntimeForProvider({ command: 'opencode', ollamaBacked: true, envVars: {} });
+    // Bare `host:port` is Ollama's own convention — the scheme is added here.
+    expect(runtime.endpoint).toBe('http://localhost:11500/v1');
+  });
+
+  it('lets the provider config win over the env override', () => {
+    vi.stubEnv('OLLAMA_HOST', 'localhost:11500');
+    const runtime = localRuntimeForProvider({
+      command: 'opencode',
+      ollamaBacked: true,
+      envVars: { OPENCODE_CONFIG_CONTENT: opencodeConfig('ollama', 'http://localhost:11600/v1') },
+    });
+    expect(runtime.endpoint).toBe('http://localhost:11600/v1');
+  });
+});
+
+describe('localBackendForProvider', () => {
+  // Moved here from services/localModelHealing.js, which now re-exports it —
+  // these cases pin the behavior its healing path depends on.
+  it('matches by id, name, and local endpoint port', () => {
+    expect(localBackendForProvider({ id: 'ollama' })).toBe('ollama');
+    expect(localBackendForProvider({ name: 'My Ollama' })).toBe('ollama');
+    expect(localBackendForProvider({ endpoint: 'http://localhost:11434/v1' })).toBe('ollama');
+    expect(localBackendForProvider({ id: 'lmstudio' })).toBe('lmstudio');
+    expect(localBackendForProvider({ name: 'lm-studio' })).toBe('lmstudio');
+    expect(localBackendForProvider({ endpoint: 'http://127.0.0.1:1234/v1' })).toBe('lmstudio');
+  });
+
+  it('declines a remote host, an unknown port, and junk', () => {
+    expect(localBackendForProvider({ endpoint: 'http://192.0.2.10:11434/v1' })).toBeNull();
+    expect(localBackendForProvider({ endpoint: 'http://localhost:9999' })).toBeNull();
+    expect(localBackendForProvider({ id: 'anthropic', endpoint: 'https://api.anthropic.com/v1' })).toBeNull();
+    expect(localBackendForProvider(null)).toBeNull();
   });
 });

@@ -141,6 +141,19 @@ describe('getProviderReadiness', () => {
     expect(JSON.stringify(readiness)).not.toContain('/Users/someone');
   });
 
+  it('counts an LM Studio app bundle as installed, so the card asks for a START not an install', async () => {
+    // The Local LLM tab already treats the macOS app bundle as installed. When
+    // this disagreed, one card rendered 'LM Studio installed' and 'Install LM
+    // Studio' two lines apart — and the install was the wrong fix.
+    const readiness = await getProviderReadiness(
+      { id: 'lmstudio', name: 'LM Studio', type: 'api', endpoint: 'http://localhost:1234/v1' },
+      { findCommand: () => null, isAppInstalled: () => true, probe: unreachable() },
+    );
+    expect(checkById(readiness, 'runtime').ok).toBe(true);
+    expect(checkById(readiness, 'server').ok).toBe(false);
+    expect(checkById(readiness, 'server').fixHint).toMatch(/Start LM Studio/);
+  });
+
   it('offers docs rather than an install for a runtime PortOS does not manage', async () => {
     const readiness = await getProviderReadiness(
       { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true, defaultModel: 'mtplx' },
@@ -167,10 +180,21 @@ describe('getProviderReadinessMap', () => {
       },
     );
     expect(Object.keys(map).sort()).toEqual(['opencode-llama', 'opencode-llama-tui']);
-    // Both llama providers point at the same daemon; the injected probe sees
-    // one call per provider, but the PATH scan is shared.
-    expect(probed).toHaveLength(2);
+    // Both llama providers point at the same daemon: one probe for the batch,
+    // not one per provider. A stock install ships several providers per
+    // endpoint, and this runs on a 20s poll.
+    expect(probed).toEqual(['http://127.0.0.1:8080/v1']);
     expect(map['opencode-llama'].ready).toBe(true);
+  });
+
+  it('skips disabled providers rather than probing daemons for cards nobody can run', async () => {
+    const probed = [];
+    const map = await getProviderReadinessMap(
+      [llamaProvider({ enabled: false }), llamaProvider({ id: 'on', endpoint: 'http://127.0.0.1:9/v1', enabled: true })],
+      { findCommand: () => null, probe: async (endpoint) => { probed.push(endpoint); return { reachable: false, models: null, error: 'refused' }; } },
+    );
+    expect(Object.keys(map)).toEqual(['on']);
+    expect(probed).toEqual(['http://127.0.0.1:9/v1']);
   });
 
   it('tolerates junk input', async () => {

@@ -15,16 +15,83 @@
  * Kept side-effect-free so both the readiness service and its tests can reason
  * about the mapping without a daemon on the host.
  *
+ * `localBackendForProvider` (and the loopback-host rules under it) lived in
+ * `services/localModelHealing.js` until this module existed; it moved here so
+ * the healing path and the readiness path classify a provider identically, and
+ * `localModelHealing.js` re-exports it for its existing callers.
+ *
  * Endpoint resolution deliberately prefers the provider's OWN configuration
- * over the canonical default: a user who moved llama-server to port 8090 edited
+ * over any default: a user who moved llama-server to port 8090 edited
  * `OPENCODE_CONFIG_CONTENT` (or `endpoint`), and probing 8080 anyway would
  * report their working setup as broken.
  */
 
 import { getOpencodeLocalProviderNamespace, isOpencodeCommand } from './providerModels.js';
+import { opencodeLocalBaseUrl } from './opencodeConfig.js';
+
+// Default OpenAI-compatible ports for the two local backends PortOS manages. An
+// endpoint-only provider (no id/name) pointed at one of these on the local
+// instance maps to that backend.
+const BACKEND_DEFAULT_PORT = { 11434: 'ollama', 1234: 'lmstudio' };
+
+/**
+ * True when a hostname names the SAME local instance the backend manager runs
+ * on — any loopback (`127.0.0.0/8`, `::1`), `localhost`, or the unspecified /
+ * bind-all address (`0.0.0.0`, `::`, which a manager bound to all interfaces
+ * reports while a provider reaches it as localhost). These all canonicalize to
+ * one token so spelling differences don't block healing. Deliberately NOT
+ * link-local / LAN / Tailscale hosts — a peer on another box is a DIFFERENT
+ * instance whose installed models we must not heal against, and whose daemon
+ * PortOS must not offer to install here.
+ */
+export function isLocalInstanceHost(hostname) {
+  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+  return h === 'localhost' || h === '0.0.0.0' || h === '::' || h === '::1' ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
+}
+
+/**
+ * The port of a provider endpoint when it points at THIS machine's local
+ * instance (any loopback / bind-all host spelling); null otherwise — so a
+ * LAN/Tailscale peer on the same port is NOT mistaken for a local backend.
+ */
+export function localEndpointPort(endpoint) {
+  const cleaned = String(endpoint || '').replace(/\/v1\/?$/, '').replace(/\/+$/, '');
+  try {
+    const u = new URL(cleaned);
+    if (!isLocalInstanceHost(u.hostname)) return null;
+    return u.port || (u.protocol === 'https:' ? '443' : '80');
+  } catch { return null; }
+}
+
+// MIRROR of `isOllamaProvider` in services/ollamaManager.js — keep in lockstep.
+// Inlined so this module stays free of the manager's module graph.
+const isOllamaShape = (provider) =>
+  provider?.id === 'ollama' ||
+  /ollama/i.test(provider?.name || '') ||
+  /(^|[/:])(?:localhost|127\.0\.0\.1|\[::1\]):11434\b/i.test(String(provider?.endpoint || ''));
+
+/**
+ * Which local backend (if any) a provider maps to. Matches by id/name first
+ * (`ollama` / `lmstudio`), then by an endpoint pointing at the backend's default
+ * port on THIS machine's local instance.
+ * @returns {'ollama'|'lmstudio'|null}
+ */
+export function localBackendForProvider(provider) {
+  if (isOllamaShape(provider)) return 'ollama';
+  if (provider?.id === 'lmstudio' || /lm[\s-]?studio/i.test(provider?.name || '')) return 'lmstudio';
+  const port = localEndpointPort(provider?.endpoint);
+  return port ? (BACKEND_DEFAULT_PORT[port] || null) : null;
+}
 
 /**
  * One row per local runtime PortOS knows how to check for.
+ *
+ * `defaultBaseUrl` is read from `opencodeConfig.js`'s provider table rather than
+ * re-typed: that table is what a spawned OpenCode actually talks to when the
+ * provider stores no config of its own, so a second copy here would eventually
+ * probe a port nothing is on and call a working setup broken. LM Studio has no
+ * row there (nothing spawns OpenCode against it), so it carries its own.
  *
  * `manageUrl` is the client route that installs/starts it — the Local LLM
  * settings tab owns every one of these flows, so an unmet requirement links
@@ -37,7 +104,7 @@ export const LOCAL_RUNTIMES = Object.freeze({
     // The server binary, not the `llama` convenience wrapper: this is what
     // `llamaServerManager` resolves and starts.
     command: 'llama-server',
-    defaultBaseUrl: 'http://127.0.0.1:8080/v1',
+    defaultBaseUrl: opencodeLocalBaseUrl('llama'),
     manageUrl: '/settings/local-llm',
     docsUrl: 'https://github.com/ggml-org/llama.cpp',
     // Named so an unmet check can say what the user still has to fetch. GGUF
@@ -49,7 +116,7 @@ export const LOCAL_RUNTIMES = Object.freeze({
     id: 'ollama',
     label: 'Ollama',
     command: 'ollama',
-    defaultBaseUrl: 'http://localhost:11434/v1',
+    defaultBaseUrl: opencodeLocalBaseUrl('ollama'),
     manageUrl: '/settings/local-llm',
     docsUrl: 'https://ollama.com/download',
     modelsHint: 'Pull a model from Settings → Local LLM before an agent can use this provider.',
@@ -69,19 +136,37 @@ export const LOCAL_RUNTIMES = Object.freeze({
     // PortOS ships no installer for MTPLX — it is a user-run process — so the
     // readiness report offers docs instead of an install action.
     command: null,
-    defaultBaseUrl: 'http://127.0.0.1:8000/v1',
+    defaultBaseUrl: opencodeLocalBaseUrl('mtplx'),
     manageUrl: null,
     docsUrl: 'https://github.com/atomantic/PortOS/blob/main/docs/features/mtplx.md',
     modelsHint: 'Start the MTPLX server yourself; PortOS does not manage that process.',
   }),
 });
 
-/** Normalize a base URL to the `/v1` root an OpenAI-compatible probe needs. */
+/**
+ * Normalize a base URL to the `/v1` root an OpenAI-compatible probe needs.
+ * A scheme is added when missing, because `OLLAMA_HOST` is conventionally a
+ * bare `host:port` (mirroring `ollamaManager`'s own normalization).
+ */
 export function normalizeOpenAiBaseUrl(url) {
   if (typeof url !== 'string') return null;
-  const trimmed = url.trim().replace(/\/+$/, '');
+  let trimmed = url.trim().replace(/\/+$/, '');
   if (trimmed === '') return null;
+  if (!/^https?:\/\//i.test(trimmed)) trimmed = `http://${trimmed}`;
   return /\/v\d+$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
+}
+
+/**
+ * The base URL the rest of PortOS talks to this backend on, when the provider
+ * itself names none. The backend managers resolve their own base URL from these
+ * env vars (`ollamaManager.js`, `lmStudioManager.js`); reading them here keeps a
+ * relocated daemon from showing up as "not responding — install it" on the card
+ * while every other PortOS feature reaches it fine.
+ */
+function envBaseUrl(kind) {
+  if (kind === 'ollama') return process.env.OLLAMA_URL || process.env.OLLAMA_HOST || null;
+  if (kind === 'lmstudio') return process.env.LM_STUDIO_URL || null;
+  return null;
 }
 
 /** The `baseURL` an OpenCode provider config declares for `namespace`, if any. */
@@ -105,29 +190,19 @@ function opencodeConfiguredBaseUrl(provider, namespace) {
  * first and its endpoint/name only as a fallback.
  *
  * The `*Backed` markers are authoritative — they are what the spawner itself
- * keys on. The heuristic tail mirrors the client's `localBackendForProvider`
- * so a plain `api` provider pointed at Ollama or LM Studio is recognized too.
- *
- * `orcarouter` is deliberately excluded: it is an OpenCode local *namespace*
- * but a remote hosted API, so there is no local daemon to check.
+ * keys on. `orcarouter` is deliberately excluded: it is an OpenCode local
+ * *namespace* but a remote hosted API, so there is no local daemon to check.
  *
  * @param {object|null|undefined} provider
  * @returns {'llama'|'ollama'|'lmstudio'|'mtplx'|null}
  */
 export function localRuntimeKind(provider) {
   if (!provider || typeof provider !== 'object') return null;
-
+  // Marker-based, NOT command-based: this also resolves `claude-ollama`, which
+  // carries `ollamaBacked` without being an OpenCode provider.
   const namespace = getOpencodeLocalProviderNamespace(provider);
   if (namespace && namespace !== 'orcarouter') return namespace;
-  // `claude-ollama` carries `ollamaBacked` without being an OpenCode provider.
-  if (provider.ollamaBacked === true) return 'ollama';
-
-  const endpoint = String(provider.endpoint || '');
-  const id = String(provider.id || '').toLowerCase();
-  const name = String(provider.name || '').toLowerCase();
-  if (id === 'ollama' || /:11434\b/.test(endpoint) || name.includes('ollama')) return 'ollama';
-  if (id === 'lmstudio' || /:1234\b/.test(endpoint) || /lm[\s-]?studio/.test(name)) return 'lmstudio';
-  return null;
+  return localBackendForProvider(provider);
 }
 
 /**
@@ -148,15 +223,9 @@ export function localRuntimeForProvider(provider) {
 
   const endpoint = normalizeOpenAiBaseUrl(configured)
     || normalizeOpenAiBaseUrl(provider?.endpoint)
+    || normalizeOpenAiBaseUrl(envBaseUrl(kind))
     || runtime.defaultBaseUrl;
 
-  return {
-    kind: runtime.id,
-    label: runtime.label,
-    command: runtime.command,
-    endpoint,
-    manageUrl: runtime.manageUrl,
-    docsUrl: runtime.docsUrl,
-    modelsHint: runtime.modelsHint,
-  };
+  const { id, ...row } = runtime;
+  return { ...row, kind: id, endpoint };
 }

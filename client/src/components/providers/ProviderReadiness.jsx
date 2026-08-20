@@ -17,6 +17,7 @@
 
 import { Link } from 'react-router';
 import { CheckCircle2, HelpCircle, Wrench, XCircle } from 'lucide-react';
+import Banner from '../ui/Banner';
 import Pill from '../ui/Pill';
 
 const ICONS = {
@@ -27,6 +28,8 @@ const ICONS = {
   // failure, so the user chases the check that IS actionable.
   null: { Icon: HelpCircle, cls: 'text-gray-500' },
 };
+
+const LINK_CLASS = 'text-port-accent hover:text-port-accent/80 underline underline-offset-2';
 
 /**
  * Render `text` with `backtick`-quoted spans as inline code. The server writes
@@ -52,23 +55,23 @@ export default function ProviderReadiness({ readiness, className = '' }) {
 
   if (ready) {
     return (
-      <div className={`flex flex-wrap items-center gap-2 ${className}`}>
-        <Pill tone="success" size="xs" icon={CheckCircle2} title={`${label} is running at ${endpoint}.`}>
-          {label} ready
-        </Pill>
-      </div>
+      <Pill tone="success" size="xs" icon={CheckCircle2} className={className} title={`${label} is running at ${endpoint}.`}>
+        {label} ready
+      </Pill>
     );
   }
 
   const blocked = checks.filter((check) => check.ok !== true).length;
 
   return (
-    <div className={`text-xs rounded border border-port-warning/40 bg-port-warning/10 px-3 py-2 space-y-1.5 ${className}`}>
-      <p className="text-port-warning font-semibold flex items-center gap-1.5">
-        <Wrench size={12} />
-        {label} setup incomplete — {blocked} requirement{blocked === 1 ? '' : 's'} unmet
-      </p>
-      <ul className="space-y-1">
+    <Banner
+      tone="warning"
+      size="sm"
+      icon={Wrench}
+      className={className}
+      title={`${label} setup incomplete — ${blocked} requirement${blocked === 1 ? '' : 's'} unmet`}
+    >
+      <ul className="space-y-1 mt-1">
         {checks.map((check) => {
           const { Icon, cls } = ICONS[String(check.ok)] || ICONS.null;
           return (
@@ -85,18 +88,14 @@ export default function ProviderReadiness({ readiness, className = '' }) {
           );
         })}
       </ul>
-      <div className="flex flex-wrap items-center gap-3 pt-0.5">
+      <div className="flex flex-wrap items-center gap-3 pt-1.5">
         {manageUrl && (
-          <Link to={manageUrl} className="text-port-accent hover:text-port-accent/80 underline underline-offset-2">
-            Open Local LLM settings
-          </Link>
+          <Link to={manageUrl} className={LINK_CLASS}>Open Local LLM settings</Link>
         )}
         {docsUrl && (
-          <a href={docsUrl} target="_blank" rel="noreferrer" className="text-port-accent hover:text-port-accent/80 underline underline-offset-2">
-            {label} setup docs
-          </a>
+          <a href={docsUrl} target="_blank" rel="noreferrer" className={LINK_CLASS}>{label} setup docs</a>
         )}
       </div>
-    </div>
+    </Banner>
   );
 }

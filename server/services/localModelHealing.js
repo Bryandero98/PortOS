@@ -20,12 +20,12 @@ import { addNotification, NOTIFICATION_TYPES, PRIORITY_LEVELS } from './notifica
 import * as ollamaManager from './ollamaManager.js';
 import * as lmStudioManager from './lmStudioManager.js';
 import { recommendEditorialModel, isEmbeddingModel } from '../lib/localModelHeuristics.js';
+// Moved to server/lib so the readiness checklist classifies a provider exactly
+// as the healing path does; re-exported below for this module's callers.
+import { isLocalInstanceHost, localBackendForProvider } from '../lib/localProviderRuntime.js';
 import { getMeasuredFits } from './localModelAssessmentStore.js';
 
-// Default OpenAI-compatible ports for the two local backends. An endpoint-only
-// provider (no id/name) pointed at one of these on the local instance maps to
-// that backend.
-const BACKEND_DEFAULT_PORT = { '11434': 'ollama', '1234': 'lmstudio' };
+export { localBackendForProvider };
 
 // A backend "model not found" — Ollama answers 404 `model "x" not found, try
 // pulling it first`; LM Studio answers `model "x" not found`/`unknown model`.
@@ -34,32 +34,6 @@ const BACKEND_DEFAULT_PORT = { '11434': 'ollama', '1234': 'lmstudio' };
 // configured one).
 const MODEL_NOT_FOUND_RE = /model\s*['"]?[\w./:-]*['"]?\s*(?:not found|does not exist|is not (?:found|installed|available))|not found, try pulling|unknown model|no such model/i;
 const NO_MODELS_LOADED_RE = /no models loaded/i;
-
-/**
- * Which local backend (if any) a provider maps to. Matches by id/name first
- * (`ollama` / `lmstudio`), then by an endpoint pointing at the backend's default
- * port on THIS machine's local instance — using the same local-host logic as
- * the endpoint guard, so every loopback / bind-all spelling resolves.
- * @returns {'ollama'|'lmstudio'|null}
- */
-export function localBackendForProvider(provider) {
-  if (ollamaManager.isOllamaProvider(provider)) return 'ollama';
-  if (provider?.id === 'lmstudio' || /lm[\s-]?studio/i.test(provider?.name || '')) return 'lmstudio';
-  const port = localEndpointPort(provider?.endpoint);
-  return port ? (BACKEND_DEFAULT_PORT[port] || null) : null;
-}
-
-// The port of a provider endpoint when it points at THIS machine's local
-// instance (any loopback / bind-all host spelling); null otherwise — so a
-// LAN/Tailscale peer on the same port is NOT mistaken for a local backend.
-function localEndpointPort(endpoint) {
-  const cleaned = String(endpoint || '').replace(/\/v1\/?$/, '').replace(/\/+$/, '');
-  try {
-    const u = new URL(cleaned);
-    if (!isLocalInstanceHost(u.hostname)) return null;
-    return u.port || (u.protocol === 'https:' ? '443' : '80');
-  } catch { return null; }
-}
 
 /**
  * True when an error string is a backend "configured model isn't installed"
@@ -126,19 +100,6 @@ export function computeProviderPatch(provider, installedIds, fallback, requested
 function managerOrigin(backend) {
   const base = backend === 'ollama' ? ollamaManager.getBaseUrl() : lmStudioManager.getBaseUrl();
   return normalizeOrigin(base);
-}
-
-// True when a hostname names the SAME local instance the backend manager runs
-// on — any loopback (`127.0.0.0/8`, `::1`), `localhost`, or the unspecified /
-// bind-all address (`0.0.0.0`, `::`, which a manager bound to all interfaces
-// reports while a provider reaches it as localhost). These all canonicalize to
-// one token so spelling differences don't block healing. Deliberately NOT
-// link-local / LAN / Tailscale hosts — a peer on another box is a DIFFERENT
-// instance whose installed models we must not heal against.
-function isLocalInstanceHost(hostname) {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 brackets
-  return h === 'localhost' || h === '0.0.0.0' || h === '::' || h === '::1' ||
-    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
 }
 
 function normalizeOrigin(url) {

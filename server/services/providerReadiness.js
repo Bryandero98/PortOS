@@ -30,10 +30,11 @@
  * to poll from a settings page under the no-cold-bootstrap policy in CLAUDE.md.
  */
 
-import { LOCAL_RUNTIMES, localRuntimeForProvider } from '../lib/localProviderRuntime.js';
+import { localRuntimeForProvider } from '../lib/localProviderRuntime.js';
 import { isConfiguredDefaultModel } from '../lib/providerModels.js';
-import { fetchWithTimeout } from '../lib/fetchWithTimeout.js';
+import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
+import { isAppInstalled as isLmStudioAppInstalled } from './lmStudioManager.js';
 
 /**
  * Loopback daemons answer (or refuse the connection) in single-digit
@@ -44,45 +45,67 @@ import { findCommandOnPath } from '../lib/processEnv.js';
 const PROBE_TIMEOUT_MS = 2_000;
 
 /**
- * Collapse the bursts a page reload produces (the Providers page asks for
- * readiness on mount and on every 20s status poll, and several providers can
- * share one endpoint) without going stale enough to hide a daemon the user just
- * started from the Local LLM tab.
+ * Sized just under the Providers page's 20s poll so consecutive polls each get
+ * a fresh answer (a daemon the user just started must show up on the next tick,
+ * not two ticks later) while a reload landing on top of a poll still reuses it.
+ * Within ONE request the promise cache below is what collapses providers that
+ * share an endpoint.
  */
-const PROBE_TTL_MS = 5_000;
-
-// endpoint → { at, result }
-const probeCache = new Map();
+const PROBE_TTL_MS = 15_000;
 
 /**
- * Ask an OpenAI-compatible endpoint what it serves.
+ * Same 60s TTL and reasoning as `providerRuntimeInstaller.js`'s status cache:
+ * availability changes only when someone installs or removes a binary, and
+ * `findCommandOnPath` is a SYNCHRONOUS PATH walk (a stat per directory), so an
+ * uncached miss blocks the event loop on every 20s poll from every open tab.
+ */
+const BINARY_TTL_MS = 60_000;
+
+// endpoint → { at, promise } — the PROMISE, not the settled value, so N
+// providers sharing one endpoint in the same batch share one socket instead of
+// all missing a not-yet-written cache entry at once.
+const probeCache = new Map();
+// command → { at, path }
+const binaryCache = new Map();
+
+/**
+ * Ask an OpenAI-compatible endpoint what it serves. `llamaServerManager` runs the
+ * same probe against the same daemons, so the request shape lives in one lib.
  * @returns {Promise<{reachable:boolean, models:string[]|null, error:string|null}>}
  *   `models: null` means reachable but the listing could not be read — distinct
  *   from `[]`, a server that is up with nothing loaded.
  */
-async function probeEndpoint(endpoint) {
-  const res = await fetchWithTimeout(`${endpoint}/models`, { method: 'GET' }, PROBE_TIMEOUT_MS)
-    .catch((err) => ({ ok: false, transportError: err?.message || 'connection failed' }));
+const probeEndpoint = (endpoint) => probeOpenAiModels(endpoint, { timeoutMs: PROBE_TIMEOUT_MS });
 
-  if (res.transportError) return { reachable: false, models: null, error: res.transportError };
-  if (!res.ok) return { reachable: false, models: null, error: `HTTP ${res.status}` };
-
-  const body = await res.json().catch(() => null);
-  const rows = Array.isArray(body?.data) ? body.data : Array.isArray(body?.models) ? body.models : null;
-  if (!rows) return { reachable: true, models: null, error: 'model listing was not readable' };
-  const models = rows
-    .map((row) => (typeof row === 'string' ? row : row?.id || row?.name))
-    .filter((id) => typeof id === 'string' && id !== '');
-  return { reachable: true, models, error: null };
+/** TTL-cached endpoint probe, shared across requests — see PROBE_TTL_MS. */
+function probeEndpointCached(endpoint) {
+  const now = Date.now();
+  const cached = probeCache.get(endpoint);
+  if (cached && now - cached.at < PROBE_TTL_MS) return cached.promise;
+  // Sweep while we are here: entries are keyed by endpoint, and an edited or
+  // deleted provider would otherwise leave its old endpoint behind forever.
+  for (const [key, entry] of probeCache) {
+    if (now - entry.at >= PROBE_TTL_MS) probeCache.delete(key);
+  }
+  // Written BEFORE the await so concurrent callers join this probe. A rejected
+  // probe would poison the entry for its TTL, so drop it on failure —
+  // `probeEndpoint` resolves for every expected failure, making this the
+  // unexpected-throw path only.
+  const promise = probeEndpoint(endpoint).catch((err) => {
+    probeCache.delete(endpoint);
+    throw err;
+  });
+  probeCache.set(endpoint, { at: now, promise });
+  return promise;
 }
 
-/** Cached endpoint probe — see PROBE_TTL_MS. */
-async function probeEndpointCached(endpoint, probe) {
-  const cached = probeCache.get(endpoint);
-  if (cached && Date.now() - cached.at < PROBE_TTL_MS) return cached.result;
-  const result = await probe(endpoint);
-  probeCache.set(endpoint, { at: Date.now(), result });
-  return result;
+/** TTL-cached PATH lookup for the handful of daemon binaries — see BINARY_TTL_MS. */
+function findCommandCached(command) {
+  const cached = binaryCache.get(command);
+  if (cached && Date.now() - cached.at < BINARY_TTL_MS) return cached.path;
+  const path = findCommandOnPath(command);
+  binaryCache.set(command, { at: Date.now(), path });
+  return path;
 }
 
 /**
@@ -96,6 +119,71 @@ function servedModelId(provider, kind) {
   if (typeof model !== 'string' || model.trim() === '' || isConfiguredDefaultModel(model)) return null;
   const trimmed = model.trim();
   return trimmed.startsWith(`${kind}/`) ? trimmed.slice(kind.length + 1) : trimmed;
+}
+
+/** The `runtime` check — is the daemon's software here at all? */
+function runtimeCheck(runtime, { onPath, appInstalled, installed, reachable }) {
+  const detail = onPath ? `\`${runtime.command}\` is on PortOS's PATH.`
+    : appInstalled ? `${runtime.label} is installed as an app.`
+      : reachable ? `Something is already serving ${runtime.endpoint}.`
+        : runtime.command ? `\`${runtime.command}\` was not found on PortOS's PATH.`
+          : `PortOS does not install ${runtime.label} — start it yourself.`;
+  const fixHint = installed ? null
+    : runtime.manageUrl ? `Install ${runtime.label} from Settings → Local LLM.`
+      : `Follow the ${runtime.label} setup docs, then reload this page.`;
+  return { id: 'runtime', label: `${runtime.label} installed`, ok: installed, detail, fixHint };
+}
+
+/** The `server` check — is it running where THIS provider points? */
+function serverCheck(runtime, { installed, result }) {
+  if (result.reachable) {
+    return {
+      id: 'server',
+      label: `${runtime.label} server responding`,
+      ok: true,
+      detail: `${runtime.endpoint} answered.`,
+      fixHint: null,
+    };
+  }
+  const start = `Start ${runtime.label}${runtime.manageUrl ? ' from Settings → Local LLM' : ''}.`;
+  return {
+    id: 'server',
+    label: `${runtime.label} server responding`,
+    ok: false,
+    detail: `Nothing answered at ${runtime.endpoint}${result.error ? ` (${result.error})` : ''}.`,
+    fixHint: installed
+      ? `${start} ${runtime.modelsHint}`
+      : `Install ${runtime.label} first, then start it. ${runtime.modelsHint}`,
+  };
+}
+
+/**
+ * The `model` check — does the running daemon serve what this provider asks
+ * for? This is the alias mismatch: `llama-server --alias dflash` against a
+ * provider pinned to `dspark` fails HERE rather than inside a dead agent run.
+ *
+ * `served` is null when the endpoint never answered (or answered unreadably),
+ * which says nothing about the model — reported as unknown, never as missing,
+ * so the user chases the check that IS actionable.
+ */
+function modelCheck(runtime, wanted, served) {
+  const label = `Model \`${wanted}\` available`;
+  if (!Array.isArray(served)) {
+    return { id: 'model', label, ok: null, detail: 'Cannot be checked until the server responds.', fixHint: null };
+  }
+  if (served.includes(wanted)) {
+    return { id: 'model', label, ok: true, detail: `${runtime.label} is serving \`${wanted}\`.`, fixHint: null };
+  }
+  const detail = served.length === 0
+    ? `${runtime.label} is running but has no model loaded.`
+    : `${runtime.label} is serving ${served.slice(0, 3).map((id) => `\`${id}\``).join(', ')}${served.length > 3 ? ` +${served.length - 3} more` : ''}.`;
+  return {
+    id: 'model',
+    label,
+    ok: false,
+    detail,
+    fixHint: `${runtime.modelsHint} Then set this provider's default model to one the server reports.`,
+  };
 }
 
 /**
@@ -114,74 +202,30 @@ export async function getProviderReadiness(provider, deps = {}) {
   const runtime = localRuntimeForProvider(provider);
   if (!runtime) return null;
 
-  const findCommand = deps.findCommand || findCommandOnPath;
+  const findCommand = deps.findCommand || findCommandCached;
+  const probe = deps.probe || probeEndpointCached;
 
-  // An injected probe bypasses the cache: it is a different oracle than the
-  // real one, and sharing a cache entry with it would let one caller's stub
-  // answer for another's live probe.
-  const endpointResult = deps.probe
-    ? await deps.probe(runtime.endpoint)
-    : await probeEndpointCached(runtime.endpoint, probeEndpoint);
+  const result = await probe(runtime.endpoint);
   // A daemon that answers is installed, whatever PATH says — Ollama's macOS app
   // and LM Studio both serve without putting a CLI on PortOS's PATH.
   const onPath = Boolean(runtime.command && findCommand(runtime.command));
-  const installed = onPath || endpointResult.reachable;
+  // LM Studio ships as a macOS app bundle whose `lms` shim the user opts into
+  // separately, so PATH alone says "not installed" for a perfectly installed
+  // copy. The Local LLM tab already counts the bundle (`localLlm.getStatus`);
+  // without the same signal here the card would render "LM Studio installed"
+  // and "install LM Studio" two lines apart, and send the user after the wrong
+  // fix — the real one is "start its server".
+  const appInstalled = runtime.kind === 'lmstudio' && (deps.isAppInstalled || isLmStudioAppInstalled)();
+  const installed = onPath || appInstalled || result.reachable;
 
-  const checks = [];
-
-  checks.push({
-    id: 'runtime',
-    label: `${runtime.label} installed`,
-    ok: installed,
-    detail: installed
-      ? (onPath ? `\`${runtime.command}\` is on PortOS's PATH.` : `Something is already serving ${runtime.endpoint}.`)
-      : runtime.command
-        ? `\`${runtime.command}\` was not found on PortOS's PATH.`
-        : `PortOS does not install ${runtime.label} — start it yourself.`,
-    fixHint: installed
-      ? null
-      : runtime.manageUrl
-        ? `Install ${runtime.label} from Settings → Local LLM.`
-        : `Follow the ${runtime.label} setup docs, then reload this page.`,
-  });
-
-  checks.push({
-    id: 'server',
-    label: `${runtime.label} server responding`,
-    ok: endpointResult.reachable,
-    detail: endpointResult.reachable
-      ? `${runtime.endpoint} answered.`
-      : `Nothing answered at ${runtime.endpoint}${endpointResult.error ? ` (${endpointResult.error})` : ''}.`,
-    fixHint: endpointResult.reachable
-      ? null
-      : installed
-        ? `Start ${runtime.label}${runtime.manageUrl ? ' from Settings → Local LLM' : ''}. ${runtime.modelsHint}`
-        : `Install ${runtime.label} first, then start it. ${runtime.modelsHint}`,
-  });
-
-  const wantedModel = servedModelId(provider, runtime.kind);
-  if (wantedModel) {
-    // Only assertable against a server that answered with a readable list. An
-    // unreachable (or unlistable) endpoint says nothing about the model, and
-    // reporting it as missing would send the user after the wrong fix.
-    const served = endpointResult.reachable ? endpointResult.models : null;
-    const ok = Array.isArray(served) ? served.includes(wantedModel) : null;
-    checks.push({
-      id: 'model',
-      label: `Model \`${wantedModel}\` available`,
-      ok,
-      detail: ok === null
-        ? 'Cannot be checked until the server responds.'
-        : ok
-          ? `${runtime.label} is serving \`${wantedModel}\`.`
-          : served.length === 0
-            ? `${runtime.label} is running but has no model loaded.`
-            : `${runtime.label} is serving ${served.slice(0, 3).map((id) => `\`${id}\``).join(', ')}${served.length > 3 ? ` +${served.length - 3} more` : ''}.`,
-      fixHint: ok === null || ok
-        ? null
-        : `${runtime.modelsHint} Then set this provider's default model to one the server reports.`,
-    });
-  }
+  const checks = [
+    runtimeCheck(runtime, { onPath, appInstalled, installed, reachable: result.reachable }),
+    serverCheck(runtime, { installed, result }),
+  ];
+  const wanted = servedModelId(provider, runtime.kind);
+  // `probeEndpoint` returns `models: null` on every unreachable path, so this
+  // needs no second reachability test.
+  if (wanted) checks.push(modelCheck(runtime, wanted, result.models));
 
   return {
     kind: runtime.kind,
@@ -197,34 +241,47 @@ export async function getProviderReadiness(provider, deps = {}) {
 }
 
 /**
- * Readiness for every provider that needs a local daemon, keyed by provider id.
- * Providers with no local dependency are omitted entirely, so the client can
- * treat "absent" as "nothing to report".
+ * Readiness for every ENABLED provider that needs a local daemon, keyed by
+ * provider id. Providers with no local dependency are omitted entirely, so the
+ * client can treat "absent" as "nothing to report".
+ *
+ * Disabled providers are skipped: a stock install ships most of the local
+ * presets disabled, and probing daemons for providers the user switched off
+ * spends most of every poll on cards that would show the checklist for a
+ * provider they cannot run anyway.
  *
  * @param {object[]} providers - RAW provider records
  */
 export async function getProviderReadinessMap(providers, deps = {}) {
-  const list = Array.isArray(providers) ? providers : [];
-  // One PATH scan per distinct binary, and one HTTP probe per distinct endpoint,
-  // no matter how many providers share them.
-  const pathCache = new Map();
-  const findCommand = deps.findCommand || findCommandOnPath;
-  const memoFind = (command) => {
-    if (!pathCache.has(command)) pathCache.set(command, findCommand(command));
-    return pathCache.get(command);
-  };
+  const list = (Array.isArray(providers) ? providers : []).filter((provider) => provider?.enabled !== false);
+  // One PATH scan per distinct binary and one probe per distinct endpoint for
+  // the whole batch — including when the caller injects its own probe, which
+  // would otherwise bypass the module-level caches that normally collapse them.
+  const findCommand = memoize(deps.findCommand || findCommandCached);
+  const probe = memoize(deps.probe || probeEndpointCached);
 
   const entries = await Promise.all(list.map(async (provider) => {
-    const readiness = await getProviderReadiness(provider, { ...deps, findCommand: memoFind });
+    const readiness = await getProviderReadiness(provider, { findCommand, probe });
     return readiness ? [provider.id, readiness] : null;
   }));
   return Object.fromEntries(entries.filter(Boolean));
 }
 
-/** The runtimes this module knows how to check — re-exported for callers/tests. */
-export { LOCAL_RUNTIMES };
+/** Per-batch single-argument memo (the returned promise is shared, not awaited). */
+function memoize(fn) {
+  const seen = new Map();
+  return (arg) => {
+    if (!seen.has(arg)) seen.set(arg, fn(arg));
+    return seen.get(arg);
+  };
+}
 
-/** Drops the endpoint probe cache (tests, and after an install/start action). */
+/**
+ * Drops the probe caches so the next read reflects a daemon that was just
+ * started, stopped, or installed — called by the llama-server lifecycle routes,
+ * which change exactly what these caches remember.
+ */
 export function resetProviderReadinessCache() {
   probeCache.clear();
+  binaryCache.clear();
 }

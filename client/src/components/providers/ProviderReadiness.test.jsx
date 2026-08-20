@@ -21,13 +21,11 @@ const readiness = (overrides = {}) => ({
 });
 
 describe('ProviderReadiness', () => {
-  it('renders nothing without a readiness report', () => {
-    const { container } = renderWithRouter(<ProviderReadiness readiness={null} />);
-    expect(container.textContent).toBe('');
-  });
-
-  it('renders nothing when the report carries no checks', () => {
-    const { container } = renderWithRouter(<ProviderReadiness readiness={readiness({ checks: [] })} />);
+  it.each([
+    ['no report yet (the card paints before the fetch lands)', null],
+    ['a report with no checks', readiness({ checks: [] })],
+  ])('renders nothing for %s', (_label, value) => {
+    const { container } = renderWithRouter(<ProviderReadiness readiness={value} />);
     expect(container.textContent).toBe('');
   });
 
@@ -47,13 +45,9 @@ describe('ProviderReadiness', () => {
     // an unknown is not a pass.
     expect(screen.getByText(/2 requirements unmet/)).toBeTruthy();
     expect(screen.getByText(/Start llama\.cpp/)).toBeTruthy();
-  });
 
-  it('pluralizes a single unmet requirement', () => {
-    const one = readiness({
-      checks: [readiness().checks[0], { ...readiness().checks[1], ok: false }],
-    });
-    renderWithRouter(<ProviderReadiness readiness={one} />);
+    // …and reads correctly when only one is outstanding.
+    renderWithRouter(<ProviderReadiness readiness={readiness({ checks: readiness().checks.slice(0, 2) })} />);
     expect(screen.getByText(/1 requirement unmet/)).toBeTruthy();
   });
 
