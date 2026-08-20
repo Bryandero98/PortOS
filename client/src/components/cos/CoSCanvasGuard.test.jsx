@@ -89,30 +89,13 @@ describe('CoSCanvasGuard', () => {
     expect(screen.getByTestId('avatar-canvas')).toBeInTheDocument();
   });
 
-  it('lets an explicit caller fallback override the WebGL pre-gate', () => {
-    // `supported` comes from a `useState` INITIALIZER, which runs once at mount —
-    // flipping the mock and rerendering would silently exercise some other
-    // branch, so this needs a fresh mount.
+  // Both panels are the guard's own. The GLB-loading callers used to pass a
+  // "no model — run setup" hint here, but they only reach the guard after a HEAD
+  // request proved the model IS there, so that hint was wrong on both branches.
+  it('owns both panels, with no caller override', () => {
+    cleanup();
     webgl.available = false;
-    render(<CoSCanvasGuard fallback={<div data-testid="caller-fallback" />}><div /></CoSCanvasGuard>);
-    expect(screen.getByTestId('caller-fallback')).toBeInTheDocument();
-    expect(screen.queryByText(/This display has no WebGL/i)).not.toBeInTheDocument();
-  });
-
-  // ...but NOT an asset failure. The GLB-loading callers pass a "no model, run
-  // setup" hint as their fallback, and they already probe for a missing model
-  // with a HEAD request before mounting the guard — so a failure reaching here
-  // means the file answered and then failed, which that hint misreports. This
-  // is the exact path #4688 describes: the server hands back the SPA index, the
-  // parser chokes on `<`, and the user gets sent to run setup for nothing.
-  it('shows the asset failure even when the caller supplied a fallback', () => {
-    render(
-      <CoSCanvasGuard fallback={<div data-testid="caller-fallback" />}>
-        <Boom error={new Error("Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON")} />
-      </CoSCanvasGuard>,
-    );
-    expect(screen.getByTestId('cos-avatar-asset-error')).toBeInTheDocument();
-    expect(screen.getByText(/web page instead of the mesh file/i)).toBeInTheDocument();
-    expect(screen.queryByTestId('caller-fallback')).not.toBeInTheDocument();
+    render(<CoSCanvasGuard><div /></CoSCanvasGuard>);
+    expect(screen.getByText(/This display has no WebGL/i)).toBeInTheDocument();
   });
 });

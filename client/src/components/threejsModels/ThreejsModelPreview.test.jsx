@@ -853,6 +853,19 @@ describe('ThreejsModelPreview spec-render failures', () => {
     expect(screen.queryByText(/Drag to orbit/)).not.toBeInTheDocument();
   });
 
+  // The selected-part badge is the third piece of chrome gated on the failure,
+  // and it only mounts with a part in the URL — so the case above never reaches
+  // it. Same defect either way: it is a DOM peer that follows the panel, so it
+  // paints over the message and its Clear button drives an unmounted canvas.
+  it('hides the selected-part badge behind the failure too', () => {
+    canvasFailure.error = new Error('bad geometry');
+    renderPreview(<ThreejsModelPreview spec={knifeSpec()} />, '/?part=handle');
+
+    expect(screen.getByTestId('threejs-spec-error')).toBeInTheDocument();
+    expect(screen.queryByText('Handle')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Clear part selection' })).not.toBeInTheDocument();
+  });
+
   // A lost WebGL context throws the same way a bad spec does, but it can come
   // back — and the spec signature never changes, so nothing else would clear it.
   it('recovers from a failure the spec signature can never clear', () => {

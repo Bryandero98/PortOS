@@ -49,8 +49,9 @@ export const ASSET_ROUTE_PREFIXES = [
  * must still reach the SPA — `/data` itself is the Data Manager page. Exact
  * paths only, not prefixes: `nav.data` has no children (`/devtools/datadog` is
  * a sibling, not a child), and `scripts/dev-proxy-drift.test.js` fails if a
- * NAV_COMMANDS route is ever added under one of these prefixes without being
- * listed here.
+ * client route is ever added under one of these prefixes without being listed
+ * here — reading both `NAV_COMMANDS` and `App.jsx`'s own nested `<Route>` tree,
+ * since a `:id` detail route is only ever declared in the latter.
  */
 export const SERVER_OWNED_PREFIXES = [
   { prefix: '/data', spaPaths: ['/data'] },

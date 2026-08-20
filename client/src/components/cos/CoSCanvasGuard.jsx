@@ -16,12 +16,12 @@ import CoSAvatarFrame from './CoSAvatarFrame';
  * is a real pre-gate and keeps the WebGL hint; anything thrown afterwards is an
  * asset failure and says so.
  *
- * `fallback` overrides the PRE-GATE only. A caught error deliberately outranks
- * it: the GLB-loading callers already probe for a missing model with a HEAD
- * request and render their own "no model, run setup" hint before mounting this
- * guard at all, so a failure that reaches HERE means the file answered and then
- * failed — a different cause, which that hint would misreport (it is what sent
- * a user chasing `npm run setup:data` for a server returning HTML).
+ * Both panels are the guard's own, with no caller override. The GLB-loading
+ * callers used to pass their "no model — run setup" hint as a `fallback`, but
+ * they reach this guard ONLY after a HEAD request proved the model is there, so
+ * that hint was wrong on both branches: it hid the asset-failure message for a
+ * server answering with HTML, and it told a user with no WebGL to go run
+ * `npm run setup:data`. Misdirecting the user is the bug #4688 is about.
  */
 
 const panelClass = (background) =>
@@ -57,7 +57,6 @@ function AvatarAssetFailure({ background = false, error }) {
 export default function CoSCanvasGuard({
   label = 'Interactive 3D avatar. Drag to rotate.',
   background = false,
-  fallback = null,
   resetKey = null,
   children,
 }) {
@@ -65,8 +64,7 @@ export default function CoSCanvasGuard({
   const [supported] = useState(() => isWebGLAvailable());
   // The r3f `<Canvas>` re-throws from its own render, and the message belongs in
   // the DOM chrome around it — so the shared boundary degrades the scene with
-  // `fallback={null}` and hands the error up here via `onError`. An explicit
-  // caller `fallback` still overrides both panels.
+  // `fallback={null}` and hands the error up here via `onError`.
   //
   // The failure is stored WITH the `resetKey` it belongs to. Without that it
   // would stick forever: once the panel is up the boundary is unmounted, so
@@ -76,7 +74,7 @@ export default function CoSCanvasGuard({
   const [failure, setFailure] = useState(null);
   const error = failure?.key === resetKey ? failure.error : null;
 
-  if (!supported) return fallback || <WebGLUnavailableHint background={background} />;
+  if (!supported) return <WebGLUnavailableHint background={background} />;
   if (error) return <AvatarAssetFailure background={background} error={error} />;
 
   return (

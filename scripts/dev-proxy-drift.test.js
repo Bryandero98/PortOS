@@ -63,17 +63,37 @@ const proxyMatches = (context, url) =>
 const navPaths = NAV_COMMANDS.map((command) => command.path);
 
 /**
- * Every path the client router declares.
+ * Every path the client router declares, with nesting resolved.
  *
  * NOT just `NAV_COMMANDS`: `client/src/CLAUDE.md` requires a selectable view to
  * register only its BASE path in the nav manifest while its `:id` detail route
  * lives in `App.jsx` alone. A convention-following `<Route path="data/:category">`
  * would therefore be invisible to a nav-manifest-only check — and the terminator
  * would 404 it in production with nothing failing near the new route.
+ *
+ * Nesting has to be resolved rather than read off each tag, because App.jsx
+ * nests (`<Route path="media"><Route path="image" …/></Route>` is `/media/image`).
+ * A depth-tracking scan is enough here and keeps the guard dependency-free — a
+ * real JSX parse would mean pulling a parser into the server test runner, whose
+ * CI job installs only the server's dependencies.
  */
 function clientRoutePaths(source) {
-  return [...source.matchAll(/<Route\s+path="([^"]+)"/g)]
-    .map(([, path]) => (path.startsWith('/') ? path : `/${path}`));
+  const paths = [];
+  const stack = [];
+  const TAG = /<Route\b([^>]*?)(\/?)>|<\/Route>/g;
+  for (const [tag, attrs, selfClosing] of source.matchAll(TAG)) {
+    if (tag === '</Route>') { stack.pop(); continue; }
+    const path = attrs.match(/\bpath="([^"]*)"/)?.[1] ?? null;
+    // An index route (no `path`) resolves to its parent, and a layout route
+    // with no path adds no segment — both are represented by a null frame.
+    const segments = [...stack, path].filter((segment) => segment);
+    if (path !== null) {
+      const joined = segments.join('/').replace(/\/+/g, '/');
+      paths.push(joined.startsWith('/') ? joined : `/${joined}`);
+    }
+    if (!selfClosing) stack.push(path);
+  }
+  return paths;
 }
 
 describe('vite dev proxy vs the server and the client router', () => {
@@ -155,7 +175,11 @@ describe('server/index.js route registration order', () => {
   it('registers every API router above the terminators', () => {
     const mountIndex = source.indexOf('mountAssetRoutes(app)');
     expect(mountIndex).toBeGreaterThan(0);
-    const shadowed = [...source.matchAll(/app\.use\(\s*'(\/(?:api|sdapi)[^']*)'/g)]
+    const apiMounts = [...source.matchAll(/app\.use\(\s*'(\/(?:api|sdapi)[^']*)'/g)];
+    // A refactor to non-literal mounts would leave the regex matching nothing
+    // and the assertion below vacuously true.
+    expect(apiMounts.length).toBeGreaterThan(20);
+    const shadowed = apiMounts
       .filter((match) => match.index > mountIndex)
       .map(([, route]) => route);
     expect(shadowed).toEqual([]);
