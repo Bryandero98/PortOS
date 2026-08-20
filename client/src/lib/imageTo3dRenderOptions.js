@@ -72,8 +72,10 @@ export function renderOptionsBody({ steps, seed, keyBackground, detail, alphaMod
     // they are, unlike alphaMode below.
     ...(detail && detail !== 'auto' && { detail }),
     ...(alphaMode !== '' && alphaMode != null && { alphaMode }),
-    // Sent always, not omitted-when-default: the server default is TRUE, so omitting
-    // it could not express "off".
+    // Sent always rather than omitted-when-default. The server default is `false`, so
+    // omitting it would happen to work today — but the whole point of this mapping is
+    // that the wire body states what the run asked for, and a future default flip
+    // must not silently change what an existing client means.
     normalMap,
   };
 }
@@ -96,8 +98,8 @@ export function fieldsFromRun(run) {
     // the same defaults a fresh form starts at.
     detail: DETAIL_PRESETS.some((p) => p.value === run?.detail) ? run.detail : 'auto',
     alphaMode: typeof run?.alphaMode === 'string' ? run.alphaMode : '',
-    // A run predating the field has none; default to on, matching the server.
-    normalMap: typeof run?.normalMap === 'boolean' ? run.normalMap : true,
+    // A run predating the field has none; default to OFF, matching the server.
+    normalMap: typeof run?.normalMap === 'boolean' ? run.normalMap : false,
   };
 }
 

@@ -202,7 +202,7 @@ export default function Media3D() {
   const [keyBackground, setKeyBackground] = useState(true);
   const [detail, setDetail] = useState('auto');
   const [alphaMode, setAlphaMode] = useState('');
-  const [normalMap, setNormalMap] = useState(true);
+  const [normalMap, setNormalMap] = useState(false);
   // Existing image-to-3D records (newest-first) so the page doubles as a library:
   // each links to its `/3d/:id` detail view.
   const [records, setRecords] = useState([]);

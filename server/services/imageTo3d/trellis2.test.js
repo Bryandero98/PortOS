@@ -19,6 +19,9 @@ import {
   isTransientInstallError,
   isHfAuthError,
   isMpsWatchdogError,
+  resolveTrellis2PipelineType,
+  resolveGlbPostprocess,
+  getTarget,
   TRELLIS2_WATCHDOG_HELP,
   probeTrellis2TextureBake,
   probeMetalToolchain,
@@ -38,9 +41,11 @@ import {
   selectTrellis2TextureSize,
   hfGatedRepoHelp,
 } from './trellis2.js';
+import { rewriteGlbMaterialsOpaque } from './glbMaterials.js';
 import {
   TRELLIS2_DECIMATION_BASELINE,
   TRELLIS2_DECIMATION_HIGH,
+  TRELLIS2_NORMAL_SOURCE_FACE_CAP,
 } from './trellis2MeshQuality.js';
 import { getTarget } from './targets.js';
 
@@ -811,6 +816,119 @@ describe('isHfAuthError', () => {
     undefined,
   ])('does NOT flag a non-auth failure: %s', (line) => {
     expect(isHfAuthError(line)).toBe(false);
+  });
+});
+
+describe('resolveTrellis2PipelineType', () => {
+  // This is the entire server-side resolution of the detail knob and it had no tests:
+  // nothing pinned the descriptor lookup, the 'auto' passthrough, or the deliberate
+  // no-throw fallback the docstring spends a paragraph justifying.
+  it("'auto' defers to the host-derived choice", () => {
+    expect(resolveTrellis2PipelineType('auto', 24)).toBe(selectTrellis2PipelineType(24));
+    expect(resolveTrellis2PipelineType('auto', 64)).toBe(selectTrellis2PipelineType(64));
+  });
+
+  it('maps each tier through the target descriptor, not a local table', () => {
+    const tiers = getTarget('trellis2').detailTiers;
+    for (const [tier, expected] of Object.entries(tiers)) {
+      expect(resolveTrellis2PipelineType(tier, 64), tier).toBe(expected);
+    }
+  });
+
+  it('lets a small host opt UP past what its memory would have chosen', () => {
+    // The override is the whole point of the knob — PortOS's 48 GB threshold is an
+    // admitted guess, so a 24 GB host asking for max must get max.
+    expect(selectTrellis2PipelineType(24)).toBe(TRELLIS2_BASELINE_PIPELINE_TYPE);
+    expect(resolveTrellis2PipelineType('max', 24)).toBe(TRELLIS2_HIGH_QUALITY_PIPELINE_TYPE);
+  });
+
+  it('lets a large host opt DOWN to a fast preview', () => {
+    expect(selectTrellis2PipelineType(64)).toBe(TRELLIS2_HIGH_QUALITY_PIPELINE_TYPE);
+    expect(resolveTrellis2PipelineType('fast', 64)).toBe(TRELLIS2_BASELINE_PIPELINE_TYPE);
+  });
+
+  it('falls back to the host choice on an unmapped tier instead of throwing', () => {
+    // Reaching this means a registry edit went wrong; degrading to the tier the host
+    // would have picked beats failing a render the user already waited on.
+    expect(resolveTrellis2PipelineType('bogus', 64)).toBe(selectTrellis2PipelineType(64));
+    expect(resolveTrellis2PipelineType('', 24)).toBe(selectTrellis2PipelineType(24));
+  });
+});
+
+describe('runTrellis2Generate render-option wiring', () => {
+  const installed = () => true;
+  const makeChild = () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = vi.fn();
+    return child;
+  };
+  const argvFor = (opts) => {
+    const child = makeChild();
+    const spawnImpl = vi.fn(() => child);
+    const { promise } = runTrellis2Generate({
+      imagePath: 'a.png', base: BASE, unifiedMemoryGb: 24, exists: installed, spawnImpl, ...opts,
+    });
+    promise.catch(() => {}); // settle; we only care about argv
+    child.emit('close', null);
+    return spawnImpl.mock.calls[0][1];
+  };
+
+  it('translates a detail tier into the pipeline type the runner receives', () => {
+    // Nothing previously pinned that `detail` reaches argv at all.
+    expect(argvFor({ detail: 'max' })).toContain(TRELLIS2_HIGH_QUALITY_PIPELINE_TYPE);
+    expect(argvFor({ detail: 'fast' })).toContain(TRELLIS2_BASELINE_PIPELINE_TYPE);
+  });
+
+  it('passes alphaMode and the normal-map flags through to the adapter', () => {
+    const argv = argvFor({ alphaMode: 'BLEND', normalMap: true });
+    expect(argv).toContain('--alpha-mode');
+    expect(argv).toContain('BLEND');
+    expect(argv).toContain('--normal-map');
+    // The source cap must actually be emitted — it was dead config, so lowering it
+    // changed nothing while its own tests kept passing.
+    expect(argv).toContain('--normal-map-max-source-faces');
+    expect(argv).toContain(String(TRELLIS2_NORMAL_SOURCE_FACE_CAP));
+  });
+
+  it('emits neither normal-map flag when the bake is off', () => {
+    const argv = argvFor({ normalMap: false });
+    expect(argv).not.toContain('--normal-map');
+    expect(argv).not.toContain('--normal-map-max-source-faces');
+  });
+
+  it.each([
+    [null, true],
+    [undefined, true],
+    ['OPAQUE', true],
+    ['MASK', false],
+    ['BLEND', false],
+    ['auto', false],
+  ])('force-opaque with alphaMode=%s -> applied=%s', (alphaMode, applied) => {
+    // The layer that rewrites the GLB on disk had no test, only the viewer's. A
+    // regression re-enabling it for BLEND would ship a silently-solid mesh.
+    expect(resolveGlbPostprocess(alphaMode, undefined) === rewriteGlbMaterialsOpaque)
+      .toBe(applied);
+  });
+
+  it('lets an explicit override win, and treats null as "run nothing"', () => {
+    const custom = async () => {};
+    expect(resolveGlbPostprocess(null, custom)).toBe(custom);
+    // `??` would have turned this back into force-opaque.
+    expect(resolveGlbPostprocess(null, null)).toBeUndefined();
+  });
+
+  it('honors an explicit null postprocess as "run nothing"', async () => {
+    // `??` would have turned an explicit null back into force-opaque.
+    const child = makeChild();
+    const { promise } = runTrellis2Generate({
+      imagePath: 'a.png', outputPath: '/out/a.glb', base: BASE, unifiedMemoryGb: 24,
+      exists: installed, spawnImpl: () => child, postprocessGlb: null,
+    });
+    child.stdout.emit('data', '  Saved: /out/a.glb\n');
+    child.emit('close', 0);
+    await expect(promise).resolves.toEqual({ assetPath: '/out/a.glb' });
   });
 });
 

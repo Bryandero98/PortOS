@@ -143,15 +143,16 @@ export default function ImageTo3dRenderOptions({
               />
               Key out solid background
             </label>
-            {/* Defaults on: it recovers shading detail the bake decimation discards
-                for ~2s on a multi-minute render, and cannot fail the render. The
-                control exists so a bad map is recoverable, not because it is a
-                routine choice. */}
+            {/* Opt-in, not default-on. It recovers shading detail the decimation
+                discards, but the bake runs before the GLB is written and builds a BVH
+                over a mesh larger than its dependency's tests cover — a hard crash
+                there (segfault / OOM / GPU watchdog) loses the whole render, which no
+                Python guard can catch. */}
             <label
               htmlFor="image-to-3d-normal-map"
               className="inline-flex cursor-pointer items-center gap-2 text-xs text-gray-300"
               title={normalMapSupported
-                ? 'Bake a normal map from the full-resolution mesh so lighting keeps detail the exported triangles no longer carry'
+                ? 'Recover shading detail the decimation discards, by baking a normal map from the full-resolution mesh. Adds time, and on a very large mesh can crash the render outright — retry without it if a render dies during texture baking.'
                 : 'This model does not bake a normal map'}
             >
               <input

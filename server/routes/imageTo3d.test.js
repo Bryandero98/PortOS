@@ -530,9 +530,11 @@ describe('image-to-3d model records', () => {
     expect(res.body?.error?.code || res.body?.code).toBe('FULL_MESH_MISSING');
   });
 
-  it('does not let /full-mesh be swallowed by the /models/:id route', async () => {
-    // Route-order regression: `/models/:id` would happily match `full-mesh` as an
-    // id and return JSON instead of a download.
+  it('routes /full-mesh to its own handler with the record id', async () => {
+    // Deliberately NOT claiming this proves route ordering: Express's `:id` matches a
+    // single path segment, so `/models/x/full-mesh` can never match `/models/:id`
+    // regardless of registration order. What it does pin is that the id is parsed
+    // from the right segment and reaches the handler.
     models.getModelFullMesh.mockRejectedValue(new Error('boom'));
     await request(makeApp()).get('/api/image-to-3d/models/image3d-1/full-mesh');
     expect(models.getModelFullMesh).toHaveBeenCalledWith('image3d-1');

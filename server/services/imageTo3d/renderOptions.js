@@ -17,8 +17,9 @@
  *    what every lane did before the knob existed.
  *  - `alphaMode: null` → don't instruct the exporter, and keep PortOS's
  *    force-opaque normalization.
- *  - `normalMap: true` (the default) → bake a tangent-space normal map from the
- *    pre-decimation mesh, so shading keeps detail the triangles no longer carry.
+ *  - `normalMap: false` (the default) → skip the normal-map bake. Opt in to recover
+ *    shading detail the decimation discards, accepting the hard-crash risk noted
+ *    below.
  */
 
 import { randomInt } from 'node:crypto';
@@ -104,11 +105,17 @@ export function normalizeRenderOptions(input = {}) {
     // `alphaMode` stays null-when-unset, because "don't ask the exporter" is a
     // genuinely different instruction from any of the concrete modes.
     alphaMode: isValidAlphaMode(input.alphaMode) ? input.alphaMode : null,
-    // Defaults ON, unlike every other knob here. It recovers shading detail the bake
-    // decimation discards, measured at ~2s against a multi-minute render, and it
-    // cannot fail a render (the bake is wrapped and degrades to no map). So the
-    // useful default is on, with this as the escape hatch if a map ever looks wrong.
-    normalMap: input.normalMap !== false,
+    // Opt-IN, for the same reason `--fill-holes` is. The bake builds a BVH over a
+    // mesh far larger than anything mtlbvh's regression tests cover, and it runs
+    // INSIDE `to_glb` — i.e. before generate.py has exported the GLB. Its Python
+    // guard catches a raise, but NOT a segfault, an abort, an OOM kill, or the macOS
+    // GPU watchdog killing a long Metal dispatch (the failure this branch's own
+    // `isMpsWatchdogError` exists for). Any of those loses a 13-20 minute render that
+    // had already produced a correct mesh and texture.
+    //
+    // An earlier revision defaulted this ON and claimed it "cannot fail a render".
+    // That was false as written, and it was the claim the opt-out decision rested on.
+    normalMap: input.normalMap === true,
   };
 }
 
@@ -179,14 +186,18 @@ export function validateRenderOptions(label, { steps = null, seed = null } = {})
  */
 export function honorTargetRenderSupport(options, support) {
   if (!support) return options;
-  return {
-    ...options,
-    ...(support.steps === false ? { steps: null } : {}),
-    // Reset to the same sentinel `normalizeRenderOptions` uses for "unset", so a
-    // dropped option records as not-requested rather than as a value the
-    // subprocess never received.
-    ...(support.detail === false ? { detail: DEFAULT_DETAIL_TIER } : {}),
-    ...(support.alphaMode === false ? { alphaMode: null } : {}),
-    ...(support.normalMap === false ? { normalMap: false } : {}),
-  };
+  // Derived from the unset shape rather than an enumerated list of keys. The previous
+  // per-key version handled 4 of the 6 keys `RENDER_OPTION_KEYS` accepts, so a
+  // descriptor declaring `seed: false` or `keyBackground: false` passed the registry
+  // invariant and was then silently ignored here — recording a value the subprocess
+  // never received, the exact thing this function exists to prevent. Reset to the same
+  // sentinel `normalizeRenderOptions` produces for "unset", whatever that key's
+  // sentinel happens to be (`null`, `'auto'`, `true`, or `false`).
+  const unset = normalizeRenderOptions();
+  const dropped = Object.fromEntries(
+    Object.entries(support)
+      .filter(([key, supported]) => supported === false && key in unset)
+      .map(([key]) => [key, unset[key]]),
+  );
+  return { ...options, ...dropped };
 }

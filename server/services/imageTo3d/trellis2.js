@@ -36,6 +36,7 @@ import {
   selectTrellis2DecimationTarget,
   trellis2MeshQualityArgs,
   trellis2FillHolesStep,
+  TRELLIS2_NORMAL_SOURCE_FACE_CAP,
 } from './trellis2MeshQuality.js';
 
 const HOME = homedir();
@@ -858,7 +859,36 @@ export const TRELLIS2_WATCHDOG_HELP = 'The macOS GPU watchdog stopped this rende
   + 'window-server load. Merely unplugging external displays, running headless over '
   + 'SSH, or lowering sampler steps are all reported NOT to help, because the kill '
   + 'targets one long dispatch rather than the render as a whole. Dropping to a lower '
-  + 'Detail tier does shorten that dispatch.'
+  + 'Detail tier does shorten that dispatch. One caveat: a blank or over-keyed source '
+  + 'image also decodes to an empty mesh and prints the same message, so if this fails '
+  + 'immediately rather than minutes in, check the input before the GPU.'
+
+/**
+ * Which GLB post-process a run should apply — extracted so the decision is testable
+ * on its own rather than as a side effect of a spawn.
+ *
+ * Three layers can flatten alpha (the exporter's `alpha_mode`, this rewrite, and the
+ * viewer's `forceOpaque` prop). They have to agree, or a mesh exported as BLEND still
+ * renders solid and reads as a broken exporter.
+ *
+ *  - `override !== undefined` wins outright, and **an explicit `null` therefore means
+ *    "run nothing"**. That is not incidental: a parameter default only applies to
+ *    `undefined`, so `null` already meant this before the fallback became computed,
+ *    and using `??` here would quietly turn it back into force-opaque — absent vs.
+ *    explicitly-empty, per CLAUDE.md.
+ *  - Otherwise force-opaque applies unless the caller asked the exporter for a
+ *    transparent material. The rewrite still defaults on because an older o_voxel
+ *    promoted to BLEND off a single low-alpha texel, which is what it was written for.
+ *
+ * @param {string|null} alphaMode
+ * @param {Function|null|undefined} override
+ * @returns {Function|undefined}
+ */
+export function resolveGlbPostprocess(alphaMode, override) {
+  if (override !== undefined) return override ?? undefined;
+  const wantsTransparency = alphaMode !== null && alphaMode !== undefined && alphaMode !== 'OPAQUE';
+  return wantsTransparency ? undefined : rewriteGlbMaterialsOpaque;
+}
 
 /**
  * Run a single image→GLB generation. The one real-subprocess boundary — GUARDED:
@@ -919,6 +949,7 @@ export function runTrellis2Generate({
   remesh = false,
   alphaMode = null,
   normalMap = false,
+  normalMapMaxSourceFaces = TRELLIS2_NORMAL_SOURCE_FACE_CAP,
   onProgress,
   spawnImpl = spawn,
   exists = existsSync,
@@ -950,6 +981,11 @@ export function runTrellis2Generate({
       remesh,
       alphaMode,
       normalMap,
+      // Emitted only alongside --normal-map, but ALWAYS passed when it is: the Python
+      // side has its own default, and leaving this unset meant the JS constant was
+      // dead config — lowering it in response to a crash report would have changed
+      // nothing while its tests kept passing.
+      ...(normalMap ? { normalMapMaxSourceFaces } : {}),
     },
   });
   // Force-opaque normalization is skipped exactly when the caller asked the
@@ -957,9 +993,7 @@ export function runTrellis2Generate({
   // default (`null`) keeps the historical force-opaque behaviour, which still
   // matters for installs carrying an older o_voxel that auto-promoted to BLEND
   // off a single low-alpha texel.
-  const wantsTransparency = alphaMode !== null && alphaMode !== 'OPAQUE';
-  const resolvedPostprocess = postprocessGlb
-    ?? (wantsTransparency ? undefined : rewriteGlbMaterialsOpaque);
+  const resolvedPostprocess = resolveGlbPostprocess(alphaMode, postprocessGlb);
   return runGenerateSubprocess({
     command,
     args,

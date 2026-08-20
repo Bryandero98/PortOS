@@ -37,7 +37,7 @@ export default function Media3DDetail() {
   const [keyBackground, setKeyBackground] = useState(true);
   const [detail, setDetail] = useState('auto');
   const [alphaMode, setAlphaMode] = useState('');
-  const [normalMap, setNormalMap] = useState(true);
+  const [normalMap, setNormalMap] = useState(false);
   const optionsSeededFor = useRef(null);
 
   const load = useCallback(async ({ initial = false } = {}) => {

@@ -209,6 +209,16 @@ def _patch_decimation_target(target):
 
     def to_glb(*args, **kwargs):
         incoming = kwargs.get("decimation_target")
+        if not isinstance(incoming, int):
+            # This file's premise is that upstream drift breaks loudly — the
+            # texture-size patch raises on exactly this class of change. Silently
+            # no-opping here would keep the render alive while discarding every bit
+            # of the geometry the override exists to preserve.
+            raise AdapterContractError(
+                "to_glb was called without an integer decimation_target "
+                f"(got {incoming!r}); upstream changed its bake call and the PortOS "
+                "decimation override needs updating"
+            )
         # Raise ANY lower target, rather than matching upstream's constant exactly.
         # An equality check against 200000 looked tighter but was silently fragile:
         # generate.py passes `min(200000, len(faces))`, so it already sends a smaller
@@ -267,6 +277,17 @@ def _patch_capture_source_mesh():
     fast_simplification.simplify = simplify
 
 
+def _require_texture_size(kwargs):
+    """The atlas size `to_glb` was called with, or a loud failure."""
+    size = kwargs.get("texture_size")
+    if not isinstance(size, int):
+        raise AdapterContractError(
+            f"to_glb was called without an integer texture_size (got {size!r}); "
+            "the PortOS normal-map bake cannot infer the atlas size"
+        )
+    return size
+
+
 def _patch_normal_map(max_source_faces, verbose=True):
     """Bake a tangent-space normal map onto the exported mesh after `to_glb`.
 
@@ -287,8 +308,10 @@ def _patch_normal_map(max_source_faces, verbose=True):
         glb = original_to_glb(*args, **kwargs)
         source = _CAPTURED.get("source")
         if source is None:
-            print("[portos] normal map skipped - no pre-decimation mesh was captured "
-                  "(the render never went through the simplify path)", flush=True)
+            print("[portos] normal map skipped - the exported mesh IS the decoder mesh, "
+                  "so there is no discarded detail to recover (decimation no-opped "
+                  "because the decoded mesh was already at or under the target)",
+                  flush=True)
             return glb
         try:
             # INSIDE the guard, deliberately. The bake module pulls numpy, torch,
@@ -302,7 +325,10 @@ def _patch_normal_map(max_source_faces, verbose=True):
                 glb,
                 source[0],
                 source[1],
-                texture_size=kwargs.get("texture_size", 2048),
+                # No silent default: baking the normal map at a different size than
+                # the base colour would misalign the atlas, and a wrong-but-plausible
+                # map is worse than no map.
+                texture_size=_require_texture_size(kwargs),
                 max_source_faces=max_source_faces or DEFAULT_MAX_SOURCE_FACES,
                 simplify=_CAPTURED.get("simplify"),
                 verbose=verbose,
