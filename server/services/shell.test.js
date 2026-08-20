@@ -8,15 +8,29 @@ vi.mock('node-pty', () => ({
 }));
 
 const makeFakePty = () => {
+  // Real node-pty's onData supports MULTIPLE independent listeners (each
+  // registration returns its own IDisposable), all fired in registration
+  // order for every chunk — shell.js relies on this directly (one listener
+  // dispatches the caller's onData hook, a second — for waitForPromptReady —
+  // watches for the readiness-probe marker). A single-slot `_dataHandler`
+  // that the second registration overwrites would silently drop the first
+  // listener and make it impossible to test the interaction between them
+  // (see the onInitialCommandSent-ordering regression test below).
+  const dataHandlers = [];
   const fake = {
-    _dataHandler: null,
     _exitHandler: null,
-    onData: vi.fn((fn) => { fake._dataHandler = fn; }),
+    onData: vi.fn((fn) => {
+      dataHandlers.push(fn);
+      return { dispose: () => {
+        const idx = dataHandlers.indexOf(fn);
+        if (idx !== -1) dataHandlers.splice(idx, 1);
+      } };
+    }),
     onExit: vi.fn((fn) => { fake._exitHandler = fn; }),
     write: vi.fn(),
     resize: vi.fn(),
     kill: vi.fn(),
-    emitData: (chunk) => fake._dataHandler?.(chunk),
+    emitData: (chunk) => { for (const fn of [...dataHandlers]) fn(chunk); },
     emitExit: (payload) => fake._exitHandler?.(payload),
   };
   ptyInstances.push(fake);
@@ -189,10 +203,10 @@ describe('createShellSession', () => {
     vi.useRealTimers();
   });
 
-  it('waitForPromptReady: holds initialCommand until the readiness probe round-trips, and fires onInitialCommandSent', () => {
+  it('waitForPromptReady: holds initialCommand until the readiness probe round-trips, and fires onInitialCommandSent', async () => {
     vi.useFakeTimers();
     const onInitialCommandSent = vi.fn();
-    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onInitialCommandSent });
+    shell.createShellSession(makeSocket(), { shell: '/bin/zsh', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onInitialCommandSent });
     const pty = ptyInstances[0];
     // The probe is written after a short PTY-spawn settle, not immediately.
     expect(pty.write).not.toHaveBeenCalled();
@@ -208,15 +222,61 @@ describe('createShellSession', () => {
     expect(pty.write).not.toHaveBeenCalledWith('claude\r');
     expect(onInitialCommandSent).not.toHaveBeenCalled();
     // The assembled marker appears in the OUTPUT → shell proven, command injected.
+    // The actual PTY write stays synchronous, but onInitialCommandSent is now
+    // routed through the same per-session hook queue as onData (see shell.js
+    // sendInitial) so a native microtask tick — NOT the faked setImmediate
+    // flushMicrotasks() uses elsewhere — is needed before it's observed.
     pty.emitData(`${marker}\n`);
     expect(pty.write).toHaveBeenCalledWith('claude\r');
+    await Promise.resolve();
     expect(onInitialCommandSent).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  // Regression pin for codex review [P1] (#4638): the probe listener and the
+  // main onData listener are both registered on ptyProcess.onData for the
+  // SAME chunk, but onData is only dispatched via the async session.hookQueue
+  // (runHook), not called inline. Firing onInitialCommandSent synchronously
+  // from the probe listener would therefore let it "jump the queue" ahead of
+  // the marker chunk's own onData call — a consumer gating output on "has the
+  // command been injected yet" would misread the probe's own echo as
+  // post-injection output. This pins that onInitialCommandSent only observes
+  // AFTER the marker chunk's onData handler has fully settled, even when that
+  // handler is itself async and slow.
+  it('waitForPromptReady: onInitialCommandSent fires only after the marker chunk\'s onData handler settles', async () => {
+    vi.useFakeTimers();
+    const order = [];
+    const onData = vi.fn(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      order.push('onData');
+    });
+    const onInitialCommandSent = vi.fn(() => { order.push('onInitialCommandSent'); });
+    shell.createShellSession(makeSocket(), { shell: '/bin/zsh', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onData, onInitialCommandSent });
+    const pty = ptyInstances[0];
+    vi.advanceTimersByTime(50);
+    const probeCall = pty.write.mock.calls.find(([d]) => /printf/.test(d));
+    const nonce = probeCall[0].match(/PORTOSRDY''([0-9a-f]+)'/)[1];
+    const marker = `PORTOSRDY${nonce}`;
+    pty.emitData(`${marker}\n`);
+    // The PTY write for the real command stays synchronous/immediate...
+    expect(pty.write).toHaveBeenCalledWith('claude\r');
+    // ...but onInitialCommandSent must wait for onData's queued (and here,
+    // deliberately slow) handler to finish first.
+    expect(onInitialCommandSent).not.toHaveBeenCalled();
+    // Adopting a thenable into a promise chain costs extra microtask ticks per
+    // link (PromiseResolveThenableJob), and this chain has several links
+    // (onData's own two awaits, runHook's Promise.resolve(fn(arg)) wrapper,
+    // the .catch() continuation, then onInitialCommandSent's own link) — so
+    // drain generously rather than hand-count an exact number of ticks.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(order).toEqual(['onData', 'onInitialCommandSent']);
     vi.useRealTimers();
   });
 
   it('waitForPromptReady: injects the command on the fallback timeout if the probe never round-trips', () => {
     vi.useFakeTimers();
-    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
+    shell.createShellSession(makeSocket(), { shell: '/bin/zsh', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
     const pty = ptyInstances[0];
     vi.advanceTimersByTime(50); // probe written
     // Output streams but the assembled marker never appears.
@@ -230,13 +290,54 @@ describe('createShellSession', () => {
 
   it('waitForPromptReady: if the shell exits before the probe round-trips, the fallback never injects the command', () => {
     vi.useFakeTimers();
-    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
+    shell.createShellSession(makeSocket(), { shell: '/bin/zsh', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
     const pty = ptyInstances[0];
     vi.advanceTimersByTime(50); // probe written
     // The shell dies before the marker round-trips → cancels pending timers.
     pty.emitExit({ exitCode: 1 });
     vi.advanceTimersByTime(8000); // past the (now-cleared) fallback window
     expect(pty.write).not.toHaveBeenCalledWith('claude\r');
+    vi.useRealTimers();
+  });
+
+  it('waitForPromptReady: uses a Write-Output probe on PowerShell and round-trips it the same way', async () => {
+    vi.useFakeTimers();
+    const onInitialCommandSent = vi.fn();
+    shell.createShellSession(makeSocket(), { shell: 'pwsh.exe', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onInitialCommandSent });
+    const pty = ptyInstances[0];
+    expect(pty.write).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(50);
+    const probeCall = pty.write.mock.calls.find(([d]) => /Write-Output/.test(d));
+    expect(probeCall).toBeTruthy();
+    const nonce = probeCall[0].match(/'PORTOSRDY' \+ '([0-9a-f]+)'/)[1];
+    const marker = `PORTOSRDY${nonce}`;
+    // The echoed command line (split literals) must not trip readiness.
+    pty.emitData(`PS C:\\> Write-Output ('PORTOSRDY' + '${nonce}')`);
+    expect(pty.write).not.toHaveBeenCalledWith('claude\r');
+    expect(onInitialCommandSent).not.toHaveBeenCalled();
+    pty.emitData(`${marker}\r\n`);
+    expect(pty.write).toHaveBeenCalledWith('claude\r');
+    // See the native-microtask-tick comment in the zsh variant of this test above.
+    await Promise.resolve();
+    expect(onInitialCommandSent).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('waitForPromptReady: cmd.exe has no probe and relies solely on the fallback timeout', async () => {
+    vi.useFakeTimers();
+    const onInitialCommandSent = vi.fn();
+    shell.createShellSession(makeSocket(), { shell: 'cmd.exe', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onInitialCommandSent });
+    const pty = ptyInstances[0];
+    vi.advanceTimersByTime(50);
+    // No probe is ever written — cmd has no safe split-literal marker.
+    expect(pty.write).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(7949); // total elapsed: 7999
+    expect(pty.write).not.toHaveBeenCalledWith('claude\r');
+    vi.advanceTimersByTime(1); // total elapsed: 8000
+    expect(pty.write).toHaveBeenCalledWith('claude\r');
+    // See the native-microtask-tick comment on the zsh waitForPromptReady test above.
+    await Promise.resolve();
+    expect(onInitialCommandSent).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
 });

@@ -6,6 +6,7 @@ import { scheduleSubmitEnters, SUBMIT_KEY } from '../lib/tuiHandshake.js';
 import { buildCdCommand } from '../lib/shellCd.js';
 import { resolveInteractiveShell } from '../lib/interactiveShellResolver.js';
 import { buildRunThenExitCommand } from '../lib/shellExit.js';
+import { buildReadinessProbe } from '../lib/shellReadinessProbe.js';
 
 // Store active shell sessions (persist across socket reconnects)
 const shellSessions = new Map();
@@ -249,8 +250,29 @@ export function createShellSession(socket, options = {}) {
     // start observing claude's input-readiness ONLY after the real command is
     // in flight — so the readiness probe's own shell activity (below) can't
     // prematurely satisfy its bracketed-paste gate.
+    //
+    // For the waitForPromptReady path, `sendInitial` runs from the probe's
+    // `ptyProcess.onData` listener (below), registered AFTER the main output
+    // listener above that dispatches `session.onData` via `runHook`/
+    // `session.hookQueue`. node-pty invokes same-event listeners in
+    // registration order, but `runHook` only QUEUES the caller's onData
+    // handler as a microtask — it doesn't run it inline. So calling
+    // `options.onInitialCommandSent?.()` synchronously here would fire it
+    // BEFORE the caller's onData handler has actually processed the very
+    // chunk that proved the probe round-tripped, even though that handler was
+    // enqueued first. A consumer gating output on "has the command been
+    // injected yet" (see agentTuiSpawning.js's commandInjected) would then
+    // misread the probe's own echoed marker as post-injection output. Routing
+    // this callback through the SAME `session.hookQueue` guarantees it runs
+    // only after that chunk's onData handler has finished — while the actual
+    // PTY write below stays synchronous/immediate, unaffected.
     const sendInitial = () => {
-      options.onInitialCommandSent?.();
+      const session = shellSessions.get(sessionId);
+      if (session && options.onInitialCommandSent) {
+        runHook('onInitialCommandSent', session, options.onInitialCommandSent);
+      } else {
+        options.onInitialCommandSent?.();
+      }
       submitToSession(sessionId, initialCommand);
     };
     if (options.waitForPromptReady) {
@@ -264,24 +286,18 @@ export function createShellSession(socket, options = {}) {
       // exactly the wedged `claude …` at a bare prompt users hit). Instead, PROVE
       // the shell is executing commands with a round-trip probe: print a unique
       // nonce and wait until we SEE it in the OUTPUT. The nonce is split in the
-      // probe source (`'PORTOSRDY' '<nonce>'`) so the command ECHO never contains
+      // probe source (see buildReadinessProbe) so the command ECHO never contains
       // the assembled string — only the executed output matches, so a single
       // sighting is unambiguous. Instant-prompt keystroke buffering replays the
-      // probe into the real shell, so this is theme- and shell-agnostic. A
-      // bounded fallback still injects the command if the probe never round-trips.
-      // NOTE: the probe is still POSIX-only (`printf`), unlike the `cd` and
-      // run-then-exit lines, which are rendered per dialect. On a Windows shell
-      // (PowerShell or cmd.exe) `printf` isn't a command, so the probe errors
-      // out, the marker never appears, and the command injects on the bounded
-      // fallback below — i.e. every Windows agent-TUI spawn waits the full 8s
-      // and then injects blind, which is exactly what the probe exists to avoid.
-      // Never broken, just slow and unproven. Making it dialect-aware is #4638.
+      // probe into the real shell, so this is theme-agnostic. A bounded fallback
+      // still injects the command if the probe never round-trips (or the dialect
+      // has none — cmd.exe, see buildReadinessProbe).
       let sent = false;
       let sub = null;
       let exitSub = null;
       const nonce = uuidv4().replace(/-/g, '').slice(0, 12);
       const marker = `PORTOSRDY${nonce}`;
-      const probe = `printf '%s\\n' 'PORTOSRDY''${nonce}'`;
+      const probe = buildReadinessProbe(nonce, shell);
       let seen = '';
       // Tear down every pending timer + listener. Called both on success
       // (fire) and when the PTY exits before the probe round-trips, so no
@@ -298,7 +314,11 @@ export function createShellSession(socket, options = {}) {
         stop();
         sendInitial();
       };
+      // No probe for this dialect (cmd.exe, probe === null) — the guard inside
+      // each callback below is a no-op and the fallback timer alone injects the
+      // command, same as a probe that never round-trips.
       sub = ptyProcess.onData((chunk) => {
+        if (!probe) return;
         seen += chunk;
         if (seen.length > 8192) seen = seen.slice(-8192);
         if (seen.includes(marker)) fire();
@@ -311,7 +331,7 @@ export function createShellSession(socket, options = {}) {
       // Writing earlier is harmless (zsh's line editor / p10k instant-prompt
       // buffer holds it until the prompt is live and replays it), but a small
       // delay avoids racing node-pty's own spawn handshake.
-      const probeTimer = setTimeout(() => { if (!sent) submitToSession(sessionId, probe); }, 50);
+      const probeTimer = setTimeout(() => { if (probe && !sent) submitToSession(sessionId, probe); }, 50);
       const fallback = setTimeout(fire, options.initialCommandDelayMs ?? 8000);
     } else {
       setTimeout(sendInitial, options.initialCommandDelayMs ?? 200);
