@@ -44,8 +44,13 @@ export function detectShellFlavor(shell, platform = process.platform) {
   if (bin) return 'posix';
   // No shell recorded — an externally-registered session (a CoS agent's TUI run)
   // hands us its PTY without one. Fall back to the platform default, which is
-  // what getDefaultShell() spawned for it.
-  return platform === 'win32' ? 'cmd' : 'posix';
+  // what lib/interactiveShellResolver.js picks: PowerShell on Windows, since
+  // cmd.exe is now only reached on a box with no PowerShell at all. Guessing
+  // 'cmd' here is not a safe default — its syntax is a hard error under
+  // PowerShell (`cd /d` → "positional parameter", `&` → "not allowed"),
+  // whereas the PowerShell forms merely fail to parse in the vanishingly rare
+  // cmd-only case.
+  return platform === 'win32' ? 'powershell' : 'posix';
 }
 
 /**

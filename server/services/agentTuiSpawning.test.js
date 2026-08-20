@@ -650,9 +650,12 @@ describe('spawnTuiAgent runtime', () => {
     runSpawn();
     await flushMicrotasks();
 
+    // The raw command plus the flag — the run-then-exit wrapper is rendered by
+    // shell.js, which is the only place that knows the session's shell dialect.
+    // Its rendering is covered by shell.test.js and lib/shellExit.test.js.
     expect(shellService.createShellSession).toHaveBeenCalledWith(
       null,
-      expect.objectContaining({ initialCommand: 'codex; exit $?' }),
+      expect.objectContaining({ initialCommand: 'codex', exitWithCommand: true }),
     );
   });
 

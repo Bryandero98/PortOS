@@ -134,18 +134,20 @@ export async function createAgentTuiSession({
     return session;
   }
 
-  // This shell exists only to host the CoS TUI. Make it follow the TUI's
-  // lifetime and preserve the TUI exit status; otherwise the login shell
-  // returns to its prompt when the provider exits and the spawner cannot
-  // observe completion until the wall-clock backstop fires.
-  const initialCommand = `${tuiConfig.commandLine}; exit $?`;
+  // This shell exists only to host the CoS TUI. `exitWithCommand` makes it
+  // follow the TUI's lifetime and preserve the TUI exit status; otherwise the
+  // login shell returns to its prompt when the provider exits and the spawner
+  // cannot observe completion until the wall-clock backstop fires. The wrapper
+  // is dialect-specific, so shell.js renders it once it knows which shell the
+  // session got (see lib/shellExit.js).
   const sessionId = shellService.createShellSession(null, {
     cwd,
+    initialCommand: tuiConfig.commandLine,
+    exitWithCommand: true,
     kind: 'agent-tui',
     agentId,
     label: `${provider.name} ${agentId}`,
     command: tuiConfig.commandLine,
-    initialCommand,
     // Wait until the shell can actually RUN commands before injecting the CLI
     // command — a fixed delay races a heavy interactive shell and the launched
     // TUI can fall straight back to a half-loaded prompt (see shell.js

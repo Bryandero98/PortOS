@@ -15,7 +15,9 @@ describe('detectShellFlavor', () => {
   });
 
   it('falls back to the platform default when no shell is recorded', () => {
-    expect(detectShellFlavor(undefined, 'win32')).toBe('cmd');
+    // PowerShell, not cmd — that is what interactiveShellResolver picks on
+    // Windows, and cmd's syntax is a hard error under PowerShell.
+    expect(detectShellFlavor(undefined, 'win32')).toBe('powershell');
     expect(detectShellFlavor('', 'darwin')).toBe('posix');
     expect(detectShellFlavor(null, 'linux')).toBe('posix');
   });

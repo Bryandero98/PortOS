@@ -389,6 +389,59 @@ describe('changeSessionDirectory', () => {
   it('returns false for a missing session', () => {
     expect(shell.changeSessionDirectory('missing', '/tmp')).toBe(false);
   });
+
+  it('records the shell it spawned when the caller names none', () => {
+    // The recorded shell is what picks the cd dialect, so a session started from
+    // the default must remember which binary that was rather than leaving
+    // detectShellFlavor to guess from the platform. Which binary gets resolved is
+    // covered by lib/interactiveShellResolver.test.js.
+    const id = shell.createShellSession(makeSocket('sock-default'));
+    const spawnedShell = vi.mocked(defaultSpawn).mock.calls[0][0];
+    expect(spawnedShell).toBeTruthy();
+    expect(shell.getSession(id).shell).toBe(spawnedShell);
+  });
+});
+
+describe('initialCommand + exitWithCommand', () => {
+  it('wraps the command so the shell exits with it, in that shell\'s dialect', () => {
+    // The wrapper is rendered here rather than by the caller because only this
+    // function knows which shell the session got. Under PowerShell the POSIX
+    // `exit $?` would report a successful run as 1 — see lib/shellExit.js.
+    vi.useFakeTimers();
+    shell.createShellSession(makeSocket('sock-pwsh'), {
+      shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+      initialCommand: 'codex',
+      exitWithCommand: true,
+      initialCommandDelayMs: 10,
+    });
+    vi.advanceTimersByTime(10);
+    expect(ptyInstances[0].write).toHaveBeenCalledWith(
+      `$LASTEXITCODE = 1; codex; exit $LASTEXITCODE${shell.SUBMIT_KEY}`,
+    );
+
+    shell.createShellSession(makeSocket('sock-zsh'), {
+      shell: '/bin/zsh',
+      initialCommand: 'codex',
+      exitWithCommand: true,
+      initialCommandDelayMs: 10,
+    });
+    vi.advanceTimersByTime(10);
+    expect(ptyInstances[1].write).toHaveBeenCalledWith(`codex; exit $?${shell.SUBMIT_KEY}`);
+    vi.useRealTimers();
+  });
+
+  it('sends the command untouched without the flag, so a user-typed command is never wrapped', () => {
+    // socket.js `shell:start` forwards whatever the user asked to run.
+    vi.useFakeTimers();
+    shell.createShellSession(makeSocket('sock-raw'), {
+      shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+      initialCommand: 'npm test',
+      initialCommandDelayMs: 10,
+    });
+    vi.advanceTimersByTime(10);
+    expect(ptyInstances[0].write).toHaveBeenCalledWith(`npm test${shell.SUBMIT_KEY}`);
+    vi.useRealTimers();
+  });
 });
 
 describe('submitToSession', () => {
