@@ -187,3 +187,59 @@ describe('lmStudioManager deleteModel', () => {
     expect(fs.existsSync(path.join(tempDir, 'lmstudio-community', 'qwen3-4b-MLX-4bit'))).toBe(true);
   });
 });
+
+describe('lmStudioManager evictDownloadedQuant', () => {
+  it('removes only the matching GGUF and leaves sibling quants', async () => {
+    const keep = writeFile('unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q8_K_XL.gguf');
+    const drop = writeFile('unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf');
+    writeFile('unsloth/Qwen3.8-27B-GGUF/mmproj-Qwen3.8-27B-UD-Q4_K_M.gguf');
+    const { evictDownloadedQuant } = await import('./lmStudioManager.js');
+
+    const result = await evictDownloadedQuant('unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M');
+
+    expect(result).toMatchObject({ success: true, modelId: 'unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M' });
+    expect(fs.existsSync(drop)).toBe(false);
+    expect(fs.existsSync(keep)).toBe(true);
+    expect(fs.existsSync(path.join(tempDir, 'unsloth', 'Qwen3.8-27B-GGUF', 'mmproj-Qwen3.8-27B-UD-Q4_K_M.gguf'))).toBe(true);
+  });
+
+  it('does not treat UD-Q4_K_M as a Q4_K_M match', async () => {
+    const ud = writeFile('unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf');
+    const plain = writeFile('unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q4_K_M.gguf');
+    const { evictDownloadedQuant } = await import('./lmStudioManager.js');
+
+    const result = await evictDownloadedQuant('hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M');
+
+    expect(result.success).toBe(true);
+    expect(fs.existsSync(plain)).toBe(false);
+    expect(fs.existsSync(ud)).toBe(true);
+  });
+
+  it('treats a missing quant as a successful no-op so first-time install can share the path', async () => {
+    writeFile('unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q8_K_XL.gguf');
+    const { evictDownloadedQuant } = await import('./lmStudioManager.js');
+
+    const result = await evictDownloadedQuant('unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M');
+
+    expect(result).toMatchObject({ success: true, missing: true });
+    expect(fs.existsSync(path.join(tempDir, 'unsloth', 'Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q8_K_XL.gguf'))).toBe(true);
+  });
+
+  it('does not wipe sibling quants when the id has no quant tag', async () => {
+    writeFile('unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf');
+    writeFile('unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q8_K_XL.gguf');
+    const { evictDownloadedQuant } = await import('./lmStudioManager.js');
+
+    const result = await evictDownloadedQuant('unsloth/Qwen3.8-27B-GGUF');
+
+    expect(result).toMatchObject({ success: true, missing: true });
+    expect(fs.existsSync(path.join(tempDir, 'unsloth', 'Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q4_K_M.gguf'))).toBe(true);
+    expect(fs.existsSync(path.join(tempDir, 'unsloth', 'Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q8_K_XL.gguf'))).toBe(true);
+  });
+
+  it('returns missing:true when the repo is not on disk', async () => {
+    const { evictDownloadedQuant } = await import('./lmStudioManager.js');
+    expect(await evictDownloadedQuant('unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M'))
+      .toMatchObject({ success: true, missing: true });
+  });
+});

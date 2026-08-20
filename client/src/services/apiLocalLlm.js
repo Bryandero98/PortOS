@@ -27,8 +27,14 @@ export const getLocalLlmHuggingFaceSearch = (backend, q = '', category = 'all', 
 // `options` lets callers opt into `{ silent: true }` so structured failure codes
 // (e.g. OLLAMA_OUTDATED → offer to upgrade in place) can be handled by the UI
 // without the default error toast firing first and stacking with the prompt.
-export const installLocalLlmModel = (backend, modelId, options) =>
-  request('/local-llm/install', { method: 'POST', body: JSON.stringify({ backend, modelId }), ...options });
+export const installLocalLlmModel = (backend, modelId, options = {}) => {
+  const { force, ...rest } = options;
+  return request('/local-llm/install', {
+    method: 'POST',
+    body: JSON.stringify({ backend, modelId, ...(force ? { force: true } : {}) }),
+    ...rest,
+  });
+};
 
 export const deleteLocalLlmModel = (backend, modelId, options = {}) =>
   request('/local-llm/delete', { method: 'POST', body: JSON.stringify({ backend, modelId }), ...options });

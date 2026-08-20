@@ -3,7 +3,7 @@ import express from 'express';
 import { request } from '../lib/testHelper.js';
 import localLlmRoutes from './localLlm.js';
 import { runLocalLlmTest, compareLocalLlmModels } from '../services/localLlmPlayground.js';
-import { listModels, listVisionModels, listToolUseModels } from '../services/localLlm.js';
+import { listModels, listVisionModels, listToolUseModels, installModel } from '../services/localLlm.js';
 import { enrichCatalogWithVariants, applyMeasuredFit } from '../services/huggingFaceCatalog.js';
 import { getMeasuredFits } from '../services/localModelAssessmentStore.js';
 import { runAssessment } from '../services/localModelAssessments.js';
@@ -24,6 +24,7 @@ vi.mock('../services/localLlm.js', () => ({
   listVisionModels: vi.fn(async () => []),
   listToolUseModels: vi.fn(async () => []),
   installModel: vi.fn(),
+  describeInstallProgress: vi.fn((p) => p?.status || null),
   deleteModel: vi.fn(),
   switchBackend: vi.fn(),
   migrateBackend: vi.fn(),
@@ -126,6 +127,33 @@ describe('local LLM playground routes', () => {
     expect(Array.isArray(res.body.models)).toBe(true);
     // The playground only needs catalog metadata — it must not pay for HF probes.
     expect(enrichCatalogWithVariants).not.toHaveBeenCalled();
+  });
+
+  it('POST /install forwards force so a redownload can replace on-disk weights', async () => {
+    installModel.mockResolvedValue({ success: true, modelId: 'unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M' });
+
+    const res = await request(makeApp())
+      .post('/api/local-llm/install')
+      .send({ backend: 'lmstudio', modelId: 'unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M', force: true });
+
+    expect(res.status).toBe(200);
+    expect(installModel).toHaveBeenCalledWith(
+      'lmstudio',
+      'unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M',
+      expect.any(Function),
+      { force: true }
+    );
+  });
+
+  it('POST /install without force still pulls as a regular install', async () => {
+    installModel.mockResolvedValue({ success: true, modelId: 'llama3.2' });
+
+    const res = await request(makeApp())
+      .post('/api/local-llm/install')
+      .send({ backend: 'ollama', modelId: 'llama3.2' });
+
+    expect(res.status).toBe(200);
+    expect(installModel).toHaveBeenCalledWith('ollama', 'llama3.2', expect.any(Function), { force: false });
   });
 
   it('runs a single local model test with validated defaults', async () => {

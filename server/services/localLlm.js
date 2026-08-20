@@ -872,8 +872,11 @@ export function describeInstallProgress(p) {
 /**
  * Install (pull/download) a model on a backend.
  * @param {(p) => void} [onProgress] - streaming progress (Ollama only)
+ * @param {{ force?: boolean }} [opts] - when true, evict existing LM Studio
+ *   files first so `lms get` actually re-fetches in-place GGUF replacements.
+ *   Ollama's pull already re-checks the registry digest, so force is a no-op there.
  */
-export async function installModel(backend, modelId, onProgress) {
+export async function installModel(backend, modelId, onProgress, { force = false } = {}) {
   if (!isBackend(backend)) return { success: false, error: `Unknown backend: ${backend}` }
   if (backend === 'ollama') {
     const importSpec = getOllamaImportSpec(modelId)
@@ -882,6 +885,12 @@ export async function installModel(backend, modelId, onProgress) {
       : await ollamaManager.pullModel(modelId, onProgress)
     if (result.success) refreshOllamaBackedProviders()
     return result
+  }
+  // `lms get` skips files already on disk. A force redownload has to evict the
+  // matching GGUF (or the whole repo folder) first, or the "new" weights never land.
+  if (force) {
+    const evicted = await lmStudioManager.evictDownloadedQuant(modelId)
+    if (!evicted.success) return { success: false, error: evicted.error, modelId }
   }
   // LM Studio: prefer the `lms` CLI (real, blocking download), fall back to the
   // REST hook.

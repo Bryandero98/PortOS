@@ -24,6 +24,14 @@ const BACKENDS = [
 ];
 const labelFor = (id) => BACKENDS.find((b) => b.id === id)?.label || id;
 
+// LM Studio's installed list is folder-scoped (`publisher/repo`) plus a separate
+// `quantization` field. A force redownload has to target a tagged id so the
+// server evicts that GGUF instead of no-op'ing on a bare repo.
+const redownloadInstallId = (model, backend) => {
+  if (backend !== 'lmstudio' || !model?.quantization || /@/.test(model.id || '')) return model.id;
+  return `${model.id}@${model.quantization}`;
+};
+
 // The speculative-decoding presets come from the server
 // (`server/lib/specDecodePresets.js`, surfaced on the llama-server status
 // response) rather than a table here: each preset names a multi-gigabyte GGUF,
@@ -659,10 +667,10 @@ export function LocalLlmTab() {
   // queued, not finished — so don't claim "installed" in that case. Install is
   // silent so an OLLAMA_OUTDATED failure can take over the UI with the upgrade
   // banner instead of stacking a useless toast with the auto-upgrade flow.
-  const install = (modelId) => runAction(
+  const install = (modelId, { force = false } = {}) => runAction(
     `install-${modelId}`,
-    () => installLocalLlmModel(selected, modelId, { silent: true }),
-    (r) => r?.pending ? `${modelId} download started` : `${modelId} installed`,
+    () => installLocalLlmModel(selected, modelId, { silent: true, force }),
+    (r) => r?.pending ? `${modelId} download started` : `${modelId} ${force ? 'redownloaded' : 'installed'}`,
     {
       onError: (err) => {
         if (err?.code === 'OLLAMA_OUTDATED' && selected === 'ollama') {
@@ -1568,7 +1576,20 @@ export function LocalLlmTab() {
                         Desktop keeps them stacked at the card's right edge. */}
                     <div className="flex flex-row sm:flex-col items-center sm:items-end gap-2 sm:gap-1 shrink-0 justify-end flex-wrap">
                       {chosenInstalled ? (
-                        <span className="text-xs px-2 py-1 text-port-success">Installed</span>
+                        <>
+                          <span className="text-xs px-2 py-1 text-port-success">Installed</span>
+                          {!isAudio && (
+                            <button
+                              onClick={() => install(chosenId, { force: true })}
+                              disabled={busy}
+                              title="Pull this build again. Updated GGUF files keep the same name, so an existing install will not refresh until you redownload."
+                              className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                            >
+                              {actionInProgress === `install-${chosenId}` ? <BrailleSpinner /> : <RefreshCw size={12} />}
+                              Redownload
+                            </button>
+                          )}
+                        </>
                       ) : m.installable === false ? (
                         // Audio models with no PortOS runtime (or a fixed-checkpoint
                         // engine like ACE-Step) are discovery-only — "Visit" below.
@@ -1679,6 +1700,16 @@ export function LocalLlmTab() {
                   <FlaskConical size={12} />
                   Chat
                 </Link>
+                <button
+                  onClick={() => install(redownloadInstallId(m, selected), { force: true })}
+                  disabled={busy}
+                  title="Pull this build again. Updated GGUF files keep the same name, so an existing install will not refresh until you redownload."
+                  className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 flex items-center gap-1 shrink-0"
+                  aria-label={`Redownload ${m.name || m.id}`}
+                >
+                  {actionInProgress === `install-${m.id}` ? <BrailleSpinner /> : <RefreshCw size={12} />}
+                  Redownload
+                </button>
                 {isConfirmingDelete(m.id) ? (
                   <ConfirmButtonPair
                     prompt="Delete?"

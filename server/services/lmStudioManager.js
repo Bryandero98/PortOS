@@ -563,6 +563,85 @@ function modelIdsReferToSameRepo(left, right) {
   return Boolean(leftKey && rightKey && leftKey === rightKey)
 }
 
+// `lms get` skips files that already exist, so a publisher replacing a GGUF in
+// place (Unsloth Dynamic 3.0, etc.) never lands unless we evict first. Strip the
+// backend-specific install wrapper down to the on-disk `<publisher>/<repo>` id.
+function repoIdFromInstallId(modelId) {
+  return String(modelId || '')
+    .trim()
+    .replace(/^https?:\/\/huggingface\.co\//i, '')
+    .replace(/^hf\.co\//i, '')
+    .replace(/@[^/@]+$/, '')
+    .replace(/:([^:/]+)$/, '')
+}
+
+function quantFromInstallId(modelId) {
+  const s = String(modelId || '').trim()
+  const at = s.match(/@([^/@]+)$/)
+  if (at) return at[1]
+  const colon = s.match(/:([^:/]+)$/)
+  return colon ? colon[1] : null
+}
+
+function trailingGgufQuant(filename) {
+  const stem = String(filename || '').split('/').pop()
+    .replace(/\.gguf$/i, '')
+    .replace(/-\d{5}-of-\d{5}$/i, '')
+  // Same trailing-token rule as huggingFaceCatalog.quantFromFilename: UD-Q4_K_M
+  // and Q4_K_M are distinct, so a suffix match would evict the wrong file.
+  const match = stem.match(/(?:^|[-_.])((?:UD-)?(?:IQ\d(?:_[A-Z0-9]+)*|Q\d(?:_[A-Z0-9]+)*|BF16|F16))$/i)
+  return match?.[1] || null
+}
+
+function ggufMatchesQuant(filename, quant) {
+  const parsed = trailingGgufQuant(filename)
+  return parsed != null && parsed.toLowerCase() === String(quant).toLowerCase()
+}
+
+/**
+ * Remove on-disk LM Studio files so a subsequent `lms get` actually re-fetches
+ * them. A quant-tagged id (`repo@UD-Q4_K_M` / `hf.co/repo:UD-Q4_K_M`) evicts
+ * only matching GGUFs and leaves sibling quants alone. A bare repo id is a
+ * no-op (`missing: true`) rather than wiping every quant in the folder — pick
+ * a tagged variant to redownload a specific build. Missing files are success
+ * so a first-time install can share this path. Ambiguous ids refuse, same as
+ * deleteModel.
+ * @returns {Promise<{ success: boolean, modelId: string, missing?: boolean, error?: string }>}
+ */
+async function evictDownloadedQuant(modelId) {
+  const repoId = repoIdFromInstallId(modelId)
+  const quant = quantFromInstallId(modelId)
+  const modelsDir = await getModelsDir()
+  const matches = await findDeletableModelDirs(modelsDir, repoId)
+  if (matches === null) return { success: false, error: `Invalid model id "${modelId}".`, modelId }
+  if (matches.length === 0) return { success: true, missing: true, modelId }
+  if (matches.length > 1) {
+    return { success: false, error: `Ambiguous model id "${modelId}" matches ${matches.length} folders — redownload by exact "publisher/repo".`, modelId }
+  }
+  const dir = matches[0]
+  if (!isModelLeafDir(modelsDir, dir)) {
+    return { success: false, error: `Refusing to evict "${dir}" — not a model folder under ${modelsDir}.`, modelId }
+  }
+  if (!quant) {
+    // Bare `publisher/repo` would otherwise rm every quant in the folder. The
+    // caller still runs `lms get`; without a tag we cannot know which file to
+    // replace, so leave the disk alone rather than delete sibling builds.
+    return { success: true, missing: true, modelId }
+  }
+
+  if (await checkLMStudioAvailable()) await unloadModel(modelId).catch(() => {})
+
+  const files = await readdir(dir)
+  const targets = files.filter((name) => /\.gguf$/i.test(name) && !/mmproj/i.test(name) && ggufMatchesQuant(name, quant))
+  if (targets.length === 0) return { success: true, missing: true, modelId }
+  for (const name of targets) {
+    await rm(join(dir, name), { force: true })
+  }
+  resetCache()
+  console.log(`🗑️ LM Studio evicted ${targets.length} ${quant} file(s) for redownload: ${modelId}`)
+  return { success: true, modelId }
+}
+
 async function findModelDir(modelsDir, modelId) {
   // Reject `.`/`..` traversal segments before joining — mirrors the stricter
   // findDeletableModelDirs guard so the read path can't resolve outside the
@@ -755,5 +834,6 @@ export {
   resolveLocalModel,
   importModelFromGguf,
   deleteModel,
+  evictDownloadedQuant,
   DEFAULT_CONFIG
 }

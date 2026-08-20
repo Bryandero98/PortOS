@@ -129,9 +129,20 @@ describe('localLlmCatalog', () => {
       expect(qwen).toMatchObject({
         category: 'general',
         featured: { label: 'Best overall' },
+        id: 'hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M',
+        size: '16.5 GB',
+        repository: 'unsloth/Qwen3.8-27B-GGUF',
       });
+      expect(qwen.note).toMatch(/Dynamic 3\.0/i);
       expect(qwen.recommendedFor).toEqual(expect.arrayContaining(['general', 'coding', 'reasoning', 'vision']));
       expect(qwen.capabilities).toEqual(expect.arrayContaining(['code', 'tools', 'vision']));
+    });
+
+    it('still treats an older Unsloth Q4_K_M install as the same Qwen3.8 catalog entry', () => {
+      const qwen = getCatalog('ollama', ['hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M'])
+        .find((m) => m.key === 'qwen3.8-27b');
+      expect(qwen.installed).toBe(true);
+      expect(qwen.id).toBe('hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M');
     });
 
     it('never lists an Ollama `:cloud` tag — those manifests carry no local weights', () => {
@@ -185,6 +196,13 @@ describe('localLlmCatalog', () => {
         .toEqual({ targetId: 'qwen3.8:27b-mlx', exact: true });
       expect(mapModelToBackend('ollama', 'qwen3.8:27b-mlx', 'lmstudio'))
         .toEqual({ targetId: 'mlx-community/Qwen3.8-27B-4bit', exact: true });
+    });
+
+    it('maps an older Unsloth Qwen3.8 Q4_K_M tag to the same LM Studio repo', () => {
+      expect(mapModelToBackend('ollama', 'hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M', 'lmstudio'))
+        .toEqual({ targetId: 'unsloth/Qwen3.8-27B-GGUF', exact: true });
+      expect(mapModelToBackend('ollama', 'hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M', 'lmstudio'))
+        .toEqual({ targetId: 'unsloth/Qwen3.8-27B-GGUF', exact: true });
     });
 
     it('maps the uncensored MLX build to its curated local Ollama import name', () => {
