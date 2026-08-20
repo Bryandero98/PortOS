@@ -108,6 +108,9 @@ export default function ChiefOfStaff() {
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const tabsRef = useRef(null);
+  // Monotonic counter for queue-state writes, so a slow fetchData cannot overwrite
+  // a fresher fetchQueue result (see both functions below).
+  const queueSeqRef = useRef(0);
   const socket = useSocket();
 
   // Derive avatar style from server config, with optional dynamic override
@@ -141,6 +144,7 @@ export default function ChiefOfStaff() {
   }, []);
 
   const fetchData = useCallback(async () => {
+    const queueSeq = queueSeqRef.current;
     const [statusData, tasksData, agentsData, healthData, providersData, appsData, learningSummaryData, insightsData] = await Promise.all([
       api.getCosStatus().catch(() => null),
       api.getCosTasks().catch(() => ({ user: null, cos: null })),
@@ -154,8 +158,15 @@ export default function ChiefOfStaff() {
       api.getCosActionableInsights({ silent: true }).catch(() => null)
     ]);
     setStatus(statusData);
-    setTasks(tasksData);
-    setAgents(agentsData);
+    // fetchData is the SLOW read (8 endpoints, one of which runs a server health
+    // check), so a queue refresh started later routinely resolves first. Its task
+    // payload would then be clobbered by this older, pre-flip one — restoring the
+    // pending-AND-active render this change exists to remove. Drop only the queue
+    // half of a superseded read; the rest of the batch has no fresher writer.
+    if (queueSeqRef.current === queueSeq) {
+      setTasks(tasksData);
+      setAgents(agentsData);
+    }
     // `getCosHealth` above reads the *pre-check* persisted health, while the
     // getCosActionableInsights call in this same batch triggers a fresh server
     // health check (cos.runHealthCheck) that emits `cos:health:check` — the
@@ -209,6 +220,10 @@ export default function ChiefOfStaff() {
     ]);
     if (tasksData) setTasks(tasksData);
     if (Array.isArray(agentsData)) setAgents(agentsData);
+    // Supersede any fetchData still in flight — see the guard in fetchData. Bumped
+    // even when both reads failed: a failed refresh still means this queue state
+    // is newer than whatever an older, slower batch is about to report.
+    queueSeqRef.current += 1;
   }, []);
 
   // NOTE: there is deliberately no on-demand "refresh just the banner insights"

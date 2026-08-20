@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const deps = vi.hoisted(() => ({
-  capability: vi.fn(), utilization: vi.fn(), jobs: vi.fn(), running: vi.fn(), models: vi.fn(), loaded: vi.fn(), tasks: vi.fn(), agents: vi.fn(),
+  capability: vi.fn(), utilization: vi.fn(), jobs: vi.fn(), running: vi.fn(), models: vi.fn(), loaded: vi.fn(), tasks: vi.fn(), status: vi.fn(), agents: vi.fn(),
 }));
 vi.mock('../lib/cudaCapability.js', () => ({ getCudaCapability: deps.capability, getCudaUtilization: deps.utilization }));
 vi.mock('./mediaJobQueue/index.js', () => ({ listJobs: deps.jobs, getRunningJob: deps.running }));
 vi.mock('./mediaJobQueue/sanitizeJob.js', () => ({ sanitizeJob: (job) => ({ id: job.id, kind: job.kind, status: job.status, params: { musicStudio: job.params.musicStudio } }) }));
 vi.mock('./imageTo3d/models.js', () => ({ listModels: deps.models }));
 vi.mock('./ollamaManager.js', () => ({ getLoadedModels: deps.loaded }));
-vi.mock('./cos.js', () => ({ getAllTasks: deps.tasks, getAgents: deps.agents }));
+vi.mock('./cos.js', () => ({ getAllTasks: deps.tasks, getStatus: deps.status, getAgents: deps.agents }));
 
 const { getActiveProcessing } = await import('./activeProcessing.js');
 
@@ -25,6 +25,7 @@ describe('active processing snapshot', () => {
     deps.models.mockResolvedValue([{ id: 'mesh-1', name: 'Fake mesh', status: 'generating' }]);
     deps.loaded.mockResolvedValue([{ id: 'model-1', name: 'Fake model' }]);
     deps.tasks.mockResolvedValue({ user: { tasks: [{ id: 'task-1', status: 'pending' }] }, cos: { tasks: [{ id: 'cos-task-1', status: 'completed' }] } });
+    deps.status.mockResolvedValue({ activeAgents: 99 });
     deps.agents.mockResolvedValue([
       { id: 'agent-1', status: 'running', taskId: 'task-a' },
       { id: 'agent-2', status: 'running', taskId: 'task-b' },
@@ -45,6 +46,7 @@ describe('active processing snapshot', () => {
     deps.models.mockResolvedValue([]);
     deps.loaded.mockResolvedValue([]);
     deps.tasks.mockResolvedValue({ user: {}, cos: {} });
+    deps.status.mockResolvedValue({ activeAgents: 0 });
     deps.agents.mockResolvedValue([]);
     const snapshot = await getActiveProcessing();
     expect(snapshot.gpu).toMatchObject({ status: 'absent', laneBusy: false, laneKind: null, gpus: [] });
@@ -64,6 +66,7 @@ describe('queued agent count', () => {
     deps.running.mockReturnValue(null);
     deps.models.mockResolvedValue([]);
     deps.loaded.mockResolvedValue([]);
+    deps.status.mockResolvedValue({ activeAgents: 0 });
   });
 
   it('does not count a pending task a running agent already holds', async () => {
@@ -83,9 +86,22 @@ describe('queued agent count', () => {
     expect(snapshot.agents).toEqual({ active: 0, queued: 1 });
   });
 
-  it('falls back to counting every pending task when the agent read fails', async () => {
+  // A failed agent read is not an empty one. Collapsing the two would report
+  // zero active agents AND still count their tasks as queued — understating both
+  // numbers at once — so the failure path falls back to getStatus()'s own tally.
+  it('falls back to the status tally when the agent read fails, without dropping pending tasks', async () => {
+    deps.status.mockResolvedValue({ activeAgents: 3 });
     deps.tasks.mockResolvedValue({ user: { tasks: [{ id: 'task-1', status: 'pending' }] }, cos: { tasks: [] } });
     deps.agents.mockRejectedValue(new Error('state unreadable'));
+    const snapshot = await getActiveProcessing();
+    expect(snapshot.agents).toEqual({ active: 3, queued: 1 });
+  });
+
+  // ...and a successful read of an EMPTY list still means zero, not the fallback.
+  it('reports zero active from a successfully empty agent list', async () => {
+    deps.status.mockResolvedValue({ activeAgents: 7 });
+    deps.tasks.mockResolvedValue({ user: { tasks: [{ id: 'task-1', status: 'pending' }] }, cos: { tasks: [] } });
+    deps.agents.mockResolvedValue([]);
     const snapshot = await getActiveProcessing();
     expect(snapshot.agents).toEqual({ active: 0, queued: 1 });
   });

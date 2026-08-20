@@ -93,6 +93,12 @@ const POST_STARTUP_QUEUE_DELAY_MS = 30_000;
 // "recently completed" and protected from resetOrphanedTasks's reaper.
 const RECENT_COMPLETION_GRACE_MS = 60_000;
 
+// How long an agent registered against a still-`pending` task is treated as
+// legitimately mid-spawn rather than a zombie. spawnAgentForTask registers the
+// agent then flips the task within the same function, so the real window is
+// sub-second; this is generous cover for a slow worktree/JIRA provisioning step.
+const SPAWN_CLAIM_GRACE_MS = 60_000;
+
 // Internal imports for functions used in this module
 import { pruneOldAgentArchives, loadAgentIndex } from './cosAgentIndex.js';
 import { archiveStaleAgents as _archiveStaleAgents } from './cosAgentArchive.js';
@@ -552,9 +558,21 @@ export async function forceSpawnTask(taskId) {
   // `{ success: true }` and a "Spawning" toast for a second dispatch that
   // withSpawnDedupGuard then silently drops. Refuse it here instead, where every
   // caller (UI, voice, API) sees the same honest answer.
+  //
+  // Bounded to the spawn window on purpose. Outside it, a `pending` task carrying
+  // a `running` agent is a BROKEN state — a zombie record whose process died
+  // before cleanupZombieAgents (which this route does not run) swept it — and
+  // "Run now" is the user's recovery for exactly that. Refusing indefinitely
+  // would turn the guard into a trap: the task is visibly stuck and nothing in
+  // the UI can restart it. So refuse only while the holder is young enough to
+  // plausibly still be mid-spawn, and let an older one be superseded.
   const holder = running.find(agent => agent.taskId === taskId);
-  if (holder) {
+  const holderAgeMs = holder ? Date.now() - new Date(holder.startedAt || 0).getTime() : Infinity;
+  if (holder && holderAgeMs < SPAWN_CLAIM_GRACE_MS) {
     return { error: `Agent ${holder.id} is already running this task` };
+  }
+  if (holder) {
+    emitLog('warn', `⚠️ Force-spawning ${taskId} over stale agent ${holder.id} (running for ${Math.round(holderAgeMs / 1000)}s on a still-pending task)`, { taskId, agentId: holder.id });
   }
   if (running.length >= state.config.maxConcurrentAgents) {
     return { error: `No available agent slots (${running.length}/${state.config.maxConcurrentAgents})` };

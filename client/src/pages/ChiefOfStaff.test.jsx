@@ -531,3 +531,48 @@ describe('ChiefOfStaff task-change subscriptions', () => {
     expect(api.getCosActionableInsights.mock.calls.length).toBe(insightsBefore);
   });
 });
+
+// fetchData reads 8 endpoints, one of which runs a server-side health check, so a
+// queue refresh started LATER routinely resolves FIRST. Without a guard, the slow
+// batch's pre-flip task payload lands last and restores the pending-AND-active
+// render — the exact symptom the queue refresh exists to clear.
+describe('ChiefOfStaff stale queue-read guard', () => {
+  const getSocketHandler = (event) => socketStub.on.mock.calls.find(([evt]) => evt === event)?.[1];
+
+  it('does not let a slow full fetch overwrite a fresher queue refresh', async () => {
+    const stale = { user: { tasks: [{ id: 'task-1', description: 'STALE pending copy', status: 'pending', metadata: {} }] }, cos: { tasks: [] } };
+    const fresh = { user: { tasks: [{ id: 'task-1', description: 'FRESH in-progress copy', status: 'in_progress', metadata: {} }] }, cos: { tasks: [] } };
+
+    // Initial paint.
+    api.getCosTasks.mockResolvedValue(stale);
+    render(
+      <MemoryRouter initialEntries={['/cos/tasks']}>
+        <Routes>
+          <Route path="/cos/:tab" element={<ChiefOfStaff />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('STALE pending copy')).toBeInTheDocument();
+
+    // A spawn kicks off the slow full fetch, whose insights read we hold open so
+    // the whole batch resolves only after the queue refresh below has landed.
+    let releaseInsights;
+    api.getCosActionableInsights.mockReturnValue(new Promise((resolve) => { releaseInsights = resolve; }));
+    await act(async () => { getSocketHandler('cos:agent:spawned')({ agentId: 'agent-1', metadata: {} }); });
+
+    // The store event's queue refresh resolves first, with the post-flip truth.
+    api.getCosTasks.mockResolvedValue(fresh);
+    await act(async () => { getSocketHandler('cos:tasks:changed')({ type: 'user', action: 'updated' }); });
+    expect(await screen.findByText('FRESH in-progress copy')).toBeInTheDocument();
+
+    // Now the slow batch finally returns — carrying the stale pre-flip snapshot.
+    api.getCosTasks.mockResolvedValue(stale);
+    await act(async () => {
+      releaseInsights({ insights: [] });
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    expect(screen.queryByText('STALE pending copy')).not.toBeInTheDocument();
+    expect(screen.getByText('FRESH in-progress copy')).toBeInTheDocument();
+  });
+});
