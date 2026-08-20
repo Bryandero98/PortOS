@@ -545,9 +545,19 @@ export async function forceSpawnTask(taskId) {
   if (await isRunnerHolding()) {
     return { error: 'CoS Runner is not reachable — start the cos-runner app before force-spawning tasks' };
   }
-  const runningAgents = Object.values(state.agents).filter(a => a.status === 'running').length;
-  if (runningAgents >= state.config.maxConcurrentAgents) {
-    return { error: `No available agent slots (${runningAgents}/${state.config.maxConcurrentAgents})` };
+  const running = Object.values(state.agents).filter(a => a.status === 'running');
+  // An agent is registered as running BEFORE spawnAgentForTask flips its task off
+  // `pending`, so the status check above still passes for the seconds between
+  // those two writes — an explicit "Run now" landing there would get a bogus
+  // `{ success: true }` and a "Spawning" toast for a second dispatch that
+  // withSpawnDedupGuard then silently drops. Refuse it here instead, where every
+  // caller (UI, voice, API) sees the same honest answer.
+  const holder = running.find(agent => agent.taskId === taskId);
+  if (holder) {
+    return { error: `Agent ${holder.id} is already running this task` };
+  }
+  if (running.length >= state.config.maxConcurrentAgents) {
+    return { error: `No available agent slots (${running.length}/${state.config.maxConcurrentAgents})` };
   }
 
   // Pre-validate provider/model resolution before emitting `task:ready`. The

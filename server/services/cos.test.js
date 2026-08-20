@@ -1240,6 +1240,21 @@ describe('forceSpawnTask — pre-validate provider before task:ready', () => {
     expect(holdIdx, 'the runner check must precede the task:ready emit')
       .toBeLessThan(forceFn.indexOf("cosEvents.emit('task:ready'"));
   });
+
+  // spawnAgentForTask registers its agent as `running` BEFORE flipping the task
+  // off `pending`, so the `status !== 'pending'` check above still passes for the
+  // seconds between those two writes. Without a live-agent check, a "Run now"
+  // landing there answers `{ success: true }` and toasts "Spawning" for a second
+  // dispatch that withSpawnDedupGuard then silently drops.
+  it('refuses a task a running agent already holds', () => {
+    const holderIdx = forceFn.indexOf('agent.taskId === taskId');
+    expect(holderIdx, 'forceSpawnTask must reject a task a running agent holds')
+      .toBeGreaterThan(-1);
+    expect(forceFn, 'the refusal must name the agent that holds it')
+      .toContain('is already running this task');
+    expect(holderIdx, 'the live-agent check must precede the task:ready emit')
+      .toBeLessThan(forceFn.indexOf("cosEvents.emit('task:ready'"));
+  });
 });
 
 describe('the runner-down hold — spawn-side gates', () => {

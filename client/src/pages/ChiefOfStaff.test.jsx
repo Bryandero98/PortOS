@@ -24,6 +24,10 @@ const api = vi.hoisted(() => ({
   getCosTodayActivity: vi.fn(),
   getCosLearning: vi.fn(),
   getProviderStatuses: vi.fn(),
+  // TasksTab + TaskAddForm, rendered by the task-event tests below.
+  getCosLearningDurations: vi.fn(),
+  getCosPopularTemplates: vi.fn(),
+  getCodeReviewDefaults: vi.fn(),
 }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 const socketStub = vi.hoisted(() => ({ connected: false, on: vi.fn(), off: vi.fn(), emit: vi.fn() }));
@@ -31,6 +35,9 @@ const socketStub = vi.hoisted(() => ({ connected: false, on: vi.fn(), off: vi.fn
 vi.mock('../services/api', () => api);
 vi.mock('../components/ui/Toast', () => ({ default: toast }));
 vi.mock('../services/socket', () => ({ default: socketStub }));
+// TaskAddForm drags in the reviewer/model picker plumbing (local-LLM status,
+// prompt templates) that the task-event tests below have no stake in.
+vi.mock('../components/cos/TaskAddForm', () => ({ default: () => null }));
 // ConfigTab's provider/model hook fetches over the network — stub it.
 vi.mock('../hooks/useProviderModels', () => ({
   default: () => ({
@@ -75,6 +82,9 @@ beforeEach(() => {
   api.getCosBudgetUsage.mockResolvedValue({ usage: {} });
   api.pauseCos.mockResolvedValue({ success: true, pausedAt: '2026-01-01T00:00:00.000Z' });
   api.resumeCos.mockResolvedValue({ success: true });
+  api.getCosLearningDurations.mockResolvedValue(null);
+  api.getCosPopularTemplates.mockResolvedValue([]);
+  api.getCodeReviewDefaults.mockResolvedValue({});
 });
 
 const renderConfigTab = () => render(
@@ -445,5 +455,79 @@ describe('ChiefOfStaff insight freshness (#2654)', () => {
     await waitFor(() => expect(api.getApps.mock.calls.length).toBeGreaterThan(1));
     expect(screen.getByText('FRESH_ISSUE')).toBeInTheDocument();
     expect(screen.queryByText('All Systems Healthy')).not.toBeInTheDocument();
+  });
+});
+
+// A scheduled CoS run is an INTERNAL task, and the page used to subscribe only
+// to `cos:tasks:user:changed` — so a freshly queued scheduled task didn't appear
+// until the 30s poll, and the pending→in_progress flip that ends a task's
+// "queued" life was equally invisible. Since the server registers an agent as
+// running BEFORE flipping its task off `pending`, the fetch fired by
+// `cos:agent:spawned` always reads the task as still-queued, which is what left
+// the row showing as pending AND active for up to a poll interval.
+describe('ChiefOfStaff task-change subscriptions', () => {
+  const getSocketHandler = (event) => socketStub.on.mock.calls.find(([evt]) => evt === event)?.[1];
+
+  const renderTasksTab = () => render(
+    <MemoryRouter initialEntries={['/cos/tasks']}>
+      <Routes>
+        <Route path="/cos/:tab" element={<ChiefOfStaff />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  it('renders a newly queued system task straight off the watcher event', async () => {
+    renderTasksTab();
+    await waitFor(() => expect(api.getCosTasks).toHaveBeenCalled());
+    const before = api.getCosTasks.mock.calls.length;
+
+    const handleCosTasksChanged = getSocketHandler('cos:tasks:cos:changed');
+    expect(handleCosTasksChanged).toBeTypeOf('function');
+    await act(async () => {
+      handleCosTasksChanged({
+        exists: true,
+        tasks: [{ id: 'cos-task-1', description: 'Example scheduled task', status: 'pending', metadata: {} }],
+      });
+    });
+
+    expect(await screen.findByText('Example scheduled task')).toBeInTheDocument();
+    // The event carries the whole list, so it must not cost a round trip.
+    expect(api.getCosTasks.mock.calls.length).toBe(before);
+  });
+
+  it('coalesces a burst of task-store changes into a single refetch', async () => {
+    renderTasksTab();
+    await waitFor(() => expect(api.getCosTasks).toHaveBeenCalled());
+    const before = api.getCosTasks.mock.calls.length;
+
+    const handleTasksChanged = getSocketHandler('cos:tasks:changed');
+    expect(handleTasksChanged).toBeTypeOf('function');
+    await act(async () => {
+      handleTasksChanged({ type: 'internal', action: 'added' });
+      handleTasksChanged({ type: 'internal', action: 'updated' });
+      handleTasksChanged({ type: 'user', action: 'updated' });
+    });
+
+    await waitFor(() => expect(api.getCosTasks.mock.calls.length).toBe(before + 1), { timeout: 2000 });
+    // `tasks:changed` also fires for writes with nothing to show here (every
+    // running task's federation lease heartbeat), so the burst must settle into
+    // one refresh rather than one per event. Any extra flush would land inside
+    // the 400ms window the first one already closed.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 200)); });
+    expect(api.getCosTasks.mock.calls.length).toBe(before + 1);
+  });
+
+  it('refreshes the queue without re-running the health-checking insights read', async () => {
+    renderTasksTab();
+    await waitFor(() => expect(api.getCosActionableInsights).toHaveBeenCalled());
+    const insightsBefore = api.getCosActionableInsights.mock.calls.length;
+
+    await act(async () => { getSocketHandler('cos:tasks:changed')({ type: 'internal', action: 'updated' }); });
+    await waitFor(() => expect(api.getCosAgents.mock.calls.length).toBeGreaterThan(1), { timeout: 2000 });
+
+    // /cos/actionable-insights runs a health check that AUTO-RESTARTS errored PM2
+    // processes. Every task add, status flip, delete and lease heartbeat emits
+    // `tasks:changed`, so this handler must never reach that endpoint.
+    expect(api.getCosActionableInsights.mock.calls.length).toBe(insightsBefore);
   });
 });
