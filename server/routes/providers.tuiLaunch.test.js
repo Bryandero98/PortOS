@@ -5,11 +5,13 @@ import { request } from '../lib/testHelper.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
 import { createPortOSProviderRoutes } from './providers.js';
 
-// The AI Providers page's "Launch in Shell" button deep-links to
-// `/shell?cmd=<tuiCommandLine>`. The line is derived server-side from
-// `buildTuiInvocation` — the SAME builder the CoS TUI spawner uses — so a
-// hand-launched provider gets its vendor posture flags and its default
-// model/effort injection rather than a naive `command + args.join(' ')`.
+// The AI Providers page's "Launch in Shell" button renders from
+// `tuiCommandLine` and deep-links to `/shell?provider=<id>` (the launch itself
+// re-resolves server-side so the provider's env rides along — see
+// lib/tuiShellLaunch.js). This suite pins the DISPLAY half: the line is derived
+// from `buildTuiInvocation` — the SAME builder the TUI spawn paths use — so it
+// carries the vendor posture flags and the model injection rather than a naive
+// `command + args.join(' ')`, and it is derived BEFORE redaction.
 
 const CODEX_TUI = {
   id: 'codex',
@@ -71,5 +73,47 @@ describe('tuiCommandLine decoration', () => {
     const res = await request(app).get('/api/providers/codex');
     expect(res.status).toBe(200);
     expect(res.body.tuiCommandLine.startsWith('codex ')).toBe(true);
+  });
+
+  it('derives the line BEFORE redaction, so a secret Bedrock marker is read at its real value', async () => {
+    // `buildTuiInvocation` consults envVars for the Bedrock model mapping.
+    // `sanitizeProvider` rewrites a secret var to '***', which reads TRUTHY —
+    // so deriving after redaction would advertise a Bedrock-mapped model for a
+    // provider that has the marker explicitly switched OFF, and the real launch
+    // (which reads the raw provider) would run something else.
+    const app = appWith({
+      getProviderById: vi.fn().mockResolvedValue({
+        ...CODEX_TUI,
+        id: 'claude-tui',
+        command: 'claude',
+        defaultModel: 'claude-opus-4-8',
+        envVars: { CLAUDE_CODE_USE_BEDROCK: '0' },
+        secretEnvVars: ['CLAUDE_CODE_USE_BEDROCK'],
+      }),
+    });
+
+    const res = await request(app).get('/api/providers/claude-tui');
+    expect(res.status).toBe(200);
+    expect(res.body.envVars.CLAUDE_CODE_USE_BEDROCK).toBe('***');
+    expect(res.body.tuiCommandLine).toContain('claude-opus-4-8');
+    expect(res.body.tuiCommandLine).not.toContain('anthropic.claude-opus-4-8');
+  });
+
+  it('never publishes the provider env alongside the command line', async () => {
+    // The env is the half that must NOT cross the wire — those values are
+    // secret, which is why the deep link carries an ID instead of a command.
+    const app = appWith({
+      getProviderById: vi.fn().mockResolvedValue({
+        ...CODEX_TUI,
+        envVars: { OPENAI_API_KEY: 'sk-not-a-real-key' },
+        secretEnvVars: ['OPENAI_API_KEY'],
+      }),
+    });
+
+    const res = await request(app).get('/api/providers/codex');
+    expect(res.status).toBe(200);
+    expect(res.body.tuiLaunchEnv).toBeUndefined();
+    expect(res.body.tuiCommandLine).not.toContain('sk-not-a-real-key');
+    expect(res.body.envVars.OPENAI_API_KEY).toBe('***');
   });
 });

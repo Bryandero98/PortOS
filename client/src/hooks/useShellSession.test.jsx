@@ -334,7 +334,7 @@ describe('useShellSession', () => {
   // "open claude here" buttons. If this hook stopped consuming the param the
   // buttons would silently drop the user at a bare prompt with no error, so pin
   // that the query param reaches the server as `shell:start { initialCommand }`.
-  describe('?cmd= / ?cwd= deep link', () => {
+  describe('?cmd= / ?cwd= / ?provider= deep links', () => {
     const at = (entry) => ({ children }) => (
       <MemoryRouter initialEntries={[entry]}>{children}</MemoryRouter>
     );
@@ -350,6 +350,23 @@ describe('useShellSession', () => {
       renderHook(() => useShellSession({}), { wrapper: at('/shell?cmd=claude&cwd=%2Ftmp%2Fapp') });
       fire('shell:sessions', [session('already-running')]);
       expect(lastEmit('shell:start')).toEqual(['shell:start', { cwd: '/tmp/app', initialCommand: 'claude' }]);
+      expect(lastEmit('shell:attach')).toBeUndefined();
+    });
+    // The AI Providers card links by provider ID so the SERVER can pair the
+    // command with that provider's env (its backend/auth live in secret
+    // envVars). If the hook dropped the param, the shell would open at a bare
+    // prompt and the button would look broken with no error anywhere.
+    it('forwards ?provider= to the server as shell:start { providerId }', () => {
+      renderHook(() => useShellSession({}), { wrapper: at('/shell?provider=claude-ollama-tui') });
+      fire('shell:sessions', []);
+      expect(lastEmit('shell:start')).toEqual(['shell:start', { providerId: 'claude-ollama-tui' }]);
+    });
+
+    it('sends no command of its own for a provider launch — the server owns it', () => {
+      renderHook(() => useShellSession({}), { wrapper: at('/shell?provider=codex') });
+      fire('shell:sessions', [session('already-running')]);
+      const [, opts] = lastEmit('shell:start');
+      expect(opts.initialCommand).toBeUndefined();
       expect(lastEmit('shell:attach')).toBeUndefined();
     });
   });

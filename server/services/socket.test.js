@@ -33,6 +33,7 @@ vi.mock('./loops.js', () => ({ loopEvents: { on: vi.fn() } }));
 vi.mock('./imageGenEvents.js', () => ({ imageGenEvents: { on: vi.fn() } }));
 vi.mock('./shell.js', () => ({
   createShellSession: vi.fn(),
+  submitToSession: vi.fn(),
   attachSession: vi.fn(),
   subscribeSessionList: vi.fn(),
   listAllSessions: vi.fn(() => []),
@@ -44,6 +45,9 @@ vi.mock('./shell.js', () => ({
   unsubscribeSessionList: vi.fn(),
   detachSocketSessions: vi.fn(() => 0)
 }));
+// The shell:start provider-launch path resolves a stored provider. Mock the
+// service (not lib/tuiShellLaunch.js) so the REAL command+env resolution runs.
+vi.mock('./providers.js', () => ({ getProviderById: vi.fn() }));
 vi.mock('../lib/socketValidation.js', () => ({
   validateSocketData: vi.fn((schema, data) => data),
   detectStartSchema: {},
@@ -72,6 +76,7 @@ import { mediaJobEvents } from './mediaJobQueue/index.js';
 import { audioGenEvents } from './audioGen/events.js';
 import { detachSocketSessions } from './shell.js';
 import * as shellService from './shell.js';
+import { getProviderById } from './providers.js';
 import { updateApp as runAppUpdate } from './appUpdater.js';
 import { analyzeApp, standardizeRefusalFor } from './pm2Standardizer.js';
 
@@ -783,6 +788,90 @@ describe('socket.js — initSocket', () => {
       finishUpdate({ success: true, steps: [] });
       await running;
       await flush();
+    });
+  });
+  // ===========================================================================
+  // shell:start — the AI Providers "Launch in Shell" path
+  //
+  // The client sends only a provider ID. The server resolves the command AND
+  // the provider's env, because a TUI provider's backend lives in `envVars`:
+  // a session started from a bare command line runs the right binary against
+  // the vendor cloud instead of the local daemon the user configured. Those
+  // values are secret besides, so they can never round-trip through the client.
+  // ===========================================================================
+  describe('shell:start provider launch', () => {
+    const OLLAMA_TUI = {
+      id: 'claude-ollama-tui',
+      name: 'Claude Ollama TUI',
+      type: 'tui',
+      command: 'claude',
+      args: [],
+      ollamaBacked: true,
+      defaultModel: 'qwen3:32b',
+      envVars: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:11434' },
+    };
+
+    const start = async (payload) => {
+      const socket = makeSocket('shell-launch');
+      createdSockets.push(socket);
+      io.connect(socket);
+      await socket.handlers['shell:start'](payload);
+      return socket;
+    };
+
+    beforeEach(() => {
+      vi.mocked(shellService.createShellSession).mockClear().mockReturnValue('sess-1');
+      vi.mocked(shellService.submitToSession).mockClear();
+      vi.mocked(getProviderById).mockReset();
+    });
+
+    it('spawns the PTY with the provider env and types the resolved command', async () => {
+      vi.mocked(getProviderById).mockResolvedValue(OLLAMA_TUI);
+
+      const socket = await start({ providerId: 'claude-ollama-tui' });
+
+      expect(socket.emitted).toContainEqual(['shell:started', { sessionId: 'sess-1' }]);
+      const [, opts] = vi.mocked(shellService.createShellSession).mock.calls.at(-1);
+      expect(opts.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:11434');
+    });
+
+    it('ignores a client-supplied command for a provider launch — the server owns it', async () => {
+      vi.mocked(getProviderById).mockResolvedValue(OLLAMA_TUI);
+
+      await start({ providerId: 'claude-ollama-tui', initialCommand: 'rm -rf /' });
+
+      // The submit is deferred behind a timer; drain it before asserting.
+      await vi.waitFor(() => expect(shellService.submitToSession).toHaveBeenCalled());
+      const [, typed] = vi.mocked(shellService.submitToSession).mock.calls.at(-1);
+      expect(typed).not.toContain('rm -rf');
+      expect(typed).toContain('claude');
+    });
+
+    it('refuses a provider that is not a launchable TUI rather than opening a bare shell', async () => {
+      vi.mocked(getProviderById).mockResolvedValue({ ...OLLAMA_TUI, type: 'api' });
+
+      const socket = await start({ providerId: 'claude-ollama-tui' });
+
+      expect(socket.emitted.some(([ev]) => ev === 'shell:error')).toBe(true);
+      expect(shellService.createShellSession).not.toHaveBeenCalled();
+    });
+
+    it('refuses an unknown provider id', async () => {
+      vi.mocked(getProviderById).mockResolvedValue(null);
+
+      const socket = await start({ providerId: 'nope' });
+
+      expect(socket.emitted.some(([ev]) => ev === 'shell:error')).toBe(true);
+      expect(shellService.createShellSession).not.toHaveBeenCalled();
+    });
+
+    it('still supports a plain cwd/command start with no provider', async () => {
+      await start({ cwd: '/tmp/app', initialCommand: 'claude' });
+
+      expect(getProviderById).not.toHaveBeenCalled();
+      const [, opts] = vi.mocked(shellService.createShellSession).mock.calls.at(-1);
+      expect(opts.cwd).toBe('/tmp/app');
+      expect(opts.env).toBeUndefined();
     });
   });
 });

@@ -816,11 +816,12 @@ describe('readiness table coverage', () => {
 });
 
 describe('Launch in Shell button on TUI provider cards', () => {
-  // The card hands the user a one-click way to drive a TUI provider by hand:
-  // `/shell?cmd=<tuiCommandLine>` starts a fresh PTY and types the exact
-  // invocation the CoS TUI spawner would use. The line is built server-side
-  // (vendor posture flags + model/effort injection + shell quoting), so the
-  // card renders nothing when an older server omits it.
+  // The card hands the user a one-click way to drive a TUI provider by hand.
+  // The link carries only the provider ID — the server pairs the command with
+  // the provider's env (its backend/auth) when it spawns the PTY, and those
+  // values are secret, so the command line itself must NOT be what's sent.
+  // `tuiCommandLine` is the display half: it decides whether the button renders
+  // at all (an older server omits it) and shows what will run.
   const baseMocks = () => {
     vi.clearAllMocks();
     api.getApps.mockResolvedValue([]);
@@ -848,10 +849,12 @@ describe('Launch in Shell button on TUI provider cards', () => {
     renderPage();
 
     const link = await screen.findByRole('link', { name: /Launch in Shell/ });
-    expect(link).toHaveAttribute(
-      'href',
-      `/shell?cmd=${encodeURIComponent('codex --dangerously-bypass-approvals-and-sandbox --model gpt-5')}`
-    );
+    // By ID, never by command — sending the line would leave the provider's env
+    // behind and launch it against the wrong backend.
+    expect(link).toHaveAttribute('href', '/shell?provider=codex');
+    expect(link.getAttribute('href')).not.toContain('cmd=');
+    // The resolved line is still surfaced, so the user can see what will run.
+    expect(link).toHaveAttribute('title', expect.stringContaining('--model gpt-5'));
   });
 
   it('renders no button for a CLI provider, or when the server sent no command line', async () => {
