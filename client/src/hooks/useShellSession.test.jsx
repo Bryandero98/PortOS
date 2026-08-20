@@ -91,6 +91,15 @@ describe('useShellSession', () => {
     expect(lastEmit('shell:cd')).toEqual(['shell:cd', { sessionId: 'abc', path: 'I:\\code\\example-app' }]);
   });
 
+  // LF would leave the command typed-but-unexecuted on cmd.exe — see SUBMIT_KEY.
+  it('submits a quick command with a carriage return, not a line feed', () => {
+    const { result } = renderHook(() => useShellSession({}), { wrapper });
+    fire('shell:sessions', []);
+    fire('shell:started', { sessionId: 'abc' });
+    act(() => result.current.sendCommand('claude'));
+    expect(lastEmit('shell:input')).toEqual(['shell:input', { sessionId: 'abc', data: 'claude\r' }]);
+  });
+
   it('ignores a shell:attached whose id does not match the pending target (strict-equality guard)', () => {
     const { result } = renderHook(() => useShellSession({}), { wrapper });
     // First load with one free survivor → auto-attach to s1 (claim:true), pending target 's1'.

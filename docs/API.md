@@ -689,8 +689,9 @@ socket.on('detect:complete', (appData) => {
 socket.emit('shell:start', {});
 socket.on('shell:started', ({ sessionId }) => console.log('session', sessionId));
 
-// Send input to shell
-socket.emit('shell:input', { sessionId, data: 'ls -la\n' });
+// Send input to shell. Submit with `\r` (the byte Enter sends), never `\n` — cmd.exe
+// under Windows ConPTY ignores LF and the line is typed but never executed.
+socket.emit('shell:input', { sessionId, data: 'ls -la\r' });
 
 // Receive shell output
 socket.on('shell:output', ({ sessionId, data }) => {
