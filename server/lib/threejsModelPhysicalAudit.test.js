@@ -205,6 +205,54 @@ describe('threejsModelPhysicalAudit', () => {
     expect(finding.message).toContain('stretch-housing');
   });
 
+  it('ties the singular sequence id to the most anisotropic animated scale', () => {
+    const res = evaluateThreejsPhysicalAudit({
+      name: 'Scale Sequence Metadata Spec',
+      parts: [{
+        id: 'housing',
+        name: 'Housing',
+        geometry: { type: 'box', width: 2, height: 1, depth: 1 },
+        children: [{
+          id: 'lens',
+          name: 'Lens',
+          geometry: { type: 'sphere', radius: 0.4 },
+        }],
+      }],
+      animation: {
+        clips: [{
+          id: 'deploy',
+          name: 'Deploy',
+          durationSeconds: 2,
+          sequences: [
+            {
+              id: 'mild-scale',
+              name: 'Mild scale',
+              partId: 'housing',
+              startSeconds: 0.2,
+              endSeconds: 0.4,
+              channels: { scale: { from: [1, 1, 1], to: [1.5, 1, 1] } },
+            },
+            {
+              id: 'severe-scale',
+              name: 'Severe scale',
+              partId: 'housing',
+              startSeconds: 0.8,
+              endSeconds: 1.2,
+              channels: { scale: { from: [1, 1, 1], to: [3, 1, 0.2] } },
+            },
+          ],
+        }],
+      },
+    });
+
+    const finding = res.findings.find((item) => item.code === 'nonuniform-parent-scale');
+    expect(finding).toMatchObject({
+      sequenceId: 'severe-scale',
+      sequenceIds: ['mild-scale', 'severe-scale'],
+      anisotropyRatio: 15,
+    });
+  });
+
   it('does not flag a non-uniformly scaled leaf without descendants', () => {
     const res = evaluateThreejsPhysicalAudit({
       name: 'Scaled Leaf Spec',
@@ -304,6 +352,132 @@ describe('threejsModelPhysicalAudit', () => {
     });
 
     expect(res.findings.filter((finding) => finding.code === 'nonuniform-parent-scale')).toHaveLength(1);
+  });
+
+  it('keeps a stronger animated scale finding beside the rest-pose finding', () => {
+    const res = evaluateThreejsPhysicalAudit({
+      name: 'Stronger Animated Scale Spec',
+      parts: [{
+        id: 'housing',
+        name: 'Housing',
+        geometry: { type: 'box', width: 2, height: 1, depth: 1 },
+        scale: [2, 1, 1],
+        children: [{
+          id: 'lens',
+          name: 'Lens',
+          geometry: { type: 'sphere', radius: 0.4 },
+        }],
+      }],
+      animation: {
+        clips: [{
+          id: 'deploy',
+          name: 'Deploy',
+          durationSeconds: 2,
+          sequences: [{
+            id: 'stronger-scale',
+            name: 'Stronger scale',
+            partId: 'housing',
+            startSeconds: 0.5,
+            endSeconds: 1.5,
+            channels: { scale: { from: [1, 1, 1], to: [6, 1, 1] } },
+          }],
+        }],
+      },
+    });
+
+    const findings = res.findings.filter((finding) => finding.code === 'nonuniform-parent-scale');
+    expect(findings).toHaveLength(2);
+    expect(findings.find((finding) => finding.clipId)).toMatchObject({
+      anisotropyRatio: 6,
+      sequenceId: 'stronger-scale',
+    });
+  });
+
+  it('coalesces an animated scale within the one-percent comparison band', () => {
+    const res = evaluateThreejsPhysicalAudit({
+      name: 'Scale Comparison Tolerance Spec',
+      parts: [{
+        id: 'housing',
+        name: 'Housing',
+        geometry: { type: 'box', width: 2, height: 1, depth: 1 },
+        scale: [2, 1, 1],
+        children: [{
+          id: 'lens',
+          name: 'Lens',
+          geometry: { type: 'sphere', radius: 0.4 },
+        }],
+      }],
+      animation: {
+        clips: [{
+          id: 'deploy',
+          name: 'Deploy',
+          durationSeconds: 2,
+          sequences: [{
+            id: 'near-scale',
+            name: 'Near scale',
+            partId: 'housing',
+            startSeconds: 0.5,
+            endSeconds: 1.5,
+            channels: { scale: { from: [1, 1, 1], to: [2.015, 1, 1] } },
+          }],
+        }],
+      },
+    });
+
+    const findings = res.findings.filter((finding) => finding.code === 'nonuniform-parent-scale');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].clipId).toBeUndefined();
+  });
+
+  it('checks scale channels in later clips after the pose budget is exhausted', () => {
+    const res = evaluateThreejsPhysicalAudit({
+      name: 'Later Clip Scale Spec',
+      parts: [{
+        id: 'housing',
+        name: 'Housing',
+        geometry: { type: 'box', width: 2, height: 1, depth: 1 },
+        children: [{
+          id: 'lens',
+          name: 'Lens',
+          geometry: { type: 'sphere', radius: 0.4 },
+        }],
+      }],
+      animation: {
+        clips: [
+          {
+            id: 'pose-heavy',
+            name: 'Pose heavy',
+            durationSeconds: 2,
+            sequences: Array.from({ length: 8 }, (_, index) => ({
+              id: `pose-${index}`,
+              name: `Pose ${index}`,
+              partId: 'housing',
+              startSeconds: (index + 1) * 0.1,
+              endSeconds: (index + 1) * 0.1 + 0.05,
+              channels: { position: { from: [0, 0, 0], to: [0, 0, 0] } },
+            })),
+          },
+          {
+            id: 'late-scale',
+            name: 'Late scale',
+            durationSeconds: 2,
+            sequences: [{
+              id: 'late-parent-scale',
+              name: 'Late parent scale',
+              partId: 'housing',
+              startSeconds: 0.5,
+              endSeconds: 1.5,
+              channels: { scale: { from: [1, 1, 1], to: [3, 1, 1] } },
+            }],
+          },
+        ],
+      },
+    });
+
+    expect(res.findings.find((finding) => finding.code === 'nonuniform-parent-scale')).toMatchObject({
+      clipId: 'late-scale',
+      sequenceId: 'late-parent-scale',
+    });
   });
 
   it('detects floating part touching nothing', () => {

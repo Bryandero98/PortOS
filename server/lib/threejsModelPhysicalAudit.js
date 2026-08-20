@@ -333,8 +333,9 @@ const normalizeScale = (scale) => (
 
 const getScaleAnisotropy = (scale) => {
   const normalized = normalizeScale(scale);
-  const minimum = Math.min(...normalized);
-  const maximum = Math.max(...normalized);
+  const absolute = normalized.map((value) => Math.abs(value));
+  const minimum = Math.min(...absolute);
+  const maximum = Math.max(...absolute);
   const ratio = maximum / Math.max(minimum, EPSILON);
   if (ratio <= 1 + NONUNIFORM_SCALE_TOLERANCE) return null;
   return { scale: normalized, ratio };
@@ -365,7 +366,6 @@ const buildNonuniformParentScaleFinding = (part, scaleSamples, context = {}) => 
 
   const normalizedSamples = scaleSamples.map((sample) => ({
     ...sample,
-    scale: normalizeScale(sample.scale),
     anisotropy: getScaleAnisotropy(sample.scale),
   }));
   const analyzedSamples = normalizedSamples
@@ -387,7 +387,7 @@ const buildNonuniformParentScaleFinding = (part, scaleSamples, context = {}) => 
     code: 'nonuniform-parent-scale',
     severity: 'warning',
     ...metadata,
-    sequenceId: sequenceIds[0] ?? metadata.sequenceId,
+    sequenceId: mostAnisotropic.sequenceId ?? metadata.sequenceId,
     sequenceIds,
     partIds: [part.id, ...descendants.map((descendant) => descendant.id)],
     affectedDescendantNames: descendantNames,
