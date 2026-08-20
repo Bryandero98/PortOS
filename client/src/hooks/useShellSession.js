@@ -149,8 +149,13 @@ export function useShellSession({ isFullscreen } = {}) {
     const cwd = searchParams.get('cwd');
     const cmd = searchParams.get('cmd');
     const session = searchParams.get('session');
-    if (cwd || cmd || session) {
-      initialOptsRef.current = { cwd, cmd, session };
+    // `provider` is the AI Providers page's "Launch in Shell" hand-off. It sends
+    // an ID rather than a command line because the server has to pair the
+    // command with the provider's own env (its backend/auth live in secret
+    // `envVars` the client never sees) — see socket.js's shell:start handler.
+    const provider = searchParams.get('provider');
+    if (cwd || cmd || session || provider) {
+      initialOptsRef.current = { cwd, cmd, session, provider };
       setSearchParams({}, { replace: true });
     } else {
       initialOptsRef.current = {};
@@ -444,6 +449,7 @@ export function useShellSession({ isFullscreen } = {}) {
     const startOpts = {};
     if (opts.cwd) startOpts.cwd = opts.cwd;
     if (opts.cmd) startOpts.initialCommand = opts.cmd;
+    if (opts.provider) startOpts.providerId = opts.provider;
     initialOptsRef.current = {};
     socket.emit('shell:start', Object.keys(startOpts).length > 0 ? startOpts : undefined);
   }, [socket, setPendingAttach]);
@@ -588,7 +594,7 @@ export function useShellSession({ isFullscreen } = {}) {
         if (opts.session && sessionList.some(s => s.sessionId === opts.session)) {
           attachToSession(opts.session);
           initialOptsRef.current = {};
-        } else if (opts.cwd || opts.cmd) {
+        } else if (opts.cwd || opts.cmd || opts.provider) {
           startSession();
         } else if (urlSid && sessionList.some(s => s.sessionId === urlSid)) {
           // URL points at a live session — attach to that one (deep-link intent

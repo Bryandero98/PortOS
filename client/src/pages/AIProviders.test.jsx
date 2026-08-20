@@ -814,3 +814,62 @@ describe('readiness table coverage', () => {
     }
   });
 });
+
+describe('Launch in Shell button on TUI provider cards', () => {
+  // The card hands the user a one-click way to drive a TUI provider by hand.
+  // The link carries only the provider ID — the server pairs the command with
+  // the provider's env (its backend/auth) when it spawns the PTY, and those
+  // values are secret, so the command line itself must NOT be what's sent.
+  // `tuiCommandLine` is the display half: it decides whether the button renders
+  // at all (an older server omits it) and shows what will run.
+  const baseMocks = () => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+    localModels.value = { ctxById: {}, installed: { ollama: null, lmstudio: null } };
+  };
+
+  it('links to the Shell page with the server-built command line', async () => {
+    baseMocks();
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'codex',
+        name: 'Codex TUI',
+        type: 'tui',
+        command: 'codex',
+        args: [],
+        enabled: true,
+        tuiCommandLine: 'codex --dangerously-bypass-approvals-and-sandbox --model gpt-5',
+      }],
+      activeProvider: null,
+    });
+
+    renderPage();
+
+    const link = await screen.findByRole('link', { name: /Launch in Shell/ });
+    // By ID, never by command — sending the line would leave the provider's env
+    // behind and launch it against the wrong backend.
+    expect(link).toHaveAttribute('href', '/shell?provider=codex');
+    expect(link.getAttribute('href')).not.toContain('cmd=');
+    // The resolved line is still surfaced, so the user can see what will run.
+    expect(link).toHaveAttribute('title', expect.stringContaining('--model gpt-5'));
+  });
+
+  it('renders no button for a CLI provider, or when the server sent no command line', async () => {
+    baseMocks();
+    api.getProviders.mockResolvedValue({
+      providers: [
+        { id: 'claude-code', name: 'Claude Code', type: 'cli', command: 'claude', args: [], enabled: true },
+        { id: 'legacy-tui', name: 'Legacy TUI', type: 'tui', command: 'claude', args: [], enabled: true },
+      ],
+      activeProvider: null,
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('Legacy TUI')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Launch in Shell/ })).not.toBeInTheDocument();
+  });
+});

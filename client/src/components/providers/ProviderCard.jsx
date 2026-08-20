@@ -11,6 +11,8 @@
  * and which section the page filed the card under can never disagree.
  */
 
+import { Link } from 'react-router';
+import { Terminal } from 'lucide-react';
 import {
   PROVIDER_CARD_STATE,
   effectiveModelContextWindow,
@@ -298,6 +300,27 @@ export default function ProviderCard({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {/* TUI providers are the only ones a human can drive interactively, so
+              they get a one-click hand-off to the Shell page. The link carries
+              only the provider ID: the server resolves both the command line
+              and the provider's `envVars` (its backend and auth) when it spawns
+              the PTY, so an Ollama-backed or Bedrock provider reaches the
+              backend it is configured for instead of the vendor cloud. Sending
+              the command itself would leave that env behind — and those values
+              are secret, so they can't ride a URL anyway. `tuiCommandLine` is
+              the display half of the same resolution: it shows what will run,
+              and an older server that omits it simply renders no button. */}
+          {isTuiProvider(provider) && provider.tuiCommandLine && (
+            <Link
+              to={`/shell?provider=${encodeURIComponent(provider.id)}`}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-port-accent/20 text-port-accent hover:bg-port-accent/30 rounded transition-colors"
+              title={`Launch in Shell: ${provider.tuiCommandLine}`}
+            >
+              <Terminal size={14} />
+              Launch in Shell
+            </Link>
+          )}
+
           <button
             onClick={() => onTest(provider.id)}
             disabled={testResult?.testing}

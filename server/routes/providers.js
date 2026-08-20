@@ -19,6 +19,7 @@ import { getProviderReadinessMap, resetProviderReadinessCache } from '../service
 import { getProviderPrerequisiteMap } from '../services/providerPrerequisites.js';
 import { runLocalRuntimeSetup } from '../services/localRuntimeSetup.js';
 import { localRuntimeForProvider } from '../lib/localProviderRuntime.js';
+import { buildTuiShellLaunch } from '../lib/tuiShellLaunch.js';
 
 /**
  * The CoS Agent Runner's exec allowlist, published read-only so the AI
@@ -74,21 +75,43 @@ const sanitizeProvider = (provider) => {
 };
 
 /**
+ * Decorate a TUI provider with the command line the Shell page will run for it,
+ * so the card can render a "Launch in Shell" button and show what it will type.
+ *
+ * DISPLAY ONLY — the launch itself goes through `shell:start { providerId }`,
+ * which re-resolves this server-side and pairs it with the provider's env (see
+ * `lib/tuiShellLaunch.js`). Publishing the line does not publish the env: those
+ * values are secret and stay on the server.
+ *
+ * Non-TUI providers get no field at all: the button is TUI-only, and an absent
+ * key (rather than an empty string) keeps "not a TUI" distinct from "a TUI
+ * whose command line came back blank".
+ */
+const withTuiLaunchCommand = (provider) => {
+  const launch = buildTuiShellLaunch(provider);
+  return launch ? { ...provider, tuiCommandLine: launch.commandLine } : provider;
+};
+
+/**
  * The shape a provider takes on its way OUT to the client: secrets stripped,
  * plus the derived `canRefreshModels` flag the AI Providers page reads to
  * decide whether to offer a "Refresh Models" button (#3620).
  *
- * Order matters. `canRefreshModels` is computed on the RAW provider, before
- * sanitization: the ollama row of the fetcher table keys partly on
- * `envVars.ANTHROPIC_BASE_URL`, which `sanitizeProvider` redacts to `'***'`
- * when the user marked it secret — deriving after would silently drop the
- * Refresh button for a Claude-Ollama provider.
+ * Order matters, and BOTH derivations run on the RAW provider, before
+ * sanitization. `canRefreshModels`: the ollama row of the fetcher table keys
+ * partly on `envVars.ANTHROPIC_BASE_URL`, which `sanitizeProvider` redacts to
+ * `'***'` when the user marked it secret — deriving after would silently drop
+ * the Refresh button for a Claude-Ollama provider. `tuiCommandLine`: the same
+ * trap one layer down, since `buildTuiInvocation` consults `envVars` for the
+ * Bedrock model mapping (`CLAUDE_CODE_USE_BEDROCK`) — a redacted `'***'` reads
+ * truthy, so a card whose provider has that var marked secret and switched OFF
+ * would advertise a Bedrock-mapped model the real launch never uses.
  *
  * These PortOS routes SHADOW the toolkit's own (which decorate the same way);
  * the toolkit keeps its copy so it stays correct standalone. Both decorate on
  * the way out only — the field is never persisted.
  */
-const presentProvider = (provider) => sanitizeProvider(withRefreshCapability(provider));
+const presentProvider = (provider) => sanitizeProvider(withTuiLaunchCommand(withRefreshCapability(provider)));
 
 /**
  * Create PortOS-specific provider routes
