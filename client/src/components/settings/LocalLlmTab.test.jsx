@@ -293,6 +293,121 @@ describe('LocalLlmTab llama-server management', () => {
     });
   });
 
+  // The preset select mounts pre-selected, so the form must mount pre-filled too —
+  // otherwise Start is disabled while the UI reads as fully configured.
+  it('seeds the form from the mounted preset so Start is immediately usable', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+    startLlamaServer.mockResolvedValueOnce({ success: true, pid: 4242 });
+
+    await renderTab();
+
+    await screen.findByText(/Launch Speculative Decoding Server/);
+    expect(screen.queryByText(/Enter a Target Base Model path to enable Start/)).toBeNull();
+
+    const startBtn = screen.getByRole('button', { name: /Start Speculative Server/ });
+    expect(startBtn).not.toBeDisabled();
+    fireEvent.click(startBtn);
+
+    await waitFor(() => {
+      expect(startLlamaServer).toHaveBeenCalledWith(expect.objectContaining({
+        model: 'models/Qwen3.8-27B-Instruct-Q4_K_M.gguf',
+        draftModel: 'models/Qwen3.8-27B-DSpark-bf16.gguf',
+        specType: 'draft-dspark',
+      }));
+    });
+  });
+
+  it('explains why Start is disabled once the model path is cleared', async () => {
+    const { getLlamaServerStatus } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+
+    await renderTab();
+
+    const modelInput = await screen.findByLabelText(/Target Base Model \(GGUF Path\)/);
+    fireEvent.change(modelInput, { target: { value: '  ' } });
+
+    const startBtn = screen.getByRole('button', { name: /Start Speculative Server/ });
+    expect(startBtn).toBeDisabled();
+    expect(startBtn).toHaveAttribute('title', expect.stringContaining('required'));
+    expect(screen.getByText(/Enter a Target Base Model path to enable Start/)).toBeInTheDocument();
+  });
+
+  it('swaps the preset and repoints both model paths', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+    startLlamaServer.mockResolvedValueOnce({ success: true, pid: 7 });
+
+    await renderTab();
+
+    const presetSelect = await screen.findByLabelText('Preset');
+    fireEvent.change(presetSelect, { target: { value: 'muse-glimmer-30b' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /Start Speculative Server/ }));
+
+    await waitFor(() => {
+      expect(startLlamaServer).toHaveBeenCalledWith(expect.objectContaining({
+        model: 'models/Muse-Glimmer-30B-Instruct-Q4_K_M.gguf',
+        draftModel: 'models/Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf',
+        specType: 'draft-dflash',
+      }));
+    });
+  });
+
+  // Coercing a number input on every keystroke snaps it back to its default the
+  // moment you clear it to retype, so the default is applied at launch instead.
+  it('lets an advanced number field sit empty while retyping and defaults it at launch', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+    startLlamaServer.mockResolvedValueOnce({ success: true, pid: 21 });
+
+    await renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Advanced options/ }));
+    const gpuLayers = screen.getByLabelText(/GPU Layers/);
+    fireEvent.change(gpuLayers, { target: { value: '' } });
+    expect(gpuLayers).toHaveValue(null);
+
+    fireEvent.click(screen.getByRole('button', { name: /Start Speculative Server/ }));
+
+    await waitFor(() => {
+      expect(startLlamaServer).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: 99 }));
+    });
+  });
+
+  it('keeps an explicit -ngl 0 rather than treating it as unset', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+    startLlamaServer.mockResolvedValueOnce({ success: true, pid: 22 });
+
+    await renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Advanced options/ }));
+    fireEvent.change(screen.getByLabelText(/GPU Layers/), { target: { value: '0' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /Start Speculative Server/ }));
+
+    await waitFor(() => {
+      expect(startLlamaServer).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: 0 }));
+    });
+  });
+
+  it('drops the preset label to Custom once a preset-supplied path is hand-edited', async () => {
+    const { getLlamaServerStatus } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+
+    await renderTab();
+
+    const presetSelect = await screen.findByLabelText('Preset');
+    expect(presetSelect).toHaveValue('qwen3.8-27b-dspark');
+
+    fireEvent.change(screen.getByLabelText(/Target Base Model \(GGUF Path\)/), {
+      target: { value: 'models/hand-picked.gguf' },
+    });
+
+    expect(presetSelect).toHaveValue('custom');
+  });
+
   it('renders install button and triggers install when llama-server is not installed', async () => {
     const { getLlamaServerStatus, installLlamaServer } = await import('../../services/api');
     getLlamaServerStatus.mockResolvedValueOnce({
