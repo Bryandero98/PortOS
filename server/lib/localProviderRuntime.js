@@ -50,18 +50,41 @@ export function isLocalInstanceHost(hostname) {
     /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
 }
 
+/** Parse a provider endpoint (with any `/v1` suffix stripped) into a URL, or null. */
+function parseEndpoint(endpoint) {
+  const cleaned = String(endpoint || '').replace(/\/v\d+\/?$/, '').replace(/\/+$/, '');
+  try {
+    return new URL(cleaned);
+  } catch { return null; }
+}
+
+/**
+ * Does this endpoint point at a daemon running on THIS machine?
+ *
+ * The distinction decides whether PortOS may inspect the host it is running on
+ * to explain the endpoint. An endpoint on a LAN/tailnet box is an EXTERNAL API
+ * server: whether `lms` is on this machine's PATH, or this machine's LM Studio
+ * app is installed, says nothing about it — so those checks must not run, and
+ * their answers must never be reported as that provider's requirements.
+ *
+ * An unparseable/blank endpoint is NOT local: callers resolve their own local
+ * default before asking, so anything still unparseable here is a typo, and
+ * guessing "local" would put this machine's install state on a remote card.
+ */
+export function isLocalInstanceEndpoint(endpoint) {
+  const url = parseEndpoint(endpoint);
+  return url ? isLocalInstanceHost(url.hostname) : false;
+}
+
 /**
  * The port of a provider endpoint when it points at THIS machine's local
  * instance (any loopback / bind-all host spelling); null otherwise — so a
  * LAN/Tailscale peer on the same port is NOT mistaken for a local backend.
  */
 export function localEndpointPort(endpoint) {
-  const cleaned = String(endpoint || '').replace(/\/v1\/?$/, '').replace(/\/+$/, '');
-  try {
-    const u = new URL(cleaned);
-    if (!isLocalInstanceHost(u.hostname)) return null;
-    return u.port || (u.protocol === 'https:' ? '443' : '80');
-  } catch { return null; }
+  const u = parseEndpoint(endpoint);
+  if (!u || !isLocalInstanceHost(u.hostname)) return null;
+  return u.port || (u.protocol === 'https:' ? '443' : '80');
 }
 
 // MIRROR of `isOllamaProvider` in services/ollamaManager.js — keep in lockstep.
@@ -225,6 +248,15 @@ export function localRuntimeForProvider(provider) {
     || normalizeOpenAiBaseUrl(provider?.endpoint)
     || normalizeOpenAiBaseUrl(envBaseUrl(kind))
     || runtime.defaultBaseUrl;
+
+  // A provider whose endpoint lives on ANOTHER machine has no local runtime,
+  // however local its name/id looks. An `LM Studio <box>` provider pointed
+  // at a LAN host still matched `lmstudio` by NAME, and the card answered
+  // "LM Studio installed — `lms` is on PortOS's PATH" and "start it from
+  // Settings → Local LLM" about a server PortOS neither runs nor can start.
+  // An external API endpoint is assumed to be set up by whoever runs it; the
+  // only honest report here is none.
+  if (!isLocalInstanceEndpoint(endpoint)) return null;
 
   const { id, ...row } = runtime;
   return { ...row, kind: id, endpoint };

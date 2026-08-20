@@ -682,7 +682,12 @@ export const localBackendForProvider = (provider) => {
   return null;
 };
 
-const LOCAL_ENDPOINT_RE = /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)(:|\/|$)/i;
+// The whole loopback block (`127.0.0.0/8`), not just `127.0.0.1` — a daemon on a
+// loopback alias (`127.0.0.2`) is as local as one on `.1`, and the server's
+// `isLocalInstanceHost` already accepts the full block. While they disagreed, a
+// provider on `http://127.0.0.2:11434` was badged NEEDS SETUP for an API key a
+// loopback endpoint never needs.
+const LOCAL_ENDPOINT_RE = /^(https?:\/\/)?(localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|0\.0\.0\.0|\[?::1\]?|\[?::\]?)(:|\/|$)/i;
 export const isLocalEndpoint = (endpoint) =>
   typeof endpoint === 'string' && LOCAL_ENDPOINT_RE.test(endpoint.trim());
 
@@ -692,6 +697,25 @@ export const isLocalEndpoint = (endpoint) =>
 // tailnet-first product — an API provider pointed at another machine's Ollama
 // is a first-class configuration, not an edge case).
 const PRIVATE_IP_RE = /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/;
+
+/**
+ * IPv6 counterpart to {@link PRIVATE_IP_RE}: unique-local (`fc00::/7`) and
+ * link-local (`fe80::/10`). Tailscale hands out a ULA address alongside the
+ * CGNAT v4 one, so without this a tailnet peer reached over IPv6 read as a
+ * public host and its keyless provider was blocked on a missing API key.
+ *
+ * Gated on the host being an IPv6 literal (it contains a `:`) and compared
+ * NUMERICALLY on the leading hextet — a bare `/^f[cd]/` prefix test would also
+ * claim hostnames like `fdrive.example.com`, and `fd::1` expands to a leading
+ * hextet of `0x00fd`, which is not in `fc00::/7` at all.
+ */
+const isPrivateIpv6 = (host) => {
+  if (!host.includes(':')) return false;
+  const first = host.split(':')[0];
+  if (!/^[0-9a-f]{1,4}$/.test(first)) return false; // '' for `::1` — loopback, already matched above
+  const n = parseInt(first, 16);
+  return (n >= 0xfc00 && n <= 0xfdff) || (n >= 0xfe80 && n <= 0xfebf);
+};
 
 /**
  * Is this endpoint inside the private network — loopback, a LAN/tailnet address,
@@ -717,9 +741,33 @@ export const isPrivateNetworkEndpoint = (endpoint) => {
   if (!URL.canParse(candidate)) return false;
   const host = new URL(candidate).hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (PRIVATE_IP_RE.test(host)) return true;
+  if (isPrivateIpv6(host)) return true;
   if (/\.(local|internal|lan|home\.arpa|ts\.net)$/.test(host)) return true;
   // A single-label host resolves only inside the local network (`http://nas:11434`).
   return !host.includes('.') && !host.includes(':');
+};
+
+/**
+ * Does this provider talk to a daemon on THIS machine?
+ *
+ * Client mirror of `isLocalInstanceEndpoint` in
+ * server/lib/localProviderRuntime.js, and the guard for anything that explains
+ * a provider by inspecting the machine PortOS runs on — "is `lms` installed
+ * here?", "start it from Settings → Local LLM". A provider named for LM Studio
+ * but pointed at another box on the tailnet matches
+ * {@link localBackendForProvider} by NAME, so without this it collected this
+ * machine's install state and offered to start a server it does not own.
+ *
+ * A blank endpoint reads as local, unlike the server's copy: the record simply
+ * hasn't named one, and every default it can fall back to is a loopback URL.
+ *
+ * @param {{endpoint?:string}} provider
+ * @returns {boolean}
+ */
+export const isLocalInstanceProvider = (provider) => {
+  const endpoint = provider?.endpoint;
+  if (typeof endpoint !== 'string' || endpoint.trim() === '') return true;
+  return isLocalEndpoint(endpoint);
 };
 
 export const isLikelyLargeContextProvider = (provider) => {
