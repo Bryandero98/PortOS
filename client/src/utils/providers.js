@@ -722,6 +722,29 @@ export const isPrivateNetworkEndpoint = (endpoint) => {
   return !host.includes('.') && !host.includes(':');
 };
 
+/**
+ * Does this provider talk to a daemon on THIS machine?
+ *
+ * Client mirror of `isLocalInstanceEndpoint` in
+ * server/lib/localProviderRuntime.js, and the guard for anything that explains
+ * a provider by inspecting the machine PortOS runs on — "is `lms` installed
+ * here?", "start it from Settings → Local LLM". A provider named for LM Studio
+ * but pointed at another box on the tailnet matches
+ * {@link localBackendForProvider} by NAME, so without this it collected this
+ * machine's install state and offered to start a server it does not own.
+ *
+ * A blank endpoint reads as local, unlike the server's copy: the record simply
+ * hasn't named one, and every default it can fall back to is a loopback URL.
+ *
+ * @param {{endpoint?:string}} provider
+ * @returns {boolean}
+ */
+export const isLocalInstanceProvider = (provider) => {
+  const endpoint = provider?.endpoint;
+  if (typeof endpoint !== 'string' || endpoint.trim() === '') return true;
+  return isLocalEndpoint(endpoint);
+};
+
 export const isLikelyLargeContextProvider = (provider) => {
   if (isProcessProvider(provider)) return true;
   return isApiProvider(provider) && !isLocalEndpoint(provider.endpoint);

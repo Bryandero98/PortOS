@@ -24,7 +24,10 @@
  *
  * Checks are reported in fix order, each with what to do about it. Only
  * local-daemon providers get a report at all (`localProviderRuntime.js` decides
- * which those are); everything else returns `null` and renders nothing.
+ * which those are); everything else returns `null` and renders nothing. That
+ * deliberately excludes a provider pointed at ANOTHER machine's OpenAI-compatible
+ * server — an external endpoint is somebody else's install to run, so PortOS
+ * neither probes this host for it nor offers to start it here.
  *
  * No LLM call is ever made here — `GET /v1/models` is a listing, so this is safe
  * to poll from a settings page under the no-cold-bootstrap policy in CLAUDE.md.

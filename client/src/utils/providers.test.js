@@ -52,6 +52,7 @@ import {
   isConfiguredDefaultModel,
   configuredDefaultIn,
   isLocalEndpoint,
+  isLocalInstanceProvider,
   enabledApiProviderFilter,
   providerTypeClass,
   getProviderTimeout,
@@ -491,6 +492,24 @@ describe('isLocalEndpoint', () => {
     expect(isLocalEndpoint('https://localhost.evil.com/v1')).toBe(false);
     expect(isLocalEndpoint('')).toBe(false);
     expect(isLocalEndpoint(undefined)).toBe(false);
+  });
+});
+
+describe('isLocalInstanceProvider', () => {
+  it('accepts a loopback endpoint and a record that names none', () => {
+    expect(isLocalInstanceProvider({ endpoint: 'http://localhost:1234/v1' })).toBe(true);
+    expect(isLocalInstanceProvider({ endpoint: 'http://127.0.0.1:11434' })).toBe(true);
+    // No endpoint = the stock local default every backend manager targets.
+    expect(isLocalInstanceProvider({ id: 'lmstudio' })).toBe(true);
+    expect(isLocalInstanceProvider({ endpoint: '  ' })).toBe(true);
+  });
+
+  it('rejects another machine, however local the provider is NAMED', () => {
+    // This is the case that put "Install LM Studio" on a card for a server
+    // running on a different box.
+    expect(isLocalInstanceProvider({ name: 'LM Studio peer', endpoint: 'http://192.168.1.50:1234/v1' })).toBe(false);
+    expect(isLocalInstanceProvider({ id: 'ollama', endpoint: 'http://10.0.0.4:11434/v1' })).toBe(false);
+    expect(isLocalInstanceProvider({ endpoint: 'https://api.openai.com/v1' })).toBe(false);
   });
 });
 
