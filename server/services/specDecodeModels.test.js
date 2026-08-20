@@ -32,6 +32,21 @@ describe('pickGgufSibling', () => {
     expect(pickGgufSibling(model, { file: 'pinned.gguf', quant: 'Q4_K_M', repo: 'o/r' })).toBe('pinned.gguf');
   });
 
+  // A preset pins `file` only where the quant tag can't discriminate the target,
+  // so falling back to the hint when the pin is gone reinstates the ambiguity —
+  // here it would fetch the 1.6 GB drafter into the base model's path.
+  it('refuses to fall back to the quant hint when a pinned file is gone', () => {
+    const model = siblings(
+      'Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf',
+      'dflash-Muse-Glimmer-30B-Q4_K_M.gguf',
+    );
+    expect(() => pickGgufSibling(model, {
+      file: 'Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf',
+      quant: 'Q4_K_M',
+      repo: 'meta-models/Muse-Glimmer-30B-GGUF',
+    })).toThrow(/no longer publishes the pinned file/i);
+  });
+
   // A lone shard on disk would satisfy the launcher's existence check and then
   // fail at load — the exact confusion this module exists to remove.
   it('refuses a sharded-only repo instead of fetching part one', () => {
@@ -46,6 +61,44 @@ describe('pickGgufSibling', () => {
 
   it('rejects a repo with no GGUF at all', () => {
     expect(() => pickGgufSibling(siblings('model.safetensors'), { quant: 'Q4_K_M', repo: 'o/r' })).toThrow(/no \.gguf/i);
+  });
+
+  // meta-models/Muse-Glimmer-30B-GGUF ships the projector and the repo's own
+  // drafter beside the target, all three tagged Q4_K_M. Shortest-name-wins would
+  // hand back the 1.4 GB `mmproj-…`, which then satisfies the launcher's
+  // existence check and fails at load.
+  it('never auto-picks an mmproj projector that carries the wanted quant', () => {
+    const model = siblings(
+      'Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf',
+      'mmproj-Muse-Glimmer-30B-Q4_K_M.gguf',
+    );
+    expect(pickGgufSibling(model, { quant: 'Q4_K_M', repo: 'meta-models/Muse-Glimmer-30B-GGUF' }))
+      .toBe('Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf');
+  });
+
+  it('says "projectors only" rather than blaming sharding when that is all a repo has', () => {
+    expect(() => pickGgufSibling(siblings('mmproj-model-Q4_K_M.gguf'), { quant: 'Q4_K_M', repo: 'o/r' }))
+      .toThrow(/projector \(mmproj\) sidecars/i);
+  });
+
+  it('still honours an explicit projector filename', () => {
+    const model = siblings('model-Q4_K_M.gguf', 'mmproj-model-Q4_K_M.gguf');
+    expect(pickGgufSibling(model, { file: 'mmproj-model-Q4_K_M.gguf', quant: 'Q4_K_M', repo: 'o/r' }))
+      .toBe('mmproj-model-Q4_K_M.gguf');
+  });
+
+  // The preset pins `file` precisely because the quant hint is ambiguous here;
+  // this asserts the pin still resolves against the repo's real sibling list.
+  it('resolves the Muse-Glimmer preset to the 17 GB target, not its dflash sidecar', () => {
+    const entry = specDecodePresets.findSpecDecodePreset('muse-glimmer-30b').model;
+    const model = siblings(
+      'Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf',
+      'Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf',
+      'dflash-Muse-Glimmer-30B-Q4_K_M.gguf',
+      'mmproj-Muse-Glimmer-30B-Q4_K_M.gguf',
+    );
+    expect(pickGgufSibling(model, { file: entry.file, quant: entry.quant, repo: entry.repo }))
+      .toBe('Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf');
   });
 });
 

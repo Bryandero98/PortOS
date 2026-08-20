@@ -19,6 +19,7 @@ import { randomBytes } from 'crypto';
 import { Readable, Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import { ensureDir, expandHome } from '../lib/fileUtils.js';
+import { isProjectorName, isShardedGguf } from '../lib/localLlmDisk.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { buildHfAuthHeaders, buildHfResolveUrl, fetchHuggingfaceModel, modelSiblingFilenames } from '../lib/huggingfaceLora.js';
 import { getHfToken } from '../lib/hfToken.js';
@@ -89,7 +90,6 @@ export async function getSpecDecodePresetStatus() {
 // A quant hint matches loosely: repos publish `…-Q4_K_M.gguf`, `….q4_k_m.gguf`
 // and `…-Q4_K_M-00001-of-00002.gguf` for the same build.
 const normalize = (text) => String(text).toLowerCase().replace(/[^a-z0-9]/g, '');
-const isShard = (filename) => /-\d{5}-of-\d{5}\.gguf$/i.test(filename);
 
 /**
  * Choose which `.gguf` sibling of the repo to fetch.
@@ -100,15 +100,37 @@ const isShard = (filename) => /-\d{5}-of-\d{5}\.gguf$/i.test(filename);
  * this whole module exists to remove.
  */
 export function pickGgufSibling(model, { file, quant, repo }) {
-  const ggufs = modelSiblingFilenames(model).filter((name) => /\.gguf$/i.test(name));
-  if (!ggufs.length) {
+  const all = modelSiblingFilenames(model).filter((name) => /\.gguf$/i.test(name));
+  if (!all.length) {
     throw new ServerError(`Hugging Face repo ${repo} publishes no .gguf file`, { status: 422, code: 'SPEC_NO_GGUF' });
   }
   if (file) {
-    const exact = ggufs.find((name) => name === file);
+    const exact = all.find((name) => name === file);
     if (exact) return exact;
+    // A pin is authoritative, never a preference: a preset carries `file` only
+    // because its repo's quant tag CANNOT discriminate the target (Muse-Glimmer
+    // tags the projector and the drafter Q4_K_M too). Falling through to the
+    // quant hint there would reinstate the very ambiguity the pin removes — and
+    // land a 1.6 GB drafter in the base model's path. Fail with something the
+    // user can act on instead.
+    throw new ServerError(
+      `Hugging Face repo ${repo} no longer publishes the pinned file ${file} — pick the replacement at https://huggingface.co/${repo} and set the path by hand.`,
+      { status: 422, code: 'SPEC_FILE_MISSING' },
+    );
   }
-  const whole = ggufs.filter((name) => !isShard(name));
+  // A projector ships under the target's own quant tag
+  // (`mmproj-Muse-Glimmer-30B-Q4_K_M.gguf`, 1.4 GB) right beside the 17 GB target,
+  // so shortest-name-wins below would hand one back — and it would then satisfy
+  // the launcher's existence check and fail at load. Only an explicit `file` may
+  // name one, which is why this filter sits after the exact-match branch.
+  const ggufs = all.filter((name) => !isProjectorName(name));
+  if (!ggufs.length) {
+    throw new ServerError(
+      `Hugging Face repo ${repo} publishes only projector (mmproj) sidecars, not a loadable model`,
+      { status: 422, code: 'SPEC_NO_GGUF' },
+    );
+  }
+  const whole = ggufs.filter((name) => !isShardedGguf(name));
   const wanted = quant ? normalize(quant) : null;
   const matches = wanted ? whole.filter((name) => normalize(name).includes(wanted)) : whole;
   if (matches.length) {

@@ -46,8 +46,13 @@ search filters them out of the install picker.
 
 DSpark pairs (stock llama.cpp):
 
-- **Qwen 3.8 27B**: base `Qwen/Qwen3.8-27B-Instruct-GGUF` + drafter `DimInfer/Qwen3.8-27B-Dspark-v1`
-- **Qwen 3 8B**: base `Qwen/Qwen3-8B-Instruct-GGUF` + drafter converted from `deepseek-ai/dspark_qwen3_8b_block7`
+- **Qwen 3.8 27B**: base `ggml-org/Qwen3.8-27B-GGUF` + drafter `erlidev/Qwen3.8-27B-DSpark-GGUF` (a GGUF conversion of `DimInfer/Qwen3.8-27B-Dspark-v1`)
+- **Qwen 3 8B**: base `Qwen/Qwen3-8B-GGUF` + drafter converted from `deepseek-ai/dspark_qwen3_8b_block7`
+
+Qwen publishes no GGUF of the 27B itself — `ggml-org` (llama.cpp's own org) and
+`unsloth`/`bartowski` are the maintained conversions. `ggml-org` is what the
+preset points at because it is the only one publishing a plain, unsharded
+`Qwen3.8-27B-Q4_K_M.gguf`.
 
 DSpark drafters ship without tokenizers — converting one to GGUF requires passing
 `--target-model-dir` so it reuses the target's tokenizer. Keep the drafter at bf16;
@@ -56,11 +61,13 @@ the target can be any quant.
 DFlash 2 pairs (require a source build of llama.cpp [#27342](https://github.com/ggml-org/llama.cpp/pull/27342)):
 
 - **Qwen 3.8 27B Draft Pair**:
-  - Base: `Qwen/Qwen3.8-27B-Instruct-GGUF` (e.g. `Qwen3.8-27B-Instruct-Q4_K_M.gguf`)
+  - Base: `ggml-org/Qwen3.8-27B-GGUF` (e.g. `Qwen3.8-27B-Q4_K_M.gguf`)
   - Drafter: `incoai/Qwen3.8-27B-DFlash2-GGUF` (e.g. `Qwen3.8-27B-DFlash2-Q4_K_M.gguf`)
 - **Muse-Glimmer 30B Draft Pair**:
-  - Base: `meta-models/Muse-Glimmer-30B-GGUF`
-  - Drafter: `z-lab/Muse-Glimmer-30B-DFlash2-GGUF`
+  - Base: `meta-models/Muse-Glimmer-30B-GGUF` (`Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf` — this
+    repo also ships an `mmproj-…-Q4_K_M.gguf` projector and its own `dflash-…-Q4_K_M.gguf`
+    drafter, so take the target by name rather than by quant tag)
+  - Drafter: `z-lab/Muse-Glimmer-30B-DFlash2-GGUF` (e.g. `Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf`)
 
 ### 2. Launch llama-server
 Start `llama-server` on loopback port `8080` with speculative decoding enabled
@@ -68,8 +75,8 @@ Start `llama-server` on loopback port `8080` with speculative decoding enabled
 
 ```bash
 llama-server \
-  -m models/Qwen3.8-27B-Instruct-Q4_K_M.gguf \
-  --draft-model models/Qwen3.8-27B-DSpark-bf16.gguf \
+  -m models/Qwen3.8-27B-Q4_K_M.gguf \
+  --draft-model models/Qwen3.8-27B-DSpark-BF16.gguf \
   --spec-type draft-dspark \
   --port 8080 \
   --host 127.0.0.1 \
