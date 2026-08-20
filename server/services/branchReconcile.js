@@ -26,7 +26,7 @@ import { stat } from 'node:fs/promises';
 import { getBranches, getDefaultBranch, isBranchMergedInto, deleteBranch } from './git.js';
 import { execGit } from '../lib/execGit.js';
 import { listWorktrees, forceRemoveWorktreeDir, classifyWorktreeDirt, reapMergedWorktrees } from './worktreeManager.js';
-import { isAgentWorktreeId, worktreeOwnershipReason } from '../lib/worktreeOwnership.js';
+import { isAgentWorktreeId, worktreeOwnershipReason, worktreeHoldExpiresAt } from '../lib/worktreeOwnership.js';
 import { execGh, ensureForgeReachable } from './github.js';
 import { getOriginInfo } from '../lib/gitRemote.js';
 import { githubRepoSpec, githubApiHost } from '../lib/workTracker.js';
@@ -236,6 +236,30 @@ async function getOpenPrsByHead(repoPath) {
 export function worktreeProtectionReason({ path, locked, activeAgentIds, ageMs, staleClaimIdleMs = STALE_CLAIM_IDLE_MS }) {
   if (!path) return null;
   return worktreeOwnershipReason({
+    path,
+    locked,
+    activeAgentIds,
+    allowStaleClaim: true,
+    ageMs,
+    staleClaimIdleMs,
+  });
+}
+
+/**
+ * When `worktreeProtectionReason`'s hold on this worktree lapses by itself, as an
+ * ISO instant — or null when it takes an outside change (a lock released, an
+ * agent exiting) that we cannot schedule.
+ *
+ * The exact mirror of the gate above, so cleanup can report not just THAT a
+ * merged branch was held back but WHEN it stops being held. Policy lives in
+ * worktreeOwnership.js; this only supplies this caller's defaults.
+ *
+ * @param {{ path:string|null, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number|null, staleClaimIdleMs?:number }} input
+ * @returns {string|null} ISO timestamp
+ */
+export function worktreeProtectionExpiresAt({ path, locked, activeAgentIds, ageMs, staleClaimIdleMs = STALE_CLAIM_IDLE_MS }) {
+  if (!path) return null;
+  return worktreeHoldExpiresAt({
     path,
     locked,
     activeAgentIds,
@@ -689,6 +713,40 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
 }
 
 /**
+ * How an idle reconcile should PARK — the reason, the breakdown, and the instant
+ * the park may end early.
+ *
+ * "Nothing actionable" has three very different meanings and they used to
+ * collapse into one: branches belong to sessions still running, merged branches
+ * are queued behind a protected worktree, or the repo really is quiet. Only the
+ * last is "nothing to do". Reporting it for the middle case is what made a task
+ * with four stale claim branches waiting on it read as though it had stopped
+ * running — the persisted state said zero of everything.
+ *
+ * Pure.
+ * @param {{reason?:string, retryAt?:string|null}[]} [skipped] - cleanupMerged's skips
+ * @param {object[]} [heldLive] - WIP branches with a liveOwnerReason
+ * @returns {{reason:string, heldBackMerged:object[], counts:{heldBackMerged:number}|null, notLaterThan:string|null}}
+ */
+export function describeIdleReconcilePark(skipped = [], heldLive = []) {
+  // Only worktree-* skips are a HOLD; 'not-merged-on-recheck' and 'cleanup-disabled'
+  // mean the branch was never eligible, so they must not read as pending work.
+  const heldBackMerged = skipped.filter((s) => s.reason?.startsWith('worktree-'));
+  const lifts = heldBackMerged.map((entry) => Date.parse(entry.retryAt)).filter(Number.isFinite);
+  const reason = heldLive.length
+    ? 'branches-held-by-live-owners'
+    : heldBackMerged.length ? 'merged-branches-held-back' : 'no-in-flight-branches';
+  return {
+    reason,
+    heldBackMerged,
+    counts: heldBackMerged.length ? { heldBackMerged: heldBackMerged.length } : null,
+    // The soonest hold to lapse is when this park may end early; entries with no
+    // (or an unreadable) deadline simply don't vote, leaving the normal cadence.
+    notLaterThan: lifts.length ? new Date(Math.min(...lifts)).toISOString() : null
+  };
+}
+
+/**
  * Deterministically clean up fully-merged branches: remove the lingering
  * worktree, then delete the local branch. Safety gates (ALL must hold):
  *   1. `isBranchMergedInto(default)` re-verified true (fail closed).
@@ -701,7 +759,8 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
  * @param {object[]} merged - gathered inputs whose state === 'MERGED'
  * @param {{ activeAgentIds?: Set<string> }} [opts] - CoS agents currently running;
  *   their worktrees are never torn down even when the branch is merged + clean.
- * @returns {Promise<{cleaned:string[], skipped:{branch:string,reason:string}[]}>}
+ * @returns {Promise<{cleaned:string[], skipped:{branch:string,reason:string,retryAt?:string}[]}>}
+ *   A skip carries `retryAt` when its hold is known to lift at a specific time.
  */
 export async function cleanupMerged(repoPath, defaultBranch, merged, { activeAgentIds = new Set() } = {}) {
   const cleaned = [];
@@ -718,11 +777,14 @@ export async function cleanupMerged(repoPath, defaultBranch, merged, { activeAge
       // an active CoS agent workspace — even if its branch is merged and clean. An
       // abandoned claim worktree (merged + clean + older than STALE_CLAIM_IDLE_MS)
       // falls through and IS reaped; that's the "cleaned 0 forever" leak this fixes.
-      const protectedReason = worktreeProtectionReason({
-        path: b.worktreePath, locked: b.worktreeLocked, activeAgentIds, ageMs: b.worktreeAgeMs
-      });
+      const gate = { path: b.worktreePath, locked: b.worktreeLocked, activeAgentIds, ageMs: b.worktreeAgeMs };
+      const protectedReason = worktreeProtectionReason(gate);
       if (protectedReason) {
-        skipped.push({ branch: b.branch, reason: protectedReason });
+        // Carry WHEN the hold lifts when it lifts on a clock (a claim worktree
+        // still inside its grace window). Without it the caller can only park on
+        // the recheck cadence and the two waits stack — see boundParkedUntil.
+        const retryAt = worktreeProtectionExpiresAt(gate);
+        skipped.push({ branch: b.branch, reason: protectedReason, ...(retryAt ? { retryAt } : {}) });
         continue;
       }
       const dirty = await isWorktreeDirty(b.worktreePath);

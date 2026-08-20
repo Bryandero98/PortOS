@@ -63,7 +63,7 @@ import {
   isAbandonedAgentWorktree, resolveLiveOwnerReason, gatherDivergence,
   actionOn, filterActionable, desiredEndState, formatInFlightForPrompt, actionableSignature,
   limitBranchesForAgent,
-  branchPriorityRank, prioritizeBranches,
+  branchPriorityRank, prioritizeBranches, worktreeProtectionExpiresAt, describeIdleReconcilePark,
   upstreamBranchName, parseRemoteHeads, partitionRemoteOrphans, reapOrphanedRemotes
 } from './branchReconcile.js';
 import * as git from './git.js';
@@ -230,16 +230,37 @@ describe('cleanupMerged', () => {
     expect(git.deleteBranch).toHaveBeenCalledWith('/repo', 'claim/issue-1933', { local: true });
   });
 
-  it('still protects a RECENT claim worktree even when merged + clean', async () => {
+  it('still protects a RECENT claim worktree even when merged + clean, and says when the hold lifts', async () => {
     git.isBranchMergedInto.mockResolvedValue(true);
     execGit.mockResolvedValue({ stdout: '', exitCode: 0 }); // clean
+    const before = Date.now();
     const res = await cleanupMerged('/repo', 'main', [
       { branch: 'claim/issue-9999', worktreePath: '/repo/data/cos/worktrees/claim-issue-9999', worktreeAgeMs: 60 * 1000 } // 1 min old
     ]);
     expect(res.cleaned).toEqual([]);
-    expect(res.skipped).toEqual([{ branch: 'claim/issue-9999', reason: 'worktree-human-claim' }]);
+    expect(res.skipped).toHaveLength(1);
+    expect(res.skipped[0]).toMatchObject({ branch: 'claim/issue-9999', reason: 'worktree-human-claim' });
+    // The whole point of retryAt: the caller can park until the grace window
+    // lapses instead of sleeping to the next recheck. ~7 days minus 1 minute out.
+    const retryMs = Date.parse(res.skipped[0].retryAt);
+    expect(retryMs).toBeGreaterThan(before + 6.9 * 24 * 60 * 60 * 1000);
+    expect(retryMs).toBeLessThanOrEqual(Date.now() + 7 * 24 * 60 * 60 * 1000);
     expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
     expect(git.deleteBranch).not.toHaveBeenCalled();
+  });
+
+  it('omits retryAt for holds that do NOT lift on a clock', async () => {
+    git.isBranchMergedInto.mockResolvedValue(true);
+    const res = await cleanupMerged('/repo', 'main', [
+      { branch: 'locked-b', worktreePath: '/wt/locked', worktreeLocked: true, worktreeAgeMs: 60 * 1000 },
+      { branch: 'active-b', worktreePath: '/repo/data/cos/worktrees/agent-abc12345', worktreeAgeMs: 60 * 1000 }
+    ], { activeAgentIds: new Set(['agent-abc12345']) });
+    // A lock and a running agent both end at a time nothing here can predict —
+    // inventing one would park the drain past a hold that may already be gone.
+    expect(res.skipped).toEqual([
+      { branch: 'locked-b', reason: 'worktree-locked' },
+      { branch: 'active-b', reason: 'worktree-active-agent' }
+    ]);
   });
 });
 
@@ -1422,5 +1443,107 @@ describe('orphaned remote branches', () => {
       const res = await reconcile('/repo');
       expect(res.orphanRemotes).toEqual({ reaped: [], reported: [] });
     });
+  });
+});
+
+describe('worktreeProtectionExpiresAt', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const CLAIM = '/repo/data/cos/worktrees/claim-issue-42';
+  const at = (over = {}) => worktreeProtectionExpiresAt({ path: CLAIM, ageMs: 2 * DAY, ...over });
+
+  it('dates a claim hold to the end of its grace window', () => {
+    const before = Date.now();
+    const ms = Date.parse(at());
+    // 7-day default window, 2 days elapsed ⇒ ~5 days out.
+    expect(ms).toBeGreaterThanOrEqual(before + 5 * DAY);
+    expect(ms).toBeLessThanOrEqual(Date.now() + 5 * DAY);
+  });
+
+  it('returns null for holds nothing can schedule', () => {
+    // A locked or agent-owned tree lifts when a human or a process decides to,
+    // not on a clock — promising a time would be a guess.
+    expect(at({ locked: true })).toBeNull();
+    expect(worktreeProtectionExpiresAt({
+      path: '/repo/data/cos/worktrees/agent-abc12345', ageMs: 2 * DAY, activeAgentIds: new Set(['agent-abc12345'])
+    })).toBeNull();
+    expect(worktreeProtectionExpiresAt({ path: null, ageMs: 2 * DAY })).toBeNull();
+  });
+
+  it('returns null when the age is unknown rather than guessing one', () => {
+    // An unmeasured age must not date the window from zero — that would park a
+    // full window out on a tree that may already be reapable.
+    for (const ageMs of [null, undefined, NaN, 'old']) expect(at({ ageMs })).toBeNull();
+  });
+
+  it('returns null once the window has already lapsed', () => {
+    expect(at({ ageMs: 9 * DAY })).toBeNull();
+  });
+
+  it('gives no expiry to a claim worktree that is ALSO locked', () => {
+    // The reason slug says 'worktree-human-claim' (first match wins), but the
+    // lock outlives the grace window — deriving the date from the slug alone
+    // would promise a lift that never happens.
+    expect(worktreeProtectionExpiresAt({ path: CLAIM, ageMs: 2 * DAY, locked: true })).toBeNull();
+  });
+
+  it('gives no expiry to a non-claim worktree that is not held at all', () => {
+    expect(worktreeProtectionExpiresAt({ path: '/repo/data/cos/worktrees/agent-abc12345', ageMs: 2 * DAY, activeAgentIds: new Set() })).toBeNull();
+  });
+});
+
+describe('describeIdleReconcilePark', () => {
+  const CLAIM_HOLD = { branch: 'claim/issue-4348', reason: 'worktree-human-claim', retryAt: '2026-01-15T00:00:00.000Z' };
+
+  it('reports a quiet repo when nothing is held', () => {
+    expect(describeIdleReconcilePark([], [])).toEqual({
+      reason: 'no-in-flight-branches', heldBackMerged: [], counts: null, notLaterThan: null
+    });
+    expect(describeIdleReconcilePark()).toMatchObject({ reason: 'no-in-flight-branches' });
+  });
+
+  it('names merged branches held back, with the count and the earliest lift', () => {
+    // The regression this exists for: four merged claim branches queued behind a
+    // grace window used to persist as 'no-in-flight-branches' / zero counts, so
+    // the task read as idle — indistinguishable from not running at all.
+    const out = describeIdleReconcilePark([
+      CLAIM_HOLD,
+      { branch: 'claim/issue-4442', reason: 'worktree-human-claim', retryAt: '2026-01-13T00:00:00.000Z' }
+    ], []);
+    expect(out.reason).toBe('merged-branches-held-back');
+    expect(out.counts).toEqual({ heldBackMerged: 2 });
+    expect(out.notLaterThan).toBe('2026-01-13T00:00:00.000Z');
+    expect(out.heldBackMerged).toHaveLength(2);
+  });
+
+  it('live owners outrank a held-back merge — a running session is why it is idle', () => {
+    const out = describeIdleReconcilePark([CLAIM_HOLD], [{ branch: 'cos/x', liveOwnerReason: 'worktree-active-agent' }]);
+    expect(out.reason).toBe('branches-held-by-live-owners');
+    // The held-back set still travels, so the log/UI can name both.
+    expect(out.counts).toEqual({ heldBackMerged: 1 });
+  });
+
+  it('ignores skips that are not holds', () => {
+    // 'cleanup-disabled' (a toggle) and 'not-merged-on-recheck' (never eligible)
+    // are not pending work — counting them would invent a queue that does not exist.
+    const out = describeIdleReconcilePark([
+      { branch: 'a', reason: 'cleanup-disabled' },
+      { branch: 'b', reason: 'not-merged-on-recheck' },
+      { branch: 'c', reason: 'delete-failed: boom' }
+    ], []);
+    expect(out).toEqual({ reason: 'no-in-flight-branches', heldBackMerged: [], counts: null, notLaterThan: null });
+  });
+
+  it('ignores an unreadable retryAt rather than parking on NaN', () => {
+    const out = describeIdleReconcilePark([
+      { branch: 'a', reason: 'worktree-human-claim', retryAt: 'not-a-date' },
+      { branch: 'b', reason: 'worktree-human-claim', retryAt: '2026-01-14T00:00:00.000Z' }
+    ], []);
+    expect(out.notLaterThan).toBe('2026-01-14T00:00:00.000Z');
+  });
+
+  it('holds with no scheduled lift park on the normal cadence', () => {
+    const out = describeIdleReconcilePark([{ branch: 'a', reason: 'worktree-locked' }], []);
+    expect(out.reason).toBe('merged-branches-held-back');
+    expect(out.notLaterThan).toBeNull();
   });
 });
