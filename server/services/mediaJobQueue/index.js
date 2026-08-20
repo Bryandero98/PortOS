@@ -463,7 +463,10 @@ export async function initMediaJobQueue() {
       } else if (j.status === 'queued') {
         queue.push({ ...j, params: restoredParams(j) });
       } else {
-        archive.push(j);
+        // The archive needs it too: a rolled-back build restores these rows,
+        // shows them in the Render Queue's recent reel, and its Retry hands the
+        // stored params straight to a local render.
+        archive.push({ ...j, params: restoredParams(j) });
       }
     }
     // Re-attach jobs resume ahead of everything else (they were mid-flight), so

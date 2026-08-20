@@ -63,6 +63,29 @@ describe('writersRoomSceneImageHook', () => {
     });
   });
 
+  it('records the wire prompt for a federated render, whose top-level prompt is blank', async () => {
+    // A routed job blanks `params.prompt` so a build rolled back past
+    // `remoteMedia` fails closed (#4683). Reading it directly would file the
+    // scene with an empty prompt instead of the one that actually rendered.
+    mediaJobEvents.emit('completed', completedImageJob({
+      params: {
+        writersRoom: tag(),
+        prompt: '',
+        modelId: null,
+        remoteMedia: {
+          wireVersion: 1,
+          peerId: '00000000-0000-4000-8000-0000000004f1',
+          request: { kind: 'image', engine: 'local', modelId: 'dev', prompt: 'a cinematic alley' },
+        },
+      },
+      filename: 'job-remote.png', id: 'job-remote',
+    }));
+    await waitFor(() => emitted.length > 0);
+    expect(persistSceneImage).toHaveBeenCalledWith('w1', 'script', {
+      sceneId: 's1', filename: 'job-remote.png', jobId: 'job-remote', prompt: 'a cinematic alley',
+    });
+  });
+
   it('derives jobId from the filename when the job carries no id', async () => {
     mediaJobEvents.emit('completed', completedImageJob({ params: { writersRoom: tag() }, filename: 'noid.png', id: null }));
     await waitFor(() => persistSceneImage.mock.calls.length > 0);

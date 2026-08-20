@@ -954,6 +954,37 @@ describe('Audio kind (#1928)', () => {
     expect(mediaJobQueue.getJob('aaaaaaaa-0000-4000-8000-000000000002').params.remoteMedia.reconcile).toBe(true);
   });
 
+  it('re-normalizes an ARCHIVED routed job too — the recent reel is a retry surface', async () => {
+    // A rolled-back build restores archived rows, shows them in the Render
+    // Queue's recent reel, and its Retry hands the stored params straight to a
+    // local render. Leaving the archive un-normalized would keep #4683 open
+    // through that path.
+    writeFileSync(join(tempDataDir, 'media-jobs.json'), JSON.stringify({
+      jobs: [{
+        id: 'bbbbbbbb-0000-4000-8000-000000000001',
+        kind: 'image',
+        status: 'failed',
+        error: 'peer unreachable',
+        queuedAt: new Date(Date.now() - 60_000).toISOString(),
+        // Inside the archive's 24h retention window, or the boot prune drops it.
+        completedAt: new Date().toISOString(),
+        params: {
+          prompt: 'a harbour', modelId: 'dev', pythonPath: '/usr/bin/python3',
+          remoteMedia: remoteImageMediaParams(),
+        },
+      }],
+    }));
+    await importFresh();
+    await mediaJobQueue.initMediaJobQueue();
+
+    const { params, status } = mediaJobQueue.getJob('bbbbbbbb-0000-4000-8000-000000000001');
+    expect(status).toBe('failed');
+    expect(params.prompt).toBe('');
+    expect(params.modelId).toBeNull();
+    expect(params.pythonPath).toBeNull();
+    expect(params.remoteMedia.request.prompt).toBe('a harbour');
+  });
+
   it('leaves a training job carrying a stray marker on the local path', () => {
     // Bypass probe for the normalization above: `training` has no federated
     // contract, so a marker on one is corrupt state — blanking its params would

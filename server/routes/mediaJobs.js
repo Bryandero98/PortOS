@@ -14,6 +14,7 @@ import { refineMediaPrompt } from '../services/mediaPromptRefiner.js';
 import { promptFromMedia } from '../services/mediaPromptFromMedia.js';
 import { CODEX_EFFORT_LEVELS } from '../lib/providerModels.js';
 import { sanitizeJob } from '../services/mediaJobQueue/sanitizeJob.js';
+import { isRemoteMediaJob } from '../services/mediaJobQueue/remoteMediaJob.js';
 import { validateVideoRetryParams } from '../services/videoGen/prepareParams.js';
 
 const router = Router();
@@ -293,10 +294,23 @@ router.post('/:id/retry', asyncHandler(async (req, res) => {
   // fallback (CODEX_IMAGEGEN_DEFAULT_EFFORT) take over, which a merged sentinel
   // string could not do (it would fail the CODEX_EFFORT_LEVELS validation).
   if (clearEffort) delete params.effort;
-  // A federated retry needs no special handling here: enqueueJob re-normalizes
-  // any job carrying a `remoteMedia` marker, so a merged prompt/model override
-  // (which never reached the peer anyway — the remote executor renders from
-  // `remoteMedia.request`) cannot restore a locally-renderable shape.
+  // enqueueJob re-normalizes any job carrying a `remoteMedia` marker, so a
+  // merged prompt/model override (which never reached the peer anyway — the
+  // remote executor renders from `remoteMedia.request`) cannot restore a
+  // locally-renderable shape. What the retry DOES have to reset is the marker's
+  // transient run state, which describes the finished attempt, not this one:
+  //   - `cancelRequested` — inherited from a canceled render, it makes the
+  //     executor's preflight abort the retry immediately, and the flag rides
+  //     along again on every further retry. That render could never be re-run.
+  //   - `reconcile` — "recover the provider job for this Idempotency-Key". The
+  //     retry gets a fresh queue id, which IS the key, so there is nothing to
+  //     recover; it must submit rather than skip preflight.
+  // Cleared here, not in routedJobParams — boot restoration re-enqueues an
+  // interrupted job under its ORIGINAL id and needs `reconcile: true` kept.
+  if (isRemoteMediaJob({ kind: job.kind, params })) {
+    const { cancelRequested: _canceled, reconcile: _reconcile, ...marker } = params.remoteMedia;
+    params.remoteMedia = { ...marker, cancelRequested: false, reconcile: false };
+  }
   const result = enqueueJob({ kind: job.kind, params, owner: job.owner });
   // Drop the original failed/canceled row from archive — the new job inherits
   // its work, and leaving both visible just lets users keep clicking Retry on

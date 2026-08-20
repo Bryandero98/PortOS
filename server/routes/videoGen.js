@@ -70,6 +70,7 @@ import { JSON_BODY_LIMIT_BYTES } from '../lib/uploadLimits.js';
 import { createInstallLogger } from '../lib/installLogger.js';
 import { prepareRemoteMediaJob } from '../services/federatedMedia/remoteSubmission.js';
 import { effectiveJobPrompt } from '../lib/federatedMediaWire.js';
+import { isRemoteMediaJob } from '../services/mediaJobQueue/remoteMediaJob.js';
 
 const router = Router();
 
@@ -1231,7 +1232,8 @@ const ACTIVE_JOB_PARAM_FIELDS = [
   // path, which the whitelist exists to keep off this surface).
   'icStrength', 'icAttentionStrength', 'icSkipStage2',
 ];
-const pickJobParams = (params) => {
+const pickJobParams = (job) => {
+  const params = job?.params;
   if (!params || typeof params !== 'object') return {};
   const out = {};
   for (const k of ACTIVE_JOB_PARAM_FIELDS) {
@@ -1272,8 +1274,8 @@ const pickJobParams = (params) => {
   // (#4683). Read through to the wire request, as the queue's own projection
   // does, or a page reload mid-render resumes the form with an empty prompt and
   // the LOCAL default model instead of the peer's.
-  if (params.remoteMedia) {
-    const prompt = effectiveJobPrompt({ params });
+  if (isRemoteMediaJob(job)) {
+    const prompt = effectiveJobPrompt(job);
     if (typeof prompt === 'string') out.prompt = prompt;
     const { modelId } = params.remoteMedia.request ?? {};
     if (typeof modelId === 'string' && modelId) out.modelId = modelId;
@@ -1293,7 +1295,7 @@ router.get('/active', (_req, res) => {
       generationId: job.id,
       status: job.status,
       position: job.position,
-      params: pickJobParams(job.params),
+      params: pickJobParams(job),
     },
   });
 });
