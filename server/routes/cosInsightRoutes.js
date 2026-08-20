@@ -100,13 +100,19 @@ router.get('/actionable-insights', asyncHandler(async (req, res) => {
   // 3. Health issues
   const healthIssues = healthCheck?.issues || [];
   if (healthIssues.length > 0) {
-    const criticalIssues = healthIssues.filter(i => i.severity === 'critical');
+    // `type`, not `severity` — runHealthCheck stamps issues `error`/`warning`
+    // and never writes a `severity` field, so the old check matched nothing and
+    // a process that failed to auto-restart banner'd at `medium` alongside a
+    // memory warning.
+    const criticalIssues = healthIssues.filter(i => i.type === 'error');
     insights.push({
       type: 'health',
       priority: criticalIssues.length > 0 ? 'critical' : 'medium',
       icon: 'AlertTriangle',
       title: `${healthIssues.length} system health issue${healthIssues.length > 1 ? 's' : ''}`,
-      description: healthIssues[0]?.message || 'System health issue detected',
+      // Lead with the error when there is one — otherwise a red `critical`
+      // banner can describe an unrelated warning that merely sorted first.
+      description: (criticalIssues[0] || healthIssues[0])?.message || 'System health issue detected',
       action: { label: 'Check Health', route: '/cos/health' },
       count: healthIssues.length
     });
@@ -183,9 +189,11 @@ router.get('/actionable-insights', asyncHandler(async (req, res) => {
     });
   }
 
-  // Sort by priority
+  // Sort by priority. `??`, not `||` — `critical` ranks 0, and `0 || 5` demoted
+  // it below every other priority, so the single most urgent insight sorted LAST
+  // and fell off the `slice(0, 5)` below once six insights were open.
   const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-  insights.sort((a, b) => (priorityOrder[a.priority] || 5) - (priorityOrder[b.priority] || 5));
+  insights.sort((a, b) => (priorityOrder[a.priority] ?? 5) - (priorityOrder[b.priority] ?? 5));
 
   res.json({
     insights: insights.slice(0, 5), // Max 5 insights

@@ -193,6 +193,52 @@ export const STATE_MESSAGES = {
   ideating: "Analyzing options...",
 };
 
+// A health issue is the ONLY thing that flips an idle-but-running CoS into
+// `investigating`, so the status bubble has to say *which* issue. Falling back
+// to the generic STATE_MESSAGES line left the avatar parked on "Investigating
+// issue..." with zero agents running and the detail reachable only by guessing
+// at the Health tab. Returns null when there is nothing to report so callers
+// can fall back to their own default. Issue shape mirrors the server's
+// `runHealthCheck` (`{ type, category, message }` — server/services/cosHealthMonitor.js).
+export const summarizeHealthIssues = (issues) => {
+  if (!Array.isArray(issues) || issues.length === 0) return null;
+  const messages = issues.map((issue) => issue?.message).filter(Boolean);
+  // Counts come from `issues`, never from `messages` — a mixed list like
+  // [{message:'A'}, {}] has two problems and one description, and counting the
+  // descriptions would under-report it as a single issue.
+  const plural = issues.length > 1 ? 's' : '';
+  // A message-less issue still has to read as an issue — `null` means "nothing
+  // to report", so callers that already know the list is non-empty never need a
+  // fallback of their own.
+  if (messages.length === 0) return `${issues.length} health issue${plural} detected`;
+  if (issues.length === 1) return messages[0];
+  return `${issues.length} health issues: ${messages.join(' · ')}`;
+};
+
+// Which of two health snapshots to keep. `getCosHealth` reads the *pre-check*
+// persisted health while the same fetch batch triggers a fresh server-side check
+// whose `cos:health:check` socket event can land first — so the slow read must
+// not clobber the fresher socket result. Keep whichever check is newer by
+// `lastCheck` (Date.parse normalizes the ISO timestamps so the compare never
+// goes lexicographic), keep `prev` when the incoming read has no comparable
+// timestamp but `prev` does, and treat a failed read (null) as "keep prev".
+export const fresherHealth = (prev, next) => {
+  if (!next) return prev ?? null;
+  const prevT = Date.parse(prev?.lastCheck ?? '');
+  const nextT = Date.parse(next.lastCheck ?? '');
+  if (!Number.isNaN(prevT) && (Number.isNaN(nextT) || nextT < prevT)) return prev;
+  return next;
+};
+
+// StatCard tone for the Issues tile. `error`-type issues mean something is
+// broken; a warning-only check (e.g. a memory-hungry process) stays amber
+// rather than screaming red — the same severity split HealthTab draws when it
+// renders the list. 'default' (not null) so a zero-issue tile keeps its gray icon.
+export const healthIssueTone = (issues) => {
+  if (!Array.isArray(issues) || issues.length === 0) return 'default';
+  return issues.some((issue) => issue?.type === 'error') ? 'critical' : 'warning';
+};
+
 // Agent option toggles for task metadata (useWorktree, openPR, simplify, requireApproval).
 export const AGENT_OPTIONS = [
   { field: 'requireApproval', label: 'Require approval', shortLabel: 'Apr', description: 'Queue as awaiting-approve and do not auto-run — including Run Now — until you approve. Off (default): Run Now starts immediately; scheduled runs still follow the confidence and safety gates.' },

@@ -16,6 +16,9 @@ import PageSkeleton from '../components/ui/PageSkeleton';
 import {
   TABS,
   STATE_MESSAGES,
+  summarizeHealthIssues,
+  healthIssueTone,
+  fresherHealth,
   CoSCharacter,
   StateLabel,
   TerminalCoSPanel,
@@ -129,6 +132,22 @@ export default function ChiefOfStaff() {
     setDesktopPanelCollapsed((prev) => !prev);
   }, [setDesktopPanelCollapsed]);
 
+  // ONE writer for the health snapshot, so the Issues tile, the avatar state and
+  // the status bubble can never describe different health checks. The ref is
+  // written synchronously alongside the state, which is what lets fetchData run
+  // the freshness rule and then derive from the value it actually committed —
+  // with a functional updater the merged result was only visible inside the
+  // updater, so the derivation below fell back to the raw (possibly older, or
+  // null) read. `merge` runs the freshness rule; the socket and manual paths
+  // deliver the newest check by definition and set it outright.
+  const healthRef = useRef(null);
+  const applyHealth = useCallback((next, { merge = false } = {}) => {
+    const resolved = merge ? fresherHealth(healthRef.current, next) : next;
+    healthRef.current = resolved;
+    setHealth(resolved);
+    return resolved;
+  }, []);
+
   // Derive agent state from system status
   const deriveAgentState = useCallback((statusData, agentsData, healthData) => {
     if (!statusData?.running) return 'sleeping';
@@ -170,21 +189,11 @@ export default function ChiefOfStaff() {
     // `getCosHealth` above reads the *pre-check* persisted health, while the
     // getCosActionableInsights call in this same batch triggers a fresh server
     // health check (cos.runHealthCheck) that emits `cos:health:check` — the
-    // socket handler's setHealth can land in `prev` before this runs. Don't let
-    // this fetch's older read clobber that fresher result; keep whichever health
-    // check is newer by lastCheck (Date.parse normalizes the ISO timestamps so
-    // the compare never goes lexicographic). A failed read (null) keeps the
-    // last-good health rather than blanking a fresher socket-delivered one.
-    setHealth(prev => {
-      if (!healthData) return prev ?? null;
-      const prevT = Date.parse(prev?.lastCheck ?? '');
-      const newT = Date.parse(healthData.lastCheck ?? '');
-      // Keep prev when it is strictly newer, OR when this read has no comparable
-      // timestamp but prev does — a timestamped health check is fresher than an
-      // untimed read, so an absent/unparseable lastCheck must not clobber it.
-      if (!Number.isNaN(prevT) && (Number.isNaN(newT) || newT < prevT)) return prev;
-      return healthData;
-    });
+    // socket handler's health write can land before this runs. `fresherHealth`
+    // keeps whichever check is newer (and keeps the last-good one when this read
+    // failed); everything below derives from what it returned, never from the
+    // raw read, so the bubble can't name an older issue than the tile shows.
+    const mergedHealth = applyHealth(healthData, { merge: true });
     setProviders(providersData.providers || []);
     setActiveProviderId(providersData.activeProvider || null);
     // Filter out PortOS Autofixer (it's part of PortOS project)
@@ -196,17 +205,20 @@ export default function ChiefOfStaff() {
     if (insightsData?.insights) setInsights(insightsData.insights);
     setLoading(false);
 
-    const newState = deriveAgentState(statusData, agentsData, healthData);
+    const newState = deriveAgentState(statusData, agentsData, mergedHealth);
     setAgentState(newState);
-    // Use default state message - real messages come from socket events
+    // Default state message — richer messages come from socket events. The one
+    // state whose default is useless is `investigating`: only a health issue
+    // gets us here, so name it rather than saying "Investigating issue..." next
+    // to an Active count of 0 with no agent to inspect.
     setStatusMessage(statusData?.paused
       ? `Paused${statusData.pauseReason ? ` — ${statusData.pauseReason}` : ''}`
-      : STATE_MESSAGES[newState]);
+      : (newState === 'investigating' && summarizeHealthIssues(mergedHealth?.issues)) || STATE_MESSAGES[newState]);
 
     // Set active agent metadata for dynamic avatar (use first running agent)
     const runningAgent = agentsData.find(a => a.status === 'running');
     setActiveAgentMeta(runningAgent?.metadata || null);
-  }, [deriveAgentState]);
+  }, [deriveAgentState, applyHealth]);
 
   // A cheap, read-only refresh of just the queue — the task lists plus the agent
   // list the Tasks tab reads to tell an already-spawning task from a waiting one.
@@ -356,13 +368,13 @@ export default function ChiefOfStaff() {
     socket.on('cos:agent:completed', handleAgentCompleted);
 
     const handleHealthCheck = (data) => {
-      setHealth({ lastCheck: data.metrics?.timestamp, issues: data.issues });
+      applyHealth({ lastCheck: data.metrics?.timestamp, issues: data.issues });
       // Do NOT refresh banner insights here — /cos/actionable-insights runs a
       // health check that re-emits this very socket event, which would loop
       // (see the note by the redirect effect). Banner refreshes on the next poll.
       if (data.issues?.length > 0) {
         setAgentState('investigating');
-        setStatusMessage(`Health check: ${data.issues.length} issue${data.issues.length > 1 ? 's' : ''} found`);
+        setStatusMessage(summarizeHealthIssues(data.issues));
         setSpeaking(true);
         setTimeout(() => setSpeaking(false), 2000);
       }
@@ -524,14 +536,14 @@ export default function ChiefOfStaff() {
     });
     setSpeaking(false);
     if (result) {
-      setHealth({ lastCheck: result.metrics?.timestamp, issues: result.issues });
+      applyHealth({ lastCheck: result.metrics?.timestamp, issues: result.issues });
       // Do NOT refresh the banner insights here — /cos/actionable-insights runs
       // a process-restarting health check, so an on-demand refresh would fire a
       // second restart ~1s after forceHealthCheck's own. The banner's health
       // count refreshes on the next fetchData poll instead (see the note above).
       toast.success('Health check complete');
       if (result.issues?.length > 0) {
-        setStatusMessage(`Health: ${result.issues.length} issue${result.issues.length > 1 ? 's' : ''} detected`);
+        setStatusMessage(summarizeHealthIssues(result.issues));
       } else {
         setAgentState('sleeping');
         setStatusMessage("Health check passed - all systems OK");
@@ -544,10 +556,6 @@ export default function ChiefOfStaff() {
   const activeAgentCount = useMemo(() =>
     agents.filter(a => a.status === 'running').length,
     [agents]
-  );
-  const hasIssues = useMemo(() =>
-    (health?.issues?.length || 0) > 0,
-    [health?.issues?.length]
   );
 
   // Memoize pending task count
@@ -600,6 +608,20 @@ export default function ChiefOfStaff() {
     onClick: () => navigate('/cos/learning'),
   };
 
+  // The Issues tile is the only place the UI admits CoS found something wrong,
+  // so it has to click through to the detail. Without that, a warning-level
+  // health issue parked the avatar on "Investigating" with Active 0, no agent
+  // to open, and the offending message reachable only by guessing at the Health
+  // tab. `title` surfaces the same summary on hover/touch-and-hold.
+  const healthIssues = health?.issues || [];
+  const issuesStatProps = {
+    label: 'Issues',
+    value: healthIssues.length,
+    tone: healthIssueTone(healthIssues),
+    title: summarizeHealthIssues(healthIssues) || 'No issues detected — view system health',
+    onClick: () => navigate('/cos/health'),
+  };
+
   // Compact stats card grid — rendered both inside the desktop CoS sidebar and
   // the mobile compressed header so the metrics always live "inside" CoS.
   const statsGridCards = (
@@ -624,9 +646,8 @@ export default function ChiefOfStaff() {
         compact
       />
       <StatCard
-        label="Issues"
-        value={health?.issues?.length || 0}
-        icon={<AlertCircle className={`w-4 h-4 ${hasIssues ? 'text-port-error' : 'text-gray-500'}`} />}
+        {...issuesStatProps}
+        icon={<AlertCircle className="w-4 h-4" />}
         compact
       />
       <StatCard
@@ -816,7 +837,7 @@ export default function ChiefOfStaff() {
                   <StatCard label="Active" value={activeAgentCount} icon={<Cpu className="w-4 h-4 text-port-accent" />} active={activeAgentCount > 0} compact />
                   <StatCard label="Pending" value={pendingTaskCount} icon={<Clock className="w-4 h-4 text-port-warning" />} compact />
                   <StatCard label="Done" value={status?.stats?.tasksCompleted || 0} icon={<CheckCircle className="w-4 h-4 text-port-success" />} compact />
-                  <StatCard label="Issues" value={health?.issues?.length || 0} icon={<AlertCircle className={`w-4 h-4 ${hasIssues ? 'text-port-error' : 'text-gray-500'}`} />} compact />
+                  <StatCard {...issuesStatProps} icon={<AlertCircle className="w-4 h-4" />} compact />
                 </div>
               </div>
             )}
@@ -960,9 +981,8 @@ export default function ChiefOfStaff() {
             mini
           />
           <StatCard
-            label="Issues"
-            value={health?.issues?.length || 0}
-            icon={<AlertCircle className={`w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5 ${hasIssues ? 'text-port-error' : 'text-gray-500'}`} />}
+            {...issuesStatProps}
+            icon={<AlertCircle className="w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />}
             mini
           />
           {/* Learning Health - clickable to go to Learning tab */}

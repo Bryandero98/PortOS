@@ -576,3 +576,163 @@ describe('ChiefOfStaff stale queue-read guard', () => {
     expect(screen.getByText('FRESH in-progress copy')).toBeInTheDocument();
   });
 });
+
+// A single warning-level health issue parked the avatar on "Investigating
+// issue..." with Active 0. Nothing on screen said what was being investigated,
+// and the Issues tile was an inert <div> holding the number 1, so the detail was
+// reachable only by guessing at the Health tab.
+describe('ChiefOfStaff Issues card', () => {
+  const memoryWarning = {
+    type: 'warning',
+    category: 'memory',
+    message: 'High memory usage in: example-app (900MB)',
+  };
+
+  const renderWithIssues = (issues) => {
+    api.getCosStatus.mockResolvedValue({ running: true, config, stats: {} });
+    api.getCosHealth.mockResolvedValue({ lastCheck: '2026-01-01T00:00:00.000Z', issues });
+    return render(
+      <MemoryRouter initialEntries={['/cos/config']}>
+        <Routes>
+          <Route path="/cos/:tab" element={<ChiefOfStaff />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+  };
+
+  // Same "never index a match list" rule as the Learning card above: the page
+  // paints the Issues tile in up to four places (desktop sidebar, mobile grid,
+  // the compressed header, and the Tailwind-`hidden` ascii `mini` bar, all still
+  // in the jsdom tree). Hold every variant to the contract.
+  const issueCards = async () => {
+    const cards = await screen.findAllByRole('button', { name: /^Issues:/ });
+    expect(cards.length).toBeGreaterThan(0);
+    return cards;
+  };
+
+  it('names the health issue in the status bubble instead of the generic investigating line', async () => {
+    renderWithIssues([memoryWarning]);
+
+    expect(await screen.findByText(memoryWarning.message)).toBeInTheDocument();
+    expect(screen.queryByText('Investigating issue...')).not.toBeInTheDocument();
+  });
+
+  it('summarizes the count when more than one issue is open', async () => {
+    renderWithIssues([memoryWarning, { type: 'error', category: 'processes', message: 'example-app failed to auto-restart' }]);
+
+    expect(await screen.findByText(/^2 health issues: /)).toBeInTheDocument();
+  });
+
+  it('makes every Issues tile a button that carries the issue summary', async () => {
+    renderWithIssues([memoryWarning]);
+
+    for (const card of await issueCards()) {
+      expect(card).toHaveAttribute('title', memoryWarning.message);
+      expect(within(card).getByText('1')).toBeInTheDocument();
+    }
+  });
+
+  it('opens the Health tab when the tile is clicked', async () => {
+    renderWithIssues([memoryWarning]);
+    const cards = await issueCards();
+
+    // Clicking the first is enough: the assertion above pins every variant to
+    // the same props object, and the click swaps the route out from under the
+    // rest of the list.
+    fireEvent.click(cards[0]);
+
+    const panel = await screen.findByRole('tabpanel');
+    expect(panel).toHaveAttribute('id', 'tabpanel-health');
+    expect(within(panel).getByText(memoryWarning.message)).toBeInTheDocument();
+  });
+
+  // The live path: a health check finishing while the page is open pushes the
+  // issue over the socket rather than through fetchData.
+  it('names the issue arriving on a live health-check socket event', async () => {
+    renderWithIssues([]);
+    // Wait for the clean first paint so the socket handler is registered.
+    for (const card of await issueCards()) expect(within(card).getByText('0')).toBeInTheDocument();
+
+    const handleHealthCheck = socketStub.on.mock.calls.find(([evt]) => evt === 'cos:health:check')?.[1];
+    expect(handleHealthCheck).toBeTypeOf('function');
+    await act(async () => {
+      handleHealthCheck({ metrics: { timestamp: '2026-01-02T00:00:00.000Z' }, issues: [memoryWarning] });
+    });
+
+    expect(await screen.findByText(memoryWarning.message)).toBeInTheDocument();
+    for (const card of await issueCards()) {
+      expect(card).toHaveAttribute('title', memoryWarning.message);
+      expect(within(card).getByText('1')).toBeInTheDocument();
+    }
+    // Drain the >0 branch's speaking timer so no state update escapes act.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2100)); });
+  });
+
+  // Without these, deleting the `tone` prop would leave every tile neutral gray
+  // while the helper's own unit tests stayed green.
+  it('colors the tile amber for a warning-only check', async () => {
+    renderWithIssues([memoryWarning]);
+
+    for (const card of await issueCards()) {
+      expect(card.className).toContain('border-port-warning');
+      expect(card.className).not.toContain('border-port-error');
+    }
+  });
+
+  it('escalates the tile to red when an issue is error-level', async () => {
+    renderWithIssues([memoryWarning, { type: 'error', category: 'processes', message: 'example-app failed to auto-restart' }]);
+
+    for (const card of await issueCards()) {
+      expect(card.className).toContain('border-port-error');
+    }
+  });
+
+  it('stays a click-through to Health when there are no issues at all', async () => {
+    renderWithIssues([]);
+
+    for (const card of await issueCards()) {
+      expect(card).toHaveAttribute('title', 'No issues detected — view system health');
+      expect(within(card).getByText('0')).toBeInTheDocument();
+      expect(card.className).not.toContain('border-port-warning');
+      expect(card.className).not.toContain('border-port-error');
+    }
+  });
+
+  // fetchData's health read is the SLOW one — it resolves after the socket event
+  // for the check that same batch triggered. Everything the page derives from
+  // health (tile, avatar state, status bubble) must come from the merged
+  // snapshot, or the bubble names an older issue than the tile is counting.
+  it('does not let a slow health read clobber a fresher socket-delivered check', async () => {
+    const staleWarning = { type: 'warning', category: 'memory', message: 'Stale issue from the older read' };
+    api.getCosStatus.mockResolvedValue({ running: true, config, stats: {} });
+    // The slow read carries the OLDER timestamp; the socket event below is newer.
+    api.getCosHealth.mockResolvedValue({ lastCheck: '2026-01-01T00:00:00.000Z', issues: [staleWarning] });
+    render(
+      <MemoryRouter initialEntries={['/cos/config']}>
+        <Routes>
+          <Route path="/cos/:tab" element={<ChiefOfStaff />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(staleWarning.message)).toBeInTheDocument();
+
+    const handleHealthCheck = socketStub.on.mock.calls.find(([evt]) => evt === 'cos:health:check')?.[1];
+    await act(async () => {
+      handleHealthCheck({ metrics: { timestamp: '2026-01-02T00:00:00.000Z' }, issues: [memoryWarning] });
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2100)); });
+
+    // Now force the slow batch to run again with its stale payload — the merge
+    // must keep the socket's newer check, for the tile AND the bubble.
+    await act(async () => {
+      socketStub.on.mock.calls.find(([evt]) => evt === 'apps:changed')?.[1]?.();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(screen.getByText(memoryWarning.message)).toBeInTheDocument();
+    expect(screen.queryByText(staleWarning.message)).not.toBeInTheDocument();
+    for (const card of await issueCards()) {
+      expect(card).toHaveAttribute('title', memoryWarning.message);
+    }
+  });
+});
