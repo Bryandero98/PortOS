@@ -175,10 +175,14 @@ repo (a globally-configured \`gh\` will silently target an unrelated GitHub repo
 1. List the open PRs. If the repo has no GitHub/GitLab remote, or the matching CLI is
    unavailable or unauthenticated, say so and skip straight to Phase 2:
    \`gh pr list --state open --limit 500 --json number,title,headRefName,author,mergeable,mergeStateStatus\`
-   (GitLab: \`glab mr list --state opened --per-page 100 --page <n>\`, paging until a page
-   comes back short.) The limit has to cover EVERY open PR, not just a first page — a bot
-   PR you never listed looks bot-uncovered to Phase 2, which then files the duplicate bump
-   this phase exists to prevent. If the result is exactly at your limit, raise it and re-run.
+   (GitLab: \`glab mr list --per-page 100 --page <n> --output json\`, paging until a page
+   comes back short; \`glab mr list\` lists OPEN MRs by default and has NO
+   \`--state\` flag — passing one exits 1.) The limit has to cover EVERY open PR,
+   not just a first page — a bot PR you never listed looks bot-uncovered to Phase 2,
+   which then files the duplicate bump this phase exists to prevent. If the result is
+   exactly at your limit, raise it and re-run. The GitLab listing needs
+   \`--output json\` because the human table carries the branch but NOT the author,
+   and the classification below reads both.
    An automated dependency PR is one authored by \`dependabot[bot]\`, \`app/dependabot\`,
    \`renovate[bot]\`, or whose head branch starts with \`dependabot/\` or \`renovate/\`.
 
@@ -250,7 +254,7 @@ repo (a globally-configured \`gh\` will silently target an unrelated GitHub repo
    owns the bump. Phase 1's list is the first filter, and when Phase 1 had forge access,
    confirm per package before you bump one it didn't mention
    (\`gh pr list --state open --search "<package> in:title"\` /
-   \`glab mr list --state opened --search "<package>"\`), so a PR that fell outside the
+   \`glab mr list --search "<package>"\`), so a PR that fell outside the
    listing can't still get double-bumped here. If Phase 1 was skipped for lack of a
    working \`gh\`/\`glab\`, skip this confirmation too — there is nothing to query — and
    say in your summary that bot-PR overlap could not be checked.
@@ -903,13 +907,13 @@ Run steps 1–5 in order.
    \`\`\`bash
    git fetch --prune 2>/dev/null
    # Owner-only mode (default): add  --author <owner>  (resolve <owner> from the project namespace).
-   glab issue list --per-page 100 -F json
+   glab issue list --per-page 100 --output json
    # Any-author mode: run the SAME command WITHOUT --author.
    \`\`\`
 3. Build the in-flight set. Collect every branch/MR source ref:
    \`\`\`bash
    git branch -a --no-color --format='%(refname:short)'
-   glab mr list --per-page 100 -F json   # read each MR's source_branch
+   glab mr list --per-page 100 --output json   # read each MR's source_branch
    \`\`\`
    For each ref (after stripping any leading \`origin/\` prefix), extract the issue number **only when the ref matches** \`claim/issue-<num>\` (number after \`claim/issue-\`) or \`cos/<task>/issue-<num>/<agent>\` (the \`issue-<num>\` third segment). Do NOT flag an issue just because its bare number appears elsewhere in a ref.
 4. **Pick the target issue:** walk the candidate list oldest-first and pick the FIRST issue where ALL of the following are true:
@@ -995,12 +999,12 @@ Every local reviewer's fixes are already committed, so the MR opens against fini
 4. **Let required CI finish and go green** — inspect the MR's pipeline (\`glab ci status\` on the branch, or \`glab mr view "\${MR_IID}"\`). A red required pipeline is not merge-eligible: fix it and re-push (same 3-round cap), or, if it stays red, stop exactly as the review-stuck cleanup above does.
 5. **Merge immediately via \`glab mr merge\`** — NEVER a local \`git merge\`. \`glab mr merge\` takes the **MR IID**, which is NOT the issue number — resolve it from the source branch first, merge, then verify remote state:
    \`\`\`bash
-   MR_IID="$(glab mr list --source-branch "claim/issue-\${NUM}" -F json | sed -n 's/.*"iid":\\([0-9]\\{1,\\}\\).*/\\1/p' | head -1)"
+   MR_IID="$(glab mr list --source-branch "claim/issue-\${NUM}" --output json | sed -n 's/.*"iid":\\([0-9]\\{1,\\}\\).*/\\1/p' | head -1)"
    glab mr merge "\${MR_IID}" --yes --remove-source-branch || {
-     glab mr view "\${MR_IID}" -F json | jq -e 'select((.state | ascii_downcase) == "merged")' >/dev/null || \
+     glab mr view "\${MR_IID}" --output json | jq -e 'select((.state | ascii_downcase) == "merged")' >/dev/null || \
        glab mr merge "\${MR_IID}" --yes --squash --remove-source-branch
    }
-   glab mr view "\${MR_IID}" -F json | jq -er 'select((.state | ascii_downcase) == "merged") | .state'
+   glab mr view "\${MR_IID}" --output json | jq -er 'select((.state | ascii_downcase) == "merged") | .state'
    \`\`\`
    The verification command must succeed and print a merged state. An opened/closed state or missing value is not success; investigate CI, review, and branch protection, then retry. Do not enter Phase 7 until the forge confirms the MR is merged.
 
@@ -1694,13 +1698,14 @@ Repository: {repoPath}
    - Contains "gitlab" -> use \`glab\` CLI
 3. List open PRs/MRs authored by others (not by atomantic):
    - GitHub: \`gh pr list --state open --json number,author,headRefName,updatedAt,title\`
-   - GitLab: \`glab mr list --state opened -F json\`
+   - GitLab: \`glab mr list --output json\`
+     (open is the default there; passing a \`--state\` flag exits 1 — it does not exist)
 
 ## Phase 2 — Check Review Status
 
 4. For each PR/MR from other contributors:
    - GitHub: \`gh pr view <number> --json reviews,commits\` — check if I have a review newer than the latest commit
-   - GitLab: \`glab mr view <iid> -F json\` — check notes/approvals vs last commit date
+   - GitLab: \`glab mr view <iid> --output json\` — check notes/approvals vs last commit date
 5. Skip PRs where I already have a review posted after the most recent commit push
 
 ## Phase 3 — Security Scan
@@ -1774,7 +1779,7 @@ Repository: {repoPath}
 6. For each approved PR:
    - Check CI/CD status:
      - GitHub: \`gh pr checks <number>\` — wait for all checks to complete (poll every 30s, up to 10 minutes)
-     - GitLab: \`glab mr view <iid> -F json\` — check pipeline status
+     - GitLab: \`glab mr view <iid> --output json\` — check pipeline status
    - Run the project's test suite locally: check for a test script in package.json, Makefile, or similar and run it
    - If all CI checks pass AND local tests pass (prefer a true merge commit so the branch tip stays in the default branch's history — if the repo disallows merge commits, fall back to \`--squash\`):
      - GitHub: \`gh pr merge <number> --merge --delete-branch || gh pr merge <number> --squash --delete-branch\`

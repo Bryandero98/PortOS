@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 
 // Drive getTaskPrompt with a controlled template so the REAL
 // resolvePromptPlaceholders (and the real PATHS.worktrees) do the work, without
@@ -8,7 +8,8 @@ vi.mock('./taskSchedule.js', () => ({
   getTaskInterval: vi.fn(async () => ({ prompt: 'before {worktreesRoot}/claim-x after' })),
 }));
 
-import { getTaskPrompt } from './taskPromptService.js';
+import { getTaskPrompt, getStagePrompt, DEFAULT_TASK_PROMPTS } from './taskPromptService.js';
+import { getTaskInterval } from './taskSchedule.js';
 import { PATHS } from '../lib/fileUtils.js';
 
 describe('taskPromptService {worktreesRoot} substitution', () => {
@@ -23,4 +24,58 @@ describe('taskPromptService {worktreesRoot} substitution', () => {
     expect(out).toBe(`before ${PATHS.worktrees}/claim-x after`);
     expect(out).not.toContain('{worktreesRoot}');
   });
+});
+
+// A pipeline STAGE body (pr-reviewer-security, code-reviewer-review, …) is read
+// straight out of the catalog by its promptKey — it is never persisted and never
+// versioned, which is why editing one takes no PROMPT_VERSIONS bump and no
+// PREVIOUS_DEFAULT_PROMPTS entry (see taskPromptDefaults.test.js). That decision
+// is only safe while stage resolution ignores stored schedule state, so pin the
+// behavior rather than restating the absent constant: hand getStagePrompt an
+// interval carrying a STALE persisted prompt and assert the current catalog body
+// still wins.
+describe('getStagePrompt reads stage bodies from the catalog, not from stored state', () => {
+  it('ignores a stale persisted prompt on the pipeline task and returns the current stage default', async () => {
+    getTaskInterval.mockResolvedValueOnce({
+      prompt: 'STALE PERSISTED BODY that an install upgraded past long ago',
+      promptVersion: 1,
+      taskMetadata: {
+        pipeline: {
+          stages: [
+            { name: 'Security Scan', promptKey: 'pr-reviewer-security' },
+            { name: 'Code Review & Merge', promptKey: 'pr-reviewer-review' },
+          ],
+        },
+      },
+    });
+
+    const stage = await getStagePrompt('pr-reviewer', 0);
+    // Byte-identical, not merely similar: resolvePromptPlaceholders only rewrites
+    // {worktreesRoot} / {reviewChecklist} / {slashdoReplan}, none of which this
+    // body carries, so nothing stands between the catalog and the caller.
+    expect(stage).toBe(DEFAULT_TASK_PROMPTS['pr-reviewer-security']);
+    expect(stage).not.toContain('STALE PERSISTED BODY');
+  });
+
+  it('falls back to the task prompt only when the stage carries no promptKey', async () => {
+    // Queued TWICE on purpose: the fallback path re-enters getTaskInterval via
+    // getTaskPrompt, so one …Once would be consumed before the fallback runs and
+    // the assertion would read the module-level default instead. …Once (not
+    // mockResolvedValue) keeps the override from leaking into later tests.
+    const unkeyed = {
+      prompt: 'the task-level body',
+      taskMetadata: { pipeline: { stages: [{ name: 'Unkeyed' }] } },
+    };
+    getTaskInterval.mockResolvedValueOnce(unkeyed).mockResolvedValueOnce(unkeyed);
+
+    await expect(getStagePrompt('pr-reviewer', 0)).resolves.toBe('the task-level body');
+  });
+});
+
+// Every override above is …Once, but reset anyway: a future test that reaches for
+// mockResolvedValue would otherwise silently replace the module-level default for
+// everything declared after it.
+afterEach(() => {
+  vi.mocked(getTaskInterval).mockReset();
+  vi.mocked(getTaskInterval).mockResolvedValue({ prompt: 'before {worktreesRoot}/claim-x after' });
 });
