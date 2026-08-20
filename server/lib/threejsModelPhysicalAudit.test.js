@@ -46,6 +46,117 @@ describe('threejsModelPhysicalAudit', () => {
     expect(buildThreejsPhysicalAuditFeedback(res)).toBe('');
   });
 
+  it('flags non-uniform parent scale and names the affected non-relief descendants', () => {
+    const spec = {
+      name: 'Scaled Parent Spec',
+      parts: [
+        {
+          id: 'torso',
+          name: 'Torso',
+          geometry: { type: 'box', width: 2, height: 1, depth: 1 },
+          position: [0, 0.5, 0],
+          scale: [3, 1, 0.2],
+          children: [
+            {
+              id: 'head',
+              name: 'Head',
+              geometry: { type: 'sphere', radius: 0.5 },
+              position: [0, 1, 0],
+            },
+            {
+              id: 'panel_lines',
+              name: 'Panel Lines',
+              explodeWithParent: true,
+              geometry: { type: 'box', width: 1, height: 0.01, depth: 0.01 },
+            },
+          ],
+        },
+      ],
+    };
+
+    const res = evaluateThreejsPhysicalAudit(spec);
+    const finding = res.findings.find((item) => item.code === 'nonuniform-parent-scale');
+    expect(finding).toMatchObject({
+      severity: 'warning',
+      partIds: ['torso', 'head'],
+      affectedDescendantNames: ['Head'],
+      anisotropyRatio: 15,
+      scaleRange: { min: [3, 1, 0.2], max: [3, 1, 0.2] },
+    });
+    expect(finding.message).toContain('Torso');
+    expect(finding.message).toContain('Head');
+    expect(finding.message).toContain('anisotropy ratio 15.00');
+    expect(buildThreejsPhysicalAuditFeedback(res)).toContain('box width/height/depth');
+  });
+
+  it('ignores relief-only children when a parent is deliberately non-uniform', () => {
+    const res = evaluateThreejsPhysicalAudit({
+      name: 'Relief Parent Spec',
+      parts: [{
+        id: 'blade',
+        name: 'Blade',
+        geometry: { type: 'box', width: 2, height: 0.2, depth: 1 },
+        position: [0, 0.1, 0],
+        scale: [4, 1, 0.5],
+        children: [{
+          id: 'serrations',
+          name: 'Serrations',
+          explodeWithParent: true,
+          geometry: { type: 'box', width: 1, height: 0.1, depth: 0.1 },
+        }],
+      }],
+    });
+
+    expect(res.findings.filter((finding) => finding.code === 'nonuniform-parent-scale')).toHaveLength(0);
+  });
+
+  it('checks animated scale channel endpoints against nested parts', () => {
+    const res = evaluateThreejsPhysicalAudit({
+      name: 'Animated Scale Spec',
+      parts: [{
+        id: 'housing',
+        name: 'Housing',
+        geometry: { type: 'box', width: 2, height: 1, depth: 1 },
+        position: [0, 0.5, 0],
+        children: [{
+          id: 'lens',
+          name: 'Lens',
+          geometry: { type: 'sphere', radius: 0.4 },
+          position: [0, 0.8, 0],
+        }],
+      }],
+      animation: {
+        clips: [{
+          id: 'deploy',
+          name: 'Deploy',
+          durationSeconds: 2,
+          sequences: [{
+            id: 'stretch-housing',
+            name: 'Stretch housing',
+            partId: 'housing',
+            startSeconds: 0.5,
+            endSeconds: 1.5,
+            channels: {
+              scale: { from: [1, 1, 1], to: [3, 1, 0.2] },
+            },
+          }],
+        }],
+      },
+    });
+
+    const finding = res.findings.find((item) => item.code === 'nonuniform-parent-scale');
+    expect(finding).toMatchObject({
+      clipId: 'deploy',
+      sequenceId: 'stretch-housing',
+      partIds: ['housing', 'lens'],
+      affectedDescendantNames: ['Lens'],
+      anisotropyRatio: 15,
+      scaleRange: { min: [1, 1, 0.2], max: [3, 1, 1] },
+    });
+    expect(finding.message).toContain('Deploy');
+    expect(finding.message).toContain('stretch-housing');
+  });
+
   it('detects floating part touching nothing', () => {
     const spec = {
       name: 'Floating Spec',

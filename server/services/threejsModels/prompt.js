@@ -104,6 +104,12 @@ at least 0.0001. Zero collapses the part to an invisible plane and a negative co
 reflects it; both are rejected. This format has no reflection and no hidden parts — build
 a mirrored counterpart as its own part with its own position and rotationDegrees, and
 simply omit a part you do not want rendered.
+
+A part's scale applies to its whole group and cascades to everything nested under it. Keep a
+container part that owns other components near-uniformly scaled; author a part's proportions
+through its own geometry dimensions (box width/height/depth, sphere radius, and equivalent
+dimensions on other geometries) instead of using a non-uniform parent scale to shape its
+children.
 `;
 
 const CHARACTER_FAMILY_ID = 'character';

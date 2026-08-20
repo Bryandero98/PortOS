@@ -19,6 +19,13 @@ describe('buildThreejsGenerationPrompt', () => {
     }
   });
 
+  it('warns that non-uniform parent scale cascades to nested parts', () => {
+    const prompt = build();
+    expect(prompt).toContain("A part's scale applies to its whole group and cascades to everything nested under it");
+    expect(prompt).toMatch(/Keep a\s+container part that owns other components near-uniformly scaled/);
+    expect(prompt).toContain('box width/height/depth, sphere radius');
+  });
+
   it('gates on the model coming apart into readable components', () => {
     expect(build()).toContain('The model must come apart into readable components');
   });
