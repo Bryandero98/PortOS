@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from '../lib/uuid.js';
 import { withSpawnCwdEnv } from '../lib/spawnCwd.js';
 import { scheduleSubmitEnters, SUBMIT_KEY } from '../lib/tuiHandshake.js';
 import { buildCdCommand } from '../lib/shellCd.js';
+import { resolveInteractiveShell } from '../lib/interactiveShellResolver.js';
 
 // Store active shell sessions (persist across socket reconnects)
 const shellSessions = new Map();
@@ -117,13 +118,16 @@ export function buildSafeEnv(env = process.env, platform = process.platform) {
 }
 
 /**
- * Get the default shell for the current OS
+ * The shell a session runs when the caller doesn't name one.
+ *
+ * Exported so a caller that must render a command in this shell's dialect
+ * (agentTuiSpawning's run-then-exit line) can ask for the same answer the
+ * session will get, rather than re-deriving it and drifting.
+ *
+ * @returns {string} shell binary path (or bare name, on POSIX)
  */
-function getDefaultShell() {
-  if (process.platform === 'win32') {
-    return process.env.COMSPEC || 'cmd.exe';
-  }
-  return process.env.SHELL || '/bin/zsh';
+export function getDefaultShell() {
+  return resolveInteractiveShell();
 }
 
 /**
@@ -264,10 +268,10 @@ export function createShellSession(socket, options = {}) {
       // bounded fallback still injects the command if the probe never round-trips.
       // NOTE: the probe is POSIX (`printf`). The only caller of waitForPromptReady
       // is the agent-TUI path, which is developer-machine (mac/linux) only; on a
-      // Windows cmd.exe shell `printf` isn't a command, so the probe errors out,
-      // the marker never appears, and the command injects on the bounded fallback
-      // below (slower, never broken). A Windows port would need a platform-aware
-      // probe.
+      // Windows shell (PowerShell or cmd.exe) `printf` isn't a command, so the
+      // probe errors out, the marker never appears, and the command injects on the
+      // bounded fallback below (slower, never broken). A Windows port would need a
+      // dialect-aware probe — see #4638.
       let sent = false;
       let sub = null;
       let exitSub = null;

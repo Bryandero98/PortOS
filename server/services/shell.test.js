@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { buildCdCommand } from '../lib/shellCd.js';
 
 let ptyInstances = [];
 let spawnImpl;
@@ -388,6 +389,18 @@ describe('changeSessionDirectory', () => {
 
   it('returns false for a missing session', () => {
     expect(shell.changeSessionDirectory('missing', '/tmp')).toBe(false);
+  });
+
+  it('records the resolved default shell when the caller names none', () => {
+    // The recorded shell is what picks the cd dialect, so a session that spawned
+    // from the default must remember which binary that was — not fall through to
+    // detectShellFlavor's platform guess. Resolution itself is covered by
+    // lib/interactiveShellResolver.test.js.
+    const id = shell.createShellSession(makeSocket('sock-default'));
+    const spawnedShell = vi.mocked(defaultSpawn).mock.calls[0][0];
+    expect(spawnedShell).toBe(shell.getDefaultShell());
+    expect(shell.changeSessionDirectory(id, '/tmp/app')).toBe(true);
+    expect(ptyInstances[0].write).toHaveBeenCalledWith(`${buildCdCommand('/tmp/app', spawnedShell)}\r`);
   });
 });
 
