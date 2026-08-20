@@ -73,6 +73,7 @@ vi.mock('../services/imageTo3d/models.js', () => ({
   startGeneration: vi.fn(),
   deleteModel: vi.fn(),
   getModelAsset: vi.fn(),
+  getModelFullMesh: vi.fn(),
 }));
 
 import * as targets from '../services/imageTo3d/targets.js';
@@ -492,5 +493,36 @@ describe('image-to-3d model records', () => {
     models.getModelAsset.mockRejectedValue(new ServerError('not ready', { status: 409, code: 'MODEL_NOT_READY' }));
     const res = await request(makeApp()).get('/api/image-to-3d/models/image3d-1/asset');
     expect(res.status).toBe(409);
+  });
+
+  it('GET /models/:id/full-mesh streams the pre-decimation OBJ', async () => {
+    const tmp = join(tmpdir(), `it-full-${process.pid}.obj`);
+    await writeFile(tmp, 'v 0 0 0\nf 1 1 1\n');
+    models.getModelFullMesh.mockResolvedValue({ path: tmp, filename: 'beacon-full.obj' });
+    const res = await request(makeApp()).get('/api/image-to-3d/models/image3d-1/full-mesh');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/model\/obj/);
+    expect(res.headers['content-disposition']).toMatch(/beacon-full\.obj/);
+    await rm(tmp, { force: true });
+  });
+
+  it('GET /models/:id/full-mesh 404s when the sidecar was never written', async () => {
+    // A missing OBJ is NOT a broken record — older renders simply have none, so it
+    // must not read as the model being unavailable.
+    const { ServerError } = await import('../lib/errorHandler.js');
+    models.getModelFullMesh.mockRejectedValue(
+      new ServerError('no full mesh', { status: 404, code: 'FULL_MESH_MISSING' }),
+    );
+    const res = await request(makeApp()).get('/api/image-to-3d/models/image3d-1/full-mesh');
+    expect(res.status).toBe(404);
+    expect(res.body?.error?.code || res.body?.code).toBe('FULL_MESH_MISSING');
+  });
+
+  it('does not let /full-mesh be swallowed by the /models/:id route', async () => {
+    // Route-order regression: `/models/:id` would happily match `full-mesh` as an
+    // id and return JSON instead of a download.
+    models.getModelFullMesh.mockRejectedValue(new Error('boom'));
+    await request(makeApp()).get('/api/image-to-3d/models/image3d-1/full-mesh');
+    expect(models.getModelFullMesh).toHaveBeenCalledWith('image3d-1');
   });
 });

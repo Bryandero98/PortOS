@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { ArrowLeft, Boxes, AlertTriangle, Loader2, RefreshCw, Trash2 } from 'lucide-react';
-import { getImageTo3dModel, generateImageTo3dModel, deleteImageTo3dModel, imageTo3dAssetUrl } from '../services/api';
+import { getImageTo3dModel, generateImageTo3dModel, deleteImageTo3dModel, imageTo3dAssetUrl, imageTo3dFullMeshUrl } from '../services/api';
 import useMounted from '../hooks/useMounted';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { timeAgo } from '../utils/formatters';
@@ -208,11 +208,23 @@ export default function Media3DDetail() {
         <div>
           <span className="mb-1 block text-xs text-gray-400">Mesh</span>
           {record.status === 'ready' && record.assetPath ? (
-            <GlbViewer
-              src={meshSrc}
-              downloadHref={imageTo3dAssetUrl(record.id)}
-              forceOpaque
-            />
+            <>
+              <GlbViewer
+                src={meshSrc}
+                downloadHref={imageTo3dAssetUrl(record.id)}
+                forceOpaque
+              />
+              {/* The viewer loads the decimated GLB because that is what a browser
+                  can render; the decoder's full mesh is an order of magnitude
+                  larger. Offer it, but say what it actually is so nobody downloads
+                  several hundred MB expecting a textured model. */}
+              <a
+                href={imageTo3dFullMeshUrl(record.id)}
+                className="mt-2 inline-block text-xs text-gray-400 underline decoration-dotted hover:text-gray-200"
+              >
+                Download full-resolution mesh (.obj — geometry only, no textures)
+              </a>
+            </>
           ) : (
             <div className="flex aspect-square items-center justify-center rounded-xl border border-dashed border-port-border bg-port-bg text-center text-sm text-gray-500">
               {isGenerating ? (

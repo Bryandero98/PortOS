@@ -12,6 +12,7 @@ import {
   startGeneration,
   deleteModel,
   getModelAsset,
+  getModelFullMesh,
 } from '../services/imageTo3d/models.js';
 import {
   RENDER_STEPS_MIN, RENDER_STEPS_MAX, RENDER_SEED_MAX,
@@ -268,14 +269,22 @@ router.post('/models', asyncHandler(async (req, res) => {
   res.status(202).json(withRenderSupport(model));
 }));
 
-router.get('/models/:id/asset', asyncHandler(async (req, res) => {
-  const { path, filename } = await getModelAsset(req.params.id);
-  res.set('Content-Type', 'model/gltf-binary');
+/**
+ * Stream a resolved mesh file as an attachment.
+ *
+ * Shared by the GLB and full-mesh OBJ downloads: the error handling below is the
+ * whole reason this is a function rather than two copies. The 'error' event fires
+ * OUTSIDE the asyncHandler promise chain, so a throw there would crash the
+ * process — it has to go through sendErrorResponse (shared envelope +
+ * headers-sent guard).
+ *
+ * @param {import('express').Response} res
+ * @param {{path: string, filename: string}} file
+ * @param {string} contentType
+ */
+function streamMeshDownload(res, { path, filename }, contentType) {
+  res.set('Content-Type', contentType);
   res.set('Content-Disposition', `attachment; filename="${filename}"`);
-  // The 'error' event fires outside the asyncHandler promise chain, so a throw
-  // here would crash the process — route it through sendErrorResponse (the shared
-  // envelope + headers-sent guard) instead. A file removed between the readiness
-  // check and the stream just 404s the download.
   const stream = createReadStream(path);
   stream.on('error', (err) => {
     console.warn(`⚠️ Image-to-3D asset stream error: ${err.code || err.message}`);
@@ -285,13 +294,25 @@ router.get('/models/:id/asset', asyncHandler(async (req, res) => {
     if (res.headersSent) {
       res.destroy(err);
     } else {
-      // Drop the GLB download headers set above so the JSON error body isn't
-      // offered to the browser as a "<name>.glb" attachment.
+      // Drop the download headers set above so the JSON error body isn't offered
+      // to the browser as an attachment named like a mesh file.
       res.removeHeader('Content-Disposition');
       sendErrorResponse(res, new ServerError('Mesh file not found', { status: 404, code: 'ASSET_MISSING' }));
     }
   });
   stream.pipe(res);
+}
+
+router.get('/models/:id/asset', asyncHandler(async (req, res) => {
+  streamMeshDownload(res, await getModelAsset(req.params.id), 'model/gltf-binary');
+}));
+
+// The decoder's pre-decimation mesh. Registered before `/models/:id` so the more
+// specific path wins, and kept off `/asset` because it is a different artifact
+// with a different failure mode (see getModelFullMesh) rather than a variant of
+// the served GLB.
+router.get('/models/:id/full-mesh', asyncHandler(async (req, res) => {
+  streamMeshDownload(res, await getModelFullMesh(req.params.id), 'model/obj');
 }));
 
 router.get('/models/:id', asyncHandler(async (req, res) => {

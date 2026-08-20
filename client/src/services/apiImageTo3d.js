@@ -42,3 +42,11 @@ export const deleteImageTo3dModel = (id, options) =>
 // GlbViewer renders; this URL is for an explicit "download the file" action.
 export const imageTo3dAssetUrl = (id) =>
   `/api/image-to-3d/models/${encodeURIComponent(id)}/asset`;
+
+// The decoder's pre-decimation mesh, as written by upstream `generate.py` next to
+// the GLB. A separate endpoint rather than a query on `asset` because it is a
+// different artifact: plain `v`/`f` OBJ with no UVs, normals or material, often
+// several hundred MB, and absent on renders that never wrote the sidecar (a plain
+// 404 — not a sign the record is broken). The GLB stays the thing the viewer loads.
+export const imageTo3dFullMeshUrl = (id) =>
+  `/api/image-to-3d/models/${encodeURIComponent(id)}/full-mesh`;
