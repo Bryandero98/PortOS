@@ -62,6 +62,20 @@ const proxyMatches = (context, url) =>
 
 const navPaths = NAV_COMMANDS.map((command) => command.path);
 
+/**
+ * Every path the client router declares.
+ *
+ * NOT just `NAV_COMMANDS`: `client/src/CLAUDE.md` requires a selectable view to
+ * register only its BASE path in the nav manifest while its `:id` detail route
+ * lives in `App.jsx` alone. A convention-following `<Route path="data/:category">`
+ * would therefore be invisible to a nav-manifest-only check — and the terminator
+ * would 404 it in production with nothing failing near the new route.
+ */
+function clientRoutePaths(source) {
+  return [...source.matchAll(/<Route\s+path="([^"]+)"/g)]
+    .map(([, path]) => (path.startsWith('/') ? path : `/${path}`));
+}
+
 describe('vite dev proxy vs the server and the client router', () => {
   // The mounts come from the table `server/index.js` mounts from, not from a
   // regex over its source — that table is why the two cannot disagree.
@@ -110,16 +124,46 @@ describe('the asset table vs what the server mounts', () => {
 });
 
 describe('server-owned prefixes vs the client router', () => {
+  const routePaths = [...new Set([...navPaths, ...clientRoutePaths(read('client/src/App.jsx'))])];
+
+  it('finds the client routes it is comparing', () => {
+    expect(routePaths.length).toBeGreaterThan(50);
+    expect(routePaths).toContain('/data');
+  });
+
   it('declares every client route that lives under a server-owned prefix', () => {
     // The failure this catches: someone adds a `/data/backups` page. The
     // terminator 404s it, the page simply does not exist, and nothing points at
     // `assetRoutePrefixes.js`. Adding the route to that entry's `spaPaths` is
     // the fix — this test is what says so.
     const undeclared = SERVER_OWNED_PREFIXES.flatMap(({ prefix, spaPaths }) => (
-      navPaths.filter((path) => (
+      routePaths.filter((path) => (
         (path === prefix || path.startsWith(`${prefix}/`)) && !spaPaths.includes(path)
       ))
     ));
     expect(undeclared).toEqual([]);
+  });
+});
+
+describe('server/index.js route registration order', () => {
+  // `mountAssetRoutes` installs a terminating 404 on /api and /sdapi, so
+  // registration order became load-bearing: a router added BELOW the call is
+  // shadowed by that 404 and never runs. Nothing else reads this file any
+  // more — the drift guard reads the tables — so this is what catches it.
+  const source = read('server/index.js');
+
+  it('registers every API router above the terminators', () => {
+    const mountIndex = source.indexOf('mountAssetRoutes(app)');
+    expect(mountIndex).toBeGreaterThan(0);
+    const shadowed = [...source.matchAll(/app\.use\(\s*'(\/(?:api|sdapi)[^']*)'/g)]
+      .filter((match) => match.index > mountIndex)
+      .map(([, route]) => route);
+    expect(shadowed).toEqual([]);
+  });
+
+  it('leaves no asset mount behind in the file the table replaced', () => {
+    // An inline `app.use('/data/x', express.static(…))` added back here would sit
+    // BELOW the terminator and be dead — and would miss the dev proxy too.
+    expect(source).not.toMatch(/app\.use\(\s*'\/data[^']*',\s*express\.static/);
   });
 });

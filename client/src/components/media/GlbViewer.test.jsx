@@ -334,6 +334,11 @@ describe('GlbViewer HDRI failures', () => {
     expect(screen.getByLabelText('Preview display settings')).toBeInTheDocument();
     openControls();
     expect(screen.getByLabelText('Ambient light')).toBeInTheDocument();
+    // ...but the two knobs that drove the now-unmounted Environment are gone,
+    // replaced by a line saying why, instead of sitting there doing nothing.
+    expect(screen.queryByLabelText('Environment light')).not.toBeInTheDocument();
+    expect(screen.queryByText('Show HDRI background')).not.toBeInTheDocument();
+    expect(screen.getByText(/Environment lighting unavailable/i)).toBeInTheDocument();
     expect(logged).toHaveBeenCalledWith(expect.stringContaining('💥 React Error'), expect.anything());
   });
 

@@ -490,7 +490,8 @@ function SpecRenderFailure({ error, onRetry }) {
     // remaps hardcoded light ink to dark and the heading goes near-invisible.
     <div
       data-testid="threejs-spec-error"
-      className="port-media-overlay absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center"
+      role="alert"
+      className="port-media-overlay absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 p-4 text-center"
     >
       <AlertTriangle className="h-6 w-6 text-port-error" aria-hidden="true" />
       <p className="text-sm font-medium">This model spec could not be rendered</p>
@@ -677,112 +678,114 @@ export default function ThreejsModelPreview({ spec, family = null, className = '
           </Canvas>
         </ErrorBoundary>
       )}
-      <div className="port-media-overlay absolute left-2 top-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 rounded-lg px-2 py-1.5 text-[10px]">
-        <span className="mr-1 whitespace-nowrap text-port-text-muted">Background</span>
-        <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Preview background">
-          {BACKGROUND_PRESETS.map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              aria-label={preset.label}
-              aria-pressed={selectedPreset === preset.id}
-              onClick={() => setBackground(preset.value)}
-              className="port-media-overlay-item rounded px-1.5 py-1"
-            >
-              {preset.label}
-            </button>
-          ))}
-        </div>
-        <label className="port-media-overlay-item flex items-center gap-1 rounded px-1.5 py-1">
-          Custom
-          <input
-            type="color"
-            aria-label="Custom preview background color"
-            value={background || '#000000'}
-            onChange={(event) => setBackground(event.target.value)}
-            className="h-4 w-5 rounded border-0 bg-transparent p-0"
-          />
-        </label>
-        <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
-        <label htmlFor={qualitySelectId} className="whitespace-nowrap text-port-text-muted">
-          Quality
-        </label>
-        <select
-          id={qualitySelectId}
-          value={qualityMode === 'auto' ? 'auto' : fixedTier}
-          onChange={handleQualityChange}
-          className="port-media-overlay-item rounded px-1.5 py-1 text-[10px]"
-        >
-          <option value="auto">Auto</option>
-          {PREVIEW_QUALITY_TIERS.map((tier) => <option key={tier} value={tier}>{tier}</option>)}
-        </select>
-        <span className="whitespace-nowrap text-port-text-muted">
-          {qualityMode === 'auto' ? `Auto · ${effectiveTier}` : `Fixed · ${effectiveTier}`}
-        </span>
-        <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
-        <label htmlFor={explodeSliderId} className="whitespace-nowrap text-port-text-muted">
-          Explode
-        </label>
-        <input
-          id={explodeSliderId}
-          type="range"
-          min="0"
-          max="1"
-          step="0.02"
-          value={explode}
-          disabled={layout.unitIds.length < 2}
-          onChange={(event) => setExplode(Number(event.target.value))}
-          className="h-1 w-20 cursor-pointer accent-port-accent disabled:cursor-not-allowed disabled:opacity-40 sm:w-28"
-        />
-        <span className="w-8 tabular-nums text-port-text-muted">{Math.round(explode * 100)}%</span>
-        {explode > 0 && (
-          <button
-            type="button"
-            onClick={() => setExplode(0)}
-            className="port-media-overlay-item rounded px-1.5 py-1"
-          >
-            Reassemble
-          </button>
-        )}
-        <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
-        <span className="whitespace-nowrap text-port-text-muted">Audit camera</span>
-        <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Audit camera">
-          {AUDIT_CAMERAS.map((camera) => {
-            const unavailable = camera.id === 'family' && !family;
-            return (
+      {!specError && (
+        <div className="port-media-overlay absolute left-2 top-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 rounded-lg px-2 py-1.5 text-[10px]">
+          <span className="mr-1 whitespace-nowrap text-port-text-muted">Background</span>
+          <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Preview background">
+            {BACKGROUND_PRESETS.map((preset) => (
               <button
-                key={camera.id}
+                key={preset.id}
                 type="button"
-                aria-label={camera.label}
-                aria-pressed={auditCamera === camera.id}
-                disabled={unavailable}
-                title={unavailable ? 'Choose a subject family to enable family review' : undefined}
-                onClick={() => setPreviewParam('auditCamera', camera.id)}
-                className="port-media-overlay-item rounded px-1.5 py-1 disabled:cursor-not-allowed disabled:opacity-40"
+                aria-label={preset.label}
+                aria-pressed={selectedPreset === preset.id}
+                onClick={() => setBackground(preset.value)}
+                className="port-media-overlay-item rounded px-1.5 py-1"
               >
-                {camera.label}
+                {preset.label}
               </button>
-            );
-          })}
-        </div>
-        <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
-        <span className="whitespace-nowrap text-port-text-muted">Inspection</span>
-        <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Inspection mode">
-          {AUDIT_RENDER_MODES.map((mode) => (
+            ))}
+          </div>
+          <label className="port-media-overlay-item flex items-center gap-1 rounded px-1.5 py-1">
+            Custom
+            <input
+              type="color"
+              aria-label="Custom preview background color"
+              value={background || '#000000'}
+              onChange={(event) => setBackground(event.target.value)}
+              className="h-4 w-5 rounded border-0 bg-transparent p-0"
+            />
+          </label>
+          <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
+          <label htmlFor={qualitySelectId} className="whitespace-nowrap text-port-text-muted">
+            Quality
+          </label>
+          <select
+            id={qualitySelectId}
+            value={qualityMode === 'auto' ? 'auto' : fixedTier}
+            onChange={handleQualityChange}
+            className="port-media-overlay-item rounded px-1.5 py-1 text-[10px]"
+          >
+            <option value="auto">Auto</option>
+            {PREVIEW_QUALITY_TIERS.map((tier) => <option key={tier} value={tier}>{tier}</option>)}
+          </select>
+          <span className="whitespace-nowrap text-port-text-muted">
+            {qualityMode === 'auto' ? `Auto · ${effectiveTier}` : `Fixed · ${effectiveTier}`}
+          </span>
+          <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
+          <label htmlFor={explodeSliderId} className="whitespace-nowrap text-port-text-muted">
+            Explode
+          </label>
+          <input
+            id={explodeSliderId}
+            type="range"
+            min="0"
+            max="1"
+            step="0.02"
+            value={explode}
+            disabled={layout.unitIds.length < 2}
+            onChange={(event) => setExplode(Number(event.target.value))}
+            className="h-1 w-20 cursor-pointer accent-port-accent disabled:cursor-not-allowed disabled:opacity-40 sm:w-28"
+          />
+          <span className="w-8 tabular-nums text-port-text-muted">{Math.round(explode * 100)}%</span>
+          {explode > 0 && (
             <button
-              key={mode.id}
               type="button"
-              aria-label={mode.label}
-              aria-pressed={auditMode === mode.id}
-              onClick={() => setPreviewParam('auditMode', mode.id)}
+              onClick={() => setExplode(0)}
               className="port-media-overlay-item rounded px-1.5 py-1"
             >
-              {mode.label}
+              Reassemble
             </button>
-          ))}
+          )}
+          <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
+          <span className="whitespace-nowrap text-port-text-muted">Audit camera</span>
+          <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Audit camera">
+            {AUDIT_CAMERAS.map((camera) => {
+              const unavailable = camera.id === 'family' && !family;
+              return (
+                <button
+                  key={camera.id}
+                  type="button"
+                  aria-label={camera.label}
+                  aria-pressed={auditCamera === camera.id}
+                  disabled={unavailable}
+                  title={unavailable ? 'Choose a subject family to enable family review' : undefined}
+                  onClick={() => setPreviewParam('auditCamera', camera.id)}
+                  className="port-media-overlay-item rounded px-1.5 py-1 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {camera.label}
+                </button>
+              );
+            })}
+          </div>
+          <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
+          <span className="whitespace-nowrap text-port-text-muted">Inspection</span>
+          <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Inspection mode">
+            {AUDIT_RENDER_MODES.map((mode) => (
+              <button
+                key={mode.id}
+                type="button"
+                aria-label={mode.label}
+                aria-pressed={auditMode === mode.id}
+                onClick={() => setPreviewParam('auditMode', mode.id)}
+                className="port-media-overlay-item rounded px-1.5 py-1"
+              >
+                {mode.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
-      {selectedId && (
+      )}
+      {selectedId && !specError && (
         <div className="port-media-overlay absolute right-2 top-2 flex max-w-[calc(100%-1rem)] items-center gap-2 rounded-lg px-2 py-1.5 text-[10px]">
           <span className="truncate font-medium">{selection.names[selectedId] || selectedId}</span>
           <code className="truncate text-port-text-muted">{selectedId}</code>
@@ -806,43 +809,45 @@ export default function ThreejsModelPreview({ spec, family = null, className = '
           </button>
         </div>
       )}
-      <div className="pointer-events-none absolute bottom-2 left-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 text-[10px]">
-        <ThreejsClipTransport
-          clips={clips}
-          clip={clip}
-          duration={playback.duration}
-          time={playback.timeSeconds}
-          playing={playback.playing}
-          speed={playback.speed}
-          activeSequenceNames={activeSequenceNames}
-          onSelectClip={(clipId) => setPreviewParam('clip', clipId)}
-          onTogglePlay={playback.togglePlay}
-          onStop={playback.stop}
-          onScrub={playback.setPlayhead}
-          onSpeedChange={playback.setSpeed}
-        />
-        <span className="port-media-overlay rounded px-2 py-1">
-          Drag to orbit · scroll to zoom · click a part to identify it · audit controls never change the saved model
-        </span>
-        {family && (
-          <span className="port-media-overlay rounded px-2 py-1 text-port-text-muted">
-            Family review: {(family.orbitViews || []).join(', ') || 'review the authored subject'}
-            {family.reviewAxes?.length > 0 ? ` · ${family.reviewAxes.join('; ')}` : ''}
+      {!specError && (
+        <div className="pointer-events-none absolute bottom-2 left-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 text-[10px]">
+          <ThreejsClipTransport
+            clips={clips}
+            clip={clip}
+            duration={playback.duration}
+            time={playback.timeSeconds}
+            playing={playback.playing}
+            speed={playback.speed}
+            activeSequenceNames={activeSequenceNames}
+            onSelectClip={(clipId) => setPreviewParam('clip', clipId)}
+            onTogglePlay={playback.togglePlay}
+            onStop={playback.stop}
+            onScrub={playback.setPlayhead}
+            onSpeedChange={playback.setSpeed}
+          />
+          <span className="port-media-overlay rounded px-2 py-1">
+            Drag to orbit · scroll to zoom · click a part to identify it · audit controls never change the saved model
           </span>
-        )}
-        {/* Never "animation-ready": nothing here is skinned. The badge says only
-            whether the spec declared a usable articulation graph, and a model
-            that predates the contract has none and reads as a static assembly. */}
-        <span
-          className={articulation.articulationReady
-            ? 'port-media-overlay rounded px-2 py-1 text-port-success'
-            : 'port-media-overlay rounded px-2 py-1 text-port-text-muted'}
-        >
-          {articulation.articulationReady
-            ? `Articulation-ready · ${articulation.jointCount} joints · ${articulation.socketCount} pivot${articulation.socketCount === 1 ? '' : 's'}`
-            : `Static assembly${articulation.jointCount > 0 ? ` · ${articulation.jointCount} joints declared` : ''}`}
-        </span>
-      </div>
+          {family && (
+            <span className="port-media-overlay rounded px-2 py-1 text-port-text-muted">
+              Family review: {(family.orbitViews || []).join(', ') || 'review the authored subject'}
+              {family.reviewAxes?.length > 0 ? ` · ${family.reviewAxes.join('; ')}` : ''}
+            </span>
+          )}
+          {/* Never "animation-ready": nothing here is skinned. The badge says only
+              whether the spec declared a usable articulation graph, and a model
+              that predates the contract has none and reads as a static assembly. */}
+          <span
+            className={articulation.articulationReady
+              ? 'port-media-overlay rounded px-2 py-1 text-port-success'
+              : 'port-media-overlay rounded px-2 py-1 text-port-text-muted'}
+          >
+            {articulation.articulationReady
+              ? `Articulation-ready · ${articulation.jointCount} joints · ${articulation.socketCount} pivot${articulation.socketCount === 1 ? '' : 's'}`
+              : `Static assembly${articulation.jointCount > 0 ? ` · ${articulation.jointCount} joints declared` : ''}`}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

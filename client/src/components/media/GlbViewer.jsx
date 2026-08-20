@@ -180,6 +180,10 @@ export default function GlbViewer({
   // at a different mesh drops the panel without an effect — and one record's
   // failure never sticks to the next one.
   const [failure, setFailure] = useState(null);
+  // The HDRI degrades on its own (see the boundary around <Environment>), but the
+  // two controls that drive it would keep sitting in the panel doing nothing —
+  // exactly the dead-knob shape this change exists to remove.
+  const [environmentFailed, setEnvironmentFailed] = useState(false);
   if (!src) return null;
   const loadError = failure?.src === src ? failure.error : null;
   const retryLoad = () => {
@@ -252,7 +256,7 @@ export default function GlbViewer({
                   image-based LIGHTING, which the three lights below already
                   stand in for. Same shape OpenWorldScene documents for its
                   galaxy spheremap: degrade to lights-only, keep the scene. */}
-              <ErrorBoundary fallback={null}>
+              <ErrorBoundary fallback={null} onError={() => setEnvironmentFailed(true)}>
                 <Suspense fallback={null}>
                   {/* Keep the HDRI in public/ instead of using drei's remote presets:
                       preview lighting and the default backdrop must work offline. */}
@@ -282,12 +286,18 @@ export default function GlbViewer({
           <LightingControl label="Ambient" max={2} value={ambientIntensity} onChange={setAmbientIntensity} />
           <LightingControl label="Key" max={3} value={keyIntensity} onChange={setKeyIntensity} />
           <LightingControl label="Fill" max={2} value={fillIntensity} onChange={setFillIntensity} />
-          <LightingControl
-            label="Environment"
-            max={2}
-            value={environmentIntensity}
-            onChange={setEnvironmentIntensity}
-          />
+          {environmentFailed ? (
+            <p className="text-xs text-port-text-muted">
+              Environment lighting unavailable — the HDRI could not be loaded, so the scene is lit by the sliders alone.
+            </p>
+          ) : (
+            <LightingControl
+              label="Environment"
+              max={2}
+              value={environmentIntensity}
+              onChange={setEnvironmentIntensity}
+            />
+          )}
           <div className="flex items-center gap-2">
             <label htmlFor={backgroundInputId} className="w-20">Background</label>
             <input
@@ -299,15 +309,17 @@ export default function GlbViewer({
               className="h-7 w-10 cursor-pointer rounded border border-port-border bg-transparent p-0.5"
             />
           </div>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={showEnvironmentBackground}
-              onChange={(event) => setShowEnvironmentBackground(event.target.checked)}
-              className="accent-port-accent"
-            />
-            Show HDRI background
-          </label>
+          {!environmentFailed && (
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={showEnvironmentBackground}
+                onChange={(event) => setShowEnvironmentBackground(event.target.checked)}
+                className="accent-port-accent"
+              />
+              Show HDRI background
+            </label>
+          )}
         </div>
       )}
       <div className="flex items-center justify-between gap-2 border-t border-port-border px-3 py-2">

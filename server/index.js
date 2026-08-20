@@ -389,9 +389,10 @@ app.use('/api/ask', askRoutes);
 // Asset static mounts, then a terminating 404 for every server-owned prefix so
 // an extensionless `/data/…` or a mistyped `/api/…` can no longer fall through
 // to the SPA fallback below and be answered with index.html and a 200 (#4688).
-// Both lists live in lib/assetRoutePrefixes.js, which `client/vite.config.js`
-// and `scripts/dev-proxy-drift.test.js` read as data — so the dev proxy and the
-// guard cannot fall behind this file.
+// Both lists live in lib/assetRoutePrefixes.js, which `scripts/dev-proxy-drift.test.js`
+// reads as data. NOTE: this call installs a terminating 404 on `/api` and
+// `/sdapi` too, so every router above must stay above — one added BELOW it is
+// shadowed and never runs. That guard test holds the ordering.
 mountAssetRoutes(app);
 
 // Serve built client UI (production mode — no Vite dev server needed)

@@ -15,6 +15,13 @@ import CoSAvatarFrame from './CoSAvatarFrame';
  * a model 404 told the user to go change an unrelated setting. `isWebGLAvailable`
  * is a real pre-gate and keeps the WebGL hint; anything thrown afterwards is an
  * asset failure and says so.
+ *
+ * `fallback` overrides the PRE-GATE only. A caught error deliberately outranks
+ * it: the GLB-loading callers already probe for a missing model with a HEAD
+ * request and render their own "no model, run setup" hint before mounting this
+ * guard at all, so a failure that reaches HERE means the file answered and then
+ * failed — a different cause, which that hint would misreport (it is what sent
+ * a user chasing `npm run setup:data` for a server returning HTML).
  */
 
 const panelClass = (background) =>
@@ -70,7 +77,7 @@ export default function CoSCanvasGuard({
   const error = failure?.key === resetKey ? failure.error : null;
 
   if (!supported) return fallback || <WebGLUnavailableHint background={background} />;
-  if (error) return fallback || <AvatarAssetFailure background={background} error={error} />;
+  if (error) return <AvatarAssetFailure background={background} error={error} />;
 
   return (
     <CoSAvatarFrame label={label} background={background}>

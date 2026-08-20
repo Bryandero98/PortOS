@@ -845,6 +845,12 @@ describe('ThreejsModelPreview spec-render failures', () => {
     expect(screen.getByText(/NaN position values/)).toBeInTheDocument();
     expect(screen.queryByTestId('threejs-canvas')).not.toBeInTheDocument();
     expect(logged).toHaveBeenCalledWith(expect.stringContaining('💥 React Error'), expect.anything());
+    // The overlay chrome is a DOM peer that comes AFTER the panel, so leaving it
+    // mounted paints it over the message — and every control on it drives a
+    // canvas that no longer exists.
+    expect(screen.queryByRole('radiogroup', { name: 'Preview background' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Explode')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Drag to orbit/)).not.toBeInTheDocument();
   });
 
   // A lost WebGL context throws the same way a bad spec does, but it can come
