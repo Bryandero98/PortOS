@@ -310,6 +310,13 @@ describe.skipIf(!pyBin)('trellis2RestoreFillHoles', () => {
 
   const patch = () => execFileSync(pyBin, [trellis2FillHolesScript(), dir], { encoding: 'utf8' });
 
+  // Python's `write_text` translates \n to the platform line ending, so the patched
+  // file is CRLF on Windows while Node's readFileSync returns the raw bytes. A
+  // `\n\s+` regex then cannot match — this failed ONLY on the Windows CI runner and
+  // passed locally. Normalizing is the convention root CLAUDE.md prescribes for
+  // exactly this class of failure.
+  const readNormalized = () => readFileSync(basePath(), 'utf8').replace(/\r\n?/g, '\n');
+
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'portos-fillholes-'));
     mkdirSync(join(dir, 'TRELLIS.2', 'trellis2', 'representations', 'mesh'), { recursive: true });
@@ -320,7 +327,7 @@ describe.skipIf(!pyBin)('trellis2RestoreFillHoles', () => {
   it('converts the hard stub into an environment gate', () => {
     writeFileSync(basePath(), STUBBED);
     patch();
-    const out = readFileSync(basePath(), 'utf8');
+    const out = readNormalized();
     expect(out).toContain('PORTOS_TRELLIS2_FILL_HOLES');
     expect(out).not.toContain('return  # Skip');
     // Default-off is the safety property: absent the env var, behaviour is
@@ -333,17 +340,28 @@ describe.skipIf(!pyBin)('trellis2RestoreFillHoles', () => {
     // and `simplify` additionally interacts with the decimation-target override.
     writeFileSync(basePath(), STUBBED);
     patch();
-    const out = readFileSync(basePath(), 'utf8');
+    const out = readNormalized();
     expect(out).toMatch(/def remove_faces\(self, face_mask\):\n\s+return\n/);
     expect(out).toMatch(/def simplify\(self, target=1000000\):\n\s+return\n/);
+  });
+
+  it('finds and replaces the stub in a CRLF file', () => {
+    // The Windows condition, reproduced on any platform. The patcher matches
+    // UPSTREAM_STUB literally and that literal contains \n, so it only works because
+    // Python's read_text applies universal newlines. If someone switched it to a
+    // byte-level read, this breaks on every Windows checkout and nowhere else.
+    writeFileSync(basePath(), STUBBED.replace(/\n/g, '\r\n'));
+    patch();
+    expect(readNormalized()).toContain('PORTOS_TRELLIS2_FILL_HOLES');
+    expect(readNormalized()).not.toContain('return  # Skip');
   });
 
   it('is idempotent, so it is safe as a repeated repair step', () => {
     writeFileSync(basePath(), STUBBED);
     patch();
-    const once = readFileSync(basePath(), 'utf8');
+    const once = readNormalized();
     expect(patch()).toMatch(/already present/);
-    expect(readFileSync(basePath(), 'utf8')).toBe(once);
+    expect(readNormalized()).toBe(once);
   });
 
   it('fails loudly rather than no-op’ing when upstream’s stub text changes', () => {
