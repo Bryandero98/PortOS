@@ -57,7 +57,13 @@ export async function probeOpenAiModels(baseUrl, { timeoutMs = 2_000 } = {}) {
     return { reachable: false, models: null, error: `HTTP ${res.status}` };
   }
 
-  const body = await readResponseJson(res, { fallback: null, emptyValue: null });
+  // The body read is its own failure path: a daemon that accepts the connection
+  // and then drops it (or sends a truncated body) rejects inside `res.text()`,
+  // NOT at the fetch above. Unhandled, that rejection escapes the probe and
+  // fails the entire readiness request — one flaky daemon would blank the
+  // checklist for every provider — so it lands on the same
+  // reachable-but-unreadable sentinel as a non-JSON body.
+  const body = await readResponseJson(res, { fallback: null, emptyValue: null }).catch(() => null);
   const rows = Array.isArray(body?.data) ? body.data : Array.isArray(body?.models) ? body.models : null;
   if (!rows) return { reachable: true, models: null, error: 'model listing was not readable' };
   return {

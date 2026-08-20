@@ -45,6 +45,15 @@ describe('probeOpenAiModels', () => {
     expect(unreadable.error).toMatch(/not readable/i);
   });
 
+  it('survives a body that rejects mid-read', async () => {
+    // A daemon that accepts the connection and then drops it rejects in
+    // res.text(), not at the fetch. Escaping here would fail the whole
+    // readiness request and blank the checklist for every provider.
+    mockFetch(async () => ({ ok: true, status: 200, text: async () => { throw new Error('terminated'); } }));
+
+    await expect(probeOpenAiModels('http://x/v1')).resolves.toMatchObject({ reachable: true, models: null });
+  });
+
   it('names the real transport failure instead of undici bare "fetch failed"', async () => {
     const err = new TypeError('fetch failed');
     err.cause = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8080'), { code: 'ECONNREFUSED' });
