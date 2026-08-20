@@ -233,11 +233,13 @@ describe('Media3D — generation workspace', () => {
 
     fireEvent.change(screen.getByLabelText(/detail/i), { target: { value: 'fast' } });
     fireEvent.change(screen.getByLabelText(/transparency/i), { target: { value: 'BLEND' } });
+    // Defaults off, so clicking it turns the bake ON — which is also the direction
+    // that matters here: an opt-in the user selected must survive to the request.
     fireEvent.click(screen.getByLabelText(/bake normal map/i));
     fireEvent.click(screen.getByRole('button', { name: /Generate 3D/i }));
 
     await waitFor(() => expect(createImageTo3dModel).toHaveBeenCalledWith(
-      expect.objectContaining({ detail: 'fast', alphaMode: 'BLEND', normalMap: false }),
+      expect.objectContaining({ detail: 'fast', alphaMode: 'BLEND', normalMap: true }),
       expect.anything(),
     ));
   });

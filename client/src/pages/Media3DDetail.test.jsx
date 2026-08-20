@@ -96,9 +96,10 @@ describe('Media3DDetail', () => {
 
     await waitFor(() => expect(generateImageTo3dModel).toHaveBeenCalledWith(
       'image3d-1',
-      // normalMap is sent explicitly rather than omitted: the server default is
-      // TRUE, so an absent key could not express "off".
-      { steps: 24, keyBackground: true, normalMap: true },
+      // normalMap is sent explicitly rather than omitted. It defaults OFF (the bake
+      // can lose a render outright), and stating it keeps the body honest about what
+      // the run asked for even if that default ever moves.
+      { steps: 24, keyBackground: true, normalMap: false },
       { silent: true },
     ));
   });
@@ -121,7 +122,7 @@ describe('Media3DDetail', () => {
     fireEvent.click(screen.getByRole('button', { name: /re-render/i }));
     await waitFor(() => expect(generateImageTo3dModel).toHaveBeenCalledWith(
       'image3d-1',
-      { steps: 48, keyBackground: false, normalMap: true },
+      { steps: 48, keyBackground: false, normalMap: false },
       { silent: true },
     ));
   });
