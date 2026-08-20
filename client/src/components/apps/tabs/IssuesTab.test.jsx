@@ -81,7 +81,9 @@ describe('IssuesTab', () => {
     expect(await screen.findByText('Crash on save')).toBeInTheDocument();
     expect(api.getAppIssues).toHaveBeenCalledWith('app-1');
     expect(screen.getByText('#42')).toBeInTheDocument();
-    expect(screen.getByText('bug')).toBeInTheDocument();
+    // Scoped by the row chip's own title — the label also appears as a filter
+    // toggle in the header, so a bare getByText('bug') is ambiguous.
+    expect(screen.getByTitle('Something is broken')).toHaveTextContent('bug');
     expect(screen.getByText(/alice/)).toBeInTheDocument();
     expect(screen.getByText('acme/widget')).toBeInTheDocument();
   });
@@ -229,6 +231,76 @@ describe('IssuesTab', () => {
 
     expect(screen.getByText('Add CSV export')).toBeInTheDocument();
     expect(screen.queryByText('Crash on save')).not.toBeInTheDocument();
+  });
+
+  it('hides in-progress issues by default and lists them once the chip is toggled on', async () => {
+    api.getAppIssues.mockResolvedValue(okPayload([
+      ISSUE,
+      {
+        ...ISSUE,
+        number: 43,
+        title: 'Being worked right now',
+        labels: [
+          { name: 'bug', color: '#d73a4a', description: '' },
+          { name: 'in-progress', color: '#0e8a16', description: '' },
+        ],
+      },
+    ]));
+    await renderTab();
+
+    await screen.findByText('Crash on save');
+    expect(screen.queryByText('Being worked right now')).not.toBeInTheDocument();
+    expect(screen.getByText('1 of 2 open')).toBeInTheDocument();
+
+    const chip = screen.getByRole('button', { name: /in-progress/ });
+    expect(chip).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(chip);
+    expect(await screen.findByText('Being worked right now')).toBeInTheDocument();
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('toggles a label chip off to hide every issue carrying that label', async () => {
+    api.getAppIssues.mockResolvedValue(okPayload([
+      ISSUE,
+      { ...ISSUE, number: 43, title: 'Add CSV export', labels: [{ name: 'feature', color: null, description: '' }] },
+    ]));
+    await renderTab();
+
+    await screen.findByText('Crash on save');
+    // Facet counts come from the fetched issues, one chip per distinct label.
+    const bugChip = screen.getByRole('button', { name: 'bug (1)' });
+    expect(screen.getByRole('button', { name: 'feature (1)' })).toBeInTheDocument();
+
+    fireEvent.click(bugChip);
+    await waitFor(() => expect(screen.queryByText('Crash on save')).not.toBeInTheDocument());
+    expect(screen.getByText('Add CSV export')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all labels' }));
+    expect(await screen.findByText('Crash on save')).toBeInTheDocument();
+  });
+
+  it('resets label filters back to the in-progress default when the app changes', async () => {
+    const inProgress = {
+      ...ISSUE,
+      number: 43,
+      title: 'Being worked right now',
+      labels: [{ name: 'in-progress', color: '#0e8a16', description: '' }],
+    };
+    api.getAppIssues.mockResolvedValue(okPayload([ISSUE, inProgress]));
+    const { rerender } = await renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: /in-progress/ }));
+    expect(await screen.findByText('Being worked right now')).toBeInTheDocument();
+
+    rerender(
+      <MemoryRouter>
+        <IssuesTab appId="app-2" appName="Other" />
+      </MemoryRouter>
+    );
+    await act(async () => {});
+
+    await waitFor(() => expect(screen.queryByText('Being worked right now')).not.toBeInTheDocument());
   });
 
   it('ignores a stale in-flight response when the app changes mid-request', async () => {

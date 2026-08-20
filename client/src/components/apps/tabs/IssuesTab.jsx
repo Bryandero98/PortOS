@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useId, useRef } from 'react'
 import { Link } from 'react-router';
 import {
   AlertTriangle, Bot, ChevronDown, ChevronRight, CircleDot, ExternalLink,
-  Loader2, RefreshCw, Rocket, Search, User
+  Loader2, RefreshCw, Rocket, Search, Tag, User
 } from 'lucide-react';
 import BrailleSpinner from '../../BrailleSpinner';
 import Banner from '../../ui/Banner';
@@ -38,6 +38,12 @@ const claimStatusForTask = (status) => ({
 // (CLI/TUI agents with a file-writing harness) can run a `/do:next` claim.
 const enabledProcessProviderFilter = (p) => Boolean(p?.enabled) && isProcessProvider(p);
 
+// `in-progress` is the forge label a `/do:next` claim stamps on an issue it is
+// actively working (server/services/issueReconcile.js#IN_PROGRESS_LABEL). Those
+// rows aren't claimable, so the tab hides them until the user toggles the chip
+// back on.
+const DEFAULT_HIDDEN_LABELS = ['in-progress'];
+
 // Why the forge returned nothing, in the user's terms. Sentinel-aware: a
 // definitive "no open issues" and a failed probe are different sentences, so an
 // unreachable CLI can never read as an empty tracker.
@@ -54,22 +60,62 @@ const EMPTY_REASONS = {
  * so it can't be a Tailwind class (those must be literal strings in source).
  * Render it as a tinted chip via inline style: the color for text and border,
  * a low-alpha wash of it for the background, which stays legible on the dark
- * surface for the full hue range. A label with no color falls back to `muted`.
+ * surface for the full hue range. A label with no color gets no inline style, so
+ * the chip keeps its own neutral look (the `muted` Pill tone on a row chip).
  */
+const labelChipStyle = (color) => (color ? {
+  color,
+  borderColor: `${color}66`,
+  backgroundColor: `${color}1a`
+} : undefined);
+
 function LabelChip({ label }) {
   return (
     <Pill
       size="xs"
       tone={label.color ? 'bare' : 'muted'}
       title={label.description || undefined}
-      style={label.color ? {
-        color: label.color,
-        borderColor: `${label.color}66`,
-        backgroundColor: `${label.color}1a`
-      } : undefined}
+      style={labelChipStyle(label.color)}
     >
       {label.name}
     </Pill>
+  );
+}
+
+/**
+ * One label's show/hide toggle. Pressed (default) = issues carrying the label
+ * are listed; un-pressed strikes the chip through and drops every issue that
+ * carries it — so an issue tagged `bug` + `in-progress` disappears while
+ * `in-progress` is off, which is what "hide in-progress work" has to mean.
+ *
+ * The count renders as a node adjacent to the name, so the computed accessible
+ * name would be "bug1" — `aria-label` spells it out instead.
+ *
+ * NOT the shared `ui/ToggleChip`: that one is a fixed-accent pill wrapping a
+ * real checkbox, which can't carry the forge's per-label color (the thing the
+ * user recognizes a label by) and stacks a checkbox per chip into a row that
+ * routinely runs 20+ labels wide.
+ */
+function LabelFilterChip({ facet, hidden, onToggle }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onToggle(facet.name)}
+      aria-pressed={!hidden}
+      aria-label={`${facet.name} (${facet.count})`}
+      title={facet.description
+        ? `${facet.description} — click to ${hidden ? 'show' : 'hide'} these issues`
+        : `Click to ${hidden ? 'show' : 'hide'} issues labeled ${facet.name}`}
+      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] transition-opacity ${
+        hidden
+          ? 'border-port-border bg-port-bg text-gray-500 line-through opacity-60 hover:opacity-100'
+          : 'border-port-border bg-port-bg text-gray-300 hover:opacity-80'
+      }`}
+      style={hidden ? undefined : labelChipStyle(facet.color)}
+    >
+      {facet.name}
+      <span className="font-mono opacity-70">{facet.count}</span>
+    </button>
   );
 }
 
@@ -89,6 +135,10 @@ export default function IssuesTab({ appId, appName }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
+  // Labels whose issues are hidden. Tracking the HIDDEN set (rather than the
+  // shown one) means a label that shows up in a later refresh is visible by
+  // default without reconciling state against the new facet list.
+  const [hiddenLabels, setHiddenLabels] = useState(() => new Set(DEFAULT_HIDDEN_LABELS));
   const [expanded, setExpanded] = useState(() => new Set());
   // Per-issue claim lifecycle: 'queuing' while the POST is in flight, then the
   // task's live CoS state. Keyed by issue number so one claim can't disable
@@ -129,6 +179,7 @@ export default function IssuesTab({ appId, appName }) {
     claimsRef.current = {};
     setClaims({});
     setOverrideContext('');
+    setHiddenLabels(new Set(DEFAULT_HIDDEN_LABELS));
   }, [appId]);
 
   useEffect(() => {
@@ -241,13 +292,40 @@ export default function IssuesTab({ appId, appName }) {
     ].join('\n').toLowerCase()
   })), [data]);
 
+  // Every label present on the fetched issues, with how many issues carry it,
+  // alphabetical so the chip row doesn't reshuffle between refreshes.
+  const labelFacets = useMemo(() => {
+    const byName = new Map();
+    for (const issue of data?.issues || []) {
+      for (const label of issue.labels || []) {
+        const seen = byName.get(label.name);
+        if (seen) seen.count += 1;
+        else byName.set(label.name, { ...label, count: 1 });
+      }
+    }
+    return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [data]);
+
   const issues = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const rows = q ? haystacks.filter(h => h.hay.includes(q)) : haystacks;
+    const rows = haystacks.filter(h =>
+      (hiddenLabels.size === 0 || !h.issue.labels.some(l => hiddenLabels.has(l.name)))
+      && (!q || h.hay.includes(q))
+    );
     return rows.map(h => h.issue);
-  }, [haystacks, query]);
+  }, [haystacks, query, hiddenLabels]);
 
   const total = data?.issues?.length ?? 0;
+  // Only labels actually on this tracker count as "filtering something" — the
+  // seeded `in-progress` default must not claim to hide anything in a repo that
+  // never uses it.
+  const hidingByLabel = labelFacets.some(f => hiddenLabels.has(f.name));
+
+  const toggleLabel = (name) => setHiddenLabels(prev => {
+    const next = new Set(prev);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    return next;
+  });
 
   const toggleExpanded = (number) => setExpanded(prev => {
     const next = new Set(prev);
@@ -342,6 +420,35 @@ export default function IssuesTab({ appId, appName }) {
         </button>
       </div>
 
+      {labelFacets.length > 0 && (
+        <div
+          role="group"
+          aria-label="Label filters"
+          className="flex flex-wrap items-center gap-1.5 px-3 py-2 bg-port-card border border-port-border rounded-lg"
+        >
+          <span className="flex items-center gap-1.5 text-xs text-gray-500 uppercase tracking-wide shrink-0">
+            <Tag size={14} /> Labels
+          </span>
+          {labelFacets.map(facet => (
+            <LabelFilterChip
+              key={facet.name}
+              facet={facet}
+              hidden={hiddenLabels.has(facet.name)}
+              onToggle={toggleLabel}
+            />
+          ))}
+          {hidingByLabel && (
+            <button
+              type="button"
+              onClick={() => setHiddenLabels(new Set())}
+              className="ml-auto text-xs text-gray-500 hover:text-port-accent transition-colors"
+            >
+              Show all labels
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="space-y-3 px-3 py-2 bg-port-card border border-port-border rounded-lg">
         <div className="flex flex-col sm:flex-row sm:items-center gap-2">
           <span className="flex items-center gap-1.5 text-xs text-gray-500 uppercase tracking-wide shrink-0">
@@ -407,7 +514,9 @@ export default function IssuesTab({ appId, appName }) {
           showing them alongside a "couldn't refresh" notice. */}
       {issues.length === 0 && total > 0 && (
         <div className="px-3 py-2 text-sm text-gray-500 bg-port-card border border-port-border rounded-lg">
-          No open issues match &ldquo;{query}&rdquo;.
+          {query.trim()
+            ? <>No open issues match &ldquo;{query}&rdquo;{hidingByLabel ? ' with the current label filters' : ''}.</>
+            : 'Every open issue carries a hidden label.'}
         </div>
       )}
 
