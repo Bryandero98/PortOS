@@ -76,15 +76,6 @@ function GlbModel({ src, forceOpaque }) {
   return <GltfPrimitive object={renderedScene} />;
 }
 
-// A mesh that fails to load must not take the page with it. Anything thrown
-// inside an r3f `<Canvas>` — a 404 on the .glb, a non-glTF body reaching the
-// parser, a WebGL context failure — is caught by the Canvas and re-thrown from
-// its OWN render (`if (error) throw error`), so with no boundary around it the
-// nearest one is the router's errorElement and the whole route is replaced by
-// "PortOS could not load this page". `fallback={null}` degrades the scene (the
-// shared boundary's documented r3f mode) while `onError` hands the failure to
-// the viewer, which owns the DOM chrome and renders the panel below.
-
 // One table so every recognized cause reads the same way. The raw messages are
 // useless on their own: the glTF parser JSON.parses whatever bytes it is handed,
 // so a 200 HTML body (an SPA fallback answering a path that isn't really
@@ -94,8 +85,8 @@ const FAILURE_HINTS = [
     /Unexpected token '<'|<!DOCTYPE/i,
     'The server answered with a web page instead of the mesh file — the asset may be missing or the server may still be restarting.',
   ],
-  [/\b404\b|not found/i, 'The mesh file is no longer on disk.'],
   [/webgl/i, 'This display cannot create a WebGL context, so 3D previews cannot render here.'],
+  [/\b404\b|not found/i, 'The mesh file is no longer on disk.'],
 ];
 
 const errorText = (error) => String(error?.message || error || '');
@@ -255,6 +246,15 @@ export default function GlbViewer({
             surface's CSS color already IS the backdrop. A scene-level color only
             duplicates it while racing Environment's own scene.background
             save/restore whenever the HDRI toggle or the picker changes. */}
+        {/* A mesh that fails to load must not take the page with it. Anything
+            thrown inside an r3f `<Canvas>` — a 404 on the .glb, a non-glTF body
+            reaching the parser, a WebGL context failure — is caught by the Canvas
+            and re-thrown from its OWN render (`if (error) throw error`), so with
+            no boundary here the nearest one is the router's errorElement and the
+            whole route becomes "PortOS could not load this page". `fallback={null}`
+            degrades the scene (the shared boundary's documented r3f mode) while
+            `onError` hands the failure to this component, which owns the DOM
+            chrome and swaps in the panel. */}
         {loadError ? (
           <GlbLoadFailure error={loadError} onRetry={retryLoad} />
         ) : (
