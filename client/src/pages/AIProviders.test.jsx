@@ -258,7 +258,7 @@ describe('local-daemon readiness on the provider card', () => {
     api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
     localModels.value = { ctxById: {}, installed: { ollama: null, lmstudio: null } };
     api.getProviders.mockResolvedValue({
-      providers: [{ id: 'opencode-llama-tui', name: 'OpenCode llama TUI', type: 'tui', command: 'opencode', args: [], enabled: true, endpoint: 'http://127.0.0.1:8080/v1', llamaBacked: true }],
+      providers: [{ id: 'opencode-llama-tui', name: 'OpenCode llama TUI', type: 'tui', command: 'opencode', args: [], enabled: true, endpoint: 'http://127.0.0.1:5568/v1', llamaBacked: true }],
       activeProvider: null,
     });
   });
@@ -269,7 +269,7 @@ describe('local-daemon readiness on the provider card', () => {
         'opencode-llama-tui': {
           kind: 'llama',
           label: 'llama.cpp',
-          endpoint: 'http://127.0.0.1:8080/v1',
+          endpoint: 'http://127.0.0.1:5568/v1',
           manageUrl: '/settings/local-llm',
           docsUrl: 'https://example.com/docs',
           ready: false,

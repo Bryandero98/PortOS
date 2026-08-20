@@ -9,6 +9,8 @@ import {
 import * as processEnv from '../lib/processEnv.js';
 import * as commandExistsModule from '../lib/commandExists.js';
 import * as childProcess from '../lib/childProcess.js';
+import * as platform from '../lib/platform.js';
+import { PORTS } from '../lib/ports.js';
 import { EventEmitter } from 'events';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -51,6 +53,9 @@ describe('llamaServerManager', () => {
   beforeEach(() => {
     _resetLlamaServerStateForTests();
     vi.restoreAllMocks();
+    // The host may have an unrelated listener on the requested port (8080 is
+    // especially common), so lifecycle tests pin the port-discovery result.
+    vi.spyOn(platform, 'isPortInUse').mockResolvedValue(false);
   });
 
   afterEach(() => {
@@ -135,6 +140,37 @@ describe('llamaServerManager', () => {
     expect(status.running).toBe(true);
     expect(status.managed).toBe(true);
     expect(status.pid).toBe(12345);
+  });
+
+  it('uses PortOS\'s extension port when no port is supplied', async () => {
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+
+    const fakeChild = new EventEmitter();
+    fakeChild.pid = 23456;
+    fakeChild.killed = false;
+    fakeChild.exitCode = null;
+    fakeChild.stdout = new EventEmitter();
+    fakeChild.stderr = new EventEmitter();
+    const spawnSpy = vi.spyOn(childProcess, 'spawn').mockReturnValue(fakeChild);
+
+    const result = await startLlamaServer({ model: modelPath });
+
+    expect(result.endpoint).toBe(`http://127.0.0.1:${PORTS.LLAMA_SERVER}/v1`);
+    expect(spawnSpy.mock.calls[0][1]).toContain('--port');
+    expect(spawnSpy.mock.calls[0][1]).toContain(String(PORTS.LLAMA_SERVER));
+  });
+
+  it('rejects before spawning when the requested port is occupied by another process', async () => {
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+    vi.spyOn(platform, 'isPortInUse').mockResolvedValue(true);
+    const spawnSpy = vi.spyOn(childProcess, 'spawn');
+
+    await expect(startLlamaServer({ model: modelPath, port: 49876 })).rejects.toMatchObject({
+      code: 'LLAMA_SERVER_PORT_IN_USE',
+      status: 409,
+      message: expect.stringContaining('Choose a different port'),
+    });
+    expect(spawnSpy).not.toHaveBeenCalled();
   });
 
   it('refuses to start when the GGUF the launch line names is not on disk', async () => {

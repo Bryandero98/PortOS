@@ -22,7 +22,7 @@ import { readResponseJson } from './readResponseJson.js';
 /**
  * The one-token reason a probe failed, for a UI that has a line to spend on it.
  * `describeFetchError` returns the whole cause chain (`fetch failed: ECONNREFUSED:
- * connect ECONNREFUSED 127.0.0.1:8080`); the code alone is what tells the user
+ * connect ECONNREFUSED <host>:<port>`); the code alone is what tells the user
  * "nothing is listening" from "the host is wedged", and the two timeout
  * spellings mean the same thing to them.
  */

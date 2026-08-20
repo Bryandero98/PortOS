@@ -9,6 +9,7 @@
  * `mediaValidation` namespace.
  */
 import { z } from 'zod';
+import { PORTS } from './ports.js';
 
 // OpenWorld snapshot pipeline (issue #877): how often to capture a city-state
 // frame and how many to retain. Validated as a settings slice on PUT /api/settings;
@@ -165,7 +166,7 @@ export const localLlmLlamaServerStartSchema = z.object({
   model: z.string().trim().min(1).max(500),
   draftModel: z.string().trim().max(500).optional().nullable(),
   specType: z.string().trim().max(100).optional().default('draft-dflash'),
-  port: z.coerce.number().int().min(1).max(65535).optional().default(8080),
+  port: z.coerce.number().int().min(1).max(65535).optional().default(PORTS.LLAMA_SERVER),
   host: z.string().trim().max(100).optional().default('127.0.0.1'),
   ctxSize: z.coerce.number().int().min(512).max(1048576).optional().default(32768),
   nGpuLayers: z.coerce.number().int().min(0).max(999).optional().default(99),

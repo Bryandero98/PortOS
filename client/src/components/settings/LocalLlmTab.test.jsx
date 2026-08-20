@@ -676,7 +676,7 @@ describe('LocalLlmTab llama-server management', () => {
       managed: true,
       presets: specPresets(),
       pid: 9999,
-      endpoint: 'http://127.0.0.1:8080/v1',
+      endpoint: 'http://127.0.0.1:5568/v1',
       config: { model: 'models/base.gguf', draftModel: 'models/draft.gguf', specType: 'draft-dflash' },
     });
     stopLlamaServer.mockResolvedValueOnce({ success: true });

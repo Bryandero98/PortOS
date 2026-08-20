@@ -51,7 +51,10 @@ const specWeightEntries = (preset) => [preset?.model, preset?.draftModel].filter
 // Defaults for the advanced numeric fields. They are applied when the server is
 // launched rather than on every keystroke: a controlled number input that coerces
 // as you type snaps back to its default the moment you clear it to retype.
-const LLAMA_NUMBER_DEFAULTS = { port: 8080, ctxSize: 32768, nGpuLayers: 99 };
+// Keep the launcher default aligned with server/lib/ports.js. 8080 is a common
+// IPFS / Tomcat / local-dashboard port and is not a safe default for a managed
+// daemon.
+const LLAMA_NUMBER_DEFAULTS = { port: 5568, ctxSize: 32768, nGpuLayers: 99 };
 
 const btnClass = 'flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded transition-colors disabled:opacity-50';
 
@@ -420,7 +423,7 @@ export function LocalLlmTab() {
     model: '',
     draftModel: '',
     specType: 'draft-dspark',
-    port: 8080,
+    port: 5568,
     host: '127.0.0.1',
     ctxSize: 32768,
     nGpuLayers: 99,

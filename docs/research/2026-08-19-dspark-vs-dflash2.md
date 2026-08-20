@@ -100,9 +100,10 @@ still be wrong:
   [Qwen3.8 27B MLX evaluation](./2026-08-16-qwen38-mlx-macos.md) both declined.
 - **A user who wants it needs nothing from PortOS.** `mlx-dspark serve` listens
   on `127.0.0.1:8080` and speaks `/v1/chat/completions` and `/v1/models` — the
-  exact endpoint the shipped `opencode-llama-tui` provider preset already points
-  at. Stop `llama-server`, start `mlx-dspark serve`, hit **Refresh Models**. Any
-  integration PortOS wrote would duplicate that for no gain.
+  same OpenAI-compatible API as the shipped `opencode-llama-tui` provider.
+  Configure that provider for 8080 if you use this external server, then hit
+  **Refresh Models**. Any integration PortOS wrote would duplicate that for no
+  gain.
 - Its own caveats narrow the win further: MoE targets (Nemotron 1.10×,
   Qwen3.6-35B-A3B 1.32×) and 2-bit Bonsai (1.07×) barely clear break-even, and
   hybrid targets can't batch.

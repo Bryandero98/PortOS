@@ -8,7 +8,7 @@ const llamaProvider = (overrides = {}) => ({
   type: 'tui',
   command: 'opencode',
   llamaBacked: true,
-  endpoint: 'http://127.0.0.1:8080/v1',
+  endpoint: 'http://127.0.0.1:5568/v1',
   models: ['dflash'],
   defaultModel: 'dflash',
   ...overrides,
@@ -230,7 +230,7 @@ describe('getProviderReadinessMap', () => {
     // Both llama providers point at the same daemon: one probe for the batch,
     // not one per provider. A stock install ships several providers per
     // endpoint, and this runs on a 20s poll.
-    expect(probed).toEqual(['http://127.0.0.1:8080/v1']);
+    expect(probed).toEqual(['http://127.0.0.1:5568/v1']);
     expect(map['opencode-llama'].ready).toBe(true);
   });
 
