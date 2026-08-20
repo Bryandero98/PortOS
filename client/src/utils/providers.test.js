@@ -1233,6 +1233,9 @@ describe('credentialSource', () => {
     expect(credentialSource({
       id: 'claude-ollama', type: 'cli', envVars: { ANTHROPIC_AUTH_TOKEN: 'ollama' },
     })).toEqual({ kind: 'env', ref: 'ANTHROPIC_AUTH_TOKEN' });
+    expect(credentialSource({
+      id: 'custom-cli', type: 'cli', envVars: { MY_LLM_KEY: '' }, secretEnvVars: ['MY_LLM_KEY'],
+    })).toEqual({ kind: 'env', ref: 'MY_LLM_KEY' });
   });
 
   it('does not treat API env settings or legacy process keys as credentials', () => {
@@ -1366,11 +1369,39 @@ describe('providerCardState', () => {
     }]);
   });
 
+  it('derives an empty env credential even when the server published no findings', () => {
+    const readiness = providerCardState(cli({
+      id: 'claude-code-bedrock',
+      missingPrerequisites: [],
+      envVars: { AWS_BEARER_TOKEN_BEDROCK: '' },
+      secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+    }));
+    expect(readiness).toEqual({
+      state: PROVIDER_CARD_STATE.BLOCKED,
+      missing: [{
+        code: 'envVar',
+        label: 'AWS_BEARER_TOKEN_BEDROCK environment variable is not set',
+      }],
+    });
+  });
+
   it('accepts a configured env credential', () => {
     expect(providerCardState(cli({
       id: 'claude-ollama',
       envVars: { ANTHROPIC_AUTH_TOKEN: 'ollama' },
     })).state).toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('blocks a shipped Claude-Ollama provider whose auth token is blank', () => {
+    const provider = SHIPPED_PROVIDERS.providers['claude-ollama'];
+    const readiness = providerCardState({
+      ...provider,
+      envVars: { ...provider.envVars, ANTHROPIC_AUTH_TOKEN: '' },
+    });
+    expect(readiness.missing).toEqual([{
+      code: 'envVar',
+      label: 'ANTHROPIC_AUTH_TOKEN environment variable is not set',
+    }]);
   });
 
   it('does not let a legacy CLI key satisfy an empty process credential', () => {
@@ -1400,6 +1431,20 @@ describe('providerCardState', () => {
     ]);
   });
 
+  it('reports only the missing half of a known AWS access-key pair', () => {
+    const readiness = providerCardState(cli({
+      envVars: {
+        AWS_ACCESS_KEY_ID: 'key-example',
+        AWS_SECRET_ACCESS_KEY: '',
+      },
+      secretEnvVars: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'],
+    }));
+    expect(readiness.missing).toEqual([{
+      code: 'envVar',
+      label: 'AWS_SECRET_ACCESS_KEY environment variable is not set',
+    }]);
+  });
+
   it('accepts a configured alternative credential when another env value is blank', () => {
     expect(providerCardState(cli({
       envVars: {
@@ -1417,6 +1462,20 @@ describe('providerCardState', () => {
       envVars: { OPENAI_API_KEY: 'token-example' },
     }));
     expect(readiness.missing).toEqual([{ code: 'apiKey', label: 'API key is not set' }]);
+  });
+
+  it('does not block an unmarked empty env value that clears an ambient credential', () => {
+    expect(providerCardState(cli({ envVars: { ANTHROPIC_API_KEY: '' } })).state)
+      .toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('keeps a redacted secret unknown while an explicit blank is missing', () => {
+    const provider = (value) => cli({
+      envVars: { AWS_BEARER_TOKEN_BEDROCK: value },
+      secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+    });
+    expect(providerCardState(provider('***')).state).toBe(PROVIDER_CARD_STATE.READY);
+    expect(providerCardState(provider('')).state).toBe(PROVIDER_CARD_STATE.BLOCKED);
   });
 
   it('does not treat an unknown env lookup as a missing credential', () => {

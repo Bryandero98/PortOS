@@ -214,6 +214,7 @@ describe('AIProviders page load error handling', () => {
         enabled: true,
         envVars: { AWS_BEARER_TOKEN_BEDROCK: '' },
         secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+        missingPrerequisites: [],
       }],
       activeProvider: null,
     });

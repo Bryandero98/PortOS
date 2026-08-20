@@ -984,8 +984,11 @@ export const isOrcaRouterBackedProvider = (provider) => provider?.orcarouterBack
 // explicit secretEnvVars list remains the primary source, but it is a masking
 // list rather than a credential schema — providers may mark optional values
 // such as AWS_PROFILE secret too. Filter both sources so only actual credential
-// names participate in readiness.
-const CREDENTIAL_ENV_VAR_RE = /(?:^|_)(?:API_KEY|APIKEY|AUTH|ACCESS_KEY|ACCESS_TOKEN|BEARER|CLIENT_SECRET|CREDENTIALS?|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)(?:_|$)/i;
+// names participate in readiness. The explicit list can still name a custom
+// credential that does not follow this convention (for example MY_LLM_KEY).
+const CREDENTIAL_ENV_VAR_RE = /(?:^|_)(?:API_KEY|APIKEY|AUTH|ACCESS_KEY|ACCESS_TOKEN|BEARER|CLIENT_SECRET|CREDENTIALS?|KEY|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)(?:_|$)/i;
+const NON_CREDENTIAL_ENV_VAR_RE = /(?:^|_)(?:BASE_URL|CONFIG|CONFIG_CONTENT|ENDPOINT|HOST|MODEL|MODE|PATH|PORT|PROFILE|REGION)(?:_|$)/i;
+const NON_CREDENTIAL_ENV_VAR_NAMES = new Set(['CLAUDE_CODE_USE_BEDROCK']);
 
 const providerHasStoredKey = (provider) =>
   provider?.hasApiKey === true || Boolean(provider?.apiKey);
@@ -994,8 +997,12 @@ const credentialEnvVars = (provider) => {
   if (!isProcessProvider(provider)) return [];
   const envVars = provider?.envVars && typeof provider.envVars === 'object' ? provider.envVars : {};
   const secretEnvVars = Array.isArray(provider?.secretEnvVars) ? provider.secretEnvVars : [];
+  const explicit = new Set(secretEnvVars.filter((name) => typeof name === 'string' && name !== ''));
   const names = [...secretEnvVars, ...Object.keys(envVars)];
-  return [...new Set(names.filter((name) => typeof name === 'string' && CREDENTIAL_ENV_VAR_RE.test(name)))];
+  return [...new Set(names.filter((name) => typeof name === 'string'
+    && !NON_CREDENTIAL_ENV_VAR_NAMES.has(name)
+    && !NON_CREDENTIAL_ENV_VAR_RE.test(name)
+    && (explicit.has(name) || CREDENTIAL_ENV_VAR_RE.test(name))))];
 };
 
 /**
@@ -1040,11 +1047,34 @@ const defaultKeySetFor = (provider, id) =>
 const defaultEnvVarSet = (provider, name) => {
   if (!name || !Object.hasOwn(provider?.envVars || {}, name)) return null;
   const value = provider.envVars[name];
+  const isExplicitCredential = Array.isArray(provider?.secretEnvVars)
+    && provider.secretEnvVars.includes(name);
   // `***` is the sanitized secret sentinel, not evidence that the value is
-  // present. A redacted value is unknown; an explicitly empty value is known
-  // missing and is safe to report.
+  // present. A redacted value is unknown; an explicitly empty SECRET value is
+  // known missing. An unmarked empty value may deliberately clear an ambient
+  // host credential so the process can use another auth path, so it is unknown.
   if (value === '***' || typeof value !== 'string') return null;
+  if (value === '' && !isExplicitCredential) return null;
   return value !== '';
+};
+
+const credentialEnvGroups = (provider) => {
+  const names = credentialEnvVars(provider);
+  const groups = [];
+  const grouped = new Set();
+  const hasAwsAccessPair = names.includes('AWS_ACCESS_KEY_ID') && names.includes('AWS_SECRET_ACCESS_KEY');
+
+  for (const name of names) {
+    if (name === 'AWS_ACCESS_KEY_ID' && hasAwsAccessPair) {
+      groups.push(['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY']);
+      grouped.add('AWS_ACCESS_KEY_ID');
+      grouped.add('AWS_SECRET_ACCESS_KEY');
+    } else if (!grouped.has(name) && !(hasAwsAccessPair && name === 'AWS_SESSION_TOKEN')) {
+      groups.push([name]);
+      grouped.add(name);
+    }
+  }
+  return groups;
 };
 
 const inheritedCredentialMissing = (provider, keySetFor) => {
@@ -1062,20 +1092,22 @@ const credentialMissing = (provider, { keySetFor = null, envVarSet = null } = {}
   if (source.kind === 'none' || !source.ref) return null;
 
   if (source.kind === 'env') {
-    const states = credentialEnvVars(provider)
-      .map((name) => {
-        const rawState = typeof envVarSet === 'function' ? envVarSet(name) : defaultEnvVarSet(provider, name);
-        return { name, state: normalizeCredentialState(rawState) };
-      });
+    const groups = credentialEnvGroups(provider).map((group) => group.map((name) => {
+      const rawState = typeof envVarSet === 'function' ? envVarSet(name) : defaultEnvVarSet(provider, name);
+      return { name, state: normalizeCredentialState(rawState) };
+    }));
     const inherited = inheritedCredentialMissing(provider, keySetFor);
     // Providers can expose alternative credential schemes in one env map (for
-    // example Bedrock bearer auth or the AWS access-key pair). A known value
-    // satisfies the group; an unknown value keeps the result non-blocking.
-    if (states.some(({ state }) => state !== false)) return inherited;
-    const missing = states.map(({ name }) => ({
+    // example Bedrock bearer auth or the AWS access-key pair). A complete known
+    // group satisfies the provider; a partial/unknown group keeps the result
+    // non-blocking rather than accusing a credential whose state is uncertain.
+    const satisfied = groups.some((group) => group.every(({ state }) => state === true));
+    const unknown = groups.some((group) => group.some(({ state }) => state === null));
+    if (satisfied || unknown) return inherited;
+    const missing = groups.flatMap((group) => group.filter(({ state }) => state === false).map(({ name }) => ({
       code: 'envVar',
       label: `${name} environment variable is not set`,
-    }));
+    })));
     if (inherited) missing.push(inherited);
     return missing.length > 0 ? missing : null;
   }
