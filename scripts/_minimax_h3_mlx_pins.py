@@ -11,16 +11,18 @@ Both readers import it, so there is one copy to re-record when the pin moves:
 
 - the runner, whose corrections keep guarding their own seam — that is the last
   line of defence for a checkout overridden after install; and
-- `minimax_h3_runtime_probe.py`, which runs at Install / Repair and calls
-  `verify_pin_seams()` there, so whoever bumps `MINIMAX_H3_EXPECTED_REVISION`
-  (server/services/videoGen/runtimes.js) hears about a moved pin at the action
-  that moved it, rather than minutes into a failed keyframe render.
+- `minimax_h3_runtime_probe.py --verify-seams`, which Install / Repair passes,
+  so whoever bumps `MINIMAX_H3_EXPECTED_REVISION` (server/services/videoGen/
+  runtimes.js) hears about a moved pin at the action that moved it, rather than
+  minutes into a failed keyframe render.
 
-A failed seam therefore leaves the whole runtime reported unready, not just the
-render mode that seam serves — deliberately. `verify_runtime_checkout()` already
-byte-verifies the checkout against the expected revision, so a stock install can
-never reach these assertions: the only way to fail one is to have moved the pin,
-and stopping there is the point.
+The probe's bare readiness path (`isByovRuntimeReady`) deliberately skips
+`verify_pin_seams()`: a moved seam breaks only the keyframe and
+substituted-conditioner paths, so failing readiness over it would set
+`byovGateBlocked` and disable Generate for text-only renders that still work.
+`verify_runtime_checkout()` already byte-verifies the checkout against the
+expected revision, so a stock install can never reach these assertions: the
+only way to fail one is to have moved the pin.
 
 MLX only, deliberately: `generate_minimax_h3_cuda.py` runs diffusers'
 `MiniMaxH3ModularPipeline` with no source checkout to pin and nothing to patch,
