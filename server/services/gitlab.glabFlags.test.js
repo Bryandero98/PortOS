@@ -41,18 +41,23 @@ const PROSE_MR_LIST_STATE = /glab\s+mr\s+ls?i?s?t?\b[^\n]*?--state\b/m;
 const ARGV_MR_LIST_STATE = /(['"])mr\1\s*,\s*(['"])list\2[^\n]*?(['"])--state\3/;
 
 /**
- * Drop the parts of a source file that only TALK about the traps, so a comment
- * explaining the flag collision (this file, lib/glabArgs.js, issueReconcile.js)
- * doesn't read as an instance of it. Deliberately conservative: JSDoc blocks and
- * comment-only lines, nothing else — over-stripping would hide a real offender,
- * which is the failure that matters here. Prompt bodies live in template
- * literals, so they survive untouched.
+ * Drop ONLY whole JSDoc blocks, so `lib/glabArgs.js` — whose entire job is to
+ * document these traps — doesn't read as an instance of them.
+ *
+ * Scoped this tightly on purpose. An earlier version also dropped every line
+ * whose first non-whitespace was `//` or `*`, reasoning that those are comment
+ * continuations. They are not, in this repo: `agentPromptBuilder.js` builds agent
+ * prompts from multi-line template literals containing markdown instruction lines
+ * that start with `**` (`**WARNING**: …`), and those are live prompt text sitting
+ * in a scanned file. Stripping them meant a trap re-introduced in that style —
+ * the single most likely place for it, since prompts are where the flags are
+ * spelled as shell commands — would be deleted before the patterns ran and the
+ * guard would pass. A stripper that has to GUESS which lines are prose fails
+ * toward false negatives, which is the one direction a guard must never fail;
+ * `^/**`-anchored block comments need no guessing. Pinned by the
+ * template-literal cases in "guard is not vacuous" below.
  */
-const stripCommentary = (src) => src
-  .replace(/\/\*\*[\s\S]*?\*\//g, '')
-  .split('\n')
-  .filter((line) => !/^\s*(\/\/|\*)/.test(line))
-  .join('\n');
+const stripCommentary = (src) => src.replace(/^[ \t]*\/\*\*[\s\S]*?\*\//gm, '');
 
 const PATTERNS = [
   ['-F json argv pair', ARGV_SHORTHAND_JSON],
@@ -102,6 +107,41 @@ describe('glab flag traps are gone tree-wide', () => {
         `${rel} (${why}) no longer matches any pattern — the scan broke, or #4685 landed and this entry should be deleted`,
       ).toBeGreaterThan(0);
     }
+  });
+
+  it('sees a trap embedded in prompt-template prose (guard is not vacuous)', () => {
+    // The regression that motivated the narrow stripper: these are the shapes a
+    // re-introduced trap actually takes in this repo's prompt builders, and a
+    // line-based comment stripper silently deleted every one of them.
+    const promptish = [
+      '  const prompt = `',
+      '**Check for an existing MR**: `glab mr list --state opened -F json`',
+      '`;',
+    ].join('\n');
+    expect(offendingPatterns(promptish).length).toBeGreaterThan(0);
+
+    // A markdown bullet, an indented shell line, and a JS-comment-looking line —
+    // all live prompt text inside a template literal, none of them comments.
+    for (const line of [
+      '- GitLab: `glab issue list --per-page 100 -F json`',
+      '   glab issue list --per-page 100 -F json',
+      '// then run: glab mr list --state opened',
+      '* `glab issue list -F json` lists them',
+    ]) {
+      expect(offendingPatterns(`x = \`\n${line}\n\`;`).length, line).toBeGreaterThan(0);
+    }
+  });
+
+  it('still ignores a JSDoc block that only documents the traps', () => {
+    // lib/glabArgs.js must not report itself.
+    const doc = [
+      '/**',
+      ' * `glab issue list -F json` is accepted, ignored, and returns the table.',
+      ' * `glab mr list --state <x>` does not exist.',
+      ' */',
+      "export const GLAB_JSON_ARGS = Object.freeze(['--output', 'json']);",
+    ].join('\n');
+    expect(offendingPatterns(doc)).toEqual([]);
   });
 
   it('the walk actually reaches the glab call sites (guard is not vacuous)', () => {

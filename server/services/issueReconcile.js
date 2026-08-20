@@ -354,11 +354,12 @@ function normalizeGitlabMr(mr) {
  * @returns {Promise<{forge:'gitlab', fullName:string, inProgress:object[], mergedPrs:object[], openPrs:object[]}|null>}
  */
 async function getGitlabState(repoPath, fullName) {
-  // `glab mr list` has NO `--state` flag — the state is selected by presence
-  // flags (`--merged`, `--closed`, `--all`) and defaults to OPEN. `--state merged`
-  // exited non-zero on every call. Both lists were broken at once, and the issue
-  // list is what made it SILENT: `-F json` there exits 0 with the human table, so
-  // the scan returned null at the guard below and never reached the mr-list log.
+  // MR state is selected by PRESENCE flags — `--merged`, `--closed`, `--all` —
+  // and defaults to open. There is no `--state <x>` pair; passing one exited
+  // non-zero on every call. Both lists were broken at once, and the issue list
+  // is what made it SILENT: the old shorthand JSON flag exits 0 with the human
+  // table there, so the scan returned null at the guard below and never reached
+  // the mr-list log. See lib/glabArgs.js.
   const [issues, merged, open] = await Promise.all([
     // `glab issue list` defaults to OPEN issues; --label filters to in-progress.
     execGlabJson(['issue', 'list', '--label', IN_PROGRESS_LABEL,
