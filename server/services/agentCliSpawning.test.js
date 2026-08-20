@@ -826,6 +826,29 @@ describe('stream error containment', () => {
     await spawnPromise.catch(() => {});
   });
 
+  it('spawns a Creative Director task in an isolated scratch cwd, not the PortOS root (#4650)', async () => {
+    const { creativeDirectorScratchCwd } = await import('../lib/spawnCwd.js');
+    const args = {
+      ...minimalArgs,
+      task: {
+        id: 'task-cd',
+        description: 'Evaluate scene',
+        metadata: { creativeDirector: { projectId: 'p', kind: 'evaluate' }, useWorktree: false },
+      },
+      workspacePath: '/tmp', // the previous default — must not win over the scratch path
+    };
+    const spawnPromise = spawnDirectly(args);
+    await new Promise((r) => setTimeout(r, 10));
+    const expectedCwd = creativeDirectorScratchCwd('agent-test');
+    expect(spawn).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ cwd: expectedCwd }),
+    );
+    fakeProcess.emit('close', 0);
+    await spawnPromise.catch(() => {});
+  });
+
   it('leaves the spawn env\'s ambient GH_TOKEN untouched when there is no owner match', async () => {
     const { resolveForgeTokenEnv } = await import('./git.js');
     vi.mocked(resolveForgeTokenEnv).mockResolvedValueOnce({});

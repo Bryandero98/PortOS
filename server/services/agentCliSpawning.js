@@ -35,6 +35,7 @@ import { prepareCliPrompt } from '../lib/cliProviderArgs.js';
 import { buildVendorSpawnConfig } from '../lib/providerVendors.js';
 import { resolveCliModel, providerSuppliesGithubToken, isOllamaClaudeProvider } from '../lib/providerModels.js';
 import { resolveForgeTokenEnv } from './git.js';
+import { resolveAgentCliCwd } from '../lib/spawnCwd.js';
 import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { prClaimWasVerified, resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
@@ -341,8 +342,10 @@ export async function spawnDirectly({
   const fullCommand = `${cliConfig.command} ${cliConfig.args.join(' ')} <<< "${(task.description || '').substring(0, 100)}..."`;
 
   const ROOT_DIR = PATHS.root;
-  // Ensure workspacePath is valid
-  const cwd = workspacePath && typeof workspacePath === 'string' ? workspacePath : ROOT_DIR;
+  // CD no-worktree tasks get an isolated scratch cwd so native CLAUDE.md
+  // discovery cannot reach the PortOS repo tree (#4650). Everyone else keeps
+  // workspacePath, falling back to the repo root when it was omitted.
+  const cwd = resolveAgentCliCwd({ workspacePath, fallbackRoot: ROOT_DIR, task, agentId });
 
   // Direct CLI agents bypass runner.js, so their Ollama-backed harnesses need
   // the same daemon context preparation as runner and TUI launches. This is
@@ -410,7 +413,7 @@ export async function spawnDirectly({
     agentId,
     taskId: task.id,
     model,
-    workspacePath,
+    workspacePath: cwd,
     prompt: (task.description || '').substring(0, 500)
   });
 
@@ -671,7 +674,7 @@ export async function spawnDirectly({
     if (terminatedByUser) userTerminatedAgents.delete(agentId);
     // This run's own sentinel (see doneSentinelName) — a worktree-less agent
     // shares its workspace and must not read a sibling's signal as its own.
-    const sentinelPath = doneSentinelPath(workspacePath, agentId);
+    const sentinelPath = doneSentinelPath(cwd, agentId);
     const completionSentinelPresent = !!sentinelPath && existsSync(sentinelPath);
     const completedBeforeHostShutdown = isHostShuttingDown() && completionSentinelPresent;
 
@@ -830,7 +833,7 @@ export async function spawnDirectly({
         isTruthyMetaFn,
         error: finalError || undefined,
         completionReason: terminatedByUser ? 'user-terminated' : undefined,
-        workspacePath,
+        workspacePath: cwd,
         prExpected: directPrClaimExpected,
         // The run window the commit criterion is evaluated against (#3637).
         startedAt: agentData?.startedAt ?? null,

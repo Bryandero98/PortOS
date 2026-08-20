@@ -40,6 +40,7 @@ import { detectPrimaryCheckoutDrift, PRIMARY_CHECKOUT_MUTATED_ESCALATION, PRIMAR
 import { canRunTaskOutputHookWithoutPayload, getTaskOutputPayloadPredicate, isProgrammaticIoTaskType, resolveTaskHookType, declaresNoCommitCriterion } from './taskTypeHooks.js';
 import { processAgentCompletion } from './agentCompletion.js';
 import { extractSimplifySummaries } from './agentSummaryExtraction.js';
+import { usesCreativeDirectorScratchCwd, removeCreativeDirectorScratchCwd } from '../lib/spawnCwd.js';
 
 /**
  * Release the execution lane and complete tool-execution tracking for a
@@ -920,6 +921,12 @@ export async function finalizeAgent({
   }
 
   await processAgentCompletion(agentId, task, success, outputBuffer);
+
+  if (usesCreativeDirectorScratchCwd(task)) {
+    await removeCreativeDirectorScratchCwd(agentId).catch((err) => {
+      emitLog('warn', `⚠️ CD scratch cleanup failed for ${agentId}: ${err.message}`, { agentId });
+    });
+  }
 
   // Hand the CORRECTED verdict back so the caller's worktree cleanup runs on the
   // same answer this function just persisted (#3358). Without it, a run
