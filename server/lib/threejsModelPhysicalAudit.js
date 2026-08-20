@@ -6,6 +6,7 @@
  * 2. `buried-geometry`: Parts swallowed completely or heavily inside another part without hierarchy/attachment exemption.
  * 3. `coplanar-surface`: Sibling or unrelated part pairs sharing a near-coplanar surface (z-fighting).
  * 4. `unprovenanced-transition`: Animated parts that pop into existence in open space without emerging from a parent or ground level.
+ * 5. `nonuniform-parent-scale`: A non-relief child inherits a parent's anisotropic scale and may be distorted.
  */
 
 import { listSpecNames } from './threejsModel.js';
@@ -14,6 +15,10 @@ const EPSILON = 1e-4;
 const COPLANAR_TOLERANCE = 1e-3;
 const TOUCH_TOLERANCE = 0.02;
 const MAX_AUDIT_POSES = 16;
+// One percent anisotropy is small enough to ignore authoring noise while still
+// catching the intentional shape-squashing that distorts a child hierarchy.
+const NONUNIFORM_SCALE_TOLERANCE = 0.01;
+const ANISOTROPY_COMPARISON_TOLERANCE = 0.01;
 
 const degreesToRadians = (degrees) => (degrees * Math.PI) / 180;
 
@@ -308,6 +313,96 @@ function collectPoseVolumes(spec, getPartState) {
   return volumes;
 }
 
+const flattenParts = (parts) => {
+  const flattened = [];
+  const walk = (list) => {
+    for (const part of list || []) {
+      flattened.push(part);
+      walk(part.children);
+    }
+  };
+  walk(parts);
+  return flattened;
+};
+
+const normalizeScale = (scale) => (
+  Array.isArray(scale) && scale.length === 3 && scale.every((value) => Number.isFinite(value))
+    ? scale
+    : [1, 1, 1]
+);
+
+const getScaleAnisotropy = (scale) => {
+  const normalized = normalizeScale(scale);
+  const absolute = normalized.map((value) => Math.abs(value));
+  const minimum = Math.min(...absolute);
+  const maximum = Math.max(...absolute);
+  const ratio = maximum / Math.max(minimum, EPSILON);
+  if (ratio <= 1 + NONUNIFORM_SCALE_TOLERANCE) return null;
+  return { scale: normalized, ratio };
+};
+
+const formatScale = (scale) => `[${scale.map((value) => Number(value.toFixed(4))).join(', ')}]`;
+
+const formatNames = (names) => listSpecNames(names.map((name) => `"${name}"`));
+
+const collectNonReliefDescendants = (part) => {
+  const descendants = [];
+  const walk = (children) => {
+    for (const child of children || []) {
+      if (child.explodeWithParent === true) continue;
+      if (child.geometry) {
+        descendants.push({ id: child.id, name: child.name || child.id });
+      }
+      walk(child.children);
+    }
+  };
+  walk(part.children);
+  return descendants;
+};
+
+const buildNonuniformParentScaleFinding = (part, scaleSamples, context = {}) => {
+  const descendants = collectNonReliefDescendants(part);
+  if (descendants.length === 0) return null;
+
+  const normalizedSamples = scaleSamples.map((sample) => ({
+    ...sample,
+    anisotropy: getScaleAnisotropy(sample.scale),
+  }));
+  const analyzedSamples = normalizedSamples
+    .filter((sample) => sample.anisotropy);
+  if (analyzedSamples.length === 0) return null;
+
+  const mostAnisotropic = analyzedSamples.reduce((best, sample) => (
+    sample.anisotropy.ratio > best.anisotropy.ratio ? sample : best
+  ));
+  const sequenceIds = [...new Set(analyzedSamples.map((sample) => sample.sequenceId).filter(Boolean))];
+  const { clipName, ...metadata } = context;
+  const descendantNames = descendants.map((descendant) => descendant.name);
+  const scope = clipName
+    ? `In clip "${clipName}", part "${part.name || part.id}" reaches authored non-uniform scale ${formatScale(mostAnisotropic.anisotropy.scale)}`
+    : `Part "${part.name || part.id}" is authored with non-uniform scale ${formatScale(mostAnisotropic.anisotropy.scale)}`;
+  const sequenceSuffix = sequenceIds.length > 0 ? ` in scale sequence${sequenceIds.length === 1 ? '' : 's'} ${formatNames(sequenceIds)}` : '';
+
+  return {
+    code: 'nonuniform-parent-scale',
+    severity: 'warning',
+    ...metadata,
+    sequenceId: mostAnisotropic.sequenceId ?? metadata.sequenceId,
+    sequenceIds,
+    partIds: [part.id, ...descendants.map((descendant) => descendant.id)],
+    affectedDescendantNames: descendantNames,
+    anisotropyRatio: mostAnisotropic.anisotropy.ratio,
+    message: `${scope} (maximum anisotropy ratio ${mostAnisotropic.anisotropy.ratio.toFixed(2)})${sequenceSuffix}, which cascades onto non-relief descendants ${formatNames(descendantNames)} and can distort them.`,
+  };
+};
+
+const collectAnimatedScaleSamples = (part, sequences) => sequences
+  .filter((sequence) => sequence.partId === part.id && sequence.channels?.scale)
+  .flatMap((sequence) => [
+    { scale: sequence.channels.scale.from, sequenceId: sequence.id },
+    { scale: sequence.channels.scale.to, sequenceId: sequence.id },
+  ]);
+
 /**
  * @param {object|null} spec a validated Three.js scene spec
  * @returns {{findings: Array, errorCount: number, warningCount: number, noteCount: number,
@@ -331,6 +426,9 @@ export function evaluateThreejsPhysicalAudit(spec) {
 
   const findings = [];
   const seenKeys = new Set();
+  const parts = flattenParts(spec.parts);
+  const staticScaleFindings = new Map();
+  const strongestAnimatedScaleFindings = new Map();
 
   const addFinding = (finding) => {
     const key = `${finding.code}|${[...finding.partIds].sort().join(',')}|${finding.clipId || ''}|${finding.sequenceId || ''}`;
@@ -343,6 +441,14 @@ export function evaluateThreejsPhysicalAudit(spec) {
   const staticVolumes = collectPoseVolumes(spec, null);
   const evaluatedPartCount = staticVolumes.length;
   let evaluatedPoseCount = 1;
+
+  for (const part of parts) {
+    const finding = buildNonuniformParentScaleFinding(part, [{ scale: part.scale }]);
+    if (finding) {
+      staticScaleFindings.set(part.id, finding);
+      addFinding(finding);
+    }
+  }
 
   const visibleStaticVolumes = staticVolumes.filter((v) => v.visible && v.opacity > 0);
 
@@ -445,9 +551,26 @@ export function evaluateThreejsPhysicalAudit(spec) {
   let remainingBudget = MAX_AUDIT_POSES - 1;
 
   for (const clip of clips) {
-    if (remainingBudget <= 0) break;
-
     const sequences = Array.isArray(clip.sequences) ? clip.sequences : [];
+
+    for (const part of parts) {
+      const scaleSamples = collectAnimatedScaleSamples(part, sequences);
+      if (scaleSamples.length > 0) {
+        const finding = buildNonuniformParentScaleFinding(part, scaleSamples, {
+          clipId: clip.id,
+          clipName: clip.name || clip.id,
+        });
+        if (finding) {
+          const current = strongestAnimatedScaleFindings.get(part.id);
+          if (!current || finding.anisotropyRatio > current.anisotropyRatio) {
+            strongestAnimatedScaleFindings.set(part.id, finding);
+          }
+        }
+      }
+    }
+
+    if (remainingBudget <= 0) continue;
+
     const sampleTimes = new Set([0, clip.durationSeconds || 0]);
     for (const seq of sequences) {
       if (Number.isFinite(seq.startSeconds)) sampleTimes.add(seq.startSeconds);
@@ -491,6 +614,14 @@ export function evaluateThreejsPhysicalAudit(spec) {
     }
   }
 
+  for (const [partId, finding] of strongestAnimatedScaleFindings) {
+    const staticFinding = staticScaleFindings.get(partId);
+    const staticRatio = staticFinding?.anisotropyRatio || 0;
+    if (!staticFinding || finding.anisotropyRatio > staticRatio * (1 + ANISOTROPY_COMPARISON_TOLERANCE)) {
+      addFinding(finding);
+    }
+  }
+
   const countBy = (severity) => findings.filter((f) => f.severity === severity).length;
 
   return {
@@ -513,9 +644,13 @@ export function evaluateThreejsPhysicalAudit(spec) {
 export function buildThreejsPhysicalAuditFeedback(physicalAudit) {
   const actionable = (physicalAudit?.findings || []).filter((f) => f.severity === 'error' || f.severity === 'warning');
   if (actionable.length === 0) return '';
+  const hasNonuniformParentScale = actionable.some((finding) => finding.code === 'nonuniform-parent-scale');
   return [
     'The previous pass failed physical conformance audits:',
     ...actionable.map((finding, index) => `${index + 1}. ${finding.message}`),
+    ...(hasNonuniformParentScale ? [
+      'For non-uniform parent scale findings, size each part through its own geometry dimensions (for example, box width/height/depth or sphere radius) and keep containers near-uniform instead of squashing a parent that owns other components.',
+    ] : []),
     'Ensure every part is physically attached to a parent, sibling, or ground plane, keep geometry exposed rather than buried inside unrelated parts, avoid exact coplanar surfaces that cause flickering, and make animated parts emerge cleanly from parents or hidden containers.',
   ].join('\n');
 }

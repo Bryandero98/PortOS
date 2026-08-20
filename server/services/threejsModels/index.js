@@ -119,7 +119,8 @@ async function executeGeneration({
     // finding is recorded and fed back rather than thrown away.
     const penetration = evaluateThreejsPenetration(spec);
     // And likewise for deterministic physical-conformance audits: floating parts,
-    // swallowed geometry, coplanar z-fighting surfaces, and unprovenanced clip transitions.
+    // swallowed geometry, coplanar z-fighting surfaces, unprovenanced clip transitions,
+    // and non-uniform parent scales cascading into nested parts.
     const physicalAudit = evaluateThreejsPhysicalAudit(spec);
     // And likewise for a spec whose materials parse cleanly but describe the
     // wrong substance — metalness 0.9 oak, transmission 1.0 steel. Advisory by

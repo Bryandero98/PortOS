@@ -638,7 +638,7 @@ export default function ThreejsModelDetail() {
           title="Physical audit"
           findings={physicalAuditFindings}
           cleanLabel="Assembly satisfies physical attachment, exposure, and coplanarity rules"
-          footer={`This check inspects the model across resting and animation poses to detect floating parts, swallowed geometry, z-fighting coplanar surfaces, and unprovenanced appearing geometry.${
+          footer={`This check inspects the model across resting and animation poses to detect floating parts, swallowed geometry, z-fighting coplanar surfaces, unprovenanced appearing geometry, and non-uniform parent scales that distort nested parts.${
             physicalAuditDefects.error + physicalAuditDefects.warning > 0
               ? ' Refining without your own feedback will also target physical conformance defects.'
               : ''
