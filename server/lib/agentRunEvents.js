@@ -437,6 +437,24 @@ export function projectRunStates(events) {
  */
 const isTerminal = (state) => state.status === 'completed' || state.status === 'failed';
 
+/**
+ * May an observation of live activity (a re-adoption, a stream re-attach) put
+ * this run back to `running`?
+ *
+ * Not if it is finished, and not if it is PAUSED. Pause is the one non-terminal
+ * state with its own explicit exit event (`run.resumed`): a paused run's process
+ * has been stopped, so nothing should be observing it live, and letting one
+ * flip the status would leave a projection reading `running` with `paused: true`
+ * beside it.
+ *
+ * `orphaned` and `interrupted` deliberately DO yield. Both mean a stop was
+ * observed or requested and neither guarantees it landed — a run re-adopted from
+ * the runner after the sweep called it dead, or after a kill it ignored, really
+ * is running, and that contradiction is the finding. The booleans stay true, so
+ * the history is not lost either way.
+ */
+const canObserveRunning = (state) => !isTerminal(state) && !state.paused;
+
 function applyKind(state, event) {
   const data = event.data ?? {};
   switch (event.kind) {
@@ -455,7 +473,7 @@ function applyKind(state, event) {
       // A survivor is still running — recovery is an annotation on a live run,
       // not a terminal state. Only the count changes so a diagnostic can show
       // "this run has been re-adopted N times".
-      if (!isTerminal(state)) state.status = 'running';
+      if (canObserveRunning(state)) state.status = 'running';
       state.recoveryCount += 1;
       break;
     case 'run.orphan-recovered':
@@ -471,7 +489,7 @@ function applyKind(state, event) {
       break;
     case 'run.reconnected':
       state.reconnectCount += 1;
-      if (!isTerminal(state)) state.status = 'running';
+      if (canObserveRunning(state)) state.status = 'running';
       break;
     case 'run.output':
       // Sizes only — the bytes themselves never enter the ledger.

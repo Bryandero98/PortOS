@@ -1203,6 +1203,19 @@ export async function spawnTuiAgent({
     const reason = useDurableRunner && /^Command executable unavailable:/i.test(message)
       ? 'command-not-found'
       : useDurableRunner ? 'spawn-rejected' : 'spawn-error';
+    if (useDurableRunner) {
+      // A handoff the runner REFUSED (#4540), recorded like the CLI path's. A
+      // LOCAL PTY that won't open is a host problem, not a handoff, so it is
+      // deliberately not recorded here.
+      await appendRunEvent({
+        kind: 'run.handoff',
+        runId,
+        agentId,
+        taskId: task.id,
+        eventId: `handoff:${agentId}:${runId || 'no-run'}:rejected`,
+        data: { to: 'none', accepted: false, kind: 'tui', reason: message },
+      });
+    }
     await finish({
       success: false,
       exitCode: 1,

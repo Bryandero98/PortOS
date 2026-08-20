@@ -371,6 +371,29 @@ describe('projectRunStates — the second-slice boundaries (#4540)', () => {
     expect(state.startedAt).toBe(at('10:00'));
   });
 
+  it('does not let a re-adoption talk a PAUSED run back into running', () => {
+    // Pause stops the process, so nothing should be observing it live; a
+    // projection reading `running` next to `paused: true` is self-contradictory.
+    const [state] = projectRunStates([
+      buildRunEvent({ kind: 'run.spawned', runId: 'r1', at: at('10:00') }),
+      buildRunEvent({ kind: 'run.paused', runId: 'r1', at: at('10:30') }),
+      buildRunEvent({ kind: 'run.runner-recovered', runId: 'r1', at: at('10:40') })
+    ]);
+    expect(state).toMatchObject({ status: 'paused', paused: true, recoveryCount: 1 });
+  });
+
+  it('DOES let a re-adoption revive a run the orphan sweep called dead', () => {
+    // The other direction on purpose: the sweep observed no process, the runner
+    // says otherwise, and that contradiction is the finding — not something to
+    // hide by pinning the status to the sweep's reading. The flag stays true.
+    const [state] = projectRunStates([
+      buildRunEvent({ kind: 'run.spawned', runId: 'r1', at: at('10:00') }),
+      buildRunEvent({ kind: 'run.orphan-recovered', runId: 'r1', at: at('10:30') }),
+      buildRunEvent({ kind: 'run.runner-recovered', runId: 'r1', at: at('10:40') })
+    ]);
+    expect(state).toMatchObject({ status: 'running', orphaned: true });
+  });
+
   it('records a REJECTED handoff without claiming an owner', () => {
     const [state] = projectRunStates([
       buildRunEvent({ kind: 'run.spawned', runId: 'r1', at: at('10:00') }),
