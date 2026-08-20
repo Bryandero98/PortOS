@@ -51,6 +51,7 @@ export default function CoSCanvasGuard({
   label = 'Interactive 3D avatar. Drag to rotate.',
   background = false,
   fallback = null,
+  resetKey = null,
   children,
 }) {
   // Probe once on mount — availability doesn't flip mid-session.
@@ -59,14 +60,21 @@ export default function CoSCanvasGuard({
   // the DOM chrome around it — so the shared boundary degrades the scene with
   // `fallback={null}` and hands the error up here via `onError`. An explicit
   // caller `fallback` still overrides both panels.
-  const [error, setError] = useState(null);
+  //
+  // The failure is stored WITH the `resetKey` it belongs to. Without that it
+  // would stick forever: once the panel is up the boundary is unmounted, so
+  // nothing can ever re-try. A caller whose avatar can change model — the
+  // mini-character wrappers switch `variant`, and with it the GLB URL — passes
+  // that URL as `resetKey` so one variant's dead model can't blank the next.
+  const [failure, setFailure] = useState(null);
+  const error = failure?.key === resetKey ? failure.error : null;
 
   if (!supported) return fallback || <WebGLUnavailableHint background={background} />;
   if (error) return fallback || <AvatarAssetFailure background={background} error={error} />;
 
   return (
     <CoSAvatarFrame label={label} background={background}>
-      <ErrorBoundary fallback={null} onError={setError}>
+      <ErrorBoundary fallback={null} onError={(caught) => setFailure({ key: resetKey, error: caught })}>
         {children}
       </ErrorBoundary>
     </CoSAvatarFrame>

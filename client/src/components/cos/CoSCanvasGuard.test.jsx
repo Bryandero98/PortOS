@@ -66,6 +66,26 @@ describe('CoSCanvasGuard', () => {
     expect(screen.getByText('something went sideways')).toBeInTheDocument();
   });
 
+  // Without the resetKey the panel sticks forever: once it is up the boundary
+  // is unmounted, so nothing can retry. The mini-character wrappers switch
+  // `variant` (and with it the GLB URL) on the same guard instance.
+  it('clears a failure when the caller points the guard at another model', () => {
+    const { rerender } = render(
+      <CoSCanvasGuard resetKey="/api/avatar/a.glb">
+        <Boom error={new Error('Could not load /api/avatar/a.glb: 404 Not Found')} />
+      </CoSCanvasGuard>,
+    );
+    expect(screen.getByTestId('cos-avatar-asset-error')).toBeInTheDocument();
+
+    rerender(
+      <CoSCanvasGuard resetKey="/api/avatar/b.glb">
+        <div data-testid="avatar-canvas" />
+      </CoSCanvasGuard>,
+    );
+    expect(screen.queryByTestId('cos-avatar-asset-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('avatar-canvas')).toBeInTheDocument();
+  });
+
   it('lets an explicit caller fallback override both panels', () => {
     const fallback = <div data-testid="caller-fallback" />;
     const { rerender } = render(

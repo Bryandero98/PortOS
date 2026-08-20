@@ -847,6 +847,20 @@ describe('ThreejsModelPreview spec-render failures', () => {
     expect(logged).toHaveBeenCalledWith(expect.stringContaining('💥 React Error'), expect.anything());
   });
 
+  // A lost WebGL context throws the same way a bad spec does, but it can come
+  // back — and the spec signature never changes, so nothing else would clear it.
+  it('recovers from a failure the spec signature can never clear', () => {
+    canvasFailure.error = new Error('THREE.WebGLRenderer: Error creating WebGL context.');
+    renderPreview(<ThreejsModelPreview spec={SPEC} />);
+    expect(screen.getByTestId('threejs-spec-error')).toBeInTheDocument();
+
+    canvasFailure.error = null;
+    fireEvent.click(screen.getByRole('button', { name: /Retry/i }));
+
+    expect(screen.queryByTestId('threejs-spec-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('threejs-canvas')).toBeInTheDocument();
+  });
+
   // The failure is remembered against the spec that produced it, so a
   // regeneration is not stuck behind the previous spec's bad geometry.
   it('clears the panel when a different spec arrives', () => {

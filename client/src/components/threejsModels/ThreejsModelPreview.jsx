@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Bounds, OrbitControls, useBounds } from '@react-three/drei';
 import * as THREE from 'three';
@@ -483,7 +483,7 @@ function useClipPlayback({ clip, cuesById, onCue }) {
 // a NaN radius or a missing vertex array. Without a boundary that throw escapes
 // to the router and blanks the whole page; this is the same inline panel
 // GlbViewer shows for a mesh that cannot load, for the same reason.
-function SpecRenderFailure({ error }) {
+function SpecRenderFailure({ error, onRetry }) {
   return (
     // `.port-media-overlay` (not a hardcoded `bg-black/NN`) because the panel
     // floats over a surface whose backdrop is a user-picked colour — a day theme
@@ -500,6 +500,17 @@ function SpecRenderFailure({ error }) {
       <p className="max-w-full break-all font-mono text-[10px] leading-snug text-port-text-muted">
         {String(error?.message || error || '')}
       </p>
+      {/* The boundary catches a lost WebGL context just as readily as a bad
+          spec, and that one can come back — but only a NEW spec clears the
+          panel on its own, so without this the preview is stuck until the model
+          is regenerated. Dropping the failure is what remounts the canvas. */}
+      <button
+        type="button"
+        onClick={onRetry}
+        className="port-media-overlay-item mt-1 inline-flex items-center gap-1.5 rounded-md border border-port-border px-3 py-1.5 text-xs font-medium"
+      >
+        <RefreshCw className="h-3.5 w-3.5" /> Retry
+      </button>
     </div>
   );
 }
@@ -623,7 +634,7 @@ export default function ThreejsModelPreview({ spec, family = null, className = '
       style={transparent ? checkerboardStyle : undefined}
     >
       {specError ? (
-        <SpecRenderFailure error={specError} />
+        <SpecRenderFailure error={specError} onRetry={() => setFailure(null)} />
       ) : (
         /* Anything thrown inside an r3f `<Canvas>` is caught by the Canvas and
            re-thrown from its OWN render, so with no boundary here the nearest one
