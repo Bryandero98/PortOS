@@ -259,17 +259,17 @@ export default function ProviderCard({
             )}
           </div>
 
-            {isGrokBuildCli(provider) && <GrokUploadWarning className="mt-2" />}
+          {isGrokBuildCli(provider) && <GrokUploadWarning className="mt-2" />}
 
-             {isOrcaRouterBackedProvider(provider) && (
-               <OrcaRouterKeyHint
-                sibling={providersById.orcarouter}
-                onEdit={onEdit}
-                className="mt-2"
-                />
-              )}
+          {isOrcaRouterBackedProvider(provider) && (
+            <OrcaRouterKeyHint
+              sibling={providersById.orcarouter}
+              onEdit={onEdit}
+              className="mt-2"
+            />
+          )}
 
-            {testResult && !testResult.testing && (
+          {testResult && !testResult.testing && (
             <div className={`mt-2 text-sm ${testResult.success ? 'text-port-success' : 'text-port-error'}`}>
               {testResult.success
                 ? `✓ Available${testResult.version ? ` (${testResult.version})` : ''}`
