@@ -39,10 +39,11 @@ const claimStatusForTask = (status) => ({
 const enabledProcessProviderFilter = (p) => Boolean(p?.enabled) && isProcessProvider(p);
 
 // `in-progress` is the forge label a `/do:next` claim stamps on an issue it is
-// actively working (server/services/issueReconcile.js#IN_PROGRESS_LABEL). Those
-// rows aren't claimable, so the tab hides them until the user toggles the chip
-// back on.
-const DEFAULT_HIDDEN_LABELS = ['in-progress'];
+// actively working (server/services/issueReconcile.js#IN_PROGRESS_LABEL), and
+// `blocked` marks work that should not be picked up by default. Those rows
+// aren't useful claim candidates, so the tab hides them until the user toggles
+// the chip back on.
+const DEFAULT_HIDDEN_LABELS = ['blocked', 'in-progress'];
 
 // Why the forge returned nothing, in the user's terms. Sentinel-aware: a
 // definitive "no open issues" and a failed probe are different sentences, so an
@@ -135,6 +136,7 @@ export default function IssuesTab({ appId, appName }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
+  const [unassignedOnly, setUnassignedOnly] = useState(false);
   // Labels whose issues are hidden. Tracking the HIDDEN set (rather than the
   // shown one) means a label that shows up in a later refresh is visible by
   // default without reconciling state against the new facet list.
@@ -180,6 +182,7 @@ export default function IssuesTab({ appId, appName }) {
     setClaims({});
     setOverrideContext('');
     setHiddenLabels(new Set(DEFAULT_HIDDEN_LABELS));
+    setUnassignedOnly(false);
   }, [appId]);
 
   useEffect(() => {
@@ -310,15 +313,16 @@ export default function IssuesTab({ appId, appName }) {
     const q = query.trim().toLowerCase();
     const rows = haystacks.filter(h =>
       (hiddenLabels.size === 0 || !h.issue.labels.some(l => hiddenLabels.has(l.name)))
+      && (!unassignedOnly || h.issue.assignees.length === 0)
       && (!q || h.hay.includes(q))
     );
     return rows.map(h => h.issue);
-  }, [haystacks, query, hiddenLabels]);
+  }, [haystacks, query, hiddenLabels, unassignedOnly]);
 
   const total = data?.issues?.length ?? 0;
   // Only labels actually on this tracker count as "filtering something" — the
-  // seeded `in-progress` default must not claim to hide anything in a repo that
-  // never uses it.
+  // seeded defaults must not claim to hide anything in a repo that never uses
+  // them.
   const hidingByLabel = labelFacets.some(f => hiddenLabels.has(f.name));
 
   const toggleLabel = (name) => setHiddenLabels(prev => {
@@ -399,6 +403,18 @@ export default function IssuesTab({ appId, appName }) {
             {issues.length === total ? `${total} open` : `${issues.length} of ${total} open`}
           </span>
         )}
+        <button
+          type="button"
+          onClick={() => setUnassignedOnly(prev => !prev)}
+          aria-pressed={unassignedOnly}
+          title={unassignedOnly ? 'Show assigned issues too' : 'Show only issues without assignees'}
+          className={`px-3 py-1.5 rounded-lg text-xs border flex items-center gap-1.5 transition-colors ${unassignedOnly
+            ? 'bg-port-accent/20 text-port-accent border-port-accent/40'
+            : 'bg-port-bg text-gray-400 border-port-border hover:text-white'
+          }`}
+        >
+          <User size={13} /> Unassigned only
+        </button>
         <div className="relative ml-auto">
           <label htmlFor={searchId} className="sr-only">Filter issues</label>
           <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
@@ -516,7 +532,9 @@ export default function IssuesTab({ appId, appName }) {
         <div className="px-3 py-2 text-sm text-gray-500 bg-port-card border border-port-border rounded-lg">
           {query.trim()
             ? <>No open issues match &ldquo;{query}&rdquo;{hidingByLabel ? ' with the current label filters' : ''}.</>
-            : 'Every open issue carries a hidden label.'}
+            : unassignedOnly
+              ? <>No unassigned open issues{hidingByLabel ? ' match the current label filters' : ''}.</>
+              : 'Every open issue carries a hidden label.'}
         </div>
       )}
 
