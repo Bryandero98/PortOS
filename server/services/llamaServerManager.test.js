@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import {
   getLlamaServerStatus,
   startLlamaServer,
@@ -10,6 +10,9 @@ import * as processEnv from '../lib/processEnv.js';
 import * as commandExistsModule from '../lib/commandExists.js';
 import * as childProcess from '../lib/childProcess.js';
 import { EventEmitter } from 'events';
+import { mkdtemp, rm, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 function fakeSpawnProcess() {
   const child = new EventEmitter();
@@ -27,6 +30,24 @@ function endProcess(child, code) {
 }
 
 describe('llamaServerManager', () => {
+  // startLlamaServer refuses to spawn for a GGUF that is not on disk, so the
+  // lifecycle tests need real files to point at.
+  let modelDir;
+  let modelPath;
+  let draftPath;
+
+  beforeAll(async () => {
+    modelDir = await mkdtemp(join(tmpdir(), 'portos-llama-'));
+    modelPath = join(modelDir, 'model.gguf');
+    draftPath = join(modelDir, 'draft.gguf');
+    await writeFile(modelPath, 'gguf');
+    await writeFile(draftPath, 'gguf');
+  });
+
+  afterAll(async () => {
+    await rm(modelDir, { recursive: true, force: true });
+  });
+
   beforeEach(() => {
     _resetLlamaServerStateForTests();
     vi.restoreAllMocks();
@@ -62,7 +83,7 @@ describe('llamaServerManager', () => {
   it('rejects start when binary is missing', async () => {
     vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(null);
 
-    await expect(startLlamaServer({ model: '/path/to/model.gguf' })).rejects.toThrow(
+    await expect(startLlamaServer({ model: modelPath })).rejects.toThrow(
       /llama-server binary was not found/i
     );
   });
@@ -84,8 +105,8 @@ describe('llamaServerManager', () => {
     });
 
     const result = await startLlamaServer({
-      model: 'models/Qwen3.8-27B.gguf',
-      draftModel: 'models/Qwen3.8-DFlash2.gguf',
+      model: modelPath,
+      draftModel: draftPath,
       specType: 'draft-dflash',
       port: 8080,
       host: '127.0.0.1',
@@ -96,8 +117,8 @@ describe('llamaServerManager', () => {
     expect(result.pid).toBe(12345);
     expect(spawnArgs.cmd).toBe('/usr/local/bin/llama-server');
     expect(spawnArgs.args).toEqual([
-      '-m', 'models/Qwen3.8-27B.gguf',
-      '--draft-model', 'models/Qwen3.8-DFlash2.gguf',
+      '-m', modelPath,
+      '--draft-model', draftPath,
       '--spec-type', 'draft-dflash',
       '--port', '8080',
       '--host', '127.0.0.1',
@@ -110,6 +131,46 @@ describe('llamaServerManager', () => {
     expect(status.running).toBe(true);
     expect(status.managed).toBe(true);
     expect(status.pid).toBe(12345);
+  });
+
+  it('refuses to start when the GGUF the launch line names is not on disk', async () => {
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+    const spawnSpy = vi.spyOn(childProcess, 'spawn');
+
+    await expect(startLlamaServer({ model: join(modelDir, 'absent.gguf') })).rejects.toThrow(
+      /base model was not found/i
+    );
+    await expect(startLlamaServer({ model: modelPath, draftModel: join(modelDir, 'absent.gguf') })).rejects.toThrow(
+      /drafter model was not found/i
+    );
+    // The weights are a separate multi-gigabyte download; spawning anyway just
+    // buries that in a server log.
+    expect(spawnSpy).not.toHaveBeenCalled();
+  });
+
+  it('reports a failure — not a PID — when llama-server exits during startup', async () => {
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+
+    const fakeChild = new EventEmitter();
+    fakeChild.pid = 999;
+    fakeChild.killed = false;
+    fakeChild.exitCode = null;
+    fakeChild.stdout = new EventEmitter();
+    fakeChild.stderr = new EventEmitter();
+
+    vi.spyOn(childProcess, 'spawn').mockImplementation(() => {
+      // A real llama.cpp rejects an unsupported --spec-type within a beat.
+      setTimeout(() => {
+        fakeChild.stderr.emit('data', Buffer.from('error: unknown spec type\n'));
+        fakeChild.exitCode = 1;
+        fakeChild.emit('exit', 1, null);
+      }, 0);
+      return fakeChild;
+    });
+
+    await expect(startLlamaServer({ model: modelPath, specType: 'draft-nope' })).rejects.toThrow(
+      /llama-server exited immediately/i
+    );
   });
 
   it('stops managed process cleanly', async () => {
@@ -125,7 +186,7 @@ describe('llamaServerManager', () => {
 
     vi.spyOn(childProcess, 'spawn').mockReturnValue(fakeChild);
 
-    await startLlamaServer({ model: 'models/model.gguf' });
+    await startLlamaServer({ model: modelPath });
     const stopResult = await stopLlamaServer();
     expect(stopResult.success).toBe(true);
 

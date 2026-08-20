@@ -5,6 +5,8 @@
  * for a local `llama-server` instance running speculative decoding (e.g. DFlash 2).
  */
 
+import { stat } from 'fs/promises';
+import { isAbsolute, resolve } from 'path';
 import { spawn } from '../lib/childProcess.js';
 import { commandExists } from '../lib/commandExists.js';
 import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
@@ -39,7 +41,11 @@ function appendLog(line) {
 async function probeEndpoint(endpoint) {
   try {
     const url = `${endpoint.replace(/\/+$/, '')}/models`;
-    const res = await fetchWithTimeout(url, { method: 'GET', timeout: PROBE_TIMEOUT_MS });
+    // The bound is `fetchWithTimeout`'s THIRD argument — a `timeout` key inside
+    // the init object is not a fetch option and was silently ignored, leaving
+    // this probe on the 15s default. That mattered on the start path, where the
+    // probe runs in a 500ms poll loop against a port nothing has bound yet.
+    const res = await fetchWithTimeout(url, { method: 'GET' }, PROBE_TIMEOUT_MS);
     return res.ok;
   } catch {
     return false;
@@ -63,6 +69,29 @@ async function probeEndpoint(endpoint) {
  */
 function resolveLlamaServerBinary() {
   return findCommandOnPath('llama-server');
+}
+
+/**
+ * Fails the start request when a GGUF the launch line names is not on disk.
+ *
+ * The weights are a SEPARATE download from the binary — several gigabytes the
+ * user fetches from Hugging Face themselves — and that is the single most
+ * common reason a freshly-installed llama.cpp still cannot serve anything.
+ * Without this check llama-server spawns, exits within a second, and the UI
+ * reports "started (PID …)" from a process that is already gone; the real cause
+ * is one line deep in the server log.
+ *
+ * Relative paths resolve against the server's cwd, which is the cwd the child
+ * inherits — so this checks the same file llama-server would open.
+ */
+async function assertModelFileExists(label, modelPath) {
+  const resolved = isAbsolute(modelPath) ? modelPath : resolve(process.cwd(), modelPath);
+  const stats = await stat(resolved).catch(() => null);
+  if (stats?.isFile()) return;
+  throw new ServerError(
+    `${label} was not found at \`${modelPath}\`. Download the GGUF first — the Local LLM tab lists the base/drafter pairs — or point this field at a file you already have.`,
+    { status: 400, code: 'LLAMA_MODEL_FILE_MISSING' }
+  );
 }
 
 /**
@@ -131,7 +160,9 @@ export async function startLlamaServer(options = {}) {
   }
 
   const args = ['-m', model.trim()];
+  await assertModelFileExists('The base model', model.trim());
   if (draftModel && typeof draftModel === 'string' && draftModel.trim()) {
+    await assertModelFileExists('The drafter model', draftModel.trim());
     args.push('--draft-model', draftModel.trim());
     if (specType) args.push('--spec-type', specType.trim());
   }
@@ -198,6 +229,19 @@ export async function startLlamaServer(options = {}) {
     await sleep(500);
     online = await probeEndpoint(endpoint);
     if (online) break;
+  }
+
+  // A child that has already exited is not a started server. Reporting
+  // `success: true` here put "llama-server started (PID …)" on screen for a
+  // process that died on a bad flag, an unreadable GGUF, or an unsupported
+  // `--spec-type` — the user then went looking for a connection problem in
+  // OpenCode instead of reading the four log lines that explain it.
+  if (child.exitCode !== null || child.signalCode) {
+    const tail = recentLogs.slice(-4).join(' | ');
+    throw new ServerError(
+      `llama-server exited immediately${lastExitError ? ` (${lastExitError})` : ''}.${tail ? ` Last output: ${tail}` : ''}`,
+      { status: 500, code: 'LLAMA_SERVER_EXITED' }
+    );
   }
 
   return {

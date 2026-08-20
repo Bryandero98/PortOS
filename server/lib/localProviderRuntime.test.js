@@ -1,0 +1,110 @@
+import { describe, it, expect } from 'vitest';
+import {
+  LOCAL_RUNTIMES,
+  localRuntimeForProvider,
+  localRuntimeKind,
+  normalizeOpenAiBaseUrl,
+} from './localProviderRuntime.js';
+
+const opencodeConfig = (namespace, baseURL) => JSON.stringify({
+  permission: 'allow',
+  provider: { [namespace]: { npm: '@ai-sdk/openai-compatible', options: { baseURL } } },
+});
+
+describe('normalizeOpenAiBaseUrl', () => {
+  it('appends /v1 only when the URL does not already end in a version segment', () => {
+    expect(normalizeOpenAiBaseUrl('http://localhost:11434')).toBe('http://localhost:11434/v1');
+    expect(normalizeOpenAiBaseUrl('http://localhost:11434/v1')).toBe('http://localhost:11434/v1');
+    expect(normalizeOpenAiBaseUrl('http://localhost:11434/v1/')).toBe('http://localhost:11434/v1');
+  });
+
+  it('returns null for anything unusable', () => {
+    expect(normalizeOpenAiBaseUrl('')).toBeNull();
+    expect(normalizeOpenAiBaseUrl('   ')).toBeNull();
+    expect(normalizeOpenAiBaseUrl(null)).toBeNull();
+    expect(normalizeOpenAiBaseUrl(42)).toBeNull();
+  });
+});
+
+describe('localRuntimeKind', () => {
+  it('reads the explicit backing markers first', () => {
+    expect(localRuntimeKind({ command: 'opencode', llamaBacked: true })).toBe('llama');
+    expect(localRuntimeKind({ command: 'opencode', mtplxBacked: true })).toBe('mtplx');
+    expect(localRuntimeKind({ command: 'opencode', ollamaBacked: true })).toBe('ollama');
+    // claude-ollama is not an OpenCode provider but is still Ollama-backed.
+    expect(localRuntimeKind({ command: 'claude', ollamaBacked: true })).toBe('ollama');
+  });
+
+  it('treats OrcaRouter as remote, not a local daemon', () => {
+    expect(localRuntimeKind({ command: 'opencode', orcarouterBacked: true })).toBeNull();
+  });
+
+  it('falls back to the endpoint/name heuristic for plain API providers', () => {
+    expect(localRuntimeKind({ type: 'api', id: 'ollama', endpoint: 'http://localhost:11434/v1' })).toBe('ollama');
+    expect(localRuntimeKind({ type: 'api', id: 'x', endpoint: 'http://localhost:1234/v1' })).toBe('lmstudio');
+    expect(localRuntimeKind({ type: 'api', id: 'x', name: 'LM Studio local' })).toBe('lmstudio');
+  });
+
+  it('returns null for a remote provider and for junk input', () => {
+    expect(localRuntimeKind({ type: 'api', id: 'openai', endpoint: 'https://api.openai.com/v1' })).toBeNull();
+    expect(localRuntimeKind(null)).toBeNull();
+    expect(localRuntimeKind('nope')).toBeNull();
+  });
+});
+
+describe('localRuntimeForProvider', () => {
+  it('prefers the baseURL the provider itself declares over the canonical default', () => {
+    const runtime = localRuntimeForProvider({
+      id: 'opencode-llama-tui',
+      command: 'opencode',
+      llamaBacked: true,
+      endpoint: 'http://127.0.0.1:8080/v1',
+      envVars: { OPENCODE_CONFIG_CONTENT: opencodeConfig('llama', 'http://127.0.0.1:8090/v1') },
+    });
+    expect(runtime.kind).toBe('llama');
+    expect(runtime.label).toBe('llama.cpp');
+    expect(runtime.command).toBe('llama-server');
+    expect(runtime.endpoint).toBe('http://127.0.0.1:8090/v1');
+    expect(runtime.manageUrl).toBe('/settings/local-llm');
+  });
+
+  it('falls back to the provider endpoint when the stored OpenCode config is unparseable', () => {
+    const runtime = localRuntimeForProvider({
+      command: 'opencode',
+      llamaBacked: true,
+      endpoint: 'http://127.0.0.1:8081/v1',
+      envVars: { OPENCODE_CONFIG_CONTENT: '{not json' },
+    });
+    expect(runtime.endpoint).toBe('http://127.0.0.1:8081/v1');
+  });
+
+  it('falls back to the canonical default when the provider declares no endpoint at all', () => {
+    const runtime = localRuntimeForProvider({ command: 'opencode', ollamaBacked: true, envVars: {} });
+    expect(runtime.endpoint).toBe(LOCAL_RUNTIMES.ollama.defaultBaseUrl);
+  });
+
+  it('reads the Claude Ollama wrapper base URL out of ANTHROPIC_BASE_URL', () => {
+    const runtime = localRuntimeForProvider({
+      command: 'claude',
+      ollamaBacked: true,
+      envVars: { ANTHROPIC_BASE_URL: 'http://localhost:11500' },
+    });
+    expect(runtime.endpoint).toBe('http://localhost:11500/v1');
+  });
+
+  it('ignores a foreign namespace in the stored OpenCode config', () => {
+    // A config that only declares `ollama` says nothing about where this
+    // llama-backed provider points — using its baseURL would probe Ollama and
+    // report the wrong daemon as the missing requirement.
+    const runtime = localRuntimeForProvider({
+      command: 'opencode',
+      llamaBacked: true,
+      envVars: { OPENCODE_CONFIG_CONTENT: opencodeConfig('ollama', 'http://localhost:11434/v1') },
+    });
+    expect(runtime.endpoint).toBe(LOCAL_RUNTIMES.llama.defaultBaseUrl);
+  });
+
+  it('returns null for providers with no local dependency', () => {
+    expect(localRuntimeForProvider({ command: 'claude', type: 'cli' })).toBeNull();
+  });
+});

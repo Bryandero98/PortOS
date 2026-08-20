@@ -71,6 +71,29 @@ llama-server \
 3. Click **Refresh Models** to pull the live aliases from `llama-server`, or use the default `dflash` model.
 4. Select **OpenCode llama TUI** in the CoS task creator or terminal runner to execute coding and agent tasks with speculative acceleration.
 
+### Checking the requirements from the Providers page
+
+Every provider backed by a local daemon carries a **requirements checklist** on
+its card in **AI Providers** — fed by `GET /api/providers/readiness`, re-polled
+every 20s:
+
+1. **llama.cpp installed** — `llama-server` is on PortOS's PATH (or something is
+   already answering at the endpoint, which proves it another way).
+2. **llama.cpp server responding** — the endpoint THIS provider points at (its
+   own `OPENCODE_CONFIG_CONTENT` `baseURL`, not a hardcoded default) answers
+   `GET /v1/models`.
+3. **Model available** — the provider's default model is one that endpoint
+   actually serves. This is the alias check: `--alias dflash` with a provider
+   asking for `dspark` fails here rather than inside a dead agent run.
+
+Until all three pass, the card says what is missing and links to
+**Settings → Local LLM**. The same failure previously surfaced only as
+`Cannot connect to API: Unable to connect` inside the agent transcript.
+
+The GGUF weights are a separate download from the binary: `llama-server` will
+not start without them, and PortOS now refuses the start with the missing path
+named rather than reporting a PID for a process that already exited.
+
 ---
 
 ## Ollama

@@ -23,6 +23,7 @@ import Modal from '../components/ui/Modal';
 import { FormField } from '../components/ui/FormField';
 import RuntimeInstallModal from '../components/install/RuntimeInstallModal';
 import ProviderRuntimeStatus from '../components/providers/ProviderRuntimeStatus';
+import ProviderReadiness from '../components/providers/ProviderReadiness';
 
 // The two local apps an API provider can front. Their installer lives on the
 // Local LLM settings tab (it starts the service too), so the provider card
@@ -114,6 +115,11 @@ export default function AIProviders() {
   // an upgrade) — distinct from a confirmed missing CLI — and simply renders no
   // install widgets.
   const [runtimes, setRuntimes] = useState({});
+  // Local-daemon requirements per provider (llama.cpp / Ollama / LM Studio /
+  // MTPLX), keyed by provider id. Providers with no local dependency are absent
+  // from the map, and an empty map means the endpoint was not reached — both
+  // render no checklist.
+  const [readiness, setReadiness] = useState({});
   // The runtime whose install modal is open (`null` = closed).
   const [installingRuntime, setInstallingRuntime] = useState(null);
   // Ollama / LM Studio install state (and the model lists the editor's pickers
@@ -194,10 +200,24 @@ export default function AIProviders() {
     if (statusData?.providers) setStatuses(statusData.providers);
   }, []);
 
+  // Local-daemon readiness (is llama-server / Ollama actually up and serving the
+  // model this provider names?). Off the critical path like the runtime probes,
+  // and re-polled on the same cadence as the status map so starting a daemon
+  // from the Local LLM tab clears the card's checklist on its own.
+  const loadReadiness = useCallback(async () => {
+    const data = await api.getProviderReadiness({ silent: true }).catch(() => null);
+    setReadiness(data?.readiness && typeof data.readiness === 'object' ? data.readiness : {});
+  }, []);
+
+  useEffect(() => { loadReadiness(); }, [loadReadiness]);
+
   useEffect(() => {
-    const id = setInterval(refreshStatuses, 20000);
+    const id = setInterval(() => {
+      refreshStatuses();
+      loadReadiness();
+    }, 20000);
     return () => clearInterval(id);
-  }, [refreshStatuses]);
+  }, [refreshStatuses, loadReadiness]);
 
   // Clear a provider's bench (runtime unavailability) so the next call retries it.
   // Note: if the underlying cause persists (e.g. an invalid model id), the very
@@ -658,6 +678,8 @@ export default function AIProviders() {
                       runtime={runtimeForProvider(provider)}
                       onInstall={setInstallingRuntime}
                     />
+
+                    <ProviderReadiness className="mt-2" readiness={readiness[provider.id]} />
 
                     {provider.enabled && statuses[provider.id]?.available === false && (
                       <div className="mt-2 text-xs rounded border border-port-error/40 bg-port-error/10 px-3 py-2 text-port-error space-y-1">
