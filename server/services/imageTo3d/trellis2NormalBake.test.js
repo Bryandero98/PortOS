@@ -28,6 +28,23 @@ function resolveNumpyPython() {
 }
 
 const pyBin = resolveNumpyPython();
+
+// The end-to-end attach test additionally needs torch + the Metal rasterizer/BVH, which
+// only a real TRELLIS.2 install has. Probed separately so the pure-helper tests above
+// still run on a host with bare numpy.
+function hasMetalStack(bin) {
+  if (!bin) return false;
+  try {
+    execFileSync(bin, ['-c',
+      'import torch, trimesh, o_voxel.postprocess as pp, mtldiffrast.torch;'
+      + ' assert getattr(pp, "_HAS_DR", False) and getattr(pp, "_BVH", None)'],
+    { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+const hasStack = hasMetalStack(pyBin);
 const MODULE_DIR = new URL('.', import.meta.url).pathname;
 
 describe.skipIf(!pyBin)('trellis2NormalBake helpers', () => {
@@ -230,5 +247,107 @@ except ValueError as e:
 `);
       expect(r.raised).toMatch(/expects exactly one mesh, got 2/);
     });
+  });
+});
+
+// The contract the runner's own tests cannot reach: their stub `to_glb` returns a
+// string, so nothing there proves a WORKING bake actually attaches the texture. A bake
+// that silently produced no normalTexture would have passed the whole suite while every
+// opted-in render shipped an unaugmented mesh.
+describe.skipIf(!hasStack)('bake_normal_map attaches a usable normal map', () => {
+  const run = (body) => {
+    const dir = mkdtempSync(join(tmpdir(), 'portos-nbake-e2e-'));
+    const script = join(dir, 'case.py');
+    try {
+      writeFileSync(script, [
+        'import sys, json',
+        `sys.path.insert(0, ${JSON.stringify(MODULE_DIR)})`,
+        'import numpy as np, trimesh',
+        'import trellis2NormalBake as nb',
+        body,
+      ].join('\n'));
+      return JSON.parse(execFileSync(pyBin, [script], { encoding: 'utf8', timeout: 240000 }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  // A flat quad, UV-mapped to the whole atlas, against a source that is the same quad
+  // pushed into a dome. The exported (flat) mesh cannot express that curvature as
+  // geometry, so a correct bake must encode it as tilt in the map.
+  const FIXTURE = `
+n = 12
+xs, ys = np.meshgrid(np.linspace(-0.5, 0.5, n), np.linspace(-0.5, 0.5, n))
+def grid(zfn):
+    v = np.stack([xs.ravel(), ys.ravel(), zfn(xs, ys).ravel()], -1).astype(np.float32)
+    f = []
+    for r in range(n - 1):
+        for c in range(n - 1):
+            a, b = r * n + c, r * n + c + 1
+            d, e = (r + 1) * n + c, (r + 1) * n + c + 1
+            f += [[a, b, e], [a, e, d]]
+    return v, np.asarray(f, np.int32)
+flat_v, faces = grid(lambda x, y: np.zeros_like(x))
+dome_export, _ = grid(lambda x, y: 0.18 * np.cos(np.pi * x) * np.cos(np.pi * y))
+# The source must be expressed in DECODER space, because that is what the bake
+# receives in production (captured at the simplify interception, before to_glb applies
+# its Y-up swap) and it converts it forward itself. Feeding an already-converted mesh
+# rotates the source away from the exported one and yields a ~0 mean z -- which is
+# exactly what a real space mismatch looks like, so this inverse also keeps the test
+# honest about decoder_to_export_space being exercised rather than bypassed.
+def to_decoder(v):            # inverse of (x,y,z) -> (x,z,-y)
+    out = np.array(v, np.float32, copy=True)
+    y = out[:, 1].copy()
+    out[:, 1] = -out[:, 2]
+    out[:, 2] = y
+    return out
+dome_v = to_decoder(dome_export)
+assert np.allclose(nb.decoder_to_export_space(dome_v), dome_export, atol=1e-6)
+uv = np.stack([(xs.ravel() + 0.5), (ys.ravel() + 0.5)], -1).astype(np.float32)
+mat = trimesh.visual.material.PBRMaterial()
+mesh = trimesh.Trimesh(vertices=flat_v, faces=faces, process=False,
+                       visual=trimesh.visual.TextureVisuals(uv=uv, material=mat))
+`;
+
+  it('attaches a normalTexture of the requested size, with real tilt', () => {
+    const r = run(FIXTURE + `
+nb.bake_normal_map(mesh, dome_v, faces, texture_size=64, verbose=False)
+t = mesh.visual.material.normalTexture
+img = np.asarray(t.convert('RGB'), np.float32) / 255.0 * 2 - 1
+lens = np.linalg.norm(img, axis=-1)
+tilt = (np.abs(img[..., :2]).max(-1) > 4/255.0)
+print(json.dumps({
+    "attached": t is not None,
+    "size": list(t.size),
+    "finite": bool(np.all(np.isfinite(img))),
+    "unit_len_max_err": float(np.abs(lens - 1).max()),
+    "mean_z": float(img[..., 2].mean()),
+    "tilt_fraction": float(tilt.mean()),
+}))
+`);
+    expect(r.attached).toBe(true);
+    expect(r.size).toEqual([64, 64]);
+    expect(r.finite).toBe(true);
+    // Every texel decodes to a unit vector (8-bit quantization is the only error).
+    expect(r.unit_len_max_err).toBeLessThan(0.05);
+    // A normal map is mostly-facing-out; a broken frame collapses this toward 0.
+    expect(r.mean_z).toBeGreaterThan(0.5);
+    // And it must actually carry the dome's curvature rather than being flat.
+    expect(r.tilt_fraction).toBeGreaterThan(0.2);
+  });
+
+  it('exports that texture through a real GLB round-trip', () => {
+    // trimesh silently dropping normalTexture on export would make the whole feature
+    // a no-op with every in-memory assertion still green.
+    const r = run(FIXTURE + `
+nb.bake_normal_map(mesh, dome_v, faces, texture_size=64, verbose=False)
+blob = mesh.export(file_type='glb')
+back = trimesh.load(trimesh.util.wrap_as_stream(blob), file_type='glb', process=False)
+m2 = list(back.geometry.values())[0]
+nt = getattr(m2.visual.material, 'normalTexture', None)
+print(json.dumps({"survived": nt is not None, "size": list(nt.size) if nt else None}))
+`);
+    expect(r.survived).toBe(true);
+    expect(r.size).toEqual([64, 64]);
   });
 });

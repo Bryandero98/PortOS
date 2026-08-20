@@ -52,7 +52,7 @@ p.add_argument("--texture-size", type=int, choices=[512, 1024, 2048], default=10
 p.add_argument("--seed", type=int, default=42)
 p.add_argument("--steps", type=int, default=None)
 a = p.parse_args()
-faces = list(range(22746188))
+faces = list(range(int(os.environ.get("FIXTURE_FACES", "22746188"))))
 target = min(200000, len(faces))
 v, f = fast_simplification.simplify(['v'], faces, 1.0 - (target / len(faces)))
 o_voxel.postprocess.to_glb(faces=f, decimation_target=target, texture_size=a.texture_size)
@@ -188,12 +188,32 @@ describe.skipIf(!pyBin)('trellis2GenerateRunner', () => {
   });
 
   it('no-ops the simplify call when the mesh is already under target', () => {
+    // The fixture must be SMALLER than the target for this to exercise the
+    // `n_faces <= target` branch at all. An earlier version used an 8.6M target
+    // against a 22.7M-face fixture, so it measured decimation and left the branch
+    // it names uncovered — where a regression computing a negative ratio would
+    // crash or corrupt the render. Reachable in practice on a high-memory host that
+    // explicitly picks the fast/512 tier.
     writeStubs();
-    // 30M target against a 22.7M-face mesh: upstream still calls simplify (its own
-    // guard compares against 200K), so the patch has to recognize the no-op case
-    // rather than compute a negative ratio.
-    const r = resultOf(run(['--decimation-target', '8600000', '--', join(dir, 'generate.py'), 'a.png']));
-    expect(r.to_glb[0].exported).toBe(8600000);
+    const r = resultOf(run(
+      ['--decimation-target', '1000000', '--', join(dir, 'generate.py'), 'a.png'],
+      { env: { FIXTURE_FACES: '150000' } },
+    ));
+    // simplify was called by upstream (its guard compares against 200K) and our
+    // wrapper returned the input untouched rather than decimating.
+    expect(r.simplify).toEqual([]);
+    expect(r.to_glb[0].exported).toBe(150000);
+  });
+
+  it('still decimates when the mesh is over target', () => {
+    // The other side of that branch, so neither direction can regress silently.
+    writeStubs();
+    const r = resultOf(run(
+      ['--decimation-target', '100000', '--', join(dir, 'generate.py'), 'a.png'],
+      { env: { FIXTURE_FACES: '150000' } },
+    ));
+    expect(r.simplify).toHaveLength(1);
+    expect(r.to_glb[0].exported).toBe(100000);
   });
 
   it('refuses to raise the target on a degraded install, and says why', () => {
