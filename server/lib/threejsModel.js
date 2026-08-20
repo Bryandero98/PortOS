@@ -811,7 +811,63 @@ const isCoplanarCloud = (vertices) => {
   return Math.abs(determinant) / (meanVariance ** 3) < COPLANAR_DETERMINANT;
 };
 
-const isZeroThicknessGeometry = (geometry) => {
+// Three.js composes a part's local transform as rotation * scale, then applies
+// each ancestor's transform from the outside. Keeping the linear part here is
+// enough for the relative thickness check and avoids making the server-side gate
+// depend on Three.js just to answer a geometry question.
+const IDENTITY_LINEAR = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+
+const multiplyLinear = (a, b) => [
+  (a[0] * b[0]) + (a[1] * b[3]) + (a[2] * b[6]),
+  (a[0] * b[1]) + (a[1] * b[4]) + (a[2] * b[7]),
+  (a[0] * b[2]) + (a[1] * b[5]) + (a[2] * b[8]),
+  (a[3] * b[0]) + (a[4] * b[3]) + (a[5] * b[6]),
+  (a[3] * b[1]) + (a[4] * b[4]) + (a[5] * b[7]),
+  (a[3] * b[2]) + (a[4] * b[5]) + (a[5] * b[8]),
+  (a[6] * b[0]) + (a[7] * b[3]) + (a[8] * b[6]),
+  (a[6] * b[1]) + (a[7] * b[4]) + (a[8] * b[7]),
+  (a[6] * b[2]) + (a[7] * b[5]) + (a[8] * b[8]),
+];
+
+const rotationLinear = (degrees = [0, 0, 0]) => {
+  const [x = 0, y = 0, z = 0] = degrees;
+  const ax = (Number.isFinite(x) ? x : 0) * (Math.PI / 180);
+  const ay = (Number.isFinite(y) ? y : 0) * (Math.PI / 180);
+  const az = (Number.isFinite(z) ? z : 0) * (Math.PI / 180);
+  const a = Math.cos(ax);
+  const b = Math.sin(ax);
+  const c = Math.cos(ay);
+  const d = Math.sin(ay);
+  const e = Math.cos(az);
+  const f = Math.sin(az);
+  // Row-major equivalent of THREE.Euler's default XYZ matrix.
+  return [
+    c * e, -c * f, d,
+    (b * d * e) + (a * f), (-b * d * f) + (a * e), -b * c,
+    (-a * d * e) + (b * f), (a * d * f) + (b * e), a * c,
+  ];
+};
+
+const scaleLinear = (scale = [1, 1, 1]) => [
+  Number.isFinite(scale[0]) ? scale[0] : 1, 0, 0,
+  0, Number.isFinite(scale[1]) ? scale[1] : 1, 0,
+  0, 0, Number.isFinite(scale[2]) ? scale[2] : 1,
+];
+
+const partLinear = (part) => multiplyLinear(
+  rotationLinear(part.rotationDegrees),
+  scaleLinear(part.scale),
+);
+
+const applyLinear = (matrix, vector) => [
+  (matrix[0] * vector[0]) + (matrix[1] * vector[1]) + (matrix[2] * vector[2]),
+  (matrix[3] * vector[0]) + (matrix[4] * vector[1]) + (matrix[5] * vector[2]),
+  (matrix[6] * vector[0]) + (matrix[7] * vector[1]) + (matrix[8] * vector[2]),
+];
+
+const vectorLength = (vector) => Math.hypot(...vector);
+
+const isZeroThicknessGeometry = (geometry, worldLinear = IDENTITY_LINEAR) => {
   if (!geometry) return false;
   if (geometry.type === 'custom') {
     const vertices = Array.isArray(geometry.vertices) ? geometry.vertices : [];
@@ -822,8 +878,13 @@ const isZeroThicknessGeometry = (geometry) => {
   if (outline.length < 3 || !(geometry.depth > 0)) return false;
   const xs = outline.map(([x]) => x);
   const ys = outline.map(([, y]) => y);
-  const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
-  return span > 0 && geometry.depth / span <= OPEN_SHELL_DEPTH_RATIO;
+  const spanX = Math.max(...xs) - Math.min(...xs);
+  const spanY = Math.max(...ys) - Math.min(...ys);
+  const xSpan = spanX * vectorLength(applyLinear(worldLinear, [1, 0, 0]));
+  const ySpan = spanY * vectorLength(applyLinear(worldLinear, [0, 1, 0]));
+  const span = Math.max(xSpan, ySpan);
+  const thickness = geometry.depth * vectorLength(applyLinear(worldLinear, [0, 0, 1]));
+  return span > 0 && thickness > 0 && thickness / span <= OPEN_SHELL_DEPTH_RATIO;
 };
 
 const isSlabGeometry = (geometry) => {
@@ -856,9 +917,12 @@ const collectMeshes = (part, out = []) => {
  */
 export function evaluateThreejsFlatness(spec) {
   const byId = new Map();
-  const indexPart = (part) => {
+  const worldLinearById = new Map();
+  const indexPart = (part, parentLinear = IDENTITY_LINEAR) => {
     byId.set(part.id, part);
-    for (const child of part.children || []) indexPart(child);
+    const worldLinear = multiplyLinear(parentLinear, partLinear(part));
+    worldLinearById.set(part.id, worldLinear);
+    for (const child of part.children || []) indexPart(child, worldLinear);
   };
   for (const part of spec?.parts || []) indexPart(part);
 
@@ -888,7 +952,8 @@ export function evaluateThreejsFlatness(spec) {
       feature: detail.feature,
       partIds: implementing.map((mesh) => mesh.id),
       isIntentionalMembrane: implementing.every((mesh) => (
-        spec?.materials?.[mesh.material]?.side === 'double' && isZeroThicknessGeometry(mesh.geometry)
+        spec?.materials?.[mesh.material]?.side === 'double'
+        && isZeroThicknessGeometry(mesh.geometry, worldLinearById.get(mesh.id))
       )),
     });
     for (const mesh of implementing) slabPartIds.add(mesh.id);

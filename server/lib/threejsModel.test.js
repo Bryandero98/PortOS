@@ -636,6 +636,18 @@ describe('evaluateThreejsFlatness', () => {
     expect(flatness.findings[0].severity).toBe('note');
   });
 
+  it('keeps a scaled near-zero-depth child in the solid-part warning', () => {
+    const parent = geometryPart('parent', undefined);
+    delete parent.material;
+    parent.scale = [1, 1, 1_000];
+    parent.children = [geometryPart('plate', { ...validExtrude(), depth: 0.001 })];
+    const spec = flatnessSpec([parent]);
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 1, noteCount: 0, flatRatio: 1 });
+    expect(flatness.findings[0].severity).toBe('warning');
+  });
+
   it('keeps duplicate feature labels classified independently', () => {
     const membrane = geometryPart('membrane', flatFanGeometry());
     const plate = geometryPart('plate', validExtrude());
