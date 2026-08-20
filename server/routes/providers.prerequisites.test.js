@@ -18,6 +18,10 @@ const { createPortOSProviderRoutes } = await import('./providers.js');
 
 const CODEX = { id: 'codex', name: 'Codex CLI', type: 'cli', command: 'codex', envVars: {} };
 const CLAUDE = { id: 'claude-code', name: 'Claude Code', type: 'cli', command: 'claude', envVars: {} };
+const BEDROCK = {
+  id: 'claude-code-bedrock', name: 'Claude Code Bedrock', type: 'cli', command: 'claude',
+  envVars: { AWS_BEARER_TOKEN_BEDROCK: '' }, secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+};
 const KEYLESS_CLOUD = { id: 'openai', name: 'OpenAI', type: 'api', endpoint: 'https://api.example.com/v1', envVars: {} };
 const LOCAL_API = { id: 'lmstudio', name: 'LM Studio', type: 'api', endpoint: 'http://localhost:1234/v1', envVars: {} };
 
@@ -79,5 +83,22 @@ describe('#4611: GET /api/providers publishes each provider\'s prerequisites', (
 
     expect(byId.codex).toHaveProperty('canRefreshModels');
     expect(byId.codex).not.toHaveProperty('apiKey');
+  });
+
+  it('preserves an explicitly empty secret env value for readiness to classify', async () => {
+    const byId = providersById(await request(appWith([BEDROCK])).get('/api/providers'));
+
+    expect(byId['claude-code-bedrock'].envVars.AWS_BEARER_TOKEN_BEDROCK).toBe('');
+    expect(byId['claude-code-bedrock'].secretEnvVars).toEqual(['AWS_BEARER_TOKEN_BEDROCK']);
+  });
+
+  it('continues redacting a configured secret env value', async () => {
+    const configured = {
+      ...BEDROCK,
+      envVars: { ...BEDROCK.envVars, AWS_BEARER_TOKEN_BEDROCK: 'token-example' },
+    };
+    const byId = providersById(await request(appWith([configured])).get('/api/providers'));
+
+    expect(byId['claude-code-bedrock'].envVars.AWS_BEARER_TOKEN_BEDROCK).toBe('***');
   });
 });

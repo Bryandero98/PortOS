@@ -28,8 +28,10 @@
  * Same for `orcaRouterKeySet`: `false` is "the sibling holds no key", `null` is
  * "the caller cannot tell". Only a definite negative produces a finding.
  *
- * Credentials carried in a secret env var (Bedrock, an Ollama auth token) are
- * deliberately NOT covered here yet — that is issue #4612.
+ * Credentials carried in a secret env var (Bedrock, an Ollama auth token) stay
+ * presentation-only here: the provider card resolves them from the sanitized
+ * env-var metadata, while routing must not assume the server can inspect the
+ * process environment that will ultimately run the provider.
  */
 
 import { PROVIDER_TYPES } from './aiToolkit/constants.js';
@@ -183,9 +185,9 @@ export const providerPrerequisites = (provider, { runtime = null, orcaRouterKeyS
     && !isPrivateNetworkEndpoint(provider?.endpoint)) {
     missing.push({ code: 'apiKey', label: 'API key is not set' });
   }
-  // The OpenCode OrcaRouter wrappers carry no key of their own — theirs lives on
-  // the sibling API provider, so that's the prerequisite to report.
-  if (provider?.orcarouterBacked === true && orcaRouterKeySet === false) {
+  // OpenCode OrcaRouter wrappers normally inherit from the sibling API
+  // provider, but an explicitly stored wrapper key takes precedence at spawn.
+  if (provider?.orcarouterBacked === true && !providerHasApiKey(provider) && orcaRouterKeySet === false) {
     missing.push({ code: 'inheritedApiKey', label: 'OrcaRouter API provider has no API key' });
   }
 
@@ -213,8 +215,8 @@ export const describeMissingPrerequisites = (missing) =>
  * can legitimately authenticate another way — a secret env var (Bedrock's AWS
  * credentials, an Ollama auth token), or an OrcaRouter wrapper carrying its own
  * key rather than the sibling's. Routing on those would take working providers
- * out of the chain, so they stay presentation-only until #4612 teaches this
- * module about env-var credentials; then they can move into this list.
+ * out of the chain, so they stay presentation-only. The provider card may
+ * report those credentials separately without changing the routing gate.
  */
 export const ROUTING_BLOCKING_CODES = Object.freeze(['runtime']);
 

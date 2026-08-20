@@ -33,6 +33,7 @@ import {
   isApiProvider,
   isProcessProvider,
   providerRuntimeKey,
+  credentialSource,
   providerCardState,
   isPrivateNetworkEndpoint,
   PROVIDER_CARD_STATE,
@@ -1209,6 +1210,44 @@ describe('providerRuntimeKey', () => {
   });
 });
 
+describe('credentialSource', () => {
+  it('identifies a stored public-provider key', () => {
+    expect(credentialSource({ id: 'cloud', type: 'api', endpoint: 'https://api.example.com/v1' }))
+      .toEqual({ kind: 'stored', ref: 'cloud' });
+  });
+
+  it('does not require a credential for a local API endpoint', () => {
+    expect(credentialSource({ id: 'ollama', type: 'api', endpoint: 'http://localhost:11434/v1', hasApiKey: false }))
+      .toEqual({ kind: 'none', ref: null });
+  });
+
+  it('identifies an inherited OrcaRouter key', () => {
+    expect(credentialSource({ id: 'opencode-orcarouter', type: 'cli', orcarouterBacked: true }))
+      .toEqual({ kind: 'inherited', ref: 'orcarouter' });
+  });
+
+  it('identifies env credentials from explicit metadata and conventional names', () => {
+    expect(credentialSource({
+      id: 'bedrock', type: 'cli', secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'], envVars: { AWS_BEARER_TOKEN_BEDROCK: '' },
+    })).toEqual({ kind: 'env', ref: 'AWS_BEARER_TOKEN_BEDROCK' });
+    expect(credentialSource({
+      id: 'claude-ollama', type: 'cli', envVars: { ANTHROPIC_AUTH_TOKEN: 'ollama' },
+    })).toEqual({ kind: 'env', ref: 'ANTHROPIC_AUTH_TOKEN' });
+  });
+
+  it('lets a wrapper carrying its own key stand down from inheritance', () => {
+    expect(credentialSource({ id: 'wrapper', type: 'cli', apiKey: 'sk-example', orcarouterBacked: true }))
+      .toEqual({ kind: 'stored', ref: 'wrapper' });
+  });
+
+  it('covers the shipped Bedrock and Claude-Ollama provider shapes', () => {
+    expect(credentialSource(SHIPPED_PROVIDERS.providers['claude-code-bedrock']))
+      .toEqual({ kind: 'env', ref: 'AWS_BEARER_TOKEN_BEDROCK' });
+    expect(credentialSource(SHIPPED_PROVIDERS.providers['claude-ollama']))
+      .toEqual({ kind: 'env', ref: 'ANTHROPIC_AUTH_TOKEN' });
+  });
+});
+
 describe('providerCardState', () => {
   const cli = (over = {}) => ({ id: 'p1', type: 'cli', command: 'opencode', enabled: true, ...over });
   const cloudApi = (over = {}) => ({ id: 'p2', type: 'api', endpoint: 'https://api.example.com/v1', enabled: true, ...over });
@@ -1277,11 +1316,47 @@ describe('providerCardState', () => {
 
   it('blocks an OrcaRouter wrapper when the sibling API provider holds no key', () => {
     const wrapper = cli({ id: 'opencode-orcarouter', orcarouterBacked: true });
-    expect(providerCardState(wrapper, { orcaRouterKeySet: false }).missing)
+    expect(providerCardState(wrapper, { keySetFor: id => id === 'orcarouter' ? false : null }).missing)
       .toEqual([{ code: 'inheritedApiKey', label: 'OrcaRouter API provider has no API key' }]);
     // Sibling absent from the list = unknown, which must not accuse the wrapper.
-    expect(providerCardState(wrapper, { orcaRouterKeySet: null }).state).toBe(PROVIDER_CARD_STATE.READY);
-    expect(providerCardState(wrapper, { orcaRouterKeySet: true }).state).toBe(PROVIDER_CARD_STATE.READY);
+    expect(providerCardState(wrapper, { keySetFor: () => null }).state).toBe(PROVIDER_CARD_STATE.READY);
+    expect(providerCardState(wrapper, { keySetFor: () => true }).state).toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('does not require the inherited key when a wrapper carries its own key', () => {
+    const wrapper = cli({ id: 'opencode-orcarouter', apiKey: 'sk-example', orcarouterBacked: true });
+    expect(providerCardState(wrapper, { keySetFor: id => id === wrapper.id })).toEqual({
+      state: PROVIDER_CARD_STATE.READY,
+      missing: [],
+    });
+  });
+
+  it('blocks an env-credential provider whose configured value is empty, naming the variable', () => {
+    const readiness = providerCardState(cli({
+      id: 'claude-code-bedrock',
+      envVars: { AWS_BEARER_TOKEN_BEDROCK: '' },
+      secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+    }));
+    expect(readiness.state).toBe(PROVIDER_CARD_STATE.BLOCKED);
+    expect(readiness.missing).toEqual([{
+      code: 'envVar',
+      label: 'AWS_BEARER_TOKEN_BEDROCK environment variable is not set',
+    }]);
+  });
+
+  it('accepts a configured env credential', () => {
+    expect(providerCardState(cli({
+      id: 'claude-ollama',
+      envVars: { ANTHROPIC_AUTH_TOKEN: 'ollama' },
+    })).state).toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('does not treat an unknown env lookup as a missing credential', () => {
+    expect(providerCardState(cli({
+      id: 'claude-code-bedrock',
+      envVars: { AWS_BEARER_TOKEN_BEDROCK: '***' },
+      secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+    }), { envVarSet: () => null }).state).toBe(PROVIDER_CARD_STATE.READY);
   });
 
   it('benches an enabled provider the server marked unavailable', () => {
