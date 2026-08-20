@@ -28,8 +28,12 @@ const labelFor = (id) => BACKENDS.find((b) => b.id === id)?.label || id;
 // `quantization` field. A force redownload has to target a tagged id so the
 // server evicts that GGUF instead of no-op'ing on a bare repo.
 const redownloadInstallId = (model, backend) => {
-  if (backend !== 'lmstudio' || !model?.quantization || /@/.test(model.id || '')) return model.id;
-  return `${model.id}@${model.quantization}`;
+  if (backend !== 'lmstudio') return model.id;
+  if (/@/.test(model.id || '')) return model.id;
+  if (model?.quantization) return `${model.id}@${model.quantization}`;
+  // /v1/models fallback has no quantization — a bare repo force-redownload
+  // would skip existing GGUFs and still toast success.
+  return null;
 };
 
 // The speculative-decoding presets come from the server
@@ -1578,7 +1582,7 @@ export function LocalLlmTab() {
                       {chosenInstalled ? (
                         <>
                           <span className="text-xs px-2 py-1 text-port-success">Installed</span>
-                          {!isAudio && (
+                          {!isAudio && (selected !== 'lmstudio' || /@/.test(chosenId || '')) && (
                             <button
                               onClick={() => install(chosenId, { force: true })}
                               disabled={busy}
@@ -1700,6 +1704,7 @@ export function LocalLlmTab() {
                   <FlaskConical size={12} />
                   Chat
                 </Link>
+                {redownloadInstallId(m, selected) && (
                 <button
                   onClick={() => install(redownloadInstallId(m, selected), { force: true })}
                   disabled={busy}
@@ -1707,9 +1712,10 @@ export function LocalLlmTab() {
                   className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 flex items-center gap-1 shrink-0"
                   aria-label={`Redownload ${m.name || m.id}`}
                 >
-                  {actionInProgress === `install-${m.id}` ? <BrailleSpinner /> : <RefreshCw size={12} />}
+                  {actionInProgress === `install-${redownloadInstallId(m, selected)}` ? <BrailleSpinner /> : <RefreshCw size={12} />}
                   Redownload
                 </button>
+                )}
                 {isConfirmingDelete(m.id) ? (
                   <ConfirmButtonPair
                     prompt="Delete?"

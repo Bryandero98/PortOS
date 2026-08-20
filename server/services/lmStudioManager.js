@@ -601,16 +601,25 @@ function ggufMatchesQuant(filename, quant) {
 /**
  * Remove on-disk LM Studio files so a subsequent `lms get` actually re-fetches
  * them. A quant-tagged id (`repo@UD-Q4_K_M` / `hf.co/repo:UD-Q4_K_M`) evicts
- * only matching GGUFs and leaves sibling quants alone. A bare repo id is a
- * no-op (`missing: true`) rather than wiping every quant in the folder — pick
- * a tagged variant to redownload a specific build. Missing files are success
- * so a first-time install can share this path. Ambiguous ids refuse, same as
- * deleteModel.
+ * only matching GGUFs and leaves sibling quants alone. A bare repo id fails —
+ * we cannot name the file to replace, and wiping the folder would drop sibling
+ * quants. Missing files are success (`missing: true`) so a first-time install
+ * can share this path. Ambiguous ids refuse, same as deleteModel.
  * @returns {Promise<{ success: boolean, modelId: string, missing?: boolean, error?: string }>}
  */
 async function evictDownloadedQuant(modelId) {
   const repoId = repoIdFromInstallId(modelId)
   const quant = quantFromInstallId(modelId)
+  // A bare `publisher/repo` cannot name the GGUF to replace. Evicting the whole
+  // folder would drop sibling quants; leaving files in place makes `lms get`
+  // skip them and report a fake success. Callers must pass `repo@QUANT`.
+  if (!quant) {
+    return {
+      success: false,
+      error: 'Redownload needs a quantization tag (e.g. repo@UD-Q4_K_M). A bare repo id would skip existing GGUFs without replacing them.',
+      modelId
+    }
+  }
   const modelsDir = await getModelsDir()
   const matches = await findDeletableModelDirs(modelsDir, repoId)
   if (matches === null) return { success: false, error: `Invalid model id "${modelId}".`, modelId }
@@ -621,12 +630,6 @@ async function evictDownloadedQuant(modelId) {
   const dir = matches[0]
   if (!isModelLeafDir(modelsDir, dir)) {
     return { success: false, error: `Refusing to evict "${dir}" — not a model folder under ${modelsDir}.`, modelId }
-  }
-  if (!quant) {
-    // Bare `publisher/repo` would otherwise rm every quant in the folder. The
-    // caller still runs `lms get`; without a tag we cannot know which file to
-    // replace, so leave the disk alone rather than delete sibling builds.
-    return { success: true, missing: true, modelId }
   }
 
   if (await checkLMStudioAvailable()) await unloadModel(modelId).catch(() => {})

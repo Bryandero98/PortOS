@@ -250,6 +250,15 @@ describe('localLlm', () => {
       expect(result).toMatchObject({ success: false, error: 'ambiguous' });
       expect(mocks.lmstudio.downloadModel).not.toHaveBeenCalled();
     });
+    it('does not download a force LM Studio redownload of a bare repo id', async () => {
+      mocks.lmstudio.evictDownloadedQuant.mockResolvedValueOnce({
+        success: false,
+        error: 'Redownload needs a quantization tag'
+      });
+      const result = await svc.installModel('lmstudio', 'unsloth/Qwen3.8-27B-GGUF', undefined, { force: true });
+      expect(result.success).toBe(false);
+      expect(mocks.lmstudio.downloadModel).not.toHaveBeenCalled();
+    });
     it('force is a no-op for Ollama beyond a regular pull', async () => {
       await svc.installModel('ollama', 'hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M', undefined, { force: true });
       expect(mocks.ollama.pullModel).toHaveBeenCalledWith('hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M', undefined);

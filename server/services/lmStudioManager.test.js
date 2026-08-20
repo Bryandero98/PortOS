@@ -225,14 +225,15 @@ describe('lmStudioManager evictDownloadedQuant', () => {
     expect(fs.existsSync(path.join(tempDir, 'unsloth', 'Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q8_K_XL.gguf'))).toBe(true);
   });
 
-  it('does not wipe sibling quants when the id has no quant tag', async () => {
+  it('refuses a bare repo id so a force redownload cannot skip existing GGUFs', async () => {
     writeFile('unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf');
     writeFile('unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q8_K_XL.gguf');
     const { evictDownloadedQuant } = await import('./lmStudioManager.js');
 
     const result = await evictDownloadedQuant('unsloth/Qwen3.8-27B-GGUF');
 
-    expect(result).toMatchObject({ success: true, missing: true });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/quantization tag/i);
     expect(fs.existsSync(path.join(tempDir, 'unsloth', 'Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q4_K_M.gguf'))).toBe(true);
     expect(fs.existsSync(path.join(tempDir, 'unsloth', 'Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q8_K_XL.gguf'))).toBe(true);
   });

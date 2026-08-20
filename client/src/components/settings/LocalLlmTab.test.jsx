@@ -167,6 +167,26 @@ describe('LocalLlmTab installed models', () => {
       expect.objectContaining({ force: true }),
     ));
   });
+
+  it('hides redownload when LM Studio did not report a quantization', async () => {
+    getLocalLlmStatus.mockResolvedValue({
+      backend: 'lmstudio',
+      ollama: { installed: false, available: false, modelCount: 0, models: [] },
+      lmstudio: {
+        installed: true,
+        available: true,
+        modelCount: 1,
+        models: [{ id: 'unsloth/Qwen3.8-27B-GGUF', name: 'Qwen3.8 27B' }],
+      },
+    });
+    render(
+      <MemoryRouter>
+        <LocalLlmTab />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText(/Installed on LM Studio/)).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /Redownload/ })).toBeNull();
+  });
 });
 
 describe('LocalLlmTab recommendations', () => {
