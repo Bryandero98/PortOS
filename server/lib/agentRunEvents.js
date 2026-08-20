@@ -441,8 +441,13 @@ function applyKind(state, event) {
   const data = event.data ?? {};
   switch (event.kind) {
     case 'run.spawned':
-      state.status = 'running';
-      state.startedAt = event.at;
+      // Guarded like every other non-terminal arm. A spawn should never follow a
+      // finalize for the same run, but the ledger is a stream several
+      // independent call sites append to, and the one thing the fold must never
+      // do is talk a finished run back into `running`. `startedAt` is first-wins
+      // for the same reason: the first spawn is the run's real start.
+      if (!isTerminal(state)) state.status = 'running';
+      state.startedAt = state.startedAt ?? event.at;
       if (typeof data.providerId === 'string') state.providerId = data.providerId;
       if (typeof data.model === 'string') state.model = data.model;
       break;

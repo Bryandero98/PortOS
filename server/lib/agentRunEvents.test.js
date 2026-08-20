@@ -361,6 +361,16 @@ describe('projectRunStates — the second-slice boundaries (#4540)', () => {
     expect(state.eventCount).toBe(5);
   });
 
+  it('does not let a late spawn talk a finished run back into running', () => {
+    const [state] = projectRunStates([
+      buildRunEvent({ kind: 'run.spawned', runId: 'r1', at: at('10:00') }),
+      buildRunEvent({ kind: 'run.finalized', runId: 'r1', at: at('11:00'), data: { success: true, exitCode: 0 } }),
+      buildRunEvent({ kind: 'run.spawned', runId: 'r1', at: at('11:05') })
+    ]);
+    expect(state.status).toBe('completed');
+    expect(state.startedAt).toBe(at('10:00'));
+  });
+
   it('records a REJECTED handoff without claiming an owner', () => {
     const [state] = projectRunStates([
       buildRunEvent({ kind: 'run.spawned', runId: 'r1', at: at('10:00') }),
