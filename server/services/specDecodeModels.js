@@ -107,6 +107,16 @@ export function pickGgufSibling(model, { file, quant, repo }) {
   if (file) {
     const exact = all.find((name) => name === file);
     if (exact) return exact;
+    // A pin is authoritative, never a preference: a preset carries `file` only
+    // because its repo's quant tag CANNOT discriminate the target (Muse-Glimmer
+    // tags the projector and the drafter Q4_K_M too). Falling through to the
+    // quant hint there would reinstate the very ambiguity the pin removes — and
+    // land a 1.6 GB drafter in the base model's path. Fail with something the
+    // user can act on instead.
+    throw new ServerError(
+      `Hugging Face repo ${repo} no longer publishes the pinned file ${file} — pick the replacement at https://huggingface.co/${repo} and set the path by hand.`,
+      { status: 422, code: 'SPEC_FILE_MISSING' },
+    );
   }
   // A projector ships under the target's own quant tag
   // (`mmproj-Muse-Glimmer-30B-Q4_K_M.gguf`, 1.4 GB) right beside the 17 GB target,

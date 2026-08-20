@@ -32,6 +32,21 @@ describe('pickGgufSibling', () => {
     expect(pickGgufSibling(model, { file: 'pinned.gguf', quant: 'Q4_K_M', repo: 'o/r' })).toBe('pinned.gguf');
   });
 
+  // A preset pins `file` only where the quant tag can't discriminate the target,
+  // so falling back to the hint when the pin is gone reinstates the ambiguity —
+  // here it would fetch the 1.6 GB drafter into the base model's path.
+  it('refuses to fall back to the quant hint when a pinned file is gone', () => {
+    const model = siblings(
+      'Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf',
+      'dflash-Muse-Glimmer-30B-Q4_K_M.gguf',
+    );
+    expect(() => pickGgufSibling(model, {
+      file: 'Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf',
+      quant: 'Q4_K_M',
+      repo: 'meta-models/Muse-Glimmer-30B-GGUF',
+    })).toThrow(/no longer publishes the pinned file/i);
+  });
+
   // A lone shard on disk would satisfy the launcher's existence check and then
   // fail at load — the exact confusion this module exists to remove.
   it('refuses a sharded-only repo instead of fetching part one', () => {

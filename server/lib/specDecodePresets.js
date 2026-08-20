@@ -9,7 +9,10 @@
  *
  * `quant` is a HINT, not a filename: repos rename their builds
  * (`…-Q4_K_M.gguf`, `…-instruct-q4_k_m.gguf`, `….Q4_K_M.gguf`) and a hard-coded
- * filename rots the moment one of them re-uploads. `file`, when present, wins.
+ * filename rots the moment one of them re-uploads — so most entries carry only
+ * the hint. `file` is the exception, and it is a PIN rather than a preference:
+ * it appears only where the quant tag cannot discriminate the target, so a pin
+ * that stops resolving is an error, not a cue to fall back to the hint.
  *
  * A file with no published single-file GGUF (the DSpark 8B block ships as a
  * tokenizer-less checkpoint that has to be converted against its target) simply
