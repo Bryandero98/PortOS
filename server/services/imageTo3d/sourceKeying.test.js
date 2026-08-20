@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -7,8 +7,10 @@ import {
   detectSolidBorderColor,
   hasMeaningfulAlpha,
   keySolidBackground,
+  KEYING_CACHE_VERSION,
   prepareSourceImage,
 } from './sourceKeying.js';
+import { sha256File } from '../../lib/fileUtils.js';
 
 // Build a raw RGBA buffer from a painter function (x, y) => [r, g, b, a?].
 const makeImage = (width, height, paint) => {
@@ -66,6 +68,17 @@ describe('keySolidBackground', () => {
     expect(alphaAt(keyed, 0, 0)).toBe(0); // background corner
     expect(alphaAt(keyed, 10, 10)).toBe(255); // subject center
     expect(alphaAt(keyed, 6, 6)).toBe(255); // subject interior near the edge
+  });
+
+  it('floods through a dirty outer row using the shared border-band seeds', () => {
+    const dirtyEdge = makeImage(20, 20, (x, y) => (
+      y === 0 ? [255, 0, 0] : (x >= 5 && x < 15 && y >= 5 && y < 15 ? BROWN : GREEN)
+    ));
+    const result = keySolidBackground(dirtyEdge);
+    expect(result).not.toBeNull();
+    const keyed = { data: result.data, width: 20, height: 20 };
+    expect(alphaAt(keyed, 0, 1)).toBe(0);
+    expect(alphaAt(keyed, 0, 0)).toBe(255); // non-background edge artifact is preserved
   });
 
   it('keys enclosed background pockets the flood fill cannot reach', () => {
@@ -155,5 +168,61 @@ describe('prepareSourceImage', () => {
     }).png().toFile(sourcePath);
     const result = await prepareSourceImage({ sourcePath, targetPath: join(await tempDir(), 'never3.png') });
     expect(result).toBeNull();
+  });
+
+  it('reuses a keyed target newer than the gallery source', async () => {
+    const sourcePath = await writePng('cache-source.png', subjectOnGreen());
+    const cachedTarget = await writePng('cache-target.png', makeImage(20, 20, () => [255, 0, 0, 255]));
+    const sourceSha256 = await sha256File(sourcePath);
+    await writeFile(`${cachedTarget}.meta.json`, JSON.stringify({
+      version: KEYING_CACHE_VERSION,
+      sourceSha256,
+    }));
+    const fresh = new Date(Date.now() + 60_000);
+    await utimes(cachedTarget, fresh, fresh);
+
+    const result = await prepareSourceImage({ sourcePath, targetPath: cachedTarget });
+    expect(result).toBe(cachedTarget);
+    const { data } = await sharp(cachedTarget).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    expect([...data.slice(0, 4)]).toEqual([255, 0, 0, 255]);
+  });
+
+  it('rekeys when source bytes change despite an older source mtime', async () => {
+    const sourcePath = await writePng('fingerprint-source.png', subjectOnGreen());
+    const cachedTarget = await writePng('fingerprint-target.png', makeImage(20, 20, () => [255, 0, 0, 255]));
+    await writeFile(`${cachedTarget}.meta.json`, JSON.stringify({
+      version: KEYING_CACHE_VERSION,
+      sourceSha256: await sha256File(sourcePath),
+    }));
+    const targetTime = new Date(Date.now() + 60_000);
+    await utimes(cachedTarget, targetTime, targetTime);
+
+    await writePng('fingerprint-source.png', makeImage(20, 20, (x, y) => (
+      x >= 6 && x < 14 && y >= 6 && y < 14 ? [90, 80, 200] : GREEN
+    )));
+    const oldSourceTime = new Date(Date.now() - 60_000);
+    await utimes(sourcePath, oldSourceTime, oldSourceTime);
+
+    const result = await prepareSourceImage({ sourcePath, targetPath: cachedTarget });
+    expect(result).toBe(cachedTarget);
+    const { data } = await sharp(cachedTarget).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    expect(alphaAt({ data, width: 20, height: 20 }, 0, 0)).toBe(0);
+    expect(JSON.parse(await readFile(`${cachedTarget}.meta.json`, 'utf8')).sourceSha256)
+      .toBe(await sha256File(sourcePath));
+  });
+
+  it('recomputes a fresh target when its keying-version metadata is stale', async () => {
+    const sourcePath = await writePng('version-source.png', subjectOnGreen());
+    const targetPath = await writePng('version-target.png', makeImage(20, 20, () => [255, 0, 0, 255]));
+    await writeFile(`${targetPath}.meta.json`, JSON.stringify({ version: 'source-keying-old' }));
+    const fresh = new Date(Date.now() + 60_000);
+    await utimes(targetPath, fresh, fresh);
+
+    const result = await prepareSourceImage({ sourcePath, targetPath });
+    expect(result).toBe(targetPath);
+    const { data } = await sharp(targetPath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    expect(alphaAt({ data, width: 20, height: 20 }, 0, 0)).toBe(0);
+    expect(JSON.parse(await readFile(`${targetPath}.meta.json`, 'utf8')))
+      .toEqual({ version: KEYING_CACHE_VERSION, sourceSha256: await sha256File(sourcePath) });
   });
 });

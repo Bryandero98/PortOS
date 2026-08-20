@@ -16,8 +16,9 @@
  * A deliberately simpler edge model than the sprites lane's chroma unmix
  * (`services/sprites/chromaKey.js`): that lane reverses source-over compositing
  * against a known pure-channel key; this one only needs "background gone, 1px
- * anti-spill feather" for an arbitrary measured background color. Consolidating
- * the shared border/median primitives with the sprites lane is tracked separately.
+ * anti-spill feather" for an arbitrary measured background color. The shared
+ * border/median primitives live in `server/lib/borderKey.js`; this module retains
+ * only the image-to-3D flood fill and its conservative sanity gates.
  *
  * Algorithm (deliberately conservative — "not sure" means "don't touch it"):
  *  1. Sample the border pixels; take the per-channel median as the candidate
@@ -34,19 +35,33 @@
  *     the detection was wrong → pass through untouched.
  */
 
+import { stat } from 'node:fs/promises';
+import { Worker } from 'node:worker_threads';
 import sharp from 'sharp';
+import {
+  hasMeaningfulAlpha as hasMeaningfulAlphaShared,
+} from '../../lib/borderKey.js';
+import { atomicWrite, readJSONFile, sha256File } from '../../lib/fileUtils.js';
+import { decodeRgbaFrame, encodePng } from '../../lib/imageRgba.js';
+import {
+  KEY_TOLERANCE,
+  KEY_TIGHT_TOLERANCE,
+  KEY_MIN_BORDER_COVERAGE,
+  KEY_SOFT_BAND,
+  KEY_MIN_KEYED_RATIO,
+  KEY_MAX_KEYED_RATIO,
+} from './sourceKeyingKernel.js';
 
-/** Euclidean RGB distance for the border/flood match (0–441 scale). */
-export const KEY_TOLERANCE = 30;
-/** Tighter distance for enclosed pockets that can't be reached from the border. */
-export const KEY_TIGHT_TOLERANCE = 15;
-/** Minimum fraction of border pixels that must match for "solid background". */
-export const KEY_MIN_BORDER_COVERAGE = 0.9;
-/** Distance band past KEY_TOLERANCE that maps to partial alpha at the edge. */
-export const KEY_SOFT_BAND = 30;
-/** Keyed-area fraction outside (min, max) means the detection was wrong. */
-export const KEY_MIN_KEYED_RATIO = 0.05;
-export const KEY_MAX_KEYED_RATIO = 0.98;
+export {
+  detectSolidBorderColor,
+  keySolidBackground,
+  KEY_TOLERANCE,
+  KEY_TIGHT_TOLERANCE,
+  KEY_MIN_BORDER_COVERAGE,
+  KEY_SOFT_BAND,
+  KEY_MIN_KEYED_RATIO,
+  KEY_MAX_KEYED_RATIO,
+} from './sourceKeyingKernel.js';
 
 /** Sources above this pixel count skip Node-side keying entirely: the raw
  * decode plus the flood/queue/output buffers scale at ~20 bytes per pixel
@@ -55,117 +70,70 @@ export const KEY_MAX_KEYED_RATIO = 0.98;
  * matting handles oversized sources. */
 export const KEY_MAX_PIXELS = 16_000_000;
 
-// Squared-distance comparisons throughout the hot loops — Math.sqrt only where a
-// real distance is needed (the feather ramp, edge pixels only).
-const KEY_TOLERANCE_SQ = KEY_TOLERANCE ** 2;
-const KEY_TIGHT_TOLERANCE_SQ = KEY_TIGHT_TOLERANCE ** 2;
-
-const distSq = (data, i, [r, g, b]) => (
-  (data[i] - r) ** 2 + (data[i + 1] - g) ** 2 + (data[i + 2] - b) ** 2
-);
-
-const median = (values) => {
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)];
-};
+// Bump the leading version when the kernel changes. The numeric inputs are
+// included so changing a tolerance invalidates fresh keyed output without
+// relying on a developer to remember a second, separate cache edit.
+export const KEYING_CACHE_VERSION = [
+  'source-keying-v1',
+  KEY_TOLERANCE,
+  KEY_TIGHT_TOLERANCE,
+  KEY_MIN_BORDER_COVERAGE,
+  KEY_SOFT_BAND,
+  KEY_MIN_KEYED_RATIO,
+  KEY_MAX_KEYED_RATIO,
+  KEY_MAX_PIXELS,
+].join(':');
 
 /** Whether an RGBA buffer already carries a meaningful (non-opaque) alpha channel. */
-export function hasMeaningfulAlpha(data) {
-  for (let i = 3; i < data.length; i += 4) {
-    if (data[i] < 250) return true;
-  }
-  return false;
-}
+export const hasMeaningfulAlpha = hasMeaningfulAlphaShared;
 
-/**
- * Detect a solid border color in a raw RGBA buffer. Returns `[r, g, b]` when at
- * least `KEY_MIN_BORDER_COVERAGE` of the border pixels sit within `KEY_TOLERANCE`
- * of the border's median color, else null.
- * @param {{data: Buffer|Uint8Array, width: number, height: number}} image
- * @returns {[number, number, number]|null}
- */
-export function detectSolidBorderColor({ data, width, height }) {
-  const offsets = [];
-  for (let x = 0; x < width; x += 1) { offsets.push(x * 4, ((height - 1) * width + x) * 4); }
-  for (let y = 1; y < height - 1; y += 1) { offsets.push(y * width * 4, (y * width + width - 1) * 4); }
+const runKeySolidBackground = (frame) => {
+  const source = frame.data instanceof Uint8Array ? frame.data : Uint8Array.from(frame.data);
+  // Always copy the exact view into a fresh ArrayBuffer. Native image decoders
+  // and test runners may expose pooled/shared backing stores that Node refuses
+  // to transfer, while this copy keeps the worker contract deterministic.
+  const transferable = new Uint8Array(source.byteLength);
+  transferable.set(source);
 
-  const color = [0, 1, 2].map((c) => median(offsets.map((i) => data[i + c])));
-  let matching = 0;
-  for (const i of offsets) { if (distSq(data, i, color) <= KEY_TOLERANCE_SQ) matching += 1; }
-  return matching / offsets.length >= KEY_MIN_BORDER_COVERAGE ? color : null;
-}
-
-/**
- * Key a solid background out of a raw RGBA buffer. Pure — returns a NEW buffer
- * plus stats, or null when the image has no detectable solid background (or the
- * detection failed its own sanity gates). See the module doc for the algorithm.
- * @param {{data: Buffer|Uint8Array, width: number, height: number}} image
- * @returns {{data: Uint8Array, background: [number, number, number], keyedRatio: number}|null}
- */
-export function keySolidBackground({ data, width, height }) {
-  const background = detectSolidBorderColor({ data, width, height });
-  if (!background) return null;
-
-  const pixelCount = width * height;
-  const keyed = new Uint8Array(pixelCount); // 1 = background
-  const queue = new Int32Array(pixelCount);
-  let queueLength = 0;
-
-  const enqueue = (p) => {
-    if (!keyed[p] && distSq(data, p * 4, background) <= KEY_TOLERANCE_SQ) {
-      keyed[p] = 1;
-      queue[queueLength] = p;
-      queueLength += 1;
-    }
-  };
-  for (let x = 0; x < width; x += 1) { enqueue(x); enqueue((height - 1) * width + x); }
-  for (let y = 1; y < height - 1; y += 1) { enqueue(y * width); enqueue(y * width + width - 1); }
-
-  for (let head = 0; head < queueLength; head += 1) {
-    const p = queue[head];
-    const x = p % width;
-    if (x > 0) enqueue(p - 1);
-    if (x < width - 1) enqueue(p + 1);
-    if (p >= width) enqueue(p - width);
-    if (p < pixelCount - width) enqueue(p + width);
-  }
-
-  // Enclosed pockets: background color trapped between limbs never touches the
-  // border, so the flood can't reach it — key it only on the tight tolerance.
-  // The flood already counted itself (queueLength); count pockets as they key.
-  let keyedCount = queueLength;
-  for (let p = 0; p < pixelCount; p += 1) {
-    if (!keyed[p] && distSq(data, p * 4, background) <= KEY_TIGHT_TOLERANCE_SQ) {
-      keyed[p] = 1;
-      keyedCount += 1;
-    }
-  }
-
-  const keyedRatio = keyedCount / pixelCount;
-  if (keyedRatio < KEY_MIN_KEYED_RATIO || keyedRatio > KEY_MAX_KEYED_RATIO) return null;
-
-  const out = new Uint8Array(data.length);
-  out.set(data);
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const p = y * width + x;
-      if (keyed[p]) { out[p * 4 + 3] = 0; continue; }
-      // Feather only against pixels that actually border the keyed region — a
-      // background-adjacent edge texel carrying spill gets partial alpha; interior
-      // pixels that merely resemble the background stay fully opaque.
-      const touchesKeyed = (x > 0 && keyed[p - 1]) || (x < width - 1 && keyed[p + 1])
-        || (y > 0 && keyed[p - width]) || (y < height - 1 && keyed[p + width]);
-      if (!touchesKeyed) continue;
-      const d = Math.sqrt(distSq(data, p * 4, background));
-      if (d < KEY_TOLERANCE + KEY_SOFT_BAND) {
-        // Max(0): an enclosed pixel inside KEY_TOLERANCE (but above the tight
-        // pocket threshold) lands here with a negative ramp value.
-        out[p * 4 + 3] = Math.max(0, Math.round(((d - KEY_TOLERANCE) / KEY_SOFT_BAND) * 255));
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./sourceKeyingWorker.js', import.meta.url), {
+      workerData: {
+        data: transferable.buffer,
+        width: frame.width,
+        height: frame.height,
+      },
+      transferList: [transferable.buffer],
+    });
+    let settled = false;
+    const settle = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      handler(value);
+    };
+    worker.on('message', (message) => {
+      if (message?.type === 'complete') settle(resolve, message.result);
+      if (message?.type === 'error') {
+        settle(reject, new Error(message.error || 'Background keying worker failed'));
       }
-    }
-  }
-  return { data: out, background, keyedRatio };
-}
+    });
+    worker.once('error', (error) => settle(reject, error));
+    worker.once('exit', (code) => {
+      if (code !== 0) settle(reject, new Error(`Background keying worker exited with code ${code}`));
+    });
+  });
+};
+
+const keyedCacheMetadataPath = (targetPath) => `${targetPath}.meta.json`;
+
+const hasFreshKeyedSource = async (sourcePath, targetPath) => {
+  const sourceStats = await stat(sourcePath);
+  const targetStats = await stat(targetPath).catch(() => null);
+  if (!targetStats?.isFile() || targetStats.mtimeMs <= sourceStats.mtimeMs) return false;
+
+  const metadata = await readJSONFile(keyedCacheMetadataPath(targetPath), null, { logError: false });
+  if (metadata?.version !== KEYING_CACHE_VERSION || !metadata.sourceSha256) return false;
+  return metadata.sourceSha256 === await sha256File(sourcePath);
+};
 
 /**
  * Resolve whether a render should consume a keyed copy of its source. Reads
@@ -183,21 +151,28 @@ export function keySolidBackground({ data, width, height }) {
  * @returns {Promise<string|null>} the keyed image path, or null to use the original
  */
 export async function prepareSourceImage({ sourcePath, targetPath }) {
+  if (await hasFreshKeyedSource(sourcePath, targetPath)) return targetPath;
+
   // Header-only probe: bail before the full decode when the source is too
   // large to key affordably (KEY_MAX_PIXELS), and when it has no alpha channel
   // at all, skip the full-buffer meaningful-alpha scan below (ensureAlpha
   // fabricates the channel).
   const { hasAlpha, width, height } = await sharp(sourcePath).metadata();
   if (!width || !height || width * height > KEY_MAX_PIXELS) return null;
-  const { data, info } = await sharp(sourcePath)
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  if (hasAlpha && hasMeaningfulAlpha(data)) return null;
-  const result = keySolidBackground({ data, width: info.width, height: info.height });
+  const frame = await decodeRgbaFrame(sourcePath);
+  if (hasAlpha && hasMeaningfulAlpha(frame.data)) return null;
+  const result = await runKeySolidBackground(frame);
   if (!result) return null;
-  await sharp(result.data, { raw: { width: info.width, height: info.height, channels: 4 } })
-    .png()
-    .toFile(targetPath);
+  await atomicWrite(targetPath, await encodePng({
+    data: result.data,
+    width: frame.width,
+    height: frame.height,
+  }));
+  await atomicWrite(keyedCacheMetadataPath(targetPath), {
+    version: KEYING_CACHE_VERSION,
+    sourceSha256: await sha256File(sourcePath),
+  }).catch((error) => {
+    console.error(`❌ Image-to-3D keying cache metadata failed for ${targetPath}: ${error.message}`);
+  });
   return targetPath;
 }

@@ -23,8 +23,14 @@ import sharp from 'sharp';
 import { join } from 'path';
 import { readdir, writeFile } from 'fs/promises';
 import { createHash } from 'crypto';
+import {
+  hasAlphaVariation,
+  median,
+  sampleBorderKey as sampleBorderKeyShared,
+} from '../../lib/borderKey.js';
 import { ensureDir, atomicWrite, sha256File } from '../../lib/fileUtils.js';
 import { findFfmpeg, runFfmpegProcess } from '../../lib/ffmpeg.js';
+import { decodeRgbaFrame, encodePng } from '../../lib/imageRgba.js';
 import { keyChannelSplit, keyness, keyShareFn, hexToRgb } from './chromaKey.js';
 
 // Authoring bounds + pure label/clamp helpers live in a sharp-free leaf module
@@ -45,6 +51,10 @@ export {
   WALK_MIN_FRAME_COUNT, WALK_MAX_FRAME_COUNT, WALK_MIN_FPS, WALK_MAX_FPS,
   walkPhaseLabels, clampFrameCount, clampFps,
 } from './walkBounds.js';
+
+// Preserve the sprite lane's established median deep-import surface while the
+// implementation lives in the shared leaf.
+export { median };
 
 // Source pipeline constants (animation_postprocess.py) — values are part of
 // the cross-install artifact contract (imported manifests carry them).
@@ -106,20 +116,7 @@ export function pyRoundTo(x, dp) {
 
 const clampChannel = (v) => Math.max(0, Math.min(255, pyRound(v)));
 
-/** statistics.median: middle value, or mean of the two middles. */
-export function median(values) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
 export const sha256Buffer = (buf) => createHash('sha256').update(buf).digest('hex');
-
-/** Decode a PNG to a raw RGBA frame `{ data, width, height }`. */
-export async function decodeRgbaFrame(src) {
-  const { data, info } = await sharp(src).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  return { data, width: info.width, height: info.height };
-}
 
 /**
  * Decode a validated sprite source into a straight-alpha transparent frame.
@@ -131,14 +128,7 @@ export async function decodeRgbaFrame(src) {
 export async function decodeTransparentSpriteSource(src, split, keyHex) {
   const frame = await decodeRgbaFrame(src);
   const { data } = frame;
-  let alphaMin = 255;
-  let alphaMax = 0;
-  for (let i = 3; i < data.length; i += 4) {
-    const alpha = data[i];
-    if (alpha < alphaMin) alphaMin = alpha;
-    if (alpha > alphaMax) alphaMax = alpha;
-  }
-  if (alphaMin < alphaMax) return despillKeyFrame(frame, split);
+  if (hasAlphaVariation(data)) return despillKeyFrame(frame, split);
   const measured = sampleBorderKey(frame);
   validateMeasuredKey(measured, split, keyHex);
   return despillKeyFrame(recoverAlphaFrame(frame, measured, split), split);
@@ -147,9 +137,7 @@ export async function decodeTransparentSpriteSource(src, split, keyHex) {
 // Encode + write + hash in one pass — hashing the in-memory PNG buffer saves
 // reading every just-written artifact back off disk purely to checksum it.
 async function encodePngWithHash(frame, dest, channels = 4) {
-  const buf = await sharp(frame.data, { raw: { width: frame.width, height: frame.height, channels } })
-    .png()
-    .toBuffer();
+  const buf = await encodePng(frame, channels);
   await writeFile(dest, buf);
   return sha256Buffer(buf);
 }
@@ -160,28 +148,7 @@ async function encodePngWithHash(frame, dest, channels = 4) {
  * exactly, the requested key — codecs shift it).
  */
 export function sampleBorderKey(frame) {
-  const { data, width, height } = frame;
-  const minDim = Math.min(width, height);
-  const band = Math.max(4, Math.floor(minDim / 120));
-  const step = Math.max(1, Math.floor(minDim / 320));
-  const rs = []; const gs = []; const bs = [];
-  const push = (x, y) => {
-    const i = (y * width + x) * 4;
-    rs.push(data[i]); gs.push(data[i + 1]); bs.push(data[i + 2]);
-  };
-  for (let x = 0; x < width; x += step) {
-    for (let o = 0; o < band && o < height; o++) {
-      push(x, o);
-      push(x, height - 1 - o);
-    }
-  }
-  for (let y = 0; y < height; y += step) {
-    for (let o = 0; o < band && o < width; o++) {
-      push(o, y);
-      push(width - 1 - o, y);
-    }
-  }
-  return [pyRound(median(rs)), pyRound(median(gs)), pyRound(median(bs))];
+  return sampleBorderKeyShared(frame).map((value) => pyRound(value));
 }
 
 /**
