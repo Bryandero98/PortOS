@@ -34,6 +34,7 @@ Common port labels:
 | 5559 | portos-autofixer | api | Autofixer daemon API |
 | 5560 | portos-autofixer-ui | ui | Autofixer web UI |
 | 5561 | portos-db (Docker container) | - | Infrastructure dependency: PostgreSQL Docker container provisioned by `scripts/setup-db.js` / Docker Compose (not a PM2 process in `server/services/apps.js`; native mode uses system pg on 5432). |
+| 5568 | llama-server | - | Loopback speculative-decoding server managed from Settings → Local LLM |
 
 ## How `:5555`, `:5553`, and `:5554` Relate
 
@@ -118,7 +119,7 @@ PortOS automatically detects ports from env vars:
 | Range | Purpose |
 |-------|---------|
 | 5553-5561 | PortOS core services (includes the `:5553` loopback mirror and the `portos-db` Docker container on `:5561`) |
-| 5562-5569 | Reserved for PortOS extensions |
+| 5562-5569 | Reserved for PortOS extensions (5568 is the managed llama-server default) |
 | 5570-5599 | User applications |
 
 PostgreSQL in native mode listens on the system default `:5432`, outside these ranges.

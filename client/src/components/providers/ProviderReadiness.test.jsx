@@ -8,14 +8,14 @@ const renderWithRouter = (ui) => render(<MemoryRouter>{ui}</MemoryRouter>);
 const readiness = (overrides = {}) => ({
   kind: 'llama',
   label: 'llama.cpp',
-  endpoint: 'http://127.0.0.1:8080/v1',
+  endpoint: 'http://127.0.0.1:5568/v1',
   manageUrl: '/settings/local-llm',
   docsUrl: 'https://example.com/llama-docs',
   ready: false,
   setup: null,
   checks: [
     { id: 'runtime', label: 'llama.cpp installed', ok: true, detail: '`llama-server` is on PortOS\'s PATH.', fixHint: null },
-    { id: 'server', label: 'llama.cpp server responding', ok: false, detail: 'Nothing answered at http://127.0.0.1:8080/v1 (connection refused).', fixHint: 'Start llama.cpp — it serves GGUF weights you download yourself.' },
+    { id: 'server', label: 'llama.cpp server responding', ok: false, detail: 'Nothing answered at http://127.0.0.1:5568/v1 (connection refused).', fixHint: 'Start llama.cpp — it serves GGUF weights you download yourself.' },
     { id: 'model', label: 'Model `dflash` available', ok: null, detail: 'Cannot be checked until the server responds.', fixHint: null },
   ],
   ...overrides,

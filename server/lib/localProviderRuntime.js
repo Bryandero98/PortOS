@@ -21,8 +21,8 @@
  * `localModelHealing.js` re-exports it for its existing callers.
  *
  * Endpoint resolution deliberately prefers the provider's OWN configuration
- * over any default: a user who moved llama-server to port 8090 edited
- * `OPENCODE_CONFIG_CONTENT` (or `endpoint`), and probing 8080 anyway would
+ * over any default: a user who moved llama-server to another port edited
+ * `OPENCODE_CONFIG_CONTENT` (or `endpoint`), and probing the old default anyway would
  * report their working setup as broken.
  */
 

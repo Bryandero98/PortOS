@@ -13,7 +13,7 @@ PortOS integrates both through the **OpenCode llama TUI** provider preset and th
 ## What PortOS Adds
 
 1. **OpenCode llama TUI Provider**:
-   - An attachable `tui` coding-agent provider preset (`opencode-llama-tui`) configured to connect to `http://127.0.0.1:8080/v1`.
+   - An attachable `tui` coding-agent provider preset (`opencode-llama-tui`) configured to connect to `http://127.0.0.1:5568/v1`.
    - Seeded with default model aliases `["dflash", "qwen3.8-27b-dflash2", "Muse-Glimmer-30B-DFlash2"]` with default `dflash`. The launcher keeps `--alias dflash` for every drafter family so this alias resolves regardless of which one you run.
    - Fully enabled by default and equipped with OpenCode's agentic file-writing harness, tool calling, and session persistence.
 2. **Model Refresh**:
@@ -70,7 +70,7 @@ DFlash 2 pairs (require a source build of llama.cpp [#27342](https://github.com/
   - Drafter: `z-lab/Muse-Glimmer-30B-DFlash2-GGUF` (e.g. `Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf`)
 
 ### 2. Launch llama-server
-Start `llama-server` on loopback port `8080` with speculative decoding enabled
+Start `llama-server` on loopback port `5568` with speculative decoding enabled
 (`--spec-type draft-dflash` for a DFlash drafter, `draft-dspark` for a DSpark one):
 
 ```bash
@@ -78,7 +78,7 @@ llama-server \
   -m models/Qwen3.8-27B-Q4_K_M.gguf \
   --model-draft models/Qwen3.8-27B-DSpark-BF16.gguf \
   --spec-type draft-dspark \
-  --port 8080 \
+  --port 5568 \
   --host 127.0.0.1 \
   --alias dflash \
   --ctx-size 32768 \

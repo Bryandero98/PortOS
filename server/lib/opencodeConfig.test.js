@@ -109,7 +109,7 @@ describe('buildOpencodeConfig', () => {
     expect(cfg.provider.llama).toMatchObject({
       npm: '@ai-sdk/openai-compatible',
       name: 'llama.cpp (local)',
-      options: { baseURL: 'http://127.0.0.1:8080/v1' },
+      options: { baseURL: 'http://127.0.0.1:5568/v1' },
     });
     expect(cfg.provider.llama.models).toEqual({
       dflash: { name: 'dflash', tool_call: true },

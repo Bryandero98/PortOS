@@ -13,6 +13,8 @@ import { killProcessTree } from '../lib/bufferedSpawn.js';
 import { expandHome, sleep } from '../lib/fileUtils.js';
 import { resolveSpecModelPath } from './specDecodeModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
+import { isPortInUse } from '../lib/platform.js';
+import { PORTS } from '../lib/ports.js';
 import { ServerError } from '../lib/errorHandler.js';
 
 const IS_WIN = process.platform === 'win32';
@@ -96,7 +98,7 @@ export async function getLlamaServerStatus() {
   const installed = Boolean(binaryPath);
 
   const host = currentConfig?.host || '127.0.0.1';
-  const port = currentConfig?.port || 8080;
+  const port = currentConfig?.port ?? PORTS.LLAMA_SERVER;
   const endpoint = `http://${host}:${port}/v1`;
 
   const isManagedActive = Boolean(managedChild && !managedChild.killed && managedChild.exitCode === null);
@@ -136,7 +138,7 @@ export async function startLlamaServer(options = {}) {
     model,
     draftModel,
     specType = 'draft-dflash',
-    port = 8080,
+    port = PORTS.LLAMA_SERVER,
     host = '127.0.0.1',
     ctxSize = 32768,
     nGpuLayers = 99,
@@ -151,6 +153,12 @@ export async function startLlamaServer(options = {}) {
   const reachable = await probeEndpoint(endpoint);
   if (reachable) {
     throw new ServerError(`Port ${port} is already in use by an active server at ${endpoint}`, { status: 409 });
+  }
+  if (await isPortInUse(port)) {
+    throw new ServerError(
+      `Port ${port} is already in use on ${host}. Choose a different port under Advanced options before starting llama-server.`,
+      { status: 409, code: 'LLAMA_SERVER_PORT_IN_USE' }
+    );
   }
 
   // Validate the weights before building the launch line, and hand `spawn` the
@@ -269,7 +277,7 @@ export async function startLlamaServer(options = {}) {
 export async function stopLlamaServer() {
   if (!managedChild || managedChild.killed || managedChild.exitCode !== null) {
     const host = currentConfig?.host || '127.0.0.1';
-    const port = currentConfig?.port || 8080;
+    const port = currentConfig?.port ?? PORTS.LLAMA_SERVER;
     const endpoint = `http://${host}:${port}/v1`;
     const reachable = await probeEndpoint(endpoint);
     if (reachable) {

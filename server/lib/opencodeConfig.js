@@ -19,6 +19,9 @@
  */
 
 import { getOpencodeLocalProviderNamespace, isOpencodeCommand } from './providerModels.js';
+import { PORTS } from './ports.js';
+
+const LLAMA_SERVER_BASE_URL = `http://127.0.0.1:${PORTS.LLAMA_SERVER}/v1`;
 
 /**
  * Base OpenCode provider entries for the local OpenAI-compatible daemons.
@@ -39,7 +42,7 @@ const OPENCODE_LOCAL_BASE_PROVIDERS = {
   llama: {
     npm: '@ai-sdk/openai-compatible',
     name: 'llama.cpp (local)',
-    options: { baseURL: 'http://127.0.0.1:8080/v1' },
+    options: { baseURL: LLAMA_SERVER_BASE_URL },
   },
   orcarouter: {
     npm: '@ai-sdk/openai-compatible',

@@ -15,6 +15,7 @@ export const PORTS = {
   AUTOFIXER: 5559,  // Autofixer API
   AUTOFIXER_UI: 5560, // Autofixer UI
   POSTGRES_DOCKER: 5561, // PostgreSQL Docker container (host port mapping)
+  LLAMA_SERVER: 5568, // Loopback llama.cpp speculative-decoding server
   POSTGRES_NATIVE: 5432  // System PostgreSQL (PGMODE=native)
 };
 
