@@ -41,6 +41,29 @@ function venvExists(venv) {
   return result === 'yes';
 }
 
+function shellIfBlocks(text) {
+  const blocks = [];
+  const stack = [];
+
+  for (const line of text.split('\n')) {
+    stack.forEach((block) => block.lines.push(line));
+
+    if (/^[ \t]*if\b/.test(line)) {
+      stack.push({
+        abortProbe: /^[ \t]*if[ \t]+!/.test(line),
+        lines: [line],
+      });
+    }
+
+    if (/^[ \t]*fi\b/.test(line)) {
+      const block = stack.pop();
+      if (block?.abortProbe) blocks.push(block.lines.join('\n'));
+    }
+  }
+
+  return blocks;
+}
+
 describe('setup-image-video venv layout handling (issue #4200)', () => {
   it('defines the shared venv interpreter resolver', () => {
     expect(helper).toBeTruthy();
@@ -100,5 +123,12 @@ describe('setup-image-video venv layout handling (issue #4200)', () => {
       .replace(helper, '')
       .replace(existsHelper, '');
     expect(body).not.toMatch(/\$\{?\w+_VENV\}?\/bin\/python3/);
+  });
+
+  it('captures diagnostics for every aborting install probe', () => {
+    const abortProbeBlocks = shellIfBlocks(source)
+      .filter((block) => block.includes('2>/dev/null') && /\bexit 1\b/.test(block));
+
+    expect(abortProbeBlocks).toEqual([]);
   });
 });

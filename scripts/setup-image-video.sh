@@ -37,6 +37,23 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PORTOS_DATA="${PORTOS_DATA:-${REPO_ROOT}/data}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# Run an install probe, and on failure show WHY. Every probe here fails for more
+# than one reason — a missing system library, a wheel resolved for the wrong
+# arch, a moved pin — and the traceback is the only thing that tells them apart.
+# Captured rather than re-run: a probe that fails non-deterministically must not
+# report a different cause than the one that failed.
+probe_or_fail() {
+  local headline="$1" hint="$2"; shift 2
+  local out
+  if ! out="$("$@" 2>&1)"; then
+    echo "❌ ${headline}" >&2
+    printf '%s\n' "$out" | tail -n 5 | sed 's/^/   /' >&2
+    echo "   ${hint}" >&2
+    exit 1
+  fi
+}
+
 is_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
 # Git-bash / MSYS / Cygwin all report a prefixed uname; PortOS runs the
 # in-app installer through git-bash on Windows, so match all three.
@@ -195,10 +212,10 @@ if [[ "$INSTALL_MFLUX" == "1" ]]; then
     fi
     echo "📦 Installing ${MFLUX_PIN} · ${MLX_PIN} · ${MLX_METAL_PIN} into ${MFLUX_VENV}..."
     uv pip install --python "$MFLUX_VENV_PY" "$MFLUX_PIN" "$MLX_PIN" "$MLX_METAL_PIN"
-    if ! "$MFLUX_VENV_PY" -c 'import mflux' 2>/dev/null; then
-      echo "❌ mflux venv built but 'import mflux' failed." >&2
-      exit 1
-    fi
+    probe_or_fail \
+      "mflux venv built but 'import mflux' failed." \
+      "Check that mflux and its MLX dependencies installed cleanly in ${MFLUX_VENV}." \
+      "$MFLUX_VENV_PY" -c 'import mflux'
     echo "✅ mflux venv ready: ${MFLUX_VENV_PY} (PortOS auto-discovers it — no Settings change needed)."
   fi
 fi
@@ -291,11 +308,10 @@ if [[ "$INSTALL_LTX2" == "1" ]]; then
   # have no use for.
   echo "📦 Syncing ltx-2-mlx packages (uv sync, no extras)..."
   (cd "${LTX2_DIR}" && uv sync)
-  if ! "${LTX2_PY}" -c "import ltx_pipelines_mlx" 2>/dev/null; then
-    echo "❌ ltx-2-mlx synced but 'import ltx_pipelines_mlx' failed." >&2
-    echo "   Re-run with: rm -rf ${LTX2_DIR}/.venv && bash $0" >&2
-    exit 1
-  fi
+  probe_or_fail \
+    "ltx-2-mlx synced but 'import ltx_pipelines_mlx' failed." \
+    "Re-run with: rm -rf ${LTX2_DIR}/.venv && bash $0" \
+    "${LTX2_PY}" -c "import ltx_pipelines_mlx"
   echo "✅ ltx-2-mlx venv ready: ${LTX2_PY}"
 fi
 
@@ -332,11 +348,10 @@ if [[ "$INSTALL_LTX25" == "1" ]]; then
   fi
   echo "📦 Syncing ltx-2.5-mlx packages (uv sync, no extras)..."
   (cd "${LTX25_DIR}" && uv sync)
-  if ! "${LTX25_PY}" -c "import ltx_pipelines_mlx" 2>/dev/null; then
-    echo "❌ ltx-2.5-mlx synced but 'import ltx_pipelines_mlx' failed." >&2
-    echo "   Re-run with: rm -rf ${LTX25_DIR}/.venv && bash $0" >&2
-    exit 1
-  fi
+  probe_or_fail \
+    "ltx-2.5-mlx synced but 'import ltx_pipelines_mlx' failed." \
+    "Re-run with: rm -rf ${LTX25_DIR}/.venv && bash $0" \
+    "${LTX25_PY}" -c "import ltx_pipelines_mlx"
   echo "✅ ltx-2.5-mlx venv ready: ${LTX25_PY}"
 fi
 
@@ -384,11 +399,10 @@ if [[ "$INSTALL_WAN22" == "1" ]]; then
   fi
   echo "📦 Syncing pinned MLX-Gen packages..."
   (cd "${WAN22_DIR}" && "$WAN22_UV" sync --locked)
-  if ! "${WAN22_PY}" -c "import mflux.models.wan.cli.wan_generate" 2>/dev/null; then
-    echo "❌ MLX-Gen synced but the Wan runtime import failed." >&2
-    echo "   Use Repair / Upgrade from the Video Gen runtime panel to retry." >&2
-    exit 1
-  fi
+  probe_or_fail \
+    "MLX-Gen synced but the Wan runtime import failed." \
+    "Use Repair / Upgrade from the Video Gen runtime panel to retry." \
+    "${WAN22_PY}" -c "import mflux.models.wan.cli.wan_generate"
   echo "✅ MLX-Gen Wan runtime ready: ${WAN22_PY}"
 fi
 
@@ -448,12 +462,10 @@ if [[ "$INSTALL_MINIMAX_H3" == "1" ]]; then
   # message is then the one thing telling a pin bump apart from a broken sync, so
   # capture stderr instead of discarding it and show the tail — the exception
   # line, under whatever traceback preceded it.
-  if ! MINIMAX_H3_PROBE_OUT="$("$MINIMAX_H3_PY" "${SCRIPT_DIR}/minimax_h3_runtime_probe.py" "$MINIMAX_H3_DIR" --verify-seams 2>&1)"; then
-    echo "❌ MiniMax H3 MLX synced but its runtime probe failed." >&2
-    printf '%s\n' "$MINIMAX_H3_PROBE_OUT" | tail -n 5 | sed "s/^/   /" >&2
-    echo "   Use Repair / Upgrade from the Video Gen runtime panel to retry." >&2
-    exit 1
-  fi
+  probe_or_fail \
+    "MiniMax H3 MLX synced but its runtime probe failed." \
+    "Use Repair / Upgrade from the Video Gen runtime panel to retry." \
+    "$MINIMAX_H3_PY" "${SCRIPT_DIR}/minimax_h3_runtime_probe.py" "$MINIMAX_H3_DIR" --verify-seams
   echo "✅ MiniMax H3 MLX runtime ready: ${MINIMAX_H3_PY}"
   echo "   Weights remain uninstalled until you accept the model terms and choose Download in Video Gen."
 fi
@@ -637,12 +649,11 @@ if [[ "$INSTALL_MUSICGEN" == "1" ]]; then
     # Verify BOTH that the class imports AND that torch loaded — the import alone
     # passed even when torch was missing, so install used to report ready and
     # then fail on the first generation.
-    if ! PORTOS_MUSICGEN_RUNTIME_DIR="${MLX_EXAMPLES_DIR}/musicgen" \
-         "$MUSICGEN_PY" -c "import sys, os, torch; sys.path.insert(0, os.environ['PORTOS_MUSICGEN_RUNTIME_DIR']); from musicgen import MusicGen" 2>/dev/null; then
-      echo "❌ MusicGen venv built but 'import torch; from musicgen import MusicGen' failed." >&2
-      echo "   Check that ${MLX_EXAMPLES_DIR}/musicgen exists and torch installed cleanly." >&2
-      exit 1
-    fi
+    probe_or_fail \
+      "MusicGen venv built but 'import torch; from musicgen import MusicGen' failed." \
+      "Check that ${MLX_EXAMPLES_DIR}/musicgen exists and torch installed cleanly." \
+      env "PORTOS_MUSICGEN_RUNTIME_DIR=${MLX_EXAMPLES_DIR}/musicgen" \
+      "$MUSICGEN_PY" -c "import sys, os, torch; sys.path.insert(0, os.environ['PORTOS_MUSICGEN_RUNTIME_DIR']); from musicgen import MusicGen"
     echo "✅ MusicGen venv ready: $MUSICGEN_PY (runtime: ${MLX_EXAMPLES_DIR}/musicgen @ ${MLX_EXAMPLES_PIN:0:12})"
   fi
 fi
@@ -683,11 +694,10 @@ if [[ "$INSTALL_AUDIOLDM2" == "1" ]]; then
     "huggingface_hub[hf_xet]"
   # Verify the pipeline class imports — a clean import means generation only
   # needs the one-time weight download, not a broken venv.
-  if ! "$AUDIOLDM2_PY" -c "import torch; from diffusers import AudioLDM2Pipeline" 2>/dev/null; then
-    echo "❌ AudioLDM2 venv built but 'import torch; from diffusers import AudioLDM2Pipeline' failed." >&2
-    echo "   Check that torch + diffusers installed cleanly in ${AUDIOLDM2_VENV}." >&2
-    exit 1
-  fi
+  probe_or_fail \
+    "AudioLDM2 venv built but 'import torch; from diffusers import AudioLDM2Pipeline' failed." \
+    "Check that torch + diffusers installed cleanly in ${AUDIOLDM2_VENV}." \
+    "$AUDIOLDM2_PY" -c "import torch; from diffusers import AudioLDM2Pipeline"
   echo "✅ AudioLDM2 venv ready: $AUDIOLDM2_PY"
 fi
 
@@ -723,11 +733,10 @@ if [[ "$INSTALL_ACESTEP" == "1" ]]; then
     "huggingface_hub[hf_xet]"
   # Verify the pipeline class imports — a clean import means generation only
   # needs the one-time checkpoint download, not a broken venv.
-  if ! "$ACESTEP_PY" -c "import torch; from acestep.pipeline_ace_step import ACEStepPipeline" 2>/dev/null; then
-    echo "❌ ACE-Step venv built but 'import torch; from acestep.pipeline_ace_step import ACEStepPipeline' failed." >&2
-    echo "   Check that torch + the acestep package installed cleanly in ${ACESTEP_VENV}." >&2
-    exit 1
-  fi
+  probe_or_fail \
+    "ACE-Step venv built but 'import torch; from acestep.pipeline_ace_step import ACEStepPipeline' failed." \
+    "Check that torch + the acestep package installed cleanly in ${ACESTEP_VENV}." \
+    "$ACESTEP_PY" -c "import torch; from acestep.pipeline_ace_step import ACEStepPipeline"
   echo "✅ ACE-Step venv ready: $ACESTEP_PY"
 fi
 
@@ -756,11 +765,10 @@ if [[ "$INSTALL_ACESTEP15" == "1" ]]; then
   "$ACESTEP15_PY" -m pip install --upgrade --extra-index-url "$ACESTEP15_TORCH_INDEX" \
     "git+https://github.com/ace-step/ACE-Step-1.5.git@v0.1.8" \
     "huggingface_hub[hf_xet]"
-  if ! "$ACESTEP15_PY" -c "import torch; from transformers import AutoModel; from acestep.handler import AceStepHandler; from acestep.inference import GenerationConfig, GenerationParams, generate_music" 2>/dev/null; then
-    echo "❌ ACE-Step 1.5 venv built but its Transformers runtime failed to import." >&2
-    echo "   Check that torch, transformers, and ACE-Step 1.5 installed cleanly in ${ACESTEP15_VENV}." >&2
-    exit 1
-  fi
+  probe_or_fail \
+    "ACE-Step 1.5 venv built but its Transformers runtime failed to import." \
+    "Check that torch, transformers, and ACE-Step 1.5 installed cleanly in ${ACESTEP15_VENV}." \
+    "$ACESTEP15_PY" -c "import torch; from transformers import AutoModel; from acestep.handler import AceStepHandler; from acestep.inference import GenerationConfig, GenerationParams, generate_music"
   echo "✅ ACE-Step 1.5 venv ready: $ACESTEP15_PY"
 fi
 
@@ -806,17 +814,10 @@ if [[ "$INSTALL_MINIMAX_MUSIC3" == "1" ]]; then
   # Fail here, with the cause named, rather than 400 MB of diffusers later. The
   # conda-base check above is a heuristic (a venv can inherit a poisoned DLL path
   # other ways); this is the ground truth.
-  if ! "$MINIMAX_MUSIC3_PY" -c "import torch" 2>/dev/null; then
-    echo "❌ torch installed into ${MINIMAX_MUSIC3_VENV} but cannot be imported." >&2
-    "$MINIMAX_MUSIC3_PY" -c "import torch" 2>&1 | tail -5 >&2
-    if is_windows; then
-      echo "   On Windows this is almost always a venv built from a conda/anaconda base:" >&2
-      echo "   conda's MKL/OpenMP DLLs break torch's c10.dll load (WinError 1114)." >&2
-      echo "   Install a standalone Python (\`uv python install 3.10\`, or python.org)," >&2
-      echo "   then re-run with PYTHON_BIN pointed at it." >&2
-    fi
-    exit 1
-  fi
+  probe_or_fail \
+    "torch installed into ${MINIMAX_MUSIC3_VENV} but cannot be imported." \
+    "On Windows, use a standalone Python instead of a conda/anaconda base, then retry the install." \
+    "$MINIMAX_MUSIC3_PY" -c "import torch"
   # Pinned to the main commit that merged MiniMax Music 3 (diffusers PR #14456,
   # 2026-08-13) — the integration is in no tagged release yet. The pin must be a
   # commit reachable from main: pip clones the default branch, so a PR-branch
@@ -854,11 +855,10 @@ if [[ "$INSTALL_MINIMAX_MUSIC3_MLX" == "1" ]]; then
     "$MINIMAX_MUSIC3_MLX_PY" -m pip install --upgrade \
       "mlx-audio @ git+https://github.com/Blaizzy/mlx-audio.git@${MLX_AUDIO_PIN}" \
       "huggingface_hub[hf_xet]"
-    if ! "$MINIMAX_MUSIC3_MLX_PY" -c "import mlx; from mlx_audio.music import load" 2>/dev/null; then
-      echo "❌ MiniMax Music 3 MLX venv built but 'import mlx; from mlx_audio.music import load' failed." >&2
-      echo "   Check that mlx-audio installed cleanly in ${MINIMAX_MUSIC3_MLX_VENV}." >&2
-      exit 1
-    fi
+    probe_or_fail \
+      "MiniMax Music 3 MLX venv built but 'import mlx; from mlx_audio.music import load' failed." \
+      "Check that mlx-audio installed cleanly in ${MINIMAX_MUSIC3_MLX_VENV}." \
+      "$MINIMAX_MUSIC3_MLX_PY" -c "import mlx; from mlx_audio.music import load"
     echo "✅ MiniMax Music 3 MLX venv ready: $MINIMAX_MUSIC3_MLX_PY (mlx-audio @ ${MLX_AUDIO_PIN:0:12})"
   fi
 fi
@@ -894,11 +894,10 @@ if [[ "$INSTALL_MUSCRIPTOR" == "1" ]]; then
     "huggingface_hub[hf_xet]"
   # Verify the model class imports — a clean import means transcription only
   # needs the one-time weight download, not a broken venv.
-  if ! "$MUSCRIPTOR_PY" -c "from muscriptor import TranscriptionModel" 2>/dev/null; then
-    echo "❌ MuScriptor venv built but 'from muscriptor import TranscriptionModel' failed." >&2
-    echo "   Check that the muscriptor package installed cleanly in ${MUSCRIPTOR_VENV}." >&2
-    exit 1
-  fi
+  probe_or_fail \
+    "MuScriptor venv built but 'from muscriptor import TranscriptionModel' failed." \
+    "Check that the muscriptor package installed cleanly in ${MUSCRIPTOR_VENV}." \
+    "$MUSCRIPTOR_PY" -c "from muscriptor import TranscriptionModel"
   echo "✅ MuScriptor venv ready: $MUSCRIPTOR_PY"
 fi
 
@@ -943,11 +942,10 @@ if [[ "$INSTALL_FLUX2" == "1" ]]; then
       "peft>=0.17" \
       "optimum-quanto>=0.2.7" \
       pillow
-    if ! "$FLUX2_PY" -c "from diffusers import Flux2KleinPipeline" 2>/dev/null; then
-      echo "❌ flux2 venv built but 'from diffusers import Flux2KleinPipeline' failed." >&2
-      echo "   Try: $FLUX2_PY -m pip install --upgrade --force-reinstall 'diffusers @ git+https://github.com/huggingface/diffusers'" >&2
-      exit 1
-    fi
+    probe_or_fail \
+      "flux2 venv built but 'from diffusers import Flux2KleinPipeline' failed." \
+      "Try: $FLUX2_PY -m pip install --upgrade --force-reinstall 'diffusers @ git+https://github.com/huggingface/diffusers'" \
+      "$FLUX2_PY" -c "from diffusers import Flux2KleinPipeline"
     echo "✅ FLUX.2 venv ready: $FLUX2_PY"
   fi
 fi
