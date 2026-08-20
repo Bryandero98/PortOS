@@ -99,6 +99,18 @@ export function prioritizeBranches(branches) {
 // reaped on the daily recheck once it crosses the threshold.
 export const STALE_CLAIM_IDLE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
+// The same window, for a claim that has demonstrably SHIPPED (see SHIPPED_CLAIM
+// on cleanupMerged). Proof of completion collapses the wait but does not remove
+// it: the one thing "merged + clean + remote branch gone" does NOT prove is that
+// the local /claim PROCESS has exited. A session that just merged its own PR —
+// or whose PR was merged from a peer machine, which PortOS users routinely run —
+// sits in exactly that state for the seconds-to-minutes it spends on teardown,
+// and reaping there deletes a directory a live process is still standing in.
+// mtime is the only liveness proxy available (a claim has no durable local agent
+// id), so keep a short idle floor over it. An hour is far longer than any
+// teardown and still turns a week-long park into a single recheck.
+export const SHIPPED_CLAIM_IDLE_MS = 60 * 60 * 1000; // 1 hour
+
 // Bound the gh query (single-user repos never realistically truncate at 200).
 const PR_LIST_LIMIT = 200;
 
@@ -225,17 +237,16 @@ async function getOpenPrsByHead(repoPath) {
  *   - locked            → the user explicitly `git worktree lock`ed it
  *   - human `/claim`    → a `claim-<slug>` worktree self-cleaned by the /claim flow,
  *                         UNLESS it is an abandoned one older than `staleClaimIdleMs`
- *                         (`ageMs` supplied) — those are reaped (see STALE_CLAIM_IDLE_MS) —
- *                         or a `claimComplete` one, which is reaped at any age
+ *                         (`ageMs` supplied) — those are reaped (see STALE_CLAIM_IDLE_MS,
+ *                         and SHIPPED_CLAIM_IDLE_MS for a claim proven shipped)
  *   - active CoS agent  → an agent (`agent-<id>`) is currently running in it
  * Sibling worktrees (`next-issue-*`, etc.) whose basename is none of these fall
  * through to null and are cleaned normally.
  *
- * @param {{ path:string, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number, staleClaimIdleMs?:number, claimComplete?:boolean }} input
- *   `claimComplete` — see the SHIPPED_CLAIM note on `cleanupMerged`.
+ * @param {{ path:string, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number, staleClaimIdleMs?:number }} input
  * @returns {string|null}
  */
-export function worktreeProtectionReason({ path, locked, activeAgentIds, ageMs, staleClaimIdleMs = STALE_CLAIM_IDLE_MS, claimComplete = false }) {
+export function worktreeProtectionReason({ path, locked, activeAgentIds, ageMs, staleClaimIdleMs = STALE_CLAIM_IDLE_MS }) {
   if (!path) return null;
   return worktreeOwnershipReason({
     path,
@@ -244,7 +255,6 @@ export function worktreeProtectionReason({ path, locked, activeAgentIds, ageMs, 
     allowStaleClaim: true,
     ageMs,
     staleClaimIdleMs,
-    claimComplete,
   });
 }
 
@@ -257,10 +267,10 @@ export function worktreeProtectionReason({ path, locked, activeAgentIds, ageMs, 
  * merged branch was held back but WHEN it stops being held. Policy lives in
  * worktreeOwnership.js; this only supplies this caller's defaults.
  *
- * @param {{ path:string|null, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number|null, staleClaimIdleMs?:number, claimComplete?:boolean }} input
+ * @param {{ path:string|null, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number|null, staleClaimIdleMs?:number }} input
  * @returns {string|null} ISO timestamp
  */
-export function worktreeProtectionExpiresAt({ path, locked, activeAgentIds, ageMs, staleClaimIdleMs = STALE_CLAIM_IDLE_MS, claimComplete = false }) {
+export function worktreeProtectionExpiresAt({ path, locked, activeAgentIds, ageMs, staleClaimIdleMs = STALE_CLAIM_IDLE_MS }) {
   if (!path) return null;
   return worktreeHoldExpiresAt({
     path,
@@ -269,7 +279,6 @@ export function worktreeProtectionExpiresAt({ path, locked, activeAgentIds, ageM
     allowStaleClaim: true,
     ageMs,
     staleClaimIdleMs,
-    claimComplete,
   });
 }
 
@@ -773,21 +782,26 @@ export function describeIdleReconcilePark(skipped = [], heldLive = []) {
  * unmerged or dirty work.
  *
  * SHIPPED_CLAIM: a `claim-*` worktree holds for STALE_CLAIM_IDLE_MS on the chance
- * a claim session is still using it. That grace is pointless once the claim has
- * demonstrably SHIPPED, and holding anyway is what left four finished claims
- * parked for a week while every run reported "cleaned 0" and parked on "merged
- * branches held back" — the exact stall this reconcile exists to clear.
+ * a claim session is still using it. Waiting out a full week is pointless once
+ * the claim has demonstrably SHIPPED, and doing it anyway is what left four
+ * finished claims parked while every run reported "cleaned 0" and parked on
+ * "merged branches held back" — the exact stall this reconcile exists to clear.
  *
- * The proof is a trio, and this function establishes all three in order:
+ * A shipped claim is one where all three hold, established here in order:
  *   1. `stillMerged` — re-verified against the default branch just above.
  *   2. `upstreamGone` — the branch was pushed and its remote ref is no longer on
  *      origin, i.e. its PR merged with `--delete-branch`.
- *   3. clean worktree — the dirty gate below, which `claimComplete` never
- *      overrides; completion releases the claim HOLD, never the dirty guard.
- * Together they say the /claim flow finished everything except its own teardown,
- * so nothing recoverable remains and the tree is reaped at any age. `upstreamGone`
- * is the discriminator the age window was standing in for: a claim still being
- * worked either has no upstream yet or has one that still exists.
+ *   3. clean worktree — the dirty gate below, which this never overrides.
+ * Together they say the /claim flow finished everything except its own teardown.
+ * `upstreamGone` is the discriminator the long window was standing in for: a
+ * claim still being WORKED either has no upstream yet or has one that still
+ * exists.
+ *
+ * What it does NOT prove is that the claim PROCESS has exited — so this
+ * SHORTENS the idle window to SHIPPED_CLAIM_IDLE_MS rather than removing it,
+ * leaving one mechanism (the age window) with two durations instead of a second
+ * way past the gate. Everything the window already guarantees still holds: an
+ * unreadable mtime fails safe to protected, and an explicit lock still wins.
  *
  * @param {string} repoPath
  * @param {string} defaultBranch
@@ -812,14 +826,15 @@ export async function cleanupMerged(repoPath, defaultBranch, merged, { activeAge
       // an active CoS agent workspace — even if its branch is merged and clean. An
       // abandoned claim worktree (merged + clean + older than STALE_CLAIM_IDLE_MS)
       // falls through and IS reaped; that's the "cleaned 0 forever" leak this fixes.
-      // A SHIPPED claim (see SHIPPED_CLAIM above) skips the wait entirely —
-      // `stillMerged` is proven above, the dirty gate below is still ahead of it.
+      // A SHIPPED claim (see SHIPPED_CLAIM above) waits out the short window
+      // instead of the week-long one — `stillMerged` is proven above, and the
+      // dirty gate below is still ahead of it.
       const gate = {
         path: b.worktreePath,
         locked: b.worktreeLocked,
         activeAgentIds,
         ageMs: b.worktreeAgeMs,
-        claimComplete: b.upstreamGone,
+        staleClaimIdleMs: b.upstreamGone ? SHIPPED_CLAIM_IDLE_MS : STALE_CLAIM_IDLE_MS,
       };
       const protectedReason = worktreeProtectionReason(gate);
       if (protectedReason) {

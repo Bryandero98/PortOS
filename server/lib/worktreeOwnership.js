@@ -42,13 +42,6 @@ function normalizedRoots(roots) {
  * `requireKnownLiveness` fails closed for `agent-*` trees when an authoritative
  * `Set` of live agents is unavailable.
  *
- * `claimComplete` is the other way past the claim hold, for a caller that has
- * PROVEN the claim already finished rather than merely waited out
- * `staleClaimIdleMs`. Both are the same opt-in — it is only honored under
- * `allowStaleClaim`, so claim reclamation stays a thing a caller declares. What
- * counts as proof is deliberately NOT decided here; branch reconciliation is the
- * only caller that supplies it (see its SHIPPED_CLAIM note).
- *
  * @param {{
  *   path?: string,
  *   locked?: boolean,
@@ -58,7 +51,6 @@ function normalizedRoots(roots) {
  *   allowStaleClaim?: boolean,
  *   ageMs?: number|null,
  *   staleClaimIdleMs?: number,
- *   claimComplete?: boolean,
  *   requireKnownLiveness?: boolean,
  * }} options
  * @returns {string|null}
@@ -72,7 +64,6 @@ export function worktreeOwnershipReason({
   allowStaleClaim = false,
   ageMs = null,
   staleClaimIdleMs,
-  claimComplete = false,
   requireKnownLiveness = false,
 } = {}) {
   if (!path) return 'worktree-missing-path';
@@ -83,14 +74,11 @@ export function worktreeOwnershipReason({
 
   const agentId = worktreeAgentId(path);
   if (isHumanClaimWorktree(agentId)) {
-    // Both escapes ride the SAME `allowStaleClaim` opt-in: one proves the claim
-    // is finished, the other waits out the window. A caller that has not declared
-    // itself a claim reclaimer gets neither.
-    const released = allowStaleClaim && (
-      claimComplete
-      || (typeof ageMs === 'number' && typeof staleClaimIdleMs === 'number' && ageMs >= staleClaimIdleMs)
-    );
-    if (!released) return 'worktree-human-claim';
+    const stale = allowStaleClaim
+      && typeof ageMs === 'number'
+      && typeof staleClaimIdleMs === 'number'
+      && ageMs >= staleClaimIdleMs;
+    if (!stale) return 'worktree-human-claim';
   }
 
   const mustBeAgentWorktree = root?.requireAgentId ?? requireAgentId;
@@ -118,9 +106,6 @@ export function worktreeOwnershipReason({
  * `worktree-human-claim` (first match wins), and its hold does NOT lift when the
  * claim window lapses. So the window is re-asked with the deadline already
  * crossed, and only a tree that comes back free gets an expiry.
- *
- * A released hold (`claimComplete`) reports no reason at all, so it correctly
- * yields no expiry — nothing is pending for a caller to wait on.
  *
  * Pure. Takes the same options object as `worktreeOwnershipReason`.
  * @param {object} [options] - plus `nowMs` for the clock
