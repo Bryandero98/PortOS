@@ -668,12 +668,71 @@ describe('ChiefOfStaff Issues card', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2100)); });
   });
 
+  // Without these, deleting the `tone` prop would leave every tile neutral gray
+  // while the helper's own unit tests stayed green.
+  it('colors the tile amber for a warning-only check', async () => {
+    renderWithIssues([memoryWarning]);
+
+    for (const card of await issueCards()) {
+      expect(card.className).toContain('border-port-warning');
+      expect(card.className).not.toContain('border-port-error');
+    }
+  });
+
+  it('escalates the tile to red when an issue is error-level', async () => {
+    renderWithIssues([memoryWarning, { type: 'error', category: 'processes', message: 'example-app failed to auto-restart' }]);
+
+    for (const card of await issueCards()) {
+      expect(card.className).toContain('border-port-error');
+    }
+  });
+
   it('stays a click-through to Health when there are no issues at all', async () => {
     renderWithIssues([]);
 
     for (const card of await issueCards()) {
       expect(card).toHaveAttribute('title', 'No issues detected — view system health');
       expect(within(card).getByText('0')).toBeInTheDocument();
+      expect(card.className).not.toContain('border-port-warning');
+      expect(card.className).not.toContain('border-port-error');
+    }
+  });
+
+  // fetchData's health read is the SLOW one — it resolves after the socket event
+  // for the check that same batch triggered. Everything the page derives from
+  // health (tile, avatar state, status bubble) must come from the merged
+  // snapshot, or the bubble names an older issue than the tile is counting.
+  it('does not let a slow health read clobber a fresher socket-delivered check', async () => {
+    const staleWarning = { type: 'warning', category: 'memory', message: 'Stale issue from the older read' };
+    api.getCosStatus.mockResolvedValue({ running: true, config, stats: {} });
+    // The slow read carries the OLDER timestamp; the socket event below is newer.
+    api.getCosHealth.mockResolvedValue({ lastCheck: '2026-01-01T00:00:00.000Z', issues: [staleWarning] });
+    render(
+      <MemoryRouter initialEntries={['/cos/config']}>
+        <Routes>
+          <Route path="/cos/:tab" element={<ChiefOfStaff />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(staleWarning.message)).toBeInTheDocument();
+
+    const handleHealthCheck = socketStub.on.mock.calls.find(([evt]) => evt === 'cos:health:check')?.[1];
+    await act(async () => {
+      handleHealthCheck({ metrics: { timestamp: '2026-01-02T00:00:00.000Z' }, issues: [memoryWarning] });
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2100)); });
+
+    // Now force the slow batch to run again with its stale payload — the merge
+    // must keep the socket's newer check, for the tile AND the bubble.
+    await act(async () => {
+      socketStub.on.mock.calls.find(([evt]) => evt === 'apps:changed')?.[1]?.();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(screen.getByText(memoryWarning.message)).toBeInTheDocument();
+    expect(screen.queryByText(staleWarning.message)).not.toBeInTheDocument();
+    for (const card of await issueCards()) {
+      expect(card).toHaveAttribute('title', memoryWarning.message);
     }
   });
 });

@@ -15,7 +15,8 @@ import {
   MODEL_CAPABLE_CLI_REVIEWERS,
   reviewerLabel,
   summarizeHealthIssues,
-  healthIssueTone
+  healthIssueTone,
+  fresherHealth
 } from './constants';
 
 // These mirror the server's domainBudgets/domainAutonomy helpers so the UI's
@@ -243,6 +244,44 @@ describe('summarizeHealthIssues', () => {
   it('still reads as an issue when the payload carries no message', () => {
     expect(summarizeHealthIssues([{ type: 'error' }])).toBe('1 health issue detected');
     expect(summarizeHealthIssues([{ type: 'error' }, {}])).toBe('2 health issues detected');
+  });
+
+  // Counting the descriptions instead of the issues under-reported a mixed
+  // list as a single issue, hiding the message-less one entirely.
+  it('counts issues, not messages, when only some carry one', () => {
+    expect(summarizeHealthIssues([{ message: 'A' }, {}])).toBe('2 health issues: A');
+    expect(summarizeHealthIssues([{ message: 'A' }, {}, { message: 'B' }])).toBe('3 health issues: A \u00b7 B');
+  });
+});
+
+// The slow `getCosHealth` read routinely resolves AFTER the socket event for the
+// check that same fetch batch triggered, so "newest wins" is what keeps the
+// Issues tile and the status bubble describing the same check.
+describe('fresherHealth', () => {
+  const older = { lastCheck: '2026-01-01T00:00:00.000Z', issues: [] };
+  const newer = { lastCheck: '2026-01-02T00:00:00.000Z', issues: [{ type: 'warning' }] };
+
+  it('takes the newer check', () => {
+    expect(fresherHealth(older, newer)).toBe(newer);
+  });
+
+  it('keeps the newer previous check against a stale read', () => {
+    expect(fresherHealth(newer, older)).toBe(newer);
+  });
+
+  it('keeps the last-good check when the read failed', () => {
+    expect(fresherHealth(newer, null)).toBe(newer);
+    expect(fresherHealth(null, null)).toBeNull();
+  });
+
+  it('keeps a timestamped previous check over an untimed read', () => {
+    expect(fresherHealth(newer, { issues: [] })).toBe(newer);
+  });
+
+  it('accepts any read when there is no comparable previous check', () => {
+    const untimed = { issues: [] };
+    expect(fresherHealth(null, untimed)).toBe(untimed);
+    expect(fresherHealth({ issues: [] }, untimed)).toBe(untimed);
   });
 });
 

@@ -1,5 +1,5 @@
 // Constants
-export { TABS, AGENT_STATES, STATE_MESSAGES, MEMORY_TYPES, MEMORY_TYPE_COLORS, summarizeHealthIssues, healthIssueTone } from './constants';
+export { TABS, AGENT_STATES, STATE_MESSAGES, MEMORY_TYPES, MEMORY_TYPE_COLORS, summarizeHealthIssues, healthIssueTone, fresherHealth } from './constants';
 
 // Avatar/Character Components
 // The five three.js *CoSAvatar variants are intentionally NOT re-exported:

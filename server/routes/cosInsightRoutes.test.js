@@ -52,6 +52,7 @@ import * as autonomousJobs from '../services/autonomousJobs.js';
 import * as productivity from '../services/productivity.js';
 import * as goalProgress from '../services/goalProgress.js';
 import * as decisionLog from '../services/decisionLog.js';
+import * as notifications from '../services/notifications.js';
 
 describe('CoS Insight Routes', () => {
   let app;
@@ -62,6 +63,9 @@ describe('CoS Insight Routes', () => {
     app.use('/api/cos', insightRoutes);
     vi.clearAllMocks();
     cos.getPendingAgentFeedbackCount.mockResolvedValue(0);
+    // clearAllMocks keeps implementations, so a per-test override would leak
+    // into later tests — restore the default empty notification list here.
+    notifications.getNotifications.mockResolvedValue([]);
   });
 
   describe('GET /api/cos/productivity', () => {
@@ -201,6 +205,33 @@ describe('CoS Insight Routes', () => {
         priority: 'medium',
         description: 'High memory usage in: example-app (900MB)'
       }));
+    });
+
+    // The priority sort used `priorityOrder[p] || 5`, and `critical` ranks 0 —
+    // so `0 || 5` demoted the single most urgent insight below every other
+    // priority. It sorted LAST and, once six insights were open, fell off the
+    // `slice(0, 5)` entirely. Only reachable now that a health issue can
+    // actually be `critical`.
+    it('sorts a critical insight first and keeps it within the top-5 slice', async () => {
+      cos.getAllTasks.mockResolvedValue({
+        user: { grouped: { pending: [], blocked: [{ id: 'b1', description: 'Blocked task' }] } },
+        cos: { awaitingApproval: [{ id: 'a1', description: 'Approve me' }], grouped: { pending: [], blocked: [] } }
+      });
+      taskLearning.getLearningInsights.mockResolvedValue({ skippedTypes: [{ type: 'flaky' }] });
+      cos.getPendingAgentFeedbackCount.mockResolvedValue(2);
+      productivity.getOptimalTimeInfo.mockResolvedValue({ hasData: false });
+      notifications.getNotifications.mockResolvedValue([{ type: 'briefing_ready' }]);
+      cos.runHealthCheck.mockResolvedValue({
+        issues: [{ type: 'error', category: 'processes', message: 'example-app failed to auto-restart' }]
+      });
+
+      const response = await request(app).get('/api/cos/actionable-insights');
+
+      expect(response.status).toBe(200);
+      // Six insights were built, so a demoted critical would have been sliced off.
+      expect(response.body.totalCount).toBe(6);
+      expect(response.body.insights[0]).toMatchObject({ type: 'health', priority: 'critical' });
+      expect(response.body.insights.map(i => i.priority)).toEqual(['critical', 'high', 'high', 'medium', 'low']);
     });
 
     it('should handle errors gracefully in parallel calls', async () => {

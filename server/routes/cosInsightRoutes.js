@@ -189,9 +189,11 @@ router.get('/actionable-insights', asyncHandler(async (req, res) => {
     });
   }
 
-  // Sort by priority
+  // Sort by priority. `??`, not `||` — `critical` ranks 0, and `0 || 5` demoted
+  // it below every other priority, so the single most urgent insight sorted LAST
+  // and fell off the `slice(0, 5)` below once six insights were open.
   const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-  insights.sort((a, b) => (priorityOrder[a.priority] || 5) - (priorityOrder[b.priority] || 5));
+  insights.sort((a, b) => (priorityOrder[a.priority] ?? 5) - (priorityOrder[b.priority] ?? 5));
 
   res.json({
     insights: insights.slice(0, 5), // Max 5 insights

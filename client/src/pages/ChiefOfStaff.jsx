@@ -18,6 +18,7 @@ import {
   STATE_MESSAGES,
   summarizeHealthIssues,
   healthIssueTone,
+  fresherHealth,
   CoSCharacter,
   StateLabel,
   TerminalCoSPanel,
@@ -131,6 +132,22 @@ export default function ChiefOfStaff() {
     setDesktopPanelCollapsed((prev) => !prev);
   }, [setDesktopPanelCollapsed]);
 
+  // ONE writer for the health snapshot, so the Issues tile, the avatar state and
+  // the status bubble can never describe different health checks. The ref is
+  // written synchronously alongside the state, which is what lets fetchData run
+  // the freshness rule and then derive from the value it actually committed —
+  // with a functional updater the merged result was only visible inside the
+  // updater, so the derivation below fell back to the raw (possibly older, or
+  // null) read. `merge` runs the freshness rule; the socket and manual paths
+  // deliver the newest check by definition and set it outright.
+  const healthRef = useRef(null);
+  const applyHealth = useCallback((next, { merge = false } = {}) => {
+    const resolved = merge ? fresherHealth(healthRef.current, next) : next;
+    healthRef.current = resolved;
+    setHealth(resolved);
+    return resolved;
+  }, []);
+
   // Derive agent state from system status
   const deriveAgentState = useCallback((statusData, agentsData, healthData) => {
     if (!statusData?.running) return 'sleeping';
@@ -172,21 +189,11 @@ export default function ChiefOfStaff() {
     // `getCosHealth` above reads the *pre-check* persisted health, while the
     // getCosActionableInsights call in this same batch triggers a fresh server
     // health check (cos.runHealthCheck) that emits `cos:health:check` — the
-    // socket handler's setHealth can land in `prev` before this runs. Don't let
-    // this fetch's older read clobber that fresher result; keep whichever health
-    // check is newer by lastCheck (Date.parse normalizes the ISO timestamps so
-    // the compare never goes lexicographic). A failed read (null) keeps the
-    // last-good health rather than blanking a fresher socket-delivered one.
-    setHealth(prev => {
-      if (!healthData) return prev ?? null;
-      const prevT = Date.parse(prev?.lastCheck ?? '');
-      const newT = Date.parse(healthData.lastCheck ?? '');
-      // Keep prev when it is strictly newer, OR when this read has no comparable
-      // timestamp but prev does — a timestamped health check is fresher than an
-      // untimed read, so an absent/unparseable lastCheck must not clobber it.
-      if (!Number.isNaN(prevT) && (Number.isNaN(newT) || newT < prevT)) return prev;
-      return healthData;
-    });
+    // socket handler's health write can land before this runs. `fresherHealth`
+    // keeps whichever check is newer (and keeps the last-good one when this read
+    // failed); everything below derives from what it returned, never from the
+    // raw read, so the bubble can't name an older issue than the tile shows.
+    const mergedHealth = applyHealth(healthData, { merge: true });
     setProviders(providersData.providers || []);
     setActiveProviderId(providersData.activeProvider || null);
     // Filter out PortOS Autofixer (it's part of PortOS project)
@@ -198,7 +205,7 @@ export default function ChiefOfStaff() {
     if (insightsData?.insights) setInsights(insightsData.insights);
     setLoading(false);
 
-    const newState = deriveAgentState(statusData, agentsData, healthData);
+    const newState = deriveAgentState(statusData, agentsData, mergedHealth);
     setAgentState(newState);
     // Default state message — richer messages come from socket events. The one
     // state whose default is useless is `investigating`: only a health issue
@@ -206,12 +213,12 @@ export default function ChiefOfStaff() {
     // to an Active count of 0 with no agent to inspect.
     setStatusMessage(statusData?.paused
       ? `Paused${statusData.pauseReason ? ` — ${statusData.pauseReason}` : ''}`
-      : (newState === 'investigating' && summarizeHealthIssues(healthData?.issues)) || STATE_MESSAGES[newState]);
+      : (newState === 'investigating' && summarizeHealthIssues(mergedHealth?.issues)) || STATE_MESSAGES[newState]);
 
     // Set active agent metadata for dynamic avatar (use first running agent)
     const runningAgent = agentsData.find(a => a.status === 'running');
     setActiveAgentMeta(runningAgent?.metadata || null);
-  }, [deriveAgentState]);
+  }, [deriveAgentState, applyHealth]);
 
   // A cheap, read-only refresh of just the queue — the task lists plus the agent
   // list the Tasks tab reads to tell an already-spawning task from a waiting one.
@@ -361,7 +368,7 @@ export default function ChiefOfStaff() {
     socket.on('cos:agent:completed', handleAgentCompleted);
 
     const handleHealthCheck = (data) => {
-      setHealth({ lastCheck: data.metrics?.timestamp, issues: data.issues });
+      applyHealth({ lastCheck: data.metrics?.timestamp, issues: data.issues });
       // Do NOT refresh banner insights here — /cos/actionable-insights runs a
       // health check that re-emits this very socket event, which would loop
       // (see the note by the redirect effect). Banner refreshes on the next poll.
@@ -529,7 +536,7 @@ export default function ChiefOfStaff() {
     });
     setSpeaking(false);
     if (result) {
-      setHealth({ lastCheck: result.metrics?.timestamp, issues: result.issues });
+      applyHealth({ lastCheck: result.metrics?.timestamp, issues: result.issues });
       // Do NOT refresh the banner insights here — /cos/actionable-insights runs
       // a process-restarting health check, so an on-demand refresh would fire a
       // second restart ~1s after forceHealthCheck's own. The banner's health

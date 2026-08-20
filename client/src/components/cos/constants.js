@@ -203,12 +203,31 @@ export const STATE_MESSAGES = {
 export const summarizeHealthIssues = (issues) => {
   if (!Array.isArray(issues) || issues.length === 0) return null;
   const messages = issues.map((issue) => issue?.message).filter(Boolean);
+  // Counts come from `issues`, never from `messages` — a mixed list like
+  // [{message:'A'}, {}] has two problems and one description, and counting the
+  // descriptions would under-report it as a single issue.
+  const plural = issues.length > 1 ? 's' : '';
   // A message-less issue still has to read as an issue — `null` means "nothing
   // to report", so callers that already know the list is non-empty never need a
   // fallback of their own.
-  if (messages.length === 0) return `${issues.length} health issue${issues.length > 1 ? 's' : ''} detected`;
-  if (messages.length === 1) return messages[0];
-  return `${messages.length} health issues: ${messages.join(' · ')}`;
+  if (messages.length === 0) return `${issues.length} health issue${plural} detected`;
+  if (issues.length === 1) return messages[0];
+  return `${issues.length} health issues: ${messages.join(' · ')}`;
+};
+
+// Which of two health snapshots to keep. `getCosHealth` reads the *pre-check*
+// persisted health while the same fetch batch triggers a fresh server-side check
+// whose `cos:health:check` socket event can land first — so the slow read must
+// not clobber the fresher socket result. Keep whichever check is newer by
+// `lastCheck` (Date.parse normalizes the ISO timestamps so the compare never
+// goes lexicographic), keep `prev` when the incoming read has no comparable
+// timestamp but `prev` does, and treat a failed read (null) as "keep prev".
+export const fresherHealth = (prev, next) => {
+  if (!next) return prev ?? null;
+  const prevT = Date.parse(prev?.lastCheck ?? '');
+  const nextT = Date.parse(next.lastCheck ?? '');
+  if (!Number.isNaN(prevT) && (Number.isNaN(nextT) || nextT < prevT)) return prev;
+  return next;
 };
 
 // StatCard tone for the Issues tile. `error`-type issues mean something is
