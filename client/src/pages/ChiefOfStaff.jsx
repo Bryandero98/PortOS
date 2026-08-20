@@ -44,6 +44,10 @@ import { resolveDynamicAvatar } from '../components/cos/constants';
 // stays out of the eager CoS chunk every /cos/* visit pays for — same reason the
 // avatars below are not re-exported from the components/cos barrel.
 const RunsTab = lazy(() => import('../components/cos/tabs/RunsTab'));
+// The run-event diagnostic is lazy for the same reason as Runs: it is a
+// post-mortem surface nobody opens on a normal day, and it pulls the whole
+// ledger read path with it.
+const RunEventsTab = lazy(() => import('../components/cos/tabs/RunEventsTab'));
 
 // Three.js-based avatars lazy-loaded so the R3F stack isn't bundled unless the
 // user's chosen avatar style actually needs it.
@@ -980,6 +984,13 @@ export default function ChiefOfStaff() {
           <div role="tabpanel" id="tabpanel-runs" aria-labelledby="tab-runs">
             <Suspense fallback={<div className="flex items-center justify-center py-12"><BrailleSpinner text="Loading runs" /></div>}>
               <RunsTab />
+            </Suspense>
+          </div>
+        )}
+        {activeTab === 'run-events' && (
+          <div role="tabpanel" id="tabpanel-run-events" aria-labelledby="tab-run-events">
+            <Suspense fallback={<div className="flex items-center justify-center py-12"><BrailleSpinner text="Loading run events" /></div>}>
+              <RunEventsTab />
             </Suspense>
           </div>
         )}

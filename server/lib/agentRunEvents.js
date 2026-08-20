@@ -59,7 +59,31 @@ export const AGENT_RUN_EVENT_KINDS = Object.freeze([
   // (cleanupOrphanedAgents). Distinguishes a crash/restart from a clean exit.
   'run.orphan-recovered',
   // A restart survivor was re-adopted from the CoS Runner (syncRunnerAgents).
-  'run.runner-recovered'
+  'run.runner-recovered',
+  // Process ownership moved between the in-server spawner and the CoS Runner.
+  // The boundary that makes a run outlive the server, and the one an in-memory
+  // ownership map forgets on restart.
+  'run.handoff',
+  // A live session re-attached to a still-running agent (TUI reattach). Says
+  // 'someone was watching again', which is how a run with no output for an hour
+  // is told from one nobody had open.
+  'run.reconnected',
+  // The run produced its FIRST output — once per run, never per chunk. Bounded
+  // on purpose: per-chunk events would make the ledger a copy of the output it
+  // deliberately redacts and would exhaust the retention bound in minutes. The
+  // one event buys time-to-first-output, which is the only thing separating a
+  // run that stalled after speaking from one that never spoke at all.
+  'run.output',
+  // The user (or a budget/queue gate) suspended a run.
+  'run.paused',
+  // A suspended run was resumed.
+  'run.resumed',
+  // An explicit stop/kill was requested. Distinct from 'run.finalized': the
+  // request is the fact being recorded, and the exit it causes lands separately
+  // — a kill that never took is exactly the discrepancy this ledger explains.
+  'run.interrupted',
+  // A PR-claim verification verdict was reached for the run's task.
+  'run.pr-verified'
 ]);
 
 const KIND_SET = new Set(AGENT_RUN_EVENT_KINDS);
@@ -346,7 +370,16 @@ const emptyProjection = (id) => ({
   exitCode: null,
   success: null,
   orphaned: false,
+  interrupted: false,
+  paused: false,
   recoveryCount: 0,
+  handoffCount: 0,
+  reconnectCount: 0,
+  pauseCount: 0,
+  owner: null,
+  outputBytes: null,
+  lastOutputAt: null,
+  prVerified: null,
   eventCount: 0,
   firstEventAt: null,
   lastEventAt: null,
@@ -393,6 +426,17 @@ export function projectRunStates(events) {
   return [...byKey.values()].sort((a, b) => String(b.lastEventAt).localeCompare(String(a.lastEventAt)));
 }
 
+/**
+ * Has this run already reached a verdict?
+ *
+ * Every non-terminal arm below is guarded by this: the ledger is read in append
+ * order, but a late-arriving annotation (a stop request that raced the exit, a
+ * reconnect logged after the process was already reaped) must not resurrect a
+ * finished run as `running`. `run.finalized` is the only arm that may set a
+ * terminal status, so once set it stays.
+ */
+const isTerminal = (state) => state.status === 'completed' || state.status === 'failed';
+
 function applyKind(state, event) {
   const data = event.data ?? {};
   switch (event.kind) {
@@ -406,12 +450,50 @@ function applyKind(state, event) {
       // A survivor is still running — recovery is an annotation on a live run,
       // not a terminal state. Only the count changes so a diagnostic can show
       // "this run has been re-adopted N times".
-      if (state.status !== 'completed' && state.status !== 'failed') state.status = 'running';
+      if (!isTerminal(state)) state.status = 'running';
       state.recoveryCount += 1;
       break;
     case 'run.orphan-recovered':
       state.orphaned = true;
-      if (state.status !== 'completed' && state.status !== 'failed') state.status = 'orphaned';
+      if (!isTerminal(state)) state.status = 'orphaned';
+      break;
+    case 'run.handoff':
+      // Ownership moved. `owner` is the answer to "which process should I look
+      // in for this run", which is precisely what the in-memory maps lose on a
+      // restart — so the LAST handoff wins and the count shows the churn.
+      state.handoffCount += 1;
+      if (typeof data.to === 'string') state.owner = data.to;
+      break;
+    case 'run.reconnected':
+      state.reconnectCount += 1;
+      if (!isTerminal(state)) state.status = 'running';
+      break;
+    case 'run.output':
+      // Sizes only — the bytes themselves never enter the ledger.
+      if (Number.isFinite(data.outputBytes)) state.outputBytes = data.outputBytes;
+      state.lastOutputAt = event.at;
+      break;
+    case 'run.paused':
+      state.paused = true;
+      state.pauseCount += 1;
+      if (!isTerminal(state)) state.status = 'paused';
+      break;
+    case 'run.resumed':
+      state.paused = false;
+      if (!isTerminal(state)) state.status = 'running';
+      break;
+    case 'run.interrupted':
+      // The stop REQUEST, not the exit it causes. Status stays non-terminal on
+      // purpose: a run still showing `interrupted` with no later
+      // `run.finalized` is a kill that never landed, and hiding that behind a
+      // synthesized "failed" would erase the only evidence of it.
+      state.interrupted = true;
+      if (typeof data.reason === 'string') state.interruptReason = data.reason;
+      if (!isTerminal(state)) state.status = 'interrupted';
+      break;
+    case 'run.pr-verified':
+      state.prVerified = data.verified === true;
+      if (typeof data.prUrl === 'string') state.prUrl = data.prUrl;
       break;
     case 'run.finalized': {
       const success = data.success === true;

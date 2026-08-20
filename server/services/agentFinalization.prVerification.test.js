@@ -83,6 +83,12 @@ vi.mock('./taskTypeHooks.js', () => ({
 }));
 
 vi.mock('./agentCompletion.js', () => ({ processAgentCompletion: vi.fn(async () => null) }));
+
+// The lifecycle ledger is a real file writer (data/cos/run-events.jsonl) — mocked
+// so finalization telemetry lands in a spy rather than the developing install's
+// ledger, and so the boundary assertions below can read the envelope (#4540).
+const { appendRunEvent } = vi.hoisted(() => ({ appendRunEvent: vi.fn(async () => ({ appended: true })) }));
+vi.mock('./agentRunEventLog.js', () => ({ appendRunEvent }));
 vi.mock('./agentSummaryExtraction.js', () => ({ extractSimplifySummaries: vi.fn(() => null) }));
 
 import {
@@ -398,5 +404,80 @@ describe('finalizeAgent — a PR-shaped run with no PR is not a success (#3358)'
     await finalize();
     // A check that never ran is not a verdict — it must not manufacture a failure.
     expect(completeAgentMock).toHaveBeenCalledWith('agent-1', expect.objectContaining({ success: true }));
+  });
+});
+
+// ─── Lifecycle ledger — the PR-verification boundary (#4540) ─────────────────
+
+describe('finalizeAgent — records the PR verdict in the lifecycle ledger', () => {
+  const prVerified = () => appendRunEvent.mock.calls.map(([e]) => e).filter((e) => e.kind === 'run.pr-verified');
+
+  const finalize = (overrides = {}) => finalizeAgent({
+    agentId: 'agent-1',
+    task: prTask(),
+    runId: 'run-1',
+    providerId: 'claude-code',
+    success: true,
+    exitCode: 0,
+    duration: 1000,
+    outputBuffer: 'done',
+    errorAnalysis: null,
+    workspacePath: '/w',
+    prExpected: true,
+    ...overrides,
+  });
+
+  it('records the passing verdict with the branch it was checked against', async () => {
+    onBranch('claim/issue-1');
+    await finalize();
+    expect(prVerified()).toEqual([expect.objectContaining({
+      runId: 'run-1',
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      data: expect.objectContaining({ verified: true, branch: 'claim/issue-1' })
+    })]);
+  });
+
+  it('records a FAILED verdict with the category, not just an absence', async () => {
+    onBranch('claim/issue-1');
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'none', number: null, url: null, detail: null });
+    await finalize();
+    expect(prVerified()[0].data).toMatchObject({ verified: false, category: PR_MISSING_CATEGORY });
+  });
+
+  it('is keyed on the run, so a retried finalize files one verdict', async () => {
+    onBranch('claim/issue-1');
+    await finalize();
+    await finalize();
+    const ids = prVerified().map((e) => e.eventId);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(1);
+  });
+
+  it('writes NOTHING when the run never promised a PR', async () => {
+    // `verifyPrClaim` returns the same `{ ok: true }` for "verified" and for
+    // "not applicable". Recording both would put two different facts on the
+    // ledger under one word.
+    onBranch('claim/issue-1');
+    await finalize({ prExpected: false });
+    expect(prVerified()).toHaveLength(0);
+  });
+
+  it('writes NOTHING when the check itself threw', async () => {
+    // A throw is not a verdict — the finalize path already falls back to the
+    // reported outcome, and the ledger must not claim a forge confirmed anything.
+    onBranch('claim/issue-1');
+    findPullRequestForBranchMock.mockRejectedValue(new Error('forge exploded'));
+    await finalize();
+    expect(prVerified()).toHaveLength(0);
+  });
+
+  it('writes NOTHING when there was no branch to ask a forge about', async () => {
+    // A detached HEAD or non-repo workspace returns the SAME `{ ok: true }` as a
+    // confirmed PR. Recording it would put "verified" on a run nothing verified —
+    // which is the failure mode this whole ledger exists to make impossible.
+    execGitMock.mockRejectedValue(new Error('not a git repository'));
+    await finalize();
+    expect(prVerified()).toHaveLength(0);
   });
 });

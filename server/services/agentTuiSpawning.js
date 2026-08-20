@@ -64,6 +64,7 @@ import { composeProviderEnv } from '../lib/cliChildEnv.js';
 import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
 import { isOllamaBackedProvider } from './providers.js';
 import { execFile } from '../lib/childProcess.js';
+import { appendRunEvent } from './agentRunEventLog.js';
 
 // Agent-specific timing/lifecycle constants (not shared with the one-shot
 // runner — agents stay alive much longer and write a sentinel file when done).
@@ -1020,7 +1021,22 @@ export async function spawnTuiAgent({
       if (isCodexSession && !promptSubmittedAt && stripped && !mcpBoot.active) mcpBoot.observe(stripped);
       const now = Date.now();
       lastOutputAt = now;
-      if (firstOutputAt === null) firstOutputAt = lastOutputAt;
+      if (firstOutputAt === null) {
+        firstOutputAt = lastOutputAt;
+        // Once per run, on the first byte off the PTY (#4540). Not awaited: this
+        // handler is on the hot output path and `appendRunEvent` is a serialized,
+        // never-rejecting queue — blocking a terminal repaint on a telemetry
+        // write would be the wrong trade. The explicit key makes the append
+        // idempotent regardless of how the guard above races.
+        appendRunEvent({
+          kind: 'run.output',
+          runId,
+          agentId,
+          taskId: task.id,
+          eventId: `output:${agentId}:${runId || 'no-run'}:first`,
+          data: { source: 'tui-pty' },
+        });
+      }
 
       if (!hasStartedWorking) {
         hasStartedWorking = true;

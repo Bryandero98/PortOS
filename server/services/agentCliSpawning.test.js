@@ -41,6 +41,12 @@ vi.mock('./toolStateMachine.js', () => ({
   errorExecution: vi.fn(),
 }));
 vi.mock('./agentErrorAnalysis.js', () => ({ analyzeAgentFailure: vi.fn().mockResolvedValue(null) }));
+// The lifecycle ledger is a real file writer (data/cos/run-events.jsonl) — mocked
+// so first-output telemetry lands in a spy rather than the developing install's
+// ledger, and because this suite's fileUtils mock carries no PATHS.cos (#4540).
+const { appendRunEvent } = vi.hoisted(() => ({ appendRunEvent: vi.fn(async () => ({ appended: true })) }));
+vi.mock('./agentRunEventLog.js', () => ({ appendRunEvent }));
+
 vi.mock('./agentRunTracking.js', () => ({ completeAgentRun: vi.fn().mockResolvedValue(undefined) }));
 // Mock git.js directly so spawnDirectly's GH_TOKEN pinning is exercised without
 // pulling in the real worktreeManager → instances module graph. Default: no
@@ -557,6 +563,42 @@ describe('stream error containment', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  // ─── Lifecycle ledger — the first-output boundary (#4540) ─────────────────
+
+  it('records ONE run.output on the first real byte, and never again', async () => {
+    // Bounded on purpose: a per-chunk event would make the ledger a copy of the
+    // output it deliberately redacts. What one event buys is time-to-first-output
+    // — the only thing that separates a run that stalled after speaking from one
+    // that never spoke at all.
+    appendRunEvent.mockClear();
+    const spawnPromise = spawnDirectly(minimalArgs);
+    await new Promise((r) => setTimeout(r, 10));
+
+    fakeProcess.stdout.emit('data', Buffer.from('{\"type\":\"result\",\"result\":\"one\"}\n'));
+    fakeProcess.stdout.emit('data', Buffer.from('{\"type\":\"result\",\"result\":\"two\"}\n'));
+    await new Promise((r) => setTimeout(r, 20));
+
+    const outputs = appendRunEvent.mock.calls.map(([e]) => e).filter((e) => e.kind === 'run.output');
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]).toMatchObject({ runId: 'run-1', agentId: 'agent-test', taskId: 'task-1', data: { source: 'cli-stdout' } });
+
+    fakeProcess.emit('close', 0);
+    await spawnPromise.catch(() => {});
+  });
+
+  it('records no run.output for a run that never produced any', async () => {
+    // The 3s initialization timer flips the record to "working" with nothing
+    // behind it, which is exactly the run this boundary must NOT vouch for.
+    appendRunEvent.mockClear();
+    const spawnPromise = spawnDirectly(minimalArgs);
+    await new Promise((r) => setTimeout(r, 10));
+
+    fakeProcess.emit('close', 1);
+    await spawnPromise.catch(() => {});
+
+    expect(appendRunEvent.mock.calls.map(([e]) => e.kind)).not.toContain('run.output');
   });
 
   it('drains stdout output on close and a failed batch flush is logged, not leaked as an unhandled rejection', async () => {

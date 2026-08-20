@@ -19,6 +19,7 @@ import { release } from './executionLanes.js';
 import { completeExecution, errorExecution } from './toolStateMachine.js';
 import { analyzeAgentFailure } from './agentErrorAnalysis.js';
 import { completeAgentRun } from './agentRunTracking.js';
+import { appendRunEvent } from './agentRunEventLog.js';
 import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
 import { activeAgents, userTerminatedAgents, pausedAgents, registerSpawnedAgent, unregisterSpawnedAgent } from './agentState.js';
 import { normalizeReviewers } from '../lib/validation.js';
@@ -433,6 +434,11 @@ export async function spawnDirectly({
   let outputBuffer = '';
   let rawStreamBuffer = ''; // Raw stdout for stream-json (used for error analysis)
   let hasStartedWorking = false;
+  // Deliberately NOT `hasStartedWorking`: that flag also flips on a 3s
+  // initialization timeout with no output behind it, so reusing it would file a
+  // `run.output` for a run that has produced nothing — the exact case (a
+  // provider that never spoke) the ledger is supposed to make visible.
+  let firstOutputRecorded = false;
   const outputFile = join(agentDir, 'output.txt');
   const isStreamJson = cliConfig.streamFormat === 'stream-json';
   const streamParser = isStreamJson ? createStreamJsonParser() : null;
@@ -522,6 +528,23 @@ export async function spawnDirectly({
       // Serialize the transcript body so two `data` events can't interleave their
       // awaits and reorder output.txt / the batched live tail.
       enqueueTranscriptWrite(async () => {
+        if (!firstOutputRecorded) {
+          firstOutputRecorded = true;
+          // Once per run, on the FIRST real byte (#4540) — never per chunk. A
+          // per-chunk event would make the ledger a copy of the output it
+          // deliberately redacts and would exhaust the retention bound in
+          // minutes. What this one event buys is time-to-first-output: a run
+          // that stalled after speaking and a run that never spoke at all are
+          // indistinguishable in the mutable record.
+          await appendRunEvent({
+            kind: 'run.output',
+            runId,
+            agentId,
+            taskId: task.id,
+            eventId: `output:${agentId}:${runId || 'no-run'}:first`,
+            data: { source: 'cli-stdout', firstChunkChars: text.length },
+          });
+        }
         if (!hasStartedWorking) {
           hasStartedWorking = true;
           await updateAgent(agentId, { metadata: { phase: 'working' } });

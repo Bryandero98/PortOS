@@ -33,6 +33,7 @@ import { release } from './executionLanes.js';
 import { completeExecution, errorExecution } from './toolStateMachine.js';
 import { resolveFailedTaskUpdate, resolveTypeFailureSignal } from './agentErrorAnalysis.js';
 import { completeAgentRun } from './agentRunTracking.js';
+import { appendRunEvent } from './agentRunEventLog.js';
 import { committedDuringRun } from '../lib/gitCommitProbe.js';
 import { SKIP_LEARNING_VERDICT } from '../lib/learningVerdict.js';
 import { detectPrimaryCheckoutDrift, PRIMARY_CHECKOUT_MUTATED_ESCALATION, PRIMARY_CHECKOUT_MUTATED_REASON } from '../lib/primaryCheckoutGuard.js';
@@ -646,13 +647,45 @@ export async function finalizeAgent({
   // successfully" the UI renders off `result.success`) sees the corrected value.
   // A THROW here is not a verdict — fall back to the reported outcome rather
   // than manufacturing a failure out of a check that never ran.
+  let prCheckThrew = false;
   const prVerdict = terminatedByUser
     ? { ok: true }
     : await verifyPrClaim({ task, workspacePath, success: reportedSuccess, prExpected })
       .catch(err => {
+        prCheckThrew = true;
         emitLog('warn', `⚠️ PR verification failed for ${agentId}: ${err.message}`, { agentId });
         return { ok: true };
       });
+
+  // Record the verdict in the lifecycle ledger (#4540) — but ONLY when the
+  // check actually reached one. `verifyPrClaim` returns the same `{ ok: true }`
+  // for "the PR is there", for "this run never promised one", for "there was no
+  // branch to ask about", and (via the catch above) for "the check threw";
+  // appending on every call would file four different facts under one word and
+  // make the ledger lie about the one transition it exists to explain.
+  //
+  // A BRANCH is the tell: every path that actually consulted a forge returns the
+  // branch it asked about, and every path that did not returns no branch at all.
+  // So gate on the branch rather than re-deriving the service's own
+  // applicability rules here, where they would drift apart.
+  if (!prCheckThrew && typeof prVerdict.branch === 'string') {
+    await appendRunEvent({
+      kind: 'run.pr-verified',
+      runId,
+      agentId,
+      taskId: task?.id,
+      // A run is verified once. An explicit natural key rather than the
+      // content-derived default so a retried finalize (the close handler and
+      // the orphan sweep can both reach this path) records one verdict, not two.
+      eventId: `pr-verify:${agentId}:${runId || 'no-run'}`,
+      data: {
+        verified: prVerdict.ok === true,
+        branch: prVerdict.branch ?? null,
+        category: prVerdict.category ?? null,
+        noChangesToShip: prVerdict.noChangesToShip === true,
+      },
+    });
+  }
 
   // #3680: a worktree agent that committed to the PRIMARY checkout left
   // unreviewed commits on an unprotected branch. Same posture as the PR check —

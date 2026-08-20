@@ -50,6 +50,7 @@ import { createToolExecution, startExecution, completeExecution, errorExecution 
 import { determineLane, acquire, release } from './executionLanes.js';
 import { analyzeAgentFailure } from './agentErrorAnalysis.js';
 import { createAgentRun } from './agentRunTracking.js';
+import { appendRunEvent } from './agentRunEventLog.js';
 import { committedDuringRun, toEpochMs } from '../lib/gitCommitProbe.js';
 import { capturePrimaryCheckoutState } from '../lib/primaryCheckoutGuard.js';
 import { buildAgentPrompt, getAppWorkspace, inlinePrLifecycleSection, isClaimFlowTask } from './agentPromptBuilder.js';
@@ -866,6 +867,19 @@ export async function spawnViaRunner(agentId, task, opts) {
     const message = err?.message || String(err);
     clearTimeout(agentInfo.initializationTimeout);
     runnerAgents.delete(agentId);
+    // A handoff that the runner REFUSED (#4540). Recorded as its own boundary
+    // rather than left to the failure the finalize below records: "the run
+    // never started because the runner would not take it" and "the run started
+    // and failed" produce the same terminal record today, and only the ledger
+    // can still tell them apart afterwards.
+    await appendRunEvent({
+      kind: 'run.handoff',
+      runId,
+      agentId,
+      taskId: task.id,
+      eventId: `handoff:${agentId}:${runId || 'no-run'}:rejected`,
+      data: { to: 'none', accepted: false, reason: message },
+    });
     releaseAgentLane({ agentId, success: false, exitCode: 1, executionId, laneName, errorExecutionMessage: message });
     // Finalize through the SAME chokepoint every other ending uses (#3632).
     // Finalizing the agent alone — which is all this used to do — left the TASK
@@ -919,6 +933,21 @@ export async function spawnViaRunner(agentId, task, opts) {
 
   // Store PID in persisted state for zombie detection
   await updateAgent(agentId, { pid: result.pid });
+
+  // Ownership of the process now sits with the CoS Runner, not this server
+  // (#4540). This is the boundary the in-memory `runnerAgents` map forgets on
+  // every restart — after which "which process should I look in for this run"
+  // has no recorded answer at all. Emitted AFTER the runner accepted, so an
+  // event means the handoff landed. The natural key is the run: a run is handed
+  // to the runner exactly once, so a retried spawn cannot double-count it.
+  await appendRunEvent({
+    kind: 'run.handoff',
+    runId,
+    agentId,
+    taskId: task.id,
+    eventId: `handoff:${agentId}:${runId || 'no-run'}:cos-runner`,
+    data: { to: 'cos-runner', accepted: true, pid: result.pid ?? null, providerId: provider.id, laneName: laneName ?? null },
+  });
 
   emitLog('info', `Agent ${agentId} spawned via runner (PID: ${result.pid})`, { agentId, pid: result.pid });
   return agentId;

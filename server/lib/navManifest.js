@@ -138,6 +138,7 @@ export const NAV_COMMANDS = [
   { id: 'nav.cos.learning', path: '/cos/learning', label: 'Learning', section: 'Chief of Staff', aliases: ['cos-learning'] },
   { id: 'nav.cos.memory', path: '/cos/memory', label: 'Memory', section: 'Chief of Staff', aliases: ['cos-memory'] },
   { id: 'nav.cos.runs', path: '/cos/runs', label: 'Runs', section: 'Chief of Staff', aliases: ['runs', 'ai-runs', 'cos-runs', 'recent-runs', 'run-history'], keywords: ['runs', 'run history', 'recent runs', 'ai runs', 'agent runs', 'failed runs'] },
+  { id: 'nav.cos.run-events', path: '/cos/run-events', label: 'Run Events', section: 'Chief of Staff', aliases: ['run-events', 'cos-run-events', 'run-event-ledger', 'lifecycle-events'], keywords: ['run events', 'lifecycle', 'ledger', 'replay', 'diagnostics', 'orphaned', 'handoff', 'reconnect', 'interrupted', 'why did this run fail'] },
   { id: 'nav.cos.schedule', path: '/cos/schedule', label: 'Schedule', section: 'Chief of Staff', aliases: ['schedule', 'cos-schedule'] },
   { id: 'nav.social-agents', path: '/agents', label: 'Social Agents', section: 'Chief of Staff', aliases: ['social-agents'] },
   // The page at /cos/workflow is now the Schedule Timeline (launch-order

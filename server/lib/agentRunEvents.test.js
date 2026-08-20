@@ -297,3 +297,89 @@ describe('projectRunStates — replayable status', () => {
     expect(projectRunState(stream, 'r1').status).toBe('completed');
   });
 });
+
+describe('projectRunStates — the second-slice boundaries (#4540)', () => {
+  const at = (hhmm) => `2026-08-18T${hhmm}:00.000Z`;
+
+  it('folds handoff, first-output, reconnect and PR verification onto one run', () => {
+    const [state] = projectRunStates([
+      buildRunEvent({ kind: 'run.spawned', runId: 'r1', agentId: 'a1', taskId: 't1', at: at('10:00') }),
+      buildRunEvent({ kind: 'run.handoff', runId: 'r1', agentId: 'a1', at: at('10:01'), data: { to: 'cos-runner', accepted: true, pid: 4242 } }),
+      buildRunEvent({ kind: 'run.output', runId: 'r1', agentId: 'a1', at: at('10:02'), data: { source: 'runner', outputBytes: 512 } }),
+      buildRunEvent({ kind: 'run.reconnected', runId: 'r1', agentId: 'a1', at: at('11:00'), data: { transport: 'runner-pty' } }),
+      buildRunEvent({ kind: 'run.pr-verified', runId: 'r1', agentId: 'a1', at: at('12:00'), data: { verified: true, branch: 'claim/issue-1' } })
+    ]);
+    expect(state).toMatchObject({
+      status: 'running',
+      handoffCount: 1,
+      owner: 'cos-runner',
+      outputBytes: 512,
+      lastOutputAt: at('10:02'),
+      reconnectCount: 1,
+      prVerified: true
+    });
+  });
+
+  it('reports a paused run as paused and a resumed one as running again', () => {
+    const spawned = buildRunEvent({ kind: 'run.spawned', runId: 'r1', at: at('10:00') });
+    const paused = buildRunEvent({ kind: 'run.paused', runId: 'r1', at: at('10:30'), data: { reason: 'user asked' } });
+
+    const [held] = projectRunStates([spawned, paused]);
+    expect(held).toMatchObject({ status: 'paused', paused: true, pauseCount: 1 });
+
+    const [released] = projectRunStates([
+      spawned,
+      paused,
+      buildRunEvent({ kind: 'run.resumed', runId: 'r1', at: at('11:00'), data: { mode: 'requeued' } })
+    ]);
+    expect(released).toMatchObject({ status: 'running', paused: false, pauseCount: 1 });
+  });
+
+  it('leaves a kill that never landed visible as interrupted, not as a failure', () => {
+    // The whole point of recording the stop REQUEST separately: a run still
+    // reading `interrupted` with no `run.finalized` after it is a kill the
+    // process ignored. Synthesizing "failed" here would erase that evidence.
+    const [state] = projectRunStates([
+      buildRunEvent({ kind: 'run.spawned', runId: 'r1', at: at('10:00') }),
+      buildRunEvent({ kind: 'run.interrupted', runId: 'r1', at: at('10:30'), data: { reason: 'terminated-by-user', signal: 'SIGTERM' } })
+    ]);
+    expect(state).toMatchObject({ status: 'interrupted', interrupted: true, interruptReason: 'terminated-by-user', success: null });
+  });
+
+  it('lets the terminal verdict outrank every later annotation', () => {
+    // Reads in append order, but a stop request that raced the exit, or a
+    // reconnect logged after the reap, must not resurrect a finished run.
+    const [state] = projectRunStates([
+      buildRunEvent({ kind: 'run.spawned', runId: 'r1', at: at('10:00') }),
+      buildRunEvent({ kind: 'run.finalized', runId: 'r1', at: at('11:00'), data: { success: true, exitCode: 0 } }),
+      buildRunEvent({ kind: 'run.interrupted', runId: 'r1', at: at('11:01'), data: { reason: 'terminated-by-user' } }),
+      buildRunEvent({ kind: 'run.reconnected', runId: 'r1', at: at('11:02') }),
+      buildRunEvent({ kind: 'run.paused', runId: 'r1', at: at('11:03') })
+    ]);
+    expect(state.status).toBe('completed');
+    expect(state.interrupted).toBe(true);
+    expect(state.eventCount).toBe(5);
+  });
+
+  it('records a REJECTED handoff without claiming an owner', () => {
+    const [state] = projectRunStates([
+      buildRunEvent({ kind: 'run.spawned', runId: 'r1', at: at('10:00') }),
+      buildRunEvent({ kind: 'run.handoff', runId: 'r1', at: at('10:01'), data: { to: 'none', accepted: false, reason: 'runner refused' } })
+    ]);
+    expect(state).toMatchObject({ handoffCount: 1, owner: 'none' });
+  });
+
+  it('records a FAILED PR verification as verified:false, not as absent', () => {
+    const [state] = projectRunStates([
+      buildRunEvent({ kind: 'run.pr-verified', runId: 'r1', at: at('12:00'), data: { verified: false, category: 'pr-missing', branch: 'claim/issue-1' } })
+    ]);
+    expect(state.prVerified).toBe(false);
+  });
+
+  it('keeps every new kind inside the closed write vocabulary', () => {
+    for (const kind of ['run.handoff', 'run.reconnected', 'run.output', 'run.paused', 'run.resumed', 'run.interrupted', 'run.pr-verified']) {
+      expect(isKnownRunEventKind(kind)).toBe(true);
+      expect(() => buildRunEvent({ kind, runId: 'r1', at: at('10:00') })).not.toThrow();
+    }
+  });
+});

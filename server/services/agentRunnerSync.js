@@ -123,6 +123,20 @@ export async function syncRunnerAgents() {
           label: `Recovered TUI ${agent.id}`,
           command: agent.command,
         });
+        // A live PTY was re-attached to a still-running agent (#4540). Distinct
+        // from the `run.runner-recovered` above: that says the RUN was
+        // re-adopted, this says its terminal stream was re-plumbed — and only
+        // one of the two can fail. No explicit idempotency key: the
+        // `!getSession` guard already means "not currently attached", so every
+        // event here is a genuinely distinct reconnect and `reconnectCount`
+        // reads as the number of times this run lost and regained its stream.
+        await appendRunEvent({
+          kind: 'run.reconnected',
+          runId: recoveredRunId,
+          agentId: agent.id,
+          taskId: agent.taskId,
+          data: { transport: 'runner-pty', sessionId: agent.sessionId ?? null },
+        });
         session.ptyProcess.onExit(({ exitCode }) => {
           shellService.unregisterExternalSession(agent.sessionId, { exitCode });
         });

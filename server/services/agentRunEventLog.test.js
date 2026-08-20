@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -27,7 +27,8 @@ const {
   getRunEventLedgerStats,
   flushRunEvents,
   __resetRunEventLogCache,
-  MAX_ACTIVE_EVENTS
+  MAX_ACTIVE_EVENTS,
+  MAX_EVENT_AGE_DAYS
 } = await import('./agentRunEventLog.js');
 const { buildRunEvent } = await import('../lib/agentRunEvents.js');
 
@@ -46,6 +47,19 @@ const restartServer = () => __resetRunEventLogCache();
 const countLines = (path) => (existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean).length : 0);
 
 beforeEach(resetLedger);
+
+// Pin the clock next to the fixture timestamps below. The ledger's AGE bound is
+// measured against the wall clock, so with a real clock every assertion in this
+// file would silently start failing MAX_EVENT_AGE_DAYS after the fixture date —
+// a red suite triggered by the calendar with no code change behind it. Only
+// `Date` is faked: the service does real fs I/O, and faking timers would stall it.
+const NOW = '2026-08-18T13:00:00.000Z';
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(NOW));
+});
+afterEach(() => vi.useRealTimers());
+
 afterAll(() => rmSync(LEDGER_DIR, { recursive: true, force: true }));
 
 describe('appendRunEvent', () => {
@@ -275,5 +289,74 @@ describe('replay / projections', () => {
 
   it('reports an unknown id as no projection rather than throwing', async () => {
     expect(await getRunDiagnostic('nope')).toEqual({ projection: null, events: [] });
+  });
+});
+
+describe('retention — age bound (#4540)', () => {
+  /** An ISO timestamp `days` before the pinned NOW. */
+  const daysAgo = (days) => new Date(Date.parse(NOW) - days * 24 * 60 * 60 * 1000).toISOString();
+  const stale = () => daysAgo(MAX_EVENT_AGE_DAYS + 1);
+  const recent = () => daysAgo(1);
+
+  const seedLines = (events) => events.map((e) => `${JSON.stringify(buildRunEvent(e))}\n`).join('');
+
+  it('hides an expired event from every read, and sweeps it off disk', async () => {
+    writeFileSync(ACTIVE, seedLines([
+      { kind: 'run.spawned', runId: 'ancient', at: stale() },
+      { kind: 'run.spawned', runId: 'current', at: recent() }
+    ]));
+    restartServer();
+
+    const events = await readRunEvents();
+    expect(events.map((e) => e.runId)).toEqual(['current']);
+    // …and the file itself shrank, so a quiet install's ledger doesn't grow
+    // forever under a count bound it never reaches.
+    expect(countLines(ACTIVE)).toBe(1);
+  });
+
+  it('drops an archive generation that has aged out entirely', async () => {
+    writeFileSync(ARCHIVE, seedLines([{ kind: 'run.spawned', runId: 'ancient', at: stale() }]));
+    writeFileSync(ACTIVE, seedLines([{ kind: 'run.spawned', runId: 'current', at: recent() }]));
+    restartServer();
+
+    const stats = await getRunEventLedgerStats();
+    expect(stats).toMatchObject({ archivedEvents: 0, activeEvents: 1, maxEventAgeDays: MAX_EVENT_AGE_DAYS });
+    expect(stats.oldestEventAt).toBe(recent());
+    // An emptied archive is unlinked, not rewritten as a zero-byte file.
+    expect(existsSync(ARCHIVE)).toBe(false);
+  });
+
+  it('re-admits an event whose only copy aged out', async () => {
+    // Same reasoning as rotation: a duplicate we can no longer see is no longer
+    // a duplicate. If expiry dropped the line but kept the id, the run could
+    // never be re-observed.
+    const event = { kind: 'run.spawned', runId: 'r1', agentId: 'a1', at: stale() };
+    writeFileSync(ACTIVE, seedLines([event]));
+    restartServer();
+
+    expect(await appendRunEvent(event)).toMatchObject({ appended: true, duplicate: false });
+    expect(countLines(ACTIVE)).toBe(1);
+  });
+
+  it('keeps deduping an event that is still inside the age window', async () => {
+    const event = { kind: 'run.spawned', runId: 'r1', agentId: 'a1', at: recent() };
+    await appendRunEvent(event);
+    expect(await appendRunEvent({ ...event })).toMatchObject({ appended: false, duplicate: true });
+  });
+
+  it('leaves a fresh ledger completely untouched', async () => {
+    await appendRunEvent({ kind: 'run.spawned', runId: 'r1', at: recent() });
+    await appendRunEvent({ kind: 'run.finalized', runId: 'r1', at: recent(), data: { success: true } });
+    const before = readFileSync(ACTIVE, 'utf8');
+    restartServer();
+    await readRunEvents();
+    expect(readFileSync(ACTIVE, 'utf8')).toBe(before);
+  });
+
+  it('sweeps an undatable corrupt line that no read could ever return', async () => {
+    writeFileSync(ACTIVE, `${seedLines([{ kind: 'run.spawned', runId: 'r1', at: recent() }])}{"eventId":"x","kind":"run.spawned"}\n`);
+    restartServer();
+    await readRunEvents();
+    expect(countLines(ACTIVE)).toBe(1);
   });
 });
