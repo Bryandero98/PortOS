@@ -89,6 +89,29 @@ export const ASSET_MOUNTS = ASSET_ROUTE_PREFIXES.map((route) => ({
 }));
 
 /**
+ * A `spaPaths` entry as a predicate over a REQUEST path.
+ *
+ * Not a string compare: an entry is a route PATTERN, and the client router's own
+ * convention produces parameterized ones (`/data/:category`). Comparing literals
+ * would 404 every concrete `/data/images` while the declaration sat in the list
+ * looking correct — and `scripts/dev-proxy-drift.test.js` points people at this
+ * list when it fails, so it has to mean what it appears to mean.
+ */
+function toRouteMatcher(pattern) {
+  const source = pattern
+    .split('/')
+    .map((segment) => {
+      if (segment.startsWith(':')) return '[^/]+';
+      if (segment === '*') return '.*';
+      return segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    })
+    .join('/');
+  const regex = new RegExp(`^${source}$`);
+  return (path) => regex.test(path);
+}
+
+
+/**
  * Mount every asset route, then close each server-owned namespace with a 404.
  *
  * The terminators are the point. The SPA fallback skips a request only when its
@@ -99,17 +122,24 @@ export const ASSET_MOUNTS = ASSET_ROUTE_PREFIXES.map((route) => ({
  * (#4688); an API client gets HTML where it expects JSON, with a success
  * status. The envelope comes from `sendErrorResponse` so this 404 is the same
  * shape as every other one PortOS emits.
+ *
+ * `ownedPrefixes` defaults to the real list; a test overrides it to exercise a
+ * `spaPaths` shape the app does not happen to use yet.
  */
-export function mountAssetRoutes(app) {
+export function mountAssetRoutes(app, ownedPrefixes = SERVER_OWNED_PREFIXES) {
   ASSET_MOUNTS.forEach(({ route, dir, gate }) => {
     app.use(route, ...(gate ? [gate] : []), express.static(dir(), ASSET_STATIC_OPTS));
   });
-  SERVER_OWNED_PREFIXES.forEach(({ prefix, spaPaths }) => {
-    app.use(prefix, (req, res, next) => (
+  ownedPrefixes.forEach(({ prefix, spaPaths }) => {
+    const spaMatchers = spaPaths.map(toRouteMatcher);
+    app.use(prefix, (req, res, next) => {
       // `app.use('/data', …)` reduces the page's own request to `req.path === '/'`.
-      spaPaths.includes(prefix + (req.path === '/' ? '' : req.path))
-        ? next()
-        : sendErrorResponse(res, new ServerError('Not found', { status: 404 }))
-    ));
+      // The trailing slash is stripped because `express.static` 301s a directory
+      // request to one (`/data/images` → `/data/images/`), and the redirect lands
+      // back here — an entry that matched the first form would miss the second.
+      const path = (prefix + (req.path === '/' ? '' : req.path)).replace(/\/+$/, '') || prefix;
+      if (spaMatchers.some((matches) => matches(path))) return next();
+      return sendErrorResponse(res, new ServerError('Not found', { status: 404 }));
+    });
   });
 }

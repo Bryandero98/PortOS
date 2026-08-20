@@ -71,27 +71,43 @@ const navPaths = NAV_COMMANDS.map((command) => command.path);
  * would therefore be invisible to a nav-manifest-only check — and the terminator
  * would 404 it in production with nothing failing near the new route.
  *
- * Nesting has to be resolved rather than read off each tag, because App.jsx
- * nests (`<Route path="media"><Route path="image" …/></Route>` is `/media/image`).
- * A depth-tracking scan is enough here and keeps the guard dependency-free — a
- * real JSX parse would mean pulling a parser into the server test runner, whose
- * CI job installs only the server's dependencies.
+ * Nesting has to be RESOLVED, not read off each tag, because App.jsx nests:
+ * `<Route path="media" …><Route path="image" …/></Route>` is `/media/image`.
+ * Hence the hand-rolled scan below instead of a regex per tag — a tag's
+ * attributes contain `>` inside JSX expressions (`element={<MediaGen />}`), so
+ * anything matching `<Route[^>]*>` ends the tag in the middle of `element` and
+ * reads every child as a sibling. Parsing properly would mean pulling a JSX
+ * parser into the SERVER test runner, whose CI job installs only the server's
+ * dependencies — so this tracks brace depth and quotes itself.
  */
 function clientRoutePaths(source) {
   const paths = [];
   const stack = [];
-  const TAG = /<Route\b([^>]*?)(\/?)>|<\/Route>/g;
-  for (const [tag, attrs, selfClosing] of source.matchAll(TAG)) {
-    if (tag === '</Route>') { stack.pop(); continue; }
+  for (let i = source.indexOf('<Route'); i !== -1; i = source.indexOf('<Route', i + 1)) {
+    if (source.startsWith('</Route>', i - 1)) continue;
+    let depth = 0;
+    let quote = null;
+    let end = -1;
+    for (let j = i + 6; j < source.length; j++) {
+      const char = source[j];
+      if (quote) { if (char === quote) quote = null; continue; }
+      if (char === '"' || char === "'" || char === '`') { quote = char; continue; }
+      if (char === '{') depth += 1;
+      else if (char === '}') depth -= 1;
+      else if (char === '>' && depth === 0) { end = j; break; }
+    }
+    if (end === -1) break;
+    const attrs = source.slice(i + 6, end);
+    const selfClosing = attrs.trimEnd().endsWith('/');
+    // An index route (no `path`) resolves to its parent, and a pathless layout
+    // route adds no segment — both are a null frame on the stack.
     const path = attrs.match(/\bpath="([^"]*)"/)?.[1] ?? null;
-    // An index route (no `path`) resolves to its parent, and a layout route
-    // with no path adds no segment — both are represented by a null frame.
-    const segments = [...stack, path].filter((segment) => segment);
     if (path !== null) {
-      const joined = segments.join('/').replace(/\/+/g, '/');
+      const joined = [...stack, path].filter((segment) => segment).join('/').replace(/\/+/g, '/');
       paths.push(joined.startsWith('/') ? joined : `/${joined}`);
     }
     if (!selfClosing) stack.push(path);
+    i = end;
   }
   return paths;
 }
@@ -146,8 +162,15 @@ describe('the asset table vs what the server mounts', () => {
 describe('server-owned prefixes vs the client router', () => {
   const routePaths = [...new Set([...navPaths, ...clientRoutePaths(read('client/src/App.jsx'))])];
 
-  it('finds the client routes it is comparing', () => {
-    expect(routePaths.length).toBeGreaterThan(50);
+  it('resolves App.jsx\'s nested routes rather than reading each tag flat', () => {
+    // Asserting on the UNION would prove nothing — NAV_COMMANDS alone satisfies
+    // it, so `clientRoutePaths` could return [] and this would stay green. These
+    // paths exist only as nested children, and the flat reading of them (`/image`)
+    // is what a tag-at-a-time regex produces once `element={<MediaGen />}` ends
+    // the match early.
+    const scanned = clientRoutePaths(read('client/src/App.jsx'));
+    expect(scanned).toContain('/media/image');
+    expect(scanned).not.toContain('/image');
     expect(routePaths).toContain('/data');
   });
 

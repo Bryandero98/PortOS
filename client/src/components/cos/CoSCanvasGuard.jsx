@@ -39,16 +39,20 @@ function WebGLUnavailableHint({ background = false }) {
   );
 }
 
-function AvatarAssetFailure({ background = false, error }) {
+// Named for the failure, not the cause: four of the six avatars are procedural
+// scenes with no GLB at all, so a throw from one of those is a render failure
+// rather than a load failure. `glbFailureHint` names a cause only when it
+// recognizes one, and the raw message covers the rest.
+function AvatarRenderFailure({ background = false, error }) {
   // `null` from the shared hint table means "we don't recognize this" — fall
   // back to the raw message rather than inventing a cause.
   const hint = glbFailureHint(error);
   return (
     <div className={panelClass(background)} data-testid="cos-avatar-asset-error" role="alert">
       <div className="text-2xl mb-2" aria-hidden="true">⚠️</div>
-      <div className="text-xs font-semibold text-gray-200 mb-1">Avatar failed to load</div>
+      <div className="text-xs font-semibold text-gray-200 mb-1">Avatar could not be displayed</div>
       <div className="text-[10px] text-gray-400 leading-snug">
-        {hint || glbErrorText(error) || 'The avatar model could not be loaded.'}
+        {hint || glbErrorText(error) || 'The 3D avatar could not be rendered.'}
       </div>
     </div>
   );
@@ -75,7 +79,7 @@ export default function CoSCanvasGuard({
   const error = failure?.key === resetKey ? failure.error : null;
 
   if (!supported) return <WebGLUnavailableHint background={background} />;
-  if (error) return <AvatarAssetFailure background={background} error={error} />;
+  if (error) return <AvatarRenderFailure background={background} error={error} />;
 
   return (
     <CoSAvatarFrame label={label} background={background}>

@@ -98,6 +98,24 @@ describe('the server-owned namespace terminators', () => {
     expect(res.text).toContain('PortOS');
   });
 
+  // `spaPaths` entries are route PATTERNS, not literals — the drift guard tells
+  // people to add a client route there when it fails, and the router convention
+  // produces parameterized ones. A literal compare would 404 every concrete
+  // path while the declaration sat in the list looking correct.
+  it('lets a parameterized spaPaths entry through to the SPA', async () => {
+    const patterned = express();
+    mountAssetRoutes(patterned, [{ prefix: '/data', spaPaths: ['/data', '/data/:category'] }]);
+    patterned.use(spaFallback);
+
+    const page = await request(patterned).get('/data/images');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('PortOS');
+
+    // ...and only one segment deep, exactly as the pattern says.
+    const tooDeep = await request(patterned).get('/data/images/nested/thing');
+    expect(tooDeep.status).toBe(404);
+  });
+
   it('still serves an asset from a mount', async () => {
     const res = await request(app).get('/data/images/probe.png');
     expect(res.status).toBe(200);

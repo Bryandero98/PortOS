@@ -92,10 +92,22 @@ describe('CoSCanvasGuard', () => {
   // Both panels are the guard's own. The GLB-loading callers used to pass a
   // "no model — run setup" hint here, but they only reach the guard after a HEAD
   // request proved the model IS there, so that hint was wrong on both branches.
-  it('owns both panels, with no caller override', () => {
+  it('owns both panels, ignoring a fallback a caller tries to pass', () => {
+    // The prop is gone, so this passes one anyway: restoring the old override
+    // would make the guard render it and fail here. Without a hostile prop the
+    // test would stay green through exactly the regression it guards.
+    const hostile = { fallback: <div data-testid="caller-fallback" /> };
+
     cleanup();
     webgl.available = false;
-    render(<CoSCanvasGuard><div /></CoSCanvasGuard>);
+    render(<CoSCanvasGuard {...hostile}><div /></CoSCanvasGuard>);
     expect(screen.getByText(/This display has no WebGL/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('caller-fallback')).not.toBeInTheDocument();
+
+    cleanup();
+    webgl.available = true;
+    render(<CoSCanvasGuard {...hostile}><Boom error={new Error('boom')} /></CoSCanvasGuard>);
+    expect(screen.getByTestId('cos-avatar-asset-error')).toBeInTheDocument();
+    expect(screen.queryByTestId('caller-fallback')).not.toBeInTheDocument();
   });
 });
