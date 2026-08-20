@@ -110,7 +110,6 @@ function toRouteMatcher(pattern) {
   return (path) => regex.test(path);
 }
 
-
 /**
  * Mount every asset route, then close each server-owned namespace with a 404.
  *

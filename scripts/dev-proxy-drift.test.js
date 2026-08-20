@@ -73,22 +73,33 @@ const navPaths = NAV_COMMANDS.map((command) => command.path);
  *
  * Nesting has to be RESOLVED, not read off each tag, because App.jsx nests:
  * `<Route path="media" …><Route path="image" …/></Route>` is `/media/image`.
- * Hence the hand-rolled scan below instead of a regex per tag — a tag's
+ * That takes both halves — matching each opener's real end, and popping on its
+ * closer — and getting either wrong fails SILENTLY, as a guard that passes.
+ * Hence the hand-rolled scan below rather than a regex per tag: a tag's
  * attributes contain `>` inside JSX expressions (`element={<MediaGen />}`), so
- * anything matching `<Route[^>]*>` ends the tag in the middle of `element` and
- * reads every child as a sibling. Parsing properly would mean pulling a JSX
- * parser into the SERVER test runner, whose CI job installs only the server's
- * dependencies — so this tracks brace depth and quotes itself.
+ * anything matching `<Route[^>]*>` ends the tag mid-attribute. Parsing properly
+ * would mean pulling a JSX parser into the SERVER test runner, whose CI job
+ * installs only the server's dependencies — so this tracks depth itself.
  */
 function clientRoutePaths(source) {
   const paths = [];
   const stack = [];
-  for (let i = source.indexOf('<Route'); i !== -1; i = source.indexOf('<Route', i + 1)) {
-    if (source.startsWith('</Route>', i - 1)) continue;
+  // Drive off BOTH tags: the closer is what unwinds nesting. Reading only
+  // openers makes the stack grow forever, so everything after the first
+  // container route inherits its segment (`/sprites` becomes `/media/sprites`)
+  // and a later `/data/...` page hides behind that prefix — a silent false pass
+  // in exactly the case this scan exists for.
+  const TAGS = /<Route(?![A-Za-z])|<\/Route\s*>/g;
+  let match;
+  while ((match = TAGS.exec(source)) !== null) {
+    if (match[0][1] === '/') { stack.pop(); continue; }
+    // Find the real end of the tag. `>` also appears INSIDE attributes
+    // (`element={<MediaGen />}`), so track brace depth and quotes rather than
+    // stopping at the first one.
     let depth = 0;
     let quote = null;
     let end = -1;
-    for (let j = i + 6; j < source.length; j++) {
+    for (let j = TAGS.lastIndex; j < source.length; j++) {
       const char = source[j];
       if (quote) { if (char === quote) quote = null; continue; }
       if (char === '"' || char === "'" || char === '`') { quote = char; continue; }
@@ -97,7 +108,7 @@ function clientRoutePaths(source) {
       else if (char === '>' && depth === 0) { end = j; break; }
     }
     if (end === -1) break;
-    const attrs = source.slice(i + 6, end);
+    const attrs = source.slice(TAGS.lastIndex, end);
     const selfClosing = attrs.trimEnd().endsWith('/');
     // An index route (no `path`) resolves to its parent, and a pathless layout
     // route adds no segment — both are a null frame on the stack.
@@ -107,7 +118,7 @@ function clientRoutePaths(source) {
       paths.push(joined.startsWith('/') ? joined : `/${joined}`);
     }
     if (!selfClosing) stack.push(path);
-    i = end;
+    TAGS.lastIndex = end + 1;
   }
   return paths;
 }
@@ -162,15 +173,22 @@ describe('the asset table vs what the server mounts', () => {
 describe('server-owned prefixes vs the client router', () => {
   const routePaths = [...new Set([...navPaths, ...clientRoutePaths(read('client/src/App.jsx'))])];
 
-  it('resolves App.jsx\'s nested routes rather than reading each tag flat', () => {
+  it('resolves App.jsx\'s nesting in BOTH directions', () => {
     // Asserting on the UNION would prove nothing — NAV_COMMANDS alone satisfies
-    // it, so `clientRoutePaths` could return [] and this would stay green. These
-    // paths exist only as nested children, and the flat reading of them (`/image`)
-    // is what a tag-at-a-time regex produces once `element={<MediaGen />}` ends
-    // the match early.
+    // it, so `clientRoutePaths` could return [] and stay green. Both halves of
+    // the scan get their own probe because each fails silently, as a PASS:
     const scanned = clientRoutePaths(read('client/src/App.jsx'));
+
+    // ...a child must inherit its parent's segment (a per-tag regex ends at the
+    // `>` inside `element={<MediaGen />}` and reads this as a sibling, `/image`);
     expect(scanned).toContain('/media/image');
     expect(scanned).not.toContain('/image');
+
+    // ...and a closer must POP it again. Without that the stack only grows, and
+    // every route declared after the first container inherits its prefix — which
+    // is what hides a later `/data/...` page from the check below.
+    expect(scanned).toContain('/sprites');
+    expect(scanned).toContain('/writers-room');
     expect(routePaths).toContain('/data');
   });
 
