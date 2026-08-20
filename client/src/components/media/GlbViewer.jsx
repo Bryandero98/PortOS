@@ -113,6 +113,7 @@ function GlbLoadFailure({ error, onRetry }) {
     // on a page, not over an arbitrary canvas backdrop.
     <div
       data-testid="glb-load-error"
+      role="alert"
       className="port-media-overlay absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center"
     >
       <AlertTriangle className="h-6 w-6 text-port-error" aria-hidden="true" />

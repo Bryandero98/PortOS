@@ -244,7 +244,9 @@ describe('GlbViewer load failures', () => {
     // escapes `render` here, exactly as it escapes to the router in the app.
     render(<GlbViewer src="/data/image-to-3d/abc/model.glb?v=1" />);
 
-    expect(screen.getByTestId('glb-load-error')).toBeInTheDocument();
+    // `role="alert"`: the panel replaces the canvas without a navigation, so a
+    // screen reader only hears about it if it announces itself.
+    expect(screen.getByRole('alert')).toBeInTheDocument();
     expect(screen.getByText('This 3D model could not be loaded')).toBeInTheDocument();
     expect(screen.getByText(/answered with a web page instead of the mesh file/i)).toBeInTheDocument();
     expect(screen.queryByTestId('glb-canvas')).not.toBeInTheDocument();
