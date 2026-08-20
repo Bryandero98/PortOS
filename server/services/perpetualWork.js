@@ -281,7 +281,15 @@ const FORGE_ISSUE_CONFIG = {
     // ignore it, and the `collaborators` gate can only be applied to the listing
     // (gh's `--author` takes exactly one account, so a trusted SET can't be
     // pushed into the query).
-    listArgs: ['issue', 'list', '--state', 'open', '--search', 'sort:created-asc', '--json', 'number,assignees,labels,title,author', '--limit', '100'],
+    // `--limit 500` (gh paginates internally up to this count in one call, per
+    // its own `--limit` docs) rather than 100: the label filter below (fixed
+    // NON_ACTIONABLE_ISSUE_LABELS plus any configured `issueExcludeLabels`)
+    // runs client-side AFTER this fetch, so a small fetch cap risks the
+    // detector parking on a false "no actionable issues" when the first page
+    // happens to be full of excluded/in-flight/epic issues even though real
+    // work exists further down the queue. Matches the same tradeoff the
+    // /do:next auto-pick walk already makes for the identical reason.
+    listArgs: ['issue', 'list', '--state', 'open', '--search', 'sort:created-asc', '--json', 'number,assignees,labels,title,author', '--limit', '500'],
     listFail: 'gh-list-failed',
     parseFail: 'gh-parse-failed',
     // Park reason when the owner filter resolves to a non-authoring owner. On
@@ -320,6 +328,13 @@ const FORGE_ISSUE_CONFIG = {
   'claim-issue-gitlab': {
     cli: 'glab',
     inFlightForge: 'gitlab',
+    // `--per-page` maxes out at 100 (GitLab's own per-call ceiling; unlike
+    // gh's `--limit`, there's no single-call "give me more" here) — same
+    // residual gap the /do:next auto-pick walk documents for GitLab: a busy
+    // tracker whose first page is dominated by excluded/in-flight/epic issues
+    // can still park on a false "no actionable issues" despite real work
+    // further down the queue. `--issues-label`-style curation is the
+    // practical mitigation there; this detector has no equivalent knob yet.
     listArgs: ['issue', 'list', '--per-page', '100', '-F', 'json'],
     listFail: 'glab-list-failed',
     parseFail: 'glab-parse-failed',
