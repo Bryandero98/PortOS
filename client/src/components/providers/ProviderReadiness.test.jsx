@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import ProviderReadiness from './ProviderReadiness';
 
@@ -12,6 +12,7 @@ const readiness = (overrides = {}) => ({
   manageUrl: '/settings/local-llm',
   docsUrl: 'https://example.com/llama-docs',
   ready: false,
+  setup: null,
   checks: [
     { id: 'runtime', label: 'llama.cpp installed', ok: true, detail: '`llama-server` is on PortOS\'s PATH.', fixHint: null },
     { id: 'server', label: 'llama.cpp server responding', ok: false, detail: 'Nothing answered at http://127.0.0.1:8080/v1 (connection refused).', fixHint: 'Start llama.cpp — it serves GGUF weights you download yourself.' },
@@ -61,6 +62,37 @@ describe('ProviderReadiness', () => {
     renderWithRouter(<ProviderReadiness readiness={readiness({ label: 'MTPLX', manageUrl: null })} />);
     expect(screen.queryByText('Open Local LLM settings')).toBeNull();
     expect(screen.getByText('MTPLX setup docs')).toBeTruthy();
+  });
+
+  it('offers the one-click setup instead of leaving a docs link as the only way forward', () => {
+    const onAutoSetup = vi.fn();
+    const setup = { runtime: 'mtplx', label: 'MTPLX', action: 'install-start', actionLabel: 'Install & start MTPLX', blockedReason: null };
+    renderWithRouter(
+      <ProviderReadiness readiness={readiness({ label: 'MTPLX', manageUrl: null, setup })} onAutoSetup={onAutoSetup} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Install & start MTPLX/ }));
+    expect(onAutoSetup).toHaveBeenCalledWith(setup);
+    // The docs stay reachable — they answer the checks a button cannot fix.
+    expect(screen.getByText('MTPLX setup docs')).toBeTruthy();
+  });
+
+  it('shows no setup button when the host cannot run the runtime', () => {
+    renderWithRouter(
+      <ProviderReadiness
+        readiness={readiness({ setup: { runtime: 'mtplx', label: 'MTPLX', action: null, actionLabel: null, blockedReason: 'MTPLX runs only on macOS with Apple Silicon.' } })}
+        onAutoSetup={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('shows no setup button when the card has no handler wired', () => {
+    // The banner is also rendered read-only in places with nothing to click.
+    renderWithRouter(
+      <ProviderReadiness readiness={readiness({ setup: { runtime: 'llama', label: 'llama.cpp', action: 'install', actionLabel: 'Install llama.cpp', blockedReason: null } })} />,
+    );
+    expect(screen.queryByRole('button')).toBeNull();
   });
 
   it('renders backtick-quoted spans as code rather than literal backticks', () => {

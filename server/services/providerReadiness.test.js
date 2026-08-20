@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { pinPlatform } from '../lib/testHelper.js';
 import { getProviderReadiness, getProviderReadinessMap, resetProviderReadinessCache } from './providerReadiness.js';
 
 const llamaProvider = (overrides = {}) => ({
@@ -180,14 +181,34 @@ describe('getProviderReadiness', () => {
     expect(checkById(readiness, 'server').fixHint).toMatch(/Start LM Studio/);
   });
 
-  it('offers docs rather than an install for a runtime PortOS does not manage', async () => {
+  it('offers a one-click install+start for MTPLX instead of a setup-doc dead end', async () => {
+    // The whole point of the setup button: MTPLX has no Local LLM tab entry,
+    // so before it existed the only answer here was "go read the vendor docs".
+    const restore = pinPlatform('darwin');
     const readiness = await getProviderReadiness(
       { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true, defaultModel: 'mtplx' },
       { findCommand: () => null, probe: unreachable() },
     );
+    restore();
     expect(readiness.manageUrl).toBeNull();
+    // The docs link stays as a secondary affordance for the model choice.
     expect(readiness.docsUrl).toBeTruthy();
-    expect(checkById(readiness, 'runtime').fixHint).toMatch(/setup docs/);
+    expect(readiness.setup).toMatchObject({ runtime: 'mtplx', action: 'install-start', blockedReason: null });
+    expect(checkById(readiness, 'runtime').fixHint).toMatch(/Install & start MTPLX/);
+    expect(checkById(readiness, 'server').fixHint).toMatch(/Install & start MTPLX/);
+  });
+
+  it('falls back to the setup docs on a host that cannot run the runtime', async () => {
+    const restore = pinPlatform('linux');
+    const readiness = await getProviderReadiness(
+      { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true, defaultModel: 'mtplx' },
+      { findCommand: () => null, probe: unreachable() },
+    );
+    restore();
+    // No button — and the checklist says WHY rather than sending the user to a
+    // doc that would not help them either.
+    expect(readiness.setup.action).toBeNull();
+    expect(checkById(readiness, 'runtime').fixHint).toMatch(/only on macOS/);
   });
 });
 

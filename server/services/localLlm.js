@@ -20,7 +20,7 @@
  * multimodal). See `server/lib/localLlmDisk.js` for the disk logic.
  */
 
-import { execFile, spawn } from '../lib/childProcess.js';import { promisify } from 'util'
+import { execFile } from '../lib/childProcess.js';import { promisify } from 'util'
 import { readFileSync, createWriteStream } from 'fs'
 import { rm } from 'fs/promises'
 import { join } from 'path'
@@ -37,6 +37,7 @@ import { recommendEditorialModel, isVisionModel, isVisionCapableCliProvider, isT
 // no import cycle: the store deliberately does not import this module.
 import { getMeasuredFits } from './localModelAssessmentStore.js'
 import { commandExists } from '../lib/commandExists.js'
+import { runStreamingCommand } from '../lib/streamingSpawn.js'
 import * as ollamaManager from './ollamaManager.js'
 import * as lmStudioManager from './lmStudioManager.js'
 import { getProviderById, getAllProviders, updateProvider, refreshProviderModelsBatch, isOllamaBackedProvider } from './providers.js'
@@ -216,67 +217,9 @@ async function brewPackageInstalled(backend) {
 
 const manager = (backend) => (backend === 'ollama' ? ollamaManager : lmStudioManager)
 
-/**
- * Spawn a command and stream its stdout/stderr lines to `onLine`, resolving
- * `{ success }` on exit. Used for package-manager installs where live output is
- * the only progress signal. Never rejects (errors resolve as `{ success:false }`)
- * and guards the `onLine` hook — this runs outside the request lifecycle.
- *
- * The error path includes a tail of the streamed output (last ~1KB of recent
- * lines) so callers get an actionable message — `brew upgrade ollama` exiting
- * non-zero with stderr "Error: ollama not installed" must surface that string,
- * not just "exited with code 1".
- */
-function runStreaming(cmd, args, onLine, timeoutMs = 0) {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] })
-    let buffer = ''
-    let settled = false
-    const tail = [] // recent non-empty lines, capped by char budget for the error message
-    let tailChars = 0
-    const TAIL_BUDGET = 1024
-    const rememberLine = (line) => {
-      if (!line) return
-      tail.push(line)
-      tailChars += line.length + 1
-      while (tailChars > TAIL_BUDGET && tail.length > 1) {
-        tailChars -= tail.shift().length + 1
-      }
-    }
-    const safeLine = (line) => {
-      if (!line) return
-      rememberLine(line)
-      if (typeof onLine !== 'function') return
-      try { onLine(line) } catch (err) { console.error(`⚠️ install progress hook failed: ${err.message}`) }
-    }
-    const finish = (result) => {
-      if (settled) return
-      settled = true
-      if (timer) clearTimeout(timer)
-      resolve(result)
-    }
-    const timer = timeoutMs > 0
-      ? setTimeout(() => { child.kill('SIGKILL'); finish({ success: false, error: `timed out after ${Math.round(timeoutMs / 1000)}s` }) }, timeoutMs)
-      : null
-    const onData = (chunk) => {
-      buffer += chunk.toString()
-      let nl
-      while ((nl = buffer.indexOf('\n')) !== -1) {
-        safeLine(buffer.slice(0, nl).trim())
-        buffer = buffer.slice(nl + 1)
-      }
-    }
-    child.stdout.on('data', onData)
-    child.stderr.on('data', onData)
-    child.on('error', (err) => finish({ success: false, error: err.message }))
-    child.on('close', (code) => {
-      safeLine(buffer.trim())
-      if (code === 0) return finish({ success: true })
-      const detail = tail.join(' — ').trim()
-      finish({ success: false, error: detail ? `exit ${code}: ${detail}` : `exited with code ${code}` })
-    })
-  })
-}
+// `runStreaming` moved to lib/streamingSpawn.js — the one-click local-runtime
+// setup flow needs the same line-streamed spawn (see localRuntimeSetup.js).
+const runStreaming = (cmd, args, onLine, timeoutMs = 0) => runStreamingCommand(cmd, args, onLine, { timeoutMs })
 
 /**
  * Install a backend's app/binary via the platform package manager (Homebrew on

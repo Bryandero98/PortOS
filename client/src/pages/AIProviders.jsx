@@ -95,6 +95,12 @@ export default function AIProviders() {
   const [readiness, setReadiness] = useState({});
   // The runtime whose install modal is open (`null` = closed).
   const [installingRuntime, setInstallingRuntime] = useState(null);
+  // The local-daemon setup the user asked PortOS to run for them, from a
+  // readiness checklist's action button: `{ runtime, label, actionLabel,
+  // providerId }`. Separate from `installingRuntime` (a CLI binary) because it
+  // streams from a different endpoint and is keyed by the PROVIDER whose
+  // endpoint the daemon must come up on.
+  const [settingUpRuntime, setSettingUpRuntime] = useState(null);
   // Ollama / LM Studio install state (and the model lists the editor's pickers
   // fold in) — fetched once here rather than inside ProviderForm so opening the
   // editor doesn't re-request it.
@@ -328,6 +334,13 @@ export default function AIProviders() {
     toast.success(`${installingRuntime?.label || 'Runtime'} installed and ready to test`);
     // Only the CLI's availability changed — the provider records did not.
     loadRuntimes();
+  };
+
+  // A daemon was just installed/started. Only the readiness checklist changed —
+  // re-poll it so the card's banner collapses to the "ready" pill on its own.
+  const handleRuntimeSetupComplete = () => {
+    toast.success(`${settingUpRuntime?.label || 'Local runtime'} is set up`);
+    loadReadiness();
   };
 
   // The install widget's data for one card: a CLI provider's binary comes from
@@ -667,6 +680,7 @@ export default function AIProviders() {
                       onDelete={handleDelete}
                       onRecover={handleRecover}
                       onInstallRuntime={setInstallingRuntime}
+                      onAutoSetupRuntime={setSettingUpRuntime}
                     />
                   ))}
                 </CollapsibleSection>
@@ -719,6 +733,23 @@ export default function AIProviders() {
         streamMethod="POST"
         flushMs={250}
         description={`Installing ${installingRuntime?.label} from ${installingRuntime?.method === 'script' ? "the vendor's official install script" : 'its global npm package'}.`}
+      />
+      {/* The readiness checklist's one-click fix. Same streaming modal as the
+          CLI installer, pointed at the local-daemon setup endpoint — which
+          re-derives the runtime and its endpoint from the provider record, so
+          `provider` is the only thing that travels. */}
+      <RuntimeInstallModal
+        open={Boolean(settingUpRuntime)}
+        runtime={settingUpRuntime?.runtime}
+        label={settingUpRuntime?.label}
+        title={settingUpRuntime?.actionLabel}
+        params={settingUpRuntime ? { provider: settingUpRuntime.providerId } : undefined}
+        onClose={() => setSettingUpRuntime(null)}
+        onComplete={handleRuntimeSetupComplete}
+        installUrlBase="/api/providers/readiness/setup"
+        streamMethod="POST"
+        flushMs={250}
+        description={`${settingUpRuntime?.actionLabel || 'Setting up'} — this can take several minutes on a first install.`}
       />
       </div>
     </div>

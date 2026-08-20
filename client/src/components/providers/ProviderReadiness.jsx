@@ -10,13 +10,19 @@
  * transcript.
  *
  * `readiness` is one entry of the map from `GET /api/providers/readiness`
- * (`{ kind, label, endpoint, ready, checks, manageUrl, docsUrl }`). Renders
- * nothing without one, so providers with no local dependency — and cards drawn
- * before the fetch resolves — show no checklist at all.
+ * (`{ kind, label, endpoint, ready, checks, manageUrl, docsUrl, setup }`).
+ * Renders nothing without one, so providers with no local dependency — and
+ * cards drawn before the fetch resolves — show no checklist at all.
+ *
+ * `setup` is the one-click fix: when PortOS can install and/or start this
+ * daemon itself (`services/localRuntimeSetup.js`), the banner leads with that
+ * button instead of a setup-doc link. The docs link stays as a secondary
+ * affordance — it is the right answer for the checks a button cannot fix (which
+ * model to download) and for a host the setup does not support.
  */
 
 import { Link } from 'react-router';
-import { CheckCircle2, HelpCircle, Wrench, XCircle } from 'lucide-react';
+import { CheckCircle2, HelpCircle, Wand2, Wrench, XCircle } from 'lucide-react';
 import Banner from '../ui/Banner';
 import Pill from '../ui/Pill';
 
@@ -49,9 +55,9 @@ function CodeText({ text }) {
   );
 }
 
-export default function ProviderReadiness({ readiness, className = '' }) {
+export default function ProviderReadiness({ readiness, onAutoSetup, className = '' }) {
   if (!readiness || !Array.isArray(readiness.checks) || readiness.checks.length === 0) return null;
-  const { label, endpoint, ready, checks, manageUrl, docsUrl } = readiness;
+  const { label, endpoint, ready, checks, manageUrl, docsUrl, setup } = readiness;
 
   if (ready) {
     return (
@@ -89,6 +95,17 @@ export default function ProviderReadiness({ readiness, className = '' }) {
         })}
       </ul>
       <div className="flex flex-wrap items-center gap-3 pt-1.5">
+        {setup?.action && onAutoSetup && (
+          <button
+            type="button"
+            onClick={() => onAutoSetup(setup)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-port-accent/20 text-port-accent hover:bg-port-accent/30 transition-colors font-medium"
+            title={`PortOS runs this on ${endpoint} for you — no terminal needed.`}
+          >
+            <Wand2 size={12} />
+            {setup.actionLabel}
+          </button>
+        )}
         {manageUrl && (
           <Link to={manageUrl} className={LINK_CLASS}>Open Local LLM settings</Link>
         )}

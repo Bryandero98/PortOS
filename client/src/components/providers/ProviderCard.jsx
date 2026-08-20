@@ -87,6 +87,7 @@ export default function ProviderCard({
   onDelete,
   onRecover,
   onInstallRuntime,
+  onAutoSetupRuntime,
 }) {
   const style = CARD_STATE_STYLES[cardState.state];
   return (
@@ -164,7 +165,11 @@ export default function ProviderCard({
               provider points at installed, up, and serving the model it names.
               Distinct from the card STATE above — that one is about the toggle
               and the credentials, this one probes the daemon. */}
-          <ProviderReadiness className="mt-2" readiness={daemonReadiness} />
+          <ProviderReadiness
+            className="mt-2"
+            readiness={daemonReadiness}
+            onAutoSetup={(setup) => onAutoSetupRuntime?.({ ...setup, providerId: provider.id })}
+          />
 
           {provider.enabled && status?.available === false && (
             <div className="mt-2 text-xs rounded border border-port-error/40 bg-port-error/10 px-3 py-2 text-port-error space-y-1">
