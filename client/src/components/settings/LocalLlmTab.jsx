@@ -794,7 +794,9 @@ export function LocalLlmTab() {
     const key = downloadKey(presetId, role);
     setLlamaDownloads((prev) => ({ ...prev, [key]: { received: 0, total: 0 } }));
     try {
-      const res = await downloadSpecDecodeModel(presetId, role);
+      // Custom catch below owns the failure toast — `silent` keeps apiCore from
+      // firing a second one for the same error.
+      const res = await downloadSpecDecodeModel(presetId, role, { silent: true });
       toast.success(res?.alreadyDownloaded
         ? `${res.path} is already on disk`
         : `${res?.path || 'Model'} downloaded`);

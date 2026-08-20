@@ -490,7 +490,7 @@ describe('LocalLlmTab llama-server management', () => {
     fireEvent.click(downloadBtn);
 
     await waitFor(() => {
-      expect(downloadSpecDecodeModel).toHaveBeenCalledWith('qwen3.8-27b-dspark', 'model');
+      expect(downloadSpecDecodeModel).toHaveBeenCalledWith('qwen3.8-27b-dspark', 'model', { silent: true });
     });
   });
 
