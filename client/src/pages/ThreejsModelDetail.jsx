@@ -405,6 +405,7 @@ export default function ThreejsModelDetail() {
   // the same as passing it — the panel is omitted rather than shown clean.
   const coverageFindings = Array.isArray(record.coverage?.findings) ? record.coverage.findings : null;
   const flatnessFindings = Array.isArray(record.flatness?.findings) ? record.flatness.findings : null;
+  const flatnessHasWarnings = flatnessFindings?.some((finding) => finding.severity === 'warning');
   const penetrationFindings = Array.isArray(record.penetration?.findings) ? record.penetration.findings : null;
   const physicalAuditFindings = Array.isArray(record.physicalAudit?.findings)
     ? record.physicalAudit.findings
@@ -614,7 +615,7 @@ export default function ThreejsModelDetail() {
           findings={flatnessFindings}
           cleanLabel="Identity parts carry real depth"
           footer={`A model can match its reference head-on and still be a stack of cardboard cut-outs, so this check counts how many identity-defining features are built only from flat parts.${
-            flatnessFindings.length > 0 ? ' Refining without your own feedback will also ask for real depth.' : ''
+            flatnessHasWarnings ? ' Refining without your own feedback will also ask for real depth.' : ''
           }`}
         />
       )}

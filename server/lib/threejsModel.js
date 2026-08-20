@@ -265,6 +265,7 @@ export const threejsGeometrySchema = z.discriminatedUnion('type', [
 
 export const threejsMaterialSchema = z.object({
   type: z.enum(['standard', 'physical', 'basic']).default('standard'),
+  side: z.enum(['front', 'double']).default('front'),
   color: colorSchema,
   metalness: z.number().finite().min(0).max(1).default(0),
   roughness: z.number().finite().min(0).max(1).default(0.65),
@@ -844,6 +845,8 @@ export function evaluateThreejsFlatness(spec) {
   const details = Array.isArray(spec?.detailInventory) ? spec.detailInventory : [];
   const slabPartIds = new Set();
   const flatFeatures = [];
+  const intentionalMembraneFeatures = [];
+  const intentionalMembranePartIds = new Set();
   let evaluated = 0;
 
   for (const detail of details) {
@@ -865,6 +868,11 @@ export function evaluateThreejsFlatness(spec) {
     if (!implementing.every((mesh) => isSlabGeometry(mesh.geometry))) continue;
     flatFeatures.push(detail.feature);
     for (const mesh of implementing) slabPartIds.add(mesh.id);
+    const isIntentionalMembrane = implementing.every((mesh) => spec?.materials?.[mesh.material]?.side === 'double');
+    if (isIntentionalMembrane) {
+      intentionalMembraneFeatures.push(detail.feature);
+      for (const mesh of implementing) intentionalMembranePartIds.add(mesh.id);
+    }
   }
 
   // `null`, not 0: a spec with no buildable identity feature was not measured
@@ -872,21 +880,41 @@ export function evaluateThreejsFlatness(spec) {
   const flatRatio = evaluated === 0 ? null : flatFeatures.length / evaluated;
   const findings = [];
   if (flatRatio !== null && flatRatio > FLAT_IDENTITY_RATIO_THRESHOLD) {
-    const offenders = [...slabPartIds];
-    findings.push({
-      code: 'flat-identity-parts',
-      severity: 'warning',
-      partIds: offenders,
-      features: flatFeatures,
-      message: `${flatFeatures.length} of ${evaluated} identity-defining features are built only from flat parts (${listSpecNames(offenders.map((id) => byId.get(id)?.name || id))}). The model will read as a projection the moment it is orbited — give the parts the subject's identity rides on a real cross-section instead of stacking unbevelled extrusions and planar triangle fans.`,
-    });
+    const intentionalFeatureNames = new Set(intentionalMembraneFeatures);
+    const unintentionalFeatures = flatFeatures.filter((feature) => !intentionalFeatureNames.has(feature));
+    const nonMembraneFeatureCount = evaluated - intentionalMembraneFeatures.length;
+    const nonMembraneFlatRatio = nonMembraneFeatureCount === 0
+      ? 0
+      : unintentionalFeatures.length / nonMembraneFeatureCount;
+    if (intentionalMembraneFeatures.length > 0) {
+      findings.push({
+        code: 'flat-identity-parts',
+        severity: 'note',
+        partIds: [...intentionalMembranePartIds],
+        features: intentionalMembraneFeatures,
+        message: `${intentionalMembraneFeatures.length} of ${evaluated} identity-defining features are intentional membrane surfaces (zero-thickness open shells: ${listSpecNames(intentionalMembraneFeatures)}). Their materials are double-sided (side "double"), so they remain visible from both sides.`,
+      });
+    }
+    if (nonMembraneFlatRatio > FLAT_IDENTITY_RATIO_THRESHOLD) {
+      const offenders = [...slabPartIds].filter((id) => !intentionalMembranePartIds.has(id));
+      findings.push({
+        code: 'flat-identity-parts',
+        severity: 'warning',
+        partIds: offenders,
+        features: unintentionalFeatures,
+        message: `${unintentionalFeatures.length} of ${nonMembraneFeatureCount} identity-defining features are built only from flat parts (${listSpecNames(offenders.map((id) => byId.get(id)?.name || id))}). The model will read as a projection the moment it is orbited — give the parts the subject's identity rides on a real cross-section instead of stacking unbevelled extrusions and planar triangle fans. If a part is genuinely a zero-thickness membrane, make its material double-sided (side "double") instead; do not use that declaration to avoid giving a solid part real depth.`,
+      });
+    }
   }
+
+  const warningCount = findings.filter((finding) => finding.severity === 'warning').length;
+  const noteCount = findings.filter((finding) => finding.severity === 'note').length;
 
   return {
     findings,
     errorCount: 0,
-    warningCount: findings.length,
-    noteCount: 0,
+    warningCount,
+    noteCount,
     identityDetailCount: evaluated,
     flatIdentityDetailCount: flatFeatures.length,
     flatRatio,
@@ -905,7 +933,7 @@ export function buildThreejsFlatnessFeedback(flatness) {
   return [
     'The previous pass failed the cross-section check — it reads as a flat projection rather than a solid:',
     ...warnings.map((finding, index) => `${index + 1}. ${finding.message}`),
-    'Rebuild those parts with genuine depth: compose them from primitives, or give an extrude a bevel, so the model holds up from any orbit angle.',
+    'Rebuild those parts with genuine depth: compose them from primitives, or give an extrude a bevel, so the model holds up from any orbit angle. If a part is genuinely a zero-thickness membrane — such as a cape, leaf, fin, or wing — make its material double-sided (side "double") instead, but never use that declaration to avoid giving a solid part real depth.',
   ].join('\n');
 }
 
@@ -1261,11 +1289,13 @@ function createGeometry(definition) {
 }
 
 function createMaterial(definition) {
+  const doubleSided = definition.side === 'double' ? { side: THREE.DoubleSide } : {};
   const unlit = {
     color: definition.color,
     opacity: definition.opacity,
     transparent: definition.transparent,
     wireframe: definition.wireframe,
+    ...doubleSided,
   };
   if (definition.type === 'basic') {
     return new THREE.MeshBasicMaterial(unlit);

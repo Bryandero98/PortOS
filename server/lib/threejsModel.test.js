@@ -72,6 +72,7 @@ describe('threejsSculptSpecSchema', () => {
   it('accepts a bounded hierarchy and fills material/part defaults', () => {
     const parsed = threejsSculptSpecSchema.parse(validSpec());
     expect(parsed.materials.body.emissive).toBe('#000000');
+    expect(parsed.materials.body.side).toBe('front');
     expect(parsed.parts[0].castShadow).toBe(true);
     expect(parsed.parts[0].children[0].id).toBe('frontTrim');
   });
@@ -348,6 +349,14 @@ describe('buildThreejsFactorySource', () => {
     expect(source).toContain('"explodeWithParent": true');
   });
 
+  it('emits the declared double-sided material option for the standalone factory', () => {
+    const spec = validSpec();
+    spec.materials.body.side = 'double';
+    const source = buildThreejsFactorySource(spec);
+    expect(source).toContain('"side": "double"');
+    expect(source).toContain('const doubleSided = definition.side === \'double\' ? { side: THREE.DoubleSide } : {};');
+  });
+
   it('emits extrude, tube, and physical-channel construction', () => {
     const spec = validSpec();
     spec.parts[0].geometry = validExtrude();
@@ -588,6 +597,26 @@ describe('evaluateThreejsFlatness', () => {
 
   it('returns a clean result for a missing spec', () => {
     expect(evaluateThreejsFlatness(null)).toMatchObject({ findings: [], flatRatio: null });
+  });
+
+  it('notes a flat identity part as an intentional membrane when its material is double-sided', () => {
+    const spec = flatnessSpec([geometryPart('membrane', flatFanGeometry())]);
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({
+      warningCount: 0,
+      noteCount: 1,
+      flatIdentityDetailCount: 1,
+      flatRatio: 1,
+    });
+    expect(flatness.findings[0]).toMatchObject({
+      code: 'flat-identity-parts',
+      severity: 'note',
+      partIds: ['membrane'],
+      features: ['membrane part silhouette'],
+    });
+    expect(flatness.findings[0].message).toContain('intentional membrane surfaces');
+    expect(buildThreejsFlatnessFeedback(flatness)).toBe('');
   });
 });
 

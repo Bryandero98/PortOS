@@ -167,6 +167,32 @@ describe('ThreejsModelDetail cross-section gate', () => {
     expect(screen.queryByText(/will also ask for real depth/)).not.toBeInTheDocument();
   });
 
+  it('shows an intentional membrane note without promising depth feedback', async () => {
+    getThreejsModel.mockResolvedValue({
+      ...baseRecord,
+      flatness: {
+        errorCount: 0,
+        warningCount: 0,
+        noteCount: 1,
+        identityDetailCount: 1,
+        flatIdentityDetailCount: 1,
+        flatRatio: 1,
+        slabPartIds: ['fin'],
+        findings: [{
+          code: 'flat-identity-parts',
+          severity: 'note',
+          message: '1 of 1 identity-defining features are intentional membrane surfaces (Fin).',
+        }],
+      },
+    });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Cross-section')).toBeInTheDocument());
+    expect(screen.getByText(/intentional membrane surfaces/)).toBeInTheDocument();
+    expect(screen.getByText('0 error · 0 warning · 1 note')).toBeInTheDocument();
+    expect(screen.queryByText(/will also ask for real depth/)).not.toBeInTheDocument();
+  });
+
   it('hides the section for a record generated before the gate existed', async () => {
     getThreejsModel.mockResolvedValue({ ...baseRecord, flatness: null });
     renderDetail();

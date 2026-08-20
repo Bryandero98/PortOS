@@ -30,6 +30,10 @@ Choosing between them:
 - lathe — profiles that are rotationally symmetric about the Y axis.
 - custom triangles — a last resort, only after none of the above can express the silhouette.
 
+A genuinely zero-thickness two-sided surface — such as a wing membrane, cape, leaf, or fin —
+needs a material with "side":"double" or it disappears from behind. Use that declaration only
+for an intentional open shell; it must not be used to dodge giving a solid part a real cross-section.
+
 When extrude is the WRONG answer: an unbevelled extrude has exactly two depth planes, so it is
 a slab. A body with a real cross-section — a torso, a limb, a head, a housing, a grip, a shell
 that swells or tapers through its thickness — must not be one. Build it from primitives, a
@@ -53,6 +57,7 @@ Return one raw JSON object and nothing else. It must have exactly this top-level
   "materials": {
     "materialId": {
       "type":"standard" | "physical" | "basic",
+      "side":"front" | "double",
       "color":"#RRGGBB","metalness":0..1,"roughness":0..1,
       "emissive":"#RRGGBB","emissiveIntensity":0..20,
       "opacity":0..1,"transparent":false,"wireframe":false,
