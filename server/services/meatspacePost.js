@@ -89,7 +89,15 @@ export const postConfigEvents = new EventEmitter();
 export const POST_BENCHMARK_PROTOCOL = Object.freeze({
   protocolId: 'post-foundation-battery',
   protocolVersion: 1,
-  scorerVersion: 'post-deterministic-v1',
+  // v2: benchmark scoring now ignores the user's live config.scoring.weights
+  // and mentalMath.drillTypes[type].timeLimitSec, using the protocol's fixed
+  // weighting (uniform) and the registered form's timeLimitSec instead — a
+  // scoring-contract change, so the version bumps (issue #4442 codex
+  // review). A v1-scored session (weighted by whatever config was active at
+  // submit time) is no longer "compatible" with a v2 one — benchmarkCompatibility()
+  // correctly buckets it as legacy/excluded rather than blending two
+  // different scoring formulas into one trend.
+  scorerVersion: 'post-deterministic-v2',
   forms: Object.freeze([
     Object.freeze({
       formId: 'a',
@@ -108,6 +116,21 @@ export const POST_BENCHMARK_PROTOCOL = Object.freeze({
   ]),
 });
 
+// Scorer versions retired by a scoring-contract change (e.g. v1 → v2's fixed
+// weights/timeLimit) but still ACCEPTABLE on submit — never rejected/lost —
+// so an in-flight benchmark run started under the old formula (client
+// fetched the old protocol before a server upgrade landed mid-session) can
+// still be saved after the upgrade (issue #4442 codex review; mirrors the
+// PROMPT_VERSIONS/PREVIOUS_DEFAULT_PROMPTS cross-version pattern in
+// taskSchedule.js). Task/config shape is unchanged across scorer versions —
+// only the scoring formula moved — so accepting it costs nothing: the
+// submission is scored under the CURRENT rules regardless (submitPostSession
+// only branches on `sessionData.benchmark` truthiness, not on which scorer
+// version it names), and its stored scorerVersion is preserved as submitted,
+// so benchmarkCompatibility() still correctly excludes it from the current
+// trend as legacy rather than silently blending two formulas together.
+const PREVIOUS_BENCHMARK_SCORER_VERSIONS = Object.freeze(['post-deterministic-v1']);
+
 const cloneBenchmarkProtocol = (protocol) => JSON.parse(JSON.stringify(protocol));
 
 export function getPostBenchmarkForm(formId) {
@@ -125,11 +148,33 @@ export async function getPostBenchmarkProtocol() {
   return { ...cloneBenchmarkProtocol(POST_BENCHMARK_PROTOCOL), nextFormId: nextForm.formId };
 }
 
-function assertBenchmarkSession(benchmark, tasks, modules) {
-  if (!benchmark) return;
-  const form = benchmark.protocolId === POST_BENCHMARK_PROTOCOL.protocolId
+// A benchmark session is "compatible" only when its stored protocol/version/
+// scorer triple exactly matches the CURRENTLY registered protocol — never
+// fabricated, never inferred by shape. `null` marks a plain (non-benchmark)
+// session so trend code can tell "not a benchmark run" apart from "a
+// benchmark run under a retired protocol/scorer version" (issue #4442);
+// both are excluded from the compatible series, but for different reasons.
+export function benchmarkCompatibility(session) {
+  const benchmark = session?.benchmark;
+  if (!benchmark) return null;
+  return benchmark.protocolId === POST_BENCHMARK_PROTOCOL.protocolId
     && benchmark.protocolVersion === POST_BENCHMARK_PROTOCOL.protocolVersion
     && benchmark.scorerVersion === POST_BENCHMARK_PROTOCOL.scorerVersion
+    ? 'compatible'
+    : 'legacy';
+}
+
+function assertBenchmarkSession(benchmark, tasks, modules) {
+  if (!benchmark) return;
+  // Accept the current scorer version OR a recognized-but-retired one — see
+  // PREVIOUS_BENCHMARK_SCORER_VERSIONS. Rejecting an in-flight run just
+  // because the server's scorer version moved on mid-session would lose the
+  // user's completed work; the form/task shape hasn't changed, only scoring.
+  const versionRecognized = benchmark.scorerVersion === POST_BENCHMARK_PROTOCOL.scorerVersion
+    || PREVIOUS_BENCHMARK_SCORER_VERSIONS.includes(benchmark.scorerVersion);
+  const form = benchmark.protocolId === POST_BENCHMARK_PROTOCOL.protocolId
+    && benchmark.protocolVersion === POST_BENCHMARK_PROTOCOL.protocolVersion
+    && versionRecognized
     ? getPostBenchmarkForm(benchmark.formId)
     : null;
   const expectedModules = form ? [...new Set(form.tasks.map((task) => task.domain))] : [];
@@ -392,6 +437,14 @@ export async function submitPostSession(sessionData) {
   // would then prefer over a questions[] derivation.
   const rawTasks = Array.isArray(sessionData.tasks) ? sessionData.tasks : [];
   assertBenchmarkSession(sessionData.benchmark, rawTasks, sessionData.modules);
+  // A math drill's time limit is normally the user's live, editable
+  // mentalMath.drillTypes[type].timeLimitSec — but a benchmark's speed bonus
+  // must come from the REGISTERED form, or the same protocol/version/scorer
+  // could still score differently across runs if the user edits their
+  // configured time limit in between (issue #4442 codex review). Resolved
+  // once here; assertBenchmarkSession already confirmed the form exists and
+  // matches when sessionData.benchmark is present.
+  const benchmarkForm = sessionData.benchmark ? getPostBenchmarkForm(sessionData.benchmark.formId) : null;
   const rescoredTasks = rawTasks.map(t => {
     const {
       score: _score, correct: _correct,
@@ -454,8 +507,9 @@ export async function submitPostSession(sessionData) {
       const { correct: _qCorrect, ...qRest } = q;
       return qRest;
     });
+    const benchmarkTimeLimitSec = benchmarkForm?.tasks.find(bt => bt.type === rest.type)?.timeLimitSec;
     const drillConfig = config.mentalMath?.drillTypes?.[rest.type] || {};
-    const timeLimitMs = (drillConfig.timeLimitSec || 120) * 1000;
+    const timeLimitMs = (benchmarkTimeLimitSec ?? drillConfig.timeLimitSec ?? 120) * 1000;
     const scored = scoreDrill(rest.type, sanitizedQuestions, timeLimitMs, rest.config || drillConfig);
     return { ...rest, ...scored };
   });
@@ -495,8 +549,16 @@ export async function submitPostSession(sessionData) {
     cadence: sessionData.cadence || 'daily',
     modules: sessionData.modules,
     tasks: rescoredTasks,
-    score: computeSessionScore(rescoredTasks, config.scoring?.weights),
+    // Benchmark scoring is fixed by the protocol, never by the user's live
+    // scoring.weights config — otherwise two "compatible" (same protocol/
+    // version/scorer) runs scored under different weight configs would land
+    // in the same trend as though they were on one scale (issue #4442 codex
+    // review). Quick/Test/Train sessions keep the configured weights.
+    score: computeSessionScore(rescoredTasks, sessionData.benchmark ? undefined : config.scoring?.weights),
     tags: sessionData.tags || {},
+    ...(sessionData.conditions && Object.keys(sessionData.conditions).length
+      ? { conditions: sessionData.conditions }
+      : {}),
     ...(sessionData.plan ? { plan: sessionData.plan } : {}),
     ...(sessionData.benchmark ? { benchmark: sessionData.benchmark } : {}),
   };
@@ -1044,7 +1106,10 @@ function pushMetricSeries(map, key, date, score, accuracy, avgResponseMs) {
 }
 
 // Finalize a `key -> (date -> bucket)` map into `key -> [{ date, score,
-// accuracy, avgResponseMs }]`, chronologically sorted.
+// accuracy, avgResponseMs, count }]`, chronologically sorted. `count` is the
+// number of score samples bucketed into that day — for a series pushed once
+// per session (e.g. the benchmark trend) that's the session count; for a
+// series pushed once per task (byDomain/byDrill) it's the task count.
 function finalizeMetricSeries(map) {
   const out = {};
   for (const [key, byDate] of map) {
@@ -1059,6 +1124,7 @@ function finalizeMetricSeries(map) {
           score: score == null ? null : Math.round(score),
           accuracy: acc == null ? null : acc,
           avgResponseMs: resp == null ? null : Math.round(resp),
+          count: b.scores.length,
         };
       });
   }
@@ -1073,6 +1139,11 @@ function finalizeMetricSeries(map) {
  *   accuracy, avg response time, minutes, and session count.
  * - `series.byDomain`  per-day series keyed by coarse module (`mental-math`, …).
  * - `series.byDrill`   per-day series keyed by drill type (`multiplication`, …).
+ * - `series.benchmark` protocol-scoped trend: only sessions run under the
+ *   CURRENT `POST_BENCHMARK_PROTOCOL` (protocolId+protocolVersion+
+ *   scorerVersion), with `excludedCount` covering benchmark runs under a
+ *   retired protocol/scorer version (issue #4442). Ordinary Quick/Test/Train
+ *   sessions never appear here at all.
  * - `totals`           minutes trained (sessions + practice), session count,
  *   practice-entry count over the window.
  * - `streak`           ONE unified streak (sessions OR training-log activity),
@@ -1116,6 +1187,17 @@ export async function getPostProgress({ days = 90 } = {}) {
   const dayMap = new Map();      // date -> { scores, accs, resp, minutes, sessions }
   const domainMap = new Map();   // module -> Map(date -> metric bucket)
   const drillMap = new Map();    // type   -> Map(date -> metric bucket)
+  // Protocol-scoped series (issue #4442): pushed through the SAME date-bucket
+  // aggregator as byDomain/byDrill below, under a single constant key, so a
+  // benchmark trend is "filter + reuse the existing bucketer" rather than a
+  // bespoke Map/ensure/finalize block. Only sessions run under the CURRENT
+  // POST_BENCHMARK_PROTOCOL contribute, so the trend never blends across a
+  // protocol/scorer version change or with ordinary Quick/Test/Train
+  // sessions. `excludedCount` surfaces what was left out (benchmark runs
+  // under a retired version) so the UI can say so rather than silently
+  // under-counting.
+  const benchmarkMap = new Map();
+  let benchmarkExcludedCount = 0;
 
   const ensureDay = (date) => {
     let d = dayMap.get(date);
@@ -1130,6 +1212,13 @@ export async function getPostProgress({ days = 90 } = {}) {
     day.sessions += 1;
     day.minutes += (s.durationMs || 0) / 60000;
     if (typeof s.score === 'number' && !Number.isNaN(s.score)) day.scores.push(s.score);
+
+    const compat = benchmarkCompatibility(s);
+    if (compat === 'compatible') {
+      pushMetricSeries(benchmarkMap, 'benchmark', date, s.score, null, null);
+    } else if (compat === 'legacy') {
+      benchmarkExcludedCount += 1;
+    }
 
     const sessionAccs = [];
     const sessionResp = [];
@@ -1178,6 +1267,9 @@ export async function getPostProgress({ days = 90 } = {}) {
       };
     });
 
+  const benchmarkByDay = (finalizeMetricSeries(benchmarkMap).benchmark || [])
+    .map(({ date, score, count }) => ({ date, score, sessions: count }));
+
   const sessionMs = sessions.reduce((sum, s) => sum + (s.durationMs || 0), 0);
   const trainingMs = training.reduce((sum, e) => sum + (e.totalMs || 0), 0);
 
@@ -1201,6 +1293,19 @@ export async function getPostProgress({ days = 90 } = {}) {
       byDay,
       byDomain: finalizeMetricSeries(domainMap),
       byDrill: finalizeMetricSeries(drillMap),
+      // Protocol-scoped benchmark trend (issue #4442) — additive, does not
+      // change `byDay`'s existing blended-score semantics. `byDay` above
+      // stays the general activity headline; this is the narrower "only
+      // compatible, versioned benchmark runs" comparison the issue's
+      // acceptance criteria require, with legacy/incompatible sessions
+      // visibly excluded via `excludedCount` rather than silently dropped.
+      benchmark: {
+        protocolId: POST_BENCHMARK_PROTOCOL.protocolId,
+        protocolVersion: POST_BENCHMARK_PROTOCOL.protocolVersion,
+        scorerVersion: POST_BENCHMARK_PROTOCOL.scorerVersion,
+        byDay: benchmarkByDay,
+        excludedCount: benchmarkExcludedCount,
+      },
     },
     totals: {
       minutesTrained: Math.round((sessionMs + trainingMs) / 60000),
