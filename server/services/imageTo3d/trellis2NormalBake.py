@@ -36,6 +36,8 @@ has actually run. This is a deliberate, documented ceiling rather than an attemp
 find the true limit at the cost of the user's render.
 """
 
+import time
+
 import numpy as np
 
 
@@ -73,13 +75,22 @@ def compute_vertex_normals(vertices, faces):
 
 
 def compute_uv_tangents(vertices, faces, uvs):
-    """Per-vertex tangents from UV derivatives (the Lengyel construction).
+    """Per-vertex tangents AND chart handedness from UV derivatives (Lengyel).
 
-    The normal map is tangent-space, so it is only meaningful against the same tangent
-    basis a renderer will reconstruct. glTF's convention is a right-handed basis built
-    from the UV gradient, which is what this computes; three.js and every other glTF
-    viewer rebuild it the same way, so a mismatch here shows up as lighting that moves
-    the wrong way rather than as an obvious error.
+    Returns ``(tangent, w)`` where ``w`` is per-vertex +/-1 — the sign of the UV
+    triangle determinant. **The handedness is not optional and cannot be replaced by a
+    global convention.** A UV unwrapper is free to mirror individual charts, and
+    cumesh's ``uv_unwrap`` does: handedness is constant *within* a chart and mixed
+    *across* charts on ordinary consistently-wound meshes. So ``cross(n, t)`` alone is
+    correct only for the ``det > 0`` charts; on the mirrored ones the bitangent points
+    the wrong way, the baked green channel is inverted, and bumps read as dents with a
+    hard discontinuity at every chart seam. No single global sign fixes it, because
+    both groups exist in the same atlas.
+
+    Must be computed against the **exported** UVs — the ones a renderer will
+    reconstruct its own TBN from. A V flip leaves the tangent invariant (both ``du.y``
+    and ``det`` change sign, cancelling in the product) but negates ``w``, so feeding
+    this the rasterization UVs instead would silently invert the handedness everywhere.
     """
     p = vertices[faces]
     t = uvs[faces]
@@ -92,9 +103,18 @@ def compute_uv_tangents(vertices, faces, uvs):
     r = np.divide(1.0, det, out=np.zeros_like(det), where=np.abs(det) > 1e-12)
     tangent = (e1 * du2[:, 1:2] - e2 * du1[:, 1:2]) * r[:, None]
     out = np.zeros_like(vertices, dtype=np.float64)
+    # Accumulate the SIGN, not the raw determinant: a chart's handedness is a property
+    # of its orientation, and area-weighting it would let one large triangle flip the
+    # frame for a vertex whose other faces disagree.
+    wsum = np.zeros(len(vertices), dtype=np.float64)
     for i in range(3):
         np.add.at(out, faces[:, i], tangent)
-    return out.astype(np.float32)
+        np.add.at(wsum, faces[:, i], np.sign(det))
+    # A vertex on a chart seam can straddle both handednesses and sum to exactly 0;
+    # +1 is the arbitrary-but-stable tie-break (such a vertex has no consistent frame
+    # either way, and the seam is where the atlas already discontinues).
+    w = np.where(wsum < 0.0, -1.0, 1.0)
+    return out.astype(np.float32), w.astype(np.float32)
 
 
 def decoder_to_export_space(arr):
@@ -164,6 +184,7 @@ def bake_normal_map(
     if not (getattr(pp, '_HAS_DR', False) and getattr(pp, '_BVH', None)):
         raise RuntimeError('normal bake needs the Metal rasterizer and BVH backends')
 
+    t_start = time.time()
     mesh, uvs = _extract_mesh(glb)
     lo_v = np.asarray(mesh.vertices, dtype=np.float32)
     lo_f = np.asarray(mesh.faces, dtype=np.int32)
@@ -230,8 +251,12 @@ def bake_normal_map(
         if getattr(mesh, 'vertex_normals', None) is not None \
         else compute_vertex_normals(lo_v, lo_f)
     lo_vn_t = torch.as_tensor(lo_vn, device=device)
-    lo_vt_t = torch.as_tensor(
-        compute_uv_tangents(lo_v, lo_f, uv_t.cpu().numpy()), device=device)
+    # Against the EXPORTED uvs, not the V-unflipped rasterization copy — see
+    # compute_uv_tangents. `uv_t` is correct for rasterizing the atlas and wrong for
+    # the tangent frame.
+    lo_vt, lo_w = compute_uv_tangents(lo_v, lo_f, uvs)
+    lo_vt_t = torch.as_tensor(lo_vt, device=device)
+    lo_w_t = torch.as_tensor(lo_w, device=device)
     pos = dr.interpolate(lo_v_t.unsqueeze(0), rast, lo_f_t)[0][0][mask]
     n_lo = torch.nn.functional.normalize(
         dr.interpolate(lo_vn_t.unsqueeze(0), rast, lo_f_t)[0][0][mask], dim=-1)
@@ -240,7 +265,11 @@ def bake_normal_map(
     # normal. Interpolation does not preserve orthogonality, and a skewed basis tilts
     # every sampled normal by a varying amount across each triangle.
     t_lo = torch.nn.functional.normalize(t_lo - n_lo * (t_lo * n_lo).sum(-1, keepdim=True), dim=-1)
-    b_lo = torch.cross(n_lo, t_lo, dim=-1)
+    # Handedness-corrected bitangent. Interpolating w and taking its sign keeps the
+    # per-texel frame consistent with the chart it lands in.
+    w_lo = torch.sign(dr.interpolate(lo_w_t.reshape(-1, 1).unsqueeze(0), rast, lo_f_t)[0][0][mask])
+    w_lo = torch.where(w_lo == 0, torch.ones_like(w_lo), w_lo)
+    b_lo = torch.cross(n_lo, t_lo, dim=-1) * w_lo
 
     # The SAME BVH class o_voxel uses (cumesh auto-selects Metal vs CUDA), so this
     # pass cannot diverge from the base-colour bake's notion of the surface.
@@ -274,17 +303,35 @@ def bake_normal_map(
         ], dim=-1)
     out = torch.nn.functional.normalize(out, dim=-1)
 
-    # Unmapped texels get flat (0,0,1) rather than black: a black normal texel decodes
-    # to a zero-length vector and renders as a hole in the lighting, and bilinear
-    # filtering drags that across every chart edge.
+    # Unmapped texels start flat (0,0,1) rather than black: a black normal texel
+    # decodes to a zero-length vector and renders as a hole in the lighting.
     img = torch.zeros((texture_size, texture_size, 3), device=pos.device, dtype=torch.float32)
     img[..., 2] = 1.0
     img[mask] = out
     encoded = ((img * 0.5 + 0.5).clamp(0, 1) * 255).round().to(torch.uint8).cpu().numpy()
 
+    # Then DILATE into the gutter, exactly as `to_glb` does for its own base-colour and
+    # metallic-roughness maps. Flat-filling alone is not enough: bilinear filtering at
+    # every chart edge blends real normals toward flat, so each UV island renders with
+    # a flattened rim. At ~1M faces the chart network is dense (the reference render
+    # produced 89,515 clusters), which makes that a pervasive seam pattern rather than
+    # an edge case. Best-effort — a missing/older cv2 costs the dilation, not the map.
+    unmapped = (~mask).to(torch.uint8).cpu().numpy()
+    if unmapped.any():
+        try:
+            import cv2
+            encoded = cv2.inpaint(encoded, unmapped, 3, cv2.INPAINT_TELEA)
+        except Exception as exc:  # noqa: BLE001 - degrade to the flat fill
+            print(f"[portos] normal-map gutter dilation skipped ({type(exc).__name__}: {exc})",
+                  flush=True)
+
     material = mesh.visual.material
     material.normalTexture = Image.fromarray(encoded, mode='RGB')
     if verbose:
         covered = int(mask.sum().item())
-        print(f"  normal map: {texture_size}x{texture_size}, {covered:,} texels covered", flush=True)
+        # Reported separately from generate.py's own "Bake time", which bundles
+        # to_glb's UV unwrap and attribute sampling. Without this the pass's real cost
+        # is unmeasurable from a render log, and the UI's time claim is a guess.
+        print(f"  normal map: {texture_size}x{texture_size}, {covered:,} texels covered "
+              f"in {time.time() - t_start:.1f}s", flush=True)
     return glb

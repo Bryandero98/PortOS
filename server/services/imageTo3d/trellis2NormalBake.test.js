@@ -129,11 +129,64 @@ print(json.dumps({"finite": bool(np.all(np.isfinite(n))), "orphan": n[3].tolist(
 v = np.array([[0,0,0],[1,0,0],[1,1,0],[0,1,0]], dtype=np.float32)
 f = np.array([[0,1,2],[0,2,3]], dtype=np.int32)
 uv = np.array([[0,0],[1,0],[1,1],[0,1]], dtype=np.float32)
-t = nb._unit(nb.compute_uv_tangents(v, f, uv))
-print(json.dumps({"first": t[0].tolist()}))
+t, w = nb.compute_uv_tangents(v, f, uv)
+t = nb._unit(t)
+print(json.dumps({"first": t[0].tolist(), "w": w.tolist()}))
 `);
       expect(r.first[0]).toBeCloseTo(1, 4);
       expect(Math.abs(r.first[1])).toBeLessThan(1e-4);
+      expect(r.w.every((x) => x === 1)).toBe(true);
+    });
+
+    // The bug this pins was a real defect: `b = cross(n, t)` with no handedness term.
+    // A UV unwrapper may mirror individual charts (cumesh's does), and on a mirrored
+    // chart that bitangent is EXACTLY inverted — so the baked green channel flips and
+    // bumps read as dents, with a discontinuity at every chart seam. No global sign
+    // fixes it, because both handednesses coexist in one atlas. Verified by measuring
+    // dot(B, V-increasing-direction): -1.00 before the fix, +1.00 after.
+    it('derives bitangent handedness per chart, so a mirrored chart is not inverted', () => {
+      const r = run(`
+n = np.array([0.,0.,1.])
+def probe(uv):
+    v = np.array([[0,0,0],[1,0,0],[0,1,0]], dtype=np.float32)
+    f = np.array([[0,1,2]], dtype=np.int32)
+    t, w = nb.compute_uv_tangents(v, f, np.asarray(uv, np.float32))
+    T = nb._unit(t)[0]
+    # Ground truth: the 3D direction along which V increases.
+    duv = np.asarray(uv, np.float32)
+    g = np.linalg.lstsq((v[1:] - v[0])[:, :2], duv[1:,1] - duv[0,1], rcond=None)[0]
+    truth = nb._unit(np.array([[g[0], g[1], 0.]]))[0]
+    return {
+        "w": float(w[0]),
+        "naive": float(np.cross(n, T) @ truth),
+        "corrected": float((np.cross(n, T) * w[0]) @ truth),
+    }
+print(json.dumps({
+    "unmirrored": probe([[0,0],[1,0],[0,1]]),
+    "mirrored":   probe([[0,1],[1,1],[0,0]]),
+}))
+`);
+      // Unmirrored: both agree with the V direction.
+      expect(r.unmirrored.w).toBe(1);
+      expect(r.unmirrored.corrected).toBeCloseTo(1, 3);
+      // Mirrored: the naive cross product is exactly backwards; ours is not.
+      expect(r.mirrored.w).toBe(-1);
+      expect(r.mirrored.naive).toBeCloseTo(-1, 3);
+      expect(r.mirrored.corrected).toBeCloseTo(1, 3);
+    });
+
+    it('breaks a seam-vertex handedness tie deterministically instead of emitting 0', () => {
+      // A vertex straddling two oppositely-wound charts sums to exactly 0. Returning 0
+      // would zero the bitangent and collapse the frame.
+      const r = run(`
+v = np.array([[0,0,0],[1,0,0],[0,1,0],[-1,0,0]], dtype=np.float32)
+f = np.array([[0,1,2],[0,2,3]], dtype=np.int32)
+uv = np.array([[0,0],[1,0],[0,1],[0,-1]], dtype=np.float32)
+t, w = nb.compute_uv_tangents(v, f, uv)
+print(json.dumps({"w": w.tolist(), "any_zero": bool((w == 0).any())}))
+`);
+      expect(r.any_zero).toBe(false);
+      for (const x of r.w) expect(Math.abs(x)).toBe(1);
     });
 
     it('survives a degenerate UV triangle without NaN', () => {
@@ -143,8 +196,8 @@ print(json.dumps({"first": t[0].tolist()}))
 v = np.array([[0,0,0],[1,0,0],[1,1,0],[0,1,0]], dtype=np.float32)
 f = np.array([[0,1,2],[0,2,3]], dtype=np.int32)
 uv = np.zeros((4, 2), dtype=np.float32)
-t = nb.compute_uv_tangents(v, f, uv)
-print(json.dumps({"finite": bool(np.all(np.isfinite(t)))}))
+t, w = nb.compute_uv_tangents(v, f, uv)
+print(json.dumps({"finite": bool(np.all(np.isfinite(t))) and bool(np.all(np.isfinite(w)))}))
 `);
       expect(r.finite).toBe(true);
     });
