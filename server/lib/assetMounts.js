@@ -6,10 +6,9 @@
  * out inline, so nothing could enumerate what was served without regexing the
  * source. This is the `server/lib/navManifest.js` pattern the root CLAUDE.md
  * recommends for exactly that drift problem: one table, iterated by the thing
- * that mounts and read as data by the guards. The route strings themselves live
- * one level down in `assetRoutePrefixes.js`, an import-free leaf that
- * `client/vite.config.js` also reads — that is what keeps the dev proxy from
- * falling behind the mounts.
+ * that mounts and read as data by the guard. The route strings themselves live
+ * one level down in `assetRoutePrefixes.js`, alongside the namespaces the
+ * terminator closes, so a new server prefix is one edit rather than two.
  *
  * `dir` is a thunk, not a string: `wrWorksDir()` derives its path at call time,
  * and a test that re-roots `PATHS.data` at a temp tree needs every entry to
@@ -38,8 +37,9 @@ const writersRoomDraftBodiesOnly = (req, res, next) => {
   next();
 };
 
-// Keyed by route so the mount order stays owned by `ASSET_ROUTE_PREFIXES` — the
-// list `client/vite.config.js` reads — rather than being restated here.
+// Keyed by route so the mount ORDER stays owned by `ASSET_ROUTE_PREFIXES` rather
+// than being restated here. A key present here but missing there would never be
+// mounted at all — silently — so `assetMounts.test.js` pins the two together.
 const ASSET_DIRS = {
   '/data/images': () => PATHS.images,
   // Reference images (multi-ref upload inputs + generated character reference
@@ -75,6 +75,11 @@ const ASSET_DIRS = {
 };
 
 const ASSET_GATES = { '/data/writers-room/works': writersRoomDraftBodiesOnly };
+
+/** The routes `ASSET_DIRS` knows a directory for — exported so a key that never
+ *  reaches `ASSET_ROUTE_PREFIXES` (and is therefore never mounted) fails a test
+ *  instead of silently not being served. */
+export const ASSET_DIR_ROUTES = Object.keys(ASSET_DIRS);
 
 /** Every asset mount as `{ route, dir, gate? }`, in mount order. */
 export const ASSET_MOUNTS = ASSET_ROUTE_PREFIXES.map((route) => ({

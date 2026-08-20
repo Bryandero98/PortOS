@@ -31,7 +31,7 @@ afterAll(() => rmSync(tempRoot, { recursive: true, force: true }));
 
 // Dynamic, not a static import: the `vi.mock` factory above closes over
 // `tempRoot`, and a static import would be hoisted above that binding.
-const { ASSET_MOUNTS, mountAssetRoutes } = await import('./assetMounts.js');
+const { ASSET_DIR_ROUTES, ASSET_MOUNTS, mountAssetRoutes } = await import('./assetMounts.js');
 
 // Stand-in for the SPA fallback `server/index.js` installs after the asset
 // mounts — same extension guard, so the test exercises the real interaction
@@ -125,5 +125,14 @@ describe('ASSET_MOUNTS', () => {
     // extensionless path under it answered with the SPA index and a 200.
     expect(ASSET_MOUNTS.length).toBeGreaterThan(5);
     expect(ASSET_MOUNTS.filter(({ route }) => !route.startsWith('/data/'))).toEqual([]);
+  });
+
+  it('mounts every route it knows a directory for', () => {
+    // The mount list is built by walking `ASSET_ROUTE_PREFIXES`, so a directory
+    // added to `ASSET_DIRS` alone is never mounted and nothing else notices —
+    // the asset just 404s. (The reverse fails loudly: a prefix with no dir
+    // throws at boot.)
+    expect([...ASSET_DIR_ROUTES].sort()).toEqual([...ASSET_MOUNTS.map((m) => m.route)].sort());
+    expect(ASSET_MOUNTS.every(({ dir }) => typeof dir === 'function')).toBe(true);
   });
 });
