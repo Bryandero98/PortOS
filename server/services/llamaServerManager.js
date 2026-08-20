@@ -164,7 +164,14 @@ export async function startLlamaServer(options = {}) {
 
   const args = ['-m', expandHome(model.trim())];
   if (draftPath) {
-    args.push('--draft-model', expandHome(draftPath));
+    // `--model-draft` is the drafter flag llama.cpp parses. Newer builds also
+    // spell it `--spec-draft-model`, but the legacy name (alias `-md`) is the
+    // one every build accepts. `--draft-model` has never existed in any of
+    // them, and an unknown flag is fatal — llama.cpp prints
+    // `error: invalid argument: …` and exits 1 before loading a single weight,
+    // so the typo killed the launch outright rather than quietly dropping
+    // speculative decoding.
+    args.push('--model-draft', expandHome(draftPath));
     if (specType) args.push('--spec-type', specType.trim());
   }
   if (port) args.push('--port', String(port));

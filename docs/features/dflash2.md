@@ -76,7 +76,7 @@ Start `llama-server` on loopback port `8080` with speculative decoding enabled
 ```bash
 llama-server \
   -m models/Qwen3.8-27B-Q4_K_M.gguf \
-  --draft-model models/Qwen3.8-27B-DSpark-BF16.gguf \
+  --model-draft models/Qwen3.8-27B-DSpark-BF16.gguf \
   --spec-type draft-dspark \
   --port 8080 \
   --host 127.0.0.1 \
