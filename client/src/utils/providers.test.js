@@ -1235,6 +1235,16 @@ describe('credentialSource', () => {
     })).toEqual({ kind: 'env', ref: 'ANTHROPIC_AUTH_TOKEN' });
   });
 
+  it('does not treat API env settings or legacy process keys as credentials', () => {
+    expect(credentialSource({
+      id: 'cloud', type: 'api', endpoint: 'https://api.example.com/v1',
+      envVars: { OPENAI_API_KEY: 'token-example' },
+    })).toEqual({ kind: 'stored', ref: 'cloud' });
+    expect(credentialSource({
+      id: 'custom-cli', type: 'cli', apiKey: 'legacy-key', envVars: {},
+    })).toEqual({ kind: 'none', ref: null });
+  });
+
   it('lets a wrapper carrying its own key stand down from inheritance', () => {
     expect(credentialSource({ id: 'wrapper', type: 'cli', apiKey: 'sk-example', orcarouterBacked: true }))
       .toEqual({ kind: 'stored', ref: 'wrapper' });
@@ -1349,6 +1359,41 @@ describe('providerCardState', () => {
       id: 'claude-ollama',
       envVars: { ANTHROPIC_AUTH_TOKEN: 'ollama' },
     })).state).toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('does not let a legacy CLI key satisfy an empty process credential', () => {
+    const readiness = providerCardState(cli({
+      apiKey: 'legacy-key',
+      envVars: { AWS_BEARER_TOKEN_BEDROCK: '' },
+      secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+    }));
+    expect(readiness.missing).toEqual([{
+      code: 'envVar',
+      label: 'AWS_BEARER_TOKEN_BEDROCK environment variable is not set',
+    }]);
+  });
+
+  it('ignores optional secret env settings and checks every credential variable', () => {
+    const readiness = providerCardState(cli({
+      envVars: {
+        AWS_PROFILE: '',
+        AWS_ACCESS_KEY_ID: 'key-example',
+        AWS_SECRET_ACCESS_KEY: '',
+      },
+      secretEnvVars: ['AWS_PROFILE', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'],
+    }));
+    expect(readiness.missing).toEqual([{
+      code: 'envVar',
+      label: 'AWS_SECRET_ACCESS_KEY environment variable is not set',
+    }]);
+  });
+
+  it('does not use API env settings in place of the stored API key', () => {
+    const readiness = providerCardState(cloudApi({
+      hasApiKey: false,
+      envVars: { OPENAI_API_KEY: 'token-example' },
+    }));
+    expect(readiness.missing).toEqual([{ code: 'apiKey', label: 'API key is not set' }]);
   });
 
   it('does not treat an unknown env lookup as a missing credential', () => {

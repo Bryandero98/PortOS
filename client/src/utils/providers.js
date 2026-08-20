@@ -981,20 +981,21 @@ export const isOllamaBackedProvider = (provider) => {
 export const isOrcaRouterBackedProvider = (provider) => provider?.orcarouterBacked === true;
 
 // Environment variables whose names are conventionally credentials. The
-// explicit secretEnvVars list remains the primary source; this small fallback
-// covers shipped providers such as Claude-Ollama, whose fixed local token is
-// useful but not marked secret in the catalog.
-const CREDENTIAL_ENV_VAR_RE = /(?:^|_)(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|BEARER_TOKEN|CLIENT_SECRET|PASSWORD|TOKEN|SECRET)(?:_|$)/i;
+// explicit secretEnvVars list remains the primary source, but it is a masking
+// list rather than a credential schema — providers may mark optional values
+// such as AWS_PROFILE secret too. Filter both sources so only actual credential
+// names participate in readiness.
+const CREDENTIAL_ENV_VAR_RE = /(?:^|_)(?:API_KEY|APIKEY|AUTH|ACCESS_KEY|ACCESS_TOKEN|BEARER|CLIENT_SECRET|CREDENTIALS?|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)(?:_|$)/i;
 
 const providerHasStoredKey = (provider) =>
   provider?.hasApiKey === true || Boolean(provider?.apiKey);
 
-const credentialEnvVar = (provider) => {
+const credentialEnvVars = (provider) => {
+  if (!isProcessProvider(provider)) return [];
   const envVars = provider?.envVars && typeof provider.envVars === 'object' ? provider.envVars : {};
   const secretEnvVars = Array.isArray(provider?.secretEnvVars) ? provider.secretEnvVars : [];
-  const explicit = secretEnvVars.find((name) => typeof name === 'string' && name !== '');
-  if (explicit) return explicit;
-  return Object.keys(envVars).find((name) => CREDENTIAL_ENV_VAR_RE.test(name)) || null;
+  const names = [...secretEnvVars, ...Object.keys(envVars)];
+  return [...new Set(names.filter((name) => typeof name === 'string' && CREDENTIAL_ENV_VAR_RE.test(name)))];
 };
 
 /**
@@ -1013,13 +1014,20 @@ export const credentialSource = (provider) => {
   if (isApiProvider(provider) && isPrivateNetworkEndpoint(provider?.endpoint)) {
     return { kind: 'none', ref: null };
   }
-  if (providerHasStoredKey(provider)) {
+  // API providers are the only ordinary providers whose stored key is read by
+  // PortOS itself. A legacy apiKey on a CLI/TUI record is not passed to the
+  // process and must not hide an empty process credential.
+  if (isApiProvider(provider)) {
     return { kind: 'stored', ref: provider?.id || null };
   }
-  const envVar = credentialEnvVar(provider);
+  // An OrcaRouter wrapper with its own key is the one process-backed exception:
+  // withOrcaRouterApiKey leaves it untouched, so that key really is used.
+  if (isOrcaRouterBackedProvider(provider) && providerHasStoredKey(provider)) {
+    return { kind: 'stored', ref: provider?.id || null };
+  }
+  const [envVar] = credentialEnvVars(provider);
   if (envVar) return { kind: 'env', ref: envVar };
   if (isOrcaRouterBackedProvider(provider)) return { kind: 'inherited', ref: 'orcarouter' };
-  if (isApiProvider(provider)) return { kind: 'stored', ref: provider?.id || null };
   return { kind: 'none', ref: null };
 };
 
@@ -1043,9 +1051,20 @@ const credentialMissing = (provider, { keySetFor = null, envVarSet = null } = {}
   const source = credentialSource(provider);
   if (source.kind === 'none' || !source.ref) return null;
 
-  const rawState = source.kind === 'env'
-    ? (typeof envVarSet === 'function' ? envVarSet(source.ref) : defaultEnvVarSet(provider, source.ref))
-    : (typeof keySetFor === 'function' ? keySetFor(source.ref) : defaultKeySetFor(provider, source.ref));
+  if (source.kind === 'env') {
+    return credentialEnvVars(provider)
+      .map((name) => {
+        const rawState = typeof envVarSet === 'function' ? envVarSet(name) : defaultEnvVarSet(provider, name);
+        return normalizeCredentialState(rawState) === false
+          ? { code: 'envVar', label: `${name} environment variable is not set` }
+          : null;
+      })
+      .filter(Boolean);
+  }
+
+  const rawState = typeof keySetFor === 'function'
+    ? keySetFor(source.ref)
+    : defaultKeySetFor(provider, source.ref);
   if (normalizeCredentialState(rawState) !== false) return null;
 
   if (source.kind === 'stored') return { code: 'apiKey', label: 'API key is not set' };
@@ -1150,7 +1169,9 @@ export const providerCardState = (provider, {
   const published = Array.isArray(provider?.missingPrerequisites) ? provider.missingPrerequisites : null;
   const missing = published ? [...published] : [];
   const addMissing = (code, label) => {
-    if (!missing.some((entry) => entry?.code === code)) missing.push({ code, label });
+    if (!missing.some((entry) => entry?.code === code && (code !== 'envVar' || entry?.label === label))) {
+      missing.push({ code, label });
+    }
   };
 
   // Kept client-side even when the server has published: `runtime` here may be
@@ -1178,7 +1199,9 @@ export const providerCardState = (provider, {
   const source = credentialSource(provider);
   if (!published || source.kind === 'env') {
     const missingCredential = credentialMissing(provider, { keySetFor, envVarSet });
-    if (missingCredential) addMissing(missingCredential.code, missingCredential.label);
+    for (const entry of Array.isArray(missingCredential) ? missingCredential : [missingCredential]) {
+      if (entry) addMissing(entry.code, entry.label);
+    }
   }
 
   if (missing.length > 0) return { state: PROVIDER_CARD_STATE.BLOCKED, missing };
