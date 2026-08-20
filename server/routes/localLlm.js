@@ -213,9 +213,9 @@ router.post('/ollama-service', asyncHandler(async (req, res) => {
 
 // POST /api/local-llm/install — pull/download a model (streams progress)
 router.post('/install', asyncHandler(async (req, res) => {
-  const { backend, modelId } = validateRequest(localLlmInstallSchema, req.body)
+  const { backend, modelId, force } = validateRequest(localLlmInstallSchema, req.body)
   const emit = emitter(req)
-  emit('start', `Installing ${modelId} on ${backend}…`)
+  emit('start', `${force ? 'Redownloading' : 'Installing'} ${modelId} on ${backend}…`)
   // A thrown rejection (e.g. the pull stream dropping mid-download) would 500
   // via asyncHandler but never emit a terminal progress frame, leaving the
   // client's progress banner stuck on the last 'start'. Surface it as 'error'.
@@ -225,7 +225,7 @@ router.post('/install', asyncHandler(async (req, res) => {
   const result = await installModel(backend, modelId, (p) => {
     const label = describeInstallProgress(p)
     if (label) emit('start', `${modelId}: ${label}`)
-  }).catch((err) => {
+  }, { force: !!force }).catch((err) => {
     emit('error', `Install failed: ${err.message}`)
     throw err
   })
@@ -238,7 +238,7 @@ router.post('/install', asyncHandler(async (req, res) => {
   }
   emit('complete', result.pending
     ? `${modelId} download started in LM Studio — it'll finish in the background`
-    : `${modelId} installed on ${backend}`)
+    : `${modelId} ${force ? 'redownloaded' : 'installed'} on ${backend}`)
   res.json({ success: true, ...result })
 }))
 

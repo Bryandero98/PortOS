@@ -33,7 +33,7 @@ vi.mock('../ui/Toast', () => ({
   default: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
 }));
 
-import { getLocalLlmStatus, getLocalLlmCatalog, patchSettingsSlice } from '../../services/api';
+import { getLocalLlmStatus, getLocalLlmCatalog, patchSettingsSlice, installLocalLlmModel } from '../../services/api';
 import { LocalLlmTab } from './LocalLlmTab';
 
 // A realistically long HF model id — the shape that got ellipsised to
@@ -126,6 +126,67 @@ describe('LocalLlmTab installed models', () => {
     // rides along with params/quant/family so nothing is squeezed out.
     expect(screen.getByText(/^34\.7B · Q6_K · qwen2 · [\d.]+ GB$/)).toBeTruthy();
   });
+
+  it('redownloads an installed model instead of requiring delete-then-install', async () => {
+    installLocalLlmModel.mockResolvedValue({ success: true });
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: `Redownload ${LONG_ID}` }));
+    await waitFor(() => expect(installLocalLlmModel).toHaveBeenCalledWith(
+      'ollama',
+      LONG_ID,
+      expect.objectContaining({ force: true, silent: true }),
+    ));
+  });
+
+  it('tags an LM Studio installed model with its quantization so redownload can evict that GGUF', async () => {
+    installLocalLlmModel.mockResolvedValue({ success: true });
+    getLocalLlmStatus.mockResolvedValue({
+      backend: 'lmstudio',
+      ollama: { installed: false, available: false, modelCount: 0, models: [] },
+      lmstudio: {
+        installed: true,
+        available: true,
+        modelCount: 1,
+        models: [{
+          id: 'unsloth/Qwen3.8-27B-GGUF',
+          name: 'Qwen3.8 27B',
+          quantization: 'UD-Q4_K_M',
+        }],
+      },
+    });
+    render(
+      <MemoryRouter>
+        <LocalLlmTab />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText(/Installed on LM Studio/)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Redownload Qwen3.8 27B' }));
+    await waitFor(() => expect(installLocalLlmModel).toHaveBeenCalledWith(
+      'lmstudio',
+      'unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M',
+      expect.objectContaining({ force: true }),
+    ));
+  });
+
+  it('hides redownload when LM Studio did not report a quantization', async () => {
+    getLocalLlmStatus.mockResolvedValue({
+      backend: 'lmstudio',
+      ollama: { installed: false, available: false, modelCount: 0, models: [] },
+      lmstudio: {
+        installed: true,
+        available: true,
+        modelCount: 1,
+        models: [{ id: 'unsloth/Qwen3.8-27B-GGUF', name: 'Qwen3.8 27B' }],
+      },
+    });
+    render(
+      <MemoryRouter>
+        <LocalLlmTab />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText(/Installed on LM Studio/)).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /Redownload/ })).toBeNull();
+  });
 });
 
 describe('LocalLlmTab recommendations', () => {
@@ -156,7 +217,7 @@ describe('LocalLlmTab recommendations', () => {
   it('highlights the flagship general model and surfaces it in its coding use-case filter', async () => {
     getLocalLlmCatalog.mockResolvedValue({
       models: [{
-        id: 'hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M',
+        id: 'hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M',
         key: 'qwen3.8-27b',
         name: 'Qwen3.8 27B',
         category: 'general',
@@ -166,8 +227,10 @@ describe('LocalLlmTab recommendations', () => {
           description: 'Flagship local pick for general work, coding and agents, reasoning, and image analysis.',
         },
         params: '27B',
-        size: '17 GB',
+        size: '16.5 GB',
         description: 'A broad local model.',
+        note: 'Dynamic 3.0 is baked into the GGUF files — re-download if you already have an older Unsloth Qwen3.8 build.',
+        repository: 'unsloth/Qwen3.8-27B-GGUF',
         capabilities: ['chat', 'code', 'reasoning', 'tools', 'vision'],
       }],
     });
@@ -179,6 +242,32 @@ describe('LocalLlmTab recommendations', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Coding & agents (1)' }));
     await waitFor(() => expect(screen.getByText('Qwen3.8 27B')).toBeTruthy());
+  });
+
+  it('offers redownload on an already-installed catalog card', async () => {
+    installLocalLlmModel.mockResolvedValue({ success: true });
+    getLocalLlmCatalog.mockResolvedValue({
+      models: [{
+        id: 'hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M',
+        key: 'qwen3.8-27b',
+        name: 'Qwen3.8 27B',
+        installed: true,
+        category: 'general',
+        recommendedFor: ['general'],
+        params: '27B',
+        size: '16.5 GB',
+        description: 'A broad local model.',
+        capabilities: ['chat'],
+      }],
+    });
+    await renderTab();
+    expect(await screen.findByText('Qwen3.8 27B')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^Redownload$/ }));
+    await waitFor(() => expect(installLocalLlmModel).toHaveBeenCalledWith(
+      'ollama',
+      'hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M',
+      expect.objectContaining({ force: true }),
+    ));
   });
 });
 

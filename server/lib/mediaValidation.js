@@ -141,6 +141,9 @@ export const localLlmModelIdSchema = z.string().min(1).max(256)
 export const localLlmInstallSchema = z.object({
   backend: localLlmBackendSchema,
   modelId: localLlmModelIdSchema,
+  // Re-pull even when the model is already on disk. Needed when a publisher
+  // replaces GGUF files in place (e.g. Unsloth Dynamic 3.0) under the same id.
+  force: z.boolean().optional(),
 });
 export const localLlmDeleteSchema = localLlmInstallSchema;
 // Memory-management unload: same `backend` + `modelId` shape as install/delete

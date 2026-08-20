@@ -126,7 +126,9 @@ const QUANT_PRIORITY = [
   'IQ4_XS',
   'UD-IQ4_XS',
   'Q5_K_M',
+  'UD-Q6_K',
   'Q6_K',
+  'UD-Q8_K_XL',
   'Q8_0',
   'BF16',
   'F16'

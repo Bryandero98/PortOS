@@ -339,12 +339,15 @@ export const LOCAL_LLM_CATALOG = [
       description: 'Flagship local pick for general work, coding and agents, reasoning, and image analysis.'
     },
     params: '27B',
-    size: '17 GB',
+    size: '16.5 GB',
     family: 'qwen',
-    description: 'Dense current-generation Qwen with a 256K context, strong coding and agent work, vision, tools, multilingual support, and a thinking mode — the strongest all-round local model that still fits 32GB.',
+    description: 'Dense current-generation Qwen with a 256K context, strong coding and agent work, vision, tools, multilingual support, and a thinking mode — the strongest all-round local model that still fits 32GB. Unsloth Dynamic 3.0 GGUF: higher fidelity at the same size than earlier Unsloth quants.',
+    note: 'Dynamic 3.0 is baked into the GGUF files — re-download if you already have an older Unsloth Qwen3.8 build. Native MLX Dynamic 3.0 is not available yet.',
+    repository: 'unsloth/Qwen3.8-27B-GGUF',
     capabilities: ['chat', 'code', 'reasoning', 'tools', 'vision', 'multilingual'],
     context: 262144,
-    ollama: 'hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M',
+    ollama: 'hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M',
+    ollamaAliases: ['hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M'],
     lmstudio: 'unsloth/Qwen3.8-27B-GGUF'
   },
   {
