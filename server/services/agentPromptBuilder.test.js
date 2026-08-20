@@ -98,6 +98,8 @@ import { isTruthyMeta } from './agentState.js';
 import { buildPrompt } from './promptService.js'; // mocked above — inspect call args
 import { loadSlashdoFile, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js'; // mocked above — control the inlined body
 import { SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
+// The heading a task-type hook's prompt points at to locate the sentinel path.
+import { PROGRAMMATIC_OUTPUT_COMPLETION_HEADING } from '../lib/agentSentinel.js';
 
 function makeTask(overrides = {}) {
   return {
@@ -2042,6 +2044,12 @@ describe('discardWorktree (reasoning-only) completion contract', () => {
 
   const assertReasoningOnly = (prompt) => {
     expect(prompt).toMatch(/## Completion \(Reasoning-Only Task\)/);
+    // Same heading via the exported constant: a pre-spawn task-type hook
+    // (layered-intelligence) can't know the per-instance sentinel filename, so
+    // its prompt points the agent at THIS section by name. Re-typing the
+    // heading as a literal here would aim that pointer at a section the
+    // briefing never emits.
+    expect(prompt).toContain(`## ${PROGRAMMATIC_OUTPUT_COMPLETION_HEADING}`);
     expect(prompt).toMatch(/discarded on exit/);
     expect(prompt).toMatch(/\.agent-done/);
     // The whole point: no push/PR/merge instructions anywhere.

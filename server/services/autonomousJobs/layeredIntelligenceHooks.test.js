@@ -141,6 +141,9 @@ import { getTaskInterval } from '../taskSchedule.js';
 // mock above) — used by the #4166 end-to-end case so the envelope→reason verdict is
 // exercised through production validation, not a hand-written stub of it.
 import { validateReasonerResponse as realValidateReasonerResponse } from '../layeredIntelligence/proposal.js';
+// The shared heading both sides of the sentinel pointer use: this hook's prompt
+// names the section, agentPromptBuilder emits it.
+import { PROGRAMMATIC_OUTPUT_COMPLETION_HEADING } from '../../lib/agentSentinel.js';
 
 const APP = { id: 'app-1', name: 'App One', repoPath: '/repo', taskTypeOverrides: {} };
 
@@ -298,12 +301,16 @@ describe('buildTaskInput', () => {
     const res = await buildTaskInput({ app: APP });
     expect(res.skip).toBeUndefined();
     expect(res.prompt).toContain('REASONING PROMPT');
-    // The completion contract is appended. It must point at the sentinel path
-    // from the briefing (the filename carries the agent id, which this hook
-    // cannot know) rather than instructing a bare `.agent-done` no poller
-    // watches.
+    // The completion contract is appended. It must point at the briefing section
+    // that prints the sentinel path (the filename carries the agent id, which
+    // this hook cannot know) — by the SHARED heading constant, so the pointer
+    // can't drift from the section agentPromptBuilder emits.
     expect(res.prompt).toContain('completion sentinel');
-    expect(res.prompt).toContain('NOT a bare `.agent-done`');
+    expect(res.prompt).toContain(PROGRAMMATIC_OUTPUT_COMPLETION_HEADING);
+    // ...and it must NOT name any other filename. A prompt that says 'not a bare
+    // `.agent-done`' is the only place the agent would learn that wrong
+    // filename exists, so naming it at all — even to forbid it — is the bug.
+    expect(res.prompt).not.toContain('.agent-done');
     expect(res.providerId).toBe('ollama');
     expect(res.model).toBe('qwen');
   });
