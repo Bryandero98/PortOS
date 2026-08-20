@@ -880,6 +880,48 @@ describe('Audio kind (#1928)', () => {
     await waitFor(() => mediaJobQueue.getJob(remote.jobId)?.status === 'completed');
   });
 
+  // #4683 — the downgrade contract is enforced HERE, not at each routed enqueue
+  // site, so a future caller that forgets to blank the local render fields can't
+  // ship a job a build rolled back past `remoteMedia` would render for real.
+  it('normalizes any enqueued job carrying a marker into the downgrade-safe shape', async () => {
+    stubs.generateImageRemote.mockImplementation(() => new Promise(() => {}));
+    // Deliberately hostile input: a caller that passed the local render fields
+    // straight through, exactly as a forgotten normalization would.
+    const remote = mediaJobQueue.enqueueJob({
+      kind: 'image',
+      params: {
+        prompt: 'a harbour',
+        modelId: 'dev',
+        pythonPath: '/usr/bin/python3',
+        width: 512,
+        remoteMedia: remoteImageMediaParams(),
+      },
+    });
+
+    const { params } = mediaJobQueue.getJob(remote.jobId);
+    expect(params.prompt).toBe('');
+    expect(params.modelId).toBeNull();
+    expect(params.pythonPath).toBeNull();
+    // Surviving job params and the marker itself ride through untouched, and
+    // the job still routes to the remote adapter on this build.
+    expect(params.width).toBe(512);
+    expect(params.remoteMedia.request.prompt).toBe('a harbour');
+    await waitFor(() => stubs.generateImageRemote.mock.calls.length === 1);
+    expect(stubs.generateImage).not.toHaveBeenCalled();
+  });
+
+  it('leaves a training job carrying a stray marker on the local path', () => {
+    // Bypass probe for the normalization above: `training` has no federated
+    // contract, so a marker on one is corrupt state — blanking its params would
+    // destroy a real local run.
+    const job = mediaJobQueue.enqueueJob({
+      kind: 'training',
+      params: { runId: 'run-1', runtime: 'mflux', modelId: 'dev', remoteMedia: remoteImageMediaParams() },
+    });
+
+    expect(mediaJobQueue.getJob(job.jobId).params.modelId).toBe('dev');
+  });
+
   it('persists cancellation intent before signaling a running remote adapter', async () => {
     stubs.generateAudioRemote.mockImplementation(() => new Promise(() => {}));
     const remote = mediaJobQueue.enqueueJob({

@@ -15,7 +15,6 @@ import { promptFromMedia } from '../services/mediaPromptFromMedia.js';
 import { CODEX_EFFORT_LEVELS } from '../lib/providerModels.js';
 import { sanitizeJob } from '../services/mediaJobQueue/sanitizeJob.js';
 import { validateVideoRetryParams } from '../services/videoGen/prepareParams.js';
-import { routedJobParams } from '../services/federatedMedia/routedJobParams.js';
 
 const router = Router();
 
@@ -294,15 +293,11 @@ router.post('/:id/retry', asyncHandler(async (req, res) => {
   // fallback (CODEX_IMAGEGEN_DEFAULT_EFFORT) take over, which a merged sentinel
   // string could not do (it would fail the CODEX_EFFORT_LEVELS validation).
   if (clearEffort) delete params.effort;
-  // A retried federated job must keep the downgrade-safe shape (#4683). The
-  // remote executor renders from `remoteMedia.request`, so a merged `prompt` /
-  // `modelId` override never reached the peer anyway — but leaving one on
-  // top-level params would hand a rolled-back build a locally-renderable job.
-  // Re-normalize instead of trusting the merge.
-  const retryParams = params.remoteMedia !== undefined
-    ? routedJobParams({ params, remoteMedia: params.remoteMedia })
-    : params;
-  const result = enqueueJob({ kind: job.kind, params: retryParams, owner: job.owner });
+  // A federated retry needs no special handling here: enqueueJob re-normalizes
+  // any job carrying a `remoteMedia` marker, so a merged prompt/model override
+  // (which never reached the peer anyway — the remote executor renders from
+  // `remoteMedia.request`) cannot restore a locally-renderable shape.
+  const result = enqueueJob({ kind: job.kind, params, owner: job.owner });
   // Drop the original failed/canceled row from archive — the new job inherits
   // its work, and leaving both visible just lets users keep clicking Retry on
   // the dead row and stacking duplicate jobs. If the prune returns false the

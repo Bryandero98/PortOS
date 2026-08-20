@@ -44,7 +44,6 @@ import { buildUniverseRunTag } from '../services/universeRunTag.js';
 import { getSettings } from '../services/settings.js';
 import { federatedMediaImageJobSubmissionSchema } from '../lib/validation.js';
 import { prepareRemoteMediaJob } from '../services/federatedMedia/remoteSubmission.js';
-import { routedJobParams } from '../services/federatedMedia/routedJobParams.js';
 
 const router = Router();
 
@@ -479,14 +478,13 @@ router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
       mediaProviderPeerId: _peerId, mediaProviderEngine: _engine,
       mode: _mode, cloudModel: _cloudModel, ...jobParams
     } = params;
-    // The conditioning prompt and the model id ride ONLY inside the versioned
-    // marker. `routedJobParams` nulls every top-level field a LOCAL dispatcher
-    // would render from, so an older build that cannot route `remoteMedia`
-    // fails closed on its own model guard rather than quietly re-rendering this
-    // job for real on local hardware. See that module for the full contract.
+    // The prompt and model ride only inside the versioned marker: enqueueJob
+    // normalizes any job carrying one into the downgrade-safe shape, so this
+    // render cannot be re-run for real by a build rolled back past
+    // `remoteMedia`. Contract: services/federatedMedia/routedJobParams.js.
     const queued = enqueueJob({
       kind: 'image',
-      params: routedJobParams({ params: jobParams, remoteMedia }),
+      params: { ...jobParams, remoteMedia },
     });
     return res.json(queuedImageResponse({
       ...queued,

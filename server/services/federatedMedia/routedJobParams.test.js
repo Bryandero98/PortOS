@@ -31,11 +31,10 @@ describe('routedJobParams', () => {
 
     expect(params.prompt).toBe('');
     // `null`, NOT absent — generateImage/generateVideo declare `modelId` as a
-    // default parameter, which fires on `undefined` only.
+    // default parameter, which fires on `undefined` only. `toBeNull` is the
+    // assertion that distinguishes the two.
     expect(params.modelId).toBeNull();
-    expect(params).toHaveProperty('modelId');
     expect(params.pythonPath).toBeNull();
-    expect(params).toHaveProperty('pythonPath');
   });
 
   it('keeps the versioned marker and the destination tags a completion hook needs', () => {
@@ -55,6 +54,14 @@ describe('routedJobParams', () => {
     const params = routedJobParams({ remoteMedia });
 
     expect(params).toEqual({ prompt: '', modelId: null, pythonPath: null, remoteMedia });
+  });
+
+  it('defaults the marker off params, which is how enqueueJob calls it', () => {
+    const params = routedJobParams({ params: { modelId: 'dev', prompt: 'edited', remoteMedia } });
+
+    expect(params.remoteMedia).toEqual(remoteMedia);
+    expect(params.prompt).toBe('');
+    expect(params.modelId).toBeNull();
   });
 });
 

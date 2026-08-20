@@ -166,11 +166,12 @@ describe('mediaJobs routes', () => {
     expect(call.params.steps).toBe(40);
   });
 
-  it('POST /:id/retry re-normalizes a federated job so an override cannot restore a locally-renderable shape', async () => {
-    // The remote executor renders from `remoteMedia.request`, so these
-    // overrides never reached the peer anyway — but leaving them on top-level
-    // params would hand a build rolled back before `remoteMedia` a job it could
-    // render locally for real (#4683).
+  it('POST /:id/retry hands a federated job back to enqueueJob with its marker intact', async () => {
+    // The retry route deliberately does NOT special-case a federated job:
+    // enqueueJob re-normalizes anything carrying a marker into the
+    // downgrade-safe shape (#4683), so the override the user typed — which
+    // never reached the peer anyway, the remote executor renders from
+    // `remoteMedia.request` — cannot restore a locally-renderable job.
     const remoteMedia = {
       wireVersion: 1,
       peerId: '00000000-0000-4000-8000-0000000004f1',
@@ -185,10 +186,6 @@ describe('mediaJobs routes', () => {
       .send({ params: { prompt: 'something else', modelId: 'sdxl-base' } });
     expect(r.status).toBe(200);
     const { params } = stubs.enqueueJob.mock.calls[0][0];
-    expect(params.prompt).toBe('');
-    expect(params.modelId).toBeNull();
-    expect(params.pythonPath).toBeNull();
-    // The marker (and the surviving job params) still ride through untouched.
     expect(params.remoteMedia).toEqual(remoteMedia);
     expect(params.width).toBe(512);
   });

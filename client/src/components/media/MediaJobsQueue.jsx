@@ -56,9 +56,9 @@ const codexEffortOf = (raw) => (typeof raw === 'string' ? raw.trim() : '');
 // Compact "engine / model" badge so a failed row tells the user *what* failed,
 // not just that it failed. Codex jobs carry `params.model`; local image/video
 // jobs carry `params.modelId`; training jobs carry a runtime + character. A
-// federated job is badged `remote` off the server-projected `renderer` field.
+// federated job is badged `remote` off the server-projected `job.renderer`.
 // Trims long HF repo paths to the tail segment.
-function modelLabel(params) {
+function modelLabel(params, renderer) {
   if (!params) return null;
   if (params.runtime || params.runId) {
     // Training job — surface the engine + who's being trained, not a prompt.
@@ -89,9 +89,9 @@ function modelLabel(params) {
   }
   const id = (params.modelId || '').trim();
   // A federated render ran on a peer, so it must not wear the local badge. The
-  // server projects `renderer` (and rebuilds `modelId` off the wire request)
+  // server projects `job.renderer` (and rebuilds `modelId` off the wire request)
   // for exactly this — the raw job nulls both to fail closed on a downgrade.
-  const where = params.renderer === 'remote' ? 'remote' : 'local';
+  const where = renderer === 'remote' ? 'remote' : 'local';
   if (!id) return where;
   const tail = id.includes('/') ? id.slice(id.lastIndexOf('/') + 1) : id;
   return `${where} / ${tail}`;
@@ -382,7 +382,11 @@ function JobRow({ job, onCancel, onRetry, onRunNow, onDelete }) {
     : 0;
   // Inline edit form for retry-with-overrides.
   const [editing, setEditing] = useState(false);
-  const canEdit = canRetry;
+  // A federated job renders from the wire request inside its `remoteMedia`
+  // marker, so a prompt/model edit here would never reach the peer — and the
+  // server re-normalizes the retry anyway. Offer the plain Retry, not the
+  // editor, rather than showing a form whose edits are silently discarded.
+  const canEdit = canRetry && job.renderer !== 'remote';
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
   return (
     <div className="bg-port-bg border border-port-border rounded p-2.5">
@@ -393,9 +397,9 @@ function JobRow({ job, onCancel, onRetry, onRunNow, onDelete }) {
             <div className="text-sm font-medium truncate">
               <span className="font-mono">{job.id.slice(0, 8)}</span>
               <span className="text-port-text-muted"> · {job.kind}</span>
-              {modelLabel(job.params) && (
+              {modelLabel(job.params, job.renderer) && (
                 <span className="text-port-text-muted" title={job.params.model || job.params.modelId || ''}>
-                  {' · '}{modelLabel(job.params)}
+                  {' · '}{modelLabel(job.params, job.renderer)}
                 </span>
               )}
               {job.position && job.status === 'queued' && (

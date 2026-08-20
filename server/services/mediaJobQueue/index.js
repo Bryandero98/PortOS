@@ -45,6 +45,8 @@ import { trainingEvents } from '../loraTraining/events.js';
 import { audioGenEvents } from '../audioGen/events.js';
 import { getSettings } from '../settings.js';
 import { IMAGE_GEN_MODE, CLOUD_IMAGE_GEN_MODES } from '../imageGen/modes.js';
+import { REMOTE_MEDIA_MODULES, isRemoteMediaJob } from './remoteMediaJob.js';
+import { routedJobParams } from '../federatedMedia/routedJobParams.js';
 
 // Cloud-CLI jobs (Codex/Grok/Agy images, Grok videos) share one parallel lane —
 // each render
@@ -57,23 +59,11 @@ const isCloudImageJob = (j) =>
   (j.kind === 'image' && CLOUD_IMAGE_GEN_MODES.includes(j.params?.mode))
   || (j.kind === 'video' && j.params?.mode === IMAGE_GEN_MODE.GROK);
 
-// The federatable kinds and the adapter each one dispatches to, in one map so
-// the two cannot drift apart. Kinds are listed explicitly rather than inferred
-// from the marker alone: a 'training' job has no federated contract, so a marker
-// on one is corrupt state that must keep taking the local path, not a routing
-// instruction.
-const REMOTE_MEDIA_MODULES = {
-  audio: () => import('../audioGen/remote.js'),
-  image: () => import('../imageGen/remote.js'),
-  video: () => import('../videoGen/remote.js'),
-};
-
-// Presence, not truthiness of individual nested fields, selects the remote
-// adapter. Persisted queue state is user-editable; a malformed marker must fail
-// closed in the kind's remote module rather than accidentally falling through to
-// a local engine with a remote-only model id.
-export const isRemoteMediaJob = (job) =>
-  Object.hasOwn(REMOTE_MEDIA_MODULES, job?.kind ?? '') && job.params?.remoteMedia !== undefined;
+// The federated-kind map and its predicate live in ./remoteMediaJob.js so light
+// consumers (sanitizeJob, route handlers) can ask "is this routed?" without
+// pulling the queue in. Re-exported here because that is where callers have
+// always found it.
+export { isRemoteMediaJob };
 
 const jobLane = (job) => {
   if (isRemoteMediaJob(job)) return 'remote';
@@ -1062,17 +1052,24 @@ export function enqueueJob({ kind, params, owner = null }) {
     throw new Error(`enqueueJob: invalid kind '${kind}'`);
   }
   const id = randomUUID();
+  // Every routed job is normalized HERE rather than at each caller (#4683): the
+  // downgrade contract only holds if it is unbypassable, and a future enqueue
+  // site that forgets the helper would ship a job a rolled-back build renders
+  // locally for real. See services/federatedMedia/routedJobParams.js.
+  const safeParams = isRemoteMediaJob({ kind, params })
+    ? routedJobParams({ params })
+    : params;
   const job = {
     id,
     kind,
     owner,
     status: 'queued',
     queuedAt: new Date().toISOString(),
-    params,
+    params: safeParams,
     // position counts "where you sit in your lane" — a running job in the
     // same lane occupies slot 1, then same-lane queued jobs follow.
     position: (() => {
-      const candidate = { kind, params };
+      const candidate = { kind, params: safeParams };
       const lane = jobLane(candidate);
       const laneQueue = queue.filter((j) => jobLane(j) === lane);
       const liveCount = lane === 'cloud'

@@ -78,8 +78,8 @@ describe('sanitizeJob', () => {
     expect(sanitized.params).toEqual({
       prompt: 'Instrumental orchestral music with a triumphant mood, moderate tempo, high energy, featuring brass and strings. No vocals or spoken words.',
       modelId: 'example/model',
-      renderer: 'remote',
     });
+    expect(sanitized.renderer).toBe('remote');
     expect(sanitized.params).not.toHaveProperty('remoteMedia');
   });
 
@@ -116,14 +116,15 @@ describe('sanitizeJob', () => {
       modelId: 'dev',
       width: 512,
       height: 512,
-      // Display-only: the Render Queue badges this 'remote / dev' rather than
-      // claiming a local render produced it.
-      renderer: 'remote',
     });
     expect(sanitized.params).not.toHaveProperty('remoteMedia');
+    // Job metadata, not a render input — the Render Queue badges this
+    // 'remote / dev' rather than claiming a local render produced it.
+    expect(sanitized.renderer).toBe('remote');
+    expect(sanitized.params).not.toHaveProperty('renderer');
   });
 
-  it('leaves a local job unbadged so it keeps the local render label', () => {
+  it('reports a local job as locally rendered', () => {
     const sanitized = sanitizeJob({
       id: 'job-local',
       kind: 'image',
@@ -132,6 +133,24 @@ describe('sanitizeJob', () => {
     });
 
     expect(sanitized.params).toEqual({ prompt: 'a lighthouse at dusk', modelId: 'dev' });
-    expect(sanitized.params).not.toHaveProperty('renderer');
+    expect(sanitized.renderer).toBe('local');
+  });
+
+  it('reports a training job carrying a stray marker as local — training has no federated contract', () => {
+    const sanitized = sanitizeJob({
+      id: 'job-training',
+      kind: 'training',
+      status: 'running',
+      params: {
+        runId: 'run-1',
+        runtime: 'mflux',
+        modelId: 'dev',
+        remoteMedia: { wireVersion: 1, request: { modelId: 'peer-model' } },
+      },
+    });
+
+    expect(sanitized.renderer).toBe('local');
+    // The marker must not rewrite a local training job's model either.
+    expect(sanitized.params.modelId).toBe('dev');
   });
 });

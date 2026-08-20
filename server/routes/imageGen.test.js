@@ -1465,14 +1465,10 @@ describe('Image Gen Routes', () => {
       });
 
       const [{ params }] = mediaJobQueue.enqueueJob.mock.calls[0];
-      // Blank top-level prompt, nulled model + interpreter, no routing fields:
-      // an older build that cannot read `remoteMedia` falls through to a local
-      // render it has to refuse, rather than quietly re-running this job on
-      // local hardware. The shape contract itself lives in
-      // services/federatedMedia/routedJobParams.test.js.
-      expect(params.prompt).toBe('');
-      expect(params.modelId).toBeNull();
-      expect(params.pythonPath).toBeNull();
+      // The conditioning prompt rides only inside the versioned marker, and the
+      // routing fields never reach the queue. enqueueJob owns blanking the
+      // local render fields on top of this (#4683) — its own suites cover that,
+      // and enqueueJob is mocked here.
       expect(params.remoteMedia.request.prompt).toBe('a lighthouse at dusk');
       expect(params.remoteMedia.request.modelId).toBe('dev');
       expect(params).not.toHaveProperty('mediaProviderPeerId');

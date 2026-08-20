@@ -1,10 +1,13 @@
 /**
  * The persisted params shape for a media job that renders on a federated peer.
  *
- * Both routed generate paths (`routes/imageGen.js`, `routes/videoGen.js`) build
- * their queue params through this one helper so the two cannot drift: the
- * downgrade contract below only holds if every routed job carries the same
- * shape.
+ * `enqueueJob` applies this to EVERY job carrying a `remoteMedia` marker — no
+ * route calls it directly. The contract below only holds if it is unbypassable:
+ * a helper each routed enqueue site had to remember would be one forgotten call
+ * away from shipping a job a rolled-back build renders locally for real, with
+ * no guard test to catch it. It normalizes the fields every kind shares; a kind
+ * with its own conditioning input still blanks that itself (audio's `lyrics`,
+ * `routes/music.js`).
  *
  * ## Downgrade contract (#4683)
  *
@@ -40,10 +43,12 @@
  * @param {object} [args.params] - Job params that survive routing (destination
  *   tags, dimensions, seed). Local-only routing/backend selectors are stripped
  *   by the caller before they get here.
- * @param {object} args.remoteMedia - The versioned marker from prepareRemoteMediaJob.
+ * @param {object} [args.remoteMedia] - The versioned marker from
+ *   prepareRemoteMediaJob. Defaults to the one already on `params` — which is
+ *   how enqueueJob calls it, having selected the job on that same marker.
  * @returns {object} Params to persist on the queued proxy job.
  */
-export const routedJobParams = ({ params = {}, remoteMedia }) => ({
+export const routedJobParams = ({ params = {}, remoteMedia = params.remoteMedia }) => ({
   ...params,
   prompt: '',
   modelId: null,

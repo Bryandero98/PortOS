@@ -122,7 +122,8 @@ describe('MediaJobsQueue — federated render badge', () => {
       kind: 'image',
       status: 'running',
       queuedAt: '2026-06-19T10:00:00Z',
-      params: { prompt: 'a lighthouse at dusk', modelId: 'dev', renderer: 'remote' },
+      renderer: 'remote',
+      params: { prompt: 'a lighthouse at dusk', modelId: 'dev' },
     }]);
 
     render(<MediaJobsQueue kind="image" />);
@@ -137,6 +138,20 @@ describe('MediaJobsQueue — federated render badge', () => {
     render(<MediaJobsQueue kind="image" />);
 
     expect(await screen.findByText(/local \/ z-image-turbo/)).toBeInTheDocument();
+  });
+
+  it('offers plain Retry but not the editor on a failed federated job', async () => {
+    // A prompt/model edit would never reach the peer — the remote executor
+    // renders from the wire request inside the marker — so showing the form
+    // would silently discard what the user typed.
+    const user = userEvent.setup();
+    listMediaJobs.mockResolvedValue([{ ...failedLocalJob, id: 'remotefail0000beef', renderer: 'remote' }]);
+
+    render(<MediaJobsQueue kind="image" />);
+    await expandReel(user);
+
+    expect(await screen.findByRole('button', { name: /^Retry$/ })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Edit and retry')).not.toBeInTheDocument();
   });
 });
 
