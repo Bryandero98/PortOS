@@ -3,6 +3,7 @@ import { Server } from 'socket.io';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { PATHS } from './lib/fileUtils.js';
+import { mountAssetRoutes } from './lib/assetMounts.js';
 import { existsSync } from 'fs';
 import { createTailscaleServers } from '../lib/tailscale-https.js';
 import { certPaths } from '../lib/certPaths.js';
@@ -151,7 +152,6 @@ import { bootstrapServices, runBootSequence, registerShutdownHandlers } from './
 import { errorMiddleware } from './lib/errorHandler.js';
 import { setHttpsEnabledAtBoot } from './lib/httpsState.js';
 import { JSON_BODY_LIMIT } from './lib/uploadLimits.js';
-import { wrWorksDir } from './services/writersRoom/_shared.js';
 import { createPortOSProviderRoutes } from './routes/providers.js';
 import { createPortOSRunsRoutes } from './routes/runs.js';
 import { createPortOSPromptsRoutes } from './routes/prompts.js';
@@ -386,52 +386,13 @@ app.use('/api/midi-runtime', midiRuntimeRoutes);
 app.use('/api/peer-sync', peerSyncRoutes);
 app.use('/api/ask', askRoutes);
 
-// Asset static mounts. `acceptRanges: true` is the serve-static default
-// already, but we set it explicitly because the federated peer-sync receiver
-// (services/sharing/peerSync.js) background-pulls missing assets from these
-// URLs and relies on HTTP Range to resume partial downloads over flaky
-// Tailnet links — losing range support here would silently force every
-// retry to restart from byte 0 on a multi-MB PNG / video. Same posture for
-// every kind below (image, image-ref, video, video-thumbnail).
-const ASSET_STATIC_OPTS = { acceptRanges: true };
-app.use('/data/images', express.static(PATHS.images, ASSET_STATIC_OPTS));
-// Reference images (multi-ref upload inputs + generated character reference
-// sheets) — served read-only so the UI can render thumbnails by URL.
-app.use('/data/image-refs', express.static(PATHS.imageRefs, ASSET_STATIC_OPTS));
-// LoRA training dataset images (lora-datasets/<id>/images/*.png).
-app.use('/data/lora-datasets', express.static(PATHS.loraDatasets, ASSET_STATIC_OPTS));
-// Serve generated videos + thumbnails so the Media UI and tailnet clients
-// can pull them by URL without going through an explicit download route.
-app.use('/data/videos', express.static(PATHS.videos, ASSET_STATIC_OPTS));
-app.use('/data/video-thumbnails', express.static(PATHS.videoThumbnails, ASSET_STATIC_OPTS));
-// Sprite Manager library previews (anchors, strips, atlases) render inline
-// via <img src="/data/sprites/<id>/<rel>"> (#2895).
-app.use('/data/sprites', express.static(PATHS.sprites, ASSET_STATIC_OPTS));
-// Image-to-3D GLB meshes (#2952) — the /3d R3F viewer loads them inline
-// via drei useGLTF from <model.assetPath> (/data/image-to-3d/<id>/model.glb).
-app.use('/data/image-to-3d', express.static(PATHS.imageTo3d, ASSET_STATIC_OPTS));
-// Voice-over WAVs rendered by the pipeline audio stage — the AudioStage UI
-// pulls them inline via <audio src="/data/audio/<filename>">.
-app.use('/data/audio', express.static(PATHS.audio));
-// Background-music tracks (uploaded today, generated locally tomorrow). The
-// AudioStage music picker plays them inline via <audio src="/data/music/...">.
-app.use('/data/music', express.static(PATHS.music));
-// Extracted third-party import assets (ChatGPT export images/audio/PDFs). The
-// Brain Memory conversation viewer renders these inline (`![](/data/brain-
-// imports/...)`) and as asset links. Read-only; range support for large PDFs.
-app.use('/data/brain-imports', express.static(PATHS.brainImportAssets, ASSET_STATIC_OPTS));
-// Writers Room file-primary draft prose bodies (works/<workId>/drafts/<draftId>.md).
-// Federation (#1565) pulls them peer→peer from this mount: a receiver that merged
-// a work record GETs each missing body's bytes by its nested path. Read-only;
-// range support for large drafts. (Tailnet-only per the project's threat model.)
-// The gate restricts the mount to the draft-body path ONLY — without it, the
-// static root would also serve adjacent work-metadata JSON (manifest.json /
-// manifest.imported.json on file-backend/migrated installs) to any client that
-// knows a work id. Only `<workId>/drafts/<draftId>.md` is needed for body pulls.
-app.use('/data/writers-room/works', (req, res, next) => {
-  if (!/^\/[^/]+\/drafts\/[^/]+\.md$/.test(req.path)) return res.status(404).end();
-  next();
-}, express.static(wrWorksDir(), ASSET_STATIC_OPTS));
+// Asset static mounts, then a terminating 404 for every server-owned prefix so
+// an extensionless `/data/…` or a mistyped `/api/…` can no longer fall through
+// to the SPA fallback below and be answered with index.html and a 200 (#4688).
+// Both lists live in lib/assetRoutePrefixes.js, which `client/vite.config.js`
+// and `scripts/dev-proxy-drift.test.js` read as data — so the dev proxy and the
+// guard cannot fall behind this file.
+mountAssetRoutes(app);
 
 // Serve built client UI (production mode — no Vite dev server needed)
 const CLIENT_DIST = join(__dirname, '..', 'client', 'dist');

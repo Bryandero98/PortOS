@@ -1,18 +1,25 @@
 /**
- * Drift guard for the Vite dev proxy, in both directions.
+ * Drift guard for the server's owned URL prefixes, in both directions.
  *
  * Under `npm run dev` (and under PM2, which runs the UI as the Vite dev server)
  * the browser talks to :5554, so anything the API serves must be proxied to
  * :5555 — and anything the CLIENT routes must NOT be. Both mistakes fail
  * quietly, which is why they are pinned here rather than left to review:
  *
- *   - a MISSING mount is answered by Vite's SPA fallback with index.html and a
- *     200, so a binary loader parses HTML and reports something unrelated to
- *     the cause (`/data/image-to-3d` was absent, and the GLB viewer died on
- *     "Unexpected token '<' ... is not valid JSON", taking its route with it);
+ *   - a MISSING proxy context is answered by Vite's SPA fallback with
+ *     index.html and a 200, so a binary loader parses HTML and reports
+ *     something unrelated to the cause (`/data/image-to-3d` was absent, and the
+ *     GLB viewer died on "Unexpected token '<' ... is not valid JSON");
  *   - an OVER-BROAD context steals a page: Vite matches a plain context with a
  *     bare `url.startsWith`, so a `'/data'` key would also capture the `/data`
  *     and `/datadog` routes and hand the browser the API's built index.html.
+ *
+ * Production has the same hole on the other side — the SPA fallback in
+ * `server/index.js` skips a request only when its path carries a file
+ * extension. `SERVER_OWNED_PREFIXES` is what closes it, and the third section
+ * below covers the one failure neither the proxy nor the terminator can see
+ * alone: a client route added UNDER a server-owned prefix, which the terminator
+ * would 404 with nothing failing near the new route.
  *
  * Full story in docs/PORTS.md.
  */
@@ -22,14 +29,11 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 import { NAV_COMMANDS } from '../server/lib/navManifest.js';
+import { ASSET_ROUTE_PREFIXES, SERVER_OWNED_PREFIXES } from '../server/lib/assetRoutePrefixes.js';
+import { ASSET_MOUNTS } from '../server/lib/assetMounts.js';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (rel) => readFileSync(join(REPO_ROOT, rel), 'utf8');
-
-/** Every `app.use('/data…', …)` mount declared by the server. */
-function serverDataMounts(source) {
-  return [...source.matchAll(/app\.use\(\s*['"](\/data(?:\/[^'"]*)?)['"]/g)].map(([, path]) => path);
-}
 
 /**
  * Every proxy context in the dev server config.
@@ -56,28 +60,66 @@ function devProxyContexts(source) {
 const proxyMatches = (context, url) =>
   (context[0] === '^' && new RegExp(context).test(url)) || url.startsWith(context);
 
+const navPaths = NAV_COMMANDS.map((command) => command.path);
+
 describe('vite dev proxy vs the server and the client router', () => {
-  const mounts = serverDataMounts(read('server/index.js'));
+  // The mounts come from the table `server/index.js` mounts from, not from a
+  // regex over its source — that table is why the two cannot disagree.
   const contexts = devProxyContexts(read('client/vite.config.js'));
 
-  it('finds the mounts and the proxy contexts it is comparing', () => {
-    // A regex that silently matched nothing would make every assertion below
-    // vacuously true.
-    expect(mounts.length).toBeGreaterThan(5);
+  it('finds the prefixes and the proxy contexts it is comparing', () => {
+    // An empty list on either side would make every assertion below vacuously
+    // true — this is the one that fails if the wiring itself breaks.
+    expect(ASSET_ROUTE_PREFIXES.length).toBeGreaterThan(5);
     expect(contexts).toContain('/api');
+    expect(navPaths.length).toBeGreaterThan(5);
   });
 
-  it('proxies an asset under every /data mount the server serves', () => {
-    const unproxied = mounts.filter(
-      (mount) => !contexts.some((context) => proxyMatches(context, `${mount}/probe.bin`)),
+  it('proxies an asset under every mount the server serves', () => {
+    const unproxied = ASSET_ROUTE_PREFIXES.filter(
+      (route) => !contexts.some((context) => proxyMatches(context, `${route}/probe.bin`)),
     );
     expect(unproxied).toEqual([]);
   });
 
   it('leaves every client route to the dev server', () => {
-    const stolen = NAV_COMMANDS
-      .map((command) => command.path)
-      .filter((path) => contexts.some((context) => proxyMatches(context, path)));
+    const stolen = navPaths.filter(
+      (path) => contexts.some((context) => proxyMatches(context, path)),
+    );
     expect(stolen).toEqual([]);
+  });
+});
+
+describe('the asset table vs what the server mounts', () => {
+  it('has a mount, in order, for every asset route prefix', () => {
+    // `ASSET_MOUNTS` is what actually gets mounted; the prefix list is what the
+    // dev proxy is checked against. A route in one and not the other is drift.
+    expect(ASSET_MOUNTS.map((mount) => mount.route)).toEqual(ASSET_ROUTE_PREFIXES);
+    expect(ASSET_MOUNTS.every((mount) => typeof mount.dir === 'function')).toBe(true);
+  });
+
+  it('serves every asset route from inside a terminated namespace', () => {
+    // A mount outside every `SERVER_OWNED_PREFIXES` entry keeps the pre-#4688
+    // behaviour: an extensionless path under it answered with the SPA index.
+    const prefixes = SERVER_OWNED_PREFIXES.map(({ prefix }) => prefix);
+    const unterminated = ASSET_ROUTE_PREFIXES.filter(
+      (route) => !prefixes.some((prefix) => route.startsWith(`${prefix}/`)),
+    );
+    expect(unterminated).toEqual([]);
+  });
+});
+
+describe('server-owned prefixes vs the client router', () => {
+  it('declares every client route that lives under a server-owned prefix', () => {
+    // The failure this catches: someone adds a `/data/backups` page. The
+    // terminator 404s it, the page simply does not exist, and nothing points at
+    // `assetRoutePrefixes.js`. Adding the route to that entry's `spaPaths` is
+    // the fix — this test is what says so.
+    const undeclared = SERVER_OWNED_PREFIXES.flatMap(({ prefix, spaPaths }) => (
+      navPaths.filter((path) => (
+        (path === prefix || path.startsWith(`${prefix}/`)) && !spaPaths.includes(path)
+      ))
+    ));
+    expect(undeclared).toEqual([]);
   });
 });
