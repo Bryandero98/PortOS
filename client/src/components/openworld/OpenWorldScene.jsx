@@ -44,6 +44,8 @@ import OpenWorldStreets from './OpenWorldStreets';
 import OpenWorldStreetProps from './OpenWorldStreetProps';
 import OpenWorldTransitLoop from './OpenWorldTransitLoop';
 import OpenWorldEnergyOverlay from './OpenWorldEnergyOverlay';
+import OpenWorldSpeedPads from './OpenWorldSpeedPads';
+import OpenWorldCollectibles from './OpenWorldCollectibles';
 import PlayerController from './PlayerController';
 import CameraTransition from './CameraTransition';
 import OpenWorldFocusCamera from './OpenWorldFocusCamera';
@@ -54,13 +56,63 @@ import { openWorldDayMix, getTimeOfDayPreset } from './openWorldConstants';
 import { CITY_MAX_ORBIT_DISTANCE } from '../../utils/openWorldFocusCamera';
 import { THIRD_PERSON } from '../../utils/openWorldPlayerRig';
 import { listRegions } from '../../utils/openWorldRegions';
+import { computeEasterEggs } from '../../utils/openWorldEasterEggs';
 import { OpenWorldPaletteProvider } from './OpenWorldPaletteContext';
 import ErrorBoundary from '../ErrorBoundary';
 import { useVisibilityEvent } from '../../hooks/useVisibilityEvent';
 
 const STARTUP_PARTICLE_DENSITY = 0.49;
 
-export default function OpenWorldScene({ apps, agentMap, onBuildingClick, onToggleCameraView, cosStatus, reviewCounts, instances, backupStatus, cosTasks, healthMetrics, voiceState, aiActivity, productivityData, activityCalendar, goals, character, chronotype, memoryGraph, inboxDepth, jiraTickets, introspection, playback = false, photoMode, photoPresetId, photoDof, onPhotoCaptureReady, settings, playSfx, keysRef, mobileInputRef, playerActionRef, dimmedAppIds, focusedAppId, focusedRegion, playerTeleport, hudSafe, background, palette, onTravelToRegion, onProximityChange, autoQuality = false, autoStartTier = 'high', autoResetToken = 0, onAutoTierChange }) {
+export default function OpenWorldScene({
+  apps,
+  agentMap,
+  onBuildingClick,
+  onToggleCameraView,
+  cosStatus,
+  reviewCounts,
+  instances,
+  backupStatus,
+  cosTasks,
+  healthMetrics,
+  voiceState,
+  aiActivity,
+  productivityData,
+  activityCalendar,
+  goals,
+  character,
+  chronotype,
+  memoryGraph,
+  inboxDepth,
+  jiraTickets,
+  introspection,
+  playback = false,
+  photoMode,
+  photoPresetId,
+  photoDof,
+  onPhotoCaptureReady,
+  settings,
+  playSfx,
+  keysRef,
+  mobileInputRef,
+  playerActionRef,
+  dimmedAppIds,
+  focusedAppId,
+  focusedRegion,
+  playerTeleport,
+  hudSafe,
+  background,
+  palette,
+  onTravelToRegion,
+  onProximityChange,
+  autoQuality = false,
+  autoStartTier = 'high',
+  autoResetToken = 0,
+  onAutoTierChange,
+  collectedShardIds = new Set(),
+  onCollectShard,
+  activeBursts = [],
+  onPlayerPoseChange,
+}) {
   const [positions, setPositions] = useState(null);
   const [proximityApp, setProximityApp] = useState(null);
   const [proximityWarpPad, setProximityWarpPad] = useState(null);
@@ -105,6 +157,10 @@ export default function OpenWorldScene({ apps, agentMap, onBuildingClick, onTogg
   // read as haze and grain, so they don't mount at all rather than fading per-frame.
   const neonLayers = Boolean(palette?.neonLayers);
   const warpRegions = useMemo(() => listRegions(), []);
+  const easterEggsList = useMemo(
+    () => computeEasterEggs({ character, goals, productivityData }),
+    [character, goals, productivityData]
+  );
 
   useEffect(() => {
     if (photoMode) {
@@ -346,6 +402,12 @@ export default function OpenWorldScene({ apps, agentMap, onBuildingClick, onTogg
       <WorldGround settings={renderSettings} />
       <OpenWorldStreets settings={renderSettings} />
       <OpenWorldStreetProps settings={renderSettings} />
+      <OpenWorldSpeedPads settings={renderSettings} />
+      <OpenWorldCollectibles
+        collectedShardIds={collectedShardIds}
+        activeBursts={activeBursts}
+        settings={renderSettings}
+      />
       <OpenWorldTransitLoop settings={renderSettings} />
 
       <BuildingCluster
@@ -390,6 +452,7 @@ export default function OpenWorldScene({ apps, agentMap, onBuildingClick, onTogg
           positions={positions}
           onBuildingProximity={handleBuildingProximity}
           onWarpPadProximity={handleWarpPadProximity}
+          onProximityChange={onProximityChange}
           onBuildingClick={onBuildingClick}
           onToggleCameraView={onToggleCameraView}
           apps={apps}
@@ -399,6 +462,11 @@ export default function OpenWorldScene({ apps, agentMap, onBuildingClick, onTogg
           teleport={playerTeleport}
           warpPads={warpRegions}
           onWarpPadInteract={onTravelToRegion}
+          easterEggs={easterEggsList}
+          collectedShardIds={collectedShardIds}
+          onCollectShard={onCollectShard}
+          onPlayerPoseChange={onPlayerPoseChange}
+          playSfx={playSfx}
           mobileInputRef={mobileInputRef}
           playerActionRef={playerActionRef}
         />

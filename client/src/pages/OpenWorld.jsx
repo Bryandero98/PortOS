@@ -23,6 +23,7 @@ import { computeSoundscape } from '../utils/openWorldSoundscape';
 import { deriveOpenWorldPalette, getTimeOfDayPreset, resolveOpenWorldTimeOfDay, resolveWorldStyle } from '../components/openworld/openWorldConstants';
 import OpenWorldFastTravel from '../components/openworld/OpenWorldFastTravel';
 import { getRegion, regionArrivalPoint, regionPath } from '../utils/openWorldRegions';
+import { loadCollectedShardIds, saveCollectedShardIds, TOTAL_SHARDS } from '../utils/openWorldCollectibles';
 import { OpenWorldPaletteProvider } from '../components/openworld/OpenWorldPaletteContext';
 import { useThemeContext } from '../components/ThemeContext';
 
@@ -187,6 +188,28 @@ function OpenWorldInner() {
   });
   const playerActionRef = useRef(null);
   const [proximityTarget, setProximityTarget] = useState(null);
+
+  // Cyber Shards collectible state + live player pose
+  const [collectedShardIds, setCollectedShardIds] = useState(() => loadCollectedShardIds());
+  const [activeBursts, setActiveBursts] = useState([]);
+  const [playerPose, setPlayerPose] = useState(null);
+
+  const handleCollectShard = useCallback((shard) => {
+    setCollectedShardIds((prev) => {
+      const next = new Set(prev);
+      next.add(shard.id);
+      saveCollectedShardIds(next);
+      return next;
+    });
+    const burstId = `${shard.id}-${Date.now()}`;
+    setActiveBursts((prev) => [
+      ...prev.slice(-4),
+      { id: burstId, x: shard.x, y: shard.y, z: shard.z, color: shard.color, age: 0 },
+    ]);
+    setTimeout(() => {
+      setActiveBursts((prev) => prev.filter((b) => b.id !== burstId));
+    }, 850);
+  }, []);
 
   // --- World map / fast travel ----------------------------------------------
   // Warping stays under `/openworld/region/:regionId`; the route param drives the orbital
@@ -553,6 +576,10 @@ function OpenWorldInner() {
         hudSafe={focusHudSafe}
         onTravelToRegion={handleTravelToRegion}
         onProximityChange={setProximityTarget}
+        collectedShardIds={collectedShardIds}
+        onCollectShard={handleCollectShard}
+        activeBursts={activeBursts}
+        onPlayerPoseChange={setPlayerPose}
       />
       {/* The full HUD hides in photo + playback mode so the view is clean; each
           mode's overlay replaces it. */}
@@ -590,6 +617,9 @@ function OpenWorldInner() {
           onAttentionItem={handleAttentionItem}
           activeRegion={focusedRegion}
           proximityTarget={proximityTarget}
+          playerPose={playerPose}
+          collectedCount={collectedShardIds.size}
+          totalShards={TOTAL_SHARDS}
         />
       )}
       {!photoMode && !playback.active && !isDesktop && settings?.explorationMode && !showSettings && !fastTravelOpen && (
