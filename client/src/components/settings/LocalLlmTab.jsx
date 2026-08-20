@@ -745,8 +745,8 @@ export function LocalLlmTab() {
   };
 
   const activeSpecPreset = findSpecPreset(llamaPresetId);
-  // The Custom preset intentionally ships empty paths, so Start stays disabled
-  // until a path is typed — say so instead of leaving a dead button.
+  // Clearing the target path is the one way back to a disabled Start — say why
+  // rather than leaving a dead button.
   const llamaModelMissing = !llamaForm.model.trim();
 
   const handleStartLlama = async (e) => {
@@ -1087,7 +1087,12 @@ export function LocalLlmTab() {
                     aria-label="GPU Layers (-ngl)"
                     type="number"
                     value={llamaForm.nGpuLayers}
-                    onChange={(e) => setLlamaForm((prev) => ({ ...prev, nGpuLayers: parseInt(e.target.value, 10) || 99 }))}
+                    onChange={(e) => setLlamaForm((prev) => {
+                      // `-ngl 0` is a real setting (CPU-only), so only a cleared
+                      // field — parseInt's NaN — may fall back to the default.
+                      const parsed = parseInt(e.target.value, 10);
+                      return { ...prev, nGpuLayers: Number.isNaN(parsed) ? 99 : parsed };
+                    })}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>

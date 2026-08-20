@@ -318,7 +318,7 @@ describe('LocalLlmTab llama-server management', () => {
     });
   });
 
-  it('explains why Start is disabled when the Custom preset clears the model path', async () => {
+  it('explains why Start is disabled once the model path is cleared', async () => {
     const { getLlamaServerStatus } = await import('../../services/api');
     getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
 
