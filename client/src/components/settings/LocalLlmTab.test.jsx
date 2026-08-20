@@ -354,6 +354,60 @@ describe('LocalLlmTab llama-server management', () => {
     });
   });
 
+  // Coercing a number input on every keystroke snaps it back to its default the
+  // moment you clear it to retype, so the default is applied at launch instead.
+  it('lets an advanced number field sit empty while retyping and defaults it at launch', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+    startLlamaServer.mockResolvedValueOnce({ success: true, pid: 21 });
+
+    await renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Advanced options/ }));
+    const gpuLayers = screen.getByLabelText(/GPU Layers/);
+    fireEvent.change(gpuLayers, { target: { value: '' } });
+    expect(gpuLayers).toHaveValue(null);
+
+    fireEvent.click(screen.getByRole('button', { name: /Start Speculative Server/ }));
+
+    await waitFor(() => {
+      expect(startLlamaServer).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: 99 }));
+    });
+  });
+
+  it('keeps an explicit -ngl 0 rather than treating it as unset', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+    startLlamaServer.mockResolvedValueOnce({ success: true, pid: 22 });
+
+    await renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Advanced options/ }));
+    fireEvent.change(screen.getByLabelText(/GPU Layers/), { target: { value: '0' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /Start Speculative Server/ }));
+
+    await waitFor(() => {
+      expect(startLlamaServer).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: 0 }));
+    });
+  });
+
+  it('drops the preset label to Custom once a preset-supplied path is hand-edited', async () => {
+    const { getLlamaServerStatus } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+
+    await renderTab();
+
+    const presetSelect = await screen.findByLabelText('Preset');
+    expect(presetSelect).toHaveValue('qwen3.8-27b-dspark');
+
+    fireEvent.change(screen.getByLabelText(/Target Base Model \(GGUF Path\)/), {
+      target: { value: 'models/hand-picked.gguf' },
+    });
+
+    expect(presetSelect).toHaveValue('custom');
+  });
+
   it('renders install button and triggers install when llama-server is not installed', async () => {
     const { getLlamaServerStatus, installLlamaServer } = await import('../../services/api');
     getLlamaServerStatus.mockResolvedValueOnce({

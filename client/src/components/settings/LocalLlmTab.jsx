@@ -71,6 +71,11 @@ const SPEC_DECODE_PRESETS = [
 const DEFAULT_SPEC_PRESET_ID = 'qwen3.8-27b-dspark';
 const findSpecPreset = (id) => SPEC_DECODE_PRESETS.find((p) => p.id === id);
 
+// Defaults for the advanced numeric fields. They are applied when the server is
+// launched rather than on every keystroke: a controlled number input that coerces
+// as you type snaps back to its default the moment you clear it to retype.
+const LLAMA_NUMBER_DEFAULTS = { port: 8080, ctxSize: 32768, nGpuLayers: 99 };
+
 const btnClass = 'flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded transition-colors disabled:opacity-50';
 
 const CATEGORY_LABELS = {
@@ -744,6 +749,18 @@ export function LocalLlmTab() {
     });
   };
 
+  // Hand-editing a path the preset supplied means the form no longer describes
+  // that preset — say Custom rather than keep claiming the preset is in effect.
+  const setLlamaField = (field, value) => {
+    setLlamaPresetId('custom');
+    setLlamaForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  // Keep an emptied field empty so it can be retyped; the launch path fills in
+  // the default. `Number('')` is 0, hence the explicit empty check.
+  const setLlamaNumber = (field, raw) =>
+    setLlamaForm((prev) => ({ ...prev, [field]: raw === '' ? '' : Number(raw) }));
+
   const activeSpecPreset = findSpecPreset(llamaPresetId);
   // Clearing the target path is the one way back to a disabled Start — say why
   // rather than leaving a dead button.
@@ -757,10 +774,14 @@ export function LocalLlmTab() {
       return;
     }
     setLlamaLoading(true);
+    const config = { ...llamaForm };
+    for (const [field, fallback] of Object.entries(LLAMA_NUMBER_DEFAULTS)) {
+      if (!Number.isFinite(config[field])) config[field] = fallback;
+    }
     try {
-      const res = await startLlamaServer(llamaForm);
+      const res = await startLlamaServer(config);
       if (res?.success) {
-        toast.success(`llama-server started (PID ${res.pid}) on port ${llamaForm.port || 8080}`);
+        toast.success(`llama-server started (PID ${res.pid}) on port ${config.port}`);
       }
       loadLlamaStatus();
     } catch (err) {
@@ -1037,7 +1058,7 @@ export function LocalLlmTab() {
                   aria-label="Target Base Model (GGUF Path)"
                   type="text"
                   value={llamaForm.model}
-                  onChange={(e) => setLlamaForm((prev) => ({ ...prev, model: e.target.value }))}
+                  onChange={(e) => setLlamaField('model', e.target.value)}
                   placeholder={activeSpecPreset?.model || 'models/your-target-Q4_K_M.gguf'}
                   className="w-full bg-port-card border border-port-border rounded px-2.5 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
                 />
@@ -1049,7 +1070,7 @@ export function LocalLlmTab() {
                   aria-label="Draft Model (Optional)"
                   type="text"
                   value={llamaForm.draftModel}
-                  onChange={(e) => setLlamaForm((prev) => ({ ...prev, draftModel: e.target.value }))}
+                  onChange={(e) => setLlamaField('draftModel', e.target.value)}
                   placeholder={activeSpecPreset?.draftModel || 'models/your-drafter.gguf'}
                   className="w-full bg-port-card border border-port-border rounded px-2.5 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
                 />
@@ -1065,7 +1086,7 @@ export function LocalLlmTab() {
                     aria-label="Port"
                     type="number"
                     value={llamaForm.port}
-                    onChange={(e) => setLlamaForm((prev) => ({ ...prev, port: parseInt(e.target.value, 10) || 8080 }))}
+                    onChange={(e) => setLlamaNumber('port', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>
@@ -1076,7 +1097,7 @@ export function LocalLlmTab() {
                     aria-label="Context Size"
                     type="number"
                     value={llamaForm.ctxSize}
-                    onChange={(e) => setLlamaForm((prev) => ({ ...prev, ctxSize: parseInt(e.target.value, 10) || 32768 }))}
+                    onChange={(e) => setLlamaNumber('ctxSize', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>
@@ -1087,12 +1108,7 @@ export function LocalLlmTab() {
                     aria-label="GPU Layers (-ngl)"
                     type="number"
                     value={llamaForm.nGpuLayers}
-                    onChange={(e) => setLlamaForm((prev) => {
-                      // `-ngl 0` is a real setting (CPU-only), so only a cleared
-                      // field — parseInt's NaN — may fall back to the default.
-                      const parsed = parseInt(e.target.value, 10);
-                      return { ...prev, nGpuLayers: Number.isNaN(parsed) ? 99 : parsed };
-                    })}
+                    onChange={(e) => setLlamaNumber('nGpuLayers', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>
@@ -1103,7 +1119,7 @@ export function LocalLlmTab() {
                     aria-label="Spec Type"
                     type="text"
                     value={llamaForm.specType}
-                    onChange={(e) => setLlamaForm((prev) => ({ ...prev, specType: e.target.value }))}
+                    onChange={(e) => setLlamaField('specType', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>
