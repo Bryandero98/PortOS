@@ -1053,8 +1053,20 @@ export async function cleanupOrphanedWorktrees(sourceWorkspace, activeAgentIds) 
  * `.claude/worktrees/` trees created by `/work`, `/claim`, and the superpowers
  * git-worktree skill (these share the PortOS repo, so they appear in
  * `git worktree list`). Active CoS agents and locked worktrees are never touched.
- * Human `/claim` worktrees (`claim-*`) are skipped by default (they self-clean in
- * the claim flow's Phase 7).
+ *
+ * Human `/claim` worktrees (`claim-*`) are ALWAYS skipped here, and deliberately
+ * so — this reaper passes neither `allowStaleClaim` nor an age, which is not an
+ * oversight to be fixed by handing it the same discriminator branch-reconcile
+ * uses. Reclaiming a claim tree turns on how long it has been idle and on
+ * whether its branch was provably SHIPPED (its upstream ref gone from origin),
+ * and `branchReconcile` is the module that computes both, per branch, with the
+ * remote-head listing to back it. This reaper knows only "merged + clean", which
+ * is also true of a claim a human paused ten minutes ago. So the claim window
+ * stays in ONE place: branch-reconcile reaps a shipped or abandoned claim on its
+ * own pass, and the claim flow's Phase 7 self-cleans the ordinary case. (Under
+ * `WORKTREES_DIR` the skip is doubly enforced: that root sets
+ * `requireAgentId: true`, so a `claim-*` basename is refused as
+ * `worktree-missing-agent-id` before the claim test is even reached.)
  *
  * @param {string} sourceWorkspace - repo root
  * @param {object} [options]

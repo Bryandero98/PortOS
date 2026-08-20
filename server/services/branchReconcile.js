@@ -234,12 +234,13 @@ async function getOpenPrsByHead(repoPath) {
  * Reason a worktree must NOT be torn down, or null if it's safe to remove.
  * Pure — the dangerous-to-remove cases the deterministic cleanup must respect
  * (mirrors the guards the existing worktree reaper honors):
+ * In gate order, so a tree held by more than one of these reports the FIRST:
  *   - locked            → the user explicitly `git worktree lock`ed it
+ *   - active CoS agent  → an agent (`agent-<id>`) is currently running in it
  *   - human `/claim`    → a `claim-<slug>` worktree self-cleaned by the /claim flow,
  *                         UNLESS it is an abandoned one older than `staleClaimIdleMs`
  *                         (`ageMs` supplied) — those are reaped (see STALE_CLAIM_IDLE_MS,
  *                         and SHIPPED_CLAIM_IDLE_MS for a claim proven shipped)
- *   - active CoS agent  → an agent (`agent-<id>`) is currently running in it
  * Sibling worktrees (`next-issue-*`, etc.) whose basename is none of these fall
  * through to null and are cleaned normally.
  *
@@ -316,7 +317,7 @@ export function isAbandonedAgentWorktree({ path, locked, activeAgentIds }) {
 
 /**
  * Why this branch must be left ALONE this cycle — the dispatch-side counterpart to
- * `worktreeProtectionReason`'s teardown gate. Two cases that gate doesn't cover:
+ * `worktreeProtectionReason`'s teardown gate. Three cases that gate doesn't cover:
  *
  * 1. **Liveness we could not determine.** `worktreeProtectionReason` is only ever
  *    called with an authoritative `activeAgentIds` Set (cleanupMerged defaults it to
@@ -332,12 +333,20 @@ export function isAbandonedAgentWorktree({ path, locked, activeAgentIds }) {
  *    otherwise classifies IN_REVIEW and gets handed to the coordinator while its own
  *    agent is still working. That is the bug this whole guard exists to prevent,
  *    surviving in a narrower window. So the branch name is checked too.
+ * 3. **A claim directory, which is a claim MARKER and not a live process.** The
+ *    claim flow has no durable local agent id for its branch, so treating the
+ *    directory's existence as liveness hides clean, open-PR claims after the
+ *    claim agent has exited — exactly the branches branch-reconcile exists to
+ *    finish. So this side passes `allowLiveClaim`, while cleanup keeps the hold
+ *    through `worktreeProtectionReason` until the claim is stale or provably
+ *    shipped. A lock still outranks it: the gate tests the lock BEFORE the
+ *    claim, so a locked claim tree reports `worktree-locked` on its own.
  * A branch with no worktree at all and no live owner is simply free (null).
  *
- * @param {{ branch?:string|null, path:string|null, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number|null }} input
+ * @param {{ branch?:string|null, path:string|null, locked?:boolean, activeAgentIds?:Set<string> }} input
  * @returns {string|null} a stable reason slug, or null when nobody owns it
  */
-export function resolveLiveOwnerReason({ branch, path, locked, activeAgentIds, ageMs }) {
+export function resolveLiveOwnerReason({ branch, path, locked, activeAgentIds }) {
   // The branch's own trailing segment is an agent id for CoS branches — checked
   // FIRST because it holds even after the worktree is gone.
   const owner = (branch || '').split('/').pop() || '';
@@ -345,27 +354,13 @@ export function resolveLiveOwnerReason({ branch, path, locked, activeAgentIds, a
     return 'branch-active-agent';
   }
   if (!path) return null;
-  const reason = worktreeOwnershipReason({
+  return worktreeOwnershipReason({
     path,
     locked,
     activeAgentIds,
-    allowStaleClaim: true,
-    ageMs,
-    staleClaimIdleMs: STALE_CLAIM_IDLE_MS,
+    allowLiveClaim: true,
     requireKnownLiveness: true,
   });
-
-  // A `claim-*` directory is a claim marker, not a live-process marker. The
-  // claim flow has no durable local agent id for this branch, so treating the
-  // directory's existence as liveness hides clean, open-PR claims after the
-  // claim agent has exited — exactly the branches branch-reconcile exists to
-  // finish. Cleanup makes the same call through worktreeProtectionReason, which
-  // holds a claim worktree until it is stale or provably shipped; this
-  // dispatch-side exception only applies after the classifier has established
-  // that the tree is clean. A lock remains an explicit hold even for a claim
-  // worktree.
-  if (reason === 'worktree-human-claim') return locked ? 'worktree-locked' : null;
-  return reason;
 }
 
 /**
@@ -726,7 +721,7 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
       // the two must agree, or the reconciler protects a worktree from deletion and
       // then hands its branch to an agent that rebases underneath the live session.
       liveOwnerReason: resolveLiveOwnerReason({
-        branch: b.name, path: worktreePath, locked: worktreeLocked, activeAgentIds, ageMs: worktreeAge
+        branch: b.name, path: worktreePath, locked: worktreeLocked, activeAgentIds
       }),
       behind: divergence.behind,
       ahead: divergence.ahead,
