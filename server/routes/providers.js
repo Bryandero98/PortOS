@@ -15,7 +15,9 @@ import {
   spawnRuntimeInstaller,
   stopRuntimeInstaller,
 } from '../services/providerRuntimeInstaller.js';
-import { getProviderReadinessMap } from '../services/providerReadiness.js';
+import { getProviderReadinessMap, resetProviderReadinessCache } from '../services/providerReadiness.js';
+import { runLocalRuntimeSetup } from '../services/localRuntimeSetup.js';
+import { localRuntimeForProvider } from '../lib/localProviderRuntime.js';
 
 /**
  * The CoS Agent Runner's exec allowlist, published read-only so the AI
@@ -39,6 +41,12 @@ const RUNNER_ALLOWED_COMMANDS = [...ALLOWED_COMMANDS].sort();
 // re-entrancy guard for a double-click or a second browser tab; its child stays
 // in the route so a client disconnect can terminate it.
 let runtimeInstallInFlight = null;
+
+// Same re-entrancy guard for the local-daemon setup lane. Separate from the CLI
+// one because they install different things, but each is single-flight: two
+// concurrent `brew install`s (or two copies of one daemon racing for a port) is
+// never what a double-click meant.
+let runtimeSetupInFlight = false;
 
 /**
  * Sanitize a provider object for client responses.
@@ -291,6 +299,89 @@ export function createPortOSProviderRoutes(aiToolkit) {
       }
     });
   };
+
+  /**
+   * Install and/or start the LOCAL DAEMON one provider points at, streaming
+   * progress as SSE. This is the "do it for me" half of `/readiness`: the
+   * checklist says llama.cpp / Ollama / LM Studio / MTPLX is missing or down,
+   * and this fixes it without sending the user to a vendor setup doc.
+   *
+   * The request names a PROVIDER id, never an endpoint, port, or command. The
+   * runtime kind and the endpoint are both re-derived server-side from the
+   * stored provider record, so nothing from the query reaches a spawn argument
+   * — the `runtime` param is only cross-checked against what the record
+   * resolves to, so a stale page cannot set up a different daemon than the card
+   * it was clicked on.
+   */
+  router.post('/readiness/setup', asyncHandler(async (req, res) => {
+    const providerId = String(req.query.provider || '');
+    const data = await providerService.getAllProviders();
+    // RAW record on purpose — a sanitized copy redacts the secret env values a
+    // custom base URL can live in, which would resolve the wrong endpoint.
+    const provider = data.providers.find((row) => row.id === providerId);
+    if (!provider) {
+      throw new ServerError('Unknown provider', { status: 404, code: 'UNKNOWN_PROVIDER', context: { provider: providerId } });
+    }
+    const runtime = localRuntimeForProvider(provider);
+    if (!runtime) {
+      throw new ServerError('This provider does not depend on a local runtime PortOS can set up.', { status: 400, code: 'NO_LOCAL_RUNTIME' });
+    }
+    const requested = req.query.runtime ? String(req.query.runtime) : runtime.kind;
+    if (requested !== runtime.kind) {
+      throw new ServerError('This provider no longer uses that runtime — reload the page and try again.', { status: 409, code: 'RUNTIME_MISMATCH' });
+    }
+
+    const { send, safeEnd } = openSseStream(res);
+    const installLog = createInstallLogger({ installer: runtime.label, target: runtime.endpoint });
+    let clientGone = false;
+    let holdsLock = false;
+    onClientDisconnect(req, res, () => {
+      clientGone = true;
+      installLog.cancel();
+      if (holdsLock) runtimeSetupInFlight = false;
+      safeEnd();
+    });
+
+    if (runtimeSetupInFlight) {
+      send({ type: 'error', message: 'Another local-runtime setup is already running. Wait for it to finish.' });
+      return safeEnd();
+    }
+    runtimeSetupInFlight = true;
+    holdsLock = true;
+    if (clientGone) {
+      runtimeSetupInFlight = false;
+      return safeEnd();
+    }
+
+    send({ type: 'stage', stage: 'setup', message: `Setting up ${runtime.label} for ${runtime.endpoint}.` });
+    installLog.start();
+    const emit = (message) => {
+      const event = { type: 'log', message };
+      installLog.onEvent(event);
+      send(event);
+    };
+
+    // `runLocalRuntimeSetup` resolves for every expected failure; the `.catch`
+    // covers the unexpected throw. Either way the headers are already flushed,
+    // so the outcome has to be a terminal SSE frame rather than a 500 body.
+    const result = await runLocalRuntimeSetup(runtime.kind, {
+      endpoint: runtime.endpoint,
+      emit,
+      isCancelled: () => clientGone,
+    }).catch((err) => ({ success: false, error: err.message }));
+
+    if (holdsLock) { runtimeSetupInFlight = false; holdsLock = false; }
+    // A daemon just came up (or a binary just landed) — the readiness caches
+    // remember it being down, and the page polls them within seconds.
+    resetProviderReadinessCache();
+    if (clientGone) return safeEnd();
+    const terminal = result.success
+      ? { type: 'complete', message: result.message || `${runtime.label} is ready.` }
+      : { type: 'error', message: result.error || `${runtime.label} setup failed.` };
+    installLog.onEvent(terminal);
+    send(terminal);
+    safeEnd();
+  }));
 
   // `runtime` rides in the query string because the shared RuntimeInstallModal
   // already appends it there for every BYO-runtime installer.

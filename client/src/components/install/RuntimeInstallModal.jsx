@@ -18,6 +18,11 @@ export default function RuntimeInstallModal({
   open,
   runtime,
   label,
+  // Heading + completion prose. Defaults read as an install because that is
+  // what every original caller does; a caller whose action is "start this
+  // daemon" passes its own so the modal doesn't claim an install that isn't
+  // happening.
+  title,
   onClose,
   onComplete,
   installUrlBase = '/api/video-gen/setup/runtime-install',
@@ -73,7 +78,7 @@ export default function RuntimeInstallModal({
               : error ? <AlertCircle size={18} className="text-port-error" />
               : <Download size={18} className="text-port-accent" />}
             <h2 id="runtime-install-title" className="text-sm font-semibold text-white">
-              Installing {label || runtime}
+              {title || `Installing ${label || runtime}`}
             </h2>
           </div>
           <button

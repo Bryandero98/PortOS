@@ -156,13 +156,14 @@ export const LOCAL_RUNTIMES = Object.freeze({
   mtplx: Object.freeze({
     id: 'mtplx',
     label: 'MTPLX',
-    // PortOS ships no installer for MTPLX — it is a user-run process — so the
-    // readiness report offers docs instead of an install action.
-    command: null,
+    command: 'mtplx',
     defaultBaseUrl: opencodeLocalBaseUrl('mtplx'),
+    // No Local LLM tab entry — MTPLX has no model catalog inside PortOS. The
+    // one-click setup on the readiness checklist
+    // (`services/localRuntimeSetup.js`) is what installs and starts it.
     manageUrl: null,
     docsUrl: 'https://github.com/atomantic/PortOS/blob/main/docs/features/mtplx.md',
-    modelsHint: 'Start the MTPLX server yourself; PortOS does not manage that process.',
+    modelsHint: 'Point the server at the Qwen MTP checkpoint you want; PortOS does not download weights.',
   }),
 });
 

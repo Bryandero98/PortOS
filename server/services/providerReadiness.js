@@ -37,6 +37,7 @@ import { localRuntimeForProvider } from '../lib/localProviderRuntime.js';
 import { isConfiguredDefaultModel } from '../lib/providerModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
+import { describeRuntimeSetup } from './localRuntimeSetup.js';
 import { isAppInstalled as isLmStudioAppInstalled } from './lmStudioManager.js';
 
 /**
@@ -124,21 +125,39 @@ function servedModelId(provider, kind) {
   return trimmed.startsWith(`${kind}/`) ? trimmed.slice(kind.length + 1) : trimmed;
 }
 
+/**
+ * The fix hint for a check the one-click setup button already covers.
+ *
+ * `setup.actionLabel` names a button rendered right below the checklist, so the
+ * hint points AT it rather than repeating a terminal recipe — and a runtime this
+ * host cannot set up at all says why instead of sending the user to a doc that
+ * would not help them either.
+ *
+ * `null` means "no button covers this", and the caller falls back to its own
+ * prose. `covers` is the action the check needs: an install-only button does
+ * nothing for a `server` check.
+ */
+function setupHint(setup, covers) {
+  if (!setup) return null;
+  if (setup.blockedReason) return setup.blockedReason;
+  return setup.action?.includes(covers) ? `Use “${setup.actionLabel}” below — PortOS does this for you.` : null;
+}
+
 /** The `runtime` check — is the daemon's software here at all? */
-function runtimeCheck(runtime, { onPath, appInstalled, installed, reachable }) {
+function runtimeCheck(runtime, { onPath, appInstalled, installed, reachable, setup }) {
   const detail = onPath ? `\`${runtime.command}\` is on PortOS's PATH.`
     : appInstalled ? `${runtime.label} is installed as an app.`
       : reachable ? `Something is already serving ${runtime.endpoint}.`
-        : runtime.command ? `\`${runtime.command}\` was not found on PortOS's PATH.`
-          : `PortOS does not install ${runtime.label} — start it yourself.`;
+        : `\`${runtime.command}\` was not found on PortOS's PATH.`;
   const fixHint = installed ? null
-    : runtime.manageUrl ? `Install ${runtime.label} from Settings → Local LLM.`
-      : `Follow the ${runtime.label} setup docs, then reload this page.`;
+    : setupHint(setup, 'install')
+      || (runtime.manageUrl ? `Install ${runtime.label} from Settings → Local LLM.`
+        : `Follow the ${runtime.label} setup docs, then reload this page.`);
   return { id: 'runtime', label: `${runtime.label} installed`, ok: installed, detail, fixHint };
 }
 
 /** The `server` check — is it running where THIS provider points? */
-function serverCheck(runtime, { installed, result }) {
+function serverCheck(runtime, { installed, result, setup }) {
   if (result.reachable) {
     return {
       id: 'server',
@@ -149,14 +168,15 @@ function serverCheck(runtime, { installed, result }) {
     };
   }
   const start = `Start ${runtime.label}${runtime.manageUrl ? ' from Settings → Local LLM' : ''}.`;
+  const fallback = installed
+    ? `${start} ${runtime.modelsHint}`
+    : `Install ${runtime.label} first, then start it. ${runtime.modelsHint}`;
   return {
     id: 'server',
     label: `${runtime.label} server responding`,
     ok: false,
     detail: `Nothing answered at ${runtime.endpoint}${result.error ? ` (${result.error})` : ''}.`,
-    fixHint: installed
-      ? `${start} ${runtime.modelsHint}`
-      : `Install ${runtime.label} first, then start it. ${runtime.modelsHint}`,
+    fixHint: setupHint(setup, 'start') || fallback,
   };
 }
 
@@ -221,9 +241,13 @@ export async function getProviderReadiness(provider, deps = {}) {
   const appInstalled = runtime.kind === 'lmstudio' && (deps.isAppInstalled || isLmStudioAppInstalled)();
   const installed = onPath || appInstalled || result.reachable;
 
+  // Resolved BEFORE the checks so each unmet one can point at the button that
+  // fixes it rather than at a setup doc.
+  const setup = describeRuntimeSetup(runtime.kind, { installed, running: result.reachable });
+
   const checks = [
-    runtimeCheck(runtime, { onPath, appInstalled, installed, reachable: result.reachable }),
-    serverCheck(runtime, { installed, result }),
+    runtimeCheck(runtime, { onPath, appInstalled, installed, reachable: result.reachable, setup }),
+    serverCheck(runtime, { installed, result, setup }),
   ];
   const wanted = servedModelId(provider, runtime.kind);
   // `probeEndpoint` returns `models: null` on every unreachable path, so this
@@ -240,6 +264,11 @@ export async function getProviderReadiness(provider, deps = {}) {
     // a pass, so the card never claims a provider is good to go on unknowns.
     ready: checks.every((check) => check.ok === true),
     checks,
+    // What a one-click "set this up for me" button can do about the unmet
+    // checks, or `null` when nothing here is auto-fixable (see
+    // `localRuntimeSetup.js`). Carried on the readiness payload so the card
+    // offers the ACTION next to the failing check instead of a setup-doc link.
+    setup,
   };
 }
 
