@@ -170,15 +170,17 @@ function expiryCutoff(now = Date.now()) {
 }
 
 /**
- * Is this event still inside the age window?
+ * Would a reader see this line — i.e. is it structurally sound AND still inside
+ * the age window?
  *
- * A line with no usable `at` is treated as NOT fresh. That is deliberate: `at`
- * is required by the envelope schema, so a line without one is corrupt or
- * truncated, the read path already drops it, and leaving it on disk would let
- * unreadable bytes accumulate forever under a retention policy that can never
- * date them. Pruning is the only thing that ever cleans them up.
+ * One predicate, used by the read path, the stats, and the prune, so all three
+ * agree by construction. A structurally invalid or undatable line counts as
+ * NOT retained: the read path drops it either way, so counting it would make
+ * the stats disagree with the endpoint they describe, and leaving it on disk
+ * would let unreadable bytes accumulate forever under a retention policy that
+ * can never date them. The prune is the only thing that ever cleans them up.
  */
-const isFresh = (event, cutoff) => typeof event?.at === 'string' && event.at > cutoff;
+const isRetained = (event, cutoff) => isStoredRunEvent(event) && event.at > cutoff;
 
 /**
  * Rewrite both generations without their expired events, and drop the expired
@@ -200,8 +202,8 @@ async function pruneExpired({ now = Date.now(), force = false } = {}) {
     readJSONLFile(ACTIVE_PATH)
   ]);
 
-  const keptArchive = archive.filter((e) => isFresh(e, cutoff));
-  const keptActive = active.filter((e) => isFresh(e, cutoff));
+  const keptArchive = archive.filter((e) => isRetained(e, cutoff));
+  const keptActive = active.filter((e) => isRetained(e, cutoff));
   const dropped = (archive.length - keptArchive.length) + (active.length - keptActive.length);
   if (dropped === 0) return;
 
@@ -307,8 +309,9 @@ export async function readRunEvents({ runId, agentId, taskId, kind, since, limit
   // A line that fails the STRUCTURAL check is a corrupt/truncated write, not
   // data — dropping it keeps one bad line from poisoning the whole projection.
   // The check deliberately admits kinds this build does not know (see
-  // `isStoredRunEvent`): a newer install's ledger must still read here.
-  let events = [...archive, ...active].filter((e) => isStoredRunEvent(e) && isFresh(e, cutoff));
+  // `isStoredRunEvent`): a newer install's ledger must still read here. The
+  // same predicate bounds the age, so a reader never sees an expired event.
+  let events = [...archive, ...active].filter((e) => isRetained(e, cutoff));
 
   if (runId) events = events.filter((e) => e.runId === runId);
   if (agentId) events = events.filter((e) => e.agentId === agentId);
@@ -368,11 +371,11 @@ export async function getRunEventLedgerStats() {
     readJSONLFile(ARCHIVE_PATH),
     readJSONLFile(ACTIVE_PATH)
   ]);
-  // Counted the way a reader sees them (fresh only), so "stats say 40 events"
-  // and "the events endpoint returns 40" can never disagree.
+  // Counted through the SAME predicate the read path uses, so "stats say 40
+  // events" and "the events endpoint returns 40" can never disagree.
   const cutoff = expiryCutoff();
-  const freshArchive = archive.filter((e) => isFresh(e, cutoff));
-  const freshActive = active.filter((e) => isFresh(e, cutoff));
+  const freshArchive = archive.filter((e) => isRetained(e, cutoff));
+  const freshActive = active.filter((e) => isRetained(e, cutoff));
   const oldest = freshArchive[0]?.at ?? freshActive[0]?.at ?? null;
   return {
     activeEvents: freshActive.length,

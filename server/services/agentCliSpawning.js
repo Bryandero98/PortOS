@@ -439,6 +439,30 @@ export async function spawnDirectly({
   // `run.output` for a run that has produced nothing — the exact case (a
   // provider that never spoke) the ledger is supposed to make visible.
   let firstOutputRecorded = false;
+  /**
+   * Record the run's first observed output, once (#4540) — never per chunk. A
+   * per-chunk event would make the ledger a copy of the output it deliberately
+   * redacts and would exhaust the retention bound in minutes. What the one event
+   * buys is time-to-first-output: a run that stalled after speaking and a run
+   * that never spoke at all are indistinguishable in the mutable record.
+   *
+   * Called from BOTH streams. Several providers say everything they have to say
+   * on stderr (codex's whole progress feed is stderr), and that output lands in
+   * the same transcript — a stdout-only recorder would file those runs as silent.
+   * The explicit key keeps the append idempotent however the two callers race.
+   */
+  const recordFirstOutput = (source, chars) => {
+    if (firstOutputRecorded) return;
+    firstOutputRecorded = true;
+    return appendRunEvent({
+      kind: 'run.output',
+      runId,
+      agentId,
+      taskId: task.id,
+      eventId: `output:${agentId}:${runId || 'no-run'}:first`,
+      data: { source, firstChunkChars: chars },
+    });
+  };
   const outputFile = join(agentDir, 'output.txt');
   const isStreamJson = cliConfig.streamFormat === 'stream-json';
   const streamParser = isStreamJson ? createStreamJsonParser() : null;
@@ -528,23 +552,7 @@ export async function spawnDirectly({
       // Serialize the transcript body so two `data` events can't interleave their
       // awaits and reorder output.txt / the batched live tail.
       enqueueTranscriptWrite(async () => {
-        if (!firstOutputRecorded) {
-          firstOutputRecorded = true;
-          // Once per run, on the FIRST real byte (#4540) — never per chunk. A
-          // per-chunk event would make the ledger a copy of the output it
-          // deliberately redacts and would exhaust the retention bound in
-          // minutes. What this one event buys is time-to-first-output: a run
-          // that stalled after speaking and a run that never spoke at all are
-          // indistinguishable in the mutable record.
-          await appendRunEvent({
-            kind: 'run.output',
-            runId,
-            agentId,
-            taskId: task.id,
-            eventId: `output:${agentId}:${runId || 'no-run'}:first`,
-            data: { source: 'cli-stdout', firstChunkChars: text.length },
-          });
-        }
+        await recordFirstOutput('cli-stdout', text.length);
         if (!hasStartedWorking) {
           hasStartedWorking = true;
           await updateAgent(agentId, { metadata: { phase: 'working' } });
@@ -579,6 +587,7 @@ export async function spawnDirectly({
       // Synchronous fallback detection before the serialized write (see stdout).
       stopForImmediateFallbackSignal(`[stderr] ${text}`);
       enqueueTranscriptWrite(async () => {
+        await recordFirstOutput('cli-stderr', text.length);
         // Codex stderr: show thinking + tool names, skip config dump and command output
         if (codexStderrFormatter) {
           const lines = codexStderrFormatter.processChunk(text);

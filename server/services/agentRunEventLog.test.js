@@ -385,3 +385,18 @@ describe('retention — dedupe and the age bound agree (#4540)', () => {
     expect(await appendRunEvent({ ...event })).toMatchObject({ appended: true, duplicate: false });
   });
 });
+
+describe('retention — one predicate for reads, stats, and the prune (#4540)', () => {
+  it('does not count a corrupt line the read path refuses to return', async () => {
+    // Otherwise "stats say 2 events" and "the events endpoint returns 1"
+    // disagree, and the stats are the thing a reader consults to decide whether
+    // a missing run aged out or was never recorded.
+    await appendRunEvent({ kind: 'run.spawned', runId: 'r1', at: '2026-08-18T12:00:00.000Z' });
+    writeFileSync(ACTIVE, `${readFileSync(ACTIVE, 'utf8')}{"eventId":"x","kind":"run.spawned","at":"2026-08-18T12:30:00.000Z"}\n`);
+    restartServer();
+
+    const stats = await getRunEventLedgerStats();
+    expect(stats.activeEvents).toBe(1);
+    expect(await readRunEvents()).toHaveLength(1);
+  });
+});

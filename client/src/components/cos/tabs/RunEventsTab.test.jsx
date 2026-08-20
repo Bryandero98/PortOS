@@ -139,3 +139,28 @@ describe('summarizeEventData', () => {
     expect(summarizeEventData({ branch: null, category: 'pr-missing' })).toBe('category=pr-missing');
   });
 });
+
+describe('RunEventsTab — a failed detail fetch is not an empty run', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getRunEventStats.mockResolvedValue(STATS);
+    api.getRunEventProjections.mockResolvedValue([projection()]);
+  });
+
+  it('says the fetch failed rather than "this run has no events"', async () => {
+    // One is a statement about the ledger, the other about the network. The
+    // reassuring "may have aged out" copy would hide the second behind the first.
+    api.getRunEventDiagnostic.mockRejectedValue(new Error('offline'));
+    renderTab('/cos/run-events?run=run-a');
+
+    expect(await screen.findByText(/Could not load this run's events/)).toBeInTheDocument();
+    expect(screen.queryByText(/may have aged out/)).not.toBeInTheDocument();
+  });
+
+  it('still says "no events in the ledger" when the server genuinely has none', async () => {
+    api.getRunEventDiagnostic.mockResolvedValue({ projection: null, events: [] });
+    renderTab('/cos/run-events?run=run-a');
+
+    expect(await screen.findByText(/may have aged out/)).toBeInTheDocument();
+  });
+});

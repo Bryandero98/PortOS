@@ -1213,6 +1213,7 @@ export async function spawnTuiAgent({
         agentId,
         taskId: task.id,
         eventId: `handoff:${agentId}:${runId || 'no-run'}:rejected`,
+        // Same refusal-vs-lost-acknowledgement conflation as the CLI path (#4615).
         data: { to: 'none', accepted: false, kind: 'tui', reason: message },
       });
     }

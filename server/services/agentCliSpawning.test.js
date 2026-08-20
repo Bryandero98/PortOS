@@ -588,6 +588,24 @@ describe('stream error containment', () => {
     await spawnPromise.catch(() => {});
   });
 
+  it('counts stderr-only output too — several providers say everything there', async () => {
+    // codex's entire progress feed is stderr and lands in the same transcript.
+    // A stdout-only recorder would file those runs as having produced nothing.
+    appendRunEvent.mockClear();
+    const spawnPromise = spawnDirectly(minimalArgs);
+    await new Promise((r) => setTimeout(r, 10));
+
+    fakeProcess.stderr.emit('data', Buffer.from('thinking...\n'));
+    await new Promise((r) => setTimeout(r, 20));
+
+    const outputs = appendRunEvent.mock.calls.map(([e]) => e).filter((e) => e.kind === 'run.output');
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0].data).toMatchObject({ source: 'cli-stderr' });
+
+    fakeProcess.emit('close', 0);
+    await spawnPromise.catch(() => {});
+  });
+
   it('records no run.output for a run that never produced any', async () => {
     // The 3s initialization timer flips the record to "working" with nothing
     // behind it, which is exactly the run this boundary must NOT vouch for.

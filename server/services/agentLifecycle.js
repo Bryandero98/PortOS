@@ -878,6 +878,11 @@ export async function spawnViaRunner(agentId, task, opts) {
       agentId,
       taskId: task.id,
       eventId: `handoff:${agentId}:${runId || 'no-run'}:rejected`,
+    // `accepted: false` mirrors what the finalize below already concludes. Note
+    // that the runner spawn path cannot currently tell an explicit refusal from
+    // an ambiguous transport failure (a lost acknowledgement for a spawn the
+    // runner DID accept) — a pre-existing conflation this event inherits rather
+    // than introduces. Tracked in #4615.
       data: { to: 'none', accepted: false, reason: message },
     });
     releaseAgentLane({ agentId, success: false, exitCode: 1, executionId, laneName, errorExecutionMessage: message });

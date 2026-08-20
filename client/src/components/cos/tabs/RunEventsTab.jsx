@@ -106,8 +106,11 @@ export default function RunEventsTab() {
     }
     let cancelled = false;
     setDetailLoading(true);
+    // `null` is the same could-not-fetch sentinel the list uses. Falling back to
+    // an empty diagnostic would render "this run has no events" — a statement
+    // about the ledger — for what is actually a statement about the network.
     api.getRunEventDiagnostic(selectedId, { silent: true })
-      .catch(() => ({ projection: null, events: [] }))
+      .catch(() => null)
       .then((next) => {
         if (cancelled) return;
         setDetail(next);
@@ -200,7 +203,10 @@ export default function RunEventsTab() {
               </p>
             )}
             {selectedId && detailLoading && <BrailleSpinner text="Replaying" />}
-            {selectedId && !detailLoading && <RunDiagnostic detail={detail} />}
+            {selectedId && !detailLoading && detail === null && (
+              <Banner tone="error">Could not load this run's events.</Banner>
+            )}
+            {selectedId && !detailLoading && detail !== null && <RunDiagnostic detail={detail} />}
           </div>
         </div>
       )}
