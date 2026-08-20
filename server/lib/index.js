@@ -346,6 +346,7 @@ export * from './mirrorParity.js';
 export * from './objects.js';
 export * from './openapiSpec.js';
 export * from './prDisposition.js';
+export * from './shellCd.js';
 export * from './shellQuote.js';
 export * from './sidecarProcess.js';
 export * from './slashdoCatalog.js';

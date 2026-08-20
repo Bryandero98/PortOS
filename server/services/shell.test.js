@@ -372,6 +372,24 @@ describe('writeToSession / resizeSession', () => {
   });
 });
 
+describe('changeSessionDirectory', () => {
+  it('writes the cd in the dialect of the shell THIS session spawned', () => {
+    // A Windows session runs cmd.exe, where the POSIX form the Shell page used to
+    // send is both mis-quoted and drive-blind — see lib/shellCd.js.
+    const winId = shell.createShellSession(makeSocket('sock-win'), { shell: 'C:\\WINDOWS\\system32\\cmd.exe' });
+    expect(shell.changeSessionDirectory(winId, 'I:\\code\\example-app')).toBe(true);
+    expect(ptyInstances[0].write).toHaveBeenCalledWith('cd /d "I:\\code\\example-app"\n');
+
+    const posixId = shell.createShellSession(makeSocket('sock-posix'), { shell: '/bin/zsh' });
+    expect(shell.changeSessionDirectory(posixId, '/Users/example/my app')).toBe(true);
+    expect(ptyInstances[1].write).toHaveBeenCalledWith("cd '/Users/example/my app'\n");
+  });
+
+  it('returns false for a missing session', () => {
+    expect(shell.changeSessionDirectory('missing', '/tmp')).toBe(false);
+  });
+});
+
 describe('pasteToSession', () => {
   let id;
   let pty;
