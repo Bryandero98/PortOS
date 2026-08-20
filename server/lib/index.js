@@ -213,6 +213,7 @@ export * from './gitForge.js';
 export * from './gitOutputParsers.js';
 export * from './gitRemote.js';
 export * from './githubRepoUrl.js';
+export * from './glabArgs.js';
 export * from './goalFeatureMap.js';
 export * from './interactiveShellResolver.js';
 export * from './killWithEscalation.js';

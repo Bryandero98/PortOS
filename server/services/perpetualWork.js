@@ -28,6 +28,7 @@ import { join } from 'path';
 import { emitLog } from './cosEvents.js';
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, extractSlugFromRef } from '../lib/planIds.js';
 import { readOriginRemoteUrl } from '../lib/gitRemote.js';
+import { withGlabJson } from '../lib/glabArgs.js';
 
 // Labels that make a GitHub issue non-actionable for autonomous claiming. MUST
 // stay in sync with the claim-issue prompt's Phase 1 skip-list
@@ -136,7 +137,7 @@ async function inFlightIssueNumbers(repoPath, forge = 'github') {
   const nums = new Set();
   // The branch list and the PR/MR list are independent CLI calls — run concurrently.
   const prListCall = forge === 'gitlab'
-    ? runCli('glab', ['mr', 'list', '--per-page', '100', '-F', 'json'], repoPath)
+    ? runCli('glab', withGlabJson(['mr', 'list', '--per-page', '100']), repoPath)
     : runCli('gh', ['pr', 'list', '--state', 'open', '--json', 'headRefName', '-q', '.[].headRefName'], repoPath);
   const [branchRes, prRes] = await Promise.all([
     runCli('git', ['branch', '-a', '--no-color', '--format=%(refname:short)'], repoPath),
@@ -335,7 +336,7 @@ const FORGE_ISSUE_CONFIG = {
     // can still park on a false "no actionable issues" despite real work
     // further down the queue. `--issues-label`-style curation is the
     // practical mitigation there; this detector has no equivalent knob yet.
-    listArgs: ['issue', 'list', '--per-page', '100', '-F', 'json'],
+    listArgs: withGlabJson(['issue', 'list', '--per-page', '100']),
     listFail: 'glab-list-failed',
     parseFail: 'glab-parse-failed',
     // Park reason when the owner filter resolves to a non-authoring owner. On

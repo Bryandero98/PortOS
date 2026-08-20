@@ -2553,7 +2553,7 @@ function buildManualPrCreateStep(step, { branchName, baseBranch, forgeCli = 'gh'
       ? `   PR_URL=$(glab mr create --source-branch ${branch} --target-branch ${base} --title "<conventional title>" --description "<description>" | grep -Eo 'https?://[^[:space:]]+' | tail -n 1)`
       : `   PR_URL=$(gh pr create --base ${base} --head ${branch} --title "<conventional title>" --body "<description>")`,
     gitlab
-      ? '   PR_NUMBER=$(glab mr view "$PR_URL" -F json | jq -r .iid)'
+      ? '   PR_NUMBER=$(glab mr view "$PR_URL" --output json | jq -r .iid)'
       : '   PR_NUMBER=$(gh pr view "$PR_URL" --json number -q .number)',
     '   ```',
     // `--fill` on a one-line commit produces an empty description; PortOS used

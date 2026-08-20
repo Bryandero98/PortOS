@@ -704,7 +704,7 @@ describe('buildLightContextPrompt', () => {
         { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode' });
 
       expect(prompt).toMatch(/PR_URL=\$\(glab mr create --source-branch claim\/issue-4363 --target-branch main/);
-      expect(prompt).toMatch(/PR_NUMBER=\$\(glab mr view "\$PR_URL" -F json \| jq -r \.iid\)/);
+      expect(prompt).toMatch(/PR_NUMBER=\$\(glab mr view "\$PR_URL" --output json \| jq -r \.iid\)/);
       expect(prompt).toMatch(/glab mr diff \$PR_NUMBER/);
       expect(prompt).toMatch(/glab mr merge "\$PR_NUMBER" --yes --remove-source-branch/);
       expect(prompt).toMatch(/glab mr view "\$PR_NUMBER"/);
