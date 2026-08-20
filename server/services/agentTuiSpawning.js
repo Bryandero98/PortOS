@@ -1064,8 +1064,20 @@ export async function spawnTuiAgent({
       // still latches — the swallowed paste never sets promptSubmittedAt.
       if (isCodexSession && !promptSubmittedAt && stripped && !mcpBoot.active) mcpBoot.observe(stripped);
       const now = Date.now();
-      lastOutputAt = now;
-      if (firstOutputAt === null) firstOutputAt = lastOutputAt;
+      // Startup-idle detection (the promptTimer's non-inputReady branch below)
+      // reads lastOutputAt/firstOutputAt to decide the TUI has gone quiet and is
+      // ready for the prompt paste. Gate them on commandInjected for the same
+      // reason inputReady.observe is gated above: the shell-level readiness
+      // probe (posix printf / PowerShell Write-Output) round-trips its own
+      // marker through this same onData hook BEFORE the real CLI command is
+      // injected, so counting it would seed the idle clock from probe echo
+      // instead of the CLI's own output — falsely satisfying "quiet" while a
+      // still-loading CLI (e.g. PowerShell's heavier startup) hasn't painted
+      // anything yet, and pasting the prompt into it.
+      if (commandInjected) {
+        lastOutputAt = now;
+        if (firstOutputAt === null) firstOutputAt = lastOutputAt;
+      }
       recordFirstOutput('tui-pty');
 
       if (!hasStartedWorking) {

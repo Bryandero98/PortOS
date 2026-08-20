@@ -1414,6 +1414,55 @@ describe('spawnTuiAgent runtime', () => {
     expect(pasteWrites()).toHaveLength(1);
   });
 
+  // ── 1c2. The readiness probe's own echo must not seed the startup-idle clock ──
+  // shell.js's waitForPromptReady round-trips a shell-level probe (posix printf /
+  // PowerShell Write-Output) BEFORE injecting the real CLI command, and fires
+  // onInitialCommandSent only once that command is actually typed in. If PTY
+  // output that arrives before onInitialCommandSent counted toward
+  // lastOutputAt/firstOutputAt, a quiet gap after the probe's own echo — e.g.
+  // PowerShell's heavier startup, which is slower than bash — would satisfy the
+  // idle-based "ready" check and paste the prompt into a still-loading CLI (codex
+  // review [P1] on the dialect-aware probe, #4638).
+  it('idle-detection: pre-injection PTY output does not satisfy startup-idle readiness', async () => {
+    let sendInitialCommand = null;
+    vi.mocked(shellService.createShellSession).mockImplementation((_socket, opts) => {
+      capturedOnData = opts.onData;
+      capturedOnExit = opts.onExit;
+      // Do NOT fire onInitialCommandSent yet — mirrors the real shell.js
+      // waitForPromptReady gap between the probe round-trip and command
+      // injection, unlike the suite's default mock (which fires it immediately).
+      sendInitialCommand = () => opts.onInitialCommandSent?.();
+      return SESSION_ID;
+    });
+
+    runSpawn({ prompt: 'evaluate our animation prompts and generate drafts' });
+    await flushMicrotasks();
+
+    // Shell-level probe echo/noise arrives BEFORE the real command is injected.
+    await capturedOnData(Buffer.from("bash-5.2$ printf '%s\\n' 'PORTOSRDY''abc123'\nPORTOSRDYabc123\n"));
+    await flushMicrotasks();
+
+    // Advance well past promptDelayMs + the idle threshold. Pre-fix, this probe
+    // echo would have seeded firstOutputAt/lastOutputAt and the idle poll would
+    // have fired the paste here — before the CLI command was ever typed in.
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+
+    const pasteWrites = () => vi.mocked(shellService.writeToSession).mock.calls
+      .filter(([id, data]) => id === SESSION_ID && data.startsWith('\x1b[200~'));
+    expect(pasteWrites()).toHaveLength(0);
+
+    // Now the real command is injected and the CLI produces its own output —
+    // the idle clock should start from here and the paste should proceed.
+    sendInitialCommand();
+    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+
+    expect(pasteWrites()).toHaveLength(1);
+  });
+
   // ── 1d. Codex MCP-server boot patience (incident 2026-07-10, agent-c5a26b40) ──
   // Codex boots the user's globally-configured MCP servers (playwright via npx,
   // a node_repl with startup_timeout_sec=120) on every headless spawn. During

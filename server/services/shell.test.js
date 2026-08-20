@@ -192,7 +192,7 @@ describe('createShellSession', () => {
   it('waitForPromptReady: holds initialCommand until the readiness probe round-trips, and fires onInitialCommandSent', () => {
     vi.useFakeTimers();
     const onInitialCommandSent = vi.fn();
-    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onInitialCommandSent });
+    shell.createShellSession(makeSocket(), { shell: '/bin/zsh', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onInitialCommandSent });
     const pty = ptyInstances[0];
     // The probe is written after a short PTY-spawn settle, not immediately.
     expect(pty.write).not.toHaveBeenCalled();
@@ -216,7 +216,7 @@ describe('createShellSession', () => {
 
   it('waitForPromptReady: injects the command on the fallback timeout if the probe never round-trips', () => {
     vi.useFakeTimers();
-    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
+    shell.createShellSession(makeSocket(), { shell: '/bin/zsh', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
     const pty = ptyInstances[0];
     vi.advanceTimersByTime(50); // probe written
     // Output streams but the assembled marker never appears.
@@ -230,13 +230,50 @@ describe('createShellSession', () => {
 
   it('waitForPromptReady: if the shell exits before the probe round-trips, the fallback never injects the command', () => {
     vi.useFakeTimers();
-    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
+    shell.createShellSession(makeSocket(), { shell: '/bin/zsh', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
     const pty = ptyInstances[0];
     vi.advanceTimersByTime(50); // probe written
     // The shell dies before the marker round-trips → cancels pending timers.
     pty.emitExit({ exitCode: 1 });
     vi.advanceTimersByTime(8000); // past the (now-cleared) fallback window
     expect(pty.write).not.toHaveBeenCalledWith('claude\r');
+    vi.useRealTimers();
+  });
+
+  it('waitForPromptReady: uses a Write-Output probe on PowerShell and round-trips it the same way', () => {
+    vi.useFakeTimers();
+    const onInitialCommandSent = vi.fn();
+    shell.createShellSession(makeSocket(), { shell: 'pwsh.exe', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onInitialCommandSent });
+    const pty = ptyInstances[0];
+    expect(pty.write).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(50);
+    const probeCall = pty.write.mock.calls.find(([d]) => /Write-Output/.test(d));
+    expect(probeCall).toBeTruthy();
+    const nonce = probeCall[0].match(/'PORTOSRDY' \+ '([0-9a-f]+)'/)[1];
+    const marker = `PORTOSRDY${nonce}`;
+    // The echoed command line (split literals) must not trip readiness.
+    pty.emitData(`PS C:\\> Write-Output ('PORTOSRDY' + '${nonce}')`);
+    expect(pty.write).not.toHaveBeenCalledWith('claude\r');
+    expect(onInitialCommandSent).not.toHaveBeenCalled();
+    pty.emitData(`${marker}\r\n`);
+    expect(pty.write).toHaveBeenCalledWith('claude\r');
+    expect(onInitialCommandSent).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('waitForPromptReady: cmd.exe has no probe and relies solely on the fallback timeout', () => {
+    vi.useFakeTimers();
+    const onInitialCommandSent = vi.fn();
+    shell.createShellSession(makeSocket(), { shell: 'cmd.exe', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onInitialCommandSent });
+    const pty = ptyInstances[0];
+    vi.advanceTimersByTime(50);
+    // No probe is ever written — cmd has no safe split-literal marker.
+    expect(pty.write).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(7949); // total elapsed: 7999
+    expect(pty.write).not.toHaveBeenCalledWith('claude\r');
+    vi.advanceTimersByTime(1); // total elapsed: 8000
+    expect(pty.write).toHaveBeenCalledWith('claude\r');
+    expect(onInitialCommandSent).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
 });

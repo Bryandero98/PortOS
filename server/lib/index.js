@@ -354,6 +354,7 @@ export * from './prDisposition.js';
 export * from './shellCd.js';
 export * from './shellExit.js';
 export * from './shellQuote.js';
+export * from './shellReadinessProbe.js';
 export * from './sidecarProcess.js';
 export * from './slashdoCatalog.js';
 export * from './slashdoInvocation.js';

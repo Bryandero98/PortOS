@@ -6,6 +6,7 @@ import { scheduleSubmitEnters, SUBMIT_KEY } from '../lib/tuiHandshake.js';
 import { buildCdCommand } from '../lib/shellCd.js';
 import { resolveInteractiveShell } from '../lib/interactiveShellResolver.js';
 import { buildRunThenExitCommand } from '../lib/shellExit.js';
+import { buildReadinessProbe } from '../lib/shellReadinessProbe.js';
 
 // Store active shell sessions (persist across socket reconnects)
 const shellSessions = new Map();
@@ -264,24 +265,18 @@ export function createShellSession(socket, options = {}) {
       // exactly the wedged `claude …` at a bare prompt users hit). Instead, PROVE
       // the shell is executing commands with a round-trip probe: print a unique
       // nonce and wait until we SEE it in the OUTPUT. The nonce is split in the
-      // probe source (`'PORTOSRDY' '<nonce>'`) so the command ECHO never contains
+      // probe source (see buildReadinessProbe) so the command ECHO never contains
       // the assembled string — only the executed output matches, so a single
       // sighting is unambiguous. Instant-prompt keystroke buffering replays the
-      // probe into the real shell, so this is theme- and shell-agnostic. A
-      // bounded fallback still injects the command if the probe never round-trips.
-      // NOTE: the probe is still POSIX-only (`printf`), unlike the `cd` and
-      // run-then-exit lines, which are rendered per dialect. On a Windows shell
-      // (PowerShell or cmd.exe) `printf` isn't a command, so the probe errors
-      // out, the marker never appears, and the command injects on the bounded
-      // fallback below — i.e. every Windows agent-TUI spawn waits the full 8s
-      // and then injects blind, which is exactly what the probe exists to avoid.
-      // Never broken, just slow and unproven. Making it dialect-aware is #4638.
+      // probe into the real shell, so this is theme-agnostic. A bounded fallback
+      // still injects the command if the probe never round-trips (or the dialect
+      // has none — cmd.exe, see buildReadinessProbe).
       let sent = false;
       let sub = null;
       let exitSub = null;
       const nonce = uuidv4().replace(/-/g, '').slice(0, 12);
       const marker = `PORTOSRDY${nonce}`;
-      const probe = `printf '%s\\n' 'PORTOSRDY''${nonce}'`;
+      const probe = buildReadinessProbe(nonce, shell);
       let seen = '';
       // Tear down every pending timer + listener. Called both on success
       // (fire) and when the PTY exits before the probe round-trips, so no
@@ -298,11 +293,15 @@ export function createShellSession(socket, options = {}) {
         stop();
         sendInitial();
       };
-      sub = ptyProcess.onData((chunk) => {
-        seen += chunk;
-        if (seen.length > 8192) seen = seen.slice(-8192);
-        if (seen.includes(marker)) fire();
-      });
+      // No probe for this dialect (cmd.exe) — skip the marker watch entirely and
+      // rely on the bounded fallback below, same as a probe that never round-trips.
+      if (probe) {
+        sub = ptyProcess.onData((chunk) => {
+          seen += chunk;
+          if (seen.length > 8192) seen = seen.slice(-8192);
+          if (seen.includes(marker)) fire();
+        });
+      }
       // If the shell dies before the probe round-trips, cancel the pending
       // writes/timers — sent stays true so the fallback can't resurrect a
       // send into the gone session.
@@ -311,7 +310,9 @@ export function createShellSession(socket, options = {}) {
       // Writing earlier is harmless (zsh's line editor / p10k instant-prompt
       // buffer holds it until the prompt is live and replays it), but a small
       // delay avoids racing node-pty's own spawn handshake.
-      const probeTimer = setTimeout(() => { if (!sent) submitToSession(sessionId, probe); }, 50);
+      const probeTimer = probe
+        ? setTimeout(() => { if (!sent) submitToSession(sessionId, probe); }, 50)
+        : null;
       const fallback = setTimeout(fire, options.initialCommandDelayMs ?? 8000);
     } else {
       setTimeout(sendInitial, options.initialCommandDelayMs ?? 200);
