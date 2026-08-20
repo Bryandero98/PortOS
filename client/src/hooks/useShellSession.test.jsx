@@ -80,6 +80,17 @@ describe('useShellSession', () => {
     expect(lastEmit('shell:input')).toEqual(['shell:input', { sessionId: 'abc', data: '\x02' }]);
   });
 
+  // cd goes over its own event carrying the PATH — the server owns the quoting,
+  // because only it knows whether the session runs cmd.exe, PowerShell, or a
+  // POSIX shell (the hard-coded POSIX form was unusable on Windows).
+  it('sends the folder path over shell:cd rather than composing a cd command', () => {
+    const { result } = renderHook(() => useShellSession({}), { wrapper });
+    fire('shell:sessions', []);
+    fire('shell:started', { sessionId: 'abc' });
+    act(() => result.current.sendCd('I:\\code\\example-app'));
+    expect(lastEmit('shell:cd')).toEqual(['shell:cd', { sessionId: 'abc', path: 'I:\\code\\example-app' }]);
+  });
+
   it('ignores a shell:attached whose id does not match the pending target (strict-equality guard)', () => {
     const { result } = renderHook(() => useShellSession({}), { wrapper });
     // First load with one free survivor → auto-attach to s1 (claim:true), pending target 's1'.

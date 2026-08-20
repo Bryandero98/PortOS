@@ -37,6 +37,7 @@ vi.mock('./shell.js', () => ({
   subscribeSessionList: vi.fn(),
   listAllSessions: vi.fn(() => []),
   writeToSession: vi.fn(),
+  changeSessionDirectory: vi.fn(() => true),
   resizeSession: vi.fn(),
   killSession: vi.fn(),
   unsubscribeSessionList: vi.fn(),
@@ -50,6 +51,7 @@ vi.mock('../lib/socketValidation.js', () => ({
   logsUnsubscribeSchema: {},
   errorRecoverSchema: {},
   shellInputSchema: {},
+  shellCdSchema: {},
   shellResizeSchema: {},
   shellAttachSchema: {},
   shellStopSchema: {},
@@ -369,6 +371,32 @@ describe('socket.js — initSocket', () => {
     socket.handlers['shell:list']();
 
     expect(shellService.listAllSessions).toHaveBeenCalledWith(socket);
+  });
+
+  // ===========================================================================
+  // shell:cd — the client sends a folder, the SERVER renders the cd command, so
+  // the quoting matches the shell that session actually runs (Windows cmd.exe
+  // rejects the POSIX form the client used to send).
+  // ===========================================================================
+  it('shell:cd hands the path to changeSessionDirectory', () => {
+    const socket = makeSocket('shell-cd');
+    io.connect(socket);
+    shellService.changeSessionDirectory.mockClear();
+
+    socket.handlers['shell:cd']({ sessionId: 'abc', path: 'I:\\code\\example-app' });
+
+    expect(shellService.changeSessionDirectory).toHaveBeenCalledWith('abc', 'I:\\code\\example-app');
+  });
+
+  it('shell:cd emits shell:error when the session is gone', () => {
+    const socket = makeSocket('shell-cd-missing');
+    io.connect(socket);
+    shellService.changeSessionDirectory.mockReturnValueOnce(false);
+
+    socket.handlers['shell:cd']({ sessionId: 'gone', path: '/tmp/app' });
+
+    const err = socket.emitted.find(([ev]) => ev === 'shell:error');
+    expect(err[1].sessionId).toBe('gone');
   });
 
   // ===========================================================================

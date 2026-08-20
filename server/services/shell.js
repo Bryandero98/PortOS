@@ -3,6 +3,7 @@ import os from 'os';
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import { withSpawnCwdEnv } from '../lib/spawnCwd.js';
 import { scheduleSubmitEnters } from '../lib/tuiHandshake.js';
+import { buildCdCommand } from '../lib/shellCd.js';
 
 // Store active shell sessions (persist across socket reconnects)
 const shellSessions = new Map();
@@ -181,6 +182,9 @@ export function createShellSession(socket, options = {}) {
     pty: ptyProcess,
     socket,
     cwd,
+    // The spawned shell binary — kept so cd-style commands injected later can be
+    // written in the dialect this session actually speaks (see changeSessionDirectory).
+    shell,
     createdAt: Date.now(),
     label: options.label || null,
     kind: options.kind || 'shell',
@@ -546,6 +550,23 @@ export function writeToSession(sessionId, data) {
     return true;
   }
   return false;
+}
+
+/**
+ * Change a session's working directory.
+ *
+ * Goes through the service rather than the client emitting its own `cd` string,
+ * because only the server knows which shell this PTY is running — and the command
+ * differs per shell. See lib/shellCd.js for why.
+ *
+ * @param {string} sessionId
+ * @param {string} dirPath
+ * @returns {boolean} false when the session is unknown
+ */
+export function changeSessionDirectory(sessionId, dirPath) {
+  const session = shellSessions.get(sessionId);
+  if (!session) return false;
+  return writeToSession(sessionId, `${buildCdCommand(dirPath, session.shell)}\n`);
 }
 
 /**
