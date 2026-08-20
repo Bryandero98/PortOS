@@ -39,8 +39,17 @@
  */
 
 import { existsSync, readdirSync } from 'fs';
-import { join } from 'path';
+import { win32 } from 'path';
 import { findCommandOnPath } from './processEnv.js';
+
+// The Windows branch below assembles WINDOWS paths, so it joins with win32
+// semantics rather than the host's. On Windows the two are identical; off it,
+// the platform `join` would splice Windows path fragments with `/` and produce
+// `C:\Program Files/PowerShell/7/pwsh.exe` — which never matches a real path and
+// makes the win32 branch untestable from a POSIX host, the exact thing the
+// injectable `platform` exists to allow. Same reasoning as `win32.basename` in
+// shellCd.js.
+const { join } = win32;
 
 /**
  * `%ProgramFiles%\PowerShell\<major>\pwsh.exe` for every installed major

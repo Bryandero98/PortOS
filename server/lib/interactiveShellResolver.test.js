@@ -26,6 +26,16 @@ describe('resolveInteractiveShellWith on Windows', () => {
       .toBe('C:\\Program Files\\PowerShell\\7\\pwsh.exe');
   });
 
+  it('builds Windows paths with backslashes even when the host is POSIX', () => {
+    // The win32 branch is reachable from any host (that is what injectable
+    // `platform` is for), so it must join with win32 semantics. The platform
+    // `join` produced `C:\Program Files/PowerShell/7/pwsh.exe` on Linux — a path
+    // that matches nothing, silently falling through to cmd.exe.
+    const picked = win({ exists: () => true });
+    expect(picked).toBe('C:\\Program Files\\PowerShell\\7\\pwsh.exe');
+    expect(picked).not.toContain('/');
+  });
+
   it('picks the newest installed pwsh major, comparing numerically not as strings', () => {
     // '10' must beat '7'; a lexical sort would pick '7'.
     expect(win({
