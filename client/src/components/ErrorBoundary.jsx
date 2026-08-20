@@ -16,6 +16,12 @@ export default class ErrorBoundary extends Component {
   componentDidCatch(error, errorInfo) {
     if (isStaleChunkError(error) && reloadOnceForStaleChunk()) return;
     console.error(`💥 React Error: ${error.message}`, errorInfo);
+    // `onError` lets a caller that owns chrome AROUND the failed subtree react
+    // to the failure — an r3f `<Canvas>` can only degrade to `fallback={null}`
+    // inside the scene, so the DOM-side message has to be rendered by the
+    // parent from its own state (GlbViewer's mesh-load panel). Not called on
+    // the stale-chunk path above: that reloads the page.
+    this.props.onError?.(error);
   }
 
   render() {

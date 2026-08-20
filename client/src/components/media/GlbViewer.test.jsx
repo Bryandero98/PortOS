@@ -1,23 +1,39 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BoxGeometry, Group, Mesh, MeshStandardMaterial } from 'three';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // The three.js stack can't run in jsdom (no WebGL context) and none of it is
 // under test here — this file covers the chrome AROUND the canvas (the download
-// link + the empty-src guard). Bounds drops the model subtree: mounting
-// <primitive>/<mesh> would surface unknown DOM elements and r3f hands back
-// HTMLElement refs without the three.js API. Canvas retains the lighting and
-// environment elements so their interactive wiring stays covered.
+// link, the empty-src guard, the load-failure panel). The model subtree mounts
+// so `useGLTF` is really called (that is what throws on a bad asset), with
+// GltfPrimitive stubbed out: rendering <primitive>/<mesh> would surface unknown
+// DOM elements and r3f hands back HTMLElement refs without the three.js API.
+// Canvas retains the lighting and environment elements so their interactive
+// wiring stays covered.
 // `mockScene` stands in for the three.js scene `useThree` hands the viewer, so
 // the environment-intensity assertions below check the value the component
 // actually writes onto the scene — not merely a prop handed to a mocked
 // <Environment>, which would stay green through the exact regression the
 // source guards against (memoizing the environment children).
-const { mockScene } = vi.hoisted(() => ({ mockScene: {} }));
+// The two failure modes are mocked separately because they behave differently:
+// `gltf.error` fails the LOADER the way drei does, mirroring suspend-react's real
+// caching (the rejection is remembered against the URL and re-thrown from the
+// render phase until `useGLTF.clear(url)` drops it — without that, nothing could
+// tell a working Retry from one that only looks like it re-fetched), while
+// `canvas.error` fails the CANVAS ITSELF, which is how r3f surfaces a WebGL
+// context failure: from its own render, with nothing cached to evict.
+const { mockScene, gltf, canvas } = vi.hoisted(() => ({
+  mockScene: {},
+  gltf: { error: null, rejections: new Map() },
+  canvas: { error: null },
+}));
 vi.mock('@react-three/fiber', () => ({
-  Canvas: ({ children }) => <div data-testid="glb-canvas">{children}</div>,
+  Canvas: ({ children }) => {
+    if (canvas.error) throw canvas.error;
+    return <div data-testid="glb-canvas">{children}</div>;
+  },
   useThree: (selector) => selector({ scene: mockScene }),
 }));
 vi.mock('@react-three/drei', () => ({
@@ -33,13 +49,27 @@ vi.mock('@react-three/drei', () => ({
       {children}
     </div>
   ),
-  Bounds: () => null,
-  useGLTF: Object.assign(() => ({ scene: {} }), { clear: vi.fn() }),
+  Bounds: ({ children }) => children,
+  useGLTF: Object.assign((url) => {
+    if (gltf.error) gltf.rejections.set(url, gltf.error);
+    const cached = gltf.rejections.get(url);
+    if (cached) throw cached;
+    return { scene: {} };
+  }, { clear: vi.fn((url) => gltf.rejections.delete(url)) }),
 }));
+vi.mock('../../hooks/useClonedGltf', () => ({ GltfPrimitive: () => null }));
 
-import GlbViewer, { cloneGlbSceneWithOpaqueMaterials } from './GlbViewer';
+import { useGLTF } from '@react-three/drei';
+import GlbViewer, { cloneGlbSceneWithOpaqueMaterials, glbFailureHint } from './GlbViewer';
 
 const openControls = () => fireEvent.click(screen.getByLabelText('Preview display settings'));
+
+beforeEach(() => {
+  gltf.error = null;
+  gltf.rejections.clear();
+  canvas.error = null;
+  useGLTF.clear.mockClear();
+});
 
 describe('GlbViewer', () => {
   it('renders nothing without a src', () => {
@@ -191,5 +221,88 @@ describe('GlbViewer', () => {
       depthWrite: true,
     });
     expect(material).toMatchObject({ transparent: true, opacity: 0.2, depthWrite: false });
+  });
+});
+
+describe('GlbViewer load failures', () => {
+  // React and the shared ErrorBoundary both log every caught error.
+  let logged;
+  beforeEach(() => {
+    logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  // The reported failure: a dev server answering an unproxied /data path with
+  // index.html, so the glTF parser JSON.parses HTML. It escaped the canvas and
+  // replaced the entire route with the router's error page.
+  it('shows an inline panel instead of letting a load error take the page down', () => {
+    gltf.error = new Error(
+      "Could not load /data/image-to-3d/abc/model.glb?v=1: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+    );
+    // Nothing catches this above the viewer: without its own boundary the throw
+    // escapes `render` here, exactly as it escapes to the router in the app.
+    render(<GlbViewer src="/data/image-to-3d/abc/model.glb?v=1" />);
+
+    expect(screen.getByTestId('glb-load-error')).toBeInTheDocument();
+    expect(screen.getByText('This 3D model could not be loaded')).toBeInTheDocument();
+    expect(screen.getByText(/answered with a web page instead of the mesh file/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('glb-canvas')).not.toBeInTheDocument();
+    // The download link survives; the controls that drive the now-unmounted
+    // canvas do not — the settings toggle sits `z-10` OVER this panel.
+    expect(screen.getByRole('link', { name: /Download \.glb/i })).toBeInTheDocument();
+    expect(screen.queryByText(/Drag to orbit/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Preview display settings')).not.toBeInTheDocument();
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('💥 React Error'), expect.anything());
+  });
+
+  it('drops the cached rejection when the user retries', () => {
+    gltf.error = new Error('Could not load /data/image-to-3d/abc/model.glb: 404 Not Found');
+    render(<GlbViewer src="/data/image-to-3d/abc/model.glb" />);
+    expect(screen.getByText(/no longer on disk/i)).toBeInTheDocument();
+
+    gltf.error = null;
+    fireEvent.click(screen.getByRole('button', { name: /Retry/i }));
+
+    // Without the clear, suspend-react re-throws the SAME cached rejection for
+    // this URL on every later render and Retry can never recover.
+    expect(useGLTF.clear).toHaveBeenCalledWith('/data/image-to-3d/abc/model.glb');
+    expect(screen.queryByTestId('glb-load-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('glb-canvas')).toBeInTheDocument();
+  });
+
+  // The failure is remembered against the src that produced it, so one record's
+  // dead mesh can't stick to the next model the viewer is pointed at.
+  it('clears the failure when the viewer is pointed at another mesh', () => {
+    gltf.error = new Error('Could not load /a.glb: boom');
+    const { rerender } = render(<GlbViewer src="/a.glb" />);
+    expect(screen.getByTestId('glb-load-error')).toBeInTheDocument();
+
+    gltf.error = null;
+    rerender(<GlbViewer src="/b.glb" />);
+
+    expect(screen.queryByTestId('glb-load-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('glb-canvas')).toBeInTheDocument();
+  });
+
+  // `useGLTF.clear` evicts a parsed scene as readily as a rejection, so a
+  // failure thrown AFTER the bytes landed must not cost a multi-MB re-download.
+  it('keeps the cached mesh when the failure was not a load failure', () => {
+    canvas.error = new Error('THREE.WebGLRenderer: Error creating WebGL context.');
+    render(<GlbViewer src="/data/image-to-3d/abc/model.glb" />);
+    expect(screen.getByText(/cannot create a WebGL context/i)).toBeInTheDocument();
+
+    canvas.error = null;
+    fireEvent.click(screen.getByRole('button', { name: /Retry/i }));
+
+    expect(useGLTF.clear).not.toHaveBeenCalled();
+    expect(screen.getByTestId('glb-canvas')).toBeInTheDocument();
+  });
+
+  it('only names a cause it can actually recognize', () => {
+    expect(glbFailureHint(new Error('something went sideways'))).toBeNull();
+    expect(glbFailureHint(new Error('<!DOCTYPE html>'))).toMatch(/web page/i);
+    expect(glbFailureHint(new Error('responded with 404'))).toMatch(/no longer on disk/i);
+    expect(glbFailureHint(new Error('Error creating WebGL context'))).toMatch(/WebGL/i);
   });
 });
