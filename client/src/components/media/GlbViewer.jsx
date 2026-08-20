@@ -9,6 +9,7 @@ import {
 import { AlertTriangle, Download, RefreshCw, Rotate3d, SlidersHorizontal } from 'lucide-react';
 import ErrorBoundary from '../ErrorBoundary';
 import { GltfPrimitive } from '../../hooks/useClonedGltf';
+import { glbErrorText, glbFailureHint } from '../../lib/glbFailure';
 
 const DEFAULT_BACKGROUND = '#050505';
 const ENVIRONMENT_HDRI = '/hdri/studio-small-08-1k.hdr';
@@ -76,31 +77,11 @@ function GlbModel({ src, forceOpaque }) {
   return <GltfPrimitive object={renderedScene} />;
 }
 
-// One table so every recognized cause reads the same way. The raw messages are
-// useless on their own: the glTF parser JSON.parses whatever bytes it is handed,
-// so a 200 HTML body (an SPA fallback answering a path that isn't really
-// served) surfaces as a JSON syntax error naming a `<` token.
-const FAILURE_HINTS = [
-  [
-    /Unexpected token '<'|<!DOCTYPE/i,
-    'The server answered with a web page instead of the mesh file — the asset may be missing or the server may still be restarting.',
-  ],
-  [/webgl/i, 'This display cannot create a WebGL context, so 3D previews cannot render here.'],
-  [/\b404\b|not found/i, 'The mesh file is no longer on disk.'],
-];
-
-const errorText = (error) => String(error?.message || error || '');
-
-export function glbFailureHint(error) {
-  const message = errorText(error);
-  return FAILURE_HINTS.find(([pattern]) => pattern.test(message))?.[1] || null;
-}
-
 // r3f prefixes every loader failure with "Could not load <url>", so this is what
 // separates "the bytes never arrived" from a failure thrown after the mesh was
 // already parsed (context loss, a throw downstream of the load). Only the former
 // justifies evicting drei's cache on retry — see retryLoad.
-const isLoadFailure = (error) => /^Could not load/i.test(errorText(error));
+const isLoadFailure = (error) => /^Could not load/i.test(glbErrorText(error));
 
 function GlbLoadFailure({ error, onRetry }) {
   const hint = glbFailureHint(error);
@@ -120,7 +101,7 @@ function GlbLoadFailure({ error, onRetry }) {
       <p className="text-sm font-medium">This 3D model could not be loaded</p>
       {hint && <p className="max-w-sm text-xs text-port-text-muted">{hint}</p>}
       <p className="max-w-full break-all font-mono text-[10px] leading-snug text-port-text-muted">
-        {errorText(error)}
+        {glbErrorText(error)}
       </p>
       <button
         type="button"
@@ -264,15 +245,26 @@ export default function GlbViewer({
               <ambientLight intensity={ambientIntensity} />
               <directionalLight position={[4, 6, 5]} intensity={keyIntensity} />
               <directionalLight position={[-4, -2, -5]} intensity={fillIntensity} />
+              {/* The HDRI gets its OWN boundary + Suspense, not the mesh's. Sharing
+                  one meant a missing or corrupt .hdr (a partial checkout, a stale
+                  service-worker cache) reported "This 3D model could not be
+                  loaded" and took the mesh down with it — while the file is only
+                  image-based LIGHTING, which the three lights below already
+                  stand in for. Same shape OpenWorldScene documents for its
+                  galaxy spheremap: degrade to lights-only, keep the scene. */}
+              <ErrorBoundary fallback={null}>
+                <Suspense fallback={null}>
+                  {/* Keep the HDRI in public/ instead of using drei's remote presets:
+                      preview lighting and the default backdrop must work offline. */}
+                  <Environment
+                    files={ENVIRONMENT_HDRI}
+                    background={showEnvironmentBackground}
+                    backgroundBlurriness={ENVIRONMENT_BACKGROUND_BLUR}
+                  />
+                  <EnvironmentIntensity value={environmentIntensity} reassertOn={showEnvironmentBackground} />
+                </Suspense>
+              </ErrorBoundary>
               <Suspense fallback={null}>
-                {/* Keep the HDRI in public/ instead of using drei's remote presets:
-                    preview lighting and the default backdrop must work offline. */}
-                <Environment
-                  files={ENVIRONMENT_HDRI}
-                  background={showEnvironmentBackground}
-                  backgroundBlurriness={ENVIRONMENT_BACKGROUND_BLUR}
-                />
-                <EnvironmentIntensity value={environmentIntensity} reassertOn={showEnvironmentBackground} />
                 <Bounds fit clip observe margin={1.2}>
                   <GlbModel src={src} forceOpaque={forceOpaque} />
                 </Bounds>
