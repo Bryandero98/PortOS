@@ -233,8 +233,8 @@ async function getOpenPrsByHead(repoPath) {
 /**
  * Reason a worktree must NOT be torn down, or null if it's safe to remove.
  * Pure — the dangerous-to-remove cases the deterministic cleanup must respect
- * (mirrors the guards the existing worktree reaper honors):
- * In gate order, so a tree held by more than one of these reports the FIRST:
+ * (mirrors the guards the existing worktree reaper honors), in gate order — a
+ * tree held by more than one of these reports the FIRST:
  *   - locked            → the user explicitly `git worktree lock`ed it
  *   - active CoS agent  → an agent (`agent-<id>`) is currently running in it
  *   - human `/claim`    → a `claim-<slug>` worktree self-cleaned by the /claim flow,
@@ -345,6 +345,7 @@ export function isAbandonedAgentWorktree({ path, locked, activeAgentIds }) {
  *    `agent-<id>` keys (case 2 above reads them as such), so a claim basename
  *    can only appear there out of contract; if one ever did, holding the branch
  *    is the fail-safe answer and the intended precedence.
+ *
  * A branch with no worktree at all and no live owner is simply free (null).
  *
  * @param {{ branch?:string|null, path:string|null, locked?:boolean, activeAgentIds?:Set<string> }} input
