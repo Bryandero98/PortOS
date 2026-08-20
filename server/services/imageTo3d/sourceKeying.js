@@ -42,7 +42,7 @@ import {
   detectSolidBorderColor as detectSolidBorderColorShared,
   hasMeaningfulAlpha as hasMeaningfulAlphaShared,
 } from '../../lib/borderKey.js';
-import { atomicWrite, readJSONFile } from '../../lib/fileUtils.js';
+import { atomicWrite, readJSONFile, sha256File } from '../../lib/fileUtils.js';
 import { decodeRgbaFrame, encodePng } from '../../lib/imageRgba.js';
 
 /** Euclidean RGB distance for the border/flood match (0–441 scale). */
@@ -219,11 +219,9 @@ const hasFreshKeyedSource = async (sourcePath, targetPath) => {
   const targetStats = await stat(targetPath).catch(() => null);
   if (!targetStats?.isFile() || targetStats.mtimeMs <= sourceStats.mtimeMs) return false;
 
-  // A missing metadata sidecar is accepted for compatibility with the first
-  // cache implementation. New outputs write one, so future algorithm/tolerance
-  // bumps invalidate all outputs produced by this version.
   const metadata = await readJSONFile(keyedCacheMetadataPath(targetPath), null, { logError: false });
-  return !metadata?.version || metadata.version === KEYING_CACHE_VERSION;
+  if (metadata?.version !== KEYING_CACHE_VERSION || !metadata.sourceSha256) return false;
+  return metadata.sourceSha256 === await sha256File(sourcePath);
 };
 
 /**
@@ -259,6 +257,9 @@ export async function prepareSourceImage({ sourcePath, targetPath }) {
     width: frame.width,
     height: frame.height,
   }));
-  await atomicWrite(keyedCacheMetadataPath(targetPath), { version: KEYING_CACHE_VERSION }).catch(() => {});
+  await atomicWrite(keyedCacheMetadataPath(targetPath), {
+    version: KEYING_CACHE_VERSION,
+    sourceSha256: await sha256File(sourcePath),
+  }).catch(() => {});
   return targetPath;
 }

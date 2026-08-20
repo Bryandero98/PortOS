@@ -10,6 +10,7 @@ import {
   KEYING_CACHE_VERSION,
   prepareSourceImage,
 } from './sourceKeying.js';
+import { sha256File } from '../../lib/fileUtils.js';
 
 // Build a raw RGBA buffer from a painter function (x, y) => [r, g, b, a?].
 const makeImage = (width, height, paint) => {
@@ -161,6 +162,11 @@ describe('prepareSourceImage', () => {
   it('reuses a keyed target newer than the gallery source', async () => {
     const sourcePath = await writePng('cache-source.png', subjectOnGreen());
     const cachedTarget = await writePng('cache-target.png', makeImage(20, 20, () => [255, 0, 0, 255]));
+    const sourceSha256 = await sha256File(sourcePath);
+    await writeFile(`${cachedTarget}.meta.json`, JSON.stringify({
+      version: KEYING_CACHE_VERSION,
+      sourceSha256,
+    }));
     const fresh = new Date(Date.now() + 60_000);
     await utimes(cachedTarget, fresh, fresh);
 
@@ -168,6 +174,30 @@ describe('prepareSourceImage', () => {
     expect(result).toBe(cachedTarget);
     const { data } = await sharp(cachedTarget).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     expect([...data.slice(0, 4)]).toEqual([255, 0, 0, 255]);
+  });
+
+  it('rekeys when source bytes change despite an older source mtime', async () => {
+    const sourcePath = await writePng('fingerprint-source.png', subjectOnGreen());
+    const cachedTarget = await writePng('fingerprint-target.png', makeImage(20, 20, () => [255, 0, 0, 255]));
+    await writeFile(`${cachedTarget}.meta.json`, JSON.stringify({
+      version: KEYING_CACHE_VERSION,
+      sourceSha256: await sha256File(sourcePath),
+    }));
+    const targetTime = new Date(Date.now() + 60_000);
+    await utimes(cachedTarget, targetTime, targetTime);
+
+    await writePng('fingerprint-source.png', makeImage(20, 20, (x, y) => (
+      x >= 6 && x < 14 && y >= 6 && y < 14 ? [90, 80, 200] : GREEN
+    )));
+    const oldSourceTime = new Date(Date.now() - 60_000);
+    await utimes(sourcePath, oldSourceTime, oldSourceTime);
+
+    const result = await prepareSourceImage({ sourcePath, targetPath: cachedTarget });
+    expect(result).toBe(cachedTarget);
+    const { data } = await sharp(cachedTarget).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    expect(alphaAt({ data, width: 20, height: 20 }, 0, 0)).toBe(0);
+    expect(JSON.parse(await readFile(`${cachedTarget}.meta.json`, 'utf8')).sourceSha256)
+      .toBe(await sha256File(sourcePath));
   });
 
   it('recomputes a fresh target when its keying-version metadata is stale', async () => {
@@ -182,6 +212,6 @@ describe('prepareSourceImage', () => {
     const { data } = await sharp(targetPath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     expect(alphaAt({ data, width: 20, height: 20 }, 0, 0)).toBe(0);
     expect(JSON.parse(await readFile(`${targetPath}.meta.json`, 'utf8')))
-      .toEqual({ version: KEYING_CACHE_VERSION });
+      .toEqual({ version: KEYING_CACHE_VERSION, sourceSha256: await sha256File(sourcePath) });
   });
 });
