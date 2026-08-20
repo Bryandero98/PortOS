@@ -165,6 +165,7 @@ export * from './tuiShellLaunch.js';
 export * from './tuiUsageScrape.js';
 
 // === File & I/O ===
+export * from './borderKey.js';
 export * from './boundedStateMap.js';
 export * from './collectionStore.js';
 export * from './conflictJournal.js';
@@ -178,6 +179,7 @@ export * from './spawnCwd.js';
 export * from './schemaVersions.js';
 export * from './imageClean.js';
 export * from './imageFrameStats.js';
+export * from './imageRgba.js';
 export * from './imageWatermark.js';
 export * from './localImageFilename.js';
 export * from './localMemory.js';

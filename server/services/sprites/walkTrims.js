@@ -17,12 +17,12 @@
 import { join } from 'path';
 import { mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
-import sharp from 'sharp';
 import {
   ensureDir, atomicWrite, pathExists, sha256File, readJSONFile,
 } from '../../lib/fileUtils.js';
 import { findFfmpeg, runFfmpegProcess } from '../../lib/ffmpeg.js';
 import { ServerError } from '../../lib/errorHandler.js';
+import { decodeRgbaFrame, encodePng } from '../../lib/imageRgba.js';
 import { resolveSpriteAssetPath, spriteDir, toRecordRelativeAssetPath } from './paths.js';
 import { requireCharacter } from './reference.js';
 import { withWalkWriteTail, getWalkState } from './walk.js';
@@ -49,9 +49,10 @@ async function encodeTrimGif(frames, fps, destAbs) {
   if (!ffmpeg) throw new ServerError('ffmpeg not found — install ffmpeg to render trim GIFs', { status: 503, code: 'FFMPEG_MISSING' });
   const scratch = await mkdtemp(join(tmpdir(), 'portos-sprite-trim-'));
   for (let i = 0; i < frames.length; i++) {
-    await sharp(frames[i].data, { raw: { width: frames[i].width, height: frames[i].height, channels: 4 } })
-      .png()
-      .toFile(join(scratch, `frame-${String(i).padStart(3, '0')}.png`));
+    await writeFile(
+      join(scratch, `frame-${String(i).padStart(3, '0')}.png`),
+      await encodePng(frames[i]),
+    );
   }
   const result = await runFfmpegProcess({
     bin: ffmpeg,
@@ -160,8 +161,8 @@ async function saveLoopTrimImpl(recordId, payload) {
   if (!await pathExists(atlasAbs)) {
     throw new ServerError(`Packed strip not found: ${stripPath}`, { status: 404, code: 'ATLAS_NOT_FOUND' });
   }
-  const { data, info } = await sharp(atlasAbs).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  if ((Math.max(...allColumns) + 1) * cellSize > info.width || cellSize > info.height) {
+  const { data, width, height } = await decodeRgbaFrame(atlasAbs);
+  if ((Math.max(...allColumns) + 1) * cellSize > width || cellSize > height) {
     throw new ServerError('Packed strip does not match its manifest geometry', { status: 409, code: 'RUN_STRIP_INVALID' });
   }
 
@@ -169,7 +170,7 @@ async function saveLoopTrimImpl(recordId, payload) {
   const frames = enabled.map((col) => {
     const out = Buffer.alloc(cellSize * cellSize * 4);
     for (let y = 0; y < cellSize; y++) {
-      const srcStart = (y * info.width + col * cellSize) * 4;
+      const srcStart = (y * width + col * cellSize) * 4;
       data.copy(out, y * cellSize * 4, srcStart, srcStart + cellSize * 4);
     }
     return { data: out, width: cellSize, height: cellSize };
@@ -191,9 +192,11 @@ async function saveLoopTrimImpl(recordId, payload) {
     }
   });
   const stripName = `${prefix}-strip.png`;
-  const stripBuf = await sharp(strip, { raw: { width: cellSize * frames.length, height: cellSize, channels: 4 } })
-    .png()
-    .toBuffer();
+  const stripBuf = await encodePng({
+    data: strip,
+    width: cellSize * frames.length,
+    height: cellSize,
+  });
   await writeFile(join(trimsAbs, stripName), stripBuf);
 
   const gifName = `${prefix}.gif`;

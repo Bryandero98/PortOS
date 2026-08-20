@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -7,6 +7,7 @@ import {
   detectSolidBorderColor,
   hasMeaningfulAlpha,
   keySolidBackground,
+  KEYING_CACHE_VERSION,
   prepareSourceImage,
 } from './sourceKeying.js';
 
@@ -155,5 +156,32 @@ describe('prepareSourceImage', () => {
     }).png().toFile(sourcePath);
     const result = await prepareSourceImage({ sourcePath, targetPath: join(await tempDir(), 'never3.png') });
     expect(result).toBeNull();
+  });
+
+  it('reuses a keyed target newer than the gallery source', async () => {
+    const sourcePath = await writePng('cache-source.png', subjectOnGreen());
+    const cachedTarget = await writePng('cache-target.png', makeImage(20, 20, () => [255, 0, 0, 255]));
+    const fresh = new Date(Date.now() + 60_000);
+    await utimes(cachedTarget, fresh, fresh);
+
+    const result = await prepareSourceImage({ sourcePath, targetPath: cachedTarget });
+    expect(result).toBe(cachedTarget);
+    const { data } = await sharp(cachedTarget).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    expect([...data.slice(0, 4)]).toEqual([255, 0, 0, 255]);
+  });
+
+  it('recomputes a fresh target when its keying-version metadata is stale', async () => {
+    const sourcePath = await writePng('version-source.png', subjectOnGreen());
+    const targetPath = await writePng('version-target.png', makeImage(20, 20, () => [255, 0, 0, 255]));
+    await writeFile(`${targetPath}.meta.json`, JSON.stringify({ version: 'source-keying-old' }));
+    const fresh = new Date(Date.now() + 60_000);
+    await utimes(targetPath, fresh, fresh);
+
+    const result = await prepareSourceImage({ sourcePath, targetPath });
+    expect(result).toBe(targetPath);
+    const { data } = await sharp(targetPath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    expect(alphaAt({ data, width: 20, height: 20 }, 0, 0)).toBe(0);
+    expect(JSON.parse(await readFile(`${targetPath}.meta.json`, 'utf8')))
+      .toEqual({ version: KEYING_CACHE_VERSION });
   });
 });
