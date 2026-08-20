@@ -1240,6 +1240,33 @@ describe('forceSpawnTask — pre-validate provider before task:ready', () => {
     expect(holdIdx, 'the runner check must precede the task:ready emit')
       .toBeLessThan(forceFn.indexOf("cosEvents.emit('task:ready'"));
   });
+
+  // spawnAgentForTask registers its agent as `running` BEFORE flipping the task
+  // off `pending`, so the `status !== 'pending'` check above still passes for the
+  // seconds between those two writes. Without a live-agent check, a "Run now"
+  // landing there answers `{ success: true }` and toasts "Spawning" for a second
+  // dispatch that withSpawnDedupGuard then silently drops.
+  it('refuses a task a running agent already holds', () => {
+    const holderIdx = forceFn.indexOf('agent.taskId === taskId');
+    expect(holderIdx, 'forceSpawnTask must reject a task a running agent holds')
+      .toBeGreaterThan(-1);
+    expect(forceFn, 'the refusal must name the agent that holds it')
+      .toContain('is already running this task');
+    expect(holderIdx, 'the live-agent check must precede the task:ready emit')
+      .toBeLessThan(forceFn.indexOf("cosEvents.emit('task:ready'"));
+  });
+
+  // ...but only while that agent is plausibly still mid-spawn. Outside the window,
+  // a `pending` task carrying a `running` agent is a zombie record — and this
+  // route never runs cleanupZombieAgents — so an unbounded refusal would turn the
+  // task's own recovery action into a permanent no-op.
+  it('bounds the refusal so a stale holder can still be superseded', () => {
+    expect(forceFn, 'the holder refusal must be age-bounded')
+      .toContain('SPAWN_CLAIM_GRACE_MS');
+    expect(forceFn, 'a stale holder must fall through to the spawn, not return')
+      .toMatch(/holderAgeMs < SPAWN_CLAIM_GRACE_MS/);
+    expect(COS_SRC, 'the grace window must be defined').toMatch(/const SPAWN_CLAIM_GRACE_MS = /);
+  });
 });
 
 describe('the runner-down hold — spawn-side gates', () => {

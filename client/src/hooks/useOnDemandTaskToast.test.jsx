@@ -95,6 +95,34 @@ describe('useOnDemandTaskToast — parked outcome', () => {
     expect(msg).not.toMatch(/0 of/);
   });
 
+  // branch-reconcile's park used to report 'no-in-flight-branches' while merged
+  // branches sat behind a protected worktree — "nothing to do" for a task the
+  // user could see had work queued, which reads as the task not running at all.
+  it('names the merged branches held back rather than claiming nothing is in flight', () => {
+    renderHook(() => useOnDemandTaskToast());
+    fire({
+      taskType: 'branch-reconcile', appName: 'App One', outcome: 'parked',
+      parkReason: 'merged-branches-held-back', counts: { heldBackMerged: 4 },
+      parkedUntil: new Date(Date.now() + 5 * 24 * 3600 * 1000).toISOString()
+    });
+    const [msg] = toastSpy.mock.calls[0];
+    expect(msg).toMatch(/already merged and waiting on a protected worktree/);
+    expect(msg).toMatch(/4 merged branch\(es\) held back/);
+    expect(msg).not.toMatch(/no branches in flight/);
+  });
+
+  it('still reads as a genuinely empty repo when nothing is held back', () => {
+    renderHook(() => useOnDemandTaskToast());
+    fire({
+      taskType: 'branch-reconcile', appName: 'App One', outcome: 'parked',
+      parkReason: 'no-in-flight-branches', counts: null,
+      parkedUntil: new Date(Date.now() + 23 * 3600 * 1000).toISOString()
+    });
+    const [msg] = toastSpy.mock.calls[0];
+    expect(msg).toMatch(/no branches in flight/);
+    expect(msg).not.toMatch(/held back/);
+  });
+
   it('explains the author-filter trap (not "no open issues") when open issues exist but none match the filter', () => {
     renderHook(() => useOnDemandTaskToast());
     // The detector reports filtered: 0 on this path (the issues were excluded by

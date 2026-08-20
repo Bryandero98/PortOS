@@ -77,6 +77,13 @@ vi.mock('../services/llamaServerManager.js', () => ({
   installLlamaServer: vi.fn(async () => ({ success: true, message: 'installed' })),
 }));
 
+// The launcher's curated presets (and their weights' on-disk state) ride along
+// on the status response so the card can offer a Download button per GGUF.
+vi.mock('../services/specDecodeModels.js', () => ({
+  getSpecDecodePresetStatus: vi.fn(async () => ([{ id: 'test-preset', label: 'Test', specType: 'draft-dspark', model: null, draftModel: null }])),
+  downloadSpecDecodeModel: vi.fn(async () => ({ success: true, path: 'models/base.gguf', file: 'base.gguf' })),
+}));
+
 // /loaded reads getSettings() to honor a user's intentionally-disabled backends,
 // so mock it (defaults to no backends disabled; the disabled-case test flips it).
 vi.mock('../services/settings.js', () => ({
@@ -473,10 +480,33 @@ describe('measured assessments wiring', () => {
 });
 
 describe('llama-server routes', () => {
-  it('GET /api/local-llm/llama-server/status returns status', async () => {
+  it('GET /api/local-llm/llama-server/status returns status with the weight presets', async () => {
     const res = await request(makeApp()).get('/api/local-llm/llama-server/status');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ installed: true, running: false });
+    expect(res.body).toEqual({
+      installed: true,
+      running: false,
+      presets: [{ id: 'test-preset', label: 'Test', specType: 'draft-dspark', model: null, draftModel: null }],
+    });
+  });
+
+  it('POST /api/local-llm/llama-server/download-model fetches one preset GGUF', async () => {
+    const { downloadSpecDecodeModel } = await import('../services/specDecodeModels.js');
+    const res = await request(makeApp())
+      .post('/api/local-llm/llama-server/download-model')
+      .send({ presetId: 'test-preset', role: 'model' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ success: true, path: 'models/base.gguf' });
+    expect(downloadSpecDecodeModel).toHaveBeenCalledWith(expect.objectContaining({ presetId: 'test-preset', role: 'model' }));
+  });
+
+  it('POST /api/local-llm/llama-server/download-model rejects an unknown role', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/llama-server/download-model')
+      .send({ presetId: 'test-preset', role: 'sneaky' });
+
+    expect(res.status).toBe(400);
   });
 
   it('POST /api/local-llm/llama-server/start launches server with valid payload', async () => {

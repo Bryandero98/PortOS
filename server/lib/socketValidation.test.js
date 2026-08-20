@@ -6,6 +6,7 @@ import {
   logsUnsubscribeSchema,
   errorRecoverSchema,
   shellInputSchema,
+  shellCdSchema,
   shellResizeSchema,
   shellSessionIdSchema,
   shellStopSchema,
@@ -133,6 +134,12 @@ describe('socketValidation schemas', () => {
 
     it('shellInputSchema rejects missing sessionId', () => {
       expect(shellInputSchema.safeParse({ data: 'ls' }).success).toBe(false);
+    });
+
+    it('shellCdSchema requires a sessionId and a non-empty path', () => {
+      expect(shellCdSchema.safeParse({ sessionId: 's1', path: '/tmp/app' }).success).toBe(true);
+      expect(shellCdSchema.safeParse({ sessionId: 's1', path: '' }).success).toBe(false);
+      expect(shellCdSchema.safeParse({ path: '/tmp/app' }).success).toBe(false);
     });
 
     it('shellResizeSchema accepts a valid resize payload', () => {

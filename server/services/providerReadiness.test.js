@@ -31,6 +31,32 @@ describe('getProviderReadiness', () => {
     expect(readiness).toBeNull();
   });
 
+  it('reports nothing — and probes nothing — for an API provider on another machine', async () => {
+    // `LM Studio <peer>` matches the `lmstudio` runtime by NAME, so the card
+    // used to answer "`lms` is on PortOS's PATH" and "start LM Studio from
+    // Settings → Local LLM" about a server running on someone else's box. An
+    // external endpoint is assumed to be set up by whoever runs it.
+    let probed = 0;
+    let pathScans = 0;
+    const readiness = await getProviderReadiness(
+      {
+        id: 'lmstudio-peer',
+        name: 'LM Studio peer',
+        type: 'api',
+        endpoint: 'http://192.0.2.10:1234/v1',
+        defaultModel: 'qwen/qwen3.5-35b-a3b',
+      },
+      {
+        findCommand: () => { pathScans += 1; return '/opt/homebrew/bin/lms'; },
+        probe: async () => { probed += 1; return { reachable: false, models: null, error: 'timed out' }; },
+        isAppInstalled: () => true,
+      },
+    );
+    expect(readiness).toBeNull();
+    expect(probed).toBe(0);
+    expect(pathScans).toBe(0);
+  });
+
   it('reports ready when the binary, the server, and the model all check out', async () => {
     const readiness = await getProviderReadiness(llamaProvider(), {
       findCommand: () => '/opt/homebrew/bin/llama-server',

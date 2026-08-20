@@ -157,19 +157,26 @@ export function useShellSession({ isFullscreen } = {}) {
     }
   }, []);
 
+  // The one place a shell:* event addressed at the ACTIVE session goes out, so the
+  // mid-attach guard can't be applied to one sender and forgotten on the next.
   // focus:false skips returning keyboard focus to the terminal after sending — used by
   // the nav-key hot buttons so repeated arrow taps on touch devices don't keep re-summoning
   // the on-screen keyboard (input is delivered over the socket regardless of focus).
-  // Returns whether the data actually went out — the dictation bridge needs to know,
+  // Returns whether the payload actually went out — the dictation bridge needs to know,
   // since it tracks what the PTY has received to compute its next correction.
-  const emitShellInput = useCallback((data, { focus = true } = {}) => {
+  const emitToSession = useCallback((event, payload, { focus = true } = {}) => {
     if (!socket || !sessionIdRef.current) return false;
     // Don't fire quick-commands into the prior session while a switch/start is mid-flight.
     if (pendingAttachRef.current.target) return false;
-    socket.emit('shell:input', { sessionId: sessionIdRef.current, data });
+    socket.emit(event, { sessionId: sessionIdRef.current, ...payload });
     if (focus) termInstanceRef.current?.focus();
     return true;
   }, [socket]);
+
+  const emitShellInput = useCallback(
+    (data, opts) => emitToSession('shell:input', { data }, opts),
+    [emitToSession]
+  );
 
   // Send a photo (plus an optional message) to whatever is running in the active
   // session — the point being a live `claude`/`codex` TUI, which reads images off
@@ -212,7 +219,12 @@ export function useShellSession({ isFullscreen } = {}) {
     return true;
   }, []);
 
-  const sendCommand = useCallback((cmd) => emitShellInput(cmd + '\n'), [emitShellInput]);
+  // CR, not LF — see SUBMIT_KEY in server/lib/tuiHandshake.js for why. Same byte as
+  // TerminalHotKeys' Enter key.
+  const sendCommand = useCallback((cmd) => emitShellInput(cmd + '\r'), [emitShellInput]);
+  // cd is the one "command" the client does NOT compose itself: it sends the folder and
+  // the server renders the `cd` for the session's actual shell (server/lib/shellCd.js).
+  const sendCd = useCallback((path) => emitToSession('shell:cd', { path }), [emitToSession]);
   const sendCtrlB = useCallback(() => emitShellInput('\x02'), [emitShellInput]);
   const sendCtrlC = useCallback(() => emitShellInput('\x03'), [emitShellInput]);
   // Arrow keys send CSI or SS3 based on the terminal's DECCKM state (see NAV_KEYS);
@@ -878,6 +890,7 @@ export function useShellSession({ isFullscreen } = {}) {
     emitShellInput,
     sendImage,
     sendCommand,
+    sendCd,
     sendCtrlB,
     sendCtrlC,
     sendNavKey,

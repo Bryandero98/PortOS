@@ -48,6 +48,14 @@ export const shellInputSchema = z.object({
   data: z.string()
 });
 
+// shell:cd — session id + the directory to change into. The client sends a PATH,
+// not a command: the `cd` line is built server-side from the session's actual
+// shell (see lib/shellCd.js), since only the server knows which one it spawned.
+export const shellCdSchema = z.object({
+  sessionId: z.string().min(1, 'sessionId is required'),
+  path: z.string().min(1, 'path is required')
+});
+
 // shell:resize — session ID with cols and rows
 export const shellResizeSchema = z.object({
   sessionId: z.string().min(1, 'sessionId is required'),

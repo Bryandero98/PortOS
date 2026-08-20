@@ -168,6 +168,13 @@ export const localLlmLlamaServerStartSchema = z.object({
   nGpuLayers: z.coerce.number().int().min(0).max(999).optional().default(99),
   alias: z.string().trim().max(100).optional().default('dflash'),
 });
+// Speculative-decoding weight download: which curated preset, and which half of
+// the pair. Both are enum-ish server-owned ids — no path or repo ever arrives
+// from the client, so a request can only ever write to a curated `models/` file.
+export const localLlmSpecModelDownloadSchema = z.object({
+  presetId: z.string().trim().min(1).max(100),
+  role: z.enum(['model', 'draftModel']),
+});
 export const localLlmHuggingFaceSearchSchema = z.object({
   backend: localLlmBackendSchema,
   q: z.string().max(160).optional().default(''),

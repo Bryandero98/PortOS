@@ -2,7 +2,8 @@ import * as pty from 'node-pty';
 import os from 'os';
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import { withSpawnCwdEnv } from '../lib/spawnCwd.js';
-import { scheduleSubmitEnters } from '../lib/tuiHandshake.js';
+import { scheduleSubmitEnters, SUBMIT_KEY } from '../lib/tuiHandshake.js';
+import { buildCdCommand } from '../lib/shellCd.js';
 
 // Store active shell sessions (persist across socket reconnects)
 const shellSessions = new Map();
@@ -12,6 +13,10 @@ const shellSessions = new Map();
 // on a private network — so this is a sanity bound against runaway tab-spamming,
 // not a resource/abuse defense. External views (TUI runs) don't count.
 const MAX_TOTAL_SESSIONS = 20;
+
+// Re-exported so a session caller reaches the Enter byte without importing the
+// TUI-handshake module directly. See lib/tuiHandshake.js for why it is CR.
+export { SUBMIT_KEY };
 
 // PTY event handlers run outside the Express middleware chain — uncaught throws here
 // crash the Node process instead of bubbling to res.next. try/catch is therefore
@@ -181,6 +186,9 @@ export function createShellSession(socket, options = {}) {
     pty: ptyProcess,
     socket,
     cwd,
+    // The spawned shell binary — kept so cd-style commands injected later can be
+    // written in the dialect this session actually speaks (see changeSessionDirectory).
+    shell,
     createdAt: Date.now(),
     label: options.label || null,
     kind: options.kind || 'shell',
@@ -236,7 +244,7 @@ export function createShellSession(socket, options = {}) {
     // prematurely satisfy its bracketed-paste gate.
     const sendInitial = () => {
       options.onInitialCommandSent?.();
-      writeToSession(sessionId, `${options.initialCommand}\n`);
+      submitToSession(sessionId, options.initialCommand);
     };
     if (options.waitForPromptReady) {
       // Inject the command only once the shell can ACTUALLY run commands. A fixed
@@ -256,15 +264,16 @@ export function createShellSession(socket, options = {}) {
       // bounded fallback still injects the command if the probe never round-trips.
       // NOTE: the probe is POSIX (`printf`). The only caller of waitForPromptReady
       // is the agent-TUI path, which is developer-machine (mac/linux) only; on a
-      // Windows cmd.exe shell `printf` no-ops and the command simply injects on the
-      // bounded fallback below (slower, never broken). A Windows port would need a
-      // platform-aware probe.
+      // Windows cmd.exe shell `printf` isn't a command, so the probe errors out,
+      // the marker never appears, and the command injects on the bounded fallback
+      // below (slower, never broken). A Windows port would need a platform-aware
+      // probe.
       let sent = false;
       let sub = null;
       let exitSub = null;
       const nonce = uuidv4().replace(/-/g, '').slice(0, 12);
       const marker = `PORTOSRDY${nonce}`;
-      const probe = `printf '%s\\n' 'PORTOSRDY''${nonce}'\n`;
+      const probe = `printf '%s\\n' 'PORTOSRDY''${nonce}'`;
       let seen = '';
       // Tear down every pending timer + listener. Called both on success
       // (fire) and when the PTY exits before the probe round-trips, so no
@@ -294,7 +303,7 @@ export function createShellSession(socket, options = {}) {
       // Writing earlier is harmless (zsh's line editor / p10k instant-prompt
       // buffer holds it until the prompt is live and replays it), but a small
       // delay avoids racing node-pty's own spawn handshake.
-      const probeTimer = setTimeout(() => { if (!sent) writeToSession(sessionId, probe); }, 50);
+      const probeTimer = setTimeout(() => { if (!sent) submitToSession(sessionId, probe); }, 50);
       const fallback = setTimeout(fire, options.initialCommandDelayMs ?? 8000);
     } else {
       setTimeout(sendInitial, options.initialCommandDelayMs ?? 200);
@@ -549,6 +558,37 @@ export function writeToSession(sessionId, data) {
 }
 
 /**
+ * Type a command line into a session and press Enter.
+ *
+ * Every "inject a command the user didn't type" path goes through here so the
+ * terminator is decided once — see SUBMIT_KEY for why it isn't a newline.
+ *
+ * @param {string} sessionId
+ * @param {string} line - command line, WITHOUT a trailing terminator
+ * @returns {boolean} false when the session is unknown
+ */
+export function submitToSession(sessionId, line) {
+  return writeToSession(sessionId, `${line}${SUBMIT_KEY}`);
+}
+
+/**
+ * Change a session's working directory.
+ *
+ * Goes through the service rather than the client emitting its own `cd` string,
+ * because only the server knows which shell this PTY is running — and the command
+ * differs per shell. See lib/shellCd.js for why.
+ *
+ * @param {string} sessionId
+ * @param {string} dirPath
+ * @returns {boolean} false when the session is unknown
+ */
+export function changeSessionDirectory(sessionId, dirPath) {
+  const session = shellSessions.get(sessionId);
+  if (!session) return false;
+  return submitToSession(sessionId, buildCdCommand(dirPath, session.shell));
+}
+
+/**
  * Deliver `text` to a session as a SINGLE bracketed-paste event, then submit it.
  *
  * This is how you hand a message to a live agent TUI rather than to a shell:
@@ -571,7 +611,7 @@ export function pasteToSession(sessionId, text, { label = 'paste' } = {}) {
   let expectedInputRevision = session.inputRevision;
   const writeEnter = () => {
     try {
-      writeToSession(sessionId, '\r');
+      writeToSession(sessionId, SUBMIT_KEY);
       expectedInputRevision = session.inputRevision;
     } catch (err) {
       // Timer callbacks run outside the request lifecycle, and a write to a

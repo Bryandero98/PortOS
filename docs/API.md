@@ -685,22 +685,28 @@ socket.on('detect:complete', (appData) => {
 > **Security**: The shell WebSocket API provides full terminal access as the PortOS process user. It relies on PortOS's network-level access control (see [Security Model](#security-model)) — do not expose the PortOS server to untrusted networks.
 
 ```javascript
-// Start a shell session
-socket.emit('shell:start', { id: 'my-session' });
+// Start a shell session — the server assigns the id and replies with shell:started
+socket.emit('shell:start', {});
+socket.on('shell:started', ({ sessionId }) => console.log('session', sessionId));
 
-// Send input to shell
-socket.emit('shell:input', { id: 'my-session', data: 'ls -la\n' });
+// Send input to shell. Submit with `\r` (the byte Enter sends), never `\n` — cmd.exe
+// under Windows ConPTY ignores LF and the line is typed but never executed.
+socket.emit('shell:input', { sessionId, data: 'ls -la\r' });
 
 // Receive shell output
-socket.on('shell:output', ({ id, data }) => {
+socket.on('shell:output', ({ sessionId, data }) => {
   console.log(data); // Terminal output
 });
 
+// Change directory — send the PATH, not a command. The server renders the `cd` for
+// the shell this session runs (`cd /d "…"` on cmd.exe, Set-Location on PowerShell).
+socket.emit('shell:cd', { sessionId, path: '/path/to/app' });
+
 // Resize terminal
-socket.emit('shell:resize', { id: 'my-session', cols: 120, rows: 40 });
+socket.emit('shell:resize', { sessionId, cols: 120, rows: 40 });
 
 // Stop shell session
-socket.emit('shell:stop', { id: 'my-session' });
+socket.emit('shell:stop', { sessionId });
 ```
 
 ### Provider Status

@@ -298,6 +298,64 @@ describe('local-daemon readiness on the provider card', () => {
   });
 });
 
+describe('an API provider pointed at another machine', () => {
+  // `localBackendForProvider` matches by NAME and port, so a provider named
+  // "LM Studio <peer>" resolved to the `lmstudio` backend and collected THIS
+  // host's install state — a card badged READY carried "LM Studio not
+  // installed / Install LM Studio" for a server running on someone else's box.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+    // LM Studio is genuinely absent from THIS machine.
+    localModels.value = { ctxById: {}, installed: { ollama: false, lmstudio: false } };
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'lmstudio-peer',
+        name: 'LM Studio peer',
+        type: 'api',
+        enabled: true,
+        endpoint: 'http://192.168.1.50:1234/v1',
+        models: ['qwen/qwen3.5-35b-a3b'],
+        defaultModel: 'qwen/qwen3.5-35b-a3b',
+      }],
+      activeProvider: null,
+    });
+  });
+
+  it('offers no local install for it, and does not demand an API key', async () => {
+    renderPage();
+
+    expect(await screen.findByText('LM Studio peer')).toBeInTheDocument();
+    expect(screen.queryByText(/LM Studio not installed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Install LM Studio/)).not.toBeInTheDocument();
+    // A keyless call to a private-network endpoint is a supported setup, so the
+    // card must not contradict the READY badge it is wearing.
+    expect(screen.getByText(/none \(private network endpoint\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/not set — Edit this provider/)).not.toBeInTheDocument();
+  });
+
+  it('still offers the local install for the same backend on THIS machine', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'lmstudio',
+        name: 'LM Studio',
+        type: 'api',
+        enabled: true,
+        endpoint: 'http://localhost:1234/v1',
+        models: [],
+      }],
+      activeProvider: null,
+    });
+
+    renderPage();
+
+    expect(await screen.findByText(/LM Studio not installed/)).toBeInTheDocument();
+  });
+});
+
 describe('handleAddSample error handling', () => {
   beforeEach(() => {
     vi.clearAllMocks();

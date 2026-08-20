@@ -184,7 +184,7 @@ describe('createShellSession', () => {
     const id = shell.createShellSession(makeSocket(), { initialCommand: 'ls', initialCommandDelayMs: 50 });
     expect(ptyInstances[0].write).not.toHaveBeenCalled();
     vi.advanceTimersByTime(50);
-    expect(ptyInstances[0].write).toHaveBeenCalledWith('ls\n');
+    expect(ptyInstances[0].write).toHaveBeenCalledWith('ls\r');
     expect(shell.getSession(id)).toBeTruthy();
     vi.useRealTimers();
   });
@@ -205,11 +205,11 @@ describe('createShellSession', () => {
     // assembled string never appears contiguously) must NOT trip readiness.
     pty.emitData('instant prompt rendering…');
     pty.emitData(`% printf '%s\\n' 'PORTOSRDY''${nonce}'`);
-    expect(pty.write).not.toHaveBeenCalledWith('claude\n');
+    expect(pty.write).not.toHaveBeenCalledWith('claude\r');
     expect(onInitialCommandSent).not.toHaveBeenCalled();
     // The assembled marker appears in the OUTPUT → shell proven, command injected.
     pty.emitData(`${marker}\n`);
-    expect(pty.write).toHaveBeenCalledWith('claude\n');
+    expect(pty.write).toHaveBeenCalledWith('claude\r');
     expect(onInitialCommandSent).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
@@ -221,10 +221,10 @@ describe('createShellSession', () => {
     vi.advanceTimersByTime(50); // probe written
     // Output streams but the assembled marker never appears.
     for (let i = 0; i < 10; i++) { pty.emitData('tick'); vi.advanceTimersByTime(500); }
-    expect(pty.write).not.toHaveBeenCalledWith('claude\n');
+    expect(pty.write).not.toHaveBeenCalledWith('claude\r');
     // …but the hard fallback (8000ms from creation) injects the command regardless.
     vi.advanceTimersByTime(8000);
-    expect(pty.write).toHaveBeenCalledWith('claude\n');
+    expect(pty.write).toHaveBeenCalledWith('claude\r');
     vi.useRealTimers();
   });
 
@@ -236,7 +236,7 @@ describe('createShellSession', () => {
     // The shell dies before the marker round-trips → cancels pending timers.
     pty.emitExit({ exitCode: 1 });
     vi.advanceTimersByTime(8000); // past the (now-cleared) fallback window
-    expect(pty.write).not.toHaveBeenCalledWith('claude\n');
+    expect(pty.write).not.toHaveBeenCalledWith('claude\r');
     vi.useRealTimers();
   });
 });
@@ -369,6 +369,34 @@ describe('writeToSession / resizeSession', () => {
 
   it('resizeSession returns false for missing session', () => {
     expect(shell.resizeSession('missing', 80, 24)).toBe(false);
+  });
+});
+
+describe('changeSessionDirectory', () => {
+  it('writes the cd in the dialect of the shell THIS session spawned', () => {
+    // A Windows session runs cmd.exe, where the POSIX form the Shell page used to
+    // send is both mis-quoted and drive-blind — see lib/shellCd.js. The trailing CR
+    // is the other half of the Windows fix; see SUBMIT_KEY.
+    const winId = shell.createShellSession(makeSocket('sock-win'), { shell: 'C:\\WINDOWS\\system32\\cmd.exe' });
+    expect(shell.changeSessionDirectory(winId, 'I:\\code\\example-app')).toBe(true);
+    expect(ptyInstances[0].write).toHaveBeenCalledWith('cd /d "I:\\code\\example-app"\r');
+
+    const posixId = shell.createShellSession(makeSocket('sock-posix'), { shell: '/bin/zsh' });
+    expect(shell.changeSessionDirectory(posixId, '/Users/example/my app')).toBe(true);
+    expect(ptyInstances[1].write).toHaveBeenCalledWith("cd '/Users/example/my app'\r");
+  });
+
+  it('returns false for a missing session', () => {
+    expect(shell.changeSessionDirectory('missing', '/tmp')).toBe(false);
+  });
+});
+
+describe('submitToSession', () => {
+  it('appends the Enter byte, and returns false for a missing session', () => {
+    const id = shell.createShellSession(makeSocket('sock-submit'));
+    expect(shell.submitToSession(id, 'npm test')).toBe(true);
+    expect(ptyInstances[0].write).toHaveBeenCalledWith(`npm test${shell.SUBMIT_KEY}`);
+    expect(shell.submitToSession('missing', 'npm test')).toBe(false);
   });
 });
 

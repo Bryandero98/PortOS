@@ -90,3 +90,33 @@ export function worktreeOwnershipReason({
   }
   return null;
 }
+
+/**
+ * When a hold reported by `worktreeOwnershipReason` lifts on its OWN, as an ISO
+ * instant — or null when only an outside change can clear it.
+ *
+ * Lives here, next to the gate, because the expiry is the same policy as the
+ * hold: the stale-claim window (`ageMs >= staleClaimIdleMs`) is the one gate keyed
+ * to a clock, so this is the only module that can name the deadline without
+ * re-deriving it from a returned slug. A lock, a live agent, and unknown
+ * liveness all end at times nothing here can predict.
+ *
+ * The slug alone is not enough to answer this, which is the other reason it
+ * belongs here: a claim worktree that is ALSO locked reports
+ * `worktree-human-claim` (first match wins), and its hold does NOT lift when the
+ * claim window lapses. So the window is re-asked with the deadline already
+ * crossed, and only a tree that comes back free gets an expiry.
+ *
+ * Pure. Takes the same options object as `worktreeOwnershipReason`.
+ * @param {object} [options] - plus `nowMs` for the clock
+ * @returns {string|null} ISO timestamp
+ */
+export function worktreeHoldExpiresAt({ nowMs = Date.now(), ...options } = {}) {
+  const { ageMs, staleClaimIdleMs } = options;
+  if (worktreeOwnershipReason(options) !== 'worktree-human-claim') return null;
+  if (!Number.isFinite(ageMs) || !Number.isFinite(staleClaimIdleMs)) return null;
+  const remaining = staleClaimIdleMs - ageMs;
+  if (remaining <= 0) return null;
+  if (worktreeOwnershipReason({ ...options, ageMs: staleClaimIdleMs }) !== null) return null;
+  return new Date(nowMs + remaining).toISOString();
+}

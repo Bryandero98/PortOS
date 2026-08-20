@@ -16,8 +16,8 @@ import {
   effectiveModelContextWindow,
   isApiProvider,
   isGrokBuildCli,
-  isLocalEndpoint,
   isOrcaRouterBackedProvider,
+  isPrivateNetworkEndpoint,
   isProcessProvider,
   isRunnerAllowedCommand,
   isTuiProvider,
@@ -205,8 +205,13 @@ export default function ProviderCard({
             {isApiProvider(provider) && (
               provider.hasApiKey ? (
                 <p className="text-xs">API key: <span className="text-port-success">set</span></p>
-              ) : isLocalEndpoint(provider.endpoint) ? (
-                <p className="text-xs">API key: <span className="text-gray-500">none (local endpoint)</span></p>
+              ) : isPrivateNetworkEndpoint(provider.endpoint) ? (
+                /* Same rule as `providerCardState`'s apiKey prerequisite — a
+                   keyless call to a private OpenAI-compatible server (loopback,
+                   the LAN box, a tailnet peer) is a supported setup, so the two
+                   must not disagree: a card badged READY used to carry an
+                   orange "API key: not set" line for exactly those endpoints. */
+                <p className="text-xs">API key: <span className="text-gray-500">none (private network endpoint)</span></p>
               ) : (
                 <p className="text-xs">API key: <span className="text-port-warning">not set — Edit this provider to paste one</span></p>
               )

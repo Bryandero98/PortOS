@@ -4,7 +4,7 @@ import { AlertTriangle } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
-import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, isOrcaRouterBackedProvider, providerRuntimeKey, providerCardState, PROVIDER_CARD_STATE } from '../utils/providers';
+import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isGrokBuildCli, isLocalEndpoint, isLocalInstanceProvider, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, isOrcaRouterBackedProvider, providerRuntimeKey, providerCardState, PROVIDER_CARD_STATE } from '../utils/providers';
 import useLocalModels from '../hooks/useLocalModels';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import BrailleSpinner from '../components/BrailleSpinner';
@@ -333,8 +333,15 @@ export default function AIProviders() {
   // The install widget's data for one card: a CLI provider's binary comes from
   // the server's runtime table; an API provider fronted by a local app takes the
   // local-LLM status, which counts an installed app with no CLI shim on PATH.
+  //
+  // Only when the endpoint is on THIS machine: `localBackendForProvider` matches
+  // by name and port, so an API provider pointed at another box's LM Studio also
+  // resolves to `lmstudio` — and reporting this host's install state for it says
+  // nothing true about that server, which is somebody else's to run.
   const runtimeForProvider = useCallback((provider) => {
-    const backend = isApiProvider(provider) ? localBackendForProvider(provider) : null;
+    const backend = isApiProvider(provider) && isLocalInstanceProvider(provider)
+      ? localBackendForProvider(provider)
+      : null;
     if (!backend) return runtimes[providerRuntimeKey(provider)] || null;
     // The readiness checklist covers this same backend in more detail, and knows
     // the difference between "not installed" and "installed but not started".

@@ -900,7 +900,7 @@ export async function updateTaskInterval(taskType, settings) {
       const records = [exec, ...Object.values(exec.perApp || {})];
       for (const rec of records) {
         if (parkedUntilMs(rec) > nowMs) {
-          rec.parkedUntil = await computePerpetualRecheckAt(merged);
+          rec.parkedUntil = boundParkedUntil(await computePerpetualRecheckAt(merged), rec.parkNotLaterThan);
         }
       }
     }
@@ -988,6 +988,35 @@ export async function computePerpetualRecheckAt(interval, fromMs = Date.now()) {
     ? Number(interval.recheckIntervalMs)
     : DEFAULT_PERPETUAL_RECHECK_MS;
   return new Date(fromMs + ms).toISOString();
+}
+
+/**
+ * Shorten a computed park so it cannot sleep past a moment the caller already
+ * KNOWS the situation changes on its own.
+ *
+ * The recheck cadence is a poll interval — the right default when nothing is
+ * known about *when* new work appears. But some parks wait on a deadline the
+ * detector can name: branch-reconcile holds a merged branch whose claim worktree
+ * is still inside its grace window, and that hold lifts at a computable instant.
+ * Parking past it compounds two waits (the grace window, then the next cron
+ * fire) into a stall several times longer than either — on a weekly recheck a
+ * 7-day hold becomes up to 14 days of a task that looks idle.
+ *
+ * Only ever SHORTENS: a bound that is unparseable, already elapsed, or later
+ * than the recheck is ignored, so a bad bound can never extend a park (nor spin
+ * one into a hot retry loop).
+ *
+ * @param {string} recheckAt - ISO timestamp from computePerpetualRecheckAt
+ * @param {string|null|undefined} notLaterThan - ISO instant the hold self-lifts
+ * @param {number} [nowMs]
+ * @returns {string} ISO timestamp
+ */
+export function boundParkedUntil(recheckAt, notLaterThan, nowMs = Date.now()) {
+  const bound = Date.parse(notLaterThan);
+  const recheck = Date.parse(recheckAt);
+  if (!Number.isFinite(bound) || !Number.isFinite(recheck)) return recheckAt;
+  if (bound <= nowMs || bound >= recheck) return recheckAt;
+  return new Date(bound).toISOString();
 }
 
 /**
@@ -1109,7 +1138,7 @@ function resolveExecutionRecord(schedule, taskType, appId = null) {
 // Every field parkPerpetual stamps for a park. Kept as one list so the clear /
 // reset paths can't drift from what park writes (adding a park field here is the
 // single edit that keeps all three in sync).
-const PARK_FIELDS = ['parkedUntil', 'parkReason', 'parkActionableCount', 'parkCounts', 'parkedAt'];
+const PARK_FIELDS = ['parkedUntil', 'parkReason', 'parkActionableCount', 'parkCounts', 'parkNotLaterThan', 'parkedAt'];
 
 /**
  * Park a perpetual task: its work-detector reported nothing actionable, so stop
@@ -1123,6 +1152,10 @@ const PARK_FIELDS = ['parkedUntil', 'parkReason', 'parkActionableCount', 'parkCo
  * makes the NEXT fresh drain cap out early, which looks exactly like the task
  * silently doing nothing.
  *
+ * `notLaterThan` is an optional ISO instant at which the caller knows the hold
+ * lifts on its own; the park is shortened to it when that is sooner than the
+ * recheck cadence, and ignored otherwise.
+ *
  * `dispatchCount` therefore DEFAULTS to 0: a park ends the drain window by
  * definition, so zeroing the budget is the invariant, not an opt-in every caller
  * has to remember. The churn detector's park in agentChurn.js relies on this
@@ -1132,10 +1165,13 @@ const PARK_FIELDS = ['parkedUntil', 'parkReason', 'parkActionableCount', 'parkCo
  * zeroing the counter there would reset the budget before every dispatch, so the
  * cap could never fire.
  */
-export async function parkPerpetual(taskType, appId = null, { reason = null, actionableCount = 0, counts = null, signature, dispatchCount = 0 } = {}) {
+export async function parkPerpetual(taskType, appId = null, { reason = null, actionableCount = 0, counts = null, signature, dispatchCount = 0, notLaterThan = null } = {}) {
   const schedule = await loadSchedule();
   const interval = schedule.tasks[taskType] || {};
-  const parkedUntil = await computePerpetualRecheckAt(interval);
+  // Bound HERE, not at the assignment: `parkedUntil` is also what the log line and
+  // the schedule:perpetual-parked event publish, and a change whose whole point is
+  // an honest "when will this actually run" must not report the un-shortened time.
+  const parkedUntil = boundParkedUntil(await computePerpetualRecheckAt(interval), notLaterThan);
   const record = ensureExecutionRecord(schedule, taskType, appId);
   record.parkedUntil = parkedUntil;
   record.parkReason = reason;
@@ -1146,6 +1182,12 @@ export async function parkPerpetual(taskType, appId = null, { reason = null, act
   // breakdown (e.g. the reconcile scans), so the field is left off the record.
   if (counts != null) record.parkCounts = counts;
   else delete record.parkCounts;
+  // The self-expiry has to OUTLIVE this call: updateTaskInterval restamps every
+  // un-elapsed park from the new cadence, and without a remembered bound it would
+  // stretch a correctly-shortened park back out — reintroducing the stacking this
+  // option exists to remove, via an unrelated settings edit.
+  if (notLaterThan) record.parkNotLaterThan = notLaterThan;
+  else delete record.parkNotLaterThan;
   record.parkedAt = new Date().toISOString();
   // A drain that parks because a full cycle made NO progress (branch-reconcile's
   // 'no-progress' park) records the actionable signature it was stuck on, so the

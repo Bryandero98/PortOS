@@ -37,6 +37,7 @@ import {
   logsUnsubscribeSchema,
   errorRecoverSchema,
   shellInputSchema,
+  shellCdSchema,
   shellResizeSchema,
   shellAttachSchema,
   shellStopSchema,
@@ -641,7 +642,7 @@ export function initSocket(io) {
       if (sessionId) {
         socket.emit('shell:started', { sessionId });
         if (initialCommand) {
-          setTimeout(() => shellService.writeToSession(sessionId, initialCommand + '\n'), 200);
+          setTimeout(() => shellService.submitToSession(sessionId, initialCommand), 200);
         }
       } else {
         socket.emit('shell:error', { error: 'Failed to create shell session' });
@@ -672,6 +673,17 @@ export function initSocket(io) {
       const validated = validateSocketData(shellInputSchema, rawData, socket, 'shell:input');
       if (!validated) return;
       if (!shellService.writeToSession(validated.sessionId, validated.data)) {
+        socket.emit('shell:error', { sessionId: validated.sessionId, error: 'Session not found' });
+      }
+    });
+
+    // The client picks a FOLDER; the server renders the `cd` for the shell this
+    // session is running. A hard-coded POSIX `cd '<path>'` from the client is what
+    // made every managed-app folder unreachable from a Windows (cmd.exe) session.
+    socket.on('shell:cd', (rawData) => {
+      const validated = validateSocketData(shellCdSchema, rawData, socket, 'shell:cd');
+      if (!validated) return;
+      if (!shellService.changeSessionDirectory(validated.sessionId, validated.path)) {
         socket.emit('shell:error', { sessionId: validated.sessionId, error: 'Session not found' });
       }
     });

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   LOCAL_RUNTIMES,
+  isLocalInstanceEndpoint,
   localBackendForProvider,
   localRuntimeForProvider,
   localRuntimeKind,
@@ -29,6 +30,25 @@ describe('normalizeOpenAiBaseUrl', () => {
     expect(normalizeOpenAiBaseUrl('   ')).toBeNull();
     expect(normalizeOpenAiBaseUrl(null)).toBeNull();
     expect(normalizeOpenAiBaseUrl(42)).toBeNull();
+  });
+});
+
+describe('isLocalInstanceEndpoint', () => {
+  it('accepts every loopback / bind-all spelling, with or without a version segment', () => {
+    expect(isLocalInstanceEndpoint('http://localhost:1234/v1')).toBe(true);
+    expect(isLocalInstanceEndpoint('http://127.0.0.1:11434')).toBe(true);
+    expect(isLocalInstanceEndpoint('http://127.5.5.5:8080/v1/')).toBe(true);
+    expect(isLocalInstanceEndpoint('http://0.0.0.0:1234/v1')).toBe(true);
+    expect(isLocalInstanceEndpoint('http://[::1]:1234/v1')).toBe(true);
+  });
+
+  it('rejects another machine, a public API, and anything unparseable', () => {
+    expect(isLocalInstanceEndpoint('http://192.0.2.10:1234/v1')).toBe(false);
+    expect(isLocalInstanceEndpoint('http://nas.example.com:11434/v1')).toBe(false);
+    expect(isLocalInstanceEndpoint('https://api.openai.com/v1')).toBe(false);
+    expect(isLocalInstanceEndpoint('localhost:1234')).toBe(false); // no scheme — not a URL
+    expect(isLocalInstanceEndpoint('')).toBe(false);
+    expect(isLocalInstanceEndpoint(null)).toBe(false);
   });
 });
 
@@ -123,6 +143,36 @@ describe('localRuntimeForProvider', () => {
 
   it('returns null for providers with no local dependency', () => {
     expect(localRuntimeForProvider({ command: 'claude', type: 'cli' })).toBeNull();
+  });
+
+  it('returns null for an API provider whose endpoint lives on ANOTHER machine', () => {
+    // The name matches `lmstudio`, so the card used to report THIS host's
+    // install state — "`lms` is on PortOS's PATH", "start LM Studio from
+    // Settings → Local LLM" — for a server PortOS neither runs nor can start.
+    expect(localRuntimeForProvider({
+      type: 'api',
+      id: 'lmstudio-peer',
+      name: 'LM Studio peer',
+      endpoint: 'http://192.0.2.10:1234/v1',
+    })).toBeNull();
+    // Same for the authoritative `*Backed` markers and for an OpenCode config
+    // that points its namespace at a peer.
+    expect(localRuntimeForProvider({
+      command: 'claude',
+      ollamaBacked: true,
+      envVars: { ANTHROPIC_BASE_URL: 'http://192.0.2.10:11434' },
+    })).toBeNull();
+    expect(localRuntimeForProvider({
+      command: 'opencode',
+      llamaBacked: true,
+      envVars: { OPENCODE_CONFIG_CONTENT: opencodeConfig('llama', 'http://192.0.2.10:8080/v1') },
+    })).toBeNull();
+  });
+
+  it('returns null when the env override the managers read points off-box', () => {
+    // OLLAMA_HOST on another machine means no local daemon to install here.
+    vi.stubEnv('OLLAMA_HOST', '192.0.2.10:11434');
+    expect(localRuntimeForProvider({ command: 'opencode', ollamaBacked: true, envVars: {} })).toBeNull();
   });
 
   it('takes the canonical default from the OpenCode provider table, not a second copy', () => {
