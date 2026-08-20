@@ -44,7 +44,9 @@ vi.mock('../components/install/RuntimeInstallModal', () => ({
     : null,
 }));
 
-import AIProviders from './AIProviders';
+import AIProviders, { PROVIDER_SECTIONS } from './AIProviders';
+import { CARD_STATE_STYLES } from '../components/providers/ProviderCard';
+import { PROVIDER_CARD_STATE } from '../utils/providers';
 
 const renderPage = () => render(
   <MemoryRouter>
@@ -212,6 +214,8 @@ describe('AIProviders page load error handling', () => {
 
     expect(await screen.findByText('No providers configured')).toBeInTheDocument();
     expect(screen.queryByText('Failed to load AI providers')).not.toBeInTheDocument();
+    // With nothing to group, no readiness section renders either.
+    expect(screen.queryByRole('button', { name: new RegExp('^Enabled') })).not.toBeInTheDocument();
   });
 
   it('renders Banner with Retry button when api.getProviders rejects and does not show EmptyState', async () => {
@@ -633,4 +637,122 @@ describe('OpenCode OrcaRouter key hint', () => {
     expect(await screen.findByText('My Orca')).toBeInTheDocument();
     expect(screen.queryByText(/API key is inherited from/)).not.toBeInTheDocument();
    });
+});
+
+describe('readiness grouping', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    localModels.value = { ctxById: {}, installed: { ollama: null, lmstudio: null } };
+  });
+
+  it('sorts each provider into the section its readiness implies', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [
+        { id: 'ready', name: 'Ready CLI', type: 'cli', command: 'claude', enabled: true },
+        { id: 'off', name: 'Switched Off', type: 'cli', command: 'claude', enabled: false },
+        { id: 'keyless', name: 'Keyless Cloud', type: 'api', endpoint: 'https://api.example.com/v1', hasApiKey: false, enabled: true },
+      ],
+      activeProvider: 'ready',
+    });
+
+    renderPage();
+
+    expect(await screen.findByRole('button', { name: new RegExp('^Enabled') })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: new RegExp('^Needs setup') })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: new RegExp('^Disabled') })).toBeInTheDocument();
+    expect(screen.getByText('READY')).toBeInTheDocument();
+    expect(screen.getByText('DISABLED')).toBeInTheDocument();
+    expect(screen.getByText('NEEDS SETUP')).toBeInTheDocument();
+    // The blocker itself stays where its fix is — the card's API-key row.
+    expect(screen.getByText(/not set — Edit this provider to paste one/)).toBeInTheDocument();
+  });
+
+  // A missing CLI is what stops the provider — not the toggle — so it belongs in
+  // "Needs setup" whichever way the switch sits.
+  it('files a switched-off provider with a missing CLI under Needs setup', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{ id: 'opencode-ollama', name: 'OpenCode Ollama', type: 'cli', command: 'opencode', enabled: false }],
+      activeProvider: null,
+    });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: { opencode: missingRuntime } });
+
+    renderPage();
+
+    expect(await screen.findByText('NEEDS SETUP')).toBeInTheDocument();
+    expect(screen.getByText('OpenCode CLI not installed')).toBeInTheDocument();
+    expect(screen.getByText('SWITCHED OFF')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: new RegExp('^Disabled') })).not.toBeInTheDocument();
+  });
+
+  // The provider list is authoritative: no sibling means the wrapper has no key
+  // to inherit at spawn time, which is a missing prerequisite, not "unknown".
+  it('files an OrcaRouter wrapper whose sibling was deleted under Needs setup', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'opencode-orcarouter',
+        name: 'OpenCode OrcaRouter',
+        type: 'cli',
+        command: 'opencode',
+        enabled: true,
+        orcarouterBacked: true,
+      }],
+      activeProvider: null,
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('NEEDS SETUP')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: new RegExp('^Needs setup') })).toBeInTheDocument();
+  });
+
+  it('badges an enabled-but-benched provider with its reason', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{ id: 'claude', name: 'Claude', type: 'cli', command: 'claude', enabled: true }],
+      activeProvider: 'claude',
+    });
+    api.getProviderStatuses.mockResolvedValue({
+      providers: { claude: { available: false, reason: 'usage-limit', message: 'Usage limit reached' } },
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('BENCHED · usage-limit')).toBeInTheDocument();
+    // Benched providers stay in the Enabled group — nothing is missing on them.
+    expect(screen.getByRole('button', { name: new RegExp('^Enabled') })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: new RegExp('^Needs setup') })).not.toBeInTheDocument();
+  });
+
+  it('folds a section away when its header is clicked', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{ id: 'off', name: 'Switched Off', type: 'cli', command: 'claude', enabled: false }],
+      activeProvider: null,
+    });
+
+    renderPage();
+
+    const header = await screen.findByRole('button', { name: /Disabled/ });
+    expect(screen.getByText('Switched Off')).toBeInTheDocument();
+
+    fireEvent.click(header);
+    expect(screen.queryByText('Switched Off')).not.toBeInTheDocument();
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(header);
+    expect(screen.getByText('Switched Off')).toBeInTheDocument();
+  });
+});
+
+// Both tables are keyed off PROVIDER_CARD_STATE, and a state missing from either
+// fails quietly: no PROVIDER_SECTIONS row and those cards vanish from the page,
+// no CARD_STATE_STYLES row and the card throws on `style.border`.
+describe('readiness table coverage', () => {
+  it('gives every readiness state a card style and exactly one section', () => {
+    for (const state of Object.values(PROVIDER_CARD_STATE)) {
+      expect(CARD_STATE_STYLES[state]).toBeDefined();
+      expect(PROVIDER_SECTIONS.filter(section => section.states.includes(state))).toHaveLength(1);
+    }
+  });
 });

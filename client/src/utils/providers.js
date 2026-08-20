@@ -686,6 +686,42 @@ const LOCAL_ENDPOINT_RE = /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?
 export const isLocalEndpoint = (endpoint) =>
   typeof endpoint === 'string' && LOCAL_ENDPOINT_RE.test(endpoint.trim());
 
+// Hosts inside the trust boundary, where an unauthenticated OpenAI-compatible
+// server is a normal setup rather than a misconfiguration: RFC1918 LAN ranges,
+// link-local, and the Tailscale CGNAT range 100.64.0.0/10 (PortOS is a
+// tailnet-first product — an API provider pointed at another machine's Ollama
+// is a first-class configuration, not an edge case).
+const PRIVATE_IP_RE = /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/;
+
+/**
+ * Is this endpoint inside the private network — loopback, a LAN/tailnet address,
+ * a `.local`/`.ts.net`/`.internal` name, or a bare single-label host?
+ *
+ * Used to decide whether a missing API key is actually a missing prerequisite.
+ * The server only attaches an `Authorization` header when a key is stored, so a
+ * keyless call to a private OpenAI-compatible server (LM Studio on the desk
+ * machine, Ollama on a tailnet peer) works exactly as configured — reporting it
+ * as "needs setup" would be a false alarm on a supported deployment. A public
+ * endpoint with no key stays flagged: that one really is misconfigured.
+ *
+ * A host that cannot be parsed reads as NOT private, keeping the stricter of
+ * the two answers for input we don't understand.
+ */
+export const isPrivateNetworkEndpoint = (endpoint) => {
+  if (isLocalEndpoint(endpoint)) return true;
+  if (typeof endpoint !== 'string' || !endpoint.trim()) return false;
+  const trimmed = endpoint.trim();
+  // A scheme-less endpoint ("192.168.1.5:1234/v1") is still a host — give the
+  // parser one so it doesn't read the leading segment as a scheme.
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  if (!URL.canParse(candidate)) return false;
+  const host = new URL(candidate).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (PRIVATE_IP_RE.test(host)) return true;
+  if (/\.(local|internal|lan|home\.arpa|ts\.net)$/.test(host)) return true;
+  // A single-label host resolves only inside the local network (`http://nas:11434`).
+  return !host.includes('.') && !host.includes(':');
+};
+
 export const isLikelyLargeContextProvider = (provider) => {
   if (isProcessProvider(provider)) return true;
   return isApiProvider(provider) && !isLocalEndpoint(provider.endpoint);
@@ -880,6 +916,88 @@ export const isGrokBuildCli = (provider) => {
   if (!isProcessProvider(provider)) return false;
   const id = String(provider?.id || '').toLowerCase();
   return id === 'grok-cli' || id === 'grok-tui' || commandBasename(provider?.command) === 'grok';
+};
+
+/**
+ * The four states a provider card can be in on the AI Providers page, ordered
+ * the way the page groups them: usable now, temporarily benched, missing a
+ * prerequisite, or simply switched off.
+ */
+export const PROVIDER_CARD_STATE = Object.freeze({
+  READY: 'ready',
+  BENCHED: 'benched',
+  BLOCKED: 'blocked',
+  DISABLED: 'disabled',
+});
+
+/**
+ * Which prerequisites a provider is missing, and the card state that follows
+ * from them — one place, so a card's border, its badge and the section the page
+ * files it under can never disagree with each other.
+ *
+ * NOT the same thing as `ProviderReadiness` /
+ * `GET /api/providers/readiness`, which probes whether the local DAEMON a
+ * provider points at (llama.cpp, Ollama, LM Studio, MTPLX) is up and serving
+ * the right model. This decides the card's bucket from its toggle, its
+ * credentials and the server's bench status; the two render side by side.
+ *
+ * PRESENTATION state, not an exec gate: the server routes on
+ * `provider.enabled && isAvailable(id)` alone (`getFallbackProvider` in
+ * server/lib/aiToolkit/providerStatus.js) and discovers a missing binary at
+ * spawn time via ENOENT, so a `blocked` card here is still reachable by the
+ * runner. Publishing the prerequisite check server-side so routing can skip
+ * un-runnable providers is issue #4611; credentials carried in a secret env var
+ * (Bedrock, Ollama auth token) are not covered yet — issue #4612.
+ *
+ * Inputs are passed in rather than read from globals so this stays pure:
+ *   runtime          — the provider's entry of the `runtimes` map (CLI binary)
+ *                      or the local-app shape the page derives from the
+ *                      local-LLM status. `null` = NOT PROBED, which must never
+ *                      read as "missing" (an older server, or a card drawn
+ *                      before the probe lands, would otherwise accuse every
+ *                      perfectly-installed CLI).
+ *   status           — the runtime-availability entry from
+ *                      `GET /api/providers/status`; `available === false`
+ *                      means the provider is benched after a failure.
+ *   orcaRouterKeySet — whether the sibling `orcarouter` API provider holds the
+ *                      key an OpenCode OrcaRouter wrapper inherits at spawn
+ *                      time. `false` covers BOTH "sibling has no key" and
+ *                      "sibling was deleted" — the server injects the key only
+ *                      when that provider exists and holds one, so either way
+ *                      the wrapper cannot authenticate. `null` is for a caller
+ *                      that genuinely cannot tell (no provider list yet) and,
+ *                      like `runtime`, is never reported as missing.
+ *
+ * `blocked` outranks `disabled`: a provider whose CLI isn't installed can't be
+ * enabled at all, so it belongs in the "needs setup" bucket whichever way its
+ * toggle happens to sit. `benched` only applies to an enabled provider that
+ * otherwise meets its prerequisites.
+ *
+ * @returns {{state: string, missing: {code: string, label: string}[]}}
+ */
+export const providerCardState = (provider, { runtime = null, status = null, orcaRouterKeySet = null } = {}) => {
+  const missing = [];
+
+  if (runtime && runtime.installed === false) {
+    missing.push({ code: 'runtime', label: `${runtime.label || 'Runtime'} is not installed` });
+  }
+  // API providers auth solely via the stored key — but only an endpoint outside
+  // the private network actually needs one. The server attaches `Authorization`
+  // only when a key is stored, so a keyless call to loopback, a LAN box, or a
+  // tailnet peer running LM Studio / Ollama works exactly as configured.
+  if (isApiProvider(provider) && provider?.hasApiKey !== true && !isPrivateNetworkEndpoint(provider?.endpoint)) {
+    missing.push({ code: 'apiKey', label: 'API key is not set' });
+  }
+  // The OpenCode OrcaRouter wrappers carry no key of their own — theirs lives
+  // on the sibling API provider, so that's the prerequisite to report.
+  if (isOrcaRouterBackedProvider(provider) && orcaRouterKeySet === false) {
+    missing.push({ code: 'inheritedApiKey', label: 'OrcaRouter API provider has no API key' });
+  }
+
+  if (missing.length > 0) return { state: PROVIDER_CARD_STATE.BLOCKED, missing };
+  if (!provider?.enabled) return { state: PROVIDER_CARD_STATE.DISABLED, missing };
+  if (status?.available === false) return { state: PROVIDER_CARD_STATE.BENCHED, missing };
+  return { state: PROVIDER_CARD_STATE.READY, missing };
 };
 
 /**

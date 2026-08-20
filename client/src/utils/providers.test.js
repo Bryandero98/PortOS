@@ -33,6 +33,9 @@ import {
   isApiProvider,
   isProcessProvider,
   providerRuntimeKey,
+  providerCardState,
+  isPrivateNetworkEndpoint,
+  PROVIDER_CARD_STATE,
   isOllamaBackedProvider,
   isOrcaRouterBackedProvider,
   isGrokBuildCli,
@@ -1173,6 +1176,127 @@ describe('providerRuntimeKey', () => {
   it('returns null when there is nothing to look up', () => {
     expect(providerRuntimeKey(null)).toBeNull();
     expect(providerRuntimeKey({ type: 'cli', command: '   ' })).toBeNull();
+  });
+});
+
+describe('providerCardState', () => {
+  const cli = (over = {}) => ({ id: 'p1', type: 'cli', command: 'opencode', enabled: true, ...over });
+  const cloudApi = (over = {}) => ({ id: 'p2', type: 'api', endpoint: 'https://api.example.com/v1', enabled: true, ...over });
+
+  it('reports an enabled provider with every prerequisite met as ready', () => {
+    expect(providerCardState(cli(), { runtime: { label: 'OpenCode CLI', installed: true } }))
+      .toEqual({ state: PROVIDER_CARD_STATE.READY, missing: [] });
+    expect(providerCardState(cloudApi({ hasApiKey: true })))
+      .toEqual({ state: PROVIDER_CARD_STATE.READY, missing: [] });
+  });
+
+  // An unprobed runtime (older server, or the card drawn before the probe
+  // lands) must read as "can't tell", never as a missing binary.
+  it('never blocks on an unprobed runtime', () => {
+    expect(providerCardState(cli(), { runtime: null }).state).toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('blocks a provider whose CLI is not installed, and names it', () => {
+    const readiness = providerCardState(cli(), { runtime: { label: 'OpenCode CLI', installed: false } });
+    expect(readiness.state).toBe(PROVIDER_CARD_STATE.BLOCKED);
+    expect(readiness.missing).toEqual([{ code: 'runtime', label: 'OpenCode CLI is not installed' }]);
+  });
+
+  it('blocks a cloud API provider with no key', () => {
+    const readiness = providerCardState(cloudApi({ hasApiKey: false }));
+    expect(readiness.state).toBe(PROVIDER_CARD_STATE.BLOCKED);
+    expect(readiness.missing).toEqual([{ code: 'apiKey', label: 'API key is not set' }]);
+  });
+
+  // Ollama / LM Studio need no key at all — absence there is not a prerequisite.
+  it('does not demand a key from a local endpoint', () => {
+    expect(providerCardState({ id: 'ollama', type: 'api', endpoint: 'http://localhost:11434/v1', enabled: true }).state)
+      .toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  // A LAN box or a tailnet peer running LM Studio / Ollama serves keylessly, and
+  // PortOS is a tailnet-first product — flagging those as unconfigured would be
+  // a false alarm on a supported deployment.
+  it.each([
+    ['http://192.168.1.50:1234/v1'],
+    ['http://10.0.0.4:11434/v1'],
+    ['http://100.101.102.103:11434/v1'],
+    ['http://desk-machine.ts.net:1234/v1'],
+    ['http://nas:11434/v1'],
+  ])('does not demand a key from the private-network endpoint %s', (endpoint) => {
+    expect(providerCardState({ id: 'lan', type: 'api', endpoint, enabled: true }).state)
+      .toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('still demands a key from a public endpoint', () => {
+    expect(providerCardState({ id: 'cloud', type: 'api', endpoint: 'https://api.example.com/v1', enabled: true }).state)
+      .toBe(PROVIDER_CARD_STATE.BLOCKED);
+  });
+
+  it('blocks an OrcaRouter wrapper when the sibling API provider holds no key', () => {
+    const wrapper = cli({ id: 'opencode-orcarouter', orcarouterBacked: true });
+    expect(providerCardState(wrapper, { orcaRouterKeySet: false }).missing)
+      .toEqual([{ code: 'inheritedApiKey', label: 'OrcaRouter API provider has no API key' }]);
+    // Sibling absent from the list = unknown, which must not accuse the wrapper.
+    expect(providerCardState(wrapper, { orcaRouterKeySet: null }).state).toBe(PROVIDER_CARD_STATE.READY);
+    expect(providerCardState(wrapper, { orcaRouterKeySet: true }).state).toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('benches an enabled provider the server marked unavailable', () => {
+    const readiness = providerCardState(cli(), { status: { available: false, reason: 'usage-limit' } });
+    expect(readiness.state).toBe(PROVIDER_CARD_STATE.BENCHED);
+    // A benched provider is fully configured — nothing to install or paste.
+    expect(readiness.missing).toEqual([]);
+  });
+
+  it('reads a switched-off but fully configured provider as disabled, not blocked', () => {
+    expect(providerCardState(cli({ enabled: false }), { runtime: { label: 'OpenCode CLI', installed: true } }).state)
+      .toBe(PROVIDER_CARD_STATE.DISABLED);
+  });
+
+  // The toggle is not what's stopping a provider whose CLI is missing, so the
+  // missing prerequisite outranks it — that's the bucket the user must act in.
+  it('keeps a switched-off provider with a missing prerequisite in the blocked bucket', () => {
+    expect(providerCardState(cli({ enabled: false }), { runtime: { label: 'OpenCode CLI', installed: false } }).state)
+      .toBe(PROVIDER_CARD_STATE.BLOCKED);
+  });
+
+  it('collects every missing prerequisite at once', () => {
+    const readiness = providerCardState(
+      { id: 'lmstudio-remote', type: 'api', endpoint: 'https://api.example.com/v1', hasApiKey: false, enabled: true },
+      { runtime: { label: 'LM Studio', installed: false } },
+    );
+    expect(readiness.missing.map(m => m.code)).toEqual(['runtime', 'apiKey']);
+  });
+});
+
+describe('isPrivateNetworkEndpoint', () => {
+  it.each([
+    'http://localhost:11434/v1',
+    'http://127.0.0.1:1234',
+    '192.168.1.5:1234/v1',
+    'http://172.16.4.4:11434',
+    'http://172.31.255.1:11434',
+    'http://100.64.0.1:11434',
+    'http://host.local:1234',
+    'http://box.internal/v1',
+    'http://ollama',
+  ])('treats %s as inside the private network', (endpoint) => {
+    expect(isPrivateNetworkEndpoint(endpoint)).toBe(true);
+  });
+
+  it.each([
+    'https://api.example.com/v1',
+    'https://example.com:8443/v1',
+    // 172.32 is outside RFC1918 (which stops at 172.31), and 100.128 is above
+    // the Tailscale CGNAT range — both are public space.
+    'http://172.32.0.1:11434',
+    'http://100.128.0.1:11434',
+    'http://9.9.9.9/v1',
+    '',
+    null,
+  ])('treats %s as public', (endpoint) => {
+    expect(isPrivateNetworkEndpoint(endpoint)).toBe(false);
   });
 });
 
