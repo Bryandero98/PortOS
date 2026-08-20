@@ -26,10 +26,23 @@ PortOS integrates both through the **OpenCode llama TUI** provider preset and th
 ## Setup & Running with llama-server
 
 ### 1. Download Base & Draft Models
-Download your base GGUF and a matching drafter GGUF from Hugging Face. Drafter
-checkpoints are **not standalone models** — they only produce text once an engine
-pairs them with their specific target, which is why PortOS's model search filters
-them out of the install picker.
+
+**From the UI (recommended).** **Settings → Local LLMs → Speculative Decoding**
+lists each preset's two GGUFs with their on-disk state and a **Download** button
+per file — PortOS fetches the weights from Hugging Face straight into the path
+the launcher passes `llama.cpp`, so a missing file is visible (and fixable)
+before you press Start rather than surfacing as a failed launch. Start stays
+disabled, naming the file to download, while either half of the selected pair is
+missing. A drafter with no published single-file GGUF (the DSpark 8B block ships
+as a tokenizer-less checkpoint) links out to a Hugging Face search instead.
+Gated repos use the Hugging Face token from Image Gen settings. Downloads land
+in `models/` under the install root (gitignored, not included in backups —
+they're re-downloadable).
+
+**By hand.** Download your base GGUF and a matching drafter GGUF from Hugging
+Face. Drafter checkpoints are **not standalone models** — they only produce text
+once an engine pairs them with their specific target, which is why PortOS's model
+search filters them out of the install picker.
 
 DSpark pairs (stock llama.cpp):
 
@@ -91,8 +104,9 @@ Until all three pass, the card says what is missing and links to
 `Cannot connect to API: Unable to connect` inside the agent transcript.
 
 The GGUF weights are a separate download from the binary: `llama-server` will
-not start without them, and PortOS now refuses the start with the missing path
-named rather than reporting a PID for a process that already exited.
+not start without them, and PortOS refuses the start with the missing path named
+rather than reporting a PID for a process that already exited. The Speculative
+Decoding card downloads them for you — see step 1.
 
 ---
 

@@ -10,11 +10,13 @@ import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import {
   getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
   deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService,
-  installAudioModel, patchSettingsSlice, getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer
+  installAudioModel, patchSettingsSlice, getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer,
+  downloadSpecDecodeModel
 } from '../../services/api';
 import socket from '../../services/socket';
 import MemoryManagement from './MemoryManagement.jsx';
 import LocalModelAssessments from './LocalModelAssessments.jsx';
+import SpecDecodeWeightRow from './SpecDecodeWeightRow.jsx';
 
 const BACKENDS = [
   { id: 'ollama', label: 'Ollama', icon: Cpu },
@@ -22,54 +24,17 @@ const BACKENDS = [
 ];
 const labelFor = (id) => BACKENDS.find((b) => b.id === id)?.label || id;
 
-// llama.cpp exposes one `--spec-type` per drafter family. `draft-dspark` merged
-// upstream on 2026-07-28 (ggml-org/llama.cpp#25173) and works on a stock
-// `brew install llama.cpp`; `draft-dflash` covers DFlash v1, while the DFlash 2
-// modules are still an open PR (#27342) and need a from-source build. Hence the
-// DSpark presets lead — see docs/research/2026-08-19-dspark-vs-dflash2.md.
-const SPEC_DECODE_PRESETS = [
-  {
-    id: 'qwen3.8-27b-dspark',
-    label: 'Qwen 3.8 27B + DSpark Drafter (Recommended — stock llama.cpp)',
-    model: 'models/Qwen3.8-27B-Instruct-Q4_K_M.gguf',
-    draftModel: 'models/Qwen3.8-27B-DSpark-bf16.gguf',
-    specType: 'draft-dspark',
-  },
-  {
-    id: 'qwen3-8b-dspark',
-    label: 'Qwen 3 8B + DSpark Drafter (small target)',
-    model: 'models/Qwen3-8B-Instruct-Q4_K_M.gguf',
-    draftModel: 'models/dspark_qwen3_8b_block7-bf16.gguf',
-    specType: 'draft-dspark',
-  },
-  {
-    id: 'qwen3.8-27b',
-    label: 'Qwen 3.8 27B + DFlash 2 Drafter (needs llama.cpp PR #27342 build)',
-    model: 'models/Qwen3.8-27B-Instruct-Q4_K_M.gguf',
-    draftModel: 'models/Qwen3.8-27B-DFlash2-Q4_K_M.gguf',
-    specType: 'draft-dflash',
-  },
-  {
-    id: 'muse-glimmer-30b',
-    label: 'Muse-Glimmer 30B + DFlash 2 Drafter (needs llama.cpp PR #27342 build)',
-    model: 'models/Muse-Glimmer-30B-Instruct-Q4_K_M.gguf',
-    draftModel: 'models/Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf',
-    specType: 'draft-dflash',
-  },
-  {
-    id: 'custom',
-    label: 'Custom GGUF / Manual Paths',
-    model: '',
-    draftModel: '',
-    specType: 'draft-dspark',
-  },
-];
-
-// The select mounts on this preset, so the form has to be seeded from it too —
-// otherwise the recommended preset reads as chosen while the required model path
-// is still empty, and Start sits disabled with nothing the user can act on.
+// The speculative-decoding presets come from the server
+// (`server/lib/specDecodePresets.js`, surfaced on the llama-server status
+// response) rather than a table here: each preset names a multi-gigabyte GGUF,
+// and only the server knows which Hugging Face repo it comes from, whether it
+// is already on disk, and how to fetch it. A client-side copy would inevitably
+// list a path the Download button had no source for.
 const DEFAULT_SPEC_PRESET_ID = 'qwen3.8-27b-dspark';
-const findSpecPreset = (id) => SPEC_DECODE_PRESETS.find((p) => p.id === id);
+const downloadKey = (presetId, role) => `${presetId}:${role}`;
+// Each entry carries its own `role`, so the rows come straight off the preset
+// rather than from a second copy of the role list.
+const specWeightEntries = (preset) => [preset?.model, preset?.draftModel].filter((e) => e?.path);
 
 // Defaults for the advanced numeric fields. They are applied when the server is
 // launched rather than on every keystroke: a controlled number input that coerces
@@ -439,19 +404,21 @@ export function LocalLlmTab() {
   const [llamaStatus, setLlamaStatus] = useState(null);
   const [llamaLoading, setLlamaLoading] = useState(false);
   const [llamaPresetId, setLlamaPresetId] = useState(DEFAULT_SPEC_PRESET_ID);
-  const [llamaForm, setLlamaForm] = useState(() => {
-    const preset = findSpecPreset(DEFAULT_SPEC_PRESET_ID);
-    return {
-      model: preset?.model || '',
-      draftModel: preset?.draftModel || '',
-      specType: preset?.specType || 'draft-dspark',
-      port: 8080,
-      host: '127.0.0.1',
-      ctxSize: 32768,
-      nGpuLayers: 99,
-      alias: 'dflash',
-    };
+  const [llamaForm, setLlamaForm] = useState({
+    model: '',
+    draftModel: '',
+    specType: 'draft-dspark',
+    port: 8080,
+    host: '127.0.0.1',
+    ctxSize: 32768,
+    nGpuLayers: 99,
+    alias: 'dflash',
   });
+  // Byte progress for downloads STARTED HERE, keyed `presetId:role`. A transfer
+  // another tab started still renders — the server reports it on the entry —
+  // but only the starting tab owns the toast and the cleanup.
+  const [llamaDownloads, setLlamaDownloads] = useState({});
+  const specPresetSeeded = useRef(false);
   const [showLlamaAdvanced, setShowLlamaAdvanced] = useState(false);
   const [showLlamaLogs, setShowLlamaLogs] = useState(false);
 
@@ -516,6 +483,41 @@ export function LocalLlmTab() {
   }, []);
 
   useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  // The preset select mounts pre-selected, so the form has to be filled in the
+  // moment the presets land — otherwise the recommended preset reads as chosen
+  // while the required model path is still empty and Start sits disabled with
+  // nothing to act on. Seeds once, so a later status refresh can't overwrite
+  // paths the user has since edited.
+  useEffect(() => {
+    if (specPresetSeeded.current) return;
+    const presets = llamaStatus?.presets;
+    if (!presets?.length) return;
+    const preset = presets.find((p) => p.id === DEFAULT_SPEC_PRESET_ID) || presets[0];
+    specPresetSeeded.current = true;
+    setLlamaPresetId(preset.id);
+    setLlamaForm((prev) => ({
+      ...prev,
+      model: preset.model?.path || '',
+      draftModel: preset.draftModel?.path || '',
+      specType: preset.specType || prev.specType,
+    }));
+  }, [llamaStatus?.presets]);
+
+  // Byte progress for an in-flight GGUF download. Frames only update a row this
+  // tab already opened — an unknown key means another tab owns that transfer,
+  // and its row renders from the server-reported `downloading` flag instead.
+  useEffect(() => {
+    const handleDownloadProgress = (frame) => {
+      if (!frame?.presetId || !frame?.role) return;
+      const key = downloadKey(frame.presetId, frame.role);
+      setLlamaDownloads((prev) => (prev[key]
+        ? { ...prev, [key]: { received: frame.received || 0, total: frame.total || 0 } }
+        : prev));
+    };
+    socket.on('llamaServer:download', handleDownloadProgress);
+    return () => socket.off('llamaServer:download', handleDownloadProgress);
+  }, []);
   // Debounce so typing in the search box doesn't fire a request per keystroke.
   //
   // `activeCategory` is a trigger for the Hugging Face source ONLY — the live
@@ -761,16 +763,62 @@ export function LocalLlmTab() {
   const setLlamaNumber = (field, raw) =>
     setLlamaForm((prev) => ({ ...prev, [field]: raw === '' ? '' : Number(raw) }));
 
-  const activeSpecPreset = findSpecPreset(llamaPresetId);
+  const specPresets = llamaStatus?.presets || [];
+  const activeSpecPreset = specPresets.find((p) => p.id === llamaPresetId) || null;
+  const activeSpecWeights = specWeightEntries(activeSpecPreset);
   // Clearing the target path is the one way back to a disabled Start — say why
   // rather than leaving a dead button.
   const llamaModelMissing = !llamaForm.model.trim();
+  // A preset file the server says isn't on disk, still named by the form. This
+  // is what the launcher would reject with LLAMA_MODEL_FILE_MISSING, so block
+  // Start here and point at the Download button instead of spending a request
+  // to produce an error the card can already answer.
+  const missingWeight = (role) => {
+    const entry = activeSpecPreset?.[role];
+    const field = role === 'model' ? llamaForm.model : llamaForm.draftModel;
+    return Boolean(entry?.path && !entry.exists && entry.path === (field || '').trim());
+  };
+  const baseWeightMissing = missingWeight('model');
+  const draftWeightMissing = missingWeight('draftModel');
+  const llamaStartBlocked = llamaModelMissing || baseWeightMissing || draftWeightMissing;
+  const llamaStartBlockedReason = llamaModelMissing
+    ? 'Enter a Target Base Model path to enable Start'
+    : baseWeightMissing
+      ? 'Download the base model to enable Start'
+      : draftWeightMissing
+        ? 'Download the drafter, or clear the field to run without it'
+        : '';
+
+  const handleDownloadSpecModel = async (role) => {
+    const presetId = llamaPresetId;
+    const key = downloadKey(presetId, role);
+    setLlamaDownloads((prev) => ({ ...prev, [key]: { received: 0, total: 0 } }));
+    try {
+      const res = await downloadSpecDecodeModel(presetId, role);
+      toast.success(res?.alreadyDownloaded
+        ? `${res.path} is already on disk`
+        : `${res?.path || 'Model'} downloaded`);
+    } catch (err) {
+      toast.error(err?.message || 'Download failed');
+    } finally {
+      setLlamaDownloads((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      loadLlamaStatus();
+    }
+  };
 
   const handleStartLlama = async (e) => {
     e?.preventDefault?.();
     // Submitting with Enter bypasses the disabled button, so re-check here.
     if (llamaModelMissing) {
       toast.error('Please specify a base model path (e.g. models/Qwen3.8-27B-Instruct-Q4_K_M.gguf)');
+      return;
+    }
+    if (baseWeightMissing || draftWeightMissing) {
+      toast.error(`${llamaStartBlockedReason} — the GGUF isn't on this machine yet.`);
       return;
     }
     setLlamaLoading(true);
@@ -827,15 +875,16 @@ export function LocalLlmTab() {
   };
 
   const handlePresetSelect = (presetId) => {
-    const preset = findSpecPreset(presetId);
+    const preset = specPresets.find((p) => p.id === presetId);
     if (!preset) return;
     setLlamaPresetId(preset.id);
-    if (preset.id !== 'custom') {
+    // `custom` carries no paths — it exists so hand-entered fields keep a label.
+    if (preset.model?.path || preset.draftModel?.path) {
       setLlamaForm((prev) => ({
         ...prev,
-        model: preset.model,
-        draftModel: preset.draftModel,
-        specType: preset.specType,
+        model: preset.model?.path || '',
+        draftModel: preset.draftModel?.path || '',
+        specType: preset.specType || prev.specType,
       }));
     }
   };
@@ -1041,7 +1090,7 @@ export function LocalLlmTab() {
                   value={llamaPresetId}
                   className="bg-port-card border border-port-border rounded px-2 py-1 text-xs text-port-accent focus:outline-none"
                 >
-                  {SPEC_DECODE_PRESETS.map((p) => (
+                  {specPresets.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.label}
                     </option>
@@ -1059,7 +1108,7 @@ export function LocalLlmTab() {
                   type="text"
                   value={llamaForm.model}
                   onChange={(e) => setLlamaField('model', e.target.value)}
-                  placeholder={activeSpecPreset?.model || 'models/your-target-Q4_K_M.gguf'}
+                  placeholder={activeSpecPreset?.model?.path || 'models/your-target-Q4_K_M.gguf'}
                   className="w-full bg-port-card border border-port-border rounded px-2.5 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
                 />
               </div>
@@ -1071,11 +1120,28 @@ export function LocalLlmTab() {
                   type="text"
                   value={llamaForm.draftModel}
                   onChange={(e) => setLlamaField('draftModel', e.target.value)}
-                  placeholder={activeSpecPreset?.draftModel || 'models/your-drafter.gguf'}
+                  placeholder={activeSpecPreset?.draftModel?.path || 'models/your-drafter.gguf'}
                   className="w-full bg-port-card border border-port-border rounded px-2.5 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
                 />
               </div>
             </div>
+
+            {activeSpecWeights.length > 0 && (
+              <div className="space-y-1.5 pt-2 border-t border-port-border/40">
+                <p className="text-[11px] text-gray-500">
+                  Weights on this machine — each GGUF is a separate multi-gigabyte download from Hugging Face, fetched into the path above.
+                </p>
+                {activeSpecWeights.map((entry) => (
+                  <SpecDecodeWeightRow
+                    key={entry.role}
+                    entry={entry}
+                    progress={llamaDownloads[downloadKey(llamaPresetId, entry.role)]}
+                    onDownload={handleDownloadSpecModel}
+                    disabled={llamaLoading}
+                  />
+                ))}
+              </div>
+            )}
 
             {showLlamaAdvanced && (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 border-t border-port-border/40 text-xs">
@@ -1136,15 +1202,19 @@ export function LocalLlmTab() {
                 {showLlamaAdvanced ? 'Hide options' : 'Advanced options (port, ctx, GPU layers)'}
               </button>
               <div className="flex items-center gap-2">
-                {llamaModelMissing && (
+                {llamaStartBlocked && (
                   <span className="text-[11px] text-port-warning text-right">
-                    Enter a Target Base Model path to enable Start
+                    {llamaStartBlockedReason}
                   </span>
                 )}
                 <button
                   type="submit"
-                  disabled={llamaLoading || llamaModelMissing}
-                  title={llamaModelMissing ? 'Target Base Model (GGUF Path) is required before the server can start' : 'Launch llama-server with these settings'}
+                  disabled={llamaLoading || llamaStartBlocked}
+                  title={llamaModelMissing
+                    ? 'Target Base Model (GGUF Path) is required before the server can start'
+                    : llamaStartBlocked
+                      ? `${llamaStartBlockedReason} — llama.cpp can't load a GGUF that isn't on disk`
+                      : 'Launch llama-server with these settings'}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent text-xs font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                 >
                   {llamaLoading ? <BrailleSpinner /> : <Power size={13} />}

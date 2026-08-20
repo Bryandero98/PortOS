@@ -6,12 +6,12 @@
  */
 
 import { stat } from 'fs/promises';
-import { resolve } from 'path';
 import { spawn } from '../lib/childProcess.js';
 import { commandExists } from '../lib/commandExists.js';
 import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
 import { killProcessTree } from '../lib/bufferedSpawn.js';
 import { expandHome, sleep } from '../lib/fileUtils.js';
+import { resolveSpecModelPath } from './specDecodeModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { ServerError } from '../lib/errorHandler.js';
 
@@ -74,16 +74,16 @@ function resolveLlamaServerBinary() {
  * reports "started (PID …)" from a process that is already gone; the real cause
  * is one line deep in the server log.
  *
- * Relative paths resolve against the server's cwd, which is the cwd the child
- * inherits, and `~` is expanded here AND in the argv below — `spawn` does no
- * shell expansion, so a tilde path must be expanded once for both or the check
- * and the launch disagree about which file they mean.
+ * Path resolution goes through `resolveSpecModelPath` — the same helper the
+ * downloader writes through — so the check and the download can never disagree
+ * about which file a relative or `~`-prefixed path means. (`spawn` does no shell
+ * expansion, hence the matching `expandHome` on the argv below.)
  */
 async function assertModelFileExists(label, modelPath) {
-  const stats = await stat(resolve(expandHome(modelPath))).catch(() => null);
+  const stats = await stat(resolveSpecModelPath(modelPath)).catch(() => null);
   if (stats?.isFile()) return;
   throw new ServerError(
-    `${label} was not found at \`${modelPath}\`. Download the GGUF first — the Local LLM tab lists the base/drafter pairs — or point this field at a file you already have.`,
+    `${label} was not found at \`${modelPath}\`. Use the Download button next to this preset in the Speculative Decoding card to fetch it, or point this field at a file you already have.`,
     { status: 400, code: 'LLAMA_MODEL_FILE_MISSING' }
   );
 }

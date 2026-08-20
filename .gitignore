@@ -91,6 +91,10 @@ tmp/LoraDatasetDetail.js
 # Runtime cache (e.g. projects.json) — regenerated, never committed
 cache/
 
+# Local GGUF weights downloaded by the speculative-decoding launcher — many GB,
+# re-downloadable from Hugging Face
+/models/
+
 .antigravitycli
 .superpowers/
 
