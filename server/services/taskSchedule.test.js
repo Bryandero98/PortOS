@@ -140,8 +140,10 @@ import {
   MANAGED_AGENT_OPTIONS,
   stripManagedAgentOptionsFromOverride,
   TASK_TYPE_DESCRIPTIONS,
-  REFERENCE_WATCH_AUDITED_VERSION
+  REFERENCE_WATCH_AUDITED_VERSION,
+  boundParkedUntil
 } from './taskSchedule.js'
+import { cosEvents } from './cosEvents.js'
 
 // Prompt getters moved to taskPromptService.js (issue #744 split, #1083 cycle
 // break). taskSchedule.js re-exports the version constants but not the getters.
@@ -1762,6 +1764,78 @@ describe('taskSchedule', () => {
         expect(await isPerpetualParkActive('unknown-type', 'app-parked')).toBe(false)
       })
 
+      // branch-reconcile knows exactly when a claim worktree's grace window lapses.
+      // Sleeping past it stacked the hold and the recheck cadence into a stall
+      // several times longer than either — the shape that made a task with four
+      // stale claim branches queued behind it look like it had stopped running.
+      // (parseCronToNextRun is pinned off so the interval path is what runs; a
+      // sibling test leaves it returning a year-2999 date.)
+      it('parkPerpetual honours notLaterThan when the hold lifts before the recheck', async () => {
+        parseCronToNextRun.mockReturnValue(null)
+        mockSchedule({ tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true, recheckIntervalMs: 7 * 24 * 3600000 } } })
+        const soon = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+        const record = await parkPerpetual('branch-reconcile', 'app-1', {
+          reason: 'merged-branches-held-back', actionableCount: 0, signature: null,
+          counts: { heldBackMerged: 4 }, notLaterThan: soon
+        })
+        expect(record.parkedUntil).toBe(soon)
+        expect(record.parkReason).toBe('merged-branches-held-back')
+        expect(record.parkCounts).toEqual({ heldBackMerged: 4 })
+      })
+
+      // The record, the log line and the schedule:perpetual-parked event all read
+      // from one value. Bounding only the record's copy would keep publishing the
+      // un-shortened time — a "parked until" the task no longer honours.
+      it('parkPerpetual publishes the SHORTENED time on the parked event, not the raw cadence', async () => {
+        parseCronToNextRun.mockReturnValue(null)
+        cosEvents.emit.mockClear()
+        mockSchedule({ tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true, recheckIntervalMs: 7 * 24 * 3600000 } } })
+        const soon = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+        const record = await parkPerpetual('branch-reconcile', 'app-1', {
+          reason: 'merged-branches-held-back', actionableCount: 0, signature: null, notLaterThan: soon
+        })
+        const parked = cosEvents.emit.mock.calls.find(([name]) => name === 'schedule:perpetual-parked')
+        expect(parked?.[1].parkedUntil).toBe(soon)
+        expect(parked[1].parkedUntil).toBe(record.parkedUntil)
+      })
+
+      // A cadence edit restamps every un-elapsed park. Without the bound
+      // remembered ON the record, that edit stretches a correctly-shortened park
+      // back out — the stacking this option exists to remove, reintroduced by an
+      // unrelated settings change.
+      it('a shortened park survives a recheck-cadence edit', async () => {
+        parseCronToNextRun.mockReturnValue(null)
+        const soon = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+        mockSchedule({
+          tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true, recheckIntervalMs: 3600000 } },
+          executions: { 'task:branch-reconcile': { lastRun: null, count: 0, perApp: {
+            'app-1': { lastRun: null, count: 0, parkedUntil: soon, parkNotLaterThan: soon, parkReason: 'merged-branches-held-back' }
+          } } }
+        })
+        await updateTaskInterval('branch-reconcile', { recheckIntervalMs: 30 * 24 * 3600000 })
+        const info = await getPerpetualParkInfo('branch-reconcile', 'app-1')
+        expect(info.parkedUntil).toBe(soon)
+      })
+
+      it('parkPerpetual drops parkNotLaterThan when no bound is given', async () => {
+        parseCronToNextRun.mockReturnValue(null)
+        mockSchedule({ tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true, recheckIntervalMs: 3600000 } } })
+        const record = await parkPerpetual('branch-reconcile', 'app-1', { reason: 'no-in-flight-branches', actionableCount: 0, signature: null })
+        expect(record.parkNotLaterThan).toBeUndefined()
+      })
+
+      it('parkPerpetual ignores a notLaterThan that is later than the recheck', async () => {
+        parseCronToNextRun.mockReturnValue(null)
+        mockSchedule({ tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true, recheckIntervalMs: 3600000 } } })
+        const far = new Date(Date.now() + 30 * 24 * 3600000).toISOString()
+        const record = await parkPerpetual('branch-reconcile', 'app-1', {
+          reason: 'merged-branches-held-back', actionableCount: 0, signature: null, notLaterThan: far
+        })
+        // The configured hourly cadence stands — a distant hold must not stretch it.
+        expect(Date.parse(record.parkedUntil)).toBeLessThanOrEqual(Date.now() + 3600000)
+        expect(Date.parse(record.parkedUntil)).toBeGreaterThan(Date.now())
+      })
+
       it('parkPerpetual omits parkCounts when no breakdown is provided', async () => {
         mockSchedule({ tasks: { 'branch-reconcile': { type: 'perpetual', enabled: true, recheckIntervalMs: 3600000 } } })
         const record = await parkPerpetual('branch-reconcile', 'app-1', { reason: 'no-in-flight-branches', actionableCount: 0, signature: null })
@@ -2290,5 +2364,37 @@ describe('taskSchedule', () => {
         expect(claim.status).toBe('ready')
       })
     })
+  })
+})
+
+describe('boundParkedUntil', () => {
+  const NOW = Date.parse('2026-01-10T00:00:00.000Z')
+  const RECHECK = '2026-01-17T05:30:00.000Z' // a weekly cron fire
+
+  it('shortens a park to a hold that lifts before the next recheck', () => {
+    expect(boundParkedUntil(RECHECK, '2026-01-12T00:00:00.000Z', NOW)).toBe('2026-01-12T00:00:00.000Z')
+  })
+
+  it('keeps the recheck when the hold outlasts it', () => {
+    // The bound only ever shortens — a later deadline must not stretch the park
+    // past the cadence the user configured.
+    expect(boundParkedUntil(RECHECK, '2026-02-01T00:00:00.000Z', NOW)).toBe(RECHECK)
+  })
+
+  it('ignores a bound that is absent or unparseable', () => {
+    for (const bound of [null, undefined, '', 'soon', 42]) {
+      expect(boundParkedUntil(RECHECK, bound, NOW)).toBe(RECHECK)
+    }
+  })
+
+  it('ignores a bound that has already elapsed rather than parking in the past', () => {
+    // A stale bound must not collapse the park to "retry immediately" — that
+    // turns a converged drain into a hot loop against the same held branches.
+    expect(boundParkedUntil(RECHECK, '2026-01-09T00:00:00.000Z', NOW)).toBe(RECHECK)
+    expect(boundParkedUntil(RECHECK, new Date(NOW).toISOString(), NOW)).toBe(RECHECK)
+  })
+
+  it('returns the recheck unchanged when it is itself unparseable', () => {
+    expect(boundParkedUntil('never', '2026-01-12T00:00:00.000Z', NOW)).toBe('never')
   })
 })

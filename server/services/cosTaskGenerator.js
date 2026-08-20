@@ -2571,7 +2571,7 @@ export async function resolveReconcileDrainGate(taskSchedule, taskType, app, { s
  */
 async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule) {
   if (taskType !== 'branch-reconcile') return { skip: false, block: '' };
-  const { reconcile, filterActionable, limitBranchesForAgent, formatInFlightForPrompt, actionableSignature } = await import('./branchReconcile.js');
+  const { reconcile, filterActionable, limitBranchesForAgent, formatInFlightForPrompt, actionableSignature, describeIdleReconcilePark } = await import('./branchReconcile.js');
   const { formatSupersededForPrompt } = await import('./supersededLedger.js');
   const { getActiveAgentIds } = await import('./agentState.js');
   // Action toggles were merged (global → per-app override) + value-constrained
@@ -2630,14 +2630,14 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
     // Definitive idle: nothing in-flight to drive. Park on the recheck cadence,
     // clearing the progress signature so a fresh set later dispatches and zeroing the
     // dispatch budget — this drain converged, so the next one gets a full one.
-    const reason = heldLive.length ? 'branches-held-by-live-owners' : 'no-in-flight-branches';
-    await taskSchedule.parkPerpetual(taskType, app.id, { reason, actionableCount: 0, signature: null });
+    // "Held back" vs "quiet repo", plus the early-wake deadline — see describeIdleReconcilePark.
+    const { reason, heldBackMerged, counts, notLaterThan } = describeIdleReconcilePark(result.skipped || [], heldLive);
+    await taskSchedule.parkPerpetual(taskType, app.id, {
+      reason, actionableCount: 0, signature: null, counts, notLaterThan
+    });
     // Surface merged branches held back by a protection guard so a lingering
     // worktree isn't an invisible "cleaned 0".
-    const heldSuffix = countSuffix(
-      (result.skipped || []).filter((s) => s.reason?.startsWith('worktree-')),
-      'merged branch(es) held back', (s) => s.reason
-    );
+    const heldSuffix = countSuffix(heldBackMerged, 'merged branch(es) held back', (s) => s.reason);
     // In-flight branches that exist but were filtered out by a disabled action
     // toggle are the OTHER way "nothing in-flight" can lie — say so, or the user
     // sees a park while real branches sit there (the same invisibility that hid
