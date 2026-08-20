@@ -19,6 +19,10 @@ import { getProviderReadinessMap, resetProviderReadinessCache } from '../service
 import { getProviderPrerequisiteMap } from '../services/providerPrerequisites.js';
 import { runLocalRuntimeSetup } from '../services/localRuntimeSetup.js';
 import { localRuntimeForProvider } from '../lib/localProviderRuntime.js';
+import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
+import { buildTuiInvocation } from '../lib/tuiHandshake.js';
+import { formatShellCommandLine } from '../lib/shellCd.js';
+import { resolveInteractiveShell } from '../lib/interactiveShellResolver.js';
 
 /**
  * The CoS Agent Runner's exec allowlist, published read-only so the AI
@@ -74,6 +78,31 @@ const sanitizeProvider = (provider) => {
 };
 
 /**
+ * Decorate a TUI provider with the exact command line the Shell page should
+ * type to launch it by hand (`?cmd=` deep link from the card's "Launch in
+ * Shell" button). Derived here rather than joined client-side because the argv
+ * a TUI provider really launches with is vendor-specific — posture flags
+ * (`applyCommandDefaults`) plus `--model`/`--effort` injection — and the
+ * quoting depends on the shell the PTY will actually run. Reusing
+ * `buildTuiInvocation` (the same builder `tuiPromptRunner.js` uses) keeps this
+ * from drifting into a second, wronger copy of that argv logic. It deliberately
+ * stops short of the agent-only decorations `buildTuiSpawnConfig` layers on —
+ * the lean-Claude `--bare` posture and `--append-system-prompt-file` exist to
+ * strip a HEADLESS run down to an agent contract, and a human opening this
+ * session wants their normal environment.
+ *
+ * Non-TUI providers get no field at all: the button is TUI-only, and an absent
+ * key (rather than an empty string) keeps "not a TUI" distinct from "a TUI
+ * whose command line came back blank".
+ */
+const withTuiLaunchCommand = (provider) => {
+  if (provider?.type !== PROVIDER_TYPES.TUI) return provider;
+  const { command, args } = buildTuiInvocation(provider, provider.defaultModel);
+  if (!command) return provider;
+  return { ...provider, tuiCommandLine: formatShellCommandLine(command, args, resolveInteractiveShell()) };
+};
+
+/**
  * The shape a provider takes on its way OUT to the client: secrets stripped,
  * plus the derived `canRefreshModels` flag the AI Providers page reads to
  * decide whether to offer a "Refresh Models" button (#3620).
@@ -88,7 +117,7 @@ const sanitizeProvider = (provider) => {
  * the toolkit keeps its copy so it stays correct standalone. Both decorate on
  * the way out only — the field is never persisted.
  */
-const presentProvider = (provider) => sanitizeProvider(withRefreshCapability(provider));
+const presentProvider = (provider) => withTuiLaunchCommand(sanitizeProvider(withRefreshCapability(provider)));
 
 /**
  * Create PortOS-specific provider routes

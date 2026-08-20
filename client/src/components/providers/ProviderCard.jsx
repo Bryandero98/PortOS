@@ -11,6 +11,8 @@
  * and which section the page filed the card under can never disagree.
  */
 
+import { Link } from 'react-router';
+import { Terminal } from 'lucide-react';
 import {
   PROVIDER_CARD_STATE,
   effectiveModelContextWindow,
@@ -298,6 +300,25 @@ export default function ProviderCard({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {/* TUI providers are the only ones a human can drive interactively, so
+              they get a one-click hand-off to the Shell page. `?cmd=` starts a
+              fresh PTY session and types the line for you. The line is built
+              SERVER-side as `tuiCommandLine` — the argv a TUI provider really
+              launches with is vendor-specific and the quoting depends on the
+              host's shell, so a client-side `command + args.join(' ')` would be
+              a wrong second copy. An older server omits the field, and the
+              button then simply doesn't render. */}
+          {isTuiProvider(provider) && provider.tuiCommandLine && (
+            <Link
+              to={`/shell?cmd=${encodeURIComponent(provider.tuiCommandLine)}`}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-port-accent/20 text-port-accent hover:bg-port-accent/30 rounded transition-colors"
+              title={`Launch in Shell: ${provider.tuiCommandLine}`}
+            >
+              <Terminal size={14} />
+              Launch in Shell
+            </Link>
+          )}
+
           <button
             onClick={() => onTest(provider.id)}
             disabled={testResult?.testing}

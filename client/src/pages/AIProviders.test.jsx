@@ -814,3 +814,59 @@ describe('readiness table coverage', () => {
     }
   });
 });
+
+describe('Launch in Shell button on TUI provider cards', () => {
+  // The card hands the user a one-click way to drive a TUI provider by hand:
+  // `/shell?cmd=<tuiCommandLine>` starts a fresh PTY and types the exact
+  // invocation the CoS TUI spawner would use. The line is built server-side
+  // (vendor posture flags + model/effort injection + shell quoting), so the
+  // card renders nothing when an older server omits it.
+  const baseMocks = () => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+    localModels.value = { ctxById: {}, installed: { ollama: null, lmstudio: null } };
+  };
+
+  it('links to the Shell page with the server-built command line', async () => {
+    baseMocks();
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'codex',
+        name: 'Codex TUI',
+        type: 'tui',
+        command: 'codex',
+        args: [],
+        enabled: true,
+        tuiCommandLine: 'codex --dangerously-bypass-approvals-and-sandbox --model gpt-5',
+      }],
+      activeProvider: null,
+    });
+
+    renderPage();
+
+    const link = await screen.findByRole('link', { name: /Launch in Shell/ });
+    expect(link).toHaveAttribute(
+      'href',
+      `/shell?cmd=${encodeURIComponent('codex --dangerously-bypass-approvals-and-sandbox --model gpt-5')}`
+    );
+  });
+
+  it('renders no button for a CLI provider, or when the server sent no command line', async () => {
+    baseMocks();
+    api.getProviders.mockResolvedValue({
+      providers: [
+        { id: 'claude-code', name: 'Claude Code', type: 'cli', command: 'claude', args: [], enabled: true },
+        { id: 'legacy-tui', name: 'Legacy TUI', type: 'tui', command: 'claude', args: [], enabled: true },
+      ],
+      activeProvider: null,
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('Legacy TUI')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Launch in Shell/ })).not.toBeInTheDocument();
+  });
+});

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildCdCommand, detectShellFlavor, quoteForShell } from './shellCd.js';
+import { buildCdCommand, detectShellFlavor, formatShellCommandLine, quoteForShell } from './shellCd.js';
 
 describe('detectShellFlavor', () => {
   it('reads the flavor off the shell binary, ignoring path and case', () => {
@@ -88,5 +88,24 @@ describe('quoteForShell', () => {
     const path = ['C:', 'work', ''].join(slash);
     expect(quoteForShell(path, 'cmd', 'argument'))
       .toBe(`"C:${slash}work${slash}${slash}"`);
+  });
+});
+
+describe('formatShellCommandLine', () => {
+  it('quotes the first token in command position and the rest as arguments', () => {
+    expect(formatShellCommandLine('codex', ['--model', 'gpt-5'], '/bin/zsh'))
+      .toBe('codex --model gpt-5');
+    expect(formatShellCommandLine("C:\\Program Files\\claude.cmd", ['--effort', 'max'], 'powershell.exe'))
+      .toBe("& 'C:\\Program Files\\claude.cmd' '--effort' 'max'");
+  });
+
+  it('quotes an argument containing spaces so the shell keeps it as one token', () => {
+    expect(formatShellCommandLine('agy', ['--model', 'gemini 3 pro'], '/bin/zsh'))
+      .toBe("agy --model 'gemini 3 pro'");
+  });
+
+  it('renders a bare command with no arguments', () => {
+    expect(formatShellCommandLine('claude', [], '/bin/zsh')).toBe('claude');
+    expect(formatShellCommandLine('claude', undefined, '/bin/zsh')).toBe('claude');
   });
 });

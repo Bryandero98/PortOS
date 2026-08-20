@@ -29,7 +29,7 @@ import * as git from './git.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
 import { spawnTuiSessionViaRunner } from './cosRunnerClient.js';
 import { resolveInteractiveShell } from '../lib/interactiveShellResolver.js';
-import { detectShellFlavor, quoteForShell } from '../lib/shellCd.js';
+import { formatShellCommandLine } from '../lib/shellCd.js';
 import { isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
@@ -222,10 +222,7 @@ export function buildTuiSpawnConfig(provider, model, {
   if (systemPromptFile && isClaudeCommand(command)) {
     args = [...args, '--append-system-prompt-file', systemPromptFile];
   }
-  const flavor = detectShellFlavor(shell);
-  const commandLine = [command, ...args]
-    .map((value, index) => quoteForShell(value, flavor, index === 0 ? 'command' : 'argument'))
-    .join(' ');
+  const commandLine = formatShellCommandLine(command, args, shell);
 
   return {
     command,
