@@ -58,6 +58,17 @@ export const stopLlamaServer = () =>
 export const installLlamaServer = () =>
   request('/local-llm/llama-server/install', { method: 'POST' });
 
+// Fetch one speculative-decoding preset's GGUF (role: 'model' | 'draftModel')
+// from Hugging Face into the path the launcher passes llama.cpp. Byte progress
+// arrives on the `llamaServer:download` socket event, not in this response —
+// a multi-GB transfer resolves only when the file is on disk.
+export const downloadSpecDecodeModel = (presetId, role, options) =>
+  request('/local-llm/llama-server/download-model', {
+    method: 'POST',
+    body: JSON.stringify({ presetId, role }),
+    ...options,
+  });
+
 // Set the default backend (which one PortOS routes local runs to) — does not move models.
 export const switchLocalLlmBackend = (to) =>
   request('/local-llm/switch', { method: 'POST', body: JSON.stringify({ to }) });

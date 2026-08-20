@@ -275,6 +275,7 @@ export * from './huggingfaceLora.js';
 export * from './huggingfaceModel.js';
 export * from './localLlmCatalog.js';
 export * from './localLlmDisk.js';
+export * from './specDecodePresets.js';
 export * from './localModelHeuristics.js';
 export * from './localModelAssessment.js';
 export * from './ollamaContext.js';

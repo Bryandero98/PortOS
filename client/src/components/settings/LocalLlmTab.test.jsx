@@ -19,6 +19,7 @@ vi.mock('../../services/api', () => ({
   startLlamaServer: vi.fn(),
   stopLlamaServer: vi.fn(),
   installLlamaServer: vi.fn().mockResolvedValue({ success: true }),
+  downloadSpecDecodeModel: vi.fn(),
 }));
 vi.mock('../../services/socket', () => ({
   default: { on: vi.fn(), off: vi.fn() },
@@ -267,14 +268,87 @@ describe('LocalLlmTab measured fit badge', () => {
   });
 });
 
+// The launcher presets (and their weights' on-disk state) come from the server
+// on the llama-server status response — the component holds no copy.
+const specPresets = ({ baseExists = true, draftExists = true } = {}) => ([
+  {
+    id: 'qwen3.8-27b-dspark',
+    label: 'Qwen 3.8 27B + DSpark Drafter (Recommended — stock llama.cpp)',
+    specType: 'draft-dspark',
+    model: {
+      role: 'model',
+      path: 'models/Qwen3.8-27B-Instruct-Q4_K_M.gguf',
+      exists: baseExists,
+      sizeBytes: baseExists ? 17_000_000_000 : null,
+      repo: 'unsloth/Qwen3.8-27B-GGUF',
+      repoUrl: 'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF',
+      downloadable: true,
+      downloading: false,
+    },
+    draftModel: {
+      role: 'draftModel',
+      path: 'models/Qwen3.8-27B-DSpark-bf16.gguf',
+      exists: draftExists,
+      sizeBytes: draftExists ? 1_200_000_000 : null,
+      repo: 'magnitudedev/Qwen3.8-27B-DSpark-GGUF',
+      repoUrl: 'https://huggingface.co/magnitudedev/Qwen3.8-27B-DSpark-GGUF',
+      downloadable: true,
+      downloading: false,
+    },
+  },
+  {
+    id: 'qwen3-8b-dspark',
+    label: 'Qwen 3 8B + DSpark Drafter (small target)',
+    specType: 'draft-dspark',
+    model: {
+      role: 'model',
+      path: 'models/Qwen3-8B-Instruct-Q4_K_M.gguf',
+      exists: true,
+      sizeBytes: 5_000_000_000,
+      repo: 'Qwen/Qwen3-8B-Instruct-GGUF',
+      repoUrl: 'https://huggingface.co/Qwen/Qwen3-8B-Instruct-GGUF',
+      downloadable: true,
+      downloading: false,
+    },
+    // The 8B DSpark block ships as a tokenizer-less checkpoint that has to be
+    // converted against its target — no single-file GGUF to fetch, so this row
+    // has to link out instead of offering a button.
+    draftModel: {
+      role: 'draftModel',
+      path: 'models/dspark_qwen3_8b_block7-bf16.gguf',
+      exists: false,
+      sizeBytes: null,
+      repo: null,
+      repoUrl: 'https://huggingface.co/models?search=dspark_qwen3_8b_block7-bf16',
+      downloadable: false,
+      downloading: false,
+    },
+  },
+  { id: 'custom', label: 'Custom GGUF / Manual Paths', specType: 'draft-dspark', model: null, draftModel: null },
+]);
+
+const llamaReady = (overrides = {}) => ({
+  installed: true,
+  running: false,
+  managed: false,
+  presets: specPresets(),
+  ...overrides,
+});
+
 describe('LocalLlmTab llama-server management', () => {
+  // `vi.clearAllMocks()` clears calls but NOT queued `mockResolvedValueOnce`
+  // values or implementations, so a test that queues one more than the
+  // component consumes leaks it into the next test's first status read. Reset
+  // the mock outright here and give it a sane standing default.
+  beforeEach(async () => {
+    const { getLlamaServerStatus } = await import('../../services/api');
+    getLlamaServerStatus.mockReset();
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
+  });
+
   it('renders start form and launches server when llama-server is installed', async () => {
     const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce({
-      installed: true,
-      running: false,
-      managed: false,
-    });
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
     startLlamaServer.mockResolvedValueOnce({ success: true, pid: 12345 });
 
     await renderTab();
@@ -297,13 +371,15 @@ describe('LocalLlmTab llama-server management', () => {
   // otherwise Start is disabled while the UI reads as fully configured.
   it('seeds the form from the mounted preset so Start is immediately usable', async () => {
     const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
     startLlamaServer.mockResolvedValueOnce({ success: true, pid: 4242 });
 
     await renderTab();
 
     await screen.findByText(/Launch Speculative Decoding Server/);
-    expect(screen.queryByText(/Enter a Target Base Model path to enable Start/)).toBeNull();
+    // Same effect-ordering caveat as above, from the other side: wait for the
+    // seeded form rather than asserting the warning is already gone.
+    await waitFor(() => expect(screen.queryByText(/Enter a Target Base Model path to enable Start/)).toBeNull());
 
     const startBtn = screen.getByRole('button', { name: /Start Speculative Server/ });
     expect(startBtn).not.toBeDisabled();
@@ -320,7 +396,7 @@ describe('LocalLlmTab llama-server management', () => {
 
   it('explains why Start is disabled once the model path is cleared', async () => {
     const { getLlamaServerStatus } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
 
     await renderTab();
 
@@ -335,30 +411,31 @@ describe('LocalLlmTab llama-server management', () => {
 
   it('swaps the preset and repoints both model paths', async () => {
     const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
     startLlamaServer.mockResolvedValueOnce({ success: true, pid: 7 });
 
     await renderTab();
 
     const presetSelect = await screen.findByLabelText('Preset');
-    fireEvent.change(presetSelect, { target: { value: 'muse-glimmer-30b' } });
+    fireEvent.change(presetSelect, { target: { value: 'qwen3-8b-dspark' } });
 
-    fireEvent.click(screen.getByRole('button', { name: /Start Speculative Server/ }));
+    expect(screen.getByLabelText(/Target Base Model \(GGUF Path\)/))
+      .toHaveValue('models/Qwen3-8B-Instruct-Q4_K_M.gguf');
+    expect(screen.getByLabelText(/Draft Model \(Optional\)/))
+      .toHaveValue('models/dspark_qwen3_8b_block7-bf16.gguf');
 
-    await waitFor(() => {
-      expect(startLlamaServer).toHaveBeenCalledWith(expect.objectContaining({
-        model: 'models/Muse-Glimmer-30B-Instruct-Q4_K_M.gguf',
-        draftModel: 'models/Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf',
-        specType: 'draft-dflash',
-      }));
-    });
+    // This preset's drafter isn't on disk, so Start stays blocked until the
+    // user downloads it (or clears the field) — that is the launcher contract,
+    // not an incidental fixture detail.
+    expect(screen.getByRole('button', { name: /Start Speculative Server/ })).toBeDisabled();
+    expect(startLlamaServer).not.toHaveBeenCalled();
   });
 
   // Coercing a number input on every keystroke snaps it back to its default the
   // moment you clear it to retype, so the default is applied at launch instead.
   it('lets an advanced number field sit empty while retyping and defaults it at launch', async () => {
     const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
     startLlamaServer.mockResolvedValueOnce({ success: true, pid: 21 });
 
     await renderTab();
@@ -377,7 +454,7 @@ describe('LocalLlmTab llama-server management', () => {
 
   it('keeps an explicit -ngl 0 rather than treating it as unset', async () => {
     const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
     startLlamaServer.mockResolvedValueOnce({ success: true, pid: 22 });
 
     await renderTab();
@@ -394,7 +471,7 @@ describe('LocalLlmTab llama-server management', () => {
 
   it('drops the preset label to Custom once a preset-supplied path is hand-edited', async () => {
     const { getLlamaServerStatus } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce({ installed: true, running: false, managed: false });
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
 
     await renderTab();
 
@@ -408,13 +485,88 @@ describe('LocalLlmTab llama-server management', () => {
     expect(presetSelect).toHaveValue('custom');
   });
 
+  // The whole point of the weights rows: a missing GGUF used to surface only as
+  // a 400 from Start ("The base model was not found at `models/…`") with no
+  // stated way to fix it.
+  it('offers a download button for a preset GGUF that is not on disk', async () => {
+    const { getLlamaServerStatus, downloadSpecDecodeModel } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue(llamaReady({ presets: specPresets({ baseExists: false }) }));
+    downloadSpecDecodeModel.mockResolvedValueOnce({ success: true, path: 'models/Qwen3.8-27B-Instruct-Q4_K_M.gguf' });
+
+    await renderTab();
+
+    await screen.findByText(/Launch Speculative Decoding Server/);
+    // The drafter IS on disk, so exactly one row offers a download.
+    expect(screen.getByText(/Downloaded \(1\.1 GB\)/)).toBeInTheDocument();
+    const downloadBtn = screen.getByRole('button', { name: /^Download$/ });
+    fireEvent.click(downloadBtn);
+
+    await waitFor(() => {
+      expect(downloadSpecDecodeModel).toHaveBeenCalledWith('qwen3.8-27b-dspark', 'model', { silent: true });
+    });
+  });
+
+  // A dropped request (reload, proxy idle timeout) does not stop the transfer —
+  // reporting it as a failure sends the user hunting a problem that isn't there.
+  it('reports a lost request as still-running when the server is still downloading', async () => {
+    const { getLlamaServerStatus, downloadSpecDecodeModel } = await import('../../services/api');
+    const toast = (await import('../ui/Toast')).default;
+    const downloading = specPresets({ baseExists: false });
+    downloading[0].model.downloading = true;
+    // No queued `…Once` values anywhere in this block: a refresh from a
+    // finished test can land during the next one and eat a queued entry, which
+    // is how this suite went order-dependent. Flip on call count instead.
+    let statusCalls = 0;
+    getLlamaServerStatus.mockImplementation(async () => {
+      statusCalls += 1;
+      return llamaReady({ presets: statusCalls === 1 ? specPresets({ baseExists: false }) : downloading });
+    });
+    downloadSpecDecodeModel.mockRejectedValueOnce(new Error('Failed to fetch'));
+
+    await renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Download$/ }));
+
+    await waitFor(() => {
+      expect(toast.warning).toHaveBeenCalledWith(expect.stringMatching(/still running in the background/));
+    });
+    expect(toast.error).not.toHaveBeenCalled();
+    // Mount + the catch's check + the finally's refresh.
+    await waitFor(() => expect(getLlamaServerStatus).toHaveBeenCalledTimes(3));
+  });
+
+  it('blocks Start while a preset GGUF is missing and names the fix', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue(llamaReady({ presets: specPresets({ baseExists: false }) }));
+
+    await renderTab();
+
+    // `findBy…` on the warning itself: the form is seeded from the presets in
+    // an effect, so the Start button can render a tick before the gate that
+    // disables it — asserting the button first makes this order-dependent.
+    expect(await screen.findByText('Download the base model to enable Start')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Start Speculative Server/ })).toBeDisabled();
+    expect(startLlamaServer).not.toHaveBeenCalled();
+  });
+
+  // A drafter with no published single-file GGUF has no Download button — the
+  // row must send the user somewhere rather than offering an action that 400s.
+  it('links out when a drafter has no automatic Hugging Face source', async () => {
+    const { getLlamaServerStatus } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
+
+    await renderTab();
+
+    const presetSelect = await screen.findByLabelText('Preset');
+    fireEvent.change(presetSelect, { target: { value: 'qwen3-8b-dspark' } });
+
+    const link = screen.getByRole('link', { name: /Find on Hugging Face/ });
+    expect(link).toHaveAttribute('href', 'https://huggingface.co/models?search=dspark_qwen3_8b_block7-bf16');
+  });
+
   it('renders install button and triggers install when llama-server is not installed', async () => {
     const { getLlamaServerStatus, installLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce({
-      installed: false,
-      running: false,
-      managed: false,
-    });
+    getLlamaServerStatus.mockResolvedValue({ installed: false, running: false, managed: false, presets: specPresets() });
 
     await renderTab();
 
@@ -429,10 +581,11 @@ describe('LocalLlmTab llama-server management', () => {
 
   it('renders running badge and stops server when llama-server is managed', async () => {
     const { getLlamaServerStatus, stopLlamaServer } = await import('../../services/api');
-    getLlamaServerStatus.mockResolvedValueOnce({
+    getLlamaServerStatus.mockResolvedValue({
       installed: true,
       running: true,
       managed: true,
+      presets: specPresets(),
       pid: 9999,
       endpoint: 'http://127.0.0.1:8080/v1',
       config: { model: 'models/base.gguf', draftModel: 'models/draft.gguf', specType: 'draft-dflash' },

@@ -26,9 +26,11 @@ import {
   localLlmAssessmentRunSchema,
   localLlmAssessmentIntentSchema,
   localLlmAssessmentDeleteSchema,
-  localLlmLlamaServerStartSchema
+  localLlmLlamaServerStartSchema,
+  localLlmSpecModelDownloadSchema
 } from '../lib/validation.js'
 import { getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer } from '../services/llamaServerManager.js'
+import { getSpecDecodePresetStatus, downloadSpecDecodeModel } from '../services/specDecodeModels.js'
 import { resetProviderReadinessCache } from '../services/providerReadiness.js'
 import { getCatalog, searchCatalog, isBackend } from '../lib/localLlmCatalog.js'
 import { isAppleSilicon } from '../lib/platform.js'
@@ -464,9 +466,29 @@ router.post('/assessments/delete', asyncHandler(async (req, res) => {
 }))
 
 // === llama-server (DFlash 2 / Speculative Decoding) ==========================
-// GET /api/local-llm/llama-server/status — binary availability, process state, logs
+// GET /api/local-llm/llama-server/status — binary availability, process state,
+// logs, and the curated target/drafter presets with each GGUF's on-disk state.
+// The presets ride along on the status call the launcher already makes so the
+// card can render "not downloaded + Download" instead of making the user press
+// Start to discover a missing file. Disk-only: no Hugging Face call here.
 router.get('/llama-server/status', asyncHandler(async (_req, res) => {
-  res.json(await getLlamaServerStatus())
+  const [status, presets] = await Promise.all([getLlamaServerStatus(), getSpecDecodePresetStatus()])
+  res.json({ ...status, presets })
+}))
+
+// POST /api/local-llm/llama-server/download-model — fetch one preset's GGUF from
+// Hugging Face into the exact path the launcher will pass llama.cpp. Byte
+// progress streams over `llamaServer:download`; the card renders it as a bar on
+// the row that started it.
+router.post('/llama-server/download-model', asyncHandler(async (req, res) => {
+  const { presetId, role } = validateRequest(localLlmSpecModelDownloadSchema, req.body)
+  const io = req.app.get('io')
+  const result = await downloadSpecDecodeModel({
+    presetId,
+    role,
+    onProgress: (frame) => io?.emit('llamaServer:download', frame),
+  })
+  res.json(result)
 }))
 
 // Each of the three actions below changes exactly what the provider-readiness
