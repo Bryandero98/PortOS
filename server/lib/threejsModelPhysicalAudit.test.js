@@ -81,7 +81,6 @@ describe('threejsModelPhysicalAudit', () => {
       partIds: ['torso', 'head'],
       affectedDescendantNames: ['Head'],
       anisotropyRatio: 15,
-      scaleRange: { min: [3, 1, 0.2], max: [3, 1, 0.2] },
     });
     expect(finding.message).toContain('Torso');
     expect(finding.message).toContain('Head');
@@ -200,10 +199,111 @@ describe('threejsModelPhysicalAudit', () => {
       partIds: ['housing', 'lens'],
       affectedDescendantNames: ['Lens'],
       anisotropyRatio: 15,
-      scaleRange: { min: [1, 1, 0.2], max: [3, 1, 1] },
     });
+    expect(finding.message).toContain('[3, 1, 0.2]');
     expect(finding.message).toContain('Deploy');
     expect(finding.message).toContain('stretch-housing');
+  });
+
+  it('does not flag a non-uniformly scaled leaf without descendants', () => {
+    const res = evaluateThreejsPhysicalAudit({
+      name: 'Scaled Leaf Spec',
+      parts: [{
+        id: 'plate',
+        name: 'Plate',
+        geometry: { type: 'box', width: 2, height: 1, depth: 1 },
+        scale: [3, 1, 0.2],
+      }],
+    });
+
+    expect(res.findings.filter((finding) => finding.code === 'nonuniform-parent-scale')).toHaveLength(0);
+  });
+
+  it('uses a one-percent tolerance for non-uniform scale', () => {
+    const withScale = (scale) => evaluateThreejsPhysicalAudit({
+      name: 'Tolerance Spec',
+      parts: [{
+        id: 'parent',
+        name: 'Parent',
+        geometry: { type: 'box', width: 2, height: 1, depth: 1 },
+        scale,
+        children: [{
+          id: 'child',
+          name: 'Child',
+          geometry: { type: 'sphere', radius: 0.5 },
+        }],
+      }],
+    });
+
+    expect(withScale([1, 1, 1.005]).findings.filter((finding) => finding.code === 'nonuniform-parent-scale')).toHaveLength(0);
+    expect(withScale([1, 1, 1.02]).findings.filter((finding) => finding.code === 'nonuniform-parent-scale')).toHaveLength(1);
+  });
+
+  it('does not flag a uniformly animated parent scale', () => {
+    const res = evaluateThreejsPhysicalAudit({
+      name: 'Uniform Animation Spec',
+      parts: [{
+        id: 'housing',
+        name: 'Housing',
+        geometry: { type: 'box', width: 2, height: 1, depth: 1 },
+        children: [{
+          id: 'lens',
+          name: 'Lens',
+          geometry: { type: 'sphere', radius: 0.4 },
+        }],
+      }],
+      animation: {
+        clips: [{
+          id: 'inflate',
+          name: 'Inflate',
+          durationSeconds: 2,
+          sequences: [{
+            id: 'inflate-housing',
+            name: 'Inflate housing',
+            partId: 'housing',
+            startSeconds: 0.5,
+            endSeconds: 1.5,
+            channels: { scale: { from: [1, 1, 1], to: [2, 2, 2] } },
+          }],
+        }],
+      },
+    });
+
+    expect(res.findings.filter((finding) => finding.code === 'nonuniform-parent-scale')).toHaveLength(0);
+  });
+
+  it('coalesces an animated duplicate when the rest pose is already more anisotropic', () => {
+    const res = evaluateThreejsPhysicalAudit({
+      name: 'Duplicate Scale Spec',
+      parts: [{
+        id: 'housing',
+        name: 'Housing',
+        geometry: { type: 'box', width: 2, height: 1, depth: 1 },
+        scale: [3, 1, 0.2],
+        children: [{
+          id: 'lens',
+          name: 'Lens',
+          geometry: { type: 'sphere', radius: 0.4 },
+        }],
+      }],
+      animation: {
+        clips: [{
+          id: 'deploy',
+          name: 'Deploy',
+          durationSeconds: 2,
+          sequences: [{
+            id: 'repeat-scale',
+            name: 'Repeat scale',
+            partId: 'housing',
+            startSeconds: 0.5,
+            endSeconds: 1.5,
+            channels: { scale: { from: [1, 1, 1], to: [3, 1, 0.2] } },
+          }],
+        }],
+      },
+    });
+
+    expect(res.findings.filter((finding) => finding.code === 'nonuniform-parent-scale')).toHaveLength(1);
   });
 
   it('detects floating part touching nothing', () => {
@@ -233,6 +333,7 @@ describe('threejsModelPhysicalAudit', () => {
 
     const feedback = buildThreejsPhysicalAuditFeedback(res);
     expect(feedback).toContain('Floating Orb');
+    expect(feedback).not.toContain('For non-uniform parent scale findings');
   });
 
   it('detects buried geometry inside another part', () => {

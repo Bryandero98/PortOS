@@ -18,6 +18,7 @@ const MAX_AUDIT_POSES = 16;
 // One percent anisotropy is small enough to ignore authoring noise while still
 // catching the intentional shape-squashing that distorts a child hierarchy.
 const NONUNIFORM_SCALE_TOLERANCE = 0.01;
+const ANISOTROPY_COMPARISON_TOLERANCE = 0.01;
 
 const degreesToRadians = (degrees) => (degrees * Math.PI) / 180;
 
@@ -374,13 +375,11 @@ const buildNonuniformParentScaleFinding = (part, scaleSamples, context = {}) => 
   const mostAnisotropic = analyzedSamples.reduce((best, sample) => (
     sample.anisotropy.ratio > best.anisotropy.ratio ? sample : best
   ));
-  const minimumScale = [0, 1, 2].map((axis) => Math.min(...normalizedSamples.map((sample) => sample.scale[axis])));
-  const maximumScale = [0, 1, 2].map((axis) => Math.max(...normalizedSamples.map((sample) => sample.scale[axis])));
   const sequenceIds = [...new Set(analyzedSamples.map((sample) => sample.sequenceId).filter(Boolean))];
   const { clipName, ...metadata } = context;
   const descendantNames = descendants.map((descendant) => descendant.name);
   const scope = clipName
-    ? `In clip "${clipName}", part "${part.name || part.id}" is authored with non-uniform scale across range ${formatScale(minimumScale)} to ${formatScale(maximumScale)}`
+    ? `In clip "${clipName}", part "${part.name || part.id}" reaches authored non-uniform scale ${formatScale(mostAnisotropic.anisotropy.scale)}`
     : `Part "${part.name || part.id}" is authored with non-uniform scale ${formatScale(mostAnisotropic.anisotropy.scale)}`;
   const sequenceSuffix = sequenceIds.length > 0 ? ` in scale sequence${sequenceIds.length === 1 ? '' : 's'} ${formatNames(sequenceIds)}` : '';
 
@@ -388,11 +387,11 @@ const buildNonuniformParentScaleFinding = (part, scaleSamples, context = {}) => 
     code: 'nonuniform-parent-scale',
     severity: 'warning',
     ...metadata,
-    sequenceId: sequenceIds.length > 0 ? sequenceIds.join(',') : metadata.sequenceId,
+    sequenceId: sequenceIds[0] ?? metadata.sequenceId,
+    sequenceIds,
     partIds: [part.id, ...descendants.map((descendant) => descendant.id)],
     affectedDescendantNames: descendantNames,
     anisotropyRatio: mostAnisotropic.anisotropy.ratio,
-    scaleRange: { min: minimumScale, max: maximumScale },
     message: `${scope} (maximum anisotropy ratio ${mostAnisotropic.anisotropy.ratio.toFixed(2)})${sequenceSuffix}, which cascades onto non-relief descendants ${formatNames(descendantNames)} and can distort them.`,
   };
 };
@@ -428,6 +427,8 @@ export function evaluateThreejsPhysicalAudit(spec) {
   const findings = [];
   const seenKeys = new Set();
   const parts = flattenParts(spec.parts);
+  const staticScaleFindings = new Map();
+  const strongestAnimatedScaleFindings = new Map();
 
   const addFinding = (finding) => {
     const key = `${finding.code}|${[...finding.partIds].sort().join(',')}|${finding.clipId || ''}|${finding.sequenceId || ''}`;
@@ -443,7 +444,10 @@ export function evaluateThreejsPhysicalAudit(spec) {
 
   for (const part of parts) {
     const finding = buildNonuniformParentScaleFinding(part, [{ scale: part.scale }]);
-    if (finding) addFinding(finding);
+    if (finding) {
+      staticScaleFindings.set(part.id, finding);
+      addFinding(finding);
+    }
   }
 
   const visibleStaticVolumes = staticVolumes.filter((v) => v.visible && v.opacity > 0);
@@ -551,14 +555,21 @@ export function evaluateThreejsPhysicalAudit(spec) {
 
     for (const part of parts) {
       const scaleSamples = collectAnimatedScaleSamples(part, sequences);
-      const finding = buildNonuniformParentScaleFinding(part, scaleSamples, {
-        clipId: clip.id,
-        clipName: clip.name || clip.id,
-      });
-      if (finding) addFinding(finding);
+      if (scaleSamples.length > 0) {
+        const finding = buildNonuniformParentScaleFinding(part, scaleSamples, {
+          clipId: clip.id,
+          clipName: clip.name || clip.id,
+        });
+        if (finding) {
+          const current = strongestAnimatedScaleFindings.get(part.id);
+          if (!current || finding.anisotropyRatio > current.anisotropyRatio) {
+            strongestAnimatedScaleFindings.set(part.id, finding);
+          }
+        }
+      }
     }
 
-    if (remainingBudget <= 0) break;
+    if (remainingBudget <= 0) continue;
 
     const sampleTimes = new Set([0, clip.durationSeconds || 0]);
     for (const seq of sequences) {
@@ -600,6 +611,14 @@ export function evaluateThreejsPhysicalAudit(spec) {
           }
         }
       }
+    }
+  }
+
+  for (const [partId, finding] of strongestAnimatedScaleFindings) {
+    const staticFinding = staticScaleFindings.get(partId);
+    const staticRatio = staticFinding?.anisotropyRatio || 0;
+    if (!staticFinding || finding.anisotropyRatio > staticRatio * (1 + ANISOTROPY_COMPARISON_TOLERANCE)) {
+      addFinding(finding);
     }
   }
 
