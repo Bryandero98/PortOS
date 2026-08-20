@@ -328,4 +328,29 @@ describe('useShellSession', () => {
       expect(readFileAsBase64).not.toHaveBeenCalled();
     });
   });
+
+  // The `?cmd=` deep link is a contract with every page that links INTO the
+  // shell — the AI Providers card's "Launch in Shell" button, the GSD/Apps
+  // "open claude here" buttons. If this hook stopped consuming the param the
+  // buttons would silently drop the user at a bare prompt with no error, so pin
+  // that the query param reaches the server as `shell:start { initialCommand }`.
+  describe('?cmd= / ?cwd= deep link', () => {
+    const at = (entry) => ({ children }) => (
+      <MemoryRouter initialEntries={[entry]}>{children}</MemoryRouter>
+    );
+
+    it('starts a new session carrying the ?cmd= line as initialCommand', () => {
+      const cmd = 'codex --dangerously-bypass-approvals-and-sandbox --model gpt-5';
+      renderHook(() => useShellSession({}), { wrapper: at(`/shell?cmd=${encodeURIComponent(cmd)}`) });
+      fire('shell:sessions', []);
+      expect(lastEmit('shell:start')).toEqual(['shell:start', { initialCommand: cmd }]);
+    });
+
+    it('starts a NEW session rather than adopting a live one, so the command actually runs', () => {
+      renderHook(() => useShellSession({}), { wrapper: at('/shell?cmd=claude&cwd=%2Ftmp%2Fapp') });
+      fire('shell:sessions', [session('already-running')]);
+      expect(lastEmit('shell:start')).toEqual(['shell:start', { cwd: '/tmp/app', initialCommand: 'claude' }]);
+      expect(lastEmit('shell:attach')).toBeUndefined();
+    });
+  });
 });
