@@ -161,6 +161,7 @@ export * as stageRunner from './stageRunner.js';
 export * from './stagePinPolicy.js';
 export * from './tuiHandshake.js';
 export * from './tuiPromptRunner.js';
+export * from './tuiShellLaunch.js';
 export * from './tuiUsageScrape.js';
 
 // === File & I/O ===

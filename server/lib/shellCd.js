@@ -97,3 +97,22 @@ export function buildCdCommand(dirPath, shell) {
     default: return `cd ${quoteForShell(path, 'posix')}`;
   }
 }
+
+/**
+ * Render a command plus its argv as ONE shell command line, quoted for the
+ * dialect that shell speaks. Shared by the CoS TUI spawner
+ * (`agentTuiSpawning.js#buildTuiSpawnConfig`) and the AI Providers page's
+ * "Launch in Shell" deep link, so a provider launched by hand is quoted exactly
+ * the way the agent runner would quote it.
+ *
+ * @param {string} command - the binary (command position — PowerShell needs `&`)
+ * @param {string[]} [args] - argv tokens
+ * @param {string} [shell] - the session's shell binary; see detectShellFlavor
+ * @returns {string} a single command line, no trailing newline
+ */
+export function formatShellCommandLine(command, args = [], shell) {
+  const flavor = detectShellFlavor(shell);
+  return [command, ...args]
+    .map((value, index) => quoteForShell(value, flavor, index === 0 ? 'command' : 'argument'))
+    .join(' ');
+}

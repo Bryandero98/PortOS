@@ -29,6 +29,8 @@ import { audioGenEvents } from './audioGen/events.js';
 import { aiStatusEvents } from './aiStatusEvents.js';
 import { wireProactiveTriggers } from './voice/proactiveTriggers.js';
 import * as shellService from './shell.js';
+import { getProviderById } from './providers.js';
+import { buildTuiShellLaunch } from '../lib/tuiShellLaunch.js';
 import {
   validateSocketData,
   detectStartSchema,
@@ -634,18 +636,50 @@ export function initSocket(io) {
       }
     });
 
-    // Shell session handlers
-    socket.on('shell:start', (options) => {
-      const cwd = options?.cwd || undefined;
-      const initialCommand = options?.initialCommand || undefined;
-      const sessionId = shellService.createShellSession(socket, { cwd });
-      if (sessionId) {
-        socket.emit('shell:started', { sessionId });
-        if (initialCommand) {
-          setTimeout(() => shellService.submitToSession(sessionId, initialCommand), 200);
+    // Shell session handlers.
+    //
+    // `providerId` is the AI Providers page's "Launch in Shell" path. The client
+    // sends only the ID and the SERVER resolves both the command line and the
+    // provider's env — a TUI provider's backend lives in `envVars`
+    // (ANTHROPIC_BASE_URL for an Ollama-backed or Bedrock claude,
+    // OPENCODE_CONFIG_CONTENT for an OpenCode wrapper), so a session started
+    // from a bare `initialCommand` would run the right binary against the WRONG
+    // backend — silently billing the vendor cloud for a provider the user
+    // pointed at a local daemon. Those values are secret besides, so they must
+    // never round-trip through the client. Resolving server-side also means the
+    // client can't choose the command: the ID only selects among the user's own
+    // stored providers.
+    socket.on('shell:start', async (options) => {
+      try {
+        const cwd = options?.cwd || undefined;
+        const providerId = typeof options?.providerId === 'string' ? options.providerId : null;
+        let initialCommand = options?.initialCommand || undefined;
+        let env;
+        if (providerId) {
+          const provider = await getProviderById(providerId).catch(() => null);
+          const launch = buildTuiShellLaunch(provider);
+          if (!launch) {
+            socket.emit('shell:error', { error: `Provider '${providerId}' is not a launchable TUI provider` });
+            return;
+          }
+          // Server-resolved wins outright — never fall back to a client-supplied
+          // command for a provider launch.
+          initialCommand = launch.commandLine;
+          env = launch.env;
         }
-      } else {
-        socket.emit('shell:error', { error: 'Failed to create shell session' });
+        const sessionId = shellService.createShellSession(socket, { cwd, env });
+        if (sessionId) {
+          socket.emit('shell:started', { sessionId });
+          if (initialCommand) {
+            setTimeout(() => shellService.submitToSession(sessionId, initialCommand), 200);
+          }
+        } else {
+          socket.emit('shell:error', { error: 'Failed to create shell session' });
+        }
+      } catch (err) {
+        const message = err?.message ?? String(err);
+        console.error(`❌ Socket handler error [shell:start]: ${message}`);
+        socket.emit('shell:error', { error: message });
       }
     });
 

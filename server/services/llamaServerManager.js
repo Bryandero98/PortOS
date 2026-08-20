@@ -244,6 +244,7 @@ export async function startLlamaServer(options = {}) {
   await execPm2(['delete', LLAMA_APP]).catch(() => {});
   clearJlistCache();
 
+  console.log(`🦙 llama-server starting on ${host}:${port} (model ${model}${draftPath ? `, drafter ${draftPath}` : ''})`);
   await execPm2([
     'start', binaryPath,
     '--name', LLAMA_APP,
