@@ -867,11 +867,19 @@ const applyLinear = (matrix, vector) => [
 
 const vectorLength = (vector) => Math.hypot(...vector);
 
+const transformVertices = (vertices, matrix) => {
+  const transformed = [];
+  for (let index = 0; index + 2 < vertices.length; index += 3) {
+    transformed.push(...applyLinear(matrix, vertices.slice(index, index + 3)));
+  }
+  return transformed;
+};
+
 const isZeroThicknessGeometry = (geometry, worldLinear = IDENTITY_LINEAR) => {
   if (!geometry) return false;
   if (geometry.type === 'custom') {
     const vertices = Array.isArray(geometry.vertices) ? geometry.vertices : [];
-    return vertices.length >= 9 && isCoplanarCloud(vertices);
+    return vertices.length >= 9 && isCoplanarCloud(transformVertices(vertices, worldLinear));
   }
   if (geometry.type !== 'extrude') return false;
   const outline = Array.isArray(geometry.outline) ? geometry.outline : [];

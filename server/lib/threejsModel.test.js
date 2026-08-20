@@ -436,6 +436,12 @@ const solidShellGeometry = () => {
   return { type: 'custom', vertices, indices };
 };
 
+const thinCustomGeometry = () => {
+  const outline = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+  const vertices = [-0.0005, 0.0005].flatMap((z) => outline.flatMap(([x, y]) => [x, y, z]));
+  return { type: 'custom', vertices, indices: [0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6] };
+};
+
 const geometryPart = (id, geometry) => ({
   id,
   name: `${id} part`,
@@ -642,6 +648,15 @@ describe('evaluateThreejsFlatness', () => {
     parent.scale = [1, 1, 1_000];
     parent.children = [geometryPart('plate', { ...validExtrude(), depth: 0.001 })];
     const spec = flatnessSpec([parent]);
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 1, noteCount: 0, flatRatio: 1 });
+    expect(flatness.findings[0].severity).toBe('warning');
+  });
+
+  it('keeps a thin custom solid in the warning after normal-axis scaling', () => {
+    const spec = flatnessSpec([geometryPart('plate', thinCustomGeometry())]);
+    spec.parts[0].scale = [1, 1, 1_000];
     spec.materials.body.side = 'double';
     const flatness = evaluateThreejsFlatness(spec);
     expect(flatness).toMatchObject({ warningCount: 1, noteCount: 0, flatRatio: 1 });
