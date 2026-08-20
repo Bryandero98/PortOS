@@ -56,17 +56,20 @@ async function listJiraTickets(app) {
  * author filter the claim flow uses on forge trackers.
  *
  * @param {object} app - managed app record (needs `id`, `repoPath`, `jira`)
- * @param {{ issueAuthorFilter?: 'self'|'collaborators'|'owner'|'any' }} [opts]
+ * @param {{ issueAuthorFilter?: 'self'|'collaborators'|'owner'|'any', issueExcludeLabels?: string[] }} [opts]
  * @returns {Promise<{tracker, source, promptTaskType, items, count, reason, transient}>}
  */
-export async function listWorkItems(app, { issueAuthorFilter } = {}) {
+export async function listWorkItems(app, { issueAuthorFilter, issueExcludeLabels } = {}) {
   const wt = await resolveAppWorkTracker(app);
   const promptTaskType = trackerToClaimTaskType(wt.resolved) || 'plan-task';
   const base = { tracker: wt.resolved, source: wt.source, promptTaskType };
 
+  const detectorOpts = {};
+  if (issueAuthorFilter) detectorOpts.issueAuthorFilter = issueAuthorFilter;
+  if (Array.isArray(issueExcludeLabels) && issueExcludeLabels.length > 0) detectorOpts.issueExcludeLabels = issueExcludeLabels;
   const result = promptTaskType === 'claim-issue-jira'
     ? await listJiraTickets(app)
-    : await detectActionableWork(promptTaskType, app, issueAuthorFilter ? { issueAuthorFilter } : {});
+    : await detectActionableWork(promptTaskType, app, detectorOpts);
 
   return {
     ...base,

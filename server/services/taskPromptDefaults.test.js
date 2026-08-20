@@ -254,8 +254,8 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // claim/plan prompt that enumerates the CLI reviewers must name the binary.
   it.each([
     ['plan-task', 16],
-    ['claim-issue', 15],
-    ['claim-issue-gitlab', 14],
+    ['claim-issue', 16],
+    ['claim-issue-gitlab', 15],
     ['claim-issue-jira', 12],
   ])('%s v%d names the antigravity reviewer\'s `agy` binary, preserving the pre-`agy` default', (key, version) => {
     const current = DEFAULT_TASK_PROMPTS[key];
@@ -287,8 +287,8 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // pointed the local-LLM reviewers at a `gh pr diff` that could not exist yet.
   it.each([
     ['plan-task', 16],
-    ['claim-issue', 15],
-    ['claim-issue-gitlab', 14],
+    ['claim-issue', 16],
+    ['claim-issue-gitlab', 15],
     ['claim-issue-jira', 12],
   ])('%s v%d reviews locally before it opens the PR/MR', (key, version) => {
     const current = DEFAULT_TASK_PROMPTS[key];
@@ -548,5 +548,15 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(v2).toContain('not finished until it IS merged');
     expect(v2).not.toContain('SUPERSEDED');
     expect(v2).not.toBe(current);
+  });
+
+  // Phase 1's candidate fetch must match perpetualWork.js's detector — both
+  // apply the blocking-label filter (fixed set + configured issueExcludeLabels)
+  // to the fetched page, so a mismatched cap risks the live agent and the
+  // perpetual drain reaching different "actionable or not" verdicts on the
+  // same repo.
+  it('claim-issue Phase 1 fetches --limit 500, matching perpetualWork.js\'s widened detector fetch', () => {
+    expect(DEFAULT_TASK_PROMPTS['claim-issue']).toContain('--limit 500');
+    expect(DEFAULT_TASK_PROMPTS['claim-issue']).not.toContain('--limit 100');
   });
 });

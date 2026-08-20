@@ -387,7 +387,12 @@ export const DEFAULT_TASK_INTERVALS = {
   // access (GitHub collaborators / GitLab project members); 'owner' only claims
   // issues the repo owner filed; 'any' claims any open issue. Per-app override
   // supported via taskTypeOverrides.
-  'claim-issue':         { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true, issueAuthorFilter: 'self' } },
+  // `issueExcludeLabels` (default `[]`) lists ADDITIONAL labels to skip when
+  // auto-claiming, on top of the fixed NON_ACTIONABLE_ISSUE_LABELS set
+  // (perpetualWork.js) — e.g. `good first issue`, to leave those open for human
+  // contributors. Per-app override supported via taskTypeOverrides, like
+  // `issueAuthorFilter`.
+  'claim-issue':         { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true, issueAuthorFilter: 'self', issueExcludeLabels: [] } },
   // claim-work is the SINGLE-SOURCE router: one toggle per app that ships the
   // next work item from whatever tracker the app is configured for
   // (app.workTracker, default 'auto' → resolved from the git origin host). At
@@ -399,9 +404,9 @@ export const DEFAULT_TASK_INTERVALS = {
   // Both `useWorktree` and `openPR` are OFF on the CoS side
   // for the SAME reasons as plan-task/claim-issue (a CoS-managed worktree would
   // hide the claim slug and trigger cleanupAgentWorktree's auto-merge).
-  // `issueAuthorFilter` applies only when the resolved tracker is a forge
-  // (github/gitlab); it's inert for plan/jira.
-  'claim-work':          { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true, issueAuthorFilter: 'self' } },
+  // `issueAuthorFilter` / `issueExcludeLabels` apply only when the resolved
+  // tracker is a forge (github/gitlab); both are inert for plan/jira.
+  'claim-work':          { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true, issueAuthorFilter: 'self', issueExcludeLabels: [] } },
   'error-handling':      { type: INTERVAL_TYPES.ROTATION, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
   'typing':              { type: INTERVAL_TYPES.ONCE, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
   // Release-check inspects and mutates release state (for example, the main →

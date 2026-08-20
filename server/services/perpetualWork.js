@@ -35,6 +35,12 @@ import { readOriginRemoteUrl } from '../lib/gitRemote.js';
 // label the agent applies when it decides an issue needs a human decision
 // (claim-issue prompt Phase 3) — excluding it here is what lets a perpetual
 // drain converge instead of re-picking the same ambiguous issue forever.
+//
+// This set is intentionally fixed/structural — a user's own reserved-for-humans
+// labels (e.g. `good first issue`) are NOT added here. They're configured
+// per-app via `taskMetadata.issueExcludeLabels` and unioned in at read time by
+// `isActionableIssue`'s `excludeLabels` param, so the base skip-list stays the
+// same across every install.
 export const NON_ACTIONABLE_ISSUE_LABELS = new Set([
   'in-progress', 'blocked', 'needs-input', 'future', 'wontfix', 'question', 'discussion'
 ]);
@@ -183,8 +189,14 @@ export function titleMarksEpic(title) {
  * is autonomously claimable. Mirrors the claim-issue prompt's Phase 1 step 4
  * predicate: no in-flight claim ref, no assignees, no blocking label, not an
  * epic. Exported for direct unit testing.
+ *
+ * `excludeLabels` is the app's configured `issueExcludeLabels`
+ * (`taskMetadata.issueExcludeLabels`) — extra labels a user wants left for
+ * human contributors (e.g. `good first issue`). It is UNIONED with
+ * `NON_ACTIONABLE_ISSUE_LABELS`, never replacing it: the base set is
+ * structural (in-progress/blocked/etc.), not user-configurable.
  */
-export function isActionableIssue(issue, inFlight = new Set()) {
+export function isActionableIssue(issue, inFlight = new Set(), excludeLabels = null) {
   if (!issue || typeof issue.number !== 'number') return false;
   if (inFlight.has(issue.number)) return false;
   if (Array.isArray(issue.assignees) && issue.assignees.length > 0) return false;
@@ -192,6 +204,7 @@ export function isActionableIssue(issue, inFlight = new Set()) {
     .map((l) => (typeof l === 'string' ? l : l?.name) || '')
     .map((s) => s.toLowerCase());
   if (labels.some((l) => NON_ACTIONABLE_ISSUE_LABELS.has(l))) return false;
+  if (excludeLabels && labels.some((l) => excludeLabels.has(l))) return false;
   if (labels.includes('epic')) return false;
   if (titleMarksEpic(issue.title)) return false;
   return true;
@@ -268,7 +281,15 @@ const FORGE_ISSUE_CONFIG = {
     // ignore it, and the `collaborators` gate can only be applied to the listing
     // (gh's `--author` takes exactly one account, so a trusted SET can't be
     // pushed into the query).
-    listArgs: ['issue', 'list', '--state', 'open', '--search', 'sort:created-asc', '--json', 'number,assignees,labels,title,author', '--limit', '100'],
+    // `--limit 500` (gh paginates internally up to this count in one call, per
+    // its own `--limit` docs) rather than 100: the label filter below (fixed
+    // NON_ACTIONABLE_ISSUE_LABELS plus any configured `issueExcludeLabels`)
+    // runs client-side AFTER this fetch, so a small fetch cap risks the
+    // detector parking on a false "no actionable issues" when the first page
+    // happens to be full of excluded/in-flight/epic issues even though real
+    // work exists further down the queue. Matches the same tradeoff the
+    // /do:next auto-pick walk already makes for the identical reason.
+    listArgs: ['issue', 'list', '--state', 'open', '--search', 'sort:created-asc', '--json', 'number,assignees,labels,title,author', '--limit', '500'],
     listFail: 'gh-list-failed',
     parseFail: 'gh-parse-failed',
     // Park reason when the owner filter resolves to a non-authoring owner. On
@@ -307,6 +328,13 @@ const FORGE_ISSUE_CONFIG = {
   'claim-issue-gitlab': {
     cli: 'glab',
     inFlightForge: 'gitlab',
+    // `--per-page` maxes out at 100 (GitLab's own per-call ceiling; unlike
+    // gh's `--limit`, there's no single-call "give me more" here) — same
+    // residual gap the /do:next auto-pick walk documents for GitLab: a busy
+    // tracker whose first page is dominated by excluded/in-flight/epic issues
+    // can still park on a false "no actionable issues" despite real work
+    // further down the queue. `--issues-label`-style curation is the
+    // practical mitigation there; this detector has no equivalent knob yet.
     listArgs: ['issue', 'list', '--per-page', '100', '-F', 'json'],
     listFail: 'glab-list-failed',
     parseFail: 'glab-parse-failed',
@@ -394,7 +422,7 @@ async function countOpenIssuesUnfiltered(cfg, repoPath) {
  * issues; 'any' = every author). The in-flight scan runs only when the list is
  * non-empty, so an empty queue parks without a wasted branch/PR scan.
  */
-async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self' } = {}) {
+async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self', issueExcludeLabels = [] } = {}) {
   const cfg = FORGE_ISSUE_CONFIG[forgeKey];
   const repoPath = app?.repoPath;
   if (!repoPath) return { actionable: false, count: 0, reason: 'no-repo-path' };
@@ -546,7 +574,10 @@ async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self' } =
   // apparently-non-empty queue yields zero claimable work — the exact confusion
   // behind "40 open issues but it parked."
   const inFlightCount = issues.filter((i) => typeof i.number === 'number' && inFlight.has(i.number)).length;
-  const actionable = issues.filter((issue) => isActionableIssue(issue, inFlight));
+  const excludeSet = Array.isArray(issueExcludeLabels) && issueExcludeLabels.length > 0
+    ? new Set(issueExcludeLabels.map((l) => String(l).toLowerCase()))
+    : null;
+  const actionable = issues.filter((issue) => isActionableIssue(issue, inFlight, excludeSet));
   const filteredCount = Math.max(0, total - actionable.length - inFlightCount);
   return {
     actionable: actionable.length > 0,

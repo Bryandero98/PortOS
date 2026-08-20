@@ -78,12 +78,13 @@ router.get('/:id/work-items', loadApp, asyncHandler(async (req, res) => {
   const app = req.loadedApp;
   const requested = req.query.issueAuthorFilter;
   const explicit = ISSUE_AUTHOR_FILTERS.includes(requested) ? requested : undefined;
-  // Only read the app's claim-work config when it's actually the answer — an
-  // explicit filter (every drawer refresh after the first) already wins, and the
-  // read costs a schedule load plus a per-app override read.
-  const issueAuthorFilter = explicit
-    ?? resolveClaimAuthorFilter(undefined, (await resolveClaimWorkMetadata(app)).metadata);
-  const result = await listWorkItems(app, { issueAuthorFilter });
+  // `issueExcludeLabels` has no query-param override (unlike the author
+  // filter) — the drawer preview always reflects the app's configured value,
+  // same as the claim agent will see, so the metadata read always happens.
+  const claimMetadata = (await resolveClaimWorkMetadata(app)).metadata;
+  const issueAuthorFilter = explicit ?? resolveClaimAuthorFilter(undefined, claimMetadata);
+  const issueExcludeLabels = claimMetadata?.issueExcludeLabels ?? [];
+  const result = await listWorkItems(app, { issueAuthorFilter, issueExcludeLabels });
   res.json({ appId: app.id, appName: app.name, issueAuthorFilter, ...result });
 }));
 

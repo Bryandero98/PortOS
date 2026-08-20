@@ -39,6 +39,7 @@ import {
   selectDryRunAutoApproved,
   exceedsMaxSpawns,
   resolveIssueAuthorFilterBlock,
+  resolveIssueExcludeLabelsBlock,
   resolveSwarmBlock,
   isCooldownExemptTask,
   emitOnDemandEmpty,
@@ -537,6 +538,21 @@ describe('work-item target', () => {
       expect(block).toContain(ref);
       expect(block).toContain(marker);
     });
+
+    it('falls back to the fixed 3-label text when no excludeLabelsBlock is passed', () => {
+      const block = buildTargetWorkItemBlock('claim-issue', '42');
+      expect(block).toContain('already carries any of `in-progress`, `blocked`, `needs-input`');
+    });
+
+    it('re-checks the SAME resolved exclude-labels list Phase 1 uses, not just the fixed 3, so a pinned target can\'t bypass a configured exclusion (e.g. a stale picker selection that gained the label after being selected)', () => {
+      const block = buildTargetWorkItemBlock('claim-issue', '42', resolveIssueExcludeLabelsBlock(['good first issue']));
+      expect(block).toContain('already carries any of `in-progress`, `blocked`, `needs-input`, `future`, `wontfix`, `question`, `discussion`, `good first issue`');
+    });
+
+    it('threads the same wiring through the gitlab flow', () => {
+      const block = buildTargetWorkItemBlock('claim-issue-gitlab', '42', resolveIssueExcludeLabelsBlock(['good first issue']));
+      expect(block).toContain('`good first issue`');
+    });
   });
 
   describe('buildPrefetchedIssueContextBlock', () => {
@@ -684,6 +700,39 @@ describe('resolveIssueAuthorFilterBlock', () => {
     // Including an inherited Object.prototype key, which a bare map lookup would
     // hand back as a "block".
     expect(resolveIssueAuthorFilterBlock('claim-issue', 'constructor')).toContain('--author "@me"');
+  });
+});
+
+// {issueExcludeLabels} is the Phase 1 step 4 blocking-label directive — the fixed
+// NON_ACTIONABLE_ISSUE_LABELS set (perpetualWork.js) plus any app-configured extras
+// (e.g. `good first issue`), so the LIVE claim agent honors the same per-app
+// exclusions the perpetual-drain detector applies.
+describe('resolveIssueExcludeLabelsBlock', () => {
+  it('renders the fixed base list with no configured extras (default, matches the prior static prompt text)', () => {
+    const block = resolveIssueExcludeLabelsBlock();
+    expect(block).toBe('`in-progress`, `blocked`, `needs-input`, `future`, `wontfix`, `question`, `discussion`');
+  });
+
+  it('appends configured extras after the fixed base list', () => {
+    const block = resolveIssueExcludeLabelsBlock(['good first issue', 'help wanted']);
+    expect(block).toBe('`in-progress`, `blocked`, `needs-input`, `future`, `wontfix`, `question`, `discussion`, `good first issue`, `help wanted`');
+  });
+
+  it('ignores non-string/empty entries and a non-array input', () => {
+    expect(resolveIssueExcludeLabelsBlock(['ok', 42, '', null])).toBe(
+      '`in-progress`, `blocked`, `needs-input`, `future`, `wontfix`, `question`, `discussion`, `ok`'
+    );
+    expect(resolveIssueExcludeLabelsBlock('not-an-array')).toBe(
+      '`in-progress`, `blocked`, `needs-input`, `future`, `wontfix`, `question`, `discussion`'
+    );
+  });
+
+  it('stays in sync with the NON_ACTIONABLE_ISSUE_LABELS set the perpetual-drain detector uses', () => {
+    expect(readFileSync(join(__dirname, 'cosTaskGenerator.js'), 'utf-8')).toContain("from './perpetualWork.js'");
+  });
+
+  it('buildClaimWorkTask threads the resolved block into the pinned-target constraint, not just the {issueExcludeLabels} placeholder', () => {
+    expect(GEN_SRC).toContain('appendTargetWorkItemBlock(promptTaskType, targetRef, issueExcludeLabelsBlock)');
   });
 });
 
