@@ -40,11 +40,15 @@ const statusChild = (stdout) => {
   return child;
 };
 
-// Exit-code-only probe child (no stdout), for the LoRA capability probe.
-const exitChild = (code) => {
+// Boolean probe child (no stdout), for the LoRA capability probe.
+const exitChild = (code, stderr = '') => {
   const child = new EventEmitter();
+  child.stderr = new EventEmitter();
   child.kill = vi.fn();
-  queueMicrotask(() => child.emit('close', code));
+  queueMicrotask(() => {
+    if (stderr) child.stderr.emit('data', Buffer.from(stderr));
+    child.emit('close', code);
+  });
   return child;
 };
 
@@ -102,6 +106,22 @@ describe('MiniMax H3 LoRA capability', () => {
     runtimeMocks.spawn.mockImplementationOnce(() => exitChild(1));
     await expect(resolveByovRuntimeLoraCapable('minimax_h3')).resolves.toBe(false);
     expect(byovRuntimeLoraCapable('minimax_h3')).toBe(false);
+  });
+
+  it('logs a capped single-line tail when a probe writes stderr', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    runtimeMocks.spawn.mockImplementationOnce(() => exitChild(
+      1, `${'x'.repeat(5000)}\nmissing quant-aware applicator`,
+    ));
+
+    await expect(resolveByovRuntimeLoraCapable('minimax_h3')).resolves.toBe(false);
+    const [message] = errorSpy.mock.calls[0] || [];
+    errorSpy.mockRestore();
+
+    expect(runtimeMocks.spawn.mock.calls[0][2].stdio).toEqual(['ignore', 'ignore', 'pipe']);
+    expect(message).toContain('missing quant-aware applicator');
+    expect(message).not.toContain('\n');
+    expect(message.length).toBeLessThanOrEqual(4096 + '❌ BYOV runtime probe failed: '.length);
   });
 
   it('caches both outcomes so the probe runs once per process', async () => {

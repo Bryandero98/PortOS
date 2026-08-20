@@ -321,15 +321,26 @@ export async function isByovRuntimeReady(runtimeId) {
   return probeOk;
 }
 
-// Spawn one exit-code-only probe in a BYOV venv. Bounded (30s SIGKILL) so a
-// wedged import can't pin a request open; any spawn/exit failure is `false`.
+const VENV_PROBE_STDERR_LIMIT = 4096;
+
+// Spawn one boolean probe in a BYOV venv. Bounded (30s SIGKILL) so a wedged
+// import can't pin a request open; any spawn/exit failure is `false`.
 function runVenvProbe(venvPython, args) {
   return new Promise((resolve) => {
+    let stderr = '';
     const child = spawn(venvPython, args, safeChildProcessOptions({
-      stdio: ['ignore', 'ignore', 'ignore'],
+      stdio: ['ignore', 'ignore', 'pipe'],
     }));
+    child.stderr.on('data', (chunk) => {
+      stderr = `${stderr}${chunk}`.slice(-VENV_PROBE_STDERR_LIMIT);
+    });
     const timer = setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); resolve(false); }, 30000);
-    child.on('close', (code) => { clearTimeout(timer); resolve(code === 0); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const detail = stderr.trim().replace(/\s+/g, ' ');
+      if (code !== 0 && detail) console.error(`❌ BYOV runtime probe failed: ${detail}`);
+      resolve(code === 0);
+    });
     child.on('error', () => { clearTimeout(timer); resolve(false); });
   });
 }
