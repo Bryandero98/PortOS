@@ -116,9 +116,13 @@ describe('llamaServerManager', () => {
     expect(result.success).toBe(true);
     expect(result.pid).toBe(12345);
     expect(spawnArgs.cmd).toBe('/usr/local/bin/llama-server');
+    // The drafter flag was once spelled `--draft-model`, which llama.cpp has
+    // never accepted — it exits 1 on an unknown flag before touching the
+    // weights, so every speculative launch died on arrival. Pinning the exact
+    // argv is what keeps a plausible-looking misspelling out.
     expect(spawnArgs.args).toEqual([
       '-m', modelPath,
-      '--draft-model', draftPath,
+      '--model-draft', draftPath,
       '--spec-type', 'draft-dflash',
       '--port', '8080',
       '--host', '127.0.0.1',
