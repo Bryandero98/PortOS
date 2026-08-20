@@ -52,9 +52,9 @@ export {
   walkPhaseLabels, clampFrameCount, clampFps,
 } from './walkBounds.js';
 
-// Preserve the sprite lane's established deep-import surface while the
-// implementations live in the shared leaves.
-export { decodeRgbaFrame, median };
+// Preserve the sprite lane's established median deep-import surface while the
+// implementation lives in the shared leaf.
+export { median };
 
 // Source pipeline constants (animation_postprocess.py) — values are part of
 // the cross-install artifact contract (imported manifests carry them).

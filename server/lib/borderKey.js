@@ -13,27 +13,37 @@ export function median(values) {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-const borderBandOffsets = ({ width, height }) => {
+/**
+ * Return raw RGBA offsets for the shared border band.
+ *
+ * Callers that need a different sampling geometry can override `band` and
+ * `step`; the sprite lane uses the defaults, while a domain preserving a
+ * historical one-pixel ring can request `{ band: 1, step: 1 }` explicitly.
+ */
+export function getBorderBandOffsets(
+  { width, height },
+  { band, step } = {},
+) {
   const minDim = Math.min(width, height);
-  const band = Math.max(4, Math.floor(minDim / 120));
-  const step = Math.max(1, Math.floor(minDim / 320));
+  const sampleBand = Math.max(1, band ?? Math.max(4, Math.floor(minDim / 120)));
+  const sampleStep = Math.max(1, step ?? Math.max(1, Math.floor(minDim / 320)));
   const offsets = [];
   const push = (x, y) => offsets.push((y * width + x) * 4);
 
-  for (let x = 0; x < width; x += step) {
-    for (let o = 0; o < band && o < height; o += 1) {
+  for (let x = 0; x < width; x += sampleStep) {
+    for (let o = 0; o < sampleBand && o < height; o += 1) {
       push(x, o);
       push(x, height - 1 - o);
     }
   }
-  for (let y = 0; y < height; y += step) {
-    for (let o = 0; o < band && o < width; o += 1) {
+  for (let y = 0; y < height; y += sampleStep) {
+    for (let o = 0; o < sampleBand && o < width; o += 1) {
       push(o, y);
       push(width - 1 - o, y);
     }
   }
   return offsets;
-};
+}
 
 const borderColor = (data, offsets) => (
   [0, 1, 2].map((channel) => median(offsets.map((offset) => data[offset + channel])))
@@ -55,8 +65,8 @@ const rgbDistanceSq = (data, offset, [r, g, b]) => (
  * @param {{data: Buffer|Uint8Array, width: number, height: number}} frame
  * @returns {[number, number, number]}
  */
-export function sampleBorderKey({ data, width, height }) {
-  const offsets = borderBandOffsets({ width, height });
+export function sampleBorderKey({ data, width, height }, options = {}) {
+  const offsets = getBorderBandOffsets({ width, height }, options);
   return borderColor(data, offsets);
 }
 
@@ -69,9 +79,14 @@ export function sampleBorderKey({ data, width, height }) {
  */
 export function detectSolidBorderColor(
   { data, width, height },
-  { tolerance = 30, minCoverage = 0.9 } = {},
+  {
+    tolerance = 30,
+    minCoverage = 0.9,
+    band,
+    step,
+  } = {},
 ) {
-  const offsets = borderBandOffsets({ width, height });
+  const offsets = getBorderBandOffsets({ width, height }, { band, step });
   if (!offsets.length) return null;
   const color = borderColor(data, offsets);
   const toleranceSq = tolerance ** 2;
@@ -83,13 +98,12 @@ export function detectSolidBorderColor(
 }
 
 /**
- * Whether an RGBA buffer contains alpha below the caller's meaningfulness
- * threshold. The default preserves image-to-3D's historical 250 cutoff; the
- * sprite lane passes 255 to preserve its previous "any alpha variation" test.
+ * Whether an RGBA buffer contains alpha below image-to-3D's historical 250
+ * meaningfulness cutoff.
  */
-export function hasMeaningfulAlpha(data, alphaThreshold = 250) {
+export function hasMeaningfulAlpha(data) {
   for (let i = 3; i < data.length; i += 4) {
-    if (data[i] < alphaThreshold) return true;
+    if (data[i] < 250) return true;
   }
   return false;
 }

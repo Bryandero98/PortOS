@@ -1,5 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads';
-import { keySolidBackground } from './sourceKeying.js';
+import { keySolidBackground } from './sourceKeyingKernel.js';
 
 const frame = {
   data: new Uint8Array(workerData.data),

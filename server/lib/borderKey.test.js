@@ -39,10 +39,9 @@ describe('borderKey', () => {
     expect(detectSolidBorderColor(frame)).toEqual(GREEN);
   });
 
-  it('shares the alpha meaningfulness threshold with an explicit override', () => {
+  it('shares the image-to-3D alpha meaningfulness threshold', () => {
     const almostOpaque = makeFrame(2, 1, (x) => [0, 0, 0, x ? 255 : 249]);
     expect(hasMeaningfulAlpha(almostOpaque.data)).toBe(true);
-    expect(hasMeaningfulAlpha(almostOpaque.data, 255)).toBe(true);
     expect(hasMeaningfulAlpha(makeFrame(2, 1, () => [0, 0, 0, 255]).data)).toBe(false);
   });
 

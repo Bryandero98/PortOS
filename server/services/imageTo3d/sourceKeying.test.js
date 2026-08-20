@@ -70,6 +70,17 @@ describe('keySolidBackground', () => {
     expect(alphaAt(keyed, 6, 6)).toBe(255); // subject interior near the edge
   });
 
+  it('floods through a dirty outer row using the shared border-band seeds', () => {
+    const dirtyEdge = makeImage(20, 20, (x, y) => (
+      y === 0 ? [255, 0, 0] : (x >= 5 && x < 15 && y >= 5 && y < 15 ? BROWN : GREEN)
+    ));
+    const result = keySolidBackground(dirtyEdge);
+    expect(result).not.toBeNull();
+    const keyed = { data: result.data, width: 20, height: 20 };
+    expect(alphaAt(keyed, 0, 1)).toBe(0);
+    expect(alphaAt(keyed, 0, 0)).toBe(255); // non-background edge artifact is preserved
+  });
+
   it('keys enclosed background pockets the flood fill cannot reach', () => {
     // A brown ring with a green hole in the middle — unreachable from the border.
     const ring = makeImage(20, 20, (x, y) => {
