@@ -15,6 +15,8 @@ const TRACKED = [
   'server/services/taskPromptDefaults.test.js',
   'server/lib/bufferedSpawn.test.js',
   'server/lib/platform.test.js',
+  'server/lib/shellCd.test.js',
+  'server/services/agentTuiSpawning.test.js',
   'client/src/a11yConventions.test.js',
   'client/src/hooks/mountedRefConventions.test.js',
   'client/src/components/catalog/CatalogCard.jsx',
@@ -307,7 +309,15 @@ describe('CI test impact planner', () => {
     expect(spawn.windowsFiles).toEqual([
       'server/lib/bufferedSpawn.test.js',
       'server/lib/platform.test.js',
+      'server/lib/shellCd.test.js',
+      'server/services/agentTuiSpawning.test.js',
     ]);
+
+    const tuiShell = buildCiTestPlan([
+      'server/lib/shellCd.js',
+    ], { trackedFiles: TRACKED });
+    expect(tuiShell.windows).toBe(true);
+    expect(tuiShell.windowsMode).toBe('related');
 
     const winHelper = buildCiTestPlan([
       'scripts/fix-windows-console.js',

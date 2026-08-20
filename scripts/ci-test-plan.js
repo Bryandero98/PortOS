@@ -39,9 +39,11 @@ const WINDOWS_RISK_RULES = [
   /^scripts\/fix-windows-console(?:\.test)?\.js$/,
   /^scripts\/ps1-bom\.test\.js$/,
   /^server\/lib\/(?:bufferedSpawn|detachedSpawn|childProcess|bashResolver|processEnv|platform|spawnCwd|cliProviderRun|grok)\b/,
+  /^server\/lib\/shellCd(?:\.test)?\.js$/,
   /^server\/lib\/agentGuard\//,
   /^server\/cos-runner\//,
   /^server\/services\/(?:shell|pm2|appBuilder)\b/,
+  /^server\/services\/agentTuiSpawning(?:\.test)?\.js$/,
   /^server\/services\/autonomousJobs\/execution\.shellSpawn/,
   /^server\/routes\/apps\//,
   /^server\/routes\/scaffoldVite\.js$/,
@@ -74,6 +76,7 @@ export const WINDOWS_CONTRACT_TESTS = [
   'server/lib/processEnv.spawnOptions.test.js',
   'server/lib/processEnv.test.js',
   'server/lib/spawnCwd.test.js',
+  'server/lib/shellCd.test.js',
   'server/routes/apps/crud.test.js',
   'server/routes/apps/icons.test.js',
   'server/routes/apps/issues.test.js',
@@ -89,6 +92,7 @@ export const WINDOWS_CONTRACT_TESTS = [
   'server/services/pm2Standardizer.test.js',
   'server/services/shell.test.js',
   'server/services/shellImageDrop.test.js',
+  'server/services/agentTuiSpawning.test.js',
 ];
 
 // Contract guards that run on EVERY plan, whatever the impact scope selects.

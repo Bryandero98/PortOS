@@ -54,6 +54,35 @@ export function detectShellFlavor(shell, platform = process.platform) {
 }
 
 /**
+ * Quote one token for a shell dialect.
+ *
+ * PowerShell and cmd.exe deliberately quote every token so Windows paths and
+ * provider arguments are passed literally. PowerShell needs the call operator
+ * for a quoted command-position token; quoted arguments do not use it.
+ *
+ * @param {*} value - token to quote
+ * @param {'cmd'|'powershell'|'posix'} flavor - shell dialect
+ * @param {'command'|'argument'} [position='argument'] - token position
+ * @returns {string}
+ */
+export function quoteForShell(value, flavor = 'posix', position = 'argument') {
+  const text = String(value ?? '');
+  switch (flavor) {
+    case 'cmd':
+      // cmd.exe has no escape for an embedded double quote. Double a trailing
+      // backslash so the Windows argv parser does not consume the closing quote.
+      return `"${text.replace(/"/g, '').replace(/\\+$/, run => `${run}${run}`)}"`;
+    case 'powershell': {
+      const quoted = `'${text.replace(/'/g, "''")}'`;
+      return position === 'command' ? `& ${quoted}` : quoted;
+    }
+    default:
+      // Keep the established POSIX rendering byte-for-byte identical.
+      return shellQuote(text);
+  }
+}
+
+/**
  * @param {string} dirPath - directory to change into
  * @param {string} [shell] - the session's shell binary; see detectShellFlavor
  * @returns {string} a single command line, no trailing newline
@@ -63,10 +92,8 @@ export function buildCdCommand(dirPath, shell) {
   // line and run the rest as its own command, and no directory name has one.
   const path = String(dirPath ?? '').replace(/[\u0000-\u001f\u007f]/g, '');
   switch (detectShellFlavor(shell)) {
-    // cmd.exe has no escape for `"` inside a quoted token, and a Windows path
-    // can't contain one — drop rather than emit an unparseable line.
-    case 'cmd': return `cd /d "${path.replace(/"/g, '')}"`;
-    case 'powershell': return `Set-Location -LiteralPath '${path.replace(/'/g, "''")}'`;
-    default: return `cd ${shellQuote(path)}`;
+    case 'cmd': return `cd /d ${quoteForShell(path, 'cmd')}`;
+    case 'powershell': return `Set-Location -LiteralPath ${quoteForShell(path, 'powershell')}`;
+    default: return `cd ${quoteForShell(path, 'posix')}`;
   }
 }
