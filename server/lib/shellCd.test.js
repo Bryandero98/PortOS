@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildCdCommand, detectShellFlavor } from './shellCd.js';
+import { buildCdCommand, detectShellFlavor, quoteForShell } from './shellCd.js';
 
 describe('detectShellFlavor', () => {
   it('reads the flavor off the shell binary, ignoring path and case', () => {
@@ -61,5 +61,25 @@ describe('buildCdCommand', () => {
 
   it('drops double quotes on cmd.exe, which has no escape for them', () => {
     expect(buildCdCommand('C:\\code\\"app"', 'cmd.exe')).toBe('cd /d "C:\\code\\app"');
+  });
+});
+
+describe('quoteForShell', () => {
+  it('preserves the existing POSIX output in command and argument positions', () => {
+    expect(quoteForShell('claude', 'posix', 'command')).toBe('claude');
+    expect(quoteForShell("/tmp/it's a file", 'posix', 'argument')).toBe("'/tmp/it'\\''s a file'");
+  });
+
+  it('uses the PowerShell call operator only for a quoted command token', () => {
+    expect(quoteForShell("C:\\Program Files\\Claude\\it's.cmd", 'powershell', 'command'))
+      .toBe("& 'C:\\Program Files\\Claude\\it''s.cmd'");
+    expect(quoteForShell("I:\\input folder\\it's.md", 'powershell', 'argument'))
+      .toBe("'I:\\input folder\\it''s.md'");
+  });
+
+  it('double-quotes cmd.exe tokens and drops embedded double quotes', () => {
+    expect(quoteForShell('C:\\Program Files\\claude.cmd', 'cmd', 'command'))
+      .toBe('"C:\\Program Files\\claude.cmd"');
+    expect(quoteForShell('arg"with space', 'cmd', 'argument')).toBe('"argwith space"');
   });
 });

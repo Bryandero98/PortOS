@@ -116,6 +116,7 @@ vi.mock('./agentWorktreeCleanup.js', () => ({
 }));
 
 vi.mock('fs', () => ({
+  readdirSync: vi.fn().mockReturnValue([]),
   // Default: no .agent-done sentinel on disk. The completion-sentinel test
   // overrides this to true. Re-set in beforeEach so it can't leak between tests.
   existsSync: vi.fn().mockReturnValue(false),
@@ -353,6 +354,23 @@ describe('agent TUI spawning', () => {
     expect(config.promptDelayMs).toBe(1000);
     expect(config).not.toHaveProperty('maxRuntimeMs');
     expect(config).not.toHaveProperty('idleTimeoutMs');
+  });
+
+  it('quotes the command position for PowerShell and cmd.exe while preserving POSIX output', () => {
+    const provider = {
+      id: 'claude-code-tui',
+      name: 'Claude TUI',
+      type: 'tui',
+      command: 'C:\\Program Files\\Claude\\claude.cmd',
+      args: ['--append-system-prompt-file', "I:\\input folder\\it's.md"],
+    };
+
+    expect(buildTuiSpawnConfig(provider, null, { shell: '/bin/zsh' }).commandLine)
+      .toBe("'C:\\Program Files\\Claude\\claude.cmd' --append-system-prompt-file 'I:\\input folder\\it'\\''s.md'");
+    expect(buildTuiSpawnConfig(provider, null, { shell: 'pwsh.exe' }).commandLine)
+      .toBe("& 'C:\\Program Files\\Claude\\claude.cmd' '--append-system-prompt-file' 'I:\\input folder\\it''s.md'");
+    expect(buildTuiSpawnConfig(provider, null, { shell: 'cmd.exe' }).commandLine)
+      .toBe('"C:\\Program Files\\Claude\\claude.cmd" "--append-system-prompt-file" "I:\\input folder\\it\'s.md"');
   });
 
   it('namespaces the Ollama model under ollama/ for an OpenCode TUI', () => {

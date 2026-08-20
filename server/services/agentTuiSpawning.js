@@ -27,7 +27,8 @@ import { normalizeReviewers } from '../lib/validation.js';
 import * as git from './git.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
 import { spawnTuiSessionViaRunner } from './cosRunnerClient.js';
-import { shellQuote } from '../lib/shellQuote.js';
+import { resolveInteractiveShell } from '../lib/interactiveShellResolver.js';
+import { detectShellFlavor, quoteForShell } from '../lib/shellCd.js';
 import { isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
@@ -201,7 +202,11 @@ function shellHasLiveChild(shellPid) {
   });
 }
 
-export function buildTuiSpawnConfig(provider, model, { systemPromptFile = null, effort = null } = {}) {
+export function buildTuiSpawnConfig(provider, model, {
+  systemPromptFile = null,
+  effort = null,
+  shell = resolveInteractiveShell(),
+} = {}) {
   const command = provider?.command || inferTuiCommand(provider?.id);
   const baseArgs = applyCommandDefaults(command, [...(provider?.args || [])]);
   // Model+effort injection (including the antigravity-validates-the-pair special
@@ -216,11 +221,15 @@ export function buildTuiSpawnConfig(provider, model, { systemPromptFile = null, 
   if (systemPromptFile && isClaudeCommand(command)) {
     args = [...args, '--append-system-prompt-file', systemPromptFile];
   }
+  const flavor = detectShellFlavor(shell);
+  const commandLine = [command, ...args]
+    .map((value, index) => quoteForShell(value, flavor, index === 0 ? 'command' : 'argument'))
+    .join(' ');
 
   return {
     command,
     args,
-    commandLine: [command, ...args].map(shellQuote).join(' '),
+    commandLine,
     promptDelayMs: provider?.tuiPromptDelayMs || DEFAULT_TUI_PROMPT_DELAY_MS
   };
 }
