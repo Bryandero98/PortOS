@@ -66,16 +66,19 @@ const PATTERNS = [
   ['glab mr list --state argv', ARGV_MR_LIST_STATE],
 ];
 
-// Stored per-install prompt DEFAULTS, which cannot be corrected by editing the
-// string alone: each edit needs a PROMPT_VERSIONS bump plus the outgoing body
-// preserved in PREVIOUS_DEFAULT_PROMPTS, or other installs never pick the fix up
-// (CLAUDE.md "Distribution model"). Tracked in issue #4685 — removing an entry
-// here is the whole acceptance criterion for that work.
-//
 // `previousDefaults.js` is frozen history: those strings must keep matching what
-// older installs actually stored, so they stay listed permanently.
+// older installs actually stored, byte for byte, or the auto-upgrade path stops
+// recognizing a stored prompt as non-customized and pins the stale body on that
+// install forever. It is the one file that must keep spelling the traps.
+//
+// `prompts.js` used to sit here too — a stored prompt default cannot be corrected
+// by editing the string alone, since each edit needs a PROMPT_VERSIONS bump plus
+// the outgoing body preserved in PREVIOUS_DEFAULT_PROMPTS (CLAUDE.md
+// "Distribution model"). Issue #4685 did that migration, so the current defaults
+// are now held to the same standard as every other server source. Prose in a
+// prompt body that merely EXPLAINS a trap still reads as an instance of it —
+// name the flag without re-spelling the subcommand ahead of it on the same line.
 const EXEMPT = new Map([
-  ['services/taskPromptDefaults/prompts.js', 'stored prompt defaults — needs a PROMPT_VERSIONS bump (#4685)'],
   ['services/taskPromptDefaults/previousDefaults.js', 'frozen historical snapshots — must match what older installs stored'],
 ]);
 

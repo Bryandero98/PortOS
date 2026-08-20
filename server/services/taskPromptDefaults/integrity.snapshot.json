@@ -6,7 +6,7 @@
     "performance": "672bd3958b12afb0f382bcebb6dc3b33",
     "accessibility": "372916803f32b82da38a5b2130a54baf",
     "console-errors": "2b6ed595287f0742bed9ecba6788afe6",
-    "dependency-updates": "7ed05444e2602f4895bdd1e5e0edcaa8",
+    "dependency-updates": "5c33d8c5c2106c978855bb2d00b9d79c",
     "documentation": "b375f95ae2274f03d06ba5ceff5705d8",
     "ui-bugs": "def9ad96bd74ab397233f234d79a1974",
     "mobile-responsive": "16d8e7f63a673a2de48994c0ac08ef3d",
@@ -16,7 +16,7 @@
     "feature-ideas": "d3282f16da29efe2d53595b3b34778bc",
     "plan-task": "2012a0da54bdbf441911a0eed05f0cb1",
     "claim-issue": "5bcaf3230a7a46ee039404943feab187",
-    "claim-issue-gitlab": "eed428fc96a8a58ee94d38e6e4896932",
+    "claim-issue-gitlab": "ed2c2c9c8cd6297340b3a92666cb2c5a",
     "claim-issue-jira": "9d782972b20d6b721eb44d0673315cad",
     "code-reviewer-review": "1cd13ee5142d130f95cc390098d0f278",
     "code-reviewer-implement": "ab2c3e16d54e195bdf856574b7702042",
@@ -31,8 +31,8 @@
     "branch-reconcile": "16479f4b64395103fd222dc9608830b1",
     "issue-reconcile": "6f33db6ad0b57c36909229694b78891a",
     "pr-reviewer": "add27b67daa6aa2c75717ac96a6bd625",
-    "pr-reviewer-security": "2050297d1cdb081a8576a781828ee44f",
-    "pr-reviewer-review": "21ccd5d3a6f3eea16c479db9ed9aedaa",
+    "pr-reviewer-security": "4df29e2bf7b05dbec67e1b6198b8b9c9",
+    "pr-reviewer-review": "ec67b91468cead9c16cfcffff06f8993",
     "reference-watch": "e0e20754700fb08d5159b8437d9c260b",
     "pr-watcher": "53ead8e26d396849bfa78f28550bd691",
     "refresh-local-llm-catalog": "ca7324a0f2251a66b46ea534940c9da8"
@@ -42,7 +42,7 @@
     "feature-ideas": 10,
     "plan-task": 16,
     "claim-issue": 16,
-    "claim-issue-gitlab": 15,
+    "claim-issue-gitlab": 16,
     "claim-issue-jira": 12,
     "pr-reviewer": 3,
     "code-reviewer-a": 1,
@@ -57,7 +57,7 @@
     "test-coverage": 2,
     "performance": 2,
     "accessibility": 2,
-    "dependency-updates": 3,
+    "dependency-updates": 4,
     "documentation": 5,
     "ui-bugs": 2,
     "mobile-responsive": 2,
@@ -133,7 +133,8 @@
       "8e8f795bb75e996b80992883983a3c08",
       "da0a8fbb33ac274a3b2efd968e302a1a",
       "d8fe2bf614b465ca46108ea3295d2ec5",
-      "7ff928b2560ed6bb1a96dbbc80142ed9"
+      "7ff928b2560ed6bb1a96dbbc80142ed9",
+      "eed428fc96a8a58ee94d38e6e4896932"
     ],
     "claim-issue": [
       "37949d1b1fa8d461a15658f8f4192d97",
@@ -169,7 +170,8 @@
     ],
     "dependency-updates": [
       "640a7c4214e6bdba2bbd5b9061d9d425",
-      "3f461b1c111ba45b7fa5016883cfa54d"
+      "3f461b1c111ba45b7fa5016883cfa54d",
+      "7ed05444e2602f4895bdd1e5e0edcaa8"
     ],
     "documentation": [
       "074ea22140f8f6a02c7e40a6bc7b0614",

@@ -435,6 +435,9 @@ describe('taskSchedule', () => {
       'claim-issue',
       'release-check',
       'refresh-local-llm-catalog',
+      // glab-flag revision (issue #4685): dependency-updates v3 → v4. Same
+      // contract, so it rides the same walk rather than a parallel describe.
+      'dependency-updates',
     ])('%s: an install on the outgoing default auto-upgrades instead of being flagged customized', async (taskType) => {
       const previous = PREVIOUS_DEFAULT_PROMPTS[taskType]
       const outgoing = previous[previous.length - 1]
