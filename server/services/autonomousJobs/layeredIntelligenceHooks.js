@@ -79,6 +79,7 @@ function outcomesTrackerSupported(filer) {
 }
 import { resolveAppWorkTracker } from '../../lib/workTracker.js'
 import { tryReadFile } from '../../lib/fileUtils.js'
+import { PROGRAMMATIC_OUTPUT_COMPLETION_HEADING } from '../../lib/agentSentinel.js'
 import { join } from 'path'
 
 /**
@@ -236,9 +237,17 @@ async function readIssues({ filer, forgeCli, cwd, jira, config }) {
 /**
  * The completion contract appended to the reasoning prompt: the agent must NOT
  * write code or open a PR (its worktree is discarded anyway) — it reasons and
- * writes its structured result to the `.agent-done` sentinel so the
+ * writes its structured result to the completion sentinel so the
  * processTaskOutput hook can file it. `payload` is the exact reasoner-JSON shape
  * buildPrompt already documents.
+ *
+ * This hook renders the prompt BEFORE spawn, so it cannot know the sentinel's
+ * per-instance filename (`.agent-done-<agentId>`) — it names the briefing
+ * section that prints the absolute path instead, via the shared heading
+ * constant so the two can't drift. It says only where the path IS: an earlier
+ * revision also warned against writing a bare `.agent-done` (a leftover from
+ * when this contract named that file itself), which in a prompt that mentions
+ * it nowhere else only teaches the agent a wrong filename.
  */
 function buildCompletionContract() {
   return [
@@ -251,10 +260,10 @@ function buildCompletionContract() {
     'commit, or open a pull request — any changes you make to this worktree are',
     'discarded. Your ONLY output is the JSON described above.',
     '',
-    'When you have decided, write your completion sentinel — the exact filename',
-    'carries your agent id, so use the path given in the completion section of',
-    'your briefing, NOT a bare `.agent-done`. It must contain a single JSON',
-    'object with this shape:',
+    'When you have decided, write your result to the completion sentinel. Its',
+    `absolute path is printed in the **${PROGRAMMATIC_OUTPUT_COMPLETION_HEADING}**`,
+    'section of this briefing — copy that path exactly; its filename is scoped to',
+    'this run. The file must contain a single JSON object with this shape:',
     '',
     '```json',
     '{ "summary": "<one-line human summary of what you proposed, or that you proposed nothing>",',

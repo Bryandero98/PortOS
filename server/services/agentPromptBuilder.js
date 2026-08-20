@@ -19,7 +19,7 @@ import { readJSONFile, PATHS, tryReadFile, expandHome } from '../lib/fileUtils.j
 import { loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, resolveReviewerConfig, reviewerEffortArgs, reviewerModelArg, buildReviewerEffortNote, resolveKeyedReviewers, buildReviewWithArgs, buildReviewersCsv } from '../lib/validation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
-import { doneSentinelName } from '../lib/agentSentinel.js';
+import { doneSentinelName, PROGRAMMATIC_OUTPUT_COMPLETION_HEADING } from '../lib/agentSentinel.js';
 import { canTypeSlashCommands, agentOwnsPrWorkflow, resolveSlashdoInvocation, buildSlashdoSection, oversizedBodyPointer, unreachableReviewerIncludes, SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
 import { shellQuote } from '../lib/shellQuote.js';
 import { TASK_PROMPT_KEY, TASK_CONTEXT_KEY, taskContextBlock } from '../lib/cosTaskPrompt.js';
@@ -1441,7 +1441,8 @@ and do NOT revert its commits unless they are actually wrong.
  */
 export function buildProgrammaticOutputCompletionSection(sentinelPath) {
   return [
-    '## Completion (Reasoning-Only Task)',
+    // Shared constant: a pre-spawn task-type hook's prompt points here BY NAME.
+    `## ${PROGRAMMATIC_OUTPUT_COMPLETION_HEADING}`,
     'This is a reasoning task, not a code change. The worktree you are in is **discarded on exit** — any commits, pushes, or PRs are thrown away and have no effect. Do NOT run `/do:push`, `/do:pr`, `git commit`, `git push`, or open a pull request.',
     '',
     `When you have finished reasoning, write your result to \`${sentinelPath}\` in the exact payload format described in your task instructions, then stop. PortOS watches this sentinel and finalizes the run shortly after it appears — do NOT run \`/quit\` and do NOT wait for anything after writing the sentinel.`

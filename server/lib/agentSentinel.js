@@ -27,6 +27,21 @@ import { safeJSONParse, sanitizeFilename } from './fileUtils.js';
 export const DONE_SENTINEL_NAME = '.agent-done';
 
 /**
+ * Heading of the briefing section that prints this run's absolute sentinel path
+ * for a reasoning-only (programmatic-output) task — see
+ * `buildProgrammaticOutputCompletionSection` in agentPromptBuilder.
+ *
+ * A task-type hook renders its prompt BEFORE spawn, so it cannot know the
+ * per-instance filename (`.agent-done-<agentId>`) and must point the agent at
+ * the briefing instead. That pointer only works if both sides agree on the
+ * heading, hence one exported constant rather than the string typed twice.
+ * Pointing POSITIVELY at this section is also the whole contract: a prompt that
+ * warns against some other filename is the only place the agent would learn
+ * that filename exists.
+ */
+export const PROGRAMMATIC_OUTPUT_COMPLETION_HEADING = 'Completion (Reasoning-Only Task)';
+
+/**
  * The sentinel filename for one agent instance: `.agent-done-<agentId>`.
  *
  * Agents that run WITHOUT a worktree (`useWorktree: false` — e.g. the
