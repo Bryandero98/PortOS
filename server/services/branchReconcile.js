@@ -900,9 +900,16 @@ export async function reconcile(repoPath = PATHS.root, { cleanup = true, reapRem
   }
 
   const defaultBranch = await getDefaultBranch(repoPath).catch(() => 'main') || 'main';
-  // Read origin's branch list once for the whole cycle: the gather needs it to
-  // tell a shipped claim from a live one, and a repo with no origin has no
-  // remote to ask (null → nothing reads as gone, which is the safe direction).
+  // The gather needs origin's branch list to tell a shipped claim from a live
+  // one. A repo with no origin has no remote to ask (null → nothing reads as
+  // gone, which is the safe direction) — gated on `hasOrigin`, not on `origin`
+  // itself, which is a populated object even for an origin-less repo.
+  //
+  // Deliberately NOT shared with reapOrphanedRemotes below: that step DELETES
+  // remote branches, and this read happens before cleanupMerged runs, so handing
+  // it this list would have it act on a view of origin taken a step earlier —
+  // exactly the staleness listRemoteHeads exists to avoid. One extra ls-remote
+  // per cycle is the cost of each destructive step reading the remote itself.
   const remoteHeads = origin?.hasOrigin ? await listRemoteHeads(repoPath) : null;
   const inputs = await gatherBranchState(repoPath, { defaultBranch, activeAgentIds, remoteHeads });
   // A gh failure AFTER a passing probe (a blip mid-cycle, or an unparseable
