@@ -193,6 +193,33 @@ export const STATE_MESSAGES = {
   ideating: "Analyzing options...",
 };
 
+// A health issue is the ONLY thing that flips an idle-but-running CoS into
+// `investigating`, so the status bubble has to say *which* issue. Falling back
+// to the generic STATE_MESSAGES line left the avatar parked on "Investigating
+// issue..." with zero agents running and the detail reachable only by guessing
+// at the Health tab. Returns null when there is nothing to report so callers
+// can fall back to their own default. Issue shape mirrors the server's
+// `runHealthCheck` (`{ type, category, message }` — server/services/cosHealthMonitor.js).
+export const summarizeHealthIssues = (issues) => {
+  if (!Array.isArray(issues) || issues.length === 0) return null;
+  const messages = issues.map((issue) => issue?.message).filter(Boolean);
+  // A message-less issue still has to read as an issue — `null` means "nothing
+  // to report", so callers that already know the list is non-empty never need a
+  // fallback of their own.
+  if (messages.length === 0) return `${issues.length} health issue${issues.length > 1 ? 's' : ''} detected`;
+  if (messages.length === 1) return messages[0];
+  return `${messages.length} health issues: ${messages.join(' · ')}`;
+};
+
+// StatCard tone for the Issues tile. `error`-type issues mean something is
+// broken; a warning-only check (e.g. a memory-hungry process) stays amber
+// rather than screaming red — matching how HealthTab colors the same list.
+// 'default' (not null) so a zero-issue tile keeps its explicit gray icon.
+export const healthIssueTone = (issues) => {
+  if (!Array.isArray(issues) || issues.length === 0) return 'default';
+  return issues.some((issue) => issue?.type === 'error') ? 'critical' : 'warning';
+};
+
 // Agent option toggles for task metadata (useWorktree, openPR, simplify, requireApproval).
 export const AGENT_OPTIONS = [
   { field: 'requireApproval', label: 'Require approval', shortLabel: 'Apr', description: 'Queue as awaiting-approve and do not auto-run — including Run Now — until you approve. Off (default): Run Now starts immediately; scheduled runs still follow the confidence and safety gates.' },

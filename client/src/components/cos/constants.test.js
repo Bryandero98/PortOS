@@ -13,7 +13,9 @@ import {
   MUSE_ROOT_MOTION_CLIPS,
   resolveMuseMotion,
   MODEL_CAPABLE_CLI_REVIEWERS,
-  reviewerLabel
+  reviewerLabel,
+  summarizeHealthIssues,
+  healthIssueTone
 } from './constants';
 
 // These mirror the server's domainBudgets/domainAutonomy helpers so the UI's
@@ -217,4 +219,46 @@ describe('reviewerLabel', () => {
     expect(reviewerLabel('@octocat')).toBe('@octocat');
   });
 });
+
+// A warning-level health issue put the CoS avatar in `investigating` while the
+// status bubble showed the generic "Investigating issue..." and the Issues tile
+// was an inert number. Both helpers exist so the UI can name the issue and color
+// the tile by severity.
+describe('summarizeHealthIssues', () => {
+  it('returns null when there is nothing to report', () => {
+    expect(summarizeHealthIssues([])).toBeNull();
+    expect(summarizeHealthIssues(null)).toBeNull();
+    expect(summarizeHealthIssues(undefined)).toBeNull();
+  });
+
+  it('names the single issue verbatim', () => {
+    expect(summarizeHealthIssues([{ type: 'warning', category: 'memory', message: 'High memory usage in: example-app (900MB)' }]))
+      .toBe('High memory usage in: example-app (900MB)');
+  });
+
+  it('counts and joins multiple issues', () => {
+    expect(summarizeHealthIssues([{ message: 'a' }, { message: 'b' }])).toBe('2 health issues: a \u00b7 b');
+  });
+
+  it('still reads as an issue when the payload carries no message', () => {
+    expect(summarizeHealthIssues([{ type: 'error' }])).toBe('1 health issue detected');
+    expect(summarizeHealthIssues([{ type: 'error' }, {}])).toBe('2 health issues detected');
+  });
+});
+
+describe('healthIssueTone', () => {
+  it('stays neutral with no issues', () => {
+    expect(healthIssueTone([])).toBe('default');
+    expect(healthIssueTone(null)).toBe('default');
+  });
+
+  it('keeps warning-only checks amber rather than red', () => {
+    expect(healthIssueTone([{ type: 'warning' }, { type: 'warning' }])).toBe('warning');
+  });
+
+  it('escalates to critical when any issue is an error', () => {
+    expect(healthIssueTone([{ type: 'warning' }, { type: 'error' }])).toBe('critical');
+  });
+});
+
 // @vitest-environment node

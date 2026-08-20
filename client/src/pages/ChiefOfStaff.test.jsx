@@ -576,3 +576,82 @@ describe('ChiefOfStaff stale queue-read guard', () => {
     expect(screen.getByText('FRESH in-progress copy')).toBeInTheDocument();
   });
 });
+
+// A single warning-level health issue parked the avatar on "Investigating
+// issue..." with Active 0. Nothing on screen said what was being investigated,
+// and the Issues tile was an inert <div> holding the number 1, so the detail was
+// reachable only by guessing at the Health tab.
+describe('ChiefOfStaff Issues card', () => {
+  const memoryWarning = {
+    type: 'warning',
+    category: 'memory',
+    message: 'High memory usage in: example-app (900MB)',
+  };
+
+  const renderWithIssues = (issues) => {
+    api.getCosStatus.mockResolvedValue({ running: true, config, stats: {} });
+    api.getCosHealth.mockResolvedValue({ lastCheck: '2026-01-01T00:00:00.000Z', issues });
+    return render(
+      <MemoryRouter initialEntries={['/cos/config']}>
+        <Routes>
+          <Route path="/cos/:tab" element={<ChiefOfStaff />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+  };
+
+  // Same "never index a match list" rule as the Learning card above: the page
+  // paints the Issues tile in up to four places (desktop sidebar, mobile grid,
+  // the compressed header, and the Tailwind-`hidden` ascii `mini` bar, all still
+  // in the jsdom tree). Hold every variant to the contract.
+  const issueCards = async () => {
+    const cards = await screen.findAllByRole('button', { name: /^Issues:/ });
+    expect(cards.length).toBeGreaterThan(0);
+    return cards;
+  };
+
+  it('names the health issue in the status bubble instead of the generic investigating line', async () => {
+    renderWithIssues([memoryWarning]);
+
+    expect(await screen.findByText(memoryWarning.message)).toBeInTheDocument();
+    expect(screen.queryByText('Investigating issue...')).not.toBeInTheDocument();
+  });
+
+  it('summarizes the count when more than one issue is open', async () => {
+    renderWithIssues([memoryWarning, { type: 'error', category: 'processes', message: 'example-app failed to auto-restart' }]);
+
+    expect(await screen.findByText(/^2 health issues: /)).toBeInTheDocument();
+  });
+
+  it('makes every Issues tile a button that carries the issue summary', async () => {
+    renderWithIssues([memoryWarning]);
+
+    for (const card of await issueCards()) {
+      expect(card).toHaveAttribute('title', memoryWarning.message);
+      expect(within(card).getByText('1')).toBeInTheDocument();
+    }
+  });
+
+  it('opens the Health tab when the tile is clicked', async () => {
+    renderWithIssues([memoryWarning]);
+    const cards = await issueCards();
+
+    // Clicking the first is enough: the assertion above pins every variant to
+    // the same props object, and the click swaps the route out from under the
+    // rest of the list.
+    fireEvent.click(cards[0]);
+
+    const panel = await screen.findByRole('tabpanel');
+    expect(panel).toHaveAttribute('id', 'tabpanel-health');
+    expect(within(panel).getByText(memoryWarning.message)).toBeInTheDocument();
+  });
+
+  it('stays a click-through to Health when there are no issues at all', async () => {
+    renderWithIssues([]);
+
+    for (const card of await issueCards()) {
+      expect(card).toHaveAttribute('title', 'No issues detected — view system health');
+      expect(within(card).getByText('0')).toBeInTheDocument();
+    }
+  });
+});

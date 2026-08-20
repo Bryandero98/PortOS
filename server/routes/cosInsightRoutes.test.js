@@ -156,6 +156,53 @@ describe('CoS Insight Routes', () => {
       }));
     });
 
+    // The health insight filtered on a `severity` field runHealthCheck never
+    // writes, so a PM2 process that failed to auto-restart banner'd at the same
+    // muted `medium` priority as a memory warning.
+    it('raises the health insight to critical for an error-type issue', async () => {
+      cos.getAllTasks.mockResolvedValue({ user: null, cos: null });
+      taskLearning.getLearningInsights.mockResolvedValue({ skippedTypes: [] });
+      cos.getPendingAgentFeedbackCount.mockResolvedValue(0);
+      productivity.getOptimalTimeInfo.mockResolvedValue({ hasData: false });
+      cos.runHealthCheck.mockResolvedValue({
+        issues: [
+          { type: 'warning', category: 'memory', message: 'High memory usage in: example-app (900MB)' },
+          { type: 'error', category: 'processes', message: 'example-app failed to auto-restart' }
+        ]
+      });
+
+      const response = await request(app).get('/api/cos/actionable-insights');
+
+      expect(response.status).toBe(200);
+      expect(response.body.insights).toContainEqual(expect.objectContaining({
+        type: 'health',
+        priority: 'critical',
+        count: 2,
+        // …and it describes the error, not the warning that happened to sort first.
+        description: 'example-app failed to auto-restart',
+        action: { label: 'Check Health', route: '/cos/health' }
+      }));
+    });
+
+    it('keeps a warning-only health check at medium priority', async () => {
+      cos.getAllTasks.mockResolvedValue({ user: null, cos: null });
+      taskLearning.getLearningInsights.mockResolvedValue({ skippedTypes: [] });
+      cos.getPendingAgentFeedbackCount.mockResolvedValue(0);
+      productivity.getOptimalTimeInfo.mockResolvedValue({ hasData: false });
+      cos.runHealthCheck.mockResolvedValue({
+        issues: [{ type: 'warning', category: 'memory', message: 'High memory usage in: example-app (900MB)' }]
+      });
+
+      const response = await request(app).get('/api/cos/actionable-insights');
+
+      expect(response.status).toBe(200);
+      expect(response.body.insights).toContainEqual(expect.objectContaining({
+        type: 'health',
+        priority: 'medium',
+        description: 'High memory usage in: example-app (900MB)'
+      }));
+    });
+
     it('should handle errors gracefully in parallel calls', async () => {
       cos.getAllTasks.mockRejectedValue(new Error('fail'));
       taskLearning.getLearningInsights.mockRejectedValue(new Error('fail'));

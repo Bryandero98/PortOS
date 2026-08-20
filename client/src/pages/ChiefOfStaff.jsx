@@ -16,6 +16,8 @@ import PageSkeleton from '../components/ui/PageSkeleton';
 import {
   TABS,
   STATE_MESSAGES,
+  summarizeHealthIssues,
+  healthIssueTone,
   CoSCharacter,
   StateLabel,
   TerminalCoSPanel,
@@ -198,10 +200,13 @@ export default function ChiefOfStaff() {
 
     const newState = deriveAgentState(statusData, agentsData, healthData);
     setAgentState(newState);
-    // Use default state message - real messages come from socket events
+    // Default state message — richer messages come from socket events. The one
+    // state whose default is useless is `investigating`: only a health issue
+    // gets us here, so name it rather than saying "Investigating issue..." next
+    // to an Active count of 0 with no agent to inspect.
     setStatusMessage(statusData?.paused
       ? `Paused${statusData.pauseReason ? ` — ${statusData.pauseReason}` : ''}`
-      : STATE_MESSAGES[newState]);
+      : (newState === 'investigating' && summarizeHealthIssues(healthData?.issues)) || STATE_MESSAGES[newState]);
 
     // Set active agent metadata for dynamic avatar (use first running agent)
     const runningAgent = agentsData.find(a => a.status === 'running');
@@ -362,7 +367,7 @@ export default function ChiefOfStaff() {
       // (see the note by the redirect effect). Banner refreshes on the next poll.
       if (data.issues?.length > 0) {
         setAgentState('investigating');
-        setStatusMessage(`Health check: ${data.issues.length} issue${data.issues.length > 1 ? 's' : ''} found`);
+        setStatusMessage(summarizeHealthIssues(data.issues));
         setSpeaking(true);
         setTimeout(() => setSpeaking(false), 2000);
       }
@@ -531,7 +536,7 @@ export default function ChiefOfStaff() {
       // count refreshes on the next fetchData poll instead (see the note above).
       toast.success('Health check complete');
       if (result.issues?.length > 0) {
-        setStatusMessage(`Health: ${result.issues.length} issue${result.issues.length > 1 ? 's' : ''} detected`);
+        setStatusMessage(summarizeHealthIssues(result.issues));
       } else {
         setAgentState('sleeping');
         setStatusMessage("Health check passed - all systems OK");
@@ -544,10 +549,6 @@ export default function ChiefOfStaff() {
   const activeAgentCount = useMemo(() =>
     agents.filter(a => a.status === 'running').length,
     [agents]
-  );
-  const hasIssues = useMemo(() =>
-    (health?.issues?.length || 0) > 0,
-    [health?.issues?.length]
   );
 
   // Memoize pending task count
@@ -600,6 +601,20 @@ export default function ChiefOfStaff() {
     onClick: () => navigate('/cos/learning'),
   };
 
+  // The Issues tile is the only place the UI admits CoS found something wrong,
+  // so it has to click through to the detail. Without that, a warning-level
+  // health issue parked the avatar on "Investigating" with Active 0, no agent
+  // to open, and the offending message reachable only by guessing at the Health
+  // tab. `title` surfaces the same summary on hover/touch-and-hold.
+  const healthIssues = health?.issues || [];
+  const issuesStatProps = {
+    label: 'Issues',
+    value: healthIssues.length,
+    tone: healthIssueTone(healthIssues),
+    title: summarizeHealthIssues(healthIssues) || 'No issues detected — view system health',
+    onClick: () => navigate('/cos/health'),
+  };
+
   // Compact stats card grid — rendered both inside the desktop CoS sidebar and
   // the mobile compressed header so the metrics always live "inside" CoS.
   const statsGridCards = (
@@ -624,9 +639,8 @@ export default function ChiefOfStaff() {
         compact
       />
       <StatCard
-        label="Issues"
-        value={health?.issues?.length || 0}
-        icon={<AlertCircle className={`w-4 h-4 ${hasIssues ? 'text-port-error' : 'text-gray-500'}`} />}
+        {...issuesStatProps}
+        icon={<AlertCircle className="w-4 h-4" />}
         compact
       />
       <StatCard
@@ -816,7 +830,7 @@ export default function ChiefOfStaff() {
                   <StatCard label="Active" value={activeAgentCount} icon={<Cpu className="w-4 h-4 text-port-accent" />} active={activeAgentCount > 0} compact />
                   <StatCard label="Pending" value={pendingTaskCount} icon={<Clock className="w-4 h-4 text-port-warning" />} compact />
                   <StatCard label="Done" value={status?.stats?.tasksCompleted || 0} icon={<CheckCircle className="w-4 h-4 text-port-success" />} compact />
-                  <StatCard label="Issues" value={health?.issues?.length || 0} icon={<AlertCircle className={`w-4 h-4 ${hasIssues ? 'text-port-error' : 'text-gray-500'}`} />} compact />
+                  <StatCard {...issuesStatProps} icon={<AlertCircle className="w-4 h-4" />} compact />
                 </div>
               </div>
             )}
@@ -960,9 +974,8 @@ export default function ChiefOfStaff() {
             mini
           />
           <StatCard
-            label="Issues"
-            value={health?.issues?.length || 0}
-            icon={<AlertCircle className={`w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5 ${hasIssues ? 'text-port-error' : 'text-gray-500'}`} />}
+            {...issuesStatProps}
+            icon={<AlertCircle className="w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />}
             mini
           />
           {/* Learning Health - clickable to go to Learning tab */}
