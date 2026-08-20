@@ -29,13 +29,13 @@ export const SPEC_DECODE_PRESETS = Object.freeze([
     label: 'Qwen 3.8 27B + DSpark Drafter (Recommended — stock llama.cpp)',
     specType: 'draft-dspark',
     model: {
-      path: 'models/Qwen3.8-27B-Instruct-Q4_K_M.gguf',
-      repo: 'Qwen/Qwen3.8-27B-Instruct-GGUF',
+      path: 'models/Qwen3.8-27B-Q4_K_M.gguf',
+      repo: 'ggml-org/Qwen3.8-27B-GGUF',
       quant: 'Q4_K_M',
     },
     draftModel: {
-      path: 'models/Qwen3.8-27B-DSpark-bf16.gguf',
-      repo: 'magnitudedev/Qwen3.8-27B-DSpark-GGUF',
+      path: 'models/Qwen3.8-27B-DSpark-BF16.gguf',
+      repo: 'erlidev/Qwen3.8-27B-DSpark-GGUF',
       quant: 'BF16',
     },
   },
@@ -44,8 +44,8 @@ export const SPEC_DECODE_PRESETS = Object.freeze([
     label: 'Qwen 3 8B + DSpark Drafter (small target)',
     specType: 'draft-dspark',
     model: {
-      path: 'models/Qwen3-8B-Instruct-Q4_K_M.gguf',
-      repo: 'Qwen/Qwen3-8B-Instruct-GGUF',
+      path: 'models/Qwen3-8B-Q4_K_M.gguf',
+      repo: 'Qwen/Qwen3-8B-GGUF',
       quant: 'Q4_K_M',
     },
     draftModel: {
@@ -57,8 +57,8 @@ export const SPEC_DECODE_PRESETS = Object.freeze([
     label: 'Qwen 3.8 27B + DFlash 2 Drafter (needs llama.cpp PR #27342 build)',
     specType: 'draft-dflash',
     model: {
-      path: 'models/Qwen3.8-27B-Instruct-Q4_K_M.gguf',
-      repo: 'Qwen/Qwen3.8-27B-Instruct-GGUF',
+      path: 'models/Qwen3.8-27B-Q4_K_M.gguf',
+      repo: 'ggml-org/Qwen3.8-27B-GGUF',
       quant: 'Q4_K_M',
     },
     draftModel: {
@@ -72,8 +72,12 @@ export const SPEC_DECODE_PRESETS = Object.freeze([
     label: 'Muse-Glimmer 30B + DFlash 2 Drafter (needs llama.cpp PR #27342 build)',
     specType: 'draft-dflash',
     model: {
-      path: 'models/Muse-Glimmer-30B-Instruct-Q4_K_M.gguf',
+      path: 'models/Muse-Glimmer-30B-Q4_K_M.gguf',
       repo: 'meta-models/Muse-Glimmer-30B-GGUF',
+      // Pinned: this repo publishes the target next to its own `dflash-` drafter
+      // and `mmproj-` projector, all three carrying the Q4_K_M tag, so the quant
+      // hint alone cannot pick the 17 GB target out of the 1.4 GB sidecars.
+      file: 'Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf',
       quant: 'Q4_K_M',
     },
     draftModel: {

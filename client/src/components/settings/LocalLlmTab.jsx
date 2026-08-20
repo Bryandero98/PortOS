@@ -843,7 +843,7 @@ export function LocalLlmTab() {
     e?.preventDefault?.();
     // Submitting with Enter bypasses the disabled button, so re-check here.
     if (llamaModelMissing) {
-      toast.error('Please specify a base model path (e.g. models/Qwen3.8-27B-Instruct-Q4_K_M.gguf)');
+      toast.error('Please specify a base model path (e.g. models/Qwen3.8-27B-Q4_K_M.gguf)');
       return;
     }
     if (baseWeightMissing || draftWeightMissing) {

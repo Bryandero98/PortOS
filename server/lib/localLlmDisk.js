@@ -131,7 +131,12 @@ export function dirIsMlx(filenames = []) {
   return hasSafetensors && !hasGguf;
 }
 
-const isProjectorName = (f) => /(^|[-_./])(mmproj|projector)/i.test(f);
+/**
+ * Is this filename a multimodal projector sidecar rather than model weights?
+ * A projector is never loadable on its own, and repos publish it under the
+ * target's own quant tag, so every "pick the model file" path has to skip it.
+ */
+export const isProjectorName = (f) => /(^|[-_./])(mmproj|projector)/i.test(f);
 const isShardName = (f) => /-\d{5}-of-\d{5}\.gguf$/i.test(f);
 
 /**
