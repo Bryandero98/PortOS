@@ -207,6 +207,7 @@ export * from './hostShutdown.js';
 export * from './execGit.js';
 export * from './ffmpeg.js';
 export * from './ffmpegRenderGuard.js';
+export * from './frameQuality.js';
 export * from './gitArgs.js';
 export * from './gitCommitProbe.js';
 export * from './gitForge.js';

@@ -2202,7 +2202,7 @@ describe('videoGen routes', () => {
   describe('POST /last-frame/:id', () => {
     it('forwards a shared-gallery upload id to extractLastFrame', async () => {
       const uploadId = 'upload-ab12cd34';
-      videoGenService.extractLastFrame.mockResolvedValue({ filename: `lastframe-${uploadId}.png` });
+      videoGenService.extractLastFrame.mockResolvedValue({ filename: `anchor-${uploadId}.png` });
 
       const r = await request(app).post(`/api/video-gen/last-frame/${uploadId}`).send({});
 
