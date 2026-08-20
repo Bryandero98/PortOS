@@ -873,3 +873,44 @@ describe('Launch in Shell button on TUI provider cards', () => {
     expect(screen.queryByRole('link', { name: /Launch in Shell/ })).not.toBeInTheDocument();
   });
 });
+
+describe('provider card layout', () => {
+  // The card's details used to be the FIRST flex item of the same row that
+  // holds the action buttons. The button group never shrinks below its
+  // max-content width (seven buttons ≈ 660px), so on a real desktop card the
+  // details were squeezed into a ~275px column of hard-wrapped text beside an
+  // empty half-card. Keeping the details OUT of that row is what fixes it, so
+  // that is what this pins — a class assertion would just restate the JSX.
+  it('renders the details below the action row, not as a flex sibling of it', async () => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+    localModels.value = { ctxById: {}, installed: { ollama: null, lmstudio: null } };
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'opencode-llama',
+        name: 'OpenCode llama TUI',
+        type: 'tui',
+        command: 'opencode',
+        args: [],
+        enabled: true,
+        defaultModel: 'dflash',
+        tuiCommandLine: 'opencode',
+      }],
+      activeProvider: null,
+    });
+
+    renderPage();
+
+    const deleteButton = await screen.findByRole('button', { name: 'Delete' });
+    // The row that lays identity out against the actions — one level above the
+    // button group the Delete button sits in.
+    const headerRow = deleteButton.closest('.flex-wrap').parentElement;
+    expect(headerRow.className).toContain('flex-row');
+    expect(headerRow.textContent).toContain('OpenCode llama TUI');
+    expect(headerRow.textContent).not.toContain('Command:');
+    expect(headerRow.textContent).not.toContain('Default:');
+  });
+});
