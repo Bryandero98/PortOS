@@ -575,8 +575,12 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // a stored prompt only picks the fix up when its PROMPT_VERSIONS entry moved AND
   // its outgoing body is recognizable, so pin both here.
   //
-  // claim-issue-gitlab is router-reached (no DEFAULT_TASK_INTERVALS entry), so
-  // taskSchedule.test.js's auto-upgrade walk never covers it.
+  // The upgrade PATH for this key is exercised in taskSchedule.test.js's walk
+  // (loadSchedule preserves and upgrades a stored task type even without a
+  // DEFAULT_TASK_INTERVALS entry). What that walk cannot see is whether the body
+  // appended to PREVIOUS_DEFAULT_PROMPTS is the RIGHT one — it reads the fixture
+  // from the same array the recognition set is read from, so a mis-copied body
+  // would agree with itself. That is what this test pins.
   it('claim-issue-gitlab v16 asks glab for JSON the one way that works, preserving the outgoing default', () => {
     const current = DEFAULT_TASK_PROMPTS['claim-issue-gitlab'];
     expect(current).toContain('glab issue list --per-page 100 --output json');

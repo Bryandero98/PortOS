@@ -175,12 +175,14 @@ repo (a globally-configured \`gh\` will silently target an unrelated GitHub repo
 1. List the open PRs. If the repo has no GitHub/GitLab remote, or the matching CLI is
    unavailable or unauthenticated, say so and skip straight to Phase 2:
    \`gh pr list --state open --limit 500 --json number,title,headRefName,author,mergeable,mergeStateStatus\`
-   (GitLab: \`glab mr list --per-page 100 --page <n>\`, paging until a page
+   (GitLab: \`glab mr list --per-page 100 --page <n> --output json\`, paging until a page
    comes back short; \`glab mr list\` lists OPEN MRs by default and has NO
    \`--state\` flag — passing one exits 1.) The limit has to cover EVERY open PR,
    not just a first page — a bot PR you never listed looks bot-uncovered to Phase 2,
    which then files the duplicate bump this phase exists to prevent. If the result is
-   exactly at your limit, raise it and re-run.
+   exactly at your limit, raise it and re-run. The GitLab listing needs
+   \`--output json\` because the human table carries the branch but NOT the author,
+   and the classification below reads both.
    An automated dependency PR is one authored by \`dependabot[bot]\`, \`app/dependabot\`,
    \`renovate[bot]\`, or whose head branch starts with \`dependabot/\` or \`renovate/\`.
 

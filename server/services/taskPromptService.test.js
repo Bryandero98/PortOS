@@ -50,11 +50,11 @@ describe('getStagePrompt reads stage bodies from the catalog, not from stored st
     });
 
     const stage = await getStagePrompt('pr-reviewer', 0);
+    // Byte-identical, not merely similar: resolvePromptPlaceholders only rewrites
+    // {worktreesRoot} / {reviewChecklist} / {slashdoReplan}, none of which this
+    // body carries, so nothing stands between the catalog and the caller.
+    expect(stage).toBe(DEFAULT_TASK_PROMPTS['pr-reviewer-security']);
     expect(stage).not.toContain('STALE PERSISTED BODY');
-    // resolvePromptPlaceholders runs over it, so compare on a stable substring
-    // of the catalog body rather than the whole (placeholder-resolved) string.
-    expect(stage).toContain('PR Security Scan (Stage 1)');
-    expect(stage).toContain(DEFAULT_TASK_PROMPTS['pr-reviewer-security'].slice(-80));
   });
 
   it('falls back to the task prompt only when the stage carries no promptKey', async () => {

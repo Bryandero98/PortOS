@@ -425,9 +425,12 @@ describe('taskSchedule', () => {
     // pre-change DEFAULT_TASK_PROMPTS hash for each key must reappear in the
     // post-change PREVIOUS_DEFAULT_PROMPTS hashes, which is visible in the diff.
     //
-    // Scoped to the keys loadSchedule actually walks — claim-issue-gitlab /
-    // claim-issue-jira are router-reached prompts with no DEFAULT_TASK_INTERVALS
-    // entry, so their preservation is asserted in taskPromptDefaults.test.js instead.
+    // Router-reached prompts (claim-issue-gitlab, claim-issue-jira) have no
+    // DEFAULT_TASK_INTERVALS entry, but loadSchedule still walks them once an
+    // install has STORED one: the merge loop preserves task types absent from the
+    // defaults, and the upgrade loop iterates every stored key. So they belong in
+    // this walk too — which is where a migration is pinned behaviorally rather
+    // than by restating the constants.
     it.each([
       'do-replan',
       'documentation',
@@ -435,9 +438,11 @@ describe('taskSchedule', () => {
       'claim-issue',
       'release-check',
       'refresh-local-llm-catalog',
-      // glab-flag revision (issue #4685): dependency-updates v3 → v4. Same
-      // contract, so it rides the same walk rather than a parallel describe.
+      // glab-flag revision (issue #4685): dependency-updates v3 → v4 and
+      // claim-issue-gitlab v15 → v16. Same contract, so they ride the same walk
+      // rather than a parallel describe.
       'dependency-updates',
+      'claim-issue-gitlab',
     ])('%s: an install on the outgoing default auto-upgrades instead of being flagged customized', async (taskType) => {
       const previous = PREVIOUS_DEFAULT_PROMPTS[taskType]
       const outgoing = previous[previous.length - 1]
