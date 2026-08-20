@@ -532,7 +532,7 @@ export async function buildClaimWorkTask(app, {
     .replace(/\{reviewers\}/g, () => reviewersCsv)
     .replace(/\{issueAuthorFilter\}/g, () => issueAuthorFilterBlock)
     .replace(/\{issueExcludeLabels\}/g, () => issueExcludeLabelsBlock)
-    + appendTargetWorkItemBlock(promptTaskType, targetRef)
+    + appendTargetWorkItemBlock(promptTaskType, targetRef, issueExcludeLabelsBlock)
     + appendPrefetchedIssueContext(promptTaskType, targetRef, issueContext)
     + appendClaimOverrideContext(overrideContext)
     + appendReviewerEffortBlock(reviewersList, promptReviewerEfforts, promptReviewerModels)
@@ -596,13 +596,30 @@ export function normalizeWorkItemRef(ref) {
 // GitHub and GitLab share one claim flow (identical phases, branch naming, and
 // skip-list — only the forge CLI differs), so their constraint copy is one
 // factory rather than two paragraphs that must be edited in lockstep.
-const forgeIssueConstraint = (forge) => (ref) => `## Target Issue Constraint
+// `excludeLabelsBlock` is the SAME resolved list Phase 1 checks against
+// (fixed NON_ACTIONABLE_ISSUE_LABELS plus any configured issueExcludeLabels)
+// — a pinned target still must not re-claim an issue the user reserved for
+// humans, including one that gained the label AFTER the picker snapshot the
+// user selected from was taken (the picker itself already excludes these
+// issues; this is the staleness/race backstop, same reason the pinned-target
+// block already re-checks closed/assigned/epic/stale rather than trusting
+// the snapshot).
+const forgeIssueConstraint = (forge) => (ref, excludeLabelsBlock) => {
+  // Fall back to the original fixed-3 text when no resolved block is passed
+  // (a caller that doesn't thread issueExcludeLabels, or a 2-arg test call)
+  // rather than interpolating an empty string into the sentence.
+  const labels = excludeLabelsBlock || '`in-progress`, `blocked`, `needs-input`';
+  return `## Target Issue Constraint
 
-The user explicitly selected ${forge} issue #${ref}. Override Phase 1 ("Pick the target issue"): do NOT pick a different issue and do NOT scan for the next eligible one — claim exactly #${ref}, and ignore the author filter above (an explicit selection overrides it). Still honor the safety checks: if #${ref} is already closed, already assigned, already carries \`in-progress\` / \`blocked\` / \`needs-input\`, is already on a \`claim/issue-${ref}\` (or \`cos/.../issue-${ref}/...\`) branch, is a tracking epic, or is stale (Phase 3), exit cleanly rather than forcing it. Otherwise run Phases 2–7 against #${ref}.`;
+The user explicitly selected ${forge} issue #${ref}. Override Phase 1 ("Pick the target issue"): do NOT pick a different issue and do NOT scan for the next eligible one — claim exactly #${ref}, and ignore the author filter above (an explicit selection overrides it). Still honor the safety checks: if #${ref} is already closed, already assigned, already carries any of ${labels}, is already on a \`claim/issue-${ref}\` (or \`cos/.../issue-${ref}/...\`) branch, is a tracking epic, or is stale (Phase 3), exit cleanly rather than forcing it. Otherwise run Phases 2–7 against #${ref}.`;
+};
 
 // Per-claim-flow copy for the "claim exactly this item" constraint. Each entry
 // renders the tracker's own vocabulary (issue / ticket / PLAN item) over one
-// shared shape, so the four flows can't drift apart.
+// shared shape, so the four flows can't drift apart. Every render fn takes
+// `(ref, excludeLabelsBlock)` even though only the forge-issue flows use the
+// second argument — plan-task/jira ignore it — so buildTargetWorkItemBlock
+// can call all four uniformly.
 const TARGET_ITEM_BLOCKS = {
   // Provenance-neutral: the same copy serves a user-picked target and a
   // scheduler-reserved planId (see buildPlanConstraintBlock).
@@ -626,10 +643,13 @@ The user explicitly selected JIRA ticket \`${ref}\` from the board. Override Pha
  * (already-claimed, stale, too-large → exit cleanly). Returns the bare block
  * (callers own their own separators), or '' when there is no target (the
  * agent-picks default) or the flow has no constraint copy.
+ *
+ * `excludeLabelsBlock` (optional, default '') is only consumed by the
+ * forge-issue flows' render fn — plan-task/jira ignore the third argument.
  */
-export function buildTargetWorkItemBlock(promptTaskType, ref) {
+export function buildTargetWorkItemBlock(promptTaskType, ref, excludeLabelsBlock = '') {
   const render = TARGET_ITEM_BLOCKS[promptTaskType];
-  return (!ref || !render) ? '' : render(ref);
+  return (!ref || !render) ? '' : render(ref, excludeLabelsBlock);
 }
 
 const PREFETCHED_ISSUE_BODY_MAX_CHARS = 12_000;
@@ -709,8 +729,8 @@ const appendClaimOverrideContext = (overrideContext) => {
 };
 
 /** The same block with the leading blank-line separator a prompt append needs. */
-const appendTargetWorkItemBlock = (promptTaskType, ref) => {
-  const block = buildTargetWorkItemBlock(promptTaskType, ref);
+const appendTargetWorkItemBlock = (promptTaskType, ref, excludeLabelsBlock = '') => {
+  const block = buildTargetWorkItemBlock(promptTaskType, ref, excludeLabelsBlock);
   return block ? `\n\n${block}` : '';
 };
 

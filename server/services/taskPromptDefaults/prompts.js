@@ -756,8 +756,11 @@ Run steps 1–5 in order.
    # do NOT pack flag+value into one variable: a bare \`$VAR\` holding "--author x"
    # is a single argv token in zsh (no word-splitting) and gh rejects it.
    #   Owner-only mode (default): resolve the owner, then add  --author "$OWNER"
+   #   --limit 500 (not 100): the blocking-label filter below runs on this
+   #   fetched page, so a small cap risks missing eligible work further down
+   #   a busy queue when the first page is full of excluded/in-flight issues.
    OWNER="$(gh repo view --json owner -q .owner.login)"
-   gh issue list --state open --author "$OWNER" --search "sort:created-asc" --json number,title,author,assignees,labels,createdAt --limit 100
+   gh issue list --state open --author "$OWNER" --search "sort:created-asc" --json number,title,author,assignees,labels,createdAt --limit 500
    #   Any-author mode: run the SAME command WITHOUT the --author "$OWNER" flag.
    \`\`\`
 3. Build the in-flight set. Collect every branch/PR ref:

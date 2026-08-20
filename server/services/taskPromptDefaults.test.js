@@ -549,4 +549,14 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(v2).not.toContain('SUPERSEDED');
     expect(v2).not.toBe(current);
   });
+
+  // Phase 1's candidate fetch must match perpetualWork.js's detector — both
+  // apply the blocking-label filter (fixed set + configured issueExcludeLabels)
+  // to the fetched page, so a mismatched cap risks the live agent and the
+  // perpetual drain reaching different "actionable or not" verdicts on the
+  // same repo.
+  it('claim-issue Phase 1 fetches --limit 500, matching perpetualWork.js\'s widened detector fetch', () => {
+    expect(DEFAULT_TASK_PROMPTS['claim-issue']).toContain('--limit 500');
+    expect(DEFAULT_TASK_PROMPTS['claim-issue']).not.toContain('--limit 100');
+  });
 });

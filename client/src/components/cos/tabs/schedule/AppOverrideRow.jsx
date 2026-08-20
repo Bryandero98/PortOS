@@ -73,8 +73,16 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
 
   // Comma-separated free text for the issueExcludeLabels override — an array
   // field, so it doesn't fit the scalar '' = inherit select pattern the other
-  // overrides use. An empty box clears the override (inherits the global
-  // list), matching every other override field here.
+  // overrides use. An empty BOX clears the override (inherits the global
+  // list) — but a blank box is also what an EXPLICIT `[]` override renders
+  // as (nothing to join), so the two states are visually identical in the
+  // text field alone. The "None" checkbox below disambiguates: it reflects
+  // (and sets) the explicit-empty-array override distinctly from "no
+  // override key at all," letting an app opt OUT of every inherited
+  // exclusion — e.g. reclaim `good first issue` for this app's own
+  // automation — which a merely-blank box could never express.
+  const excludeLabelsExplicitlyEmpty = Array.isArray(override?.taskMetadata?.issueExcludeLabels)
+    && override.taskMetadata.issueExcludeLabels.length === 0;
   const excludeLabelsDraft = useFieldDraft(
     (override?.taskMetadata?.issueExcludeLabels || []).join(', '),
     (next) => {
@@ -210,17 +218,29 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
         )}
 
         {ISSUE_AUTHOR_FILTER_TASK_TYPES.has(taskType) && (
-          <input
-            type="text"
-            value={excludeLabelsDraft.value}
-            onChange={excludeLabelsDraft.onChange}
-            onBlur={excludeLabelsDraft.onBlur}
-            disabled={updating}
-            aria-label={`Labels to leave for humans for ${app.name}`}
-            title={`Comma-separated labels to skip when auto-claiming (blank inherits: ${(globalTaskMetadata?.issueExcludeLabels || []).join(', ') || 'none'})`}
-            placeholder="Inherit"
-            className="bg-port-card border border-port-border rounded px-2 py-1.5 text-xs text-white min-w-[140px] min-h-[40px]"
-          />
+          <span className="flex items-center gap-1">
+            <input
+              type="text"
+              value={excludeLabelsDraft.value}
+              onChange={excludeLabelsDraft.onChange}
+              onBlur={excludeLabelsDraft.onBlur}
+              disabled={updating}
+              aria-label={`Labels to leave for humans for ${app.name}`}
+              title={`Comma-separated labels to skip when auto-claiming (blank inherits: ${(globalTaskMetadata?.issueExcludeLabels || []).join(', ') || 'none'})`}
+              placeholder="Inherit"
+              className="bg-port-card border border-port-border rounded px-2 py-1.5 text-xs text-white min-w-[140px] min-h-[40px]"
+            />
+            <label htmlFor={`exclude-labels-none-${app.id}-${taskType}`} className="flex items-center gap-1 text-[10px] text-gray-500 whitespace-nowrap" title="Explicitly claim ALL labels for this app, ignoring the global exclusion list — a blank box alone means inherit, this means override to none">
+              <input
+                type="checkbox"
+                id={`exclude-labels-none-${app.id}-${taskType}`}
+                checked={excludeLabelsExplicitlyEmpty}
+                onChange={(e) => handleOverrideChange('issueExcludeLabels', e.target.checked ? [] : '')}
+                disabled={updating}
+              />
+              None
+            </label>
+          </span>
         )}
 
         {SWARM_TASK_TYPES.has(taskType) && (
