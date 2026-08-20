@@ -485,6 +485,17 @@ describe('isLocalEndpoint', () => {
     expect(isLocalEndpoint('localhost:11434')).toBe(true);
   });
 
+  it('matches the whole loopback block, not just 127.0.0.1', () => {
+    // A daemon on a loopback alias is as local as one on `.1`, and the server's
+    // `isLocalInstanceHost` accepts the full block — while they disagreed, a
+    // provider on 127.0.0.2 was badged NEEDS SETUP for a key it never needs.
+    expect(isLocalEndpoint('http://127.0.0.2:11434/v1')).toBe(true);
+    expect(isLocalEndpoint('http://127.5.5.5:8080')).toBe(true);
+    expect(isLocalEndpoint('http://[::]:1234')).toBe(true);
+    // …without letting a loopback prefix vouch for a public host.
+    expect(isLocalEndpoint('http://127.0.0.1.evil.com/v1')).toBe(false);
+  });
+
   it('rejects hosted endpoints and non-strings', () => {
     expect(isLocalEndpoint('https://api.cerebras.ai/v1')).toBe(false);
     expect(isLocalEndpoint('https://api.openai.com/v1')).toBe(false);
@@ -1300,6 +1311,13 @@ describe('isPrivateNetworkEndpoint', () => {
     'http://host.local:1234',
     'http://box.internal/v1',
     'http://ollama',
+    // IPv6 unique-local — Tailscale hands out a ULA address alongside the CGNAT
+    // v4 one, so a tailnet peer reached over IPv6 must not read as public.
+    'http://[fd7a:115c:a1e0::1]:11434/v1',
+    'http://[fc00::5]:1234',
+    // IPv6 link-local (fe80::/10).
+    'http://[fe80::1]:1234',
+    'http://[febf::1]:1234',
   ])('treats %s as inside the private network', (endpoint) => {
     expect(isPrivateNetworkEndpoint(endpoint)).toBe(true);
   });
@@ -1312,6 +1330,14 @@ describe('isPrivateNetworkEndpoint', () => {
     'http://172.32.0.1:11434',
     'http://100.128.0.1:11434',
     'http://9.9.9.9/v1',
+    // A HOSTNAME starting with fc/fd is not an IPv6 ULA — a bare prefix test on
+    // the host would hand these the no-key-needed pass.
+    'https://fdrive.example.com:1234/v1',
+    'https://fc-api.example.com/v1',
+    // 2001:… is public IPv6, and `fd::1` expands to a leading hextet of 0x00fd,
+    // which is outside fc00::/7 despite the `fd` spelling.
+    'http://[2001:db8::1]:1234',
+    'http://[fd::1]:1234',
     '',
     null,
   ])('treats %s as public', (endpoint) => {
