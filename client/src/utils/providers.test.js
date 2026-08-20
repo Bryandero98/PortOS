@@ -1220,7 +1220,7 @@ describe('providerCardState', () => {
   it.each([
     ['http://192.168.1.50:1234/v1'],
     ['http://10.0.0.4:11434/v1'],
-    ['http://100.101.102.103:11434/v1'],
+    ['http://100.64.0.5:11434/v1'],
     ['http://desk-machine.ts.net:1234/v1'],
     ['http://nas:11434/v1'],
   ])('does not demand a key from the private-network endpoint %s', (endpoint) => {
