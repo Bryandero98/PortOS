@@ -213,8 +213,8 @@ export const summarizeHealthIssues = (issues) => {
 
 // StatCard tone for the Issues tile. `error`-type issues mean something is
 // broken; a warning-only check (e.g. a memory-hungry process) stays amber
-// rather than screaming red — matching how HealthTab colors the same list.
-// 'default' (not null) so a zero-issue tile keeps its explicit gray icon.
+// rather than screaming red — the same severity split HealthTab draws when it
+// renders the list. 'default' (not null) so a zero-issue tile keeps its gray icon.
 export const healthIssueTone = (issues) => {
   if (!Array.isArray(issues) || issues.length === 0) return 'default';
   return issues.some((issue) => issue?.type === 'error') ? 'critical' : 'warning';

@@ -646,6 +646,28 @@ describe('ChiefOfStaff Issues card', () => {
     expect(within(panel).getByText(memoryWarning.message)).toBeInTheDocument();
   });
 
+  // The live path: a health check finishing while the page is open pushes the
+  // issue over the socket rather than through fetchData.
+  it('names the issue arriving on a live health-check socket event', async () => {
+    renderWithIssues([]);
+    // Wait for the clean first paint so the socket handler is registered.
+    for (const card of await issueCards()) expect(within(card).getByText('0')).toBeInTheDocument();
+
+    const handleHealthCheck = socketStub.on.mock.calls.find(([evt]) => evt === 'cos:health:check')?.[1];
+    expect(handleHealthCheck).toBeTypeOf('function');
+    await act(async () => {
+      handleHealthCheck({ metrics: { timestamp: '2026-01-02T00:00:00.000Z' }, issues: [memoryWarning] });
+    });
+
+    expect(await screen.findByText(memoryWarning.message)).toBeInTheDocument();
+    for (const card of await issueCards()) {
+      expect(card).toHaveAttribute('title', memoryWarning.message);
+      expect(within(card).getByText('1')).toBeInTheDocument();
+    }
+    // Drain the >0 branch's speaking timer so no state update escapes act.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2100)); });
+  });
+
   it('stays a click-through to Health when there are no issues at all', async () => {
     renderWithIssues([]);
 
