@@ -35,7 +35,9 @@ describe('buildTuiShellLaunch', () => {
 
   it('falls back to the id-inferred command when the provider stores none', () => {
     const launch = buildTuiShellLaunch({ id: 'codex', type: 'tui', command: '', args: [] });
-    expect(launch.commandLine.startsWith('codex')).toBe(true);
+    // Dialect-agnostic: CI runs this suite on Windows too, where PowerShell
+    // renders a quoted command token as `& 'codex'`.
+    expect(launch.commandLine).toMatch(/^(?:& )?(['"])?codex\1?(?:\s|$)/);
   });
 
   it('applies the vendor posture flag a naive command+args join would drop', () => {

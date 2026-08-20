@@ -62,7 +62,10 @@ describe('tuiCommandLine decoration', () => {
 
     const res = await request(app).get('/api/providers/codex');
     expect(res.status).toBe(200);
-    expect(res.body.tuiCommandLine).toContain("'/tmp/my apps'");
+    // Assert the SHAPE, not one dialect's rendering: the quote character is the
+    // shell's, and CI runs this suite on Windows too (PowerShell/cmd) as well as
+    // POSIX. What must hold everywhere is that the path stayed one quoted token.
+    expect(res.body.tuiCommandLine).toMatch(/(['"])\/tmp\/my apps\1/);
   });
 
   it('falls back to the id-inferred command when the provider stores none', async () => {
@@ -72,7 +75,10 @@ describe('tuiCommandLine decoration', () => {
 
     const res = await request(app).get('/api/providers/codex');
     expect(res.status).toBe(200);
-    expect(res.body.tuiCommandLine.startsWith('codex ')).toBe(true);
+    // Same dialect-agnostic rule — PowerShell renders a quoted command token as
+    // `& 'codex'`, so a bare startsWith('codex ') passes on POSIX and fails on
+    // the Windows runner.
+    expect(res.body.tuiCommandLine).toMatch(/^(?:& )?(['"])?codex\1? /);
   });
 
   it('derives the line BEFORE redaction, so a secret Bedrock marker is read at its real value', async () => {
