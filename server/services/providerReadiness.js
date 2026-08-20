@@ -261,7 +261,9 @@ export async function getProviderReadinessMap(providers, deps = {}) {
   const probe = memoize(deps.probe || probeEndpointCached);
 
   const entries = await Promise.all(list.map(async (provider) => {
-    const readiness = await getProviderReadiness(provider, { findCommand, probe });
+    // Spread `deps` first so any other injected dep (isAppInstalled) survives,
+    // then override the two the batch memoizes.
+    const readiness = await getProviderReadiness(provider, { ...deps, findCommand, probe });
     return readiness ? [provider.id, readiness] : null;
   }));
   return Object.fromEntries(entries.filter(Boolean));

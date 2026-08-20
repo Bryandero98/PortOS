@@ -655,15 +655,17 @@ export const visionLocalModelFilter = (id, provider, visionIdsByProvider = null)
  * 11434; LM Studio defaults to 1234. The stable provider ids (`ollama` /
  * `lmstudio`) are checked too — AI Assignments' curated provider payload
  * omits `endpoint`, and a renamed display name would otherwise miss detection.
+ *
+ * Client mirror of `localBackendForProvider` in
+ * server/lib/localProviderRuntime.js — keep in lockstep. The SERVER copy is
+ * authoritative and stricter: it parses the endpoint as a URL and requires a
+ * loopback/bind-all host, so a peer machine's daemon on the same port is not
+ * claimed as local. This one only labels UI, so it stays a cheap regex; if it
+ * ever gates an action, take the server's rules with it.
+ *
  * @param {{id?:string,endpoint?:string,name?:string}} provider
  * @returns {'ollama'|'lmstudio'|null}
  */
-// Client mirror of `localBackendForProvider` in server/lib/localProviderRuntime.js
-// — keep in lockstep. The SERVER copy is authoritative and stricter: it parses
-// the endpoint as a URL and requires a loopback/bind-all host, so a peer
-// machine's daemon on the same port is not claimed as local. This one only
-// labels UI, so it stays a cheap regex; if it ever gates an action, take the
-// server's rules with it.
 export const localBackendForProvider = (provider) => {
   if (!provider) return null;
   const id = String(provider.id || '').toLowerCase();
