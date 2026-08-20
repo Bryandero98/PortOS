@@ -69,6 +69,7 @@ import { saveUploadedGalleryVideo } from '../services/videoUpload.js';
 import { JSON_BODY_LIMIT_BYTES } from '../lib/uploadLimits.js';
 import { createInstallLogger } from '../lib/installLogger.js';
 import { prepareRemoteMediaJob } from '../services/federatedMedia/remoteSubmission.js';
+import { routedJobParams } from '../services/federatedMedia/routedJobParams.js';
 
 const router = Router();
 
@@ -1068,13 +1069,14 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
       kind: 'video',
       request,
     });
-    // Prompt and dials ride ONLY inside the versioned marker, and the job
-    // carries no pythonPath. An older build that can't route `remoteMedia`
-    // therefore hits generateVideo's "Prompt is required" guard and fails
-    // closed instead of re-rendering this job locally.
+    // Prompt, dials, and model id ride ONLY inside the versioned marker.
+    // `routedJobParams` is shared with the routed image path so the two shapes
+    // cannot drift: an older build that can't route `remoteMedia` hits
+    // generateVideo's "Prompt is required" guard, and its `Unknown video model`
+    // guard behind that, instead of re-rendering this job locally.
     const { jobId, position, status } = enqueueJob({
       kind: 'video',
-      params: { prompt: '', modelId: request.modelId, remoteMedia },
+      params: routedJobParams({ remoteMedia }),
     });
     return res.json({
       jobId,

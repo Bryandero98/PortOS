@@ -113,6 +113,33 @@ describe('MediaJobsQueue — Creative Director renders', () => {
   });
 });
 
+describe('MediaJobsQueue — federated render badge', () => {
+  it('badges a peer-rendered job remote instead of claiming a local render', async () => {
+    // The server projects `renderer` and rebuilds `modelId` off the wire
+    // request — the raw job nulls both so a rolled-back build fails closed.
+    listMediaJobs.mockResolvedValue([{
+      id: 'remotejob0000beef',
+      kind: 'image',
+      status: 'running',
+      queuedAt: '2026-06-19T10:00:00Z',
+      params: { prompt: 'a lighthouse at dusk', modelId: 'dev', renderer: 'remote' },
+    }]);
+
+    render(<MediaJobsQueue kind="image" />);
+
+    expect(await screen.findByText(/remote \/ dev/)).toBeInTheDocument();
+    expect(screen.queryByText(/local \/ dev/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the local badge on a job with no renderer projection', async () => {
+    listMediaJobs.mockResolvedValue([{ ...failedLocalJob, status: 'running', error: undefined }]);
+
+    render(<MediaJobsQueue kind="image" />);
+
+    expect(await screen.findByText(/local \/ z-image-turbo/)).toBeInTheDocument();
+  });
+});
+
 describe('MediaJobsQueue — Codex reasoning-effort retry control', () => {
   it('surfaces the job effort in the row label', async () => {
     const user = userEvent.setup();

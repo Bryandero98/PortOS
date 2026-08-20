@@ -166,6 +166,33 @@ describe('mediaJobs routes', () => {
     expect(call.params.steps).toBe(40);
   });
 
+  it('POST /:id/retry re-normalizes a federated job so an override cannot restore a locally-renderable shape', async () => {
+    // The remote executor renders from `remoteMedia.request`, so these
+    // overrides never reached the peer anyway — but leaving them on top-level
+    // params would hand a build rolled back before `remoteMedia` a job it could
+    // render locally for real (#4683).
+    const remoteMedia = {
+      wireVersion: 1,
+      peerId: '00000000-0000-4000-8000-0000000004f1',
+      request: { kind: 'image', engine: 'local', modelId: 'dev', prompt: 'a lighthouse at dusk' },
+    };
+    jobStore.set('j-remote', {
+      id: 'j-remote', kind: 'image', owner: null, status: 'failed',
+      params: { prompt: '', modelId: null, pythonPath: null, width: 512, remoteMedia },
+    });
+    const r = await request(makeApp())
+      .post('/api/media-jobs/j-remote/retry')
+      .send({ params: { prompt: 'something else', modelId: 'sdxl-base' } });
+    expect(r.status).toBe(200);
+    const { params } = stubs.enqueueJob.mock.calls[0][0];
+    expect(params.prompt).toBe('');
+    expect(params.modelId).toBeNull();
+    expect(params.pythonPath).toBeNull();
+    // The marker (and the surviving job params) still ride through untouched.
+    expect(params.remoteMedia).toEqual(remoteMedia);
+    expect(params.width).toBe(512);
+  });
+
   it('POST /:id/retry accepts the editable video generation controls', async () => {
     jobStore.set('j-video-edit', {
       id: 'j-video-edit', kind: 'video', owner: null, status: 'failed',

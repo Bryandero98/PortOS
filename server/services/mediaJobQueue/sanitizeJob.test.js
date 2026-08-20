@@ -78,20 +78,22 @@ describe('sanitizeJob', () => {
     expect(sanitized.params).toEqual({
       prompt: 'Instrumental orchestral music with a triumphant mood, moderate tempo, high energy, featuring brass and strings. No vocals or spoken words.',
       modelId: 'example/model',
+      renderer: 'remote',
     });
     expect(sanitized.params).not.toHaveProperty('remoteMedia');
   });
 
-  it('restores an image/video remote job prompt from its marker, not from params', () => {
+  it('restores an image/video remote job prompt and model from its marker, not from params', () => {
     const sanitized = sanitizeJob({
       id: 'job-image',
       kind: 'image',
       status: 'running',
       params: {
-        // Blank on purpose: the prompt lives only inside the versioned marker so
-        // an older build that cannot route it fails closed instead of rendering.
+        // Blank/nulled on purpose: the prompt and the model live only inside
+        // the versioned marker so an older build that cannot route it fails
+        // closed instead of rendering (#4683).
         prompt: '',
-        modelId: 'dev',
+        modelId: null,
         width: 512,
         height: 512,
         remoteMedia: {
@@ -114,7 +116,22 @@ describe('sanitizeJob', () => {
       modelId: 'dev',
       width: 512,
       height: 512,
+      // Display-only: the Render Queue badges this 'remote / dev' rather than
+      // claiming a local render produced it.
+      renderer: 'remote',
     });
     expect(sanitized.params).not.toHaveProperty('remoteMedia');
+  });
+
+  it('leaves a local job unbadged so it keeps the local render label', () => {
+    const sanitized = sanitizeJob({
+      id: 'job-local',
+      kind: 'image',
+      status: 'running',
+      params: { prompt: 'a lighthouse at dusk', modelId: 'dev' },
+    });
+
+    expect(sanitized.params).toEqual({ prompt: 'a lighthouse at dusk', modelId: 'dev' });
+    expect(sanitized.params).not.toHaveProperty('renderer');
   });
 });

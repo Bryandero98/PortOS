@@ -1465,11 +1465,16 @@ describe('Image Gen Routes', () => {
       });
 
       const [{ params }] = mediaJobQueue.enqueueJob.mock.calls[0];
-      // Blank top-level prompt + no routing fields: an older build that cannot
-      // read `remoteMedia` falls through to a local render with nothing to
-      // render, rather than quietly re-running this job on local hardware.
+      // Blank top-level prompt, nulled model + interpreter, no routing fields:
+      // an older build that cannot read `remoteMedia` falls through to a local
+      // render it has to refuse, rather than quietly re-running this job on
+      // local hardware. The shape contract itself lives in
+      // services/federatedMedia/routedJobParams.test.js.
       expect(params.prompt).toBe('');
+      expect(params.modelId).toBeNull();
+      expect(params.pythonPath).toBeNull();
       expect(params.remoteMedia.request.prompt).toBe('a lighthouse at dusk');
+      expect(params.remoteMedia.request.modelId).toBe('dev');
       expect(params).not.toHaveProperty('mediaProviderPeerId');
       expect(params).not.toHaveProperty('mediaProviderEngine');
     });

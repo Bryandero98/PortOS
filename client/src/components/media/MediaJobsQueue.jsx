@@ -55,7 +55,8 @@ const codexEffortOf = (raw) => (typeof raw === 'string' ? raw.trim() : '');
 
 // Compact "engine / model" badge so a failed row tells the user *what* failed,
 // not just that it failed. Codex jobs carry `params.model`; local image/video
-// jobs carry `params.modelId`; training jobs carry a runtime + character.
+// jobs carry `params.modelId`; training jobs carry a runtime + character. A
+// federated job is badged `remote` off the server-projected `renderer` field.
 // Trims long HF repo paths to the tail segment.
 function modelLabel(params) {
   if (!params) return null;
@@ -87,9 +88,13 @@ function modelLabel(params) {
       : 'agy / configured default';
   }
   const id = (params.modelId || '').trim();
-  if (!id) return 'local';
+  // A federated render ran on a peer, so it must not wear the local badge. The
+  // server projects `renderer` (and rebuilds `modelId` off the wire request)
+  // for exactly this — the raw job nulls both to fail closed on a downgrade.
+  const where = params.renderer === 'remote' ? 'remote' : 'local';
+  if (!id) return where;
   const tail = id.includes('/') ? id.slice(id.lastIndexOf('/') + 1) : id;
-  return `local / ${tail}`;
+  return `${where} / ${tail}`;
 }
 
 // Embeds the live render queue inline on the Image / Video gen pages so the

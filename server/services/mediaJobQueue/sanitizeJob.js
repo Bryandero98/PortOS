@@ -41,6 +41,21 @@ export function sanitizeJob(job) {
   if (safeParams && remotePrompt) {
     safeParams.prompt = remotePrompt;
   }
+  // Same reasoning for the model id: it is nulled in top-level params so a
+  // downgraded build cannot render the job locally (#4683), so rebuild it from
+  // the marker here — the Render Queue card's model badge reads
+  // `params.modelId`. Audio carries no wire model id and keeps whatever the
+  // local engine recorded.
+  const remoteModelId = job.params?.remoteMedia?.request?.modelId;
+  if (safeParams && typeof remoteModelId === 'string' && remoteModelId) {
+    safeParams.modelId = remoteModelId;
+  }
+  // Display-only discriminator, never persisted in job params: a routed job
+  // renders on a peer, so labelling it with the local-render badge ("local /
+  // flux") would misreport where the pixels came from.
+  if (safeParams && job.params?.remoteMedia !== undefined) {
+    safeParams.renderer = 'remote';
+  }
   return {
     id: job.id,
     kind: job.kind,

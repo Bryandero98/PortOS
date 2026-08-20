@@ -2293,12 +2293,16 @@ describe('videoGen routes', () => {
       });
 
       const [{ params }] = mediaJobQueue.enqueueJob.mock.calls[0];
-      // Blank top-level prompt + no pythonPath: an older build that cannot read
-      // `remoteMedia` hits generateVideo's "Prompt is required" guard and fails
-      // closed instead of re-rendering this job on local hardware.
+      // Blank top-level prompt, nulled model + interpreter: an older build that
+      // cannot read `remoteMedia` hits generateVideo's "Prompt is required"
+      // guard (and its model guard behind that) instead of re-rendering this
+      // job on local hardware. Shape contract:
+      // services/federatedMedia/routedJobParams.test.js.
       expect(params.prompt).toBe('');
-      expect(params).not.toHaveProperty('pythonPath');
+      expect(params.modelId).toBeNull();
+      expect(params.pythonPath).toBeNull();
       expect(params.remoteMedia.request.prompt).toBe('a slow pan across a harbour');
+      expect(params.remoteMedia.request.modelId).toBe('ltx2');
     });
 
     it('requires an explicit provider model instead of falling back to a local default', async () => {
