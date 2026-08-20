@@ -1,8 +1,8 @@
 /**
  * Lane-agnostic PER-RUN render options for image-to-3D generation (sampler
- * steps / seed / background keying). Shared by the route schema, the record
- * layer, and both TRELLIS.2 lanes so the accepted ranges and CLI flags can't
- * drift between them.
+ * steps / seed / background keying / detail tier / alpha mode). Shared by the
+ * route schema, the record layer, and every lane so the accepted ranges and CLI
+ * flags can't drift between them.
  *
  * These are deliberately per-run parameters, NOT a stored record preference:
  * each generate request says what it wants, the run entry records the concrete
@@ -13,6 +13,10 @@
  *  - `seed: null`  → roll a fresh random seed for this run, so "Re-render"
  *    actually samples a new model instead of deterministically reproducing the
  *    last one (the upstream CLI default is a fixed 42).
+ *  - `detail: 'auto'` → derive the pipeline tier from host capability, which is
+ *    what every lane did before the knob existed.
+ *  - `alphaMode: null` → don't instruct the exporter, and keep PortOS's
+ *    force-opaque normalization.
  */
 
 import { randomInt } from 'node:crypto';
@@ -33,6 +37,41 @@ export function randomRenderSeed() {
   return randomInt(0, RENDER_SEED_MAX + 1);
 }
 
+/**
+ * Abstract detail tiers, mapped by each target to its OWN concrete parameter.
+ *
+ * Deliberately not the raw `--pipeline-type` string. Each lane has a different
+ * vocabulary for the same idea — the MPS port takes `512` / `1024` /
+ * `1024_cascade`, Pixal3D takes a 1024/1536 resolution, the TRELLIS.2 CUDA lane
+ * takes nothing at all — so a raw pass-through would leak one lane's enum into a
+ * shared API and render a control that is wrong for the others. The mapping lives
+ * on the target descriptor (`detailTiers`), so a lane that gains a tier is a
+ * registry edit rather than a change here.
+ *
+ * `'auto'` is the default and means "derive from host capability", which is the
+ * behaviour every lane had before this option existed. It is a real value rather
+ * than `null` because the user can pick it back deliberately after choosing a tier.
+ */
+export const DETAIL_TIERS = ['auto', 'fast', 'balanced', 'max'];
+export const DEFAULT_DETAIL_TIER = 'auto';
+
+/** Whether a value names a detail tier. */
+export const isValidDetailTier = (value) => DETAIL_TIERS.includes(value);
+
+/**
+ * glTF alpha modes a caller may request for the exported material.
+ *
+ * `'auto'` defers to the exporter's own heuristic (BLEND only when >1% of valid
+ * texels are meaningfully transparent). `null` means "don't ask", which keeps the
+ * historical behaviour: exporter default plus PortOS's force-opaque normalization.
+ * That normalization exists for older exporters that promoted to BLEND off a
+ * single low-alpha texel — see `glbMaterials.js`.
+ */
+export const ALPHA_MODES = ['OPAQUE', 'auto', 'BLEND', 'MASK'];
+
+/** Whether a value names an alpha mode (null/undefined are "unset"). */
+export const isValidAlphaMode = (value) => ALPHA_MODES.includes(value);
+
 const intInRange = (value, min, max) => (
   Number.isInteger(value) && value >= min && value <= max
 );
@@ -47,16 +86,36 @@ export const isValidRenderSeed = (value) => intInRange(value, 0, RENDER_SEED_MAX
  * Normalize a request's options into the per-run shape. Invalid/absent values
  * collapse to the unset sentinel (`null`) rather than throwing — the route
  * schema is the loud gate; this is the internal-caller normalizer.
- * @param {{steps?: number|null, seed?: number|null, keyBackground?: boolean}} [input]
- * @returns {{steps: number|null, seed: number|null, keyBackground: boolean}}
+ * @param {{steps?: number|null, seed?: number|null, keyBackground?: boolean,
+ *          detail?: string, alphaMode?: string|null}} [input]
+ * @returns {{steps: number|null, seed: number|null, keyBackground: boolean,
+ *            detail: string, alphaMode: string|null}}
  */
 export function normalizeRenderOptions(input = {}) {
   return {
     steps: isValidRenderSteps(input.steps) ? input.steps : null,
     seed: isValidRenderSeed(input.seed) ? input.seed : null,
     keyBackground: input.keyBackground !== false,
+    // `detail` collapses to the explicit 'auto' sentinel rather than null: it is a
+    // choosable value, and a run entry recording 'auto' is what actually happened.
+    detail: isValidDetailTier(input.detail) ? input.detail : DEFAULT_DETAIL_TIER,
+    // `alphaMode` stays null-when-unset, because "don't ask the exporter" is a
+    // genuinely different instruction from any of the concrete modes.
+    alphaMode: isValidAlphaMode(input.alphaMode) ? input.alphaMode : null,
   };
 }
+
+/**
+ * The per-run option keys — i.e. exactly the keys `normalizeRenderOptions` returns.
+ *
+ * Exported so the registry invariant that validates a target's
+ * `supportsRenderOptions` can derive the legal knob names from here instead of
+ * restating them. That list had already drifted once: it still read
+ * `['steps','seed','keyBackground']` after `detail` and `alphaMode` were added, so a
+ * descriptor declaring support for a real knob failed the invariant while a typo'd
+ * knob name would have passed.
+ */
+export const RENDER_OPTION_KEYS = Object.freeze(Object.keys(normalizeRenderOptions()));
 
 /**
  * Validate steps/seed and emit their CLI flags — the single owner of both the
@@ -106,11 +165,19 @@ export function validateRenderOptions(label, { steps = null, seed = null } = {})
  * applied. `support` is the target descriptor's `supportsRenderOptions`; absent means
  * everything is honored, so existing targets need no entry.
  *
- * @param {{steps: number|null, seed: number|null, keyBackground: boolean}} options
- * @param {{steps?: boolean}} [support]
- * @returns {{steps: number|null, seed: number|null, keyBackground: boolean}}
+ * @param {object} options
+ * @param {{steps?: boolean, detail?: boolean, alphaMode?: boolean}} [support]
+ * @returns {object}
  */
 export function honorTargetRenderSupport(options, support) {
   if (!support) return options;
-  return { ...options, ...(support.steps === false ? { steps: null } : {}) };
+  return {
+    ...options,
+    ...(support.steps === false ? { steps: null } : {}),
+    // Reset to the same sentinel `normalizeRenderOptions` uses for "unset", so a
+    // dropped option records as not-requested rather than as a value the
+    // subprocess never received.
+    ...(support.detail === false ? { detail: DEFAULT_DETAIL_TIER } : {}),
+    ...(support.alphaMode === false ? { alphaMode: null } : {}),
+  };
 }

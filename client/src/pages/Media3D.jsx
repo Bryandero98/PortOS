@@ -200,6 +200,8 @@ export default function Media3D() {
   const [steps, setSteps] = useState('');
   const [seed, setSeed] = useState('');
   const [keyBackground, setKeyBackground] = useState(true);
+  const [detail, setDetail] = useState('auto');
+  const [alphaMode, setAlphaMode] = useState('');
   // Existing image-to-3D records (newest-first) so the page doubles as a library:
   // each links to its `/3d/:id` detail view.
   const [records, setRecords] = useState([]);
@@ -296,7 +298,7 @@ export default function Media3D() {
         name: nameFromImageFilename(selectedImage.filename),
         filename: selectedImage.filename,
         target: selectedTarget.id,
-        ...renderOptionsBody({ steps, seed, keyBackground }),
+        ...renderOptionsBody({ steps, seed, keyBackground, detail, alphaMode }),
       },
       { silent: true },
     ).catch((err) => {
@@ -398,6 +400,12 @@ export default function Media3D() {
 
           <ImageTo3dRenderOptions
             stepsSupported={selectedTarget?.supportsRenderOptions?.steps !== false}
+            detailSupported={selectedTarget?.supportsRenderOptions?.detail !== false}
+            alphaModeSupported={selectedTarget?.supportsRenderOptions?.alphaMode !== false}
+            detail={detail}
+            onDetailChange={setDetail}
+            alphaMode={alphaMode}
+            onAlphaModeChange={setAlphaMode}
             steps={steps}
             onStepsChange={setSteps}
             seed={seed}

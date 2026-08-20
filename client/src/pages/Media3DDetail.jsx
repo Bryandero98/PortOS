@@ -9,7 +9,7 @@ import GlbViewer from '../components/media/GlbViewer';
 import MediaImage from '../components/MediaImage';
 import InlineConfirmRow from '../components/ui/InlineConfirmRow';
 import ImageTo3dRenderOptions from '../components/media/ImageTo3dRenderOptions';
-import { fieldsFromRun, renderOptionsBody } from '../lib/imageTo3dRenderOptions';
+import { fieldsFromRun, renderOptionsBody, runWantsTransparency } from '../lib/imageTo3dRenderOptions';
 import { imageTo3dStatusMeta } from '../components/media/imageTo3dStatus';
 import toast from '../components/ui/Toast';
 
@@ -35,6 +35,8 @@ export default function Media3DDetail() {
   const [steps, setSteps] = useState('');
   const [seed, setSeed] = useState('');
   const [keyBackground, setKeyBackground] = useState(true);
+  const [detail, setDetail] = useState('auto');
+  const [alphaMode, setAlphaMode] = useState('');
   const optionsSeededFor = useRef(null);
 
   const load = useCallback(async ({ initial = false } = {}) => {
@@ -74,6 +76,8 @@ export default function Media3DDetail() {
     setSteps(fields.steps);
     setSeed(fields.seed);
     setKeyBackground(fields.keyBackground);
+    setDetail(fields.detail);
+    setAlphaMode(fields.alphaMode);
   }, [record]);
 
   const handleRegenerate = useCallback(async () => {
@@ -81,7 +85,7 @@ export default function Media3DDetail() {
     setBusy(true);
     const next = await generateImageTo3dModel(
       id,
-      renderOptionsBody({ steps, seed, keyBackground }),
+      renderOptionsBody({ steps, seed, keyBackground, detail, alphaMode }),
       { silent: true },
     ).catch((err) => {
       toast.error(err?.message || 'Could not start the render.');
@@ -124,6 +128,9 @@ export default function Media3DDetail() {
   // Re-renders overwrite the same model.glb path. Key the fetch to the completed
   // generation so drei's URL cache loads the new bytes when this record is rendered
   // again, while old records without generatedAt retain their historical URL.
+  // Read from the last run rather than the live form: the form is what the NEXT
+  // render will use, while the mesh on screen came from the last one.
+  const renderedTransparent = runWantsTransparency(record?.runs?.at?.(-1));
   const meshSrc = record.generatedAt
     ? `${record.assetPath}?v=${encodeURIComponent(record.generatedAt)}`
     : record.assetPath;
@@ -170,12 +177,18 @@ export default function Media3DDetail() {
       <div className="mb-4 rounded-lg border border-port-border bg-port-card p-3">
         <ImageTo3dRenderOptions
           stepsSupported={record.supportsRenderOptions?.steps !== false}
+          detailSupported={record.supportsRenderOptions?.detail !== false}
+          alphaModeSupported={record.supportsRenderOptions?.alphaMode !== false}
           steps={steps}
           onStepsChange={setSteps}
           seed={seed}
           onSeedChange={setSeed}
           keyBackground={keyBackground}
           onKeyBackgroundChange={setKeyBackground}
+          detail={detail}
+          onDetailChange={setDetail}
+          alphaMode={alphaMode}
+          onAlphaModeChange={setAlphaMode}
           disabled={busy || isGenerating}
         />
       </div>
@@ -209,10 +222,14 @@ export default function Media3DDetail() {
           <span className="mb-1 block text-xs text-gray-400">Mesh</span>
           {record.status === 'ready' && record.assetPath ? (
             <>
+              {/* The viewer is the THIRD layer that can flatten alpha, after the
+                  exporter's own alpha_mode and PortOS's GLB rewrite. It has to agree
+                  with the run's request, or a mesh exported as BLEND still renders
+                  solid here and reads as a broken exporter. */}
               <GlbViewer
                 src={meshSrc}
                 downloadHref={imageTo3dAssetUrl(record.id)}
-                forceOpaque
+                forceOpaque={!renderedTransparent}
               />
               {/* The viewer loads the decimated GLB because that is what a browser
                   can render; the decoder's full mesh is an order of magnitude

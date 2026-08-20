@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { IMAGE_TO_3D_TARGETS, IMAGE_TO_3D_TARGET_IDS, EXECUTION_LANES, OUTPUT_KINDS } from './targets.js';
 import { TARGET_ADAPTERS } from './adapters.js';
+import { RENDER_OPTION_KEYS } from './renderOptions.js';
 
 // Registry-wide invariants, asserted by LOOPING over the registry rather than by a
 // hand-written block per target. The per-target blocks in targets.test.js only cover
@@ -46,7 +47,10 @@ describe('image-to-3D registry invariants', () => {
       it('declares only boolean render-option support, when it declares any', () => {
         if (target.supportsRenderOptions === undefined) return;
         for (const [knob, supported] of Object.entries(target.supportsRenderOptions)) {
-          expect(['steps', 'seed', 'keyBackground']).toContain(knob);
+          // Derived from normalizeRenderOptions rather than restated, so adding a
+          // per-run option cannot leave this invariant rejecting valid descriptors
+          // (which is exactly what happened when `detail`/`alphaMode` landed).
+          expect(RENDER_OPTION_KEYS).toContain(knob);
           expect(typeof supported).toBe('boolean');
         }
       });

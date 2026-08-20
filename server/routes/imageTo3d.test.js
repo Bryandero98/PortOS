@@ -174,16 +174,28 @@ describe('image-to-3d routes', () => {
       models.getModel.mockResolvedValue(record('pixal3dCuda'));
       models.createModel.mockResolvedValue(record('pixal3dCuda'));
       models.startGeneration.mockResolvedValue(record('pixal3dCuda'));
+      // Read from the registry rather than restated, so adding a knob to a
+      // descriptor does not need an edit here to stay honest.
+      const expected = targets.renderOptionSupportFor('pixal3dCuda');
 
       const get = await request(app).get('/api/image-to-3d/models/image3d-1');
-      expect(get.body.supportsRenderOptions).toEqual({ steps: false });
+      expect(get.body.supportsRenderOptions).toEqual(expected);
 
       const created = await request(app).post('/api/image-to-3d/models')
         .send({ filename: 'example.png', name: 'x' });
-      expect(created.body.supportsRenderOptions).toEqual({ steps: false });
+      expect(created.body.supportsRenderOptions).toEqual(expected);
 
       const regen = await request(app).post('/api/image-to-3d/models/image3d-1/generate').send({});
-      expect(regen.body.supportsRenderOptions).toEqual({ steps: false });
+      expect(regen.body.supportsRenderOptions).toEqual(expected);
+    });
+
+    it('tells the client the detail control is unusable on a VRAM-derived lane', () => {
+      // Pixal3D picks 1024/1536 from the card's VRAM, so a rendered-but-ignored
+      // Detail control would be a lie about what the render will do.
+      expect(targets.renderOptionSupportFor('pixal3dCuda').detail).toBe(false);
+      expect(targets.renderOptionSupportFor('trellis2Cuda').detail).toBe(false);
+      // The MPS lane is the one that honors it.
+      expect(targets.renderOptionSupportFor('trellis2')).toBeNull();
     });
 
     it('omits the field for a target that honors every knob', async () => {

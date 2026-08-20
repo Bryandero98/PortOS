@@ -10,21 +10,25 @@ import {
   renderOptionArgs,
   validateRenderOptions,
   honorTargetRenderSupport,
+  ALPHA_MODES,
+  DEFAULT_DETAIL_TIER,
+  DETAIL_TIERS,
+  RENDER_OPTION_KEYS,
 } from './renderOptions.js';
 
 describe('normalizeRenderOptions', () => {
   it('defaults to unset steps/seed with keying enabled', () => {
-    expect(normalizeRenderOptions()).toEqual({ steps: null, seed: null, keyBackground: true });
-    expect(normalizeRenderOptions({})).toEqual({ steps: null, seed: null, keyBackground: true });
+    expect(normalizeRenderOptions()).toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null });
+    expect(normalizeRenderOptions({})).toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null });
   });
 
   it('keeps valid values and collapses invalid ones to the unset sentinel', () => {
     expect(normalizeRenderOptions({ steps: 24, seed: 0, keyBackground: false }))
-      .toEqual({ steps: 24, seed: 0, keyBackground: false });
+      .toEqual({ steps: 24, seed: 0, keyBackground: false, detail: 'auto', alphaMode: null });
     expect(normalizeRenderOptions({ steps: RENDER_STEPS_MAX + 1, seed: RENDER_SEED_MAX + 1 }))
-      .toEqual({ steps: null, seed: null, keyBackground: true });
+      .toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null });
     expect(normalizeRenderOptions({ steps: 12.5, seed: '42' }))
-      .toEqual({ steps: null, seed: null, keyBackground: true });
+      .toEqual({ steps: null, seed: null, keyBackground: true, detail: 'auto', alphaMode: null });
   });
 });
 
@@ -83,6 +87,43 @@ describe('validateRenderOptions', () => {
   it('names the caller in the error, so a lane-specific builder reads as the thrower', () => {
     expect(() => validateRenderOptions('buildPixal3dGenerateArgs', { steps: 999 }))
       .toThrow(/^buildPixal3dGenerateArgs:/);
+  });
+});
+
+describe('detail tier and alpha mode', () => {
+  it('defaults detail to the auto sentinel, not null', () => {
+    // 'auto' is a choosable value ("derive from host"), so a run entry recording it
+    // is the truth rather than an absence.
+    expect(normalizeRenderOptions().detail).toBe(DEFAULT_DETAIL_TIER);
+    expect(DETAIL_TIERS).toContain(DEFAULT_DETAIL_TIER);
+  });
+
+  it.each(DETAIL_TIERS)('keeps the valid tier %s', (tier) => {
+    expect(normalizeRenderOptions({ detail: tier }).detail).toBe(tier);
+  });
+
+  it.each(['ultra', '1024_cascade', '', null, 7])('collapses invalid tier %s to auto', (bad) => {
+    // Notably '1024_cascade' — a lane's concrete pipeline value is NOT a tier, and
+    // letting it through would leak one lane's vocabulary into the shared API.
+    expect(normalizeRenderOptions({ detail: bad }).detail).toBe(DEFAULT_DETAIL_TIER);
+  });
+
+  it.each(ALPHA_MODES)('keeps the valid alpha mode %s', (mode) => {
+    expect(normalizeRenderOptions({ alphaMode: mode }).alphaMode).toBe(mode);
+  });
+
+  it('keeps alphaMode null when unset, which is distinct from OPAQUE', () => {
+    // null = "don't instruct the exporter, and keep the force-opaque normalization".
+    // OPAQUE = "the exporter should emit OPAQUE". Collapsing them would make the
+    // normalization impossible to opt out of.
+    expect(normalizeRenderOptions().alphaMode).toBeNull();
+    expect(normalizeRenderOptions({ alphaMode: 'OPAQUE' }).alphaMode).toBe('OPAQUE');
+  });
+});
+
+describe('RENDER_OPTION_KEYS', () => {
+  it('matches exactly what normalizeRenderOptions returns', () => {
+    expect(RENDER_OPTION_KEYS).toEqual(Object.keys(normalizeRenderOptions()));
   });
 });
 

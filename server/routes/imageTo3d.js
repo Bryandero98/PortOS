@@ -15,7 +15,7 @@ import {
   getModelFullMesh,
 } from '../services/imageTo3d/models.js';
 import {
-  RENDER_STEPS_MIN, RENDER_STEPS_MAX, RENDER_SEED_MAX,
+  RENDER_STEPS_MIN, RENDER_STEPS_MAX, RENDER_SEED_MAX, DETAIL_TIERS, ALPHA_MODES,
 } from '../services/imageTo3d/renderOptions.js';
 import { createInstallLogger } from '../lib/installLogger.js';
 import { openSseStream } from '../lib/sseDownload.js';
@@ -32,6 +32,11 @@ const renderOptionsSchema = z.object({
   steps: z.number().int().min(RENDER_STEPS_MIN).max(RENDER_STEPS_MAX).optional(),
   seed: z.number().int().min(0).max(RENDER_SEED_MAX).optional(),
   keyBackground: z.boolean().optional(),
+  // Abstract tier, not a lane's raw pipeline value — the target maps it (see
+  // renderOptions.js). Enums come from there so the route can't accept a tier the
+  // normalizer would silently discard.
+  detail: z.enum([...DETAIL_TIERS]).optional(),
+  alphaMode: z.enum([...ALPHA_MODES]).optional(),
 });
 
 const createModelSchema = z.object({

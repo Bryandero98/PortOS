@@ -433,6 +433,48 @@ export function selectTrellis2PipelineType(unifiedMemoryGb) {
 }
 
 /**
+ * Resolve a request's abstract detail tier to this port's `--pipeline-type`.
+ *
+ * `'auto'` (the default) keeps the historical hardware-derived behaviour; any other
+ * tier is looked up in the target descriptor's `detailTiers`, so the tier vocabulary
+ * lives in the registry rather than being restated here.
+ *
+ * An unmapped tier falls back to the hardware-derived choice rather than throwing.
+ * That is deliberate: the route enum and the descriptor are validated against each
+ * other by `targets.test.js`, so reaching this branch means a registry edit went
+ * wrong — and degrading to the tier the host would have picked anyway is a far better
+ * outcome than failing a render the user already waited on.
+ *
+ * The descriptor is read lazily, at call time, for the same reason `hfGatedRepoHelp`
+ * does: resolving it at module scope would make merely importing this file depend on
+ * `targets.js` being fully materialized, which a partial test mock of that module
+ * breaks.
+ *
+ * @param {string} detail one of DETAIL_TIERS
+ * @param {number} unifiedMemoryGb
+ * @returns {string} a value from TRELLIS2_PIPELINE_TYPES
+ */
+export function resolveTrellis2PipelineType(detail, unifiedMemoryGb) {
+  if (!detail || detail === 'auto') return selectTrellis2PipelineType(unifiedMemoryGb);
+  const mapped = getTarget('trellis2')?.detailTiers?.[detail];
+  if (mapped && TRELLIS2_PIPELINE_TYPES.includes(mapped)) {
+    // A tier ABOVE what this host's memory would have chosen is allowed on purpose:
+    // overriding the hardware heuristic is the point of the knob, and PortOS's
+    // 48 GB threshold is explicitly a conservative guess (the port publishes no
+    // 1024-cascade memory ceiling). But say so in the log, because the likely
+    // failure on an undersized host is an OOM or a watchdog kill many minutes in,
+    // and this line is what connects that to the choice.
+    const hostChoice = selectTrellis2PipelineType(unifiedMemoryGb);
+    if (mapped !== hostChoice) {
+      console.log(`🎚️ TRELLIS.2 detail '${detail}' → pipeline ${mapped} (host default for ${unifiedMemoryGb} GB is ${hostChoice})`);
+    }
+    return mapped;
+  }
+  console.warn(`⚠️ TRELLIS.2 detail tier '${detail}' is unmapped — falling back to the host-derived pipeline`);
+  return selectTrellis2PipelineType(unifiedMemoryGb);
+}
+
+/**
  * PortOS asks for at least a 2K atlas, overriding `generate.py`'s 1K default. The
  * bake UV-unwraps a 200k-triangle mesh into a single atlas, so texel budget per
  * triangle is the binding constraint on surface quality. Hosts with the same
@@ -871,6 +913,7 @@ export function runTrellis2Generate({
   unifiedMemoryGb = Math.round(totalmem() / 1024 ** 3),
   steps = null,
   seed = null,
+  detail = 'auto',
   decimationTarget = null,
   fillHoles = false,
   remesh = false,
@@ -886,7 +929,9 @@ export function runTrellis2Generate({
     err.code = 'TRELLIS2_NOT_INSTALLED';
     return { promise: Promise.reject(err), kill: () => {} };
   }
-  const resolvedPipelineType = pipelineType ?? selectTrellis2PipelineType(unifiedMemoryGb);
+  // An explicit `pipelineType` still wins (direct callers and tests use it); a
+  // request expresses itself as a detail tier instead.
+  const resolvedPipelineType = pipelineType ?? resolveTrellis2PipelineType(detail, unifiedMemoryGb);
   const resolvedTextureSize = textureSize ?? selectTrellis2TextureSize(unifiedMemoryGb);
   const resolvedDecimationTarget = decimationTarget
     ?? selectTrellis2DecimationTarget(unifiedMemoryGb, TRELLIS2_HIGH_QUALITY_MIN_MEMORY_GB);

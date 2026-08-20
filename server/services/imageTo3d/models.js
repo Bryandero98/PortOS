@@ -366,6 +366,11 @@ async function beginRender(record, adapter, sourcePath, caps, requestOptions) {
           steps: options.steps,
           seed: options.seed,
           keyBackground: options.keyBackground,
+          // Recorded so the detail view can render the knobs this run actually
+          // used — and so the viewer knows whether transparency was requested,
+          // which decides if its force-opaque pass should apply.
+          detail: options.detail,
+          alphaMode: options.alphaMode,
           startedAt,
           completedAt: null,
           error: null,
