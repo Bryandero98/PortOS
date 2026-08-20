@@ -14,7 +14,9 @@ Each `--image` needs its own `--anchor`, in the same order.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
+import inspect
 import json
 import re
 import shutil
@@ -149,14 +151,31 @@ def install_key_prefix_map(rules: list[tuple[str, str]]) -> None:
     MiniMaxH3TextEncoder._wanted = _wanted
 
 
+def pinned_encoder_hook(name: str, consequence: str, kind: type | None = None):
+    """Return one attribute of the pinned text encoder, or say the pin moved.
+
+    Each keyframe correction below wraps a different method of
+    `MiniMaxH3TextEncoder`, and each is only correct against the implementation
+    it was written for — so every one of them checks its hook is still there and
+    still the shape it patches, and reports the same two ways out.
+    """
+    from minimax_h3_mlx.text_encoder import MiniMaxH3TextEncoder
+
+    hook = getattr(MiniMaxH3TextEncoder, name, None)
+    if hook is None or (kind is not None and not isinstance(hook, kind)):
+        raise RuntimeError(
+            f"The pinned MiniMax H3 runtime no longer exposes MiniMaxH3TextEncoder.{name}, so "
+            f"{consequence}. Render text-only, or update PortOS for the new pin."
+        )
+    return MiniMaxH3TextEncoder, hook
+
+
 def torch_image_stack_available() -> bool:
     """Whether the pinned runtime's own `AutoProcessor` path can load at all.
 
-    transformers 5 dropped the numpy image processors: every class the auto path
-    resolves is torchvision-backed, and importing one without torch raises rather
-    than degrading. The MLX runtime lock deliberately ships neither
-    (`requirements-minimax-h3-mlx.lock.txt`), so this is False for a stock PortOS
-    install and True only if the user added torch to that venv themselves.
+    False for every stock install: `requirements-minimax-h3-mlx.lock.txt` ships
+    neither package, and `uv pip sync` removes anything added on top of it. See
+    `install_pil_image_processor` for what that costs and how it is covered.
     """
     return all(importlib.util.find_spec(module) is not None for module in ("torch", "torchvision"))
 
@@ -184,8 +203,8 @@ def load_pil_image_processor(processor_dir: Path):
     if processor_class is None:
         raise RuntimeError(
             f"transformers {transformers.__version__} exposes no {name}, the PIL-backed twin of the "
-            f"checkpoint's {declared}. Install torch and torchvision into the MiniMax H3 runtime venv "
-            "to condition on a keyframe with this transformers version."
+            f"checkpoint's {declared}, so a keyframe cannot be encoded without PyTorch. Render "
+            "text-only, or update PortOS for a transformers version that still ships one."
         )
     return processor_class.from_pretrained(str(processor_dir))
 
@@ -207,14 +226,9 @@ def install_pil_image_processor() -> None:
     it doesn't use and — deliberately, like the key-prefix map above — leaves the
     pinned checkout untouched, because it is verified clean before this runs.
     """
-    from minimax_h3_mlx.text_encoder import MiniMaxH3TextEncoder
-
-    if not isinstance(getattr(MiniMaxH3TextEncoder, "processor", None), property):
-        raise RuntimeError(
-            "The pinned MiniMax H3 runtime no longer exposes MiniMaxH3TextEncoder.processor, so a "
-            "keyframe cannot be encoded without PyTorch. Render text-only, install torch and "
-            "torchvision into the runtime venv, or update PortOS for the new pin."
-        )
+    encoder, _ = pinned_encoder_hook(
+        "processor", "a keyframe cannot be encoded without PyTorch", kind=property
+    )
 
     def processor(self):
         if self._processor is None:
@@ -226,7 +240,7 @@ def install_pil_image_processor() -> None:
             )
         return self._processor
 
-    MiniMaxH3TextEncoder.processor = property(processor)
+    encoder.processor = property(processor)
 
 
 def install_vision_weight_sanitizer() -> None:
@@ -245,31 +259,31 @@ def install_vision_weight_sanitizer() -> None:
     correctly-laid-out tensor as a no-op, so this stays right if a later pin (or a
     later mlx-vlm) starts handing the tower a sanitized weight.
     """
-    from minimax_h3_mlx.text_encoder import MiniMaxH3TextEncoder
-
-    original = getattr(MiniMaxH3TextEncoder, "_load_weights", None)
-    if original is None:
-        raise RuntimeError(
-            "The pinned MiniMax H3 runtime no longer exposes MiniMaxH3TextEncoder._load_weights, "
-            "so its vision tower cannot be laid out for MLX. Render text-only, or update PortOS "
-            "for the new pin."
-        )
+    encoder, original = pinned_encoder_hook(
+        "_load_weights", "its vision tower cannot be laid out for MLX"
+    )
 
     def _load_weights(self, model_dir, dtype, verbose):
         original(self, model_dir, dtype, verbose)
         sanitize_vision_weights(self.vision)
 
-    MiniMaxH3TextEncoder._load_weights = _load_weights
+    encoder._load_weights = _load_weights
 
 
 def sanitize_vision_weights(vision) -> None:
-    """Run mlx-vlm's `sanitize` over an already-loaded vision module, in place."""
+    """Run mlx-vlm's `sanitize` over an already-loaded vision module, in place.
+
+    Routed through mlx-vlm's `sanitize_weights`, which is what its own loader
+    calls: a tower that stops publishing `sanitize` is then a no-op here rather
+    than an AttributeError mid-load. `vision` is None on a text-only encoder.
+    """
     if vision is None:
         return
     import mlx.core as mx
     from mlx.utils import tree_flatten, tree_unflatten
+    from mlx_vlm.utils import sanitize_weights
 
-    sanitized = vision.sanitize(dict(tree_flatten(vision.parameters())))
+    sanitized = sanitize_weights(vision, dict(tree_flatten(vision.parameters())))
     vision.update(tree_unflatten(list(sanitized.items())))
     mx.eval(vision.parameters())
 
@@ -278,6 +292,14 @@ def sanitize_vision_weights(vision) -> None:
 # replacement below is installed, so the day upstream fixes this the patch says
 # so loudly rather than shadowing a working implementation forever.
 PINNED_BROADCAST_MERGE = "mx.where(image_mask[..., None], hidden.astype(inputs_embeds.dtype)[None], inputs_embeds)"
+
+# sha256 of the whole pinned `encode`, because the replacement below re-runs its
+# body with one line changed rather than wrapping it. Matching only the merge
+# line would let every OTHER edit a pin bump makes — a new `_hidden_states`
+# argument, a different dtype, an added step — pass silently into a stale copy.
+# Re-record this when bumping MINIMAX_H3_EXPECTED_REVISION, after re-reading
+# `encode` and folding whatever changed into the replacement.
+PINNED_ENCODE_DIGEST = "8047e407e797cd46cd7538024ca09d97402d369d97b1d825757a1590416bda7d"
 
 
 def install_vision_embed_merge() -> None:
@@ -296,21 +318,20 @@ def install_vision_embed_merge() -> None:
     the broadcast could never check). A text-only request never reaches the merge,
     so it is handed straight back to the pinned implementation untouched.
     """
-    import inspect
-
-    from minimax_h3_mlx.text_encoder import MiniMaxH3TextEncoder
-
-    original = getattr(MiniMaxH3TextEncoder, "encode", None)
-    if original is None:
-        raise RuntimeError(
-            "The pinned MiniMax H3 runtime no longer exposes MiniMaxH3TextEncoder.encode, so a "
-            "keyframe cannot be merged into the prompt. Render text-only, or update PortOS for "
-            "the new pin."
-        )
-    if PINNED_BROADCAST_MERGE not in inspect.getsource(original):
+    encoder, original = pinned_encoder_hook(
+        "encode", "a keyframe cannot be merged into the prompt"
+    )
+    source = inspect.getsource(original)
+    if PINNED_BROADCAST_MERGE not in source:
         raise RuntimeError(
             "The pinned MiniMax H3 runtime no longer merges keyframe embeddings the way PortOS "
             "corrects for; re-check the pin before rendering with a keyframe."
+        )
+    if hashlib.sha256(source.encode("utf-8")).hexdigest() != PINNED_ENCODE_DIGEST:
+        raise RuntimeError(
+            "The pinned MiniMax H3 runtime changed MiniMaxH3TextEncoder.encode outside the merge "
+            "PortOS corrects; fold the change into the replacement and re-record "
+            "PINNED_ENCODE_DIGEST before rendering with a keyframe."
         )
 
     def encode(self, prompt: str, images: list | None = None):
@@ -357,7 +378,7 @@ def install_vision_embed_merge() -> None:
         mx.eval(hidden_states)
         return hidden_states, token_tags
 
-    MiniMaxH3TextEncoder.encode = encode
+    encoder.encode = encode
 
 
 def write_final_norm_shard(path: Path, key: str, hidden_size: int) -> None:

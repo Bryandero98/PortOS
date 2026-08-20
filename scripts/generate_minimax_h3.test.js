@@ -67,6 +67,46 @@ const argsExpr = (overrides = {}) => {
   return `args = SimpleNamespace(${fields.join(', ')})`;
 };
 
+// Stand-in for the pinned runtime: the installers below reach for
+// `minimax_h3_mlx.text_encoder.MiniMaxH3TextEncoder`, so every case that
+// exercises one has to put a class there first. `preamble` runs before the
+// class body, for recorders the stub's methods close over.
+const stubPin = (classBody, preamble = []) => [
+  'import sys, types',
+  ...preamble,
+  'class MiniMaxH3TextEncoder:',
+  ...classBody,
+  'module = types.ModuleType("minimax_h3_mlx.text_encoder")',
+  'module.MiniMaxH3TextEncoder = MiniMaxH3TextEncoder',
+  'sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
+  'sys.modules["minimax_h3_mlx.text_encoder"] = module',
+].join('\n');
+
+// The merge correction guards itself with `inspect.getsource`, which needs a
+// real file — so that stand-in is written out and imported rather than declared
+// inline. The merge itself is carried as a COMMENT: the stub only has to look
+// like the pin to `getsource`, not run its body.
+const filePin = (encodeBody) => [
+  'import importlib.util, sys, tempfile, types',
+  'temp = tempfile.mkdtemp()',
+  'pin = Path(temp) / "pinned_text_encoder.py"',
+  'pin.write_text("\\n".join([',
+  '    "class MiniMaxH3TextEncoder:",',
+  '    "    def encode(self, prompt, images=None):",',
+  ...encodeBody.map((line) => `    ${JSON.stringify(`        # ${line}`)},`),
+  '    "        return (\'pinned\', prompt, images)",',
+  ']))',
+  'spec = importlib.util.spec_from_file_location("minimax_h3_mlx.text_encoder", pin)',
+  'module = importlib.util.module_from_spec(spec)',
+  'sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
+  'sys.modules["minimax_h3_mlx.text_encoder"] = module',
+  'spec.loader.exec_module(module)',
+  'MiniMaxH3TextEncoder = module.MiniMaxH3TextEncoder',
+].join('\n');
+
+// The line the correction replaces, mirrored from the runner's own constant.
+const PINNED_MERGE = 'inputs_embeds = mx.where(image_mask[..., None], hidden.astype(inputs_embeds.dtype)[None], inputs_embeds)';
+
 describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
   it('defaults the MLX runner to nine sigma points for eight forwards', () => {
     const output = runPython(`${importRunner}\n${[
@@ -498,7 +538,6 @@ describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
     ].join('\n')}`);
     expect(output.trim()).toBe('10');
   });
-
   // Keyframe conditioning is the one path with no torch under it: the MLX lock
   // ships neither torch nor torchvision, and transformers 5 routes every auto
   // image-processor load through them. Text-only renders never touch it, which
@@ -507,9 +546,7 @@ describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
     const output = runPython(`${importRunner}\n${[
       'import json',
       'present = {"torch": object(), "torchvision": object(), "numpy": object()}',
-      'def fake_find_spec(name):',
-      '    return present.get(name)',
-      'runner.importlib.util.find_spec = fake_find_spec',
+      'runner.importlib.util.find_spec = present.get',
       'both = runner.torch_image_stack_available()',
       'present.pop("torchvision")',
       'vision_only = runner.torch_image_stack_available()',
@@ -574,23 +611,19 @@ describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
   // to that one attribute: building the rest is what pulls in the video
   // processor nothing here uses.
   it('binds the PIL twin to the only sub-processor the pinned encoder reads', () => {
-    const output = runPython(`${importRunner}\n${[
-      'import json, sys, types',
-      'class FakeEncoder:',
+    const output = runPython(`${importRunner}\n${stubPin([
       '    def __init__(self, model_dir):',
       '        self._model_dir = Path(model_dir)',
       '        self._processor = None',
       '    @property',
       '    def processor(self):',
       '        raise AssertionError("the pinned auto-processor property must not run")',
-      'module = types.ModuleType("minimax_h3_mlx.text_encoder")',
-      'module.MiniMaxH3TextEncoder = FakeEncoder',
-      'sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
-      'sys.modules["minimax_h3_mlx.text_encoder"] = module',
+    ])}\n${[
+      'import json',
       'seen = []',
       'runner.load_pil_image_processor = lambda directory: seen.append(directory) or "pil-image-processor"',
       'runner.install_pil_image_processor()',
-      'encoder = FakeEncoder("/checkpoint/text_encoder")',
+      'encoder = MiniMaxH3TextEncoder("/checkpoint/text_encoder")',
       'first = encoder.processor',
       'print(json.dumps({',
       '    "image_processor": first.image_processor,',
@@ -608,42 +641,19 @@ describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
     expect(result.loads).toEqual([join('/checkpoint', 'processor')]);
   });
 
-  it('refuses to bind a twin onto a pin with no processor property', () => {
-    const output = runPython(`${importRunner}\n${[
-      'import sys, types',
-      'class Bare: pass',
-      'module = types.ModuleType("minimax_h3_mlx.text_encoder")',
-      'module.MiniMaxH3TextEncoder = Bare',
-      'sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
-      'sys.modules["minimax_h3_mlx.text_encoder"] = module',
-      'try:',
-      '    runner.install_pil_image_processor()',
-      'except RuntimeError as exc:',
-      '    print(str(exc))',
-      'else:',
-      '    raise SystemExit("a pin with no processor property was accepted")',
-    ].join('\n')}`);
-    expect(output).toMatch(/no longer exposes MiniMaxH3TextEncoder\.processor/);
-  });
-
   // mlx-vlm's loader sanitizes `patch_embed.proj.weight` into MLX's conv layout;
   // the pinned port loads the safetensors itself and skips it, so the tower gets
   // torch's `(C_out, C_in, kD, kH, kW)` and conv3d rejects the first keyframe.
   it('sanitizes the vision tower after the pinned load, not instead of it', () => {
-    const output = runPython(`${importRunner}\n${[
-      'import json, sys, types',
-      'order = []',
-      'class FakeEncoder:',
+    const output = runPython(`${importRunner}\n${stubPin([
       '    def _load_weights(self, model_dir, dtype, verbose):',
       '        order.append(("pinned load", str(model_dir), str(dtype), verbose))',
       '        self.vision = "vision-tower"',
-      'module = types.ModuleType("minimax_h3_mlx.text_encoder")',
-      'module.MiniMaxH3TextEncoder = FakeEncoder',
-      'sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
-      'sys.modules["minimax_h3_mlx.text_encoder"] = module',
+    ], ['order = []'])}\n${[
+      'import json',
       'runner.sanitize_vision_weights = lambda vision: order.append(("sanitize", vision))',
       'runner.install_vision_weight_sanitizer()',
-      'FakeEncoder()._load_weights(Path("/checkpoint/text_encoder"), "bfloat16", False)',
+      'MiniMaxH3TextEncoder()._load_weights(Path("/checkpoint/text_encoder"), "bfloat16", False)',
       'print(json.dumps(order))',
     ].join('\n')}`);
     // The pinned load runs first and unchanged — the correction is applied to
@@ -653,24 +663,6 @@ describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
       ['pinned load', join('/checkpoint', 'text_encoder'), 'bfloat16', false],
       ['sanitize', 'vision-tower'],
     ]);
-  });
-
-  it('refuses to sanitize a pin with no _load_weights hook', () => {
-    const output = runPython(`${importRunner}\n${[
-      'import sys, types',
-      'class Bare: pass',
-      'module = types.ModuleType("minimax_h3_mlx.text_encoder")',
-      'module.MiniMaxH3TextEncoder = Bare',
-      'sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
-      'sys.modules["minimax_h3_mlx.text_encoder"] = module',
-      'try:',
-      '    runner.install_vision_weight_sanitizer()',
-      'except RuntimeError as exc:',
-      '    print(str(exc))',
-      'else:',
-      '    raise SystemExit("a pin with no _load_weights hook was accepted")',
-    ].join('\n')}`);
-    expect(output).toMatch(/no longer exposes MiniMaxH3TextEncoder\._load_weights/);
   });
 
   it('leaves the vision tower alone when the encoder built none', () => {
@@ -683,61 +675,78 @@ describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
     expect(output.trim()).toBe('ok');
   });
 
-  // The pinned encode merges the keyframe's vision rows with a BROADCAST, which
-  // only lines up when the request is nothing but image tokens — every real
-  // prompt + keyframe pair dies in `[broadcast_shapes]`. The correction is
-  // asserted against the pin so it retires itself if upstream ever fixes it.
+  // Each adapter patches a different method, and each is only correct against
+  // the implementation it was written for — so a pin that moved has to be told
+  // apart from one that still fits, before a render spends minutes loading.
   it.each([
-    ['inputs_embeds = mx.where(image_mask[..., None], hidden.astype(inputs_embeds.dtype)[None], inputs_embeds)', null],
-    ['inputs_embeds = merge(image_mask, hidden, inputs_embeds)', /no longer merges keyframe embeddings/],
-  ])('installs the scatter only over a pin that still merges by broadcast (%s)', (merge, expected) => {
-    const output = runPython(`${importRunner}\n${[
-      'import importlib.util, sys, tempfile, types',
-      'with tempfile.TemporaryDirectory() as temp:',
-      // inspect.getsource needs a real file, so the stand-in pin is written out
-      // and imported rather than declared inline.
-      '    pin = Path(temp) / "pinned_text_encoder.py"',
-      '    pin.write_text("\\n".join([',
-      '        "class MiniMaxH3TextEncoder:",',
-      '        "    def encode(self, prompt, images=None):",',
-      // Carried as a comment: the stand-in only has to look like the pin to
-      // `inspect.getsource`, not run its body.
-      `        "        # ${merge}",`,
-      '        "        return (\'pinned\', prompt, images)",',
-      '    ]))',
-      '    spec = importlib.util.spec_from_file_location("minimax_h3_mlx.text_encoder", pin)',
-      '    module = importlib.util.module_from_spec(spec)',
-      '    sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
-      '    sys.modules["minimax_h3_mlx.text_encoder"] = module',
-      '    spec.loader.exec_module(module)',
-      '    try:',
-      '        runner.install_vision_embed_merge()',
-      '    except RuntimeError as exc:',
-      '        print("REFUSED", str(exc))',
-      '    else:',
-      // A text-only request has no merge to correct, so it must come back from
-      // the pinned implementation untouched.
-      '        print("INSTALLED", module.MiniMaxH3TextEncoder().encode("a prompt"))',
+    ['install_pil_image_processor', 'processor'],
+    ['install_vision_weight_sanitizer', '_load_weights'],
+    ['install_vision_embed_merge', 'encode'],
+  ])('refuses to install %s onto a pin with no %s hook', (installer, hook) => {
+    const output = runPython(`${importRunner}\n${stubPin(['    pass'])}\n${[
+      'try:',
+      `    runner.${installer}()`,
+      'except RuntimeError as exc:',
+      '    print(str(exc))',
+      'else:',
+      `    raise SystemExit("a pin with no ${hook} hook was accepted")`,
     ].join('\n')}`);
-    if (expected) expect(output).toMatch(expected);
-    else expect(output.trim()).toBe("INSTALLED ('pinned', 'a prompt', None)");
+    expect(output).toMatch(new RegExp(`no longer exposes MiniMaxH3TextEncoder\\.${hook}`));
   });
 
-  it('refuses to correct a pin with no encode hook', () => {
-    const output = runPython(`${importRunner}\n${[
-      'import sys, types',
-      'class Bare: pass',
-      'module = types.ModuleType("minimax_h3_mlx.text_encoder")',
-      'module.MiniMaxH3TextEncoder = Bare',
-      'sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
-      'sys.modules["minimax_h3_mlx.text_encoder"] = module',
+  // A `processor` that is no longer a property is as much a pin change as an
+  // absent one: the pinned caller would start calling it, and the replacement
+  // is a property.
+  it('refuses to bind the twin onto a processor that is no longer a property', () => {
+    const output = runPython(`${importRunner}\n${stubPin(['    processor = "not-a-property"'])}\n${[
+      'try:',
+      '    runner.install_pil_image_processor()',
+      'except RuntimeError as exc:',
+      '    print(str(exc))',
+      'else:',
+      '    raise SystemExit("a non-property processor was accepted")',
+    ].join('\n')}`);
+    expect(output).toMatch(/no longer exposes MiniMaxH3TextEncoder\.processor/);
+  });
+
+  // The pinned encode merges the keyframe's vision rows with a BROADCAST, which
+  // only lines up when the request is nothing but image tokens — every real
+  // prompt + keyframe pair dies in `[broadcast_shapes]`. The correction re-runs
+  // the pinned body with that one line swapped, so it is guarded twice: by the
+  // line it replaces, and by a digest over the whole body it copied.
+  it('corrects a pin that still merges by broadcast, and hands its text-only path back', () => {
+    const output = runPython(`${importRunner}\n${filePin([PINNED_MERGE])}\n${[
+      'import hashlib, inspect',
+      'runner.PINNED_ENCODE_DIGEST = hashlib.sha256(',
+      '    inspect.getsource(MiniMaxH3TextEncoder.encode).encode("utf-8")',
+      ').hexdigest()',
+      'runner.install_vision_embed_merge()',
+      'print(MiniMaxH3TextEncoder().encode("a prompt"))',
+    ].join('\n')}`);
+    // A text-only request has no merge to correct, so it must come back from the
+    // pinned implementation untouched.
+    expect(output.trim()).toBe("('pinned', 'a prompt', None)");
+  });
+
+  it.each([
+    // Upstream fixed the merge: the correction has to retire, not shadow it.
+    [[PINNED_MERGE.replace('mx.where', 'masked_scatter')], 'digest-of-this-pin', /no longer merges keyframe embeddings/],
+    // The merge is untouched but something else in the body moved — the copy is
+    // stale in a way matching one line could never see.
+    [[PINNED_MERGE], `"${'0'.repeat(64)}"`, /changed MiniMaxH3TextEncoder\.encode outside the merge/],
+  ])('refuses a pin the copied encode no longer matches (%j)', (body, digest, expected) => {
+    const output = runPython(`${importRunner}\n${filePin(body)}\n${[
+      'import hashlib, inspect',
+      `runner.PINNED_ENCODE_DIGEST = ${digest === 'digest-of-this-pin'
+        ? 'hashlib.sha256(inspect.getsource(MiniMaxH3TextEncoder.encode).encode("utf-8")).hexdigest()'
+        : digest}`,
       'try:',
       '    runner.install_vision_embed_merge()',
       'except RuntimeError as exc:',
       '    print(str(exc))',
       'else:',
-      '    raise SystemExit("a pin with no encode hook was accepted")',
+      '    raise SystemExit("a drifted pin was accepted")',
     ].join('\n')}`);
-    expect(output).toMatch(/no longer exposes MiniMaxH3TextEncoder\.encode/);
+    expect(output).toMatch(expected);
   });
 });
