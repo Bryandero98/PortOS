@@ -53,7 +53,8 @@ vite dev (npm run dev)  ──── :5554 ─ Vite dev server (dev only, separa
 Rules of thumb:
 1. **`:5555` is the only port a remote user ever needs.** The scheme (HTTP vs HTTPS) flips based on whether a TLS cert is provisioned (`npm run setup:cert`); the port number does not.
 2. **`:5553` is a convenience for local terminals.** When HTTPS is on, `https://localhost:5555` would trip a cert warning (the cert covers `<machine>.<tailnet>.ts.net`, not `localhost`). The loopback HTTP mirror on `:5553` lets curl/scripts skip TLS entirely. It binds to `127.0.0.1` only — never reachable over the network.
-3. **`:5554` is `vite dev` only.** In `npm run dev`, Vite serves the React UI from `:5554` and proxies `/api` calls to `:5555`. In `npm start` (production), the React build is served from `:5555` itself; `:5554` is unused.
+3. **`:5554` is `vite dev` only.** In `npm run dev`, Vite serves the React UI from `:5554` and proxies `/api`, `/data` and `/socket.io` to `:5555`. In `npm start` (production), the React build is served from `:5555` itself; `:5554` is unused.
+   - **Anything the server serves must be in that proxy list.** An unproxied path does not 404 in dev — Vite's SPA fallback answers it with `index.html` and a `200`, so a loader expecting bytes parses HTML and fails somewhere far from the cause (a missing `/data/image-to-3d` entry surfaced as `Unexpected token '<' … is not valid JSON` from the GLB viewer, which took its whole route down). `/data` is therefore proxied as one wildcard prefix, and `scripts/dev-proxy-drift.test.js` fails if a server `/data/**` mount ever falls outside it.
 
 ## Defining Ports in ecosystem.config.cjs
 
