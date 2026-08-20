@@ -64,6 +64,13 @@ describe('llamaServerManager', () => {
     // The host may have an unrelated listener on the requested port (8080 is
     // especially common), so lifecycle tests pin the port-discovery result.
     vi.spyOn(platform, 'isPortInUse').mockResolvedValue(false);
+    // Same reason, one layer up: `startLlamaServer` refuses to spawn when an
+    // OpenAI-compatible server already ANSWERS on the endpoint, and it probes
+    // over the real network. A developer with llama.cpp actually running on
+    // PortOS's own extension port failed five of these for reasons that have
+    // nothing to do with the code under test, so pin the probe too. Tests that
+    // need a reachable endpoint re-mock this with `{ reachable: true }`.
+    vi.spyOn(openAiModelsProbe, 'probeOpenAiModels').mockResolvedValue({ reachable: false, models: [] });
 
     // Status and start both probe the endpoint over the network. On a developer
     // machine that is running PortOS's own llama-server the probe answers for
