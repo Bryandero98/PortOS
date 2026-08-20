@@ -43,6 +43,13 @@ vi.mock('./agentPromptBuilder.js', () => ({
   getAppDataForTask: vi.fn().mockResolvedValue(null),
   createJiraTicketForTask: vi.fn(),
 }));
+vi.mock('../lib/fileUtils.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    ensureDir: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 import { prepareAgentWorkspace, resolveTaskExistingBranch } from './agentWorkspacePrep.js';
 import { updateTask, getAgents } from './cos.js';
@@ -50,8 +57,46 @@ import { ensureLatest } from './git.js';
 import { detectConflicts } from './taskConflict.js';
 import { getAppWorkspace } from './agentPromptBuilder.js';
 import { createWorktree, adoptWorktree, findAdoptableWorktreeForBranch } from './worktreeManager.js';
+import { ensureDir, PATHS } from '../lib/fileUtils.js';
+import { creativeDirectorScratchCwd } from '../lib/spawnCwd.js';
 
 beforeEach(() => { vi.clearAllMocks(); });
+
+describe('prepareAgentWorkspace — Creative Director scratch cwd (#4650)', () => {
+  it('pins a CD no-worktree task to an isolated scratch dir and skips the git pull', async () => {
+    const task = {
+      id: 't-cd',
+      taskType: 'internal',
+      metadata: { creativeDirector: { projectId: 'p', kind: 'plan' }, useWorktree: false },
+    };
+    const r = await prepareAgentWorkspace({ agentId: 'agent-cd', task });
+    expect(r.outcome).toBe('ready');
+    expect(r.workspacePath).toBe(creativeDirectorScratchCwd('agent-cd'));
+    expect(r.workspacePath).not.toBe(PATHS.root);
+    expect(r.worktreeInfo).toBeNull();
+    expect(ensureDir).toHaveBeenCalledWith(r.workspacePath);
+    expect(ensureLatest).not.toHaveBeenCalled();
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(detectConflicts).not.toHaveBeenCalled();
+  });
+
+  it('leaves a CD task that explicitly asked for a worktree on the normal path', async () => {
+    ensureLatest.mockResolvedValue({ success: true, upToDate: true });
+    createWorktree.mockResolvedValue({
+      worktreePath: '/mock/worktrees/agent-cd-wt', branchName: 'cos/t-cd/agent-cd-wt', baseBranch: 'main',
+    });
+    const task = {
+      id: 't-cd-wt',
+      taskType: 'internal',
+      metadata: { creativeDirector: { projectId: 'p', kind: 'plan' }, useWorktree: true },
+    };
+    const r = await prepareAgentWorkspace({ agentId: 'agent-cd-wt', task });
+    expect(r.outcome).toBe('ready');
+    expect(r.workspacePath).toBe('/mock/worktrees/agent-cd-wt');
+    expect(ensureLatest).toHaveBeenCalled();
+    expect(createWorktree).toHaveBeenCalled();
+  });
+});
 
 describe('prepareAgentWorkspace', () => {
   it('read-only task: returns ready with the shared workspace and skips the git pull', async () => {

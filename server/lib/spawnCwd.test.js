@@ -4,7 +4,8 @@ import { posixPath } from './testHelper.js';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir, homedir } from 'os';
 import { join } from 'path';
-import { resolveSpawnCwd, withSpawnCwdEnv } from './spawnCwd.js';
+import { resolveSpawnCwd, withSpawnCwdEnv, usesCreativeDirectorScratchCwd, creativeDirectorScratchCwd, resolveAgentCliCwd } from './spawnCwd.js';
+import { PATHS } from './fileUtils.js';
 import { collectServerSources, readServerSource } from './testHelper.js';
 
 describe('resolveSpawnCwd', () => {
@@ -132,6 +133,59 @@ describe('resolveSpawnCwd — supplied-but-unusable never reaches the fallback',
     for (const shape of [undefined, null, '']) {
       expect(resolveSpawnCwd(shape, FALLBACK)).toBe(FALLBACK);
     }
+  });
+});
+
+describe('Creative Director scratch cwd (#4650)', () => {
+  const cdTask = (extra = {}) => ({
+    metadata: { creativeDirector: { projectId: 'p', kind: 'plan' }, useWorktree: false, ...extra },
+  });
+
+  it('recognizes a CD no-worktree task and rejects a worktree-requested one', () => {
+    expect(usesCreativeDirectorScratchCwd(cdTask())).toBe(true);
+    expect(usesCreativeDirectorScratchCwd(cdTask({ useWorktree: 'false' }))).toBe(true);
+    expect(usesCreativeDirectorScratchCwd(cdTask({ useWorktree: true }))).toBe(false);
+    expect(usesCreativeDirectorScratchCwd(cdTask({ useWorktree: 'true' }))).toBe(false);
+    expect(usesCreativeDirectorScratchCwd({ metadata: {} })).toBe(false);
+    expect(usesCreativeDirectorScratchCwd(null)).toBe(false);
+  });
+
+  it('places the scratch dir under the OS temp dir, outside the PortOS checkout', () => {
+    const cwd = creativeDirectorScratchCwd('agent-cd-1');
+    expect(cwd).toBe(join(tmpdir(), 'portos-cd-cwd', 'agent-cd-1'));
+    expect(cwd).not.toBe(PATHS.root);
+    // Native CLAUDE.md discovery walks parents to the git root. A path under
+    // the checkout (including gitignored data/) would still leak repo CLAUDE.md.
+    expect(cwd.startsWith(`${PATHS.root}/`)).toBe(false);
+    expect(cwd.startsWith(PATHS.root + '\\')).toBe(false);
+  });
+
+  it('refuses a missing agentId so CD runs cannot collapse onto one folder', () => {
+    expect(() => creativeDirectorScratchCwd('')).toThrow(/agentId/);
+    expect(() => creativeDirectorScratchCwd(null)).toThrow(/agentId/);
+  });
+
+  it('resolveAgentCliCwd swaps PATHS.root for the scratch path on a CD task', () => {
+    const scratch = creativeDirectorScratchCwd('agent-cd-2');
+    expect(resolveAgentCliCwd({
+      workspacePath: PATHS.root,
+      fallbackRoot: PATHS.root,
+      task: cdTask(),
+      agentId: 'agent-cd-2',
+    })).toBe(scratch);
+    // Non-CD keeps the caller workspace, including the root fallback.
+    expect(resolveAgentCliCwd({
+      workspacePath: '/tmp',
+      fallbackRoot: PATHS.root,
+      task: { metadata: {} },
+      agentId: 'agent-cd-2',
+    })).toBe('/tmp');
+    expect(resolveAgentCliCwd({
+      workspacePath: null,
+      fallbackRoot: PATHS.root,
+      task: { metadata: {} },
+      agentId: 'agent-cd-2',
+    })).toBe(PATHS.root);
   });
 });
 

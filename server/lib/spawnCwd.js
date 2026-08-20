@@ -25,8 +25,51 @@
  * cwd it was actually spawned in (issue #3193).
  */
 
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { statSync } from 'fs';
 import { expandHome } from './fileUtils.js';
+
+/**
+ * Creative Director treatment/plan/evaluate tasks are HTTP-PATCH deliverables
+ * (`noCodeOutput`) and never asked for a worktree. Spawning them with
+ * `cwd = PATHS.root` lets Claude Code / Codex natively discover the PortOS
+ * repo's CLAUDE.md files — the same dev-convention bloat the API path already
+ * skips via `skipClaudeMd`. A per-agent scratch dir with no CLAUDE.md in its
+ * tree is the provider-agnostic fix (#4650).
+ *
+ * `useWorktree: true` keeps the worktree: an explicit isolation request still
+ * wins. CD production tasks always set `useWorktree: false`.
+ */
+export function usesCreativeDirectorScratchCwd(task) {
+  if (!task?.metadata?.creativeDirector) return false;
+  const useWorktree = task.metadata.useWorktree;
+  return useWorktree !== true && useWorktree !== 'true';
+}
+
+/**
+ * Isolated cwd for a CD-marked CLI/TUI run. Lives under the OS temp dir — NOT
+ * under the PortOS checkout (`data/cos/agents` is still inside the git tree,
+ * so Claude Code / Codex walking parent directories would still find the repo
+ * CLAUDE.md). `agentId` is required — a missing id would collapse every CD run
+ * onto one shared folder.
+ */
+export function creativeDirectorScratchCwd(agentId) {
+  if (typeof agentId !== 'string' || !agentId) {
+    throw new Error('creativeDirectorScratchCwd requires a non-empty agentId');
+  }
+  return join(tmpdir(), 'portos-cd-cwd', agentId);
+}
+
+/**
+ * Spawn-site cwd for a CoS agent. CD scratch tasks always resolve to the
+ * per-agent scratch path (even if the caller still handed `PATHS.root`);
+ * everyone else keeps the existing `workspacePath || fallbackRoot` rule.
+ */
+export function resolveAgentCliCwd({ workspacePath, fallbackRoot, task, agentId } = {}) {
+  if (usesCreativeDirectorScratchCwd(task)) return creativeDirectorScratchCwd(agentId);
+  return workspacePath && typeof workspacePath === 'string' ? workspacePath : fallbackRoot;
+}
 
 /**
  * Resolve the working directory for a spawned run or agent.

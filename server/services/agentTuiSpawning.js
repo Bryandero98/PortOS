@@ -17,6 +17,7 @@ import { resolveErrorAnalysis } from './agentTuiSpawning/finalizeHelpers.js';
 import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
 import { activeAgents, userTerminatedAgents, pausedAgents, registerSpawnedAgent, unregisterSpawnedAgent } from './agentState.js';
 import { PATHS, watchForFile } from '../lib/fileUtils.js';
+import { resolveAgentCliCwd } from '../lib/spawnCwd.js';
 import { doneSentinelName, doneSentinelPath as resolveDoneSentinelPath, parseSentinelPayload } from '../lib/agentSentinel.js';
 import { shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 import { SENTINEL_COMPLETION_MARKER } from '../lib/agentOutputMarkers.js';
@@ -538,7 +539,10 @@ export async function spawnTuiAgent({
   // state writes must batch"), and `analyzeAgentFailure` reads the file on
   // failure so it gets the full PTY stream regardless of run length.
   const rawFile = join(agentDir, 'raw.txt');
-  const cwd = workspacePath && typeof workspacePath === 'string' ? workspacePath : PATHS.root;
+  // CD no-worktree tasks get an isolated scratch cwd so native CLAUDE.md
+  // discovery cannot reach the PortOS repo tree (#4650). Everyone else keeps
+  // workspacePath, falling back to the repo root when it was omitted.
+  const cwd = resolveAgentCliCwd({ workspacePath, fallbackRoot: PATHS.root, task, agentId });
   // The agent writes `.agent-done` in its workspace to signal completion (see
   // the sentinel watcher below) and then stops — it does NOT run `/quit` (that
   // is a UI command the agent can't invoke). The file watcher is the primary
@@ -547,7 +551,7 @@ export async function spawnTuiAgent({
   // up front so both the watcher AND finish() can read it (see ingestDoneSentinel).
   // Resolved from the shared helper, so this is byte-identical to the path the
   // prompt told the agent to write (see resolveSentinelPath).
-  const doneSentinelPath = resolveDoneSentinelPath(workspacePath, agentId);
+  const doneSentinelPath = resolveDoneSentinelPath(cwd, agentId);
   const promptPreview = prompt.replace(/\s+/g, ' ').slice(0, 100);
   const commandName = tuiConfig.command.split('/').pop();
   let finalized = false;
@@ -869,7 +873,7 @@ export async function spawnTuiAgent({
         isTruthyMetaFn,
         error: finalError || undefined,
         completionReason: reason,
-        workspacePath,
+        workspacePath: cwd,
         prExpected: prClaimExpected,
         // The run window the commit criterion is evaluated against (#3637).
         startedAt: agentData?.startedAt ?? null,
@@ -1266,7 +1270,7 @@ export async function spawnTuiAgent({
       agentId,
       taskId: task.id,
       model,
-      workspacePath,
+      workspacePath: cwd,
       prompt: (task.description || '').substring(0, 500)
     });
   }

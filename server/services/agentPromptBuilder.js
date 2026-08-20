@@ -1645,23 +1645,31 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
 
   // Creative Director tasks (scene evaluation, treatment/plan run via API) judge
   // generated content rather than writing PortOS code — shared below by both
-  // `skipClaudeMd` (the repo's dev-oriented CLAUDE.md files are pure noise for
-  // that prompt) and `noCodeOutput` (the deliverable is an HTTP PATCH, not a
-  // commit).
+  // `skipDevContext` (the repo's CLAUDE.md files plus memory / digital-twin /
+  // onboard-tools are pure noise for that prompt) and `noCodeOutput` (the
+  // deliverable is an HTTP PATCH, not a commit).
   const isCreativeDirectorTask = !!task.metadata?.creativeDirector;
   // Full path: API providers don't read CLAUDE.md natively, so always include it —
-  // except for Creative Director tasks, per above.
-  const skipClaudeMd = isCreativeDirectorTask;
+  // except for Creative Director tasks, per above. Memory, digital-twin, and the
+  // onboard-tools catalog are the same category of dev-oriented noise for a
+  // vision/PATCH task (#4650) — CD evaluate uses native Read + HTTP PATCH, and
+  // CD plan already receives creative-tool specs via `getToolSpecs()` in its
+  // own prompt, not this section.
+  const skipDevContext = isCreativeDirectorTask;
   // Fetch independent context sections in parallel
   const [memorySection, claudeMdSection, digitalTwinSection] = await Promise.all([
-    getMemorySection(task, { maxTokens: config.memory?.maxContextTokens || 2000 })
-      .catch(err => { console.log(`⚠️ Memory retrieval failed: ${err.message}`); return null; }),
-    skipClaudeMd
+    skipDevContext
+      ? Promise.resolve(null)
+      : getMemorySection(task, { maxTokens: config.memory?.maxContextTokens || 2000 })
+          .catch(err => { console.log(`⚠️ Memory retrieval failed: ${err.message}`); return null; }),
+    skipDevContext
       ? Promise.resolve(null)
       : getClaudeMdContext(workspaceDir)
           .catch(err => { console.log(`⚠️ CLAUDE.md retrieval failed: ${err.message}`); return null; }),
-    getDigitalTwinForPrompt({ maxTokens: config.digitalTwin?.maxContextTokens || config.soul?.maxContextTokens || 2000, personaId: 'active' })
-      .catch(err => { console.log(`⚠️ Digital twin context retrieval failed: ${err.message}`); return null; })
+    skipDevContext
+      ? Promise.resolve(null)
+      : getDigitalTwinForPrompt({ maxTokens: config.digitalTwin?.maxContextTokens || config.soul?.maxContextTokens || 2000, personaId: 'active' })
+          .catch(err => { console.log(`⚠️ Digital twin context retrieval failed: ${err.message}`); return null; })
   ]);
 
   // Build context compaction section if task is retrying after a context-limit failure
@@ -1875,10 +1883,12 @@ ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch 
   const skillSection = await loadSkillTemplates(detectSkillTemplates(task));
 
   // Build onboard tools section for agent awareness
-  const toolsSection = await getToolsSummaryForPrompt().catch(err => {
-    console.log(`⚠️ Tools summary retrieval failed: ${err.message}`);
-    return '';
-  });
+  const toolsSection = skipDevContext
+    ? ''
+    : await getToolsSummaryForPrompt().catch(err => {
+        console.log(`⚠️ Tools summary retrieval failed: ${err.message}`);
+        return '';
+      });
 
   // Build .planning/ context section for GSD-enabled apps
   let planningContextSection = '';

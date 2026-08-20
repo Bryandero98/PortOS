@@ -31,11 +31,11 @@ import { emitLog } from './cosEvents.js';
 import { updateTask, addTask } from './cos.js';
 import { getAppById } from './apps.js';
 import { isTruthyMeta, isFalsyMeta, getActiveAgentIds } from './agentState.js';
-import { PATHS } from '../lib/fileUtils.js';
+import { PATHS, ensureDir } from '../lib/fileUtils.js';
 import * as git from './git.js';
 import { detectConflicts } from './taskConflict.js';
 import { createWorktree, adoptWorktree, findAdoptableWorktreeForBranch, isBranchCheckedOutElsewhereError } from './worktreeManager.js';
-import { resolveSpawnCwd } from '../lib/spawnCwd.js';
+import { resolveSpawnCwd, usesCreativeDirectorScratchCwd, creativeDirectorScratchCwd } from '../lib/spawnCwd.js';
 import { enforceSafeBranchUpstream } from '../lib/branchUpstreamGuard.js';
 import { resolveTaskTargetBranch } from '../lib/taskTargetBranch.js';
 import { getAppWorkspace, getAppDataForTask, createJiraTicketForTask } from './agentPromptBuilder.js';
@@ -144,6 +144,27 @@ async function adoptWorktreeHoldingBranch({ agentId, workspacePath, branchName, 
  * @returns {Promise<object>} discriminated outcome (see module doc)
  */
 export async function prepareAgentWorkspace({ agentId, task }) {
+  // Creative Director treatment/plan/evaluate tasks are HTTP-PATCH deliverables
+  // and never asked for a worktree. Pin them to an isolated scratch cwd BEFORE
+  // the PortOS-root resolution / git-pull / conflict scan, so a CLI/TUI provider
+  // cannot natively discover the repo CLAUDE.md tree (#4650).
+  if (usesCreativeDirectorScratchCwd(task)) {
+    const workspacePath = creativeDirectorScratchCwd(agentId);
+    await ensureDir(workspacePath);
+    emitLog('info', `📂 Agent workspace: ${workspacePath} (creative-director scratch)`, {
+      taskId: task.id, workspace: workspacePath,
+    });
+    return {
+      outcome: 'ready',
+      workspacePath,
+      resolvedAppName: null,
+      worktreeInfo: null,
+      jiraTicket: null,
+      jiraBranchName: null,
+      explicitWorktree: false,
+    };
+  }
+
   // Determine workspace path and resolve app name
   const isReadOnly = isTruthyMeta(task.metadata?.readOnly);
   let workspacePath = task.metadata?.app
