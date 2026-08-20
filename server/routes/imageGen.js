@@ -42,6 +42,8 @@ import * as characterService from '../services/character.js';
 import { randomUUID } from 'crypto';
 import { buildUniverseRunTag } from '../services/universeRunTag.js';
 import { getSettings } from '../services/settings.js';
+import { federatedMediaImageJobSubmissionSchema } from '../lib/validation.js';
+import { prepareRemoteMediaJob } from '../services/federatedMedia/remoteSubmission.js';
 
 const router = Router();
 
@@ -176,6 +178,14 @@ const generateSchema = z.object({
   // path returns the filename to the client, which attaches it directly.
   catalogIngredientId: z.string().min(1).max(200).optional(),
   catalogMediaKind: z.enum(['portrait', 'reference']).optional(),
+  // Federated media provider (#4348). When set, the render is submitted to
+  // THIS registered peer instead of running on local hardware. Server-validated
+  // against the per-peer allowlist — an agent cannot route work to an arbitrary
+  // peer by naming one here. mediaProviderEngine names the provider-side
+  // engine within that allowlist; local image/video generation registers as
+  // 'local', which is the only engine a provider can currently advertise.
+  mediaProviderPeerId: z.string().uuid().optional(),
+  mediaProviderEngine: z.string().trim().min(1).max(80).optional(),
 }).refine(refineImagePixelCap, { message: PIXEL_CAP_MESSAGE, path: ['width'] });
 
 // JSON callers (SDAPI bridge, avatar route, the Imagine page's old payload
@@ -336,7 +346,7 @@ router.get('/regen/availability', asyncHandler(async (req, res) => {
 // Shape returned for any image-gen job that goes through the mediaJobQueue
 // (local + codex). Kept in one place so the two enqueue branches below stay
 // in sync — the client's polling/SSE hooks key off these fields.
-const queuedImageResponse = ({ jobId, position, status, mode, model }) => ({
+const queuedImageResponse = ({ jobId, position, status, mode, model, mediaProviderPeerId = null }) => ({
   jobId,
   generationId: jobId,
   filename: `${jobId}.png`,
@@ -345,6 +355,10 @@ const queuedImageResponse = ({ jobId, position, status, mode, model }) => ({
   model,
   status,
   position,
+  // Which peer is rendering this, or null for a local/cloud render. The client
+  // needs it to label the in-flight card honestly — `mode` is null for a
+  // federated render precisely because no local backend is running it.
+  mediaProviderPeerId,
 });
 
 router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
@@ -405,6 +419,81 @@ router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
   // call with no local single-flight constraint to absorb. `settings` and
   // `mode` were already resolved above (so the FLUX.2 + local-backend gate
   // could fire before staging any uploads).
+
+  // Federated render (#4348): submit to the selected peer instead of running
+  // locally. Checked BEFORE the cloud/local dispatch below — those branches
+  // resolve this machine's backends, which a remote render never uses.
+  if (params.mediaProviderPeerId) {
+    // The federated wire is text-to-image only: it carries no init image,
+    // reference images, or LoRA weights, and cleaners run on the bytes this
+    // machine renders. Reject rather than silently dropping conditioning the
+    // user asked for — a render that quietly ignores its source image is worse
+    // than one that refuses.
+    const unsupported = [
+      ['an init image', params.initImagePath],
+      ['reference images', params.referenceImagePaths?.length],
+      ['LoRA weights', params.loraFilenames?.length || params.loraPaths?.length],
+    ].filter(([, present]) => present).map(([label]) => label);
+    if (unsupported.length) {
+      throw new ServerError(
+        `A federated media provider renders text-to-image only — this request uses ${unsupported.join(' and ')}. Render locally instead.`,
+        { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
+      );
+    }
+    // A peer advertises specific models; it has no notion of 'this caller's
+    // default'. Say so rather than letting the wire schema report a bare
+    // 'expected string, received undefined' for a field the local path defaults.
+    if (!params.modelId) {
+      throw new ServerError(
+        'A federated render must name the provider model explicitly (modelId)',
+        { status: 400, code: 'MEDIA_PROVIDER_MODEL_REQUIRED' },
+      );
+    }
+    // Re-validate against the wire schema here rather than trusting the route
+    // schema's overlap with it: this object is what gets persisted and replayed
+    // on every reconcile, so it must already be a body the provider accepts.
+    const request = validateRequest(federatedMediaImageJobSubmissionSchema, {
+      kind: 'image',
+      engine: params.mediaProviderEngine || 'local',
+      modelId: params.modelId,
+      prompt: params.prompt,
+      ...(params.negativePrompt ? { negativePrompt: params.negativePrompt } : {}),
+      ...(params.width !== undefined ? { width: params.width } : {}),
+      ...(params.height !== undefined ? { height: params.height } : {}),
+      ...(params.steps !== undefined ? { steps: params.steps } : {}),
+      ...(params.guidance !== undefined ? { guidance: params.guidance } : {}),
+      ...(params.seed !== undefined ? { seed: params.seed } : {}),
+    });
+    const { peer, remoteMedia } = await prepareRemoteMediaJob({
+      peerId: params.mediaProviderPeerId,
+      kind: 'image',
+      request,
+    });
+    // Drop every field that only means something to a LOCAL dispatch: the
+    // routing inputs consumed above, plus the backend selectors this render
+    // never uses. The destination tags (universeRun, writersRoom, musicVideo,
+    // catalogAttach) deliberately stay — their completion hooks fire off the
+    // finished filename and work identically for a federated render.
+    const {
+      mediaProviderPeerId: _peerId, mediaProviderEngine: _engine,
+      mode: _mode, cloudModel: _cloudModel, ...jobParams
+    } = params;
+    // The conditioning prompt rides ONLY inside the versioned marker. An older
+    // build that cannot route `remoteMedia` therefore falls through to a local
+    // render with no prompt and no configured backend, rather than quietly
+    // re-rendering this job for real on local hardware.
+    const queued = enqueueJob({
+      kind: 'image',
+      params: { ...jobParams, prompt: '', remoteMedia },
+    });
+    return res.json(queuedImageResponse({
+      ...queued,
+      mode: null,
+      model: request.modelId,
+      mediaProviderPeerId: peer.id,
+    }));
+  }
+
   // `cloudModel` is a dispatcher-level knob, not a provider param — the
   // resolver folds it into the provider's own `model`, so drop the raw field
   // before it rides into the persisted job params.

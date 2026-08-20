@@ -60,6 +60,18 @@ vi.mock('../services/mediaJobQueue/index.js', () => ({
 // The /generate route resolves an optional universeRun collection target via
 // findOrCreateUniverseCollection. Mock it so the universeRun test asserts the
 // tag-resolution wiring without touching real collection storage.
+// The federated branch resolves the peer + capacity preflight through this
+// helper; mock it so the route test asserts its own validation and enqueue
+// wiring without standing up a peer registry.
+const federatedPeerId = '00000000-0000-4000-8000-0000000000f1';
+vi.mock('../services/federatedMedia/remoteSubmission.js', () => ({
+  prepareRemoteMediaJob: vi.fn(async ({ peerId, kind, request }) => ({
+    peer: { id: peerId },
+    capability: { kind, engine: request.engine, modelId: request.modelId },
+    remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request },
+  })),
+}));
+
 vi.mock('../services/mediaCollections.js', () => ({
   findOrCreateUniverseCollection: vi.fn(async ({ universeId }) => ({ id: `col-${universeId}` })),
 }));
@@ -109,6 +121,7 @@ import * as characterService from '../services/character.js';
 import * as mediaJobQueue from '../services/mediaJobQueue/index.js';
 import { getSettings } from '../services/settings.js';
 import { findOrCreateUniverseCollection } from '../services/mediaCollections.js';
+import { prepareRemoteMediaJob } from '../services/federatedMedia/remoteSubmission.js';
 
 describe('Image Gen Routes', () => {
   let app;
@@ -1417,4 +1430,75 @@ describe('Image Gen Routes', () => {
       resolveBackendSpy.mockRestore();
     });
   });
+
+  describe('POST /api/image-gen/generate — federated media provider', () => {
+    it('submits to the selected peer and keeps the prompt inside the versioned marker', async () => {
+      const response = await request(app).post('/api/image-gen/generate').send({
+        prompt: 'a lighthouse at dusk',
+        modelId: 'dev',
+        width: 512,
+        height: 512,
+        seed: 42,
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        jobId: 'mock-image-job',
+        // No local backend renders this, so `mode` must not name one.
+        mode: null,
+        model: 'dev',
+        mediaProviderPeerId: federatedPeerId,
+      });
+      expect(prepareRemoteMediaJob).toHaveBeenCalledWith({
+        peerId: federatedPeerId,
+        kind: 'image',
+        request: {
+          kind: 'image',
+          engine: 'local',
+          modelId: 'dev',
+          prompt: 'a lighthouse at dusk',
+          width: 512,
+          height: 512,
+          seed: 42,
+        },
+      });
+
+      const [{ params }] = mediaJobQueue.enqueueJob.mock.calls[0];
+      // Blank top-level prompt + no routing fields: an older build that cannot
+      // read `remoteMedia` falls through to a local render with nothing to
+      // render, rather than quietly re-running this job on local hardware.
+      expect(params.prompt).toBe('');
+      expect(params.remoteMedia.request.prompt).toBe('a lighthouse at dusk');
+      expect(params).not.toHaveProperty('mediaProviderPeerId');
+      expect(params).not.toHaveProperty('mediaProviderEngine');
+    });
+
+    it('requires an explicit provider model instead of falling back to a local default', async () => {
+      const response = await request(app).post('/api/image-gen/generate').send({
+        prompt: 'a lighthouse at dusk',
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(response.status).toBe(400);
+      expect(response.body.code).toBe('MEDIA_PROVIDER_MODEL_REQUIRED');
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
+    });
+
+    it('refuses a federated render that carries conditioning the wire cannot take', async () => {
+      const response = await request(app).post('/api/image-gen/generate').send({
+        prompt: 'a lighthouse at dusk',
+        modelId: 'dev',
+        loraFilenames: ['style.safetensors'],
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(response.status).toBe(400);
+      expect(response.body.code).toBe('MEDIA_PROVIDER_INPUT_UNSUPPORTED');
+      expect(response.body.error).toMatch(/LoRA weights/);
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
+      expect(prepareRemoteMediaJob).not.toHaveBeenCalled();
+    });
+  });
+
 });

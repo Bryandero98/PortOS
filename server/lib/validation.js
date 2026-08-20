@@ -790,7 +790,7 @@ const federatedMediaAudioJobSubmissionSchema = federatedMediaJobRoutingSchema.ex
 // carrying prompt or record content (see the acceptance criteria on #4348) —
 // a submitted job body is not a status payload. Local input assets (init/
 // reference images, LoRAs) stay out of scope for this slice; see the PR body.
-const federatedMediaImageJobSubmissionSchema = federatedMediaJobRoutingSchema.omit({
+export const federatedMediaImageJobSubmissionSchema = federatedMediaJobRoutingSchema.omit({
   durationSec: true, durationMode: true,
 }).extend({
   kind: z.literal('image'),
@@ -803,7 +803,7 @@ const federatedMediaImageJobSubmissionSchema = federatedMediaJobRoutingSchema.om
   seed: z.number().int().min(0).optional(),
 }).strict().refine(refineImagePixelCap, { message: PIXEL_CAP_MESSAGE, path: ['width'] });
 
-const federatedMediaVideoJobSubmissionSchema = federatedMediaJobRoutingSchema.omit({
+export const federatedMediaVideoJobSubmissionSchema = federatedMediaJobRoutingSchema.omit({
   durationSec: true, durationMode: true,
 }).extend({
   kind: z.literal('video'),

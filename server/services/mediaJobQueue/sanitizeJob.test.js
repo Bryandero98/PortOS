@@ -81,4 +81,40 @@ describe('sanitizeJob', () => {
     });
     expect(sanitized.params).not.toHaveProperty('remoteMedia');
   });
+
+  it('restores an image/video remote job prompt from its marker, not from params', () => {
+    const sanitized = sanitizeJob({
+      id: 'job-image',
+      kind: 'image',
+      status: 'running',
+      params: {
+        // Blank on purpose: the prompt lives only inside the versioned marker so
+        // an older build that cannot route it fails closed instead of rendering.
+        prompt: '',
+        modelId: 'dev',
+        width: 512,
+        height: 512,
+        remoteMedia: {
+          wireVersion: 1,
+          peerId: '00000000-0000-4000-8000-000000000001',
+          request: {
+            kind: 'image',
+            engine: 'local',
+            modelId: 'dev',
+            prompt: 'a lighthouse at dusk',
+            width: 512,
+            height: 512,
+          },
+        },
+      },
+    });
+
+    expect(sanitized.params).toEqual({
+      prompt: 'a lighthouse at dusk',
+      modelId: 'dev',
+      width: 512,
+      height: 512,
+    });
+    expect(sanitized.params).not.toHaveProperty('remoteMedia');
+  });
 });

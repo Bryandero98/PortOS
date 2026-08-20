@@ -13,7 +13,9 @@ import os from 'os';
 import { z } from 'zod';
 import { asyncHandler, ServerError, failValidation } from '../lib/errorHandler.js';
 import { uploadFields } from '../lib/multipart.js';
-import { videoModelTermsSchema } from '../lib/validation.js';
+import {
+  validateRequest, videoModelTermsSchema, federatedMediaVideoJobSubmissionSchema,
+} from '../lib/validation.js';
 import { grokVideoDurationSchema } from '../lib/sharedSchemas.js';
 import { MIN_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
 import {
@@ -66,6 +68,7 @@ import { startHfDownloadStream, openSseStream } from '../lib/sseDownload.js';
 import { saveUploadedGalleryVideo } from '../services/videoUpload.js';
 import { JSON_BODY_LIMIT_BYTES } from '../lib/uploadLimits.js';
 import { createInstallLogger } from '../lib/installLogger.js';
+import { prepareRemoteMediaJob } from '../services/federatedMedia/remoteSubmission.js';
 
 const router = Router();
 
@@ -318,6 +321,13 @@ const generateBodySchema = z.object({
       sceneId: z.string().min(1).max(200),
     }).optional(),
   ),
+  // Federated media provider (#4348). When set, the render is submitted to
+  // THIS registered peer instead of local hardware. Server-validated against
+  // the per-peer allowlist, so naming a peer here cannot route work to one the
+  // local user never opted into. `mediaProviderEngine` names the provider-side
+  // engine inside that allowlist (local generation registers as 'local').
+  mediaProviderPeerId: z.string().guid().optional(),
+  mediaProviderEngine: z.string().trim().min(1).max(80).optional(),
 });
 
 // Probes required-package imports on each call so a half-installed Python
@@ -997,6 +1007,89 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     failValidation(parsed);
   }
   const body = parsed.data;
+  // Federated render (#4348): submit to the selected peer instead of running
+  // locally. Handled BEFORE prepareVideoGenParams, which resolves this
+  // machine's backend and stages uploads a remote render can never use.
+  if (body.mediaProviderPeerId) {
+    // The federated wire is text-to-video only. Every input below changes what
+    // the clip actually is, and none of it can cross — refuse rather than
+    // render something the user didn't ask for.
+    const unsupported = [
+      ['uploaded files', Object.keys(uploads).length],
+      ['a source image', body.sourceImageFile],
+      ['an end frame', body.lastImageFile],
+      ['keyframes', body.keyframes?.length],
+      ['a source video to extend', body.extendFromVideoId],
+      ['IC-LoRA references', body.icReferenceVideoIds?.length || body.icReferenceImageFiles?.length],
+      ['LoRA weights', body.loraFilenames?.length],
+      ['chained chunks', body.chunks > 1],
+      ['the Grok backend', body.backend === 'grok'],
+      ['a non-text render mode', body.mode !== undefined && body.mode !== 'text'],
+      // A director-board render is image-to-video by construction (its scene
+      // reference frame conditions the shot), and its project/scene ids are
+      // validated inside prepareVideoGenParams, which this branch bypasses.
+      ['a music-video scene tag', body.musicVideo],
+    ].filter(([, present]) => present).map(([label]) => label);
+    if (unsupported.length) {
+      await cleanupMultipartTemp(uploads);
+      throw new ServerError(
+        `A federated media provider renders text-to-video only — this request uses ${unsupported.join(' and ')}. Render locally instead.`,
+        { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
+      );
+    }
+    // A peer advertises specific models; it has no notion of 'this caller's
+    // default'. Say so rather than letting the wire schema report a bare
+    // 'expected string, received undefined' for a field the local path defaults.
+    if (!body.modelId) {
+      throw new ServerError(
+        'A federated render must name the provider model explicitly (modelId)',
+        { status: 400, code: 'MEDIA_PROVIDER_MODEL_REQUIRED' },
+      );
+    }
+    // Re-validate against the wire schema rather than trusting this route
+    // schema's overlap with it: this object is persisted and replayed on every
+    // reconcile, so it must already be a body the provider accepts.
+    const request = validateRequest(federatedMediaVideoJobSubmissionSchema, {
+      kind: 'video',
+      engine: body.mediaProviderEngine || 'local',
+      modelId: body.modelId,
+      prompt: body.prompt,
+      ...(body.negativePrompt ? { negativePrompt: body.negativePrompt } : {}),
+      ...(body.width !== undefined ? { width: body.width } : {}),
+      ...(body.height !== undefined ? { height: body.height } : {}),
+      ...(body.numFrames !== undefined ? { numFrames: body.numFrames } : {}),
+      ...(body.fps !== undefined ? { fps: body.fps } : {}),
+      ...(body.steps !== undefined ? { steps: body.steps } : {}),
+      ...(body.guidanceScale !== undefined ? { guidance: body.guidanceScale } : {}),
+      ...(body.seed !== undefined ? { seed: body.seed } : {}),
+    });
+    const { peer, remoteMedia } = await prepareRemoteMediaJob({
+      peerId: body.mediaProviderPeerId,
+      kind: 'video',
+      request,
+    });
+    // Prompt and dials ride ONLY inside the versioned marker, and the job
+    // carries no pythonPath. An older build that can't route `remoteMedia`
+    // therefore hits generateVideo's "Prompt is required" guard and fails
+    // closed instead of re-rendering this job locally.
+    const { jobId, position, status } = enqueueJob({
+      kind: 'video',
+      params: { prompt: '', modelId: request.modelId, remoteMedia },
+    });
+    return res.json({
+      jobId,
+      generationId: jobId,
+      filename: `${jobId}.mp4`,
+      model: request.modelId,
+      // No local backend is running this, so `mode` is null rather than a
+      // backend name the render never used.
+      mode: null,
+      mediaProviderPeerId: peer.id,
+      status,
+      position,
+    });
+  }
+
   // Everything between validation and enqueue — backend resolution, upload
   // staging with rollback, mode/reference validation, history lookups — lives
   // in the service (#3288), mirroring imageGen's prepareGenerateParams. It

@@ -28,11 +28,16 @@ export function sanitizeJob(job) {
           : value,
       ]))
     : undefined;
-  // Remote jobs keep only a fixed-vocabulary profile inside their versioned
-  // marker so free-form personal text never reaches the provider. Rebuild the
-  // actual conditioning prompt for the public projection without exposing
-  // private peer routing state.
-  const remotePrompt = renderFederatedMediaAudioPrompt(job.params?.remoteMedia?.profile);
+  // A remote job's conditioning text lives inside its versioned marker, never
+  // in top-level params — that is what makes an older build (which cannot route
+  // the marker) fail closed instead of quietly re-rendering the job locally.
+  // Rebuild the prompt for the public projection without exposing private peer
+  // routing state. Audio renders it from the fixed-vocabulary profile (free-form
+  // personal text never reaches an audio provider at all); image and video carry
+  // the submitted prompt itself.
+  const remotePrompt = renderFederatedMediaAudioPrompt(job.params?.remoteMedia?.profile)
+    ?? (typeof job.params?.remoteMedia?.request?.prompt === 'string'
+      ? job.params.remoteMedia.request.prompt : null);
   if (safeParams && remotePrompt) {
     safeParams.prompt = remotePrompt;
   }

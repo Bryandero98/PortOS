@@ -149,6 +149,18 @@ vi.mock('../lib/sseDownload.js', () => ({
 
 // Render submissions go through the mediaJobQueue. Mock its surface so the
 // route tests stay synchronous and don't kick off the worker loop.
+// The federated branch resolves the peer + capacity preflight through this
+// helper; mock it so the route test asserts its own validation and enqueue
+// wiring without standing up a peer registry.
+const federatedPeerId = '00000000-0000-4000-8000-0000000000f2';
+vi.mock('../services/federatedMedia/remoteSubmission.js', () => ({
+  prepareRemoteMediaJob: vi.fn(async ({ peerId, kind, request }) => ({
+    peer: { id: peerId },
+    capability: { kind, engine: request.engine, modelId: request.modelId },
+    remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request },
+  })),
+}));
+
 vi.mock('../services/mediaJobQueue/index.js', () => ({
   enqueueJob: vi.fn(({ kind, params }) => ({ jobId: `mock-${kind}-job`, position: 1, status: 'queued' })),
   attachSseClient: vi.fn(() => false),
@@ -218,6 +230,7 @@ vi.mock('fs/promises', () => ({
 import { copyFile, unlink } from 'fs/promises';
 import * as videoGenService from '../services/videoGen/local.js';
 import * as mediaJobQueue from '../services/mediaJobQueue/index.js';
+import { prepareRemoteMediaJob } from '../services/federatedMedia/remoteSubmission.js';
 import { getProject as getMusicVideoProject } from '../services/musicVideo/projects.js';
 import { getTrack } from '../services/tracks/index.js';
 import { resolveGalleryImage } from '../lib/fileUtils.js';
@@ -2247,4 +2260,85 @@ describe('videoGen routes', () => {
       expect(r.body.error).toMatch(/not found/i);
     });
   });
+
+  describe('POST / — federated media provider', () => {
+    it('submits to the selected peer and keeps the prompt inside the versioned marker', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a slow pan across a harbour',
+        modelId: 'ltx2',
+        numFrames: 121,
+        fps: 24,
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({
+        jobId: 'mock-video-job',
+        // No local backend renders this, so `mode` must not name one.
+        mode: null,
+        model: 'ltx2',
+        mediaProviderPeerId: federatedPeerId,
+      });
+      expect(prepareRemoteMediaJob).toHaveBeenCalledWith({
+        peerId: federatedPeerId,
+        kind: 'video',
+        request: {
+          kind: 'video',
+          engine: 'local',
+          modelId: 'ltx2',
+          prompt: 'a slow pan across a harbour',
+          numFrames: 121,
+          fps: 24,
+        },
+      });
+
+      const [{ params }] = mediaJobQueue.enqueueJob.mock.calls[0];
+      // Blank top-level prompt + no pythonPath: an older build that cannot read
+      // `remoteMedia` hits generateVideo's "Prompt is required" guard and fails
+      // closed instead of re-rendering this job on local hardware.
+      expect(params.prompt).toBe('');
+      expect(params).not.toHaveProperty('pythonPath');
+      expect(params.remoteMedia.request.prompt).toBe('a slow pan across a harbour');
+    });
+
+    it('requires an explicit provider model instead of falling back to a local default', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a slow pan across a harbour',
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body.code).toBe('MEDIA_PROVIDER_MODEL_REQUIRED');
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
+    });
+
+    it('refuses a federated render that carries conditioning the wire cannot take', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a slow pan across a harbour',
+        modelId: 'ltx2',
+        sourceImageFile: 'frame.png',
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body.code).toBe('MEDIA_PROVIDER_INPUT_UNSUPPORTED');
+      expect(r.body.error).toMatch(/source image/);
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
+      expect(prepareRemoteMediaJob).not.toHaveBeenCalled();
+    });
+
+    it('refuses a federated chained render rather than shipping one unchained clip', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a slow pan across a harbour',
+        modelId: 'ltx2',
+        chunks: 3,
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/chained chunks/);
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
+    });
+  });
+
 });
