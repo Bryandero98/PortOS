@@ -305,7 +305,6 @@ export default function MuseCoSAvatar({ state, speaking, background = false }) {
     <CoSCanvasGuard
       label="Muse 3D avatar. Drag to rotate."
       background={background}
-      fallback={<MissingModelHint background={background} />}
     >
       <Canvas
         camera={{ position: [0, 0, 3.3], fov: 45 }}

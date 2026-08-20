@@ -24,10 +24,15 @@ import { resolve } from 'node:path';
 // tell a working Retry from one that only looks like it re-fetched), while
 // `canvas.error` fails the CANVAS ITSELF, which is how r3f surfaces a WebGL
 // context failure: from its own render, with nothing cached to evict.
-const { mockScene, gltf, canvas } = vi.hoisted(() => ({
+// `hdri.error` fails the ENVIRONMENT only — a missing or corrupt .hdr (a partial
+// checkout, a stale service-worker cache). It is deliberately separate from
+// `gltf.error`: the whole point of the HDRI's own boundary is that the two
+// failures must not produce the same outcome.
+const { mockScene, gltf, canvas, hdri } = vi.hoisted(() => ({
   mockScene: {},
   gltf: { error: null, rejections: new Map() },
   canvas: { error: null },
+  hdri: { error: null },
 }));
 vi.mock('@react-three/fiber', () => ({
   Canvas: ({ children }) => {
@@ -39,7 +44,9 @@ vi.mock('@react-three/fiber', () => ({
 vi.mock('@react-three/drei', () => ({
   Canvas: () => null,
   OrbitControls: () => null,
-  Environment: ({ background, backgroundBlurriness, files, children }) => (
+  Environment: ({ background, backgroundBlurriness, files, children }) => {
+    if (hdri.error) throw hdri.error;
+    return (
     <div
       data-testid="glb-environment"
       data-background={background ? 'visible' : 'hidden'}
@@ -48,7 +55,8 @@ vi.mock('@react-three/drei', () => ({
     >
       {children}
     </div>
-  ),
+    );
+  },
   Bounds: ({ children }) => children,
   useGLTF: Object.assign((url) => {
     if (gltf.error) gltf.rejections.set(url, gltf.error);
@@ -60,7 +68,7 @@ vi.mock('@react-three/drei', () => ({
 vi.mock('../../hooks/useClonedGltf', () => ({ GltfPrimitive: () => null }));
 
 import { useGLTF } from '@react-three/drei';
-import GlbViewer, { cloneGlbSceneWithOpaqueMaterials, glbFailureHint } from './GlbViewer';
+import GlbViewer, { cloneGlbSceneWithOpaqueMaterials } from './GlbViewer';
 
 const openControls = () => fireEvent.click(screen.getByLabelText('Preview display settings'));
 
@@ -68,6 +76,7 @@ beforeEach(() => {
   gltf.error = null;
   gltf.rejections.clear();
   canvas.error = null;
+  hdri.error = null;
   useGLTF.clear.mockClear();
 });
 
@@ -300,11 +309,45 @@ describe('GlbViewer load failures', () => {
     expect(useGLTF.clear).not.toHaveBeenCalled();
     expect(screen.getByTestId('glb-canvas')).toBeInTheDocument();
   });
+});
 
-  it('only names a cause it can actually recognize', () => {
-    expect(glbFailureHint(new Error('something went sideways'))).toBeNull();
-    expect(glbFailureHint(new Error('<!DOCTYPE html>'))).toMatch(/web page/i);
-    expect(glbFailureHint(new Error('responded with 404'))).toMatch(/no longer on disk/i);
-    expect(glbFailureHint(new Error('Error creating WebGL context'))).toMatch(/WebGL/i);
+describe('GlbViewer HDRI failures', () => {
+  let logged;
+  beforeEach(() => {
+    logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  // The HDRI is image-based LIGHTING, which the three lights already stand in
+  // for. Sharing the mesh's boundary meant a missing .hdr reported "This 3D
+  // model could not be loaded" and took a perfectly good mesh down with it.
+  it('degrades to lights-only when the HDRI fails, keeping the mesh', () => {
+    hdri.error = new Error('Could not load /hdri/studio-small-08-1k.hdr: 404 Not Found');
+    render(<GlbViewer src="/data/image-to-3d/abc/model.glb" />);
+
+    expect(screen.queryByTestId('glb-load-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('glb-canvas')).toBeInTheDocument();
+    // The environment is the only thing gone — the viewer is NOT in failure
+    // mode, so the controls driving the still-live canvas are still mounted.
+    expect(screen.queryByTestId('glb-environment')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Preview display settings')).toBeInTheDocument();
+    openControls();
+    expect(screen.getByLabelText('Ambient light')).toBeInTheDocument();
+    // ...but the two knobs that drove the now-unmounted Environment are gone,
+    // replaced by a line saying why, instead of sitting there doing nothing.
+    expect(screen.queryByLabelText('Environment light')).not.toBeInTheDocument();
+    expect(screen.queryByText('Show HDRI background')).not.toBeInTheDocument();
+    expect(screen.getByText(/Environment lighting unavailable/i)).toBeInTheDocument();
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('💥 React Error'), expect.anything());
+  });
+
+  // The other half of the split: the mesh's own failure must still surface.
+  it('still shows the failure panel when the MESH is what failed', () => {
+    gltf.error = new Error('Could not load /data/image-to-3d/abc/model.glb: 404 Not Found');
+    render(<GlbViewer src="/data/image-to-3d/abc/model.glb" />);
+
+    expect(screen.getByTestId('glb-load-error')).toBeInTheDocument();
+    expect(screen.queryByTestId('glb-canvas')).not.toBeInTheDocument();
   });
 });
