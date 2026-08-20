@@ -369,6 +369,18 @@ describe('projectRunStates — the second-slice boundaries (#4540)', () => {
     expect(state).toMatchObject({ handoffCount: 1, owner: 'none' });
   });
 
+  it('takes the run total output size from the finalize event, not the first-byte marker', () => {
+    // `run.output` marks the FIRST byte; only `run.finalized` knows how much
+    // there was in the end. Reading the size off the marker would leave every
+    // completed run reporting no output at all.
+    const [state] = projectRunStates([
+      buildRunEvent({ kind: 'run.output', runId: 'r1', at: at('10:02'), data: { source: 'cli-stdout', firstChunkChars: 40 } }),
+      buildRunEvent({ kind: 'run.finalized', runId: 'r1', at: at('11:00'), data: { success: true, exitCode: 0, outputBytes: 98304 } })
+    ]);
+    expect(state.outputBytes).toBe(98304);
+    expect(state.lastOutputAt).toBe(at('10:02'));
+  });
+
   it('records a FAILED PR verification as verified:false, not as absent', () => {
     const [state] = projectRunStates([
       buildRunEvent({ kind: 'run.pr-verified', runId: 'r1', at: at('12:00'), data: { verified: false, category: 'pr-missing', branch: 'claim/issue-1' } })

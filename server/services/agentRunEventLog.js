@@ -96,9 +96,12 @@ const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_READ_LIMIT = RUN_EVENT_READ_LIMITS.default;
 export const MAX_READ_LIMIT = RUN_EVENT_READ_LIMITS.max;
 
-// Lazily hydrated on first append/read. `null` (not an empty Set) is the
-// "never loaded" sentinel, so a genuinely empty ledger caches as empty instead
-// of re-reading both files on every single append.
+// Lazily hydrated on first append/read: Maps of eventId → the event's `at`.
+// `null` (not an empty Map) is the "never loaded" sentinel, so a genuinely
+// empty ledger caches as empty instead of re-reading both files on every single
+// append. The timestamp is carried so the duplicate check can apply the SAME age
+// cutoff the read path applies — otherwise, in the window between prunes, a
+// redelivery could be rejected as a duplicate of an event no reader can see.
 let activeIds = null;
 let archiveIds = null;
 let activeCount = 0;
@@ -109,14 +112,35 @@ let lastPrunedAt = null;
 // Serializes appends; also the handle callers await.
 let appendQueue = Promise.resolve();
 
+/** eventId → `at`, for the duplicate check. Lines with no id are unindexable. */
+function indexById(events) {
+  return new Map(events.filter((e) => e?.eventId).map((e) => [e.eventId, e.at ?? null]));
+}
+
+/**
+ * Have we already stored this event, in a copy a reader can still see?
+ *
+ * An id whose only copy has aged past the cutoff does NOT count: the read path
+ * filters that event out, so treating a redelivery as a duplicate would leave
+ * the ledger with an event nothing can read and no way to re-observe it. Same
+ * reasoning as rotation — a duplicate we can no longer see is no longer a
+ * duplicate — applied continuously rather than only at the moment of a prune.
+ */
+function isStoredDuplicate(eventId, cutoff) {
+  const at = activeIds.has(eventId) ? activeIds.get(eventId)
+    : archiveIds.has(eventId) ? archiveIds.get(eventId)
+      : undefined;
+  return at !== undefined && typeof at === 'string' && at > cutoff;
+}
+
 async function hydrate() {
   if (activeIds) return;
   const [active, archive] = await Promise.all([
     readJSONLFile(ACTIVE_PATH),
     readJSONLFile(ARCHIVE_PATH)
   ]);
-  activeIds = new Set(active.map((e) => e?.eventId).filter(Boolean));
-  archiveIds = new Set(archive.map((e) => e?.eventId).filter(Boolean));
+  activeIds = indexById(active);
+  archiveIds = indexById(archive);
   activeCount = active.length;
 }
 
@@ -131,7 +155,7 @@ async function rotateIfFull() {
   if (await pathExists(ARCHIVE_PATH)) await unlink(ARCHIVE_PATH);
   await rename(ACTIVE_PATH, ARCHIVE_PATH);
   archiveIds = activeIds;
-  activeIds = new Set();
+  activeIds = new Map();
   activeCount = 0;
   console.log(`🔁 Rotated CoS run event ledger at ${MAX_ACTIVE_EVENTS} events`);
 }
@@ -190,8 +214,8 @@ async function pruneExpired({ now = Date.now(), force = false } = {}) {
   }
   if (keptActive.length !== active.length) await writeJSONLines(ACTIVE_PATH, keptActive);
 
-  archiveIds = new Set(keptArchive.map((e) => e?.eventId).filter(Boolean));
-  activeIds = new Set(keptActive.map((e) => e?.eventId).filter(Boolean));
+  archiveIds = indexById(keptArchive);
+  activeIds = indexById(keptActive);
   activeCount = keptActive.length;
   console.log(`🧹 Pruned ${dropped} CoS run events older than ${MAX_EVENT_AGE_DAYS} days`);
 }
@@ -202,12 +226,12 @@ async function appendNow(input) {
   // Age out BEFORE the duplicate check: an event whose only copy just expired
   // must be appendable again, exactly as after a rotation.
   await pruneExpired();
-  if (activeIds.has(event.eventId) || archiveIds.has(event.eventId)) {
+  if (isStoredDuplicate(event.eventId, expiryCutoff())) {
     return { appended: false, duplicate: true, event };
   }
   await rotateIfFull();
   await appendJSONLine(ACTIVE_PATH, event);
-  activeIds.add(event.eventId);
+  activeIds.set(event.eventId, event.at);
   activeCount += 1;
   return { appended: true, duplicate: false, event };
 }
@@ -362,7 +386,7 @@ export async function getRunEventLedgerStats() {
 }
 
 /**
- * Drop every cached seen-id set so the next call re-reads from disk.
+ * Drop every cached seen-id map so the next call re-reads from disk.
  *
  * Exported for tests, which write ledger files directly to simulate a restart —
  * the in-process caches are exactly what a real restart discards.

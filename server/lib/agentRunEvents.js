@@ -502,6 +502,11 @@ function applyKind(state, event) {
       state.endedAt = event.at;
       state.exitCode = Number.isFinite(data.exitCode) ? data.exitCode : null;
       state.durationMs = Number.isFinite(data.durationMs) ? data.durationMs : null;
+      // The finalize event carries the run's TOTAL output size — the only place
+      // a real byte count exists. `run.output` marks the first byte, not the
+      // last, so without this the projection's `outputBytes` would be null for
+      // every completed run.
+      if (Number.isFinite(data.outputBytes)) state.outputBytes = data.outputBytes;
       if (typeof data.errorCategory === 'string') state.errorCategory = data.errorCategory;
       break;
     }

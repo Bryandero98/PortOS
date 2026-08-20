@@ -871,6 +871,22 @@ describe('resumeAgent — requeues the paused agent\'s own task', () => {
     expect(markAgentComplete).toHaveBeenCalledWith('agent-paused-1', expect.objectContaining({ resumed: true }));
   });
 
+  // The lifecycle ledger (#4540) records a RESUME, not a retirement. The two
+  // non-continuing modes retire the paused record without queueing anything, so
+  // recording them would show a run going back to `running` that nothing runs.
+  it('records run.resumed only for the modes that actually continued the work', async () => {
+    appendRunEvent.mockClear();
+    await resumeAgent('agent-paused-1');
+    expect(appendRunEvent.mock.calls.map(([e]) => e).filter((e) => e.kind === 'run.resumed')).toEqual([
+      expect.objectContaining({ agentId: 'agent-paused-1', data: expect.objectContaining({ mode: 'requeued' }) })
+    ]);
+
+    appendRunEvent.mockClear();
+    getTaskById.mockResolvedValue({ ...PAUSED_TASK, status: 'in_progress', metadata: { context: 'original context' } });
+    await resumeAgent('agent-paused-1');
+    expect(appendRunEvent.mock.calls.map(([e]) => e).filter((e) => e.kind === 'run.resumed')).toHaveLength(0);
+  });
+
   // A user asking to resume is an explicit dispatch, and reviveBlockedTask resets the
   // spawn/orphan budgets — so a task that fell into a LATER failure block restarts in
   // place rather than being duplicated onto a fresh task.

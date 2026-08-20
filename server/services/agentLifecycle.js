@@ -931,15 +931,17 @@ export async function spawnViaRunner(agentId, task, opts) {
     return null;
   }
 
-  // Store PID in persisted state for zombie detection
-  await updateAgent(agentId, { pid: result.pid });
-
   // Ownership of the process now sits with the CoS Runner, not this server
   // (#4540). This is the boundary the in-memory `runnerAgents` map forgets on
   // every restart — after which "which process should I look in for this run"
-  // has no recorded answer at all. Emitted AFTER the runner accepted, so an
-  // event means the handoff landed. The natural key is the run: a run is handed
-  // to the runner exactly once, so a retried spawn cannot double-count it.
+  // has no recorded answer at all.
+  //
+  // Recorded the instant the runner accepts, BEFORE the pid persist below: the
+  // handoff has already happened by then, and a failed `updateAgent` would
+  // otherwise leave a live runner-owned process with no record of who owns it —
+  // precisely the orphan this ledger exists to explain. The natural key is the
+  // run: a run is handed to the runner exactly once, so a retried spawn cannot
+  // double-count it.
   await appendRunEvent({
     kind: 'run.handoff',
     runId,
@@ -948,6 +950,9 @@ export async function spawnViaRunner(agentId, task, opts) {
     eventId: `handoff:${agentId}:${runId || 'no-run'}:cos-runner`,
     data: { to: 'cos-runner', accepted: true, pid: result.pid ?? null, providerId: provider.id, laneName: laneName ?? null },
   });
+
+  // Store PID in persisted state for zombie detection
+  await updateAgent(agentId, { pid: result.pid });
 
   emitLog('info', `Agent ${agentId} spawned via runner (PID: ${result.pid})`, { agentId, pid: result.pid });
   return agentId;

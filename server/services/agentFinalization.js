@@ -668,18 +668,26 @@ export async function finalizeAgent({
   // branch it asked about, and every path that did not returns no branch at all.
   // So gate on the branch rather than re-deriving the service's own
   // applicability rules here, where they would drift apart.
-  if (!prCheckThrew && typeof prVerdict.branch === 'string') {
+  //
+  // `forge-unreachable` is excluded for the same reason a throw is: the forge
+  // being down is not evidence about the PR. Recording it as `verified: false`
+  // would put "this run shipped no PR" on the record for a run that may well
+  // have shipped one.
+  if (!prCheckThrew && typeof prVerdict.branch === 'string' && prVerdict.category !== FORGE_UNREACHABLE_CATEGORY) {
+    const verified = prVerdict.ok === true;
     await appendRunEvent({
       kind: 'run.pr-verified',
       runId,
       agentId,
       taskId: task?.id,
-      // A run is verified once. An explicit natural key rather than the
-      // content-derived default so a retried finalize (the close handler and
-      // the orphan sweep can both reach this path) records one verdict, not two.
-      eventId: `pr-verify:${agentId}:${runId || 'no-run'}`,
+      // Keyed on the run AND the verdict. The run part collapses a retried
+      // finalize (the close handler and the orphan sweep can both reach this
+      // path) into one entry; the verdict part keeps a run whose SECOND check
+      // found the PR its first check missed from being silently suppressed by
+      // the miss — that transition is the whole reason to look at the ledger.
+      eventId: `pr-verify:${agentId}:${runId || 'no-run'}:${verified ? 'ok' : prVerdict.category || 'failed'}`,
       data: {
-        verified: prVerdict.ok === true,
+        verified,
         branch: prVerdict.branch ?? null,
         category: prVerdict.category ?? null,
         noChangesToShip: prVerdict.noChangesToShip === true,

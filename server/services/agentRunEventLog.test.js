@@ -360,3 +360,28 @@ describe('retention — age bound (#4540)', () => {
     expect(countLines(ACTIVE)).toBe(1);
   });
 });
+
+describe('retention — dedupe and the age bound agree (#4540)', () => {
+  const MINUTE = 60 * 1000;
+  const AGE_MS = MAX_EVENT_AGE_DAYS * 24 * 60 * MINUTE;
+
+  it('re-admits an expired event even when the on-disk prune has not run yet', async () => {
+    // The prune is throttled to once an hour; the read filter is not. Without an
+    // age-aware duplicate check there is a window where a redelivery is rejected
+    // as a duplicate of an event no reader can see — the ledger would hold a
+    // fact it refuses to show and refuses to re-record.
+    //
+    // Pinned INSIDE that window on purpose: the event is 30 minutes short of
+    // expiry when first appended, and the clock then advances 40 minutes — past
+    // the event's age bound, but short of the prune interval that would
+    // otherwise have swept the id away and made this pass for the wrong reason.
+    const event = { kind: 'run.spawned', runId: 'r1', at: new Date(Date.parse(NOW) - AGE_MS + 30 * MINUTE).toISOString() };
+    expect(await appendRunEvent(event)).toMatchObject({ appended: true });
+
+    vi.setSystemTime(new Date(Date.parse(NOW) + 40 * MINUTE));
+    expect(countLines(ACTIVE)).toBe(1); // still on disk — the prune has NOT run
+    expect(await readRunEvents()).toHaveLength(0); // …but no reader can see it
+
+    expect(await appendRunEvent({ ...event })).toMatchObject({ appended: true, duplicate: false });
+  });
+});

@@ -481,3 +481,47 @@ describe('finalizeAgent — records the PR verdict in the lifecycle ledger', () 
     expect(prVerified()).toHaveLength(0);
   });
 });
+
+describe('finalizeAgent — the PR verdict is only recorded when one was reached', () => {
+  const prVerified = () => appendRunEvent.mock.calls.map(([e]) => e).filter((e) => e.kind === 'run.pr-verified');
+
+  const finalize = (overrides = {}) => finalizeAgent({
+    agentId: 'agent-1',
+    task: prTask(),
+    runId: 'run-1',
+    providerId: 'claude-code',
+    success: true,
+    exitCode: 0,
+    duration: 1000,
+    outputBuffer: 'done',
+    errorAnalysis: null,
+    workspacePath: '/w',
+    prExpected: true,
+    ...overrides,
+  });
+
+  it('writes NOTHING when the forge was unreachable', async () => {
+    // The forge being down is not evidence about the PR. Recording it as
+    // `verified: false` would put "this run shipped no PR" on the record for a
+    // run that may well have shipped one.
+    onBranch('claim/issue-1');
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'error', number: null, url: null, detail: 'gh: connection refused' });
+    await finalize();
+
+    expect(completeAgentMock).toHaveBeenCalledWith('agent-1', expect.objectContaining({ completionReason: FORGE_UNREACHABLE_CATEGORY }));
+    expect(prVerified()).toHaveLength(0);
+  });
+
+  it('records a later verdict that CHANGED, rather than suppressing it as a duplicate', async () => {
+    // A retry that finally opens the PR is exactly the transition worth reading
+    // the ledger for; a run-scoped key alone would swallow it.
+    onBranch('claim/issue-1');
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'none', number: null, url: null, detail: null });
+    await finalize();
+    findPullRequestForBranchMock.mockResolvedValue({ status: 'found', number: 7, url: 'https://example.com/pr/7' });
+    await finalize();
+
+    expect(prVerified().map((e) => e.data.verified)).toEqual([false, true]);
+    expect(new Set(prVerified().map((e) => e.eventId)).size).toBe(2);
+  });
+});

@@ -393,16 +393,21 @@ export async function resumeAgent(agentId, overrides = {}) {
   // resume branch before the spawn it triggers can pick it up. Paused records are
   // explicitly completable (see the idempotence guard in `completeAgent`).
   pausedAgents.delete(agentId);
-  // A paused run was released back to the queue (#4540). `mode` is the part the
-  // mutable record loses: 'requeued' and 'new-task' both read as a completed
-  // paused agent afterwards, and only one of them left a fresh task behind.
-  await appendRunEvent({
-    kind: 'run.resumed',
-    runId: agent.metadata?.runId ?? null,
-    agentId,
-    taskId: resumed.taskId ?? taskId,
-    data: { mode: resumed.mode ?? mode, branchName: resumed.branchName ?? null },
-  });
+  // A paused run was released back to the queue (#4540). Only the modes that
+  // actually CONTINUE the work qualify: 'already-active' and 'superseded' retire
+  // the paused record without queueing anything, so recording them as a resume
+  // would show a run going back to `running` that nothing is running. `mode` is
+  // the part the mutable record still loses — 'requeued' and 'new-task' both
+  // read as a completed paused agent afterwards, and only one left a fresh task.
+  if (mode === 'requeued' || mode === 'new-task') {
+    await appendRunEvent({
+      kind: 'run.resumed',
+      runId: agent.metadata?.runId ?? null,
+      agentId,
+      taskId: resumed.taskId ?? taskId,
+      data: { mode: resumed.mode ?? mode, branchName: resumed.branchName ?? null },
+    });
+  }
   await completeAgent(agentId, {
     success: false,
     resumed: true,
