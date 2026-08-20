@@ -15,6 +15,7 @@ import {
   spawnRuntimeInstaller,
   stopRuntimeInstaller,
 } from '../services/providerRuntimeInstaller.js';
+import { getProviderReadinessMap } from '../services/providerReadiness.js';
 
 /**
  * The CoS Agent Runner's exec allowlist, published read-only so the AI
@@ -132,6 +133,26 @@ export function createPortOSProviderRoutes(aiToolkit) {
   // host account name.
   router.get('/runtimes', asyncHandler(async (_req, res) => {
     res.json({ runtimes: await getProviderRuntimeStatuses() });
+  }));
+
+  /**
+   * Requirements checklist for every provider backed by a LOCAL daemon
+   * (llama.cpp, Ollama, LM Studio, MTPLX) — see `services/providerReadiness.js`.
+   *
+   * `/runtimes` above answers "can PortOS run this CLI?"; this answers "is the
+   * daemon that CLI talks to installed, running, and serving the model this
+   * provider asks for?" — the failure that otherwise only surfaces as
+   * "Cannot connect to API" inside a dead agent transcript.
+   *
+   * Computed on the RAW providers on purpose: a sanitized copy redacts secret
+   * env values, and a user's custom base URL can live in one
+   * (`OPENCODE_CONFIG_CONTENT`, `ANTHROPIC_BASE_URL`), which would send the
+   * probe at the wrong endpoint. The response carries booleans, labels, and the
+   * provider's own already-displayed endpoint — never a resolved binary path.
+   */
+  router.get('/readiness', asyncHandler(async (_req, res) => {
+    const data = await providerService.getAllProviders();
+    res.json({ readiness: await getProviderReadinessMap(data.providers) });
   }));
 
   /**

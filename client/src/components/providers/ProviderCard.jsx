@@ -4,15 +4,15 @@
  * Lives here rather than inline on the page because the page also owns the
  * provider EDITOR, the sample-provider panel and the ad-hoc runner — the card
  * is ~250 lines of its own and was already three `map`s deep once the page
- * started grouping cards by readiness.
+ * started grouping cards by their card state.
  *
- * The card renders no derivation of its own: `readiness`, `runtime` and
+ * The card renders no derivation of its own: `cardState`, `runtime` and
  * `status` all arrive resolved, so what colors the border, what the badge says,
  * and which section the page filed the card under can never disagree.
  */
 
 import {
-  PROVIDER_READINESS,
+  PROVIDER_CARD_STATE,
   effectiveModelContextWindow,
   isApiProvider,
   isGrokBuildCli,
@@ -26,36 +26,37 @@ import {
 } from '../../utils/providers';
 import { formatContextLength } from '../../utils/formatters';
 import ProviderRuntimeStatus from './ProviderRuntimeStatus';
+import ProviderReadiness from './ProviderReadiness';
 import { GrokUploadWarning, OrcaRouterKeyHint } from './ProviderNotices';
 
 // One phrasing for "this command isn't on the CoS Agent Runner's allowlist".
 // The editor states the same thing in its own inline banner, in prose.
 const RUNNER_NOT_ALLOWED_HINT = 'This command is not on the CoS Agent Runner’s allowlist, so /spawn and /spawn-tui will refuse it. The provider still works everywhere else (direct spawn, chat, pipeline). The allowlist is curated in the PortOS source, not in this form.';
 
-// Card presentation per readiness state. Exactly ONE border-color utility is
+// Card presentation per card state. Exactly ONE border-color utility is
 // emitted per card — Tailwind resolves same-specificity color utilities by
 // stylesheet order, not by the order they appear in `className` — so the
 // "default provider" highlight is a ring rather than a competing border color.
-export const READINESS_STYLES = {
-  [PROVIDER_READINESS.READY]: {
+export const CARD_STATE_STYLES = {
+  [PROVIDER_CARD_STATE.READY]: {
     label: 'READY',
     border: 'border-port-success/40',
     badge: 'bg-port-success/20 text-port-success',
     hint: 'Enabled, and every prerequisite is in place.',
   },
-  [PROVIDER_READINESS.BENCHED]: {
+  [PROVIDER_CARD_STATE.BENCHED]: {
     label: 'BENCHED',
     border: 'border-port-error/50',
     badge: 'bg-port-error/20 text-port-error',
     hint: 'Enabled, but benched after a failure — calls route to the fallback.',
   },
-  [PROVIDER_READINESS.BLOCKED]: {
+  [PROVIDER_CARD_STATE.BLOCKED]: {
     label: 'NEEDS SETUP',
     border: 'border-port-warning/50',
     badge: 'bg-port-warning/20 text-port-warning',
     hint: 'Missing a prerequisite — install the CLI or add the API key to use it.',
   },
-  [PROVIDER_READINESS.DISABLED]: {
+  [PROVIDER_CARD_STATE.DISABLED]: {
     label: 'DISABLED',
     border: 'border-port-border',
     badge: 'bg-gray-500/20 text-gray-400',
@@ -68,7 +69,8 @@ export const READINESS_STYLES = {
 
 export default function ProviderCard({
   provider,
-  readiness,
+  cardState,
+  daemonReadiness,
   runtime,
   status,
   isDefault,
@@ -86,7 +88,7 @@ export default function ProviderCard({
   onRecover,
   onInstallRuntime,
 }) {
-  const style = READINESS_STYLES[readiness.state];
+  const style = CARD_STATE_STYLES[cardState.state];
   return (
     <div
       className={`bg-port-card border border-l-4 rounded-xl p-4 ${style.border} ${style.dim || ''} ${
@@ -115,26 +117,26 @@ export default function ProviderCard({
                 MTPLX
               </span>
             )}
-            {/* One badge for the card's readiness — the same state that
+            {/* One badge for the card's state — the same one that
                 colors its border and decides which section it sits in.
                 BENCHED covers what used to render as UNAVAILABLE: an
                 enabled provider sidelined after a failure (usage limit,
                 model-not-found, auth) in favor of its fallback. */}
             <span
               className={`text-xs px-2 py-0.5 rounded ${style.badge}`}
-              title={readiness.state === PROVIDER_READINESS.BLOCKED
-                ? readiness.missing.map(m => m.label).join(' · ')
+              title={cardState.state === PROVIDER_CARD_STATE.BLOCKED
+                ? cardState.missing.map(m => m.label).join(' · ')
                 : (status?.message || style.hint)}
             >
               {style.label}
-              {readiness.state === PROVIDER_READINESS.BENCHED && status?.reason
+              {cardState.state === PROVIDER_CARD_STATE.BENCHED && status?.reason
                 ? ` · ${status.reason}`
                 : ''}
             </span>
             {/* A blocked provider's toggle is not what's stopping it, so
                 spell out which way it sits rather than leaving the reader
                 to infer it from the Enable/Disable button. */}
-            {readiness.state === PROVIDER_READINESS.BLOCKED && (
+            {cardState.state === PROVIDER_CARD_STATE.BLOCKED && (
               <span className="text-xs px-2 py-0.5 rounded bg-gray-500/20 text-gray-400">
                 {provider.enabled ? 'SWITCHED ON' : 'SWITCHED OFF'}
               </span>
@@ -157,6 +159,12 @@ export default function ProviderCard({
             runtime={runtime}
             onInstall={onInstallRuntime}
           />
+
+          {/* The other half of "can this actually run": is the local daemon this
+              provider points at installed, up, and serving the model it names.
+              Distinct from the card STATE above — that one is about the toggle
+              and the credentials, this one probes the daemon. */}
+          <ProviderReadiness className="mt-2" readiness={daemonReadiness} />
 
           {provider.enabled && status?.available === false && (
             <div className="mt-2 text-xs rounded border border-port-error/40 bg-port-error/10 px-3 py-2 text-port-error space-y-1">

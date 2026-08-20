@@ -7,6 +7,7 @@ const api = vi.hoisted(() => ({
   getApps: vi.fn(),
   getProviderStatuses: vi.fn(),
   getProviderRuntimes: vi.fn(),
+  getProviderReadiness: vi.fn(),
   getSampleProviders: vi.fn(),
   createProvider: vi.fn(),
   updateProvider: vi.fn(),
@@ -44,8 +45,8 @@ vi.mock('../components/install/RuntimeInstallModal', () => ({
 }));
 
 import AIProviders, { PROVIDER_SECTIONS } from './AIProviders';
-import { READINESS_STYLES } from '../components/providers/ProviderCard';
-import { PROVIDER_READINESS } from '../utils/providers';
+import { CARD_STATE_STYLES } from '../components/providers/ProviderCard';
+import { PROVIDER_CARD_STATE } from '../utils/providers';
 
 const renderPage = () => render(
   <MemoryRouter>
@@ -71,6 +72,7 @@ describe('AIProviders page load error handling', () => {
     api.getApps.mockResolvedValue([]);
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
     api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
     localModels.value = { ctxById: {}, installed: { ollama: null, lmstudio: null } };
   });
 
@@ -248,12 +250,61 @@ describe('AIProviders page load error handling', () => {
   });
 });
 
+describe('local-daemon readiness on the provider card', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    localModels.value = { ctxById: {}, installed: { ollama: null, lmstudio: null } };
+    api.getProviders.mockResolvedValue({
+      providers: [{ id: 'opencode-llama-tui', name: 'OpenCode llama TUI', type: 'tui', command: 'opencode', args: [], enabled: true, endpoint: 'http://127.0.0.1:8080/v1', llamaBacked: true }],
+      activeProvider: null,
+    });
+  });
+
+  it('surfaces the unmet requirements when the local daemon is not running', async () => {
+    api.getProviderReadiness.mockResolvedValue({
+      readiness: {
+        'opencode-llama-tui': {
+          kind: 'llama',
+          label: 'llama.cpp',
+          endpoint: 'http://127.0.0.1:8080/v1',
+          manageUrl: '/settings/local-llm',
+          docsUrl: 'https://example.com/docs',
+          ready: false,
+          checks: [
+            { id: 'runtime', label: 'llama.cpp installed', ok: false, detail: 'not found', fixHint: 'Install llama.cpp from Settings → Local LLM.' },
+            { id: 'server', label: 'llama.cpp server responding', ok: false, detail: 'nothing answered', fixHint: 'Install llama.cpp first, then start it.' },
+          ],
+        },
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByText(/llama\.cpp setup incomplete/)).toBeInTheDocument();
+    expect(screen.getByText(/Install llama\.cpp from Settings/)).toBeInTheDocument();
+  });
+
+  it('renders no checklist for a provider the server reports nothing about', async () => {
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+
+    renderPage();
+
+    expect(await screen.findByText('OpenCode llama TUI')).toBeInTheDocument();
+    expect(screen.queryByText(/setup incomplete/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/ready$/)).not.toBeInTheDocument();
+  });
+});
+
 describe('handleAddSample error handling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getApps.mockResolvedValue([]);
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
     api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
     api.getProviders.mockResolvedValue({
       providers: [],
       activeProvider: null,
@@ -290,6 +341,7 @@ describe('handleAddAllSamples partial failure handling', () => {
     api.getApps.mockResolvedValue([]);
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
     api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
     api.getProviders.mockResolvedValue({
       providers: [],
       activeProvider: null,
@@ -335,6 +387,7 @@ describe('CoS Agent Runner allowlist warning', () => {
     api.getApps.mockResolvedValue([]);
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
     api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
   });
 
   it('badges a provider whose command is off the published allowlist', async () => {
@@ -434,6 +487,7 @@ describe('Local num_ctx field', () => {
     api.getApps.mockResolvedValue([]);
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
     api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
   });
 
   const openEditorFor = async (provider) => {
@@ -488,6 +542,7 @@ describe('OpenCode OrcaRouter key hint', () => {
     api.getApps.mockResolvedValue([]);
     api.getProviderStatuses.mockResolvedValue({ providers: {} });
     api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
    });
 
   // The OpenCode wrapper carries no key of its own — the card must point the
@@ -690,13 +745,13 @@ describe('readiness grouping', () => {
   });
 });
 
-// Both tables are keyed off PROVIDER_READINESS, and a state missing from either
+// Both tables are keyed off PROVIDER_CARD_STATE, and a state missing from either
 // fails quietly: no PROVIDER_SECTIONS row and those cards vanish from the page,
-// no READINESS_STYLES row and the card throws on `style.border`.
+// no CARD_STATE_STYLES row and the card throws on `style.border`.
 describe('readiness table coverage', () => {
   it('gives every readiness state a card style and exactly one section', () => {
-    for (const state of Object.values(PROVIDER_READINESS)) {
-      expect(READINESS_STYLES[state]).toBeDefined();
+    for (const state of Object.values(PROVIDER_CARD_STATE)) {
+      expect(CARD_STATE_STYLES[state]).toBeDefined();
       expect(PROVIDER_SECTIONS.filter(section => section.states.includes(state))).toHaveLength(1);
     }
   });

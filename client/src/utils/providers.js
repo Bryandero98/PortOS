@@ -655,6 +655,14 @@ export const visionLocalModelFilter = (id, provider, visionIdsByProvider = null)
  * 11434; LM Studio defaults to 1234. The stable provider ids (`ollama` /
  * `lmstudio`) are checked too — AI Assignments' curated provider payload
  * omits `endpoint`, and a renamed display name would otherwise miss detection.
+ *
+ * Client mirror of `localBackendForProvider` in
+ * server/lib/localProviderRuntime.js — keep in lockstep. The SERVER copy is
+ * authoritative and stricter: it parses the endpoint as a URL and requires a
+ * loopback/bind-all host, so a peer machine's daemon on the same port is not
+ * claimed as local. This one only labels UI, so it stays a cheap regex; if it
+ * ever gates an action, take the server's rules with it.
+ *
  * @param {{id?:string,endpoint?:string,name?:string}} provider
  * @returns {'ollama'|'lmstudio'|null}
  */
@@ -915,7 +923,7 @@ export const isGrokBuildCli = (provider) => {
  * the way the page groups them: usable now, temporarily benched, missing a
  * prerequisite, or simply switched off.
  */
-export const PROVIDER_READINESS = Object.freeze({
+export const PROVIDER_CARD_STATE = Object.freeze({
   READY: 'ready',
   BENCHED: 'benched',
   BLOCKED: 'blocked',
@@ -923,11 +931,17 @@ export const PROVIDER_READINESS = Object.freeze({
 });
 
 /**
- * Which prerequisites a provider is missing, and the readiness state that
- * follows from them — one place, so a card's border, its badge and the section
- * the page files it under can never disagree with each other.
+ * Which prerequisites a provider is missing, and the card state that follows
+ * from them — one place, so a card's border, its badge and the section the page
+ * files it under can never disagree with each other.
  *
- * PRESENTATION readiness, not an exec gate: the server routes on
+ * NOT the same thing as `ProviderReadiness` /
+ * `GET /api/providers/readiness`, which probes whether the local DAEMON a
+ * provider points at (llama.cpp, Ollama, LM Studio, MTPLX) is up and serving
+ * the right model. This decides the card's bucket from its toggle, its
+ * credentials and the server's bench status; the two render side by side.
+ *
+ * PRESENTATION state, not an exec gate: the server routes on
  * `provider.enabled && isAvailable(id)` alone (`getFallbackProvider` in
  * server/lib/aiToolkit/providerStatus.js) and discovers a missing binary at
  * spawn time via ENOENT, so a `blocked` card here is still reachable by the
@@ -961,7 +975,7 @@ export const PROVIDER_READINESS = Object.freeze({
  *
  * @returns {{state: string, missing: {code: string, label: string}[]}}
  */
-export const providerReadiness = (provider, { runtime = null, status = null, orcaRouterKeySet = null } = {}) => {
+export const providerCardState = (provider, { runtime = null, status = null, orcaRouterKeySet = null } = {}) => {
   const missing = [];
 
   if (runtime && runtime.installed === false) {
@@ -980,10 +994,10 @@ export const providerReadiness = (provider, { runtime = null, status = null, orc
     missing.push({ code: 'inheritedApiKey', label: 'OrcaRouter API provider has no API key' });
   }
 
-  if (missing.length > 0) return { state: PROVIDER_READINESS.BLOCKED, missing };
-  if (!provider?.enabled) return { state: PROVIDER_READINESS.DISABLED, missing };
-  if (status?.available === false) return { state: PROVIDER_READINESS.BENCHED, missing };
-  return { state: PROVIDER_READINESS.READY, missing };
+  if (missing.length > 0) return { state: PROVIDER_CARD_STATE.BLOCKED, missing };
+  if (!provider?.enabled) return { state: PROVIDER_CARD_STATE.DISABLED, missing };
+  if (status?.available === false) return { state: PROVIDER_CARD_STATE.BENCHED, missing };
+  return { state: PROVIDER_CARD_STATE.READY, missing };
 };
 
 /**

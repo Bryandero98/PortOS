@@ -4,8 +4,9 @@ import { AlertTriangle } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
-import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, isOrcaRouterBackedProvider, providerRuntimeKey, providerReadiness, PROVIDER_READINESS } from '../utils/providers';
+import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, isOrcaRouterBackedProvider, providerRuntimeKey, providerCardState, PROVIDER_CARD_STATE } from '../utils/providers';
 import useLocalModels from '../hooks/useLocalModels';
+import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import BrailleSpinner from '../components/BrailleSpinner';
 import EmptyState from '../components/EmptyState';
 import Banner from '../components/ui/Banner';
@@ -40,21 +41,21 @@ export const PROVIDER_SECTIONS = [
     title: 'Enabled',
     hint: 'Switched on and available to run',
     dot: 'bg-port-success',
-    states: [PROVIDER_READINESS.READY, PROVIDER_READINESS.BENCHED],
+    states: [PROVIDER_CARD_STATE.READY, PROVIDER_CARD_STATE.BENCHED],
   },
   {
     key: 'blocked',
     title: 'Needs setup',
     hint: 'Missing a CLI or an API key — these cannot run yet',
     dot: 'bg-port-warning',
-    states: [PROVIDER_READINESS.BLOCKED],
+    states: [PROVIDER_CARD_STATE.BLOCKED],
   },
   {
     key: 'disabled',
     title: 'Disabled',
     hint: 'Fully configured, but switched off',
     dot: 'bg-gray-500',
-    states: [PROVIDER_READINESS.DISABLED],
+    states: [PROVIDER_CARD_STATE.DISABLED],
   },
 ];
 
@@ -87,6 +88,11 @@ export default function AIProviders() {
   // an upgrade) — distinct from a confirmed missing CLI — and simply renders no
   // install widgets.
   const [runtimes, setRuntimes] = useState({});
+  // Local-daemon requirements per provider (llama.cpp / Ollama / LM Studio /
+  // MTPLX), keyed by provider id. Providers with no local dependency are absent
+  // from the map, and an empty map means the endpoint was not reached — both
+  // render no checklist.
+  const [readiness, setReadiness] = useState({});
   // The runtime whose install modal is open (`null` = closed).
   const [installingRuntime, setInstallingRuntime] = useState(null);
   // Ollama / LM Studio install state (and the model lists the editor's pickers
@@ -167,10 +173,20 @@ export default function AIProviders() {
     if (statusData?.providers) setStatuses(statusData.providers);
   }, []);
 
-  useEffect(() => {
-    const id = setInterval(refreshStatuses, 20000);
-    return () => clearInterval(id);
-  }, [refreshStatuses]);
+  // Local-daemon readiness (is llama-server / Ollama actually up and serving the
+  // model this provider names?). Off the critical path like the runtime probes,
+  // and re-polled on the same cadence as the status map so starting a daemon
+  // from the Local LLM tab clears the card's checklist on its own.
+  const loadReadiness = useCallback(async () => {
+    const data = await api.getProviderReadiness({ silent: true }).catch(() => null);
+    setReadiness(data?.readiness && typeof data.readiness === 'object' ? data.readiness : {});
+  }, []);
+
+  // `useAutoRefetch` rather than a raw interval so both polls pause while the
+  // tab is hidden — a readiness tick costs one HTTP probe per distinct local
+  // endpoint, which a backgrounded settings tab should not keep spending.
+  const pollCards = useCallback(() => Promise.all([refreshStatuses(), loadReadiness()]), [refreshStatuses, loadReadiness]);
+  useAutoRefetch(pollCards, 20000, { pollOnly: true });
 
   // Clear a provider's bench (runtime unavailability) so the next call retries it.
   // Note: if the underlying cause persists (e.g. an invalid model id), the very
@@ -320,11 +336,16 @@ export default function AIProviders() {
   const runtimeForProvider = useCallback((provider) => {
     const backend = isApiProvider(provider) ? localBackendForProvider(provider) : null;
     if (!backend) return runtimes[providerRuntimeKey(provider)] || null;
+    // The readiness checklist covers this same backend in more detail, and knows
+    // the difference between "not installed" and "installed but not started".
+    // Rendering both put a green "LM Studio installed" pill directly above
+    // "Install LM Studio" — so wherever the checklist has an answer, it wins.
+    if (readiness[provider.id]?.kind === backend) return null;
     const installed = localModels.installed?.[backend];
     // `null` = status not fetched — never offer an install from an unknown state.
     if (typeof installed !== 'boolean') return null;
     return { id: backend, label: LOCAL_APP_LABELS[backend], installed, installable: false, manageUrl: '/settings/local-llm' };
-  }, [runtimes, localModels.installed]);
+  }, [runtimes, localModels.installed, readiness]);
 
   // Everything the cards are derived from, in one pass: each provider's runtime,
   // its readiness (runtime install state + credentials + the runtime bench,
@@ -332,10 +353,10 @@ export default function AIProviders() {
   // section), and the id lookup the cards use for fallback/sibling references.
   // Memoized because this page re-renders on the 20s status poll and on every
   // keystroke in the ad-hoc runner's prompt box.
-  const { providersById, runtimeByProviderId, readinessByProviderId, providersBySection } = useMemo(() => {
+  const { providersById, runtimeByProviderId, cardStateByProviderId, providersBySection } = useMemo(() => {
     const byId = Object.fromEntries(providers.map(p => [p.id, p]));
     const runtimeById = Object.fromEntries(providers.map(p => [p.id, runtimeForProvider(p)]));
-    const readinessById = Object.fromEntries(providers.map(p => [p.id, providerReadiness(p, {
+    const readinessById = Object.fromEntries(providers.map(p => [p.id, providerCardState(p, {
       runtime: runtimeById[p.id],
       status: statuses[p.id],
       // `providers` is the authoritative list, so a sibling that is absent from
@@ -352,7 +373,7 @@ export default function AIProviders() {
     return {
       providersById: byId,
       runtimeByProviderId: runtimeById,
-      readinessByProviderId: readinessById,
+      cardStateByProviderId: readinessById,
       providersBySection: Object.fromEntries(PROVIDER_SECTIONS.map(section => [
         section.key,
         defaultFirst(providers.filter(p => section.states.includes(readinessById[p.id].state))),
@@ -621,7 +642,8 @@ export default function AIProviders() {
                     <ProviderCard
                       key={provider.id}
                       provider={provider}
-                      readiness={readinessByProviderId[provider.id]}
+                      cardState={cardStateByProviderId[provider.id]}
+                      daemonReadiness={readiness[provider.id]}
                       runtime={runtimeByProviderId[provider.id]}
                       status={statuses[provider.id]}
                       isDefault={provider.id === activeProviderId}

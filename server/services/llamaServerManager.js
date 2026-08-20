@@ -5,12 +5,14 @@
  * for a local `llama-server` instance running speculative decoding (e.g. DFlash 2).
  */
 
+import { stat } from 'fs/promises';
+import { resolve } from 'path';
 import { spawn } from '../lib/childProcess.js';
 import { commandExists } from '../lib/commandExists.js';
 import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
 import { killProcessTree } from '../lib/bufferedSpawn.js';
-import { fetchWithTimeout } from '../lib/fetchWithTimeout.js';
-import { sleep } from '../lib/fileUtils.js';
+import { expandHome, sleep } from '../lib/fileUtils.js';
+import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { ServerError } from '../lib/errorHandler.js';
 
 const IS_WIN = process.platform === 'win32';
@@ -35,16 +37,13 @@ function appendLog(line) {
 
 /**
  * Probes whether an OpenAI-compatible endpoint responds at the given host/port.
+ * Shares one implementation with the readiness checklist — the timeout bug this
+ * used to carry (a `timeout` key inside the fetch init object, which is not a
+ * fetch option, leaving a 500ms poll loop on the 15s default) came from having
+ * two copies of the same probe.
  */
-async function probeEndpoint(endpoint) {
-  try {
-    const url = `${endpoint.replace(/\/+$/, '')}/models`;
-    const res = await fetchWithTimeout(url, { method: 'GET', timeout: PROBE_TIMEOUT_MS });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
+const probeEndpoint = async (endpoint) =>
+  (await probeOpenAiModels(endpoint, { timeoutMs: PROBE_TIMEOUT_MS })).reachable;
 
 /**
  * Resolves the `llama-server` executable on the child-process PATH.
@@ -63,6 +62,30 @@ async function probeEndpoint(endpoint) {
  */
 function resolveLlamaServerBinary() {
   return findCommandOnPath('llama-server');
+}
+
+/**
+ * Fails the start request when a GGUF the launch line names is not on disk.
+ *
+ * The weights are a SEPARATE download from the binary — several gigabytes the
+ * user fetches from Hugging Face themselves — and that is the single most
+ * common reason a freshly-installed llama.cpp still cannot serve anything.
+ * Without this check llama-server spawns, exits within a second, and the UI
+ * reports "started (PID …)" from a process that is already gone; the real cause
+ * is one line deep in the server log.
+ *
+ * Relative paths resolve against the server's cwd, which is the cwd the child
+ * inherits, and `~` is expanded here AND in the argv below — `spawn` does no
+ * shell expansion, so a tilde path must be expanded once for both or the check
+ * and the launch disagree about which file they mean.
+ */
+async function assertModelFileExists(label, modelPath) {
+  const stats = await stat(resolve(expandHome(modelPath))).catch(() => null);
+  if (stats?.isFile()) return;
+  throw new ServerError(
+    `${label} was not found at \`${modelPath}\`. Download the GGUF first — the Local LLM tab lists the base/drafter pairs — or point this field at a file you already have.`,
+    { status: 400, code: 'LLAMA_MODEL_FILE_MISSING' }
+  );
 }
 
 /**
@@ -130,9 +153,18 @@ export async function startLlamaServer(options = {}) {
     throw new ServerError(`Port ${port} is already in use by an active server at ${endpoint}`, { status: 409 });
   }
 
-  const args = ['-m', model.trim()];
-  if (draftModel && typeof draftModel === 'string' && draftModel.trim()) {
-    args.push('--draft-model', draftModel.trim());
+  // Validate the weights before building the launch line, and hand `spawn` the
+  // EXPANDED paths: it performs no shell expansion, so a `~/models/…` argv entry
+  // would reach llama.cpp as a literal directory named `~`.
+  await assertModelFileExists('The base model', model.trim());
+  const draftPath = typeof draftModel === 'string' && draftModel.trim()
+    ? draftModel.trim()
+    : null;
+  if (draftPath) await assertModelFileExists('The drafter model', draftPath);
+
+  const args = ['-m', expandHome(model.trim())];
+  if (draftPath) {
+    args.push('--draft-model', expandHome(draftPath));
     if (specType) args.push('--spec-type', specType.trim());
   }
   if (port) args.push('--port', String(port));
@@ -198,6 +230,19 @@ export async function startLlamaServer(options = {}) {
     await sleep(500);
     online = await probeEndpoint(endpoint);
     if (online) break;
+  }
+
+  // A child that has already exited is not a started server. Reporting
+  // `success: true` here put "llama-server started (PID …)" on screen for a
+  // process that died on a bad flag, an unreadable GGUF, or an unsupported
+  // `--spec-type` — the user then went looking for a connection problem in
+  // OpenCode instead of reading the four log lines that explain it.
+  if (child.exitCode !== null || child.signalCode) {
+    const tail = recentLogs.slice(-4).join(' | ');
+    throw new ServerError(
+      `llama-server exited immediately${lastExitError ? ` (${lastExitError})` : ''}.${tail ? ` Last output: ${tail}` : ''}`,
+      { status: 500, code: 'LLAMA_SERVER_EXITED' }
+    );
   }
 
   return {

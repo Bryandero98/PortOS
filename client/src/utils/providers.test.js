@@ -33,9 +33,9 @@ import {
   isApiProvider,
   isProcessProvider,
   providerRuntimeKey,
-  providerReadiness,
+  providerCardState,
   isPrivateNetworkEndpoint,
-  PROVIDER_READINESS,
+  PROVIDER_CARD_STATE,
   isOllamaBackedProvider,
   isOrcaRouterBackedProvider,
   isGrokBuildCli,
@@ -1179,39 +1179,39 @@ describe('providerRuntimeKey', () => {
   });
 });
 
-describe('providerReadiness', () => {
+describe('providerCardState', () => {
   const cli = (over = {}) => ({ id: 'p1', type: 'cli', command: 'opencode', enabled: true, ...over });
   const cloudApi = (over = {}) => ({ id: 'p2', type: 'api', endpoint: 'https://api.example.com/v1', enabled: true, ...over });
 
   it('reports an enabled provider with every prerequisite met as ready', () => {
-    expect(providerReadiness(cli(), { runtime: { label: 'OpenCode CLI', installed: true } }))
-      .toEqual({ state: PROVIDER_READINESS.READY, missing: [] });
-    expect(providerReadiness(cloudApi({ hasApiKey: true })))
-      .toEqual({ state: PROVIDER_READINESS.READY, missing: [] });
+    expect(providerCardState(cli(), { runtime: { label: 'OpenCode CLI', installed: true } }))
+      .toEqual({ state: PROVIDER_CARD_STATE.READY, missing: [] });
+    expect(providerCardState(cloudApi({ hasApiKey: true })))
+      .toEqual({ state: PROVIDER_CARD_STATE.READY, missing: [] });
   });
 
   // An unprobed runtime (older server, or the card drawn before the probe
   // lands) must read as "can't tell", never as a missing binary.
   it('never blocks on an unprobed runtime', () => {
-    expect(providerReadiness(cli(), { runtime: null }).state).toBe(PROVIDER_READINESS.READY);
+    expect(providerCardState(cli(), { runtime: null }).state).toBe(PROVIDER_CARD_STATE.READY);
   });
 
   it('blocks a provider whose CLI is not installed, and names it', () => {
-    const readiness = providerReadiness(cli(), { runtime: { label: 'OpenCode CLI', installed: false } });
-    expect(readiness.state).toBe(PROVIDER_READINESS.BLOCKED);
+    const readiness = providerCardState(cli(), { runtime: { label: 'OpenCode CLI', installed: false } });
+    expect(readiness.state).toBe(PROVIDER_CARD_STATE.BLOCKED);
     expect(readiness.missing).toEqual([{ code: 'runtime', label: 'OpenCode CLI is not installed' }]);
   });
 
   it('blocks a cloud API provider with no key', () => {
-    const readiness = providerReadiness(cloudApi({ hasApiKey: false }));
-    expect(readiness.state).toBe(PROVIDER_READINESS.BLOCKED);
+    const readiness = providerCardState(cloudApi({ hasApiKey: false }));
+    expect(readiness.state).toBe(PROVIDER_CARD_STATE.BLOCKED);
     expect(readiness.missing).toEqual([{ code: 'apiKey', label: 'API key is not set' }]);
   });
 
   // Ollama / LM Studio need no key at all — absence there is not a prerequisite.
   it('does not demand a key from a local endpoint', () => {
-    expect(providerReadiness({ id: 'ollama', type: 'api', endpoint: 'http://localhost:11434/v1', enabled: true }).state)
-      .toBe(PROVIDER_READINESS.READY);
+    expect(providerCardState({ id: 'ollama', type: 'api', endpoint: 'http://localhost:11434/v1', enabled: true }).state)
+      .toBe(PROVIDER_CARD_STATE.READY);
   });
 
   // A LAN box or a tailnet peer running LM Studio / Ollama serves keylessly, and
@@ -1224,45 +1224,45 @@ describe('providerReadiness', () => {
     ['http://desk-machine.ts.net:1234/v1'],
     ['http://nas:11434/v1'],
   ])('does not demand a key from the private-network endpoint %s', (endpoint) => {
-    expect(providerReadiness({ id: 'lan', type: 'api', endpoint, enabled: true }).state)
-      .toBe(PROVIDER_READINESS.READY);
+    expect(providerCardState({ id: 'lan', type: 'api', endpoint, enabled: true }).state)
+      .toBe(PROVIDER_CARD_STATE.READY);
   });
 
   it('still demands a key from a public endpoint', () => {
-    expect(providerReadiness({ id: 'cloud', type: 'api', endpoint: 'https://api.example.com/v1', enabled: true }).state)
-      .toBe(PROVIDER_READINESS.BLOCKED);
+    expect(providerCardState({ id: 'cloud', type: 'api', endpoint: 'https://api.example.com/v1', enabled: true }).state)
+      .toBe(PROVIDER_CARD_STATE.BLOCKED);
   });
 
   it('blocks an OrcaRouter wrapper when the sibling API provider holds no key', () => {
     const wrapper = cli({ id: 'opencode-orcarouter', orcarouterBacked: true });
-    expect(providerReadiness(wrapper, { orcaRouterKeySet: false }).missing)
+    expect(providerCardState(wrapper, { orcaRouterKeySet: false }).missing)
       .toEqual([{ code: 'inheritedApiKey', label: 'OrcaRouter API provider has no API key' }]);
     // Sibling absent from the list = unknown, which must not accuse the wrapper.
-    expect(providerReadiness(wrapper, { orcaRouterKeySet: null }).state).toBe(PROVIDER_READINESS.READY);
-    expect(providerReadiness(wrapper, { orcaRouterKeySet: true }).state).toBe(PROVIDER_READINESS.READY);
+    expect(providerCardState(wrapper, { orcaRouterKeySet: null }).state).toBe(PROVIDER_CARD_STATE.READY);
+    expect(providerCardState(wrapper, { orcaRouterKeySet: true }).state).toBe(PROVIDER_CARD_STATE.READY);
   });
 
   it('benches an enabled provider the server marked unavailable', () => {
-    const readiness = providerReadiness(cli(), { status: { available: false, reason: 'usage-limit' } });
-    expect(readiness.state).toBe(PROVIDER_READINESS.BENCHED);
+    const readiness = providerCardState(cli(), { status: { available: false, reason: 'usage-limit' } });
+    expect(readiness.state).toBe(PROVIDER_CARD_STATE.BENCHED);
     // A benched provider is fully configured — nothing to install or paste.
     expect(readiness.missing).toEqual([]);
   });
 
   it('reads a switched-off but fully configured provider as disabled, not blocked', () => {
-    expect(providerReadiness(cli({ enabled: false }), { runtime: { label: 'OpenCode CLI', installed: true } }).state)
-      .toBe(PROVIDER_READINESS.DISABLED);
+    expect(providerCardState(cli({ enabled: false }), { runtime: { label: 'OpenCode CLI', installed: true } }).state)
+      .toBe(PROVIDER_CARD_STATE.DISABLED);
   });
 
   // The toggle is not what's stopping a provider whose CLI is missing, so the
   // missing prerequisite outranks it — that's the bucket the user must act in.
   it('keeps a switched-off provider with a missing prerequisite in the blocked bucket', () => {
-    expect(providerReadiness(cli({ enabled: false }), { runtime: { label: 'OpenCode CLI', installed: false } }).state)
-      .toBe(PROVIDER_READINESS.BLOCKED);
+    expect(providerCardState(cli({ enabled: false }), { runtime: { label: 'OpenCode CLI', installed: false } }).state)
+      .toBe(PROVIDER_CARD_STATE.BLOCKED);
   });
 
   it('collects every missing prerequisite at once', () => {
-    const readiness = providerReadiness(
+    const readiness = providerCardState(
       { id: 'lmstudio-remote', type: 'api', endpoint: 'https://api.example.com/v1', hasApiKey: false, enabled: true },
       { runtime: { label: 'LM Studio', installed: false } },
     );
