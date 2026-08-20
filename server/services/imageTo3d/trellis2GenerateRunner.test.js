@@ -1,9 +1,10 @@
 import { execFileSync } from '../../lib/childProcess.js';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { trellis2GenerateRunnerScript } from './trellis2.js';
+import { trellis2FillHolesScript } from './trellis2MeshQuality.js';
 import { resolveTestPython } from '../../lib/testHelper.js';
 
 // Probe for an interpreter that actually runs rather than assuming `python3`:
@@ -13,33 +14,251 @@ import { resolveTestPython } from '../../lib/testHelper.js';
 
 const pyBin = resolveTestPython();
 
+// A stand-in for the two upstream modules the adapter patches. Records what it was
+// called with and models the one behaviour that matters: `to_glb` decimates down to
+// whatever `decimation_target` it receives. Without that modelling, the test could
+// not tell a working override from one that gets silently undone at the bake.
+const STUB_FAST_SIMPLIFICATION = `CALLS = []
+def simplify(points, faces, ratio=None, **kw):
+    CALLS.append((len(faces), round(ratio, 6)))
+    return points, list(range(max(1, int(round(len(faces) * (1.0 - ratio))))))
+`;
+
+const stubPostprocess = ({ backend = 'metal', hasDr = true }) => `_BACKEND = ${backend === null ? 'None' : `'${backend}'`}
+_HAS_DR = ${hasDr ? 'True' : 'False'}
+_HAS_FLEX_GEMM = True
+CALLS = []
+def to_glb(**kw):
+    faces = kw['faces']
+    target = kw['decimation_target']
+    CALLS.append({'exported': min(len(faces), target), **{k: v for k, v in kw.items() if k != 'faces'}})
+    return 'glb'
+`;
+
+// Mirrors the shape of upstream generate.py's Metal bake branch: derive a ratio
+// from the 200K clamp, simplify, then hand the result to to_glb with the same
+// clamp as `decimation_target`.
+const FAKE_GENERATE = `import argparse, json, fast_simplification, o_voxel.postprocess
+p = argparse.ArgumentParser()
+p.add_argument("image")
+p.add_argument("--output", default="out")
+p.add_argument("--pipeline-type", default="512")
+p.add_argument("--texture-size", type=int, choices=[512, 1024, 2048], default=1024)
+p.add_argument("--seed", type=int, default=42)
+p.add_argument("--steps", type=int, default=None)
+a = p.parse_args()
+faces = list(range(22746188))
+target = min(200000, len(faces))
+v, f = fast_simplification.simplify(['v'], faces, 1.0 - (target / len(faces)))
+o_voxel.postprocess.to_glb(faces=f, decimation_target=target, texture_size=a.texture_size)
+print("RESULT " + json.dumps({
+    "simplify": fast_simplification.CALLS,
+    "to_glb": o_voxel.postprocess.CALLS,
+    "image": a.image,
+    "texture_size": a.texture_size,
+    "seed": a.seed,
+    "steps": a.steps,
+}))
+`;
+
 describe.skipIf(!pyBin)('trellis2GenerateRunner', () => {
+  let dir;
+
+  const writeStubs = ({ backend = 'metal', hasDr = true } = {}) => {
+    mkdirSync(join(dir, 'stub', 'o_voxel'), { recursive: true });
+    writeFileSync(join(dir, 'stub', 'fast_simplification.py'), STUB_FAST_SIMPLIFICATION);
+    writeFileSync(join(dir, 'stub', 'o_voxel', '__init__.py'), '');
+    writeFileSync(join(dir, 'stub', 'o_voxel', 'postprocess.py'), stubPostprocess({ backend, hasDr }));
+  };
+
+  const run = (args, { env = {} } = {}) => execFileSync(
+    pyBin,
+    [trellis2GenerateRunnerScript(), ...args],
+    { encoding: 'utf8', cwd: dir, env: { ...process.env, PYTHONPATH: join(dir, 'stub'), ...env } },
+  );
+
+  const resultOf = (output) => JSON.parse(
+    output.split('\n').find((l) => l.startsWith('RESULT ')).slice('RESULT '.length),
+  );
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'portos-trellis2-runner-'));
+    writeFileSync(join(dir, 'generate.py'), FAKE_GENERATE);
+  });
+
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
   it('preserves direct-script imports while exposing the 4K texture size', () => {
-    const fixtureDir = mkdtempSync(join(tmpdir(), 'portos-trellis2-runner-'));
-    const generateScript = join(fixtureDir, 'generate.py');
+    writeStubs();
+    writeFileSync(join(dir, 'fixture_module.py'), 'VALUE = "local-import-ok"\n');
+    writeFileSync(join(dir, 'generate.py'), [
+      'import argparse',
+      'from fixture_module import VALUE',
+      'parser = argparse.ArgumentParser()',
+      'parser.add_argument("--texture-size", type=int, choices=[512, 1024, 2048])',
+      'args = parser.parse_args()',
+      'print(f"{VALUE}:{args.texture_size}")',
+      '',
+    ].join('\n'));
 
-    try {
-      writeFileSync(join(fixtureDir, 'fixture_module.py'), 'VALUE = "local-import-ok"\n');
-      writeFileSync(generateScript, [
-        'import argparse',
-        'from fixture_module import VALUE',
-        'parser = argparse.ArgumentParser()',
-        'parser.add_argument("--texture-size", type=int, choices=[512, 1024, 2048])',
-        'args = parser.parse_args()',
-        'print(f"{VALUE}:{args.texture_size}")',
-        '',
-      ].join('\n'));
+    expect(run(['--', join(dir, 'generate.py'), '--texture-size', '4096']).trim())
+      .toBe('local-import-ok:4096');
+  });
 
-      const output = execFileSync(pyBin, [
-        trellis2GenerateRunnerScript(),
-        generateScript,
-        '--texture-size',
-        '4096',
-      ], { encoding: 'utf8' });
+  it('passes upstream arguments through untouched after the `--` separator', () => {
+    writeStubs();
+    const r = resultOf(run([
+      '--', join(dir, 'generate.py'), 'shoe.png',
+      '--texture-size', '2048', '--seed', '7', '--steps', '24',
+    ]));
+    expect(r).toMatchObject({ image: 'shoe.png', texture_size: 2048, seed: 7, steps: 24 });
+  });
 
-      expect(output.trim()).toBe('local-import-ok:4096');
-    } finally {
-      rmSync(fixtureDir, { recursive: true, force: true });
-    }
+  it('leaves upstream’s 200K clamp alone when no target is requested', () => {
+    // Backward compatibility: an install that asks for nothing must render
+    // byte-identically to before this adapter grew the flag.
+    writeStubs();
+    const r = resultOf(run(['--', join(dir, 'generate.py'), 'a.png']));
+    expect(r.to_glb[0].exported).toBe(200000);
+    expect(r.to_glb[0].decimation_target).toBe(200000);
+  });
+
+  it('retargets BOTH the simplify ratio and to_glb’s own decimation target', () => {
+    // The two halves are separately necessary. Patching only the ratio hands
+    // to_glb a 1M-face mesh with a 200K target, and it re-decimates straight
+    // back down — a silent no-op that looks like the override never applied.
+    writeStubs();
+    const r = resultOf(run(['--decimation-target', '1000000', '--', join(dir, 'generate.py'), 'a.png']));
+    expect(r.simplify[0][0]).toBe(22746188);
+    expect(r.simplify[0][1]).toBeCloseTo(1 - (1000000 / 22746188), 6);
+    expect(r.to_glb[0].decimation_target).toBe(1000000);
+    expect(r.to_glb[0].exported).toBe(1000000);
+  });
+
+  it('no-ops the simplify call when the mesh is already under target', () => {
+    writeStubs();
+    // 30M target against a 22.7M-face mesh: upstream still calls simplify (its own
+    // guard compares against 200K), so the patch has to recognize the no-op case
+    // rather than compute a negative ratio.
+    const r = resultOf(run(['--decimation-target', '8600000', '--', join(dir, 'generate.py'), 'a.png']));
+    expect(r.to_glb[0].exported).toBe(8600000);
+  });
+
+  it('refuses to raise the target on a degraded install, and says why', () => {
+    // The KDTree fallback's xatlas unwrap hangs on large meshes, so raising the
+    // target there would trade lost detail for a render that never finishes.
+    writeStubs({ hasDr: false });
+    const out = run(['--decimation-target', '1000000', '--', join(dir, 'generate.py'), 'a.png']);
+    expect(out).toMatch(/Metal bake backend unavailable/);
+    expect(resultOf(out).to_glb[0].exported).toBe(200000);
+  });
+
+  it('forwards the exporter knobs upstream never passes', () => {
+    writeStubs();
+    const r = resultOf(run([
+      '--remesh', '--alpha-mode', 'auto',
+      '--mesh-cluster-refine-iterations', '2',
+      '--mesh-cluster-smooth-strength', '0.5',
+      '--', join(dir, 'generate.py'), 'a.png',
+    ]));
+    expect(r.to_glb[0]).toMatchObject({
+      remesh: true,
+      alpha_mode: 'auto',
+      mesh_cluster_refine_iterations: 2,
+      mesh_cluster_smooth_strength: 0.5,
+    });
+  });
+
+  it('passes no exporter knobs at all when none are requested', () => {
+    writeStubs();
+    const r = resultOf(run(['--', join(dir, 'generate.py'), 'a.png']));
+    expect(r.to_glb[0]).not.toHaveProperty('remesh');
+    expect(r.to_glb[0]).not.toHaveProperty('alpha_mode');
+  });
+
+  it('fails loudly when --fill-holes is asked for but the gate is absent', () => {
+    // Must not degrade to "render without hole filling" — that is exactly the
+    // output the flag exists to avoid, so silence here would be a lie.
+    writeStubs();
+    mkdirSync(join(dir, 'TRELLIS.2', 'trellis2', 'representations', 'mesh'), { recursive: true });
+    writeFileSync(
+      join(dir, 'TRELLIS.2', 'trellis2', 'representations', 'mesh', 'base.py'),
+      'class Mesh:\n    def fill_holes(self):\n        return  # stubbed\n',
+    );
+    expect(() => run(['--fill-holes', '--', join(dir, 'generate.py'), 'a.png']))
+      .toThrow(/unconditional mps_compat stub|still carries/);
+  });
+
+  it('rejects an invocation with no upstream script', () => {
+    writeStubs();
+    expect(() => run(['--decimation-target', '1000'])).toThrow(/requires the upstream generate.py path/);
+  });
+});
+
+describe.skipIf(!pyBin)('trellis2RestoreFillHoles', () => {
+  let dir;
+  const basePath = () => join(dir, 'TRELLIS.2', 'trellis2', 'representations', 'mesh', 'base.py');
+
+  // The exact line mps_compat.py injects, en dash included.
+  const STUBBED = [
+    'class Mesh:',
+    '    def fill_holes(self, max_hole_perimeter=3e-2):',
+    '        return  # Skip — Metal cumesh segfaults on large decode meshes',
+    '        vertices = self.vertices.to(self.device)',
+    '',
+    '    def remove_faces(self, face_mask):',
+    '        return',
+    '',
+    '    def simplify(self, target=1000000):',
+    '        return',
+    '',
+  ].join('\n');
+
+  const patch = () => execFileSync(pyBin, [trellis2FillHolesScript(), dir], { encoding: 'utf8' });
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'portos-fillholes-'));
+    mkdirSync(join(dir, 'TRELLIS.2', 'trellis2', 'representations', 'mesh'), { recursive: true });
+  });
+
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('converts the hard stub into an environment gate', () => {
+    writeFileSync(basePath(), STUBBED);
+    patch();
+    const out = readFileSync(basePath(), 'utf8');
+    expect(out).toContain('PORTOS_TRELLIS2_FILL_HOLES');
+    expect(out).not.toContain('return  # Skip');
+    // Default-off is the safety property: absent the env var, behaviour is
+    // identical to the hard stub.
+    expect(out).toMatch(/if not os\.environ\.get\('PORTOS_TRELLIS2_FILL_HOLES'\):\n\s+return/);
+  });
+
+  it('leaves remove_faces and simplify stubbed', () => {
+    // Deliberate: neither has the independent at-scale evidence fill_holes has,
+    // and `simplify` additionally interacts with the decimation-target override.
+    writeFileSync(basePath(), STUBBED);
+    patch();
+    const out = readFileSync(basePath(), 'utf8');
+    expect(out).toMatch(/def remove_faces\(self, face_mask\):\n\s+return\n/);
+    expect(out).toMatch(/def simplify\(self, target=1000000\):\n\s+return\n/);
+  });
+
+  it('is idempotent, so it is safe as a repeated repair step', () => {
+    writeFileSync(basePath(), STUBBED);
+    patch();
+    const once = readFileSync(basePath(), 'utf8');
+    expect(patch()).toMatch(/already present/);
+    expect(readFileSync(basePath(), 'utf8')).toBe(once);
+  });
+
+  it('fails loudly rather than no-op’ing when upstream’s stub text changes', () => {
+    // A silent no-op would leave --fill-holes appearing to work and doing nothing.
+    writeFileSync(basePath(), 'class Mesh:\n    def fill_holes(self):\n        pass\n');
+    expect(() => patch()).toThrow(/expected mps_compat's fill_holes stub/);
+  });
+
+  it('fails when the target file is missing entirely', () => {
+    expect(() => patch()).toThrow(/not found/);
   });
 });
