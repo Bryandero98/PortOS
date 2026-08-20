@@ -293,15 +293,15 @@ export function createShellSession(socket, options = {}) {
         stop();
         sendInitial();
       };
-      // No probe for this dialect (cmd.exe) — skip the marker watch entirely and
-      // rely on the bounded fallback below, same as a probe that never round-trips.
-      if (probe) {
-        sub = ptyProcess.onData((chunk) => {
-          seen += chunk;
-          if (seen.length > 8192) seen = seen.slice(-8192);
-          if (seen.includes(marker)) fire();
-        });
-      }
+      // No probe for this dialect (cmd.exe, probe === null) — the guard inside
+      // each callback below is a no-op and the fallback timer alone injects the
+      // command, same as a probe that never round-trips.
+      sub = ptyProcess.onData((chunk) => {
+        if (!probe) return;
+        seen += chunk;
+        if (seen.length > 8192) seen = seen.slice(-8192);
+        if (seen.includes(marker)) fire();
+      });
       // If the shell dies before the probe round-trips, cancel the pending
       // writes/timers — sent stays true so the fallback can't resurrect a
       // send into the gone session.
@@ -310,9 +310,7 @@ export function createShellSession(socket, options = {}) {
       // Writing earlier is harmless (zsh's line editor / p10k instant-prompt
       // buffer holds it until the prompt is live and replays it), but a small
       // delay avoids racing node-pty's own spawn handshake.
-      const probeTimer = probe
-        ? setTimeout(() => { if (!sent) submitToSession(sessionId, probe); }, 50)
-        : null;
+      const probeTimer = setTimeout(() => { if (probe && !sent) submitToSession(sessionId, probe); }, 50);
       const fallback = setTimeout(fire, options.initialCommandDelayMs ?? 8000);
     } else {
       setTimeout(sendInitial, options.initialCommandDelayMs ?? 200);
