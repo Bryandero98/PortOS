@@ -5,7 +5,7 @@ vi.mock('./github.js', () => ({
   execGh: vi.fn(async () => '[]'),
   ensureForgeReachable: (...args) => ensureForgeReachableMock(...args),
 }));
-vi.mock('./gitlab.js', () => ({ execGlab: vi.fn(async () => '[]') }));
+vi.mock('./gitlab.js', () => ({ execGlabJson: vi.fn(async () => ({ rows: [], reason: 'ok' })) }));
 // gitRemote is the only effectful dependency of the real forge classifier, so
 // mock IT and let `resolveRepoForgeTarget` run for real — the github-vs-gitlab
 // routing under test is exactly that mapping.
@@ -20,7 +20,7 @@ vi.mock('../lib/fileUtils.js', () => ({
 
 import { listAppIssues } from './appIssues.js';
 import { execGh } from './github.js';
-import { execGlab } from './gitlab.js';
+import { execGlabJson } from './gitlab.js';
 import { getOriginInfo, readOriginRemoteUrl } from '../lib/gitRemote.js';
 
 // `workTracker: 'auto'` resolves to whatever the origin host is — the common case.
@@ -38,7 +38,7 @@ beforeEach(() => {
   getOriginInfo.mockResolvedValue({ isGithub: true, host: 'github.com', fullName: 'acme/widget' });
   readOriginRemoteUrl.mockResolvedValue('git@github.com:acme/widget.git');
   execGh.mockResolvedValue('[]');
-  execGlab.mockResolvedValue('[]');
+  execGlabJson.mockResolvedValue({ rows: [], reason: 'ok' });
 });
 
 describe('listAppIssues — GitHub', () => {
@@ -131,7 +131,7 @@ describe('listAppIssues — GitHub', () => {
 describe('listAppIssues — GitLab', () => {
   it('normalizes iid / description / string labels / username assignees', async () => {
     useGitlabOrigin();
-    execGlab.mockResolvedValue(JSON.stringify([{
+    execGlabJson.mockResolvedValue({ reason: 'ok', rows: [{
       iid: 7,
       title: 'Add export',
       description: 'We need CSV',
@@ -143,7 +143,7 @@ describe('listAppIssues — GitLab', () => {
       milestone: { title: 'Sprint 3' },
       created_at: '2026-02-01T00:00:00Z',
       updated_at: '2026-02-02T00:00:00Z',
-    }]));
+    }] });
 
     const result = await listAppIssues(APP);
 
@@ -161,14 +161,37 @@ describe('listAppIssues — GitLab', () => {
       { name: 'p2', color: null, description: '' },
     ]);
     // glab resolves the project from its cwd, so the repo path is load-bearing.
-    expect(execGlab.mock.calls[0][1]).toBe('/repo');
+    expect(execGlabJson.mock.calls[0][1]).toBe('/repo');
+    // execGlabJson owns the output flag (lib/glabArgs.js); callers pass none.
+    expect(execGlabJson.mock.calls[0][0]).toEqual(['issue', 'list', '--per-page', '100']);
   });
 
-  it('a null glab result (CLI missing / timed out) is transient', async () => {
+  it('a failed glab call (CLI missing / unauthenticated / timed out) is transient', async () => {
     useGitlabOrigin();
-    execGlab.mockResolvedValue(null);
+    execGlabJson.mockResolvedValue({ rows: null, reason: 'cli-failed' });
     const result = await listAppIssues(APP);
     expect(result).toMatchObject({ forge: 'gitlab', reason: 'fetch-failed', transient: true });
+    // Every transient answer carries its own sentence — the client has no
+    // fallback advice to guess with.
+    expect(result.headline).toMatch(/Couldn't reach GitLab/);
+    expect(result.remedy).toMatch(/glab auth status/);
+  });
+
+  it('a glab that ANSWERED with non-JSON gets its own headline + remedy, not the re-auth advice', async () => {
+    useGitlabOrigin();
+    execGlabJson.mockResolvedValue({ rows: null, reason: 'not-json' });
+    const result = await listAppIssues(APP);
+    expect(result).toMatchObject({ forge: 'gitlab', reason: 'glab-output-not-json', transient: true });
+    // The sentence ships WITH the reason so the client never re-derives it.
+    expect(result.headline).toMatch(/Reached GitLab/);
+    expect(result.remedy).toMatch(/update `glab`/);
+  });
+
+  it('an ANSWERED empty list is the definitive no-open-issues, not a failed read', async () => {
+    useGitlabOrigin();
+    execGlabJson.mockResolvedValue({ rows: [], reason: 'ok' });
+    const result = await listAppIssues(APP);
+    expect(result).toMatchObject({ forge: 'gitlab', reason: 'no-open-issues', transient: false, issues: [] });
   });
 });
 
@@ -177,7 +200,7 @@ describe('listAppIssues — non-forge apps', () => {
     const result = await listAppIssues({ id: 'app-2', name: 'No Repo' });
     expect(result).toMatchObject({ forge: null, reason: 'no-repo-path', transient: false, issues: [] });
     expect(execGh).not.toHaveBeenCalled();
-    expect(execGlab).not.toHaveBeenCalled();
+    expect(execGlabJson).not.toHaveBeenCalled();
   });
 
   it('an unrecognized origin falls back to PLAN.md, which has no forge issue list', async () => {
@@ -221,10 +244,10 @@ describe('listAppIssues — non-forge apps', () => {
   it('lists issues for a gitlab tracker explicitly pinned on a custom-hostname self-hosted origin', async () => {
     getOriginInfo.mockResolvedValue({ isGithub: false, host: 'git.example-corp.com', fullName: 'acme/widget' });
     readOriginRemoteUrl.mockResolvedValue('git@git.example-corp.com:acme/widget.git');
-    execGlab.mockResolvedValue(JSON.stringify([{ iid: 3, title: 'Custom host works', labels: [], assignees: [] }]));
+    execGlabJson.mockResolvedValue({ reason: 'ok', rows: [{ iid: 3, title: 'Custom host works', labels: [], assignees: [] }] });
     const result = await listAppIssues({ ...APP, workTracker: 'gitlab' });
     expect(result).toMatchObject({ forge: 'gitlab', tracker: 'gitlab', reason: 'ok' });
-    expect(execGlab.mock.calls[0][1]).toBe('/repo');
+    expect(execGlabJson.mock.calls[0][1]).toBe('/repo');
   });
 });
 
@@ -252,7 +275,7 @@ describe('listAppIssues — the list must match the tracker a claim would use', 
     const result = await listAppIssues({ ...APP, workTracker: 'gitlab' });
     expect(result).toMatchObject({ forge: null, tracker: 'gitlab', reason: 'tracker-forge-mismatch' });
     expect(execGh).not.toHaveBeenCalled();
-    expect(execGlab).not.toHaveBeenCalled();
+    expect(execGlabJson).not.toHaveBeenCalled();
   });
 
   it('honors an explicit github pin on a GitHub remote', async () => {

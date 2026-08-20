@@ -18,12 +18,13 @@
  *
  * Sentinel discipline (CLAUDE.md): "couldn't ask the forge" never collapses into
  * "there are no issues". A failed probe returns `issues: []` WITH
- * `transient: true` and a `reason`, so the UI says "couldn't load" instead of
- * the lie "no open issues".
+ * `transient: true`, a `reason`, and the `headline`/`remedy` that describe it, so
+ * the UI says "couldn't load" instead of the lie "no open issues" — and says WHY
+ * without guessing, since the classifier is the only thing that knows.
  */
 
 import { execGh, ensureForgeReachable } from './github.js';
-import { execGlab } from './gitlab.js';
+import { execGlabJson } from './gitlab.js';
 import { resolveAppForgeTarget } from '../lib/workTracker.js';
 import { safeJSONParse } from '../lib/fileUtils.js';
 
@@ -67,11 +68,11 @@ function normalizeGithubIssue(issue) {
 }
 
 /**
- * Normalize a raw `glab issue list -F json` row. GitLab keys the number on
+ * Normalize a raw `glab issue list --output json` row. GitLab keys the number on
  * `iid` and assignees/author on `username`. Labels are plain strings on current
- * `glab`, but the object form is tolerated too — the `-F json` label shape has
- * varied across glab versions, and a silently-dropped label list is worse than
- * an unused branch.
+ * `glab`, but the object form is tolerated too — the JSON label shape has varied
+ * across glab versions, and a silently-dropped label list is worse than an
+ * unused branch.
  */
 function normalizeGitlabIssue(issue) {
   return {
@@ -95,14 +96,11 @@ function normalizeGitlabIssue(issue) {
 }
 
 /**
- * Shared tail of both fetchers: parse the CLI's JSON and classify the answer.
- * The absent-vs-empty split is the whole point — an unparseable/failed read is
- * `fetch-failed` + transient, while a CLI that answered with zero rows is the
- * definitive `no-open-issues`.
+ * Classify an ANSWERED row list. The absent-vs-empty split is the whole point —
+ * a CLI that answered with zero rows is the definitive `no-open-issues`, never
+ * conflated with a read we couldn't make.
  */
-function toIssueResult(raw, normalize) {
-  const rows = safeJSONParse(raw, null);
-  if (!Array.isArray(rows)) return { issues: [], reason: 'fetch-failed', transient: true };
+function toIssueResult(rows, normalize) {
   return { issues: rows.map(normalize), reason: rows.length ? 'ok' : 'no-open-issues', transient: false };
 }
 
@@ -117,8 +115,8 @@ async function fetchGithubIssues(repoSpec, apiHost) {
   if (!forge.ok) {
     return { issues: [], reason: `gh-${forge.status}`, transient: true, remedy: forge.remedy || null };
   }
-  // execGh REJECTS on failure (execGlab resolves null), so this catch is what
-  // makes the two fetchers share the same "raw or null" contract below.
+  // execGh REJECTS on failure; normalize to null so the parse below is the only
+  // guard.
   const raw = await execGh([
     'issue', 'list', '--repo', repoSpec, '--state', 'open',
     '--limit', String(GH_LIST_LIMIT),
@@ -127,17 +125,43 @@ async function fetchGithubIssues(repoSpec, apiHost) {
     console.error(`❌ app-issues: gh issue list failed for ${repoSpec}: ${err.message}`);
     return null;
   });
-  return toIssueResult(raw, normalizeGithubIssue);
+  const rows = safeJSONParse(raw, null);
+  if (!Array.isArray(rows)) {
+    return {
+      issues: [], reason: 'fetch-failed', transient: true,
+      headline: 'Couldn\'t read GitHub\'s issue list',
+      remedy: 'run `gh issue list` in the repo to see what gh reports',
+    };
+  }
+  return toIssueResult(rows, normalizeGithubIssue);
 }
 
 /**
  * Open issues from GitLab. `glab` resolves the project from the origin remote in
  * its working directory, so every call runs in `repoPath`.
+ *
+ * glab's two failure modes get two different sentences, because they send the
+ * user to two different places: `cli-failed` really can be an unauthenticated or
+ * unreachable CLI, while `not-json` means glab answered fine and only its output
+ * flags moved. Collapsing the latter into the reachability framing is what told
+ * an authenticated user to "retry once the CLI is authenticated".
  */
 async function fetchGitlabIssues(repoPath) {
   // `glab issue list` defaults to OPEN issues.
-  const raw = await execGlab(['issue', 'list', '--per-page', String(GL_PER_PAGE), '-F', 'json'], repoPath);
-  return toIssueResult(raw, normalizeGitlabIssue);
+  const { rows, reason } = await execGlabJson(['issue', 'list', '--per-page', String(GL_PER_PAGE)], repoPath);
+  if (rows) return toIssueResult(rows, normalizeGitlabIssue);
+  if (reason === 'not-json') {
+    return {
+      issues: [], reason: 'glab-output-not-json', transient: true,
+      headline: "Reached GitLab, but couldn't read its answer",
+      remedy: 'update `glab` — its JSON output flag moved (check `glab issue list --help`)',
+    };
+  }
+  return {
+    issues: [], reason: 'fetch-failed', transient: true,
+    headline: "Couldn't reach GitLab",
+    remedy: 'check `glab auth status` and that `glab` is installed and can reach the host',
+  };
 }
 
 /**
@@ -163,10 +187,10 @@ async function fetchGitlabIssues(repoPath) {
  * refuses to list anything for those, since a claim wouldn't touch it.
  *
  * @param {object} app - managed app record (needs `repoPath`, `workTracker`)
- * @returns {Promise<{forge:'github'|'gitlab'|null, tracker:string|null, fullName:string|null, issues:object[], reason:string, transient:boolean, remedy:string|null}>}
+ * @returns {Promise<{forge:'github'|'gitlab'|null, tracker:string|null, fullName:string|null, issues:object[], reason:string, transient:boolean, headline:string|null, remedy:string|null}>}
  */
 export async function listAppIssues(app) {
-  const base = { forge: null, tracker: null, fullName: null, issues: [], transient: false, remedy: null };
+  const base = { forge: null, tracker: null, fullName: null, issues: [], transient: false, headline: null, remedy: null };
   if (!app?.repoPath) return { ...base, reason: 'no-repo-path' };
 
   const { tracker, target } = await resolveAppForgeTarget(app);
@@ -192,6 +216,10 @@ export async function listAppIssues(app) {
     issues: result.issues,
     reason: result.reason,
     transient: result.transient,
+    // Headline + remedy ride WITH the reason, so the sentence and the state it
+    // describes cannot drift apart across the HTTP boundary (mirrors
+    // github.js#ghRemedy). The client renders them; it never re-derives them.
+    headline: result.headline || null,
     remedy: result.remedy || null,
   };
 }

@@ -52,7 +52,7 @@
 
 import { execGit } from '../lib/execGit.js';
 import { execGh, ensureForgeReachable } from './github.js';
-import { execGlab } from './gitlab.js';
+import { execGlabJson } from './gitlab.js';
 import { fetchMyCurrentSprintTickets } from './jira.js';
 import { resolveAppForgeTarget, resolveRepoForgeTarget } from '../lib/workTracker.js';
 import { safeJSONParse, PATHS } from '../lib/fileUtils.js';
@@ -311,7 +311,7 @@ async function getGithubState(repoSpec, fullName, apiHost = null) {
 }
 
 /**
- * Normalize a raw GitLab issue (from `glab issue list -F json`) into the common
+ * Normalize a raw GitLab issue (from `glab issue list --output json`) into the common
  * shape. GitLab keys the number on `iid`, exposes labels as plain strings, and
  * assignees as `{ username }` objects.
  */
@@ -354,32 +354,34 @@ function normalizeGitlabMr(mr) {
  * @returns {Promise<{forge:'gitlab', fullName:string, inProgress:object[], mergedPrs:object[], openPrs:object[]}|null>}
  */
 async function getGitlabState(repoPath, fullName) {
-  const [issuesRaw, mergedRaw, openRaw] = await Promise.all([
+  // `glab mr list` has NO `--state` flag — the state is selected by presence
+  // flags (`--merged`, `--closed`, `--all`) and defaults to OPEN. Passing
+  // `--state merged` exited non-zero on every call, so the GitLab arm of this
+  // scan skipped every cycle without ever reporting why.
+  const [issues, merged, open] = await Promise.all([
     // `glab issue list` defaults to OPEN issues; --label filters to in-progress.
-    execGlab(['issue', 'list', '--label', IN_PROGRESS_LABEL,
-      '--per-page', String(GL_PER_PAGE), '-F', 'json'], repoPath),
-    execGlab(['mr', 'list', '--state', 'merged',
-      '--per-page', String(GL_PER_PAGE), '-F', 'json'], repoPath),
-    execGlab(['mr', 'list', '--state', 'opened',
-      '--per-page', String(GL_PER_PAGE), '-F', 'json'], repoPath),
+    execGlabJson(['issue', 'list', '--label', IN_PROGRESS_LABEL,
+      '--per-page', String(GL_PER_PAGE)], repoPath),
+    execGlabJson(['mr', 'list', '--merged',
+      '--per-page', String(GL_PER_PAGE)], repoPath),
+    // Opened is glab's default; `--opened` is deprecated, so pass no state flag.
+    execGlabJson(['mr', 'list',
+      '--per-page', String(GL_PER_PAGE)], repoPath),
   ]);
 
-  const inProgressRaw = safeJSONParse(issuesRaw, null);
-  if (!Array.isArray(inProgressRaw)) return null;
+  if (!issues.rows) return null;
   // Same load-bearing treatment as the GitHub path (#3358): a `glab` blip on the
   // MR lists must fail the scan, not degrade to "no MRs exist".
-  const mergedRows = safeJSONParse(mergedRaw, null);
-  const openRows = safeJSONParse(openRaw, null);
-  if (!Array.isArray(mergedRows) || !Array.isArray(openRows)) {
-    console.error(`❌ issue-reconcile: glab mr list unavailable for ${fullName} — skipping this cycle`);
+  if (!merged.rows || !open.rows) {
+    console.error(`❌ issue-reconcile: glab mr list unavailable for ${fullName} (${merged.reason}/${open.reason}) — skipping this cycle`);
     return null;
   }
   return {
     forge: 'gitlab',
     fullName,
-    inProgress: inProgressRaw.map(normalizeGitlabIssue),
-    mergedPrs: mergedRows.map(normalizeGitlabMr),
-    openPrs: openRows.map(normalizeGitlabMr),
+    inProgress: issues.rows.map(normalizeGitlabIssue),
+    mergedPrs: merged.rows.map(normalizeGitlabMr),
+    openPrs: open.rows.map(normalizeGitlabMr),
   };
 }
 

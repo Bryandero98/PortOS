@@ -388,7 +388,12 @@ export default function IssuesTab({ appId, appName }) {
 
   const forgeLabel = FORGE_LABEL[data?.forge] || 'Issues';
   // A transient failure keeps the "couldn't ask" framing — never the lie that
-  // the tracker is empty.
+  // the tracker is empty. The SENTENCE comes from the server, beside the
+  // classifier that produced the reason: the reason vocabulary is open-ended
+  // (`gh-${status}`), and only the classifier knows whether the forge was
+  // unreachable or merely answered in a dialect we couldn't parse. A client-side
+  // reason→copy table can only shadow one entry of that, which is how an
+  // authenticated user got told to authenticate.
   const unavailable = data?.transient === true;
 
   return (
@@ -514,8 +519,8 @@ export default function IssuesTab({ appId, appName }) {
 
       {!error && unavailable && (
         <Banner tone="warning" size="md" icon={AlertTriangle}>
-          Couldn&apos;t reach {forgeLabel} ({data.reason})
-          {data.remedy ? ` — ${data.remedy}.` : ' — retry once the CLI is authenticated.'}
+          {data.headline || `Couldn't reach ${forgeLabel}`} ({data.reason})
+          {data.remedy ? ` — ${data.remedy}.` : ''}
         </Banner>
       )}
 

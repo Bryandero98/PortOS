@@ -22,7 +22,7 @@ vi.mock('./github.js', () => ({
   execGh: vi.fn(async () => '[]'),
   ensureForgeReachable: (...args) => ensureForgeReachableMock(...args),
 }));
-vi.mock('./gitlab.js', () => ({ execGlab: vi.fn(async () => '[]') }));
+vi.mock('./gitlab.js', () => ({ execGlabJson: vi.fn(async () => ({ rows: [], reason: 'ok' })) }));
 vi.mock('./jira.js', () => ({ fetchMyCurrentSprintTickets: vi.fn(async () => []) }));
 vi.mock('../lib/gitRemote.js', () => ({
   getOriginInfo: vi.fn(async () => ({ isGithub: true, host: 'github.com', fullName: 'atomantic/PortOS' })),
@@ -46,7 +46,7 @@ import {
 } from './issueReconcile.js';
 import { execGit } from '../lib/execGit.js';
 import { execGh } from './github.js';
-import { execGlab } from './gitlab.js';
+import { execGlabJson } from './gitlab.js';
 import { fetchMyCurrentSprintTickets } from './jira.js';
 import { getOriginInfo, readOriginRemoteUrl } from '../lib/gitRemote.js';
 
@@ -269,7 +269,7 @@ describe('reconcile', () => {
     const result = await reconcile('/repo');
     expect(result).toBeNull();
     expect(execGh).not.toHaveBeenCalled();
-    expect(execGlab).not.toHaveBeenCalled();
+    expect(execGlabJson).not.toHaveBeenCalled();
   });
 
   it('scans a GitHub Enterprise host (isGithub=false) via a host-qualified --repo selector', async () => {
@@ -329,7 +329,7 @@ describe('reconcile', () => {
     expect(result.forge).toBe('gitlab');
     expect(result.zombies.map((z) => z.number)).toEqual([42]);
     // glab is cwd-routed — it must run in the scanned checkout.
-    expect(execGlab.mock.calls[0][1]).toBe('/repo');
+    expect(execGlabJson.mock.calls[0][1]).toBe('/repo');
   });
 
   it('still scans a plan-tracked app on a forge origin (a zombie is a fact about the repo, not about where claims are filed)', async () => {
@@ -371,16 +371,18 @@ function useGitlabOrigin() {
 }
 
 /**
- * Wire execGlab's three list calls by argv shape. Inputs use the RAW GitLab JSON
- * shape (iid / web_url / source_branch / description) so the test also exercises
- * the GitLab→common normalizers.
+ * Wire execGlabJson's three list calls by argv shape. Inputs use the RAW GitLab
+ * JSON shape (iid / web_url / source_branch / description) so the test also
+ * exercises the GitLab→common normalizers.
+ *
+ * The merged/open split keys off the `--merged` presence flag; open is glab's
+ * default. See gitlab.glabFlags.test.js for why there is no `--state` pair.
  */
 function mockGlab({ issues = [], merged = [], open = [] }) {
-  execGlab.mockImplementation(async (argv) => {
-    if (argv[0] === 'issue' && argv[1] === 'list') return JSON.stringify(issues);
-    if (argv[0] === 'mr' && argv.includes('merged')) return JSON.stringify(merged);
-    if (argv[0] === 'mr' && argv.includes('opened')) return JSON.stringify(open);
-    return '[]';
+  execGlabJson.mockImplementation(async (argv) => {
+    if (argv[0] === 'issue' && argv[1] === 'list') return { rows: issues, reason: 'ok' };
+    if (argv[0] === 'mr') return { rows: argv.includes('--merged') ? merged : open, reason: 'ok' };
+    return { rows: [], reason: 'ok' };
   });
 }
 
@@ -448,12 +450,33 @@ describe('reconcile (GitLab forge)', () => {
   });
 
   it('returns null (transient) when the glab issue list query fails', async () => {
-    execGlab.mockImplementation(async (argv) => {
-      if (argv[0] === 'issue') return null; // load-bearing query failed / glab down
-      return '[]';
+    execGlabJson.mockImplementation(async (argv) => {
+      // load-bearing query failed / glab down
+      if (argv[0] === 'issue') return { rows: null, reason: 'cli-failed' };
+      return { rows: [], reason: 'ok' };
     });
     const result = await reconcile('/repo');
     expect(result).toBeNull();
+  });
+
+  it('splits merged-vs-open MRs with presence flags, not a nonexistent `--state`', async () => {
+    mockGlab({ issues: [], merged: [], open: [] });
+    await reconcile('/repo');
+    const mrCalls = execGlabJson.mock.calls.map(([argv]) => argv).filter((argv) => argv[0] === 'mr');
+    expect(mrCalls).toHaveLength(2);
+    for (const argv of mrCalls) expect(argv).not.toContain('--state');
+    // Merged is explicit; opened is glab's default, so it carries no state flag.
+    expect(mrCalls.some((argv) => argv.includes('--merged'))).toBe(true);
+    expect(mrCalls.some((argv) => !argv.includes('--merged'))).toBe(true);
+  });
+
+  it('leaves the JSON output flag to execGlabJson', async () => {
+    mockGlab({ issues: [], merged: [], open: [] });
+    await reconcile('/repo');
+    for (const [argv] of execGlabJson.mock.calls) {
+      expect(argv).not.toContain('-F');
+      expect(argv).not.toContain('--output');
+    }
   });
 
   it('empty in-progress list is a valid answer (no zombies), not a skip', async () => {
@@ -512,7 +535,7 @@ describe('reconcile (JIRA tracker)', () => {
     expect(result.zombies[0].status).toBe('In Review');
     // JIRA never routes to gh/glab.
     expect(execGh).not.toHaveBeenCalled();
-    expect(execGlab).not.toHaveBeenCalled();
+    expect(execGlabJson).not.toHaveBeenCalled();
   });
 
   it('a live claim/<KEY> branch keeps the In-Review ticket LIVE (not a zombie)', async () => {

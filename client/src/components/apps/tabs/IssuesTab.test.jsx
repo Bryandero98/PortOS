@@ -376,13 +376,47 @@ describe('IssuesTab', () => {
   it('says "couldn\'t reach" for a transient failure — never "no open issues"', async () => {
     api.getAppIssues.mockResolvedValue({
       forge: 'github', fullName: 'acme/widget', issues: [],
-      reason: 'gh-unauthenticated', transient: true, remedy: 'run gh auth login',
+      reason: 'gh-unauthenticated', transient: true, headline: null, remedy: 'run gh auth login',
     });
     await renderTab();
 
     expect(await screen.findByText(/Couldn't reach GitHub/)).toBeInTheDocument();
     expect(screen.getByText(/run gh auth login/)).toBeInTheDocument();
     expect(screen.queryByText(/No open issues on this tracker/)).not.toBeInTheDocument();
+  });
+
+  it('renders the server\'s headline verbatim instead of inferring one from the reason', async () => {
+    // A glab whose JSON output flag moved answers with its human table at exit 0
+    // — reachable, just unreadable. Only the server-side classifier can tell
+    // those apart, so it ships the sentence; the client must not second-guess it
+    // with a reason table, which is how an authenticated user got told to
+    // authenticate.
+    api.getAppIssues.mockResolvedValue({
+      forge: 'gitlab', fullName: 'group/proj', issues: [],
+      reason: 'glab-output-not-json', transient: true,
+      headline: "Reached GitLab, but couldn't read its answer",
+      remedy: 'update `glab` — its JSON output flag moved (check `glab issue list --help`)',
+    });
+    await renderTab();
+
+    expect(await screen.findByText(/Reached GitLab, but couldn't read its answer/)).toBeInTheDocument();
+    expect(screen.getByText(/its JSON output flag moved/)).toBeInTheDocument();
+    expect(screen.queryByText(/Couldn't reach GitLab/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/retry once the CLI is authenticated/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No open issues on this tracker/)).not.toBeInTheDocument();
+  });
+
+  it('falls back to the reachability framing when the server ships no headline', async () => {
+    // Older reasons (and any the server adds without copy) still read sensibly
+    // rather than rendering a blank banner.
+    api.getAppIssues.mockResolvedValue({
+      forge: 'gitlab', fullName: 'group/proj', issues: [],
+      reason: 'some-new-reason', transient: true, headline: null, remedy: null,
+    });
+    await renderTab();
+
+    expect(await screen.findByText(/Couldn't reach GitLab/)).toBeInTheDocument();
+    expect(screen.getByText(/some-new-reason/)).toBeInTheDocument();
   });
 
   it('explains a non-forge origin instead of showing an empty list', async () => {

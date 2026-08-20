@@ -236,7 +236,7 @@ const COLLABORATOR_FORGE = {
     who: 'project members (direct, or inherited from the project\'s group)',
     membersCmd: 'glab api --paginate "projects/:id/members/all" -q ".[].username"',
     selfCmd: 'glab api user -q .username',
-    listHint: 'list open issues WITHOUT `--author` (`glab issue list -F json`, whose payload already carries the author) and keep only issues whose `.author.username`',
+    listHint: 'list open issues WITHOUT `--author` (`glab issue list --output json`, whose payload already carries the author) and keep only issues whose `.author.username`',
     verb: 'opened',
     failHint: 'the account lacks access to the member list, or `glab` is unauthenticated'
   }

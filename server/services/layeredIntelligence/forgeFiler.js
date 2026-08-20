@@ -10,6 +10,7 @@ import { safeJSONParse } from '../../lib/fileUtils.js';
 import { LI_LABEL, LI_BLOCKING_LABEL } from './constants.js';
 import { slugMarker, extractSlugFromBody } from './dedup.js';
 import { runCli } from './runCli.js';
+import { withGlabJson } from '../../lib/glabArgs.js';
 
 /**
  * Normalize a forge issue state to `open` / `closed`. GitLab reports `opened`
@@ -72,7 +73,7 @@ export async function listForgeIssues({ cli, cwd, env, label = LI_LABEL, state =
   // glab lists open issues by default and needs `--all` to widen to every state;
   // gh takes the state explicitly.
   const args = cli === 'glab'
-    ? ['issue', 'list', '--label', label, ...(state === 'all' ? ['--all'] : []), '-P', '100', '-F', 'json']
+    ? withGlabJson(['issue', 'list', '--label', label, ...(state === 'all' ? ['--all'] : []), '-P', '100'])
     : ['issue', 'list', '--label', label, '--state', state, '--limit', '100', '--json', 'number,title,body,state,stateReason,closedAt,url,labels,comments,closedByPullRequestsReferences'];
   const { code, stdout } = await exec(cli, args, { cwd, env });
   if (code !== 0) return { ok: false, issues: [] };
@@ -98,12 +99,12 @@ export async function listForgeIssues({ cli, cwd, env, label = LI_LABEL, state =
       // The rejection classifier's last-resort signal (#2748): the prose a human
       // left when declining, for a close with no matching label/close-reason. gh
       // returns `comments` in the same batched list call (no extra fetch); glab's
-      // `-F json` omits them, so its rows carry null and fall through to label/
+      // JSON omits them, so its rows carry null and fall through to label/
       // stateReason only (tracked in the issue's Remaining).
       closingComment: extractClosingComment(i.comments),
       // The implementing-PR handle (#2748, deliverable 2): gh reports every PR that
       // closes/references this issue in `closedByPullRequestsReferences`. Additive
-      // and null-defaulted — glab's `-F json` omits it, so its rows carry null and
+      // and null-defaulted — glab's JSON omits it, so its rows carry null and
       // fall through to the label/comment signals, and the reconciler only reads a
       // PR's state when it holds a number here. Scoped to the issue's own repo (parsed
       // from its url) so a cross-repo closing PR can't resolve to the wrong number.
@@ -207,7 +208,7 @@ export function extractClosingComment(comments) {
  */
 export async function listBlockingIssues({ cli, cwd, env, exec = runCli } = {}) {
   const args = cli === 'glab'
-    ? ['issue', 'list', '--label', LI_BLOCKING_LABEL, '-P', '100', '-F', 'json']
+    ? withGlabJson(['issue', 'list', '--label', LI_BLOCKING_LABEL, '-P', '100'])
     : ['issue', 'list', '--label', LI_BLOCKING_LABEL, '--state', 'open', '--limit', '100', '--json', 'number,title,state'];
   const { code, stdout } = await exec(cli, args, { cwd, env });
   if (code !== 0) return { ok: false, issues: [] };
