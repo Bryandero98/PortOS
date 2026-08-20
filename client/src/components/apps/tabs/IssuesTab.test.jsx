@@ -233,6 +233,27 @@ describe('IssuesTab', () => {
     expect(screen.queryByText('Crash on save')).not.toBeInTheDocument();
   });
 
+  it('filters to unassigned issues when the toggle is enabled', async () => {
+    api.getAppIssues.mockResolvedValue(okPayload([
+      ISSUE,
+      { ...ISSUE, number: 43, title: 'Add CSV export', labels: [], assignees: [] },
+    ]));
+    await renderTab();
+
+    await screen.findByText('Crash on save');
+    const toggle = screen.getByRole('button', { name: 'Unassigned only' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(toggle);
+
+    expect(await screen.findByText('Add CSV export')).toBeInTheDocument();
+    expect(screen.queryByText('Crash on save')).not.toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(toggle);
+    expect(await screen.findByText('Crash on save')).toBeInTheDocument();
+  });
+
   it('hides in-progress issues by default and lists them once the chip is toggled on', async () => {
     api.getAppIssues.mockResolvedValue(okPayload([
       ISSUE,
@@ -260,6 +281,30 @@ describe('IssuesTab', () => {
     expect(chip).toHaveAttribute('aria-pressed', 'true');
   });
 
+  it('hides blocked issues by default and lists them once the chip is toggled on', async () => {
+    api.getAppIssues.mockResolvedValue(okPayload([
+      ISSUE,
+      {
+        ...ISSUE,
+        number: 43,
+        title: 'Waiting on a dependency',
+        labels: [{ name: 'blocked', color: '#b60205', description: '' }],
+      },
+    ]));
+    await renderTab();
+
+    await screen.findByText('Crash on save');
+    expect(screen.queryByText('Waiting on a dependency')).not.toBeInTheDocument();
+    expect(screen.getByText('1 of 2 open')).toBeInTheDocument();
+
+    const chip = screen.getByRole('button', { name: 'blocked (1)' });
+    expect(chip).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(chip);
+    expect(await screen.findByText('Waiting on a dependency')).toBeInTheDocument();
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+  });
+
   it('toggles a label chip off to hide every issue carrying that label', async () => {
     api.getAppIssues.mockResolvedValue(okPayload([
       ISSUE,
@@ -280,7 +325,7 @@ describe('IssuesTab', () => {
     expect(await screen.findByText('Crash on save')).toBeInTheDocument();
   });
 
-  it('resets label filters back to the in-progress default when the app changes', async () => {
+  it('resets label and assignee filters when the app changes', async () => {
     const inProgress = {
       ...ISSUE,
       number: 43,
@@ -292,6 +337,7 @@ describe('IssuesTab', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /in-progress/ }));
     expect(await screen.findByText('Being worked right now')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Unassigned only' }));
 
     rerender(
       <MemoryRouter>
@@ -301,6 +347,7 @@ describe('IssuesTab', () => {
     await act(async () => {});
 
     await waitFor(() => expect(screen.queryByText('Being worked right now')).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Unassigned only' })).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('ignores a stale in-flight response when the app changes mid-request', async () => {
