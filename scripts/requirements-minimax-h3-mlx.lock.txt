@@ -1,3 +1,13 @@
+# MiniMax H3 MLX runtime — fully-resolved lock for ~/.portos/minimax-h3-mlx/.venv.
+#
+# `torch` and `torchvision` are deliberately absent: the port is MLX-native and
+# needs neither, and they are ~2 GB. That is load-bearing, not incidental —
+# transformers 5 routes every AutoProcessor/AutoImageProcessor load through
+# torchvision, so scripts/generate_minimax_h3.py binds the PIL-backed image
+# processor itself for keyframe conditioning (see `install_pil_image_processor`).
+# Note also that setup-image-video.sh installs this with `uv pip sync`, which
+# REMOVES anything added on top — a hand-installed torch does not survive a
+# Repair, so nothing may be built on the assumption that one is present.
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.14.2
