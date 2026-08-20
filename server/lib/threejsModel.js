@@ -753,6 +753,11 @@ const RELATIVE_PLANE_QUANTUM = 1e-3;
 // the plane count above rather than double-jeopardy here.
 const COPLANAR_DETERMINANT = 1e-6;
 
+// An extrude can represent a membrane only when its sweep is negligible at the
+// scale of its outline. Keep this relative so the declaration works for both a
+// small fin and a large cape, while a positive-depth plate remains a solid slab.
+const OPEN_SHELL_DEPTH_RATIO = 1e-3;
+
 // Aggregate, never per-part: `extrude` is the RIGHT answer for a plate, a badge,
 // or a sign, so a flat part is only evidence when the model's identity rides on
 // it. The finding is "the load-bearing parts are predominantly flat", reported
@@ -806,6 +811,21 @@ const isCoplanarCloud = (vertices) => {
   return Math.abs(determinant) / (meanVariance ** 3) < COPLANAR_DETERMINANT;
 };
 
+const isZeroThicknessGeometry = (geometry) => {
+  if (!geometry) return false;
+  if (geometry.type === 'custom') {
+    const vertices = Array.isArray(geometry.vertices) ? geometry.vertices : [];
+    return vertices.length >= 9 && isCoplanarCloud(vertices);
+  }
+  if (geometry.type !== 'extrude') return false;
+  const outline = Array.isArray(geometry.outline) ? geometry.outline : [];
+  if (outline.length < 3 || !(geometry.depth > 0)) return false;
+  const xs = outline.map(([x]) => x);
+  const ys = outline.map(([, y]) => y);
+  const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  return span > 0 && geometry.depth / span <= OPEN_SHELL_DEPTH_RATIO;
+};
+
 const isSlabGeometry = (geometry) => {
   if (!geometry) return false;
   if (geometry.type === 'extrude') {
@@ -844,9 +864,7 @@ export function evaluateThreejsFlatness(spec) {
 
   const details = Array.isArray(spec?.detailInventory) ? spec.detailInventory : [];
   const slabPartIds = new Set();
-  const flatFeatures = [];
-  const intentionalMembraneFeatures = [];
-  const intentionalMembranePartIds = new Set();
+  const flatDetails = [];
   let evaluated = 0;
 
   for (const detail of details) {
@@ -866,23 +884,28 @@ export function evaluateThreejsFlatness(spec) {
     evaluated += 1;
     const implementing = [...meshes.values()];
     if (!implementing.every((mesh) => isSlabGeometry(mesh.geometry))) continue;
-    flatFeatures.push(detail.feature);
+    flatDetails.push({
+      feature: detail.feature,
+      partIds: implementing.map((mesh) => mesh.id),
+      isIntentionalMembrane: implementing.every((mesh) => (
+        spec?.materials?.[mesh.material]?.side === 'double' && isZeroThicknessGeometry(mesh.geometry)
+      )),
+    });
     for (const mesh of implementing) slabPartIds.add(mesh.id);
-    const isIntentionalMembrane = implementing.every((mesh) => spec?.materials?.[mesh.material]?.side === 'double');
-    if (isIntentionalMembrane) {
-      intentionalMembraneFeatures.push(detail.feature);
-      for (const mesh of implementing) intentionalMembranePartIds.add(mesh.id);
-    }
   }
 
   // `null`, not 0: a spec with no buildable identity feature was not measured
   // flat, it was not measured at all, and a 0 would read as a clean result.
+  const flatFeatures = flatDetails.map(({ feature }) => feature);
+  const intentionalMembraneDetails = flatDetails.filter(({ isIntentionalMembrane }) => isIntentionalMembrane);
+  const intentionalMembraneFeatures = intentionalMembraneDetails.map(({ feature }) => feature);
+  const unintentionalDetails = flatDetails.filter(({ isIntentionalMembrane }) => !isIntentionalMembrane);
+  const unintentionalFeatures = unintentionalDetails.map(({ feature }) => feature);
+  const intentionalMembranePartIds = new Set(intentionalMembraneDetails.flatMap(({ partIds }) => partIds));
   const flatRatio = evaluated === 0 ? null : flatFeatures.length / evaluated;
   const findings = [];
   if (flatRatio !== null && flatRatio > FLAT_IDENTITY_RATIO_THRESHOLD) {
-    const intentionalFeatureNames = new Set(intentionalMembraneFeatures);
-    const unintentionalFeatures = flatFeatures.filter((feature) => !intentionalFeatureNames.has(feature));
-    const nonMembraneFeatureCount = evaluated - intentionalMembraneFeatures.length;
+    const nonMembraneFeatureCount = evaluated - intentionalMembraneDetails.length;
     const nonMembraneFlatRatio = nonMembraneFeatureCount === 0
       ? 0
       : unintentionalFeatures.length / nonMembraneFeatureCount;
@@ -896,7 +919,7 @@ export function evaluateThreejsFlatness(spec) {
       });
     }
     if (nonMembraneFlatRatio > FLAT_IDENTITY_RATIO_THRESHOLD) {
-      const offenders = [...slabPartIds].filter((id) => !intentionalMembranePartIds.has(id));
+      const offenders = [...new Set(unintentionalDetails.flatMap(({ partIds }) => partIds))];
       findings.push({
         code: 'flat-identity-parts',
         severity: 'warning',

@@ -618,6 +618,38 @@ describe('evaluateThreejsFlatness', () => {
     expect(flatness.findings[0].message).toContain('intentional membrane surfaces');
     expect(buildThreejsFlatnessFeedback(flatness)).toBe('');
   });
+
+  it('keeps a positive-depth double-sided extrude in the solid-part warning', () => {
+    const spec = flatnessSpec([geometryPart('plate', validExtrude())]);
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 1, noteCount: 0, flatRatio: 1 });
+    expect(flatness.findings[0].severity).toBe('warning');
+    expect(buildThreejsFlatnessFeedback(flatness)).toContain('genuine depth');
+  });
+
+  it('accepts a double-sided near-zero-depth extrude as an intentional membrane', () => {
+    const spec = flatnessSpec([geometryPart('membrane', { ...validExtrude(), depth: 0.001 })]);
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 0, noteCount: 1, flatRatio: 1 });
+    expect(flatness.findings[0].severity).toBe('note');
+  });
+
+  it('keeps duplicate feature labels classified independently', () => {
+    const membrane = geometryPart('membrane', flatFanGeometry());
+    const plate = geometryPart('plate', validExtrude());
+    membrane.material = 'membrane';
+    plate.material = 'plate';
+    const spec = flatnessSpec([membrane, plate]);
+    spec.materials.membrane = { ...spec.materials.body, side: 'double' };
+    spec.materials.plate = { ...spec.materials.body, side: 'double' };
+    spec.detailInventory[0].feature = 'shared feature';
+    spec.detailInventory[1].feature = 'shared feature';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 1, noteCount: 1, flatRatio: 1 });
+    expect(flatness.findings.map((finding) => finding.severity)).toEqual(['note', 'warning']);
+  });
 });
 
 describe('buildThreejsFlatnessFeedback', () => {
