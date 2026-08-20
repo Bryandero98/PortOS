@@ -458,6 +458,16 @@ describe('resolveLiveOwnerReason', () => {
     expect(resolveLiveOwnerReason({ path: '/wt/claim-fix-thing', locked: true, activeAgentIds: live })).toBe('worktree-locked');
   });
 
+  it('lets a LIVE owner outrank the claim exception, not the other way round', () => {
+    // activeAgentIds holds `agent-<id>` keys, so a claim basename can only land
+    // there out of contract — but the gate tests liveness BEFORE the claim, so
+    // if one ever did, the branch is held rather than dispatched. That is the
+    // intended direction: never hand a branch to an agent while something says
+    // a process still owns it.
+    expect(resolveLiveOwnerReason({ path: '/wt/claim-fix-thing', activeAgentIds: new Set(['claim-fix-thing']) }))
+      .toBe('worktree-active-agent');
+  });
+
   it('is null for a free worktree, a dead agent, and no worktree at all', () => {
     expect(resolveLiveOwnerReason({ path: '/wt/agent-bbbbbbbb', activeAgentIds: live })).toBeNull();
     expect(resolveLiveOwnerReason({ path: '/wt/next-issue-42', activeAgentIds: live })).toBeNull();

@@ -340,7 +340,11 @@ export function isAbandonedAgentWorktree({ path, locked, activeAgentIds }) {
  *    finish. So this side passes `allowLiveClaim`, while cleanup keeps the hold
  *    through `worktreeProtectionReason` until the claim is stale or provably
  *    shipped. A lock still outranks it: the gate tests the lock BEFORE the
- *    claim, so a locked claim tree reports `worktree-locked` on its own.
+ *    claim, so a locked claim tree reports `worktree-locked` on its own — and
+ *    so does a live agent, on the same ordering. `activeAgentIds` holds
+ *    `agent-<id>` keys (case 2 above reads them as such), so a claim basename
+ *    can only appear there out of contract; if one ever did, holding the branch
+ *    is the fail-safe answer and the intended precedence.
  * A branch with no worktree at all and no live owner is simply free (null).
  *
  * @param {{ branch?:string|null, path:string|null, locked?:boolean, activeAgentIds?:Set<string> }} input
