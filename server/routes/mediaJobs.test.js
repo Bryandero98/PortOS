@@ -221,6 +221,21 @@ describe('mediaJobs routes', () => {
     expect(params.remoteMedia.request.prompt).toBe('a lighthouse at dusk');
   });
 
+  it('POST /:id/retry survives a corrupt null marker instead of 500ing', async () => {
+    // `isRemoteMediaJob` gates on presence, not truthiness — a hand-edited
+    // media-jobs.json (or a peer-merged record) can hold `remoteMedia: null`
+    // and still be classified as routed. The queue's remote module is where a
+    // malformed marker fails closed; the retry route must not crash first.
+    jobStore.set('j-null-marker', {
+      id: 'j-null-marker', kind: 'image', owner: null, status: 'failed',
+      params: { prompt: '', modelId: null, remoteMedia: null },
+    });
+    const r = await request(makeApp()).post('/api/media-jobs/j-null-marker/retry').send({});
+    expect(r.status).toBe(200);
+    const { params } = stubs.enqueueJob.mock.calls[0][0];
+    expect(params.remoteMedia).toEqual({ cancelRequested: false, reconcile: false });
+  });
+
   it('POST /:id/retry leaves a local job\'s params alone', async () => {
     // Bypass probe for the marker reset above: a training job carrying a stray
     // marker has no federated contract, so it must keep the local path.

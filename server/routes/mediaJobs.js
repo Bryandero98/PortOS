@@ -263,7 +263,7 @@ router.post('/:id/retry', asyncHandler(async (req, res) => {
       { status: 409, code: 'JOB_RETRY_TEMP_UPLOAD' },
     );
   }
-  const body = validateRequest(retryBodySchema, req.body ?? {}) ?? {};
+  const body = validateRequest(retryBodySchema, req.body ?? {});
   const rawOverrides = body.params ?? {};
   // A `effort: 'default'` override is a clear-to-default signal, not a value to
   // merge — handled by deleting params.effort below so the render falls back to
@@ -307,8 +307,12 @@ router.post('/:id/retry', asyncHandler(async (req, res) => {
   //     recover; it must submit rather than skip preflight.
   // Cleared here, not in routedJobParams — boot restoration re-enqueues an
   // interrupted job under its ORIGINAL id and needs `reconcile: true` kept.
+  // `?? {}` because the predicate gates on PRESENCE, not truthiness — a
+  // hand-edited or peer-merged `remoteMedia: null` passes it, and this is the
+  // one marker consumer that would hard-crash rather than fail closed in the
+  // kind's remote module the way every other one does.
   if (isRemoteMediaJob({ kind: job.kind, params })) {
-    const { cancelRequested: _canceled, reconcile: _reconcile, ...marker } = params.remoteMedia;
+    const { cancelRequested: _canceled, reconcile: _reconcile, ...marker } = params.remoteMedia ?? {};
     params.remoteMedia = { ...marker, cancelRequested: false, reconcile: false };
   }
   const result = enqueueJob({ kind: job.kind, params, owner: job.owner });
