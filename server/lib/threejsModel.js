@@ -265,6 +265,7 @@ export const threejsGeometrySchema = z.discriminatedUnion('type', [
 
 export const threejsMaterialSchema = z.object({
   type: z.enum(['standard', 'physical', 'basic']).default('standard'),
+  side: z.enum(['front', 'double']).default('front'),
   color: colorSchema,
   metalness: z.number().finite().min(0).max(1).default(0),
   roughness: z.number().finite().min(0).max(1).default(0.65),
@@ -752,6 +753,11 @@ const RELATIVE_PLANE_QUANTUM = 1e-3;
 // the plane count above rather than double-jeopardy here.
 const COPLANAR_DETERMINANT = 1e-6;
 
+// An extrude can represent a membrane only when its sweep is negligible at the
+// scale of its outline. Keep this relative so the declaration works for both a
+// small fin and a large cape, while a positive-depth plate remains a solid slab.
+const OPEN_SHELL_DEPTH_RATIO = 1e-3;
+
 // Aggregate, never per-part: `extrude` is the RIGHT answer for a plate, a badge,
 // or a sign, so a flat part is only evidence when the model's identity rides on
 // it. The finding is "the load-bearing parts are predominantly flat", reported
@@ -805,6 +811,90 @@ const isCoplanarCloud = (vertices) => {
   return Math.abs(determinant) / (meanVariance ** 3) < COPLANAR_DETERMINANT;
 };
 
+// Three.js composes a part's local transform as rotation * scale, then applies
+// each ancestor's transform from the outside. Keeping the linear part here is
+// enough for the relative thickness check and avoids making the server-side gate
+// depend on Three.js just to answer a geometry question.
+const IDENTITY_LINEAR = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+
+const multiplyLinear = (a, b) => [
+  (a[0] * b[0]) + (a[1] * b[3]) + (a[2] * b[6]),
+  (a[0] * b[1]) + (a[1] * b[4]) + (a[2] * b[7]),
+  (a[0] * b[2]) + (a[1] * b[5]) + (a[2] * b[8]),
+  (a[3] * b[0]) + (a[4] * b[3]) + (a[5] * b[6]),
+  (a[3] * b[1]) + (a[4] * b[4]) + (a[5] * b[7]),
+  (a[3] * b[2]) + (a[4] * b[5]) + (a[5] * b[8]),
+  (a[6] * b[0]) + (a[7] * b[3]) + (a[8] * b[6]),
+  (a[6] * b[1]) + (a[7] * b[4]) + (a[8] * b[7]),
+  (a[6] * b[2]) + (a[7] * b[5]) + (a[8] * b[8]),
+];
+
+const rotationLinear = (degrees = [0, 0, 0]) => {
+  const [x = 0, y = 0, z = 0] = degrees;
+  const ax = (Number.isFinite(x) ? x : 0) * (Math.PI / 180);
+  const ay = (Number.isFinite(y) ? y : 0) * (Math.PI / 180);
+  const az = (Number.isFinite(z) ? z : 0) * (Math.PI / 180);
+  const a = Math.cos(ax);
+  const b = Math.sin(ax);
+  const c = Math.cos(ay);
+  const d = Math.sin(ay);
+  const e = Math.cos(az);
+  const f = Math.sin(az);
+  // Row-major equivalent of THREE.Euler's default XYZ matrix.
+  return [
+    c * e, -c * f, d,
+    (b * d * e) + (a * f), (-b * d * f) + (a * e), -b * c,
+    (-a * d * e) + (b * f), (a * d * f) + (b * e), a * c,
+  ];
+};
+
+const scaleLinear = (scale = [1, 1, 1]) => [
+  Number.isFinite(scale[0]) ? scale[0] : 1, 0, 0,
+  0, Number.isFinite(scale[1]) ? scale[1] : 1, 0,
+  0, 0, Number.isFinite(scale[2]) ? scale[2] : 1,
+];
+
+const partLinear = (part) => multiplyLinear(
+  rotationLinear(part.rotationDegrees),
+  scaleLinear(part.scale),
+);
+
+const applyLinear = (matrix, vector) => [
+  (matrix[0] * vector[0]) + (matrix[1] * vector[1]) + (matrix[2] * vector[2]),
+  (matrix[3] * vector[0]) + (matrix[4] * vector[1]) + (matrix[5] * vector[2]),
+  (matrix[6] * vector[0]) + (matrix[7] * vector[1]) + (matrix[8] * vector[2]),
+];
+
+const vectorLength = (vector) => Math.hypot(...vector);
+
+const transformVertices = (vertices, matrix) => {
+  const transformed = [];
+  for (let index = 0; index + 2 < vertices.length; index += 3) {
+    transformed.push(...applyLinear(matrix, vertices.slice(index, index + 3)));
+  }
+  return transformed;
+};
+
+const isZeroThicknessGeometry = (geometry, worldLinear = IDENTITY_LINEAR) => {
+  if (!geometry) return false;
+  if (geometry.type === 'custom') {
+    const vertices = Array.isArray(geometry.vertices) ? geometry.vertices : [];
+    return vertices.length >= 9 && isCoplanarCloud(transformVertices(vertices, worldLinear));
+  }
+  if (geometry.type !== 'extrude') return false;
+  const outline = Array.isArray(geometry.outline) ? geometry.outline : [];
+  if (outline.length < 3 || !(geometry.depth > 0)) return false;
+  const xs = outline.map(([x]) => x);
+  const ys = outline.map(([, y]) => y);
+  const spanX = Math.max(...xs) - Math.min(...xs);
+  const spanY = Math.max(...ys) - Math.min(...ys);
+  const xSpan = spanX * vectorLength(applyLinear(worldLinear, [1, 0, 0]));
+  const ySpan = spanY * vectorLength(applyLinear(worldLinear, [0, 1, 0]));
+  const span = Math.max(xSpan, ySpan);
+  const thickness = geometry.depth * vectorLength(applyLinear(worldLinear, [0, 0, 1]));
+  return span > 0 && thickness > 0 && thickness / span <= OPEN_SHELL_DEPTH_RATIO;
+};
+
 const isSlabGeometry = (geometry) => {
   if (!geometry) return false;
   if (geometry.type === 'extrude') {
@@ -835,15 +925,18 @@ const collectMeshes = (part, out = []) => {
  */
 export function evaluateThreejsFlatness(spec) {
   const byId = new Map();
-  const indexPart = (part) => {
+  const worldLinearById = new Map();
+  const indexPart = (part, parentLinear = IDENTITY_LINEAR) => {
     byId.set(part.id, part);
-    for (const child of part.children || []) indexPart(child);
+    const worldLinear = multiplyLinear(parentLinear, partLinear(part));
+    worldLinearById.set(part.id, worldLinear);
+    for (const child of part.children || []) indexPart(child, worldLinear);
   };
   for (const part of spec?.parts || []) indexPart(part);
 
   const details = Array.isArray(spec?.detailInventory) ? spec.detailInventory : [];
   const slabPartIds = new Set();
-  const flatFeatures = [];
+  const flatDetails = [];
   let evaluated = 0;
 
   for (const detail of details) {
@@ -863,30 +956,61 @@ export function evaluateThreejsFlatness(spec) {
     evaluated += 1;
     const implementing = [...meshes.values()];
     if (!implementing.every((mesh) => isSlabGeometry(mesh.geometry))) continue;
-    flatFeatures.push(detail.feature);
+    flatDetails.push({
+      feature: detail.feature,
+      partIds: implementing.map((mesh) => mesh.id),
+      isIntentionalMembrane: implementing.every((mesh) => (
+        spec?.materials?.[mesh.material]?.side === 'double'
+        && isZeroThicknessGeometry(mesh.geometry, worldLinearById.get(mesh.id))
+      )),
+    });
     for (const mesh of implementing) slabPartIds.add(mesh.id);
   }
 
   // `null`, not 0: a spec with no buildable identity feature was not measured
   // flat, it was not measured at all, and a 0 would read as a clean result.
+  const flatFeatures = flatDetails.map(({ feature }) => feature);
+  const intentionalMembraneDetails = flatDetails.filter(({ isIntentionalMembrane }) => isIntentionalMembrane);
+  const intentionalMembraneFeatures = intentionalMembraneDetails.map(({ feature }) => feature);
+  const unintentionalDetails = flatDetails.filter(({ isIntentionalMembrane }) => !isIntentionalMembrane);
+  const unintentionalFeatures = unintentionalDetails.map(({ feature }) => feature);
+  const intentionalMembranePartIds = new Set(intentionalMembraneDetails.flatMap(({ partIds }) => partIds));
   const flatRatio = evaluated === 0 ? null : flatFeatures.length / evaluated;
   const findings = [];
   if (flatRatio !== null && flatRatio > FLAT_IDENTITY_RATIO_THRESHOLD) {
-    const offenders = [...slabPartIds];
-    findings.push({
-      code: 'flat-identity-parts',
-      severity: 'warning',
-      partIds: offenders,
-      features: flatFeatures,
-      message: `${flatFeatures.length} of ${evaluated} identity-defining features are built only from flat parts (${listSpecNames(offenders.map((id) => byId.get(id)?.name || id))}). The model will read as a projection the moment it is orbited — give the parts the subject's identity rides on a real cross-section instead of stacking unbevelled extrusions and planar triangle fans.`,
-    });
+    const nonMembraneFeatureCount = evaluated - intentionalMembraneDetails.length;
+    const nonMembraneFlatRatio = nonMembraneFeatureCount === 0
+      ? 0
+      : unintentionalFeatures.length / nonMembraneFeatureCount;
+    if (intentionalMembraneFeatures.length > 0) {
+      findings.push({
+        code: 'flat-identity-parts',
+        severity: 'note',
+        partIds: [...intentionalMembranePartIds],
+        features: intentionalMembraneFeatures,
+        message: `${intentionalMembraneFeatures.length} of ${evaluated} identity-defining features are intentional membrane surfaces (zero-thickness open shells: ${listSpecNames(intentionalMembraneFeatures)}). Their materials are double-sided (side "double"), so they remain visible from both sides.`,
+      });
+    }
+    if (nonMembraneFlatRatio > FLAT_IDENTITY_RATIO_THRESHOLD) {
+      const offenders = [...new Set(unintentionalDetails.flatMap(({ partIds }) => partIds))];
+      findings.push({
+        code: 'flat-identity-parts',
+        severity: 'warning',
+        partIds: offenders,
+        features: unintentionalFeatures,
+        message: `${unintentionalFeatures.length} of ${nonMembraneFeatureCount} identity-defining features are built only from flat parts (${listSpecNames(offenders.map((id) => byId.get(id)?.name || id))}). The model will read as a projection the moment it is orbited — give the parts the subject's identity rides on a real cross-section instead of stacking unbevelled extrusions and planar triangle fans. If a part is genuinely a zero-thickness membrane, make its material double-sided (side "double") instead; do not use that declaration to avoid giving a solid part real depth.`,
+      });
+    }
   }
+
+  const warningCount = findings.filter((finding) => finding.severity === 'warning').length;
+  const noteCount = findings.filter((finding) => finding.severity === 'note').length;
 
   return {
     findings,
     errorCount: 0,
-    warningCount: findings.length,
-    noteCount: 0,
+    warningCount,
+    noteCount,
     identityDetailCount: evaluated,
     flatIdentityDetailCount: flatFeatures.length,
     flatRatio,
@@ -905,7 +1029,7 @@ export function buildThreejsFlatnessFeedback(flatness) {
   return [
     'The previous pass failed the cross-section check — it reads as a flat projection rather than a solid:',
     ...warnings.map((finding, index) => `${index + 1}. ${finding.message}`),
-    'Rebuild those parts with genuine depth: compose them from primitives, or give an extrude a bevel, so the model holds up from any orbit angle.',
+    'Rebuild those parts with genuine depth: compose them from primitives, or give an extrude a bevel, so the model holds up from any orbit angle. If a part is genuinely a zero-thickness membrane — such as a cape, leaf, fin, or wing — make its material double-sided (side "double") instead, but never use that declaration to avoid giving a solid part real depth.',
   ].join('\n');
 }
 
@@ -1261,11 +1385,13 @@ function createGeometry(definition) {
 }
 
 function createMaterial(definition) {
+  const doubleSided = definition.side === 'double' ? { side: THREE.DoubleSide } : {};
   const unlit = {
     color: definition.color,
     opacity: definition.opacity,
     transparent: definition.transparent,
     wireframe: definition.wireframe,
+    ...doubleSided,
   };
   if (definition.type === 'basic') {
     return new THREE.MeshBasicMaterial(unlit);

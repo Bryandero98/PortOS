@@ -71,11 +71,13 @@ export function createSculptBufferGeometry(definition) {
  * render profile — the two must move together.
  */
 export function sculptMaterialProps(definition, envMapIntensity = 1) {
+  const doubleSided = definition.side === 'double' ? { side: THREE.DoubleSide } : {};
   const unlit = {
     color: definition.color,
     opacity: definition.opacity,
     transparent: definition.transparent,
     wireframe: definition.wireframe,
+    ...doubleSided,
   };
   if (definition.type === 'basic') return unlit;
   const lit = {

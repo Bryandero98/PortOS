@@ -72,6 +72,7 @@ describe('threejsSculptSpecSchema', () => {
   it('accepts a bounded hierarchy and fills material/part defaults', () => {
     const parsed = threejsSculptSpecSchema.parse(validSpec());
     expect(parsed.materials.body.emissive).toBe('#000000');
+    expect(parsed.materials.body.side).toBe('front');
     expect(parsed.parts[0].castShadow).toBe(true);
     expect(parsed.parts[0].children[0].id).toBe('frontTrim');
   });
@@ -348,6 +349,14 @@ describe('buildThreejsFactorySource', () => {
     expect(source).toContain('"explodeWithParent": true');
   });
 
+  it('emits the declared double-sided material option for the standalone factory', () => {
+    const spec = validSpec();
+    spec.materials.body.side = 'double';
+    const source = buildThreejsFactorySource(spec);
+    expect(source).toContain('"side": "double"');
+    expect(source).toContain('const doubleSided = definition.side === \'double\' ? { side: THREE.DoubleSide } : {};');
+  });
+
   it('emits extrude, tube, and physical-channel construction', () => {
     const spec = validSpec();
     spec.parts[0].geometry = validExtrude();
@@ -425,6 +434,12 @@ const solidShellGeometry = () => {
   }
   for (let index = 0; index + 2 < vertices.length / 3; index += 3) indices.push(index, index + 1, index + 2);
   return { type: 'custom', vertices, indices };
+};
+
+const thinCustomGeometry = () => {
+  const outline = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+  const vertices = [-0.0005, 0.0005].flatMap((z) => outline.flatMap(([x, y]) => [x, y, z]));
+  return { type: 'custom', vertices, indices: [0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6] };
 };
 
 const geometryPart = (id, geometry) => ({
@@ -588,6 +603,79 @@ describe('evaluateThreejsFlatness', () => {
 
   it('returns a clean result for a missing spec', () => {
     expect(evaluateThreejsFlatness(null)).toMatchObject({ findings: [], flatRatio: null });
+  });
+
+  it('notes a flat identity part as an intentional membrane when its material is double-sided', () => {
+    const spec = flatnessSpec([geometryPart('membrane', flatFanGeometry())]);
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({
+      warningCount: 0,
+      noteCount: 1,
+      flatIdentityDetailCount: 1,
+      flatRatio: 1,
+    });
+    expect(flatness.findings[0]).toMatchObject({
+      code: 'flat-identity-parts',
+      severity: 'note',
+      partIds: ['membrane'],
+      features: ['membrane part silhouette'],
+    });
+    expect(flatness.findings[0].message).toContain('intentional membrane surfaces');
+    expect(buildThreejsFlatnessFeedback(flatness)).toBe('');
+  });
+
+  it('keeps a positive-depth double-sided extrude in the solid-part warning', () => {
+    const spec = flatnessSpec([geometryPart('plate', validExtrude())]);
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 1, noteCount: 0, flatRatio: 1 });
+    expect(flatness.findings[0].severity).toBe('warning');
+    expect(buildThreejsFlatnessFeedback(flatness)).toContain('genuine depth');
+  });
+
+  it('accepts a double-sided near-zero-depth extrude as an intentional membrane', () => {
+    const spec = flatnessSpec([geometryPart('membrane', { ...validExtrude(), depth: 0.001 })]);
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 0, noteCount: 1, flatRatio: 1 });
+    expect(flatness.findings[0].severity).toBe('note');
+  });
+
+  it('keeps a scaled near-zero-depth child in the solid-part warning', () => {
+    const parent = geometryPart('parent', undefined);
+    delete parent.material;
+    parent.scale = [1, 1, 1_000];
+    parent.children = [geometryPart('plate', { ...validExtrude(), depth: 0.001 })];
+    const spec = flatnessSpec([parent]);
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 1, noteCount: 0, flatRatio: 1 });
+    expect(flatness.findings[0].severity).toBe('warning');
+  });
+
+  it('keeps a thin custom solid in the warning after normal-axis scaling', () => {
+    const spec = flatnessSpec([geometryPart('plate', thinCustomGeometry())]);
+    spec.parts[0].scale = [1, 1, 1_000];
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 1, noteCount: 0, flatRatio: 1 });
+    expect(flatness.findings[0].severity).toBe('warning');
+  });
+
+  it('keeps duplicate feature labels classified independently', () => {
+    const membrane = geometryPart('membrane', flatFanGeometry());
+    const plate = geometryPart('plate', validExtrude());
+    membrane.material = 'membrane';
+    plate.material = 'plate';
+    const spec = flatnessSpec([membrane, plate]);
+    spec.materials.membrane = { ...spec.materials.body, side: 'double' };
+    spec.materials.plate = { ...spec.materials.body, side: 'double' };
+    spec.detailInventory[0].feature = 'shared feature';
+    spec.detailInventory[1].feature = 'shared feature';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 1, noteCount: 1, flatRatio: 1 });
+    expect(flatness.findings.map((finding) => finding.severity)).toEqual(['note', 'warning']);
   });
 });
 
