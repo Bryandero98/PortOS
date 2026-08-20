@@ -1062,15 +1062,20 @@ const credentialMissing = (provider, { keySetFor = null, envVarSet = null } = {}
   if (source.kind === 'none' || !source.ref) return null;
 
   if (source.kind === 'env') {
-    const missing = credentialEnvVars(provider)
+    const states = credentialEnvVars(provider)
       .map((name) => {
         const rawState = typeof envVarSet === 'function' ? envVarSet(name) : defaultEnvVarSet(provider, name);
-        return normalizeCredentialState(rawState) === false
-          ? { code: 'envVar', label: `${name} environment variable is not set` }
-          : null;
-      })
-      .filter(Boolean);
+        return { name, state: normalizeCredentialState(rawState) };
+      });
     const inherited = inheritedCredentialMissing(provider, keySetFor);
+    // Providers can expose alternative credential schemes in one env map (for
+    // example Bedrock bearer auth or the AWS access-key pair). A known value
+    // satisfies the group; an unknown value keeps the result non-blocking.
+    if (states.some(({ state }) => state !== false)) return inherited;
+    const missing = states.map(({ name }) => ({
+      code: 'envVar',
+      label: `${name} environment variable is not set`,
+    }));
     if (inherited) missing.push(inherited);
     return missing.length > 0 ? missing : null;
   }

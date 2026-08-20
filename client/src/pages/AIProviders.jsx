@@ -532,7 +532,7 @@ export default function AIProviders() {
                           {Object.entries(provider.envVars).map(([k, v]) => (
                             <div key={k}>
                               <code className="ml-1 text-orange-400">
-                                {k}={provider.secretEnvVars?.includes(k) ? '***' : v}
+                                {k}={provider.secretEnvVars?.includes(k) ? (v === '' ? '(not set)' : '***') : v}
                               </code>
                             </div>
                           ))}

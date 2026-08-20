@@ -204,6 +204,26 @@ describe('AIProviders page load error handling', () => {
     expect(screen.queryByText('Failed to load AI providers')).not.toBeInTheDocument();
   });
 
+  it('shows a blank secret environment value as not set', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'bedrock',
+        name: 'Bedrock CLI',
+        type: 'cli',
+        command: 'claude',
+        enabled: true,
+        envVars: { AWS_BEARER_TOKEN_BEDROCK: '' },
+        secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+      }],
+      activeProvider: null,
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('AWS_BEARER_TOKEN_BEDROCK=(not set)')).toBeInTheDocument();
+    expect(screen.queryByText('AWS_BEARER_TOKEN_BEDROCK=***')).not.toBeInTheDocument();
+  });
+
   it('renders EmptyState when api.getProviders succeeds with 0 items', async () => {
     api.getProviders.mockResolvedValue({
       providers: [],

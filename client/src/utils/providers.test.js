@@ -1389,15 +1389,26 @@ describe('providerCardState', () => {
     const readiness = providerCardState(cli({
       envVars: {
         AWS_PROFILE: '',
-        AWS_ACCESS_KEY_ID: 'key-example',
+        AWS_ACCESS_KEY_ID: '',
         AWS_SECRET_ACCESS_KEY: '',
       },
       secretEnvVars: ['AWS_PROFILE', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'],
     }));
-    expect(readiness.missing).toEqual([{
-      code: 'envVar',
-      label: 'AWS_SECRET_ACCESS_KEY environment variable is not set',
-    }]);
+    expect(readiness.missing).toEqual([
+      { code: 'envVar', label: 'AWS_ACCESS_KEY_ID environment variable is not set' },
+      { code: 'envVar', label: 'AWS_SECRET_ACCESS_KEY environment variable is not set' },
+    ]);
+  });
+
+  it('accepts a configured alternative credential when another env value is blank', () => {
+    expect(providerCardState(cli({
+      envVars: {
+        AWS_BEARER_TOKEN_BEDROCK: '',
+        AWS_ACCESS_KEY_ID: 'key-example',
+        AWS_SECRET_ACCESS_KEY: 'secret-example',
+      },
+      secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+    })).state).toBe(PROVIDER_CARD_STATE.READY);
   });
 
   it('does not use API env settings in place of the stored API key', () => {
