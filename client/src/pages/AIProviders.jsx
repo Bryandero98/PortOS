@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link } from 'react-router';
 import { AlertTriangle } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
-import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, supportsModelRefresh, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, isOrcaRouterBackedProvider, providerRuntimeKey } from '../utils/providers';
+import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isGrokBuildCli, isLocalEndpoint, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, isOrcaRouterBackedProvider, providerRuntimeKey, providerReadiness, PROVIDER_READINESS } from '../utils/providers';
 import useLocalModels from '../hooks/useLocalModels';
 import BrailleSpinner from '../components/BrailleSpinner';
 import EmptyState from '../components/EmptyState';
@@ -22,68 +22,41 @@ import EffortSelect from '../components/cos/EffortSelect';
 import Modal from '../components/ui/Modal';
 import { FormField } from '../components/ui/FormField';
 import RuntimeInstallModal from '../components/install/RuntimeInstallModal';
-import ProviderRuntimeStatus from '../components/providers/ProviderRuntimeStatus';
+import ProviderCard from '../components/providers/ProviderCard';
+import { GrokUploadWarning, OrcaRouterKeyHint } from '../components/providers/ProviderNotices';
+import CollapsibleSection from '../components/ui/CollapsibleSection';
 
 // The two local apps an API provider can front. Their installer lives on the
 // Local LLM settings tab (it starts the service too), so the provider card
 // links there instead of offering an install of its own.
 const LOCAL_APP_LABELS = { ollama: 'Ollama', lmstudio: 'LM Studio' };
 
-// One phrasing for "this command isn't on the CoS Agent Runner's allowlist",
-// shared by the provider-card badge tooltip and the editor's inline banner.
-const RUNNER_NOT_ALLOWED_HINT = 'This command is not on the CoS Agent Runner’s allowlist, so /spawn and /spawn-tui will refuse it. The provider still works everywhere else (direct spawn, chat, pipeline). The allowlist is curated in the PortOS source, not in this form.';
-
-// Privacy disclosure for the Grok Build CLI/TUI: its harness uploads the entire
-// working repo to xAI (GCP) as it works unless the user opts out. Shown both on
-// the provider card and in the create/edit form (before enabling) — see
-// isGrokBuildCli for which providers match.
-function GrokUploadWarning({ className = '' }) {
-  return (
-    <div className={`text-xs rounded-md border border-port-warning/40 bg-port-warning/10 text-port-warning px-2.5 py-2 leading-relaxed ${className}`}>
-      ⚠️ The Grok harness uploads your <span className="font-semibold">entire working repo</span> to
-      xAI (GCP) as it works. To keep your code local, add the following to{' '}
-      <code className="font-mono">~/.grok/config.toml</code> before enabling this provider:
-      <pre className="mt-1.5 whitespace-pre rounded bg-port-bg/60 px-2 py-1.5 font-mono text-[11px] text-port-warning">{`[harness]
-disable_codebase_upload = true`}</pre>
-    </div>
-   );
-}
-
-// The OpenCode OrcaRouter wrappers (opencode-orcarouter / -tui) keep no key of
-// their own — at spawn time the server copies the key from the sibling
-// `orcarouter` API provider. This answers "where do I put the API key?" from the
-// card/form: it's on the API provider, not here.
-function OrcaRouterKeyHint({ sibling, className = '', onEdit }) {
-  const hasKey = Boolean(sibling?.hasApiKey);
-  return (
-    <div className={`text-xs rounded-md border border-port-border bg-port-bg/60 px-2.5 py-2 leading-relaxed ${className}`}>
-      <span className="text-gray-300">
-        API key is inherited from the <code className="font-mono">OrcaRouter</code> API provider
-        {" "}at run time — this wrapper has no key field of its own.
-      </span>
-      <p className="mt-1 text-gray-400">
-        You do not need to add an environment variable. PortOS supplies{' '}
-        <code className="font-mono">ORCAROUTER_API_KEY</code> to OpenCode automatically.
-      </p>
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        {hasKey ? (
-          <span className="text-port-success">OrcaRouter key: set</span>
-        ) : (
-          <span className="text-port-warning">OrcaRouter key: not set</span>
-        )}
-        {sibling && onEdit && (
-          <button
-            type="button"
-            onClick={() => onEdit(sibling)}
-            className="text-port-accent hover:text-port-accent/80 underline underline-offset-2"
-          >
-            Edit OrcaRouter API provider
-          </button>
-        )}
-      </div>
-    </div>
-   );
-}
+// The three buckets the cards are grouped into, in the order they render.
+// "Needs setup" sits between them deliberately: a provider missing its CLI or
+// key can't be turned on at all, so it is neither enabled nor merely disabled.
+export const PROVIDER_SECTIONS = [
+  {
+    key: 'enabled',
+    title: 'Enabled',
+    hint: 'Switched on and available to run',
+    dot: 'bg-port-success',
+    states: [PROVIDER_READINESS.READY, PROVIDER_READINESS.BENCHED],
+  },
+  {
+    key: 'blocked',
+    title: 'Needs setup',
+    hint: 'Missing a CLI or an API key — these cannot run yet',
+    dot: 'bg-port-warning',
+    states: [PROVIDER_READINESS.BLOCKED],
+  },
+  {
+    key: 'disabled',
+    title: 'Disabled',
+    hint: 'Fully configured, but switched off',
+    dot: 'bg-gray-500',
+    states: [PROVIDER_READINESS.DISABLED],
+  },
+];
 
 export default function AIProviders() {
   const [providers, setProviders] = useState([]);
@@ -344,14 +317,46 @@ export default function AIProviders() {
   // The install widget's data for one card: a CLI provider's binary comes from
   // the server's runtime table; an API provider fronted by a local app takes the
   // local-LLM status, which counts an installed app with no CLI shim on PATH.
-  const runtimeForProvider = (provider) => {
+  const runtimeForProvider = useCallback((provider) => {
     const backend = isApiProvider(provider) ? localBackendForProvider(provider) : null;
     if (!backend) return runtimes[providerRuntimeKey(provider)] || null;
     const installed = localModels.installed?.[backend];
     // `null` = status not fetched — never offer an install from an unknown state.
     if (typeof installed !== 'boolean') return null;
     return { id: backend, label: LOCAL_APP_LABELS[backend], installed, installable: false, manageUrl: '/settings/local-llm' };
-  };
+  }, [runtimes, localModels.installed]);
+
+  // Everything the cards are derived from, in one pass: each provider's runtime,
+  // its readiness (runtime install state + credentials + the runtime bench,
+  // folded into the state that drives the card's color, its badge and its
+  // section), and the id lookup the cards use for fallback/sibling references.
+  // Memoized because this page re-renders on the 20s status poll and on every
+  // keystroke in the ad-hoc runner's prompt box.
+  const { providersById, runtimeByProviderId, readinessByProviderId, providersBySection } = useMemo(() => {
+    const byId = Object.fromEntries(providers.map(p => [p.id, p]));
+    const runtimeById = Object.fromEntries(providers.map(p => [p.id, runtimeForProvider(p)]));
+    const readinessById = Object.fromEntries(providers.map(p => [p.id, providerReadiness(p, {
+      runtime: runtimeById[p.id],
+      status: statuses[p.id],
+      // `null` when the sibling isn't in the list at all — unknown, not missing.
+      orcaRouterKeySet: byId.orcarouter ? Boolean(byId.orcarouter.hasApiKey) : null,
+    })]));
+    // The default provider floats to the top of whichever section it sits in, so
+    // "which one runs by default" stays a one-glance answer after grouping.
+    const defaultFirst = (list) => {
+      const idx = list.findIndex(p => p.id === activeProviderId);
+      return idx <= 0 ? list : [list[idx], ...list.slice(0, idx), ...list.slice(idx + 1)];
+    };
+    return {
+      providersById: byId,
+      runtimeByProviderId: runtimeById,
+      readinessByProviderId: readinessById,
+      providersBySection: Object.fromEntries(PROVIDER_SECTIONS.map(section => [
+        section.key,
+        defaultFirst(providers.filter(p => section.states.includes(readinessById[p.id].state))),
+      ])),
+    };
+  }, [providers, statuses, activeProviderId, runtimeForProvider]);
 
   const selectedRunProvider = providers.find(p => p.id === activeProviderId);
   const runProviderIsTui = isTuiProvider(selectedRunProvider);
@@ -570,8 +575,8 @@ export default function AIProviders() {
         </div>
       )}
 
-      {/* Provider List */}
-      <div className="grid gap-4">
+      {/* Provider List, grouped by readiness (see PROVIDER_SECTIONS) */}
+      <div className="grid gap-6">
         {loadError ? (
           <Banner
             tone="error"
@@ -591,252 +596,51 @@ export default function AIProviders() {
           </Banner>
         ) : (
           <>
-            {(() => {
-              const idx = providers.findIndex(p => p.id === activeProviderId);
-              if (idx <= 0) return providers;
-              return [providers[idx], ...providers.slice(0, idx), ...providers.slice(idx + 1)];
-            })().map(provider => (
-              <div
-                key={provider.id}
-                className={`bg-port-card border rounded-xl p-4 ${
-                  provider.id === activeProviderId ? 'border-port-accent' : 'border-port-border'
-                }`}
-              >
-                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-lg font-semibold text-white">{provider.name}</h3>
-                      <span className={`text-xs px-2 py-0.5 rounded ${providerTypeClass(provider.type)}`}>
-                        {provider.type.toUpperCase()}
-                      </span>
-                      {provider.id === activeProviderId && (
-                        <span className="text-xs px-2 py-0.5 rounded bg-port-accent/20 text-port-accent">
-                          DEFAULT
-                        </span>
-                      )}
-                      {provider.llamaBacked && (
-                        <span className="text-xs px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                          LLAMA.CPP / DFLASH
-                        </span>
-                      )}
-                      {provider.mtplxBacked && (
-                        <span className="text-xs px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                          MTPLX
-                        </span>
-                      )}
-                      {!provider.enabled && (
-                        <span className="text-xs px-2 py-0.5 rounded bg-gray-500/20 text-gray-400">
-                          DISABLED
-                        </span>
-                      )}
-                      {/* Runtime availability is independent of the `enabled` toggle: an
-                          enabled provider can still be benched after a failure (usage
-                          limit, model-not-found, auth) and skipped in favor of a fallback. */}
-                      {provider.enabled && statuses[provider.id]?.available === false && (
-                        <span
-                          className="text-xs px-2 py-0.5 rounded bg-port-error/20 text-port-error"
-                          title={statuses[provider.id]?.message || ''}
-                        >
-                          UNAVAILABLE{statuses[provider.id]?.reason ? ` · ${statuses[provider.id].reason}` : ''}
-                        </span>
-                      )}
-                      {/* Off the CoS Agent Runner's exec allowlist: the provider still
-                          works for direct spawn, it just can't be launched by /spawn
-                          or /spawn-tui. Informational — never a save-time rejection. */}
-                      {isProcessProvider(provider) && isRunnerAllowedCommand(provider.command, runnerAllowedCommands) === false && (
-                        <span
-                          className="text-xs px-2 py-0.5 rounded bg-port-warning/20 text-port-warning"
-                          title={RUNNER_NOT_ALLOWED_HINT}
-                        >
-                          NO AGENT RUNNER
-                        </span>
-                      )}
-                    </div>
-
-                    <ProviderRuntimeStatus
-                      className="mt-2"
-                      runtime={runtimeForProvider(provider)}
-                      onInstall={setInstallingRuntime}
+            {PROVIDER_SECTIONS.map(section => {
+              const sectionProviders = providersBySection[section.key];
+              if (sectionProviders.length === 0) return null;
+              return (
+                <CollapsibleSection
+                  key={section.key}
+                  size="lg"
+                  defaultOpen
+                  buttonClassName="flex-wrap border-b border-port-border/60 pb-1.5"
+                  bodyClassName="grid gap-4 pt-3"
+                  label={(
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${section.dot}`} aria-hidden="true" />
+                      <span className="text-sm font-semibold uppercase tracking-wide text-white">{section.title}</span>
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-port-bg text-gray-400">{sectionProviders.length}</span>
+                      <span className="text-xs text-gray-500">{section.hint}</span>
+                    </span>
+                  )}
+                >
+                  {sectionProviders.map(provider => (
+                    <ProviderCard
+                      key={provider.id}
+                      provider={provider}
+                      readiness={readinessByProviderId[provider.id]}
+                      runtime={runtimeByProviderId[provider.id]}
+                      status={statuses[provider.id]}
+                      isDefault={provider.id === activeProviderId}
+                      providersById={providersById}
+                      runnerAllowedCommands={runnerAllowedCommands}
+                      testResult={testResults[provider.id]}
+                      refreshing={Boolean(refreshing[provider.id])}
+                      recovering={Boolean(recovering[provider.id])}
+                      onTest={handleTest}
+                      onRefreshModels={handleRefreshModels}
+                      onToggleEnabled={handleToggleEnabled}
+                      onSetActive={handleSetActive}
+                      onEdit={(target) => { setEditingProvider(target); setShowForm(true); }}
+                      onDelete={handleDelete}
+                      onRecover={handleRecover}
+                      onInstallRuntime={setInstallingRuntime}
                     />
-
-                    {provider.enabled && statuses[provider.id]?.available === false && (
-                      <div className="mt-2 text-xs rounded border border-port-error/40 bg-port-error/10 px-3 py-2 text-port-error space-y-1">
-                        <p className="break-words">
-                          <span className="font-semibold">Benched ({statuses[provider.id]?.reason || 'unknown'})</span>
-                          {statuses[provider.id]?.timeUntilRecovery ? ` — auto-retries in ${statuses[provider.id].timeUntilRecovery}` : ''}
-                          . Calls route to the fallback until then.
-                        </p>
-                        {statuses[provider.id]?.message && (
-                          <p className="break-words text-port-error/80">Why: {statuses[provider.id].message}</p>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => handleRecover(provider.id)}
-                          disabled={recovering[provider.id]}
-                          className="mt-1 px-2 py-0.5 rounded bg-port-error/20 hover:bg-port-error/30 disabled:opacity-50 text-port-error"
-                        >
-                          {recovering[provider.id] ? 'Clearing…' : 'Recover now'}
-                        </button>
-                      </div>
-                    )}
-
-                    <div className="mt-2 text-sm text-gray-400 space-y-1">
-                      {provider.llamaBacked && (
-                        <p className="text-xs text-purple-300/90">
-                          Local llama.cpp / llama-server harness (endpoint: <code className="text-purple-200">{provider.endpoint}</code>) — supports DFlash 2 speculative drafting.
-                        </p>
-                      )}
-                      {isProcessProvider(provider) && (
-                        <p className="break-words">Command: <code className="text-gray-300 break-all">{provider.command} {provider.args?.join(' ')}</code></p>
-                      )}
-                      {isApiProvider(provider) && (
-                        <p className="break-words">Endpoint: <code className="text-gray-300 break-all">{provider.endpoint}</code></p>
-                      )}
-                      {/* API-type providers auth solely via the stored apiKey (sent as a
-                          Bearer header) — surface its state here so "where does the key
-                          go?" is answered from the card, not by spelunking the form. */}
-                      {isApiProvider(provider) && (
-                        provider.hasApiKey ? (
-                          <p className="text-xs">API key: <span className="text-port-success">set</span></p>
-                        ) : isLocalEndpoint(provider.endpoint) ? (
-                          <p className="text-xs">API key: <span className="text-gray-500">none (local endpoint)</span></p>
-                        ) : (
-                          <p className="text-xs">API key: <span className="text-port-warning">not set — Edit this provider to paste one</span></p>
-                        )
-                      )}
-                      {provider.models?.length > 0 && (
-                        <p>Models: {provider.models.slice(0, 3).join(', ')}{provider.models.length > 3 ? ` +${provider.models.length - 3}` : ''}</p>
-                      )}
-                      {provider.defaultModel && (
-                        <p className="break-words">Default: <code className="text-gray-300 break-all">{provider.defaultModel}</code></p>
-                      )}
-                      {provider.effort && (
-                        <p className="break-words">Default effort: <code className="text-gray-300">{provider.effort}</code></p>
-                      )}
-                      {(() => {
-                        const windowLabel = formatContextLength(effectiveModelContextWindow(provider, provider.defaultModel));
-                        return windowLabel ? (
-                          <p className="text-xs">
-                            Context: <span className="text-gray-300">{windowLabel}</span>
-                            {provider.contextWindow ? <span className="text-gray-500"> override</span> : null}
-                          </p>
-                        ) : null;
-                      })()}
-                      {(provider.lightModel || provider.mediumModel || provider.heavyModel) && (
-                        <p className="text-xs">
-                          Tiers:
-                          {provider.lightModel && <span className="ml-1 text-port-success">{provider.lightModel}</span>}
-                          {provider.mediumModel && <span className="ml-1 text-port-warning">{provider.mediumModel}</span>}
-                          {provider.heavyModel && <span className="ml-1 text-port-error">{provider.heavyModel}</span>}
-                        </p>
-                      )}
-                      {provider.headlessArgs?.length > 0 && (
-                        <p className="text-xs break-words">
-                          Headless: <code className="text-gray-300 break-all">{provider.headlessArgs.join(' ')}</code>
-                        </p>
-                      )}
-                      {isTuiProvider(provider) && (
-                        <p className="text-xs break-words">
-                          TUI: paste delay <span className="text-gray-300">{provider.tuiPromptDelayMs || 2500}ms</span>, completion by sentinel, process exit, or explicit failure
-                        </p>
-                      )}
-                      {provider.fallbackProvider && (
-                        <p className="text-xs">
-                          Fallback: <span className="text-port-accent">{providers.find(p => p.id === provider.fallbackProvider)?.name || provider.fallbackProvider}</span>
-                          {provider.fallbackModel && <span className="ml-1 text-gray-300">({provider.fallbackModel})</span>}
-                        </p>
-                      )}
-                      {provider.envVars && Object.keys(provider.envVars).length > 0 && (
-                        <div className="text-xs mt-1">
-                          <span className="text-gray-400">Env:</span>
-                          {Object.entries(provider.envVars).map(([k, v]) => (
-                            <div key={k}>
-                              <code className="ml-1 text-orange-400">
-                                {k}={provider.secretEnvVars?.includes(k) ? '***' : v}
-                              </code>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                      {isGrokBuildCli(provider) && <GrokUploadWarning className="mt-2" />}
-
-                       {isOrcaRouterBackedProvider(provider) && (
-                         <OrcaRouterKeyHint
-                          sibling={providers.find(p => p.id === 'orcarouter')}
-                          onEdit={(sibling) => { setEditingProvider(sibling); setShowForm(true); }}
-                          className="mt-2"
-                          />
-                        )}
-
-                      {testResults[provider.id] && !testResults[provider.id].testing && (
-                      <div className={`mt-2 text-sm ${testResults[provider.id].success ? 'text-port-success' : 'text-port-error'}`}>
-                        {testResults[provider.id].success
-                          ? `✓ Available${testResults[provider.id].version ? ` (${testResults[provider.id].version})` : ''}`
-                          : `✗ ${testResults[provider.id].error}`
-                        }
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      onClick={() => handleTest(provider.id)}
-                      disabled={testResults[provider.id]?.testing}
-                      className="px-3 py-1.5 text-sm bg-port-border hover:bg-port-border/80 text-white rounded transition-colors disabled:opacity-50"
-                    >
-                      {testResults[provider.id]?.testing ? 'Testing...' : 'Test'}
-                    </button>
-
-                    {supportsModelRefresh(provider) && (
-                      <button
-                        onClick={() => handleRefreshModels(provider.id)}
-                        disabled={refreshing[provider.id]}
-                        className="px-3 py-1.5 text-sm bg-port-border hover:bg-port-border/80 text-white rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="Refresh available models"
-                      >
-                        {refreshing[provider.id] ? 'Refreshing...' : 'Refresh Models'}
-                      </button>
-                    )}
-
-                    <button
-                      onClick={() => handleToggleEnabled(provider)}
-                      className={`px-3 py-1.5 text-sm rounded transition-colors ${
-                        provider.enabled
-                          ? 'bg-port-warning/20 text-port-warning hover:bg-port-warning/30'
-                          : 'bg-port-success/20 text-port-success hover:bg-port-success/30'
-                      }`}
-                    >
-                      {provider.enabled ? 'Disable' : 'Enable'}
-                    </button>
-
-                    {provider.id !== activeProviderId && provider.enabled && (
-                      <button
-                        onClick={() => handleSetActive(provider.id)}
-                        className="px-3 py-1.5 text-sm bg-port-accent/20 text-port-accent hover:bg-port-accent/30 rounded transition-colors"
-                      >
-                        Set Default
-                      </button>
-                    )}
-
-                    <button
-                      onClick={() => { setEditingProvider(provider); setShowForm(true); }}
-                      className="px-3 py-1.5 text-sm bg-port-border hover:bg-port-border/80 text-white rounded transition-colors"
-                    >
-                      Edit
-                    </button>
-
-                    <button
-                      onClick={() => handleDelete(provider.id)}
-                      className="px-3 py-1.5 text-sm bg-port-error/20 text-port-error hover:bg-port-error/30 rounded transition-colors"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
+                  ))}
+                </CollapsibleSection>
+              );
+            })}
 
             {providers.length === 0 && (
               <EmptyState

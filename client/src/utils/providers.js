@@ -875,6 +875,76 @@ export const isGrokBuildCli = (provider) => {
 };
 
 /**
+ * The four states a provider card can be in on the AI Providers page, ordered
+ * the way the page groups them: usable now, temporarily benched, missing a
+ * prerequisite, or simply switched off.
+ */
+export const PROVIDER_READINESS = Object.freeze({
+  READY: 'ready',
+  BENCHED: 'benched',
+  BLOCKED: 'blocked',
+  DISABLED: 'disabled',
+});
+
+/**
+ * Which prerequisites a provider is missing, and the readiness state that
+ * follows from them — one place, so a card's border, its badge and the section
+ * the page files it under can never disagree with each other.
+ *
+ * PRESENTATION readiness, not an exec gate: the server routes on
+ * `provider.enabled && isAvailable(id)` alone (`getFallbackProvider` in
+ * server/lib/aiToolkit/providerStatus.js) and discovers a missing binary at
+ * spawn time via ENOENT, so a `blocked` card here is still reachable by the
+ * runner. Publishing the prerequisite check server-side so routing can skip
+ * un-runnable providers is issue #4611; credentials carried in a secret env var
+ * (Bedrock, Ollama auth token) are not covered yet — issue #4612.
+ *
+ * Inputs are passed in rather than read from globals so this stays pure:
+ *   runtime          — the provider's entry of the `runtimes` map (CLI binary)
+ *                      or the local-app shape the page derives from the
+ *                      local-LLM status. `null` = NOT PROBED, which must never
+ *                      read as "missing" (an older server, or a card drawn
+ *                      before the probe lands, would otherwise accuse every
+ *                      perfectly-installed CLI).
+ *   status           — the runtime-availability entry from
+ *                      `GET /api/providers/status`; `available === false`
+ *                      means the provider is benched after a failure.
+ *   orcaRouterKeySet — whether the sibling `orcarouter` API provider holds the
+ *                      key an OpenCode OrcaRouter wrapper inherits at spawn
+ *                      time. `null` = unknown (sibling not in the list), and
+ *                      like `runtime` must not be reported as missing.
+ *
+ * `blocked` outranks `disabled`: a provider whose CLI isn't installed can't be
+ * enabled at all, so it belongs in the "needs setup" bucket whichever way its
+ * toggle happens to sit. `benched` only applies to an enabled provider that
+ * otherwise meets its prerequisites.
+ *
+ * @returns {{state: string, missing: {code: string, label: string}[]}}
+ */
+export const providerReadiness = (provider, { runtime = null, status = null, orcaRouterKeySet = null } = {}) => {
+  const missing = [];
+
+  if (runtime && runtime.installed === false) {
+    missing.push({ code: 'runtime', label: `${runtime.label || 'Runtime'} is not installed` });
+  }
+  // API providers auth solely via the stored key. A local endpoint (Ollama, LM
+  // Studio) needs none, so its absence is not a missing prerequisite there.
+  if (isApiProvider(provider) && provider?.hasApiKey !== true && !isLocalEndpoint(provider?.endpoint)) {
+    missing.push({ code: 'apiKey', label: 'API key is not set' });
+  }
+  // The OpenCode OrcaRouter wrappers carry no key of their own — theirs lives
+  // on the sibling API provider, so that's the prerequisite to report.
+  if (isOrcaRouterBackedProvider(provider) && orcaRouterKeySet === false) {
+    missing.push({ code: 'inheritedApiKey', label: 'OrcaRouter API provider has no API key' });
+  }
+
+  if (missing.length > 0) return { state: PROVIDER_READINESS.BLOCKED, missing };
+  if (!provider?.enabled) return { state: PROVIDER_READINESS.DISABLED, missing };
+  if (status?.available === false) return { state: PROVIDER_READINESS.BENCHED, missing };
+  return { state: PROVIDER_READINESS.READY, missing };
+};
+
+/**
  * Resolve the provider whose timeout is the "fallback" for a stage — the
  * stage's pinned provider when set, otherwise the active provider. Used to
  * power the placeholder + hint on stage-timeout UIs in PromptManager and
