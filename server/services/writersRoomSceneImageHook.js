@@ -28,14 +28,17 @@
 import { createMediaJobImageHook } from './mediaJobImageHook.js';
 import { persistSceneImage } from './writersRoom/evaluator.js';
 import { writersRoomEvents } from './writersRoomEvents.js';
+import { effectiveJobPrompt } from '../lib/federatedMediaWire.js';
 
 // The render filename is `${jobId}.png`; prefer the job id, fall back to
 // stripping the extension so the attach records a stable jobId either way.
 const deriveJobId = (job, filename) =>
   (typeof job.id === 'string' && job.id ? job.id : filename.replace(/\.png$/, ''));
 // The gen prompt IS the scene prompt (buildScenePrompt output), so record it on
-// the attach without the tag having to carry a duplicate copy.
-const derivePrompt = (job) => (typeof job.params?.prompt === 'string' ? job.params.prompt : null);
+// the attach without the tag having to carry a duplicate copy. A federated
+// render blanks top-level `prompt` to fail closed on a downgrade (#4683), so
+// read through to the marker rather than saving the scene an empty prompt.
+const derivePrompt = (job) => effectiveJobPrompt(job);
 
 const hook = createMediaJobImageHook({
   label: 'writers-room scene-image',

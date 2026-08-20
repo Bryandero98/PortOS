@@ -69,6 +69,7 @@ import { saveUploadedGalleryVideo } from '../services/videoUpload.js';
 import { JSON_BODY_LIMIT_BYTES } from '../lib/uploadLimits.js';
 import { createInstallLogger } from '../lib/installLogger.js';
 import { prepareRemoteMediaJob } from '../services/federatedMedia/remoteSubmission.js';
+import { effectiveJobPrompt } from '../lib/federatedMediaWire.js';
 
 const router = Router();
 
@@ -1265,6 +1266,17 @@ const pickJobParams = (params) => {
     if (names.length && icLoraSpecForMode(params.mode)?.referenceKind === 'image') {
       out.icReferenceImageFiles = names;
     }
+  }
+  // A federated render's prompt and model live only inside the versioned marker
+  // — the top-level copies are blanked so a downgraded build fails closed
+  // (#4683). Read through to the wire request, as the queue's own projection
+  // does, or a page reload mid-render resumes the form with an empty prompt and
+  // the LOCAL default model instead of the peer's.
+  if (params.remoteMedia) {
+    const prompt = effectiveJobPrompt({ params });
+    if (typeof prompt === 'string') out.prompt = prompt;
+    const { modelId } = params.remoteMedia.request ?? {};
+    if (typeof modelId === 'string' && modelId) out.modelId = modelId;
   }
   return out;
 };

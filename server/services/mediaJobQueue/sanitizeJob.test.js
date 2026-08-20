@@ -55,8 +55,11 @@ describe('sanitizeJob', () => {
       kind: 'audio',
       status: 'queued',
       params: {
+        // Blank/nulled by routedJobParams, exactly as the queue persists it —
+        // if the fixture carried the model id here too, the marker rebuild
+        // below could stop working and this test would still pass.
         prompt: '',
-        modelId: 'example/model',
+        modelId: null,
         remoteMedia: {
           wireVersion: 1,
           peerId: '00000000-0000-4000-8000-000000000001',

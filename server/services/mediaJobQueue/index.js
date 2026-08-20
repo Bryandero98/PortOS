@@ -71,6 +71,16 @@ const jobLane = (job) => {
   return 'gpu';
 };
 
+// Boot restoration is the second way a job enters the queue, so it needs the
+// same routed-job normalization enqueueJob applies (#4683). A job written by a
+// build older than that fix still carries the top-level model id a legacy
+// dispatcher would render from; re-normalizing on restore (and letting the boot
+// persist write the safe shape back) means upgrading and then rolling back
+// cannot resurrect a locally-renderable routed job.
+const restoredParams = (job) => (isRemoteMediaJob(job)
+  ? routedJobParams({ params: job.params })
+  : job.params);
+
 const JOBS_FILE = join(PATHS.data, 'media-jobs.json');
 const COMPLETED_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_PERSISTED_ARCHIVE = 500;
@@ -403,13 +413,16 @@ export async function initMediaJobQueue() {
             ...j,
             status: 'queued',
             cancelRequested: marker?.cancelRequested === true,
-            params: {
-              ...j.params,
-              remoteMedia: {
-                ...(marker && typeof marker === 'object' && !Array.isArray(marker) ? marker : {}),
-                reconcile: true,
+            params: restoredParams({
+              ...j,
+              params: {
+                ...j.params,
+                remoteMedia: {
+                  ...(marker && typeof marker === 'object' && !Array.isArray(marker) ? marker : {}),
+                  reconcile: true,
+                },
               },
-            },
+            }),
           });
           console.log(`🔁 media-job [${j.id.slice(0, 8)}] remote ${j.kind} interrupted — re-enqueued for reconciliation`);
           continue;
@@ -448,7 +461,7 @@ export async function initMediaJobQueue() {
           safeUnlinkUpload(p);
         }
       } else if (j.status === 'queued') {
-        queue.push({ ...j });
+        queue.push({ ...j, params: restoredParams(j) });
       } else {
         archive.push(j);
       }
