@@ -465,7 +465,7 @@ function main() {
   const base = process.env.CI_BASE_SHA;
   const head = process.env.CI_HEAD_SHA || 'HEAD';
   if (!forceFull && !base) {
-    throw new Error('CI_BASE_SHA is required unless CI_FORCE_FULL=true.');
+    throw new Error('CI_BASE_SHA is required unless the run is forced full (CI_FORCE_FULL=true or CI_BASE_REF=release).');
   }
   const changedFiles = forceFull
     ? []

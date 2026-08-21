@@ -8,6 +8,7 @@ import {
   FULL_CI_GATE_CHECK_NAME,
   findVerifiedSha,
   hasPassingGate,
+  parseCheckRuns,
   parseCommitSummary,
 } from './verify-ci-status.js';
 
@@ -60,6 +61,25 @@ describe('hasPassingGate', () => {
   it('treats an unreachable checks API the same as no gate', () => {
     expect(hasPassingGate(null)).toBe(false);
     expect(hasPassingGate([])).toBe(false);
+  });
+});
+
+describe('parseCheckRuns', () => {
+  it('returns the check runs from a well-formed response', () => {
+    expect(parseCheckRuns(JSON.stringify({ check_runs: [passingGate] }))).toEqual([passingGate]);
+  });
+
+  it('reads a gate-less answer as empty, not unreadable', () => {
+    expect(parseCheckRuns(JSON.stringify({ check_runs: [] }))).toEqual([]);
+    expect(parseCheckRuns(JSON.stringify({ total_count: 0 }))).toEqual([]);
+  });
+
+  it('degrades an unreadable body to null instead of throwing', () => {
+    // A 200 carrying non-JSON (proxy / captive-portal HTML) must fall back to
+    // running the full suite, not fail the verify job and block the release.
+    expect(() => parseCheckRuns('<html>nope</html>')).not.toThrow();
+    expect(parseCheckRuns('<html>nope</html>')).toBeNull();
+    expect(parseCheckRuns('null')).toEqual([]);
   });
 });
 

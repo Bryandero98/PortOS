@@ -71,8 +71,13 @@ const capture = (command, args) => {
   return result.stdout.trim();
 };
 
-// null = the checks API could not be reached, [] = it answered with no gate.
-// Both end the release at "unverified", but only the first is worth a warning.
+// null = the checks API could not be answered for this sha, [] = it answered
+// with no gate. Both end the release at "unverified", but only the first warns.
+//
+// The parse is guarded because an unreadable answer must degrade to "run the
+// full suite", not throw: an uncaught throw here fails the verify job, and the
+// release then reports a hard error instead of simply re-testing the tree.
+// A 200 carrying non-JSON (proxy/captive-portal HTML) is the realistic case.
 function fetchCheckRuns(repo, sha) {
   const query = `check_name=${encodeURIComponent(FULL_CI_GATE_CHECK_NAME)}&filter=latest`;
   const body = capture('gh', ['api', `repos/${repo}/commits/${sha}/check-runs?${query}`]);
@@ -80,7 +85,19 @@ function fetchCheckRuns(repo, sha) {
     console.warn(`⚠️  Checks API unreachable for ${sha.slice(0, 8)} — treating it as unverified.`);
     return null;
   }
-  return JSON.parse(body).check_runs || [];
+  return parseCheckRuns(body, sha);
+}
+
+/** check_runs from a `/check-runs` response body, or null when unreadable. */
+export function parseCheckRuns(body, sha = '') {
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    console.warn(`⚠️  Unreadable checks response for ${String(sha).slice(0, 8)} — treating it as unverified.`);
+    return null;
+  }
+  return Array.isArray(parsed?.check_runs) ? parsed.check_runs : [];
 }
 
 function emit(verified, reason) {

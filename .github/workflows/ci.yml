@@ -57,7 +57,11 @@ jobs:
       - name: Select affected test surfaces
         id: plan
         env:
-          CI_FORCE_FULL: ${{ github.event_name != 'pull_request' }}
+          # `inputs.full` is only decisive for a caller that invokes this
+          # reusable workflow from a pull_request-triggered workflow — every
+          # call site in this repo comes from a push, which the first clause
+          # already covers. It stays honored so the declared input is real.
+          CI_FORCE_FULL: ${{ github.event_name != 'pull_request' || inputs.full == true }}
           # The planner turns a PR into `release` into a full plan: that PR is
           # the single gate a release ships behind, so it never runs scoped.
           CI_BASE_REF: ${{ github.base_ref }}
