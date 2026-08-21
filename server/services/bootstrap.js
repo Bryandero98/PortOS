@@ -644,7 +644,15 @@ const announceListening = ({ io, httpServer, localHttpServer, httpsEnabled, port
     console.log(`   🧬 build ${formatBuildIdentity(identity)}`);
   } else {
     getBuildIdentity()
-      .then((late) => console.log(`   🧬 build ${formatBuildIdentity(late)} (probed late)`))
+      .then((late) => {
+        // Only print once there is something true to print. A failed probe
+        // resolves to an all-null tuple, and formatting THAT would claim "no git
+        // metadata" — the wrong reason, permanently, about a checkout that is
+        // fine. Say the probe did not finish instead; the API and the UI report
+        // the real value as soon as a retry succeeds.
+        if (late?.shortCommit) console.log(`   🧬 build ${formatBuildIdentity(late)}`);
+        else console.log(`   🧬 build — git probe did not finish in time; /api/system/build will report it`);
+      })
       .catch((err) => console.error(`❌ Build identity probe failed: ${err.message}`));
   }
   if (!httpsEnabled) {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 
 const api = vi.hoisted(() => ({ getSystemBuild: vi.fn() }));
 vi.mock('../../services/api', () => api);
@@ -132,7 +132,9 @@ describe('BuildStampPanel', () => {
     expect(screen.getByText('at start · up 3h 12m')).toBeInTheDocument();
   });
 
-  it('survives a failed build fetch (older server with no such route)', async () => {
+  it('blames the endpoint, not the checkout, when the build fetch fails', async () => {
+    // An older server has no /api/system/build at all. Rendering "no git
+    // metadata" there would name a cause the panel never established.
     vi.resetModules();
     document.head.innerHTML = '';
     api.getSystemBuild.mockRejectedValue(new Error('404'));
@@ -141,5 +143,26 @@ describe('BuildStampPanel', () => {
     render(<Panel />);
 
     expect(screen.getByText('Running build')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/may be running a version without this endpoint/i)).toBeInTheDocument());
+    expect(screen.queryByText(/no git metadata/i)).not.toBeInTheDocument();
+  });
+
+  it('says it is still checking rather than claiming missing git metadata', async () => {
+    // The pre-fetch state is not evidence about the checkout.
+    vi.resetModules();
+    document.head.innerHTML = '';
+    let release;
+    api.getSystemBuild.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    const Panel = (await import('./BuildStampPanel.jsx')).default;
+
+    render(<Panel />);
+
+    expect(screen.getByText(/checking which build is running/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no git metadata/i)).not.toBeInTheDocument();
+
+    // Settle the pending fetch inside act, or its state update lands after the
+    // test and the suite treats the act warning as a failure.
+    await act(async () => { release(serverBuild()); });
+    expect(screen.getByText('abc1234 · main')).toBeInTheDocument();
   });
 });

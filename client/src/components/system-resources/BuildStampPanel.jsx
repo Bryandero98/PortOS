@@ -27,6 +27,9 @@ import { timeAgo } from '../../utils/formatters';
  */
 export default function BuildStampPanel({ uptimeFormatted }) {
   const [build, setBuild] = useState(null);
+  // `null` build covers three different states, and they must not all render as
+  // "no git metadata" — that names a cause the panel has not established.
+  const [load, setLoad] = useState('loading');
 
   // One fetch on mount, not on the page's 15s health poll: the commit a running
   // process was started from cannot change without a restart, and a restart
@@ -34,8 +37,8 @@ export default function BuildStampPanel({ uptimeFormatted }) {
   useEffect(() => {
     let live = true;
     api.getSystemBuild({ silent: true })
-      .then((data) => { if (live) setBuild(data); })
-      .catch(() => {});
+      .then((data) => { if (live) { setBuild(data); setLoad('ready'); } })
+      .catch(() => { if (live) setLoad('error'); });
     return () => { live = false; };
   }, []);
 
@@ -85,7 +88,7 @@ export default function BuildStampPanel({ uptimeFormatted }) {
         />
       </dl>
 
-      <p className="mt-3 text-xs text-gray-500">{footnote(state, build)}</p>
+      <p className="mt-3 text-xs text-gray-500">{footnote(state, build, load)}</p>
     </section>
   );
 }
@@ -97,7 +100,11 @@ function bundleHint() {
   return TRUSTED_BUNDLE_STAMP?.builtAt ? `built ${timeAgo(TRUSTED_BUNDLE_STAMP.builtAt)}` : null;
 }
 
-function footnote(state, build) {
+function footnote(state, build, load) {
+  if (load === 'loading') return 'Checking which build is running…';
+  // An older server has no /api/system/build at all. Saying "no git metadata"
+  // there blames the checkout for a missing endpoint.
+  if (load === 'error') return 'Could not read the server build — it may be running a version without this endpoint.';
   if (state === 'mismatch') return null;
   if (state === 'unknown') {
     return !SERVED_BUILD_ID
