@@ -33,6 +33,10 @@ import {
   listMusicEngines, getInstances, generateMusic, installAudioModel, removeAudioModel, getActiveProcessing, getMediaJob, getTrack, cancelMediaJob,
 } from '../../services/api';
 import { formatDownloadGb } from '../../utils/formatters';
+import {
+  resolvePeerMediaReadiness,
+  summarizePeerMediaQueue,
+} from '../../lib/federatedMediaReadiness.js';
 import RuntimeInstallModal from '../install/RuntimeInstallModal';
 
 /**
@@ -479,7 +483,12 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
 
   const selectedUserModel = engine?.models?.find((m) => m.id === modelId && m.userAdded);
   const showRuntimeInstallHint = !isRemote && !!engine && (!engine.ready || !selectedModelReady) && (!!prompt?.trim() || userSelectedEngine);
-  const remoteStatus = selectedRemotePeer?.mediaProviderStatus;
+  // The same resolver the Instances card and System Health use, rather than
+  // reading `state` off the stored probe: a snapshot recorded as `ready` keeps
+  // saying so after its freshness window closes, and this is the surface where
+  // the user actually commits a render to that peer.
+  const remoteReadiness = selectedRemotePeer ? resolvePeerMediaReadiness(selectedRemotePeer) : null;
+  const remoteQueueSegments = remoteReadiness ? summarizePeerMediaQueue(remoteReadiness.queue) : [];
 
   return (
     <div className="space-y-2 border border-port-border rounded-lg p-3 bg-port-bg/40">
@@ -522,11 +531,10 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
             </select>
           </label>
           <p className="text-[11px] text-gray-400">
-            {remoteStatus?.state === 'ready' && remoteStatus.snapshot?.queue
-              ? `${remoteStatus.snapshot.queue.running} running · ${remoteStatus.snapshot.queue.queued} queued`
-              : remoteStatus?.state === 'stale'
-                ? 'Capacity is stale; remote generation is blocked until the peer reports fresh status.'
-                : 'Remote generation requires a ready, authenticated peer with fresh capacity.'}
+            {remoteReadiness?.state === 'ready' && remoteQueueSegments.length > 0
+              ? remoteQueueSegments.join(' · ')
+              : remoteReadiness?.help
+                || 'Remote generation requires a ready, authenticated peer with fresh capacity.'}
           </p>
           <div className="grid grid-cols-2 gap-2">
             {(['style', 'mood', 'tempo', 'energy']).map((field) => (

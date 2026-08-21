@@ -45,7 +45,7 @@ function LaneRow({ label, help, lane }) {
 
 function PeerRow({ peer }) {
   const readiness = resolvePeerMediaReadiness(peer);
-  const queue = summarizePeerMediaQueue(readiness.queue);
+  const queueSegments = summarizePeerMediaQueue(readiness.queue);
   return (
     <div className="rounded-lg border border-port-border bg-port-bg px-3 py-2">
       <div className="flex items-center gap-2">
@@ -58,9 +58,7 @@ function PeerRow({ peer }) {
         {readiness.kinds.length > 0
           ? <span>{readiness.kinds.join(' · ')}</span>
           : <span>no models allowlisted</span>}
-        {queue.slots && <span>{queue.slots}</span>}
-        {queue.drain && <span>{queue.drain}</span>}
-        {queue.kinds.length > 0 && <span>{queue.kinds.join(' · ')}</span>}
+        {queueSegments.length > 0 && <span>{queueSegments.join(' · ')}</span>}
         {readiness.checkedAt && <span>checked {timeAgo(readiness.checkedAt)}</span>}
       </div>
       {readiness.help && (

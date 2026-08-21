@@ -72,6 +72,9 @@ const PEER_OFFLINE = Object.freeze({ label: 'peer offline', tone: 'warning' });
 // on `capabilities`, and a new identity every render would defeat that memo for
 // exactly the peers that have nothing to recompute.
 const NO_CAPABILITIES = Object.freeze([]);
+// A peer with no snapshot yet is the common case on a fresh instance, and its
+// row re-renders on every 15s poll — no reason to allocate a fresh empty array.
+const NO_QUEUE_SEGMENTS = Object.freeze([]);
 
 const isRecord = (value) => value && typeof value === 'object' && !Array.isArray(value);
 // NUL separator, matching the server's own model key: a printable separator
@@ -130,54 +133,45 @@ function verifiedState(status, now) {
   return state;
 }
 
-// Same rationale as NO_CAPABILITIES, for the queue summary's kind list.
-const NO_KIND_SUMMARY = Object.freeze([]);
 const isCount = (value) => Number.isInteger(value) && value >= 0;
 
 /**
- * The peer's queue block as a display summary, shared by both surfaces.
+ * The peer's queue block as finished display segments.
  *
- * `concurrency` and `byKind` reached the wire after v1 shipped (#4348), so an
- * older provider omits them and every segment here is independently optional —
- * a missing field is dropped rather than rendered as a zero, which would claim
- * an idle lane the peer never reported. `slots` stays first because it is the
- * one segment every provider has always sent.
+ * Returns the rendered phrases rather than the numbers behind them, so every
+ * surface shows the same words — a lib that stopped at "3/4 slots" and left
+ * each caller to append its own connective would reintroduce, one layer down,
+ * exactly the disagreement this module exists to prevent.
+ *
+ * `concurrency` and `byKind` reached the wire after v1 shipped (#4348): an
+ * older provider omits them, so their segments are dropped rather than shown as
+ * a zero that would claim an idle lane the peer never reported on.
  *
  * @param {object|null} queue - `snapshot.queue` from a probed peer
- * @returns {{slots: string|null, drain: string|null, kinds: string[]}}
+ * @returns {string[]} segments to render in order, possibly empty
  */
 export function summarizePeerMediaQueue(queue) {
-  if (!isRecord(queue)) return { slots: null, drain: null, kinds: NO_KIND_SUMMARY };
-  const slots = isCount(queue.running) && isCount(queue.queued)
-    && isCount(queue.totalActive) && isCount(queue.maxQueuedJobs)
-    ? `${queue.running} running · ${queue.queued} queued · ${queue.totalActive}/${queue.maxQueuedJobs} slots`
-    : null;
-  // "How fast does that backlog drain?", which queue depth alone cannot answer:
-  // two jobs ahead on a 1-wide lane is a very different wait from two on a
-  // 10-wide one.
-  const drain = Number.isInteger(queue.concurrency) && queue.concurrency > 0
-    ? `${queue.concurrency} at a time`
-    : null;
-  // Only kinds actually occupying a lane. Listing three zeroes crowds out the
-  // one number that matters, and the `slots` segment above already reports
-  // whether anything is running at all.
-  const byKind = isRecord(queue.byKind) ? queue.byKind : null;
-  const kinds = byKind
-    ? FEDERATED_MEDIA_KINDS
-      .map(({ kind, label }) => {
-        const entry = byKind[kind];
-        if (!isRecord(entry)) return null;
-        const running = isCount(entry.running) ? entry.running : 0;
-        const queued = isCount(entry.queued) ? entry.queued : 0;
-        if (running + queued === 0) return null;
-        const parts = [];
-        if (running > 0) parts.push(`${running} running`);
-        if (queued > 0) parts.push(`${queued} queued`);
-        return `${label} ${parts.join(', ')}`;
-      })
-      .filter(Boolean)
-    : NO_KIND_SUMMARY;
-  return { slots, drain, kinds: kinds.length > 0 ? kinds : NO_KIND_SUMMARY };
+  if (!isRecord(queue)) return NO_QUEUE_SEGMENTS;
+  const segments = [];
+  if (isCount(queue.running) && isCount(queue.queued)
+    && isCount(queue.totalActive) && isCount(queue.maxQueuedJobs)) {
+    segments.push(`${queue.running} running · ${queue.queued} queued · ${queue.totalActive}/${queue.maxQueuedJobs} slots active`);
+  }
+  if (isCount(queue.concurrency) && queue.concurrency > 0) {
+    segments.push(`runs ${queue.concurrency} at a time`);
+  }
+  // The provider reports only the kinds holding a lane, so every entry here has
+  // work in it; a kind that is idle is simply absent.
+  const byKind = isRecord(queue.byKind) ? queue.byKind : {};
+  for (const { kind, label } of FEDERATED_MEDIA_KINDS) {
+    const entry = byKind[kind];
+    if (!isRecord(entry) || !isCount(entry.running) || !isCount(entry.queued)) continue;
+    const parts = [];
+    if (entry.running > 0) parts.push(`${entry.running} running`);
+    if (entry.queued > 0) parts.push(`${entry.queued} queued`);
+    if (parts.length > 0) segments.push(`${label} ${parts.join(', ')}`);
+  }
+  return segments;
 }
 
 /**

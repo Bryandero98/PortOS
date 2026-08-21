@@ -13,7 +13,7 @@ const state = vi.hoisted(() => ({
   imageModels: [],
   videoModels: [],
   cachedRepos: new Set(),
-  queueCapacity: null,
+  cloudLaneLimit: 3,
 }));
 
 vi.mock('./settings.js', () => ({
@@ -54,7 +54,9 @@ vi.mock('./musicEngineCapabilities.js', () => ({
 
 vi.mock('./mediaJobQueue/index.js', () => ({
   listJobs: vi.fn(() => state.jobs),
-  getQueueCapacity: vi.fn(() => state.queueCapacity),
+  // Mirrors the real lane routing: a federated job never sets a cloud `mode`,
+  // so every kind this contract carries lands on the serialized GPU lane.
+  laneConcurrencyFor: vi.fn((job) => (job?.params?.mode ? state.cloudLaneLimit : 1)),
   isRemoteMediaJob: (job) => job?.kind === 'audio' && job.params?.remoteMedia !== undefined,
   getJob: vi.fn((id) => state.jobs.find((job) => job.id === id) || null),
   enqueueJob: vi.fn(({ kind, owner, params }) => {
@@ -153,11 +155,7 @@ beforeEach(() => {
   state.imageModels = [];
   state.videoModels = [];
   state.cachedRepos = new Set();
-  // Mirrors getQueueCapacity()'s real shape: a serialized GPU lane, a parallel
-  // cloud-CLI lane, and the outgoing proxy lane the provider must ignore.
-  state.queueCapacity = {
-    lanes: { gpu: { running: 0, queued: 0, limit: 1 }, cloud: { running: 0, queued: 0, limit: 3 }, remote: { running: 0, queued: 0, limit: 20 } },
-  };
+  state.cloudLaneLimit = 3;
   __resetFederatedMediaProviderForTests();
 });
 
@@ -215,11 +213,13 @@ describe('federated media provider capacity and idempotency', () => {
     });
   });
 
-  it('reports the local generation concurrency behind the queue depth', async () => {
+  // The bug this replaced: summing every local lane told an audio-only provider
+  // it "runs 4 at a time" because the parallel cloud-CLI lane is wide, when its
+  // music renders serialize one at a time.
+  it('reports the lane a federated job actually lands on, not a whole-machine sum', async () => {
+    state.cloudLaneLimit = 10;
     const status = await getFederatedMediaProviderStatus(config());
-    // GPU (1) + cloud CLI (3). The 20-wide outgoing proxy lane is excluded for
-    // the same reason its jobs are: it renders on someone else's hardware.
-    expect(status.queue.concurrency).toBe(4);
+    expect(status.queue.concurrency).toBe(1);
   });
 
   it('breaks the shared queue down by federated kind, excluding outgoing proxy jobs', async () => {
@@ -237,18 +237,20 @@ describe('federated media provider capacity and idempotency', () => {
     expect(status.queue.byKind).toEqual({
       audio: { running: 1, queued: 1 },
       image: { running: 0, queued: 1 },
-      video: { running: 0, queued: 0 },
     });
+    // The training job holds a lane but has no bucket, which is why byKind
+    // need not sum to totalActive.
     expect(status.queue.totalActive).toBe(4);
   });
 
-  it('seeds an idle kind with zeroes rather than omitting it', async () => {
+  // Reporting image/video occupancy to a consumer that negotiated audio only
+  // would leave byKind as the one part of the payload the kind projection does
+  // not govern.
+  it('scopes the per-kind breakdown to the negotiated kinds', async () => {
+    state.jobs = [{ id: 'a', kind: 'image', status: 'running', owner: null }];
     const status = await getFederatedMediaProviderStatus(config());
-    expect(status.queue.byKind).toEqual({
-      audio: { running: 0, queued: 0 },
-      image: { running: 0, queued: 0 },
-      video: { running: 0, queued: 0 },
-    });
+    expect(status.queue.byKind).toEqual({});
+    expect(status.queue.totalActive).toBe(1);
   });
 
   it('queues allowlisted audio without exposing the prompt in its response', async () => {

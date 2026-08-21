@@ -28,8 +28,8 @@ import {
   cancelJob,
   enqueueJob,
   getJob,
-  getQueueCapacity,
   isRemoteMediaJob,
+  laneConcurrencyFor,
   listJobs,
 } from './mediaJobQueue/index.js';
 import { listMusicEngineCapabilities } from './musicEngineCapabilities.js';
@@ -348,54 +348,54 @@ async function capabilitiesForKind(kind, config, { pythonPath = null } = {}) {
   return [];
 }
 
-/**
- * How many of the locally-counted active jobs actually run at once here.
- *
- * `maxQueuedJobs` is an admission bound, not a rate: it says how much work this
- * provider will hold, not how fast that work drains. Two jobs ahead of a
- * submission mean two renders' wait on the serialized GPU lane and roughly none
- * on the parallel cloud-CLI lane, and a consumer reading only the queue depth
- * cannot tell those apart. Summing exactly the lanes `activeQueueSnapshot`
- * counts — the local generation lanes, never the outgoing proxy lane — keeps
- * the two numbers describing the same population.
- */
-function localGenerationConcurrency() {
-  const { lanes } = getQueueCapacity();
-  return lanes.gpu.limit + lanes.cloud.limit;
-}
+// Every job this provider accepts is a local-engine render — buildQueueParams
+// deliberately omits `mode`, and the cloud-CLI backends are not federatable —
+// so the lane a submission lands on is decided by its kind alone. The queue
+// answers how wide that lane is; the minimum across the negotiated kinds is the
+// fail-closed reading if two kinds ever route differently.
+const federatedLaneConcurrency = (kinds) => Math.min(
+  ...kinds.map((kind) => laneConcurrencyFor({ kind, params: {} })),
+);
 
-function activeQueueSnapshot(config) {
-  // Outgoing proxy jobs consume a remote peer's capacity, not this provider's
-  // local generation resources. Counting them here can create a federation
-  // deadlock where two otherwise-idle peers both report busy while waiting on
-  // each other.
+/**
+ * Jobs occupying this machine's own generation lanes, and whether another fits.
+ *
+ * Outgoing proxy jobs consume a remote peer's capacity, not this provider's, so
+ * they are excluded — counting them can deadlock two otherwise-idle peers into
+ * both reporting busy while each waits on the other.
+ */
+function activeQueueSnapshot(config, kinds) {
   const active = listJobs().filter((job) =>
     ACTIVE_STATUSES.has(job.status) && !isRemoteMediaJob(job),
   );
-  const providerActive = active.filter((job) => job.owner?.startsWith(OWNER_PREFIX));
-  // Seed every federated kind so an idle lane reports 0 rather than being
-  // absent — an absent key and a zero read identically in a UI, and only one of
-  // them is true. Derived from the same filtered list as the slot count, not
-  // from getQueueCapacity().byKind, which also counts the outgoing proxy jobs
-  // this snapshot deliberately excludes.
-  const byKind = Object.fromEntries(
-    KNOWN_MEDIA_KINDS.map((kind) => [kind, { running: 0, queued: 0 }]),
-  );
+  let providerActive = 0;
+  let queued = 0;
+  let running = 0;
+  // Only the kinds the caller negotiated, and only those actually holding a
+  // lane: with the block present, an absent kind is idle. Derived from the same
+  // filtered list as the slot count rather than from getQueueCapacity().byKind,
+  // which also counts the outgoing proxy jobs excluded above.
+  const byKind = {};
   for (const job of active) {
-    // A local job of a kind this contract does not federate (LoRA training)
-    // still occupies a lane, so it counts toward `totalActive` — it just has
-    // no bucket of its own, which is why the two need not sum.
-    const bucket = byKind[job.kind];
-    if (bucket) bucket[job.status === 'running' ? 'running' : 'queued'] += 1;
+    if (job.owner?.startsWith(OWNER_PREFIX)) {
+      providerActive += 1;
+      if (job.status === 'running') running += 1; else queued += 1;
+    }
+    // Local work of a kind this contract does not federate (LoRA training) still
+    // holds a lane, so it counts toward `totalActive` while having no bucket —
+    // which is why the two need not sum.
+    if (!kinds.includes(job.kind)) continue;
+    const bucket = byKind[job.kind] ?? (byKind[job.kind] = { running: 0, queued: 0 });
+    bucket[job.status === 'running' ? 'running' : 'queued'] += 1;
   }
   return {
     totalActive: active.length,
-    providerActive: providerActive.length,
-    queued: providerActive.filter((job) => job.status === 'queued').length,
-    running: providerActive.filter((job) => job.status === 'running').length,
+    providerActive,
+    queued,
+    running,
     maxQueuedJobs: config.maxQueuedJobs,
     accepting: active.length < config.maxQueuedJobs,
-    concurrency: localGenerationConcurrency(),
+    concurrency: federatedLaneConcurrency(kinds),
     byKind,
   };
 }
@@ -416,7 +416,7 @@ export async function getFederatedMediaProviderStatus(config, { kinds = ['audio'
   const capabilities = (await Promise.all(
     requestedKinds.map((kind) => capabilitiesForKind(kind, config, { pythonPath })),
   )).flat();
-  const queue = activeQueueSnapshot(config);
+  const queue = activeQueueSnapshot(config, requestedKinds);
   const anyReady = capabilities.some((capability) => capability.ready);
   return {
     wireVersion: FEDERATED_MEDIA_WIRE_VERSION,
@@ -594,7 +594,7 @@ export async function submitFederatedMediaJob({ callerId, config, input, idempot
       return { replayed: true, job: await describeFederatedMediaJob(callerId, existing) };
     }
 
-    const queue = activeQueueSnapshot(config);
+    const queue = activeQueueSnapshot(config, [input.kind]);
     if (!queue.accepting) {
       unavailable('Provider queue is at capacity', 'MEDIA_PROVIDER_BUSY', 429, {
         retryable: true,

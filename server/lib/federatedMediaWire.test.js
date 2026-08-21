@@ -186,7 +186,6 @@ describe('federated media status kind projection', () => {
         byKind: {
           audio: { running: 1, queued: 0 },
           image: { running: 0, queued: 1 },
-          video: { running: 0, queued: 0 },
         },
       },
     }));
@@ -200,10 +199,10 @@ describe('federated media status kind projection', () => {
     expect(parsed.queue.byKind).toBeUndefined();
   });
 
-  // The kind list is negotiated, so a provider legitimately reports fewer kinds
-  // than the consumer knows about. A record that demanded every key would make
-  // an audio-only projection unparseable the moment a fourth kind is added.
-  it('accepts a byKind covering only the negotiated kinds', () => {
+  // The provider reports only the kinds holding a lane, and the kind list is
+  // negotiated besides. A record that demanded every key would make an
+  // audio-only projection unparseable the moment a fourth kind is added.
+  it('accepts a byKind covering only some kinds', () => {
     expect(federatedMediaProviderStatusSchema.safeParse(status({
       queue: { ...status().queue, byKind: { audio: { running: 1, queued: 0 } } },
     })).success).toBe(true);

@@ -194,24 +194,18 @@ const federatedMediaQueueStatusSchema = z.object({
   running: z.number().int().nonnegative(),
   maxQueuedJobs: z.number().int().positive(),
   accepting: z.boolean(),
-  // Added after wire v1 shipped, so both are optional AND nullable: a provider
-  // on an older build omits them, and reading an absent value as a number
-  // would invent capacity that was never reported. `null`/absent means
-  // "unknown", never "zero" — the sentinel rule in CLAUDE.md.
+  // Both added after wire v1 shipped, so both are optional: an older provider
+  // omits them, and absent must read as UNKNOWN rather than zero. See "Drain
+  // rate and per-kind occupancy" in docs/FEDERATED_MEDIA_PROVIDERS.md for what
+  // they mean and why queue depth alone could not answer it.
   //
-  // `concurrency` is how many of the reported active jobs actually run at
-  // once here, which is what turns a queue depth into an expected wait: two
-  // jobs ahead of you on a serialized lane is a very different answer from two
-  // on a parallel one, and `maxQueuedJobs` alone cannot tell them apart.
+  // Bounded well above any lane width this build configures, so a provider with
+  // more or wider lanes than ours still validates.
   concurrency: z.number().int().positive().max(64).nullable().optional(),
-  // `byKind` covers the federated kinds only. `totalActive` legitimately
-  // exceeds their sum: it also counts local media work of kinds this contract
-  // does not federate (e.g. LoRA training), which occupies the same lanes.
-  //
-  // `partialRecord`, not `record`: a Zod 4 record over an enum key is
-  // exhaustive, so the day a fourth kind joins KNOWN_MEDIA_KINDS every older
-  // provider's three-kind payload would fail validation on a newer consumer.
-  // The provider only ever reports the kinds the consumer negotiated anyway.
+  // Only the kinds actually holding a lane: with the block present, an absent
+  // kind is idle. `partialRecord`, not `record` — a Zod 4 record over an enum
+  // key is exhaustive, so the day a fourth kind joins KNOWN_MEDIA_KINDS every
+  // older provider's payload would fail validation on a newer consumer.
   byKind: z.partialRecord(mediaKindSchema, federatedMediaKindOccupancySchema).optional(),
 });
 

@@ -75,14 +75,13 @@ describe('PeerMediaProviderPanel', () => {
       mediaProvider: { enabled: true, audioModels: [] },
       mediaProviderStatus: withQueue({
         concurrency: 2,
-        byKind: { audio: { running: 1, queued: 2 }, image: { running: 0, queued: 0 }, video: { running: 0, queued: 0 } },
+        byKind: { audio: { running: 1, queued: 2 } },
       }),
     };
     render(<PeerMediaProviderPanel peer={peer} onRefresh={vi.fn()} />);
 
     fireEvent.click(screen.getByRole('button', { name: /Remote media provider/i }));
-    expect(screen.getByText(/runs 2 at a time/i)).toBeInTheDocument();
-    expect(screen.getByText(/audio 1 running, 2 queued/i)).toBeInTheDocument();
+    expect(screen.getByText(/runs 2 at a time · audio 1 running, 2 queued/i)).toBeInTheDocument();
     // An idle kind is omitted, not rendered as a zero.
     expect(screen.queryByText(/(image|video) \d/i)).not.toBeInTheDocument();
   });

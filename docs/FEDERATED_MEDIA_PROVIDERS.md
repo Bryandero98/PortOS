@@ -315,6 +315,8 @@ CUDA has three states: `available`, `absent`, and `unknown`. A CUDA model is rea
 
 The configured `maxQueuedJobs` is conservative: all queued/running work that consumes this machine's media resources counts against it. Outgoing proxy jobs are excluded because they consume another peer's capacity; counting them could make two idle peers report busy while waiting on each other.
 
+### Drain rate and per-kind occupancy
+
 The queue block also reports how fast that backlog drains, because a depth alone
 cannot say:
 
@@ -323,18 +325,25 @@ cannot say:
 | `totalActive` | every queued/running local media job, including kinds this contract does not federate |
 | `providerActive` / `queued` / `running` | the subset owned by federated callers |
 | `maxQueuedJobs` | the admission bound `accepting` is computed against |
-| `concurrency` | how many of those active jobs actually run at once here |
-| `byKind` | per-kind `{running, queued}` for `audio`/`image`/`video` |
+| `concurrency` | how many jobs run at once on the lane a federated submission lands on |
+| `byKind` | `{running, queued}` for each negotiated kind currently holding a lane |
 
 Two jobs ahead of a submission mean two renders' wait on a serialized lane and
-roughly none on a parallel one; `concurrency` is what tells those apart.
-`byKind` covers the federated kinds only, so it need not sum to `totalActive` —
-local work of an unfederated kind (LoRA training) occupies the same lanes.
+roughly none on a parallel one; `concurrency` is what tells those apart. It is
+the width of the one lane a federated job runs in, **not** a sum across lanes —
+the lanes are alternatives, so a machine with a wide parallel cloud-CLI lane
+must not claim that width for GPU work that serializes. Every job this contract
+carries is a local-engine render, so today that is the serialized GPU lane.
 
-`concurrency` and `byKind` were added after wire v1 shipped, so both are
-optional: a provider on an older build omits them and a consumer must read the
-absence as **unknown**, never as zero. The UI drops the segment rather than
-rendering a lane as idle that the peer never reported on.
+`byKind` lists only the negotiated kinds currently holding a lane; with the
+block present, an absent kind is idle. It need not sum to `totalActive`, which
+also counts local work of kinds this contract does not federate (LoRA training)
+occupying the same lanes.
+
+Both fields were added after wire v1 shipped, so both are optional: a provider
+on an older build omits them and a consumer must read that absence as
+**unknown**, never as zero. The UI drops the segment rather than rendering a
+lane as idle that the peer never reported on.
 
 Status never includes prompts, lyrics, credentials, local paths, commission records, or private creative metadata.
 
