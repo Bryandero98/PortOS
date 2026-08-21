@@ -274,7 +274,7 @@ function SystemHealthOverview() {
 
         <MediaCapacityPanel media={health.media} />
 
-        <BuildStampPanel build={health.build} uptimeFormatted={health.system.uptimeFormatted} />
+        <BuildStampPanel uptimeFormatted={health.system.uptimeFormatted} />
 
         <section className="bg-port-card border border-port-border rounded-xl p-4">
           <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">

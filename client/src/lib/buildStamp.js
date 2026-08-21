@@ -23,6 +23,25 @@
 export const BUNDLE_STAMP = typeof __BUILD_STAMP__ === 'undefined' ? null : __BUILD_STAMP__;
 
 /**
+ * The build id the server stamped into the served index.html, or null.
+ *
+ * Null means the page did NOT come from a built `client/dist` — i.e. `npm run
+ * dev`, where Vite serves its own index.html and the server never injects the
+ * meta tag. That is the single gate for trusting `BUNDLE_STAMP` at all: the
+ * Vite define is frozen when the dev server starts, so under HMR it reports the
+ * commit you started at while serving code from every commit since. Anything
+ * that displays or compares the bundle stamp must check this first.
+ */
+export const SERVED_BUILD_ID = (() => {
+  if (typeof document === 'undefined') return null;
+  const el = document.querySelector('meta[name="portos-build-id"]');
+  return el ? el.getAttribute('content') : null;
+})();
+
+/** The bundle stamp only when it can be trusted — see `SERVED_BUILD_ID`. */
+export const TRUSTED_BUNDLE_STAMP = SERVED_BUILD_ID ? BUNDLE_STAMP : null;
+
+/**
  * Trim a stamp field to a usable value, or null. Both halves of the feature emit
  * `null` for "not known", so this only has to reject blanks and non-strings —
  * never a placeholder string, which would swallow a branch that genuinely

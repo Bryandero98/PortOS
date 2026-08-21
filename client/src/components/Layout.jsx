@@ -109,7 +109,7 @@ import {
 // not honour ESLint-style "global" block comments, so it is declared in
 // biome.jsonc's `javascript.globals` instead.
 import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage';
-import { BUNDLE_STAMP, describeBuild } from '../lib/buildStamp.js';
+import { TRUSTED_BUNDLE_STAMP, describeBuild } from '../lib/buildStamp.js';
 import Logo from './Logo';
 import { useErrorNotifications } from '../hooks/useErrorNotifications';
 import { useNotifications } from '../hooks/useNotifications';
@@ -1209,7 +1209,10 @@ export default function Layout() {
               // cannot carry: which commit is actually running (#4694). This is
               // the zero-navigation surface — the full read-out, including
               // bundle/server drift, is on /system-resources/overview.
-              title={BUNDLE_STAMP ? `v${__APP_VERSION__} · ${describeBuild(BUNDLE_STAMP) ?? 'commit unknown'}` : undefined}
+              // TRUSTED_, not BUNDLE_: under `npm run dev` the Vite define is
+              // frozen at dev-server start while HMR serves every commit since,
+              // so a tooltip there would confidently report the wrong commit.
+              title={TRUSTED_BUNDLE_STAMP ? `v${__APP_VERSION__} · ${describeBuild(TRUSTED_BUNDLE_STAMP) ?? 'commit unknown'}` : undefined}
             >
               v{__APP_VERSION__}
             </span>

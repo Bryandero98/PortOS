@@ -146,11 +146,11 @@ describe('System Health Routes', () => {
     expect(response.body).toHaveProperty('overallHealth');
   });
 
-  it('stamps the running build on health details (#4694)', async () => {
-    const response = await request(app).get('/api/system/health/details');
+  it('serves the running build on its own route (#4694)', async () => {
+    const response = await request(app).get('/api/system/build');
 
     expect(response.status).toBe(200);
-    expect(response.body.build).toEqual({
+    expect(response.body).toEqual({
       commit: 'abc1234567890abcdef1234567890abcdef12345',
       shortCommit: 'abc1234',
       branch: 'main',
@@ -158,23 +158,27 @@ describe('System Health Routes', () => {
     });
   });
 
-  it('keeps the build stamp OFF the always-public /health payload', async () => {
-    // /api/system/health is in PUBLIC_API_PATHS (lib/authGate.js) — a branch
-    // name can carry an issue title, so the stamp stays behind the auth gate.
-    const response = await request(app).get('/api/system/health');
-
-    expect(response.status).toBe(200);
-    expect(response.body).not.toHaveProperty('build');
+  it('keeps the build stamp OFF every payload peers scrape (#4694)', async () => {
+    // THE federation boundary for this feature, and the reason /build is its
+    // own route. `probePeer` (services/instances.js) fetches /health/details
+    // from every configured peer and persists the whole JSON verbatim as
+    // `peer.lastHealth` — so a `build` field there would ship the branch name
+    // (which can carry an issue title) to someone else's install and land on
+    // their disk. /health is additionally in the always-public set.
+    for (const path of ['/api/system/health', '/api/system/health/details']) {
+      const response = await request(app).get(path);
+      expect(response.status).toBe(200);
+      expect(response.body).not.toHaveProperty('build');
+      expect(JSON.stringify(response.body)).not.toContain('abc1234');
+    }
   });
 
-  it('degrades the build stamp to null instead of failing the whole health report', async () => {
-    getBuildIdentity.mockRejectedValueOnce(new Error('git exploded'));
+  it('never leaks a path, hostname, or username through the build route', async () => {
+    const response = await request(app).get('/api/system/build');
 
-    const response = await request(app).get('/api/system/health/details');
-
-    expect(response.status).toBe(200);
-    expect(response.body.build).toBeNull();
-    expect(response.body).toHaveProperty('overallHealth');
+    expect(Object.keys(response.body).sort()).toEqual(
+      ['branch', 'commit', 'dirty', 'shortCommit']
+    );
   });
 
 

@@ -47,6 +47,23 @@ router.get('/processing', asyncHandler(async (req, res) => {
   res.json(await getActiveProcessing());
 }));
 
+/**
+ * GET /api/system/build — which git commit THIS server process is running (#4694).
+ *
+ * Deliberately its OWN route rather than a field on /health/details, which
+ * looks auth-gated but is not private: `probePeer` in services/instances.js
+ * fetches /health/details from every configured peer and persists the whole
+ * JSON verbatim as `peer.lastHealth`. Anything added there therefore leaves
+ * the machine and is written to disk on someone else's install — and a branch
+ * name can carry an issue title. Peers do not probe this path, so the stamp
+ * stays local by construction rather than by a promise nobody can enforce.
+ * See the root CLAUDE.md privacy rules and #4694 ("local-only diagnostic data
+ * — must not join a sync payload"). `systemHealth.test.js` pins both halves.
+ */
+router.get('/build', asyncHandler(async (req, res) => {
+  res.json(await getBuildIdentity());
+}));
+
 router.get('/health', asyncHandler(async (req, res) => {
   const [self, version, authRequired] = await Promise.all([
     getSelf().catch(() => null),
@@ -84,7 +101,7 @@ router.get('/health/details', asyncHandler(async (req, res) => {
   const startTime = Date.now();
 
   // Gather data in parallel
-  const [pm2Processes, appStatusSummary, cosStatus, self, dbHealth, version, diskStats, memStats, thresholds, forgeHealth, mediaCapacity, build] = await Promise.all([
+  const [pm2Processes, appStatusSummary, cosStatus, self, dbHealth, version, diskStats, memStats, thresholds, forgeHealth, mediaCapacity] = await Promise.all([
     listProcesses().catch(() => []),
     apps.getAppStatusSummary().catch(() => ({ total: 0, online: 0, stopped: 0, notStarted: 0, unknown: 0, degraded: false, unmanaged: 0 })),
     cos.getStatus().catch(() => null),
@@ -97,13 +114,7 @@ router.get('/health/details', asyncHandler(async (req, res) => {
     checkGhHealth().catch(() => ({ status: 'error', ok: false, detail: 'Health check failed', remedy: null, checkedAt: null })),
     // Media-lane capacity never fails the health report: an unreadable GPU probe
     // degrades to `null`, which the UI renders as unknown rather than as idle.
-    getMediaCapacity().catch(() => null),
-    // Which git commit THIS server process is running (#4694). Details-only:
-    // /api/system/health is in the always-public set (lib/authGate.js), and a
-    // branch name can carry an issue title, so the stamp stays behind the auth
-    // gate. `getBuildIdentity` is non-throwing by contract; the catch keeps a
-    // future change to it from being able to fail the whole health report.
-    getBuildIdentity().catch(() => null)
+    getMediaCapacity().catch(() => null)
   ]);
 
   const memUsagePercent = Math.round((memStats.used / memStats.total) * 100);
@@ -298,7 +309,6 @@ router.get('/health/details', asyncHandler(async (req, res) => {
     apps: appStats,
     cos: cosInfo,
     media: mediaCapacity,
-    build,
     database: dbHealth,
     forge: forgeHealth,
     thresholds,
