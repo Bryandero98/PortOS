@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildCiTestPlan, WINDOWS_CONTRACT_TESTS } from './ci-test-plan.js';
+import { buildCiTestPlan, forceFullReasonFor, WINDOWS_CONTRACT_TESTS } from './ci-test-plan.js';
 
 const TRACKED = [
   'server/lib/index.test.js',
@@ -271,6 +271,41 @@ describe('CI test impact planner', () => {
     );
     expect(wide.full).toBe(true);
     expect(wide.reason).toMatch(/wide change/);
+  });
+
+  it('forces the complete suite for a pull request into release', () => {
+    // release.yml skips its own suite on the strength of this run, so it must
+    // never be scoped — whatever the diff happens to touch.
+    expect(forceFullReasonFor({ forceFull: false, baseRef: 'release' }))
+      .toBe('release gate: pull request into release');
+
+    const plan = buildCiTestPlan([], {
+      trackedFiles: TRACKED,
+      forceFull: true,
+      forceFullReason: forceFullReasonFor({ forceFull: false, baseRef: 'release' }),
+    });
+    expect(plan).toMatchObject({ full: true, server: { mode: 'full' }, windows: true });
+    expect(plan.reason).toMatch(/release gate/);
+  });
+
+  it('lets an ordinary pull request into main stay scoped', () => {
+    expect(forceFullReasonFor({ forceFull: false, baseRef: 'main' })).toBeNull();
+    expect(forceFullReasonFor({ forceFull: false, baseRef: undefined })).toBeNull();
+    expect(forceFullReasonFor({ forceFull: true, baseRef: 'main' })).toBe('full CI requested');
+  });
+
+  it('routes CI pipeline scripts to the complete suite', () => {
+    for (const path of [
+      'scripts/ci-test-plan.js',
+      'scripts/run-ci-tests.js',
+      'scripts/run-ci-lint.js',
+      'scripts/verify-ci-status.js',
+      'scripts/verify-ci-status.test.js',
+    ]) {
+      const plan = buildCiTestPlan([path], { trackedFiles: TRACKED });
+      expect(plan.full, path).toBe(true);
+      expect(plan.reason, path).toMatch(/CI pipeline script changed/);
+    }
   });
 
   it('honors an explicit full-CI request', () => {
