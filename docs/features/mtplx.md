@@ -75,6 +75,11 @@ start a server on the loopback OpenAI-compatible endpoint the preset points at,
   offered a **Start MTPLX** that could only fail, and named the missing weights
   solely inside that failure — the one blocking fact was reachable only by
   clicking the button it made impossible.
+- Closing the modal **cancels the download**. PortOS allows one local-runtime
+  setup at a time, and a weights pull can run for hours, so leaving it running
+  after you dismissed it would also refuse every other runtime's setup button
+  for the rest of it. A cancelled pull leaves a partial download in the cache,
+  which the checklist reports as such and offers to re-fetch.
 - It only ever runs for an endpoint on **this** machine. A preset pointed at
   another host gets no checklist and no button — that install is whoever runs
   it.

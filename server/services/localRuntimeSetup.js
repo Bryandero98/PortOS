@@ -251,17 +251,31 @@ const SETUP_ROWS = Object.freeze({
       return { success: false, error: 'Neither Homebrew nor python3 is available. Install Homebrew from https://brew.sh, then try again.' };
     },
     /**
+     * What MTPLX's own cache holds, WITHOUT starting it — `mtplx models --json`
+     * is a local directory listing. Sits next to the `pull` step it gates so
+     * the two cannot drift, and `providerReadiness.js` reads it through
+     * `readRuntimeWeights` to put the same fact on the checklist.
+     */
+    async weights() {
+      return describeMtplxCache(await listMtplxCachedModels()).state;
+    },
+    /**
      * Fetch MTPLX's OWN default verified checkpoint — no repo id from the
      * request, so this cannot be pointed at an arbitrary download. Runs only
      * for the `pull-start` action, which the user clicks by its full name.
      */
-    async pull({ emit }) {
+    async pull({ emit, isCancelled }) {
       const binary = findCommandOnPath('mtplx');
       if (!binary) return { success: false, error: '`mtplx` was not found on PortOS\'s PATH. Restart PortOS so it picks up the new bin directory, then try again.' };
       emit('Downloading MTPLX\'s default verified checkpoint. This is a multi-gigabyte download and can take a long while — leave this window open to watch it.');
       // `mtplx pull` redraws one progress line with a bare `\r`; splitting on
       // newlines alone would leave the stream silent for the whole download.
-      return runStreamingCommand(binary, ['pull'], emit, { timeoutMs: WEIGHTS_TIMEOUT_MS, splitRe: PROGRESS_SPLIT_RE });
+      // `isCancelled` is load-bearing here, not decoration: this is the one
+      // step that can run for HOURS, and the route holds its single-setup lock
+      // until this promise settles. Without it, closing the modal leaves the
+      // download running and every other runtime's setup button refused for the
+      // rest of it.
+      return runStreamingCommand(binary, ['pull'], emit, { timeoutMs: WEIGHTS_TIMEOUT_MS, splitRe: PROGRESS_SPLIT_RE, isCancelled });
     },
     async start({ emit, endpoint, isCancelled }) {
       // `mtplx serve` defaults `--model` to ONE hard-coded checkpoint and exits
@@ -372,6 +386,25 @@ const SETUP_ROWS = Object.freeze({
   }),
 });
 
+/**
+ * What a runtime's own model cache holds, without starting it. `'unknown'` for
+ * every runtime with no cache PortOS can read offline — never `'empty'`, which
+ * would claim a fact PortOS does not have.
+ *
+ * Exported so `providerReadiness.js` reports the checklist from the SAME fact
+ * `describeRuntimeSetup` picks a button from; a second copy of the reader table
+ * over there is how the two would drift into disagreeing about one cache.
+ *
+ * @returns {Promise<'unknown'|'empty'|'partial'|'ready'>}
+ */
+export async function readRuntimeWeights(kind) {
+  const read = SETUP_ROWS[kind]?.weights;
+  return read ? read() : 'unknown';
+}
+
+/** The cache states that make a start impossible. */
+export const weightsBlockStart = (weights) => weights === 'empty' || weights === 'partial';
+
 /** True when this host can run the runtime's setup at all. */
 function platformSupported(row) {
   return !row.platforms || row.platforms.includes(process.platform);
@@ -414,7 +447,7 @@ export function describeRuntimeSetup(kind, { installed, running, weights = 'unkn
   // Only offered once the binary is here: the cache cannot be read without it,
   // so an uninstalled runtime's `weights` says nothing and `install-start`
   // stays the honest first step.
-  const needsWeights = Boolean(row.pull) && !needsInstall && needsStart && (weights === 'empty' || weights === 'partial');
+  const needsWeights = Boolean(row.pull) && !needsInstall && needsStart && weightsBlockStart(weights);
   const action = needsWeights ? 'pull-start'
     : needsInstall && needsStart ? 'install-start'
       : needsInstall ? 'install' : 'start';
@@ -442,10 +475,12 @@ export function describeRuntimeSetup(kind, { installed, running, weights = 'unkn
  *   `isCancelled` is checked between steps so a closed modal does not go on to
  *   start a daemon nobody is watching for. `action` is the one the checklist's
  *   button named; only `pull-start` adds a step (the model download), and it is
- *   opt-in precisely so no other action can spend gigabytes of bandwidth.
+ *   opt-in precisely so no other action can spend gigabytes of bandwidth. Omit
+ *   it (`null`) and this resolves the action the checklist would offer right
+ *   now — see the resolution comment below.
  * @returns {Promise<{success: boolean, error?: string, message?: string}>}
  */
-export async function runLocalRuntimeSetup(kind, { endpoint, emit = () => {}, isCancelled = () => false, action = 'install-start' }) {
+export async function runLocalRuntimeSetup(kind, { endpoint, emit = () => {}, isCancelled = () => false, action = null }) {
   const row = SETUP_ROWS[kind];
   const runtime = LOCAL_RUNTIMES[kind];
   if (!row || !runtime) return { success: false, error: `PortOS has no automatic setup for \`${String(kind)}\`.` };
@@ -462,10 +497,31 @@ export async function runLocalRuntimeSetup(kind, { endpoint, emit = () => {}, is
   }
   if (!platformSupported(row)) return { success: false, error: row.unsupportedReason };
 
+  // Refuse a step this runtime does not have BEFORE anything is installed. A
+  // `pull-start` aimed at Ollama would otherwise run Ollama's install on its way
+  // to being refused, and llama.cpp (`start: null`) would return the
+  // install-succeeded message without ever refusing at all.
+  if (action === 'pull-start' && !row.pull) {
+    return { success: false, error: `PortOS cannot download model weights for ${runtime.label}.` };
+  }
+
   // Same two signals `providerReadiness.js` uses: the binary on PATH, plus LM
   // Studio's macOS app bundle, which serves without ever putting `lms` there.
   const installed = Boolean(runtime.command && findCommandOnPath(runtime.command)) ||
     (kind === 'lmstudio' && isLmStudioAppInstalled());
+
+  // A request that names NO action came from a client built before `pull-start`
+  // existed — a stale `client/dist` (`pm2 restart` does not rebuild it) or a tab
+  // open across an upgrade. That client still renders THIS server's
+  // `setup.actionLabel`, so the user clicked a button reading “Download the
+  // default model & start MTPLX”; defaulting to a plain start would answer that
+  // click with the very "no model weights are cached" dead end this action
+  // exists to remove. Resolve what the checklist is offering instead, which is
+  // by construction the label they clicked.
+  // `installed &&` mirrors `describeRuntimeSetup`'s own gate: the cache cannot
+  // be read without the binary, so an uninstalled runtime never resolves to a
+  // download — and never spends a cache read to learn that.
+  const resolved = action || (row.pull && installed && weightsBlockStart(await row.weights()) ? 'pull-start' : 'install-start');
 
   if (!installed) {
     const result = await row.install({ emit, endpoint: target, isCancelled });
@@ -485,9 +541,8 @@ export async function runLocalRuntimeSetup(kind, { endpoint, emit = () => {}, is
   // clicked a button that says so. `describeRuntimeSetup` offers it exactly
   // when the cache is provably unusable, which is the state where a plain
   // Start would exit before binding a port.
-  if (action === 'pull-start') {
-    if (!row.pull) return { success: false, error: `PortOS cannot download model weights for ${runtime.label}.` };
-    const pulled = await row.pull({ emit });
+  if (resolved === 'pull-start') {
+    const pulled = await row.pull({ emit, isCancelled });
     if (!pulled.success) return { success: false, error: `${runtime.label} model download failed: ${pulled.error}` };
     emit(`${runtime.label}'s default checkpoint is cached.`);
     if (isCancelled()) return { success: false, error: 'Cancelled after the download — the weights are cached, but nothing was started.' };

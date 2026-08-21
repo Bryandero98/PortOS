@@ -45,7 +45,7 @@ const vllmProject = vi.hoisted(() => ({
 }));
 vi.mock('../lib/vllmQwenProject.js', () => vllmProject);
 
-import { describeRuntimeSetup, runLocalRuntimeSetup, SETUP_ACTIONS, SETUP_RUNTIME_KINDS } from './localRuntimeSetup.js';
+import { describeRuntimeSetup, readRuntimeWeights, runLocalRuntimeSetup, SETUP_ACTIONS, SETUP_RUNTIME_KINDS } from './localRuntimeSetup.js';
 
 const unreachable = { reachable: false, models: null, error: 'ECONNREFUSED' };
 /** A spawned daemon whose stdio never emits, driven entirely by the poll loop. */
@@ -394,19 +394,109 @@ describe('runLocalRuntimeSetup', () => {
     expect(result.success).toBe(true);
   });
 
-  it('never downloads weights behind a plain start', async () => {
-    // A multi-gigabyte download is a decision; only the button that says so
-    // may spend it. Both of the refusals below reach `mtplx pull` in PROSE.
+  it('never downloads weights behind an explicit plain start', async () => {
+    // A multi-gigabyte download is a decision; only the action that says so may
+    // spend it. A `start` reaches `mtplx pull` in PROSE and nowhere else.
     mtplxCache.listMtplxCachedModels.mockResolvedValue(cachedModels([]));
     pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
     probe.probeOpenAiModels.mockResolvedValue(unreachable);
     const restore = pinPlatform('darwin');
 
-    await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1', action: 'start' });
+    const result = await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1', action: 'start' });
+    restore();
+
+    expect(streaming.runStreamingCommand).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('mtplx pull') });
+  });
+
+  it('resolves an ABSENT action to whatever the checklist is currently offering', async () => {
+    // A client built before `pull-start` existed sends no action — but it still
+    // renders THIS server's button label, so on an empty cache the user clicked
+    // “Download the default model & start MTPLX”. Defaulting to a start would
+    // answer that click with the exact no-weights dead end the action removes.
+    const daemon = fakeChild();
+    child.spawn.mockReturnValue(daemon);
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    mtplxCache.listMtplxCachedModels
+      .mockResolvedValueOnce(cachedModels([]))
+      .mockResolvedValueOnce(cachedModels([{ repo_id: 'Example/Fresh', validation: { ok: true } }]));
+    probe.probeOpenAiModels
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(reachable(['mtplx']))
+      .mockResolvedValueOnce(reachable(['mtplx']));
+    const restore = pinPlatform('darwin');
+
+    const result = await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1' });
+    restore();
+
+    expect(streaming.runStreamingCommand.mock.calls[0][1]).toEqual(['pull']);
+    expect(result.success).toBe(true);
+  });
+
+  it('resolves an ABSENT action to a plain start when the cache can serve', async () => {
+    const daemon = fakeChild();
+    child.spawn.mockReturnValue(daemon);
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    probe.probeOpenAiModels
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(reachable(['mtplx']))
+      .mockResolvedValueOnce(reachable(['mtplx']));
+    const restore = pinPlatform('darwin');
+
     await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1' });
     restore();
 
     expect(streaming.runStreamingCommand).not.toHaveBeenCalled();
+    expect(child.spawn.mock.calls[0][1]).toContain('serve');
+  });
+
+  it('refuses `pull-start` for a runtime with no pull step BEFORE installing anything', async () => {
+    // Reached after the route validated only membership in the global action
+    // list. Refusing late would run Ollama's install on the way to the refusal,
+    // and llama.cpp (`start: null`) would return its install-succeeded message
+    // without ever refusing at all.
+    pathLookup.findCommandOnPath.mockReturnValue(null);
+    probe.probeOpenAiModels.mockResolvedValue(unreachable);
+
+    for (const kind of ['ollama', 'llama']) {
+      const result = await runLocalRuntimeSetup(kind, { endpoint: 'http://127.0.0.1:11434/v1', action: 'pull-start' });
+      expect(result).toMatchObject({ success: false, error: expect.stringMatching(/cannot download model weights/) });
+    }
+    expect(localLlm.installBackend).not.toHaveBeenCalled();
+    expect(llama.installLlamaServer).not.toHaveBeenCalled();
+  });
+
+  it('hands the download a cancellation hook — the setup lock is held until it settles', async () => {
+    // The route holds its single-setup lock until this promise resolves, and a
+    // weights pull can run for hours. Without a hook the child ignores a closed
+    // modal, so the download keeps going AND every other runtime's setup button
+    // is refused for the rest of it.
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    child.spawn.mockReturnValue(fakeChild());
+    // Let the daemon come up, so this case ends at a settled setup rather than
+    // spinning the start poll until its three-minute deadline.
+    probe.probeOpenAiModels
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(reachable(['mtplx']))
+      .mockResolvedValueOnce(reachable(['mtplx']));
+    const isCancelled = () => false;
+    const restore = pinPlatform('darwin');
+
+    await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1', action: 'pull-start', isCancelled });
+    restore();
+
+    expect(streaming.runStreamingCommand.mock.calls[0][3]).toMatchObject({ isCancelled });
+  });
+
+  it('reads no model cache for a runtime that has none', async () => {
+    // `readRuntimeWeights` is what keeps the readiness poll from spending a
+    // subprocess per non-MTPLX runtime.
+    await expect(readRuntimeWeights('ollama')).resolves.toBe('unknown');
+    await expect(readRuntimeWeights('nonsense')).resolves.toBe('unknown');
+    expect(mtplxCache.listMtplxCachedModels).not.toHaveBeenCalled();
   });
 
   it('stops at a failed download rather than starting a server that cannot serve', async () => {

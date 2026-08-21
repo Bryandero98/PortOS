@@ -38,6 +38,35 @@ describe('runStreamingCommand', () => {
     expect(result.error).toBeTruthy();
   });
 
+  it('kills a command the caller cancels, without waiting for its timeout', async () => {
+    // A weights download runs for hours and the caller holds a lock until this
+    // settles, so a closed stream has to actually STOP the child — a timeout
+    // bounds the worst case, it does not answer a cancel.
+    let cancelled = false;
+    setTimeout(() => { cancelled = true; }, 50);
+    const result = await runStreamingCommand(
+      NODE,
+      ['-e', 'setTimeout(() => {}, 600000)'],
+      undefined,
+      { timeoutMs: 600_000, isCancelled: () => cancelled },
+    );
+
+    expect(result).toEqual({ success: false, error: 'cancelled' });
+  }, 20_000);
+
+  it('treats a throwing cancellation check as "not cancelled" rather than crashing', async () => {
+    // The poll fires outside the Express request lifecycle: an uncaught throw
+    // there takes the process down, with no `next(err)` to bubble to.
+    const result = await runStreamingCommand(
+      NODE,
+      ['-e', 'console.log("done")'],
+      undefined,
+      { isCancelled: () => { throw new Error('gone'); } },
+    );
+
+    expect(result).toEqual({ success: true });
+  });
+
   it('kills a command that outruns its timeout', async () => {
     const result = await runStreamingCommand(
       NODE,

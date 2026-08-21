@@ -24,17 +24,25 @@ import { safeChildProcessEnv, safeChildProcessOptions } from './processEnv.js';
 import { createLineReader, createOutputTail } from './streamLines.js';
 
 /**
+ * How often `isCancelled` is asked. A second is well under human perception for
+ * "I closed it and it stopped", and a check this cheap costs nothing against a
+ * command whose whole point is that it runs for minutes or hours.
+ */
+const CANCEL_POLL_MS = 1_000;
+
+/**
  * @param {string} cmd
  * @param {string[]} args
  * @param {(line: string) => void} [onLine] - called once per non-empty line
- * @param {{timeoutMs?: number, cwd?: string, env?: object, spawnImpl?: Function, splitRe?: RegExp}} [options]
+ * @param {{timeoutMs?: number, cwd?: string, env?: object, spawnImpl?: Function, splitRe?: RegExp, isCancelled?: () => boolean}} [options]
  *   `timeoutMs: 0` (default) means no timeout. `splitRe` is forwarded to the
  *   line readers — pass `/[\r\n]+/` for a tool whose progress bar redraws the
  *   same line with a bare `\r`, so each redraw surfaces instead of the stream
- *   going silent for the length of a multi-gigabyte download.
+ *   going silent for the length of a multi-gigabyte download. `isCancelled` is
+ *   polled while the command runs; see CANCEL_POLL_MS.
  * @returns {Promise<{success: boolean, error?: string}>}
  */
-export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env, spawnImpl = spawn, splitRe } = {}) {
+export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env, spawnImpl = spawn, splitRe, isCancelled } = {}) {
   return new Promise((resolve) => {
     const child = spawnImpl(cmd, args, safeChildProcessOptions({
       env: env ? safeChildProcessEnv(env) : process.env,
@@ -58,6 +66,7 @@ export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (cancelTimer) clearInterval(cancelTimer);
       resolve(result);
     };
 
@@ -66,6 +75,25 @@ export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env
         child.kill('SIGKILL');
         finish({ success: false, error: `timed out after ${Math.round(timeoutMs / 1000)}s` });
       }, timeoutMs)
+      : null;
+
+    // A command that runs for hours (a model-weights download) outlives the
+    // request that asked for it, and a caller holding a lock until this settles
+    // holds it for the whole run. Polling is what lets a closed stream actually
+    // STOP the child — `timeoutMs` alone only bounds the worst case.
+    //
+    // The callback runs outside the Express request lifecycle, so a throwing
+    // `isCancelled` would take the process down with no `next(err)` to bubble to
+    // (see the try/catch exception in CLAUDE.md). A predicate that cannot be
+    // asked is treated as "not cancelled" — the timeout still bounds the run.
+    const cancelTimer = typeof isCancelled === 'function'
+      ? setInterval(() => {
+        let cancelled = false;
+        try { cancelled = isCancelled(); } catch (err) { console.error(`⚠️ cancellation check failed for ${cmd}: ${err.message}`); }
+        if (!cancelled) return;
+        child.kill('SIGKILL');
+        finish({ success: false, error: 'cancelled' });
+      }, CANCEL_POLL_MS)
       : null;
 
     // ONE reader per stream — never a shared buffer. Chunks arrive on arbitrary

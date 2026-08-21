@@ -91,15 +91,18 @@ describe('POST /api/providers/readiness/setup', () => {
     expect(frames(response.text).at(-1)).toEqual({ type: 'complete', message: 'Ollama is running.' });
   });
 
-  it('forwards the action the checklist button named, defaulting to install-start', async () => {
+  it('forwards the action the checklist button named, and null when it names none', async () => {
     // `pull-start` is the only action that downloads model weights, so it has
-    // to survive the trip from the button to the service — and every older
-    // client, which sends no action at all, must keep its old behavior.
+    // to survive the trip from the button to the service.
     await request(app([CLAUDE_OLLAMA])).post('/api/providers/readiness/setup?provider=claude-ollama&action=pull-start');
     expect(setupService.runLocalRuntimeSetup.mock.calls[0][1]).toMatchObject({ action: 'pull-start' });
 
+    // An absent action stays absent rather than becoming a default HERE: a
+    // client built before this parameter still renders this server's button
+    // label, so the service resolves what the checklist is offering. Defaulting
+    // to a start in the route would hide that from it.
     await request(app([CLAUDE_OLLAMA])).post('/api/providers/readiness/setup?provider=claude-ollama');
-    expect(setupService.runLocalRuntimeSetup.mock.calls[1][1]).toMatchObject({ action: 'install-start' });
+    expect(setupService.runLocalRuntimeSetup.mock.calls[1][1]).toMatchObject({ action: null });
   });
 
   it('rejects an action outside the fixed set rather than passing it through', async () => {

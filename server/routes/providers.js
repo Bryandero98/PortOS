@@ -381,10 +381,12 @@ export function createPortOSProviderRoutes(aiToolkit) {
     }
     // Which of the fixed steps the checklist's button named. Matched against the
     // closed set rather than passed through, so the only thing an unexpected
-    // value can do is 400 — it never reaches a command. `install-start` is the
-    // default because that is the shape every pre-`action` client sends.
-    const action = req.query.action ? String(req.query.action) : 'install-start';
-    if (!SETUP_ACTIONS.includes(action)) {
+    // value can do is 400 — it never reaches a command. Absent stays `null`
+    // rather than becoming a default here: a client built before this parameter
+    // existed still renders THIS server's button label, so the service resolves
+    // what the checklist is currently offering instead of assuming a start.
+    const action = req.query.action ? String(req.query.action) : null;
+    if (action !== null && !SETUP_ACTIONS.includes(action)) {
       throw new ServerError('Unknown setup action.', { status: 400, code: 'UNKNOWN_SETUP_ACTION', context: { action } });
     }
 

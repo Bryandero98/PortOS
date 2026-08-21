@@ -35,10 +35,9 @@
 
 import { localRuntimeForProvider } from '../lib/localProviderRuntime.js';
 import { isConfiguredDefaultModel } from '../lib/providerModels.js';
-import { describeMtplxCache, listMtplxCachedModels } from '../lib/mtplxModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
-import { describeRuntimeSetup } from './localRuntimeSetup.js';
+import { describeRuntimeSetup, readRuntimeWeights, weightsBlockStart } from './localRuntimeSetup.js';
 import { isAppInstalled as isLmStudioAppInstalled } from './lmStudioManager.js';
 
 /**
@@ -73,18 +72,6 @@ const BINARY_TTL_MS = 60_000;
  * away. Longer than the probe TTL for exactly that reason.
  */
 const WEIGHTS_TTL_MS = 60_000;
-
-/**
- * How to read a runtime's model cache WITHOUT starting it, for the runtimes
- * where that is possible. Ollama and LM Studio need their daemon up to list
- * anything (and the Models → LLMs page owns their downloads anyway);
- * llama.cpp's weights are a GGUF path the user picks; the vLLM stack's weights
- * ship inside an operator-prepared compose project. MTPLX alone answers
- * `mtplx models --json` offline.
- */
-const WEIGHT_CACHE_READERS = Object.freeze({
-  mtplx: async () => describeMtplxCache(await listMtplxCachedModels()).state,
-});
 
 // endpoint + key → { at, promise } — the PROMISE, not the settled value, so N
 // providers sharing one endpoint in the same batch share one socket instead of
@@ -144,9 +131,9 @@ ${apiKey}`;
  * say so up front and offer the download instead of the start.
  *
  * A cache that could not be read reports `'unknown'` — never `'empty'`, which
- * would claim a fact PortOS does not have. Only called for a kind in
- * `WEIGHT_CACHE_READERS`; everything else answers `'unknown'` at the call site
- * without spending a subprocess.
+ * would claim a fact PortOS does not have, and so does a runtime with no cache
+ * PortOS can read offline (`readRuntimeWeights` answers those without spending
+ * a subprocess).
  *
  * TTL-cached — see WEIGHTS_TTL_MS.
  *
@@ -159,7 +146,7 @@ function readWeightsStateCached(kind) {
   // Cached BEFORE the await so concurrent providers on one runtime share the
   // subprocess; dropped on an unexpected throw so a transient failure cannot
   // poison the entry for its whole TTL (same shape as the probe cache above).
-  const promise = WEIGHT_CACHE_READERS[kind]().catch((err) => {
+  const promise = readRuntimeWeights(kind).catch((err) => {
     weightsCache.delete(kind);
     throw err;
   });
@@ -220,9 +207,6 @@ function weightsDetail(runtime, weights) {
   return null;
 }
 
-/** True for the cache states that make a start impossible. */
-const blocksStart = (weights) => weights === 'empty' || weights === 'partial';
-
 /** The `runtime` check — is the daemon's software here at all? */
 function runtimeCheck(runtime, { onPath, appInstalled, installed, reachable, setup }) {
   const detail = onPath ? `\`${runtime.command}\` is on PortOS's PATH.`
@@ -254,7 +238,7 @@ function serverCheck(runtime, { installed, result, setup, weights = 'unknown' })
   // Name the blocker in the SAME line that says nothing answered. Otherwise the
   // checklist reads "installed ✓ / not responding — just press Start", and
   // Start is the thing that cannot work until the weights land.
-  const blocked = blocksStart(weights) ? weightsDetail(runtime, weights) : null;
+  const blocked = weightsBlockStart(weights) ? weightsDetail(runtime, weights) : null;
   return {
     id: 'server',
     label: `${runtime.label} server responding`,
@@ -284,7 +268,7 @@ function modelCheck(runtime, wanted, served, probeError = null, { weights = 'unk
       : weightsDetail(runtime, weights) || 'Cannot be checked until the server responds.';
     // An unservable cache is the ONE unknown here that has a fix: the download
     // that makes a start possible at all.
-    const fixHint = blocksStart(weights) ? setupHint(setup, 'pull') : null;
+    const fixHint = weightsBlockStart(weights) ? setupHint(setup, 'pull') : null;
     return { id: 'model', label, ok: null, detail, fixHint };
   }
   if (served.includes(wanted)) {
@@ -347,7 +331,7 @@ export async function getProviderReadiness(provider, deps = {}) {
   // What the runtime's own model cache holds. Only worth asking when the daemon
   // is installed and NOT answering: a running server's `/v1/models` is the
   // better answer, and an uninstalled runtime has no cache to read.
-  const weights = installed && !result.reachable && WEIGHT_CACHE_READERS[runtime.kind]
+  const weights = installed && !result.reachable
     ? await (deps.readWeights || readWeightsStateCached)(runtime.kind)
     : 'unknown';
 

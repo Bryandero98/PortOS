@@ -254,11 +254,12 @@ describe('getProviderReadiness', () => {
     expect(checkById(readiness, 'model').detail).toMatch(/Weights are cached locally/);
   });
 
-  it('never reads a model cache it has no reason to — or cannot', async () => {
+  it('never reads a model cache it has no reason to', async () => {
     // A running daemon answers `/v1/models`, which is a better source than its
     // cache; an uninstalled one has no cache to read at all. Spawning `mtplx
     // models` (a directory walk) on either would burn a subprocess per 20s poll
-    // for nothing.
+    // for nothing. (A runtime with no readable cache is filtered one level
+    // down, by `readRuntimeWeights` — see its test in localRuntimeSetup.)
     const restore = pinPlatform('darwin');
     const reads = [];
     const readWeights = async (kind) => { reads.push(kind); return 'empty'; };
@@ -270,8 +271,6 @@ describe('getProviderReadiness', () => {
       { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true, defaultModel: 'mtplx' },
       { findCommand: () => null, probe: unreachable(), readWeights },
     );
-    // ...and a runtime with no cache PortOS can read never asks either.
-    await getProviderReadiness(llamaProvider(), { findCommand: () => '/opt/homebrew/bin/llama-server', probe: unreachable(), readWeights });
     restore();
     expect(reads).toEqual([]);
   });
