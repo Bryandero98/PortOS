@@ -9,6 +9,28 @@ export const MEMORY_DRILL_TYPES = ['memory-fill-blank', 'memory-sequence', 'memo
 // COGNITIVE_DRILL_TYPES in server/services/meatspacePostCognitive.js.
 export const COGNITIVE_DRILL_TYPES = ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time', 'task-switching', 'go-no-go', 'flanker'];
 
+// Cognitive drills that have a progressive difficulty ladder. Mirror of the
+// COGNITIVE_LADDERS keys in server/lib/postProgression.js — reaction-time is the
+// one cognitive drill with no ladder, so its stored config always runs as-is.
+export const COGNITIVE_LADDER_TYPES = ['n-back', 'digit-span', 'schulte-table', 'mental-rotation', 'stroop', 'task-switching', 'go-no-go', 'flanker'];
+
+/**
+ * Whether this drill's effective config is still UNKNOWN: a laddered drill left
+ * progressive (the default) whose rung has not been fetched yet. Anything that
+ * DESCRIBES the drill must wait rather than fall back to the stored knobs —
+ * rendering those first would state the wrong rule and then silently swap it
+ * out from under the reader.
+ *
+ * `cognitiveProgress` is the whole `getPostCognitiveProgress()` map, using the
+ * `null` = not fetched / `{}` = fetched-or-failed sentinel, so a failed fetch
+ * degrades to the stored knobs instead of hanging on "resolving" forever.
+ */
+export function cognitiveRungPending(type, drillConfig, cognitiveProgress) {
+  if (!COGNITIVE_LADDER_TYPES.includes(type)) return false;
+  if (drillConfig?.progressive === false) return false;
+  return cognitiveProgress == null;
+}
+
 /**
  * The config a cognitive drill will ACTUALLY run with — not necessarily the one
  * stored in POST config. Mirrors the server's override in `resolveDrillConfig`

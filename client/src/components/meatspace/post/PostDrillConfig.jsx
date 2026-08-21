@@ -4,7 +4,7 @@ import { updatePostConfig, getProviders, getPostAdaptivePreview, getPostMultipli
 import toast from '../../ui/Toast';
 import { FormField } from '../../ui/FormField';
 import { filterSelectableModels, enabledApiProviderFilter } from '../../../utils/providers';
-import { GOAL_DEFS, POST_TOPICS, MODULE_LABELS, DRILL_LABELS, DRILL_DESCRIPTIONS, composedSessionDrillTypes, effectiveCognitiveDrillConfig } from './constants';
+import { GOAL_DEFS, POST_TOPICS, MODULE_LABELS, DRILL_LABELS, DRILL_DESCRIPTIONS, composedSessionDrillTypes } from './constants';
 import { CognitiveDrillTutorialPreview, CognitiveDrillHowItWorksButton } from './PostCognitiveDrillRunner';
 
 // Modules a Full/Quick composed session can draw from (issue #2100), DERIVED
@@ -693,8 +693,13 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
     if (!anyCognitiveProgressive) { setCognitiveProgress(null); return; }
     let cancelled = false;
     getPostCognitiveProgress({ silent: true })
-      .then(p => { if (!cancelled) setCognitiveProgress(p); })
-      .catch(err => console.warn('⚠️ Failed to load cognitive progress: ' + err.message));
+      .then(p => { if (!cancelled) setCognitiveProgress(p || {}); })
+      // `{}` on failure, not null: null means "not fetched yet", which would
+      // leave the how-to preview waiting on a rung that is never coming.
+      .catch(err => {
+        console.warn('⚠️ Failed to load cognitive progress: ' + err.message);
+        if (!cancelled) setCognitiveProgress({});
+      });
     return () => { cancelled = true; };
   }, [anyCognitiveProgressive]);
 
@@ -1124,10 +1129,9 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
           that is backward recall. Built at render, not at click, so editing a
           knob and reopening shows the new value. */}
       <CognitiveDrillTutorialPreview
-        drill={howItWorksType ? {
-          type: howItWorksType,
-          config: effectiveCognitiveDrillConfig(cognitiveDrillTypes[howItWorksType], cognitiveProgress?.[howItWorksType]),
-        } : null}
+        type={howItWorksType}
+        drillConfig={howItWorksType ? cognitiveDrillTypes[howItWorksType] : null}
+        cognitiveProgress={cognitiveProgress}
         onClose={() => setHowItWorksType(null)}
       />
 

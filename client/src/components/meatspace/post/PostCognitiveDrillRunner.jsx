@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Brain, Check, X, BookOpen, Play } from 'lucide-react';
-import { DRILL_LABELS, nBackBalancedAccuracy } from './constants';
+import { DRILL_LABELS, nBackBalancedAccuracy, effectiveCognitiveDrillConfig, cognitiveRungPending } from './constants';
 import { safeReadJsonStorage, safeWriteStorage } from '../../../lib/safeStorage.js';
 import useMounted from '../../../hooks/useMounted';
 import useKeyCapture from '../../../hooks/useKeyCapture';
@@ -127,6 +127,17 @@ export function buildNBackExample(n) {
 export function hasDrillTutorial(type) {
   return getDrillTutorial({ type }) != null;
 }
+
+/**
+ * Drill types whose how-to copy actually VARIES with the drill config — the
+ * n-back lag, the digit-span recall direction, the reaction-time mode. Only
+ * these need the effective (ladder) config resolved before the card can be
+ * shown; every other card reads the same at any difficulty, so it opens
+ * immediately. Guarded by a property test that probes `getDrillTutorial` with
+ * two configs, so a new config-dependent branch can't be added without landing
+ * on this list.
+ */
+export const CONFIG_DEPENDENT_TUTORIAL_TYPES = ['n-back', 'digit-span', 'reaction-time'];
 
 // Per-type how-to content. A pure function of the drill so config-dependent
 // copy (n-back lag, digit-span direction, reaction-time mode) reads correctly.
@@ -329,10 +340,28 @@ function CognitiveDrillTutorial({ drill, tut, header = null, onAction, actionLab
  * `drill` may be null (nothing selected) or a type with no tutorial — both
  * render nothing, so callers can pass state straight through.
  */
-export function CognitiveDrillTutorialPreview({ drill, onClose }) {
+export function CognitiveDrillTutorialPreview({ type, drillConfig, cognitiveProgress, onClose }) {
+  // Both the effective config and the "can we show it yet?" question are decided
+  // HERE, not at each call site: the two surfaces would otherwise each carry
+  // (and each get to drift on) the same three-way derivation.
+  const drill = type ? { type, config: effectiveCognitiveDrillConfig(drillConfig, cognitiveProgress?.[type]) } : null;
   const tut = drill ? getDrillTutorial(drill) : null;
   if (!tut) return null;
-  const label = DRILL_LABELS[drill.type] || drill.type;
+  const label = DRILL_LABELS[type] || type;
+  const pending = CONFIG_DEPENDENT_TUTORIAL_TYPES.includes(type)
+    && cognitiveRungPending(type, drillConfig, cognitiveProgress);
+  if (pending) {
+    // The rung that decides this drill's lag / recall direction hasn't loaded.
+    // Waiting beats rendering the stored knobs, which would state one rule and
+    // then swap it for another mid-read.
+    return (
+      <Modal open onClose={onClose} size="md" usePortal ariaLabel={`How ${label} works`}>
+        <div className="bg-port-card border border-port-border rounded-xl p-5 text-center text-sm text-gray-400" role="status">
+          Resolving your current {label} difficulty…
+        </div>
+      </Modal>
+    );
+  }
   return (
     // `usePortal` per the overlay convention in client/src/CLAUDE.md: this is
     // rendered mid-tree inside two long settings/launcher pages, and a

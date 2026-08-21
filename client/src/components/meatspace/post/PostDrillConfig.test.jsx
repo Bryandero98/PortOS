@@ -14,7 +14,7 @@ vi.mock('../../ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn() }
 
 import PostDrillConfig from './PostDrillConfig';
 import { updatePostConfig, getProviders, getPostAdaptivePreview, getPostMultiplicationProgress, getPostPowersProgress, getPostCognitiveProgress, getMemoryItems } from '../../../services/api';
-import { LLM_DRILL_TYPES, DRILL_LABELS, COGNITIVE_DRILL_TYPES } from './constants';
+import { LLM_DRILL_TYPES, DRILL_LABELS, COGNITIVE_DRILL_TYPES, COGNITIVE_LADDER_TYPES } from './constants';
 
 // The generatable LLM drill types + labels, imported from the canonical
 // client constant (mirrors server LLM_DRILL_TYPES in meatspacePostLlm.js) —
@@ -389,6 +389,26 @@ describe('PostDrillConfig', () => {
       for (const type of COGNITIVE_DRILL_TYPES) {
         expect(screen.getByRole('button', { name: `How ${DRILL_LABELS[type]} works` })).toBeTruthy();
       }
+    });
+
+    // Drift guard for the COGNITIVE_LADDER_TYPES mirror in constants.js: the
+    // launcher's fetch gate and `cognitiveRungPending` both key on it, so if it
+    // and this file's per-drill `progressive` flags ever disagree, the how-to
+    // card silently goes back to describing the stored knobs.
+    it('COGNITIVE_LADDER_TYPES matches exactly the drills that expose a Progressive toggle', async () => {
+      // Every cognitive drill switched ON — the three executive-control drills
+      // ship disabled, and the Progressive toggle only renders on an enabled card.
+      const allOn = {
+        ...config,
+        cognitive: {
+          enabled: true,
+          drillTypes: Object.fromEntries(COGNITIVE_DRILL_TYPES.map(t => [t, { enabled: true }])),
+        },
+      };
+      await renderConfig(<PostDrillConfig config={allOn} onSaved={vi.fn()} onBack={vi.fn()} />);
+      const laddered = COGNITIVE_DRILL_TYPES.filter(type =>
+        screen.queryByRole('switch', { name: `Progressive difficulty — ${DRILL_LABELS[type]}` }) != null);
+      expect(laddered.sort()).toEqual([...COGNITIVE_LADDER_TYPES].sort());
     });
 
     // The DEFAULT configuration: progressive is on, so the server runs the

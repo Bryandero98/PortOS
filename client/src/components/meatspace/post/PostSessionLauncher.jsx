@@ -6,7 +6,7 @@ import { FormField } from '../../ui/FormField';
 import Pill from '../../ui/Pill';
 import { enabledApiProviderFilter } from '../../../utils/providers';
 import useProviderModels from '../../../hooks/useProviderModels.js';
-import { DOMAINS, DRILL_TO_DOMAIN, DRILL_LABELS, effectiveCognitiveDrillConfig, computeDomainAverages, computeGoalProgress, isTopicEnabled, selectMemoryItemForDrill, resolveTopicForDrillType } from './constants';
+import { DOMAINS, DRILL_TO_DOMAIN, DRILL_LABELS, COGNITIVE_LADDER_TYPES, computeDomainAverages, computeGoalProgress, isTopicEnabled, selectMemoryItemForDrill, resolveTopicForDrillType } from './constants';
 import { otherPostSections, TOPIC_SURFACE_SECTIONS } from './practiceCatalog';
 import { postIcon } from './postIcons';
 import BrowseCatalogLink from './BrowseCatalogLink';
@@ -231,14 +231,21 @@ export default function PostSessionLauncher({
   // Conditional-fetch like the goal-scoped effects above — nothing is requested
   // on an install with no progressive cognitive drill enabled.
   const needsCognitiveProgress = config?.cognitive?.enabled !== false
-    && Object.values(config?.cognitive?.drillTypes || {})
-      .some(cfg => cfg?.enabled !== false && cfg?.progressive !== false);
+    && COGNITIVE_LADDER_TYPES.some(type => {
+      const cfg = config?.cognitive?.drillTypes?.[type];
+      return cfg && cfg.enabled !== false && cfg.progressive !== false;
+    });
   useEffect(() => {
     if (!needsCognitiveProgress) { setCognitiveProgress(null); return; }
     let cancelled = false;
     getPostCognitiveProgress({ silent: true })
-      .then(p => { if (!cancelled) setCognitiveProgress(p); })
-      .catch(err => console.warn('⚠️ Failed to load cognitive progress: ' + err.message));
+      .then(p => { if (!cancelled) setCognitiveProgress(p || {}); })
+      // `{}` on failure, not null: null means "not fetched yet" and would leave
+      // the preview waiting forever on a rung that is never coming.
+      .catch(err => {
+        console.warn('⚠️ Failed to load cognitive progress: ' + err.message);
+        if (!cancelled) setCognitiveProgress({});
+      });
     return () => { cancelled = true; };
   }, [needsCognitiveProgress]);
 
@@ -1243,10 +1250,9 @@ export default function PostSessionLauncher({
       </div>
 
       <CognitiveDrillTutorialPreview
-        drill={howItWorksType ? {
-          type: howItWorksType,
-          config: effectiveCognitiveDrillConfig(config.cognitive?.drillTypes?.[howItWorksType], cognitiveProgress?.[howItWorksType]),
-        } : null}
+        type={howItWorksType}
+        drillConfig={howItWorksType ? config.cognitive?.drillTypes?.[howItWorksType] : null}
+        cognitiveProgress={cognitiveProgress}
         onClose={() => setHowItWorksType(null)}
       />
     </div>
