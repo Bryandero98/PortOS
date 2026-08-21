@@ -124,6 +124,30 @@ describe('MtplxServerCard', () => {
     expect(screen.queryByRole('button', { name: /Stop MTPLX/ })).toBeNull();
   });
 
+  // A measured assessment relaunches this daemon with tuning flags and leaves
+  // them on, so every later request through the `mtplx` provider runs under
+  // them. A card showing only the model would report the server as plain
+  // "running" while it serves with, say, MTP decoding switched off.
+  it('names the tuning flags the running daemon was launched with', async () => {
+    await renderCard({
+      installed: true, running: true, managed: true, supported: true,
+      endpoint: 'http://127.0.0.1:8000/v1',
+      config: { model: 'Example/Qwen-MTP', port: 8000, tuning: { generationMode: 'ar' } },
+      tuningFlags: ['--generation-mode', 'ar'],
+    });
+    expect(screen.getByText('--generation-mode ar')).toBeInTheDocument();
+  });
+
+  it('says nothing about tuning for a daemon running on plain defaults', async () => {
+    await renderCard({
+      installed: true, running: true, managed: true, supported: true,
+      endpoint: 'http://127.0.0.1:8000/v1',
+      config: { model: 'Example/Qwen-MTP', port: 8000, tuning: {} },
+      tuningFlags: [],
+    });
+    expect(screen.queryByText(/Tuning:/)).toBeNull();
+  });
+
   it('offers the install when the binary is missing', async () => {
     const handlers = await renderCard({ installed: false, running: false, supported: true });
     fireEvent.click(screen.getByRole('button', { name: /Install MTPLX/ }));

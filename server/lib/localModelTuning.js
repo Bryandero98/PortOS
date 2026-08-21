@@ -26,8 +26,9 @@
  *                       llama-server command line and relaunches. → `launchConfig`
  *   - `env: 'NAME'`   — an environment variable PortOS hands `ollama serve`
  *                       when it restarts the daemon. → `launchEnv`
- *   - `cli: '--flag'` — an `lms load` flag PortOS passes when it reloads the
- *                       LM Studio model. → `launchArgs`
+ *   - `cli: '--flag'` — a launch flag PortOS puts on the command line of a
+ *                       daemon it re-runs: `lms load` for LM Studio, `mtplx
+ *                       serve` for MTPLX. → `launchArgs`
  *   - `wire: 'field'` — a field PortOS merges into each measurement request
  *                       body. → `requestBody`
  *
@@ -49,9 +50,28 @@
  * is kept because a runtime that does honour per-request knobs (vLLM) is the
  * likely next entry.
  *
- * MTPLX and vLLM therefore declare no knobs: PortOS starts MTPLX under PM2 but
- * passes only `--port`/`--model`, and it does not start vLLM at all. Add knobs
- * there once there is a launch path that carries them.
+ * vLLM therefore declares no knobs: PortOS does not start it — it is a container
+ * from the shipped compose stack, so there is no launch line to put a flag on.
+ * Add knobs there once PortOS manages that container's lifecycle.
+ *
+ * ## Verifying an `mtplx serve` flag before declaring it
+ *
+ * This matters more here than for the other runtimes: `mtplx serve` exits before
+ * it binds on a flag it does not recognize, which the LLMs page reports to the
+ * user as "the server would not start". The enum SPELLINGS carry the same risk —
+ * argparse rejects an unlisted `choices` value exactly as it rejects an unknown
+ * flag.
+ *
+ * So each knob below was read off MTPLX's own argument parser rather than its
+ * feature docs, at a spread of releases rather than only the newest, since other
+ * installs upgrade on their own schedule. Reproduce it the same way before
+ * adding one — on a machine with MTPLX, `mtplx serve --help`; otherwise read
+ * upstream `mtplx/cli.py` (github.com/youssofal/MTPLX), where the `serve`
+ * subparser and the `_add_batching_args` / `_add_paged_kv_quant_args` helpers it
+ * calls define these flags, and `mtplx/profiles.py` defines `PROFILE_CHOICES`.
+ * The six below and their options were confirmed present and unchanged at tags
+ * v1.0.0, v2.0.0, v2.5.4 and v2.9.0, with one exception noted on `profile`.
+ * Prefer a flag with that kind of history over one new in the current release.
  *
  * ## The sentinel contract
  *
@@ -71,26 +91,42 @@
 const CACHE_TYPES = ['f16', 'q8_0', 'q4_0'];
 
 /**
+ * The command a `cli` knob's flag lands on, per runtime. Two runtimes now share
+ * the `cli` transport but re-run different binaries, and the note has to name the
+ * one the user would see in `ps` — "PortOS reloads the model with `lms load …`"
+ * on an MTPLX knob would describe a command that never runs.
+ */
+const CLI_COMMAND = {
+  lmstudio: (flag) => `PortOS reloads the model with \`lms load ${flag}\`.`,
+  mtplx: (flag) => `PortOS relaunches \`mtplx serve\` with \`${flag}\` on its command line.`,
+};
+
+/**
  * The user-facing sentence for a knob: what PortOS will DO with it, naming the
  * flag or variable it becomes. Derived from the transport so the form, the
  * catalog, and the code that applies it cannot drift — and shipped to the client
  * on the spec, so the note lives with the module that owns the transport rather
  * than being re-derived in the UI.
  */
-const noteFor = (spec) => {
+const noteFor = (runtimeId, spec) => {
   if (spec.wire) return `Sent with each measurement request as \`${spec.wire}\`.`;
   if (spec.env) return `PortOS restarts the server with ${spec.env} set.`;
-  if (spec.cli) return `PortOS reloads the model with \`lms load ${spec.cli}\`.`;
+  // A `cli` runtime with no entry above falls back to naming the flag alone
+  // rather than borrowing another runtime's command — vague, but never wrong.
+  if (spec.cli) {
+    const describe = CLI_COMMAND[runtimeId];
+    return describe ? describe(spec.cli) : `PortOS puts \`${spec.cli}\` on the server's launch line and relaunches it.`;
+  }
   return "PortOS puts this on the server's launch line and relaunches it.";
 };
 
 // `applies` and `note` are computed, never written by hand — see the transport
 // rule above. A spec with no transport gets `applies: 'launch'` and a note it
 // cannot honour, which is what the catalog guard test exists to catch.
-const decorate = (spec) => Object.freeze({
+const decorate = (runtimeId, spec) => Object.freeze({
   ...spec,
   applies: spec.wire ? 'request' : 'launch',
-  note: noteFor(spec),
+  note: noteFor(runtimeId, spec),
 });
 
 /**
@@ -131,15 +167,36 @@ const RAW_SPECS = {
     { id: 'gpuOffload', label: 'GPU offload', type: 'number', cli: '--gpu', min: 0, max: 1, step: 0.05, hint: 'Fraction of layers on the GPU (0 = CPU only, 1 = full offload). Lower frees VRAM for a bigger context at the cost of throughput.' },
     { id: 'parallel', label: 'Parallel requests', type: 'number', cli: '--parallel', min: 1, max: 16, hint: 'Predictions the model runs at once. Higher total throughput, slower per prediction.' },
   ],
-  // PortOS starts MTPLX under PM2 but passes only `--port` and `--model`, and it
-  // does not start vLLM at all — so neither has a knob it could apply. Left
+  // `mtplx serve` flags, applied by relaunching the PM2 daemon on a new command
+  // line. Ordered context → decode → memory → preset, so the form reads from the
+  // knob that decides whether a prompt fits down to the ones that trade latency
+  // for throughput. Every flag verified against upstream's own argument parser —
+  // see the verification note at the top of this file before adding another.
+  mtplx: [
+    { id: 'contextWindow', label: 'Context window', type: 'number', cli: '--context-window', min: 512, max: 1048576, unit: 'tokens', hint: 'Overrides the window MTPLX reads from the model config. Larger costs unified memory up front, and past what fits the server will not load.' },
+    { id: 'depth', label: 'MTP depth', type: 'number', cli: '--depth', min: 1, max: 8, hint: 'Tokens the MTP sidecar drafts per verify step. Deeper wins more when the draft is accepted and costs more when it is rejected — the knob MTPLX\'s own `mtplx tune` sweeps.' },
+    { id: 'generationMode', label: 'Decode mode', type: 'enum', cli: '--generation-mode', options: ['mtp', 'ar'], hint: 'Native multi-token speculative decode, or plain target-only autoregressive. The comparison that answers whether MTP is actually paying off for this model here.' },
+    { id: 'kvQuant', label: 'KV cache quantization', type: 'enum', cli: '--kv-quant', options: ['off', 'q8', 'q4'], hint: 'Quantizing the paged KV cache buys context length with a little quality. q4 is the smallest at every length but re-dequantizes each decode step, so long-context decode gets slower.' },
+    { id: 'batchingPreset', label: 'Batching preset', type: 'enum', cli: '--batching-preset', options: ['solo', 'latency', 'agent', 'throughput'], hint: 'How the server trades per-request latency against total throughput. `solo` is the cleanest baseline for a single-stream measurement.' },
+    // `turbo` is the one option not present at every tag checked — it arrived in
+    // MTPLX v2.0.0. Offered anyway: an install old enough to reject it gets the
+    // refusal-and-restore path, not a dead daemon, and pinning the catalog to
+    // the oldest release would cost every current install the knob that matters
+    // most. The diagnostic profiles ('exact', 'max-diagnostic') are valid but
+    // are not what a throughput sweep is asking, so they are left out.
+    { id: 'profile', label: 'Runtime profile', type: 'enum', cli: '--profile', options: ['sustained', 'turbo', 'performance-cold', 'stable'], hint: 'MTPLX\'s own bundle of runtime settings. `turbo` targets peak rate on the quantized flagships; `sustained` holds up over a long run. Diagnostic profiles are deliberately not offered.' },
+  ],
+  // PortOS does not start vLLM at all — it is a container from the shipped
+  // compose stack — so it has no launch line to put a flag on. Left
   // present-and-empty rather than absent so the runtime still enumerates.
-  mtplx: [],
   vllm: [],
 };
 
 export const TUNING_SPECS = Object.freeze(Object.fromEntries(
-  Object.entries(RAW_SPECS).map(([runtime, specs]) => [runtime, Object.freeze(specs.map(decorate))])
+  Object.entries(RAW_SPECS).map(([runtime, specs]) => [
+    runtime,
+    Object.freeze(specs.map((spec) => decorate(runtime, spec))),
+  ])
 ));
 
 /** Knob specs for one runtime, or `[]` for a runtime with none declared. */

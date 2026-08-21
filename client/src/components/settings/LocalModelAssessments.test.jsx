@@ -58,7 +58,10 @@ const RUNTIMES = [
     { id: 'ubatchSize', label: 'Micro-batch size', type: 'number', applies: 'launch', config: true, min: 1, max: 8192, hint: 'Physical micro-batch.', note: "PortOS puts this on the server's launch line and relaunches it." },
     { id: 'flashAttn', label: 'Flash attention', type: 'boolean', applies: 'launch', config: true, hint: 'Fused attention kernel.', note: "PortOS puts this on the server's launch line and relaunches it." },
   ] },
-  { id: 'mtplx', label: 'MTPLX', managed: false, modelCount: null, error: 'not reachable at http://127.0.0.1:8000/v1 (ECONNREFUSED)', tuningSpecs: [] },
+  { id: 'mtplx', label: 'MTPLX', managed: false, modelCount: null, error: 'not reachable at http://127.0.0.1:8000/v1 (ECONNREFUSED)', tuningSpecs: [
+    { id: 'depth', label: 'MTP depth', type: 'number', applies: 'launch', cli: '--depth', min: 1, max: 8, hint: 'Draft lookahead.', note: 'PortOS relaunches `mtplx serve` with `--depth` on its command line.' },
+    { id: 'kvQuant', label: 'KV cache quantization', type: 'enum', applies: 'launch', cli: '--kv-quant', options: ['off', 'q8', 'q4'], hint: 'Context length for a little quality.', note: 'PortOS relaunches `mtplx serve` with `--kv-quant` on its command line.' },
+  ] },
 ];
 
 // The sweep queue is server state the panel reads on mount. Every suite here

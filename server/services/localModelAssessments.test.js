@@ -43,6 +43,16 @@ vi.mock('./llamaServerManager.js', () => ({
   relaunchLlamaServerWithTuning: (...args) => relaunchLlamaServerWithTuning(...args),
 }));
 
+// MTPLX's knobs are `mtplx serve` flags, so applying one relaunches the PM2
+// daemon. Left unmocked this suite would shell out to the developer's real PM2
+// and probe their real :8000 — the same reason llama-server is mocked above.
+const getMtplxServerEndpoint = vi.fn(async () => 'http://127.0.0.1:8000/v1');
+const relaunchMtplxServerWithTuning = vi.fn(async () => ({ applied: true, reason: null, config: null }));
+vi.mock('./mtplxServerManager.js', () => ({
+  getMtplxServerEndpoint: (...args) => getMtplxServerEndpoint(...args),
+  relaunchMtplxServerWithTuning: (...args) => relaunchMtplxServerWithTuning(...args),
+}));
+
 const listModels = vi.fn();
 vi.mock('./localLlm.js', () => ({ listModels: (...args) => listModels(...args) }));
 
@@ -79,6 +89,7 @@ const store = await import('./localModelAssessmentStore.js');
 // Dynamic, like the two above: a static import hoists ABOVE the fileUtils mock,
 // and this module resolves its claim path from `PATHS.data` at load time.
 const { claimHeavyLocalJob } = await import('../lib/heavyJobClaim.js');
+const { TUNING_SPECS, tuningSpecsFor } = await import('../lib/localModelTuning.js');
 
 const STORE = join(tempRoot, 'local-llm', 'assessments.json');
 
@@ -103,6 +114,8 @@ beforeEach(() => {
   relaunchLlamaServerWithTuning.mockReset().mockResolvedValue({ applied: true, reason: null, config: null });
   restartOllamaWithEnv.mockReset().mockResolvedValue({ applied: true, reason: 'restarted' });
   loadLmStudioModelWithArgs.mockReset().mockResolvedValue({ success: true });
+  getMtplxServerEndpoint.mockReset().mockResolvedValue('http://127.0.0.1:8000/v1');
+  relaunchMtplxServerWithTuning.mockReset().mockResolvedValue({ applied: true, reason: null, config: null });
 });
 
 describe('buildSamplePrompt', () => {
@@ -684,6 +697,33 @@ describe('endpoint runtimes', () => {
   });
 });
 
+// The refusal in `applyLaunchTuning` catches a runtime with NO applier. This
+// catches the sharper case: a runtime WITH one, whose catalog declares a knob
+// that applier's transport cannot carry. Nothing fails at runtime there — the
+// relaunch runs, `tuningApplied: true` is recorded, and the knob is dropped on
+// the way to the launch line, which is exactly the un-applied-but-claimed
+// reading the catalog exists to prevent.
+describe('launch transports', () => {
+  it('carries every launch knob each runtime with an applier declares', () => {
+    for (const [runtime, transport] of Object.entries(svc.LAUNCH_TRANSPORTS)) {
+      expect(transport, `${runtime} applier declares no transport`).toBeTruthy();
+      for (const spec of tuningSpecsFor(runtime)) {
+        if (spec.applies !== 'launch') continue;
+        expect(spec[transport], `${runtime}/${spec.id} is not a \`${transport}\` knob`).toBeTruthy();
+      }
+    }
+  });
+
+  // The mirror: a runtime that declares launch knobs but has no applier would
+  // offer a form whose every field is refused at run time.
+  it('gives every runtime that declares a launch knob an applier to apply it', () => {
+    for (const [runtime, specs] of Object.entries(TUNING_SPECS)) {
+      if (!specs.some((spec) => spec.applies === 'launch')) continue;
+      expect(svc.LAUNCH_TRANSPORTS, `${runtime} declares launch knobs`).toHaveProperty(runtime);
+    }
+  });
+});
+
 describe('tuning', () => {
   it('keeps two tunings of one model as two records rather than overwriting', async () => {
     runLocalLlmTest.mockResolvedValue(okRun(40, 120));
@@ -783,17 +823,44 @@ describe('tuning', () => {
   });
 
   // A runtime with no launch path must not silently swallow a knob: the catalog
-  // offers none for MTPLX/vLLM today, and if one is ever added without a
-  // transport the reading has to say it was not applied.
+  // offers none for vLLM (a container from the shipped compose stack), and if
+  // one is ever added without a transport the reading has to say so.
   it('refuses launch tuning for a runtime PortOS does not start', async () => {
     probeOpenAiModels.mockResolvedValue({ reachable: true, models: ['a-model'], error: null });
     runEndpointLlmTest.mockResolvedValue(okRun());
     const result = await svc.runAssessment({
-      backend: 'mtplx', modelId: 'a-model', contextTokens: [512], tuning: { maxKvSize: 8192 },
+      backend: 'vllm', modelId: 'a-model', contextTokens: [512], tuning: { maxKvSize: 8192 },
     });
-    // Retired from the catalog, so it normalizes away entirely — no claim made.
+    // Not in the catalog, so it normalizes away entirely — no claim made.
     expect(result.tuningApplied).toBeNull();
     expect(result.tuningKey).toBe('');
+  });
+
+  it('relaunches `mtplx serve` to apply an MTPLX tuning', async () => {
+    probeOpenAiModels.mockResolvedValue({ reachable: true, models: ['a-model'], error: null });
+    runEndpointLlmTest.mockResolvedValue(okRun());
+    const result = await svc.runAssessment({
+      backend: 'mtplx', modelId: 'a-model', contextTokens: [512], tuning: { depth: 5, kvQuant: 'q8' },
+    });
+    expect(relaunchMtplxServerWithTuning).toHaveBeenCalledWith({ depth: 5, kvQuant: 'q8' });
+    expect(result.tuningApplied).toBe(true);
+    expect(result.tuningKey).toBe('depth=5,kvQuant=q8');
+  });
+
+  // A launch line MTPLX rejects must not be filed as evidence FOR that tuning —
+  // the manager puts the previous configuration back and says why, and the
+  // reading has to carry the refusal rather than the claim.
+  it('records an MTPLX tuning the daemon refused as not applied', async () => {
+    probeOpenAiModels.mockResolvedValue({ reachable: true, models: ['a-model'], error: null });
+    runEndpointLlmTest.mockResolvedValue(okRun());
+    relaunchMtplxServerWithTuning.mockResolvedValueOnce({
+      applied: false, reason: 'MTPLX rejected that tuning: unrecognized arguments', config: null,
+    });
+    const result = await svc.runAssessment({
+      backend: 'mtplx', modelId: 'a-model', contextTokens: [512], tuning: { contextWindow: 1048576 },
+    });
+    expect(result.tuningApplied).toBe(false);
+    expect(result.tuningNotApplied).toMatch(/unrecognized arguments/);
   });
 
   it('never relaunches llama-server for an untuned run', async () => {

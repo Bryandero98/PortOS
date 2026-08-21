@@ -144,7 +144,40 @@ not offer to stop a process it did not start.
 All presets are disabled by default. Merely updating PortOS does not make a
 network request, invoke a model, tune speculative decoding, alter the active
 provider, or install anything — the setup above runs only from that explicit
-click. MTPLX tuning remains an explicit operator action outside PortOS.
+click. Nothing relaunches `mtplx serve` on its own either; the tuning below runs
+only from an assessment you start.
+
+## Tuning the launch line
+
+**Models → LLMs → measured assessments** can relaunch `mtplx serve` with
+different flags between runs, so "how fast is this checkpoint here?" can be
+answered per configuration rather than once. The knobs PortOS offers are the ones
+it can actually put on the launch line:
+
+| Knob | Flag | What it trades |
+| --- | --- | --- |
+| Context window | `--context-window` | Prompt length against unified memory |
+| MTP depth | `--depth` | Draft lookahead — deeper wins more when accepted, costs more when rejected |
+| Decode mode | `--generation-mode` | Native multi-token speculative decode vs plain autoregressive |
+| KV cache quantization | `--kv-quant` | Context length against a little quality |
+| Batching preset | `--batching-preset` | Per-request latency against total throughput |
+| Runtime profile | `--profile` | MTPLX's own bundle: peak rate vs holding up over a long run |
+
+Each measurement is stored under the tuning it ran with, so several tunings of
+one checkpoint coexist and can be ranked against each other.
+
+Two things worth knowing:
+
+- **A launch line MTPLX rejects does not leave the daemon down.** `mtplx serve`
+  exits before it binds on a flag or value it will not accept, so PortOS puts the
+  previous configuration back up and records the reading as *not* applied, naming
+  the reason. A sweep is expected to produce launch lines that do not work.
+- **The knobs come from MTPLX's own argument parser**, not from its feature docs,
+  and only flags stable across MTPLX releases are offered. If your MTPLX is old
+  enough to reject one, you get the refusal above rather than a dead provider.
+
+`mtplx tune` — upstream's own depth auto-tuner, which writes a saved winner into
+MTPLX's config — stays an explicit operator action outside PortOS.
 
 ## Startup at boot
 
