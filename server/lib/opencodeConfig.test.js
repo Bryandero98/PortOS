@@ -177,6 +177,35 @@ describe('buildOpencodeEnvVars', () => {
     expect(cfg.agent.build).toEqual({ temperature: 0.25, think: true, reasoningEffort: 'high' });
   });
 
+  it('sends llama.cpp its generation defaults, routing thinking through the chat template', () => {
+    // The OpenCode llama TUI is the headline case: llama.cpp has no native
+    // `think` flag, so a toggle emitted as Ollama's would be silently dropped.
+    const result = buildOpencodeEnvVars(
+      { command: 'opencode', llamaBacked: true, models: [], temperature: 0.2, topP: 0.9, thinking: true, effort: 'high' },
+      'qwen3.8-27b',
+    );
+    const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
+    expect(cfg.agent.build).toEqual({
+      temperature: 0.2,
+      topP: 0.9,
+      chat_template_kwargs: { enable_thinking: true },
+      reasoningEffort: 'high',
+    });
+  });
+
+  it('leaves a llama.cpp provider with no configured generation alone', () => {
+    // Only Ollama carries the historical 0.6 default — opening the editor up to
+    // the other backends must not start pinning a temperature they never had.
+    const result = buildOpencodeEnvVars({ command: 'opencode', llamaBacked: true, models: [] }, 'qwen3.8-27b');
+    const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
+    expect(cfg.agent).toBeUndefined();
+  });
+
+  it('omits the thinking toggle for OrcaRouter, whose upstreams own it', () => {
+    const cfg = buildOpencodeConfig('gpt-5', null, 'orcarouter', { temperature: 0.4, thinking: true });
+    expect(cfg.agent.build).toEqual({ temperature: 0.4 });
+  });
+
   it('declares the run model under provider.mtplx.models for MTPLX-backed OpenCode', () => {
     const result = buildOpencodeEnvVars({ command: 'opencode', mtplxBacked: true, models: ['mtplx'] }, 'mtplx');
     const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);

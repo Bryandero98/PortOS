@@ -91,6 +91,22 @@ llama-server \
 3. Click **Refresh Models** to pull the live aliases from `llama-server`, or use the default `dflash` model.
 4. Select **OpenCode llama TUI** in the CoS task creator or terminal runner to execute coding and agent tasks with speculative acceleration.
 
+### Generation defaults
+
+**AI Providers → edit the provider → Generation** carries the defaults every run
+of that provider starts with — **Temperature**, **Top-P**, **Thinking mode**, and
+**Default Effort**. They apply to HTTP, CLI, and TUI launches alike, so the same
+local model keeps one posture however it is reached; OpenCode receives them as
+its `agent.build` options, and a CoS task can still override temperature and
+thinking for a single run.
+
+The block is offered only for the backends PortOS actually forwards these to —
+Ollama, llama.cpp, and MTPLX, plus the OrcaRouter gateway. Thinking is not a
+portable flag: Ollama takes its native `think` boolean while llama.cpp and MTPLX
+receive `enable_thinking` through the chat template, so a model with no reasoning
+mode simply ignores it. Leaving **Top-P** blank sends no `top_p` at all, which is
+not the same as pinning `1` — the backend keeps its own default.
+
 ### Checking the requirements from the Providers page
 
 Every provider backed by a local daemon carries a **requirements checklist** on

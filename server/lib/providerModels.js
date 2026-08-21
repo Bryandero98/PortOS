@@ -87,8 +87,9 @@ export const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhi
 export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 // OpenCode forwards this narrow OpenAI-compatible ladder as `reasoningEffort`
-// to a local Ollama model. Keep it separate from vendor-CLI-only levels.
-export const OPENCODE_OLLAMA_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
+// to whichever local backend it is wired to (Ollama, llama.cpp, MTPLX,
+// OrcaRouter). Keep it separate from vendor-CLI-only levels.
+export const OPENCODE_LOCAL_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 // Cursor Agent's ladder. Cursor has NO `--effort` flag — the level is a
 // parameter of the model id itself (`gpt-5[effort=max]`), folded in by
 // `foldCursorEffortIntoModel` — so `buildEffortArgs` deliberately emits nothing
@@ -351,7 +352,7 @@ export function foldCursorEffortIntoModel(model, effort) {
  */
 export function effortLevelsForProvider(provider, model = null) {
   if (!provider) return null;
-  if (isOpencodeProvider(provider) && provider.ollamaBacked === true) return OPENCODE_OLLAMA_EFFORT_LEVELS;
+  if (isOpencodeProvider(provider) && getOpencodeLocalProviderNamespace(provider)) return OPENCODE_LOCAL_EFFORT_LEVELS;
   if (isCodexProvider(provider)) return CODEX_EFFORT_LEVELS;
   if (isAntigravityProvider(provider)) {
     const perModel = model ? antigravityModelEffortLevels(model, provider.models) : null;

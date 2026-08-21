@@ -86,9 +86,14 @@ export const providerSchema = z.object({
   // Per-request context window (Ollama num_ctx). Lifts the ~4K default so long
   // prompts (e.g. a whole manuscript) aren't silently truncated. Null = unset.
   numCtx: z.number().int().min(512).max(1048576).nullable().optional(),
-  // Ollama generation controls. These are provider-level so the same local
-  // model keeps its defaults across API, CLI, and TUI launchers.
+  // Default generation controls for the local OpenAI-compatible backends
+  // (Ollama, llama.cpp, MTPLX) and the OpenCode wrappers in front of them.
+  // Provider-level so the same local model keeps its defaults across API, CLI,
+  // and TUI launchers; a run may still override them per task.
   temperature: z.number().min(0).max(2).optional(),
+  // Nucleus sampling. Optional with no default: a backend that is never told a
+  // top_p keeps its own, which is not the same as being pinned to 1.
+  topP: z.number().min(0).max(1).nullable().optional(),
   thinking: z.boolean().optional(),
   // Planning-time context window (tokens) the editorial budgeter may assume for
   // this provider — distinct from numCtx (what we *ask Ollama for*). For cloud

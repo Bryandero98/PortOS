@@ -6,7 +6,7 @@ import { join, extname, basename, isAbsolute, delimiter } from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { randomUUID } from 'crypto';
 import { analyzeError, analyzeHttpError, ERROR_CATEGORIES } from './errorDetection.js';
-import { isOllamaBackedProvider } from './internal/ollamaBacked.js';
+import { apiGenerationOptions } from './internal/generationOptions.js';
 
 // npm-installed CLI providers (claude, codex, opencode, …) are .cmd/.bat
 // shims on Windows; Node's spawn() can't execute those without going through
@@ -651,12 +651,7 @@ export function createRunnerService(config = {}) {
               model: model || provider.defaultModel,
               messages: [{ role: 'user', content: messageContent }],
               stream: true,
-              ...(isOllamaBackedProvider(provider)
-                ? {
-                    temperature: Number.isFinite(Number(provider.temperature)) ? Number(provider.temperature) : 0.6,
-                    ...(typeof provider.thinking === 'boolean' ? { think: provider.thinking } : {})
-                  }
-                : {}),
+              ...apiGenerationOptions(provider),
               // Ollama's OpenAI-compatible endpoint defaults to a ~4K context
               // window and silently truncates longer prompts. A top-level
               // num_ctx lifts it (honored by Ollama, ignored by other

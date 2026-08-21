@@ -110,6 +110,79 @@ export function toBareModelIds(models, providerKey = 'ollama') {
 }
 
 /**
+ * How each local OpenCode provider entry carries a "thinking" toggle.
+ *
+ * `temperature`, `topP` and `reasoningEffort` are portable — every daemon behind
+ * these entries speaks the OpenAI chat-completions shape, so they are emitted
+ * for all of them. The thinking toggle is NOT: Ollama takes its own native
+ * `think` boolean, while a llama.cpp / MTPLX OpenAI endpoint routes it through
+ * the chat template (`chat_template_kwargs.enable_thinking`). OrcaRouter fronts
+ * cloud models that own their reasoning switch upstream, so it gets no toggle at
+ * all and the editor hides the checkbox for it. MIRROR of
+ * `generationControlsFor` in `client/src/utils/providers.js`; keep in lockstep.
+ * @type {Record<'ollama'|'mtplx'|'llama'|'orcarouter', 'think'|'chatTemplate'|null>}
+ */
+const THINKING_STYLE = {
+  ollama: 'think',
+  mtplx: 'chatTemplate',
+  llama: 'chatTemplate',
+  orcarouter: null,
+};
+
+const numberInRange = (value, min, max) => {
+  if (value === null || value === undefined || value === '') return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= min && n <= max ? n : undefined;
+};
+
+// TASKS.md metadata is text, so a persisted task re-enters the lifecycle as
+// `'true'`/`'false'`. Accept both wire forms without treating an absent or
+// malformed value as an intentional override.
+const readBoolean = (value) =>
+  value === true || value === 'true'
+    ? true
+    : value === false || value === 'false'
+      ? false
+      : undefined;
+
+/**
+ * The `agent.build` generation overrides for one local OpenCode provider entry,
+ * or null when nothing is configured. OpenCode applies generation controls to
+ * agents, not provider definitions; `build` is its primary coding agent for both
+ * `opencode run` and the TUI, and unknown agent options are passed through to
+ * the provider.
+ *
+ * @param {{temperature?:unknown, topP?:unknown, thinking?:unknown, effort?:unknown}|null|undefined} generation
+ * @param {'ollama'|'mtplx'|'llama'|'orcarouter'} providerKey
+ * @returns {object|null}
+ */
+export function buildAgentGeneration(generation, providerKey) {
+  if (!generation || !Object.hasOwn(THINKING_STYLE, providerKey)) return null;
+  // Ollama agent runs have defaulted to 0.6 since this control shipped. The
+  // other backends keep their own server-side default until the user sets one,
+  // so opening the editor up to them changes nothing on its own.
+  const temperature = numberInRange(generation.temperature, 0, 2)
+    ?? (providerKey === 'ollama' ? 0.6 : undefined);
+  const topP = numberInRange(generation.topP, 0, 1);
+  const thinking = readBoolean(generation.thinking);
+  const thinkingStyle = THINKING_STYLE[providerKey];
+  const effort = typeof generation.effort === 'string' && generation.effort.trim()
+    ? generation.effort.trim()
+    : undefined;
+  const build = {
+    ...(temperature === undefined ? {} : { temperature }),
+    ...(topP === undefined ? {} : { topP }),
+    ...(thinking === undefined || thinkingStyle === null
+      ? {}
+      : thinkingStyle === 'think'
+        ? { think: thinking }
+        : { chat_template_kwargs: { enable_thinking: thinking } }),
+    ...(effort === undefined ? {} : { reasoningEffort: effort }),
+  };
+  return Object.keys(build).length > 0 ? build : null;
+}
+
+/**
  * Build an OpenCode config object declaring the given models under the selected
  * local provider. Accepts a single id or a list (bare or namespace-prefixed —
  * both are normalized to bare keys) and, optionally, a `base` config to merge
@@ -145,29 +218,12 @@ export function buildOpencodeConfig(models, base = null, providerKey = 'ollama',
       ...Object.fromEntries(bareIds.map((id) => [id, { name: id, tool_call: true }])),
     };
   }
-  // OpenCode applies generation controls to agents, not provider definitions.
-  // `build` is its primary coding agent for both `opencode run` and the TUI;
-  // unknown agent options are passed through to the provider, including
-  // Ollama's native `think` flag.
-  if (generation && providerKey === 'ollama') {
-    const temperature = Number.isFinite(Number(generation.temperature)) ? Number(generation.temperature) : 0.6;
-    // TASKS.md metadata is text, so a persisted task re-enters the lifecycle as
-    // `'true'`/`'false'`. Accept both wire forms without treating an absent or
-    // malformed value as an intentional override.
-    const thinking = generation.thinking === true || generation.thinking === 'true'
-      ? true
-      : generation.thinking === false || generation.thinking === 'false'
-        ? false
-        : undefined;
-    const effort = typeof generation.effort === 'string' && generation.effort.trim()
-      ? generation.effort.trim()
-      : undefined;
+  const build = buildAgentGeneration(generation, providerKey);
+  if (build) {
     config.agent = { ...(config.agent && typeof config.agent === 'object' ? config.agent : {}) };
     config.agent.build = {
       ...(config.agent.build && typeof config.agent.build === 'object' ? config.agent.build : {}),
-      temperature,
-      ...(thinking === undefined ? {} : { think: thinking }),
-      ...(effort === undefined ? {} : { reasoningEffort: effort }),
+      ...build,
     };
   }
   return config;

@@ -673,6 +673,79 @@ describe('provider reasoning defaults', () => {
       expect.objectContaining({ effort: 'high', thinking: false }),
     ));
   });
+
+  // The OpenCode llama TUI is the headline case: `llamaBacked` is a record
+  // marker, not a form field, and the block used to be gated on the Ollama
+  // check alone — so the provider that most needs a temperature had none.
+  it('offers effort, temperature, top-p and thinking on a llama.cpp-backed OpenCode TUI', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'opencode-llama-tui',
+        name: 'OpenCode llama TUI',
+        type: 'tui',
+        command: 'opencode',
+        args: [],
+        enabled: true,
+        llamaBacked: true,
+        models: ['qwen3.8-27b'],
+        defaultModel: 'qwen3.8-27b',
+        effort: '',
+        thinking: true,
+        envVars: {},
+      }],
+      activeProvider: 'opencode-llama-tui',
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await openEditorTab('Generation');
+
+    fireEvent.change(await screen.findByLabelText('Default Effort'), { target: { value: 'high' } });
+    fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '0.2' } });
+    fireEvent.change(screen.getByLabelText('Top-P'), { target: { value: '0.9' } });
+    expect(screen.getByLabelText('Enable model reasoning')).toBeChecked();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.updateProvider).toHaveBeenCalledWith(
+      'opencode-llama-tui',
+      expect.objectContaining({ effort: 'high', temperature: 0.2, topP: 0.9, thinking: true }),
+    ));
+  });
+
+  // A stored default PortOS never forwards is a control that lies. The editor
+  // hides the block for cloud providers, and the payload must not carry the
+  // form's seeded values either (`topP: ''` isn't even a valid number).
+  it('sends no generation defaults for a cloud API provider', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'anthropic',
+        name: 'Anthropic',
+        type: 'api',
+        endpoint: 'https://api.anthropic.com/v1',
+        enabled: true,
+        models: ['claude-opus-5'],
+        defaultModel: 'claude-opus-5',
+        envVars: {},
+      }],
+      activeProvider: 'anthropic',
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await openEditorTab('Generation');
+
+    expect(screen.queryByLabelText('Temperature')).toBeNull();
+    expect(screen.queryByLabelText('Enable model reasoning')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.updateProvider).toHaveBeenCalled());
+    const payload = api.updateProvider.mock.calls[0][1];
+    expect(payload).not.toHaveProperty('temperature');
+    expect(payload).not.toHaveProperty('topP');
+    expect(payload).not.toHaveProperty('thinking');
+  });
 });
 
 describe('provider editor deep links', () => {
