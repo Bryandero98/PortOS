@@ -66,7 +66,7 @@ import { agentGuardEnv } from '../lib/agentGuard/index.js';
 import { composeProviderEnv } from '../lib/cliChildEnv.js';
 import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
 import { isOllamaBackedProvider } from './providers.js';
-import { execFile } from '../lib/childProcess.js';
+import { shellHasLiveChild } from '../lib/shellLivenessProbe.js';
 import { appendRunEvent } from './agentRunEventLog.js';
 
 // Agent-specific timing/lifecycle constants (not shared with the one-shot
@@ -182,25 +182,6 @@ export async function createAgentTuiSession({
 
   const ptyProcess = shellService.getSessionProcess(sessionId);
   return { sessionId, ptyProcess, pid: ptyProcess?.pid || null };
-}
-
-// Best-effort liveness probe for the launched TUI command. The TUI runs e.g.
-// `claude` as a CHILD of a persistent PTY shell (see createShellSession writing
-// initialCommand), so when that command exits at startup the PTY itself stays
-// open — the shell just returns to its prompt — and the spawner's onExit never
-// fires. "The shell PID has no live child process" therefore means the launched
-// command has already exited. Resolves true (assume alive) when the probe can't
-// run, so a flaky/absent `ps` never blocks an otherwise-healthy paste.
-function shellHasLiveChild(shellPid) {
-  if (!shellPid) return Promise.resolve(true);
-  return new Promise((resolve) => {
-    // `-Ao ppid=` is POSIX (all processes, ppid column only, no header) and
-    // works on both macOS (BSD ps) and Linux (procps).
-    execFile('ps', ['-Ao', 'ppid='], { timeout: 2000 }, (err, stdout) => {
-      if (err) { resolve(true); return; }
-      resolve(stdout.split('\n').some((line) => parseInt(line, 10) === shellPid));
-    });
-  });
 }
 
 export function buildTuiSpawnConfig(provider, model, {
