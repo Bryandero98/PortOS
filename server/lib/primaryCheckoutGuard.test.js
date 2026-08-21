@@ -48,6 +48,21 @@ async function addOrigin() {
   await attachBareOrigin(scratch, repo);
 }
 
+/**
+ * Assert `branch` really has no upstream. The #4717 cases only exercise the
+ * default-branch frontier when there is nothing to fall back FROM, and a stray
+ * `branch.autoSetupMerge` would silently route them down the ordinary path and
+ * keep passing for the wrong reason.
+ */
+async function expectNoUpstream(branch) {
+  const result = await execGit(
+    ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`],
+    repo,
+    { ignoreExitCode: true },
+  );
+  expect(result.exitCode).not.toBe(0);
+}
+
 /** Land a commit on the remote and fast-forward `repo` onto it, as a pull would. */
 async function pullFromOrigin(subject) {
   const clone = join(scratch, `contributor-${subject.replace(/\W+/g, '-')}`);
@@ -615,6 +630,69 @@ describe.skipIf(SKIP_HEAVY_INTEGRATION)('detectPrimaryCheckoutDrift', () => {
     expect(verdict.drifted).toBe(true);
     expect(verdict.unpushedCount).toBeNull();
     expect(verdict.commitCount).toBe(1);
+  });
+
+  it('does not blame a MERGED agent for main\'s history when the baseline sits behind main (#4717)', async () => {
+    // The production shape, exactly: the primary was parked on `release` (behind
+    // `main`) at spawn, the agent branched from `main` and its PR MERGED during the
+    // run, and the human then cut an UNPUSHED feature branch off `main` in the
+    // shared primary. With no upstream on that branch the guard used to have no
+    // pushed frontier, so every commit since the `release` baseline read as
+    // stranded — and all of `main` is on a merged agent's branch, so attribution
+    // matched and the run was failed for the contents of `main`.
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    // `release` lags `main` by a commit that IS pushed and reviewed.
+    await execGit(['branch', 'release', 'origin/main'], repo);
+    await pullFromOrigin('shipped on main after release was cut');
+    await execGit(['checkout', 'release'], repo);
+    const baseline = await capturePrimaryCheckoutState(repo);
+    expect(baseline.branch).toBe('release');
+
+    // The agent's branch carries `main` (its PR merged), so it is an ANCESTOR of
+    // the primary's head — the shape that reads as maximal proof of authorship.
+    await execGit(['branch', agentBranch, 'origin/main'], repo);
+    // The human's mid-run feature branch: cut from the LOCAL `main` and never
+    // pushed, so it has no upstream. `--no-track` pins that regardless of the
+    // running machine's `branch.autoSetupMerge`; production got there by cutting
+    // from a local branch, which does not auto-track under the default config.
+    await execGit(['checkout', 'main'], repo);
+    await execGit(['checkout', '--no-track', '-b', 'my-feature'], repo);
+    await commit('the human\'s own work');
+    await expectNoUpstream('my-feature');
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.drifted).toBe(false);
+    expect(verdict.unattributed).toBe(true);
+    expect(verdict.message).toContain('release → my-feature');
+  });
+
+  it('still catches a real jack onto a no-upstream branch cut from main (#4717 must not over-clear)', async () => {
+    // Same no-upstream branch and the same lagging baseline, but this time the
+    // stranded commit is the AGENT'S. The default-branch frontier only clears
+    // content the remote already has, so it must not clear this one.
+    await addOrigin();
+    const agentBranch = 'cos/task-x/agent-y';
+    await execGit(['branch', 'release', 'origin/main'], repo);
+    await pullFromOrigin('shipped on main after release was cut');
+    await execGit(['checkout', 'release'], repo);
+    const baseline = await capturePrimaryCheckoutState(repo);
+
+    await execGit(['checkout', '--no-track', '-b', agentBranch, 'main'], repo);
+    await commit('the agent\'s real work');
+    const agentTip = (await capturePrimaryCheckoutState(repo)).head;
+    await execGit(['checkout', 'main'], repo);
+    await execGit(['checkout', '--no-track', '-b', 'my-feature'], repo);
+    await execGit(['cherry-pick', agentTip], repo);
+    await expectNoUpstream('my-feature');
+
+    const verdict = await detectPrimaryCheckoutDrift(baseline, { agentBranch });
+    expect(verdict.drifted).toBe(true);
+    // The frontier cleared `main`'s own commit, so only the jacked one is stranded.
+    expect(verdict.suggestedFix).toContain('1 commit ');
+    // And the reset target is a ref that EXISTS, not `origin/my-feature` (#4098).
+    expect(verdict.suggestedFix).toContain(`git -C ${repo} reset --hard origin/main`);
+    expect(verdict.suggestedFix).toContain('has no upstream of its own');
   });
 
   it('reports no drift when there is nothing to check', async () => {
