@@ -57,7 +57,26 @@ import {
   saveAssessment,
   withStaleness,
 } from './localModelAssessmentStore.js';
-import { runLocalLlmTest } from './localLlmPlayground.js';
+import {
+  ASSESSABLE_RUNTIMES,
+  LOCAL_RUNTIMES,
+  MANAGED_ASSESSMENT_BACKENDS,
+  isEndpointRuntime,
+  localRuntimeKind,
+} from '../lib/localProviderRuntime.js';
+import {
+  compareTunings,
+  describeTuning,
+  launchTuning,
+  normalizeTuning,
+  requestBody,
+  tuningSignature,
+  tuningSpecsFor,
+} from '../lib/localModelTuning.js';
+import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
+import { getAllProviders } from './providers.js';
+import { runEndpointLlmTest, runLocalLlmTest } from './localLlmPlayground.js';
+import { getLlamaServerEndpoint, relaunchLlamaServerWithTuning } from './llamaServerManager.js';
 import { listModels } from './localLlm.js';
 import {
   getLoadedModels as getLoadedOllamaModels,
@@ -116,6 +135,83 @@ function buildFillerPrompt(contextTokens) {
 export function buildSamplePrompt(contextTokens) {
   const filler = buildFillerPrompt(contextTokens);
   return `${filler}\nIgnoring every reference item above, what is 2 + 2? Answer with the number only.`;
+}
+
+// ---- runtimes ---------------------------------------------------------------
+
+/**
+ * Where this runtime's OpenAI-compatible API actually is right now.
+ *
+ * llama.cpp is the one that moves: PortOS starts it, and a user who picked a
+ * different port under Advanced options is serving somewhere the default no
+ * longer names. Ask the manager rather than re-deriving the port here — probing
+ * the stale default would report a working server as unreachable.
+ */
+export async function runtimeEndpoint(runtime) {
+  if (runtime === 'llama') {
+    // The endpoint-only accessor, NOT `getLlamaServerStatus` — that one pays for
+    // a network probe and an `execPm2 logs` subprocess, and this path runs on
+    // every Performance page load only to learn a port number.
+    const endpoint = await getLlamaServerEndpoint().catch(() => null);
+    if (endpoint) return endpoint;
+  }
+  return LOCAL_RUNTIMES[runtime]?.defaultBaseUrl || null;
+}
+
+/**
+ * The API key a bare endpoint runtime is served behind, or `''` for the usual
+ * unauthenticated loopback daemon.
+ *
+ * A vLLM container started from the shipped compose stack sets `VLLM_API_KEY`
+ * and answers 401 to an unauthenticated request — which `probeOpenAiModels`
+ * correctly reports as "reachable, listing unreadable" and a measurement would
+ * hit on every sample. `providerReadiness.js` already solves this by reading the
+ * key off the matching provider record; this resolves it the same way, keyed on
+ * the same `localRuntimeKind` classifier so the two can't disagree about which
+ * provider backs which runtime.
+ */
+export async function runtimeApiKey(runtime) {
+  const providers = await getAllProviders().catch(() => []);
+  const match = (Array.isArray(providers) ? providers : [])
+    .find((p) => localRuntimeKind(p) === runtime && typeof p?.apiKey === 'string' && p.apiKey !== '');
+  return match?.apiKey || '';
+}
+
+/**
+ * Models this runtime can be measured against, plus why the list failed when it
+ * did.
+ *
+ * The two paths differ in what "installed" even means. A managed backend has a
+ * durable catalog on disk (`listModels`), so its list survives the daemon being
+ * down. An endpoint runtime has no catalog at all — its models are whatever the
+ * running process reports from `GET /v1/models`, so a stopped daemon means "no
+ * models listable", which is an ERROR, never an empty catalog. Collapsing those
+ * would silently hide every model behind a daemon the user just needs to start.
+ *
+ * @returns {Promise<{models: Array<object>|null, error: string|null}>}
+ *   `models: null` means the list could not be read; `[]` means it was read and
+ *   is genuinely empty.
+ */
+export async function listRuntimeModels(runtime) {
+  if (MANAGED_ASSESSMENT_BACKENDS.includes(runtime)) {
+    const models = await listModels(runtime).catch((err) => ({ error: err?.message || 'model list failed' }));
+    if (!Array.isArray(models)) return { models: null, error: models.error };
+    // Both managers cache an EMPTY list on a failed read rather than throwing,
+    // so `[]` alone cannot distinguish "no models" from "the list could not be
+    // read". Each manager's own error getter is the authoritative signal.
+    const error = runtime === 'ollama' ? getOllamaListError() : getLmStudioListError();
+    return { models, error: error || null };
+  }
+
+  const endpoint = await runtimeEndpoint(runtime);
+  if (!endpoint) return { models: null, error: 'no endpoint is configured for this runtime' };
+  const probe = await probeOpenAiModels(endpoint, { timeoutMs: 2500, apiKey: await runtimeApiKey(runtime) });
+  if (!probe.reachable) return { models: null, error: `not reachable at ${endpoint} (${probe.error})` };
+  if (!probe.models) return { models: null, error: probe.error || 'model listing was not readable' };
+  // An endpoint runtime reports ids only — no params, no quantization. `null`
+  // there is honest: the capability axis simply goes unscored rather than being
+  // guessed from the id.
+  return { models: probe.models.map((id) => ({ id, params: null, quantization: null })), error: null };
 }
 
 // ---- measurement ------------------------------------------------------------
@@ -178,9 +274,14 @@ function describeVerdict(verdict, samples) {
  * failure stops immediately for the same reason.
  *
  * @param {object} options
- * @param {'ollama'|'lmstudio'} options.backend
+ * @param {'ollama'|'lmstudio'|'llama'|'mtplx'|'vllm'} options.backend
  * @param {string} options.modelId
  * @param {number[]} [options.contextTokens] nominal context sizes to sample
+ * @param {object} [options.tuning] launch/runtime knobs (`lib/localModelTuning.js`).
+ *   Launch knobs are applied where PortOS starts the daemon (llama.cpp); the
+ *   rest are recorded so two readings of one model stay comparable. The tuning
+ *   is part of the record's identity, so a second tuning of the same model is a
+ *   NEW record rather than an overwrite.
  * @param {AbortSignal} [options.signal] client disconnect
  * @param {(frame: object) => void} [options.onProgress] per-sample progress.
  *   A run is minutes long on a large model, so the caller (the route) forwards
@@ -189,7 +290,7 @@ function describeVerdict(verdict, samples) {
  *   THIS run apart from an unrelated model install streaming on the same event.
  * @returns {Promise<object>} the persisted assessment record
  */
-export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_CONTEXT_TOKENS, signal, onProgress } = {}) {
+export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_CONTEXT_TOKENS, tuning, signal, onProgress } = {}) {
   const contexts = [...new Set(contextTokens)].filter((n) => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
   // The listener runs outside the request lifecycle's error path in some callers
   // (a socket emit can throw on a closed io), and a broken progress consumer must
@@ -199,11 +300,38 @@ export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_
     try { onProgress({ scope: 'assessment', backend, modelId, ...frame }); }
     catch (err) { console.error(`❌ Local LLM: assessment progress listener failed: ${err.message}`); }
   };
-  const environment = await captureEnvironment({ backend });
-  const installed = await listModels(backend).catch(() => []);
-  const card = installed.find((m) => m?.id === modelId) || null;
+  const normalizedTuning = normalizeTuning(backend, tuning);
+  const tuningKey = tuningSignature(normalizedTuning);
+  const tuningLabel = describeTuning(backend, normalizedTuning);
 
-  console.log(`📏 Local LLM: assessing ${backend}/${modelId} across ${contexts.length} context sizes`);
+  // Launch knobs go on the daemon's command line BEFORE the first sample, or
+  // the measurement would describe the previous configuration while claiming
+  // the new one. `applied: false` is recorded rather than swallowed — a reading
+  // taken under a tuning PortOS could not apply must not be filed as evidence
+  // for that tuning.
+  const launch = launchTuning(backend, normalizedTuning);
+  const applicable = { ...launch, ...requestBody(backend, normalizedTuning) };
+  const tuningApplication = Object.keys(launch).length > 0
+    ? await relaunchLlamaServerWithTuning(launch).catch((err) => ({ applied: false, reason: err?.message || 'relaunch failed', config: null }))
+    // `null`, NOT `true`, when nothing here is settable: an all-`record` tuning
+    // (LM Studio, MTPLX, vLLM) was never applied by PortOS in any sense, and
+    // reporting it as applied is the exact claim `lib/localModelTuning.js`
+    // forbids. `true` is reserved for knobs that actually reached the daemon.
+    : { applied: Object.keys(applicable).length > 0 ? true : null, reason: null, config: null };
+
+  const endpoint = isEndpointRuntime(backend) ? await runtimeEndpoint(backend) : null;
+  if (isEndpointRuntime(backend) && !endpoint) {
+    throw new Error(`No endpoint is configured for the ${backend} runtime`);
+  }
+  // Same key the listing probe used — a key-gated vLLM 401s every sample
+  // otherwise, and the run would record "does-not-fit" for an auth failure.
+  const apiKey = endpoint ? await runtimeApiKey(backend) : '';
+
+  const environment = await captureEnvironment({ backend });
+  const { models: installed } = await listRuntimeModels(backend);
+  const card = (installed || []).find((m) => m?.id === modelId) || null;
+
+  console.log(`📏 Local LLM: assessing ${backend}/${modelId}${tuningKey ? ` [${tuningKey}]` : ''} across ${contexts.length} context sizes`);
   emit({
     event: 'start',
     sampleIndex: 0,
@@ -225,16 +353,23 @@ export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_
     // still throw before the stream opens — an unconfigured provider. Catch that
     // into the same result shape so one bad backend records a failed sample
     // instead of aborting the whole assessment with no evidence at all.
-    const result = await runLocalLlmTest({
-      backend,
+    // Both runners take the same shape, including the request-applied knobs —
+    // the ONLY difference is whether the model is reached through a configured
+    // provider or straight at a loopback endpoint.
+    const shared = {
       modelId,
       prompt: buildSamplePrompt(context),
       systemPrompt: SAMPLE_SYSTEM_PROMPT,
       temperature: 0,
       maxTokens: SAMPLE_MAX_TOKENS,
       timeoutMs: SAMPLE_TIMEOUT_MS,
+      extraBody: requestBody(backend, normalizedTuning),
       signal,
-    }).catch((err) => ({ backend, modelId, text: '', error: err?.message || 'assessment run failed' }));
+    };
+    const result = await (endpoint
+      ? runEndpointLlmTest({ ...shared, runtime: backend, endpoint, apiKey })
+      : runLocalLlmTest({ ...shared, backend })
+    ).catch((err) => ({ backend, modelId, text: '', error: err?.message || 'assessment run failed' }));
 
     const sample = toSample(context, result);
     samples.push(sample);
@@ -258,6 +393,20 @@ export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_
   const assessment = {
     backend,
     modelId,
+    // The configuration this reading describes. `{}` / `''` / `null` mean
+    // "backend defaults", which is a real answer — the daemon ran with whatever
+    // it ships with, and a later default-run compares against it directly.
+    tuning: normalizedTuning,
+    tuningKey,
+    tuningLabel,
+    // Whether the tuning actually reached the daemon. `false` with a reason
+    // means the numbers below describe SOME OTHER configuration, and the UI has
+    // to say so rather than filing them under the requested tuning. `null` means
+    // there was nothing for PortOS to apply — backend defaults, or a tuning made
+    // entirely of knobs the user set outside PortOS.
+    tuningApplied: tuningApplication.applied,
+    tuningNotApplied: tuningApplication.applied === false ? tuningApplication.reason : null,
+    endpoint,
     params: card?.params ?? null,
     // LM Studio serves one quant per install but reports a repo-level id, so the
     // quant has to be recorded separately for a catalog badge to know WHICH
@@ -315,51 +464,75 @@ export async function getAssessmentReport({ intent = 'balanced' } = {}) {
   // taken before a RAM upgrade or a backend update describes hardware that no
   // longer exists, and nothing else on this page would ever say so — the user
   // would have to remember. This path can afford the backend-version probe (it
-  // already lists models from both backends); the catalog badge path cannot, and
+  // already lists models from every runtime); the catalog badge path cannot, and
   // uses the free durable-fields comparison instead.
   const liveEnvironments = await captureLiveEnvironments();
   const assessments = stored.map((a) => withStaleness(a, liveEnvironments[a?.backend] || null));
 
-  // Both managers cache an EMPTY list on a failed read rather than throwing, so
-  // `[]` alone cannot distinguish "this backend has no models" from "the list
-  // could not be read" — and presenting the second as the first would silently
-  // hide every assessable model plus the reason. Each manager's own list-error
-  // getter is the authoritative signal; a `.catch` here is only the backstop.
+  // One listing per assessable runtime. `models: null` is a FAILED read, never
+  // an empty catalog — see `listRuntimeModels`.
   const listed = Object.fromEntries(await Promise.all(
-    ['ollama', 'lmstudio'].map(async (backend) => {
-      const models = await listModels(backend).catch((err) => ({ error: err?.message || 'model list failed' }));
-      if (!Array.isArray(models)) return [backend, { models: null, error: models.error }];
-      const error = backend === 'ollama' ? getOllamaListError() : getLmStudioListError();
-      return [backend, { models, error: error || null }];
-    })
+    ASSESSABLE_RUNTIMES.map(async (runtime) => [runtime, await listRuntimeModels(runtime)])
   ));
 
-  const listErrors = Object.entries(listed).filter(([, r]) => r.error).map(([backend]) => backend);
+  const runtimes = ASSESSABLE_RUNTIMES.map((id) => ({
+    id,
+    label: LOCAL_RUNTIMES[id]?.label || id,
+    managed: MANAGED_ASSESSMENT_BACKENDS.includes(id),
+    // `null` = the listing failed, so the count is unknown. `0` = it was read
+    // and this runtime genuinely serves nothing.
+    modelCount: Array.isArray(listed[id].models) ? listed[id].models.length : null,
+    error: listed[id].error,
+    tuningSpecs: tuningSpecsFor(id),
+  }));
+
+  const listErrors = ASSESSABLE_RUNTIMES.filter((id) => listed[id].error);
   const installedKeys = new Set(
-    Object.entries(listed).flatMap(([backend, r]) => (r.models || []).map((m) => assessmentKey(backend, m?.id)))
+    ASSESSABLE_RUNTIMES.flatMap((runtime) => (listed[runtime].models || []).map((m) => assessmentKey(runtime, m?.id)))
   );
 
   // A model the user has since deleted must not keep showing up as a
-  // recommendation — it cannot run. But only drop it when the backend's list is
+  // recommendation — it cannot run. But only drop it when the runtime's list is
   // TRUSTWORTHY: an unreadable list would otherwise wipe every recommendation
-  // for that backend, which is the same "failed read read as empty" mistake.
-  const trusted = new Set(Object.entries(listed).filter(([, r]) => Array.isArray(r.models) && !r.error).map(([backend]) => backend));
+  // for that runtime, which is the same "failed read read as empty" mistake.
+  const trusted = new Set(ASSESSABLE_RUNTIMES.filter((id) => Array.isArray(listed[id].models) && !listed[id].error));
   const isStillInstalled = (a) =>
     !trusted.has(a?.backend) || installedKeys.has(assessmentKey(a?.backend, a?.modelId));
   const stillInstalled = assessments.filter(isStillInstalled);
   const uninstalled = assessments
     .filter((a) => !isStillInstalled(a))
-    .map((a) => ({ backend: a?.backend || null, modelId: a?.modelId || null }));
+    .map((a) => ({ backend: a?.backend || null, modelId: a?.modelId || null, tuningLabel: a?.tuningLabel || null }));
 
-  const { ranked, excluded } = rankByIntent(stillInstalled, resolvedIntent);
+  // A reading taken under a tuning PortOS could NOT apply describes some other
+  // configuration entirely. It is kept on disk (the run cost real minutes, and
+  // the failed attempt plus its reason is what tells the user why) but it must
+  // never be scored AS that tuning: ranking it would recommend a configuration
+  // nobody measured, and comparing it would credit the previous config's
+  // throughput to the knobs that never reached the daemon.
+  const unappliedTuning = stillInstalled.filter((a) => a?.tuningApplied === false);
+  const scorable = stillInstalled.filter((a) => a?.tuningApplied !== false);
 
-  const assessedKeys = new Set(assessments.map((a) => assessmentKey(a?.backend, a?.modelId)));
+  const { ranked, excluded } = rankByIntent(scorable, resolvedIntent);
+  for (const a of unappliedTuning) {
+    excluded.push({
+      backend: a?.backend || null,
+      modelId: a?.modelId || null,
+      tuningKey: a?.tuningKey || '',
+      tuningLabel: a?.tuningLabel || null,
+      verdict: a?.verdict || 'unknown',
+      reason: `measured, but the requested tuning was not applied — ${a?.tuningNotApplied || 'reason not recorded'}`,
+    });
+  }
+
+  // "Not yet measured" is keyed on the model, NOT on the model+tuning: once one
+  // tuning has been measured the model is no longer an unanswered question, and
+  // listing it again under every un-run tuning would make the section unbounded.
+  const assessedModels = new Set(assessments.map((a) => assessmentKey(a?.backend, a?.modelId)));
   const unassessed = [];
-  for (const [backend, { models }] of Object.entries(listed)) {
-    if (!Array.isArray(models)) continue;
-    for (const model of models) {
-      if (model?.id && !assessedKeys.has(assessmentKey(backend, model.id))) {
-        unassessed.push({ backend, modelId: model.id, params: model.params ?? null });
+  for (const runtime of ASSESSABLE_RUNTIMES) {
+    for (const model of listed[runtime].models || []) {
+      if (model?.id && !assessedModels.has(assessmentKey(runtime, model.id))) {
+        unassessed.push({ backend: runtime, modelId: model.id, params: model.params ?? null });
       }
     }
   }
@@ -370,7 +543,12 @@ export async function getAssessmentReport({ intent = 'balanced' } = {}) {
     defaultContextTokens: DEFAULT_CONTEXT_TOKENS,
     assessments,
     unassessed,
-    // Backends whose model list could not be trusted — distinct from "listed,
+    // Every assessable runtime with its label, reachability, and knob catalog —
+    // so the UI renders one source of truth instead of a hardcoded backend list.
+    runtimes,
+    // Which tuning won, per model, for models measured under two or more.
+    tuningComparison: compareTunings(scorable),
+    // Runtimes whose model list could not be trusted — distinct from "listed,
     // and legitimately empty".
     listErrors,
     // Measurements for models that are no longer installed. Kept on disk (a
@@ -380,7 +558,7 @@ export async function getAssessmentReport({ intent = 'balanced' } = {}) {
     ranked,
     excluded,
     // The machine as it is now, so the panel can name the difference rather than
-    // just flagging "stale". Keyed by backend because the backend version is
+    // just flagging "stale". Keyed by runtime because the backend version is
     // part of what makes a reading stale.
     liveEnvironments,
   };

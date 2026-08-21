@@ -446,24 +446,24 @@ router.get('/assessments', asyncHandler(async (req, res) => {
 // Long-running by nature (one bounded generation per context size), so the
 // client's abort signal is threaded through to stop mid-run on disconnect.
 router.post('/assessments/run', asyncHandler(async (req, res) => {
-  const { backend, modelId, contextTokens } = validateRequest(localLlmAssessmentRunSchema, req.body)
+  const { backend, modelId, contextTokens, tuning } = validateRequest(localLlmAssessmentRunSchema, req.body)
   const io = req.app.get('io')
   // Same `localLlm:progress` channel the pull/migrate paths use, so one banner
   // renders every long local-LLM operation. The extra fields (`scope`, `backend`,
   // `modelId`, `sampleIndex`/`sampleCount`) let a listener tell an assessment
   // frame from a model pull streaming on the same event.
   const onProgress = (frame) => io?.emit('localLlm:progress', frame)
-  res.json(await runAssessment({ backend, modelId, contextTokens, signal: abortSignalFromResponse(res), onProgress }))
+  res.json(await runAssessment({ backend, modelId, contextTokens, tuning, signal: abortSignalFromResponse(res), onProgress }))
 }))
 
 // POST /api/local-llm/assessments/delete — drop one stale measurement (e.g. after
 // a RAM upgrade or a backend update makes the recorded evidence misleading).
 // 404s when nothing was removed rather than reporting a phantom success.
 router.post('/assessments/delete', asyncHandler(async (req, res) => {
-  const { backend, modelId } = validateRequest(localLlmAssessmentDeleteSchema, req.body)
-  const result = await deleteAssessment(backend, modelId)
-  if (!result.deleted) throw new ServerError('No assessment recorded for that model', { status: 404, context: { backend, modelId } })
-  res.json({ success: true, backend, modelId })
+  const { backend, modelId, tuningKey } = validateRequest(localLlmAssessmentDeleteSchema, req.body)
+  const result = await deleteAssessment(backend, modelId, tuningKey)
+  if (!result.deleted) throw new ServerError('No assessment recorded for that model', { status: 404, context: { backend, modelId, tuningKey } })
+  res.json({ success: true, backend, modelId, tuningKey })
 }))
 
 // === llama-server (DFlash 2 / Speculative Decoding) ==========================

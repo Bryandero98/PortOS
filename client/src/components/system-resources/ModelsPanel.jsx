@@ -74,7 +74,7 @@ export default function ModelsPanel({ report, loading, onRunReport, cleanup }) {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Link to="/media/models" className="min-h-[36px] rounded-lg border border-port-border px-3 py-2 text-xs text-gray-300 hover:bg-port-border/40">Media models</Link>
-              <Link to="/settings/local-llm" className="min-h-[36px] rounded-lg border border-port-border px-3 py-2 text-xs text-gray-300 hover:bg-port-border/40">Local LLM settings</Link>
+              <Link to="/models/llms" className="min-h-[36px] rounded-lg border border-port-border px-3 py-2 text-xs text-gray-300 hover:bg-port-border/40">Manage LLMs</Link>
               <button
                 type="button"
                 onClick={onRunReport}

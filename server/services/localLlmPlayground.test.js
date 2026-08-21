@@ -6,7 +6,7 @@ vi.mock('./providers.js', () => ({ getProviderById: vi.fn() }));
 vi.mock('./providerStatus.js', () => ({ markProviderAvailable: vi.fn(() => Promise.resolve()) }));
 vi.mock('./ollamaManager.js', () => ({ ensureProviderReady: vi.fn(() => Promise.resolve({ success: true })) }));
 
-import { buildPrompt, buildMessages, summarizeTimings, extractStreamDelta, resolvePartialOutput, runLocalLlmTest } from './localLlmPlayground.js';
+import { buildPrompt, summarizeTimings, runLocalLlmTest } from './localLlmPlayground.js';
 import { createRun, finalizeRunRecord } from './runner.js';
 import { getProviderById } from './providers.js';
 
@@ -19,21 +19,6 @@ describe('buildPrompt', () => {
   it('prefixes a labeled system block when present (display format, not wire)', () => {
     expect(buildPrompt({ systemPrompt: 'Be terse', prompt: 'hi' }))
       .toBe('System instructions:\nBe terse\n\nUser prompt:\nhi');
-  });
-});
-
-describe('buildMessages', () => {
-  it('omits the system message when blank', () => {
-    expect(buildMessages({ systemPrompt: '  ', prompt: 'hi' })).toEqual([
-      { role: 'user', content: 'hi' },
-    ]);
-  });
-
-  it('includes a system message when present', () => {
-    expect(buildMessages({ systemPrompt: 'Be terse', prompt: 'hi' })).toEqual([
-      { role: 'system', content: 'Be terse' },
-      { role: 'user', content: 'hi' },
-    ]);
   });
 });
 
@@ -55,48 +40,6 @@ describe('summarizeTimings', () => {
     const t = summarizeTimings({ startedAt: 1000, firstChunkAt: 1000, endedAt: 1000, text: 'hello' });
     expect(t.totalMs).toBe(0);
     expect(t.charsPerSecond).toBeNull();
-  });
-});
-
-describe('extractStreamDelta', () => {
-  it('parses an OpenAI-style content delta', () => {
-    const line = 'data: {"choices":[{"delta":{"content":"Hi"}}]}';
-    expect(extractStreamDelta(line)).toEqual({ content: 'Hi', reasoning: '' });
-  });
-
-  it('parses a reasoning delta', () => {
-    const line = 'data: {"choices":[{"delta":{"reasoning":"thinking"}}]}';
-    expect(extractStreamDelta(line)).toEqual({ content: '', reasoning: 'thinking' });
-  });
-
-  it('skips non-data lines and the [DONE]/✅ sentinels', () => {
-    expect(extractStreamDelta(': keep-alive')).toBeNull();
-    expect(extractStreamDelta('data: [DONE]')).toBeNull();
-    expect(extractStreamDelta('data: ✅')).toBeNull();
-    expect(extractStreamDelta('')).toBeNull();
-  });
-
-  it('skips a malformed frame instead of throwing (one bad frame must not abort the stream)', () => {
-    expect(extractStreamDelta('data: {not json')).toBeNull();
-  });
-
-  it('tolerates a frame with no delta', () => {
-    expect(extractStreamDelta('data: {"choices":[{}]}')).toEqual({ content: '', reasoning: '' });
-  });
-});
-
-describe('resolvePartialOutput', () => {
-  it('prefers visible content over reasoning', () => {
-    expect(resolvePartialOutput({ output: 'hello', reasoning: 'thinking' })).toBe('hello');
-  });
-
-  it('falls back to reasoning when no content streamed', () => {
-    expect(resolvePartialOutput({ output: '   ', reasoning: 'partial thought' })).toBe('partial thought');
-  });
-
-  it('returns empty string when neither content nor reasoning streamed', () => {
-    expect(resolvePartialOutput({ output: '', reasoning: '' })).toBe('');
-    expect(resolvePartialOutput({})).toBe('');
   });
 });
 

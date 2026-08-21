@@ -29,7 +29,7 @@
  *                offered on Windows, where they ship a separate PowerShell
  *                script PortOS deliberately does not run for the user.
  *
- * Ollama and LM Studio are deliberately absent: the Local LLM settings tab owns
+ * Ollama and LM Studio are deliberately absent: the Models → LLMs page owns
  * their install (it also starts the service afterwards, and knows that a macOS
  * app bundle with no `lms` shim still counts as installed). The Providers page
  * links there for those two instead of re-probing them here.

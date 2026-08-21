@@ -196,5 +196,8 @@ export const runLocalLlmAssessment = (payload, options) =>
 
 // Drop a stale measurement — after a RAM upgrade or a backend update the
 // recorded evidence describes a machine that no longer exists.
-export const deleteLocalLlmAssessment = (backend, modelId, options) =>
-  request('/local-llm/assessments/delete', { method: 'POST', body: JSON.stringify({ backend, modelId }), ...options });
+//
+// `tuningKey` picks WHICH measurement of the model to drop: a model can hold
+// several, one per launch tuning. `''` is the backend-defaults record.
+export const deleteLocalLlmAssessment = (backend, modelId, tuningKey = '', options) =>
+  request('/local-llm/assessments/delete', { method: 'POST', body: JSON.stringify({ backend, modelId, tuningKey }), ...options });

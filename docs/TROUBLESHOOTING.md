@@ -139,7 +139,7 @@ Two caveats:
   `ollama serve` runs from its own unit file, so when a window is configured
   PortOS starts (or restarts) Ollama itself.
 
-The Local LLM settings card shows the window loaded models are actually running
+The Models → LLMs page shows the window loaded models are actually running
 at, and flags it when it's below what an agent harness needs.
 
 ## Chief of Staff Issues

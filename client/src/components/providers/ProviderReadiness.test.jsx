@@ -9,7 +9,7 @@ const readiness = (overrides = {}) => ({
   kind: 'llama',
   label: 'llama.cpp',
   endpoint: 'http://127.0.0.1:5568/v1',
-  manageUrl: '/settings/local-llm',
+  manageUrl: '/models/llms',
   docsUrl: 'https://example.com/llama-docs',
   ready: false,
   setup: null,
@@ -52,16 +52,16 @@ describe('ProviderReadiness', () => {
     expect(screen.getByText(/1 requirement unmet/)).toBeTruthy();
   });
 
-  it('links to the Local LLM tab as an in-app action — never to vendor setup docs', () => {
+  it('links to the Models → LLMs page as an in-app action — never to vendor setup docs', () => {
     renderWithRouter(<ProviderReadiness readiness={readiness()} />);
-    expect(screen.getByText('Open Local LLM settings').closest('a').getAttribute('href')).toBe('/settings/local-llm');
+    expect(screen.getByText('Open the LLMs page').closest('a').getAttribute('href')).toBe('/models/llms');
     expect(screen.queryByText(/setup docs/i)).toBeNull();
     expect(screen.queryByRole('link', { name: /llama\.cpp setup docs/i })).toBeNull();
   });
 
   it('omits the manage link for a runtime PortOS does not install, and still never points at docs', () => {
     renderWithRouter(<ProviderReadiness readiness={readiness({ label: 'MTPLX', manageUrl: null })} />);
-    expect(screen.queryByText('Open Local LLM settings')).toBeNull();
+    expect(screen.queryByText('Open the LLMs page')).toBeNull();
     expect(screen.queryByText(/setup docs/i)).toBeNull();
   });
 
@@ -105,7 +105,7 @@ describe('ProviderReadiness', () => {
       <ProviderReadiness
         readiness={readiness({
           checks: [
-            { id: 'model', label: 'Model `dflash` available', ok: false, detail: 'no model loaded', fixHint: 'Start a preset from Settings → Local LLM.', servedModels: [] },
+            { id: 'model', label: 'Model `dflash` available', ok: false, detail: 'no model loaded', fixHint: 'Start a preset from Models → LLMs.', servedModels: [] },
           ],
         })}
         onUseServedModel={vi.fn()}

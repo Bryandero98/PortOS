@@ -122,7 +122,7 @@ export default function ProviderReadiness({ readiness, onAutoSetup, onUseServedM
           </button>
         )}
         {manageUrl && (
-          <Link to={manageUrl} className={ACTION_CLASS}>Open Local LLM settings</Link>
+          <Link to={manageUrl} className={ACTION_CLASS}>Open the LLMs page</Link>
         )}
       </div>
     </Banner>

@@ -29,7 +29,7 @@ import { GrokUploadWarning, OrcaRouterKeyHint } from '../components/providers/Pr
 import CollapsibleSection from '../components/ui/CollapsibleSection';
 
 // The two local apps an API provider can front. Their installer lives on the
-// Local LLM settings tab (it starts the service too), so the provider card
+// Models → LLMs page (it starts the service too), so the provider card
 // links there instead of offering an install of its own.
 const LOCAL_APP_LABELS = { ollama: 'Ollama', lmstudio: 'LM Studio' };
 
@@ -223,7 +223,7 @@ export default function AIProviders() {
   // Local-daemon readiness (is llama-server / Ollama actually up and serving the
   // model this provider names?). Off the critical path like the runtime probes,
   // and re-polled on the same cadence as the status map so starting a daemon
-  // from the Local LLM tab clears the card's checklist on its own.
+  // from the Models → LLMs page clears the card's checklist on its own.
   const loadReadiness = useCallback(async () => {
     const data = await api.getProviderReadiness({ silent: true }).catch(() => null);
     setReadiness(data?.readiness && typeof data.readiness === 'object' ? data.readiness : {});
@@ -424,7 +424,7 @@ export default function AIProviders() {
     const installed = localModels.installed?.[backend];
     // `null` = status not fetched — never offer an install from an unknown state.
     if (typeof installed !== 'boolean') return null;
-    return { id: backend, label: LOCAL_APP_LABELS[backend], installed, installable: false, manageUrl: '/settings/local-llm' };
+    return { id: backend, label: LOCAL_APP_LABELS[backend], installed, installable: false, manageUrl: '/models/llms' };
   }, [runtimes, localModels.installed, readiness]);
 
   // Everything the cards are derived from, in one pass: each provider's runtime,

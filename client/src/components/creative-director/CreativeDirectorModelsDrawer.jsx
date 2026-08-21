@@ -349,14 +349,14 @@ export default function CreativeDirectorModelsDrawer({ open, onClose, project, o
                 {noVisionModels && (
                   <p className="text-xs text-port-warning">
                     No vision-capable models found on this provider.{' '}
-                    <Link to="/settings/local-llm" className="underline hover:text-port-warning/80">Install a VLM</Link>
+                    <Link to="/models/llms" className="underline hover:text-port-warning/80">Install a VLM</Link>
                     {' '}(e.g. qwen3-vl, gemma4) or type a model id above.
                   </p>
                 )}
 
                 {toolIncapable && (
                   <ToolUseWarning model={effectiveModel} isProviderDefault={!draft.model}>
-                    <Link to="/settings/local-llm" className="underline hover:text-port-warning/80">Browse models</Link>.
+                    <Link to="/models/llms" className="underline hover:text-port-warning/80">Browse models</Link>.
                   </ToolUseWarning>
                 )}
               </section>

@@ -155,6 +155,7 @@ export * from './localProviderRuntime.js';
 export * from './mtplxModels.js';
 export * from './vllmQwenProject.js';
 export * from './openAiModelsProbe.js';
+export * from './openAiChatStream.js';
 // `runners.js` re-defines `isFlux2`/`isZImage`/`isErnie` that also live in
 // mediaModels.js — namespace it so the barrel surface is unambiguous.
 export * as runners from './runners.js';
@@ -291,6 +292,7 @@ export * from './localLlmDisk.js';
 export * from './specDecodePresets.js';
 export * from './localModelHeuristics.js';
 export * from './localModelAssessment.js';
+export * from './localModelTuning.js';
 export * from './ollamaContext.js';
 export * from './loraDataset.js';
 export * from './issueLength.js';

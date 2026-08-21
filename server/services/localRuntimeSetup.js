@@ -3,7 +3,7 @@
  *
  * `providerReadiness.js` answers WHAT is missing (the daemon isn't installed,
  * isn't running, isn't serving the right model). Until this module existed, the
- * answer to "so fix it" was a link — to the Local LLM settings tab for the two
+ * answer to "so fix it" was a link — to the Models → LLMs page for the two
  * backends PortOS manages, and to the vendor's README for MTPLX, which is a
  * dead end inside PortOS: the user leaves the app, reads a setup doc, runs two
  * commands in a terminal, comes back and reloads. This module makes the
@@ -20,7 +20,7 @@
  *
  *   - **Weights are never downloaded.** llama.cpp cannot be started without a
  *     GGUF path the user chooses, and no runtime's *model* check is auto-fixed
- *     — a multi-gigabyte download is a decision, and the Local LLM tab already
+ *     — a multi-gigabyte download is a decision, and the Models → LLMs page already
  *     owns that flow with a picker. MTPLX is started on a checkpoint ALREADY in
  *     its cache (`lib/mtplxModels.js`); an empty cache is reported with the
  *     `mtplx pull` command that fixes it, never fetched.
@@ -324,12 +324,12 @@ const SETUP_ROWS = Object.freeze({
       const result = await installLlamaServer({ onProgress: (p) => { if (p?.message) emit(p.message); } })
         .catch((err) => ({ success: false, error: err.message }));
       return result.success
-        ? { success: true, note: 'Choose a GGUF model on Settings → Local LLM to start llama-server — PortOS does not pick weights for you.' }
+        ? { success: true, note: 'Choose a GGUF model on Models → LLMs to start llama-server — PortOS does not pick weights for you.' }
         : result;
     },
     // llama-server takes a required model path, and the weights are a separate
     // multi-gigabyte download. Starting it unattended would mean guessing which
-    // checkpoint the user meant, so the Local LLM tab keeps that step.
+    // checkpoint the user meant, so the Models → LLMs page keeps that step.
     start: null,
   }),
 });
@@ -423,7 +423,7 @@ export async function runLocalRuntimeSetup(kind, { endpoint, emit = () => {}, is
   }
 
   if (!row.start) {
-    return { success: true, message: `${runtime.label} is installed. Pick a model on Settings → Local LLM to start it.` };
+    return { success: true, message: `${runtime.label} is installed. Pick a model on Models → LLMs to start it.` };
   }
   if (isCancelled()) return { success: false, error: 'Cancelled after the install — nothing was started.' };
 

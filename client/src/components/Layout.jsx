@@ -15,6 +15,8 @@ import {
   Activity,
   BarChart3,
   Cpu,
+  Gauge,
+  FlaskConical,
   Wrench,
   ExternalLink,
   Crown,
@@ -304,6 +306,17 @@ const navItems = [
     ],
   },
   {
+    label: 'Models',
+    icon: Cpu,
+    defaultTo: '/models/performance',
+    children: [
+      { to: '/models/llms', label: 'LLMs', icon: Cpu },
+      { to: '/models/performance', label: 'Performance', icon: Gauge },
+      { to: '/local-llm/playground', label: 'Playground', icon: FlaskConical },
+      { to: '/models/status', label: 'Status', icon: Activity },
+    ],
+  },
+  {
     label: 'Settings',
     icon: Settings,
     defaultTo: '/settings/general',
@@ -314,7 +327,6 @@ const navItems = [
       { to: '/settings/code-reviewers', label: 'Code Reviewers', icon: ShieldCheck },
       { to: '/settings/database', label: 'Database', icon: Database },
       { to: '/settings/general', label: 'General', icon: Settings },
-      { to: '/settings/local-llm', label: 'Local LLMs', icon: Cpu },
       { to: '/settings/mortalloom', label: 'MortalLoom', icon: Activity },
       { to: '/openclaw', label: 'OpenClaw', icon: MessagesSquare },
       { to: '/prompts', label: 'Prompts', icon: FileText },
@@ -531,6 +543,10 @@ const FULL_WIDTH_PATH_PREFIXES = [
   '/pipeline/issues/',
   '/pipeline/series/',
   '/post',
+  // Models mirrors Settings: PageHeader + TabPills over a `flex-1 overflow-auto`
+  // body, so the page owns its own scroll. Without this it nests inside the
+  // padded scrolling main and the inner `h-full` clips below the fold.
+  '/models',
   '/settings',
   // Round EDITOR (/rounds/:id) and the Learning Guide (/rounds/guide)
   // are full-width and own their own scroll; the bare /rounds index

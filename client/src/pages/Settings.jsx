@@ -9,7 +9,6 @@ import { CatalogTypesTab } from '../components/settings/CatalogTypesTab';
 import CodeReviewersTab from '../components/settings/CodeReviewersTab';
 import { DatabaseTab } from '../components/settings/DatabaseTab';
 import EmbeddingsTab from '../components/settings/EmbeddingsTab';
-import { LocalLlmTab } from '../components/settings/LocalLlmTab';
 import { TelegramTab } from '../components/settings/TelegramTab';
 import { GeneralTab } from '../components/settings/GeneralTab';
 import { MortalLoomTab } from '../components/settings/MortalLoomTab';
@@ -48,7 +47,6 @@ export default function Settings() {
       case 'code-reviewers': return <CodeReviewersTab />;
       case 'database': return <DatabaseTab />;
       case 'embeddings': return <EmbeddingsTab />;
-      case 'local-llm': return <LocalLlmTab />;
       case 'security': return <SecurityTab />;
       case 'sharing': return <SharingTab />;
       case 'signal': return <SignalTab />;

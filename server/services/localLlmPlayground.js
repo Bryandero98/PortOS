@@ -4,8 +4,10 @@ import { ensureBackendProvider } from './localLlm.js';
 import { getProviderById } from './providers.js';
 import { markProviderAvailable } from './providerStatus.js';
 import { ensureProviderReady as ensureOllamaProviderReady } from './ollamaManager.js';
-import { readResponseJson } from '../lib/readResponseJson.js';
 import { anyAbortSignal } from '../lib/requestAbort.js';
+// The SSE read loop lives in `lib/openAiChatStream.js` so the assessments
+// service can measure a bare loopback daemon that has no provider record.
+import { buildMessages, streamOpenAiChat } from '../lib/openAiChatStream.js';
 import { assertSecretEndpoint } from '../lib/aiToolkit/internal/endpointGuard.js';
 
 const PROVIDER_BY_BACKEND = { ollama: 'ollama', lmstudio: 'lmstudio' };
@@ -37,45 +39,6 @@ export function summarizeTimings({ startedAt, firstChunkAt, endedAt, text }) {
   };
 }
 
-// Parse one OpenAI-style SSE `data:` line into its content/reasoning delta.
-// Returns null for non-data lines, the [DONE]/✅ sentinels, or a malformed
-// frame: a single bad frame must SKIP, not abort the stream — one non-JSON
-// keep-alive would otherwise throw out of the read loop and discard every
-// token already received.
-export function extractStreamDelta(rawLine) {
-  const line = rawLine.trim();
-  if (!line.startsWith('data: ')) return null;
-  const data = line.slice(6).trim();
-  if (!data || data === '[DONE]' || data === '✅') return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(data);
-  } catch {
-    return null;
-  }
-  const delta = parsed?.choices?.[0]?.delta;
-  return { content: delta?.content || '', reasoning: delta?.reasoning || '' };
-}
-
-export function buildMessages({ systemPrompt, prompt }) {
-  const system = String(systemPrompt || '').trim();
-  return [
-    ...(system ? [{ role: 'system', content: system }] : []),
-    { role: 'user', content: prompt },
-  ];
-}
-
-// Resolve the text to surface from a (possibly interrupted) stream: prefer the
-// visible content, fall back to reasoning when no content arrived (some models
-// emit only a reasoning channel), and '' when neither did. Used on both the
-// normal-finish path and the partial-output-on-throw path so a timed-out run
-// still shows what streamed before the abort.
-export function resolvePartialOutput({ output = '', reasoning = '' }) {
-  if (output.trim()) return output;
-  if (reasoning.trim()) return reasoning;
-  return '';
-}
-
 async function resolveLocalProvider(backend) {
   const providerId = PROVIDER_BY_BACKEND[backend];
   if (!providerId) {
@@ -94,7 +57,7 @@ async function resolveLocalProvider(backend) {
   return provider;
 }
 
-async function streamChatCompletion({ provider, backend, modelId, prompt, systemPrompt, temperature, maxTokens, signal, onChunk }) {
+async function streamChatCompletion({ provider, backend, modelId, prompt, systemPrompt, temperature, maxTokens, extraBody = {}, signal, onChunk }) {
   if (backend === 'ollama') {
     const ready = await ensureOllamaProviderReady(provider).catch((err) => ({ success: false, error: err.message }));
     if (!ready.success) {
@@ -110,92 +73,19 @@ async function streamChatCompletion({ provider, backend, modelId, prompt, system
     allowCustomEndpoint: provider.allowCustomEndpoint === true,
   });
 
-  const headers = { 'Content-Type': 'application/json' };
-  if (provider.apiKey) headers.Authorization = `Bearer ${provider.apiKey}`;
-
-  const response = await fetch(`${provider.endpoint}/chat/completions`, {
-    method: 'POST',
-    headers,
+  return streamOpenAiChat({
+    endpoint: provider.endpoint,
+    apiKey: provider.apiKey,
+    model: modelId,
+    messages: buildMessages({ systemPrompt, prompt }),
+    temperature,
+    maxTokens,
+    // The caller's knobs win over the provider default: an assessment measuring
+    // a specific `num_ctx` must not silently be run at the provider's.
+    extraBody: { ...(Number(provider.numCtx) > 0 ? { num_ctx: Number(provider.numCtx) } : {}), ...extraBody },
     signal,
-    body: JSON.stringify({
-      model: modelId,
-      messages: buildMessages({ systemPrompt, prompt }),
-      stream: true,
-      temperature,
-      max_tokens: maxTokens,
-      ...(Number(provider.numCtx) > 0 ? { num_ctx: Number(provider.numCtx) } : {}),
-    }),
-  }).catch((err) => ({ ok: false, status: 0, error: err.message }));
-
-  if (!response.ok) {
-    const body = response.text ? await response.text().catch(() => '') : response.error || '';
-    throw new Error(`Provider returned ${response.status || 0}: ${body || response.error || response.statusText || 'request failed'}`);
-  }
-
-  if (!response.body?.getReader) {
-    // Sentinel fallback: a non-JSON/blank 200 body must throw (caught by
-    // runLocalLlmTest → finalizeRunRecord success:false), not return '' — which
-    // line 205 would persist as a successful empty run. Mirrors the pre-helper
-    // response.json() throw; a valid body with empty content is unchanged.
-    const data = await readResponseJson(response, { fallback: null, emptyValue: null });
-    if (!data) {
-      throw new Error(`Provider returned a non-JSON response (${response.status})`);
-    }
-    const text = data.choices?.[0]?.message?.content || '';
-    if (text) await onChunk(text, 'content');
-    return text;
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let output = '';
-  let reasoning = '';
-
-  const consumeLine = async (rawLine) => {
-    const delta = extractStreamDelta(rawLine);
-    if (!delta) return;
-    if (delta.content) {
-      output += delta.content;
-      await onChunk(delta.content, 'content');
-    }
-    // Stream reasoning live too, on its own channel, so a reasoning-only model
-    // (deepseek-r1, qwq, …) renders its chain-of-thought as it arrives instead
-    // of sitting on "Waiting for the first token…" until the whole run lands.
-    // Kept distinct from content so the live panel can label it and so the
-    // final content-only `text` doesn't inherit reasoning prose.
-    if (delta.reasoning) {
-      reasoning += delta.reasoning;
-      await onChunk(delta.reasoning, 'reasoning');
-    }
-  };
-
-  // Always release the reader (and tear down the socket) on every exit path —
-  // a normal finish, an abort via the timeout signal, or a throw mid-stream.
-  // On a throw (e.g. an AbortError from the timeout) surface the tokens already
-  // streamed by attaching them to the error, so runLocalLlmTest can render the
-  // partial output alongside the timeout message instead of discarding it.
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) await consumeLine(line);
-    }
-    if (buffer.trim()) await consumeLine(buffer);
-  } catch (err) {
-    err.partialOutput = resolvePartialOutput({ output, reasoning });
-    throw err;
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-
-  // Both channels already streamed live via onChunk, so there's no end-of-stream
-  // re-emit here — re-pushing `resolved` would double the reasoning-only output
-  // the client just received. We only resolve the final text for the result record.
-  return resolvePartialOutput({ output, reasoning });
+    onChunk,
+  });
 }
 
 export async function runLocalLlmTest({
@@ -206,6 +96,9 @@ export async function runLocalLlmTest({
   temperature = 0.3,
   maxTokens = 1000,
   timeoutMs = 300000,
+  // Backend-specific request knobs merged into the chat-completions body (see
+  // `lib/localModelTuning.js#requestBody`). Empty for a plain playground run.
+  extraBody = {},
   signal: clientSignal,
   // Optional per-token callback `onToken(delta, kind)` where kind is 'content'
   // or 'reasoning'. When provided (streaming route), each delta is forwarded as
@@ -249,6 +142,7 @@ export async function runLocalLlmTest({
       systemPrompt,
       temperature,
       maxTokens,
+      extraBody,
       signal,
       onChunk: (chunk, kind = 'content') => {
         // First token of EITHER channel marks TTFT: for a reasoning model the
@@ -302,6 +196,82 @@ export async function runLocalLlmTest({
       error,
       text: partialText,
       timings: summarizeTimings({ startedAt, firstChunkAt, endedAt, text: partialText }),
+      options: { temperature, maxTokens, timeoutMs },
+    };
+  }
+}
+
+/**
+ * Measure one generation against a bare OpenAI-compatible loopback daemon —
+ * llama.cpp, MTPLX, or vLLM — that PortOS does NOT hold a provider record for.
+ *
+ * Returns the same shape as `runLocalLlmTest` (text / error / timings) so the
+ * assessment sampler treats every runtime identically. What it deliberately
+ * does NOT do is create a `/runs` record: `createRun` resolves a configured
+ * provider, and inventing one for a daemon the user started outside PortOS
+ * would put a phantom provider in the runs history.
+ *
+ * @param {object} options
+ * @param {string} options.runtime runtime id, echoed back on the result
+ * @param {string} options.endpoint OpenAI-compatible base ending in `/v1`
+ */
+export async function runEndpointLlmTest({
+  runtime,
+  endpoint,
+  // Empty for the usual unauthenticated loopback daemon; set for a vLLM
+  // container started behind `VLLM_API_KEY`, which 401s without it.
+  apiKey = '',
+  modelId,
+  prompt,
+  systemPrompt = '',
+  temperature = 0.3,
+  maxTokens = 1000,
+  timeoutMs = 300000,
+  extraBody = {},
+  signal: clientSignal,
+  onToken,
+}) {
+  const startedAt = Date.now();
+  let firstChunkAt = null;
+  const timeoutController = new AbortController();
+  const timeoutHandle = setTimeout(() => timeoutController.abort(), timeoutMs);
+  const signal = anyAbortSignal([clientSignal, timeoutController.signal]);
+
+  try {
+    const text = await streamOpenAiChat({
+      endpoint,
+      apiKey,
+      model: modelId,
+      messages: buildMessages({ systemPrompt, prompt }),
+      temperature,
+      maxTokens,
+      extraBody,
+      signal,
+      onChunk: (chunk, kind = 'content') => {
+        if (!firstChunkAt && chunk) firstChunkAt = Date.now();
+        if (chunk) return onToken?.(chunk, kind);
+        return undefined;
+      },
+    }).finally(() => clearTimeout(timeoutHandle));
+    return {
+      backend: runtime,
+      modelId,
+      endpoint,
+      text,
+      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt: Date.now(), text }),
+      options: { temperature, maxTokens, timeoutMs },
+    };
+  } catch (err) {
+    clearTimeout(timeoutHandle);
+    const error = err?.name === 'AbortError' ? `Timed out after ${timeoutMs}ms` : err?.message || 'Local LLM test failed';
+    const partialText = typeof err?.partialOutput === 'string' ? err.partialOutput : '';
+    return {
+      backend: runtime,
+      modelId,
+      endpoint,
+      error,
+      text: partialText,
+      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt: Date.now(), text: partialText }),
       options: { temperature, maxTokens, timeoutMs },
     };
   }

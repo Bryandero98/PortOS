@@ -228,6 +228,72 @@ describe('explainAssessment', () => {
   });
 });
 
+// The tuning IS the row's identity when a model holds several measurements. The
+// consumer keys the row on it, deletes THIS measurement with it, and pre-fills a
+// re-measure from it — so a projection that drops it collapses every variant
+// onto the backend-defaults record (wrong row deleted, re-measure loses its
+// settings, duplicate React keys).
+describe('rankByIntent — tuning identity', () => {
+  const tuned = (tuningKey, tuning, tuningLabel, charsPerSecond) => ({
+    backend: 'llama',
+    modelId: 'example-7b',
+    verdict: 'fits',
+    params: '7B',
+    tuningKey,
+    tuning,
+    tuningLabel,
+    performance: { meanCharsPerSecond: charsPerSecond, contextDegradation: 0.9, maxWorkingContextTokens: 16384 },
+    environment: { memoryBudgetGb: 64 },
+    residentGb: 5,
+  });
+
+  it('carries the tuning through to every ranked row', () => {
+    const { ranked } = rankByIntent([
+      tuned('', {}, null, 90),
+      tuned('ubatchSize=512', { ubatchSize: 512 }, 'Micro-batch size 512', 120),
+    ], 'fastest');
+    expect(ranked).toHaveLength(2);
+    expect(ranked.map((r) => r.tuningKey).sort()).toEqual(['', 'ubatchSize=512']);
+    const fastest = ranked[0];
+    expect(fastest.tuningKey).toBe('ubatchSize=512');
+    expect(fastest.tuning).toEqual({ ubatchSize: 512 });
+    expect(fastest.tuningLabel).toBe('Micro-batch size 512');
+  });
+
+  it('gives two tunings of one model distinct identities, not one collapsed row', () => {
+    const { ranked } = rankByIntent([
+      tuned('', {}, null, 90),
+      tuned('ubatchSize=512', { ubatchSize: 512 }, 'Micro-batch size 512', 120),
+    ], 'fastest');
+    const keys = ranked.map((r) => `${r.backend}:${r.modelId}@${r.tuningKey}`);
+    expect(new Set(keys).size).toBe(2);
+  });
+
+  it('reports that a tuning was not applied so the row can say the numbers are another config', () => {
+    const entry = tuned('ubatchSize=512', { ubatchSize: 512 }, 'Micro-batch size 512', 120);
+    const { ranked } = rankByIntent([
+      { ...entry, tuningApplied: false, tuningNotApplied: 'llama-server is not running' },
+    ], 'fastest');
+    expect(ranked[0].tuningApplied).toBe(false);
+    expect(ranked[0].tuningNotApplied).toBe('llama-server is not running');
+  });
+
+  it('breaks a model-id tie on the tuning so the order is stable across reloads', () => {
+    const a = tuned('a=1', {}, 'A', 100);
+    const b = tuned('b=2', { }, 'B', 100);
+    expect(rankByIntent([b, a], 'fastest').ranked.map((r) => r.tuningKey)).toEqual(['a=1', 'b=2']);
+    expect(rankByIntent([a, b], 'fastest').ranked.map((r) => r.tuningKey)).toEqual(['a=1', 'b=2']);
+  });
+
+  it('carries the tuning onto an excluded row too, so variants stay distinguishable there', () => {
+    const { excluded } = rankByIntent([
+      { ...tuned('ubatchSize=512', { ubatchSize: 512 }, 'Micro-batch size 512', 120), verdict: 'does-not-fit' },
+    ], 'fastest');
+    expect(excluded[0].tuningKey).toBe('ubatchSize=512');
+    expect(excluded[0].tuningLabel).toBe('Micro-batch size 512');
+  });
+});
+
 describe('rankByIntent', () => {
   const assessment = (modelId, verdict, performance, extra = {}) => ({
     backend: 'ollama',
@@ -263,7 +329,7 @@ describe('rankByIntent', () => {
     const { ranked, excluded } = rankByIntent(models, 'balanced');
     expect(ranked.map((r) => r.modelId)).toEqual(['example-model:7b']);
     expect(excluded).toEqual([
-      { backend: 'ollama', modelId: 'example-model:70b', verdict: 'does-not-fit', reason: 'out of memory' },
+      { backend: 'ollama', modelId: 'example-model:70b', tuningKey: '', tuningLabel: null, verdict: 'does-not-fit', reason: 'out of memory' },
     ]);
   });
 

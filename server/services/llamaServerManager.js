@@ -24,6 +24,14 @@ export const LLAMA_APP = 'portos-llama-server';
 const MAX_LOG_LINES = 100;
 const PROBE_TIMEOUT_MS = 1500;
 const STARTUP_WAIT_TIMEOUT_MS = 4000;
+// How long a relaunch waits for the kernel to release the old listener.
+const PORT_RELEASE_TIMEOUT_MS = 5000;
+// How long a relaunch waits for the new process to answer. `startLlamaServer`
+// polls for only STARTUP_WAIT_TIMEOUT_MS, which a large GGUF routinely exceeds
+// while loading — so a relaunch must not read "not ready yet" as "wedged".
+// Mutable only through the test seam below: a suite asserting the give-up path
+// cannot sit through two real minutes of polling.
+let relaunchReadyTimeoutMs = 120000;
 
 let currentConfig = null;
 let recentLogs = [];
@@ -105,7 +113,47 @@ function parseConfigFromArgs(args) {
     ctxSize,
     nGpuLayers,
     alias,
+    // Tuning flags. `null` means the flag was NOT on the launch line, so
+    // llama.cpp's own default applied — distinct from a value we chose. A
+    // caller re-launching with this config must leave a null off the line
+    // rather than substituting a number llama.cpp never saw.
+    batchSize: getArg('-b') !== null ? Number(getArg('-b')) : null,
+    ubatchSize: getArg('-ub') !== null ? Number(getArg('-ub')) : null,
+    threads: getArg('-t') !== null ? Number(getArg('-t')) : null,
+    flashAttn: list.includes('--flash-attn') || list.includes('-fa'),
+    cacheTypeK: getArg('--cache-type-k'),
+    cacheTypeV: getArg('--cache-type-v'),
+    draftMax: getArg('--draft-max') !== null ? Number(getArg('--draft-max')) : null,
   };
+}
+
+// The endpoint the current (or last-known) configuration serves on. Split out so
+// the two callers below can't drift on how host/port are defaulted.
+const endpointFor = (config) =>
+  `http://${config?.host || '127.0.0.1'}:${config?.port ?? PORTS.LLAMA_SERVER}/v1`;
+
+/**
+ * Just the base URL llama-server is serving on — no endpoint probe, no PM2 log
+ * fetch.
+ *
+ * `getLlamaServerStatus` answers a much bigger question and pays for it with a
+ * network probe AND an `execPm2 logs` subprocess. A caller that only needs
+ * "which port is it on?" (the assessments read path, which runs on every
+ * Performance page load) must not spawn a process to find out and then discard
+ * the logs it paid for.
+ *
+ * Reads the same recovered-config path as the status call, so a PortOS restart
+ * that left the PM2 process online still resolves the real port rather than the
+ * default.
+ */
+export async function getLlamaServerEndpoint() {
+  if (!currentConfig) {
+    const pm2Status = await getAppStatusStrict(LLAMA_APP);
+    if (pm2Status?.status === 'online' && pm2Status.args) {
+      currentConfig = parseConfigFromArgs(pm2Status.args);
+    }
+  }
+  return endpointFor(currentConfig);
 }
 
 /**
@@ -125,7 +173,7 @@ export async function getLlamaServerStatus() {
 
   const host = currentConfig?.host || '127.0.0.1';
   const port = currentConfig?.port ?? PORTS.LLAMA_SERVER;
-  const endpoint = `http://${host}:${port}/v1`;
+  const endpoint = endpointFor(currentConfig);
 
   const reachable = await probeEndpoint(endpoint);
 
@@ -192,6 +240,17 @@ export async function startLlamaServer(options = {}) {
     ctxSize = 32768,
     nGpuLayers = 99,
     alias = 'dflash',
+    // Tuning knobs (`lib/localModelTuning.js`). Every one defaults to `null` =
+    // NOT SET: the flag is left off the launch line entirely so llama.cpp
+    // applies its own default. Substituting a number here would silently pin a
+    // value the user never chose and make two "default" runs incomparable.
+    batchSize = null,
+    ubatchSize = null,
+    threads = null,
+    flashAttn = false,
+    cacheTypeK = null,
+    cacheTypeV = null,
+    draftMax = null,
   } = options;
 
   if (!model || typeof model !== 'string') {
@@ -251,6 +310,15 @@ export async function startLlamaServer(options = {}) {
   if (host) args.push('--host', host);
   if (ctxSize) args.push('--ctx-size', String(ctxSize));
   if (nGpuLayers !== undefined && nGpuLayers !== null) args.push('-ngl', String(nGpuLayers));
+  if (Number.isFinite(batchSize)) args.push('-b', String(batchSize));
+  if (Number.isFinite(ubatchSize)) args.push('-ub', String(ubatchSize));
+  if (Number.isFinite(threads)) args.push('-t', String(threads));
+  if (flashAttn) args.push('--flash-attn');
+  if (cacheTypeK) args.push('--cache-type-k', String(cacheTypeK));
+  if (cacheTypeV) args.push('--cache-type-v', String(cacheTypeV));
+  // Only meaningful alongside a drafter — passing it without one makes
+  // llama-server reject the launch line outright.
+  if (Number.isFinite(draftMax) && draftPath) args.push('--draft-max', String(draftMax));
   if (alias) args.push('--alias', alias);
 
   lastExitError = null;
@@ -278,6 +346,13 @@ export async function startLlamaServer(options = {}) {
     ctxSize,
     nGpuLayers,
     alias,
+    batchSize,
+    ubatchSize,
+    threads,
+    flashAttn,
+    cacheTypeK,
+    cacheTypeV,
+    draftMax,
   };
 
   // Delete stale PM2 entry so our own previous instance doesn't count as a collision
@@ -376,6 +451,127 @@ export async function stopLlamaServer() {
   currentConfig = null;
 
   return { success: true, message: 'llama-server stopped' };
+}
+
+/**
+ * Block until nothing is listening on `port`, or the timeout elapses.
+ *
+ * `startLlamaServer` refuses when the port is still bound, and PM2's delete
+ * returns before the kernel has released the listener — without this a relaunch
+ * loses a race with itself and reports "port already in use" for the server it
+ * just stopped.
+ */
+async function waitForPortRelease(port) {
+  const deadline = Date.now() + PORT_RELEASE_TIMEOUT_MS;
+  while (Date.now() < deadline && await isPortInUse(port)) await sleep(200);
+}
+
+/**
+ * Block until the endpoint answers, or the readiness budget elapses.
+ * `false` means it never answered — which is a wedged process, not a slow one.
+ */
+async function waitForEndpoint(endpoint) {
+  const deadline = Date.now() + relaunchReadyTimeoutMs;
+  while (Date.now() < deadline) {
+    if (await probeEndpoint(endpoint)) return true;
+    await sleep(1000);
+  }
+  return false;
+}
+
+/**
+ * Relaunch llama-server with a different tuning, keeping the model/drafter it is
+ * already serving.
+ *
+ * This is the "evaluate tuning parameters for launching these" half of the
+ * measured-assessment feature: a sweep across micro-batch sizes or KV-cache
+ * types is only possible if something can put those flags on the launch line
+ * between runs.
+ *
+ * It refuses rather than guesses in the two cases where it cannot know what to
+ * relaunch:
+ *   - nothing is running, so there is no model path to reuse;
+ *   - something IS listening but PortOS did not start it (an externally-launched
+ *     llama-server), so stopping it would kill a process the user owns.
+ *
+ * Every one of those returns `{ applied: false, reason }` instead of throwing:
+ * the caller (an assessment run) can still measure whatever is actually serving
+ * and record that the requested tuning was NOT applied, which is far more useful
+ * than failing the whole run. A launch line llama-server rejects, and a relaunch
+ * that never answers on its port, land on the same shape — and the rejected case
+ * puts the PREVIOUS configuration back, because a tuning sweep is expected to
+ * produce launch lines that don't work and must not leave the daemon down.
+ *
+ * @param {object} tuning launch knobs from `lib/localModelTuning.js`
+ * @returns {Promise<{applied: boolean, reason: string|null, config: object|null}>}
+ */
+export async function relaunchLlamaServerWithTuning(tuning = {}) {
+  const knobs = Object.entries(tuning).filter(([, v]) => v !== null && v !== undefined);
+  if (knobs.length === 0) {
+    return { applied: false, reason: 'no launch knobs were requested', config: currentConfig };
+  }
+
+  const status = await getLlamaServerStatus();
+  if (!status.running) {
+    return { applied: false, reason: 'llama-server is not running, so PortOS has no model path to relaunch with', config: null };
+  }
+  if (!status.managed || !status.config?.model) {
+    return {
+      applied: false,
+      reason: 'llama-server was started outside PortOS — start it from the LLMs page to let PortOS apply tuning',
+      config: status.config || null,
+    };
+  }
+
+  const previous = status.config;
+  const next = { ...previous, ...tuning };
+  console.log(`🦙 llama-server: relaunching to apply tuning (${knobs.map(([k, v]) => `${k}=${v}`).join(', ')})`);
+  await stopLlamaServer();
+  await waitForPortRelease(next.port ?? PORTS.LLAMA_SERVER);
+
+  // A tuning sweep EXPECTS launch lines that don't work — `--flash-attn` on a
+  // build without it, a `--cache-type-k` this build lacks, a `-ub` past what the
+  // GPU can hold. llama-server exits immediately and `startLlamaServer` throws.
+  // Leaving it down would be far worse than not applying the tuning: this daemon
+  // fronts the `llama` provider for the whole install, so every later request
+  // would fail too. Put the previous configuration back before reporting.
+  const started = await startLlamaServer(next).catch(async (err) => {
+    console.error(`❌ llama-server: tuning launch failed (${err.message}) — restoring the previous configuration`);
+    await waitForPortRelease(previous.port ?? PORTS.LLAMA_SERVER);
+    const restored = await startLlamaServer(previous).catch((restoreErr) => {
+      console.error(`❌ llama-server: could not restore the previous configuration: ${restoreErr.message}`);
+      return null;
+    });
+    return { failure: err.message, config: restored?.config || null };
+  });
+  if (started.failure) {
+    return { applied: false, reason: `llama-server rejected that tuning: ${started.failure}`, config: started.config };
+  }
+
+  // PM2 reporting `online` is not the same as the server answering. But
+  // `startLlamaServer` only polls for four seconds, and a large GGUF routinely
+  // takes longer than that to load — so `online: false` is "not ready YET",
+  // not "wedged". Give it a real readiness budget before judging.
+  const ready = started.online || await waitForEndpoint(started.endpoint);
+  if (!ready) {
+    // Still silent. Treat it exactly like a rejected launch line: put the
+    // previous configuration back, so the install's llama provider is not left
+    // pointing at a process that never serves. Without this the caller would go
+    // on to measure a dead endpoint and record the timeouts as evidence.
+    console.error('❌ llama-server: relaunched process never answered — restoring the previous configuration');
+    await stopLlamaServer().catch(() => {});
+    await waitForPortRelease(previous.port ?? PORTS.LLAMA_SERVER);
+    const restored = await startLlamaServer(previous).catch((err) => {
+      console.error(`❌ llama-server: could not restore the previous configuration: ${err.message}`);
+      return null;
+    });
+    return {
+      applied: false,
+      reason: 'llama-server relaunched but never answered on its port',
+      config: restored?.config || null,
+    };
+  }
+  return { applied: true, reason: null, config: started.config };
 }
 
 /**
@@ -493,9 +689,11 @@ export async function installLlamaServer({ onProgress = () => {} } = {}) {
 /**
  * Clears in-memory test state (used by test suites).
  */
-export function _resetLlamaServerStateForTests() {
+export function _resetLlamaServerStateForTests({ relaunchReadyTimeout } = {}) {
   currentConfig = null;
   recentLogs = [];
   lastExitError = null;
+  // Restored to the production budget unless a suite asks for a shorter one.
+  relaunchReadyTimeoutMs = Number.isFinite(relaunchReadyTimeout) ? relaunchReadyTimeout : 120000;
 }
 

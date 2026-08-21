@@ -308,6 +308,8 @@ export function rankByIntent(assessments, intent = 'balanced') {
       excluded.push({
         backend: assessment?.backend || null,
         modelId: assessment?.modelId || null,
+        tuningKey: assessment?.tuningKey || '',
+        tuningLabel: assessment?.tuningLabel || null,
         verdict,
         reason: assessment?.verdictReason || null,
       });
@@ -319,6 +321,8 @@ export function rankByIntent(assessments, intent = 'balanced') {
       excluded.push({
         backend: assessment?.backend || null,
         modelId: assessment?.modelId || null,
+        tuningKey: assessment?.tuningKey || '',
+        tuningLabel: assessment?.tuningLabel || null,
         verdict,
         reason: 'ran, but no axis of this intent was measured',
       });
@@ -343,6 +347,19 @@ export function rankByIntent(assessments, intent = 'balanced') {
       // `null` = the caller did not annotate staleness, which is not the same as
       // "compared and current".
       staleness: assessment?.staleness || null,
+      // The tuning IS part of this row's identity, not decoration. A model can
+      // hold several measurements, one per launch configuration, and the
+      // consumer uses these to key the row, to delete THIS measurement rather
+      // than the backend-defaults one, and to pre-fill a re-measure with the
+      // configuration that produced it. Dropping them collapsed every variant
+      // onto the default record.
+      tuningKey: assessment?.tuningKey || '',
+      tuning: assessment?.tuning || {},
+      tuningLabel: assessment?.tuningLabel || null,
+      // `null` = nothing was settable (see runAssessment); `false` means these
+      // numbers describe some OTHER configuration, which the row has to say.
+      tuningApplied: assessment?.tuningApplied ?? null,
+      tuningNotApplied: assessment?.tuningNotApplied || null,
       explanation: explainAssessment(assessment, resolvedIntent),
     });
   }
@@ -361,7 +378,10 @@ export function rankByIntent(assessments, intent = 'balanced') {
     (isStale(a) - isStale(b))
     || (b.score - a.score)
     || (b.coverage - a.coverage)
-    || String(a.modelId).localeCompare(String(b.modelId)));
+    || String(a.modelId).localeCompare(String(b.modelId))
+    // Two tunings of ONE model tie on model id, so the signature is what makes
+    // their order stable across reloads.
+    || String(a.tuningKey).localeCompare(String(b.tuningKey)));
   return { intent: resolvedIntent, ranked, excluded };
 }
 

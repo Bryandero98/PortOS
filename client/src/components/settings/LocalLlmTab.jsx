@@ -14,8 +14,6 @@ import {
   downloadSpecDecodeModel
 } from '../../services/api';
 import socket from '../../services/socket';
-import MemoryManagement from './MemoryManagement.jsx';
-import LocalModelAssessments from './LocalModelAssessments.jsx';
 import SpecDecodeWeightRow from './SpecDecodeWeightRow.jsx';
 
 const BACKENDS = [
@@ -55,6 +53,12 @@ const specWeightEntries = (preset) => [preset?.model, preset?.draftModel].filter
 // IPFS / Tomcat / local-dashboard port and is not a safe default for a managed
 // daemon.
 const LLAMA_NUMBER_DEFAULTS = { port: 5568, ctxSize: 32768, nGpuLayers: 99 };
+// Optional llama.cpp tuning flags — unlike the fields above these have NO
+// PortOS default: an untouched one is stripped from the launch payload so
+// llama.cpp applies its own. Mirrors `server/lib/localModelTuning.js`.
+const LLAMA_TUNING_FIELDS = ['batchSize', 'ubatchSize', 'threads', 'cacheTypeK', 'cacheTypeV'];
+// KV-cache types llama.cpp accepts for --cache-type-k/-v; '' means "leave it off".
+const LLAMA_CACHE_TYPES = ['f16', 'q8_0', 'q4_0'];
 
 const btnClass = 'flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded transition-colors disabled:opacity-50';
 
@@ -428,6 +432,17 @@ export function LocalLlmTab() {
     ctxSize: 32768,
     nGpuLayers: 99,
     alias: 'dflash',
+    // Performance tuning (`server/lib/localModelTuning.js`). Empty = NOT SET:
+    // the flag is left off the launch line entirely so llama.cpp applies its own
+    // default. A number here would silently pin a value the user never chose and
+    // make two "default" launches incomparable. Measure the effect of a change
+    // on Models → Performance.
+    batchSize: '',
+    ubatchSize: '',
+    threads: '',
+    flashAttn: false,
+    cacheTypeK: '',
+    cacheTypeV: '',
   });
   // Byte progress for downloads STARTED HERE, keyed `presetId:role`. A transfer
   // another tab started still renders — the server reports it on the entry —
@@ -891,6 +906,12 @@ export function LocalLlmTab() {
     for (const [field, fallback] of Object.entries(LLAMA_NUMBER_DEFAULTS)) {
       if (!Number.isFinite(config[field])) config[field] = fallback;
     }
+    // An untouched tuning field means "llama.cpp's default", which is NOT a
+    // value we can name — drop it so the server leaves the flag off the launch
+    // line instead of receiving an empty string it would coerce to 0.
+    for (const field of LLAMA_TUNING_FIELDS) {
+      if (config[field] === '' || config[field] === null) delete config[field];
+    }
     try {
       const res = await startLlamaServer(config);
       if (res?.success) {
@@ -956,8 +977,6 @@ export function LocalLlmTab() {
 
   return (
     <div className="space-y-4">
-      <MemoryManagement />
-      <LocalModelAssessments />
       {/* Backends — status + switch/migrate */}
       <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-4">
         <div className="flex items-center justify-between">
@@ -1297,6 +1316,88 @@ export function LocalLlmTab() {
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>
+
+                {/* Performance tuning. Unlike the fields above, these have no
+                    PortOS default — an empty one is stripped from the launch
+                    line so llama.cpp applies its own. Measure what a change
+                    actually bought on Models → Performance. */}
+                <p className="col-span-2 sm:col-span-4 text-[11px] text-gray-500 pt-1 border-t border-port-border/40">
+                  Performance tuning — leave a field empty for llama.cpp&apos;s own default.{' '}
+                  <Link to="/models/performance" className="text-port-accent hover:underline">Measure the difference</Link>{' '}
+                  after changing one.
+                </p>
+                <div>
+                  <label htmlFor="llama-batch-size" className="text-[11px] text-gray-400 block mb-1">Batch size (-b)</label>
+                  <input
+                    id="llama-batch-size"
+                    aria-label="Batch size (-b)"
+                    type="number"
+                    placeholder="default"
+                    value={llamaForm.batchSize}
+                    onChange={(e) => setLlamaNumber('batchSize', e.target.value)}
+                    className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="llama-ubatch-size" className="text-[11px] text-gray-400 block mb-1">Micro-batch (-ub)</label>
+                  <input
+                    id="llama-ubatch-size"
+                    aria-label="Micro-batch (-ub)"
+                    type="number"
+                    placeholder="default"
+                    value={llamaForm.ubatchSize}
+                    onChange={(e) => setLlamaNumber('ubatchSize', e.target.value)}
+                    className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="llama-threads" className="text-[11px] text-gray-400 block mb-1">CPU threads (-t)</label>
+                  <input
+                    id="llama-threads"
+                    aria-label="CPU threads (-t)"
+                    type="number"
+                    placeholder="default"
+                    value={llamaForm.threads}
+                    onChange={(e) => setLlamaNumber('threads', e.target.value)}
+                    className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
+                  />
+                </div>
+                <div className="flex items-end gap-2 pb-1">
+                  <input
+                    id="llama-flash-attn"
+                    type="checkbox"
+                    checked={llamaForm.flashAttn}
+                    onChange={(e) => setLlamaForm((prev) => ({ ...prev, flashAttn: e.target.checked }))}
+                    className="accent-port-accent"
+                  />
+                  <label htmlFor="llama-flash-attn" className="text-[11px] text-gray-400">Flash attention</label>
+                </div>
+                <div>
+                  <label htmlFor="llama-cache-type-k" className="text-[11px] text-gray-400 block mb-1">KV cache K</label>
+                  <select
+                    id="llama-cache-type-k"
+                    aria-label="KV cache K"
+                    value={llamaForm.cacheTypeK}
+                    onChange={(e) => setLlamaField('cacheTypeK', e.target.value)}
+                    className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
+                  >
+                    <option value="">default</option>
+                    {LLAMA_CACHE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="llama-cache-type-v" className="text-[11px] text-gray-400 block mb-1">KV cache V</label>
+                  <select
+                    id="llama-cache-type-v"
+                    aria-label="KV cache V"
+                    value={llamaForm.cacheTypeV}
+                    onChange={(e) => setLlamaField('cacheTypeV', e.target.value)}
+                    className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
+                  >
+                    <option value="">default</option>
+                    {LLAMA_CACHE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
               </div>
             )}
 
@@ -1307,7 +1408,7 @@ export function LocalLlmTab() {
                 className="text-[11px] text-gray-500 hover:text-gray-300 flex items-center gap-1"
               >
                 {showLlamaAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                {showLlamaAdvanced ? 'Hide options' : 'Advanced options (port, ctx, GPU layers, model id, spec type)'}
+                {showLlamaAdvanced ? 'Hide options' : 'Advanced options (port, ctx, GPU layers, model id, spec type, performance tuning)'}
               </button>
               <div className="flex items-center gap-2">
                 {llamaStartBlocked && (
@@ -1404,7 +1505,7 @@ export function LocalLlmTab() {
             <span>
               {labelFor(selected)} isn't running — {selectedData.installed
                 ? (selected === 'ollama' ? 'use the controls to start it or keep it running at login.' : 'launch the app and enable the local server.')
-                : 'install it first (Settings → Local LLMs prompts at setup, or run `npm run setup:llm`).'}
+                : 'install it first (Models → LLMs prompts at setup, or run `npm run setup:llm`).'}
             </span>
             {selected === 'ollama' && selectedData.installed && selectedData.canControl && (
               <button

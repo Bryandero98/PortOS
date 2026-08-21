@@ -343,7 +343,7 @@ export default function AiAssignmentsTab() {
                     )}
                     {toolIncapable && (
                       <ToolUseWarning model={effectiveModel} isProviderDefault={!draft.model} className="mt-1.5">
-                        <Link to="/settings/local-llm" className="underline hover:text-port-warning/80">Browse models</Link>.
+                        <Link to="/models/llms" className="underline hover:text-port-warning/80">Browse models</Link>.
                       </ToolUseWarning>
                     )}
                   </td>

@@ -103,7 +103,7 @@ describe('localRuntimeForProvider', () => {
     expect(runtime.label).toBe('llama.cpp');
     expect(runtime.command).toBe('llama-server');
     expect(runtime.endpoint).toBe('http://127.0.0.1:8090/v1');
-    expect(runtime.manageUrl).toBe('/settings/local-llm');
+    expect(runtime.manageUrl).toBe('/models/llms');
   });
 
   it('falls back to the provider endpoint when the stored OpenCode config is unparseable', () => {
@@ -149,7 +149,7 @@ describe('localRuntimeForProvider', () => {
   it('returns null for an API provider whose endpoint lives on ANOTHER machine', () => {
     // The name matches `lmstudio`, so the card used to report THIS host's
     // install state — "`lms` is on PortOS's PATH", "start LM Studio from
-    // Settings → Local LLM" — for a server PortOS neither runs nor can start.
+    // Models → LLMs" — for a server PortOS neither runs nor can start.
     expect(localRuntimeForProvider({
       type: 'api',
       id: 'lmstudio-peer',

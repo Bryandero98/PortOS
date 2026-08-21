@@ -225,7 +225,7 @@ function downloadedModelInventory({
       loaded: !ollamaResidencyError && ollamaLoadedIds.has(stored.id),
       residencyUnknown: Boolean(ollamaResidencyError),
       inventoryUnknown: !Array.isArray(ollamaStored) || Boolean(stored.inventoryUnknown),
-      managePath: '/settings/local-llm',
+      managePath: '/models/llms',
       action: ollamaStatus?.available
         ? { type: 'local-model', backend: 'ollama', modelId: stored.id }
         : null,
@@ -276,7 +276,7 @@ function downloadedModelInventory({
       residencyUnknown: Boolean(lmStudioResidencyError),
       inventoryUnknown: !Array.isArray(lmStudioStored) || Boolean(stored.inventoryUnknown),
       cleanupReason: 'Deleting this entry removes the whole LM Studio model folder, including every downloaded quantization in it.',
-      managePath: '/settings/local-llm',
+      managePath: '/models/llms',
       action: { type: 'local-model', backend: 'lmstudio', modelId: stored.id },
     };
   });
@@ -448,13 +448,13 @@ export async function buildSystemResourceReport() {
     {
       id: 'ollama', label: 'Ollama models', kind: 'model',
       sizeBytes: finiteOrNull(ollamaBytes), status: backendState(ollamaBytes),
-      managePath: '/settings/local-llm', protected: false,
+      managePath: '/models/llms', protected: false,
       note: 'Local language-model manifests and shared blobs.',
     },
     {
       id: 'lmstudio', label: 'LM Studio models', kind: 'model',
       sizeBytes: finiteOrNull(lmStudioBytes), status: backendState(lmStudioBytes),
-      managePath: '/settings/local-llm', protected: false,
+      managePath: '/models/llms', protected: false,
       note: 'Downloaded GGUF or MLX model directories.',
     },
     {

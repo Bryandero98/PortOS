@@ -18,7 +18,7 @@ const model = {
   name: 'Example model',
   sizeBytes: 1024,
   loaded: false,
-  managePath: '/settings/local-llm',
+  managePath: '/models/llms',
   action: { type: 'local-model', backend: 'ollama', modelId: 'example:latest' },
 };
 const report = {
