@@ -165,7 +165,14 @@ export const localLlmOllamaServiceSchema = z.object({ action: z.enum(['start', '
 export const localLlmLlamaServerStartSchema = z.object({
   model: z.string().trim().min(1).max(500),
   draftModel: z.string().trim().max(500).optional().nullable(),
-  specType: z.string().trim().max(100).optional().default('draft-dflash'),
+  // A comma-separated list of llama.cpp `--spec-type` implementations
+  // (`ngram-map-k`, `draft-dflash,ngram-map-k`). Free vocabulary on purpose —
+  // fork builds ship their own — but shaped, since it lands in the launch argv.
+  // Empty is allowed and means "no speculative decoding".
+  specType: z.string().trim().max(100).regex(
+    /^$|^[A-Za-z0-9._-]+(?:\s*,\s*[A-Za-z0-9._-]+)*$/,
+    'specType must be a comma-separated list of llama.cpp spec-type names',
+  ).optional().default('draft-dflash'),
   port: z.coerce.number().int().min(1).max(65535).optional().default(PORTS.LLAMA_SERVER),
   host: z.string().trim().max(100).optional().default('127.0.0.1'),
   ctxSize: z.coerce.number().int().min(512).max(1048576).optional().default(32768),

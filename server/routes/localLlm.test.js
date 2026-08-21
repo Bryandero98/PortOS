@@ -511,11 +511,21 @@ describe('llama-server routes', () => {
   it('GET /api/local-llm/llama-server/status returns status with the weight presets', async () => {
     const res = await request(makeApp()).get('/api/local-llm/llama-server/status');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({
+    expect(res.body).toMatchObject({
       installed: true,
       running: false,
       presets: [{ id: 'test-preset', label: 'Test', specType: 'draft-dspark', model: null, draftModel: null }],
     });
+  });
+
+  it('GET /api/local-llm/llama-server/status publishes the drafter-free spec types', async () => {
+    // The card renders the picker from this list, so a launch with no drafter
+    // GGUF (`ngram-map-k`) has to be reachable without the user knowing the
+    // llama.cpp vocabulary by heart.
+    const res = await request(makeApp()).get('/api/local-llm/llama-server/status');
+    expect(res.body.specTypes.map((entry) => entry.id)).toEqual(
+      expect.arrayContaining(['ngram-map-k', 'draft-dflash', 'none']),
+    );
   });
 
   it('POST /api/local-llm/llama-server/download-model fetches one preset GGUF', async () => {

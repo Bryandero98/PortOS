@@ -184,6 +184,49 @@ describe('llamaServerManager', () => {
     expect(status.pid).toBe(12345);
   });
 
+  it('starts an ngram spec type with no drafter model at all', async () => {
+    // `ngram-*` implementations draft from the tokens already in context, so a
+    // drafter GGUF is not just optional — there is nothing to download.
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+
+    await startLlamaServer({ model: modelPath, specType: 'ngram-map-k' });
+
+    const startCall = execPm2Calls.find((c) => c[0] === 'start');
+    expect(startCall).not.toContain('--model-draft');
+    expect(startCall.slice(startCall.indexOf('--spec-type'), startCall.indexOf('--spec-type') + 2))
+      .toEqual(['--spec-type', 'ngram-map-k']);
+  });
+
+  it('passes a combined drafter + ngram spec type through as one comma-separated flag', async () => {
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+
+    await startLlamaServer({ model: modelPath, draftModel: draftPath, specType: 'draft-dflash, ngram-map-k' });
+
+    const startCall = execPm2Calls.find((c) => c[0] === 'start');
+    expect(startCall[startCall.indexOf('--spec-type') + 1]).toBe('draft-dflash,ngram-map-k');
+  });
+
+  it('drops only the drafter-based half of a combined spec type when no drafter is set', async () => {
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+
+    await startLlamaServer({ model: modelPath, specType: 'draft-dflash,ngram-map-k' });
+
+    const startCall = execPm2Calls.find((c) => c[0] === 'start');
+    expect(startCall[startCall.indexOf('--spec-type') + 1]).toBe('ngram-map-k');
+    const status = await getLlamaServerStatus();
+    // The card reports what is running, not what was asked for.
+    expect(status.config.specType).toBe('ngram-map-k');
+  });
+
+  it('omits --spec-type entirely when the only requested type needs an absent drafter', async () => {
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+
+    await startLlamaServer({ model: modelPath, specType: 'draft-dspark' });
+
+    const startCall = execPm2Calls.find((c) => c[0] === 'start');
+    expect(startCall).not.toContain('--spec-type');
+  });
+
   it('uses PortOS\'s extension port when no port is supplied', async () => {
     vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
 

@@ -85,6 +85,37 @@ llama-server \
   --n-gpu-layers 99
 ```
 
+### 2b. Drafter-free speculation (n-gram spec types)
+
+`--spec-type` is a **comma-separated list**, and only its `draft-*` entries need a
+drafter GGUF. The `ngram-*` implementations draft by pattern-matching the tokens
+already in the context window — no second model, no extra VRAM — which makes them
+worth having even when you have no drafter for your target:
+
+| Spec type | Needs a drafter? | What it drafts from |
+| --- | --- | --- |
+| `draft-dspark` / `draft-dflash` / `draft-simple` / `draft-mtp` | yes | a second model |
+| `ngram-map-k` / `ngram-map-k4v` | no | repeated n-grams in the live context |
+| `ngram-simple` / `ngram-mod` / `ngram-cache` | no | n-gram lookup over token history |
+
+Mixing the two families in one server is supported and is the usual reason to
+comma-separate — the drafter handles novel text while the n-gram map catches the
+long verbatim repeats an agent produces (re-emitted file contents, diffs, JSON):
+
+```bash
+llama-server \
+  -m models/Qwen3.8-27B-Q4_K_M.gguf \
+  --model-draft models/Qwen3.8-27B-DSpark-BF16.gguf \
+  --spec-type draft-dspark,ngram-map-k \
+  --port 5568 --host 127.0.0.1 --alias dflash
+```
+
+In PortOS, set this in **Settings → Local LLMs → Speculative Decoding →
+Advanced options → Spec Type** (the picker suggests the types above). Leaving the
+**Drafter Model** field empty is a supported configuration: PortOS drops the
+`draft-*` entries from the launch line — logging which ones — and starts with the
+`ngram-*` half. Vocabulary reference: llama.cpp `docs/speculative.md`.
+
 ### 3. Use in PortOS
 1. Navigate to **AI Providers** (`/ai`) or **Settings → Local LLMs**.
 2. Verify **OpenCode llama TUI** is enabled.
