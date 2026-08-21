@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NAV_COMMANDS, getNavAliasMap, resolveNavCommand } from './navManifest.js';
+import { PORTOS_APP_ID } from './appIdentity.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -501,13 +502,16 @@ function scanRoutes(appSrc) {
 
     // Redirects are recorded rather than dropped: a moved page's old path has to
     // keep landing somewhere, and that is only assertable if the scanner reports
-    // where each forwarding route points. `to` is read off the same line, so a
-    // `from`-only wrapper (CanonRedirect, UniverseRouteRedirect) records nothing
-    // rather than a bogus target.
+    // where each forwarding route points. `to` is read off the same line — as a
+    // plain string, or as a template literal whose only interpolation is the
+    // PortOS app id (`/apps/${PORTOS_APP_ID}/submodules`). A `from`-only wrapper
+    // (CanonRedirect) records nothing rather than a bogus target.
     const redirectElement = line.match(REDIRECT_ELEMENT);
     if (redirectElement) {
-      const to = line.match(/\bto="([^"]*)"/);
-      if (to) redirects.push({ from: absolute, to: to[1], element: redirectElement[1] });
+      const quoted = line.match(/\bto="([^"]*)"/);
+      const templated = line.match(/\bto=\{`([^`]*)`\}/);
+      const to = quoted?.[1] ?? templated?.[1]?.replace('${PORTOS_APP_ID}', PORTOS_APP_ID);
+      if (to) redirects.push({ from: absolute, to, element: redirectElement[1] });
       continue;
     }
 
@@ -585,6 +589,28 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
       // The dataset workbench was its own deep-linkable path, and a bookmark into
       // one dataset breaks just as silently as the index.
       '/media/training/:datasetId',
+      // The rest of the moves App.jsx already redirected but nothing declared.
+      // A pinned sidebar row is a STORED route path, so an undeclared move made
+      // the pin stop resolving and vanish on the next update — the client reads
+      // these to map a stored path onto where its page lives now.
+      '/city',                            // OpenWorld's rename (whole subtree)
+      '/devtools/submodules',
+      '/devtools/runs',
+      '/settings/contacts',
+      '/imessage',
+      '/system-health',
+      '/datadog',
+      '/jira',
+      '/image-gen',
+      '/video-gen',
+      '/media-history',
+      '/annotate', '/annotate/:mediaKey',
+      '/media/sprites', '/media/sprites/:id',
+      '/media/3d', '/media/3d/:id',
+      '/media/creative-director', '/media/creative-director/:id/:tab',
+      '/media/music-video', '/media/music-video/:projectId',
+      '/media/universe-builder', '/media/universe-builder/:universeId',
+      '/universe-builder', '/universe-builder/:universeId',
     ].filter((p) => !declared.has(p));
     expect(missing).toEqual([]);
   });
