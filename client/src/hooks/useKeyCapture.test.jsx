@@ -180,6 +180,40 @@ describe('useKeyCapture', () => {
     });
   });
 
+  // A press that was claimed must always be RELEASED, or a handler that began
+  // something on the keydown (the Morse keyer's tone) is stranded. The guards
+  // read state that can change while a key is held — focus moving onto a button,
+  // a dialog opening — so the keyup mirrors the keydown's decision instead of
+  // re-asking.
+  it('releases a claimed press even when focus moves to a button mid-hold', () => {
+    const down = vi.fn(() => true);
+    const up = vi.fn(() => true);
+    const { getByRole } = render(<Probe onKeyDown={down} onKeyUp={up} />);
+
+    fireEvent.keyDown(document.body, { code: 'Space', key: ' ' });
+    expect(down).toHaveBeenCalledTimes(1);
+
+    // Focus lands on a button while Space is still held, so the release arrives
+    // with a button target.
+    fireEvent.keyUp(getByRole('button', { name: 'act' }), { code: 'Space', key: ' ' });
+    expect(up).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not release a press it never claimed', () => {
+    const down = vi.fn(() => true);
+    const up = vi.fn(() => true);
+    const { getByRole } = render(<Probe onKeyDown={down} onKeyUp={up} />);
+    const button = getByRole('button', { name: 'act' });
+
+    // Both halves on the button: the browser owns this press end to end, and
+    // activating a <button> fires on the KEYUP — claiming it would cancel that.
+    fireEvent.keyDown(button, { code: 'Space', key: ' ' });
+    fireEvent.keyUp(button, { code: 'Space', key: ' ' });
+
+    expect(down).not.toHaveBeenCalled();
+    expect(up).not.toHaveBeenCalled();
+  });
+
   it('reads the latest handler without re-subscribing', () => {
     const first = vi.fn(() => true);
     const second = vi.fn(() => true);

@@ -37,6 +37,10 @@ const CLAIM_GUARDS = { ignoreRepeat: false, allowChords: true };
  *   lives INSIDE a dialog passes `enabledInDialog: true` to opt back in. Both the
  *   option name and its default mirror `useKeyboardShortcuts`.
  *
+ * The guards are evaluated on the KEYDOWN only; the keyup half mirrors that
+ * decision, so a press that was claimed is always released, even if focus or an
+ * open dialog changed while the key was held.
+ *
  * Handlers are read through refs, so inline arrows recreated every render (the
  * common call-site shape) don't tear down and re-add the listeners; only
  * `enabled` flips the subscription. A handler that is absent entirely doesn't
@@ -53,6 +57,9 @@ export default function useKeyCapture({ enabled = true, enabledInDialog = false,
   const upRef = useRef(onKeyUp);
   downRef.current = onKeyDown;
   upRef.current = onKeyUp;
+  // Keys whose keydown the guards turned away, so the matching keyup can make
+  // the same call — see the mirroring note below.
+  const ignoredDownRef = useRef(new Set());
 
   // Presence, not identity — a call site that always passes a handler keeps one
   // stable subscription no matter how often its inline arrow is recreated.
@@ -62,20 +69,35 @@ export default function useKeyCapture({ enabled = true, enabledInDialog = false,
   useEffect(() => {
     if (!enabled) return undefined;
     const guards = { ...CLAIM_GUARDS, enabledInDialog };
-    const claim = (ref) => (e) => {
-      if (shouldIgnoreGlobalKey(e, guards)) return;
+    const ignoredDown = ignoredDownRef.current;
+    // The keyup half MIRRORS whatever the keydown decided rather than
+    // re-evaluating the guards, because the guards read state that can change
+    // mid-press. Native button activation needs the keydown AND the keyup on the
+    // same element, so re-asking on keyup gets it wrong in both directions: Tab
+    // (or a click) onto a button while Space is held would swallow the release
+    // and strand a handler that began a press on the keydown — a Morse keyer
+    // stuck transmitting — while a dialog opening mid-press would do the same.
+    const claim = (ref, isDown) => (e) => {
+      if (isDown) {
+        if (shouldIgnoreGlobalKey(e, guards)) { ignoredDown.add(e.code || e.key); return; }
+        ignoredDown.delete(e.code || e.key);
+      } else if (ignoredDown.delete(e.code || e.key)) {
+        return;
+      }
       if (ref.current?.(e) !== true) return;
       e.preventDefault();
       // Subsumes stopPropagation: also skips the remaining listeners on window.
       e.stopImmediatePropagation();
     };
-    const down = hasDown ? claim(downRef) : null;
-    const up = hasUp ? claim(upRef) : null;
+    const down = hasDown ? claim(downRef, true) : null;
+    const up = hasUp ? claim(upRef, false) : null;
     if (down) window.addEventListener('keydown', down, true);
     if (up) window.addEventListener('keyup', up, true);
     return () => {
       if (down) window.removeEventListener('keydown', down, true);
       if (up) window.removeEventListener('keyup', up, true);
+      // A key held across an unsubscribe has no keyup to clear it.
+      ignoredDown.clear();
     };
   }, [enabled, enabledInDialog, hasDown, hasUp]);
 }

@@ -208,7 +208,7 @@ export default function RapidReader({
           {onClose && (
             <button
               type="button"
-              onClick={onClose}
+              onClick={onClose} {...noPointerFocusProps}
               className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg border border-port-border text-gray-400 hover:text-white hover:bg-port-bg/60 ml-1"
               title="Close (Esc)"
               aria-label="Close"
@@ -235,7 +235,7 @@ export default function RapidReader({
           <div className="flex items-center gap-1 border border-port-border rounded-md overflow-hidden">
             <button
               type="button"
-              onClick={() => setChunkSize(1)}
+              onClick={() => setChunkSize(1)} {...noPointerFocusProps}
               className={`px-2 py-1 text-xs ${chunkSize === 1 ? 'bg-port-accent/20 text-port-accent' : 'text-gray-400 hover:text-white'}`}
               aria-pressed={chunkSize === 1}
               aria-label="Show one word at a time"
@@ -244,7 +244,7 @@ export default function RapidReader({
             </button>
             <button
               type="button"
-              onClick={() => setChunkSize(2)}
+              onClick={() => setChunkSize(2)} {...noPointerFocusProps}
               className={`px-2 py-1 text-xs ${chunkSize === 2 ? 'bg-port-accent/20 text-port-accent' : 'text-gray-400 hover:text-white'}`}
               aria-pressed={chunkSize === 2}
               aria-label="Show two words at a time"
