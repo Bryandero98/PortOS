@@ -695,6 +695,65 @@ describe('selectSweepTargets', () => {
     const targets = selectSweepTargets({ assessments: [stale], unassessed, scope: 'everything-please' });
     expect(targets.map((t) => t.modelId)).toEqual(['new-model']);
   });
+
+  // ---- the second dimension ------------------------------------------------
+  // `tunings` is what makes a TUNING sweep a case of this selector rather than a
+  // queue of its own: same dedupe, same ordering, same consent-count guarantee.
+  const grid = [
+    { tuning: {}, key: '', label: null },
+    { tuning: { flashAttn: true }, key: 'flashAttn=true', label: 'Flash attention on' },
+  ];
+
+  it('restricts the queue to the named model, whatever the scope would have picked', () => {
+    const targets = selectSweepTargets({
+      assessments: [stale, fresh], unassessed, scope: 'unmeasured',
+      only: { backend: 'ollama', modelId: 'fresh-model' },
+    });
+    expect(targets.map((t) => t.modelId)).toEqual(['fresh-model']);
+  });
+
+  it('returns nothing for a model no record or listing names', () => {
+    const targets = selectSweepTargets({
+      assessments: [stale], unassessed, scope: 'all',
+      only: { backend: 'ollama', modelId: 'ghost' },
+    });
+    expect(targets).toEqual([]);
+  });
+
+  it('crosses every selected model with the grid, one measurement per pair', () => {
+    const targets = selectSweepTargets({ assessments: [], unassessed, scope: 'unmeasured', tunings: grid });
+    expect(targets.map((t) => `${t.modelId}@${t.tuningKey}`))
+      .toEqual(['new-model@', 'new-model@flashAttn=true']);
+  });
+
+  // The grid REPLACES each record's own tuning — that is the whole point of the
+  // dimension. Keeping the stored tuning would measure the same configuration
+  // under every variant's label.
+  it('replaces a record\'s stored tuning with the grid variant', () => {
+    const [baseline, variant] = selectSweepTargets({
+      assessments: [stale], unassessed: [], scope: 'stale', tunings: grid,
+    });
+    expect(baseline.tuning).toEqual({});
+    expect(baseline.tuningLabel).toBeNull();
+    expect(variant.tuning).toEqual({ flashAttn: true });
+    expect(variant.tuningLabel).toBe('Flash attention on');
+  });
+
+  // A model that reached the cross under two stored tunings is still ONE model:
+  // measuring each variant twice would put the same configuration on both sides
+  // of the comparison table.
+  it('crosses a model held under several stored tunings only once', () => {
+    const other = { ...stale, tuningKey: 'ctx=4096', tuning: { numCtx: 4096 } };
+    const targets = selectSweepTargets({
+      assessments: [stale, other], unassessed: [], scope: 'stale', tunings: grid,
+    });
+    expect(targets).toHaveLength(2);
+  });
+
+  it('leaves the queue alone for an empty grid rather than emptying it', () => {
+    const targets = selectSweepTargets({ assessments: [], unassessed, scope: 'unmeasured', tunings: [] });
+    expect(targets.map((t) => t.modelId)).toEqual(['new-model']);
+  });
 });
 
 describe('summarizeSweepScopes', () => {

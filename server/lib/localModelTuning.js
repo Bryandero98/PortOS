@@ -50,6 +50,15 @@
  * is kept because a runtime that does honour per-request knobs (vLLM) is the
  * likely next entry.
  *
+ * ## Sweepable knobs (`sweep` / `sweepWith`)
+ *
+ * A knob may also name the values a machine-driven sweep should TRY:
+ * `sweep: [value, …]` are the candidates, and `sweepWith: { otherKnob: value }`
+ * names co-knobs the runtime requires for a candidate to take effect at all.
+ * `tuningGridFor` builds the candidate grid from those fields — see its comment
+ * for why the grid is one knob at a time and what a missing `sweep` means. A
+ * knob with no `sweep` is simply never varied by a sweep.
+ *
  * vLLM therefore declares no knobs: PortOS does not start it — it is a container
  * from the shipped compose stack, so there is no launch line to put a flag on.
  * Add knobs there once PortOS manages that container's lifecycle.
@@ -141,11 +150,14 @@ const RAW_SPECS = {
     { id: 'ctxSize', label: 'Context size', type: 'number', config: true, min: 512, max: 1048576, unit: 'tokens', hint: 'KV cache is allocated for the whole window up front — a larger one costs memory even when prompts are short.' },
     { id: 'nGpuLayers', label: 'GPU layers', type: 'number', config: true, min: 0, max: 999, hint: 'Layers offloaded to the GPU. Fewer layers frees VRAM for a bigger context at the cost of throughput.' },
     { id: 'parallel', label: 'Parallel slots', type: 'number', config: true, min: 1, max: 16, hint: 'Request slots llama-server reserves VRAM for. It divides the context window across them — 1 is right for a TUI agent (one long session). Raising it shrinks per-request context.' },
-    { id: 'batchSize', label: 'Batch size', type: 'number', config: true, min: 1, max: 8192, hint: 'Logical prompt batch (-b). Raising it speeds up prefill on long prompts and raises peak memory.' },
-    { id: 'ubatchSize', label: 'Micro-batch size', type: 'number', config: true, min: 1, max: 8192, hint: 'Physical micro-batch (-ub). The single knob that most often moves long-context throughput.' },
+    { id: 'batchSize', label: 'Batch size', type: 'number', config: true, min: 1, max: 8192, sweep: [4096], hint: 'Logical prompt batch (-b). Raising it speeds up prefill on long prompts and raises peak memory.' },
+    { id: 'ubatchSize', label: 'Micro-batch size', type: 'number', config: true, min: 1, max: 8192, sweep: [1024], hint: 'Physical micro-batch (-ub). The single knob that most often moves long-context throughput.' },
     { id: 'threads', label: 'CPU threads', type: 'number', config: true, min: 1, max: 256, hint: 'Threads for the CPU-resident layers. More is not always faster once you pass the physical core count.' },
-    { id: 'flashAttn', label: 'Flash attention', type: 'boolean', config: true, hint: 'Fused attention kernel. Usually faster and lighter on memory, but not every build/GPU supports it.' },
-    { id: 'cacheTypeK', label: 'KV cache type (K)', type: 'enum', config: true, options: CACHE_TYPES, hint: 'Quantizing the key cache buys context length with a little quality.' },
+    { id: 'flashAttn', label: 'Flash attention', type: 'boolean', config: true, sweep: [true], hint: 'Fused attention kernel. Usually faster and lighter on memory, but not every build/GPU supports it.' },
+    { id: 'cacheTypeK', label: 'KV cache type (K)', type: 'enum', config: true, options: CACHE_TYPES, sweep: ['q8_0'], hint: 'Quantizing the key cache buys context length with a little quality.' },
+    // No `sweep` on purpose: llama.cpp refuses a quantized V cache unless flash
+    // attention is on, so a V-only variant would fail to launch rather than
+    // measure anything. The `flashAttn` variant above is the honest single knob.
     { id: 'cacheTypeV', label: 'KV cache type (V)', type: 'enum', config: true, options: CACHE_TYPES, hint: 'Quantizing the value cache buys context length with a little quality.' },
     { id: 'draftMax', label: 'Draft tokens', type: 'number', config: true, min: 0, max: 64, hint: 'Speculative-decoding lookahead. Only does anything when a drafter model is loaded.' },
   ],
@@ -155,8 +167,11 @@ const RAW_SPECS = {
   // unknown fields, and the model still loads at the daemon default.
   ollama: [
     { id: 'numCtx', label: 'Context size', type: 'number', env: 'OLLAMA_CONTEXT_LENGTH', min: 512, max: 1048576, unit: 'tokens', hint: 'The window every model loads with. Larger costs VRAM up front, and past what fits Ollama offloads to CPU instead of failing.' },
-    { id: 'flashAttention', label: 'Flash attention', type: 'boolean', env: 'OLLAMA_FLASH_ATTENTION', hint: 'Fused attention kernel. Usually faster and lighter on memory, and a prerequisite for a quantized KV cache.' },
-    { id: 'kvCacheType', label: 'KV cache type', type: 'enum', env: 'OLLAMA_KV_CACHE_TYPE', options: CACHE_TYPES, hint: 'Quantizing the KV cache buys context length with a little quality. Ollama honours it only with flash attention on.' },
+    { id: 'flashAttention', label: 'Flash attention', type: 'boolean', env: 'OLLAMA_FLASH_ATTENTION', sweep: [true], hint: 'Fused attention kernel. Usually faster and lighter on memory, and a prerequisite for a quantized KV cache.' },
+    // `sweepWith` rather than a bare `sweep`: Ollama honours OLLAMA_KV_CACHE_TYPE
+    // ONLY with flash attention on, so a kv-only variant would re-measure the
+    // baseline under a label claiming otherwise — see the grid note below.
+    { id: 'kvCacheType', label: 'KV cache type', type: 'enum', env: 'OLLAMA_KV_CACHE_TYPE', options: CACHE_TYPES, sweep: ['q8_0'], sweepWith: { flashAttention: true }, hint: 'Quantizing the KV cache buys context length with a little quality. Ollama honours it only with flash attention on.' },
     { id: 'numParallel', label: 'Parallel requests', type: 'number', env: 'OLLAMA_NUM_PARALLEL', min: 1, max: 16, hint: 'Request slots the daemon serves at once. Each slot claims its own share of the context window, so raising it shrinks the window per request.' },
   ],
   // LM Studio's load-time settings, applied by reloading the model through
@@ -164,7 +179,7 @@ const RAW_SPECS = {
   // no CLI flag, so they are not offered — see the transport rule above.
   lmstudio: [
     { id: 'contextLength', label: 'Context length', type: 'number', cli: '--context-length', min: 512, max: 1048576, unit: 'tokens', hint: 'The window the model is loaded with. LM Studio refuses a load that does not fit rather than silently shrinking it.' },
-    { id: 'gpuOffload', label: 'GPU offload', type: 'number', cli: '--gpu', min: 0, max: 1, step: 0.05, hint: 'Fraction of layers on the GPU (0 = CPU only, 1 = full offload). Lower frees VRAM for a bigger context at the cost of throughput.' },
+    { id: 'gpuOffload', label: 'GPU offload', type: 'number', cli: '--gpu', min: 0, max: 1, step: 0.05, sweep: [1], hint: 'Fraction of layers on the GPU (0 = CPU only, 1 = full offload). Lower frees VRAM for a bigger context at the cost of throughput.' },
     { id: 'parallel', label: 'Parallel requests', type: 'number', cli: '--parallel', min: 1, max: 16, hint: 'Predictions the model runs at once. Higher total throughput, slower per prediction.' },
   ],
   // `mtplx serve` flags, applied by relaunching the PM2 daemon on a new command
@@ -285,6 +300,73 @@ export function describeTuning(runtimeId, tuning) {
     .filter((spec) => tuning?.[spec.id] !== undefined && tuning?.[spec.id] !== null)
     .map((spec) => `${spec.label} ${formatValue(spec, tuning[spec.id])}`);
   return parts.length ? parts.join(' · ') : null;
+}
+
+/**
+ * Default cap on how many tunings ONE sweep will queue, baseline included.
+ *
+ * Every variant is a full measurement — a daemon restart plus one bounded
+ * generation per context size, so minutes of GPU each. Six is the point where a
+ * sweep is still something you can start and read the same evening.
+ */
+export const DEFAULT_TUNING_GRID_VARIANTS = 6;
+
+/**
+ * The knob combinations worth measuring for one runtime: backend defaults first,
+ * then ONE variant per knob that declares a `sweep` candidate.
+ *
+ * ## Why one knob at a time
+ *
+ * A full cross-product of the llama.cpp catalog is thousands of runs at minutes
+ * each. A single-knob grid answers the question the comparison table actually
+ * reports — "was that knob worth it?", via `compareTunings`'s `deltaPercent` —
+ * and the user stacks winners by re-sweeping from the one that won.
+ *
+ * The ONE exception is a knob whose runtime documents a hard prerequisite:
+ * `sweepWith` names the co-knobs that must be set for the candidate to take
+ * effect (Ollama honours `OLLAMA_KV_CACHE_TYPE` only with flash attention on).
+ * Without it that variant would re-measure the baseline under a label claiming
+ * a quantized cache — a wrong answer, which is worse than a two-knob variant.
+ *
+ * A knob with no `sweep` is deliberately absent from the grid: `ctxSize` changes
+ * what is being measured rather than how fast it runs, `threads`/`nGpuLayers`
+ * have no machine-independent candidate, and a quantized V cache does not launch
+ * without flash attention.
+ *
+ * The returned length IS the run count, so a caller can name it in a consent
+ * gate before anything starts — which the AI Provider Usage Policy (root
+ * CLAUDE.md) requires of any batch of provider calls. `maxVariants` truncates in
+ * catalog order; nothing here reports the grid as exhaustive. It is an
+ * in-process option only — there is no wire path that shrinks the grid, because
+ * a request that could would run a different count than consent named.
+ *
+ * @param {string} runtimeId
+ * @param {{ maxVariants?: number }} [options]
+ * @returns {Array<{ key: string, label: string|null, tuning: object }>} always at
+ *   least the baseline — `key: ''`, `label: null`, meaning "backend defaults".
+ *   A runtime with no sweepable knobs returns exactly that one entry, which a
+ *   caller must read as "nothing to compare here", not as a one-variant sweep.
+ */
+export function tuningGridFor(runtimeId, { maxVariants = DEFAULT_TUNING_GRID_VARIANTS } = {}) {
+  const cap = Number.isFinite(maxVariants) && maxVariants >= 1 ? Math.floor(maxVariants) : DEFAULT_TUNING_GRID_VARIANTS;
+  // The baseline is not optional: without it every variant's `deltaPercent` is
+  // relative to another variant, and "was that knob worth it?" has no answer.
+  const grid = [{ key: '', label: null, tuning: {} }];
+  const seen = new Set(['']);
+  for (const spec of tuningSpecsFor(runtimeId)) {
+    if (!Array.isArray(spec.sweep)) continue;
+    for (const candidate of spec.sweep) {
+      if (grid.length >= cap) return grid;
+      // Through `normalizeTuning` like any other tuning, so a candidate that the
+      // catalog would clamp or reject cannot enter the grid unvalidated.
+      const tuning = normalizeTuning(runtimeId, { ...(spec.sweepWith || {}), [spec.id]: candidate });
+      const key = tuningSignature(tuning);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      grid.push({ key, label: describeTuning(runtimeId, tuning), tuning });
+    }
+  }
+  return grid;
 }
 
 /**

@@ -38,9 +38,13 @@ vi.mock('./providers.js', () => ({ getAllProviders: (...args) => getAllProviders
 
 const getLlamaServerEndpoint = vi.fn();
 const relaunchLlamaServerWithTuning = vi.fn();
+const captureLlamaServerConfig = vi.fn(async () => null);
+const restoreLlamaServerConfig = vi.fn(async () => ({ restored: false, reason: 'nothing was captured' }));
 vi.mock('./llamaServerManager.js', () => ({
   getLlamaServerEndpoint: (...args) => getLlamaServerEndpoint(...args),
   relaunchLlamaServerWithTuning: (...args) => relaunchLlamaServerWithTuning(...args),
+  captureLlamaServerConfig: (...args) => captureLlamaServerConfig(...args),
+  restoreLlamaServerConfig: (...args) => restoreLlamaServerConfig(...args),
 }));
 
 // MTPLX's knobs are `mtplx serve` flags, so applying one relaunches the PM2
@@ -793,7 +797,7 @@ describe('tuning', () => {
     const result = await svc.runAssessment({
       backend: 'llama', modelId: 'dflash', contextTokens: [512], tuning: { ubatchSize: 512 },
     });
-    expect(relaunchLlamaServerWithTuning).toHaveBeenCalledWith({ ubatchSize: 512 });
+    expect(relaunchLlamaServerWithTuning).toHaveBeenCalledWith({ ubatchSize: 512 }, { reset: false });
     expect(result.tuningApplied).toBe(true);
     expect(result.tuningLabel).toBe('Micro-batch size 512');
   });
@@ -863,11 +867,38 @@ describe('tuning', () => {
     expect(result.tuningNotApplied).toMatch(/unrecognized arguments/);
   });
 
+  // The user's launch flags live only in the running llama-server process, so an
+  // ordinary measurement must never touch them. A reset is something a SWEEP
+  // asks for, and only a sweep, because only a sweep puts the configuration back.
   it('never relaunches llama-server for an untuned run', async () => {
     probeOpenAiModels.mockResolvedValue({ reachable: true, models: ['dflash'], error: null });
     runEndpointLlmTest.mockResolvedValue(okRun());
     await svc.runAssessment({ backend: 'llama', modelId: 'dflash', contextTokens: [512] });
     expect(relaunchLlamaServerWithTuning).not.toHaveBeenCalled();
+  });
+
+  // The baseline variant of a tuning sweep: no knobs, which only means something
+  // when the caller asked for a complete tuning.
+  it('applies an empty tuning as a reset when the caller asked for one', async () => {
+    probeOpenAiModels.mockResolvedValue({ reachable: true, models: ['dflash'], error: null });
+    runEndpointLlmTest.mockResolvedValue(okRun());
+    await svc.runAssessment({ backend: 'llama', modelId: 'dflash', contextTokens: [512], resetTuning: true });
+    expect(relaunchLlamaServerWithTuning).toHaveBeenCalledWith({}, { reset: true });
+  });
+
+  // Only a runtime PortOS can reset AND put back may be swept — otherwise the
+  // sweep leaves its knobs set for good and every later "backend defaults"
+  // reading is taken under them (#4763).
+  it('reports which runtimes a tuning sweep may drive', () => {
+    expect(svc.isTuningSweepable('llama')).toBe(true);
+    expect(svc.isTuningSweepable('ollama')).toBe(false);
+    expect(svc.isTuningSweepable('lmstudio')).toBe(false);
+    expect(svc.isTuningSweepable('mtplx')).toBe(false);
+  });
+
+  it('captures and restores nothing for a runtime with no launch state', async () => {
+    expect(await svc.captureLaunchState('ollama')).toBeNull();
+    expect(await svc.restoreLaunchState('ollama', null)).toEqual({ restored: false, reason: 'nothing to restore' });
   });
 
   it('deletes one tuning of a model and leaves the others', async () => {

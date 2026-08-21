@@ -254,6 +254,12 @@ export const getLocalLlmAssessmentSweep = (options) =>
 
 // `scope` is 'unmeasured' | 'stale' | 'all'. 409s when a sweep is already
 // running or the scope covers nothing.
+//
+// For a TUNING sweep the payload is `{ backend, modelId, tunings: true }` —
+// one model across the knob grid its runtime declares. `tunings` is the ASK,
+// never the grid: the server derives which knob sets that means, and
+// `report.runtimes[].tuningGrid` is that same list shipped for the consent gate
+// to count. 409s when the runtime has no knob PortOS can sweep.
 export const startLocalLlmAssessmentSweep = (payload, options) =>
   request('/local-llm/assessments/sweep', { method: 'POST', body: JSON.stringify(payload), ...options });
 

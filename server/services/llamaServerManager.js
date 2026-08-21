@@ -17,6 +17,7 @@ import { parseSpecTypes, isDraftSpecType } from '../lib/specDecodePresets.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { isPortInUse } from '../lib/platform.js';
 import { PORTS } from '../lib/ports.js';
+import { tuningSpecsFor } from '../lib/localModelTuning.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { execPm2, getAppStatusStrict, clearJlistCache, getSavedProcessNames } from './pm2.js';
 
@@ -481,12 +482,110 @@ async function waitForEndpoint(endpoint) {
  * puts the PREVIOUS configuration back, because a tuning sweep is expected to
  * produce launch lines that don't work and must not leave the daemon down.
  *
+ * `reset` makes the request the COMPLETE tuning rather than a patch: every
+ * sweepable knob it omits goes back to off. A SWEEP needs that — merging onto
+ * the previous launch line is what made its second variant inherit the first
+ * variant's flags (`-b 4096` then `-ub 1024` launching with both, while the
+ * record's label claimed one knob and `deltaPercent` credited an accumulated
+ * line to a single change) — and with `reset` an EMPTY tuning becomes a real
+ * instruction, "run backend defaults", which is the baseline every variant is
+ * compared against.
+ *
+ * It is OPT-IN, and must stay that way. The user's launch flags live only in the
+ * running process (the LLMs page seeds its form from hardcoded defaults, not
+ * from what is running), so a reset the caller did not ask for destroys the only
+ * copy of a configuration they chose. Only a sweep — which captures the
+ * configuration first and puts it back afterwards — may request one.
+ *
+ * The reset covers the knobs llama-server leaves OFF the launch line when they
+ * are absent. `ctxSize`, `nGpuLayers` and `parallel` are deliberately excluded:
+ * every one of them is emitted unconditionally with a real launcher default
+ * rather than having an unset state, the user picks them on the LLMs page, and
+ * no sweep varies them — "clearing" them would just substitute the default and
+ * silently resize the window (or the slot count) out from under a running
+ * server.
+ *
  * @param {object} tuning launch knobs from `lib/localModelTuning.js`
+ * @param {{reset?: boolean}} [options] `reset` clears every sweepable knob the
+ *   tuning does not name. Never pass it from an ordinary measurement.
  * @returns {Promise<{applied: boolean, reason: string|null, config: object|null}>}
  */
-export async function relaunchLlamaServerWithTuning(tuning = {}) {
-  const knobs = Object.entries(tuning).filter(([, v]) => v !== null && v !== undefined);
-  if (knobs.length === 0) {
+const LAUNCHER_OWNED_KNOBS = new Set(['ctxSize', 'nGpuLayers', 'parallel']);
+
+// Derived from the catalog rather than listed again here, so a knob added to
+// llama.cpp's spec list is reset by default instead of quietly persisting into
+// the next variant of a sweep. The value each knob resets TO is the one
+// `startLlamaServer` reads as "leave the flag off the launch line".
+const CLEARED_TUNING = Object.freeze(Object.fromEntries(
+  tuningSpecsFor('llama')
+    .filter((spec) => spec.config && !LAUNCHER_OWNED_KNOBS.has(spec.id))
+    .map((spec) => [spec.id, spec.type === 'boolean' ? false : null])
+));
+
+// `undefined`, `null`, and a false toggle all render the same launch line — the
+// flag is simply absent — so they must compare equal, or every untuned run on an
+// untuned server would look like a change and pay for a restart.
+const asLaunched = (value) => (value === undefined || value === null || value === false ? null : value);
+
+/**
+ * The launch configuration currently in effect, or `null` when PortOS is not the
+ * one running llama-server (nothing to put back, and nothing it may touch).
+ *
+ * Paired with `restoreLlamaServerConfig`: a tuning sweep relaunches the daemon
+ * once per variant and would otherwise leave the last variant's flags in place
+ * with the user's own flags cleared — and the running process is the only record
+ * of what they chose.
+ */
+export async function captureLlamaServerConfig() {
+  const status = await getLlamaServerStatus();
+  return status.running && status.managed && status.config?.model ? status.config : null;
+}
+
+/**
+ * Put a captured launch configuration back, exactly as it was.
+ *
+ * A no-op for `null` (nothing was captured) and for a configuration already in
+ * effect, so a sweep that never actually changed anything costs no restart.
+ *
+ * A daemon that is DOWN is the case a restore matters most, not one to decline:
+ * a sweep is expected to produce launch lines that do not work, and when the
+ * failing one's own fallback could not get the previous configuration up either,
+ * llama-server is stopped and the install's `llama` provider is dead until
+ * somebody notices. The captured configuration is a known-good launch line and
+ * nothing holds the port (`startLlamaServer` refuses if anything does), so it is
+ * started rather than refused. Only a server that is running and NOT
+ * PortOS-managed is off limits — that one belongs to somebody else.
+ */
+export async function restoreLlamaServerConfig(config) {
+  if (!config?.model) return { restored: false, reason: 'nothing was captured' };
+  const status = await getLlamaServerStatus();
+  if (status.running && !status.managed) {
+    return { restored: false, reason: 'llama-server is now running outside PortOS, so its launch line is not PortOS\'s to change' };
+  }
+
+  if (status.running) {
+    const differs = Object.keys(CLEARED_TUNING).some((id) => asLaunched(status.config?.[id]) !== asLaunched(config[id]));
+    if (!differs) return { restored: true, reason: null };
+    await stopLlamaServer();
+  }
+  await waitForPortRelease(config.port ?? PORTS.LLAMA_SERVER);
+
+  console.log('🦙 llama-server: restoring the launch configuration the sweep started from');
+  const started = await startLlamaServer(config).catch((err) => {
+    console.error(`❌ llama-server: could not restore the launch configuration: ${err.message}`);
+    return null;
+  });
+  return {
+    restored: Boolean(started),
+    reason: started ? null : 'llama-server would not start with the captured configuration, and is now stopped',
+  };
+}
+
+export async function relaunchLlamaServerWithTuning(tuning = {}, { reset = false } = {}) {
+  // Without a reset an empty tuning asks for nothing, so there is nothing to do
+  // — and answering before touching PM2 keeps an ordinary untuned measurement
+  // free of a status round trip.
+  if (!reset && Object.values(tuning).every((v) => v === null || v === undefined)) {
     return { applied: false, reason: 'no launch knobs were requested', config: currentConfig };
   }
 
@@ -503,8 +602,22 @@ export async function relaunchLlamaServerWithTuning(tuning = {}) {
   }
 
   const previous = status.config;
-  const next = { ...previous, ...tuning };
-  console.log(`🦙 llama-server: relaunching to apply tuning (${knobs.map(([k, v]) => `${k}=${v}`).join(', ')})`);
+  const next = { ...previous, ...(reset ? CLEARED_TUNING : {}), ...tuning };
+  // Nothing to do when the daemon is ALREADY running this exact tuning — the
+  // common case for an untuned measurement on an untuned server, and the reason
+  // making an empty tuning meaningful costs a plain assessment nothing.
+  //
+  // Compared across the cleared set UNION whatever the request names, not the
+  // cleared set alone: a request for a launcher-owned knob (`ctxSize`,
+  // `nGpuLayers`) changes nothing in the cleared set, and judging on that would
+  // report a context-size change as applied while the server kept serving the
+  // old window.
+  const compared = new Set([...Object.keys(CLEARED_TUNING), ...Object.keys(tuning || {})]);
+  const changed = [...compared].some((id) => asLaunched(next[id]) !== asLaunched(previous[id]));
+  if (!changed) return { applied: true, reason: null, config: previous };
+
+  const knobs = Object.entries(tuning).filter(([, v]) => v !== null && v !== undefined);
+  console.log(`🦙 llama-server: relaunching to apply tuning (${knobs.length ? knobs.map(([k, v]) => `${k}=${v}`).join(', ') : 'backend defaults'})`);
   await stopLlamaServer();
   await waitForPortRelease(next.port ?? PORTS.LLAMA_SERVER);
 

@@ -4,6 +4,8 @@ import {
   startLlamaServer,
   stopLlamaServer,
   relaunchLlamaServerWithTuning,
+  captureLlamaServerConfig,
+  restoreLlamaServerConfig,
   installLlamaServer,
   _resetLlamaServerStateForTests,
   LLAMA_APP,
@@ -478,6 +480,18 @@ describe('llamaServerManager', () => {
     // probe instead: "reachable" has to track the fake PM2 process, or the
     // relaunch can never observe the server it just started answering — and the
     // new `online` check would report every success as not-applied.
+    // The launch line of the most recent PM2 start — everything after the `--`
+    // separator, which is what llama-server actually received.
+    const launchArgs = () => {
+      const start = [...execPm2Calls].reverse().find((c) => c[0] === 'start') || [];
+      const dash = start.indexOf('--');
+      return dash === -1 ? [] : start.slice(dash + 1);
+    };
+
+    // Did the daemon actually bounce? Reading the status tails PM2's logs, which
+    // is not a restart — only a stop/start pair is.
+    const restarted = () => execPm2Calls.some((c) => c[0] === 'start' || c[0] === 'delete');
+
     const started = async () => {
       vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
       vi.spyOn(openAiModelsProbe, 'probeOpenAiModels')
@@ -492,12 +506,160 @@ describe('llamaServerManager', () => {
       expect(result.reason).toMatch(/not running/);
     });
 
+    // The user's launch flags live only in the running process, so an ordinary
+    // measurement must never reset them. Without `reset` an empty tuning asks
+    // for nothing and is answered before PM2 is touched at all.
     it('refuses an empty tuning rather than restarting for no reason', async () => {
       await started();
       execPm2Calls = [];
       const result = await relaunchLlamaServerWithTuning({});
       expect(result.applied).toBe(false);
-      expect(execPm2Calls).toEqual([]);
+      expect(restarted()).toBe(false);
+    });
+
+    // The regression this guards: a reset the caller did not ask for wipes the
+    // only copy of a configuration the user chose on the LLMs page.
+    it('keeps the flags a tuning does not name unless a reset was requested', async () => {
+      await started();
+      await relaunchLlamaServerWithTuning({ batchSize: 4096, flashAttn: true }, { reset: true });
+      const result = await relaunchLlamaServerWithTuning({ ubatchSize: 1024 });
+
+      expect(result.config.ubatchSize).toBe(1024);
+      expect(result.config.batchSize).toBe(4096);
+      expect(result.config.flashAttn).toBe(true);
+    });
+
+    // The bug `reset` exists for: variants applied in sequence accumulated, so
+    // the second launched with the first one's flags while its record's label
+    // claimed a single knob — and `compareTunings` credited the change to it.
+    it('clears the knobs a reset tuning does not name, so variants cannot accumulate', async () => {
+      await started();
+      await relaunchLlamaServerWithTuning({ batchSize: 4096 }, { reset: true });
+      execPm2Calls = [];
+      const result = await relaunchLlamaServerWithTuning({ ubatchSize: 1024 }, { reset: true });
+
+      expect(result.applied).toBe(true);
+      expect(result.config.ubatchSize).toBe(1024);
+      expect(result.config.batchSize).toBeNull();
+      expect(launchArgs()).not.toContain('4096');
+    });
+
+    // The baseline variant of a sweep: no knobs at all, which only means
+    // something when the caller asked for a complete tuning.
+    it('resets a tuned server back to backend defaults for an empty reset tuning', async () => {
+      await started();
+      await relaunchLlamaServerWithTuning({ ubatchSize: 1024, flashAttn: true }, { reset: true });
+      execPm2Calls = [];
+      const result = await relaunchLlamaServerWithTuning({}, { reset: true });
+
+      expect(result.applied).toBe(true);
+      expect(result.config.ubatchSize).toBeNull();
+      expect(result.config.flashAttn).toBe(false);
+      expect(launchArgs()).not.toContain('--flash-attn');
+    });
+
+    it('reports a reset already in effect without restarting', async () => {
+      await started();
+      execPm2Calls = [];
+      const result = await relaunchLlamaServerWithTuning({}, { reset: true });
+      expect(result.applied).toBe(true);
+      expect(restarted()).toBe(false);
+    });
+
+    // A sweep rewrites the launch line once per variant, and the running daemon
+    // is the only record of the flags the user chose.
+    it('captures and restores the launch configuration a sweep started from', async () => {
+      await started();
+      await relaunchLlamaServerWithTuning({ ubatchSize: 512, flashAttn: true }, { reset: true });
+      const captured = await captureLlamaServerConfig();
+
+      await relaunchLlamaServerWithTuning({ batchSize: 4096 }, { reset: true });
+      expect((await getLlamaServerStatus()).config.flashAttn).toBe(false);
+
+      const result = await restoreLlamaServerConfig(captured);
+      expect(result.restored).toBe(true);
+      const back = (await getLlamaServerStatus()).config;
+      expect(back.ubatchSize).toBe(512);
+      expect(back.flashAttn).toBe(true);
+      expect(back.batchSize).toBeNull();
+    });
+
+    // A sweep is EXPECTED to produce launch lines that do not work. When the
+    // failing variant's own fallback could not get the previous configuration up
+    // either, llama-server is stopped and the install's provider is dead —
+    // which is when a restore matters most, not a reason to decline it.
+    it('starts from the captured configuration when the daemon is down', async () => {
+      await started();
+      const captured = await captureLlamaServerConfig();
+      await stopLlamaServer();
+      expect((await getLlamaServerStatus()).running).toBe(false);
+
+      const result = await restoreLlamaServerConfig(captured);
+      expect(result.restored).toBe(true);
+      expect((await getLlamaServerStatus()).running).toBe(true);
+    });
+
+    // A server somebody else started belongs to them.
+    it('refuses a running server PortOS does not manage', async () => {
+      await started();
+      const captured = await captureLlamaServerConfig();
+      pm2State = { name: 'someone-elses-llama', status: 'online', pid: 999, args: [] };
+      execPm2Calls = [];
+
+      const result = await restoreLlamaServerConfig(captured);
+      expect(result.restored).toBe(false);
+      expect(result.reason).toMatch(/outside PortOS/);
+      expect(restarted()).toBe(false);
+    });
+
+    it('captures nothing when PortOS is not the one running llama-server', async () => {
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+      expect(await captureLlamaServerConfig()).toBeNull();
+    });
+
+    it('restoring nothing is a no-op rather than a restart', async () => {
+      await started();
+      execPm2Calls = [];
+      const result = await restoreLlamaServerConfig(null);
+      expect(result.restored).toBe(false);
+      expect(restarted()).toBe(false);
+    });
+
+    // A launcher-owned knob is not in the cleared set, so judging 'did anything
+    // change?' on that set alone would report a new context size as applied
+    // while the server kept serving the old window.
+    it('relaunches for a launcher-owned knob the cleared set does not cover', async () => {
+      await started();
+      execPm2Calls = [];
+      const result = await relaunchLlamaServerWithTuning({ ctxSize: 4096 });
+
+      expect(result.applied).toBe(true);
+      expect(result.config.ctxSize).toBe(4096);
+      expect(launchArgs()).toContain('4096');
+    });
+
+    it('skips the relaunch when a named knob already matches what is running', async () => {
+      await started();
+      const running = (await getLlamaServerStatus()).config;
+      execPm2Calls = [];
+      const result = await relaunchLlamaServerWithTuning({ ctxSize: running.ctxSize });
+
+      expect(result.applied).toBe(true);
+      expect(restarted()).toBe(false);
+    });
+
+    // The model path, the port, and the window the user picked on the LLMs page
+    // are not sweepable knobs — clearing them would resize the server out from
+    // under them.
+    it('leaves the model, port, and launcher-owned knobs alone', async () => {
+      await started();
+      const before = (await getLlamaServerStatus()).config;
+      const result = await relaunchLlamaServerWithTuning({ ubatchSize: 1024 });
+
+      expect(result.config.model).toBe(before.model);
+      expect(result.config.port).toBe(before.port);
+      expect(result.config.ctxSize).toBe(before.ctxSize);
+      expect(result.config.nGpuLayers).toBe(before.nGpuLayers);
     });
 
     it('puts the knobs on the new launch line, keeping the model it was serving', async () => {

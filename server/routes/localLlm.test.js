@@ -561,6 +561,59 @@ describe('measured assessments wiring', () => {
     });
   });
 
+  // `tunings` is the ASK, not the grid — the service decides which knob sets a
+  // "tuning sweep of this model" means. A client that could post the grid could
+  // ask for an arbitrary batch of provider calls.
+  it('POST /assessments/sweep forwards a tuning-sweep request without a grid', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/assessments/sweep')
+      .send({ backend: 'llama', modelId: 'example-model.gguf', tunings: true });
+
+    expect(res.status).toBe(200);
+    expect(startSweep).toHaveBeenCalledWith(expect.objectContaining({
+      backend: 'llama', modelId: 'example-model.gguf', tunings: true,
+    }));
+  });
+
+  // The service's refusals ride the existing rejected → 409 path rather than a
+  // second, hand-rolled one in the handler.
+  it('POST /assessments/sweep 409s when the service refuses the tuning grid', async () => {
+    startSweep.mockResolvedValueOnce({ status: 'idle', rejected: 'mtplx has no tuning knobs PortOS can sweep' });
+    const res = await request(makeApp())
+      .post('/api/local-llm/assessments/sweep')
+      .send({ backend: 'mtplx', modelId: 'example-model', tunings: true });
+
+    expect(res.status).toBe(409);
+  });
+
+  // Half a model reference would fall through to the scope and measure every
+  // installed model — hours of work nobody asked for.
+  it('POST /assessments/sweep rejects a backend with no modelId', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/assessments/sweep')
+      .send({ backend: 'llama', tunings: true });
+
+    expect(res.status).toBe(400);
+    expect(startSweep).not.toHaveBeenCalled();
+  });
+
+  // No wire knob shrinks the grid: the consent gate names its count from the
+  // report's grid, so a request that could shrink it would run a different
+  // number than the user agreed to.
+  it('POST /assessments/sweep rejects an attempt to size the grid from the wire', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/assessments/sweep')
+      .send({ backend: 'llama', modelId: 'example-model.gguf', tunings: true, maxVariants: 2 });
+
+    expect(res.status).toBe(200);
+    expect(startSweep.mock.calls[0][0].maxVariants).toBeUndefined();
+  });
+
+  it('POST /assessments/sweep leaves a plain model sweep untuned', async () => {
+    await request(makeApp()).post('/api/local-llm/assessments/sweep').send({ scope: 'all' });
+    expect(startSweep.mock.calls[0][0].tunings).toBe(false);
+  });
+
   it('GET /assessments/sweep reports the queue without touching a provider', async () => {
     const res = await request(makeApp()).get('/api/local-llm/assessments/sweep');
     expect(res.status).toBe(200);

@@ -79,6 +79,7 @@ import {
   launchTuning,
   normalizeTuning,
   requestBody,
+  tuningGridFor,
   tuningSignature,
   tuningSpecsFor,
 } from '../lib/localModelTuning.js';
@@ -87,7 +88,12 @@ import { ServerError } from '../lib/errorHandler.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { getAllProviders } from './providers.js';
 import { runEndpointLlmTest, runLocalLlmTest } from './localLlmPlayground.js';
-import { getLlamaServerEndpoint, relaunchLlamaServerWithTuning } from './llamaServerManager.js';
+import {
+  captureLlamaServerConfig,
+  getLlamaServerEndpoint,
+  relaunchLlamaServerWithTuning,
+  restoreLlamaServerConfig,
+} from './llamaServerManager.js';
 import { getMtplxServerEndpoint, relaunchMtplxServerWithTuning } from './mtplxServerManager.js';
 import { listModels } from './localLlm.js';
 import {
@@ -324,7 +330,7 @@ function describeVerdict(verdict, samples) {
  *   THIS run apart from an unrelated model install streaming on the same event.
  * @returns {Promise<object>} the persisted assessment record
  */
-export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_CONTEXT_TOKENS, tuning, signal, onProgress, claimTimeoutMs = 0 } = {}) {
+export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_CONTEXT_TOKENS, tuning, resetTuning = false, signal, onProgress, claimTimeoutMs = 0 } = {}) {
   const contexts = [...new Set(contextTokens)].filter((n) => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
   // The listener runs outside the request lifecycle's error path in some callers
   // (a socket emit can throw on a closed io), and a broken progress consumer must
@@ -362,7 +368,7 @@ export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_
         performance: summarizePerformance([]),
       };
     }
-    return await measureModel({ backend, modelId, contexts, tuning, signal, emit });
+    return await measureModel({ backend, modelId, contexts, tuning, resetTuning, signal, emit });
   } finally {
     await claim.release();
   }
@@ -398,24 +404,52 @@ const toApplication = (ok, error, fallbackReason) => ({
  * the flag is silently dropped on the way to a launch line that renders only
  * `cli`. Nothing fails at runtime, so `LAUNCH_TRANSPORTS` below is exported and
  * `localModelAssessments.test.js` asserts the catalog against it.
+ *
+ * ## `sweepable` — which runtimes a TUNING SWEEP may drive
+ *
+ * A sweep needs two things an ordinary measurement does not, and a manager that
+ * cannot do BOTH must not be swept:
+ *
+ *   1. **A complete tuning.** Each variant's launch line has to be exactly that
+ *      variant's knobs, and the baseline's has to be none of them — otherwise
+ *      variants accumulate and `deltaPercent` credits an accumulated line to a
+ *      single change. That is the `reset` a sweep passes through.
+ *   2. **A configuration that can be put back.** A sweep relaunches the daemon
+ *      once per variant, and the running process is the only record of the
+ *      launch flags the user chose. Without `capture`/`restore` a sweep would
+ *      silently replace them with its last variant's.
+ *
+ * Only llama.cpp offers both today. Ollama's environment is written into the
+ * user's launchd domain / a systemd drop-in and survives a restart, LM Studio's
+ * load settings survive a reload, and MTPLX has the reset but no capture pair —
+ * so on those a sweep would leave its knobs set forever AND measure every later
+ * "backend defaults" reading under them. #4763 is the work that makes them
+ * sweepable; until it lands the button and the route refuse rather than
+ * producing a comparison that reads as valid.
  */
 const LAUNCH_APPLIERS = {
   llama: {
     transport: 'config',
-    apply: ({ launch }) => relaunchLlamaServerWithTuning(launchConfig('llama', launch)),
+    sweepable: true,
+    apply: ({ launch, reset }) => relaunchLlamaServerWithTuning(launchConfig('llama', launch), { reset }),
+    capture: captureLlamaServerConfig,
+    restore: restoreLlamaServerConfig,
   },
   ollama: {
     transport: 'env',
+    sweepable: false,
     apply: ({ launch }) => restartOllamaWithEnv(launchEnv('ollama', launch))
       .then((r) => toApplication(r.applied, r.error, `Ollama could not be restarted with that tuning (${r.reason})`)),
   },
   lmstudio: {
     transport: 'cli',
+    sweepable: false,
     apply: ({ modelId, launch }) => loadLmStudioModelWithArgs(modelId, launchArgs('lmstudio', launch))
       .then((r) => toApplication(r.success, r.error, 'LM Studio could not reload the model with that tuning')),
   },
   mtplx: {
     transport: 'cli',
+    sweepable: false,
     // Takes the knob set as-is rather than rendered flags: `mtplxServerManager`
     // renders it with the same catalog on the way to the launch line, and keeps
     // the ids so it can report back which tuning the daemon came up under.
@@ -432,19 +466,32 @@ export const LAUNCH_TRANSPORTS = Object.freeze(Object.fromEntries(
   Object.entries(LAUNCH_APPLIERS).map(([runtime, { transport }]) => [runtime, transport])
 ));
 
-async function applyLaunchTuning({ backend, modelId, launch }) {
+/** Whether a TUNING SWEEP may drive this runtime — see `sweepable` above. */
+export const isTuningSweepable = (backend) => LAUNCH_APPLIERS[backend]?.sweepable === true;
+
+/**
+ * Remember a runtime's launch configuration so a sweep can put it back.
+ * `null` for a runtime with nothing to capture — restoring it is then a no-op.
+ */
+export const captureLaunchState = (backend) => LAUNCH_APPLIERS[backend]?.capture?.() ?? Promise.resolve(null);
+
+/** Put back what `captureLaunchState` returned. Safe to call with `null`. */
+export const restoreLaunchState = (backend, state) =>
+  (state ? LAUNCH_APPLIERS[backend]?.restore?.(state) : null) ?? Promise.resolve({ restored: false, reason: 'nothing to restore' });
+
+async function applyLaunchTuning({ backend, modelId, launch, reset }) {
   const applier = LAUNCH_APPLIERS[backend];
   if (!applier) {
     return { applied: false, reason: `PortOS does not start the ${backend} runtime, so it cannot apply launch tuning`, config: null };
   }
-  return applier.apply({ backend, modelId, launch })
+  return applier.apply({ backend, modelId, launch, reset })
     .catch((err) => ({ applied: false, reason: err?.message || 'relaunch failed', config: null }));
 }
 
 // The measurement itself, with the accelerator already claimed by the caller
 // above. Split out so the claim's release is one `finally` around one call
 // rather than wrapped around a 100-line body.
-async function measureModel({ backend, modelId, contexts, tuning, signal, emit }) {
+async function measureModel({ backend, modelId, contexts, tuning, resetTuning, signal, emit }) {
   const normalizedTuning = normalizeTuning(backend, tuning);
   const tuningKey = tuningSignature(normalizedTuning);
   const tuningLabel = describeTuning(backend, normalizedTuning);
@@ -455,8 +502,14 @@ async function measureModel({ backend, modelId, contexts, tuning, signal, emit }
   // tuning PortOS could not apply must not be filed as evidence for that tuning.
   const launch = launchTuning(backend, normalizedTuning);
   const request = requestBody(backend, normalizedTuning);
+  // `resetTuning` (a SWEEP, never an ordinary Measure) makes an empty launch
+  // tuning meaningful: "no knobs" is the baseline every variant is compared
+  // against, so it has to be applied rather than assumed. Without it an empty
+  // tuning stays what it has always been — nothing was asked for, nothing is
+  // touched — which is what keeps a plain measurement from relaunching, and from
+  // recording `tuningApplied: false` for a run that requested no tuning at all.
   let tuningApplication;
-  if (Object.keys(launch).length > 0) {
+  if (Object.keys(launch).length > 0 || resetTuning) {
     // Announced BEFORE the await, because applying a launch tuning stops and
     // restarts a daemon — and a cold MLX or GGUF checkpoint can take minutes to
     // load again. Without this the progress stream is silent for that whole
@@ -465,9 +518,11 @@ async function measureModel({ backend, modelId, contexts, tuning, signal, emit }
       event: 'start',
       sampleIndex: 0,
       sampleCount: contexts.length,
-      message: `Restarting ${backend} with ${tuningLabel} before measuring…`,
+      // A sweep's baseline variant has no label, and "restarting with null" is
+      // not a sentence. It is a real configuration — say which one.
+      message: `Restarting ${backend} with ${tuningLabel || 'backend defaults'} before measuring…`,
     });
-    tuningApplication = await applyLaunchTuning({ backend, modelId, launch });
+    tuningApplication = await applyLaunchTuning({ backend, modelId, launch, reset: resetTuning });
   } else {
     // `null`, NOT `true`, when nothing was tuned. `true` when the only knobs set
     // ride on the request body, which needs no daemon restart to take effect.
@@ -639,6 +694,16 @@ export async function getAssessmentReport({ intent = 'balanced' } = {}) {
     modelCount: Array.isArray(listed[id].models) ? listed[id].models.length : null,
     error: listed[id].error,
     tuningSpecs: tuningSpecsFor(id),
+    // The tuning grid a sweep of this runtime would run — literally the same
+    // call `localModelAssessmentSweep.js` makes when one starts, so the count
+    // and labels the consent gate names cannot differ from what executes. There
+    // is deliberately no wire knob that resizes it (see the sweep schema).
+    //
+    // EMPTY for a runtime a sweep may not drive, so the page offers the action
+    // exactly where the server would accept it. Shipping a grid for a runtime
+    // PortOS cannot reset and put back would advertise a comparison that reads
+    // as valid and is not — see `sweepable` on LAUNCH_APPLIERS and #4763.
+    tuningGrid: isTuningSweepable(id) ? tuningGridFor(id) : [],
   }));
 
   const listErrors = ASSESSABLE_RUNTIMES.filter((id) => listed[id].error);

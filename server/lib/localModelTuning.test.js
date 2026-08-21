@@ -9,6 +9,7 @@ import {
   launchTuning,
   normalizeTuning,
   requestBody,
+  tuningGridFor,
   tuningSignature,
   tuningSpecsFor,
 } from './localModelTuning.js';
@@ -306,5 +307,99 @@ describe('compareTunings', () => {
       measured({ ubatchSize: 512 }, 40, { modelId: 'other-70b' }),
     ]);
     expect(rows).toEqual([]);
+  });
+});
+
+describe('tuningGridFor', () => {
+  // The baseline is the reading every variant's `deltaPercent` is measured
+  // against — a grid without it compares variants to each other and answers a
+  // different question than the one the table claims to answer.
+  it('leads with backend defaults, keyed so it shares an untuned record', () => {
+    const [baseline] = tuningGridFor('llama');
+    expect(baseline).toEqual({ key: '', label: null, tuning: {} });
+  });
+
+  it('varies exactly one knob per variant, so deltaPercent attributes the change', () => {
+    for (const variant of tuningGridFor('llama').slice(1)) {
+      expect(Object.keys(variant.tuning)).toHaveLength(1);
+    }
+  });
+
+  // Ollama honours OLLAMA_KV_CACHE_TYPE only with flash attention on, so the
+  // kv variant carries its prerequisite. Without it the run would re-measure the
+  // baseline under a label claiming a quantized cache — a wrong answer.
+  it('carries a knob\'s declared prerequisite into the variant that needs it', () => {
+    const kv = tuningGridFor('ollama').find((v) => v.tuning.kvCacheType);
+    expect(kv.tuning).toEqual({ kvCacheType: 'q8_0', flashAttention: true });
+  });
+
+  it('labels every variant so a comparison row says which knob it describes', () => {
+    for (const variant of tuningGridFor('llama').slice(1)) {
+      expect(variant.label).toBeTruthy();
+      expect(variant.key).toBe(tuningSignature(variant.tuning));
+    }
+  });
+
+  it('never repeats a knob set — one measurement per configuration', () => {
+    const keys = tuningGridFor('llama').map((v) => v.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  // The returned length IS the run count a consent gate names, so the cap has to
+  // bound the whole grid, baseline included.
+  it('truncates to maxVariants, counting the baseline', () => {
+    expect(tuningGridFor('llama', { maxVariants: 3 })).toHaveLength(3);
+    expect(tuningGridFor('llama', { maxVariants: 1 })).toHaveLength(1);
+  });
+
+  it('falls back to the default for a nonsense cap rather than emptying the grid', () => {
+    const full = tuningGridFor('llama');
+    expect(tuningGridFor('llama', { maxVariants: 0 })).toEqual(full);
+    expect(tuningGridFor('llama', { maxVariants: Number.NaN })).toEqual(full);
+  });
+
+  // A runtime PortOS cannot pass flags to has nothing to sweep. One entry is the
+  // signal for that — the caller must read it as "no comparison available",
+  // never as a one-variant sweep worth minutes of GPU.
+  it('returns the baseline alone for a runtime with no sweepable knob', () => {
+    expect(tuningGridFor('mtplx')).toHaveLength(1);
+    expect(tuningGridFor('vllm')).toHaveLength(1);
+    expect(tuningGridFor('not-a-runtime')).toHaveLength(1);
+  });
+
+  // The grid is built from the catalog, so a candidate the catalog would reject
+  // must not survive into a launch line.
+  it('produces only knob sets the catalog would accept back', () => {
+    for (const runtime of ['llama', 'ollama', 'lmstudio']) {
+      for (const variant of tuningGridFor(runtime)) {
+        expect(normalizeTuning(runtime, variant.tuning)).toEqual(variant.tuning);
+      }
+    }
+  });
+
+  // Every variant has to reach the daemon through some transport, or the sweep
+  // measures the baseline several times under different names.
+  it('renders every variant through a transport that reaches the daemon', () => {
+    const rendered = (runtime, tuning) => ({
+      ...launchConfig(runtime, tuning), ...launchEnv(runtime, tuning),
+      ...launchArgs(runtime, tuning), ...requestBody(runtime, tuning),
+    });
+    for (const runtime of ['llama', 'ollama', 'lmstudio']) {
+      for (const variant of tuningGridFor(runtime).slice(1)) {
+        expect(Object.keys(rendered(runtime, variant.tuning)).length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  // The grid feeds `compareTunings`, whose ranking is by throughput — a variant
+  // that changes what is being measured (a different context window) would make
+  // the winner incomparable rather than faster.
+  it('never sweeps a knob that changes what is being measured', () => {
+    const changesTheMeasurement = ['ctxSize', 'numCtx', 'contextLength'];
+    for (const runtime of ['llama', 'ollama', 'lmstudio']) {
+      for (const variant of tuningGridFor(runtime)) {
+        for (const knob of changesTheMeasurement) expect(variant.tuning[knob]).toBeUndefined();
+      }
+    }
   });
 });
