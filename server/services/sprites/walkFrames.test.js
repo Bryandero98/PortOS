@@ -66,6 +66,9 @@ const healthyPng = () => {
 };
 
 const transparentPng = () => makeRgbaPng(() => [0, 0, 0, 0]);
+const nearEmptyPng = () => makeRgbaPng((x, y) => (
+  x === 0 && y === 0 ? [255, 255, 255, 255] : [0, 0, 0, 0]
+));
 
 let seq = 0;
 const newId = () => `frametest-${++seq}`;
@@ -176,6 +179,21 @@ describe('verifyPackagedFrames — byte mode (compile gate)', () => {
         status: 422,
         code: 'ATLAS_COMPILE_INVALID',
         message: expect.stringContaining(`Direction east frame 5 (${manifest.frames[5].phase}) has no content`),
+      });
+  });
+
+  it('rejects a near-empty packed frame instead of treating alpha speckle as content', async () => {
+    const id = newId();
+    const healthy = await healthyPng();
+    const frameBytes = Array(8).fill(healthy);
+    frameBytes[4] = await nearEmptyPng();
+    const manifest = await makeFrames(id, { frameBytes });
+
+    await expect(verifyPackagedFrames(id, manifest, { bytes: true }))
+      .rejects.toMatchObject({
+        status: 422,
+        code: 'ATLAS_COMPILE_INVALID',
+        message: expect.stringContaining(`Direction east frame 4 (${manifest.frames[4].phase}) has no content`),
       });
   });
 

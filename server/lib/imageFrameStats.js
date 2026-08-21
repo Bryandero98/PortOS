@@ -52,6 +52,12 @@ export const NEAR_EMPTY_ENTROPY_FLOOR = 0.05;
 // 16x16 is reported as unjudgeable (`ok: null`) rather than degenerate.
 export const MIN_JUDGEABLE_PIXELS = 256;
 
+// Match NEAR_EMPTY_ENTROPY_FLOOR's roughly 0.5% signal floor for alpha-only
+// silhouettes. Both visible and transparent coverage must clear this floor;
+// a couple of transparent holes in an otherwise flat opaque sheet are not a
+// meaningful silhouette.
+export const ALPHA_COVERAGE_FLOOR = 255 * 0.005;
+
 export const FRAME_REASON = {
   SOLID_FILL: 'solid-fill',
   FULLY_TRANSPARENT: 'fully-transparent',
@@ -120,7 +126,12 @@ export async function describeFrameStats(input) {
   // just the normal PNG case and must not rescue a flat fill.
   const alpha = metadata.hasAlpha ? perChannel[perChannel.length - 1] : null;
   const alphaCarriesContent = Boolean(
-    alpha && !stats.isOpaque && alpha.max > alpha.min && alpha.stdev >= SOLID_FILL_STDEV_EPSILON,
+    alpha
+      && !stats.isOpaque
+      && alpha.max > alpha.min
+      && alpha.stdev >= SOLID_FILL_STDEV_EPSILON
+      && alpha.mean >= ALPHA_COVERAGE_FLOOR
+      && alpha.mean <= 255 - ALPHA_COVERAGE_FLOOR,
   );
 
   // Only the colour channels decide "flat" — a fully-OPAQUE alpha channel is

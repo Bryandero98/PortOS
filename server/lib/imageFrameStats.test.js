@@ -105,6 +105,24 @@ describe('describeFrameStats', () => {
     expect(isDegenerateFrame(stats)).toBe(false);
   });
 
+  it('rejects an RGBA frame with only a few visible pixels', async () => {
+    const buf = await fromPixels((x, y) => (
+      x === 0 && y === 0 ? [255, 255, 255, 255] : [0, 0, 0, 0]
+    ), { channels: 4 });
+    const stats = await describeFrameStats(buf);
+    expect(stats.ok).toBe(false);
+    expect(stats.reason).toBe(FRAME_REASON.NEAR_EMPTY);
+  });
+
+  it('rejects a flat RGBA frame with only a few transparent pixels', async () => {
+    const buf = await fromPixels((x, y) => (
+      x < 2 && y === 0 ? [40, 40, 40, 0] : [40, 40, 40, 255]
+    ), { channels: 4 });
+    const stats = await describeFrameStats(buf);
+    expect(stats.ok).toBe(false);
+    expect(stats.reason).toBe(FRAME_REASON.SOLID_FILL);
+  });
+
   it('rejects a near-empty frame whose single stray pixel leaves entropy at the floor', async () => {
     const buf = await fromPixels((x, y) => (x === 0 && y === 0 ? [255, 255, 255] : [0, 0, 0]));
     const stats = await describeFrameStats(buf);
