@@ -23,6 +23,7 @@ const providers = await import('../services/providers.js');
 const prompts = await import('../services/promptService.js');
 const runner = await import('../services/runner.js');
 const { buildEffortArgs } = await import('./providerModels.js');
+const { CREATIVE_LATITUDE_HEADING } = await import('./creativeLatitude.js');
 const {
   runStagedLLM,
   runInlineLLM,
@@ -424,8 +425,11 @@ describe('stageRunner — runInlineLLM (#1346)', () => {
     const out = await runInlineLLM('my inline prompt body', { returnsJson: true, source: 'pipeline-editorial-custom' });
     expect(out.providerId).toBe('mock-api');
     expect(out.content).toEqual({ findings: [] });
-    // The prompt is passed through verbatim — buildPrompt/getStage are not consulted.
-    expect(executedPrompt).toBe('my inline prompt body');
+    // The body rides through unrendered — buildPrompt/getStage are not consulted.
+    // It arrives prefixed with the IP-latitude clause, which the runner stamps on
+    // any creative run source (a custom editorial check reads the manuscript).
+    expect(executedPrompt.endsWith('my inline prompt body')).toBe(true);
+    expect(executedPrompt).toContain(CREATIVE_LATITUDE_HEADING);
     expect(prompts.buildPrompt).not.toHaveBeenCalled();
     expect(prompts.getStage).not.toHaveBeenCalled();
   });

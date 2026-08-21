@@ -85,10 +85,16 @@ const pipelineJudge = await import('./pipelineJudge.js');
 const textStages = await import('./textStages.js');
 const textStageProgress = await import('./textStageProgress.js');
 const runnerSvc = await import('../runner.js');
+const { CREATIVE_LATITUDE_CLAUSE } = await import('../../lib/creativeLatitude.js');
 
-// Strip the `RENDERED:<stage>:` prefix that the mocked buildPrompt prepends
-// so the asserted-against context is the bare JSON tree.
-const ctxFromCall = (call) => JSON.parse(call.prompt.replace(/^RENDERED:[^:]+:/, ''));
+// Strip the IP-latitude clause the runner prepends to every creative run
+// (lib/creativeLatitude.js) plus the `RENDERED:<stage>:` prefix the mocked
+// buildPrompt adds, so the asserted-against context is the bare JSON tree.
+const ctxFromCall = (call) => JSON.parse(
+  call.prompt
+    .replace(`${CREATIVE_LATITUDE_CLAUSE}\n\n---\n\n`, '')
+    .replace(/^RENDERED:[^:]+:/, ''),
+);
 
 describe('pipeline text stage generator', () => {
   beforeEach(() => {
@@ -241,7 +247,7 @@ describe('pipeline text stage generator', () => {
       lengthProfile: 'extended',
     });
     await textStages.generateStage(issue.id, 'idea');
-    const ctx = JSON.parse(llmCalls[0].prompt.replace(/^RENDERED:[^:]+:/, ''));
+    const ctx = ctxFromCall(llmCalls[0]);
     const lt = ctx.lengthTargets;
     expect(lt.profile).toBe('extended');
     expect(lt.pageTarget).toBe(32);
@@ -677,7 +683,7 @@ describe('pipeline text stage generator', () => {
       minutesTarget: 50,
     });
     await textStages.generateStage(issue.id, 'idea');
-    const ctx = JSON.parse(llmCalls[0].prompt.replace(/^RENDERED:[^:]+:/, ''));
+    const ctx = ctxFromCall(llmCalls[0]);
     const lt = ctx.lengthTargets;
     expect(lt.profile).toBe('custom');
     expect(lt.pageTarget).toBe(44);

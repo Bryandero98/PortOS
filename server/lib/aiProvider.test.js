@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { stripCodeFences, parseLLMJSON, callProviderAISimple } from './aiProvider.js';
+import { CREATIVE_LATITUDE_HEADING } from './creativeLatitude.js';
 
 // `statusOp` is hoisted with the mock factories so the ai:status spy is in scope
 // when vitest lifts vi.mock above the imports.
@@ -102,6 +103,27 @@ describe('callProviderAISimple completion classification', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  const sentPrompt = () => JSON.parse(globalThis.fetch.mock.calls[0][1].body).messages[0].content;
+
+  it('stamps the IP-latitude clause when the caller declares the prompt creative', async () => {
+    // This helper posts to /chat/completions itself, so neither buildPrompt nor
+    // runPromptThroughProvider can stamp it — the opt-in flag is the only route.
+    respondWith({ choices: [{ message: { content: 'prose' } }] });
+
+    await callProviderAISimple(provider, 'model-1', 'Write the scene.', { creative: true });
+
+    expect(sentPrompt().startsWith(CREATIVE_LATITUDE_HEADING)).toBe(true);
+    expect(sentPrompt().endsWith('Write the scene.')).toBe(true);
+  });
+
+  it('leaves a non-creative prompt untouched', async () => {
+    respondWith({ choices: [{ message: { content: 'ok' } }] });
+
+    await callProviderAISimple(provider, 'model-1', 'Summarize CPU load.', {});
+
+    expect(sentPrompt()).toBe('Summarize CPU load.');
   });
 
   it('classifies a whitespace-only completion as a provider error, not a successful call', async () => {

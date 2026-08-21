@@ -71,6 +71,7 @@ export * from './comicScriptParser.js';
 export * from './composeStyledPrompt.js';
 export * from './creativeDirectorPresets.js';
 export * from './creativeDirectorPrompts.js';
+export * from './creativeLatitude.js';
 // Namespaced: the editorial-check registry (#1284) lives in the editorial/
 // subdir with its own barrel — surface it under `editorial.*` so the root
 // discovery surface reaches EDITORIAL_CHECKS + the lookup helpers.

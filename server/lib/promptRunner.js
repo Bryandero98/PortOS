@@ -37,6 +37,7 @@ import { isGenerationModel } from './localModelHeuristics.js';
 import { getAIToolkitInstance } from './aiToolkitState.js';
 import { createSingleFlight } from './singleFlight.js';
 import { extractJson } from './jsonExtract.js';
+import { isCreativeRunSource, withCreativeLatitude } from './creativeLatitude.js';
 
 // The fallback-lifecycle notifiers live in services/autoFixer.js, which
 // transitively pulls in services/cos.js (PM2 + fs + sockets). Importing it
@@ -394,7 +395,7 @@ function buildSchemaFailureError(result) {
  * their own try/catch.
  *
  * @param {object} args
- * @param {string} [args.providerId]
+ * @param {string} [rawArgs.providerId]
  * @param {string} [args.model]
  * @returns {Promise<{ provider: object|null, selectedModel: string|null }>}
  */
@@ -476,9 +477,9 @@ export function assertVisionRunUsedImages(result, requestedProvider) {
  * make `/runs` and SSE status events lie about model usage.
  *
  * @param {object} args
- * @param {object} args.provider — { id, type: 'cli'|'api'|'tui', timeout?, ... }
- * @param {string} args.prompt   — full text to send to the LLM
- * @param {string} args.source   — run-record tag (`'universe-builder-expansion'`,
+ * @param {object} rawArgs.provider — { id, type: 'cli'|'api'|'tui', timeout?, ... }
+ * @param {string} rawArgs.prompt   — full text to send to the LLM
+ * @param {string} rawArgs.source   — run-record tag (`'universe-builder-expansion'`,
  *   `'media-prompt-refine'`, `'messages-triage'`, `'staged-llm'`, etc.)
  * @param {string} [args.model]  — model id hint; ignored when the
  *   provider doesn't honor it (claude-code, antigravity-cli today).
@@ -558,26 +559,36 @@ export function assertVisionRunUsedImages(result, requestedProvider) {
  *   `'constrained-agent-retry'` for a fallback-provider retry — so callers can
  *   log/attribute the deterministic recovery path.
  */
-export async function runPromptThroughProvider(args) {
+export async function runPromptThroughProvider(rawArgs) {
   // Validate inputs up front so an accidentally-null `provider` (or one
   // missing `id`/`type`) surfaces a clear error here instead of throwing
   // a downstream TypeError on `provider.id` inside createRun or on the
   // provider.type dispatch below.
-  if (!args?.provider || typeof args.provider !== 'object') {
+  if (!rawArgs?.provider || typeof rawArgs.provider !== 'object') {
     throw new Error('runPromptThroughProvider: provider is required');
   }
-  if (typeof args.provider.id !== 'string' || !args.provider.id) {
+  if (typeof rawArgs.provider.id !== 'string' || !rawArgs.provider.id) {
     throw new Error('runPromptThroughProvider: provider.id must be a non-empty string');
   }
-  if (args.provider.type !== PROVIDER_TYPES.CLI && args.provider.type !== PROVIDER_TYPES.API && args.provider.type !== PROVIDER_TYPES.TUI) {
-    throw new Error(`Unsupported provider type: ${args.provider.type}`);
+  if (rawArgs.provider.type !== PROVIDER_TYPES.CLI && rawArgs.provider.type !== PROVIDER_TYPES.API && rawArgs.provider.type !== PROVIDER_TYPES.TUI) {
+    throw new Error(`Unsupported provider type: ${rawArgs.provider.type}`);
   }
-  if (typeof args.prompt !== 'string' || !args.prompt.length) {
+  if (typeof rawArgs.prompt !== 'string' || !rawArgs.prompt.length) {
     throw new Error('runPromptThroughProvider: prompt must be a non-empty string');
   }
-  if (typeof args.source !== 'string' || !args.source.length) {
+  if (typeof rawArgs.source !== 'string' || !rawArgs.source.length) {
     throw new Error('runPromptThroughProvider: source must be a non-empty string');
   }
+
+  // Creative requests carry the IP-latitude clause (lib/creativeLatitude.js) so a
+  // model doesn't quietly genericize a reference the artist put there on purpose.
+  // Keyed on `source` — the one stable per-call-site tag every caller already
+  // has to pass — which covers every hand-rolled creative prompt from one place.
+  // Stage-template prompts are stamped upstream in promptService.buildPrompt; the
+  // stamp is idempotent, so a pre-stamped prompt passes through untouched.
+  const args = isCreativeRunSource(rawArgs.source)
+    ? { ...rawArgs, prompt: withCreativeLatitude(rawArgs.prompt) }
+    : rawArgs;
 
   // Execute once, then decide whether the deterministic fallback cascade runs.
   // A transport-layer failure is caught into `firstError`. A transport SUCCESS
@@ -648,7 +659,7 @@ export async function runPromptThroughProvider(args) {
     //   Tier 4 escalate     — the deferred investigation task the hook queued
     //
     // `failed` is the provider that ACTUALLY ran — usually equals
-    // args.provider, but createRun may have proactively swapped to a
+    // rawArgs.provider, but createRun may have proactively swapped to a
     // different fallback if the requested primary was already marked
     // unavailable. Always dedupe against what actually ran so the
     // task-suppression notifiers cancel the right queued task.
@@ -764,7 +775,7 @@ export async function runPromptThroughProvider(args) {
         && providerHonorsModelOverride(failed)) {
         const correctedModel = pickConfigCorrectedModel(failed, failedModel);
         if (correctedModel) {
-          console.log(`🔧 Tier 1 (config/env) retry: ${args.source} on ${failed.name} with model ${correctedModel} (requested ${failedModel} → ${category})`);
+          console.log(`🔧 Tier 1 (config/env) retry: ${rawArgs.source} on ${failed.name} with model ${correctedModel} (requested ${failedModel} → ${category})`);
           // Suppress the primary's investigation task while the corrected retry
           // runs so a slow (>TASK_DEFER_MS) but SUCCESSFUL retry can't leave a
           // task behind for a recovered failure.
@@ -817,14 +828,14 @@ export async function runPromptThroughProvider(args) {
       // retry once, cancel the task on a recovered + schema-valid response.
       if (isSchemaTypeCategory(category)) {
         const correctedPrompt = await buildSchemaCorrectedPrompt({
-          prompt: args.prompt,
+          prompt: rawArgs.prompt,
           responseSchema: args.responseSchema,
           repair: args.repair,
           category,
           error: firstError,
         });
         if (correctedPrompt) {
-          console.log(`🧩 Tier 2 (schema/type) retry: ${args.source} on ${failed.name} (category ${category})`);
+          console.log(`🧩 Tier 2 (schema/type) retry: ${rawArgs.source} on ${failed.name} (category ${category})`);
           await suppress(primaryKey);
           let tier2Result;
           try {
@@ -891,7 +902,7 @@ export async function runPromptThroughProvider(args) {
       }
       const fallback = picked.provider;
 
-      console.log(`⚡ Tier 3 (constrained-agent-retry): ${args.source} with fallback ${fallback.name} (primary ${failed.name} failed: ${firstError.message})`);
+      console.log(`⚡ Tier 3 (constrained-agent-retry): ${rawArgs.source} with fallback ${fallback.name} (primary ${failed.name} failed: ${firstError.message})`);
 
       // Suppress the primary key (idempotent across tiers) for the fallback run.
       await suppress(primaryKey);
@@ -1086,7 +1097,7 @@ function stripFallbackContext(err) {
 }
 
 /**
- * Inner helper: execute one attempt against `args.provider`. Returns
+ * Inner helper: execute one attempt against `rawArgs.provider`. Returns
  * { text, runId, model } on success. On failure, throws an Error with
  * `effectiveProvider` and `effectiveModel` attached so the retry path
  * knows which provider actually ran (createRun may have proactively

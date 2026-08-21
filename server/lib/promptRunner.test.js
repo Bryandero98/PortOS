@@ -63,6 +63,7 @@ const providers = await import('../services/providers.js');
 const autoFixer = await import('../services/autoFixer.js');
 const toolkitState = await import('./aiToolkitState.js');
 const { ERROR_CATEGORIES } = await import('./aiToolkit/errorDetection.js');
+const { CREATIVE_LATITUDE_HEADING, withCreativeLatitude } = await import('./creativeLatitude.js');
 const { runPromptThroughProvider, resolveProviderAndModel, resolveEffectiveModel, pickConfigCorrectedModel, normalizeResponseSchema, coerceResponseToSchema, isSchemaTypeCategory } = await import('./promptRunner.js');
 
 const apiProvider = (extra = {}) => ({
@@ -219,7 +220,10 @@ describe('promptRunner — happy paths', () => {
     await runPromptThroughProvider({
       provider: apiProvider({ id: 'openai' }),
       prompt: 'p',
-      source: 'media-prompt-refine',
+      // A non-creative source: this test is about forwarding, and a creative
+      // one would arrive at createRun with the IP-latitude clause prepended
+      // (covered by the 'creative IP-latitude clause' block below).
+      source: 'unit-test-source',
       model: 'gpt-5',
     });
 
@@ -227,7 +231,7 @@ describe('promptRunner — happy paths', () => {
       providerId: 'openai',
       model: 'gpt-5',
       prompt: 'p',
-      source: 'media-prompt-refine',
+      source: 'unit-test-source',
     }));
     // workspacePath now also goes through (defaults to process.cwd() when
     // the caller doesn't pass `cwd`) so /runs reflects the actual spawn dir.
@@ -1894,5 +1898,44 @@ describe('promptRunner — Tier 2 schema/type correction (issue #2350)', () => {
     const out = await runPromptThroughProvider({ provider: apiProvider(), prompt: 'p', source: 'test' });
     expect(out.text).toBe('```json\n{"ok":true}\n```'); // no coercion without a schema
     expect(out.fixTier).toBeUndefined();
+  });
+});
+
+describe('creative IP-latitude clause', () => {
+  beforeEach(() => {
+    runner.executeApiRun.mockImplementation(async ({ onData, onComplete }) => {
+      onData('ok');
+      onComplete({ success: true });
+    });
+  });
+
+  const promptSentToRunner = () => runner.executeApiRun.mock.calls[0][0].prompt;
+
+  it('prepends the clause when the run source names a creative request', async () => {
+    await runPromptThroughProvider({
+      provider: apiProvider(), prompt: 'Draw the vault door.', source: 'media-prompt-refine',
+    });
+    expect(promptSentToRunner()).toContain(CREATIVE_LATITUDE_HEADING);
+    expect(promptSentToRunner()).toContain('Draw the vault door.');
+  });
+
+  it('leaves an operational run source untouched', async () => {
+    await runPromptThroughProvider({
+      provider: apiProvider(), prompt: 'Classify this note.', source: 'brain-classify',
+    });
+    expect(promptSentToRunner()).toBe('Classify this note.');
+  });
+
+  it('does not double-stamp a prompt that already carries the clause', async () => {
+    const prompt = withCreativeLatitude('Write the fight beat.');
+    await runPromptThroughProvider({ provider: apiProvider(), prompt, source: 'music-lyrics' });
+    expect(promptSentToRunner().split(CREATIVE_LATITUDE_HEADING)).toHaveLength(2);
+  });
+
+  it('persists the stamped prompt on the run record so /runs shows what ran', async () => {
+    await runPromptThroughProvider({
+      provider: apiProvider(), prompt: 'Score the loop.', source: 'chiptune-score',
+    });
+    expect(runner.createRun.mock.calls[0][0].prompt).toContain(CREATIVE_LATITUDE_HEADING);
   });
 });

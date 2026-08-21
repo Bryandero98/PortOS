@@ -12,6 +12,7 @@ import { ensureProviderReady as ensureOllamaProviderReady, isOllamaProvider } fr
 // graph, breaking suites that partial-mock fileUtils without PATHS.
 import { readResponseJson } from './readResponseJson.js';
 import { evaluateSecretEndpoint } from './aiToolkit/internal/endpointGuard.js';
+import { withCreativeLatitude } from './creativeLatitude.js';
 
 const isAPI = (p) => p && p.type === 'api' && p.enabled !== false;
 
@@ -206,6 +207,10 @@ async function postChatCompletion(provider, model, prompt, { temperature, max_to
  * `ai:status` Socket.IO channel. The op slug groups all phase events under
  * one toast id so "loading model → calling → done" updates the same toast.
  *
+ * Pass `creative: true` when the prompt asks for creative work (prose, style,
+ * render prompts) so it carries the IP-latitude clause — this helper bypasses
+ * both of the usual chokepoints (see lib/creativeLatitude.js).
+ *
  * Pass `appId` and/or `workspacePath` when the call originates on behalf of a
  * managed app or CoS-agent workspace — the OpenWorld AI Core aims its activity
  * beam at that building (falling back to a generic radial beam when neither is
@@ -213,10 +218,16 @@ async function postChatCompletion(provider, model, prompt, { temperature, max_to
  * so the beam's thickness can track tokens/sec.
  */
 export async function callProviderAISimple(provider, model, prompt, options = {}) {
-  const { temperature = 0.3, max_tokens = 1000, op, opLabel, appId, workspacePath, background } = options;
+  const { temperature = 0.3, max_tokens = 1000, op, opLabel, appId, workspacePath, background, creative } = options;
   if (provider.type !== 'api') {
     return { error: 'This operation requires an API-based provider' };
   }
+  // This helper is a THIRD LLM transport — it posts to /chat/completions itself
+  // rather than going through promptService.buildPrompt or the shared runner, so
+  // neither of the IP-latitude chokepoints can see it (lib/creativeLatitude.js).
+  // There is no stage name or run `source` here to classify by, so a creative
+  // caller declares itself with `creative: true` and the stamp happens here.
+  const body = creative ? withCreativeLatitude(prompt) : prompt;
   const opts = { temperature, max_tokens, timeout: provider.timeout || DEFAULT_PROVIDER_TIMEOUT_MS };
 
   // Always emit status events (server logs + UI toasts) for AI calls. Callers
@@ -265,7 +276,7 @@ export async function callProviderAISimple(provider, model, prompt, options = {}
     }
   }
 
-  const first = await postChatCompletion(provider, model, prompt, opts);
+  const first = await postChatCompletion(provider, model, body, opts);
   if (!first.error) {
     statusOp.complete(`${doneLabel} done (${elapsedSec()}s)`, throughput(first.tokens));
     return { text: first.text };
@@ -275,7 +286,7 @@ export async function callProviderAISimple(provider, model, prompt, options = {}
   // reporting completion or error under that model id. Shared by both local
   // recovery paths below, which differ only in how they pick `retryModel`.
   const retryWith = async (retryModel) => {
-    const retry = await postChatCompletion(provider, retryModel, prompt, opts);
+    const retry = await postChatCompletion(provider, retryModel, body, opts);
     if (!retry.error) {
       statusOp.complete(`${doneLabel} done (${elapsedSec()}s)`, { model: retryModel, ...throughput(retry.tokens) });
       return { text: retry.text };
