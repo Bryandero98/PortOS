@@ -5,6 +5,7 @@ import {
   federatedMediaModelKey,
   peerMediaProviderConfig,
   resolvePeerMediaReadiness,
+  summarizePeerMediaQueue,
 } from './federatedMediaReadiness.js';
 
 const NOW = Date.parse('2026-08-20T12:00:00.000Z');
@@ -184,5 +185,108 @@ describe('federatedMediaModelKey', () => {
     expect(federatedMediaModelKey({ engine: 'local', modelId: 'ltx2' })).toBe('local\u0000ltx2');
     expect(federatedMediaModelKey({ engine: 'a', modelId: 'b-c' }))
       .not.toBe(federatedMediaModelKey({ engine: 'a-b', modelId: 'c' }));
+  });
+});
+
+describe('resolvePeerMediaReadiness usable', () => {
+  const freshReady = (overrides = {}) => ({
+    id: 'peer-1',
+    enabled: true,
+    status: 'online',
+    mediaProvider: { enabled: true, audioModels: [{ engine: 'e', modelId: 'm' }] },
+    mediaProviderStatus: {
+      state: 'ready',
+      checkedAt: iso(-1_000),
+      freshUntil: iso(60_000),
+      snapshot: { queue: { running: 0, queued: 0, totalActive: 0, maxQueuedJobs: 4, accepting: true }, capabilities: [] },
+    },
+    ...overrides,
+  });
+
+  it('is true only for an enabled, online, opted-in peer with a fresh ready snapshot', () => {
+    expect(resolvePeerMediaReadiness(freshReady(), { now: NOW }).usable).toBe(true);
+  });
+
+  // `state` is the provider's verdict on its own surface and says nothing about
+  // reachability, so a caller gating on it alone would enable work against a
+  // peer that is switched off or gone.
+  it('is false for a peer that is switched off, offline, or not opted in, however fresh its snapshot', () => {
+    for (const overrides of [
+      { enabled: false },
+      { status: 'offline' },
+      { mediaProvider: { enabled: false, audioModels: [] } },
+    ]) {
+      const readiness = resolvePeerMediaReadiness(freshReady(overrides), { now: NOW });
+      expect(readiness.state).toBe('ready');
+      expect(readiness.usable).toBe(false);
+    }
+  });
+
+  it('is false once the capacity window has expired', () => {
+    const stale = freshReady();
+    stale.mediaProviderStatus.freshUntil = iso(-1_000);
+    expect(resolvePeerMediaReadiness(stale, { now: NOW }).usable).toBe(false);
+  });
+});
+
+describe('summarizePeerMediaQueue', () => {
+  const queue = (overrides = {}) => ({
+    totalActive: 2, providerActive: 1, queued: 1, running: 1, maxQueuedJobs: 4, accepting: true, ...overrides,
+  });
+
+  it('renders shared slots, drain rate, per-kind load, and the federated share', () => {
+    expect(summarizePeerMediaQueue(queue({
+      concurrency: 2,
+      byKind: { audio: { running: 1, queued: 1 }, image: { running: 0, queued: 1 } },
+    }))).toEqual([
+      '2/4 shared slots active',
+      'runs 2 at a time',
+      'audio 1 running, 1 queued',
+      'image 1 queued',
+      'federated 1 running, 1 queued',
+    ]);
+  });
+
+  // byKind is machine-wide while running/queued are the federated share, so an
+  // unlabelled "0 running" beside "audio 1 running" would claim the peer is
+  // both busy and idle.
+  it('labels the federated share so it cannot be read as the whole machine', () => {
+    expect(summarizePeerMediaQueue({
+      totalActive: 1, providerActive: 0, queued: 0, running: 0, maxQueuedJobs: 2, accepting: true,
+      byKind: { audio: { running: 1, queued: 0 } },
+    })).toEqual(['1/2 shared slots active', 'audio 1 running']);
+  });
+
+  // An older provider sends neither new field. Rendering the absence as a zero
+  // would claim idle lanes the peer never reported on.
+  it('drops the segments an older provider never sent instead of showing zeroes', () => {
+    expect(summarizePeerMediaQueue(queue())).toEqual([
+      '2/4 shared slots active',
+      'federated 1 running, 1 queued',
+    ]);
+  });
+
+  it('drops a concurrency that claims no capacity', () => {
+    expect(summarizePeerMediaQueue(queue({ concurrency: 0 })))
+      .not.toContain('runs 0 at a time');
+  });
+
+  // The provider omits an idle kind, but a build that sent one must not add a
+  // segment saying nothing.
+  // Asserted as an exact array: `toContain` on an array is element identity,
+  // not substring, so `.not.toContain('audio')` would pass against a segment
+  // reading 'audio 0 running' and verify nothing.
+  it('omits a kind reporting no work', () => {
+    expect(summarizePeerMediaQueue(queue({
+      byKind: { audio: { running: 0, queued: 0 }, image: { running: 2, queued: 0 } },
+    }))).toEqual([
+      '2/4 shared slots active',
+      'image 2 running',
+      'federated 1 running, 1 queued',
+    ]);
+  });
+
+  it('reports nothing at all when the queue block is missing', () => {
+    for (const bad of [null, undefined, 'busy']) expect(summarizePeerMediaQueue(bad)).toEqual([]);
   });
 });

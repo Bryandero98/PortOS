@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
   imageModels: [],
   videoModels: [],
   cachedRepos: new Set(),
+  laneWidthByKind: {},
 }));
 
 vi.mock('./settings.js', () => ({
@@ -53,6 +54,10 @@ vi.mock('./musicEngineCapabilities.js', () => ({
 
 vi.mock('./mediaJobQueue/index.js', () => ({
   listJobs: vi.fn(() => state.jobs),
+  // Widths deliberately differ per kind so a test can tell a minimum from a sum
+  // or a max; the real queue routes every federated kind to the same lane, but
+  // that is the thing under test, not a premise of it.
+  laneConcurrencyFor: vi.fn((job) => state.laneWidthByKind[job?.kind] ?? 1),
   isRemoteMediaJob: (job) => job?.kind === 'audio' && job.params?.remoteMedia !== undefined,
   getJob: vi.fn((id) => state.jobs.find((job) => job.id === id) || null),
   enqueueJob: vi.fn(({ kind, owner, params }) => {
@@ -83,7 +88,7 @@ import {
   submitFederatedMediaJob,
   __resetFederatedMediaProviderForTests,
 } from './federatedMediaProvider.js';
-import { enqueueJob } from './mediaJobQueue/index.js';
+import { enqueueJob, laneConcurrencyFor } from './mediaJobQueue/index.js';
 import { PATHS, sha256Text } from '../lib/fileUtils.js';
 import { canonicalStringify } from '../lib/objects.js';
 
@@ -151,6 +156,7 @@ beforeEach(() => {
   state.imageModels = [];
   state.videoModels = [];
   state.cachedRepos = new Set();
+  state.laneWidthByKind = { audio: 1, image: 1, video: 1 };
   __resetFederatedMediaProviderForTests();
 });
 
@@ -206,6 +212,66 @@ describe('federated media provider capacity and idempotency', () => {
     expect(status.capabilities[0]).toMatchObject({
       ready: false, unavailableReason: 'vram-unknown-size',
     });
+  });
+
+  // The bug this replaced: summing every local lane told an audio-only provider
+  // it "runs 4 at a time" because the parallel cloud-CLI lane is wide, when its
+  // music renders serialize one at a time. Widths differ per kind here so a sum
+  // (12), a max (10), and the fail-closed minimum (1) are all distinguishable.
+  it('reports the narrowest lane a negotiated kind lands on, never a sum or a max', async () => {
+    state.laneWidthByKind = { audio: 1, image: 10, video: 1 };
+    const status = await getFederatedMediaProviderStatus(config(), { kinds: ['audio', 'image', 'video'] });
+    expect(status.queue.concurrency).toBe(1);
+    // And it asks about the job shape the provider actually enqueues: adding a
+    // cloud `mode` would route the probe to a lane no federated job uses.
+    expect(laneConcurrencyFor).toHaveBeenCalledWith({ kind: 'image', params: {} });
+  });
+
+  it('reports the width of the one negotiated kind when only one was asked for', async () => {
+    state.laneWidthByKind = { audio: 4, image: 1, video: 1 };
+    const status = await getFederatedMediaProviderStatus(config());
+    expect(status.queue.concurrency).toBe(4);
+  });
+
+  it('breaks the shared queue down by federated kind, excluding outgoing proxy jobs', async () => {
+    state.jobs = [
+      { id: 'a', kind: 'audio', status: 'running', owner: 'federated-media:peer-example' },
+      { id: 'b', kind: 'audio', status: 'queued', owner: null },
+      { id: 'c', kind: 'image', status: 'queued', owner: null },
+      // Outgoing proxy work: rendered on a peer, so it occupies no lane here.
+      { id: 'd', kind: 'audio', status: 'running', owner: null, params: { remoteMedia: {} } },
+      // A kind this contract does not federate still holds a local lane, so it
+      // counts toward totalActive while having no bucket of its own.
+      { id: 'e', kind: 'training', status: 'running', owner: null },
+    ];
+    const status = await getFederatedMediaProviderStatus(config(), { kinds: ['audio', 'image', 'video'] });
+    expect(status.queue.byKind).toEqual({
+      audio: { running: 1, queued: 1 },
+      image: { running: 0, queued: 1 },
+    });
+    // byKind is machine-wide while these are the federated share, counted in
+    // the same pass — only job 'a' is owned by a federated caller. The training
+    // job holds a lane but has no bucket, which is why byKind need not sum to
+    // totalActive.
+    expect(status.queue).toMatchObject({
+      providerActive: 1, running: 1, queued: 0, totalActive: 4,
+    });
+  });
+
+  // Reporting image/video occupancy to a consumer that negotiated audio only
+  // would leave byKind as the one part of the payload the kind projection does
+  // not govern.
+  it('scopes the per-kind breakdown to the negotiated kinds', async () => {
+    state.jobs = [
+      { id: 'a', kind: 'image', status: 'running', owner: null },
+      // Federated work of a kind this caller did not negotiate: invisible in
+      // byKind, but still part of the federated share of the machine — so a
+      // kind filter applied before the owner check would under-report it.
+      { id: 'b', kind: 'image', status: 'running', owner: 'federated-media:peer-example' },
+    ];
+    const status = await getFederatedMediaProviderStatus(config());
+    expect(status.queue.byKind).toEqual({});
+    expect(status.queue).toMatchObject({ totalActive: 2, providerActive: 1, running: 1, queued: 0 });
   });
 
   it('queues allowlisted audio without exposing the prompt in its response', async () => {

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { IMAGE_GEN_MODE } from '../imageGen/modes.js';
 
 // The queue persists to data/media-jobs.json. Steer it at a temp dir so each
 // test gets a clean slate without scribbling over the real data dir.
@@ -238,6 +239,29 @@ describe('mediaJobQueue', () => {
     it('reports the remote lane bound', () => {
       expect(mediaJobQueue.getQueueCapacity().lanes.remote.limit)
         .toBe(mediaJobQueue.REMOTE_MEDIA_PARALLEL_LIMIT);
+    });
+  });
+
+  describe('laneConcurrencyFor', () => {
+    // The lanes are alternatives, not a pool: a caller that summed their limits
+    // would claim the wide cloud-CLI width for GPU work that serializes.
+    it('answers with the lane the job would run in, never a total', () => {
+      const { lanes } = mediaJobQueue.getQueueCapacity();
+      expect(mediaJobQueue.laneConcurrencyFor({ kind: 'audio', params: {} })).toBe(lanes.gpu.limit);
+      expect(mediaJobQueue.laneConcurrencyFor({ kind: 'image', params: {} })).toBe(lanes.gpu.limit);
+      expect(mediaJobQueue.laneConcurrencyFor({
+        kind: 'image', params: { mode: IMAGE_GEN_MODE.CODEX },
+      })).toBe(lanes.cloud.limit);
+      expect(mediaJobQueue.laneConcurrencyFor({
+        kind: 'audio', params: { remoteMedia: remoteMediaParams() },
+      })).toBe(mediaJobQueue.REMOTE_MEDIA_PARALLEL_LIMIT);
+    });
+
+    it('tracks the cloud lane limit as configured rather than a snapshot of it', () => {
+      mediaJobQueue.setCodexParallelLimit(5);
+      expect(mediaJobQueue.laneConcurrencyFor({
+        kind: 'image', params: { mode: IMAGE_GEN_MODE.CODEX },
+      })).toBe(5);
     });
   });
 

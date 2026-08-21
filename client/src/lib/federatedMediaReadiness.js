@@ -7,10 +7,11 @@
  * worse than either alone. The state machine, its labels, and the remedy text
  * therefore live here rather than inside one component.
  *
- * The server stays authoritative. `assertFederatedMediaProviderSelection`
+ * The server stays authoritative: `assertFederatedMediaProviderSelection`
  * (server/services/federatedMediaConsumer.js) re-probes and fail-closes before
- * any job leaves this instance, so nothing here gates work — it only decides
- * what the user is shown.
+ * any job leaves this instance. What `usable` gates is the client's own
+ * submit affordance, so a peer the server would refuse is refused before the
+ * user commits to it rather than after.
  */
 
 import { Film, Image, Music2 } from 'lucide-react';
@@ -72,6 +73,9 @@ const PEER_OFFLINE = Object.freeze({ label: 'peer offline', tone: 'warning' });
 // on `capabilities`, and a new identity every render would defeat that memo for
 // exactly the peers that have nothing to recompute.
 const NO_CAPABILITIES = Object.freeze([]);
+// A peer with no snapshot yet is the common case on a fresh instance, and its
+// row re-renders on every 15s poll — no reason to allocate a fresh empty array.
+const NO_QUEUE_SEGMENTS = Object.freeze([]);
 
 const isRecord = (value) => value && typeof value === 'object' && !Array.isArray(value);
 // NUL separator, matching the server's own model key: a printable separator
@@ -130,14 +134,67 @@ function verifiedState(status, now) {
   return state;
 }
 
+const isCount = (value) => Number.isInteger(value) && value >= 0;
+
+// "<label> 1 running, 2 queued", or null when nothing is there to report.
+const occupancySegment = (label, entry) => {
+  if (!isRecord(entry) || !isCount(entry.running) || !isCount(entry.queued)) return null;
+  const parts = [];
+  if (entry.running > 0) parts.push(`${entry.running} running`);
+  if (entry.queued > 0) parts.push(`${entry.queued} queued`);
+  return parts.length > 0 ? `${label} ${parts.join(', ')}` : null;
+};
+
+/**
+ * The peer's queue block as finished display segments.
+ *
+ * Returns the rendered phrases rather than the numbers behind them, so every
+ * surface shows the same words — a lib that stopped at "3/4 slots" and left
+ * each caller to append its own connective would reintroduce, one layer down,
+ * exactly the disagreement this module exists to prevent.
+ *
+ * `concurrency` and `byKind` reached the wire after v1 shipped (#4348): an
+ * older provider omits them, so their segments are dropped rather than shown as
+ * a zero that would claim an idle lane the peer never reported on.
+ *
+ * @param {object|null} queue - `snapshot.queue` from a probed peer
+ * @returns {string[]} segments to render in order, possibly empty
+ */
+export function summarizePeerMediaQueue(queue) {
+  if (!isRecord(queue)) return NO_QUEUE_SEGMENTS;
+  const segments = [];
+  // Machine-wide: every local render on that peer competes for these slots,
+  // which is why this is the number that predicts a wait.
+  if (isCount(queue.totalActive) && isCount(queue.maxQueuedJobs)) {
+    segments.push(`${queue.totalActive}/${queue.maxQueuedJobs} shared slots active`);
+  }
+  if (isCount(queue.concurrency) && queue.concurrency > 0) {
+    segments.push(`runs ${queue.concurrency} at a time`);
+  }
+  // Also machine-wide — this is what breaks the slot count down. The provider
+  // reports only the kinds holding a lane, so an idle kind is simply absent.
+  const byKind = isRecord(queue.byKind) ? queue.byKind : {};
+  for (const { kind, label } of FEDERATED_MEDIA_KINDS) {
+    const segment = occupancySegment(label, byKind[kind]);
+    if (segment) segments.push(segment);
+  }
+  // The federated share of the same slots, labelled so it cannot be read as the
+  // whole picture: an unlabelled "0 running" beside "audio 1 running" says the
+  // peer is both busy and idle.
+  const federated = occupancySegment('federated', queue);
+  if (federated) segments.push(federated);
+  return segments;
+}
+
 /**
  * Resolve one peer's media-provider readiness for display.
  *
  * @param {object} peer - a sanitized peer record from `GET /api/instances`
  * @param {{now?: number}} [options]
- * @returns {{configured: boolean, state: string|null, label: string, tone: string,
- *   help: string|null, queue: object|null, capabilities: object[], checkedAt: string|null,
- *   models: Record<string, object[]>, modelCount: number, kinds: string[]}}
+ * @returns {{configured: boolean, state: string|null, usable: boolean, label: string,
+ *   tone: string, help: string|null, queue: object|null, capabilities: object[],
+ *   checkedAt: string|null, models: Record<string, object[]>, modelCount: number,
+ *   kinds: string[]}}
  */
 export function resolvePeerMediaReadiness(peer, { now = Date.now() } = {}) {
   const config = peerMediaProviderConfig(peer);
@@ -146,16 +203,24 @@ export function resolvePeerMediaReadiness(peer, { now = Date.now() } = {}) {
   // An unverifiable status does not get to keep whatever the probe concluded —
   // including the `ready` it concluded at probe time.
   const state = status ? verifiedState(status, now) : null;
-  const meta = peer?.enabled === false
+  // `state` is the provider's own verdict on its provider surface — it says
+  // nothing about whether this peer is switched on or reachable. Composing the
+  // two happens once, here, rather than at each caller: a surface that gated a
+  // button on the bare `state` would enable it for a disabled or offline peer
+  // still holding a fresh snapshot from before it went away.
+  const blocked = peer?.enabled === false
     ? PEER_DISABLED
     : !config.enabled
       ? OFF
       : peer?.status !== 'online'
         ? PEER_OFFLINE
-        : (FEDERATED_MEDIA_STATE_META[state] || CHECKING);
+        : null;
+  const meta = blocked ?? (FEDERATED_MEDIA_STATE_META[state] || CHECKING);
   return {
     configured: config.enabled,
     state,
+    // The one reading a caller should gate work on.
+    usable: !blocked && state === 'ready',
     label: meta.label,
     tone: meta.tone,
     // A peer-level reading carries its own remedy; otherwise the remedy belongs

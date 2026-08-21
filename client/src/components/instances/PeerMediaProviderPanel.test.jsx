@@ -43,6 +43,11 @@ const readyStatus = {
 // by design — a patch that omitted a list would only read as "unchanged" by luck.
 const emptyLists = { audioModels: [], imageModels: [], videoModels: [] };
 
+const withQueue = (queue) => ({
+  ...readyStatus,
+  snapshot: { ...readyStatus.snapshot, queue: { ...readyStatus.snapshot.queue, ...queue } },
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   updatePeer.mockResolvedValue({ id: basePeer.id });
@@ -64,6 +69,23 @@ describe('PeerMediaProviderPanel', () => {
     expect(onRefresh).toHaveBeenCalled();
   });
 
+  it('reports how fast the peer drains its queue and which kinds are occupying it', () => {
+    const peer = {
+      ...basePeer,
+      mediaProvider: { enabled: true, audioModels: [] },
+      mediaProviderStatus: withQueue({
+        concurrency: 2,
+        byKind: { audio: { running: 1, queued: 2 } },
+      }),
+    };
+    render(<PeerMediaProviderPanel peer={peer} onRefresh={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Remote media provider/i }));
+    expect(screen.getByText(/runs 2 at a time · audio 1 running, 2 queued · federated 1 running, 2 queued/i)).toBeInTheDocument();
+    // An idle kind is omitted, not rendered as a zero.
+    expect(screen.queryByText(/(image|video) \d/i)).not.toBeInTheDocument();
+  });
+
   it('shows queue capacity and persists an allowlisted model without dropping future config fields', async () => {
     const onRefresh = vi.fn();
     const peer = {
@@ -74,7 +96,7 @@ describe('PeerMediaProviderPanel', () => {
     render(<PeerMediaProviderPanel peer={peer} onRefresh={onRefresh} />);
 
     fireEvent.click(screen.getByRole('button', { name: /Remote media provider/i }));
-    expect(screen.getByText(/1 running · 2 queued · 3\/4 shared slots active/i)).toBeInTheDocument();
+    expect(screen.getByText(/3\/4 shared slots active · federated 1 running, 2 queued/i)).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText('Allow audio model MiniMax Music 3'));
 
     await waitFor(() => expect(updatePeer).toHaveBeenCalledWith('peer-example', {

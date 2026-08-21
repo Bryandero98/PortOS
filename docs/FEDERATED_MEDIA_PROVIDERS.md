@@ -263,7 +263,8 @@ An unreadable capacity report renders as unknown rather than as an idle machine.
 
 The **peer** half lists every peer enabled as a media provider with its
 readiness state, allowlisted kinds, the peer's own shared queue depth against its
-`maxQueuedJobs`, and how long ago it was probed — the same state vocabulary and
+`maxQueuedJobs`, how many of those jobs it runs in parallel, which kinds are
+occupying its lanes, and how long ago it was probed — the same state vocabulary and
 remedy text the Instances peer card uses, from one shared resolver
 (`client/src/lib/federatedMediaReadiness.js`), so the two screens cannot
 disagree.
@@ -313,6 +314,41 @@ All successful JSON responses include `wireVersion: 1`. The version is also fixe
 CUDA has three states: `available`, `absent`, and `unknown`. A CUDA model is ready only when the state is positively `available`; a failed or ambiguous probe blocks admission. Runtime, host-platform, exact fixed-checkpoint readiness, and queue capacity are similarly fail-closed.
 
 The configured `maxQueuedJobs` is conservative: all queued/running work that consumes this machine's media resources counts against it. Outgoing proxy jobs are excluded because they consume another peer's capacity; counting them could make two idle peers report busy while waiting on each other.
+
+### Drain rate and per-kind occupancy
+
+The queue block also reports how fast that backlog drains, because a depth alone
+cannot say:
+
+| Field | Meaning |
+|-------|---------|
+| `totalActive` | every queued/running local media job, including kinds this contract does not federate |
+| `providerActive` / `queued` / `running` | the subset owned by federated callers — a *share* of the above, never the whole picture |
+| `maxQueuedJobs` | the admission bound `accepting` is computed against |
+| `concurrency` | how many jobs run at once on the lane a federated submission lands on |
+| `byKind` | `{running, queued}` for each negotiated kind currently holding a lane |
+
+Two jobs ahead of a submission mean two renders' wait on a serialized lane and
+roughly none on a parallel one; `concurrency` is what tells those apart. It is
+the width of the one lane a federated job runs in, **not** a sum across lanes —
+the lanes are alternatives, so a machine with a wide parallel cloud-CLI lane
+must not claim that width for GPU work that serializes. Every job this contract
+carries is a local-engine render, so today that is the serialized GPU lane.
+
+`byKind` lists only the negotiated kinds currently holding a lane; with the
+block present, an absent kind is idle. It need not sum to `totalActive`, which
+also counts local work of kinds this contract does not federate (LoRA training)
+occupying the same lanes.
+
+`byKind` and `totalActive` describe the whole machine, while `running`/`queued`
+describe only the federated share of it — so the UI labels the federated
+numbers rather than rendering them bare. An unlabelled `0 running` beside
+`audio 1 running` would say the peer is simultaneously busy and idle.
+
+Both fields were added after wire v1 shipped, so both are optional: a provider
+on an older build omits them and a consumer must read that absence as
+**unknown**, never as zero. The UI drops the segment rather than rendering a
+lane as idle that the peer never reported on.
 
 Status never includes prompts, lyrics, credentials, local paths, commission records, or private creative metadata.
 

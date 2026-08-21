@@ -171,6 +171,57 @@ describe('federated media status kind projection', () => {
     expect(parsed.maxNumFrames).toBeUndefined();
     expect(parsed.resolutionOptions).toBeUndefined();
   });
+
+  it('validates a queue block reporting concurrency and per-kind occupancy', () => {
+    const parsed = federatedMediaProviderStatusSchema.parse(status({
+      kinds: ['audio', 'image', 'video'],
+      queue: {
+        totalActive: 3,
+        providerActive: 1,
+        queued: 0,
+        running: 1,
+        maxQueuedJobs: 4,
+        accepting: true,
+        concurrency: 2,
+        byKind: {
+          audio: { running: 1, queued: 0 },
+          image: { running: 0, queued: 1 },
+        },
+      },
+    }));
+    expect(parsed.queue.concurrency).toBe(2);
+    expect(parsed.queue.byKind.image).toEqual({ running: 0, queued: 1 });
+  });
+
+  it('validates an older provider queue block omitting concurrency and byKind', () => {
+    const parsed = federatedMediaProviderStatusSchema.parse(status());
+    expect(parsed.queue.concurrency).toBeUndefined();
+    expect(parsed.queue.byKind).toBeUndefined();
+  });
+
+  // The provider reports only the kinds holding a lane, and the kind list is
+  // negotiated besides. A record that demanded every key would make an
+  // audio-only projection unparseable the moment a fourth kind is added.
+  it('accepts a byKind covering only some kinds', () => {
+    expect(federatedMediaProviderStatusSchema.safeParse(status({
+      queue: { ...status().queue, byKind: { audio: { running: 1, queued: 0 } } },
+    })).success).toBe(true);
+  });
+
+  it('rejects a byKind entry that is not a non-negative count pair', () => {
+    const bad = (byKind) => federatedMediaProviderStatusSchema.safeParse(status({
+      queue: { ...status().queue, byKind },
+    })).success;
+    expect(bad({ audio: { running: -1, queued: 0 } })).toBe(false);
+    expect(bad({ audio: { running: 1 } })).toBe(false);
+    expect(bad({ holo: { running: 1, queued: 0 } })).toBe(false);
+  });
+
+  it('rejects a concurrency that claims no capacity at all', () => {
+    expect(federatedMediaProviderStatusSchema.safeParse(status({
+      queue: { ...status().queue, concurrency: 0 },
+    })).success).toBe(false);
+  });
 });
 
 describe('normalizeRequestedMediaKinds', () => {

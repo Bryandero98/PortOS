@@ -33,6 +33,10 @@ import {
   listMusicEngines, getInstances, generateMusic, installAudioModel, removeAudioModel, getActiveProcessing, getMediaJob, getTrack, cancelMediaJob,
 } from '../../services/api';
 import { formatDownloadGb } from '../../utils/formatters';
+import {
+  resolvePeerMediaReadiness,
+  summarizePeerMediaQueue,
+} from '../../lib/federatedMediaReadiness.js';
 import RuntimeInstallModal from '../install/RuntimeInstallModal';
 
 /**
@@ -318,10 +322,17 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
     setDurationSec((d) => (d == null ? engine.defaultDurationSec : d));
   }, [engine?.id, engine?.models]);
 
+  // The same resolver the Instances card and System Health use, rather than the
+  // `state` recorded on the stored probe: a snapshot written as `ready` keeps
+  // saying so after its freshness window closes, and this is the surface where
+  // the user actually commits a render to that peer. It gates the button as
+  // well as the caption — a caption reading "stale" beside an enabled Generate
+  // just moves the rejection to the server.
+  const remoteReadiness = selectedRemotePeer ? resolvePeerMediaReadiness(selectedRemotePeer) : null;
+  const remoteQueueSegments = remoteReadiness ? summarizePeerMediaQueue(remoteReadiness.queue) : [];
   const remoteReady = isRemote
-    && selectedRemotePeer?.status === 'online'
-    && selectedRemotePeer?.mediaProviderStatus?.state === 'ready'
-    && selectedRemotePeer?.mediaProviderStatus?.snapshot?.queue?.accepting === true
+    && remoteReadiness?.usable === true
+    && remoteReadiness.queue?.accepting === true
     && selectedRemoteModel?.ready === true;
   const canGenerate = (isRemote ? remoteReady : !!engine?.ready && selectedModelReady)
     && !!prompt?.trim() && !isGenerating;
@@ -386,6 +397,18 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   const handleGenerate = async () => {
     if (!generationEngine) return;
     if (!prompt?.trim()) { toast.error('Add a generation prompt first'); return; }
+    // The button's own reading is as old as the last render, and a capacity
+    // window expires on the clock rather than on a state change — so between
+    // polls an enabled button can already be pointing at a stale peer. Re-derive
+    // now, and say so here instead of letting the server reject a submission the
+    // user just committed to.
+    if (isRemote) {
+      const fresh = resolvePeerMediaReadiness(selectedRemotePeer);
+      if (!fresh.usable) {
+        toast.error(fresh.help || 'The selected peer is no longer reporting available capacity');
+        return;
+      }
+    }
     setGenerating(true);
     const body = {
       prompt: prompt.trim(),
@@ -479,7 +502,6 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
 
   const selectedUserModel = engine?.models?.find((m) => m.id === modelId && m.userAdded);
   const showRuntimeInstallHint = !isRemote && !!engine && (!engine.ready || !selectedModelReady) && (!!prompt?.trim() || userSelectedEngine);
-  const remoteStatus = selectedRemotePeer?.mediaProviderStatus;
 
   return (
     <div className="space-y-2 border border-port-border rounded-lg p-3 bg-port-bg/40">
@@ -497,8 +519,12 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
         >
           <option value="">This instance</option>
           {peers.filter((peer) => peer.mediaProvider?.enabled === true).map((peer) => {
-            const status = peer.mediaProviderStatus;
-            const suffix = status?.state === 'ready' ? '' : ` (${status?.state || 'checking'})`;
+            // Same reading as the caption and the button below. The stored
+            // `state` alone would leave a switched-off or lapsed peer listed
+            // with no suffix — reading as ready — beside a caption explaining
+            // why it is not.
+            const readiness = resolvePeerMediaReadiness(peer);
+            const suffix = readiness.usable ? '' : ` (${readiness.label})`;
             return <option key={peer.id} value={peer.id}>{peer.name || peer.address || 'Federated peer'}{suffix}</option>;
           })}
         </select>
@@ -522,11 +548,12 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
             </select>
           </label>
           <p className="text-[11px] text-gray-400">
-            {remoteStatus?.state === 'ready' && remoteStatus.snapshot?.queue
-              ? `${remoteStatus.snapshot.queue.running} running · ${remoteStatus.snapshot.queue.queued} queued`
-              : remoteStatus?.state === 'stale'
-                ? 'Capacity is stale; remote generation is blocked until the peer reports fresh status.'
-                : 'Remote generation requires a ready, authenticated peer with fresh capacity.'}
+            {remoteReadiness?.usable
+              // A usable peer carries no remedy text, so falling through would
+              // print the not-ready sentence beside an enabled button.
+              ? (remoteQueueSegments.join(' · ') || 'Peer is ready.')
+              : remoteReadiness?.help
+                || 'Remote generation requires a ready, authenticated peer with fresh capacity.'}
           </p>
           <div className="grid grid-cols-2 gap-2">
             {(['style', 'mood', 'tempo', 'energy']).map((field) => (

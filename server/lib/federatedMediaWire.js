@@ -179,6 +179,14 @@ export const federatedMediaCapabilitySchema = z.object({
   })).max(100).nullable().optional(),
 });
 
+// Per-kind occupancy of the provider's own generation lanes. Counts only —
+// never a job id, an owner, or anything derived from a prompt (ADR
+// docs/decisions/2026-08-20-federated-visual-prompts.md rule 3).
+const federatedMediaKindOccupancySchema = z.object({
+  running: z.number().int().nonnegative(),
+  queued: z.number().int().nonnegative(),
+});
+
 const federatedMediaQueueStatusSchema = z.object({
   totalActive: z.number().int().nonnegative(),
   providerActive: z.number().int().nonnegative(),
@@ -186,6 +194,19 @@ const federatedMediaQueueStatusSchema = z.object({
   running: z.number().int().nonnegative(),
   maxQueuedJobs: z.number().int().positive(),
   accepting: z.boolean(),
+  // Both added after wire v1 shipped, so both are optional: an older provider
+  // omits them, and absent must read as UNKNOWN rather than zero. See "Drain
+  // rate and per-kind occupancy" in docs/FEDERATED_MEDIA_PROVIDERS.md for what
+  // they mean and why queue depth alone could not answer it.
+  //
+  // Bounded well above any lane width this build configures, so a provider with
+  // more or wider lanes than ours still validates.
+  concurrency: z.number().int().positive().max(64).nullable().optional(),
+  // Only the kinds actually holding a lane: with the block present, an absent
+  // kind is idle. `partialRecord`, not `record` — a Zod 4 record over an enum
+  // key is exhaustive, so the day a fourth kind joins KNOWN_MEDIA_KINDS every
+  // older provider's payload would fail validation on a newer consumer.
+  byKind: z.partialRecord(mediaKindSchema, federatedMediaKindOccupancySchema).optional(),
 });
 
 // Strip unknown fields from peer responses before persisting or exposing them

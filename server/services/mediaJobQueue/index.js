@@ -300,6 +300,31 @@ export function getRunningJob() {
   return running;
 }
 
+// One definition of each lane's slot count, shared by getQueueCapacity and
+// laneConcurrencyFor so a caller can never read a limit this module has moved.
+const laneLimits = () => ({
+  gpu: 1,
+  cloud: codexParallelLimit,
+  remote: REMOTE_MEDIA_PARALLEL_LIMIT,
+});
+
+/**
+ * How many jobs like `job` run at once here — the slot count of the lane
+ * `jobLane` would route it to.
+ *
+ * Exported for the same reason `getQueueCapacity` is: the lane split is private
+ * to this module, so a caller asking "how fast would this drain?" must not
+ * answer it by naming lanes. Summing limits by hand also gives the wrong
+ * number — the lanes are alternatives, not a pool, so a machine whose parallel
+ * cloud-CLI lane is wide would claim that width for GPU work that serializes.
+ *
+ * @param {{kind: string, params?: object}} job - a real or prospective job
+ * @returns {number} the lane's configured concurrency
+ */
+export function laneConcurrencyFor(job) {
+  return laneLimits()[jobLane(job)];
+}
+
 /**
  * Lane occupancy and queue depth, reported by the queue itself.
  *
@@ -319,10 +344,11 @@ export function getRunningJob() {
  *   runningKind: string|null}}
  */
 export function getQueueCapacity() {
+  const limits = laneLimits();
   const lanes = {
-    gpu: { running: running ? 1 : 0, queued: 0, limit: 1 },
-    cloud: { running: cloudRunning.length, queued: 0, limit: codexParallelLimit },
-    remote: { running: remoteRunning.length, queued: 0, limit: REMOTE_MEDIA_PARALLEL_LIMIT },
+    gpu: { running: running ? 1 : 0, queued: 0, limit: limits.gpu },
+    cloud: { running: cloudRunning.length, queued: 0, limit: limits.cloud },
+    remote: { running: remoteRunning.length, queued: 0, limit: limits.remote },
   };
   // Seed every known kind so a lane with no work reports 0 rather than being
   // absent — an absent key and a zero read identically in a UI, and only one
