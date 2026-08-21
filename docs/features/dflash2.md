@@ -111,10 +111,19 @@ llama-server \
 ```
 
 In PortOS, set this in **Settings → Local LLMs → Speculative Decoding →
-Advanced options → Spec Type** (the picker suggests the types above). Leaving the
-**Drafter Model** field empty is a supported configuration: PortOS drops the
-`draft-*` entries from the launch line — logging which ones — and starts with the
-`ngram-*` half. Vocabulary reference: llama.cpp `docs/speculative.md`.
+Advanced options → Spec Type** (the picker suggests the types above). The two
+fields are resolved against each other at launch, so a preset's prefilled paths
+can't fight your choice:
+
+- **Drafter Model empty + `draft-*` types** — those entries are dropped (logged),
+  and the launch starts with whatever `ngram-*` half remains.
+- **Drafter Model set + only `ngram-*` types** — the drafter is ignored rather
+  than loaded, and Start is no longer blocked on a drafter GGUF that was never
+  downloaded.
+- **Spec Type empty + Drafter Model set** — left alone: llama.cpp speculates off
+  a bare `--model-draft`, so PortOS does not second-guess it.
+
+Vocabulary reference: llama.cpp `docs/speculative.md`.
 
 ### 3. Use in PortOS
 1. Navigate to **AI Providers** (`/ai`) or **Settings → Local LLMs**.
@@ -131,12 +140,20 @@ local model keeps one posture however it is reached; OpenCode receives them as
 its `agent.build` options, and a CoS task can still override temperature and
 thinking for a single run.
 
-The block is offered only for the backends PortOS actually forwards these to —
-Ollama, llama.cpp, and MTPLX, plus the OrcaRouter gateway. Thinking is not a
-portable flag: Ollama takes its native `think` boolean while llama.cpp and MTPLX
-receive `enable_thinking` through the chat template, so a model with no reasoning
-mode simply ignores it. Leaving **Top-P** blank sends no `top_p` at all, which is
-not the same as pinning `1` — the backend keeps its own default.
+Each control appears only where PortOS actually forwards it. Sampling
+(temperature, top-p) reaches Ollama, llama.cpp, and MTPLX, plus the OrcaRouter
+gateway — but not a Claude Code harness pointed at Ollama, which owns its own
+sampling and takes only the thinking signal. Thinking itself is not a portable
+flag: Ollama gets its native `think` boolean, llama.cpp and MTPLX get
+`enable_thinking` through the chat template, a Claude/Ollama harness gets
+`MAX_THINKING_TOKENS`, and OrcaRouter gets nothing (its upstream models own the
+switch). A model with no reasoning mode ignores it either way.
+
+**Every field left blank is simply not sent**, so the backend keeps its own
+default — blank Top-P is not the same as pinning `1`, and blank Temperature is
+not the same as pinning `0.6` (though Ollama agent runs still fall back to `0.6`
+server-side). This is why the editor never seeds a value a provider does not
+already have: an unrelated Save must not silently pin one.
 
 ### Checking the requirements from the Providers page
 

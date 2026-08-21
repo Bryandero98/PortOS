@@ -218,6 +218,32 @@ describe('llamaServerManager', () => {
     expect(status.config.specType).toBe('ngram-map-k');
   });
 
+  it('ignores a preset drafter path when only ngram spec types were requested', async () => {
+    // The launcher card seeds BOTH fields from a preset, so switching Spec Type
+    // to an ngram implementation leaves the drafter path behind — loading it
+    // would cost VRAM the run can't use, and a preset GGUF that was never
+    // downloaded would fail the existence check and block Start outright.
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+
+    await startLlamaServer({ model: modelPath, draftModel: draftPath, specType: 'ngram-map-k' });
+
+    const startCall = execPm2Calls.find((c) => c[0] === 'start');
+    expect(startCall).not.toContain('--model-draft');
+    expect(startCall[startCall.indexOf('--spec-type') + 1]).toBe('ngram-map-k');
+    const status = await getLlamaServerStatus();
+    expect(status.config.draftModel).toBeNull();
+  });
+
+  it('keeps a drafter when no spec type is set at all — llama.cpp drafts off --model-draft alone', async () => {
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+
+    await startLlamaServer({ model: modelPath, draftModel: draftPath, specType: '' });
+
+    const startCall = execPm2Calls.find((c) => c[0] === 'start');
+    expect(startCall[startCall.indexOf('--model-draft') + 1]).toBe(draftPath);
+    expect(startCall).not.toContain('--spec-type');
+  });
+
   it('omits --spec-type entirely when the only requested type needs an absent drafter', async () => {
     vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
 

@@ -148,7 +148,9 @@ describe('generationControlsFor', () => {
   it.each([
     ['OpenCode llama TUI', { id: 'opencode-llama-tui', command: 'opencode', llamaBacked: true }, { temperature: true, topP: true, thinking: true }],
     ['OpenCode MTPLX', { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true }, { temperature: true, topP: true, thinking: true }],
-    ['Claude Ollama TUI', { id: 'claude-ollama-tui', command: 'claude', ollamaBacked: true }, { temperature: true, topP: true, thinking: true }],
+    // A Claude harness on Ollama is forwarded only MAX_THINKING_TOKENS
+    // (server/lib/cliChildEnv.js) — it owns its own sampling.
+    ['Claude Ollama TUI', { id: 'claude-ollama-tui', command: 'claude', ollamaBacked: true }, { temperature: false, topP: false, thinking: true }],
     ['native Ollama API', { id: 'ollama', type: 'api', endpoint: 'http://localhost:11434/v1' }, { temperature: true, topP: true, thinking: true }],
     // OrcaRouter proxies cloud models that own their own reasoning switch.
     ['OpenCode OrcaRouter', { id: 'opencode-orcarouter', command: 'opencode', orcarouterBacked: true }, { temperature: true, topP: true, thinking: false }],

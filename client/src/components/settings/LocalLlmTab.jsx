@@ -808,21 +808,29 @@ export function LocalLlmTab() {
     return Boolean(entry?.path && !entry.exists && entry.path === (field || '').trim());
   };
   const baseWeightMissing = missingWeight('model');
-  const draftWeightMissing = missingWeight('draftModel');
-  const llamaStartBlocked = llamaModelMissing || baseWeightMissing || draftWeightMissing;
   // Rendered from the server's list (status payload) so the card never carries a
   // second copy of the llama.cpp vocabulary.
   const specTypeSuggestions = llamaStatus?.specTypes || [];
-  // MIRROR of `isDraftSpecType` / `parseSpecTypes` in
-  // server/lib/specDecodePresets.js. The launcher drops drafter-based types when
-  // no drafter is configured; say so here rather than letting the server quietly
-  // rewrite the launch line the user thought they were starting.
-  const draftlessSpecTypes = (llamaForm.draftModel || '').trim()
-    ? []
-    : String(llamaForm.specType || '').split(',').map((t) => t.trim()).filter((t) => t.startsWith('draft-'));
-  const draftlessSpecNotice = draftlessSpecTypes.length > 0
-    ? `${draftlessSpecTypes.join(', ')} will be skipped until a Drafter Model is set.`
-    : '';
+  // MIRROR of `parseSpecTypes` / `isDraftSpecType` in
+  // server/lib/specDecodePresets.js, and of how `startLlamaServer` resolves the
+  // two fields against each other. An EMPTY spec type still drafts (llama.cpp
+  // speculates off a bare `--model-draft`), so it counts as using the drafter.
+  const requestedSpecTypes = String(llamaForm.specType || '').split(',').map((t) => t.trim()).filter(Boolean);
+  const draftSpecTypes = requestedSpecTypes.filter((t) => t.startsWith('draft-'));
+  const drafterInUse = requestedSpecTypes.length === 0 || draftSpecTypes.length > 0;
+  const drafterConfigured = Boolean((llamaForm.draftModel || '').trim());
+  // Only block Start on a missing drafter GGUF when the launch would actually
+  // load one — an `ngram-*` run needs no drafter, so a preset's undownloaded
+  // drafter path must not hold it hostage.
+  const draftWeightMissing = drafterInUse && missingWeight('draftModel');
+  const llamaStartBlocked = llamaModelMissing || baseWeightMissing || draftWeightMissing;
+  // Say what the launcher will do with a mismatched pair rather than letting the
+  // server quietly rewrite the launch line the user thought they were starting.
+  const specTypeNotice = !drafterConfigured && draftSpecTypes.length > 0
+    ? `${draftSpecTypes.join(', ')} will be skipped until a Drafter Model is set.`
+    : drafterConfigured && !drafterInUse
+      ? 'The Drafter Model will be ignored — none of these spec types use one.'
+      : '';
   const llamaStartBlockedReason = llamaModelMissing
     ? 'Enter a Target Base Model path to enable Start'
     : baseWeightMissing
@@ -962,7 +970,7 @@ export function LocalLlmTab() {
           Both backends can be installed and running at the same time — <span className="text-gray-400">Default</span> just sets which one PortOS routes local-LLM runs to. Use <span className="text-gray-400">Import from…</span> to copy or link models between them without re-downloading.
         </p>
         <p className="text-xs text-gray-500">
-          For local coding agents, configure the shared <Link to="/ai" className="text-port-accent hover:underline">temperature, top-p and thinking defaults in AI Providers</Link>. Every local OpenAI-compatible backend receives them — Ollama, llama.cpp and MTPLX, whether reached directly or through an OpenCode CLI/TUI wrapper. New local providers start at temperature 0.6.
+          For local coding agents, configure the shared <Link to="/ai" className="text-port-accent hover:underline">temperature, top-p and thinking defaults in AI Providers</Link>. Every local OpenAI-compatible backend receives them — Ollama, llama.cpp and MTPLX, whether reached directly or through an OpenCode CLI/TUI wrapper. Every control left blank is simply not sent, so the backend keeps its own default — Ollama agent runs fall back to temperature 0.6.
         </p>
 
         {loading && !status ? (
@@ -1274,8 +1282,8 @@ export function LocalLlmTab() {
                     <code className="text-gray-400">ngram-*</code> ones speculate from the tokens already in context, so they run
                     with the Drafter field empty.
                   </p>
-                  {draftlessSpecNotice && (
-                    <p className="text-[11px] text-port-warning mt-1">{draftlessSpecNotice}</p>
+                  {specTypeNotice && (
+                    <p className="text-[11px] text-port-warning mt-1">{specTypeNotice}</p>
                   )}
                 </div>
                 <div>

@@ -663,9 +663,9 @@ describe('provider reasoning defaults', () => {
     const effort = await screen.findByLabelText('Default Effort');
     fireEvent.change(effort, { target: { value: 'high' } });
 
-    const thinking = screen.getByLabelText('Enable model reasoning');
-    expect(thinking).toBeChecked();
-    fireEvent.click(thinking);
+    const thinking = screen.getByLabelText('Thinking mode');
+    expect(thinking).toHaveValue('true');
+    fireEvent.change(thinking, { target: { value: 'false' } });
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(api.updateProvider).toHaveBeenCalledWith(
@@ -704,13 +704,82 @@ describe('provider reasoning defaults', () => {
     fireEvent.change(await screen.findByLabelText('Default Effort'), { target: { value: 'high' } });
     fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '0.2' } });
     fireEvent.change(screen.getByLabelText('Top-P'), { target: { value: '0.9' } });
-    expect(screen.getByLabelText('Enable model reasoning')).toBeChecked();
+    expect(screen.getByLabelText('Thinking mode')).toHaveValue('true');
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(api.updateProvider).toHaveBeenCalledWith(
       'opencode-llama-tui',
       expect.objectContaining({ effort: 'high', temperature: 0.2, topP: 0.9, thinking: true }),
     ));
+  });
+
+  // The editor must be able to leave "unset" alone: seeding a default would let
+  // an unrelated Save pin a temperature/thinking mode the backend never had, and
+  // only Ollama has a documented server-side fallback to pin back to.
+  it('saves an untouched llama.cpp provider without pinning any generation default', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'opencode-llama-tui',
+        name: 'OpenCode llama TUI',
+        type: 'tui',
+        command: 'opencode',
+        args: [],
+        enabled: true,
+        llamaBacked: true,
+        models: ['qwen3.8-27b'],
+        defaultModel: 'qwen3.8-27b',
+        envVars: {},
+      }],
+      activeProvider: 'opencode-llama-tui',
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await openEditorTab('Generation');
+
+    expect(await screen.findByLabelText('Temperature')).toHaveValue(null);
+    expect(screen.getByLabelText('Thinking mode')).toHaveValue('');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.updateProvider).toHaveBeenCalled());
+    expect(api.updateProvider.mock.calls[0][1]).toMatchObject({ temperature: null, topP: null, thinking: null });
+  });
+
+  // A Claude harness on Ollama is forwarded only MAX_THINKING_TOKENS
+  // (server/lib/cliChildEnv.js) — it owns its own sampling, so offering a
+  // temperature there would be a control that silently does nothing.
+  it('offers only the thinking control on a Claude/Ollama provider', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'claude-ollama-tui',
+        name: 'Claude Ollama TUI',
+        type: 'tui',
+        command: 'claude',
+        args: [],
+        enabled: true,
+        ollamaBacked: true,
+        models: ['qwen3:32b'],
+        defaultModel: 'qwen3:32b',
+        envVars: {},
+      }],
+      activeProvider: 'claude-ollama-tui',
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await openEditorTab('Generation');
+
+    expect(await screen.findByLabelText('Thinking mode')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Temperature')).toBeNull();
+    expect(screen.queryByLabelText('Top-P')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.updateProvider).toHaveBeenCalled());
+    const payload = api.updateProvider.mock.calls[0][1];
+    expect(payload).not.toHaveProperty('temperature');
+    expect(payload).not.toHaveProperty('topP');
   });
 
   // A stored default PortOS never forwards is a control that lies. The editor
@@ -737,7 +806,7 @@ describe('provider reasoning defaults', () => {
     await openEditorTab('Generation');
 
     expect(screen.queryByLabelText('Temperature')).toBeNull();
-    expect(screen.queryByLabelText('Enable model reasoning')).toBeNull();
+    expect(screen.queryByLabelText('Thinking mode')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(api.updateProvider).toHaveBeenCalled());

@@ -999,10 +999,15 @@ export const isOrcaRouterBackedProvider = (provider) => provider?.orcarouterBack
  * excluded: PortOS sends it no sampling fields at all, so offering a stored
  * temperature there would be a control that silently does nothing.
  *
- * `thinking` is false for OrcaRouter, whose upstream models own their own
- * reasoning switch. MIRROR of `THINKING_STYLE` / `buildAgentGeneration` in
- * server/lib/opencodeConfig.js and `apiGenerationOptions` in
- * server/lib/aiToolkit/internal/generationOptions.js; keep in lockstep.
+ * Each control is reported separately because the forwarding is uneven:
+ * OrcaRouter's upstream models own their own reasoning switch, so it has no
+ * thinking toggle; and the Claude Code harness pointed at Ollama takes ONLY a
+ * thinking signal (`MAX_THINKING_TOKENS=0` in server/lib/cliChildEnv.js) — it
+ * owns its own sampling, so a temperature or top-p stored on one of those
+ * records would never reach the daemon. MIRROR of `THINKING_STYLE` /
+ * `buildAgentGeneration` in server/lib/opencodeConfig.js and
+ * `apiGenerationOptions` in server/lib/aiToolkit/internal/generationOptions.js;
+ * keep in lockstep.
  * @param {object|null|undefined} provider
  * @returns {{temperature:boolean, topP:boolean, thinking:boolean}|null}
  */
@@ -1012,6 +1017,9 @@ export const generationControlsFor = (provider) => {
     || provider?.llamaBacked === true
     || provider?.mtplxBacked === true;
   if (!local && !orcarouter) return null;
+  if (commandBasename(provider?.command) === 'claude') {
+    return { temperature: false, topP: false, thinking: true };
+  }
   return { temperature: true, topP: true, thinking: !orcarouter };
 };
 
