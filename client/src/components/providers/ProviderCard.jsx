@@ -122,6 +122,11 @@ export default function ProviderCard({
               LLAMA.CPP / DFLASH
             </span>
           )}
+          {provider.vllmBacked && (
+            <span className="text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+              vLLM / DFLASH2
+            </span>
+          )}
           {provider.mtplxBacked && (
             <span className="text-xs px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
               MTPLX
@@ -284,6 +289,11 @@ export default function ProviderCard({
           {provider.llamaBacked && (
             <p className="text-xs text-purple-300/90">
               Local llama.cpp / llama-server harness (endpoint: <code className="text-purple-200">{provider.endpoint}</code>) — supports DFlash 2 speculative drafting.
+            </p>
+          )}
+          {provider.vllmBacked && (
+            <p className="text-xs text-emerald-300/90">
+              Local vLLM container (endpoint: <code className="text-emerald-200">{provider.endpoint}</code>) — Qwen3.8-27B with DFlash 2 drafting. It holds the whole GPU, so stop it before running local image/video generation.
             </p>
           )}
           {isProcessProvider(provider) && (

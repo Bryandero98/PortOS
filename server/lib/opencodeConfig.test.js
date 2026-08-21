@@ -203,6 +203,33 @@ describe('buildOpencodeEnvVars', () => {
     expect(storedConfig).not.toContain('sk-orca-example');
   });
 
+  it('declares the run model under provider.vllm at the container endpoint', () => {
+    const result = buildOpencodeEnvVars({ command: 'opencode', vllmBacked: true, models: ['qwen3.8-27b'] }, 'qwen3.8-27b');
+    const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
+    expect(cfg.provider.vllm.options.baseURL).toBe('http://127.0.0.1:18020/v1');
+    expect(cfg.provider.vllm.models['qwen3.8-27b']).toEqual({ name: 'qwen3.8-27b', tool_call: true });
+  });
+
+  it("injects the vLLM container's API key into options.apiKey, and no ORCAROUTER_API_KEY", () => {
+    const result = buildOpencodeEnvVars({
+      command: 'opencode',
+      vllmBacked: true,
+      models: ['qwen3.8-27b'],
+      apiKey: 'vllm-key-example',
+    }, 'qwen3.8-27b');
+    const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
+    expect(cfg.provider.vllm.options.apiKey).toBe('vllm-key-example');
+    // The OrcaRouter env var is that vendor's, not a generic key channel.
+    expect(result.ORCAROUTER_API_KEY).toBeUndefined();
+  });
+
+  it('leaves options.apiKey off a keyless local namespace even when the provider carries a key', () => {
+    const cfg = JSON.parse(buildOpencodeEnvVars({
+      command: 'opencode', mtplxBacked: true, models: ['mtplx'], apiKey: 'should-not-leak',
+    }, 'mtplx').OPENCODE_CONFIG_CONTENT);
+    expect(cfg.provider.mtplx.options.apiKey).toBeUndefined();
+  });
+
   it('unions the provider models, defaultModel, and the run model (deduped, bare)', () => {
     const provider = {
       command: 'opencode', ollamaBacked: true,

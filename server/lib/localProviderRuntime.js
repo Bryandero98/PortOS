@@ -4,13 +4,14 @@
  * A provider like `opencode-llama-tui` is only half a configuration: PortOS can
  * spawn the OpenCode CLI perfectly and the run still dies with "Cannot connect
  * to API: Unable to connect" because the daemon it points at — `llama-server`,
- * the Ollama daemon, LM Studio's server, an MTPLX process — was never installed
+ * the Ollama daemon, LM Studio's server, an MTPLX process, a vLLM container —
+ * was never installed
  * or never started. The binary check in `providerRuntimeInstaller.js` answers
  * "can PortOS run `opencode`?", which is a different question and stays green in
  * exactly that failure.
  *
  * This module is the pure half of the answer: given a provider record, which
- * local runtime backs it (`llama` / `ollama` / `lmstudio` / `mtplx`) and what
+ * local runtime backs it (`llama` / `ollama` / `lmstudio` / `mtplx` / `vllm`) and what
  * base URL should be probed. `services/providerReadiness.js` does the probing.
  * Kept side-effect-free so both the readiness service and its tests can reason
  * about the mapping without a daemon on the host.
@@ -153,6 +154,21 @@ export const LOCAL_RUNTIMES = Object.freeze({
     docsUrl: 'https://lmstudio.ai/download',
     modelsHint: 'Download a model in LM Studio and start its local server.',
   }),
+  vllm: Object.freeze({
+    id: 'vllm',
+    label: 'vLLM (Qwen3.8-27B)',
+    // Docker is the harness: the stack ships as an upstream compose project
+    // (syv-ai/qwen38-27b-rtx3090), and PortOS never vendors the engine or the
+    // ~9.5 GB image. "Is docker here?" is the only install question PortOS can
+    // answer about it.
+    command: 'docker',
+    defaultBaseUrl: opencodeLocalBaseUrl('vllm'),
+    // No Local LLM tab entry — the weights and the compose project are an
+    // operator-owned ~20 GB prepare step, not something PortOS downloads.
+    manageUrl: null,
+    docsUrl: 'https://github.com/atomantic/PortOS/blob/main/docs/features/qwen38-rtx3090.md',
+    modelsHint: 'Clone syv-ai/qwen38-27b-rtx3090 and run its prepare step once — PortOS never pulls the image or the ~20 GB of weights.',
+  }),
   mtplx: Object.freeze({
     id: 'mtplx',
     label: 'MTPLX',
@@ -218,7 +234,7 @@ function opencodeConfiguredBaseUrl(provider, namespace) {
  * *namespace* but a remote hosted API, so there is no local daemon to check.
  *
  * @param {object|null|undefined} provider
- * @returns {'llama'|'ollama'|'lmstudio'|'mtplx'|null}
+ * @returns {'llama'|'ollama'|'lmstudio'|'mtplx'|'vllm'|null}
  */
 export function localRuntimeKind(provider) {
   if (!provider || typeof provider !== 'object') return null;

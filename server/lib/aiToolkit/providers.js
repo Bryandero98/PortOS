@@ -606,6 +606,10 @@ export function createProviderService(config = {}) {
         // namespace and model refresh probes its local endpoint.
         ...(providerData.mtplxBacked === true ? { mtplxBacked: true } : {}),
         ...(providerData.llamaBacked === true ? { llamaBacked: true } : {}),
+        // The local vLLM container is a third distinct local backend: preserve
+        // the marker so OpenCode receives the `vllm/` namespace and model
+        // refresh probes the container rather than the OpenCode harness.
+        ...(providerData.vllmBacked === true ? { vllmBacked: true } : {}),
         ...(providerData.orcarouterBacked === true ? { orcarouterBacked: true } : {}),
         // Explicit opt-in to send the API key to an arbitrary (non-local,
         // non-allowlisted) endpoint — see internal/endpointGuard.js. Only
@@ -1093,6 +1097,19 @@ export function createProviderService(config = {}) {
 
     /** Fetch the llama-server catalog for OpenCode llama CLI/TUI wrappers. */
     async _fetchLlamaModels(provider) {
+      return this._refreshAPIProviderModels(provider);
+    },
+
+    /**
+     * Fetch the served catalog from a local vLLM container for its OpenCode
+     * CLI/TUI wrappers. Same OpenAI-compatible contract as MTPLX/llama-server,
+     * plus the compose stack's API key as a Bearer header (attached by
+     * `_refreshAPIProviderModels` from the wrapper's own `apiKey`).
+     *
+     * Refresh-only, like every other local fetcher here: it never starts the
+     * container, pulls the image, or issues a completion.
+     */
+    async _fetchVllmModels(provider) {
       return this._refreshAPIProviderModels(provider);
     },
 

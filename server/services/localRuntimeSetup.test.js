@@ -37,6 +37,13 @@ const mtplxCache = vi.hoisted(() => ({
 }));
 vi.mock('../lib/mtplxModels.js', () => mtplxCache);
 vi.mock('../lib/fileUtils.js', () => ({ sleep: async () => {} }));
+// The vLLM compose project on disk. Mocked so the suite never stats a real
+// checkout, and so each start case can pick its own refusal.
+const vllmProject = vi.hoisted(() => ({
+  inspectVllmQwenProject: vi.fn(),
+  vllmStartBlockedReason: vi.fn(() => null),
+}));
+vi.mock('../lib/vllmQwenProject.js', () => vllmProject);
 
 import { describeRuntimeSetup, runLocalRuntimeSetup, SETUP_RUNTIME_KINDS } from './localRuntimeSetup.js';
 
@@ -58,7 +65,11 @@ const reachable = (models = ['mtplx']) => ({ reachable: true, models, error: nul
 
 const cachedModels = (models) => ({ models, error: null });
 
+const preparedVllmProject = { dir: '/home/example/qwen-serving', hasProject: true, composeFile: 'docker-compose.yml', hasWeights: true, weightsRoot: '/home/example/qwen-serving/models' };
+
 beforeEach(() => {
+  vllmProject.inspectVllmQwenProject.mockResolvedValue(preparedVllmProject);
+  vllmProject.vllmStartBlockedReason.mockReturnValue(null);
   // Implementations AND return values (not just call records) survive
   // `clearAllMocks`. A probe implementation left over from an earlier test drives
   // this module's poll loop for its full three-minute timeout, and a leftover
@@ -78,7 +89,7 @@ afterEach(() => {
 
 describe('describeRuntimeSetup', () => {
   it('covers every runtime the readiness checklist can report', () => {
-    expect([...SETUP_RUNTIME_KINDS].sort()).toEqual(['llama', 'lmstudio', 'mtplx', 'ollama']);
+    expect([...SETUP_RUNTIME_KINDS].sort()).toEqual(['llama', 'lmstudio', 'mtplx', 'ollama', 'vllm']);
   });
 
   it('offers install AND start when nothing is there yet', () => {
@@ -416,5 +427,76 @@ describe('runLocalRuntimeSetup', () => {
   it('refuses a runtime kind it has no row for', async () => {
     const result = await runLocalRuntimeSetup('made-up', { endpoint: 'http://127.0.0.1:9/v1' });
     expect(result).toMatchObject({ success: false, error: expect.stringMatching(/no automatic setup/) });
+  });
+});
+
+describe('vllm — the container is brought up, never provisioned', () => {
+  const vllmEndpoint = 'http://127.0.0.1:18020/v1';
+
+  it('is unsupported on darwin, and says where Mac users should go instead', () => {
+    const restore = pinPlatform('darwin');
+    expect(describeRuntimeSetup('vllm', { installed: false, running: false })).toMatchObject({
+      runtime: 'vllm',
+      action: null,
+      blockedReason: expect.stringMatching(/MTPLX or llama.cpp DSpark/),
+    });
+    restore();
+  });
+
+  it('offers a start button on a Linux/Windows host with docker present', () => {
+    const restore = pinPlatform('linux');
+    expect(describeRuntimeSetup('vllm', { installed: true, running: false })).toMatchObject({
+      runtime: 'vllm',
+      action: 'start',
+      blockedReason: null,
+    });
+    restore();
+  });
+
+  it('brings up an already-prepared compose project in its own directory', async () => {
+    const restore = pinPlatform('linux');
+    pathLookup.findCommandOnPath.mockReturnValue('/usr/bin/docker');
+    probe.probeOpenAiModels
+      .mockResolvedValueOnce(unreachable)   // initial
+      .mockResolvedValueOnce(unreachable)   // after "install"
+      .mockResolvedValue(reachable(['qwen3.8-27b'])); // confirm
+
+    const result = await runLocalRuntimeSetup('vllm', { endpoint: vllmEndpoint, emit: () => {} });
+
+    expect(result.success).toBe(true);
+    expect(streaming.runStreamingCommand).toHaveBeenCalledWith(
+      'docker',
+      ['compose', '--profile', 'single', 'up', '-d'],
+      expect.any(Function),
+      expect.objectContaining({ cwd: preparedVllmProject.dir }),
+    );
+    restore();
+  });
+
+  it('refuses to run compose when the project is not demonstrably prepared', async () => {
+    const restore = pinPlatform('linux');
+    pathLookup.findCommandOnPath.mockReturnValue('/usr/bin/docker');
+    probe.probeOpenAiModels.mockResolvedValue(unreachable);
+    vllmProject.vllmStartBlockedReason.mockReturnValue('no Qwen weights are cached yet');
+
+    const result = await runLocalRuntimeSetup('vllm', { endpoint: vllmEndpoint, emit: () => {} });
+
+    expect(result).toMatchObject({ success: false, error: expect.stringMatching(/no Qwen weights are cached/) });
+    // The whole point: a 20 GB pull is never started on the user's behalf.
+    expect(streaming.runStreamingCommand).not.toHaveBeenCalled();
+    restore();
+  });
+
+  it('never installs docker, WSL2, or the container toolkit', async () => {
+    const restore = pinPlatform('linux');
+    pathLookup.findCommandOnPath.mockReturnValue(null); // docker not on PATH
+    probe.probeOpenAiModels.mockResolvedValue(unreachable);
+
+    const result = await runLocalRuntimeSetup('vllm', { endpoint: vllmEndpoint, emit: () => {} });
+
+    expect(result).toMatchObject({ success: false, error: expect.stringMatching(/does not install this stack/) });
+    expect(streaming.runStreamingCommand).not.toHaveBeenCalled();
+    expect(localLlm.installBackend).not.toHaveBeenCalled();
+    restore();
   });
 });

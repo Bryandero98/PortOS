@@ -11,7 +11,7 @@
  * endpoint answers — from the button next to the failing check.
  *
  * Every command here comes from the fixed table below. A request names a
- * runtime *kind* (`mtplx` / `llama` / `ollama` / `lmstudio`) and nothing else —
+ * runtime *kind* (`mtplx` / `llama` / `ollama` / `lmstudio` / `vllm`) and nothing else —
  * no package, URL, port, or argument from the request ever reaches a shell
  * word, which keeps this as narrow as `providerRuntimeInstaller.js`'s CLI
  * install surface while removing the docs dead end.
@@ -29,6 +29,10 @@
  *     PortOS installs the package and starts the loopback API server; that
  *     helper stays an explicit operator action outside PortOS, exactly as
  *     `docs/features/mtplx.md` promised before this button existed.
+ *   - **The vLLM container is never provisioned.** Its start row brings up an
+ *     already-prepared compose project and nothing else: no image pull, no
+ *     weight download, no docker/WSL2/NVIDIA-toolkit install. A project that is
+ *     not demonstrably prepared is refused with the command that prepares it.
  */
 
 import { IS_WIN32 } from '../lib/bufferedSpawn.js';
@@ -38,6 +42,7 @@ import { sleep } from '../lib/fileUtils.js';
 import { LOCAL_RUNTIMES, localEndpointPort } from '../lib/localProviderRuntime.js';
 import { listMtplxCachedModels, pickMtplxCachedModel } from '../lib/mtplxModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
+import { inspectVllmQwenProject, vllmStartBlockedReason } from '../lib/vllmQwenProject.js';
 import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
 import { createLineReader, createOutputTail } from '../lib/streamLines.js';
 import { runStreamingCommand } from '../lib/streamingSpawn.js';
@@ -249,6 +254,39 @@ const SETUP_ROWS = Object.freeze({
     },
   }),
 
+  vllm: Object.freeze({
+    // CUDA + Marlin + FlashInfer in a Linux container. On macOS there is no card
+    // to give it, and DFlash 2 on Apple Silicon is unproven in this project —
+    // the analogous local-daemon path there already ships as MTPLX / DSpark.
+    platforms: ['linux', 'win32'],
+    unsupportedReason: 'The vLLM Qwen3.8-27B stack needs an NVIDIA GPU (RTX 3090) and a Linux container runtime. On Apple Silicon use the MTPLX or llama.cpp DSpark presets instead.',
+    async install() {
+      // Deliberately never installs anything. Docker Desktop / the NVIDIA
+      // container toolkit / WSL2 are host-level operator decisions with driver
+      // requirements PortOS cannot judge, and the payload is a ~9.5 GB image.
+      return {
+        success: false,
+        error: 'PortOS does not install this stack. On the RTX 3090 host, set up WSL2 (or Linux) with Docker and the NVIDIA Container Toolkit, then follow docs/features/qwen38-rtx3090.md to clone and prepare syv-ai/qwen38-27b-rtx3090.',
+      };
+    },
+    async start({ emit, isCancelled }) {
+      // Only ever brings up an ALREADY-prepared project — see
+      // `lib/vllmQwenProject.js` for why each refusal below exists.
+      const project = await inspectVllmQwenProject();
+      const blocked = vllmStartBlockedReason(project);
+      if (blocked) return { success: false, error: blocked };
+      if (isCancelled()) return { success: false, error: 'Cancelled before the container was started.' };
+      emit(`Starting the vLLM container from ${project.dir} (${project.composeFile}).`);
+      emit('The image and weights are already on disk — this only brings the service up.');
+      return runStreamingCommand(
+        'docker',
+        ['compose', '--profile', 'single', 'up', '-d'],
+        emit,
+        { timeoutMs: CONTROL_TIMEOUT_MS, cwd: project.dir },
+      );
+    },
+  }),
+
   ollama: Object.freeze({
     async install({ emit }) {
       // `installBackend` already registers the Homebrew service / runs the
@@ -311,7 +349,7 @@ function platformSupported(row) {
  * unmet check is the model, which PortOS will not choose), or a runtime PortOS
  * can install but not start when the install is already done.
  *
- * @param {string} kind - `mtplx` | `llama` | `ollama` | `lmstudio`
+ * @param {string} kind - `mtplx` | `llama` | `ollama` | `lmstudio` | `vllm`
  * @param {{installed: boolean, running: boolean}} state
  */
 export function describeRuntimeSetup(kind, { installed, running }) {

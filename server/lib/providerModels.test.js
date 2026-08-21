@@ -190,6 +190,7 @@ describe('providerModels', () => {
     it('uses explicit markers and keeps Ollama as the malformed dual-marker fallback', () => {
       expect(getOpencodeLocalProviderNamespace({ ollamaBacked: true })).toBe('ollama');
       expect(getOpencodeLocalProviderNamespace({ mtplxBacked: true })).toBe('mtplx');
+    expect(getOpencodeLocalProviderNamespace({ vllmBacked: true })).toBe('vllm');
       expect(getOpencodeLocalProviderNamespace({ llamaBacked: true })).toBe('llama');
       expect(getOpencodeLocalProviderNamespace({ orcarouterBacked: true })).toBe('orcarouter');
       expect(getOpencodeLocalProviderNamespace({ ollamaBacked: true, mtplxBacked: true })).toBe('ollama');

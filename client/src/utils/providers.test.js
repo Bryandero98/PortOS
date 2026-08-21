@@ -902,6 +902,7 @@ describe('supportsModelRefresh', () => {
       'opencode-llama-tui',
       'opencode-mtplx', 'opencode-mtplx-tui', 'opencode-ollama',
       'opencode-ollama-tui', 'opencode-orcarouter', 'opencode-orcarouter-tui',
+      'opencode-vllm', 'opencode-vllm-tui',
       'orcarouter',
     ]);
   });

@@ -79,6 +79,16 @@ export const MODEL_FETCHERS = [
     fetch: '_fetchLlamaModels',
   },
   {
+    key: 'vllm',
+    // The vLLM container publishes its served model through the same
+    // OpenAI-compatible `/v1/models` contract. It answers only WITH the
+    // compose stack's API key, which the wrapper stores on `apiKey` —
+    // `_refreshAPIProviderModels` attaches it as a Bearer header.
+    cliMatch: (p) => p?.vllmBacked === true,
+    tuiMatch: (p) => p?.vllmBacked === true,
+    fetch: '_fetchVllmModels',
+  },
+  {
     key: 'orcarouter',
     // OrcaRouter-backed OpenCode wrappers probe the sibling API provider's
     // OpenAI-compatible `/models` endpoint, never `opencode models`.

@@ -169,6 +169,45 @@
       "tuiPromptDelayMs": 2500,
       "tuiIdleTimeoutMs": 180000
     },
+    "opencode-vllm": {
+      "id": "opencode-vllm",
+      "name": "OpenCode vLLM (Qwen3.8-27B)",
+      "type": "cli",
+      "command": "opencode",
+      "args": ["run"],
+      "endpoint": "http://127.0.0.1:18020/v1",
+      "apiKey": "",
+      "models": ["qwen3.8-27b"],
+      "defaultModel": "qwen3.8-27b",
+      "vllmBacked": true,
+      "timeout": 600000,
+      "enabled": false,
+      "envVars": {
+        "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"allow\",\"provider\":{\"vllm\":{\"npm\":\"@ai-sdk/openai-compatible\",\"name\":\"vLLM Qwen3.8-27B (local)\",\"options\":{\"baseURL\":\"http://127.0.0.1:18020/v1\"}}}}"
+      },
+      "secretEnvVars": [],
+      "headlessArgs": []
+    },
+    "opencode-vllm-tui": {
+      "id": "opencode-vllm-tui",
+      "name": "OpenCode vLLM TUI (Qwen3.8-27B)",
+      "type": "tui",
+      "command": "opencode",
+      "args": [],
+      "endpoint": "http://127.0.0.1:18020/v1",
+      "apiKey": "",
+      "models": ["qwen3.8-27b"],
+      "defaultModel": "qwen3.8-27b",
+      "vllmBacked": true,
+      "timeout": 600000,
+      "enabled": false,
+      "envVars": {
+        "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"allow\",\"provider\":{\"vllm\":{\"npm\":\"@ai-sdk/openai-compatible\",\"name\":\"vLLM Qwen3.8-27B (local)\",\"options\":{\"baseURL\":\"http://127.0.0.1:18020/v1\"}}}}"
+      },
+      "secretEnvVars": [],
+      "tuiPromptDelayMs": 2500,
+      "tuiIdleTimeoutMs": 180000
+    },
     "orcarouter": {
       "id": "orcarouter",
       "name": "OrcaRouter",

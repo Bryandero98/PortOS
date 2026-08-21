@@ -248,3 +248,46 @@ describe('getProviderReadinessMap', () => {
     await expect(getProviderReadinessMap(null, { findCommand: () => null, probe: unreachable() })).resolves.toEqual({});
   });
 });
+
+describe('vLLM — a key-gated container', () => {
+  const vllmProvider = (overrides = {}) => ({
+    id: 'opencode-vllm-tui',
+    name: 'OpenCode vLLM TUI (Qwen3.8-27B)',
+    type: 'tui',
+    command: 'opencode',
+    vllmBacked: true,
+    endpoint: 'http://127.0.0.1:18020/v1',
+    models: ['qwen3.8-27b'],
+    defaultModel: 'qwen3.8-27b',
+    ...overrides,
+  });
+
+  it('maps the marker to the vLLM runtime at the container endpoint', async () => {
+    const readiness = await getProviderReadiness(vllmProvider(), {
+      findCommand: () => '/usr/bin/docker',
+      probe: reachable(['qwen3.8-27b']),
+    });
+    expect(readiness).toMatchObject({ kind: 'vllm', endpoint: 'http://127.0.0.1:18020/v1' });
+    expect(checkById(readiness, 'model').ok).toBe(true);
+  });
+
+  it("hands the provider's key to the probe so a gated container can be listed", async () => {
+    const keys = [];
+    await getProviderReadiness(vllmProvider({ apiKey: 'vllm-key-example' }), {
+      findCommand: () => '/usr/bin/docker',
+      probe: async (_endpoint, apiKey) => { keys.push(apiKey); return { reachable: true, models: ['qwen3.8-27b'], error: null }; },
+    });
+    expect(keys).toEqual(['vllm-key-example']);
+  });
+
+  it('calls a 401 a running server, and points at the key rather than at starting it', async () => {
+    const readiness = await getProviderReadiness(vllmProvider(), {
+      findCommand: () => '/usr/bin/docker',
+      probe: async () => ({ reachable: true, models: null, error: 'authentication required' }),
+    });
+    expect(checkById(readiness, 'server').ok).toBe(true);
+    const model = checkById(readiness, 'model');
+    expect(model.ok).toBeNull();
+    expect(model.detail).toMatch(/paste the server's key/);
+  });
+});

@@ -1122,3 +1122,61 @@ describe('provider card layout', () => {
     expect(headerRow.textContent).not.toContain('Default:');
   });
 });
+
+describe('vLLM-backed TUI provider', () => {
+  const vllmTui = (overrides = {}) => ({
+    id: 'opencode-vllm-tui',
+    name: 'OpenCode vLLM TUI (Qwen3.8-27B)',
+    type: 'tui',
+    command: 'opencode',
+    args: [],
+    enabled: true,
+    endpoint: 'http://127.0.0.1:18020/v1',
+    models: ['qwen3.8-27b'],
+    defaultModel: 'qwen3.8-27b',
+    vllmBacked: true,
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+    localModels.value = { ctxById: {}, installed: { ollama: null, lmstudio: null } };
+  });
+
+  it('badges the card so the GPU-exclusive backend is visible at a glance', async () => {
+    api.getProviders.mockResolvedValue({ providers: [vllmTui()], activeProvider: null });
+    renderPage();
+    expect(await screen.findByText('vLLM / DFLASH2')).toBeInTheDocument();
+  });
+
+  it('offers an API Key field on a TUI provider — the container is key-gated', async () => {
+    api.getProviders.mockResolvedValue({ providers: [vllmTui()], activeProvider: null });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    const key = await screen.findByLabelText('API Key');
+    fireEvent.change(key, { target: { value: 'vllm-key-example' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.updateProvider).toHaveBeenCalledWith(
+      'opencode-vllm-tui',
+      expect.objectContaining({ apiKey: 'vllm-key-example' }),
+    ));
+  });
+
+  it('keeps the field off an unauthenticated local TUI backend', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [vllmTui({ id: 'opencode-mtplx-tui', name: 'OpenCode MTPLX TUI', vllmBacked: undefined, mtplxBacked: true })],
+      activeProvider: null,
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await screen.findByDisplayValue('opencode');
+    expect(screen.queryByLabelText('API Key')).toBeNull();
+  });
+});
