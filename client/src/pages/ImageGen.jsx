@@ -441,7 +441,7 @@ export default function ImageGen() {
   }, [availableBackends, i2iCapable, switchMode]);
 
   // ?lora=<filename> preselects a LoRA when the user clicks "Test" on the
-  // /media/loras manager page. Defers until availableLoras has loaded so the
+  // /models/loras manager page. Defers until availableLoras has loaded so the
   // metadata (recommendedScale, name, triggerWords) is available; once applied,
   // strip the param so a refresh doesn't keep re-adding the LoRA. Also
   // auto-appends the LoRA's trigger words to the prompt — the user came from

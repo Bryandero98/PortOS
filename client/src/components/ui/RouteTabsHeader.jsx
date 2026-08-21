@@ -15,9 +15,13 @@ import TabPills from './TabPills';
  * whose `to` lives outside their route prefix (Models → Playground) — the id
  * still selects it, so the host page passes its own `activeTab`.
  *
- * @param {{ tabs: Array<{id:string,label:string,to:string}>, activeTab: string, ariaLabel: string }} props
+ * Sections with more tabs than a pill bar reads well at (Models) pass
+ * `mobileDropdown` — plus `mobileSelectId`, so the collapsed `<select>` gets a
+ * real `<label htmlFor>` rather than only an aria-label.
+ *
+ * @param {{ tabs: Array<{id:string,label:string,to:string}>, activeTab: string, ariaLabel: string, mobileDropdown?: boolean, mobileSelectId?: string }} props
  */
-export default function RouteTabsHeader({ tabs, activeTab, ariaLabel }) {
+export default function RouteTabsHeader({ tabs, activeTab, ariaLabel, mobileDropdown = false, mobileSelectId }) {
   const navigate = useNavigate();
 
   const handleChange = (tabId) => {
@@ -31,6 +35,8 @@ export default function RouteTabsHeader({ tabs, activeTab, ariaLabel }) {
       activeTab={activeTab}
       onChange={handleChange}
       ariaLabel={ariaLabel}
+      mobileDropdown={mobileDropdown}
+      mobileSelectId={mobileSelectId}
       className="w-full min-w-0 shrink-0"
     />
   );

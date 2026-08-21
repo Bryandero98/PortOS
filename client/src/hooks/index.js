@@ -196,6 +196,7 @@ export * from './useRecordMerge.js';
 export * from './useRenderJobQueue.js';
 export * from './useRepoIntake.js';
 export * from './useSyncIntegrity.js';
+export * from './useSystemResourceReport.js';
 export * from './useTwinEvaluationSuite.js';
 export * from './useUniverseNav.js';
 export * from './useVideoFileSrc.js';

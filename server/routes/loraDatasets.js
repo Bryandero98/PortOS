@@ -3,7 +3,7 @@
  *
  * CRUD + image upload (multipart) + batch generation + reference-sheet
  * slicing + vision captioning (SSE) for the per-subject training
- * datasets behind /media/training. Training-run launch lives at
+ * datasets behind /models/training. Training-run launch lives at
  * `/api/lora-training` (routes/loraTraining.js); this surface ends at
  * "dataset ready to train".
  */

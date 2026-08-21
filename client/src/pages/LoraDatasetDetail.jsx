@@ -1,5 +1,5 @@
 /**
- * LoRA dataset workbench (/media/training/:datasetId).
+ * LoRA dataset workbench (/models/training/:datasetId).
  *
  * Build reference material for one universe bible subject (generate via the image
  * queue, upload, slice the reference-sheet turnaround), caption it with
@@ -486,7 +486,7 @@ export default function LoraDatasetDetail() {
     return (
       <div className="bg-port-card border border-port-border rounded-lg p-6 text-center text-gray-400">
         <AlertTriangle className="w-6 h-6 mx-auto mb-2 text-port-error" />
-        {loadError} — <Link to="/media/training" className="text-port-accent hover:underline">back to datasets</Link>
+        {loadError} — <Link to="/models/training" className="text-port-accent hover:underline">back to datasets</Link>
       </div>
     );
   }
@@ -498,7 +498,7 @@ export default function LoraDatasetDetail() {
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
-          <Link to="/media/training" className="text-xs text-gray-400 hover:text-white flex items-center gap-1 mb-1">
+          <Link to="/models/training" className="text-xs text-gray-400 hover:text-white flex items-center gap-1 mb-1">
             <ArrowLeft className="w-3 h-3" /> Datasets
           </Link>
           <div className="flex items-center gap-2 min-w-0">

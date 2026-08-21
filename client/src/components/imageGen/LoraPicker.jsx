@@ -74,7 +74,7 @@ export default function LoraPicker({
             {selected.length > 0 ? ` · ${selected.length}/${MAX_SELECTED_LORAS} selected` : ''})
           </span>
         </span>
-        <Link to="/media/loras" className="text-[11px] text-port-accent hover:underline">Manage →</Link>
+        <Link to="/models/loras" className="text-[11px] text-port-accent hover:underline">Manage →</Link>
       </div>
       {compatible.length === 0 ? (
         <p className="text-xs text-gray-500 italic">

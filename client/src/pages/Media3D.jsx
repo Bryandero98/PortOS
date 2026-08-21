@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
-import { Boxes, CheckCircle2, Download, AlertTriangle, Loader2, ExternalLink, ImagePlus, Sparkles, KeyRound } from 'lucide-react';
+import { Boxes, CheckCircle2, AlertTriangle, Loader2, ImagePlus, Sparkles, Settings2 } from 'lucide-react';
 import { getImageTo3dTargets, createImageTo3dModel, getImageTo3dModel, listImageTo3dModels } from '../services/api';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import useMounted from '../hooks/useMounted';
 import { nameFromImageFilename, timeAgo } from '../utils/formatters';
-import RuntimeInstallModal from '../components/install/RuntimeInstallModal';
 import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
 import GlbViewer from '../components/media/GlbViewer';
-import HfTokenBanner, { GatedModelList, HF_SOURCE_LABEL } from '../components/imageGen/HfTokenBanner';
+import Image3dHfAccessNotice from '../components/media/Image3dHfAccessNotice';
 import { useHfTokenStatus } from '../hooks/useHfTokenStatus';
 import useUrlParams from '../hooks/useUrlParams';
 import MediaImage from '../components/MediaImage';
@@ -20,160 +19,10 @@ import { unavailableReasonLabel } from '../lib/imageTo3dReasons';
 // Poll cadence while a render is in flight (a real TRELLIS.2 render is multi-minute).
 const POLL_INTERVAL_MS = 2500;
 
-// Prerequisite notice for a target that needs gated Hugging Face access. Driven by
-// the CENTRAL token store (GET /image-gen/setup/hf-token-status) — the same one the
-// Image Gen page writes — so a user who already pasted a token isn't told to go set
-// one up in a terminal. With no token, the inline paste-and-save banner appears
-// instead of instructions. Either way the gated repos stay listed: a token doesn't
-// grant access until their terms are accepted on the user's HF account.
-function HfAccessNotice({ models, tokenPresent, tokenSource, onSaved }) {
-  // Escape hatch for the stale/invalid-token case: `isHfAuthError` in the runner
-  // also matches `401` / `Invalid user token`, and its guidance now says to add a
-  // token *on this page* — so the paste form has to stay reachable even when one is
-  // already configured, or that instruction is impossible to follow here. Mirrors
-  // MidiGatedModal's "Use a different token".
-  const [replacing, setReplacing] = useState(false);
-
-  if (!models?.length) return null;
-  // Status still loading (null) — don't flash a "needs setup" banner at a user who
-  // already has a token.
-  if (tokenPresent === null) return null;
-
-  const handleSaved = () => { setReplacing(false); onSaved?.(); };
-
-  if (!tokenPresent || replacing) {
-    return <HfTokenBanner models={models} onSaved={handleSaved} />;
-  }
-
-  return (
-    <div className="rounded-lg border border-port-border bg-port-bg/40 p-3 text-xs text-gray-400">
-      <div className="flex items-center gap-1.5 font-medium text-port-success">
-        <KeyRound className="h-3.5 w-3.5" />
-        Hugging Face token configured
-        {HF_SOURCE_LABEL[tokenSource] ? ` (${HF_SOURCE_LABEL[tokenSource]})` : ''}
-      </div>
-      <p className="mt-1">
-        Accept the terms for these gated models on your Hugging Face account if you haven’t — a token alone
-        doesn’t grant access:
-      </p>
-      <GatedModelList models={models} linkClassName="text-port-accent hover:underline" />
-      <button
-        type="button"
-        onClick={() => setReplacing(true)}
-        className="mt-2 text-xs underline text-gray-400 hover:text-white"
-      >
-        Use a different token
-      </button>
-    </div>
-  );
-}
-
-const LANE_LABEL = {
-  'local-mps': 'Runs on-device (Apple Silicon)',
-  'local-cuda': 'Runs on-device (CUDA)',
-  'hosted-api': 'Hosted API',
-};
-
 // A target is generation-ready when it can run on this host and its local model
 // is present (installed:null means "no install concept" — a hosted target that's
 // ready as soon as it's available).
 const isTargetReady = (t) => !!t && t.available && t.installed !== false;
-
-function StatusBadge({ target }) {
-  if (!target.available) {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-port-warning">
-        <AlertTriangle className="w-3.5 h-3.5" />
-        {unavailableReasonLabel(target.unavailableReason)}
-      </span>
-    );
-  }
-  if (target.installed) {
-    // An installed-but-degraded target still renders — TRELLIS.2 with no Metal bake
-    // produces correct geometry with a scrambled surface; Pixal3D with no NATTEN
-    // falls back to DINO projection features — so "Ready" alone would be a lie. The
-    // server normalizes every such case into `degraded` (see the adapter contract),
-    // and a probe that could NOT run reports nothing here rather than crying wolf
-    // about an install that is probably fine.
-    if (target.degraded) {
-      return (
-        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-port-warning">
-          <AlertTriangle className="w-3.5 h-3.5" /> Ready · {target.degraded.label}
-        </span>
-      );
-    }
-    return (
-      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-port-success">
-        <CheckCircle2 className="w-3.5 h-3.5" /> Ready
-      </span>
-    );
-  }
-  return null;
-}
-
-function TargetCard({ target, onInstall }) {
-  // Install only applies to targets with a local install concept (installed is a
-  // boolean); hosted targets report installed:null and are Ready when available.
-  const canInstall = target.available && target.installed === false;
-  const degraded = target.degraded;
-  // Repair install re-runs setup — but only offer it when the server says it can
-  // actually fix this. On a Command-Line-Tools-only host `repairable` is false and the
-  // remedy is installing Xcode, so a Repair button would just fail the same way and
-  // read as broken.
-  const canRepair = !!degraded && degraded.repairable !== false;
-
-  return (
-    <div className="rounded-lg border border-port-border bg-port-card p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-white">{target.label}</h2>
-            {target.executionLane && (
-              <span className="rounded bg-port-bg px-1.5 py-0.5 text-[11px] text-gray-400">
-                {LANE_LABEL[target.executionLane] || target.executionLane}
-              </span>
-            )}
-          </div>
-          {target.description && (
-            <p className="mt-1 text-xs text-gray-400">{target.description}</p>
-          )}
-          {(target.upstream || target.port) && (
-            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-500">
-              {target.upstream && (
-                <a href={target.upstream} target="_blank" rel="noreferrer"
-                  className="inline-flex items-center gap-1 hover:text-port-accent">
-                  <ExternalLink className="w-3 h-3" /> Upstream
-                </a>
-              )}
-              {target.port && (
-                <a href={target.port} target="_blank" rel="noreferrer"
-                  className="inline-flex items-center gap-1 hover:text-port-accent">
-                  <ExternalLink className="w-3 h-3" /> Apple Silicon port
-                </a>
-              )}
-            </div>
-          )}
-        </div>
-        <div className="flex shrink-0 flex-col items-end gap-2">
-          <StatusBadge target={target} />
-          {(canInstall || canRepair) && (
-            <button
-              onClick={() => onInstall(target)}
-              className="inline-flex items-center gap-1.5 rounded-md bg-port-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600"
-            >
-              <Download className="w-3.5 h-3.5" /> {canInstall ? 'Install' : 'Repair install'}
-            </button>
-          )}
-        </div>
-      </div>
-      {degraded?.help && (
-        <p className="mt-3 rounded border border-port-warning/40 bg-port-warning/10 p-2 text-[11px] leading-relaxed text-port-warning">
-          {degraded.help}
-        </p>
-      )}
-    </div>
-  );
-}
 
 export default function Media3D() {
   const [searchParams, updateParams] = useUrlParams();
@@ -186,8 +35,6 @@ export default function Media3D() {
   const [targets, setTargets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  // The target whose install modal is open (only local-install targets); null = closed.
-  const [installTarget, setInstallTarget] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   // Render lifecycle: a create kicks off an on-device render, then we poll the
   // record (via useAutoRefetch below) until it lands (ready → preview) or fails
@@ -317,12 +164,11 @@ export default function Media3D() {
     if (!selectedImage) return 'Pick a source image to continue.';
     if (!selectedTarget) return 'No image-to-3D model is registered.';
     if (!selectedTarget.available) return unavailableReasonLabel(selectedTarget.unavailableReason, 'This model can’t run on this host.');
-    if (selectedTarget.installed === false) return `Install ${selectedTarget.label} below before generating.`;
+    if (selectedTarget.installed === false) return `Install ${selectedTarget.label} from Models → 3D before generating.`;
     return null;
   })();
 
   const gatedHfModels = selectedTarget?.available ? selectedTarget.gatedRepos : null;
-  const gatedRepoCount = installTarget?.gatedRepos?.length || 0;
 
   return (
     <div className="mx-auto max-w-4xl">
@@ -332,8 +178,7 @@ export default function Media3D() {
           <h1 className="text-lg font-semibold text-white">3D</h1>
         </div>
         <p className="mt-1 text-sm text-gray-400">
-          Turn a rendered image into a 3D mesh. Pick a source image and model here, then install
-          and manage the image-to-3D runtimes below.
+          Turn a rendered image into a 3D mesh. Pick a source image and model, then render on-device.
         </p>
       </header>
 
@@ -392,7 +237,7 @@ export default function Media3D() {
           </div>
 
           {gatedHfModels?.length > 0 && (
-            <HfAccessNotice
+            <Image3dHfAccessNotice
               models={gatedHfModels}
               tokenPresent={hfTokenPresent}
               tokenSource={hfTokenSource}
@@ -497,68 +342,34 @@ export default function Media3D() {
         </section>
       )}
 
-      <h2 className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-400">Models &amp; runtimes</h2>
-
-      {loading && (
-        <div className="flex items-center gap-2 text-sm text-gray-400">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading models…
+      {/* Install/repair lives under Models → 3D — these are on-device runtimes, not
+          renders — so the generate flow just names the state and links there (#4728). */}
+      <section className="rounded-xl border border-port-border bg-port-card p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-white">Runtimes</h2>
+            <p className="mt-1 text-xs text-gray-400">
+              {loading
+                ? 'Checking which image-to-3D runtimes are installed…'
+                : error
+                  ? error
+                  : targets.length === 0
+                    ? 'No image-to-3D models are registered.'
+                    : `${targets.filter(isTargetReady).length} of ${targets.length} ready on this host.`}
+            </p>
+          </div>
+          <Link
+            to="/models/3d"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-port-border px-3 py-1.5 text-xs text-gray-300 hover:border-port-accent hover:text-white"
+          >
+            <Settings2 className="h-3.5 w-3.5" /> Manage runtimes
+          </Link>
         </div>
-      )}
-
-      {error && !loading && (
-        <div className="flex items-center justify-between rounded-lg border border-port-error/40 bg-port-error/10 p-4 text-sm text-port-error">
-          <span>{error}</span>
-          <button onClick={load} className="rounded-md border border-port-error/50 px-3 py-1 text-xs hover:bg-port-error/20">
-            Retry
-          </button>
-        </div>
-      )}
-
-      {!loading && !error && (
-        <div className="space-y-3">
-          {targets.length === 0 && (
-            <p className="text-sm text-gray-500">No image-to-3D models are registered.</p>
-          )}
-          {targets.map((target) => (
-            <TargetCard key={target.id} target={target} onInstall={setInstallTarget} />
-          ))}
-        </div>
-      )}
+      </section>
 
       {/* Searchable render-history picker (reused from Image Gen). Selecting an
           image drives `?image=` so the choice is deep-linkable. */}
       <GalleryImagePicker open={pickerOpen} onClose={() => setPickerOpen(false)} onSelect={handlePick} allowUpload />
-
-      {/* TRELLIS.2 (and any future local-install target) streams its clone +
-          setup.sh install through the shared runtime-install modal. */}
-      <RuntimeInstallModal
-        open={!!installTarget}
-        runtime={installTarget?.id}
-        label={installTarget?.label}
-        installUrlBase={installTarget ? `/api/image-to-3d/targets/${installTarget.id}/install` : undefined}
-        // Repairing an already-installed target must re-run its setup rather than
-        // short-circuit on "already installed" — that re-run is what rebuilds whatever
-        // was missing (TRELLIS.2's Metal backends, Pixal3D's NATTEN kernels) now that
-        // its build deps are present.
-        params={installTarget?.degraded ? { repair: '1' } : undefined}
-        // Copy comes from the target descriptor, never hard-coded here: this modal is
-        // shared by every target, so TRELLIS.2-specific prose would misdescribe the
-        // others. A degraded target explains its own remedy via `degraded.help`.
-        // `undefined` rather than '' when a target has nothing to say, so
-        // RuntimeInstallModal's own default description applies instead of a blank panel.
-        description={installTarget?.degraded
-          // The degraded help text owns the whole message (both targets' already end by
-          // saying downloaded models are kept) — appending to it would repeat that.
-          ? installTarget.degraded.help
-          : [
-            installTarget?.installNotes,
-            gatedRepoCount
-              ? `It also pulls ${gatedRepoCount} gated Hugging Face ${gatedRepoCount === 1 ? 'model' : 'models'} on first render — accept their terms and add a Hugging Face token above (see the note on the 3D page).`
-              : null,
-          ].filter(Boolean).join(' ') || undefined}
-        onClose={() => setInstallTarget(null)}
-        onComplete={() => { setInstallTarget(null); load(); }}
-      />
     </div>
   );
 }

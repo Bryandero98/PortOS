@@ -17,6 +17,7 @@ import {
   Cpu,
   Gauge,
   FlaskConical,
+  Braces,
   Wrench,
   ExternalLink,
   Crown,
@@ -310,10 +311,15 @@ const navItems = [
     icon: Cpu,
     defaultTo: '/models/performance',
     children: [
+      { to: '/models/3d', label: '3D', icon: Boxes },
+      { to: '/models/embeddings', label: 'Embeddings', icon: Braces },
       { to: '/models/llms', label: 'LLMs', icon: Cpu },
+      { to: '/models/loras', label: 'LoRAs', icon: Sparkles },
+      { to: '/models/media', label: 'Media', icon: HardDrive },
       { to: '/models/performance', label: 'Performance', icon: Gauge },
       { to: '/local-llm/playground', label: 'Playground', icon: FlaskConical },
       { to: '/models/status', label: 'Status', icon: Activity },
+      { to: '/models/training', label: 'Training', icon: GraduationCap },
     ],
   },
   {

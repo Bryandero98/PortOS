@@ -50,13 +50,10 @@ const MediaCollections = lazyWithReload(() => import('./pages/MediaCollections')
 const MediaCollectionDetail = lazyWithReload(() => import('./pages/MediaCollectionDetail'));
 const MediaCollectionSyncView = lazyWithReload(() => import('./pages/MediaCollectionSyncView'));
 const SyncView = lazyWithReload(() => import('./pages/SyncView'));
-const MediaModels = lazyWithReload(() => import('./pages/MediaModels'));
 const ThreejsModels = lazyWithReload(() => import('./pages/ThreejsModels'));
 const Media3D = lazyWithReload(() => import('./pages/Media3D'));
 const Media3DDetail = lazyWithReload(() => import('./pages/Media3DDetail'));
 const ThreejsModelDetail = lazyWithReload(() => import('./pages/ThreejsModelDetail'));
-const Loras = lazyWithReload(() => import('./pages/Loras'));
-const LoraTraining = lazyWithReload(() => import('./pages/LoraTraining'));
 const LoraDatasetDetail = lazyWithReload(() => import('./pages/LoraDatasetDetail'));
 const UniverseBuilder = lazyWithReload(() => import('./pages/UniverseBuilder'));
 const Universes = lazyWithReload(() => import('./pages/Universes'));
@@ -191,6 +188,7 @@ const MEDIA_CREATIVE_DIRECTOR_PREFIX = /^\/media\/creative-director/;
 const MEDIA_SPRITES_PREFIX = /^\/media\/sprites/;
 const MEDIA_MUSIC_VIDEO_PREFIX = /^\/media\/music-video/;
 const MEDIA_3D_PREFIX = /^\/media\/3d/;
+const MEDIA_TRAINING_PREFIX = /^\/media\/training/;
 // The annotator lives under the Media shell (/media/annotate). A bare /annotate
 // is what a bookmark, a typed URL, or a half-remembered path lands on — alias it
 // rather than letting the catch-all swallow it (issue #3793).
@@ -313,8 +311,15 @@ export default function App() {
           {/* Local LLM management moved out of Settings into its own top-level
               Models section (#4736). Bookmarks and stale ⌘K history keep working. */}
           <Route path="settings/local-llm" element={<Navigate to="/models/llms" replace />} />
+          {/* Embeddings moved into Models with the rest of the model management
+              (#4728) — it picks a model, not a preference. */}
+          <Route path="settings/embeddings" element={<Navigate to="/models/embeddings" replace />} />
           <Route path="settings/:tab" element={<Settings />} />
           <Route path="models" element={<Navigate to="/models/performance" replace />} />
+          {/* The training tab has a routed dataset workbench. React Router ranks
+              the static `training` segment above `:tab`, so the drill-down wins
+              over the tab route without depending on declaration order. */}
+          <Route path="models/training/:datasetId" element={<LoraDatasetDetail />} />
           <Route path="models/:tab" element={<Models />} />
           <Route path="local-llm/playground" element={<LocalLlmPlayground />} />
           <Route path="uploads" element={<Uploads />} />
@@ -328,6 +333,9 @@ export default function App() {
           <Route path="workspace-contexts/:appId" element={<WorkspaceContexts />} />
           <Route path="system-health" element={<Navigate to="/system-resources/overview" replace />} />
           <Route path="system-resources" element={<Navigate to="/system-resources/overview" replace />} />
+          {/* The downloaded-model inventory folded into Models → Status (#4728),
+              which already answered "what is resident right now". */}
+          <Route path="system-resources/models" element={<Navigate to="/models/status" replace />} />
           <Route path="system-resources/:tab" element={<SystemHealthPage />} />
           <Route path="capabilities" element={<CapabilityMap />} />
           <Route path="loops" element={<Loops />} />
@@ -401,7 +409,10 @@ export default function App() {
             <Route path="sprites/:id" element={<PrefixRedirect from={MEDIA_SPRITES_PREFIX} to="/sprites" />} />
             <Route path="timeline" element={<VideoTimeline />} />
             <Route path="timeline/:projectId" element={<VideoTimelineEditor />} />
-            <Route path="models" element={<MediaModels />} />
+            {/* Media models, LoRAs and LoRA training moved into the Models
+                section (#4728). Redirects keep legacy /media/* bookmarks and
+                stale ⌘K history working. */}
+            <Route path="models" element={<RedirectWithSearch to="/models/media" />} />
             <Route path="threejs" element={<ThreejsModels />} />
             <Route path="threejs/:id" element={<ThreejsModelDetail />} />
             {/* 3D moved to the top-level /3d route (Create sidebar link). These
@@ -409,9 +420,9 @@ export default function App() {
                 working. */}
             <Route path="3d" element={<PrefixRedirect from={MEDIA_3D_PREFIX} to="/3d" />} />
             <Route path="3d/:id" element={<PrefixRedirect from={MEDIA_3D_PREFIX} to="/3d" />} />
-            <Route path="loras" element={<Loras />} />
-            <Route path="training" element={<LoraTraining />} />
-            <Route path="training/:datasetId" element={<LoraDatasetDetail />} />
+            <Route path="loras" element={<RedirectWithSearch to="/models/loras" />} />
+            <Route path="training" element={<PrefixRedirect from={MEDIA_TRAINING_PREFIX} to="/models/training" />} />
+            <Route path="training/:datasetId" element={<PrefixRedirect from={MEDIA_TRAINING_PREFIX} to="/models/training" />} />
             {/* Universes live at /universes (Create sidebar link). These
                 redirects keep legacy /media/universe-builder bookmarks working
                 after the MediaGen tab was removed. */}
@@ -454,7 +465,7 @@ export default function App() {
           <Route path="image-gen" element={<RedirectWithSearch to="/media/image" />} />
           <Route path="video-gen" element={<RedirectWithSearch to="/media/video" />} />
           <Route path="media-history" element={<RedirectWithSearch to="/media/history" />} />
-          <Route path="media-models" element={<RedirectWithSearch to="/media/models" />} />
+          <Route path="media-models" element={<RedirectWithSearch to="/models/media" />} />
           <Route path="wiki" element={<RedirectWithSearch to="/wiki/overview" />} />
           <Route path="wiki/:tab" element={<Wiki />} />
           <Route path="rapid-reader" element={<RapidReaderPage />} />

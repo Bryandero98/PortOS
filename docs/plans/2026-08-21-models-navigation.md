@@ -120,8 +120,17 @@ voice (`NAV_COMMANDS` gained `nav.models.performance` and `nav.models.status`;
 
 ## Follow-up
 
-Only LLM model management lives under Models so far. Media models — LoRAs,
-image/video checkpoints (`/media/models`), Three.js meshes, embeddings — are
-scattered across Create and Settings and belong in the same section. Tracked in
-[#4728](https://github.com/atomantic/PortOS/issues/4728) so this change stays
-reviewable.
+The rest of the model management followed in
+[#4728](https://github.com/atomantic/PortOS/issues/4728): media checkpoints
+(`/models/media`), LoRAs (`/models/loras`), LoRA training
+(`/models/training`), embeddings (`/models/embeddings`) and the image-to-3D
+runtimes (`/models/3d`) all moved in from Create and Settings, and Dev Tools'
+`/system-resources/models` folded into `/models/status`. Every old path
+redirects, and every moved command keeps its opaque id.
+
+Two things deliberately stayed out, because they are output or generation rather
+than installed weights: Three.js Models is a gallery of generated meshes, and
+`/3d` is the render flow that consumes the runtimes now listed under Models.
+Audio models stayed with the Music studio as well — the model picker there drives
+install-on-demand for the model being generated with, so it is not separable from
+the generate form.

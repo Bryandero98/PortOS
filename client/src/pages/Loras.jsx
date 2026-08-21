@@ -1149,7 +1149,7 @@ function LoraCard({ lora, onDelete, deleting, deleteConfirm }) {
         {lora.source === 'trained' && lora.character && (
           <div className="mb-2">
             <Link
-              to={lora.trainedFromDatasetId ? `/media/training/${lora.trainedFromDatasetId}` : '/media/training'}
+              to={lora.trainedFromDatasetId ? `/models/training/${lora.trainedFromDatasetId}` : '/models/training'}
               className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-port-success/15 text-port-success border border-port-success/30 hover:bg-port-success/25"
               title="Trained in PortOS — open the training dataset"
             >

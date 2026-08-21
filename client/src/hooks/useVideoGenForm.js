@@ -338,7 +338,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   }, [sourceImageFile, sourceUploadUrl, modelId, models]);
 
   // ?lora=<filename> preselects a video LoRA when the user clicks "Test" on a
-  // video LoRA card in /media/loras. Mirrors the ImageGen ?lora= handoff:
+  // video LoRA card in /models/loras. Mirrors the ImageGen ?lora= handoff:
   // defer until the library has loaded (for name/scale/triggers), append the
   // LoRA's trigger words, then strip the param so a refresh doesn't re-add it.
   useEffect(() => {
@@ -355,7 +355,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       // ltx2 model is compatible, so the modelId-validation effect won't undo
       // this. A non-video LoRA needs no switch (the image picker tolerates it).
       // Family-agnostic on BOTH sides: an incoming H3 LoRA must be recognized as
-      // video (else the Test handoff from /media/loras lands in the no-op
+      // video (else the Test handoff from /models/loras lands in the no-op
       // branch), and the model it switches to must be one whose family matches,
       // not an ltx2 model that would reject it.
       const incomingFamily = loraFamilyOf(match);

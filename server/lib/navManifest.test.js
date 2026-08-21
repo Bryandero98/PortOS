@@ -33,6 +33,7 @@ const TABBED_PAGES = [
   { prefix: '/messages', file: 'client/src/pages/Messages.jsx', kind: 'ids', constName: 'TABS' },
   { prefix: '/wiki', file: 'client/src/pages/Wiki.jsx', kind: 'ids', constName: 'TABS' },
   { prefix: '/settings', file: 'client/src/components/settings/SettingsTabsHeader.jsx', kind: 'links', constName: 'TABS' },
+  { prefix: '/models', file: 'client/src/components/models/ModelsTabsHeader.jsx', kind: 'links', constName: 'TABS' },
   { prefix: '/sharing', file: 'client/src/pages/Sharing.jsx', kind: 'links', constName: 'SECTIONS' },
   // OpenWorld's fast-travel destinations aren't page tabs, but they follow the same
   // contract: one `/openworld/region/<id>` nav command per region in the client's
@@ -147,8 +148,26 @@ describe('resolveNavCommand — fuzzy matching', () => {
 
   it('resolves every canonical System Resources section name', () => {
     expect(resolveNavCommand('system resources')?.path).toBe('/system-resources/overview');
-    expect(resolveNavCommand('model resources')?.path).toBe('/system-resources/models');
     expect(resolveNavCommand('active queues')?.path).toBe('/system-resources/queues');
+  });
+
+  it('resolves the folded Model Resources aliases to Models → Status', () => {
+    // The Dev Tools model-inventory page folded into /models/status (#4728),
+    // which already answered "what is resident right now". Its aliases moved with
+    // it rather than being dropped — a user who says "model resources" or
+    // "downloaded models" must still land on the inventory, not nowhere.
+    expect(resolveNavCommand('model resources')?.path).toBe('/models/status');
+    expect(resolveNavCommand('downloaded models')?.path).toBe('/models/status');
+  });
+
+  it('resolves the moved model-management pages to their Models paths', () => {
+    // Media models, LoRAs, LoRA training and embeddings moved out of Create and
+    // Settings (#4728). Their command ids are unchanged (they are opaque and
+    // persisted), so only these paths prove the move actually landed.
+    expect(resolveNavCommand('media models')?.path).toBe('/models/media');
+    expect(resolveNavCommand('loras')?.path).toBe('/models/loras');
+    expect(resolveNavCommand('lora training')?.path).toBe('/models/training');
+    expect(resolveNavCommand('embeddings')?.path).toBe('/models/embeddings');
   });
 
   it('resolves Universe Builder to the /universes index path', () => {
@@ -442,6 +461,7 @@ function joinRoutePath(segments) {
 function scanRoutes(appSrc) {
   const stack = []; // parent path segments of currently-open <Route> containers
   const required = [];
+  const redirects = []; // { from, to } for every forwarding leaf route
   const malformed = [];
   for (const rawLine of appSrc.split('\n')) {
     const line = rawLine.trim();
@@ -464,17 +484,26 @@ function scanRoutes(appSrc) {
       stack.push(routePath ?? '');
       continue;
     }
-    if (REDIRECT_ELEMENT.test(line)) continue;
-
     // An index route resolves to its parent's path (e.g. the `/` index = Dashboard).
     const absolute = routePath === null
       ? joinRoutePath(stack)
       : joinRoutePath([...stack, routePath]);
 
+    // Redirects are recorded rather than dropped: a moved page's old path has to
+    // keep landing somewhere, and that is only assertable if the scanner reports
+    // where each forwarding route points. `to` is read off the same line, so a
+    // `from`-only wrapper (CanonRedirect, UniverseRouteRedirect) records nothing
+    // rather than a bogus target.
+    if (REDIRECT_ELEMENT.test(line)) {
+      const to = line.match(/\bto="([^"]*)"/);
+      if (to) redirects.push({ from: absolute, to: to[1] });
+      continue;
+    }
+
     if (absolute.split('/').some((s) => s.startsWith(':'))) continue; // param route
     required.push(absolute);
   }
-  return { required: [...new Set(required)], malformed, stackDepth: stack.length };
+  return { required: [...new Set(required)], redirects, malformed, stackDepth: stack.length };
 }
 
 describe('nav coverage — every navigable App.jsx route has a manifest entry', () => {
@@ -496,6 +525,45 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
     const uncovered = [...routePaths]
       .filter((p) => !navPaths.has(p) && !NAV_COVERAGE_OPT_OUT.has(p));
     expect(uncovered).toEqual([]);
+  });
+
+  // Every page that has ever moved leaves its old path behind in bookmarks, in
+  // stale ⌘K history, and in links other installs' peers may hold. A move that
+  // forgets the redirect 404s all of them, and nothing else in this file would
+  // notice — the coverage guard above only looks at where routes point NOW.
+  it('keeps a redirect for every relocated model-management path', () => {
+    const moved = [
+      ['/media/models', '/models/media'],
+      ['/media/loras', '/models/loras'],
+      ['/media/training', '/models/training'],
+      ['/settings/embeddings', '/models/embeddings'],
+      ['/settings/local-llm', '/models/llms'],
+      ['/system-resources/models', '/models/status'],
+      ['/media-models', '/models/media'],
+    ];
+    const byFrom = new Map(scan.redirects.map((r) => [r.from, r.to]));
+    const broken = moved
+      .filter(([from, to]) => byFrom.get(from) !== to)
+      .map(([from, to]) => `${from} → ${byFrom.get(from) ?? 'NO REDIRECT'} (want ${to})`);
+    expect(broken).toEqual([]);
+  });
+
+  // A redirect that forwards to a path nothing serves is a 404 with extra steps.
+  it('every redirect lands on a real route or nav destination', () => {
+    const known = new Set([...routePaths, ...navPaths]);
+    const dangling = scan.redirects
+      // A RELATIVE target (`to="overview"`) resolves against its own route, so it
+      // has no absolute path to look up — /feature-agents/:id → overview and the
+      // two pipeline/story tab defaults are all this shape.
+      .filter((r) => r.to.startsWith('/'))
+      .map((r) => ({ ...r, bare: r.to.split(/[?#]/)[0] }))
+      // A param route can't be enumerated by path, so accept any target whose
+      // parent segment is served (e.g. /models/training covers the :datasetId
+      // drill-down the PrefixRedirect rebases onto).
+      .filter(({ bare }) => !known.has(bare)
+        && !known.has(bare.split('/').slice(0, -1).join('/')))
+      .map((r) => `${r.from} → ${r.to}`);
+    expect(dangling).toEqual([]);
   });
 
   it('opt-out list has no stale entries', () => {
