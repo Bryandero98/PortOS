@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
 
 vi.mock('../../../services/api', () => ({
   updatePostConfig: vi.fn(),
@@ -57,7 +58,12 @@ const MEMORY_ITEMS = [
 // Settle the mount-time memory-items fetch inside act() so the strict act()
 // guard in src/test/setup.js doesn't fail the test on a post-mount state update.
 async function renderPlan(config = baseConfig(), props = {}) {
-  const result = render(<PracticePlan config={config} onSaved={() => {}} onBack={() => {}} {...props} />);
+  // Wrapped: the plan links out to the Practice Library, and <Link> needs a router.
+  const result = render(
+    <MemoryRouter>
+      <PracticePlan config={config} onSaved={() => {}} onBack={() => {}} {...props} />
+    </MemoryRouter>,
+  );
   await act(async () => {});
   return result;
 }
@@ -240,5 +246,13 @@ describe('PracticePlan two-flags-one-control seeding (issue #3252)', () => {
     const [patch] = updatePostConfig.mock.calls[0];
     expect(patch.topics.memory).toEqual({ enabled: false });
     expect(patch.memory.enabled).toBe(false);
+  });
+});
+
+describe('PracticePlan — pointing beyond the topic list', () => {
+  it('links to the Practice Library, which covers what topics do not', async () => {
+    await renderPlan();
+    const link = screen.getByText(/Browse every test type/).closest('a');
+    expect(link).toHaveAttribute('href', '/post/explore');
   });
 });

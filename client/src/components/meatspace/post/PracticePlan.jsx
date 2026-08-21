@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { ArrowLeft, Save, ChevronRight, ChevronDown, ListChecks, Loader } from 'lucide-react';
+import BrowseCatalogLink from './BrowseCatalogLink';
 import { updatePostConfig, getMemoryItems } from '../../../services/api';
 import toast from '../../ui/Toast';
 import {
@@ -310,6 +311,11 @@ export default function PracticePlan({ config, onSaved, onBack }) {
           </p>
         )}
       </div>
+
+      {/* Rhetoric and the standalone study surfaces aren't topics, so they never
+          appear in the toggle list above — without this the plan reads as the
+          complete inventory of what POST offers, and it isn't. */}
+      <BrowseCatalogLink hint="Looking for something else?" />
 
       {MODULE_GROUPS.map(group => {
         const groupTopics = POST_TOPICS.filter(t => t.module === group.module);

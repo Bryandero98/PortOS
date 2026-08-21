@@ -4,7 +4,7 @@ import { updatePostConfig, getProviders, getPostAdaptivePreview, getPostMultipli
 import toast from '../../ui/Toast';
 import { FormField } from '../../ui/FormField';
 import { filterSelectableModels, enabledApiProviderFilter } from '../../../utils/providers';
-import { GOAL_DEFS, POST_TOPICS, MODULE_LABELS, composedSessionDrillTypes } from './constants';
+import { GOAL_DEFS, POST_TOPICS, MODULE_LABELS, DRILL_LABELS, DRILL_DESCRIPTIONS, composedSessionDrillTypes } from './constants';
 
 // Modules a Full/Quick composed session can draw from (issue #2100), DERIVED
 // from the shared topic registry so the list has one owner (issue #3252): a
@@ -47,16 +47,12 @@ function describeAdaptive(info) {
 
 const DRILL_META = {
   'doubling-chain': {
-    label: 'Doubling Chain',
-    desc: 'Double a number repeatedly',
     fields: [
       { key: 'steps', label: 'Steps', type: 'number', min: 3, max: 20 },
       { key: 'timeLimitSec', label: 'Time Limit (sec)', type: 'number', min: 10, max: 300 }
     ]
   },
   'serial-subtraction': {
-    label: 'Serial Subtraction',
-    desc: 'Subtract a number repeatedly',
     fields: [
       { key: 'steps', label: 'Steps', type: 'number', min: 3, max: 30 },
       { key: 'subtrahend', label: 'Subtract By', type: 'number', min: 1, max: 100 },
@@ -64,8 +60,6 @@ const DRILL_META = {
     ]
   },
   'multiplication': {
-    label: 'Multiplication',
-    desc: 'Multiply random numbers',
     fields: [
       { key: 'count', label: 'Questions', type: 'number', min: 3, max: 30 },
       { key: 'maxDigits', label: 'Max Digits', type: 'number', min: 1, max: 4 },
@@ -73,8 +67,6 @@ const DRILL_META = {
     ]
   },
   'powers': {
-    label: 'Powers',
-    desc: 'Calculate base^exponent',
     fields: [
       { key: 'count', label: 'Questions', type: 'number', min: 3, max: 20 },
       { key: 'maxExponent', label: 'Max Exponent', type: 'number', min: 2, max: 20 },
@@ -82,8 +74,6 @@ const DRILL_META = {
     ]
   },
   'estimation': {
-    label: 'Estimation',
-    desc: 'Approximate arithmetic results',
     fields: [
       { key: 'count', label: 'Questions', type: 'number', min: 3, max: 20 },
       { key: 'tolerancePct', label: 'Tolerance %', type: 'number', min: 1, max: 50 },
@@ -91,8 +81,6 @@ const DRILL_META = {
     ]
   },
   'applied-numeracy': {
-    label: 'Applied Numeracy',
-    desc: 'Everyday percentages, ratios, units, rates, and estimation',
     fields: [
       { key: 'count', label: 'Questions', type: 'number', min: 1, max: 20 },
       { key: 'difficulty', label: 'Complexity Level', type: 'number', min: 1, max: 3 },
@@ -128,22 +116,22 @@ const llmFields = () => [
 
 const LLM_DRILL_META = {
   // --- Wordplay ---
-  'pun-wordplay': { label: 'Pun & Wordplay', desc: 'Create puns and wordplay on given topics', fields: llmFields(), defaults: { enabled: true, count: 5, timeLimitSec: 120 } },
-  'word-association': { label: 'Word Association', desc: 'Associate freely with given words — trains lateral thinking', fields: llmFields(), defaults: { enabled: true, count: 5, timeLimitSec: 120 } },
-  'compound-chain': { label: 'Compound Chain', desc: 'Chain compound words/phrases from a seed word', fields: llmFields(), defaults: { enabled: false, count: 5, timeLimitSec: 120 } },
-  'bridge-word': { label: 'Bridge Word', desc: 'Find a word that links two others', fields: llmFields(), defaults: { enabled: false, count: 5, timeLimitSec: 120 } },
-  'double-meaning': { label: 'Double Meaning', desc: 'Exploit words with two meanings', fields: llmFields(), defaults: { enabled: false, count: 5, timeLimitSec: 120 } },
-  'idiom-twist': { label: 'Idiom Twist', desc: 'Twist familiar idioms into new phrases', fields: llmFields(), defaults: { enabled: false, count: 5, timeLimitSec: 120 } },
+  'pun-wordplay': { fields: llmFields(), defaults: { enabled: true, count: 5, timeLimitSec: 120 } },
+  'word-association': { fields: llmFields(), defaults: { enabled: true, count: 5, timeLimitSec: 120 } },
+  'compound-chain': { fields: llmFields(), defaults: { enabled: false, count: 5, timeLimitSec: 120 } },
+  'bridge-word': { fields: llmFields(), defaults: { enabled: false, count: 5, timeLimitSec: 120 } },
+  'double-meaning': { fields: llmFields(), defaults: { enabled: false, count: 5, timeLimitSec: 120 } },
+  'idiom-twist': { fields: llmFields(), defaults: { enabled: false, count: 5, timeLimitSec: 120 } },
   // --- Verbal Agility ---
-  'story-recall': { label: 'Story Recall', desc: 'Read a paragraph, then answer questions from memory', fields: llmFields(), defaults: { enabled: true, count: 3, timeLimitSec: 180 } },
-  'verbal-fluency': { label: 'Verbal Fluency', desc: 'Name as many items in a category as possible', fields: llmFields(), defaults: { enabled: true, count: 3, timeLimitSec: 60 } },
-  'wit-comeback': { label: 'Wit & Comeback', desc: 'Craft witty responses to scenarios — trains verbal agility', fields: llmFields(), defaults: { enabled: true, count: 5, timeLimitSec: 120 } },
+  'story-recall': { fields: llmFields(), defaults: { enabled: true, count: 3, timeLimitSec: 180 } },
+  'verbal-fluency': { fields: llmFields(), defaults: { enabled: true, count: 3, timeLimitSec: 60 } },
+  'wit-comeback': { fields: llmFields(), defaults: { enabled: true, count: 5, timeLimitSec: 120 } },
   // --- Imagination ---
-  'what-if': { label: 'What If?', desc: 'Explore creative hypothetical scenarios', fields: llmFields(), defaults: { enabled: false, count: 3, timeLimitSec: 180 } },
-  'alternative-uses': { label: 'Alternative Uses', desc: 'List unconventional uses for everyday objects', fields: llmFields(), defaults: { enabled: false, count: 3, timeLimitSec: 180 } },
-  'story-prompt': { label: 'Story Prompt', desc: 'Spin a short story from a creative prompt', fields: llmFields(), defaults: { enabled: false, count: 3, timeLimitSec: 180 } },
-  'invention-pitch': { label: 'Invention Pitch', desc: 'Pitch inventions that solve quirky problems', fields: llmFields(), defaults: { enabled: false, count: 3, timeLimitSec: 180 } },
-  'reframe': { label: 'Reframe', desc: 'Reframe a frustrating situation positively or humorously', fields: llmFields(), defaults: { enabled: false, count: 3, timeLimitSec: 180 } }
+  'what-if': { fields: llmFields(), defaults: { enabled: false, count: 3, timeLimitSec: 180 } },
+  'alternative-uses': { fields: llmFields(), defaults: { enabled: false, count: 3, timeLimitSec: 180 } },
+  'story-prompt': { fields: llmFields(), defaults: { enabled: false, count: 3, timeLimitSec: 180 } },
+  'invention-pitch': { fields: llmFields(), defaults: { enabled: false, count: 3, timeLimitSec: 180 } },
+  'reframe': { fields: llmFields(), defaults: { enabled: false, count: 3, timeLimitSec: 180 } }
 };
 
 const LLM_TYPES = Object.keys(LLM_DRILL_META);
@@ -185,8 +173,6 @@ function seedLlmDrillTypes(saved) {
 // promised behavior that didn't happen (issue #2008).
 const COGNITIVE_DRILL_META = {
   'n-back': {
-    label: 'N-Back',
-    desc: 'Signal when a letter matches the one N steps back — working memory',
     // `progressive: true` marks a laddered drill (ProgressiveBadge + toggle
     // render). `ladderFields` are the knobs the ladder actually drives per rung
     // (server/lib/postProgression.js COGNITIVE_LADDERS) — ONLY these are hidden
@@ -203,8 +189,6 @@ const COGNITIVE_DRILL_META = {
     defaults: { enabled: true, progressive: true, n: 2, length: 20, stimulusMs: 2500 },
   },
   'digit-span': {
-    label: 'Digit Span',
-    desc: 'Recall a shown digit sequence forward or backward',
     progressive: true,
     ladderFields: ['direction', 'startLength', 'maxLength'],
     fields: [
@@ -219,8 +203,6 @@ const COGNITIVE_DRILL_META = {
     defaults: { enabled: true, progressive: true, direction: 'forward', startLength: 3, maxLength: 8, showMs: 1000 },
   },
   'stroop': {
-    label: 'Stroop',
-    desc: 'Name the ink color of a color-word — attention & inhibition',
     progressive: true,
     ladderFields: ['count', 'incongruentPct'],
     fields: [
@@ -230,8 +212,6 @@ const COGNITIVE_DRILL_META = {
     defaults: { enabled: true, progressive: true, count: 15, incongruentPct: 75 },
   },
   'schulte-table': {
-    label: 'Schulte Table',
-    desc: 'Scan a shuffled grid and tap 1, 2, 3... in order — visual attention & speed',
     progressive: true,
     ladderFields: ['size'],
     fields: [
@@ -240,8 +220,6 @@ const COGNITIVE_DRILL_META = {
     defaults: { enabled: true, progressive: true, size: 5 },
   },
   'mental-rotation': {
-    label: 'Mental Rotation',
-    desc: 'Pick the shape that’s the same, just rotated — spatial reasoning',
     progressive: true,
     ladderFields: ['count', 'rotationComplexity', 'optionCount'],
     fields: [
@@ -256,8 +234,6 @@ const COGNITIVE_DRILL_META = {
     defaults: { enabled: true, progressive: true, count: 8, rotationComplexity: 3, optionCount: 4 },
   },
   'reaction-time': {
-    label: 'Reaction Time',
-    desc: 'React the instant a stimulus appears — processing speed baseline',
     fields: [
       { key: 'mode', label: 'Mode', type: 'select', options: [
         { value: 'simple', label: 'Simple' },
@@ -274,8 +250,6 @@ const COGNITIVE_DRILL_META = {
     defaults: { enabled: true, mode: 'simple', count: 15, minDelayMs: 1000, maxDelayMs: 3000, choices: 3 },
   },
   'task-switching': {
-    label: 'Task Switching',
-    desc: 'Apply the currently cued rule — focused practice for switching between explicit classifications',
     progressive: true,
     ladderFields: ['ruleCount', 'switchRatePct', 'cueStimulusIntervalMs', 'incongruentPct', 'responseDeadlineMs'],
     fields: [
@@ -289,8 +263,6 @@ const COGNITIVE_DRILL_META = {
     defaults: { enabled: false, progressive: true, count: 18, ruleCount: 2, switchRatePct: 50, cueStimulusIntervalMs: 700, incongruentPct: 50, responseDeadlineMs: 2200 },
   },
   'go-no-go': {
-    label: 'Go / No-Go',
-    desc: 'Respond to go signals and withhold to lures — focused response-inhibition practice',
     progressive: true,
     ladderFields: ['noGoPct', 'stimulusMs', 'lureSimilarity', 'responseDeadlineMs'],
     fields: [
@@ -306,8 +278,6 @@ const COGNITIVE_DRILL_META = {
     defaults: { enabled: false, progressive: true, count: 20, noGoPct: 25, stimulusMs: 600, lureSimilarity: 'low', responseDeadlineMs: 1400 },
   },
   'flanker': {
-    label: 'Flanker Control',
-    desc: 'Report the center arrow while ignoring surrounding arrows — narrow interference-control practice',
     progressive: true,
     ladderFields: ['congruentPct', 'flankerDistance', 'flankerStrength', 'responseDeadlineMs'],
     fields: [
@@ -493,7 +463,10 @@ function GroupBulkToggle({ groupLabel, onEnableAll, onDisableAll }) {
   );
 }
 
-function DrillCard({ meta, drillConfig, enabled, accent, onToggle, onUpdateField, adaptiveInfo, progressive, onToggleProgressive, progressInfo, managedFieldKeys = [], speedGated = false, managedLabel = 'Manual knobs' }) {
+function DrillCard({ type, meta, drillConfig, enabled, accent, onToggle, onUpdateField, adaptiveInfo, progressive, onToggleProgressive, progressInfo, managedFieldKeys = [], speedGated = false, managedLabel = 'Manual knobs' }) {
+  // Label and description both come from the shared registries in constants.js —
+  // the per-module META objects carry only the knobs, so a drill rename is one edit.
+  const label = DRILL_LABELS[type];
   const supportsProgressive = typeof progressive === 'boolean';
   // Fields the ladder drives (hidden while progressive is on; shown in manual
   // mode). Multiplication hides only Max Digits; a cognitive drill hides every
@@ -508,14 +481,14 @@ function DrillCard({ meta, drillConfig, enabled, accent, onToggle, onUpdateField
     }`}>
       <div className="flex items-center justify-between mb-3">
         <div>
-          <h3 className="text-white font-medium">{meta.label}</h3>
-          <p className="text-gray-500 text-xs">{meta.desc}</p>
+          <h3 className="text-white font-medium">{label}</h3>
+          <p className="text-gray-500 text-xs">{DRILL_DESCRIPTIONS[type]}</p>
         </div>
         <button
           type="button"
           role="switch"
           aria-checked={enabled}
-          aria-label={meta.label}
+          aria-label={label}
           onClick={onToggle}
           className={`shrink-0 w-10 h-5 rounded-full transition-colors relative ${
             enabled ? toggleBg : 'bg-port-border'
@@ -537,7 +510,7 @@ function DrillCard({ meta, drillConfig, enabled, accent, onToggle, onUpdateField
             type="button"
             role="switch"
             aria-checked={progressive}
-            aria-label={`Progressive difficulty — ${meta.label}`}
+            aria-label={`Progressive difficulty — ${label}`}
             onClick={onToggleProgressive}
             className={`shrink-0 w-10 h-5 rounded-full transition-colors relative ${
               progressive ? toggleBg : 'bg-port-border'
@@ -1055,6 +1028,7 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
             return (
               <DrillCard
                 key={type}
+                type={type}
                 meta={meta}
                 drillConfig={drillConfig}
                 enabled={drillConfig.enabled !== false}
@@ -1115,6 +1089,7 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
             return (
               <DrillCard
                 key={type}
+                type={type}
                 meta={meta}
                 drillConfig={drillConfig}
                 enabled={drillConfig.enabled !== false}
@@ -1206,6 +1181,7 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
                   return (
                     <DrillCard
                       key={type}
+                      type={type}
                       meta={meta}
                       drillConfig={drillConfig}
                       enabled={drillConfig.enabled !== false}

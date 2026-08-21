@@ -295,6 +295,74 @@ export const DRILL_LABELS = {
   'task-switching': 'Task Switching',
   'go-no-go': 'Go / No-Go',
   'flanker': 'Flanker Control',
+  // Morse types are owned by the `morse` topic and never compose into a POST
+  // session, but they ARE drill types — the Practice Library and the Practice
+  // Plan both name them, so they need a label like every other type.
+  'morse-copy': 'Morse Copy',
+  'morse-head-copy': 'Morse Head Copy',
+  'morse-send': 'Morse Send',
+};
+
+// One-line "what is this test?" copy for every drill type POST offers — the
+// single source shared by Drill Config's cards and the Practice Library
+// (`/post/explore`). Before this existed the prose lived only inside
+// PostDrillConfig's private meta registries, so a drill the user had never
+// enabled had no description anywhere they could browse.
+// `practiceCatalog.test.js` asserts one entry per DRILL_LABELS key (and no
+// orphan the other way), so a new drill type can't ship label-only.
+export const DRILL_DESCRIPTIONS = {
+  'doubling-chain': 'Double a number repeatedly',
+  'serial-subtraction': 'Subtract a number repeatedly',
+  'multiplication': 'Multiply random numbers',
+  'powers': 'Calculate base^exponent',
+  'estimation': 'Approximate arithmetic results',
+  'applied-numeracy': 'Everyday percentages, ratios, units, rates, and estimation',
+  'word-association': 'Associate freely with given words — trains lateral thinking',
+  'story-recall': 'Read a paragraph, then answer questions from memory',
+  'verbal-fluency': 'Name as many items in a category as possible',
+  'wit-comeback': 'Craft witty responses to scenarios — trains verbal agility',
+  'pun-wordplay': 'Create puns and wordplay on given topics',
+  'compound-chain': 'Chain compound words/phrases from a seed word',
+  'bridge-word': 'Find a word that links two others',
+  'double-meaning': 'Exploit words with two meanings',
+  'idiom-twist': 'Twist familiar idioms into new phrases',
+  'memory-fill-blank': 'Fill missing words in partially shown lines of a text you are memorizing',
+  'memory-sequence': 'Given a line, type what comes next',
+  'memory-element-flash': 'Name elements from symbols or vice versa',
+  'memory-element-study': 'Study element name ↔ symbol pairings',
+  'what-if': 'Explore creative hypothetical scenarios',
+  'alternative-uses': 'List unconventional uses for everyday objects',
+  'story-prompt': 'Spin a short story from a creative prompt',
+  'invention-pitch': 'Pitch inventions that solve quirky problems',
+  'reframe': 'Reframe a frustrating situation positively or humorously',
+  'n-back': 'Signal when a letter matches the one N steps back — working memory',
+  'digit-span': 'Recall a shown digit sequence forward or backward',
+  'stroop': 'Name the ink color of a color-word — attention & inhibition',
+  'schulte-table': 'Scan a shuffled grid and tap 1, 2, 3... in order — visual attention & speed',
+  'mental-rotation': 'Pick the shape that’s the same, just rotated — spatial reasoning',
+  'reaction-time': 'React the instant a stimulus appears — processing speed baseline',
+  'task-switching': 'Apply the currently cued rule — focused practice for switching between explicit classifications',
+  'go-no-go': 'Respond to go signals and withhold to lures — focused response-inhibition practice',
+  'flanker': 'Report the center arrow while ignoring surrounding arrows — narrow interference-control practice',
+  'morse-copy': 'Listen to Morse, type what you hear',
+  'morse-head-copy': 'Audio-only — no on-screen code hints or cheat sheet',
+  'morse-send': 'Hold spacebar (or tap) to key dits & dahs',
+};
+
+// Drill types that ALSO have a dedicated standalone trainer route, so the
+// Practice Library can offer "practice this one now" instead of only telling
+// the user which session it composes into. Keyed by drill type; the value is
+// the same deep link the recommendation engine hands back for that drill.
+export const DRILL_PRACTICE_LINKS = {
+  'compound-chain': '/post/wordplay/compound-chain',
+  'bridge-word': '/post/wordplay/bridge-word',
+  'double-meaning': '/post/wordplay/double-meaning',
+  'idiom-twist': '/post/wordplay/idiom-twist',
+  'memory-element-flash': '/post/memory/elements/element-flash',
+  'memory-element-study': '/post/memory/elements/element-study',
+  'morse-copy': '/post/morse/copy',
+  'morse-head-copy': '/post/morse/head-copy',
+  'morse-send': '/post/morse/send',
 };
 
 function parseAppliedNumeracyInput(value, question) {
