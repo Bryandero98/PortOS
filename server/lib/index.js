@@ -363,6 +363,7 @@ export * from './openapiSpec.js';
 export * from './prDisposition.js';
 export * from './shellCd.js';
 export * from './shellExit.js';
+export * from './shellLivenessProbe.js';
 export * from './shellQuote.js';
 export * from './shellReadinessProbe.js';
 export * from './sidecarProcess.js';
