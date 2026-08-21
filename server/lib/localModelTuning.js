@@ -56,15 +56,22 @@
  *
  * ## Verifying an `mtplx serve` flag before declaring it
  *
- * MTPLX's knobs were read off its own `serve` argument parser (upstream
- * `mtplx/cli.py`), not off its feature docs, and every one below was checked to
- * exist unchanged from MTPLX v1.0.0 through v2.9.0 — including the enum SPELLINGS,
- * since argparse rejects an unlisted choice exactly as it rejects an unknown
- * flag. That matters more here than for the other runtimes: `mtplx serve` exits
- * before it binds on a flag it does not recognize, which the LLMs page reports as
- * "the server would not start". Verify the same way (`mtplx serve --help`, or the
- * upstream parser) before adding one, and prefer a flag with a long history over
- * one that appeared in the current release.
+ * This matters more here than for the other runtimes: `mtplx serve` exits before
+ * it binds on a flag it does not recognize, which the LLMs page reports to the
+ * user as "the server would not start". The enum SPELLINGS carry the same risk —
+ * argparse rejects an unlisted `choices` value exactly as it rejects an unknown
+ * flag.
+ *
+ * So each knob below was read off MTPLX's own argument parser rather than its
+ * feature docs, at a spread of releases rather than only the newest, since other
+ * installs upgrade on their own schedule. Reproduce it the same way before
+ * adding one — on a machine with MTPLX, `mtplx serve --help`; otherwise read
+ * upstream `mtplx/cli.py` (github.com/youssofal/MTPLX), where the `serve`
+ * subparser and the `_add_batching_args` / `_add_paged_kv_quant_args` helpers it
+ * calls define these flags, and `mtplx/profiles.py` defines `PROFILE_CHOICES`.
+ * The six below and their options were confirmed present and unchanged at tags
+ * v1.0.0, v2.0.0, v2.5.4 and v2.9.0, with one exception noted on `profile`.
+ * Prefer a flag with that kind of history over one new in the current release.
  *
  * ## The sentinel contract
  *
@@ -171,6 +178,12 @@ const RAW_SPECS = {
     { id: 'generationMode', label: 'Decode mode', type: 'enum', cli: '--generation-mode', options: ['mtp', 'ar'], hint: 'Native multi-token speculative decode, or plain target-only autoregressive. The comparison that answers whether MTP is actually paying off for this model here.' },
     { id: 'kvQuant', label: 'KV cache quantization', type: 'enum', cli: '--kv-quant', options: ['off', 'q8', 'q4'], hint: 'Quantizing the paged KV cache buys context length with a little quality. q4 is the smallest at every length but re-dequantizes each decode step, so long-context decode gets slower.' },
     { id: 'batchingPreset', label: 'Batching preset', type: 'enum', cli: '--batching-preset', options: ['solo', 'latency', 'agent', 'throughput'], hint: 'How the server trades per-request latency against total throughput. `solo` is the cleanest baseline for a single-stream measurement.' },
+    // `turbo` is the one option not present at every tag checked — it arrived in
+    // MTPLX v2.0.0. Offered anyway: an install old enough to reject it gets the
+    // refusal-and-restore path, not a dead daemon, and pinning the catalog to
+    // the oldest release would cost every current install the knob that matters
+    // most. The diagnostic profiles ('exact', 'max-diagnostic') are valid but
+    // are not what a throughput sweep is asking, so they are left out.
     { id: 'profile', label: 'Runtime profile', type: 'enum', cli: '--profile', options: ['sustained', 'turbo', 'performance-cold', 'stable'], hint: 'MTPLX\'s own bundle of runtime settings. `turbo` targets peak rate on the quantized flagships; `sustained` holds up over a long run. Diagnostic profiles are deliberately not offered.' },
   ],
   // PortOS does not start vLLM at all — it is a container from the shipped

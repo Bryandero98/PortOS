@@ -138,6 +138,14 @@ function parseTuningFromArgs(list) {
   const raw = {};
   for (const spec of tuningSpecsFor('mtplx')) {
     if (!spec.cli) continue;
+    // `launchArgs` renders a boolean as a BARE flag, so its inverse is presence,
+    // not the next token — reading one would recover the NEXT flag's name as
+    // this knob's value. No MTPLX knob is boolean today; this is here so adding
+    // one cannot silently break re-adoption.
+    if (spec.type === 'boolean') {
+      if (list.includes(spec.cli)) raw[spec.id] = true;
+      continue;
+    }
     const value = pm2ArgValue(list, spec.cli);
     if (value !== null) raw[spec.id] = value;
   }
@@ -151,13 +159,26 @@ async function waitForPortRelease(port) {
 }
 
 /**
- * Block until the endpoint answers, or the readiness budget elapses.
- * `false` means it never answered — a wedged process, not a slow-loading one.
+ * Block until the relaunched server answers, or until it is proven dead.
+ *
+ * Polls PM2 alongside the endpoint, because the two failures look identical from
+ * the endpoint alone and cost wildly different amounts of time. `mtplx serve`
+ * accepts a `--context-window` far past what the machine can hold, then dies
+ * partway through loading the checkpoint — well after `startMtplxServer`'s short
+ * startup window has already returned. Waiting the full readiness budget out on
+ * a process PM2 has already marked `errored` would leave the install's `mtplx`
+ * provider down for minutes per bad launch line, and a tuning sweep is EXPECTED
+ * to produce bad launch lines.
+ *
+ * `false` means it will not serve — dead or wedged; either way, restore.
  */
-async function waitForEndpoint(endpoint) {
+async function waitForRelaunchedEndpoint(endpoint) {
   const deadline = Date.now() + relaunchReadyTimeoutMs;
   while (Date.now() < deadline) {
     if (await probeEndpoint(endpoint)) return true;
+    clearJlistCache();
+    const proc = await getAppStatusStrict(MTPLX_APP);
+    if (proc && ['errored', 'stopped', 'not_found'].includes(proc.status)) return false;
     await sleep(1000);
   }
   return false;
@@ -482,14 +503,34 @@ export async function stopMtplxServer() {
  * @returns {Promise<{applied: boolean, reason: string|null, config: object|null}>}
  */
 export async function relaunchMtplxServerWithTuning(tuning = {}) {
-  const knobs = Object.entries(normalizeTuning('mtplx', tuning)).filter(([, v]) => v !== null && v !== undefined);
+  const normalized = normalizeTuning('mtplx', tuning);
+  const knobs = Object.entries(normalized);
   if (knobs.length === 0) {
     return { applied: false, reason: 'no launch knobs were requested', config: currentConfig };
+  }
+  // Gated on the RENDERED flags, not the knob count: a knob can normalize to a
+  // value that renders nothing (a boolean set to false — a CLI has no spelling
+  // for "explicitly off"). Relaunching on that would run daemon defaults while
+  // the caller records `tuningApplied: true`, which is the un-applied-but-claimed
+  // reading this whole path exists to prevent.
+  if (launchArgs('mtplx', normalized).length === 0) {
+    return { applied: false, reason: 'that tuning renders no `mtplx serve` flag, so there is nothing to relaunch with', config: currentConfig };
   }
 
   const status = await getMtplxServerStatus();
   if (!status.running) {
     return { applied: false, reason: 'MTPLX is not running, so PortOS has no checkpoint to relaunch with', config: null };
+  }
+  // `null` is "PM2 could not be read", NOT "someone else started it". Collapsing
+  // the two would tell a user their own managed daemon is external — a
+  // misdiagnosis that points them at the wrong fix. Refusing is still right:
+  // PortOS must not stop a process it cannot prove it owns.
+  if (status.managed === null) {
+    return {
+      applied: false,
+      reason: 'PortOS could not read PM2, so it cannot tell whether it owns this MTPLX server',
+      config: status.config || null,
+    };
   }
   if (!status.managed) {
     return {
@@ -515,7 +556,7 @@ export async function relaunchMtplxServerWithTuning(tuning = {}) {
   // which makes `compareTunings` rank two readings that were not what they say.
   // Replacing is exact here because an absent `mtplx serve` flag IS the daemon
   // default — the same sentinel contract `lib/localModelTuning.js` documents.
-  const next = { ...previous, tuning: Object.fromEntries(knobs) };
+  const next = { ...previous, tuning: normalized };
   const port = next.port ?? DEFAULT_PORT;
   console.log(`🚄 MTPLX: relaunching to apply tuning (${knobs.map(([k, v]) => `${k}=${v}`).join(', ')})`);
 
@@ -539,7 +580,7 @@ export async function relaunchMtplxServerWithTuning(tuning = {}) {
   // waits only long enough to catch a server that dies immediately, and a cold
   // MLX checkpoint takes far longer than that to load. So `online: false` here
   // is "not ready YET", not "wedged"; give it the real readiness budget first.
-  const ready = started.online || await waitForEndpoint(started.endpoint);
+  const ready = started.online || await waitForRelaunchedEndpoint(started.endpoint);
   if (ready) return { applied: true, reason: null, config: started.config };
 
   // Still silent. Treat it exactly like a rejected launch line: put the previous

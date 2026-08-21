@@ -310,6 +310,46 @@ describe('mtplxServerManager', () => {
       expect(pm2State?.status).toBe('online');
     });
 
+    // A launch line MTPLX ACCEPTS but the machine cannot hold dies partway
+    // through loading the checkpoint — after the short startup window has
+    // already returned. Waiting the full readiness budget out on a process PM2
+    // has marked `errored` leaves the install's mtplx provider down for minutes
+    // per bad launch line, and a sweep is expected to produce several.
+    it('restores immediately when PM2 shows the relaunch died, not after the full budget', async () => {
+      await startMtplxServer({ tuning: { depth: 2 } });
+      // Long enough that sitting it out would blow the per-test timeout, so the
+      // assertion is about noticing the death rather than about the clock.
+      _resetMtplxServerStateForTests({ startupWait: 20, startupPoll: 5, relaunchReadyTimeout: 60_000 });
+
+      const realExec = pm2Module.execPm2.getMockImplementation();
+      vi.spyOn(pm2Module, 'execPm2').mockImplementation(async (args) => {
+        const out = await realExec(args);
+        // Comes up "online", then dies once the startup wait has already passed.
+        if (args[0] === 'start' && args.includes('--context-window')) {
+          setTimeout(() => { if (pm2State) pm2State.status = 'errored'; }, 30);
+        }
+        return out;
+      });
+
+      const result = await relaunchMtplxServerWithTuning({ contextWindow: 1048576 });
+      expect(result.applied).toBe(false);
+      expect(result.reason).toMatch(/never answered/);
+      expect(result.config.tuning).toEqual({ depth: 2 });
+    });
+
+    it('refuses when PM2 cannot be read, without calling the daemon external', async () => {
+      // `pm2 jlist` fails transiently while MTPLX is still answering: running,
+      // but PortOS cannot prove it owns the process.
+      vi.spyOn(openAiModelsProbe, 'probeOpenAiModels').mockResolvedValue({ reachable: true });
+      vi.spyOn(pm2Module, 'getAppStatusStrict').mockResolvedValue(null);
+      const result = await relaunchMtplxServerWithTuning({ depth: 3 });
+      expect(result.applied).toBe(false);
+      expect(result.reason).toMatch(/could not read PM2/);
+      // The misdiagnosis this replaced: telling a user their own managed daemon
+      // was started outside PortOS points them at the wrong fix.
+      expect(result.reason).not.toMatch(/outside PortOS/);
+    });
+
     it('refuses when nothing is running, since there is no checkpoint to reuse', async () => {
       const result = await relaunchMtplxServerWithTuning({ depth: 3 });
       expect(result.applied).toBe(false);

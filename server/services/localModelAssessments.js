@@ -455,11 +455,24 @@ async function measureModel({ backend, modelId, contexts, tuning, signal, emit }
   // tuning PortOS could not apply must not be filed as evidence for that tuning.
   const launch = launchTuning(backend, normalizedTuning);
   const request = requestBody(backend, normalizedTuning);
-  const tuningApplication = Object.keys(launch).length > 0
-    ? await applyLaunchTuning({ backend, modelId, launch })
+  let tuningApplication;
+  if (Object.keys(launch).length > 0) {
+    // Announced BEFORE the await, because applying a launch tuning stops and
+    // restarts a daemon — and a cold MLX or GGUF checkpoint can take minutes to
+    // load again. Without this the progress stream is silent for that whole
+    // stretch, on a run the user just started, which reads as a hang.
+    emit({
+      event: 'start',
+      sampleIndex: 0,
+      sampleCount: contexts.length,
+      message: `Restarting ${backend} with ${tuningLabel} before measuring…`,
+    });
+    tuningApplication = await applyLaunchTuning({ backend, modelId, launch });
+  } else {
     // `null`, NOT `true`, when nothing was tuned. `true` when the only knobs set
     // ride on the request body, which needs no daemon restart to take effect.
-    : { applied: Object.keys(request).length > 0 ? true : null, reason: null, config: null };
+    tuningApplication = { applied: Object.keys(request).length > 0 ? true : null, reason: null, config: null };
+  }
 
   const endpoint = isEndpointRuntime(backend) ? await runtimeEndpoint(backend) : null;
   if (isEndpointRuntime(backend) && !endpoint) {
