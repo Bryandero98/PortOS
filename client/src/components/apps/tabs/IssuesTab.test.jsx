@@ -17,6 +17,14 @@ const { socketHandlers, socketMock } = vi.hoisted(() => {
 
 vi.mock('../../../services/socket', () => ({ default: socketMock }));
 
+// Label chips grade their color against the ACTIVE theme mode, so the mode has
+// to be steerable per test. The real provider runs a settings fetch on mount,
+// which this suite has no business exercising.
+const { themeMode } = vi.hoisted(() => ({ themeMode: { current: 'night' } }));
+vi.mock('../../ThemeContext', () => ({
+  useThemeContext: () => ({ theme: { mode: themeMode.current } }),
+}));
+
 vi.mock('../../../services/api', () => ({
   getAppIssues: vi.fn(),
   createSlashdoTask: vi.fn(),
@@ -24,6 +32,7 @@ vi.mock('../../../services/api', () => ({
 }));
 
 import * as api from '../../../services/api';
+import { chipColors, parseColor } from '../../../lib/chipContrast';
 import IssuesTab from './IssuesTab';
 
 const ISSUE = {
@@ -60,6 +69,7 @@ const renderTab = async () => {
 };
 
 beforeEach(() => {
+  themeMode.current = 'night';
   socketHandlers.clear();
   socketMock.on.mockClear();
   socketMock.off.mockClear();
@@ -86,6 +96,39 @@ describe('IssuesTab', () => {
     expect(screen.getByTitle('Something is broken')).toHaveTextContent('bug');
     expect(screen.getByText(/alice/)).toBeInTheDocument();
     expect(screen.getByText('acme/widget')).toBeInTheDocument();
+  });
+
+  // The AA guarantee itself is `lib/chipContrast.test.js`'s job. What this suite
+  // owns is the wiring: the chip is styled for the ACTIVE theme mode, not a
+  // hardcoded one. #fef2c0 is GitHub's default pale yellow — the color that
+  // rendered as white-on-cream before chips were graded per mode.
+  it.each(['day', 'night'])('styles label chips for the %s theme mode', async (mode) => {
+    themeMode.current = mode;
+    api.getAppIssues.mockResolvedValue(okPayload([{
+      ...ISSUE,
+      labels: [{ name: 'plan', color: '#fef2c0', description: 'Planned work' }],
+    }]));
+    await renderTab();
+
+    const chip = await screen.findByTitle('Planned work');
+    expect(chip).toHaveTextContent('plan');
+    // parseColor on both sides: jsdom normalizes an inline `#rrggbb` to `rgb(…)`,
+    // so comparing the raw strings would pass no matter which mode was used.
+    const other = mode === 'day' ? 'night' : 'day';
+    expect(parseColor(chip.style.color)).toEqual(parseColor(chipColors('#fef2c0', mode).color));
+    expect(parseColor(chip.style.color)).not.toEqual(parseColor(chipColors('#fef2c0', other).color));
+  });
+
+  it('leaves a colorless label on the neutral chip instead of an inline color', async () => {
+    api.getAppIssues.mockResolvedValue(okPayload([{
+      ...ISSUE,
+      labels: [{ name: 'feature', color: null, description: 'No forge color' }],
+    }]));
+    await renderTab();
+
+    const chip = await screen.findByTitle('No forge color');
+    expect(chip.style.color).toBe('');
+    expect(chip.className).toContain('text-gray-300');
   });
 
   it('keeps the description collapsed until the user expands it', async () => {
@@ -323,6 +366,32 @@ describe('IssuesTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Show all labels' }));
     expect(await screen.findByText('Crash on save')).toBeInTheDocument();
+  });
+
+  it('never ships a filter chip with both a graded color and the theme utilities that override it', async () => {
+    // `.bg-port-bg` / `.border-port-border` / day-mode `.text-gray-300` are all
+    // `!important` in index.css, and author `!important` beats an inline style —
+    // so a chip carrying both renders in theme neutrals with its label color
+    // silently dead. Colored chips drop the utilities; colorless ones keep them.
+    api.getAppIssues.mockResolvedValue(okPayload([
+      ISSUE,
+      { ...ISSUE, number: 43, labels: [{ name: 'feature', color: null, description: '' }] },
+    ]));
+    await renderTab();
+
+    const colored = await screen.findByRole('button', { name: 'bug (1)' });
+    expect(colored.style.color).not.toBe('');
+    expect(colored.className).not.toMatch(/text-gray-300|bg-port-bg|border-port-border/);
+
+    const colorless = screen.getByRole('button', { name: 'feature (1)' });
+    expect(colorless.style.color).toBe('');
+    expect(colorless.className).toContain('text-gray-300');
+
+    // Hidden chips are struck through in theme neutrals — no inline color to lose.
+    fireEvent.click(colored);
+    const hidden = await screen.findByRole('button', { name: 'bug (1)' });
+    expect(hidden.style.color).toBe('');
+    expect(hidden.className).toContain('line-through');
   });
 
   it('resets label and assignee filters when the app changes', async () => {
