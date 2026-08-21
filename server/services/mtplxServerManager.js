@@ -81,7 +81,7 @@ const probeEndpoint = async (endpoint) =>
   (await probeOpenAiModels(endpoint, { timeoutMs: PROBE_TIMEOUT_MS })).reachable;
 
 const endpointFor = (config) =>
-  `http://${config?.host || DEFAULT_HOST}:${config?.port ?? DEFAULT_PORT}/v1`;
+  `http://${DEFAULT_HOST}:${config?.port ?? DEFAULT_PORT}/v1`;
 
 /**
  * Reconstructs the launch config from PM2 process args when PortOS restarted
@@ -94,7 +94,6 @@ function parseConfigFromArgs(args) {
   if (!list.includes('serve')) return null;
   const port = pm2ArgValue(list, '--port');
   return {
-    host: pm2ArgValue(list, '--host') || DEFAULT_HOST,
     port: port ? Number(port) : DEFAULT_PORT,
     // Absent means MTPLX was started on its OWN default checkpoint — don't
     // invent a repo id the launch line never carried.
@@ -156,7 +155,7 @@ export async function getMtplxServerStatus() {
     running: isManagedActive || reachable,
     managed: isReadFailed ? null : isManagedActive,
     pid: isManagedActive ? (pm2Status?.pid || null) : null,
-    host: currentConfig?.host || DEFAULT_HOST,
+    host: DEFAULT_HOST,
     port: currentConfig?.port ?? DEFAULT_PORT,
     endpoint,
     config: isManagedActive ? currentConfig : null,
@@ -231,10 +230,15 @@ async function resolveStartModel(requested, emit) {
  * checklist passes its own longer budget, because that flow's contract is "the
  * endpoint answers when this returns".
  *
- * @param {{port?: number, host?: string, model?: string, waitMs?: number, onProgress?: (line: string) => void}} options
+ * There is deliberately no `host` option: MTPLX is a loopback daemon
+ * (`docs/features/mtplx.md`), every shipped provider preset points at
+ * 127.0.0.1, and accepting a host PortOS never puts on the launch line would
+ * report an endpoint the server is not bound to.
+ *
+ * @param {{port?: number, model?: string, waitMs?: number, onProgress?: (line: string) => void}} options
  */
 export async function startMtplxServer(options = {}) {
-  const { port = DEFAULT_PORT, host = DEFAULT_HOST, model: requestedModel = null, waitMs, onProgress = () => {} } = options;
+  const { port = DEFAULT_PORT, model: requestedModel = null, waitMs, onProgress = () => {} } = options;
   const emit = (line) => { appendLog(line); onProgress(line); };
 
   const binaryPath = resolveMtplxBinary();
@@ -250,13 +254,13 @@ export async function startMtplxServer(options = {}) {
     throw new ServerError(`MTPLX is already running with PID ${pm2Status.pid}`, { status: 409 });
   }
 
-  const endpoint = `http://${host}:${port}/v1`;
+  const endpoint = `http://${DEFAULT_HOST}:${port}/v1`;
   if (await probeEndpoint(endpoint)) {
     throw new ServerError(`Port ${port} is already in use by an active server at ${endpoint}`, { status: 409 });
   }
   if (await isPortInUse(port)) {
     throw new ServerError(
-      `Port ${port} is already in use on ${host}. Point MTPLX at a different port before starting it.`,
+      `Port ${port} is already in use on ${DEFAULT_HOST}. Point MTPLX at a different port before starting it.`,
       { status: 409, code: 'MTPLX_PORT_IN_USE' }
     );
   }
@@ -274,14 +278,14 @@ export async function startMtplxServer(options = {}) {
   // where the PROVIDER points — a user who moved MTPLX to 8010 would otherwise
   // get a second server on 8000 that nothing talks to.
   const args = ['serve', '--port', String(port), ...(model ? ['--model', model] : [])];
-  currentConfig = { host, port, model };
+  currentConfig = { port, model };
   appendLog(`Starting: mtplx ${args.join(' ')}`);
 
   // Delete any stale PM2 entry so our own previous instance doesn't count as a collision.
   await execPm2(['delete', MTPLX_APP]).catch(() => {});
   clearJlistCache();
 
-  console.log(`🚄 MTPLX starting on ${host}:${port}${model ? ` (model ${model})` : ' (MTPLX default model)'}`);
+  console.log(`🚄 MTPLX starting on ${DEFAULT_HOST}:${port}${model ? ` (model ${model})` : ' (MTPLX default model)'}`);
   await execPm2([
     'start', binaryPath,
     '--name', MTPLX_APP,

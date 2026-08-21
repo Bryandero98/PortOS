@@ -177,7 +177,8 @@ const SETUP_ROWS = Object.freeze({
       }
       if (cache.state === 'empty') return { success: false, error: MTPLX_NO_MODEL_ERROR };
       if (cache.state === 'partial') return { success: false, error: mtplxPartialCacheError(cache.count) };
-      if (cache.model) emit(`Serving the cached MTPLX model ${cache.model}.`);
+      // The manager emits "Serving the cached MTPLX model …" once it has the
+      // checkpoint, so don't announce it here too — both go to the same modal.
       // The cache lookup is an awaited subprocess — the modal can close while it
       // runs, and the caller's cancellation check happened BEFORE it. Without
       // this, a cancelled setup still starts a server nobody asked to keep.

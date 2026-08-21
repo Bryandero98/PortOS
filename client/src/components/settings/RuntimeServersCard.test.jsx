@@ -25,7 +25,7 @@ const renderCard = (props = {}) => {
   render(
     <MemoryRouter>
       <RuntimeServersCard
-        status={{ ollama: {}, lmstudio: {} }}
+        status={{ ollama: { canAutoInstall: true }, lmstudio: {} }}
         llamaStatus={null}
         mtplxStatus={null}
         loading={false}
@@ -89,6 +89,21 @@ describe('RuntimeServersCard', () => {
     });
     fireEvent.click(within(row('MTPLX')).getByRole('button', { name: /^Start/ }));
     expect(handlers.onStartMtplx).toHaveBeenCalled();
+  });
+
+  it('invokes a row action with NO arguments — never React\'s click event', () => {
+    // MTPLX's start handler takes a launch config and the client JSON.stringify's
+    // it into the request body. Binding it straight to `onClick` handed it the
+    // SyntheticEvent instead, which throws on its circular DOM refs.
+    const handlers = renderCard({
+      mtplxStatus: { installed: true, running: false, supported: true, cachedModels: ['Example/Qwen-MTP'] },
+    });
+    const mtplx = row('MTPLX');
+    fireEvent.click(within(mtplx).getByRole('button', { name: /^Start/ }));
+    expect(handlers.onStartMtplx).toHaveBeenCalledWith();
+
+    fireEvent.click(within(row('Ollama')).getByRole('button', { name: /Install/ }));
+    expect(handlers.onInstallBackend).toHaveBeenCalledWith('ollama');
   });
 
   it('blocks the MTPLX Start with the pull command when its cache is empty', () => {

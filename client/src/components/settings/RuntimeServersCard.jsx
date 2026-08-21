@@ -88,6 +88,12 @@ function pm2Row({ id, label, icon, status, platformReason, onStart, onStop, onIn
   };
 }
 
+/**
+ * Every action is invoked as `row.onX()`, never bound straight to `onClick` —
+ * React would hand the handler its SyntheticEvent as the first argument, and a
+ * handler that takes a launch config (MTPLX's start) would serialize the event
+ * into the request body instead of the config.
+ */
 function ServerRow({ row, busy, actionInProgress, children }) {
   const Icon = row.icon;
   const meta = STATE_META[row.state] || STATE_META.missing;
@@ -116,7 +122,7 @@ function ServerRow({ row, busy, actionInProgress, children }) {
         {children}
         {row.onInstall && (
           <button
-            onClick={row.onInstall}
+            onClick={() => row.onInstall()}
             disabled={busy}
             className={accentBtn}
             title={`Install ${row.label} on this machine`}
@@ -139,7 +145,7 @@ function ServerRow({ row, busy, actionInProgress, children }) {
         )}
         {row.onStart && (
           <button
-            onClick={row.onStart}
+            onClick={() => row.onStart()}
             disabled={busy}
             className={neutralBtn}
             title={`Start the local ${row.label} server`}
@@ -153,7 +159,7 @@ function ServerRow({ row, busy, actionInProgress, children }) {
         )}
         {row.onStop && (
           <button
-            onClick={row.onStop}
+            onClick={() => row.onStop()}
             disabled={busy}
             className={neutralBtn}
             title={`Stop the local ${row.label} server`}

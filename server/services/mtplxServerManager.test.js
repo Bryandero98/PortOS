@@ -174,6 +174,17 @@ describe('mtplxServerManager', () => {
       expect(pm2State).toBeNull();
     });
 
+    it('reports the endpoint it actually bound, with no host it never passes', async () => {
+      // MTPLX is a loopback daemon and no `--host` ever reaches its launch line,
+      // so accepting a host would record an endpoint the server is not bound to.
+      const result = await startMtplxServer({ port: 8010, host: '0.0.0.0' });
+      expect(result.endpoint).toBe('http://127.0.0.1:8010/v1');
+      expect(result.config).not.toHaveProperty('host');
+      const launch = execPm2Calls.find((a) => a[0] === 'start');
+      expect(launch).not.toContain('--host');
+      expect((await getMtplxServerStatus()).host).toBe('127.0.0.1');
+    });
+
     it('refuses when the binary is not installed', async () => {
       vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(null);
       await expect(startMtplxServer()).rejects.toThrow(/not found on PATH/);

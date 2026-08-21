@@ -173,7 +173,8 @@ export const localLlmLmStudioServiceSchema = z.object({ action: z.enum(['start',
 // point at. `model` is a Hugging Face repo id, which lands in the launch argv.
 export const localLlmMtplxStartSchema = z.object({
   port: z.coerce.number().int().min(1).max(65535).optional(),
-  host: z.string().trim().max(100).optional(),
+  // No `host`: MTPLX is a loopback daemon and the manager never puts one on the
+  // launch line, so accepting one would only record an endpoint it isn't bound to.
   model: z.string().trim().max(200).regex(
     /^$|^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/,
     'model must be a Hugging Face repo id',

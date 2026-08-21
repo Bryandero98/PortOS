@@ -451,6 +451,28 @@ describe('runLocalRuntimeSetup', () => {
     expect(result).toMatchObject({ success: false, error: expect.stringContaining('connection reset') });
   });
 
+  it('announces the cached checkpoint once, not once per layer', async () => {
+    // The manager emits this line itself once it has the checkpoint, and both
+    // layers stream into the SAME setup modal.
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    probe.probeOpenAiModels
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(reachable(['mtplx']));
+    // Stand in for the real manager's own emit, so the count covers both layers.
+    mtplx.startMtplxServer.mockImplementation(async ({ model, onProgress }) => {
+      if (model) onProgress(`Serving the cached MTPLX model ${model}.`);
+      return { success: true, endpoint: 'http://127.0.0.1:8000/v1' };
+    });
+    const lines = [];
+    const restore = pinPlatform('darwin');
+
+    await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1', emit: (l) => lines.push(l) });
+    restore();
+
+    expect(lines.filter((l) => /Serving the cached MTPLX model/.test(l))).toHaveLength(1);
+  });
+
   it('exposes every action the route may accept', () => {
     expect([...SETUP_ACTIONS].sort()).toEqual(['install', 'install-start', 'pull-start', 'start']);
   });
