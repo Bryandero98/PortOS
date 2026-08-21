@@ -102,6 +102,12 @@ export async function updateHistoryItemPrompt(id, prompt) {
     const trimmedPrompt = typeof prompt === 'string' ? prompt.trim() : '';
     if (trimmedPrompt) item.prompt = trimmedPrompt;
     else delete item.prompt;
+    // The trigger-weave provenance (#4665) describes the prompt this render was
+    // MADE with, so it can't survive an edit to that prompt — leaving it would
+    // have the row claim a `renderPrompt` derived from text that is no longer
+    // there, and name tokens as "added" to a prompt they were never added to.
+    delete item.renderPrompt;
+    delete item.addedTriggerWords;
     result = { id, prompt: trimmedPrompt };
     return history;
   });

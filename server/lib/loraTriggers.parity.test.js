@@ -16,10 +16,14 @@ import { describe, it, expect } from 'vitest';
 import {
   firstTriggerWord as serverFirstTriggerWord,
   promptHasTriggerWord as serverPromptHasTriggerWord,
+  separatorFor as serverSeparatorFor,
+  weaveLoraTriggers,
 } from './loraTriggers.js';
 import {
   firstTriggerWord as clientFirstTriggerWord,
   promptHasTriggerWord as clientPromptHasTriggerWord,
+  separatorFor as clientSeparatorFor,
+  appendTriggerWords as clientAppendTriggerWords,
 } from '../../client/src/lib/loraTriggers.js';
 
 // Every shape the two implementations must agree on: the whole-token boundary
@@ -69,6 +73,36 @@ describe('LoRA trigger words — server↔client parity', () => {
         `firstTriggerWord drifted for ${JSON.stringify(words)}`,
       ).toEqual(serverFirstTriggerWord(words));
     }
+  });
+
+  it('agrees on how a trigger clause attaches to the end of a prompt', () => {
+    // The server weave and the client's '+ trigger' button both append. Whichever
+    // lands the token first makes the other a no-op, so a separator that drifts
+    // means one of them can bury the activation token in a trailing directive
+    // with nothing downstream to repair it.
+    const SEPARATOR_CASES = [
+      'a rooftop at dusk',
+      'a rooftop at dusk,',
+      '',
+      'cinematic. a rooftop\n\nno music, no soundtrack',
+      'a rooftop\nsecond line',
+    ];
+    for (const trimmed of SEPARATOR_CASES) {
+      expect(
+        clientSeparatorFor(trimmed),
+        `separatorFor drifted for ${JSON.stringify(trimmed)}`,
+      ).toBe(serverSeparatorFor(trimmed));
+    }
+  });
+
+  it('pins the multi-paragraph rule in BOTH the weave and the button', () => {
+    // A mutual regression would slip past the equality check above, so pin the
+    // behavior: a token must never join a trailing negation list.
+    const multi = 'a rooftop at dusk\n\nno text, no watermark';
+    expect(weaveLoraTriggers(multi, [['aria_tok']]).prompt)
+      .toBe(`${multi}\n\naria_tok`);
+    expect(clientAppendTriggerWords(multi, ['aria_tok']))
+      .toBe(`${multi}\n\naria_tok`);
   });
 
   it('pins the boundary rule both copies encode (not just that they match)', () => {

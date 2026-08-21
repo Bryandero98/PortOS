@@ -40,6 +40,21 @@ export const promptHasTriggerWord = (prompt, word) => {
 };
 
 /**
+ * How a trigger clause attaches to the end of an existing prompt. Mirrors
+ * `server/lib/loraTriggers.js#separatorFor` — the button and the server weave
+ * MUST agree here, because whichever one lands the token first makes the other
+ * a no-op. A single-paragraph prompt gets a comma join; a multi-paragraph one
+ * gets its own paragraph, so the token can't be swallowed into a trailing
+ * directive (`…\n\nno text, no watermark, aria_tok` reads the activation
+ * token as one more thing to avoid).
+ */
+export const separatorFor = (trimmed) => {
+  if (!trimmed) return '';
+  if (/\n/.test(trimmed)) return '\n\n';
+  return trimmed.endsWith(',') ? ' ' : ', ';
+};
+
+/**
  * The "+ trigger" button's append: add a LoRA's trigger words to the prompt,
  * comma-separated, skipping any already present.
  *
@@ -62,6 +77,5 @@ export const appendTriggerWords = (prompt, words, effectivePrompt = prompt) => {
   const fresh = list.filter((w) => !promptHasTriggerWord(haystack, w));
   if (!fresh.length) return prompt;
   const trimmed = String(prompt || '').trim();
-  const sep = !trimmed ? '' : trimmed.endsWith(',') ? ' ' : ', ';
-  return `${trimmed}${sep}${fresh.join(', ')}`;
+  return `${trimmed}${separatorFor(trimmed)}${fresh.join(', ')}`;
 };

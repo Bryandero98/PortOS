@@ -38,6 +38,14 @@ describe('appendTriggerWords', () => {
       .toBe('a rooftop, portrait');
   });
 
+  it('appends as its own paragraph on a multi-paragraph prompt', () => {
+    // Whichever of the button and the server weave lands the token first makes
+    // the other a no-op, so the button must not bury it in a trailing directive
+    // — nothing downstream would repair it. Mirrors separatorFor on the server.
+    const multi = 'a rooftop at dusk\n\nno text, no watermark';
+    expect(appendTriggerWords(multi, ['aria_tok'])).toBe(`${multi}\n\naria_tok`);
+  });
+
   it('returns the prompt untouched when there is nothing to add', () => {
     expect(appendTriggerWords('a rooftop', [])).toBe('a rooftop');
     expect(appendTriggerWords('a rooftop', null)).toBe('a rooftop');

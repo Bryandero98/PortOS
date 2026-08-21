@@ -70,7 +70,7 @@ export const promptHasTriggerWord = (prompt, word) => {
  * read it as suppressed as activated. That is the exact inverse of the point.
  * The pipeline's `\n\nFeaturing <Name> (<trigger>).` clause has the same shape.
  */
-const separatorFor = (trimmed) => {
+export const separatorFor = (trimmed) => {
   if (!trimmed) return '';
   if (/\n/.test(trimmed)) return '\n\n';
   return trimmed.endsWith(',') ? ' ' : ', ';

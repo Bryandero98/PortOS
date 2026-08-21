@@ -361,6 +361,7 @@ vi.mock('../../lib/detachedSpawn.js', () => ({
 
 // ─── module under test ───────────────────────────────────────────────────────
 // Import AFTER all vi.mock calls so the hoisted mocks are in place.
+let updateHistoryItemPrompt;
 let generateChainedVideo;
 let generateVideo;
 let extractLastFrame;
@@ -369,7 +370,7 @@ let videoGenEvents;
 beforeEach(async () => {
   vi.resetModules();
   // Re-import fresh copies so mock reset above applies cleanly
-  ({ generateChainedVideo, generateVideo, extractLastFrame } = await import('./local.js'));
+  ({ generateChainedVideo, generateVideo, extractLastFrame, updateHistoryItemPrompt } = await import('./local.js'));
   ({ videoGenEvents } = await import('./events.js'));
 });
 
@@ -4863,5 +4864,41 @@ describe('generateVideo — first render child dies during the accelerator hando
     expect(child.proc.kill).toHaveBeenCalledWith('SIGTERM');
     expect(heavyClaimRelease).toHaveBeenCalled();
     expect(failures).toHaveLength(1);
+  });
+});
+
+describe('updateHistoryItemPrompt — trigger-weave provenance (#4665)', () => {
+  const seedHistory = async (item) => {
+    const { readJSONFile, atomicWrite } = await import('../../lib/fileUtils.js');
+    vi.mocked(readJSONFile).mockResolvedValue([item]);
+    vi.mocked(atomicWrite).mockClear();
+    return () => {
+      const calls = vi.mocked(atomicWrite).mock.calls;
+      return calls[calls.length - 1]?.[1]?.[0];
+    };
+  };
+
+  it('drops renderPrompt + addedTriggerWords when the user edits the prompt', async () => {
+    // The provenance describes the prompt this render was MADE with. Leaving it
+    // after an edit has the row claim a renderPrompt derived from text that is
+    // no longer there, and name tokens as "added" to a prompt they never were.
+    const written = await seedHistory({
+      id: 'woven-1',
+      prompt: 'a rooftop at dusk',
+      renderPrompt: 'a rooftop at dusk, fox_tok',
+      addedTriggerWords: ['fox_tok'],
+    });
+    await updateHistoryItemPrompt('woven-1', 'a beach at noon');
+    const item = written();
+    expect(item.prompt).toBe('a beach at noon');
+    expect(item.renderPrompt).toBeUndefined();
+    expect(item.addedTriggerWords).toBeUndefined();
+  });
+
+  it('leaves an un-woven row otherwise untouched', async () => {
+    const written = await seedHistory({ id: 'plain-1', prompt: 'a rooftop', seed: 42 });
+    await updateHistoryItemPrompt('plain-1', 'a beach');
+    const item = written();
+    expect(item).toEqual({ id: 'plain-1', prompt: 'a beach', seed: 42 });
   });
 });
