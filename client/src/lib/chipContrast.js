@@ -14,12 +14,14 @@
 // own tinted backdrop. A label already legible on the active mode is returned
 // untouched.
 //
-// Pure + side-effect free: the caller passes the active theme `mode`
-// (`'day' | 'night'`, from `useThemeContext().theme.mode`); nothing here reads
-// the DOM.
+// Referentially transparent: the caller passes the active theme `mode`
+// (`'day' | 'night'`, from `useThemeContext().theme.mode`) and nothing here reads
+// the DOM. The only state is a bounded memo of results, since the same handful
+// of label colors is graded on every row of every render.
 
 import { THEMES } from '../themes/portosThemes.js';
 import { clamp } from '../utils/formatters.js';
+import { evictOldest } from './boundedMap.js';
 
 // `"234 228 219"` (the `--port-*` color-var form) → `{ r, g, b }`.
 const parseTriple = (triple) => {
@@ -188,7 +190,9 @@ export function ensureReadable(rgb, backdrop) {
 // A repo's label palette is a few dozen colors that repeat on every row, and the
 // lightness search runs up to ~50 iterations per miss — so memoize per
 // (color, mode). The cache also hands React a stable `style` object across
-// renders, which it can skip diffing.
+// renders, which it can skip diffing. The cap is well above any real palette;
+// it only stops a long-lived session from growing the map without bound.
+const CACHE_MAX = 512;
 const cache = new Map();
 
 /**
@@ -215,5 +219,6 @@ export function chipColors(raw, mode) {
   } : null;
 
   cache.set(key, style);
+  evictOldest(cache, CACHE_MAX);
   return style;
 }
