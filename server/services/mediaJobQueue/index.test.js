@@ -182,6 +182,65 @@ describe('mediaJobQueue', () => {
     expect(r2.position).toBe(2);
   });
 
+  describe('getQueueCapacity', () => {
+    it('separates the serialized GPU lane from the parallel remote lane', async () => {
+      // Both lanes run concurrently, so a remote job must NOT be reported as
+      // waiting behind the local GPU render — that conflation is what made two
+      // idle peers each read as busy while waiting on the other.
+      stubs.generateVideo.mockImplementation(() => new Promise(() => {}));
+      stubs.generateAudioRemote.mockImplementation(() => new Promise(() => {}));
+      mediaJobQueue.enqueueJob({ kind: 'video', params: { prompt: 'local' } });
+      mediaJobQueue.enqueueJob({ kind: 'video', params: { prompt: 'waiting' } });
+      mediaJobQueue.enqueueJob({
+        kind: 'audio',
+        params: {
+          prompt: '',
+          engine: 'remote-audio',
+          modelId: 'example/model',
+          remoteMedia: remoteMediaParams(),
+        },
+      });
+      await waitFor(() => stubs.generateVideo.mock.calls.length === 1
+        && stubs.generateAudioRemote.mock.calls.length === 1);
+
+      const capacity = mediaJobQueue.getQueueCapacity();
+      // The remote render runs concurrently with the local one and the second
+      // video still waits — the remote job neither occupies the GPU lane nor
+      // queues behind it.
+      expect(capacity.lanes.gpu).toMatchObject({ running: 1, queued: 1, limit: 1 });
+      expect(capacity.lanes.remote).toMatchObject({ running: 1, queued: 0 });
+      expect(capacity.runningKind).toBe('video');
+      expect(capacity.totals).toEqual({ running: 2, queued: 1 });
+    });
+
+    it('counts queue depth per kind', async () => {
+      stubs.generateVideo.mockImplementation(() => new Promise(() => {}));
+      mediaJobQueue.enqueueJob({ kind: 'video', params: {} });
+      mediaJobQueue.enqueueJob({ kind: 'video', params: {} });
+      mediaJobQueue.enqueueJob({ kind: 'image', params: {} });
+      await waitFor(() => stubs.generateVideo.mock.calls.length === 1);
+
+      const { byKind } = mediaJobQueue.getQueueCapacity();
+      expect(byKind.video).toEqual({ running: 1, queued: 1 });
+      expect(byKind.image).toEqual({ running: 0, queued: 1 });
+    });
+
+    // An absent key and a zero read identically in a UI, and only one of them
+    // is true — every known kind must be present even with no work.
+    it('reports every known kind on an empty queue', () => {
+      const { byKind, totals, runningKind } = mediaJobQueue.getQueueCapacity();
+      expect(Object.keys(byKind).sort()).toEqual([...mediaJobQueue.JOB_KINDS].sort());
+      expect(Object.values(byKind).every((c) => c.running === 0 && c.queued === 0)).toBe(true);
+      expect(totals).toEqual({ running: 0, queued: 0 });
+      expect(runningKind).toBeNull();
+    });
+
+    it('reports the remote lane bound', () => {
+      expect(mediaJobQueue.getQueueCapacity().lanes.remote.limit)
+        .toBe(mediaJobQueue.REMOTE_MEDIA_PARALLEL_LIMIT);
+    });
+  });
+
   it('rejects unknown kinds', () => {
     expect(() => mediaJobQueue.enqueueJob({ kind: 'bogus', params: {} })).toThrow(/invalid kind/);
   });

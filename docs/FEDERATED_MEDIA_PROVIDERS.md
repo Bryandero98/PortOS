@@ -2,7 +2,7 @@
 
 PortOS can opt in to serving local media-generation capacity to another registered PortOS peer. The wire contract, `/api/federation/media/v1`, carries queued **audio, image, and video** generation through the existing durable `mediaJobQueue` and this machine's local engines.
 
-Provider-side queueing, consumer-side capacity discovery, and durable remote execution are available for all three kinds. Provider selection is exposed through the generation APIs; the picker UI, multi-provider scheduling, input-asset transfer, and higher-level commission routing remain later slices of issue #4348.
+Provider-side queueing, consumer-side capacity discovery, durable remote execution, and unattended (Creative Director / Commission) routing are available for all three kinds. Interactive provider selection is exposed through the generation APIs and the Music Studio panel; Image Gen / Video Gen pickers, multi-provider scheduling, and input-asset transfer remain later slices of issue #4348.
 
 ## Enable a provider
 
@@ -225,6 +225,47 @@ machine. A provider rejection inside a batch is contained rather than fatal —
 one refused portrait or scene frame is recorded in that run's `skipped` list and
 the rest of the batch still queues.
 
+## Capacity at a glance (System Health)
+
+**System Health → Overview → Media capacity** answers "can this install render
+right now, here or on a peer, and if not, why not?" in one card.
+
+The **local** half comes from `GET /api/system/health/details` under a `media`
+key: this machine's CUDA state and, per lane, how many renders are running
+against that lane's configured concurrency plus how deep its queue is.
+
+| Lane | Concurrency | What runs there |
+|------|-------------|-----------------|
+| Local GPU | 1 (serialized) | local image/video/audio/training renders |
+| Cloud CLI | `imageGen.codex.parallelLimit` | codex/grok/agy renders — external quota, no local GPU |
+| Federated | 20 | outgoing proxy jobs rendering on a peer |
+
+CUDA is reported with the same three states the wire uses — `available`,
+`absent`, and `unknown` — and the card labels them distinctly. A probe that
+could not run is not the claim "this machine has no GPU", and collapsing the two
+is what would make an operator go hunting for a card that is sitting there fine.
+An unreadable capacity report renders as unknown rather than as an idle machine.
+
+The **peer** half lists every peer enabled as a media provider with its
+readiness state, allowlisted kinds, the peer's own shared queue depth against its
+`maxQueuedJobs`, and how long ago it was probed — the same state vocabulary and
+remedy text the Instances peer card uses, from one shared resolver
+(`client/src/lib/federatedMediaReadiness.js`), so the two screens cannot
+disagree.
+
+Both surfaces re-derive **stale** at render time from the stored snapshot's
+`freshUntil`. A snapshot probed as `ready` sits on the peer record until the
+next poll, so without that check it would keep reading `ready` well after the
+server would refuse to submit against it — the inverse of the fail-closed rule
+the capacity contract is built on. Nothing here gates work either way: the
+server re-probes and fail-closes before any job leaves.
+
+The peer half is assembled in the browser from `GET /api/instances`, a local
+read. It is deliberately **not** folded into `/api/system/health/details`
+alongside the local half: registered peers fetch that endpoint on every probe,
+so our peer list and routing policy would ride federation with it — exactly what
+`redactPeerForWire` keeps machine-local.
+
 ## Authentication and identity
 
 Every request requires both:
@@ -308,4 +349,4 @@ A remote job's conditioning prompt is persisted **only inside its versioned `rem
 
 ## Current boundary
 
-Wire v1 carries instrumental audio, text-to-image, and text-to-video. Interactive remote selection is exposed through the Music Studio panel and the generation APIs rather than a peer picker on the Image Gen / Video Gen pages; unattended work routes through **Instances → Unattended render routing**. Still remaining from #4348: those Image Gen / Video Gen pickers, a privacy-preserving design for remote lyrical conditioning (which is also what keeps unattended audio local), input-asset transfer (init/reference images, LoRAs, chained renders), multi-provider fairness/failover, and aggregate provider health on System Health.
+Wire v1 carries instrumental audio, text-to-image, and text-to-video. Interactive remote selection is exposed through the Music Studio panel and the generation APIs rather than a peer picker on the Image Gen / Video Gen pages; unattended work routes through **Instances → Unattended render routing**. Still remaining from #4348: those Image Gen / Video Gen pickers, a privacy-preserving design for remote lyrical conditioning (which is also what keeps unattended audio local), input-asset transfer (init/reference images, LoRAs, chained renders), and multi-provider fairness/failover.

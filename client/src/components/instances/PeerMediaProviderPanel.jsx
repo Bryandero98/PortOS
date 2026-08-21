@@ -1,62 +1,21 @@
 import { useMemo, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, Film, Gauge, Image, Music2 } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Gauge } from 'lucide-react';
 import { probePeer, updatePeer } from '../../services/api';
+import {
+  FEDERATED_MEDIA_KINDS,
+  federatedMediaModelKey as keyOf,
+  peerMediaProviderConfig,
+  resolvePeerMediaReadiness,
+} from '../../lib/federatedMediaReadiness.js';
 import Pill from '../ui/Pill';
-
-// Wire v1 shipped audio-only, then grew image and video (#4348). The panel is
-// driven off this table rather than one hardcoded lane so a peer that shares a
-// GPU for renders is configurable at all — before this, image/video models were
-// accepted by the server but had no surface to allowlist them from, which left
-// federated renders unreachable from the UI.
-const KINDS = Object.freeze([
-  { kind: 'audio', label: 'audio', field: 'audioModels', Icon: Music2 },
-  { kind: 'image', label: 'image', field: 'imageModels', Icon: Image },
-  { kind: 'video', label: 'video', field: 'videoModels', Icon: Film },
-]);
-
-const STATE_META = {
-  ready: { label: 'ready', tone: 'success' },
-  busy: { label: 'busy', tone: 'warning' },
-  stale: { label: 'stale', tone: 'warning' },
-  unauthorized: { label: 'auth required', tone: 'warning' },
-  unsupported: { label: 'older peer', tone: 'note' },
-  disabled: { label: 'provider off', tone: 'note' },
-  unavailable: { label: 'unavailable', tone: 'warning' },
-  unreachable: { label: 'unreachable', tone: 'warning' },
-  invalid: { label: 'invalid status', tone: 'warning' },
-};
-
-const STATE_HELP = {
-  busy: 'The peer is reachable, but its shared media lane is currently at capacity.',
-  stale: 'The last capacity snapshot expired. New remote work is blocked until a fresh probe succeeds.',
-  unauthorized: 'Store this peer’s instance-password credential above and make sure this instance is registered there.',
-  unsupported: 'This peer does not expose the federated-media wire-v1 status endpoint yet.',
-  disabled: 'Enable federated media sharing on the peer under Settings → Sharing.',
-  unavailable: 'The peer has no currently ready allowlisted media runtime/model.',
-  unreachable: 'The media status request failed. New remote work remains blocked.',
-  invalid: 'The peer returned a response that did not match the versioned media-provider contract.',
-};
-
-const isRecord = (value) => value && typeof value === 'object' && !Array.isArray(value);
-// NUL separator, matching the server's own model key: a printable separator
-// would let an engine name containing it collide with a different pair.
-const keyOf = ({ engine, modelId }) => `${engine}\u0000${modelId}`;
-const listOf = (raw, field) => (Array.isArray(raw?.[field]) ? raw[field] : []);
-
-function configOf(peer) {
-  const raw = isRecord(peer?.mediaProvider) ? peer.mediaProvider : {};
-  const models = {};
-  for (const { kind, field } of KINDS) models[kind] = listOf(raw, field);
-  return { raw, enabled: raw.enabled === true, models };
-}
 
 // A peer only advertises the kinds this instance asked for, and it only asks
 // for kinds that already have an allowlisted model — so an already-selected
 // model the peer has stopped advertising still has to appear, or the user could
 // never uncheck it. Those rows render as `not-advertised`.
-function modelRows(selected, status, kind) {
+function modelRows(selected, capabilities, kind) {
   const rows = new Map();
-  for (const capability of status?.snapshot?.capabilities || []) {
+  for (const capability of capabilities) {
     if (capability?.kind !== kind || !capability.engine || !capability.modelId) continue;
     rows.set(keyOf(capability), capability);
   }
@@ -80,19 +39,15 @@ function modelRows(selected, status, kind) {
 export default function PeerMediaProviderPanel({ peer, onRefresh }) {
   const [expanded, setExpanded] = useState(false);
   const [saving, setSaving] = useState(false);
-  const config = configOf(peer);
-  const status = peer.mediaProviderStatus || null;
+  const config = peerMediaProviderConfig(peer);
+  const readiness = resolvePeerMediaReadiness(peer);
+  const capabilities = readiness.capabilities;
   const rowsByKind = useMemo(
-    () => Object.fromEntries(KINDS.map(({ kind }) => [kind, modelRows(config.models[kind], status, kind)])),
+    () => Object.fromEntries(FEDERATED_MEDIA_KINDS.map(({ kind }) => [kind, modelRows(config.models[kind], capabilities, kind)])),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [config.raw, status],
+    [config.raw, capabilities],
   );
-  const stateMeta = !config.enabled
-    ? { label: 'off', tone: 'note' }
-    : peer.status !== 'online'
-      ? { label: 'peer offline', tone: 'warning' }
-      : STATE_META[status?.state] || { label: 'checking', tone: 'muted' };
-  const queue = status?.snapshot?.queue;
+  const queue = readiness.queue;
 
   // Carry every kind's list forward on each write. The server merges the
   // mediaProvider object, but a patch that omitted a list this panel never
@@ -102,7 +57,7 @@ export default function PeerMediaProviderPanel({ peer, onRefresh }) {
     const next = {
       ...config.raw,
       enabled: config.enabled,
-      ...Object.fromEntries(KINDS.map(({ kind, field }) => [field, config.models[kind]])),
+      ...Object.fromEntries(FEDERATED_MEDIA_KINDS.map(({ kind, field }) => [field, config.models[kind]])),
       ...patch,
     };
     const updated = await updatePeer(peer.id, { mediaProvider: next }).catch(() => null);
@@ -138,8 +93,8 @@ export default function PeerMediaProviderPanel({ peer, onRefresh }) {
         <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium group-hover:text-gray-400 transition-colors">
           Remote media provider
         </span>
-        <Pill tone={stateMeta.tone} size="xs" bordered={false} className="ml-auto">
-          {stateMeta.label}
+        <Pill tone={readiness.tone} size="xs" bordered={false} className="ml-auto">
+          {readiness.label}
         </Pill>
       </button>
 
@@ -173,11 +128,11 @@ export default function PeerMediaProviderPanel({ peer, onRefresh }) {
                 </div>
               )}
 
-              {status?.state && status.state !== 'ready' && STATE_HELP[status.state] && (
-                <p className="text-[10px] text-port-warning leading-snug">{STATE_HELP[status.state]}</p>
+              {readiness.help && (
+                <p className="text-[10px] text-port-warning leading-snug">{readiness.help}</p>
               )}
 
-              {KINDS.map(({ kind, label, field, Icon }) => {
+              {FEDERATED_MEDIA_KINDS.map(({ kind, label, field, Icon }) => {
                 const rows = rowsByKind[kind];
                 const selectedKeys = new Set(config.models[kind]
                   .filter((model) => model?.engine && model.modelId)
