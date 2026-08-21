@@ -9,6 +9,49 @@ export const MEMORY_DRILL_TYPES = ['memory-fill-blank', 'memory-sequence', 'memo
 // COGNITIVE_DRILL_TYPES in server/services/meatspacePostCognitive.js.
 export const COGNITIVE_DRILL_TYPES = ['n-back', 'digit-span', 'stroop', 'schulte-table', 'mental-rotation', 'reaction-time', 'task-switching', 'go-no-go', 'flanker'];
 
+// Cognitive drills that have a progressive difficulty ladder. Mirror of the
+// COGNITIVE_LADDERS keys in server/lib/postProgression.js — reaction-time is the
+// one cognitive drill with no ladder, so its stored config always runs as-is.
+export const COGNITIVE_LADDER_TYPES = ['n-back', 'digit-span', 'schulte-table', 'mental-rotation', 'stroop', 'task-switching', 'go-no-go', 'flanker'];
+
+/**
+ * Whether this drill's effective config is still UNKNOWN: a laddered drill left
+ * progressive (the default) whose rung has not been fetched yet. Anything that
+ * DESCRIBES the drill must wait rather than fall back to the stored knobs —
+ * rendering those first would state the wrong rule and then silently swap it
+ * out from under the reader.
+ *
+ * `cognitiveProgress` is the whole `getPostCognitiveProgress()` map, using the
+ * `null` = not fetched / `{}` = fetched-or-failed sentinel, so a failed fetch
+ * degrades to the stored knobs instead of hanging on "resolving" forever.
+ */
+export function cognitiveRungPending(type, drillConfig, cognitiveProgress) {
+  if (!COGNITIVE_LADDER_TYPES.includes(type)) return false;
+  if (drillConfig?.progressive === false) return false;
+  return cognitiveProgress == null;
+}
+
+/**
+ * The config a cognitive drill will ACTUALLY run with — not necessarily the one
+ * stored in POST config. Mirrors the server's override in `resolveDrillConfig`
+ * (server/services/meatspacePost.js): while a laddered drill is progressive
+ * (the shipped default), the rung's config wins over the manual knobs.
+ *
+ * This matters for anything that DESCRIBES a drill to the user rather than just
+ * labelling it: a default n-back at rung 4 runs 3-back while the stored `n` is
+ * still 2, and digit-span flips to backward recall at rung 3 — so a how-to card
+ * built from the stored config would teach the wrong rule.
+ *
+ * `progressInfo` is one type's entry from `getPostCognitiveProgress()`; pass
+ * null/undefined when it hasn't loaded (or the type has no ladder) and the
+ * stored config is returned unchanged.
+ */
+export function effectiveCognitiveDrillConfig(drillConfig, progressInfo) {
+  const stored = drillConfig || {};
+  if (stored.progressive === false) return stored;
+  return progressInfo?.config ? { ...stored, ...progressInfo.config } : stored;
+}
+
 // Drill types valid elsewhere but not yet wired into the interactive POST
 // session drill picker. Multi-blank fill-in-the-blank is now wired end to end,
 // so this remains empty until a future generation-only type needs the guard.

@@ -5,6 +5,7 @@ import toast from '../../ui/Toast';
 import { FormField } from '../../ui/FormField';
 import { filterSelectableModels, enabledApiProviderFilter } from '../../../utils/providers';
 import { GOAL_DEFS, POST_TOPICS, MODULE_LABELS, DRILL_LABELS, DRILL_DESCRIPTIONS, composedSessionDrillTypes } from './constants';
+import { CognitiveDrillTutorialPreview, CognitiveDrillHowItWorksButton } from './PostCognitiveDrillRunner';
 
 // Modules a Full/Quick composed session can draw from (issue #2100), DERIVED
 // from the shared topic registry so the list has one owner (issue #3252): a
@@ -463,7 +464,7 @@ function GroupBulkToggle({ groupLabel, onEnableAll, onDisableAll }) {
   );
 }
 
-function DrillCard({ type, meta, drillConfig, enabled, accent, onToggle, onUpdateField, adaptiveInfo, progressive, onToggleProgressive, progressInfo, managedFieldKeys = [], speedGated = false, managedLabel = 'Manual knobs' }) {
+function DrillCard({ type, meta, drillConfig, enabled, accent, onToggle, onUpdateField, adaptiveInfo, progressive, onToggleProgressive, progressInfo, managedFieldKeys = [], speedGated = false, managedLabel = 'Manual knobs', onPreviewHowItWorks }) {
   // Label and description both come from the shared registries in constants.js —
   // the per-module META objects carry only the knobs, so a drill rename is one edit.
   const label = DRILL_LABELS[type];
@@ -483,6 +484,9 @@ function DrillCard({ type, meta, drillConfig, enabled, accent, onToggle, onUpdat
         <div>
           <h3 className="text-white font-medium">{label}</h3>
           <p className="text-gray-500 text-xs">{DRILL_DESCRIPTIONS[type]}</p>
+          {/* Outside the `enabled &&` blocks on purpose: previewing the rules is
+              how you decide whether to switch a drill ON (issue #4732). */}
+          {onPreviewHowItWorks && <CognitiveDrillHowItWorksButton type={type} onClick={onPreviewHowItWorks} />}
         </div>
         <button
           type="button"
@@ -587,6 +591,10 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
   const [multiplicationProgress, setMultiplicationProgress] = useState(null);
   const [powersProgress, setPowersProgress] = useState(null);
   const [cognitiveProgress, setCognitiveProgress] = useState(null);
+  // Drill type whose how-to card is open in the preview modal (issue #4732), or
+  // null. Held as the type alone — the drill payload is rebuilt from the CURRENT
+  // draft config on render, so editing `n` and reopening shows the new lag.
+  const [howItWorksType, setHowItWorksType] = useState(null);
   // Opt-in daily reminder — off by default; see server/services/meatspacePostReminder.js.
   const [reminderEnabled, setReminderEnabled] = useState(
     () => config?.reminder?.enabled === true
@@ -684,9 +692,14 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
   useEffect(() => {
     if (!anyCognitiveProgressive) { setCognitiveProgress(null); return; }
     let cancelled = false;
-    getPostCognitiveProgress()
-      .then(p => { if (!cancelled) setCognitiveProgress(p); })
-      .catch(err => console.warn('⚠️ Failed to load cognitive progress: ' + err.message));
+    getPostCognitiveProgress({ silent: true })
+      .then(p => { if (!cancelled) setCognitiveProgress(p || {}); })
+      // `{}` on failure, not null: null means "not fetched yet", which would
+      // leave the how-to preview waiting on a rung that is never coming.
+      .catch(err => {
+        console.warn('⚠️ Failed to load cognitive progress: ' + err.message);
+        if (!cancelled) setCognitiveProgress({});
+      });
     return () => { cancelled = true; };
   }, [anyCognitiveProgressive]);
 
@@ -1102,11 +1115,25 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
                 managedFieldKeys={supportsProgressive ? (meta.ladderFields || []) : []}
                 speedGated={false}
                 managedLabel="The difficulty knobs"
+                onPreviewHowItWorks={() => setHowItWorksType(type)}
               />
             );
           })}
         </div>
       )}
+
+      {/* The card must teach the rules of the drill that will ACTUALLY run: while
+          a laddered drill is progressive (the default), the server overrides the
+          manual knobs with the rung's config, so a stored `n: 2` would otherwise
+          describe a 3-back run — and digit-span would say "in order" for a rung
+          that is backward recall. Built at render, not at click, so editing a
+          knob and reopening shows the new value. */}
+      <CognitiveDrillTutorialPreview
+        type={howItWorksType}
+        drillConfig={howItWorksType ? cognitiveDrillTypes[howItWorksType] : null}
+        cognitiveProgress={cognitiveProgress}
+        onClose={() => setHowItWorksType(null)}
+      />
 
       {/* LLM Drills Section */}
       <div className="flex items-center justify-between pt-2">

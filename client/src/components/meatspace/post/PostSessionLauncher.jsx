@@ -1,15 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router';
 import { Zap, Play, Brain, Dumbbell, Timer, Target, TrendingUp, TrendingDown, Minus, Compass, ArrowRight, ChevronRight, Layers } from 'lucide-react';
-import { getPostReviewReps, getPostRecommendations, getMorseProgress, getPostProgress, getPostBenchmarkProtocol, getMemoryItems, updatePostConfig } from '../../../services/api';
+import { getPostReviewReps, getPostRecommendations, getMorseProgress, getPostProgress, getPostBenchmarkProtocol, getMemoryItems, updatePostConfig, getPostCognitiveProgress } from '../../../services/api';
 import { FormField } from '../../ui/FormField';
 import Pill from '../../ui/Pill';
 import { enabledApiProviderFilter } from '../../../utils/providers';
 import useProviderModels from '../../../hooks/useProviderModels.js';
-import { DOMAINS, DRILL_TO_DOMAIN, DRILL_LABELS, computeDomainAverages, computeGoalProgress, isTopicEnabled, selectMemoryItemForDrill, resolveTopicForDrillType } from './constants';
+import { DOMAINS, DRILL_TO_DOMAIN, DRILL_LABELS, COGNITIVE_LADDER_TYPES, computeDomainAverages, computeGoalProgress, isTopicEnabled, selectMemoryItemForDrill, resolveTopicForDrillType } from './constants';
 import { otherPostSections, TOPIC_SURFACE_SECTIONS } from './practiceCatalog';
 import { postIcon } from './postIcons';
 import BrowseCatalogLink from './BrowseCatalogLink';
+import { CognitiveDrillTutorialPreview, CognitiveDrillHowItWorksButton } from './PostCognitiveDrillRunner';
 import { streakGlyph } from '../../../lib/streakGlyph.js';
 import useUserTimezone from '../../../hooks/useUserTimezone.js';
 import { todayKeyInTimezone } from '../../../utils/timezone.js';
@@ -154,6 +155,12 @@ export default function PostSessionLauncher({
   const [quickDurationSaveState, setQuickDurationSaveState] = useState('idle');
   const [benchmarkState, setBenchmarkState] = useState('idle');
   const [benchmarkError, setBenchmarkError] = useState(null);
+  // Drill TYPE whose how-to card is open, or null (issue #4732) — same shape as
+  // PostDrillConfig, with the payload derived at render so the card can never
+  // show a config snapshot that has since moved. Nothing mounts a runner, so no
+  // drill timer is affected.
+  const [howItWorksType, setHowItWorksType] = useState(null);
+  const [cognitiveProgress, setCognitiveProgress] = useState(null);
 
   useEffect(() => {
     setQuickDurationMin(normalizeQuickDurationMinutes(config?.quickDurationMin));
@@ -216,6 +223,31 @@ export default function PostSessionLauncher({
       .catch(() => { if (!cancelled) setMorseWpm(null); });
     return () => { cancelled = true; };
   }, [config?.goals?.morseWpmTarget]);
+
+  // Cognitive ladder rungs. Needed only so the "How it works" card describes the
+  // drill that will ACTUALLY run: while a laddered drill is progressive (the
+  // shipped default) the server overrides the stored knobs with the rung's
+  // config, so the card would otherwise teach the wrong lag / recall direction.
+  // Conditional-fetch like the goal-scoped effects above — nothing is requested
+  // on an install with no progressive cognitive drill enabled.
+  const needsCognitiveProgress = config?.cognitive?.enabled !== false
+    && COGNITIVE_LADDER_TYPES.some(type => {
+      const cfg = config?.cognitive?.drillTypes?.[type];
+      return cfg && cfg.enabled !== false && cfg.progressive !== false;
+    });
+  useEffect(() => {
+    if (!needsCognitiveProgress) { setCognitiveProgress(null); return; }
+    let cancelled = false;
+    getPostCognitiveProgress({ silent: true })
+      .then(p => { if (!cancelled) setCognitiveProgress(p || {}); })
+      // `{}` on failure, not null: null means "not fetched yet" and would leave
+      // the preview waiting forever on a rung that is never coming.
+      .catch(err => {
+        console.warn('⚠️ Failed to load cognitive progress: ' + err.message);
+        if (!cancelled) setCognitiveProgress({});
+      });
+    return () => { cancelled = true; };
+  }, [needsCognitiveProgress]);
 
   // Today's total training minutes (incl. training-log practice) — fetched only
   // when a daily-minutes goal is set, so that goal counts Training/Morse/memory
@@ -1161,9 +1193,15 @@ export default function PostSessionLauncher({
               </div>
               <div className="space-y-2">
                 {enabledCognitiveDrills.map(([type, cfg]) => (
-                  <div key={type} className="flex items-center justify-between text-sm">
-                    <span className="text-white">{DRILL_LABELS[type] || type}</span>
-                    <span className="text-gray-500">
+                  <div key={type} className="flex items-center justify-between gap-2 text-sm">
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-white truncate">{DRILL_LABELS[type] || type}</span>
+                      {/* Re-entry to the how-to card the first-run gate showed once
+                          and never again (issue #4732). Opens a preview with no
+                          runner behind it, so no timer starts and nothing is scored. */}
+                      <CognitiveDrillHowItWorksButton type={type} onClick={() => setHowItWorksType(type)} compact />
+                    </span>
+                    <span className="text-gray-500 text-right">
                       {cognitiveSummary(type, cfg)}
                     </span>
                   </div>
@@ -1210,6 +1248,13 @@ export default function PostSessionLauncher({
           )}
         </div>
       </div>
+
+      <CognitiveDrillTutorialPreview
+        type={howItWorksType}
+        drillConfig={howItWorksType ? config.cognitive?.drillTypes?.[howItWorksType] : null}
+        cognitiveProgress={cognitiveProgress}
+        onClose={() => setHowItWorksType(null)}
+      />
     </div>
   );
 }

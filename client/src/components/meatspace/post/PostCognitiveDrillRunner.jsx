@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Brain, Check, X, BookOpen, Play } from 'lucide-react';
-import { DRILL_LABELS, nBackBalancedAccuracy } from './constants';
+import { DRILL_LABELS, nBackBalancedAccuracy, effectiveCognitiveDrillConfig, cognitiveRungPending } from './constants';
 import { safeReadJsonStorage, safeWriteStorage } from '../../../lib/safeStorage.js';
 import useMounted from '../../../hooks/useMounted';
 import useKeyCapture from '../../../hooks/useKeyCapture';
 import { isPressKey } from '../../../lib/a11yKeyboard.js';
+import Modal from '../../ui/Modal';
 
 /**
  * Interactive runner for deterministic cognitive drills (n-back, digit-span,
@@ -117,6 +118,26 @@ export function buildNBackExample(n) {
   sequence[sequence.length - 1] = sequence[sequence.length - 1 - lag];
   return { sequence, n: lag };
 }
+
+/**
+ * Whether a drill type has a how-to card at all. The one predicate that owns
+ * this rule: a "How it works" affordance must not render for a type
+ * `getDrillTutorial` has no case for, or it opens nothing.
+ */
+export function hasDrillTutorial(type) {
+  return getDrillTutorial({ type }) != null;
+}
+
+/**
+ * Drill types whose how-to copy actually VARIES with the drill config — the
+ * n-back lag, the digit-span recall direction, the reaction-time mode. Only
+ * these need the effective (ladder) config resolved before the card can be
+ * shown; every other card reads the same at any difficulty, so it opens
+ * immediately. Guarded by a property test that probes `getDrillTutorial` with
+ * two configs, so a new config-dependent branch can't be added without landing
+ * on this list.
+ */
+export const CONFIG_DEPENDENT_TUTORIAL_TYPES = ['n-back', 'digit-span', 'reaction-time'];
 
 // Per-type how-to content. A pure function of the drill so config-dependent
 // copy (n-back lag, digit-span direction, reaction-time mode) reads correctly.
@@ -236,25 +257,33 @@ export function getDrillTutorial(drill) {
 // Holds the runner until the first-run tutorial (if any) is dismissed.
 function DrillTutorialGate({ drill, isTraining, drillIndex, drillCount, children }) {
   const [showTutorial, setShowTutorial] = useState(
-    () => getDrillTutorial(drill) != null && !hasSeenDrillTutorial(drill.type),
+    () => hasDrillTutorial(drill.type) && !hasSeenDrillTutorial(drill.type),
   );
   if (!showTutorial) return children;
   return (
     <CognitiveDrillTutorial
       drill={drill}
-      isTraining={isTraining}
-      drillIndex={drillIndex}
-      drillCount={drillCount}
-      onStart={() => { markDrillTutorialSeen(drill.type); setShowTutorial(false); }}
+      tut={getDrillTutorial(drill)}
+      header={<DrillHeader type={drill.type} isTraining={isTraining} drillIndex={drillIndex} drillCount={drillCount} />}
+      onAction={() => { markDrillTutorialSeen(drill.type); setShowTutorial(false); }}
+      actionLabel="Start drill"
+      ActionIcon={Play}
+      footNote="You’ll only see this the first time for each drill type. Reopen it any time from the launcher or Config."
     />
   );
 }
 
-function CognitiveDrillTutorial({ drill, isTraining, drillIndex, drillCount, onStart }) {
-  const tut = getDrillTutorial(drill);
+/**
+ * The how-to card for one cognitive drill type. Everything around the card body
+ * is caller-supplied so one component serves both entry points: the first-run
+ * gate (drill header, "Start drill", the one-shot footnote) and the standalone
+ * preview below (no header, "Got it", no run behind it). Keeping the body in one
+ * place is the point — the n-back worked example must not drift between them.
+ */
+function CognitiveDrillTutorial({ drill, tut, header = null, onAction, actionLabel, ActionIcon, footNote = null }) {
   return (
     <div className="max-w-lg mx-auto space-y-6">
-      <DrillHeader type={drill.type} isTraining={isTraining} drillIndex={drillIndex} drillCount={drillCount} />
+      {header}
 
       <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-5 space-y-4">
         <div className="flex items-center gap-2 text-rose-300">
@@ -285,15 +314,102 @@ function CognitiveDrillTutorial({ drill, isTraining, drillIndex, drillCount, onS
 
       <button
         type="button"
-        onClick={onStart}
+        onClick={onAction}
         autoFocus
         className="w-full px-6 py-4 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-500/40 font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
       >
-        <Play size={18} /> Start drill
+        <ActionIcon size={18} /> {actionLabel}
       </button>
 
-      <p className="text-center text-xs text-gray-600">You&rsquo;ll only see this the first time for each drill type.</p>
+      {footNote && <p className="text-center text-xs text-gray-600">{footNote}</p>}
     </div>
+  );
+}
+
+/**
+ * Standalone how-to card for a drill type, with no runner behind it — the way
+ * back to a tutorial once its one-shot first-run gate has been spent (issue
+ * #4732). Rendered from the POST launcher and the drill config so a rule you
+ * last read weeks ago is re-readable without starting a scored run.
+ *
+ * Deliberately NOT reachable from inside a live drill: every cognitive runner
+ * stamps `startedAtRef` at mount, so re-showing the tutorial mid-run would
+ * either drop the run or bill the reading time to its `totalMs`. The preview
+ * takes a plain `{ type, config }` and mounts no runner at all.
+ *
+ * `drill` may be null (nothing selected) or a type with no tutorial — both
+ * render nothing, so callers can pass state straight through.
+ */
+export function CognitiveDrillTutorialPreview({ type, drillConfig, cognitiveProgress, onClose }) {
+  // Both the effective config and the "can we show it yet?" question are decided
+  // HERE, not at each call site: the two surfaces would otherwise each carry
+  // (and each get to drift on) the same three-way derivation.
+  const drill = type ? { type, config: effectiveCognitiveDrillConfig(drillConfig, cognitiveProgress?.[type]) } : null;
+  const tut = drill ? getDrillTutorial(drill) : null;
+  if (!tut) return null;
+  const label = DRILL_LABELS[type] || type;
+  const pending = CONFIG_DEPENDENT_TUTORIAL_TYPES.includes(type)
+    && cognitiveRungPending(type, drillConfig, cognitiveProgress);
+  if (pending) {
+    // The rung that decides this drill's lag / recall direction hasn't loaded.
+    // Waiting beats rendering the stored knobs, which would state one rule and
+    // then swap it for another mid-read.
+    return (
+      <Modal open onClose={onClose} size="md" usePortal ariaLabel={`How ${label} works`}>
+        <div className="bg-port-card border border-port-border rounded-xl p-5 text-center text-sm text-gray-400" role="status">
+          Resolving your current {label} difficulty…
+        </div>
+      </Modal>
+    );
+  }
+  return (
+    // `usePortal` per the overlay convention in client/src/CLAUDE.md: this is
+    // rendered mid-tree inside two long settings/launcher pages, and a
+    // `backdrop-filter` ancestor (every bordered `.bg-port-card` on the glass
+    // themes) would otherwise become the fixed overlay's containing block.
+    // Sized `md` to match the card body's own `max-w-lg`, so there is no dead
+    // gutter inside the panel.
+    <Modal open onClose={onClose} size="md" usePortal ariaLabel={`How ${label} works`}>
+      <div className="bg-port-card border border-port-border rounded-xl p-5 max-h-[85vh] overflow-y-auto">
+        <CognitiveDrillTutorial
+          drill={drill}
+          tut={tut}
+          onAction={onClose}
+          actionLabel="Got it"
+          ActionIcon={Check}
+          footNote="Preview only — nothing is timed or scored here."
+        />
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * The affordance that opens the preview. Shared by the POST launcher sidebar and
+ * the Drill Config cards so the accessible name (`How <label> works`, which both
+ * suites assert) and the mobile hit area live in ONE place rather than drifting
+ * per surface. Renders nothing for a type with no how-to card, so the button can
+ * never open an empty modal.
+ *
+ * `compact` is the launcher's dense sidebar row: icon only, with the 44px touch
+ * target collapsing to a tight icon on `sm+`.
+ */
+export function CognitiveDrillHowItWorksButton({ type, onClick, compact = false }) {
+  if (!hasDrillTutorial(type)) return null;
+  const label = DRILL_LABELS[type] || type;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`How ${label} works`}
+      title="How it works"
+      className={compact
+        ? 'shrink-0 inline-flex items-center justify-center min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:p-1 -m-1 sm:m-0 rounded-lg text-gray-500 hover:text-rose-300 transition-colors focus:outline-hidden focus:ring-2 focus:ring-port-accent'
+        : 'mt-1 inline-flex items-center justify-center gap-1 min-h-[44px] sm:min-h-0 sm:py-0.5 text-xs text-gray-500 hover:text-port-accent transition-colors rounded focus:outline-hidden focus:ring-2 focus:ring-port-accent'}
+    >
+      <BookOpen size={compact ? 14 : 12} />
+      {!compact && 'How it works'}
+    </button>
   );
 }
 
