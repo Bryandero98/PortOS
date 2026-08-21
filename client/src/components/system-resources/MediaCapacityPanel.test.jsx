@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
 const api = vi.hoisted(() => ({ getInstances: vi.fn() }));
@@ -121,10 +121,56 @@ describe('MediaCapacityPanel', () => {
   });
 
   // A failed read and a genuinely peerless install must not render identically.
-  it('distinguishes a failed peer read from having no providers', async () => {
+  it('distinguishes a failed first peer read from having no providers', async () => {
     api.getInstances.mockRejectedValue(new Error('offline'));
     renderPanel();
     expect(await screen.findByText(/provider readiness is unknown/i)).toBeInTheDocument();
     expect(screen.queryByText(/No peer is enabled as a media provider/)).not.toBeInTheDocument();
+  });
+
+  it('shows a disabled peer connection as disabled, not as ready', async () => {
+    api.getInstances.mockResolvedValue({ peers: [providerPeer({ enabled: false })] });
+    renderPanel();
+    expect(await screen.findByText('peer disabled')).toBeInTheDocument();
+    expect(screen.queryByText('ready')).not.toBeInTheDocument();
+  });
+
+  // The panel's whole job is to say what is usable *now* — a mount-only read
+  // froze every peer at its mount-time reading for as long as the page stayed
+  // open.
+  it('re-reads the peer list on the poll interval', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      api.getInstances.mockResolvedValue({ peers: [] });
+      renderPanel();
+      await act(async () => {});
+      await screen.findByText(/No peer is enabled as a media provider/);
+
+      api.getInstances.mockResolvedValue({ peers: [providerPeer()] });
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+
+      expect(await screen.findByText('render-box')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the last known peers when a later refresh fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      api.getInstances.mockResolvedValue({ peers: [providerPeer()] });
+      renderPanel();
+      await act(async () => {});
+      await screen.findByText('render-box');
+
+      api.getInstances.mockRejectedValue(new Error('offline'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+
+      expect(await screen.findByText(/Showing the last known snapshot/i)).toBeInTheDocument();
+      // The peer we already know about stays on screen rather than vanishing.
+      expect(screen.getByText('render-box')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

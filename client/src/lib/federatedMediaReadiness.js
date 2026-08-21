@@ -47,6 +47,21 @@ export const FEDERATED_MEDIA_STATE_HELP = Object.freeze({
   invalid: 'The peer returned a response that did not match the versioned media-provider contract.',
 });
 
+// Peer-level readings that outrank whatever the last probe concluded. None of
+// them is a provider state from the wire; each carries its own remedy because
+// the wire's `state` may legitimately be absent (or stale-but-`ready`) while
+// one of these holds.
+//
+// PEER_DISABLED comes first for the same reason the server checks it first:
+// `assertFederatedMediaProviderSelection` rejects a submission to a disabled
+// peer with MEDIA_PROVIDER_PEER_DISABLED before it looks at anything else, so a
+// peer whose connection is switched off must never read as `ready` here no
+// matter how healthy its cached snapshot looks.
+const PEER_DISABLED = Object.freeze({
+  label: 'peer disabled',
+  tone: 'warning',
+  help: 'This peer connection is switched off. Re-enable it under Instances before routing work to it.',
+});
 // Not a real provider state — the peer is opted in but no probe has landed yet.
 // Kept distinct from `unavailable` so a first-run instance doesn't accuse a
 // perfectly healthy peer of having nothing to offer.
@@ -108,19 +123,23 @@ export function resolvePeerMediaReadiness(peer, { now = Date.now() } = {}) {
   const state = !status
     ? null
     : (snapshotExpired(status, now) ? 'stale' : status.state);
-  const meta = !config.enabled
-    ? OFF
-    : peer?.status !== 'online'
-      ? PEER_OFFLINE
-      : (FEDERATED_MEDIA_STATE_META[state] || CHECKING);
+  const meta = peer?.enabled === false
+    ? PEER_DISABLED
+    : !config.enabled
+      ? OFF
+      : peer?.status !== 'online'
+        ? PEER_OFFLINE
+        : (FEDERATED_MEDIA_STATE_META[state] || CHECKING);
   return {
     configured: config.enabled,
     state,
     label: meta.label,
     tone: meta.tone,
-    // Remedy text belongs to the provider state, not to the peer being offline
-    // — an offline peer's own row already says so.
-    help: (config.enabled && state && state !== 'ready' && FEDERATED_MEDIA_STATE_HELP[state]) || null,
+    // A peer-level reading carries its own remedy; otherwise the remedy belongs
+    // to the provider state. An offline peer gets none — its own row says so.
+    help: meta.help !== undefined
+      ? meta.help
+      : ((config.enabled && state && state !== 'ready' && FEDERATED_MEDIA_STATE_HELP[state]) || null),
     queue: isRecord(snapshot?.queue) ? snapshot.queue : null,
     capabilities: Array.isArray(snapshot?.capabilities) ? snapshot.capabilities : NO_CAPABILITIES,
     checkedAt: typeof status?.checkedAt === 'string' ? status.checkedAt : null,

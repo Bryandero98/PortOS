@@ -78,6 +78,20 @@ describe('resolvePeerMediaReadiness', () => {
     expect(readiness.state).toBeNull();
   });
 
+  // The server rejects a submission to a disabled peer with
+  // MEDIA_PROVIDER_PEER_DISABLED before it looks at capacity at all, so a
+  // healthy cached snapshot must not keep advertising it as ready.
+  it('reports a disabled peer connection as disabled despite a ready snapshot', () => {
+    const readiness = resolvePeerMediaReadiness(peer({ enabled: false }), { now: NOW });
+    expect(readiness.label).toBe('peer disabled');
+    expect(readiness.tone).toBe('warning');
+    expect(readiness.help).toMatch(/switched off/i);
+  });
+
+  it('treats a peer with no explicit enabled flag as enabled', () => {
+    expect(resolvePeerMediaReadiness(peer(), { now: NOW }).label).toBe('ready');
+  });
+
   it('reports an offline peer as offline rather than as a provider fault', () => {
     const readiness = resolvePeerMediaReadiness(peer({ status: 'offline' }), { now: NOW });
     expect(readiness.label).toBe('peer offline');

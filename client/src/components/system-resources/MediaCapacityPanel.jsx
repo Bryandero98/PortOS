@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Gauge } from 'lucide-react';
 import { Link } from 'react-router';
+import { useAutoRefetch } from '../../hooks/useAutoRefetch.js';
 import * as api from '../../services/api.js';
 import Pill from '../ui/Pill';
 import { timeAgo } from '../../utils/formatters';
@@ -97,7 +98,13 @@ export default function MediaCapacityPanel({ media }) {
     setPeers(Array.isArray(data.peers) ? data.peers : []);
   }, []);
 
-  useEffect(() => { loadPeers(); }, [loadPeers]);
+  // Poll on the same cadence as the health report this panel sits in. Loading
+  // once on mount left a peer that came back (or was just enabled, or just went
+  // stale) frozen at its mount-time reading for as long as the user stayed on
+  // the page — and this panel's whole job is to say what is usable *now*.
+  // pollOnly: loadPeers owns its own state so it can keep "the read failed"
+  // separate from "there are no providers", which a single `data` slot cannot.
+  useAutoRefetch(loadPeers, 15_000, { pollOnly: true });
 
   const providers = (peers || []).filter((peer) => peer?.mediaProvider?.enabled === true);
   const cuda = CUDA_META[media?.gpu?.cudaStatus] || CUDA_META.unknown;
@@ -141,12 +148,21 @@ export default function MediaCapacityPanel({ media }) {
           </Link>
         </div>
 
-        {peersFailed ? (
+        {/* A refresh that fails once we already have a list keeps showing it,
+            flagged as last-known — the same call QueuesPanel makes. Only a
+            failure with nothing to fall back on reports unknown, because that
+            is the one case where rendering an empty list would assert
+            "no providers configured" without having read anything. */}
+        {peersFailed && (
           <p className="mt-2 text-xs text-port-warning">
-            Peer list unavailable — provider readiness is unknown.
+            Peer list refresh failed. {peers === null
+              ? 'Provider readiness is unknown.'
+              : 'Showing the last known snapshot.'}
           </p>
-        ) : peers === null ? (
-          <p className="mt-2 text-xs text-gray-500">Loading peer providers…</p>
+        )}
+
+        {peers === null ? (
+          !peersFailed && <p className="mt-2 text-xs text-gray-500">Loading peer providers…</p>
         ) : providers.length === 0 ? (
           <p className="mt-2 text-xs text-gray-500">
             No peer is enabled as a media provider. Enable one from Instances to render on another machine.
