@@ -66,6 +66,27 @@ describe('resolvePeerMediaReadiness', () => {
     },
   );
 
+  // assertFederatedMediaProviderSelection refuses a probe with no snapshot, so a
+  // ready state with nothing behind it must not be advertised as usable.
+  it.each([undefined, null, 'nope', []])(
+    'treats a ready status whose snapshot is %p as invalid',
+    (snapshot) => {
+      const broken = peer({ mediaProviderStatus: { ...peer().mediaProviderStatus, snapshot } });
+      const readiness = resolvePeerMediaReadiness(broken, { now: NOW });
+      expect(readiness.state).toBe('invalid');
+      expect(readiness.help).toBe(FEDERATED_MEDIA_STATE_HELP.invalid);
+    },
+  );
+
+  // Expiry is checked before the snapshot shape: an expired record's problem is
+  // its age, and "re-probe" is the remedy that actually fixes it.
+  it('prefers stale over invalid when an expired status also lacks a snapshot', () => {
+    const broken = peer({
+      mediaProviderStatus: { ...peer().mediaProviderStatus, snapshot: null, freshUntil: iso(-1000) },
+    });
+    expect(resolvePeerMediaReadiness(broken, { now: NOW }).state).toBe('stale');
+  });
+
   it('treats a busy snapshot with no verifiable window as stale', () => {
     const broken = peer({
       mediaProviderStatus: { ...peer().mediaProviderStatus, state: 'busy', freshUntil: null },

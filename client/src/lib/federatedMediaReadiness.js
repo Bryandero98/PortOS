@@ -97,24 +97,37 @@ export function peerMediaProviderConfig(peer) {
 const CAPACITY_CLAIMING_STATES = new Set(['ready', 'busy']);
 
 /**
- * Can this stored snapshot still be trusted to describe current capacity?
+ * The state a stored status has actually earned, which is not always the one it
+ * records.
  *
- * The probe records `freshUntil` from the provider's own `generatedAt +
- * staleAfterMs`, then the record sits on disk until the next peer poll. A
- * snapshot probed as `ready` therefore keeps reading `ready` long after the
- * server would refuse to submit against it, which is precisely the
- * "stale must not look available" rule the capacity contract is built on.
- * Re-deriving expiry at render time closes that gap without a second probe.
+ * The probe writes `freshUntil` from the provider's own `generatedAt +
+ * staleAfterMs`, then the record sits on the peer until the next poll — so a
+ * status probed as `ready` keeps saying `ready` long after the server would
+ * refuse to submit against it. Re-deriving the verdict at render time closes
+ * that gap without a second probe.
  *
- * A missing or unparseable `freshUntil` fails CLOSED for the capacity-claiming
- * states: `Date.parse` returns NaN there, and treating NaN as "not expired"
- * would let a corrupt record advertise a provider with no verifiable window at
- * all — the fail-open version of the same bug.
+ * The checks below the guard mirror, in order, the gates
+ * `assertFederatedMediaProviderSelection` applies before it will submit, so
+ * neither surface can advertise a peer the server would reject. They all fail
+ * CLOSED: an absent or unparseable `freshUntil` makes `Date.parse` return NaN,
+ * and reading NaN as "not expired" would advertise a provider with no
+ * verifiable window at all — the fail-open version of the very bug this
+ * function exists to fix.
+ *
+ * Only the shape is checked here, not the full wire schema: the server does the
+ * authoritative validation, and duplicating it client-side would be a second
+ * copy to keep in sync. The bar is that a claim of current capacity must have
+ * something behind it.
  */
-function freshnessFailed(status, now) {
+function verifiedState(status, now) {
+  const state = status?.state;
   const freshUntil = Date.parse(status?.freshUntil);
-  if (Number.isFinite(freshUntil)) return freshUntil < now;
-  return CAPACITY_CLAIMING_STATES.has(status?.state);
+  if (Number.isFinite(freshUntil) && freshUntil < now) return 'stale';
+  // A failure state makes no capacity claim, so it needs nothing to back one.
+  if (!CAPACITY_CLAIMING_STATES.has(state)) return state;
+  if (!Number.isFinite(freshUntil)) return 'stale';
+  if (!isRecord(status.snapshot)) return 'invalid';
+  return state;
 }
 
 /**
@@ -130,11 +143,9 @@ export function resolvePeerMediaReadiness(peer, { now = Date.now() } = {}) {
   const config = peerMediaProviderConfig(peer);
   const status = isRecord(peer?.mediaProviderStatus) ? peer.mediaProviderStatus : null;
   const snapshot = isRecord(status?.snapshot) ? status.snapshot : null;
-  // An unverifiable snapshot is stale whatever the probe concluded — including
-  // the `ready` it concluded at probe time.
-  const state = !status
-    ? null
-    : (freshnessFailed(status, now) ? 'stale' : status.state);
+  // An unverifiable status does not get to keep whatever the probe concluded —
+  // including the `ready` it concluded at probe time.
+  const state = status ? verifiedState(status, now) : null;
   const meta = peer?.enabled === false
     ? PEER_DISABLED
     : !config.enabled
