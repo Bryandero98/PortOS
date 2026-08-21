@@ -509,11 +509,87 @@ describe('llamaServerManager', () => {
     // The user's launch flags live only in the running process, so an ordinary
     // measurement must never reset them. Without `reset` an empty tuning asks
     // for nothing and is answered before PM2 is touched at all.
-    it('refuses an empty tuning rather than restarting for no reason', async () => {
+    // `null`, not `false`: nothing was refused. The daemon already serves the
+    // configuration the caller asked for, so an untuned assessment's "Backend
+    // defaults" label is accurate as it stands.
+    it('relaunches nothing for an empty tuning on a daemon it never tuned', async () => {
       await started();
       execPm2Calls = [];
       const result = await relaunchLlamaServerWithTuning({});
-      expect(result.applied).toBe(false);
+      expect(result.applied).toBeNull();
+      expect(result.reason).toBeNull();
+      expect(restarted()).toBe(false);
+    });
+
+    // The bug this pair exists for: an untuned run that followed a tuned one was
+    // sampling a daemon still carrying the tuned launch line, then filing the
+    // reading as "Backend defaults" — a record describing a configuration that
+    // never ran, which `compareTunings` ranks every real tuning against.
+    it('puts the pre-tuning launch line back for an empty tuning after a tuned one', async () => {
+      await started();
+      await relaunchLlamaServerWithTuning({ ubatchSize: 512, flashAttn: true });
+      execPm2Calls = [];
+
+      const result = await relaunchLlamaServerWithTuning({});
+
+      expect(result.applied).toBeNull();
+      const start = execPm2Calls.find((c) => c[0] === 'start');
+      expect(start).not.toContain('-ub');
+      expect(start).not.toContain('--flash-attn');
+      expect(start[start.indexOf('-m') + 1]).toBe(modelPath);
+    });
+
+    // The baseline is the line the FIRST tuning displaced. Crediting the second
+    // tuning's `previous` would make "untuned" mean "whatever the first sweep
+    // left running" — the same lie, one step removed.
+    it('keeps the original baseline across successive tunings', async () => {
+      await started();
+      await relaunchLlamaServerWithTuning({ ubatchSize: 512 });
+      await relaunchLlamaServerWithTuning({ ubatchSize: 1024, flashAttn: true });
+      execPm2Calls = [];
+
+      await relaunchLlamaServerWithTuning({});
+
+      const start = execPm2Calls.find((c) => c[0] === 'start');
+      expect(start).not.toContain('-ub');
+      expect(start).not.toContain('--flash-attn');
+    });
+
+    it('relaunches nothing for a second empty tuning once the daemon is back at its baseline', async () => {
+      await started();
+      await relaunchLlamaServerWithTuning({ ubatchSize: 512 });
+      await relaunchLlamaServerWithTuning({});
+      execPm2Calls = [];
+
+      expect(await relaunchLlamaServerWithTuning({})).toMatchObject({ applied: null });
+      expect(restarted()).toBe(false);
+    });
+
+    // A user-stopped daemon takes its tuning with it, so a later untuned run has
+    // nothing to undo — and must not resurrect the process to prove it.
+    it('drops the baseline when the daemon is stopped outside a relaunch', async () => {
+      await started();
+      await relaunchLlamaServerWithTuning({ ubatchSize: 512 });
+      await stopLlamaServer();
+      execPm2Calls = [];
+
+      expect(await relaunchLlamaServerWithTuning({})).toMatchObject({ applied: null });
+      expect(restarted()).toBe(false);
+    });
+
+    // A start the user asked for supersedes the baseline. Restoring the old
+    // daemon's launch line over a configuration just chosen on the LLMs page
+    // would undo their change in the name of measuring defaults.
+    it('drops the baseline when a fresh server is started over a crashed one', async () => {
+      await started();
+      await relaunchLlamaServerWithTuning({ ubatchSize: 512 });
+      // The daemon dies outside PortOS — nothing called stopLlamaServer, so
+      // nothing cleared the baseline — and the user starts a new one.
+      pm2State = null;
+      await startLlamaServer({ model: modelPath, port: PORTS.LLAMA_SERVER, ctxSize: 65536 });
+      execPm2Calls = [];
+
+      expect(await relaunchLlamaServerWithTuning({})).toMatchObject({ applied: null });
       expect(restarted()).toBe(false);
     });
 

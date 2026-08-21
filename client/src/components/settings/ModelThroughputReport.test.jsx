@@ -82,10 +82,22 @@ describe('ModelThroughputReport', () => {
 
   it('flags a reading whose tuning never reached the daemon', () => {
     const unapplied = row('tuned-model', {
-      tuningLabel: '8k context', tuningApplied: false, tuningNotApplied: 'llama-server is not running',
+      tuningKey: 'ctxSize=8192', tuningLabel: '8k context', tuningApplied: false, tuningNotApplied: 'llama-server is not running',
     });
     render(<ModelThroughputReport report={report([unapplied])} />);
     expect(screen.getByText('tuning not applied')).toBeInTheDocument();
+  });
+
+  // An UNTUNED reading already renders as "backend defaults", so the same
+  // warning has to say the opposite thing: the daemon could not be put BACK on
+  // defaults, and this row is not the baseline it claims to be.
+  it('flags an untuned reading the daemon could not be returned to defaults for', () => {
+    const stillTuned = row('baseline-model', {
+      tuningKey: '', tuningApplied: false, tuningNotApplied: 'Ollama would not stop',
+    });
+    render(<ModelThroughputReport report={report([stillTuned])} />);
+    expect(screen.getByText('not at defaults')).toBeInTheDocument();
+    expect(screen.queryByText('tuning not applied')).not.toBeInTheDocument();
   });
 
   it('renders nothing at all when no model has been measured', () => {

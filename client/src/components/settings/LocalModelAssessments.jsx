@@ -33,6 +33,7 @@ import useMounted from '../../hooks/useMounted';
 import AssessmentSweepPanel from './AssessmentSweepPanel';
 import ModelThroughputReport from './ModelThroughputReport';
 import { formatContextTokens, formatDurationMs, throughputLabel } from '../../utils/formatters';
+import { tuningNoticeChip } from '../../lib/assessmentTuningNotice';
 import {
   getLocalLlmAssessments, runLocalLlmAssessment, deleteLocalLlmAssessment,
 } from '../../services/api';
@@ -299,14 +300,10 @@ function RankedRow({ entry, runtimeLabel, onRemeasure, onDelete, onSweepTunings,
               {entry.tuningLabel || 'backend defaults'}
             </span>
           </div>
-          {/* The numbers below describe SOME OTHER configuration when the launch
-              knobs never reached the daemon — say so rather than filing them
-              under the tuning that was asked for. */}
-          {entry.tuningApplied === false && entry.tuningNotApplied && (
-            <p className="text-[11px] text-port-warning mt-0.5">
-              Tuning was not applied — {entry.tuningNotApplied}. These numbers describe the configuration that was actually running.
-            </p>
-          )}
+          {/* No `tuningApplied === false` caveat here on purpose: a reading whose
+              configuration never reached the daemon is never RANKED. The server
+              pulls it out of `scorable` and into `excluded`, which renders the
+              reason below — see `getAssessmentReport`. */}
           <p className="text-xs text-gray-400 mt-1">{entry.explanation}</p>
           {entry.staleness?.stale && (
             <p className="text-[11px] text-port-warning mt-0.5">
@@ -606,8 +603,8 @@ export function LocalModelAssessments() {
       // A tuning that could not be applied means the verdict describes a
       // different configuration — surface that at the point of the result
       // rather than only in the row the user has to go find.
-      if (result.tuningApplied === false && result.tuningNotApplied) {
-        toast.warning(`${target.modelId}: ${verdict} — tuning not applied (${result.tuningNotApplied})`);
+      if (tuningNoticeChip(result)) {
+        toast.warning(`${target.modelId}: ${verdict} — ${tuningNoticeChip(result)} (${result.tuningNotApplied || 'reason not recorded'})`);
         return;
       }
       toast.success(`${target.modelId}: ${verdict}`);
