@@ -68,6 +68,10 @@ git clone https://github.com/syv-ai/qwen38-27b-rtx3090 ~/qwen-serving
 cd ~/qwen-serving
 echo "VLLM_API_KEY=$(openssl rand -hex 24)" > .env
 printf 'SPEC=dflash2\nPREFIX_CACHE=1\n' >> .env
+echo 'EXTRA_ARGS=--enable-auto-tool-choice --tool-call-parser qwen3_xml' >> .env   # required for any agent use
+if grep -qi microsoft /proc/version; then                                          # WSL2 only, both required
+  printf 'VLLM_WSL2_ENABLE_PIN_MEMORY=1\nPYTORCH_CUDA_ALLOC_CONF=expandable_segments:False\n' >> .env
+fi
 docker compose build              # ~9.5 GB image, built here — there is no registry to pull from
 docker compose run --rm prepare   # ~20 GB download + CPU requantization, idempotent, resumable
 docker compose --profile single up -d
@@ -78,12 +82,80 @@ a `depends_on` of the server. Running them separately is worth it anyway: it is
 the long, unattended part, and PortOS's Start button deliberately refuses until
 `prepare` has actually landed weights on disk (see below).
 
+**Tool calling must be switched on, or the coding agent is useless.** Upstream's
+`single-user/start_qwen.sh` serves without it, and vLLM then rejects every
+request that offers tools with `"auto" tool choice requires
+--enable-auto-tool-choice and --tool-call-parser to be set`. OpenCode sends tools
+on its very first turn, so the session dies immediately — the model never gets to
+read or write a file.
+
+**Use `qwen3_xml`, not `hermes`.** The chat template's `<tool_call>` markers make
+`hermes` look right, and the server starts happily with it — but Qwen3.8 emits
+its calls in XML (`<function=name><parameter=path>…`), not the Hermes JSON body
+that parser expects. The mismatch fails silently: vLLM cannot parse the call, so
+it returns the raw markup as ordinary assistant text with `tool_calls: null`, and
+the agent simply never uses a tool. There is no error anywhere to explain it.
+
+```bash
+echo 'EXTRA_ARGS=--enable-auto-tool-choice --tool-call-parser qwen3_xml' >> .env
+```
+
+`EXTRA_ARGS` is appended to the `vllm serve` command line by the start script.
+With the right parser the same request comes back as `finish_reason:
+"tool_calls"` and a structured `tool_calls` array. This is the one setting
+without which the whole point of the preset — a CoS agent editing files — does
+not work.
+
+**On WSL2, `VLLM_WSL2_ENABLE_PIN_MEMORY=1` is mandatory, not a tuning knob.**
+vLLM turns pinned host memory off whenever it detects WSL, and its GPU model
+runner allocates UVA buffers that require it — so without this the engine never
+initializes. The container dies with `RuntimeError: UVA is not available` and,
+because compose restarts it `unless-stopped`, quietly crash-loops instead of
+failing once. A current WSL2 kernel does support pinned memory; vLLM just leaves
+it opt-in. Put it in `.env` next to the other knobs:
+
+```bash
+echo 'VLLM_WSL2_ENABLE_PIN_MEMORY=1' >> .env
+```
+
+Upstream's WSL2 notes predate this code path and do not mention it. On native
+Linux it is unnecessary.
+
+**On WSL2, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False` is also
+mandatory.** Expandable segments rely on CUDA's virtual-memory-management APIs,
+which WSL2 supports only partially. With them on, weight loading dies seconds in,
+inside `gptq_marlin_repack`, with a generic
+`torch_call_dispatcher("aten::empty", …) API call failed` — which reads like an
+out-of-memory error and is not one. It reproduces on a completely idle 24 GB card
+at `GPU_UTIL=0.70`, with both the base and `-fast` checkpoints, while the repack
+op itself works correctly when called directly. Upstream lists this as an
+escape hatch for memory trouble; on WSL2 it is a precondition for starting at
+all.
+
+**On WSL2, raise the VM's memory ceiling before running `prepare`.** The
+requantization step is CPU-side and memory-hungry — `quant_lm_head.py` holds a
+whole 2.5 GB shard plus several float32 copies of a 248k-row `lm_head` — and
+WSL2 defaults to a ceiling of half the host's RAM. On a 32 GB machine that 16 GB
+ceiling is not enough: the step is SIGKILLed and the only symptom is a bare
+`Killed` with exit 137, which says nothing about WSL. Give the VM ~24 GB and some
+swap in `%UserProfile%\.wslconfig`, then `wsl --shutdown` for it to take effect:
+
+```ini
+[wsl2]
+memory=24GB
+swap=16GB
+```
+
+Stop any containers cleanly first — `wsl --shutdown` takes the whole VM down,
+including a PostgreSQL container a PortOS install is using. The download half of
+`prepare` is unaffected and resumes where it left off, so a run killed here costs
+minutes, not the 20 GB again.
+
 **The card must be otherwise empty.** vLLM's startup gate compares free VRAM
 against `GPU_UTIL`, so another model server holding a few GB — LM Studio, Ollama,
 a local image/video job — makes the container exit rather than start small. Stop
-those first. If startup still dies on memory, upstream's escape hatches are
-`GPU_UTIL=0.93` (the documented WSL2 fallback) and
-`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False` in `.env`. Capping board
+those first. If startup still dies on memory, upstream's escape hatch is
+`GPU_UTIL=0.93` (the documented WSL2 fallback) in `.env`. Capping board
 power with `nvidia-smi -pl 250` is worth doing on a 3090.
 
 Confirm it serves before touching PortOS:
