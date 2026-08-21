@@ -4,6 +4,7 @@ import {
   startLlamaServer,
   stopLlamaServer,
   relaunchLlamaServerWithTuning,
+  relaunchLlamaServerWithAlias,
   captureLlamaServerConfig,
   restoreLlamaServerConfig,
   installLlamaServer,
@@ -474,6 +475,67 @@ describe('llamaServerManager', () => {
   // The sweep half of measured assessments: put new flags on the launch line
   // between runs. Every failure mode here has to leave the daemon USABLE — it
   // fronts the `llama` provider for the whole install.
+  describe('relaunchLlamaServerWithAlias', () => {
+    const startedAs = async (alias) => {
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+      vi.spyOn(openAiModelsProbe, 'probeOpenAiModels')
+        .mockImplementation(async () => ({ reachable: pm2State?.status === 'online' }));
+      await startLlamaServer({ model: modelPath, port: PORTS.LLAMA_SERVER, alias });
+    };
+    const lastStartArgs = () => {
+      const start = [...execPm2Calls].reverse().find((c) => c[0] === 'start') || [];
+      const dash = start.indexOf('--');
+      return dash === -1 ? [] : start.slice(dash + 1);
+    };
+
+    // The mismatch this whole feature exists for: llama.cpp answers under the
+    // `--alias` its launch line set, so pointing the daemon at the id the
+    // provider sends is a rename of the weights already loaded.
+    it('relaunches the SAME weights under the requested id', async () => {
+      await startedAs('dflash');
+      execPm2Calls = [];
+
+      const result = await relaunchLlamaServerWithAlias('qwen3.8-27b-dflash2');
+
+      expect(result.applied).toBe(true);
+      expect(result.reason).toBeNull();
+      const args = lastStartArgs();
+      expect(args[args.indexOf('--alias') + 1]).toBe('qwen3.8-27b-dflash2');
+      // The weights never move — that is what makes this cheap.
+      expect(args[args.indexOf('-m') + 1]).toBe(modelPath);
+    });
+
+    // `null`, not `true`: nothing was restarted, and a toast claiming a restart
+    // would have the user waiting for a reload that never happened.
+    it('does not bounce a daemon that already answers under that id', async () => {
+      await startedAs('dflash');
+      execPm2Calls = [];
+
+      const result = await relaunchLlamaServerWithAlias('dflash');
+
+      expect(result.applied).toBeNull();
+      expect(execPm2Calls.some((c) => c[0] === 'start' || c[0] === 'delete')).toBe(false);
+    });
+
+    // An externally-launched llama-server belongs to whoever ran it. Refuse with
+    // the flag they can add themselves rather than killing their process.
+    it('refuses — and names the flag — when PortOS did not start the daemon', async () => {
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+      const result = await relaunchLlamaServerWithAlias('qwen3.8-27b-dflash2');
+      expect(result.applied).toBe(false);
+      expect(result.reason).toMatch(/--alias qwen3\.8-27b-dflash2/);
+      expect(execPm2Calls.some((c) => c[0] === 'start' || c[0] === 'delete')).toBe(false);
+    });
+
+    it('refuses a blank model id without touching the daemon', async () => {
+      await startedAs('dflash');
+      execPm2Calls = [];
+      const result = await relaunchLlamaServerWithAlias('   ');
+      expect(result.applied).toBe(false);
+      expect(execPm2Calls).toEqual([]);
+    });
+  });
+
   describe('relaunchLlamaServerWithTuning', () => {
     // The default harness pins the endpoint unreachable so lifecycle tests don't
     // collide with a developer's real llama-server. These tests need a FAITHFUL

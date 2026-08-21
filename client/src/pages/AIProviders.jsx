@@ -128,6 +128,10 @@ export default function AIProviders() {
   // streams from a different endpoint and is keyed by the PROVIDER whose
   // endpoint the daemon must come up on.
   const [settingUpRuntime, setSettingUpRuntime] = useState(null);
+  // Provider ids whose local daemon is mid-relaunch onto the model id they send
+  // (the "Serve as …" fix). A relaunch reloads the weights, so the button has to
+  // stay disabled for the tens of seconds a large GGUF takes to come back.
+  const [servingModel, setServingModel] = useState({});
   // Ollama / LM Studio install state (and the model lists the editor's pickers
   // fold in) — fetched once here rather than inside ProviderForm so opening the
   // editor doesn't re-request it.
@@ -289,6 +293,29 @@ export default function AIProviders() {
       entry.id === provider.id ? { ...entry, ...updates } : entry
     )));
     toast.success(`Default model set to ${defaultModel}`);
+    loadReadiness();
+  };
+
+  // The mirror of `handleUseServedModel`: instead of moving the provider onto
+  // whatever the daemon answers as, relaunch the daemon under the id the
+  // provider sends. llama.cpp serves one model per process under its `--alias`,
+  // so this keeps the loaded weights and only changes the name — no download.
+  const handleServeWantedModel = async (provider) => {
+    if (!provider?.id || servingModel[provider.id]) return;
+    setServingModel((prev) => ({ ...prev, [provider.id]: true }));
+    // `silent` so the 409 refusal (an externally-started daemon) reads as one
+    // toast naming the fix rather than the helper's generic error on top of it.
+    const result = await api.serveProviderModel(provider.id, { silent: true })
+      .catch((err) => ({ error: err?.message || 'The relaunch failed.' }));
+    setServingModel((prev) => ({ ...prev, [provider.id]: false }));
+    if (!result?.success) {
+      toast.error(result?.error || 'Could not relaunch the local server under that model id.');
+      loadReadiness();
+      return;
+    }
+    toast.success(result.relaunched
+      ? `Local server restarted — now serving ${result.model}`
+      : `Local server already serves ${result.model}`);
     loadReadiness();
   };
 
@@ -768,6 +795,8 @@ export default function AIProviders() {
                       onInstallRuntime={setInstallingRuntime}
                       onAutoSetupRuntime={setSettingUpRuntime}
                       onUseServedModel={handleUseServedModel}
+                      onServeWantedModel={handleServeWantedModel}
+                      servingModel={Boolean(servingModel[provider.id])}
                     />
                   ))}
                 </CollapsibleSection>
