@@ -384,6 +384,14 @@ describe('mtplxServerManager', () => {
       expect(result.reason).toMatch(/exited while loading/);
       expect(result.reason).toMatch(/metal buffer allocation failed/);
       expect(result.config.tuning).toEqual({ depth: 2 });
+
+      // The restore relaunches, and `startMtplxServer` clears the log buffer and
+      // lastExitError for the server it is about to start — so without putting
+      // the failure back, the card would show a healthy daemon with empty logs
+      // and the only record of WHY would be inside the assessment.
+      const after = await getMtplxServerStatus();
+      expect(after.lastExitError).toMatch(/exited while loading/);
+      expect(after.recentLogs.join(' ')).toMatch(/restored the previous configuration/);
     });
 
     // "MTPLX rejected that tuning" is only true when `mtplx serve` actually ran.
@@ -472,6 +480,23 @@ describe('mtplxServerManager', () => {
       };
       const status = await getMtplxServerStatus();
       expect(status.config.tuning).toEqual({ depth: 5, kvQuant: 'q8' });
+    });
+
+    // Reading a running process is not user input: clamping a value into the
+    // catalog's range would report `--depth 8` as `--depth 8`'s clamped cousin
+    // and hand THAT to a restore, while the daemon demonstrably runs the
+    // original. Installs upgrade independently, so a launch line predating a
+    // tightened bound is exactly the case this hits.
+    it('drops a re-adopted value outside the declared range instead of clamping it', async () => {
+      pm2State = {
+        name: MTPLX_APP,
+        status: 'online',
+        pid: 4242,
+        args: ['serve', '--port', '8000', '--model', 'Example/Qwen-MTP', '--depth', '99', '--kv-quant', 'q8'],
+      };
+      const status = await getMtplxServerStatus();
+      expect(status.config.tuning).toEqual({ kvQuant: 'q8' });
+      expect(status.tuningFlags).toEqual(['--kv-quant', 'q8']);
     });
   });
 

@@ -143,6 +143,14 @@ function parseConfigFromArgs(args) {
  * argv holds strings, while the status payload and the restore path both expect
  * the coerced shape. Empty when nothing was tuned, which reads the same as a
  * server started before tuning existed.
+ *
+ * This is a READ of a running process, so a value the catalog cannot represent
+ * is DROPPED, never clamped. `normalizeTuning` clamps, which is right for user
+ * input (the form offered the range) and wrong here: installs upgrade on their
+ * own schedule, so a daemon started before a release that tightened a bound is
+ * exactly the case this hits — and clamping would report `--depth 4` on the card
+ * and hand `--depth 4` to a restore, while the process is demonstrably running
+ * `--depth 8`. Absent at least means "PortOS cannot name this", which is true.
  */
 function parseTuningFromArgs(list) {
   const raw = {};
@@ -157,10 +165,20 @@ function parseTuningFromArgs(list) {
       continue;
     }
     const value = pm2ArgValue(list, spec.cli);
-    if (value !== null) raw[spec.id] = value;
+    if (value === null) continue;
+    // Outside the declared range: drop rather than let `normalizeTuning` clamp
+    // it into a number the daemon is not running with. (An enum value the
+    // catalog no longer lists is already dropped there, for the same reason.)
+    if (spec.type === 'number' && !withinDeclaredRange(spec, value)) continue;
+    raw[spec.id] = value;
   }
   return normalizeTuning('mtplx', raw);
 }
+
+const withinDeclaredRange = (spec, raw) => {
+  const num = Number(raw);
+  return Number.isFinite(num) && num >= (spec.min ?? -Infinity) && num <= (spec.max ?? Infinity);
+};
 
 /** Block until the port is free, or the release budget elapses. */
 async function waitForPortRelease(port) {
@@ -509,14 +527,22 @@ export async function stopMtplxServer() {
  *
  * This is MTPLX's half of the measured-assessment feature: a sweep across MTP
  * depths or KV-quantization modes is only possible if something can put those
- * flags on the launch line between runs. It mirrors
- * `llamaServerManager.relaunchLlamaServerWithTuning` — same result shape, same
- * two refusals, same restore-on-failure — because the assessment runner treats
- * every runtime's applier identically.
+ * flags on the launch line between runs. It returns the same result shape as
+ * `llamaServerManager.relaunchLlamaServerWithTuning`, because the assessment
+ * runner treats every runtime's applier identically.
  *
- * It refuses rather than guesses in the three cases where it cannot know what to
- * relaunch:
+ * **It is NOT a line-for-line copy of that function, and syncing the two from
+ * this comment would reintroduce bugs.** Two deliberate divergences:
+ *   - llama MERGES the request onto the flags already set (`{...previous,
+ *     ...tuning}`); this REPLACES them, so the launch line is exactly the knob
+ *     set the record is labelled with. See the note at the merge point below.
+ *   - llama returns as soon as the restore's `startLlamaServer` returns; this
+ *     waits for the restored daemon to actually answer. See `restorePrevious`.
+ *
+ * It refuses rather than guesses in the four cases where it cannot know what to
+ * relaunch, or must not:
  *   - nothing is running, so there is no checkpoint to reuse;
+ *   - PM2 could not be read, so PortOS cannot prove it owns the process;
  *   - something IS listening but PortOS did not start it, so stopping it would
  *     kill a process the user owns;
  *   - the launch line names no `--model`, so the running server is on MTPLX's
@@ -604,7 +630,7 @@ export async function relaunchMtplxServerWithTuning(tuning = {}) {
   if (started.failure) {
     const reason = launchFailureReason(started.failure);
     console.error(`❌ MTPLX: tuning launch failed (${started.failure.message}) — restoring the previous configuration`);
-    return { applied: false, reason, config: await restorePrevious(previous) };
+    return { applied: false, reason, config: await restorePrevious(previous, reason) };
   }
 
   // `startMtplxServer` returning is not the same as the endpoint answering — it
@@ -620,7 +646,7 @@ export async function relaunchMtplxServerWithTuning(tuning = {}) {
   // and record the timeouts as evidence for this tuning.
   console.error(`❌ MTPLX: ${ready.reason} — restoring the previous configuration`);
   await stopMtplxServer().catch(() => {});
-  return { applied: false, reason: ready.reason, config: await restorePrevious(previous) };
+  return { applied: false, reason: ready.reason, config: await restorePrevious(previous, ready.reason) };
 }
 
 /**
@@ -649,12 +675,21 @@ const launchFailureReason = (err) => (err?.code === 'MTPLX_EXITED'
  * the caller reports the tuning as not applied either way, and a config here
  * would claim a daemon that is not running.
  */
-async function restorePrevious(previous) {
+async function restorePrevious(previous, failure) {
   await waitForPortRelease(previous.port ?? DEFAULT_PORT);
   const restored = await startMtplxServer(previous).catch((err) => {
     console.error(`❌ MTPLX: could not restore the previous configuration: ${err.message}`);
     return null;
   });
+  // `startMtplxServer` clears the log buffer and `lastExitError` for the server
+  // it is about to launch — correct in general, but here it would erase the ONLY
+  // trace of why the tuning failed. The card would then show a healthy daemon
+  // with empty logs, and the reason would survive only inside the assessment
+  // record. Put the failure back so the LLMs page can still explain it.
+  if (failure) {
+    lastExitError = failure;
+    appendLog(`Tuning launch failed (${failure}) — restored the previous configuration.`);
+  }
   if (!restored) return null;
   if (restored.online) return restored.config;
   const back = await waitForRelaunchedEndpoint(restored.endpoint);
