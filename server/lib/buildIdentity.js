@@ -95,6 +95,11 @@ export function parsePorcelainV2(stdout) {
 // must stay distinguishable from "we checked and the tree is clean".
 const UNKNOWN_IDENTITY = { commit: null, shortCommit: null, branch: null, dirty: null };
 
+/**
+ * @returns {Promise<{identity: object, definitive: boolean}>} `definitive` is
+ *   false only when the probe itself failed (timeout, spawn error) — a state
+ *   that can clear on its own and so must not be cached forever.
+ */
 async function probe() {
   // `ignoreExitCode` so a non-repo resolves to a readable non-zero exit rather
   // than rejecting — the house convention for probe-shaped git calls, see
@@ -104,10 +109,19 @@ async function probe() {
     timeout: GIT_TIMEOUT_MS
   }).catch(() => null);
 
-  // No `.git`, a broken checkout, or a timeout — report not-known, never a
-  // fabricated value.
-  if (!result || result.exitCode !== 0) return UNKNOWN_IDENTITY;
-  return parsePorcelainV2(result.stdout);
+  // A REJECTION is transient: git timed out or could not be spawned. That can
+  // genuinely happen once at boot — the 5s bound elapsing while migrations and
+  // the DB hammer the disk, or a cold/dataless tree git has to materialize —
+  // and caching it would pin every field to null for the process lifetime,
+  // silently disabling the whole feature on a perfectly good checkout.
+  if (!result) return { identity: UNKNOWN_IDENTITY, definitive: false };
+
+  // A non-zero EXIT is definitive: git ran and told us this is not a checkout
+  // (a tarball install). Cache it, or every health request would re-spawn git
+  // to re-learn the same answer.
+  if (result.exitCode !== 0) return { identity: UNKNOWN_IDENTITY, definitive: true };
+
+  return { identity: parsePorcelainV2(result.stdout), definitive: true };
 }
 
 let cached = null;
@@ -125,13 +139,19 @@ let resolved = null;
  * the UI labels it as an at-start fact.
  *
  * Non-throwing. Every field is independently nullable: a tarball install with
- * no `.git`, a detached checkout, or a git timeout reports `commit: null`.
+ * no `.git`, a detached checkout, or a git timeout reports `commit: null`. A
+ * timeout is retried on the next call; a definitive "not a repo" is not.
  *
  * @returns {Promise<{commit: string|null, shortCommit: string|null, branch: string|null, dirty: boolean|null}>}
  */
 export function getBuildIdentity() {
-  cached ??= probe().then((identity) => {
+  cached ??= probe().then(({ identity, definitive }) => {
     resolved = identity;
+    // Release the cache when the probe merely FAILED, so the next caller retries
+    // instead of inheriting a transient null forever. A definitive answer —
+    // including "not a git checkout" — is kept, preserving the one-spawn
+    // property for real repos and tarball installs alike.
+    if (!definitive) cached = null;
     return identity;
   });
   return cached;

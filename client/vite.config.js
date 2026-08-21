@@ -37,13 +37,28 @@ function gitStamp(args) {
 
 function buildStamp() {
   const head = gitStamp(['rev-parse', '--abbrev-ref', 'HEAD']);
+  // Were the CLIENT sources uncommitted when this bundle was built? Scoped to
+  // this directory (`-- .`) on purpose: a dirty server file says nothing about
+  // what went into the bundle, and repo-wide would mark every dist dirty during
+  // ordinary server work. Without this the commit id alone is not enough — a
+  // dist built from an edited tree carries its parent's clean commit, and the
+  // panel would assert full agreement for code that was never committed.
+  //
+  // `--porcelain` prints nothing for a clean tree, so `gitStamp` returns null
+  // there — which is indistinguishable from a failed probe. Re-probe with a
+  // marker instead: `--porcelain` plus `rev-parse --is-inside-work-tree` tells
+  // us the command CAN run, so a null status means clean rather than unknown.
+  const inRepo = gitStamp(['rev-parse', '--is-inside-work-tree']) === 'true';
   return {
     commit: gitStamp(['rev-parse', '--short=7', 'HEAD']),
     // `rev-parse --abbrev-ref` prints the literal string `HEAD` on a detached
-    // checkout, which is not a branch name.
+    // checkout, which is not a branch name. (git refuses to CREATE a branch
+    // named HEAD, so this is never a real branch.)
     branch: head === 'HEAD' ? null : head,
-    // Commit / branch / timestamp only. No paths (they embed the OS username),
-    // no hostname — this string ships to every browser that loads the app.
+    // null = we could not check, distinct from false = checked and clean.
+    dirty: inRepo ? gitStamp(['status', '--porcelain', '--', '.']) !== null : null,
+    // Commit / branch / dirty / timestamp only. No paths (they embed the OS
+    // username), no hostname — this ships to every browser that loads the app.
     builtAt: new Date().toISOString()
   };
 }

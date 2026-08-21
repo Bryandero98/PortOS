@@ -24,16 +24,20 @@ export function showStaleBuildToast() {
 /**
  * Sticky toast for the OTHER staleness: this tab matches the bundle on disk,
  * but that bundle was built from a different git commit than the server process
- * is running (#4694). Deliberately offers no Reload button — reloading re-serves
- * the same stale dist and changes nothing. The remedy is a rebuild or a restart,
- * so the toast names it instead of offering an action that would not work.
+ * is running (#4694).
+ *
+ * No Reload button, because reloading ON ITS OWN re-serves the same stale dist
+ * and changes nothing — but the copy must not say reloading never helps either:
+ * after the rebuild it names first, a reload is exactly what puts this tab on
+ * the new bundle. Restarting the server instead drops the socket, and the
+ * reconnect frame clears this toast (see services/socket.js).
  */
 export function showBuildDriftToast() {
   toast(
     <div className="flex flex-col gap-0.5">
       <span>UI and server were built from different commits.</span>
       <span className="text-xs opacity-80">
-        Rebuild the client or restart the server — reloading will not help.
+        Rebuild the client and reload, or restart the server from the checkout you are editing.
       </span>
     </div>,
     { id: 'portos-build-drift', duration: Infinity, label: 'UI and server built from different commits' },

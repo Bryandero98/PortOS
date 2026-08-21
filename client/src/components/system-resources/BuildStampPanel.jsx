@@ -48,7 +48,8 @@ export default function BuildStampPanel({ uptimeFormatted }) {
   });
   const bundleLabel = describeBuild({
     commit: TRUSTED_BUNDLE_STAMP?.commit,
-    branch: TRUSTED_BUNDLE_STAMP?.branch
+    branch: TRUSTED_BUNDLE_STAMP?.branch,
+    dirty: TRUSTED_BUNDLE_STAMP?.dirty
   });
 
   return (
@@ -103,13 +104,26 @@ function footnote(state, build) {
       ? 'Running from the Vite dev server, so there is no built bundle to compare against the server.'
       : 'Commit unknown on at least one side (no git metadata), so bundle/server drift cannot be checked here.';
   }
-  // Matching commits are not the whole story: the comparison is commit-only, and
-  // the server tree can carry uncommitted edits that no commit id reflects.
-  // Claiming "this is the code that is running" there would be a false assurance
-  // in exactly the debugging session this panel exists to end.
-  return build?.dirty === false
+
+  // Matching commits are not the whole story. The comparison is commit-only, and
+  // EITHER tree can carry uncommitted edits that no commit id reflects: the
+  // server booted from a dirty checkout, or the dist was built from one (which
+  // stamps its parent's clean commit). Claiming "this is the code that is
+  // running" in either case would be a false assurance in exactly the debugging
+  // session this panel exists to end.
+  const unclean = [
+    build?.dirty === true && 'the server tree',
+    TRUSTED_BUNDLE_STAMP?.dirty === true && 'this bundle'
+  ].filter(Boolean);
+  if (unclean.length > 0) {
+    return `Same commit on both sides, but ${unclean.join(' and ')} had uncommitted changes that commit does not include.`;
+  }
+
+  // Only claim full agreement once both sides confirmed clean — `null` means the
+  // check did not run, which is not the same as clean.
+  return build?.dirty === false && TRUSTED_BUNDLE_STAMP?.dirty === false
     ? 'Bundle and server agree — what you are looking at is the code that is running.'
-    : 'Bundle and server are on the same commit, but the server tree has changes that commit does not include.';
+    : 'Bundle and server are on the same commit. Whether either tree had uncommitted changes could not be checked.';
 }
 
 function StampRow({ label, value, hint }) {

@@ -51,8 +51,8 @@ describe('BuildStampPanel', () => {
     expect(screen.getByText('abc1234')).toBeInTheDocument();
   });
 
-  it('confirms agreement only when the server tree is also clean', async () => {
-    await renderPanel({ stamp: { commit: 'abc1234', branch: 'main' } });
+  it('confirms agreement only when BOTH trees are confirmed clean', async () => {
+    await renderPanel({ stamp: { commit: 'abc1234', branch: 'main', dirty: false } });
 
     await waitFor(() => expect(screen.getByText(/what you are looking at is the code that is running/i)).toBeInTheDocument());
   });
@@ -61,11 +61,43 @@ describe('BuildStampPanel', () => {
     // Commit-only comparison cannot see working-tree edits — asserting a match
     // here would be a false assurance in the exact session this panel ends.
     await renderPanel({
-      stamp: { commit: 'abc1234', branch: 'main' },
+      stamp: { commit: 'abc1234', branch: 'main', dirty: false },
       build: serverBuild({ dirty: true }),
     });
 
-    await waitFor(() => expect(screen.getByText(/changes that commit does not include/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/the server tree had uncommitted changes/i)).toBeInTheDocument());
+    expect(screen.queryByText(/what you are looking at is the code that is running/i)).not.toBeInTheDocument();
+  });
+
+  it('does not claim agreement when the BUNDLE was built from a dirty tree', async () => {
+    // A dist built from edited sources carries its parent's clean commit, so the
+    // commit ids match while the bundle contains code that was never committed.
+    await renderPanel({
+      stamp: { commit: 'abc1234', branch: 'main', dirty: true },
+      build: serverBuild({ dirty: false }),
+    });
+
+    await waitFor(() => expect(screen.getByText(/this bundle had uncommitted changes/i)).toBeInTheDocument());
+    expect(screen.queryByText(/what you are looking at is the code that is running/i)).not.toBeInTheDocument();
+  });
+
+  it('names both trees when both were dirty', async () => {
+    await renderPanel({
+      stamp: { commit: 'abc1234', branch: 'main', dirty: true },
+      build: serverBuild({ dirty: true }),
+    });
+
+    await waitFor(() => expect(screen.getByText(/the server tree and this bundle had uncommitted changes/i)).toBeInTheDocument());
+  });
+
+  it('says the cleanliness check did not run rather than claiming agreement', async () => {
+    // `null` is "we could not tell" — never rendered as clean.
+    await renderPanel({
+      stamp: { commit: 'abc1234', branch: 'main', dirty: null },
+      build: serverBuild({ dirty: null }),
+    });
+
+    await waitFor(() => expect(screen.getByText(/could not be checked/i)).toBeInTheDocument());
     expect(screen.queryByText(/what you are looking at is the code that is running/i)).not.toBeInTheDocument();
   });
 

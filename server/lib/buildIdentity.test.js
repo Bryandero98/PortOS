@@ -120,6 +120,31 @@ describe('getBuildIdentity', () => {
     expect(identity.dirty).toBeNull();
   });
 
+  it('retries after a TRANSIENT probe failure instead of caching null forever', async () => {
+    // A 5s timeout can elapse once at boot while migrations hammer the disk.
+    // Caching that would disable the whole feature for the process lifetime on
+    // a checkout that is perfectly fine.
+    mocks.execGit.mockRejectedValueOnce(new Error('git command timed out after 5s'));
+    mocks.execGit.mockResolvedValue(ok(CLEAN));
+    const { getBuildIdentity } = await loadModule();
+
+    expect((await getBuildIdentity()).commit).toBeNull();
+    expect((await getBuildIdentity()).commit).toBe('1234567890abcdef1234567890abcdef12345678');
+  });
+
+  it('caches a DEFINITIVE not-a-repo answer rather than re-spawning git per request', async () => {
+    // git ran and told us there is no checkout (a tarball install). That cannot
+    // change under a running process, so one spawn is enough.
+    mocks.execGit.mockResolvedValue(fail());
+    const { getBuildIdentity } = await loadModule();
+
+    await getBuildIdentity();
+    await getBuildIdentity();
+    await getBuildIdentity();
+
+    expect(mocks.execGit).toHaveBeenCalledTimes(1);
+  });
+
   it('shares one spawn across concurrent first callers', async () => {
     // The boot log and an early health request can both land before the first
     // probe resolves; caching the PROMISE (not the value) keeps that to one spawn.
