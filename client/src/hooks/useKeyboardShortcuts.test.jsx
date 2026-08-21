@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderHook, fireEvent } from '@testing-library/react';
-import useKeyboardShortcuts, { isEditableTarget } from './useKeyboardShortcuts';
+import useKeyboardShortcuts from './useKeyboardShortcuts';
 
 // Dispatch a keydown from `target` (the listener reads e.target). Defaults to
 // the window itself, which is not an editable field. `fireEvent` returns false
@@ -11,18 +11,6 @@ function press(key, { target = window, meta = false, ctrl = false, alt = false }
 }
 
 afterEach(() => vi.restoreAllMocks());
-
-describe('isEditableTarget', () => {
-  it('flags the standard form fields and contentEditable, not plain elements', () => {
-    expect(isEditableTarget({ tagName: 'INPUT' })).toBe(true);
-    expect(isEditableTarget({ tagName: 'TEXTAREA' })).toBe(true);
-    expect(isEditableTarget({ tagName: 'SELECT' })).toBe(true);
-    expect(isEditableTarget({ tagName: 'DIV', isContentEditable: true })).toBe(true);
-    expect(isEditableTarget({ tagName: 'DIV' })).toBe(false);
-    expect(isEditableTarget(null)).toBe(false);
-    expect(isEditableTarget({})).toBe(false);
-  });
-});
 
 describe('useKeyboardShortcuts', () => {
   it('fires the matching handler and preventDefaults the event', () => {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, act, within } from '@testing-library/react';
+import { installVoiceHotkeySpy } from '../../../test/voiceHotkeySpy';
 import PostCognitiveDrillRunner, {
   localAccuracyScore,
   localSchulteMetrics,
@@ -919,19 +920,16 @@ describe('n-back tutorial card', () => {
 // key in the capture phase so the mic never opens mid-drill. Stand in for the
 // widget with a bubble-phase window listener and assert it stays silent.
 describe('Space-driven drills do not leak the key to the global voice hotkey', () => {
-  let voiceHotkey;
+  const voiceHotkey = installVoiceHotkeySpy();
 
   beforeEach(() => {
     vi.useFakeTimers();
-    voiceHotkey = vi.fn();
-    window.addEventListener('keydown', voiceHotkey);
     markDrillTutorialSeen('n-back');
     markDrillTutorialSeen('go-no-go');
     markDrillTutorialSeen('reaction-time');
   });
 
   afterEach(() => {
-    window.removeEventListener('keydown', voiceHotkey);
     vi.useRealTimers();
     window.localStorage.clear();
   });
@@ -946,7 +944,7 @@ describe('Space-driven drills do not leak the key to the global voice hotkey', (
     act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
     act(() => { vi.advanceTimersByTime(1000); });
 
-    expect(voiceHotkey).not.toHaveBeenCalled();
+    expect(voiceHotkey()).not.toHaveBeenCalled();
     expect(onComplete.mock.calls[0][0].questions).toEqual([
       expect.objectContaining({ index: 1, answered: 'match', correct: true }),
     ]);
@@ -965,7 +963,7 @@ describe('Space-driven drills do not leak the key to the global voice hotkey', (
     act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
     act(() => { vi.advanceTimersByTime(250); });
 
-    expect(voiceHotkey).not.toHaveBeenCalled();
+    expect(voiceHotkey()).not.toHaveBeenCalled();
     expect(onComplete.mock.calls[0][0].questions).toHaveLength(1);
   });
 
@@ -979,7 +977,7 @@ describe('Space-driven drills do not leak the key to the global voice hotkey', (
     act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
     act(() => { vi.advanceTimersByTime(500); });
 
-    expect(voiceHotkey).not.toHaveBeenCalled();
+    expect(voiceHotkey()).not.toHaveBeenCalled();
     expect(onComplete.mock.calls[0][0].questions).toHaveLength(1);
   });
 
@@ -994,13 +992,33 @@ describe('Space-driven drills do not leak the key to the global voice hotkey', (
     // Now in the 500ms result phase: a second press must NOT record anything,
     // and must NOT reach the voice hotkey either.
     act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
-    expect(voiceHotkey).not.toHaveBeenCalled();
+    expect(voiceHotkey()).not.toHaveBeenCalled();
 
     act(() => { vi.advanceTimersByTime(600); });
     act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
     act(() => { vi.advanceTimersByTime(600); });
-    expect(voiceHotkey).not.toHaveBeenCalled();
+    expect(voiceHotkey()).not.toHaveBeenCalled();
     expect(onComplete.mock.calls[0][0].questions).toHaveLength(2);
+  });
+
+  // Space on a focused button belongs to the browser (#4748), so a mouse click
+  // that parked focus on the on-screen response button would take the drill's
+  // key over — and native activation fires on keyUP, inflating a scored
+  // reaction time. The runner therefore refuses pointer focus for every button
+  // on the surface. jsdom doesn't implement click-to-focus, so the cancelled
+  // mousedown (which is what suppresses the focus in a real browser) is the
+  // observable here.
+  it('refuses pointer focus on the on-screen Match button, so Space stays the scored path', () => {
+    const drill = { type: 'n-back', config: { n: 1, stimulusMs: 1000 }, sequence: ['A', 'A'] };
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={vi.fn()} isTraining={false} />,
+    );
+    act(() => { vi.advanceTimersByTime(1900); }); // into the 2nd stimulus, so Match is enabled
+    const match = screen.getByRole('button', { name: 'Match' });
+    expect(match).toBeEnabled();
+
+    // fireEvent returns false when the event was canceled.
+    expect(fireEvent.mouseDown(match)).toBe(false);
   });
 
   it('lets an unrelated key through — this is not a blanket keyboard trap', () => {
@@ -1009,6 +1027,6 @@ describe('Space-driven drills do not leak the key to the global voice hotkey', (
       <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={vi.fn()} isTraining={false} />,
     );
     act(() => { fireEvent.keyDown(document.body, { code: 'KeyJ', key: 'j' }); });
-    expect(voiceHotkey).toHaveBeenCalledTimes(1);
+    expect(voiceHotkey()).toHaveBeenCalledTimes(1);
   });
 });

@@ -25,8 +25,7 @@ import {
   isVoiceHiddenStorageEvent,
 } from '../../services/voiceVisibility';
 import { MicroGlyph } from '../micrographics';
-import { isButtonActivation } from '../../lib/a11yKeyboard';
-import { isEditableTarget } from '../../hooks/useKeyboardShortcuts';
+import { shouldIgnoreGlobalKey } from '../../lib/a11yKeyboard';
 import { safeReadStorage, safeWriteStorage } from '../../lib/safeStorage';
 
 // Peak below this (0..1) is usually whisper's [BLANK_AUDIO] territory.
@@ -584,16 +583,18 @@ export default function VoiceWidget() {
   useEffect(() => {
     if (!enabled) return;
     const onKey = (e) => {
-      if (e.code !== hotkey || e.repeat) return;
-      // The shared guard, not a local copy: it also covers SELECT, where the default
-      // Space hotkey would open the mic instead of the element's own dropdown.
-      if (isEditableTarget(e.target)) return;
-      // Space on a focused button must ACTIVATE it (standard browser behavior).
-      // With the default Space hotkey, preventDefault-ing here would swallow
-      // every keyboard button press in the app and open the mic instead — e.g.
-      // the POST cognitive drills' Start / Match buttons. A non-Space hotkey
-      // never collides with activation, so this only stands down for Space.
-      if (isButtonActivation(e)) return;
+      if (e.code !== hotkey) return;
+      // The same shared predicate the two keyboard hooks use, not a local copy —
+      // this is the app-global handler they stand down FOR, so it has to agree
+      // with them about what a key is off-limits for. It drops auto-repeat, any
+      // editable target (SELECT included, where the default Space hotkey would
+      // otherwise open the mic instead of the element's own dropdown), and Space
+      // on a focused button, which must ACTIVATE it: preventDefault-ing there
+      // would swallow every keyboard button press in the app and open the mic
+      // instead (e.g. the POST cognitive drills' Start / Match buttons).
+      // Chords and open dialogs are deliberately allowed through — push-to-talk
+      // stays reachable while a modal is up.
+      if (shouldIgnoreGlobalKey(e, { allowChords: true, enabledInDialog: true })) return;
       e.preventDefault();
       // writeVoiceHidden dispatches VISIBILITY_EVENT, which the listener
       // below syncs into local `hidden` — no explicit setHidden needed.

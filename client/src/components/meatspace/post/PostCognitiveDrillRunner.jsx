@@ -4,7 +4,7 @@ import { DRILL_LABELS, nBackBalancedAccuracy, effectiveCognitiveDrillConfig, cog
 import { safeReadJsonStorage, safeWriteStorage } from '../../../lib/safeStorage.js';
 import useMounted from '../../../hooks/useMounted';
 import useKeyCapture from '../../../hooks/useKeyCapture';
-import { isPressKey } from '../../../lib/a11yKeyboard.js';
+import { isPressKey, noPointerFocusSurfaceProps } from '../../../lib/a11yKeyboard.js';
 import Modal from '../../ui/Modal';
 
 /**
@@ -33,6 +33,10 @@ export default function PostCognitiveDrillRunner({ drill, drillIndex, drillCount
   // (and each runner's `startedAtRef`) don't start until the user taps Start.
   // Keyed by drill.type so each new type in a session re-evaluates cleanly.
   return (
+    // These drills are scored on the keydown, and native button activation fires
+    // on the keyup — so a click that parked focus on a response button would
+    // silently inflate every later reaction time.
+    <div {...noPointerFocusSurfaceProps}>
     <DrillTutorialGate
       key={drill.type}
       drill={drill}
@@ -42,6 +46,7 @@ export default function PostCognitiveDrillRunner({ drill, drillIndex, drillCount
     >
       {renderCognitiveDrill(shared)}
     </DrillTutorialGate>
+    </div>
   );
 }
 

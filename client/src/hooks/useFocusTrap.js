@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { pointerFocusSuppressedElement } from '../lib/a11yKeyboard.js';
 
 // Keyboard focus management for modal surfaces (dialogs, drawers, lightboxes).
 // When `active` flips true it:
@@ -64,7 +65,14 @@ export default function useFocusTrap(active, containerRef, { initialFocusRef } =
   const restoreRef = useRef(null);
   const wasActive = useRef(false);
   if (active && !wasActive.current) {
-    restoreRef.current = typeof document !== 'undefined' ? document.activeElement : null;
+    const focused = typeof document !== 'undefined' ? document.activeElement : null;
+    // Nothing focused means the opener may have been a control on a surface that
+    // refuses pointer focus (`noPointerFocusSurfaceProps` — e.g. an OpenWorld HUD
+    // button opening this very drawer). Fall back to it so closing still returns
+    // the user to what they clicked instead of stranding focus on <body>.
+    restoreRef.current = focused && focused !== document.body
+      ? focused
+      : (pointerFocusSuppressedElement() || focused);
   }
   wasActive.current = active;
 
@@ -110,12 +118,24 @@ export default function useFocusTrap(active, containerRef, { initialFocusRef } =
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
       const activeEl = document.activeElement;
+      // A target we deliberately focused outside the tab order needs steering
+      // too: an `initialFocusRef` aimed at a `tabIndex={-1}` element (or the
+      // container's own fallback tabindex) sits inside the dialog but outside
+      // `focusable`, and without this Shift+Tab from there fell through to the
+      // browser and walked straight out of the modal.
+      //
+      // Scoped to THAT element on purpose. Other unlisted-but-focusable
+      // descendants — chiefly `<video controls>`, which the selector doesn't
+      // match — must keep falling through, or Tab yanks focus off the video
+      // instead of walking into its native controls.
+      const steerTarget = initialFocusRef?.current || (container.getAttribute('tabindex') === '-1' ? container : null);
+      const adrift = activeEl === steerTarget || !container.contains(activeEl);
       if (e.shiftKey) {
-        if (activeEl === first || !container.contains(activeEl)) {
+        if (activeEl === first || adrift) {
           e.preventDefault();
           last.focus();
         }
-      } else if (activeEl === last || !container.contains(activeEl)) {
+      } else if (activeEl === last || adrift) {
         e.preventDefault();
         first.focus();
       }

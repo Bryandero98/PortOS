@@ -115,3 +115,110 @@ export function isPressKey(event) {
     || event?.key === 'Spacebar'
     || event?.code === 'Space';
 }
+
+/**
+ * True when an event came from a field the user is typing into, so a single-key
+ * shortcut (a/d/g/j/k), a bare arrow, or a Space-claiming surface never steals a
+ * keystroke or caret move. The standard form fields plus any contentEditable
+ * surface count.
+ *
+ * @param {EventTarget | null} el
+ * @returns {boolean}
+ */
+export function isEditableTarget(el) {
+  if (!el || typeof el.tagName !== 'string') return false;
+  if (el.isContentEditable) return true;
+  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT';
+}
+
+/**
+ * The one predicate every app-global key handler consults before acting on a
+ * window keystroke: "is this event off-limits to me?". `useKeyboardShortcuts`
+ * (bubble-phase shortcut maps) and `useKeyCapture` (capture-phase key claiming)
+ * both route through it, so a guard added here lands for both instead of having
+ * to be re-remembered at each hook — the drift that let `useKeyCapture` swallow
+ * native button activation while the other two Space paths stood down (#4748).
+ *
+ * Always ignored, with no opt-out:
+ * - **Editable targets** — typing into an input/textarea/select/contentEditable.
+ * - **Native button activation** (`isButtonActivation`) — Space on a focused
+ *   button-like element, where the browser is about to click it. Claiming that
+ *   press swallows every keyboard button activation on the surface and runs the
+ *   global action instead.
+ *
+ * Ignored by default, opt out per handler:
+ * - **⌘/Ctrl/Alt chords** (`allowChords`) — so app/browser shortcuts still win.
+ *   A handler that reads a raw physical key (a keyer, a game control) passes
+ *   `allowChords: true`, because dropping a chorded keydown strands it with no
+ *   matching keyup.
+ * - **OS auto-repeat** (`ignoreRepeat`) — a held key fires once, not once per
+ *   repeat tick. A handler that tracks press/release itself passes
+ *   `ignoreRepeat: false` and filters `e.repeat` on its own terms.
+ * - **An open `aria-modal` dialog** (`enabledInDialog`) — the dialog owns the top
+ *   surface, so a key aimed at it must not reach a handler still mounted behind
+ *   it. A surface that itself lives INSIDE the dialog opts back in.
+ *
+ * @param {KeyboardEvent} event
+ * @param {object}  [options]
+ * @param {boolean} [options.enabledInDialog=false] act even while a dialog is open
+ * @param {boolean} [options.ignoreRepeat=true]     drop OS auto-repeat keydowns
+ * @param {boolean} [options.allowChords=false]     act on ⌘/Ctrl/Alt chords too
+ * @returns {boolean} true when the handler must stand down
+ */
+export function shouldIgnoreGlobalKey(event, { enabledInDialog = false, ignoreRepeat = true, allowChords = false } = {}) {
+  // Cheapest guards first: plain flags, then a property read, then an ancestor
+  // walk, and only then the full-document query — this runs on every keystroke
+  // of every mounted consumer.
+  if (!allowChords && (event.metaKey || event.ctrlKey || event.altKey)) return true;
+  if (ignoreRepeat && event.repeat) return true;
+  if (isEditableTarget(event.target)) return true;
+  if (isButtonActivation(event)) return true;
+  if (!enabledInDialog && document.querySelector('[aria-modal="true"]')) return true;
+  return false;
+}
+
+/**
+ * Props for the ROOT of a surface that owns a key globally — a drill scored on
+ * Space, the Morse keyer, RapidReader, the OpenWorld rig.
+ *
+ * On such a surface a button that keeps focus after a mouse click silently takes
+ * the key over: `shouldIgnoreGlobalKey` correctly stands the global handler down
+ * for native button activation, so the next Space presses the lingering button
+ * instead of driving the surface. `preventDefault` on `mousedown` is what
+ * suppresses that focus — it leaves the click itself, and every keyboard path,
+ * untouched, so a user who TABS to the button still focuses and activates it.
+ *
+ * This sits on the surface root rather than on each button deliberately. The
+ * per-button form has to be remembered for every control on the surface and for
+ * every control added later — the same "re-remember it at each site" drift that
+ * made #4748 a bug in the first place — and these surfaces render their buttons
+ * across several child components. One capture-phase handler at the root covers
+ * all of them, including ones that don't exist yet.
+ */
+// The control whose pointer focus was last suppressed. A button that opens a
+// dialog never becomes `document.activeElement`, so `useFocusTrap` would capture
+// `<body>` as the element to restore focus to on close (WCAG 2.4.3) — this is
+// what it falls back to instead. No staleness guard is needed beyond
+// `isConnected`: the fallback is only ever consulted when nothing else holds
+// focus, and anything else taking focus is exactly what makes that untrue.
+let pointerFocusSuppressed = null;
+
+export const noPointerFocusSurfaceProps = {
+  onMouseDownCapture: (event) => {
+    const control = event.target?.closest?.('button, [role="button"]');
+    if (!control) return;
+    event.preventDefault();
+    pointerFocusSuppressed = control;
+  },
+};
+
+/**
+ * The control `noPointerFocusSurfaceProps` last kept focus off, if it is still
+ * in the document. Focus restoration consults this when it finds nothing
+ * focused; everything else should read `document.activeElement`.
+ *
+ * @returns {Element | null}
+ */
+export function pointerFocusSuppressedElement() {
+  return pointerFocusSuppressed?.isConnected ? pointerFocusSuppressed : null;
+}

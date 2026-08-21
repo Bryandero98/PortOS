@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Play, Pause, RotateCcw, Rewind, FastForward, X, Zap } from 'lucide-react';
 import Modal from './ui/Modal';
 import useKeyCapture from '../hooks/useKeyCapture';
+import { noPointerFocusSurfaceProps } from '../lib/a11yKeyboard';
 
 // Optimal Recognition Point — the focal letter the eye lands on. Spritz-style:
 // shorter words use a left-shifted ORP, longer words shift right. Returns the
@@ -140,7 +141,9 @@ export default function RapidReader({
   }
 
   return (
-    <div className="bg-port-card border border-port-border rounded-lg overflow-hidden">
+    // The reader owns Space, the arrows and +/- while it is mounted, so no click
+    // inside it may park focus on a button and take those keys over.
+    <div className="bg-port-card border border-port-border rounded-lg overflow-hidden" {...noPointerFocusSurfaceProps}>
       {/* Reader display */}
       <div className={`relative bg-port-bg flex items-center justify-center ${compact ? 'py-10' : 'py-16 sm:py-24'}`}>
         {/* Center alignment guide — vertical line at the focal point */}
@@ -300,6 +303,11 @@ function FocalSlot({ chunk, focalColor }) {
 // and Modal IS that layer. The claim runs in the capture phase, so Esc reaches
 // onClose and never Modal's own bubble-phase close — the reader owns Esc here.
 export function RapidReaderModal({ open, text, title, onClose, ...readerProps }) {
+  // Aim the dialog's initial focus at the header ROW, not at the Close button
+  // inside it. Focus otherwise lands on the first focusable descendant, and
+  // Space on a focused button belongs to the browser — so the reader's own
+  // Space (play/pause) would have dismissed the reader instead.
+  const headerRef = useRef(null);
   return (
     <Modal
       open={open}
@@ -307,8 +315,9 @@ export function RapidReaderModal({ open, text, title, onClose, ...readerProps })
       size="xl"
       ariaLabel={title || 'Rapid Reader'}
       panelClassName="bg-port-card border border-port-border rounded-xl shadow-2xl"
+      initialFocusRef={headerRef}
     >
-      <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-port-border">
+      <div ref={headerRef} tabIndex={-1} className="flex items-center justify-between gap-2 px-4 py-2 border-b border-port-border">
         <div className="flex items-center gap-2 text-sm text-gray-300 truncate">
           <Zap size={14} className="text-port-accent shrink-0" />
           <span className="truncate">{title || 'Rapid Reader'}</span>
@@ -316,6 +325,7 @@ export function RapidReaderModal({ open, text, title, onClose, ...readerProps })
         <button
           type="button"
           onClick={onClose}
+         
           className="min-h-[44px] min-w-[44px] flex items-center justify-center text-gray-400 hover:text-white"
           aria-label="Close rapid reader"
         >

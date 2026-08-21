@@ -27,37 +27,21 @@ vi.mock('../components/openworld/OpenWorldPhotoOverlay', () => ({ default: () =>
 vi.mock('../components/openworld/OpenWorldPlaybackOverlay', () => ({ default: () => null }));
 vi.mock('../components/openworld/OpenWorldSettingsDrawer', () => ({ default: () => null }));
 
-vi.mock('../hooks/useOpenWorldData', () => ({
-  useOpenWorldData: () => ({
-    apps: [], cosAgents: [], cosStatus: {}, eventLogs: [], agentMap: new Map(),
-    reviewCounts: {}, instances: {}, systemHealth: null, notificationCounts: {},
-    backupStatus: null, cosTasks: [], healthMetrics: null, voiceState: null,
-    character: null, aiActivity: null, loading: openWorldDataState.loading, connected: true,
-  }),
-}));
-vi.mock('../hooks/useOpenWorldPlayback', () => ({
-  useOpenWorldPlayback: () => ({
-    active: false, currentFrame: null, snapshots: [], frameIndex: 0, stats: null,
-    playing: false, speed: 1, loading: false, error: null,
-    enter: vi.fn(), exit: vi.fn(), seek: vi.fn(), step: vi.fn(),
-    togglePlay: vi.fn(), cycleSpeed: vi.fn(),
-  }),
-}));
+vi.mock('../hooks/useOpenWorldData', async () => {
+  const { OPEN_WORLD_DATA } = await import('../test/openWorldPageMocks.js');
+  // Only `loading` varies per test here; everything else is the shared empty shape.
+  return { useOpenWorldData: () => ({ ...OPEN_WORLD_DATA, loading: openWorldDataState.loading }) };
+});
+vi.mock('../hooks/useOpenWorldPlayback', async () => {
+  const { openWorldPlaybackMock } = await import('../test/openWorldPageMocks.js');
+  const playback = openWorldPlaybackMock(vi);
+  return { useOpenWorldPlayback: () => playback };
+});
 vi.mock('../hooks/useOpenWorldAudio', () => ({ default: () => ({ playSfx: vi.fn(), isAudioReady: false }) }));
 vi.mock('../hooks/useAutoRefetch', () => ({ useAutoRefetch: () => ({ data: null }) }));
-// Only the endpoints this page polls. `useAutoRefetch` is stubbed above so none of them
-// actually fire — the mock exists to keep the real api module (and its socket import) out
-// of the jsdom run.
-vi.mock('../services/api', () => ({
-  getCosQuickSummary: vi.fn(async () => null),
-  getCosActivityCalendar: vi.fn(async () => null),
-  getGoals: vi.fn(async () => null),
-  getChronotype: vi.fn(async () => null),
-  getMemoryGraph: vi.fn(async () => null),
-  getBrainInbox: vi.fn(async () => null),
-  getOpenWorldIntrospection: vi.fn(async () => null),
-  getMySprintTickets: vi.fn(async () => []),
-}));
+// Only the endpoints this page polls, from the shared page fixture. The vi.mock
+// CALL has to stay here (vitest hoists it), so the factory dynamic-imports it.
+vi.mock('../services/api', async () => (await import('../test/openWorldPageMocks.js')).openWorldApiMock(vi));
 
 const OpenWorld = (await import('./OpenWorld')).default;
 

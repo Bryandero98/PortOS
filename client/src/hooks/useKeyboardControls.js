@@ -1,13 +1,17 @@
 import { useRef, useEffect, useCallback } from 'react';
-import { isEditableTarget } from './useKeyboardShortcuts.js';
+import { shouldIgnoreGlobalKey } from '../lib/a11yKeyboard.js';
 
 // Movement input is only ever meant for the world behind the UI, so a keystroke aimed at
-// a form field or at an open dialog must not reach the rig: typing "w" in the fast-travel
-// search would otherwise walk the avatar, and Space inside the settings drawer would jump
-// it (Tab likewise has to move focus in those contexts, not flip exploration mode).
+// a form field, at a focused HUD button, or at an open dialog must not reach the rig:
+// typing "w" in the fast-travel search would otherwise walk the avatar, Space on a focused
+// HUD button would jump AND press the button, and Space inside the settings drawer would
+// jump it (Tab likewise has to move focus in those contexts, not flip exploration mode).
+// The shared predicate is the same one PlayerController's own Space claim consults, so the
+// two agree on when the rig stands down. Chords and auto-repeat stay allowed through: the
+// rig reads held keys, so dropping either would strand or stutter a movement key.
 // Note this is a keyDOWN-only gate — keyup always clears, or a key held when a dialog
 // opens would stay stuck down forever.
-const ignoresMovement = (e) => isEditableTarget(e.target) || Boolean(document.querySelector('[aria-modal="true"]'));
+const ignoresMovement = (e) => shouldIgnoreGlobalKey(e, { allowChords: true, ignoreRepeat: false });
 
 export default function useKeyboardControls(onToggleMode) {
   const keysRef = useRef(new Set());

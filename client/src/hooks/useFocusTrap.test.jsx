@@ -3,6 +3,7 @@ import { useRef } from 'react';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 
 import useFocusTrap from './useFocusTrap.js';
+import { noPointerFocusSurfaceProps } from '../lib/a11yKeyboard.js';
 
 afterEach(cleanup);
 
@@ -12,6 +13,23 @@ function Dialog({ active }) {
   return (
     <div ref={ref} data-testid="dialog">
       <button>first</button>
+      <button>middle</button>
+      <button>last</button>
+    </div>
+  );
+}
+
+// A dialog whose keyboard belongs to its CONTENT, not to its first button — so
+// it aims initial focus at a non-tabbable header (RapidReaderModal's shape).
+function HeaderFocusDialog() {
+  const ref = useRef(null);
+  const headerRef = useRef(null);
+  useFocusTrap(true, ref, { initialFocusRef: headerRef });
+  return (
+    <div ref={ref} data-testid="dialog">
+      <div ref={headerRef} tabIndex={-1} data-testid="header">
+        <button>first</button>
+      </div>
       <button>middle</button>
       <button>last</button>
     </div>
@@ -31,6 +49,54 @@ describe('useFocusTrap', () => {
   it('moves focus to the first focusable element on activation', () => {
     render(<Dialog active />);
     expect(document.activeElement).toBe(screen.getByText('first'));
+  });
+
+  describe('with an initialFocusRef aimed outside the tab order', () => {
+    it('honours the requested target instead of the first focusable', () => {
+      render(<HeaderFocusDialog />);
+      expect(document.activeElement).toBe(screen.getByTestId('header'));
+    });
+
+    // The target is tabIndex=-1, so it is not IN the focusable list — without
+    // steering, Shift+Tab from it fell through to the browser and walked
+    // straight out of the modal (WCAG 2.1.2).
+    it('keeps Shift+Tab inside the dialog, wrapping to the last control', () => {
+      render(<HeaderFocusDialog />);
+      fireEvent.keyDown(screen.getByTestId('dialog'), { key: 'Tab', shiftKey: true });
+      expect(document.activeElement).toBe(screen.getByText('last'));
+    });
+
+    it('sends a forward Tab to the first control', () => {
+      render(<HeaderFocusDialog />);
+      fireEvent.keyDown(screen.getByTestId('dialog'), { key: 'Tab' });
+      expect(document.activeElement).toBe(screen.getByText('first'));
+    });
+  });
+
+  // A surface that owns a key refuses pointer focus for its buttons, so a HUD
+  // button that opens a dialog never becomes document.activeElement. Restoring
+  // to <body> on close would strand the keyboard user (WCAG 2.4.3).
+  it('restores focus to a clicked opener whose pointer focus was suppressed', () => {
+    function PointerHarness({ active }) {
+      return (
+        <div {...noPointerFocusSurfaceProps}>
+          <button data-testid="opener">opener</button>
+          {active && <Dialog active={active} />}
+        </div>
+      );
+    }
+    const { rerender } = render(<PointerHarness active={false} />);
+    const opener = screen.getByTestId('opener');
+
+    // The surface cancels the mousedown, so the opener never takes focus.
+    fireEvent.mouseDown(opener);
+    expect(document.activeElement).not.toBe(opener);
+
+    rerender(<PointerHarness active />);
+    expect(document.activeElement).toBe(screen.getByText('first'));
+
+    rerender(<PointerHarness active={false} />);
+    expect(document.activeElement).toBe(opener);
   });
 
   it('wraps focus from the last element to the first on Tab', () => {

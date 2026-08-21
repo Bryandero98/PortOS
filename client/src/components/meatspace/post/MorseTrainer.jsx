@@ -10,6 +10,7 @@ import { streakGlyph } from '../../../lib/streakGlyph.js';
 import { safeReadJsonStorage, safeWriteStorage } from '../../../lib/safeStorage';
 import { resumeAudioContext } from '../../../lib/audioContext.js';
 import { MORSE_MATERIAL_MODES, canAdvanceMorseLevel, selectMorsePrompt } from '../../../lib/morsePractice.js';
+import { isPressKey, noPointerFocusSurfaceProps } from '../../../lib/a11yKeyboard.js';
 import PostCompletionActions from './PostCompletionActions';
 import { startRetryableSaves } from './completionSave';
 
@@ -559,7 +560,14 @@ export default function MorseTrainer({ mode = null, onSelectMode, onExitMode, on
         </div>
       </div>
 
-      <div className={`grid grid-cols-1 ${showReference ? 'xl:grid-cols-[minmax(0,1fr)_24rem]' : ''} gap-6`}>
+      {/* In send mode the keyer owns the spacebar across BOTH columns — the
+          drill on the left and the practice key / reference tabs on the right —
+          so the guard belongs on the grid that holds them, not on either one.
+          Off send mode nothing owns Space and this is inert. */}
+      <div
+        className={`grid grid-cols-1 ${showReference ? 'xl:grid-cols-[minmax(0,1fr)_24rem]' : ''} gap-6`}
+        {...(mode === 'send' ? noPointerFocusSurfaceProps : null)}
+      >
         <div className="space-y-6 min-w-0 max-w-2xl">
           <SettingsPanel prefs={prefs} updatePrefs={updatePrefs} onResetProgress={resetProgress} trainingStats={trainingStats} progress={morseProgress} />
           {!mode && <ModeGrid onPick={onSelectMode} />}
@@ -851,7 +859,7 @@ function ListView({ currentPath }) {
   );
 }
 
-function KeyPad({ keying }) {
+export function KeyPad({ keying }) {
   return (
     <div className="bg-port-card border border-port-border rounded-lg p-4 space-y-3">
       <div className="flex items-center justify-between">
@@ -863,12 +871,29 @@ function KeyPad({ keying }) {
           <Eraser size={11} /> Clear
         </button>
       </div>
+      {/* Space on a focused button belongs to the browser (useKeyCapture stands
+          down for it), so the pad has to key on its OWN key events — otherwise
+          tapping it once with the mouse would leave focus here and make the
+          spacebar dead, on the very control labelled "TAP / HOLD SPACE".
+          preventDefault suppresses the native click-on-keyup too, so one press
+          is one press. */}
       <button
+        type="button"
         onMouseDown={keying.beginPress}
         onMouseUp={keying.endPress}
         onMouseLeave={keying.endPress}
         onTouchStart={(e) => { e.preventDefault(); keying.beginPress(); }}
         onTouchEnd={(e) => { e.preventDefault(); keying.endPress(); }}
+        onKeyDown={(e) => {
+          if (!isPressKey(e)) return;
+          e.preventDefault();
+          if (!e.repeat) keying.beginPress();
+        }}
+        onKeyUp={(e) => {
+          if (!isPressKey(e)) return;
+          e.preventDefault();
+          keying.endPress();
+        }}
         className={`w-full select-none py-6 rounded-lg border-2 font-mono text-base transition-colors ${
           keying.pressing ? 'border-port-accent bg-port-accent/20 text-port-accent' : 'border-port-border bg-port-bg text-gray-400 hover:border-port-accent'
         }`}

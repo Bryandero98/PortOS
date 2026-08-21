@@ -175,13 +175,16 @@ export default function Modal({
   panelClassName = '',
   ariaLabelledBy,
   ariaLabel,
+  initialFocusRef,
 }) {
   const backdropRef = useRef(null);
   const dialogRef = useRef(null);
   // Trap keyboard focus inside the dialog while open, then restore it to the
   // element that opened the modal (WCAG 2.4.3 / 2.1.2). Runs for every Modal
-  // regardless of the Esc/backdrop opt-outs.
-  useFocusTrap(open, dialogRef);
+  // regardless of the Esc/backdrop opt-outs. Focus otherwise lands on the first
+  // focusable descendant — usually a header Close button, which is wrong for a
+  // dialog whose own content owns the keyboard: pass `initialFocusRef` to aim it.
+  useFocusTrap(open, dialogRef, { initialFocusRef });
   // `useId()` is React's render-safe stable id source — survives StrictMode's
   // double-invoke without allocating extra ids the way a `modalIdSeq++`
   // module-scope counter would.
