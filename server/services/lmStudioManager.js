@@ -569,10 +569,14 @@ async function runLms(args, { timeoutMs }) {
   if (!binary) {
     return {
       success: false,
-      error: "LM Studio's \`lms\` CLI is not on PortOS's PATH. Open LM Studio once and run \`lms bootstrap\`, or use the app's Developer tab."
+      error: "LM Studio's `lms` CLI is not on PortOS's PATH. Open LM Studio once and run `lms bootstrap`, or use the app's Developer tab."
     }
   }
-  const label = `\`lms ${args.filter((a) => !a.startsWith('-')).join(' ')}\``
+  // Name the SUBCOMMAND in the error, not the whole argv — a flag's value
+  // ("8192") is not a flag and would otherwise land in the message as if it were
+  // part of the command the user should run.
+  const flagAt = args.findIndex((a) => a.startsWith('-'))
+  const label = `\`lms ${args.slice(0, flagAt === -1 ? args.length : flagAt).join(' ')}\``
   const result = await bufferedSpawn(binary, args, { timeoutMs, shell: false })
   resetCache()
   if (result.timedOut) return { success: false, error: `${label} timed out after ${Math.round(timeoutMs / 1000)}s` }

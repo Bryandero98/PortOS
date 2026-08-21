@@ -140,7 +140,10 @@ const envSignature = (env) => Object.entries(env || {})
  * describe two different daemons.
  */
 function rememberAppliedEnv(env, identity) {
-  appliedLaunchEnv = envSignature(env)
+  // `null` (nothing recorded), never `''` — the latch below tests
+  // `appliedLaunchEnv !== null` to mean "we know what this daemon holds", and an
+  // empty-string stand-in for "unknown" would claim knowledge we do not have.
+  appliedLaunchEnv = env ? envSignature(env) : null
   // A restart that named no window leaves Ollama on its VRAM-based auto-pick,
   // which is not a window PortOS can claim — so the context latch is cleared
   // rather than crediting the new process with the old one's window.
