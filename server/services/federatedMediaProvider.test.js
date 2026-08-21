@@ -669,11 +669,13 @@ describe('federated media provider — prompt-free status and projection payload
     expect(audioCap).toMatchObject({
       frameStride: null,
       maxNumFrames: null,
+      frameOptions: null,
       resolutionOptions: null,
     });
     expect(videoCap).toMatchObject({
       frameStride: 4,
       maxNumFrames: 121,
+      frameOptions: [25, 49, 73, 97, 121],
       resolutionOptions: [{ label: '1344x768 (16:9)', w: 1344, h: 768 }],
     });
   });

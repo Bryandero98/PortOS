@@ -113,7 +113,7 @@ describe('federated media status kind projection', () => {
     })).success).toBe(false);
   });
 
-  it('validates capabilities with frameStride, maxNumFrames, and resolutionOptions', () => {
+  it('validates capabilities with frameStride, maxNumFrames, frameOptions, and resolutionOptions', () => {
     const capability = {
       kind: 'video',
       engine: 'local',
@@ -133,6 +133,7 @@ describe('federated media status kind projection', () => {
       autoDuration: false,
       frameStride: 4,
       maxNumFrames: 121,
+      frameOptions: [25, 49, 73, 97, 121],
       resolutionOptions: [{ w: 1344, h: 768, label: '16:9 H3 default' }],
     };
 

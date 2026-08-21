@@ -223,6 +223,7 @@ async function configuredAudioCapabilities(config) {
       autoDuration: engine?.autoDuration === true,
       frameStride: null,
       maxNumFrames: null,
+      frameOptions: null,
       resolutionOptions: null,
       _engine: engine,
       _model: model,
@@ -289,6 +290,9 @@ async function localGeneratorCapabilities(kind, pythonPath, { models, configured
       maxNumFrames: Number.isFinite(model?.maxNumFrames) && Number(model.maxNumFrames) > 0
         ? Number(model.maxNumFrames)
         : (Array.isArray(model?.frameOptions) && model.frameOptions.length ? Math.max(...model.frameOptions) : null),
+      frameOptions: Array.isArray(model?.frameOptions) && model.frameOptions.length > 0
+        ? model.frameOptions.filter(Number.isFinite)
+        : null,
       resolutionOptions: Array.isArray(model?.resolutionOptions) && model.resolutionOptions.length > 0
         ? model.resolutionOptions.map(({ label, w, h }) => ({
             w: Number(w),

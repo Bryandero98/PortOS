@@ -170,6 +170,7 @@ export const federatedMediaCapabilitySchema = z.object({
   autoDuration: z.boolean(),
   frameStride: z.number().int().positive().nullable().optional(),
   maxNumFrames: z.number().int().positive().nullable().optional(),
+  frameOptions: z.array(z.number().int().positive()).max(100).nullable().optional(),
   resolutionOptions: z.array(z.object({
     w: z.number().int().min(64).max(4096),
     h: z.number().int().min(64).max(4096),

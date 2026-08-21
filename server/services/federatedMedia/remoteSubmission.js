@@ -26,37 +26,55 @@ export function negotiateVideoConstraints(request, capability) {
 
   // Frame constraint negotiation (issue #4681)
   if (negotiated.numFrames !== undefined) {
-    const frameStride = Number(capability.frameStride);
-    const maxNumFrames = Number(capability.maxNumFrames);
-    const hasStride = Number.isFinite(frameStride) && frameStride > 0;
-    const hasMax = Number.isFinite(maxNumFrames);
+    const requestedFrames = Number(negotiated.numFrames);
+    if (!Number.isFinite(requestedFrames) || requestedFrames < 1) {
+      throw new ServerError(
+        `Requested frame count (${requestedFrames}) is invalid for ${capability.modelName || capability.modelId}`,
+        { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
+      );
+    }
 
-    if (hasStride || hasMax) {
-      const requestedFrames = Number(negotiated.numFrames);
-      if (requestedFrames < 1) {
-        throw new ServerError(
-          `Requested frame count (${requestedFrames}) is invalid for ${capability.modelName || capability.modelId}`,
-          { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
-        );
-      }
-      let legalFrames = requestedFrames;
-      if (hasStride) {
-        legalFrames = Math.floor((legalFrames - 1) / frameStride) * frameStride + 1;
-      }
-      if (hasMax && legalFrames > maxNumFrames) {
-        legalFrames = hasStride
-          ? Math.floor((maxNumFrames - 1) / frameStride) * frameStride + 1
-          : maxNumFrames;
-      }
-      if (legalFrames < 1) {
+    if (Array.isArray(capability.frameOptions) && capability.frameOptions.length > 0) {
+      const legalOptions = capability.frameOptions
+        .filter((opt) => Number.isFinite(opt) && opt > 0 && opt <= requestedFrames)
+        .sort((a, b) => b - a);
+      const best = legalOptions[0];
+      if (!best) {
         throw new ServerError(
           `Requested frame count (${requestedFrames}) cannot be satisfied by ${capability.modelName || capability.modelId}`,
           { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
         );
       }
-      if (legalFrames !== requestedFrames) {
-        console.log(`🌐 Federated render: adjusted numFrames from ${requestedFrames} to ${legalFrames} for ${capability.modelName || capability.modelId}`);
-        negotiated = { ...negotiated, numFrames: legalFrames };
+      if (best !== requestedFrames) {
+        console.log(`🌐 Federated render: adjusted numFrames from ${requestedFrames} to ${best} for ${capability.modelName || capability.modelId}`);
+        negotiated = { ...negotiated, numFrames: best };
+      }
+    } else {
+      const frameStride = capability.frameStride != null ? Number(capability.frameStride) : null;
+      const maxNumFrames = capability.maxNumFrames != null ? Number(capability.maxNumFrames) : null;
+      const hasStride = frameStride !== null && Number.isFinite(frameStride) && frameStride > 0;
+      const hasMax = maxNumFrames !== null && Number.isFinite(maxNumFrames);
+
+      if (hasStride || hasMax) {
+        let legalFrames = requestedFrames;
+        if (hasStride) {
+          legalFrames = Math.floor((legalFrames - 1) / frameStride) * frameStride + 1;
+        }
+        if (hasMax && legalFrames > maxNumFrames) {
+          legalFrames = hasStride
+            ? Math.floor((maxNumFrames - 1) / frameStride) * frameStride + 1
+            : maxNumFrames;
+        }
+        if (legalFrames < 1) {
+          throw new ServerError(
+            `Requested frame count (${requestedFrames}) cannot be satisfied by ${capability.modelName || capability.modelId}`,
+            { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
+          );
+        }
+        if (legalFrames !== requestedFrames) {
+          console.log(`🌐 Federated render: adjusted numFrames from ${requestedFrames} to ${legalFrames} for ${capability.modelName || capability.modelId}`);
+          negotiated = { ...negotiated, numFrames: legalFrames };
+        }
       }
     }
   }
