@@ -94,6 +94,7 @@ const Agents = lazyWithReload(() => import('./pages/Agents'));
 const Uploads = lazyWithReload(() => import('./pages/Uploads'));
 const Settings = lazyWithReload(() => import('./pages/Settings'));
 const LocalLlmPlayground = lazyWithReload(() => import('./pages/LocalLlmPlayground'));
+const Models = lazyWithReload(() => import('./pages/Models'));
 const Shell = lazyWithReload(() => import('./pages/Shell'));
 const BrowserPage = lazyWithReload(() => import('./pages/Browser'));
 const Jira = lazyWithReload(() => import('./pages/Jira'));
@@ -309,7 +310,12 @@ export default function App() {
           <Route path="settings" element={<Navigate to="/settings/backup" replace />} />
           {/* Legacy /settings/contacts → Comms Messages → Contacts tab */}
           <Route path="settings/contacts" element={<Navigate to="/messages/contacts" replace />} />
+          {/* Local LLM management moved out of Settings into its own top-level
+              Models section (#4736). Bookmarks and stale ⌘K history keep working. */}
+          <Route path="settings/local-llm" element={<Navigate to="/models/llms" replace />} />
           <Route path="settings/:tab" element={<Settings />} />
+          <Route path="models" element={<Navigate to="/models/performance" replace />} />
+          <Route path="models/:tab" element={<Models />} />
           <Route path="local-llm/playground" element={<LocalLlmPlayground />} />
           <Route path="uploads" element={<Uploads />} />
           <Route path="shell" element={<Shell />} />

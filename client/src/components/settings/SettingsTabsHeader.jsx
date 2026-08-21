@@ -1,5 +1,4 @@
-import { useNavigate } from 'react-router';
-import TabPills from '../ui/TabPills';
+import RouteTabsHeader from '../ui/RouteTabsHeader';
 
 // Shared sub-nav for every page that lives under the sidebar's "Settings"
 // group. Settings.jsx hosts the in-Settings tabs (general/backup/etc.) and
@@ -19,7 +18,6 @@ export const TABS = [
   { id: 'database', label: 'Database', to: '/settings/database' },
   { id: 'embeddings', label: 'Embeddings', to: '/settings/embeddings' },
   { id: 'general', label: 'General', to: '/settings/general' },
-  { id: 'local-llm', label: 'Local LLMs', to: '/settings/local-llm' },
   { id: 'mortalloom', label: 'MortalLoom', to: '/settings/mortalloom' },
   { id: 'openclaw', label: 'OpenClaw', to: '/openclaw' },
   { id: 'prompts', label: 'Prompts', to: '/prompts' },
@@ -34,20 +32,5 @@ export const TABS = [
 ];
 
 export default function SettingsTabsHeader({ activeTab }) {
-  const navigate = useNavigate();
-
-  const handleChange = (tabId) => {
-    const target = TABS.find(t => t.id === tabId);
-    if (target) navigate(target.to);
-  };
-
-  return (
-    <TabPills
-      tabs={TABS}
-      activeTab={activeTab}
-      onChange={handleChange}
-      ariaLabel="Settings sections"
-      className="w-full min-w-0 shrink-0"
-    />
-  );
+  return <RouteTabsHeader tabs={TABS} activeTab={activeTab} ariaLabel="Settings sections" />;
 }

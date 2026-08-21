@@ -24,11 +24,6 @@ vi.mock('../../services/api', () => ({
 vi.mock('../../services/socket', () => ({
   default: { on: vi.fn(), off: vi.fn() },
 }));
-// The memory panel owns its own 5s poll + voice/TTS endpoints — irrelevant here.
-vi.mock('./MemoryManagement.jsx', () => ({ default: () => <div data-testid="memory-management" /> }));
-// Same for the assessments panel — it fetches its own report on mount and is
-// covered by LocalModelAssessments.test.jsx.
-vi.mock('./LocalModelAssessments.jsx', () => ({ default: () => <div data-testid="local-model-assessments" /> }));
 vi.mock('../ui/Toast', () => ({
   default: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
 }));
@@ -454,6 +449,34 @@ describe('LocalLlmTab llama-server management', () => {
         model: 'models/my-model.gguf',
       }));
     });
+  });
+
+  // An untouched tuning field means "llama.cpp's default", which is not a value
+  // PortOS can name. Sending `''` (which the server coerces to 0) or a made-up
+  // number would pin a setting the user never chose and make two "default"
+  // launches incomparable.
+  it('omits an untouched tuning flag from the launch payload entirely', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
+    startLlamaServer.mockResolvedValueOnce({ success: true, pid: 99 });
+
+    await renderTab();
+    await screen.findByText(/Launch Speculative Decoding Server/);
+    await waitFor(() => expect(screen.queryByText(/Enter a Target Base Model path to enable Start/)).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: /Advanced options/ }));
+    fireEvent.change(screen.getByLabelText('Micro-batch (-ub)'), { target: { value: '512' } });
+    fireEvent.click(screen.getByRole('button', { name: /Start Speculative Server/ }));
+
+    await waitFor(() => expect(startLlamaServer).toHaveBeenCalled());
+    const payload = startLlamaServer.mock.calls[0][0];
+    expect(payload.ubatchSize).toBe(512);
+    for (const untouched of ['batchSize', 'threads', 'cacheTypeK', 'cacheTypeV']) {
+      expect(payload, untouched).not.toHaveProperty(untouched);
+    }
+    // A boolean has no "unset" spelling, so it does travel — as `false`, which
+    // is what leaves `--flash-attn` off the line.
+    expect(payload.flashAttn).toBe(false);
   });
 
   // The preset select mounts pre-selected, so the form must mount pre-filled too —

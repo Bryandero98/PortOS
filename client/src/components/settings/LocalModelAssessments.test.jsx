@@ -8,7 +8,7 @@ vi.mock('../../services/api', () => ({
   deleteLocalLlmAssessment: vi.fn(),
 }));
 
-vi.mock('../ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('../ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
 
 // Per-sample run progress arrives on the shared `localLlm:progress` socket
 // event; the tests below replay frames through the registered handler.
@@ -31,8 +31,25 @@ const report = (overrides = {}) => ({
   readError: null,
   ranked: [],
   excluded: [],
+  runtimes: RUNTIMES,
+  tuningComparison: [],
+  uninstalled: [],
   ...overrides,
 });
+
+// The runtime roster is server-derived — label, reachability, and the knob
+// catalog all ride on the report, so the panel has no hardcoded backend list to
+// drift from.
+const RUNTIMES = [
+  { id: 'ollama', label: 'Ollama', managed: true, modelCount: 1, error: null, tuningSpecs: [
+    { id: 'numCtx', label: 'Context size', type: 'number', applies: 'request', min: 512, max: 1048576, unit: 'tokens', hint: 'Sent with the request.' },
+  ] },
+  { id: 'llama', label: 'llama.cpp', managed: false, modelCount: 3, error: null, tuningSpecs: [
+    { id: 'ubatchSize', label: 'Micro-batch size', type: 'number', applies: 'launch', min: 1, max: 8192, hint: 'Physical micro-batch.' },
+    { id: 'flashAttn', label: 'Flash attention', type: 'boolean', applies: 'launch', hint: 'Fused attention kernel.' },
+  ] },
+  { id: 'mtplx', label: 'MTPLX', managed: false, modelCount: null, error: 'not reachable at http://127.0.0.1:8000/v1 (ECONNREFUSED)', tuningSpecs: [] },
+];
 
 const rankedEntry = (overrides = {}) => ({
   backend: 'ollama',
@@ -76,7 +93,7 @@ describe('LocalModelAssessments', () => {
     render(<LocalModelAssessments />);
     expect(await screen.findByText('example-model:7b')).toBeInTheDocument();
     expect(screen.getByText('120 chars/s')).toBeInTheDocument();
-    expect(screen.getByText('4k tokens')).toBeInTheDocument();
+    expect(screen.getByText('4K tokens')).toBeInTheDocument();
     // Resident size is measured by /api/ps and must survive into the ranked
     // entry — rendering "not measured" here would hide a real measurement.
     expect(screen.getByText('5.0 GB')).toBeInTheDocument();
@@ -111,11 +128,11 @@ describe('LocalModelAssessments', () => {
     expect(runLocalLlmAssessment).not.toHaveBeenCalled();
     expect(screen.getByText(/Measure this model\?/)).toBeInTheDocument();
     expect(screen.getByText(/3 times/)).toBeInTheDocument();
-    expect(screen.getByText(/512, 4k, 16k tokens of context/)).toBeInTheDocument();
+    expect(screen.getByText(/512, 4K, 16K tokens of context/)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /run assessment/i }));
     await waitFor(() => expect(runLocalLlmAssessment).toHaveBeenCalledWith(
-      { backend: 'ollama', modelId: 'example-model:7b' },
+      { backend: 'ollama', modelId: 'example-model:7b', tuning: {} },
       expect.objectContaining({ silent: true, signal: expect.any(AbortSignal) }),
     ));
   });
@@ -161,7 +178,7 @@ describe('LocalModelAssessments', () => {
 
     await user.click(await screen.findByRole('button', { name: /discard the measurement/i }));
     await waitFor(() => expect(screen.getByText(/Not yet measured \(1\)/)).toBeInTheDocument());
-    expect(deleteLocalLlmAssessment).toHaveBeenCalledWith('ollama', 'example-model:7b', { silent: true });
+    expect(deleteLocalLlmAssessment).toHaveBeenCalledWith('ollama', 'example-model:7b', '', { silent: true });
   });
 
   it('aborts an in-flight run when the user stops it, without toasting a failure', async () => {
@@ -323,5 +340,135 @@ describe('LocalModelAssessments', () => {
       unmount();
       expect(socket.off).toHaveBeenCalledWith('localLlm:progress', expect.any(Function));
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Runtimes and launch tuning
+// ---------------------------------------------------------------------------
+
+describe('LocalModelAssessments — runtimes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getLocalLlmAssessments.mockResolvedValue(report());
+  });
+
+  it('lists every assessable runtime from the report, not a hardcoded set', async () => {
+    render(<LocalModelAssessments />);
+    for (const label of ['Ollama', 'llama.cpp', 'MTPLX']) {
+      expect(await screen.findByText(label)).toBeInTheDocument();
+    }
+  });
+
+  // A stopped daemon must not read as "0 models" — that says "nothing
+  // installed" when the fix is to start it.
+  it('shows an unreachable runtime as unreachable, never as zero models', async () => {
+    render(<LocalModelAssessments />);
+    expect(await screen.findByText('unreachable')).toBeInTheDocument();
+    expect(screen.getByText('1 model')).toBeInTheDocument();
+    expect(screen.getByText('3 models')).toBeInTheDocument();
+  });
+
+  it('names a runtime by its server-supplied label on a ranked row', async () => {
+    getLocalLlmAssessments.mockResolvedValue(report({
+      ranked: [rankedEntry({ backend: 'llama', modelId: 'dflash' })],
+    }));
+    render(<LocalModelAssessments />);
+    expect(await screen.findByText('dflash')).toBeInTheDocument();
+    // Once in the roster, once on the row.
+    expect(screen.getAllByText('llama.cpp').length).toBeGreaterThan(1);
+  });
+});
+
+describe('LocalModelAssessments — tuning', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getLocalLlmAssessments.mockResolvedValue(report({
+      unassessed: [{ backend: 'llama', modelId: 'dflash', params: null }],
+    }));
+  });
+
+  it('sends the knobs the user set with the run', async () => {
+    runLocalLlmAssessment.mockResolvedValue({ verdict: 'fits', tuningApplied: true });
+    const user = userEvent.setup();
+    render(<LocalModelAssessments />);
+    await user.click(await screen.findByRole('button', { name: /Measure/ }));
+    await user.click(await screen.findByRole('button', { name: /Tuning/ }));
+    await user.type(screen.getByLabelText('Micro-batch size'), '512');
+    await user.click(screen.getByRole('button', { name: 'Run assessment' }));
+    await waitFor(() => expect(runLocalLlmAssessment).toHaveBeenCalledWith(
+      { backend: 'llama', modelId: 'dflash', tuning: { ubatchSize: 512 } },
+      expect.objectContaining({ silent: true }),
+    ));
+  });
+
+  // An empty field means "leave the daemon on its own default". Sending 0 would
+  // pin a value the user never chose.
+  it('omits an untouched knob rather than sending a zero', async () => {
+    runLocalLlmAssessment.mockResolvedValue({ verdict: 'fits', tuningApplied: true });
+    const user = userEvent.setup();
+    render(<LocalModelAssessments />);
+    await user.click(await screen.findByRole('button', { name: /Measure/ }));
+    await user.click(await screen.findByRole('button', { name: /Tuning/ }));
+    await user.click(screen.getByRole('button', { name: 'Run assessment' }));
+    await waitFor(() => expect(runLocalLlmAssessment).toHaveBeenCalledWith(
+      expect.objectContaining({ tuning: {} }),
+      expect.anything(),
+    ));
+  });
+
+  it('says what PortOS can and cannot set for each knob', async () => {
+    const user = userEvent.setup();
+    render(<LocalModelAssessments />);
+    await user.click(await screen.findByRole('button', { name: /Measure/ }));
+    await user.click(await screen.findByRole('button', { name: /Tuning/ }));
+    expect(screen.getAllByText(/puts this on the launch line/).length).toBe(2);
+  });
+
+  it('warns instead of celebrating when the tuning never reached the daemon', async () => {
+    runLocalLlmAssessment.mockResolvedValue({
+      verdict: 'fits', tuningApplied: false, tuningNotApplied: 'llama-server is not running',
+    });
+    const user = userEvent.setup();
+    render(<LocalModelAssessments />);
+    await user.click(await screen.findByRole('button', { name: /Measure/ }));
+    await user.click(screen.getByRole('button', { name: 'Run assessment' }));
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(expect.stringMatching(/tuning not applied/)));
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+});
+
+describe('LocalModelAssessments — tuning comparison', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('shows each tuning against the winner once a model has two', async () => {
+    getLocalLlmAssessments.mockResolvedValue(report({
+      tuningComparison: [{
+        backend: 'llama',
+        modelId: 'dflash',
+        best: { tuning: { ubatchSize: 512 }, label: 'Micro-batch size 512', charsPerSecond: 120 },
+        variants: [
+          { tuning: { ubatchSize: 512 }, label: 'Micro-batch size 512', charsPerSecond: 120, deltaPercent: 100, maxWorkingContextTokens: 16384, assessedAt: null },
+          { tuning: {}, label: 'Backend defaults', charsPerSecond: 90, deltaPercent: 75, maxWorkingContextTokens: 16384, assessedAt: null },
+        ],
+      }],
+    }));
+    render(<LocalModelAssessments />);
+    expect(await screen.findByText('Tuning comparison')).toBeInTheDocument();
+    expect(screen.getByText('Micro-batch size 512')).toBeInTheDocument();
+    expect(screen.getByText('75%')).toBeInTheDocument();
+  });
+
+  it('renders nothing when no model has been measured under two tunings', async () => {
+    getLocalLlmAssessments.mockResolvedValue(report());
+    render(<LocalModelAssessments />);
+    await screen.findByText('Ollama');
+    expect(screen.queryByText('Tuning comparison')).toBeNull();
+  });
+
+  it('labels an untuned reading as backend defaults, not as a blank', async () => {
+    getLocalLlmAssessments.mockResolvedValue(report({ ranked: [rankedEntry()] }));
+    render(<LocalModelAssessments />);
+    expect(await screen.findByText('backend defaults')).toBeInTheDocument();
   });
 });

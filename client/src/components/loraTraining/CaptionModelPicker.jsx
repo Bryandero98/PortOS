@@ -98,7 +98,7 @@ export default function CaptionModelPicker({ onChange }) {
       </select>
       {saving && <Loader2 className="w-3 h-3 animate-spin text-gray-400" />}
       {!models.length && (
-        <span className="text-[11px] text-port-warning flex items-center gap-1" title="Install a vision model (e.g. Qwen2.5-VL, LLaVA) from Settings → Local LLM">
+        <span className="text-[11px] text-port-warning flex items-center gap-1" title="Install a vision model (e.g. Qwen2.5-VL, LLaVA) from Models → LLMs">
           <AlertTriangle className="w-3 h-3" /> none installed
         </span>
       )}

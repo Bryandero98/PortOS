@@ -117,9 +117,9 @@ export function localBackendForProvider(provider) {
  * probe a port nothing is on and call a working setup broken. LM Studio has no
  * row there (nothing spawns OpenCode against it), so it carries its own.
  *
- * `manageUrl` is the client route that installs/starts it — the Local LLM
- * settings tab owns every one of these flows, so an unmet requirement links
- * there rather than duplicating the install UI on the Providers page.
+ * `manageUrl` is the client route that installs/starts it — the Models → LLMs
+ * page owns every one of these flows, so an unmet requirement links there
+ * rather than duplicating the install UI on the Providers page.
  */
 export const LOCAL_RUNTIMES = Object.freeze({
   llama: Object.freeze({
@@ -129,7 +129,7 @@ export const LOCAL_RUNTIMES = Object.freeze({
     // `llamaServerManager` resolves and starts.
     command: 'llama-server',
     defaultBaseUrl: opencodeLocalBaseUrl('llama'),
-    manageUrl: '/settings/local-llm',
+    manageUrl: '/models/llms',
     docsUrl: 'https://github.com/ggml-org/llama.cpp',
     // Named so an unmet check can say what the user still has to fetch. GGUF
     // weights are a separate download from the binary — the single most common
@@ -141,16 +141,16 @@ export const LOCAL_RUNTIMES = Object.freeze({
     label: 'Ollama',
     command: 'ollama',
     defaultBaseUrl: opencodeLocalBaseUrl('ollama'),
-    manageUrl: '/settings/local-llm',
+    manageUrl: '/models/llms',
     docsUrl: 'https://ollama.com/download',
-    modelsHint: 'Pull a model from Settings → Local LLM before an agent can use this provider.',
+    modelsHint: 'Pull a model from Models → LLMs before an agent can use this provider.',
   }),
   lmstudio: Object.freeze({
     id: 'lmstudio',
     label: 'LM Studio',
     command: 'lms',
     defaultBaseUrl: 'http://localhost:1234/v1',
-    manageUrl: '/settings/local-llm',
+    manageUrl: '/models/llms',
     docsUrl: 'https://lmstudio.ai/download',
     modelsHint: 'Download a model in LM Studio and start its local server.',
   }),
@@ -163,7 +163,7 @@ export const LOCAL_RUNTIMES = Object.freeze({
     // answer about it.
     command: 'docker',
     defaultBaseUrl: opencodeLocalBaseUrl('vllm'),
-    // No Local LLM tab entry — the weights and the compose project are an
+    // No Models → LLMs entry — the weights and the compose project are an
     // operator-owned ~20 GB prepare step, not something PortOS downloads.
     manageUrl: null,
     docsUrl: 'https://github.com/atomantic/PortOS/blob/main/docs/features/qwen38-rtx3090.md',
@@ -174,7 +174,7 @@ export const LOCAL_RUNTIMES = Object.freeze({
     label: 'MTPLX',
     command: 'mtplx',
     defaultBaseUrl: opencodeLocalBaseUrl('mtplx'),
-    // No Local LLM tab entry — MTPLX has no model catalog inside PortOS. The
+    // No Models → LLMs entry — MTPLX has no model catalog inside PortOS. The
     // one-click setup on the readiness checklist
     // (`services/localRuntimeSetup.js`) is what installs and starts it.
     manageUrl: null,
@@ -182,6 +182,32 @@ export const LOCAL_RUNTIMES = Object.freeze({
     modelsHint: 'Point the server at the Qwen MTP checkpoint you want; PortOS does not download weights.',
   }),
 });
+
+/**
+ * Local runtimes the measured-assessment feature can benchmark.
+ *
+ * Deliberately the same key space as `LOCAL_RUNTIMES` above, minus nothing:
+ * every local daemon PortOS knows how to *reach* is one it can also *measure*,
+ * because a measurement is just one bounded generation over the shared
+ * OpenAI-compatible wire protocol.
+ *
+ * The split below is about how PortOS gets to the model, not about how good the
+ * measurement is:
+ *   - MANAGED — PortOS keeps a provider record and an installed-model catalog
+ *     for it, so a run goes through the playground's provider path and lands in
+ *     `/runs`.
+ *   - ENDPOINT — a bare loopback daemon the user (or PortOS's llama-server
+ *     launcher) started. Its "installed models" are whatever `GET /v1/models`
+ *     reports right now, and a measurement talks to the endpoint directly.
+ */
+export const ASSESSABLE_RUNTIMES = Object.freeze(['ollama', 'lmstudio', 'llama', 'mtplx', 'vllm']);
+
+/** Assessable runtimes PortOS holds a provider record and model catalog for. */
+export const MANAGED_ASSESSMENT_BACKENDS = Object.freeze(['ollama', 'lmstudio']);
+
+/** True for an assessable runtime reached as a bare OpenAI-compatible endpoint. */
+export const isEndpointRuntime = (id) =>
+  ASSESSABLE_RUNTIMES.includes(id) && !MANAGED_ASSESSMENT_BACKENDS.includes(id);
 
 /**
  * Normalize a base URL to the `/v1` root an OpenAI-compatible probe needs.
@@ -270,7 +296,7 @@ export function localRuntimeForProvider(provider) {
   // however local its name/id looks. An `LM Studio <box>` provider pointed
   // at a LAN host still matched `lmstudio` by NAME, and the card answered
   // "LM Studio installed — `lms` is on PortOS's PATH" and "start it from
-  // Settings → Local LLM" about a server PortOS neither runs nor can start.
+  // Models → LLMs" about a server PortOS neither runs nor can start.
   // An external API endpoint is assumed to be set up by whoever runs it; the
   // only honest report here is none.
   if (!isLocalInstanceEndpoint(endpoint)) return null;

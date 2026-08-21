@@ -6,7 +6,7 @@ import { __resetOllamaRegistryCache } from './ollamaRegistryCatalog.js'
 // consults it before the network — so without this mock these tests read the
 // developer's live `data/cache/huggingface-repos.json`. The fixtures below use
 // real repo ids (bartowski/…, facebook/musicgen-small, nomic-ai/…) that this very
-// feature caches the moment anyone opens Settings → Local LLM, so a cached record
+// feature caches the moment anyone opens Models → LLMs, so a cached record
 // would bypass the `fetch` mock entirely and fail assertions locally while CI —
 // with no cache file — stayed green. Mocking also keeps the debounced writer from
 // ever persisting these fabricated records (a 13 GB `Qwen3.6-35B`, `burst-pub/…`)

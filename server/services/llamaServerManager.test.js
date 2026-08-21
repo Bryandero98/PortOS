@@ -3,6 +3,7 @@ import {
   getLlamaServerStatus,
   startLlamaServer,
   stopLlamaServer,
+  relaunchLlamaServerWithTuning,
   installLlamaServer,
   _resetLlamaServerStateForTests,
   LLAMA_APP,
@@ -452,5 +453,92 @@ describe('llamaServerManager', () => {
     });
 
     await expect(installLlamaServer()).rejects.toThrow(/brew link --overwrite llama\.cpp/i);
+  });
+
+  // ---- tuning relaunch ----------------------------------------------------
+  // The sweep half of measured assessments: put new flags on the launch line
+  // between runs. Every failure mode here has to leave the daemon USABLE — it
+  // fronts the `llama` provider for the whole install.
+  describe('relaunchLlamaServerWithTuning', () => {
+    // The default harness pins the endpoint unreachable so lifecycle tests don't
+    // collide with a developer's real llama-server. These tests need a FAITHFUL
+    // probe instead: "reachable" has to track the fake PM2 process, or the
+    // relaunch can never observe the server it just started answering — and the
+    // new `online` check would report every success as not-applied.
+    const started = async () => {
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+      vi.spyOn(openAiModelsProbe, 'probeOpenAiModels')
+        .mockImplementation(async () => ({ reachable: pm2State?.status === 'online' }));
+      await startLlamaServer({ model: modelPath, port: PORTS.LLAMA_SERVER });
+    };
+
+    it('refuses when nothing is running — there is no model path to reuse', async () => {
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+      const result = await relaunchLlamaServerWithTuning({ ubatchSize: 512 });
+      expect(result.applied).toBe(false);
+      expect(result.reason).toMatch(/not running/);
+    });
+
+    it('refuses an empty tuning rather than restarting for no reason', async () => {
+      await started();
+      execPm2Calls = [];
+      const result = await relaunchLlamaServerWithTuning({});
+      expect(result.applied).toBe(false);
+      expect(execPm2Calls).toEqual([]);
+    });
+
+    it('puts the knobs on the new launch line, keeping the model it was serving', async () => {
+      await started();
+      execPm2Calls = [];
+      const result = await relaunchLlamaServerWithTuning({ ubatchSize: 512, flashAttn: true });
+      expect(result.applied).toBe(true);
+      const start = execPm2Calls.find((c) => c[0] === 'start');
+      expect(start).toContain('-ub');
+      expect(start[start.indexOf('-ub') + 1]).toBe('512');
+      expect(start).toContain('--flash-attn');
+      expect(start[start.indexOf('-m') + 1]).toBe(modelPath);
+    });
+
+    // A sweep is EXPECTED to produce launch lines llama.cpp rejects. Leaving the
+    // daemon down would break every later request, not just this measurement.
+    it('restores the previous configuration when the tuned launch line exits', async () => {
+      await started();
+      // The harness's fake, captured as a raw function — re-spying and calling
+      // `pm2Module.execPm2` would re-enter this wrapper and blow the stack.
+      const fakeExec = pm2Module.execPm2.getMockImplementation();
+      let starts = 0;
+      vi.spyOn(pm2Module, 'execPm2').mockImplementation(async (args) => {
+        // Fail only the FIRST start after the relaunch (the tuned one); the
+        // restore that follows must succeed.
+        if (args[0] === 'start' && starts++ === 0) {
+          pm2State = { name: LLAMA_APP, status: 'errored', pid: null, args: [] };
+          execPm2Calls.push(args);
+          return { stdout: '', stderr: '' };
+        }
+        return fakeExec(args);
+      });
+      execPm2Calls = [];
+
+      const result = await relaunchLlamaServerWithTuning({ ubatchSize: 999999 });
+      expect(result.applied).toBe(false);
+      expect(result.reason).toMatch(/rejected that tuning/);
+      // The restore ran, and it carried the ORIGINAL model with no `-ub`.
+      const restore = execPm2Calls.filter((c) => c[0] === 'start').at(-1);
+      expect(restore).not.toContain('-ub');
+      expect(restore[restore.indexOf('-m') + 1]).toBe(modelPath);
+    });
+
+    // PM2 reporting `online` is not the same as the server answering. A daemon
+    // that never opened its port has not had the tuning applied in any sense a
+    // measurement could rest on.
+    it('reports not-applied when the relaunched server never answers', async () => {
+      await started();
+      // PM2 keeps reporting `online` while the endpoint stays silent — the exact
+      // split the check exists for.
+      vi.spyOn(openAiModelsProbe, 'probeOpenAiModels').mockResolvedValue({ reachable: false });
+      const result = await relaunchLlamaServerWithTuning({ ubatchSize: 512 });
+      expect(result.applied).toBe(false);
+      expect(result.reason).toMatch(/never answered/);
+    });
   });
 });

@@ -18,14 +18,14 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Gauge, RefreshCw, Trash2, Play, AlertTriangle, History } from 'lucide-react';
+import { Gauge, RefreshCw, Trash2, Play, AlertTriangle, History, SlidersHorizontal, ChevronDown, ChevronUp } from 'lucide-react';
 import socket from '../../services/socket';
 import Modal from '../ui/Modal';
 import BrailleSpinner from '../BrailleSpinner';
 import toast from '../ui/Toast';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import useMounted from '../../hooks/useMounted';
-import { formatDurationMs } from '../../utils/formatters';
+import { formatContextLength, formatDurationMs } from '../../utils/formatters';
 import {
   getLocalLlmAssessments, runLocalLlmAssessment, deleteLocalLlmAssessment,
 } from '../../services/api';
@@ -37,7 +37,20 @@ const INTENTS = [
   { id: 'lightweight', label: 'Lightweight', blurb: 'Favors the smallest resident footprint — room left for other work.' },
 ];
 
-const BACKEND_LABEL = { ollama: 'Ollama', lmstudio: 'LM Studio' };
+// Fallback labels only. The authoritative roster (label, reachability, knob
+// catalog) rides on the report as `runtimes` — a hardcoded list here would drift
+// the moment the server learns a sixth runtime.
+const BACKEND_LABEL = {
+  ollama: 'Ollama', lmstudio: 'LM Studio', llama: 'llama.cpp', mtplx: 'MTPLX', vllm: 'vLLM',
+};
+
+// What PortOS can actually DO with a knob, spelled out next to it. A knob it
+// cannot set must never look like one it did.
+const APPLIES_NOTE = {
+  launch: 'PortOS puts this on the launch line and relaunches the server.',
+  request: 'Sent with each measurement request.',
+  record: 'PortOS cannot set this — recorded so two readings stay comparable.',
+};
 
 const VERDICT_META = {
   fits: { label: 'Fits', cls: 'text-emerald-400 border-emerald-400/50' },
@@ -48,7 +61,20 @@ const VERDICT_META = {
 
 const AXIS_LABEL = { capability: 'Capability', speed: 'Speed', fidelity: 'Context stability', memory: 'Memory headroom' };
 
-const formatContext = (tokens) => (tokens >= 1024 ? `${Math.round(tokens / 1024)}k` : String(tokens));
+// The shared formatter, minus its standalone-badge suffix — the prose around
+// every call site here already says "tokens of context".
+const formatContext = (tokens) => formatContextLength(tokens, { suffix: '' });
+
+const backendLabel = (report, id) =>
+  report?.runtimes?.find((r) => r.id === id)?.label || BACKEND_LABEL[id] || id;
+
+const specsFor = (report, id) => report?.runtimes?.find((r) => r.id === id)?.tuningSpecs || [];
+
+// An empty field means "leave the daemon on its own default", so it is dropped
+// rather than sent as 0/false — the server applies the same rule.
+const compactTuning = (draft) => Object.fromEntries(
+  Object.entries(draft || {}).filter(([, v]) => v !== '' && v !== null && v !== undefined)
+);
 
 // `null` is NOT MEASURED and must render as such — never as 0, and never as a
 // dash the reader could mistake for "measured, none".
@@ -79,11 +105,80 @@ function VerdictPill({ verdict }) {
   );
 }
 
+/**
+ * One runtime's tuning knobs as a form.
+ *
+ * Every field starts EMPTY, which means "leave the daemon on its own default" —
+ * not zero. Pre-filling a number would silently pin a value the user never
+ * chose and make two "default" readings incomparable.
+ */
+function TuningFields({ specs, draft, onChange, disabled }) {
+  if (!specs.length) return null;
+  const set = (id, value) => onChange({ ...draft, [id]: value });
+  return (
+    <div className="space-y-2">
+      {specs.map((spec) => {
+        const fieldId = `tuning-${spec.id}`;
+        const value = draft[spec.id] ?? '';
+        return (
+          <div key={spec.id} className="grid grid-cols-[1fr_auto] gap-2 items-start">
+            <div className="min-w-0">
+              <label htmlFor={fieldId} className="text-xs text-gray-300">{spec.label}</label>
+              <p className="text-[10px] text-gray-500 leading-snug">{spec.hint}</p>
+              <p className="text-[10px] text-gray-600 leading-snug">{APPLIES_NOTE[spec.applies]}</p>
+            </div>
+            {spec.type === 'boolean' ? (
+              <input
+                id={fieldId}
+                type="checkbox"
+                disabled={disabled}
+                checked={value === true}
+                onChange={(e) => set(spec.id, e.target.checked ? true : '')}
+                className="mt-1 accent-port-accent"
+              />
+            ) : spec.type === 'enum' ? (
+              <select
+                id={fieldId}
+                disabled={disabled}
+                value={value}
+                onChange={(e) => set(spec.id, e.target.value)}
+                className="bg-port-bg border border-port-border rounded px-2 py-1 text-xs text-white w-28"
+              >
+                <option value="">default</option>
+                {spec.options.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            ) : (
+              <input
+                id={fieldId}
+                type="number"
+                inputMode="decimal"
+                disabled={disabled}
+                min={spec.min}
+                max={spec.max}
+                step={spec.step || 1}
+                placeholder="default"
+                value={value}
+                onChange={(e) => set(spec.id, e.target.value === '' ? '' : Number(e.target.value))}
+                className="bg-port-bg border border-port-border rounded px-2 py-1 text-xs text-white w-28"
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Consent gate. PortOS never calls a provider the user didn't knowingly ask for,
 // so this names the exact backend, model, and generation count before the first
 // request goes out — the same contract as the POST drill cache's fill modal.
-function AssessmentConsentModal({ target, contextTokens, onCancel, onConfirm, running, progress }) {
+function AssessmentConsentModal({
+  target, runtimeLabel, contextTokens, tuningSpecs, tuning, onTuningChange,
+  onCancel, onConfirm, running, progress,
+}) {
+  const [showTuning, setShowTuning] = useState(false);
   if (!target) return null;
+  const tunedCount = Object.keys(compactTuning(tuning)).length;
   return (
     <Modal open onClose={onCancel} size="sm" ariaLabel="Run local model assessment" closeOnBackdrop={!running}>
       <div className="bg-port-card border border-port-border rounded-lg p-5 space-y-4">
@@ -93,7 +188,7 @@ function AssessmentConsentModal({ target, contextTokens, onCancel, onConfirm, ru
         </div>
         <p className="text-sm text-gray-400">
           PortOS will run <span className="text-gray-200 font-mono break-all">{target.modelId}</span> on{' '}
-          <span className="text-gray-200">{BACKEND_LABEL[target.backend] || target.backend}</span>{' '}
+          <span className="text-gray-200">{runtimeLabel}</span>{' '}
           {contextTokens.length} time{contextTokens.length === 1 ? '' : 's'} — one short generation at each of{' '}
           {contextTokens.map(formatContext).join(', ')} tokens of context — and record what it measured.
         </p>
@@ -101,6 +196,37 @@ function AssessmentConsentModal({ target, contextTokens, onCancel, onConfirm, ru
           Nothing else on this page calls a model. This can take several minutes on a large model, and it
           loads the model into memory. The result stays on this machine and is never synced to a peer.
         </p>
+
+        {/* Tuning is opt-in and collapsed: the common case is "measure it as it
+            is", and an expanded knob wall would make that click look risky. A
+            tuned run is stored as its OWN record, so it never overwrites the
+            defaults reading it should be compared against. */}
+        {tuningSpecs.length > 0 && (
+          <div className="border border-port-border rounded-lg">
+            <button
+              type="button"
+              onClick={() => setShowTuning((v) => !v)}
+              disabled={running}
+              aria-expanded={showTuning}
+              className="w-full flex items-center justify-between gap-2 px-3 py-2 text-xs text-gray-300 hover:text-white transition-colors disabled:opacity-50"
+            >
+              <span className="flex items-center gap-1.5">
+                <SlidersHorizontal size={12} />
+                Tuning {tunedCount > 0 && <span className="text-port-accent">({tunedCount} set)</span>}
+              </span>
+              {showTuning ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            </button>
+            {showTuning && (
+              <div className="px-3 pb-3 space-y-2">
+                <p className="text-[10px] text-gray-500">
+                  Leave a field empty to use the runtime&apos;s own default. A tuned run is recorded
+                  separately, so you can compare it against the untuned one instead of replacing it.
+                </p>
+                <TuningFields specs={tuningSpecs} draft={tuning} onChange={onTuningChange} disabled={running} />
+              </div>
+            )}
+          </div>
+        )}
         {/* Live per-sample progress off the `localLlm:progress` socket event, so a
             multi-minute run reports which sample it is on instead of a bare spinner.
             Absent until the first frame arrives — never a fake 0%. */}
@@ -140,7 +266,7 @@ function AssessmentConsentModal({ target, contextTokens, onCancel, onConfirm, ru
   );
 }
 
-function RankedRow({ entry, onRemeasure, onDelete, busy }) {
+function RankedRow({ entry, runtimeLabel, onRemeasure, onDelete, busy }) {
   const perf = entry.performance || {};
   return (
     <div className="border border-port-border rounded-lg p-3 space-y-2">
@@ -148,10 +274,24 @@ function RankedRow({ entry, onRemeasure, onDelete, busy }) {
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm text-white font-mono break-all">{entry.modelId}</span>
-            <span className="text-[10px] text-gray-500">{BACKEND_LABEL[entry.backend] || entry.backend}</span>
+            <span className="text-[10px] text-gray-500">{runtimeLabel}</span>
             <VerdictPill verdict={entry.verdict} />
             <StalePill staleness={entry.staleness} />
+            {/* Which launch configuration this reading describes. Shown even for
+                an untuned run: "backend defaults" is a real answer, and leaving
+                it blank would read as "unknown configuration". */}
+            <span className="px-1.5 py-0.5 text-[10px] rounded border border-port-border text-gray-400">
+              {entry.tuningLabel || 'backend defaults'}
+            </span>
           </div>
+          {/* The numbers below describe SOME OTHER configuration when the launch
+              knobs never reached the daemon — say so rather than filing them
+              under the tuning that was asked for. */}
+          {entry.tuningApplied === false && entry.tuningNotApplied && (
+            <p className="text-[11px] text-port-warning mt-0.5">
+              Tuning was not applied — {entry.tuningNotApplied}. These numbers describe the configuration that was actually running.
+            </p>
+          )}
           <p className="text-xs text-gray-400 mt-1">{entry.explanation}</p>
           {entry.staleness?.stale && (
             <p className="text-[11px] text-port-warning mt-0.5">
@@ -171,7 +311,7 @@ function RankedRow({ entry, onRemeasure, onDelete, busy }) {
           <button
             onClick={() => onRemeasure(entry)}
             disabled={busy}
-            title="Measure again"
+            title="Measure again (and adjust tuning)"
             aria-label={`Measure ${entry.modelId} again`}
             className="p-1.5 text-gray-400 hover:text-white transition-colors disabled:opacity-50"
           >
@@ -243,11 +383,91 @@ function RankedRow({ entry, onRemeasure, onDelete, busy }) {
   );
 }
 
+/**
+ * Which launch tuning won, per model.
+ *
+ * Only rendered for models measured under two or more tunings — one reading is
+ * not a comparison, and presenting it as "the best tuning" would dress a single
+ * measurement up as a conclusion. The server enforces the same rule.
+ */
+function TuningComparison({ rows, runtimeLabelFor }) {
+  if (!rows?.length) return null;
+  return (
+    <div className="space-y-2">
+      <h3 className="text-xs font-medium text-gray-400">Tuning comparison</h3>
+      <p className="text-[11px] text-gray-500">
+        Throughput of each launch configuration, relative to the best one measured for that model.
+      </p>
+      {rows.map((row) => (
+        <div key={`${row.backend}:${row.modelId}`} className="border border-port-border rounded-lg p-3 space-y-1.5">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-white font-mono break-all">{row.modelId}</span>
+            <span className="text-[10px] text-gray-500">{runtimeLabelFor(row.backend)}</span>
+          </div>
+          {row.variants.map((variant, index) => (
+            <div key={variant.label} className="grid grid-cols-[1fr_auto] gap-2 items-center text-[11px]">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className={index === 0 ? 'text-emerald-400' : 'text-gray-300'}>{variant.label}</span>
+                  {index === 0 && <span className="text-[10px] text-emerald-400/70">best</span>}
+                </div>
+                <span className="inline-block w-full max-w-[220px] h-1.5 rounded bg-port-border overflow-hidden align-middle">
+                  <span
+                    className={`block h-full ${index === 0 ? 'bg-emerald-400' : 'bg-port-accent'}`}
+                    style={{ width: `${Math.max(2, Math.round(variant.deltaPercent ?? 0))}%` }}
+                  />
+                </span>
+              </div>
+              <div className="text-right text-gray-400 shrink-0">
+                {variant.charsPerSecond} chars/s
+                <span className="text-gray-600 ml-1.5">{variant.deltaPercent}%</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Every runtime PortOS can measure against, and whether it can be reached.
+ *
+ * `modelCount === null` means the listing FAILED, so the count is unknown — a
+ * stopped daemon must not render as "0 models", which reads as "nothing
+ * installed" when the fix is to start it.
+ */
+function RuntimeRoster({ runtimes }) {
+  if (!runtimes?.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {runtimes.map((runtime) => (
+        <span
+          key={runtime.id}
+          title={runtime.error || undefined}
+          className={`px-1.5 py-0.5 text-[10px] rounded border ${
+            runtime.error ? 'text-gray-500 border-port-border' : 'text-gray-300 border-port-accent/40'
+          }`}
+        >
+          {runtime.label}
+          <span className="ml-1 text-gray-600">
+            {runtime.modelCount === null ? 'unreachable' : `${runtime.modelCount} model${runtime.modelCount === 1 ? '' : 's'}`}
+          </span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export function LocalModelAssessments() {
   const [intent, setIntent] = useState('balanced');
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [pendingTarget, setPendingTarget] = useState(null);
+  // Tuning for the run being set up. Kept beside `pendingTarget` rather than
+  // inside the modal so re-measuring can pre-fill it from the existing record,
+  // and so it survives the collapse/expand of the tuning section.
+  const [tuningDraft, setTuningDraft] = useState({});
   // Per-sample progress for the run in flight. `null` = no frame yet, which is
   // rendered as "no progress bar" rather than as 0 of N.
   const [progress, setProgress] = useState(null);
@@ -309,7 +529,7 @@ export function LocalModelAssessments() {
     // That is OUR abort, not a failure, so swallow it here rather than letting
     // useAsyncAction toast an error the user just asked for.
     const result = await runLocalLlmAssessment(
-      { backend: target.backend, modelId: target.modelId },
+      { backend: target.backend, modelId: target.modelId, tuning: compactTuning(target.tuning) },
       { silent: true, signal: controller.signal },
     ).catch((err) => {
       if (controller.signal.aborted) return { cancelled: true };
@@ -323,30 +543,49 @@ export function LocalModelAssessments() {
   }, { errorMessage: 'Assessment failed' });
 
   const confirmRun = async () => {
-    const target = pendingTarget;
+    const target = { ...pendingTarget, tuning: compactTuning(tuningDraft) };
     activeTargetRef.current = target;
     setProgress(null);
     const result = await runAssessment(target);
     activeTargetRef.current = null;
     setProgress(null);
     setPendingTarget(null);
-// An aborted run recorded nothing on either side, so there is no verdict
-    // to report — marked `cancelled` by the abort catch above, or by the server
+    setTuningDraft({});
+    // An aborted run recorded nothing on either side, so there is no verdict to
+    // report — marked `cancelled` by the abort catch above, or by the server
     // when it saw the signal drop mid-run.
     if (result && !result.cancelled) {
       const verdict = VERDICT_META[result.verdict]?.label || result.verdict;
+      // A tuning that could not be applied means the verdict describes a
+      // different configuration — surface that at the point of the result
+      // rather than only in the row the user has to go find.
+      if (result.tuningApplied === false && result.tuningNotApplied) {
+        toast.warning(`${target.modelId}: ${verdict} — tuning not applied (${result.tuningNotApplied})`);
+        return;
+      }
       toast.success(`${target.modelId}: ${verdict}`);
     }
   };
 
   const [removeAssessment, removing] = useAsyncAction(async (entry) => {
-    await deleteLocalLlmAssessment(entry.backend, entry.modelId, { silent: true });
-    setReport((prev) => (prev ? {
-      ...prev,
-      ranked: prev.ranked.filter((r) => !(r.backend === entry.backend && r.modelId === entry.modelId)),
-      assessments: prev.assessments.filter((a) => !(a.backend === entry.backend && a.modelId === entry.modelId)),
-      unassessed: [...prev.unassessed, { backend: entry.backend, modelId: entry.modelId, params: null }],
-    } : prev));
+    const tuningKey = entry.tuningKey || '';
+    await deleteLocalLlmAssessment(entry.backend, entry.modelId, tuningKey, { silent: true });
+    const isDropped = (r) => r.backend === entry.backend && r.modelId === entry.modelId && (r.tuningKey || '') === tuningKey;
+    setReport((prev) => {
+      if (!prev) return prev;
+      const assessments = prev.assessments.filter((a) => !isDropped(a));
+      // The model only returns to "not yet measured" when its LAST tuning is
+      // gone — dropping one of several still leaves evidence for it.
+      const stillMeasured = assessments.some((a) => a.backend === entry.backend && a.modelId === entry.modelId);
+      return {
+        ...prev,
+        ranked: prev.ranked.filter((r) => !isDropped(r)),
+        assessments,
+        unassessed: stillMeasured
+          ? prev.unassessed
+          : [...prev.unassessed, { backend: entry.backend, modelId: entry.modelId, params: null }],
+      };
+    });
     return true;
   }, { errorMessage: 'Could not discard that measurement' });
 
@@ -357,6 +596,15 @@ export function LocalModelAssessments() {
     activeTargetRef.current = null;
     setProgress(null);
     setPendingTarget(null);
+    setTuningDraft({});
+  };
+
+  // Re-measuring starts from the tuning that produced the existing record, so
+  // "run it again" reproduces the same configuration by default and adjusting
+  // one knob is a one-field edit rather than re-entering the whole set.
+  const openTarget = (entry) => {
+    setTuningDraft(entry?.tuning && typeof entry.tuning === 'object' ? { ...entry.tuning } : {});
+    setPendingTarget(entry);
   };
 
   const busy = running || removing;
@@ -383,9 +631,13 @@ export function LocalModelAssessments() {
       <p className="text-xs text-gray-500">
         The install catalog estimates fit from a model&apos;s file size. This measures it: one short
         generation at each of several context lengths, recording throughput, time to first token, and how
-        far throughput falls off as context grows. Results stay on this machine — they describe this
-        hardware, so they are never synced to a peer.
+        far throughput falls off as context grows — across every local runtime PortOS can reach
+        (Ollama, LM Studio, llama.cpp, MTPLX, vLLM). Measure a model under more than one launch tuning to
+        see which configuration this machine actually prefers. Results stay on this machine — they
+        describe this hardware, so they are never synced to a peer.
       </p>
+
+      <RuntimeRoster runtimes={report?.runtimes} />
 
       <div className="flex items-center gap-2 flex-wrap">
         <label htmlFor="assessment-intent" className="text-xs text-gray-400">Rank for</label>
@@ -414,7 +666,7 @@ export function LocalModelAssessments() {
           {report.listErrors?.length > 0 && (
             <p className="text-xs text-port-warning flex items-center gap-1.5" role="alert">
               <AlertTriangle size={12} />
-              Could not list installed models for {report.listErrors.map((b) => BACKEND_LABEL[b] || b).join(' and ')} —
+              Could not list installed models for {report.listErrors.map((b) => backendLabel(report, b)).join(', ')} —
               models there may be missing from this list.
             </p>
           )}
@@ -425,8 +677,9 @@ export function LocalModelAssessments() {
                 <RankedRow
                   key={`${entry.backend}:${entry.modelId}`}
                   entry={entry}
+                  runtimeLabel={backendLabel(report, entry.backend)}
                   busy={busy}
-                  onRemeasure={setPendingTarget}
+                  onRemeasure={openTarget}
                   onDelete={removeAssessment}
                 />
               ))}
@@ -451,6 +704,11 @@ export function LocalModelAssessments() {
             </div>
           )}
 
+          <TuningComparison
+            rows={report.tuningComparison}
+            runtimeLabelFor={(id) => backendLabel(report, id)}
+          />
+
           {report.unassessed?.length > 0 && (
             <div className="space-y-1">
               <h3 className="text-xs font-medium text-gray-400">
@@ -464,10 +722,10 @@ export function LocalModelAssessments() {
                   <div key={`${entry.backend}:${entry.modelId}`} className="flex items-center justify-between gap-2 text-xs">
                     <span className="text-gray-300 font-mono break-all min-w-0">
                       {entry.modelId}
-                      <span className="text-gray-600 ml-2">{BACKEND_LABEL[entry.backend] || entry.backend}</span>
+                      <span className="text-gray-600 ml-2">{backendLabel(report, entry.backend)}</span>
                     </span>
                     <button
-                      onClick={() => setPendingTarget(entry)}
+                      onClick={() => openTarget(entry)}
                       disabled={busy}
                       className="flex items-center gap-1 px-2 py-1 text-[11px] rounded border border-port-border text-gray-300 hover:border-port-accent hover:text-white transition-colors disabled:opacity-50 shrink-0"
                     >
@@ -483,7 +741,11 @@ export function LocalModelAssessments() {
 
       <AssessmentConsentModal
         target={pendingTarget}
+        runtimeLabel={backendLabel(report, pendingTarget?.backend)}
         contextTokens={report?.defaultContextTokens || []}
+        tuningSpecs={specsFor(report, pendingTarget?.backend)}
+        tuning={tuningDraft}
+        onTuningChange={setTuningDraft}
         running={running}
         progress={progress}
         onCancel={cancelRun}

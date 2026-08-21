@@ -34,7 +34,7 @@ Common port labels:
 | 5559 | portos-autofixer | api | Autofixer daemon API |
 | 5560 | portos-autofixer-ui | ui | Autofixer web UI |
 | 5561 | portos-db (Docker container) | - | Infrastructure dependency: PostgreSQL Docker container provisioned by `scripts/setup-db.js` / Docker Compose (not a PM2 process in `server/services/apps.js`; native mode uses system pg on 5432). |
-| 5568 | llama-server | - | Loopback speculative-decoding server managed from Settings → Local LLM |
+| 5568 | llama-server | - | Loopback speculative-decoding server managed from Models → LLMs |
 | 18020 | vLLM (Docker) | - | Loopback vLLM Qwen3.8-27B / DFlash 2 container on an RTX 3090 host. Operator-started (`docker compose --profile single up -d`) — PortOS never brings it up on boot. See [features/qwen38-rtx3090.md](./features/qwen38-rtx3090.md). |
 
 ## How `:5555`, `:5553`, and `:5554` Relate

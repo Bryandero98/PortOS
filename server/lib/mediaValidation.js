@@ -10,6 +10,7 @@
  */
 import { z } from 'zod';
 import { PORTS } from './ports.js';
+import { ASSESSABLE_RUNTIMES } from './localProviderRuntime.js';
 
 // OpenWorld snapshot pipeline (issue #877): how often to capture a city-state
 // frame and how many to retain. Validated as a settings slice on PUT /api/settings;
@@ -178,6 +179,17 @@ export const localLlmLlamaServerStartSchema = z.object({
   ctxSize: z.coerce.number().int().min(512).max(1048576).optional().default(32768),
   nGpuLayers: z.coerce.number().int().min(0).max(999).optional().default(99),
   alias: z.string().trim().max(100).optional().default('dflash'),
+  // Tuning flags. Every one defaults to null = NOT SET, so the flag is left off
+  // the launch line and llama.cpp applies its own default — a numeric default
+  // here would silently pin a value the user never chose. Ranges mirror
+  // `lib/localModelTuning.js`; keep them in lockstep.
+  batchSize: z.coerce.number().int().min(1).max(8192).optional().nullable().default(null),
+  ubatchSize: z.coerce.number().int().min(1).max(8192).optional().nullable().default(null),
+  threads: z.coerce.number().int().min(1).max(256).optional().nullable().default(null),
+  flashAttn: z.boolean().optional().default(false),
+  cacheTypeK: z.enum(['f16', 'q8_0', 'q4_0']).optional().nullable().default(null),
+  cacheTypeV: z.enum(['f16', 'q8_0', 'q4_0']).optional().nullable().default(null),
+  draftMax: z.coerce.number().int().min(0).max(64).optional().nullable().default(null),
 });
 // Speculative-decoding weight download: which curated preset, and which half of
 // the pair. Both are enum-ish server-owned ids — no path or repo ever arrives
@@ -203,19 +215,41 @@ export const localLlmTestSchema = localLlmPlaygroundOptionsSchema.extend({
   modelId: localLlmModelIdSchema,
   prompt: z.string().trim().min(1).max(50000),
 });
+// Assessments reach EVERY local runtime PortOS can talk to, not just the two it
+// installs models for — llama.cpp, MTPLX, and vLLM are bare OpenAI-compatible
+// daemons with no PortOS-side catalog. `localLlmBackendSchema` stays narrow
+// because install/delete/migrate genuinely only work on the managed pair.
+export const localLlmRuntimeSchema = z.enum(ASSESSABLE_RUNTIMES);
+// Tuning knobs are validated for SHAPE only (a flat map of scalars). Which keys
+// a runtime accepts, and their ranges, live in `lib/localModelTuning.js` — one
+// catalog, applied by `normalizeTuning`, rather than a Zod copy that would drift
+// from it. Unknown keys are dropped there, so a bogus key cannot reach a launch
+// line.
+export const localLlmTuningSchema = z.record(
+  z.string().max(64),
+  z.union([z.number(), z.boolean(), z.string().max(64)])
+).optional();
 // Measured local-model assessment (server/services/localModelAssessments.js). One
 // request runs ONE model across up to 5 nominal context sizes; the cap keeps a
 // single user click from turning into an unbounded, minutes-long provider job.
 // 131072 is the largest context any shipped local model advertises.
 export const localLlmAssessmentRunSchema = z.object({
-  backend: localLlmBackendSchema,
+  backend: localLlmRuntimeSchema,
   modelId: localLlmModelIdSchema,
   contextTokens: z.array(z.coerce.number().int().min(64).max(131072)).min(1).max(5).optional(),
+  tuning: localLlmTuningSchema,
 });
 export const localLlmAssessmentIntentSchema = z.object({
   intent: z.enum(['balanced', 'smartest', 'fastest', 'lightweight']).optional().default('balanced'),
 });
-export const localLlmAssessmentDeleteSchema = localLlmInstallSchema;
+// `tuningKey` identifies WHICH measurement of a model to drop — several can now
+// coexist, one per tuning. Absent/'' targets the backend-defaults record, which
+// is exactly what a pre-tuning client sends.
+export const localLlmAssessmentDeleteSchema = z.object({
+  backend: localLlmRuntimeSchema,
+  modelId: localLlmModelIdSchema,
+  tuningKey: z.string().max(500).optional().default(''),
+});
 
 export const localLlmCompareSchema = z.object({
   mode: z.enum(['round-robin', 'parallel']).optional().default('round-robin'),

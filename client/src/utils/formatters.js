@@ -381,18 +381,25 @@ export function formatDownloadGb(gb) {
  * Format a model context window (in tokens) compactly, e.g. 32768 → "32K ctx",
  * 131072 → "128K ctx", 1048576 → "1M ctx". Returns null for missing/invalid
  * values so callers can omit the label entirely.
+ *
+ * `suffix` is what follows the number. The default reads as a standalone badge;
+ * pass `''` when the surrounding prose already supplies the noun ("up to 32K
+ * tokens of context"), so the two spellings stay one implementation instead of
+ * a near-copy per caller.
+ *
  * @param {number|null|undefined} tokens
+ * @param {{ suffix?: string }} [options]
  * @returns {string|null}
  */
-export function formatContextLength(tokens) {
+export function formatContextLength(tokens, { suffix = ' ctx' } = {}) {
   const n = Number(tokens);
   if (!Number.isFinite(n) || n <= 0) return null;
   if (n >= 1024 * 1024) {
     const m = n / (1024 * 1024);
-    return `${parseFloat(m.toFixed(m % 1 ? 1 : 0))}M ctx`;
+    return `${parseFloat(m.toFixed(m % 1 ? 1 : 0))}M${suffix}`;
   }
-  if (n >= 1024) return `${Math.round(n / 1024)}K ctx`;
-  return `${n} ctx`;
+  if (n >= 1024) return `${Math.round(n / 1024)}K${suffix}`;
+  return `${n}${suffix}`;
 }
 
 /**

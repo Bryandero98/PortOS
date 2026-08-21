@@ -154,6 +154,14 @@ describe('formatContextLength', () => {
     expect(formatContextLength(1048576)).toBe('1M ctx');
   });
 
+  // Callers whose surrounding prose already says "tokens of context" drop the
+  // badge suffix rather than keeping a near-copy of this function.
+  it('drops the suffix when asked, across every magnitude bucket', () => {
+    expect(formatContextLength(512, { suffix: '' })).toBe('512');
+    expect(formatContextLength(4096, { suffix: '' })).toBe('4K');
+    expect(formatContextLength(1048576, { suffix: '' })).toBe('1M');
+  });
+
   it('returns null for missing/invalid values', () => {
     expect(formatContextLength(null)).toBeNull();
     expect(formatContextLength(undefined)).toBeNull();

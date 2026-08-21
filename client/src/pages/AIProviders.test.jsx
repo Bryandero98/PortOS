@@ -159,7 +159,7 @@ describe('AIProviders page load error handling', () => {
     expect(screen.getByRole('link', { name: /Install instructions/ })).toHaveAttribute('href', 'https://opencode.ai/docs');
   });
 
-  // Ollama / LM Studio keep their real installer on the Local LLM tab, so the
+  // Ollama / LM Studio keep their real installer on the Models → LLMs page, so the
   // provider card links there instead of streaming an install of its own — and
   // reads their state from the local-LLM status, which counts an installed app
   // with no CLI shim on PATH.
@@ -172,7 +172,7 @@ describe('AIProviders page load error handling', () => {
 
     renderPage();
 
-    expect(await screen.findByRole('link', { name: /Install LM Studio/ })).toHaveAttribute('href', '/settings/local-llm');
+    expect(await screen.findByRole('link', { name: /Install LM Studio/ })).toHaveAttribute('href', '/models/llms');
   });
 
   // `null` means the local-LLM status has not answered yet — offering an
@@ -304,11 +304,11 @@ describe('local-daemon readiness on the provider card', () => {
           kind: 'llama',
           label: 'llama.cpp',
           endpoint: 'http://127.0.0.1:5568/v1',
-          manageUrl: '/settings/local-llm',
+          manageUrl: '/models/llms',
           docsUrl: 'https://example.com/docs',
           ready: false,
           checks: [
-            { id: 'runtime', label: 'llama.cpp installed', ok: false, detail: 'not found', fixHint: 'Install llama.cpp from Settings → Local LLM.' },
+            { id: 'runtime', label: 'llama.cpp installed', ok: false, detail: 'not found', fixHint: 'Install llama.cpp from Models → LLMs.' },
             { id: 'server', label: 'llama.cpp server responding', ok: false, detail: 'nothing answered', fixHint: 'Install llama.cpp first, then start it.' },
           ],
         },
@@ -318,7 +318,7 @@ describe('local-daemon readiness on the provider card', () => {
     renderPage();
 
     expect(await screen.findByText(/llama\.cpp setup incomplete/)).toBeInTheDocument();
-    expect(screen.getByText(/Install llama\.cpp from Settings/)).toBeInTheDocument();
+    expect(screen.getByText(/Install llama\.cpp from Models/)).toBeInTheDocument();
     expect(screen.queryByText(/setup docs/i)).not.toBeInTheDocument();
   });
 
@@ -330,7 +330,7 @@ describe('local-daemon readiness on the provider card', () => {
           kind: 'llama',
           label: 'llama.cpp',
           endpoint: 'http://127.0.0.1:5568/v1',
-          manageUrl: '/settings/local-llm',
+          manageUrl: '/models/llms',
           ready: false,
           checks: [
             { id: 'runtime', label: 'llama.cpp installed', ok: true, detail: 'on PATH', fixHint: null },

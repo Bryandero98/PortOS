@@ -157,7 +157,7 @@ function runtimeCheck(runtime, { onPath, appInstalled, installed, reachable, set
         : `\`${runtime.command}\` was not found on PortOS's PATH.`;
   const fixHint = installed ? null
     : setupHint(setup, 'install')
-      || (runtime.manageUrl ? `Install ${runtime.label} from Settings → Local LLM.`
+      || (runtime.manageUrl ? `Install ${runtime.label} from Models → LLMs.`
         : `Use the setup button below to install ${runtime.label}.`);
   return { id: 'runtime', label: `${runtime.label} installed`, ok: installed, detail, fixHint };
 }
@@ -173,7 +173,7 @@ function serverCheck(runtime, { installed, result, setup }) {
       fixHint: null,
     };
   }
-  const start = `Start ${runtime.label}${runtime.manageUrl ? ' from Settings → Local LLM' : ''}.`;
+  const start = `Start ${runtime.label}${runtime.manageUrl ? ' from Models → LLMs' : ''}.`;
   const fallback = installed
     ? `${start} ${runtime.modelsHint}`
     : `Install ${runtime.label} first, then start it. ${runtime.modelsHint}`;
@@ -215,9 +215,9 @@ function modelCheck(runtime, wanted, served, probeError = null) {
     : `${runtime.label} is serving ${listed}${served.length > 3 ? ` +${served.length - 3} more` : ''}.`;
   const fixHint = served.length === 0
     ? (runtime.manageUrl
-      ? 'No model is loaded. Start a preset from Settings → Local LLM.'
+      ? 'No model is loaded. Start a preset from Models → LLMs.'
       : 'No model is loaded. Use the setup controls on this card to load one.')
-    : `This provider will send \`${wanted}\`, but the running server only accepts ${listed}. Use the button below to match them${runtime.manageUrl ? ', or change the loaded weights in Local LLM settings' : ''}.`;
+    : `This provider will send \`${wanted}\`, but the running server only accepts ${listed}. Use the button below to match them${runtime.manageUrl ? ', or change the loaded weights on the Models → LLMs page' : ''}.`;
   return {
     id: 'model',
     label,
@@ -256,7 +256,7 @@ export async function getProviderReadiness(provider, deps = {}) {
   const onPath = Boolean(runtime.command && findCommand(runtime.command));
   // LM Studio ships as a macOS app bundle whose `lms` shim the user opts into
   // separately, so PATH alone says "not installed" for a perfectly installed
-  // copy. The Local LLM tab already counts the bundle (`localLlm.getStatus`);
+  // copy. The Models → LLMs page already counts the bundle (`localLlm.getStatus`);
   // without the same signal here the card would render "LM Studio installed"
   // and "install LM Studio" two lines apart, and send the user after the wrong
   // fix — the real one is "start its server".

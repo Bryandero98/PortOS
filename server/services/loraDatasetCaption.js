@@ -162,7 +162,7 @@ export async function resolveCaptionModel({
     : null) || visionModels[0];
   if (!pick) {
     throw new ServerError(
-      'No vision-capable model is installed for captioning. Install one (e.g. Qwen2.5-VL, LLaVA, or Llama 3.2 Vision) from Settings → Local LLM, then pick it on the dataset.',
+      'No vision-capable model is installed for captioning. Install one (e.g. Qwen2.5-VL, LLaVA, or Llama 3.2 Vision) from Models → LLMs, then pick it on the dataset.',
       { status: 409, code: 'LORA_CAPTION_NO_VISION_MODEL' },
     );
   }

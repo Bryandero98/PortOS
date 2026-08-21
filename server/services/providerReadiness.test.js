@@ -35,7 +35,7 @@ describe('getProviderReadiness', () => {
   it('reports nothing — and probes nothing — for an API provider on another machine', async () => {
     // `LM Studio <peer>` matches the `lmstudio` runtime by NAME, so the card
     // used to answer "`lms` is on PortOS's PATH" and "start LM Studio from
-    // Settings → Local LLM" about a server running on someone else's box. An
+    // Models → LLMs" about a server running on someone else's box. An
     // external endpoint is assumed to be set up by whoever runs it.
     let probed = 0;
     let pathScans = 0;
@@ -122,7 +122,7 @@ describe('getProviderReadiness', () => {
     const model = checkById(readiness, 'model');
     expect(model.detail).toMatch(/no model loaded/);
     expect(model.servedModels).toEqual([]);
-    expect(model.fixHint).toMatch(/Local LLM/);
+    expect(model.fixHint).toMatch(/Models → LLMs/);
     expect(model.fixHint).not.toMatch(/button below/);
   });
 
@@ -178,7 +178,7 @@ describe('getProviderReadiness', () => {
   });
 
   it('counts an LM Studio app bundle as installed, so the card asks for a START not an install', async () => {
-    // The Local LLM tab already treats the macOS app bundle as installed. When
+    // The Models → LLMs page already treats the macOS app bundle as installed. When
     // this disagreed, one card rendered 'LM Studio installed' and 'Install LM
     // Studio' two lines apart — and the install was the wrong fix.
     const readiness = await getProviderReadiness(
@@ -191,7 +191,7 @@ describe('getProviderReadiness', () => {
   });
 
   it('offers a one-click install+start for MTPLX instead of a setup-doc dead end', async () => {
-    // The whole point of the setup button: MTPLX has no Local LLM tab entry,
+    // The whole point of the setup button: MTPLX has no Models → LLMs page entry,
     // so before it existed the only answer here was "go read the vendor docs".
     const restore = pinPlatform('darwin');
     const readiness = await getProviderReadiness(
