@@ -1,6 +1,6 @@
 import { StrictMode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
 // ── Mocks must be declared before any imports that use them ──────────────────
@@ -106,6 +106,9 @@ describe('MoodBoardDetail stale-response guards', () => {
       .mockReturnValueOnce(second.promise); // board 'b'
 
     const { rerender } = renderPage();
+    // GalleryImagePicker has mount work even while closed. Flush it before
+    // changing boards so its state cannot settle after this test finishes.
+    await act(async () => {});
     // The user navigates to board 'b' before board 'a' has resolved.
     currentId = 'b';
     rerender(<MemoryRouter><MoodBoardDetail /></MemoryRouter>);
