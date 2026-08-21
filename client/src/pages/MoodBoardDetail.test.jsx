@@ -106,9 +106,6 @@ describe('MoodBoardDetail stale-response guards', () => {
       .mockReturnValueOnce(second.promise); // board 'b'
 
     const { rerender } = renderPage();
-    // GalleryImagePicker has mount work even while closed. Flush it before
-    // changing boards so its state cannot settle after this test finishes.
-    await act(async () => {});
     // The user navigates to board 'b' before board 'a' has resolved.
     currentId = 'b';
     rerender(<MemoryRouter><MoodBoardDetail /></MemoryRouter>);
@@ -116,6 +113,9 @@ describe('MoodBoardDetail stale-response guards', () => {
     // Newer request resolves first — its data should show.
     second.resolve({ id: 'b', name: 'Board B', items: [] });
     await waitFor(() => expect(boardNameValue()).toBe('Board B'));
+    // GalleryImagePicker mounts with the loaded board and resets its filter
+    // state in a mount effect. Settle it before the unwrapped stale response.
+    await act(async () => {});
 
     // Older (stale) request resolves last — it must NOT overwrite current state.
     first.resolve({ id: 'a', name: 'Board A', items: [] });
