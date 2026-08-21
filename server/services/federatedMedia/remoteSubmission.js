@@ -42,16 +42,19 @@ export function negotiateVideoConstraints(request, capability) {
         .map(Number)
         .filter((opt) => Number.isInteger(opt) && opt >= 1 && opt <= 600 && (maxNumFrames === null || opt <= maxNumFrames))
         .sort((a, b) => a - b);
-      if (validOptions.length > 0) {
-        // Snap down to largest option <= requested; if below minimum option, snap UP to minimum legal option.
-        const optionsBelow = validOptions.filter((opt) => opt <= requestedFrames);
-        const best = optionsBelow.length > 0
-          ? optionsBelow[optionsBelow.length - 1]
-          : validOptions[0];
-        if (best !== requestedFrames) {
-          console.log(`🌐 Federated render: adjusted numFrames from ${requestedFrames} to ${best} for ${capability.modelName || capability.modelId}`);
-          negotiated = { ...negotiated, numFrames: best };
-        }
+      if (validOptions.length === 0) {
+        throw new ServerError(
+          `Requested frame count (${requestedFrames}) cannot be satisfied by ${capability.modelName || capability.modelId}`,
+          { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
+        );
+      }
+      // Discrete frameOptions models snap to nearestOption (consistent with local reconciler)
+      const best = validOptions.reduce((closest, opt) =>
+        Math.abs(opt - requestedFrames) < Math.abs(closest - requestedFrames) ? opt : closest,
+      validOptions[0]);
+      if (best !== requestedFrames) {
+        console.log(`🌐 Federated render: adjusted numFrames from ${requestedFrames} to ${best} for ${capability.modelName || capability.modelId}`);
+        negotiated = { ...negotiated, numFrames: best };
       }
     } else {
       const frameStride = capability.frameStride != null ? Number(capability.frameStride) : null;
@@ -61,24 +64,20 @@ export function negotiateVideoConstraints(request, capability) {
 
       if (hasStride || hasMax) {
         let legalFrames = requestedFrames;
+        const minLegal = hasStride ? frameStride + 1 : 1;
         if (hasStride) {
-          const minLegal = frameStride + 1;
+          // Continuous stride models snap down to n*stride + 1 per issue #4681 specification
+          // (never up, to avoid spending unbudgeted provider GPU compute on continuous ranges).
           legalFrames = Math.floor((legalFrames - 1) / frameStride) * frameStride + 1;
-          if (legalFrames < minLegal) {
-            throw new ServerError(
-              `Requested frame count (${requestedFrames}) cannot be satisfied by ${capability.modelName || capability.modelId} (minimum ${minLegal})`,
-              { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
-            );
-          }
         }
         if (hasMax && legalFrames > maxNumFrames) {
           legalFrames = hasStride
             ? Math.floor((maxNumFrames - 1) / frameStride) * frameStride + 1
             : maxNumFrames;
         }
-        if (legalFrames < 1) {
+        if (legalFrames < minLegal || legalFrames < 1) {
           throw new ServerError(
-            `Requested frame count (${requestedFrames}) cannot be satisfied by ${capability.modelName || capability.modelId}`,
+            `Requested frame count (${requestedFrames}) cannot be satisfied by ${capability.modelName || capability.modelId} (minimum ${minLegal})`,
             { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
           );
         }
@@ -133,7 +132,13 @@ export function negotiateVideoConstraints(request, capability) {
   }
 
   // Defensive validation against the wire schema bounds before persisting/returning
-  federatedMediaVideoJobSubmissionSchema.partial().parse(negotiated);
+  const validationResult = federatedMediaVideoJobSubmissionSchema.partial().safeParse(negotiated);
+  if (!validationResult.success) {
+    throw new ServerError(
+      `Negotiated video parameters violate schema: ${validationResult.error.message}`,
+      { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
+    );
+  }
 
   return negotiated;
 }

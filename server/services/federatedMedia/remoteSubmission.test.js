@@ -45,25 +45,39 @@ describe('negotiateVideoConstraints', () => {
     expect(negotiateVideoConstraints({ numFrames: 40 }, {}).numFrames).toBe(40);
   });
 
-  it('snaps numFrames down to the nearest discrete option when frameOptions is present', () => {
-    const capability = {
-      modelId: 'minimax_h3',
-      frameOptions: [107, 124, 141, 158],
-    };
-
-    expect(negotiateVideoConstraints({ numFrames: 121 }, capability).numFrames).toBe(107);
-    expect(negotiateVideoConstraints({ numFrames: 124 }, capability).numFrames).toBe(124);
-    expect(negotiateVideoConstraints({ numFrames: 130 }, capability).numFrames).toBe(124);
-    expect(negotiateVideoConstraints({ numFrames: 200 }, capability).numFrames).toBe(158);
-  });
-
-  it('snaps up to minimum frameOption when requested numFrames is below minimum option', () => {
+  it('snaps numFrames to the nearest discrete option when frameOptions is present', () => {
     const capability = {
       modelId: 'minimax_h3',
       frameOptions: [107, 124, 141, 158],
     };
 
     expect(negotiateVideoConstraints({ numFrames: 50 }, capability).numFrames).toBe(107);
+    expect(negotiateVideoConstraints({ numFrames: 121 }, capability).numFrames).toBe(124);
+    expect(negotiateVideoConstraints({ numFrames: 124 }, capability).numFrames).toBe(124);
+    expect(negotiateVideoConstraints({ numFrames: 130 }, capability).numFrames).toBe(124);
+    expect(negotiateVideoConstraints({ numFrames: 200 }, capability).numFrames).toBe(158);
+  });
+
+  it('rejects when maxNumFrames filters out all frameOptions', () => {
+    const capability = {
+      modelId: 'minimax_h3',
+      frameOptions: [107, 124, 141, 158],
+      maxNumFrames: 100,
+    };
+
+    expect(() => negotiateVideoConstraints({ numFrames: 50 }, capability))
+      .toThrow(/cannot be satisfied/);
+  });
+
+  it('rejects when maxNumFrames pushes stride count below minLegal', () => {
+    const capability = {
+      modelId: 'wan22',
+      frameStride: 8,
+      maxNumFrames: 5,
+    };
+
+    expect(() => negotiateVideoConstraints({ numFrames: 40 }, capability))
+      .toThrow(/cannot be satisfied.*minimum 9/);
   });
 
   it('snaps width and height to closest aspect ratio when resolutionOptions is present', () => {
