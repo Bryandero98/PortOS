@@ -15,12 +15,17 @@ import { fetchWithTimeout } from '../lib/fetchWithTimeout.js'
 import {
   dirIsMlx, selectPrimaryGguf, selectProjectorGguf, isShardedGguf, lmStudioPublisherRepo
 } from '../lib/localLlmDisk.js'
+import { bufferedSpawn } from '../lib/bufferedSpawn.js'
+import { findCommandOnPath } from '../lib/processEnv.js'
 
 const AVAILABILITY_CACHE_TTL_MS = 30_000
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 // Availability probe is short — if the local server is down we'd rather fail
 // fast and degrade to "no LM Studio" than block 30s on every cold check.
 const AVAILABILITY_PROBE_TIMEOUT_MS = 5_000
+// `lms server start|stop` only asks the already-installed app to flip its
+// listener — it never downloads anything, so a minute is generous.
+const LMS_CONTROL_TIMEOUT_MS = 60_000
 
 // Default LM Studio configuration
 const DEFAULT_CONFIG = {
@@ -501,6 +506,41 @@ function isAppInstalled() {
   return process.platform === 'darwin' && existsSync('/Applications/LM Studio.app')
 }
 
+/**
+ * Start or stop LM Studio's local OpenAI-compatible server via its own `lms` CLI.
+ *
+ * `lms` is LM Studio's CLI shim, installed by `lms bootstrap` from the app.
+ * Without it there is no headless way to drive the server, and pretending
+ * otherwise would report a success the user cannot see — so that case is a
+ * refusal naming the one command that fixes it.
+ *
+ * Resolves rather than throws (mirrors `controlOllamaServer`) so the route can
+ * turn a refusal into a 502 with the reason intact.
+ *
+ * @param {'start'|'stop'} action
+ */
+async function controlServer(action) {
+  if (action !== 'start' && action !== 'stop') {
+    return { success: false, error: `Unknown LM Studio action: ${action}` }
+  }
+  const binary = findCommandOnPath('lms')
+  if (!binary) {
+    return {
+      success: false,
+      error: "LM Studio's `lms` CLI is not on PortOS's PATH. Open LM Studio once and run `lms bootstrap`, or use the app's Developer tab."
+    }
+  }
+  const result = await bufferedSpawn(binary, ['server', action], { timeoutMs: LMS_CONTROL_TIMEOUT_MS, shell: false })
+  resetCache()
+  if (result.timedOut) return { success: false, error: `\`lms server ${action}\` timed out` }
+  if (!result.success) {
+    const detail = result.error?.message || String(result.stderr || result.stdout || '').trim().split(/\r?\n/).pop()
+    return { success: false, error: detail || `\`lms server ${action}\` exited with code ${result.code}` }
+  }
+  console.log(`📦 LM Studio server ${action === 'start' ? 'started' : 'stopped'}`)
+  return { success: true }
+}
+
 // ---- local-disk introspection / import (migrate fast-path) ------------------
 
 const dirExists = (p) => stat(p).then((s) => s.isDirectory()).catch(() => false)
@@ -816,6 +856,7 @@ async function importModelFromGguf({ lmstudioId, ggufPath, projectorPath, mode =
 
 export {
   checkLMStudioAvailable,
+  controlServer as controlLmStudioServer,
   getLoadedModels,
   getLastLoadedModelsError,
   getAvailableModels,

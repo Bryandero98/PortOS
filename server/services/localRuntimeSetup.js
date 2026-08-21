@@ -33,30 +33,27 @@
  *     optional `mtplx max --install` fan-control helper behind a sudo prompt.
  *     PortOS installs the package and starts the loopback API server; that
  *     helper stays an explicit operator action outside PortOS, exactly as
- *     `docs/features/mtplx.md` promised before this button existed.
+ *     `docs/features/mtplx.md` promised before this button existed. Both of
+ *     those steps are delegated to `mtplxServerManager.js`, so a server started
+ *     here is the same PM2 process (`portos-mtplx`) the Models → LLMs page can
+ *     stop, log, and persist across a reboot — the two surfaces cannot drift
+ *     onto different install commands or a daemon only one of them can see.
  *   - **The vLLM container is never provisioned.** Its start row brings up an
  *     already-prepared compose project and nothing else: no image pull, no
  *     weight download, no docker/WSL2/NVIDIA-toolkit install. A project that is
  *     not demonstrably prepared is refused with the command that prepares it.
  */
 
-import { IS_WIN32 } from '../lib/bufferedSpawn.js';
-import { spawn } from '../lib/childProcess.js';
-import { commandExists } from '../lib/commandExists.js';
-import { sleep } from '../lib/fileUtils.js';
 import { LOCAL_RUNTIMES, localEndpointPort } from '../lib/localProviderRuntime.js';
 import { describeMtplxCache, listMtplxCachedModels } from '../lib/mtplxModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { inspectVllmQwenProject, vllmStartBlockedReason } from '../lib/vllmQwenProject.js';
-import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
-import { createLineReader, createOutputTail } from '../lib/streamLines.js';
+import { findCommandOnPath } from '../lib/processEnv.js';
 import { runStreamingCommand } from '../lib/streamingSpawn.js';
 import { installLlamaServer } from './llamaServerManager.js';
+import { installMtplx, startMtplxServer, MTPLX_UNSUPPORTED_REASON } from './mtplxServerManager.js';
 import { controlOllamaServer, installBackend } from './localLlm.js';
 import { isAppInstalled as isLmStudioAppInstalled } from './lmStudioManager.js';
-
-/** Package-manager installs routinely run for minutes (a cask is a download). */
-const INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
 
 /** A short command that only asks a running daemon to do something. */
 const CONTROL_TIMEOUT_MS = 60 * 1000;
@@ -76,20 +73,10 @@ const WEIGHTS_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const PROGRESS_SPLIT_RE = /[\r\n]+/;
 
 /**
- * How long to wait for a just-started daemon to answer `/v1/models`. MTPLX
- * loads a multi-gigabyte MLX checkpoint before it binds, so this is sized for a
- * cold model load rather than for a socket coming up.
+ * How long a start step waits for a just-started daemon to answer. Sized for a
+ * cold multi-gigabyte model load, not for a socket coming up.
  */
-/**
- * Parked on a detached daemon's `error` once this module stops watching it. An
- * EventEmitter `error` with NO listener throws, which outside the request
- * lifecycle takes the PortOS process down — so the watchers are replaced, never
- * merely removed. Module-scope, so it closes over nothing.
- */
-const IGNORE_ERROR = () => {};
-
 const START_TIMEOUT_MS = 3 * 60 * 1000;
-const START_POLL_MS = 1_500;
 
 /**
  * Bound on the `GET /v1/models` reachability probes. Loopback answers (or
@@ -126,105 +113,6 @@ const ACTION_LABELS = {
 export const SETUP_ACTIONS = Object.freeze(Object.keys(ACTION_LABELS));
 
 /**
- * Spawn a long-lived local daemon and wait until its OpenAI-compatible endpoint
- * answers. Detached (own process group) so PortOS restarting does not take the
- * daemon down with it, and `unref`'d so a running daemon never holds the PortOS
- * process open. Output is streamed only during the startup window — a daemon's
- * steady-state request log is not install progress.
- */
-async function startDaemon({ command, args, endpoint, emit, isCancelled = () => false, timeoutMs = START_TIMEOUT_MS }) {
-  const binary = findCommandOnPath(command);
-  if (!binary) return { success: false, error: `\`${command}\` was not found on PortOS's PATH after the install. Restart PortOS so it picks up the new bin directory, then try again.` };
-
-  emit(`Starting: ${command} ${args.join(' ')}`);
-  const child = spawn(binary, args, safeChildProcessOptions({
-    env: safeChildProcessEnv(),
-    shell: false,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: !IS_WIN32,
-  }));
-
-  let exited = null;
-  // Recent output, so a daemon that dies before it binds reports what it
-  // printed rather than only its exit code.
-  const tail = createOutputTail();
-  const onLine = (line) => {
-    const text = line.trim();
-    if (!text) return;
-    tail.remember(text);
-    emit(text);
-  };
-  // One reader per stream: a shared carry buffer splices a half-written stdout
-  // line onto the next stderr chunk (see `lib/streamLines.js`).
-  const stdoutReader = createLineReader(onLine);
-  const stderrReader = createLineReader(onLine);
-  const onStdout = stdoutReader.push;
-  const onStderr = stderrReader.push;
-  child.stdout?.on('data', onStdout);
-  child.stderr?.on('data', onStderr);
-  // Outside the request lifecycle: an unhandled 'error' on a child is a process
-  // crash, and the exit code is what turns "still waiting" into a real reason.
-  const onError = (err) => { exited = `failed to start: ${err.message}`; };
-  const onExit = (code, signal) => {
-    if (exited === null) exited = `exited early (${signal || `code ${code}`})`;
-  };
-  child.on('error', onError);
-  child.on('exit', onExit);
-  /**
-   * Detach from the daemon, which outlives this request.
-   *
-   * Keep DRAINING: a daemon whose stdout pipe fills up blocks on its next
-   * write, and `resume()` on a listener-less stream discards what it reads.
-   *
-   * Drop EVERY listener, not just `onData`: they share one closure scope, so
-   * any one of them left attached to a long-lived child pins that scope — and
-   * `emit` in it — which holds the SSE response open for the daemon's whole
-   * lifetime. `IGNORE_ERROR` takes the `error` slot back so a later crash
-   * cannot throw on an emitter with no listener.
-   */
-  const stopStreaming = () => {
-    child.stdout?.off('data', onStdout);
-    child.stderr?.off('data', onStderr);
-    for (const stream of [child.stdout, child.stderr]) {
-      stream?.resume();
-    }
-    child.off('error', onError);
-    child.off('exit', onExit);
-    child.on('error', IGNORE_ERROR);
-    child.unref();
-  };
-
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    await sleep(START_POLL_MS);
-    // The daemon is deliberately left running when the user closes the modal —
-    // it is the thing they asked for, and killing it would undo the setup. Only
-    // the WAIT stops.
-    if (isCancelled()) {
-      stopStreaming();
-      return { success: false, error: 'Cancelled while waiting for the server to come up.' };
-    }
-    const probe = await probeOpenAiModels(endpoint, { timeoutMs: PROBE_TIMEOUT_MS });
-    if (probe.reachable) {
-      stopStreaming();
-      return { success: true, models: probe.models };
-    }
-    if (exited) {
-      // Flush FIRST: the reason a daemon dies is often its last line, and a
-      // child that exited without a trailing newline leaves it in the carry.
-      stdoutReader.flush();
-      stderrReader.flush();
-      stopStreaming();
-      const detail = tail.text();
-      return { success: false, error: `${command} ${exited}.${detail ? ` ${detail}` : ''}` };
-    }
-  }
-
-  stopStreaming();
-  return { success: false, error: `${endpoint} still did not answer after ${Math.round(timeoutMs / 1000)}s. The daemon may still be loading a model — reload this page shortly.` };
-}
-
-/**
  * One row per local runtime PortOS can set up on its own.
  *
  * `platforms` is the HARD gate (an empty/absent list means every platform).
@@ -235,20 +123,14 @@ async function startDaemon({ command, args, endpoint, emit, isCancelled = () => 
 const SETUP_ROWS = Object.freeze({
   mtplx: Object.freeze({
     platforms: ['darwin'],
-    unsupportedReason: 'MTPLX runs only on macOS with Apple Silicon.',
+    unsupportedReason: MTPLX_UNSUPPORTED_REASON,
     async install({ emit }) {
-      // Upstream's recommended path is its Homebrew tap; pip is the documented
-      // fallback for a host without Homebrew. Both install the same `mtplx`
-      // binary, and neither runs the optional privileged fan-control helper.
-      if (await commandExists('brew', ['--version'])) {
-        emit('Installing MTPLX via Homebrew (youssofal/mtplx/mtplx)…');
-        return runStreamingCommand('brew', ['install', 'youssofal/mtplx/mtplx'], emit, { timeoutMs: INSTALL_TIMEOUT_MS });
-      }
-      if (await commandExists('python3', ['--version'])) {
-        emit('Homebrew was not found — installing MTPLX with pip instead…');
-        return runStreamingCommand('python3', ['-m', 'pip', 'install', '--upgrade', 'mtplx'], emit, { timeoutMs: INSTALL_TIMEOUT_MS });
-      }
-      return { success: false, error: 'Neither Homebrew nor python3 is available. Install Homebrew from https://brew.sh, then try again.' };
+      // Same install `mtplxServerManager` runs from the Models → LLMs card:
+      // upstream's Homebrew tap, with pip as the documented fallback for a host
+      // without Homebrew. Neither runs the optional privileged fan-control helper.
+      const result = await installMtplx({ onProgress: (p) => { if (p?.message) emit(p.message); } })
+        .catch((err) => ({ success: false, error: err.message }));
+      return result;
     },
     /**
      * What MTPLX's own cache holds, WITHOUT starting it — `mtplx models --json`
@@ -281,7 +163,11 @@ const SETUP_ROWS = Object.freeze({
       // `mtplx serve` defaults `--model` to ONE hard-coded checkpoint and exits
       // 1 before binding when that repo is not in its cache — even on a machine
       // holding a different MTP model that would have served fine. Ask the
-      // cache first and name what is actually there.
+      // cache first and name what is actually there. Read HERE rather than
+      // leaving it to the manager because the refusals differ by surface: this
+      // checklist can offer the `pull-start` download button, and the messages
+      // above say so; the Models → LLMs launcher has no such button and names
+      // `mtplx pull` instead.
       const cache = describeMtplxCache(await listMtplxCachedModels());
       if (cache.state === 'unknown') {
         // The cache could not be READ — which is not "read, and empty". Fall
@@ -291,18 +177,24 @@ const SETUP_ROWS = Object.freeze({
       }
       if (cache.state === 'empty') return { success: false, error: MTPLX_NO_MODEL_ERROR };
       if (cache.state === 'partial') return { success: false, error: mtplxPartialCacheError(cache.count) };
-      if (cache.model) emit(`Serving the cached MTPLX model ${cache.model}.`);
+      // The manager emits "Serving the cached MTPLX model …" once it has the
+      // checkpoint, so don't announce it here too — both go to the same modal.
       // The cache lookup is an awaited subprocess — the modal can close while it
       // runs, and the caller's cancellation check happened BEFORE it. Without
-      // this, a cancelled setup still spawns a detached daemon nobody asked to
-      // keep.
+      // this, a cancelled setup still starts a server nobody asked to keep.
       if (isCancelled()) return { success: false, error: 'Cancelled before the server was started.' };
-      // `mtplx start` is interactive (it prompts for a model); `serve` is the
-      // API-only server, which is the half PortOS actually talks to. The daemon
-      // must bind where the PROVIDER points — a user who moved MTPLX to 8010
-      // would otherwise get a second server on 8000 that nothing talks to.
-      const args = ['serve', '--port', localEndpointPort(endpoint) || '8000', ...(cache.model ? ['--model', cache.model] : [])];
-      return startDaemon({ command: 'mtplx', args, endpoint, emit, isCancelled });
+      // Delegated to the PM2-backed manager so a server started from this
+      // checklist is the SAME managed process the LLMs page can stop, log, and
+      // persist with `pm2 save` — a detached spawn here would be invisible there.
+      // The resolved checkpoint rides along so the manager does not walk the
+      // cache a second time for one start.
+      const port = Number(localEndpointPort(endpoint)) || undefined;
+      // This flow's contract is "the endpoint answers when the button finishes",
+      // so it buys the full cold-model-load budget rather than the launcher's
+      // short beat — MTPLX loads a multi-gigabyte MLX checkpoint before it binds.
+      return startMtplxServer({ port, model: cache.model, waitMs: START_TIMEOUT_MS, onProgress: emit })
+        .then(() => ({ success: true }))
+        .catch((err) => ({ success: false, error: err.message }));
     },
   }),
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
 vi.mock('../../services/api', () => ({
@@ -13,6 +13,12 @@ vi.mock('../../services/api', () => ({
   installLocalLlmBackend: vi.fn(),
   upgradeLocalLlmBackend: vi.fn(),
   controlOllamaService: vi.fn(),
+  controlLmStudioService: vi.fn(),
+  getMtplxServerStatus: vi.fn().mockResolvedValue({ installed: false, running: false, supported: true, cachedModels: [] }),
+  startMtplxServer: vi.fn(),
+  stopMtplxServer: vi.fn(),
+  installMtplx: vi.fn(),
+  saveRuntimeStartupList: vi.fn(),
   installAudioModel: vi.fn(),
   patchSettingsSlice: vi.fn(),
   getLlamaServerStatus: vi.fn().mockResolvedValue({ installed: false, running: false }),
@@ -91,6 +97,41 @@ describe('LocalLlmTab backend disable state', () => {
     await waitFor(() => expect(patchSettingsSlice).toHaveBeenCalledWith('localLlm.lmstudio', { disabled: true }));
     await waitFor(() => expect(screen.queryByText(/LM Studio isn't running/)).toBeNull());
     expect(screen.getByText('Disabled')).toBeInTheDocument();
+  });
+});
+
+describe('LocalLlmTab runtime servers', () => {
+  it('mounts one control surface covering every local runtime, not just the catalog backends', async () => {
+    await renderTab();
+    const card = screen.getByRole('heading', { name: 'Local Runtime Servers' }).closest('div.bg-port-card');
+    for (const label of ['Ollama', 'LM Studio', 'llama.cpp', 'MTPLX']) {
+      expect(within(card).getByText(label)).toBeInTheDocument();
+    }
+  });
+
+  it('starts MTPLX from that surface', async () => {
+    const { getMtplxServerStatus, startMtplxServer } = await import('../../services/api');
+    getMtplxServerStatus.mockResolvedValue({
+      installed: true, running: false, supported: true, cachedModels: ['Example/Qwen-MTP'], endpoint: 'http://127.0.0.1:8000/v1',
+    });
+    startMtplxServer.mockResolvedValue({ success: true, online: true, endpoint: 'http://127.0.0.1:8000/v1' });
+
+    await renderTab();
+    const card = screen.getByRole('heading', { name: 'Local Runtime Servers' }).closest('div.bg-port-card');
+    const mtplxRow = within(card).getByText('MTPLX').closest('div.flex.flex-col');
+    fireEvent.click(within(mtplxRow).getByRole('button', { name: /^Start/ }));
+
+    await waitFor(() => expect(startMtplxServer).toHaveBeenCalled());
+  });
+
+  it('saves the PM2 process list so the managed daemons survive a reboot', async () => {
+    const { saveRuntimeStartupList } = await import('../../services/api');
+    saveRuntimeStartupList.mockResolvedValue({ success: true });
+
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: /Save PM2 list for reboot/ }));
+
+    await waitFor(() => expect(saveRuntimeStartupList).toHaveBeenCalled());
   });
 });
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Square, Power, PowerOff, Eye, Wrench, Brain, Code2, MessageSquare, Boxes, AlertTriangle, FlaskConical, Music, ArrowUpCircle, Zap, ChevronDown, ChevronUp, Terminal } from 'lucide-react';
+import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Power, PowerOff, Eye, Wrench, Brain, Code2, MessageSquare, Boxes, AlertTriangle, FlaskConical, Music, ArrowUpCircle, Zap, ChevronDown, ChevronUp, Terminal } from 'lucide-react';
 import toast from '../ui/Toast';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import BrailleSpinner from '../BrailleSpinner';
@@ -11,10 +11,13 @@ import {
   getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
   deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService,
   installAudioModel, patchSettingsSlice, getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer,
-  downloadSpecDecodeModel
+  downloadSpecDecodeModel, controlLmStudioService, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx,
+  saveRuntimeStartupList
 } from '../../services/api';
 import socket from '../../services/socket';
 import SpecDecodeWeightRow from './SpecDecodeWeightRow.jsx';
+import RuntimeServersCard from './RuntimeServersCard.jsx';
+import MtplxServerCard from './MtplxServerCard.jsx';
 
 const BACKENDS = [
   { id: 'ollama', label: 'Ollama', icon: Cpu },
@@ -191,8 +194,6 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
   const Icon = backend.icon;
   const other = backend.id === 'ollama' ? 'lmstudio' : 'ollama';
   const otherData = status?.[other];
-  const statusLabel = data?.disabled ? 'Disabled' : data?.available ? 'Running' : data?.installed ? 'Installed (stopped)' : 'Not installed';
-  const statusColor = data?.disabled ? 'bg-gray-600' : data?.available ? 'bg-port-success' : data?.installed ? 'bg-port-warning' : 'bg-gray-600';
   const startupService = backend.id === 'ollama' ? data?.service : null;
   const runsAtStartup = Boolean(startupService?.runAtStartup);
   // The window resident models were ACTUALLY loaded at — Ollama picks it from
@@ -214,16 +215,14 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
           {isDefault && (
             <span
               className="text-xs px-1.5 py-0.5 bg-port-accent/20 text-port-accent rounded"
-              title="PortOS routes local-LLM runs here by default. This is independent of whether the server is running (see the status dot)."
+              title="PortOS routes local-LLM runs here by default. This is independent of whether the server is running — see Local Runtime Servers above."
             >
               Default
             </span>
           )}
-          <span className={`w-2 h-2 rounded-full ${statusColor}`} title={statusLabel} />
         </div>
       </div>
 
-      <div className="text-sm text-white">{statusLabel}</div>
       <div className="text-xs text-gray-400">
         {data?.modelCount ?? 0} model{(data?.modelCount ?? 0) === 1 ? '' : 's'} installed
         {data?.version && <> · v{data.version}</>}
@@ -245,55 +244,8 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
         )}
       </div>
 
-      {!data?.installed && (
-        <div className="flex flex-wrap gap-1.5 pt-1 border-t border-port-border/50">
-          {data?.canAutoInstall ? (
-            <button
-              onClick={() => runAction(
-                `install-backend-${backend.id}`,
-                () => installLocalLlmBackend(backend.id),
-                (r) => r?.note ? `Installed ${backend.label} — ${r.note}` : `Installed ${backend.label}`
-              )}
-              disabled={busy}
-              className={`${btnClass} bg-port-accent/20 hover:bg-port-accent/30 text-port-accent`}
-              title="Install via Homebrew (macOS) / official installer (Linux)"
-            >
-              {actionInProgress === `install-backend-${backend.id}` ? <BrailleSpinner /> : <Download size={12} />}
-              Install {backend.label}
-            </button>
-          ) : (
-            <a
-              href={data?.downloadUrl}
-              target="_blank"
-              rel="noreferrer"
-              className={`${btnClass} bg-port-border hover:bg-port-border/70 text-white no-underline`}
-            >
-              <ExternalLink size={12} />
-              Get {backend.label}
-            </a>
-          )}
-        </div>
-      )}
-
       {data?.installed && (
         <div className="flex flex-wrap gap-1.5 pt-1 border-t border-port-border/50">
-          {backend.id === 'ollama' && data?.canControl && (
-            <button
-              onClick={() => runAction(
-                `ollama-service-${data.available ? 'stop' : 'start'}`,
-                () => controlOllamaService(data.available ? 'stop' : 'start'),
-                data.available ? 'Ollama stopped' : 'Ollama is running'
-              )}
-              disabled={busy}
-              className={`${btnClass} ${data.available ? 'bg-port-warning/20 hover:bg-port-warning/30 text-port-warning' : 'bg-port-accent/20 hover:bg-port-accent/30 text-port-accent'}`}
-              title={data.available ? 'Stop the local Ollama server' : 'Start the local Ollama server'}
-            >
-              {actionInProgress === `ollama-service-${data.available ? 'stop' : 'start'}`
-                ? <BrailleSpinner />
-                : data.available ? <Square size={12} /> : <Play size={12} />}
-              {data.available ? 'Stop' : 'Start'} Ollama
-            </button>
-          )}
           {backend.id === 'ollama' && data?.updateAvailable && (
             data?.canUpgrade ? (
               <button
@@ -321,23 +273,6 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
                 Update available
               </a>
             )
-          )}
-          {backend.id === 'ollama' && startupService?.supported && (
-            <button
-              onClick={() => runAction(
-                `ollama-service-${runsAtStartup ? 'disable' : 'enable'}`,
-                () => controlOllamaService(runsAtStartup ? 'disable' : 'enable'),
-                runsAtStartup ? 'Ollama background service disabled' : 'Ollama will run at login'
-              )}
-              disabled={busy}
-              className={`${btnClass} ${runsAtStartup ? 'bg-port-warning/20 hover:bg-port-warning/30 text-port-warning' : 'bg-port-accent/20 hover:bg-port-accent/30 text-port-accent'}`}
-              title={runsAtStartup ? 'Stop the Homebrew service and remove the launch-at-login registration' : 'Start Ollama with Homebrew services so it runs in the background at login'}
-            >
-              {actionInProgress === `ollama-service-${runsAtStartup ? 'disable' : 'enable'}`
-                ? <BrailleSpinner />
-                : runsAtStartup ? <PowerOff size={12} /> : <Power size={12} />}
-              {runsAtStartup ? 'Disable Startup' : 'Run at Startup'}
-            </button>
           )}
           {!isDefault && (
             <button
@@ -421,7 +356,12 @@ export function LocalLlmTab() {
   const selectedInitialized = useRef(false);
 
   const [llamaStatus, setLlamaStatus] = useState(null);
+  const [mtplxStatus, setMtplxStatus] = useState(null);
   const [llamaLoading, setLlamaLoading] = useState(false);
+  // Anchor for the unified server card's "Configure" action — llama-server needs
+  // a model path, so its Start lives in the launcher rather than in that row.
+  const llamaSectionRef = useRef(null);
+  const mtplxSectionRef = useRef(null);
   const [llamaPresetId, setLlamaPresetId] = useState(DEFAULT_SPEC_PRESET_ID);
   const [llamaForm, setLlamaForm] = useState({
     model: '',
@@ -461,10 +401,20 @@ export function LocalLlmTab() {
       .catch(() => null);
   }, []);
 
+  const loadMtplxStatus = useCallback(() => (
+    getMtplxServerStatus({ silent: true })
+      .then((res) => {
+        if (res) setMtplxStatus(res);
+        return res;
+      })
+      .catch(() => null)
+  ), []);
+
   const loadStatus = useCallback(() => {
     const requestId = ++statusRequestId.current;
     setLoading(true);
     loadLlamaStatus();
+    loadMtplxStatus();
     return getLocalLlmStatus({ silent: true })
       .then((s) => {
         if (requestId !== statusRequestId.current) return;
@@ -481,7 +431,7 @@ export function LocalLlmTab() {
       .finally(() => {
         if (requestId === statusRequestId.current) setLoading(false);
       });
-  }, [loadLlamaStatus]);
+  }, [loadLlamaStatus, loadMtplxStatus]);
 
   // `source` and `category` are required rather than defaulted from state: a
   // state default would put them in the dep list, so `loadCatalog`'s identity
@@ -611,13 +561,18 @@ export function LocalLlmTab() {
   }, [loadStatus, loadCatalog, selected, query, catalogSource, activeCategory]);
 
   const runAction = useCallback((key, fn, successMsg, options = {}) => {
-    const { onError, clearConfirm = true } = options;
+    const { onError, clearConfirm = true, ollamaService = false } = options;
     if (clearConfirm) setConfirmAction(null);
     setActionInProgress(key);
     return fn()
       .then((result) => {
         if (successMsg) toast.success(typeof successMsg === 'function' ? successMsg(result) : successMsg);
-        if (typeof result?.running === 'boolean') {
+        // Optimistic repaint for the Ollama service controls only. Every runtime
+        // start/stop result carries `running` — llama-server's and MTPLX's too —
+        // so the CALLER declares this, rather than it being inferred from the
+        // response shape; otherwise stopping MTPLX would paint Ollama as stopped
+        // until the refetch lands.
+        if (ollamaService && typeof result?.running === 'boolean') {
           setStatus((prev) => prev ? ({
             ...prev,
             ollama: {
@@ -642,6 +597,62 @@ export function LocalLlmTab() {
   }, [loadStatus, loadCatalog, selected, query, catalogSource, activeCategory]);
 
   const busy = actionInProgress != null;
+
+  // === Unified runtime-server controls ======================================
+  // Every handler routes through `runAction` so one busy/spinner/refresh path
+  // covers all four runtimes. The `runtime-<verb>-<id>` keys are what
+  // `RuntimeServersCard` matches to place its spinner.
+  const controlOllama = (action) => runAction(
+    action === 'enable' || action === 'disable' ? 'runtime-startup-ollama' : `runtime-${action}-ollama`,
+    () => controlOllamaService(action),
+    { start: 'Ollama is running', stop: 'Ollama stopped', enable: 'Ollama will run at login', disable: 'Ollama background service disabled' }[action],
+    { ollamaService: true }
+  );
+  const controlLmStudio = (action) => runAction(
+    `runtime-${action}-lmstudio`,
+    () => controlLmStudioService(action),
+    action === 'start' ? 'LM Studio server is running' : 'LM Studio server stopped'
+  );
+  const installRuntimeBackend = (backend) => runAction(
+    `runtime-install-${backend}`,
+    () => installLocalLlmBackend(backend),
+    (r) => r?.note ? `Installed ${labelFor(backend)} — ${r.note}` : `Installed ${labelFor(backend)}`
+  );
+  const runtimeInstallLlama = () => runAction(
+    'runtime-install-llama',
+    () => installLlamaServer(),
+    'llama.cpp installed'
+  ).then(loadLlamaStatus);
+  const runtimeStopLlama = () => runAction(
+    'runtime-stop-llama',
+    () => stopLlamaServer(),
+    (r) => r?.message || 'llama-server stopped'
+  ).then(loadLlamaStatus);
+  const runtimeInstallMtplx = () => runAction(
+    'runtime-install-mtplx',
+    () => installMtplx(),
+    'MTPLX installed'
+  ).then(loadMtplxStatus);
+  const runtimeStartMtplx = (config = {}) => runAction(
+    'runtime-start-mtplx',
+    () => startMtplxServer(config),
+    // `online: false` is "started, still loading its checkpoint" — not a
+    // failure. Saying "running" there would be wrong the moment the user checks.
+    (r) => (r?.online
+      ? `MTPLX is running at ${r?.endpoint || 'its endpoint'}`
+      : 'MTPLX started — it\'s loading its checkpoint, refresh in a moment')
+  ).then(loadMtplxStatus);
+  const runtimeStopMtplx = () => runAction(
+    'runtime-stop-mtplx',
+    () => stopMtplxServer(),
+    (r) => r?.message || 'MTPLX stopped'
+  ).then(loadMtplxStatus);
+  const saveRuntimeStartup = () => runAction(
+    'runtime-save-startup',
+    () => saveRuntimeStartupList(),
+    'Saved — the PM2 processes running now will come back after a reboot'
+  ).then(() => { loadLlamaStatus(); loadMtplxStatus(); });
+  const scrollTo = (ref) => ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   const selectedData = status?.[selected];
   const selectedOllamaStartupAction = selectedData?.service?.supported ? 'enable' : 'start';
   const selectedOllamaStartupLabel = selectedData?.service?.supported ? 'Run at Startup' : 'Start Ollama';
@@ -984,7 +995,29 @@ export function LocalLlmTab() {
 
   return (
     <div className="space-y-4">
-      {/* Backends — status + switch/migrate */}
+      {/* One start/stop/install surface for every local server PortOS can run */}
+      <RuntimeServersCard
+        status={status}
+        llamaStatus={llamaStatus}
+        mtplxStatus={mtplxStatus}
+        loading={loading}
+        busy={busy}
+        actionInProgress={actionInProgress}
+        onRefresh={loadStatus}
+        onControlOllama={controlOllama}
+        onControlLmStudio={controlLmStudio}
+        onInstallBackend={installRuntimeBackend}
+        onInstallLlama={runtimeInstallLlama}
+        onStopLlama={runtimeStopLlama}
+        onConfigureLlama={() => scrollTo(llamaSectionRef)}
+        onConfigureMtplx={() => scrollTo(mtplxSectionRef)}
+        onInstallMtplx={runtimeInstallMtplx}
+        onStartMtplx={runtimeStartMtplx}
+        onStopMtplx={runtimeStopMtplx}
+        onSaveStartup={saveRuntimeStartup}
+      />
+
+      {/* Backends — model catalog, default marker, cross-backend import */}
       <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-medium text-gray-300">Local LLM Backends</h2>
@@ -993,7 +1026,7 @@ export function LocalLlmTab() {
           </button>
         </div>
         <p className="text-xs text-gray-500">
-          Both backends can be installed and running at the same time — <span className="text-gray-400">Default</span> just sets which one PortOS routes local-LLM runs to. Use <span className="text-gray-400">Import from…</span> to copy or link models between them without re-downloading.
+          Ollama and LM Studio are the two backends PortOS keeps a model catalog for — both can be installed and running at once, and <span className="text-gray-400">Default</span> just sets which one PortOS routes local-LLM runs to. Use <span className="text-gray-400">Import from…</span> to copy or link models between them without re-downloading. Start and stop them (and llama.cpp and MTPLX) from <span className="text-gray-400">Local Runtime Servers</span> above.
         </p>
         <p className="text-xs text-gray-500">
           For local coding agents, configure the shared <Link to="/ai" className="text-port-accent hover:underline">temperature, top-p and thinking defaults in AI Providers</Link>. Every local OpenAI-compatible backend receives them — Ollama, llama.cpp and MTPLX, whether reached directly or through an OpenCode CLI/TUI wrapper. Every control left blank is simply not sent, so the backend keeps its own default — Ollama agent runs fall back to temperature 0.6.
@@ -1088,34 +1121,26 @@ export function LocalLlmTab() {
         )}
       </div>
 
+      {/* MTPLX — PM2-managed native-MTP runtime (Apple Silicon) */}
+      <div ref={mtplxSectionRef}>
+        <MtplxServerCard
+          status={mtplxStatus}
+          loading={loading}
+          busy={busy}
+          actionInProgress={actionInProgress}
+          onRefresh={loadMtplxStatus}
+          onStart={runtimeStartMtplx}
+          onStop={runtimeStopMtplx}
+          onInstall={runtimeInstallMtplx}
+        />
+      </div>
+
       {/* Speculative Decoding & Custom Runtimes (DFlash 2 / llama.cpp) */}
-      <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-4">
+      <div ref={llamaSectionRef} className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <Zap size={16} className="text-port-accent" />
             <h2 className="text-sm font-medium text-gray-300">Speculative Decoding & Custom Runtimes (DFlash 2 / llama.cpp)</h2>
-            {llamaStatus?.running && llamaStatus?.managed && (
-              <span className="px-2 py-0.5 text-xs rounded bg-port-success/20 text-port-success flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-port-success animate-pulse" />
-                Running (PID {llamaStatus.pid})
-              </span>
-            )}
-            {llamaStatus?.running && !llamaStatus?.managed && (
-              <span className="px-2 py-0.5 text-xs rounded bg-blue-500/20 text-blue-300 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-blue-400" />
-                Active on {llamaStatus.endpoint} (External)
-              </span>
-            )}
-            {!llamaStatus?.running && llamaStatus?.installed && (
-              <span className="px-2 py-0.5 text-xs rounded bg-gray-500/20 text-gray-400">
-                Stopped
-              </span>
-            )}
-            {!llamaStatus?.installed && (
-              <span className="px-2 py-0.5 text-xs rounded bg-port-warning/20 text-port-warning" title="Install via Homebrew: brew install llama.cpp or compile with DFlash2 support">
-                llama-server not found on PATH
-              </span>
-            )}
           </div>
           <div className="flex items-center gap-3">
             <button
@@ -1519,7 +1544,8 @@ export function LocalLlmTab() {
                 onClick={() => runAction(
                   `ollama-service-${selectedOllamaStartupAction}-models`,
                   () => controlOllamaService(selectedOllamaStartupAction),
-                  selectedOllamaStartupAction === 'enable' ? 'Ollama will run at login' : 'Ollama is running'
+                  selectedOllamaStartupAction === 'enable' ? 'Ollama will run at login' : 'Ollama is running',
+                  { ollamaService: true }
                 )}
                 disabled={busy}
                 className={`${btnClass} bg-port-accent/20 hover:bg-port-accent/30 text-port-accent`}

@@ -11,17 +11,17 @@ import { spawn } from '../lib/childProcess.js';
 import { commandExists } from '../lib/commandExists.js';
 import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
 import { expandHome, sleep } from '../lib/fileUtils.js';
+import { createDaemonLogBuffer, pm2ArgValue } from '../lib/managedDaemon.js';
 import { resolveSpecModelPath } from './specDecodeModels.js';
 import { parseSpecTypes, isDraftSpecType } from '../lib/specDecodePresets.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { isPortInUse } from '../lib/platform.js';
 import { PORTS } from '../lib/ports.js';
 import { ServerError } from '../lib/errorHandler.js';
-import { execPm2, getAppStatusStrict, clearJlistCache } from './pm2.js';
+import { execPm2, getAppStatusStrict, clearJlistCache, getSavedProcessNames } from './pm2.js';
 
 export const LLAMA_APP = 'portos-llama-server';
 
-const MAX_LOG_LINES = 100;
 const PROBE_TIMEOUT_MS = 1500;
 const STARTUP_WAIT_TIMEOUT_MS = 4000;
 // How long a relaunch waits for the kernel to release the old listener.
@@ -34,18 +34,9 @@ const PORT_RELEASE_TIMEOUT_MS = 5000;
 let relaunchReadyTimeoutMs = 120000;
 
 let currentConfig = null;
-let recentLogs = [];
 let lastExitError = null;
-
-function appendLog(line) {
-  if (!line) return;
-  const text = String(line).trimEnd();
-  if (!text) return;
-  recentLogs.push(`[${new Date().toISOString()}] ${text}`);
-  if (recentLogs.length > MAX_LOG_LINES) {
-    recentLogs = recentLogs.slice(-MAX_LOG_LINES);
-  }
-}
+const logs = createDaemonLogBuffer();
+const appendLog = logs.append;
 
 /**
  * Probes whether an OpenAI-compatible endpoint responds at the given host/port.
@@ -86,10 +77,7 @@ async function assertModelFileExists(label, modelPath) {
 function parseConfigFromArgs(args) {
   if (!args) return null;
   const list = Array.isArray(args) ? args : String(args).split(' ');
-  const getArg = (flag) => {
-    const idx = list.indexOf(flag);
-    return idx !== -1 && idx + 1 < list.length ? list[idx + 1] : null;
-  };
+  const getArg = (flag) => pm2ArgValue(list, flag);
 
   const model = getArg('-m') || getArg('--model');
   if (!model) return null;
@@ -163,7 +151,7 @@ export async function getLlamaServerStatus() {
   const binaryPath = resolveLlamaServerBinary();
   const installed = Boolean(binaryPath);
 
-  const pm2Status = await getAppStatusStrict(LLAMA_APP);
+  const [pm2Status, savedApps] = await Promise.all([getAppStatusStrict(LLAMA_APP), getSavedProcessNames()]);
   const isReadFailed = pm2Status === null;
   const isManagedActive = Boolean(pm2Status && pm2Status.status === 'online');
 
@@ -177,28 +165,9 @@ export async function getLlamaServerStatus() {
 
   const reachable = await probeEndpoint(endpoint);
 
-  let logs = [...recentLogs];
-  if (isManagedActive || (pm2Status && pm2Status.status !== 'not_found')) {
-    try {
-      const pm2LogsResult = await execPm2(['logs', LLAMA_APP, '--nostream', '--lines', String(MAX_LOG_LINES)]);
-      const combined = (pm2LogsResult.stdout || '') + '\n' + (pm2LogsResult.stderr || '');
-      const parsedLines = combined.split('\n').map((l) => l.trimEnd()).filter(Boolean);
-      if (parsedLines.length > 0) {
-        const seen = new Set(logs);
-        for (const line of parsedLines) {
-          if (!seen.has(line)) {
-            logs.push(line);
-            seen.add(line);
-          }
-        }
-        if (logs.length > MAX_LOG_LINES) {
-          logs = logs.slice(-MAX_LOG_LINES);
-        }
-      }
-    } catch {
-      // Ignore PM2 log retrieval errors
-    }
-  }
+  const pm2Logs = isManagedActive || (pm2Status && pm2Status.status !== 'not_found')
+    ? await execPm2(['logs', LLAMA_APP, '--nostream', '--lines', String(logs.maxLines)]).catch(() => null)
+    : null;
 
   return {
     installed,
@@ -209,7 +178,10 @@ export async function getLlamaServerStatus() {
     port,
     endpoint,
     config: isManagedActive ? currentConfig : null,
-    recentLogs: logs,
+    // Is this PM2 app in the saved dump `pm2 resurrect` replays at boot?
+    // `null` = the dump could not be read, which is not the same as "no".
+    runAtStartup: savedApps === null ? null : savedApps.includes(LLAMA_APP),
+    recentLogs: logs.withPm2Logs(`${pm2Logs?.stdout || ''}\n${pm2Logs?.stderr || ''}`),
     lastExitError: isReadFailed ? 'Failed to read PM2 status' : lastExitError,
   };
 }
@@ -322,7 +294,7 @@ export async function startLlamaServer(options = {}) {
   if (alias) args.push('--alias', alias);
 
   lastExitError = null;
-  recentLogs = [];
+  logs.reset();
   if (droppedSpecTypes.length > 0) {
     appendLog(`Ignoring spec-type ${droppedSpecTypes.join(',')} — no drafter model is set`);
     console.log(`🦙 llama-server dropping drafter-based spec types ${droppedSpecTypes.join(',')} (no --model-draft configured)`);
@@ -386,16 +358,10 @@ export async function startLlamaServer(options = {}) {
   }
 
   if (currentProc && (currentProc.status === 'errored' || currentProc.status === 'stopped' || currentProc.status === 'not_found')) {
-    let tail = '';
-    try {
-      const pm2Logs = await execPm2(['logs', LLAMA_APP, '--nostream', '--lines', '15']);
-      const combined = (pm2Logs.stderr || pm2Logs.stdout || '').trim();
-      const lines = combined.split('\n').map((l) => l.trimEnd()).filter(Boolean);
-      for (const line of lines) appendLog(line);
-      tail = lines.slice(-4).join(' | ');
-    } catch {
-      tail = recentLogs.slice(-4).join(' | ');
-    }
+    const exitLogs = await execPm2(['logs', LLAMA_APP, '--nostream', '--lines', '15']).catch(() => null);
+    const lines = (exitLogs?.stderr || exitLogs?.stdout || '').trim().split('\n').map((l) => l.trimEnd()).filter(Boolean);
+    for (const line of lines) appendLog(line);
+    const tail = (lines.length ? lines : logs.snapshot()).slice(-4).join(' | ');
 
     lastExitError = `PM2 status: ${currentProc.status}`;
 
@@ -691,7 +657,7 @@ export async function installLlamaServer({ onProgress = () => {} } = {}) {
  */
 export function _resetLlamaServerStateForTests({ relaunchReadyTimeout } = {}) {
   currentConfig = null;
-  recentLogs = [];
+  logs.reset();
   lastExitError = null;
   // Restored to the production budget unless a suite asks for a shorter one.
   relaunchReadyTimeoutMs = Number.isFinite(relaunchReadyTimeout) ? relaunchReadyTimeout : 120000;

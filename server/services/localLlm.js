@@ -1,9 +1,14 @@
 /**
  * Local LLM orchestration — unifies the Ollama and LM Studio backends behind
  * one shape so the UI can list / search / install / delete models, move models
- * between backends, and pick the default backend. Both backends can be installed
- * and running at the same time; the "default" is just which one PortOS routes
- * local runs to.
+ * between backends, and pick the default backend. Both can be installed and
+ * running at the same time; the "default" is just which one PortOS routes local
+ * runs to.
+ *
+ * These two are the backends PortOS keeps a MODEL CATALOG for. They are not the
+ * only local servers it runs: `llamaServerManager.js` and `mtplxServerManager.js`
+ * own the two PM2-managed daemons (llama.cpp, MTPLX), and the LLMs page's
+ * "Local Runtime Servers" card starts and stops all four through one surface.
  *
  * The default backend is recorded in `.env` as `LLM_BACKEND` (parallel to
  * `PGMODE`), so it survives restarts and is readable by the setup script. The
