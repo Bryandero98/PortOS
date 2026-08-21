@@ -545,13 +545,21 @@ async function relaunchWithConfig(next, previous) {
  * `managed: false` covers both "nothing is running" and "something is listening
  * that PortOS did not start" — neither is a launch line PortOS may change.
  *
- * @returns {Promise<{managed: boolean, config: object|null}>}
+ * `readFailed: true` is a THIRD answer and must not collapse into either: it
+ * means PM2 itself could not be read (`getAppStatusStrict`'s null sentinel), so
+ * PortOS does not know what is running. Reporting that as "not PortOS's" would
+ * tell a user who owns the daemon to go add `--alias` to a launch line PortOS
+ * wrote — the fix is to retry. `getLlamaServerStatus` draws the same
+ * distinction (`isReadFailed`).
+ *
+ * @returns {Promise<{managed: boolean, config: object|null, readFailed: boolean}>}
  */
 export async function readLlamaServerLaunch() {
   const pm2Status = await getAppStatusStrict(LLAMA_APP);
-  if (!pm2Status || pm2Status.status !== 'online') return { managed: false, config: null };
+  if (pm2Status === null) return { managed: false, config: null, readFailed: true };
+  if (pm2Status.status !== 'online') return { managed: false, config: null, readFailed: false };
   if (!currentConfig && pm2Status.args) currentConfig = parseConfigFromArgs(pm2Status.args);
-  return { managed: true, config: currentConfig };
+  return { managed: true, config: currentConfig, readFailed: false };
 }
 
 /**
@@ -575,7 +583,15 @@ export async function relaunchLlamaServerWithAlias(alias) {
   const wanted = String(alias ?? '').trim();
   if (!wanted) return { applied: false, reason: 'No model id was given to serve under.', config: null };
 
-  const { managed, config } = await readLlamaServerLaunch();
+  const { managed, config, readFailed } = await readLlamaServerLaunch();
+  if (readFailed) {
+    return {
+      applied: false,
+      retryable: true,
+      reason: 'PortOS could not read PM2 to find out what llama-server is running. Try again in a moment.',
+      config: null,
+    };
+  }
   if (!managed || !config?.model) {
     return {
       applied: false,
@@ -592,10 +608,13 @@ export async function relaunchLlamaServerWithAlias(alias) {
   const baseline = preTuningConfig;
   console.log(`🦙 llama-server: relaunching to answer as ${wanted} (was ${config.alias || 'unset'})`);
   const outcome = await relaunchWithConfig({ ...config, alias: wanted }, config);
-  // Every outcome leaves the same weights and the same tuning flags on the port
-  // — the renamed line on success, the original one on either failure — so the
-  // displaced baseline is still the line to put back later, whichever it was.
-  preTuningConfig = baseline;
+  // The baseline is the line a later untuned assessment RELAUNCHES, so it has to
+  // carry the new id or that assessment silently renames the daemon back and
+  // re-breaks the provider this button just fixed. Only the alias moves: every
+  // other field of the baseline is the user's own launch line, which a rename
+  // does not touch. On either failure path the original alias is what is back on
+  // the port, so the baseline stays exactly as captured.
+  preTuningConfig = outcome.ok && baseline ? { ...baseline, alias: wanted } : baseline;
   if (outcome.rejected) {
     return { applied: false, reason: `llama-server rejected the relaunch: ${outcome.rejected}`, config: outcome.config };
   }

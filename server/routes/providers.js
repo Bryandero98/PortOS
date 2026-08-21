@@ -16,10 +16,11 @@ import {
   stopRuntimeInstaller,
 } from '../services/providerRuntimeInstaller.js';
 import { getProviderReadinessMap, resetProviderReadinessCache, servedModelId } from '../services/providerReadiness.js';
-import { relaunchLlamaServerWithAlias } from '../services/llamaServerManager.js';
+import { getLlamaServerEndpoint, relaunchLlamaServerWithAlias } from '../services/llamaServerManager.js';
+import { claimHeavyLocalJob } from '../lib/heavyJobClaim.js';
 import { getProviderPrerequisiteMap } from '../services/providerPrerequisites.js';
 import { runLocalRuntimeSetup, SETUP_ACTIONS } from '../services/localRuntimeSetup.js';
-import { localRuntimeForProvider } from '../lib/localProviderRuntime.js';
+import { localEndpointPort, localRuntimeForProvider } from '../lib/localProviderRuntime.js';
 import { buildTuiShellLaunch } from '../lib/tuiShellLaunch.js';
 
 /**
@@ -50,13 +51,6 @@ let runtimeInstallInFlight = null;
 // concurrent `brew install`s (or two copies of one daemon racing for a port) is
 // never what a double-click meant.
 let runtimeSetupInFlight = false;
-
-// And for the model-id relaunch lane. Two providers can point at ONE
-// llama-server, so a second relaunch arriving mid-flight would stop the daemon
-// the first one just started and leave whichever finished last on the port —
-// with the first caller reporting a success that no longer describes anything
-// running. Single-flight for the same reason the setup lane above is.
-let serveModelInFlight = false;
 
 /**
  * Sanitize a provider object for client responses.
@@ -489,19 +483,49 @@ export function createPortOSProviderRoutes(aiToolkit) {
       throw new ServerError('This provider selects no specific model, so there is nothing to serve it as.', { status: 400, code: 'NO_DEFAULT_MODEL' });
     }
 
-    if (serveModelInFlight) {
-      throw new ServerError('Another local-server relaunch is already running. Wait for it to finish.', { status: 409, code: 'SERVE_MODEL_IN_FLIGHT' });
+    // The provider's OWN endpoint, not the runtime's default: a second
+    // llama-server on another loopback port is a different daemon, and PortOS
+    // only manages one (`portos-llama-server`). Without this the button on a
+    // provider pointed at that second server would restart the managed one under
+    // the second one's model id — breaking the provider that WAS working and
+    // leaving the clicked one mismatched exactly as before.
+    const managedEndpoint = await getLlamaServerEndpoint();
+    // Compared by PORT, not by string: the manager renders its host as
+    // `127.0.0.1` while a provider may spell the same daemon `localhost`, and a
+    // string compare would refuse a setup that works. `localRuntimeForProvider`
+    // already guarantees `runtime.endpoint` is a local-instance host, so a
+    // matching port is the same daemon.
+    if (localEndpointPort(runtime.endpoint) !== localEndpointPort(managedEndpoint)) {
+      throw new ServerError(
+        `This provider points at ${runtime.endpoint}, but the llama-server PortOS manages serves ${managedEndpoint}. Add \`--alias ${wanted}\` to that server's own launch line instead.`,
+        { status: 409, code: 'LLAMA_ENDPOINT_MISMATCH' },
+      );
     }
-    serveModelInFlight = true;
+
+    // A relaunch reloads multi-gigabyte weights onto the accelerator, and an
+    // assessment sweep relaunches the same daemon on its own schedule — so this
+    // takes the machine-wide claim those jobs take rather than a lock private to
+    // this route. Zero timeout: an interactive click refuses immediately with
+    // who holds it rather than queueing behind hours of sweep.
+    const claim = await claimHeavyLocalJob({ kind: 'llama-server model id', id: wanted, timeoutMs: 0 });
+    if (!claim.ok) {
+      throw new ServerError(claim.message, { status: 409, code: 'LOCAL_ACCELERATOR_BUSY' });
+    }
     // `relaunchLlamaServerWithAlias` resolves for every expected refusal, so
-    // this covers the unexpected throw — the lock must not survive it, or the
-    // route is dead until the process restarts.
-    const result = await relaunchLlamaServerWithAlias(wanted).finally(() => { serveModelInFlight = false; });
+    // this covers the unexpected throw — the claim must not survive it, or every
+    // later heavy local job is refused until the process exits.
+    const result = await relaunchLlamaServerWithAlias(wanted).finally(() => claim.release());
     // The daemon's launch line just changed under the readiness caches, and the
     // page polls them within seconds.
     resetProviderReadinessCache();
     if (result.applied === false) {
-      throw new ServerError(result.reason, { status: 409, code: 'SERVE_MODEL_FAILED', context: { model: wanted } });
+      throw new ServerError(result.reason, {
+        // A PM2 read that failed says nothing about the daemon — the fix is to
+        // retry, not to go edit a launch line.
+        status: result.retryable ? 503 : 409,
+        code: result.retryable ? 'SERVE_MODEL_UNAVAILABLE' : 'SERVE_MODEL_FAILED',
+        context: { model: wanted },
+      });
     }
     res.json({
       success: true,

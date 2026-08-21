@@ -527,6 +527,51 @@ describe('llamaServerManager', () => {
       expect(execPm2Calls.some((c) => c[0] === 'start' || c[0] === 'delete')).toBe(false);
     });
 
+    // The regression this pins: an untuned assessment RELAUNCHES the pre-tuning
+    // baseline. If that baseline keeps the old alias, it silently renames the
+    // daemon back and re-breaks the provider the rename just fixed.
+    it('carries the new id into the pre-tuning baseline a later untune restores', async () => {
+      await startedAs('dflash');
+      await relaunchLlamaServerWithTuning({ ubatchSize: 512 });
+      await relaunchLlamaServerWithAlias('qwen3.8-27b-dflash2');
+      execPm2Calls = [];
+
+      // The untuned measurement: puts the pre-tuning launch line back.
+      await relaunchLlamaServerWithTuning({});
+
+      const args = lastStartArgs();
+      expect(args[args.indexOf('--alias') + 1]).toBe('qwen3.8-27b-dflash2');
+      // ...and it is still a genuine untune: the tuning flag is gone.
+      expect(args).not.toContain('-ub');
+    });
+
+    // A rejected rename leaves the ORIGINAL alias on the port, so the baseline
+    // must stay exactly as captured or the untune would rename to an id nothing
+    // ever served.
+    it('leaves the baseline alone when the rename never takes', async () => {
+      await startedAs('dflash');
+      await relaunchLlamaServerWithTuning({ ubatchSize: 512 });
+      // Fail only the renamed launch; the restore that follows must succeed.
+      const fakeExec = pm2Module.execPm2.getMockImplementation();
+      let starts = 0;
+      vi.spyOn(pm2Module, 'execPm2').mockImplementation(async (args) => {
+        if (args[0] === 'start' && starts++ === 0) {
+          pm2State = { name: LLAMA_APP, status: 'errored', pid: null, args: [] };
+          execPm2Calls.push(args);
+          return { stdout: '', stderr: '' };
+        }
+        return fakeExec(args);
+      });
+
+      const result = await relaunchLlamaServerWithAlias('qwen3.8-27b-dflash2');
+      expect(result.applied).toBe(false);
+
+      execPm2Calls = [];
+      await relaunchLlamaServerWithTuning({});
+      const args = lastStartArgs();
+      expect(args[args.indexOf('--alias') + 1]).toBe('dflash');
+    });
+
     it('refuses a blank model id without touching the daemon', async () => {
       await startedAs('dflash');
       execPm2Calls = [];

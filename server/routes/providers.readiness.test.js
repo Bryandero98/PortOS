@@ -12,7 +12,12 @@ const readinessService = vi.hoisted(() => ({
 // module would hand it `undefined` and the route would throw before it ever
 // reached the daemon.
 vi.mock('../services/providerReadiness.js', async (importOriginal) => ({ ...(await importOriginal()), ...readinessService }));
-const llamaService = vi.hoisted(() => ({ relaunchLlamaServerWithAlias: vi.fn() }));
+const llamaService = vi.hoisted(() => ({
+  relaunchLlamaServerWithAlias: vi.fn(),
+  // The route checks that the provider points at the daemon PortOS actually
+  // manages before relaunching it, so the suite has to say where that is.
+  getLlamaServerEndpoint: vi.fn(),
+}));
 vi.mock('../services/llamaServerManager.js', async (importOriginal) => ({ ...(await importOriginal()), ...llamaService }));
 const setupService = vi.hoisted(() => ({ runLocalRuntimeSetup: vi.fn() }));
 // PARTIAL mock: `SETUP_ACTIONS` is the closed set the route validates against,
@@ -191,6 +196,7 @@ describe('POST /api/providers/readiness/serve-model', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     llamaService.relaunchLlamaServerWithAlias.mockResolvedValue({ applied: true, reason: null, config: null });
+    llamaService.getLlamaServerEndpoint.mockResolvedValue('http://127.0.0.1:5568/v1');
   });
 
   it('relaunches under the id the provider sends, re-derived from the stored record', async () => {
@@ -270,26 +276,44 @@ describe('POST /api/providers/readiness/serve-model', () => {
     expect(llamaService.relaunchLlamaServerWithAlias).not.toHaveBeenCalled();
   });
 
-  // Two providers can point at ONE llama-server, so a second relaunch arriving
-  // mid-flight would stop the daemon the first one just started.
-  it('is single-flight — a concurrent relaunch is refused, not raced', async () => {
-    let release;
-    llamaService.relaunchLlamaServerWithAlias.mockImplementationOnce(
-      () => new Promise((resolve) => { release = () => resolve({ applied: true, reason: null, config: null }); }),
-    );
-    const server = app([LLAMA_TUI]);
+  // The manager renders its host as `127.0.0.1` while a provider may spell the
+  // same daemon `localhost`. A string compare would refuse a working setup.
+  it('accepts a differently-spelled host for the same daemon', async () => {
+    const response = await request(app([{ ...LLAMA_TUI, endpoint: 'http://localhost:5568/v1' }]))
+      .post('/api/providers/readiness/serve-model?provider=opencode-llama-tui');
 
-    // `.then()` is what starts a RequestBuilder — holding the builder alone
-    // never sends, so the second request would find the lane free.
-    const first = request(server).post('/api/providers/readiness/serve-model?provider=opencode-llama-tui').then((r) => r);
-    // Let the first request reach the in-flight guard before the second lands.
-    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
-    const second = await request(server).post('/api/providers/readiness/serve-model?provider=opencode-llama-tui');
+    expect(response.status).toBe(200);
+    expect(llamaService.relaunchLlamaServerWithAlias).toHaveBeenCalledWith('qwen3.8-27b-dflash2');
+  });
 
-    expect(second.status).toBe(409);
-    expect(second.body.code).toBe('SERVE_MODEL_IN_FLIGHT');
-    release();
-    expect((await first).status).toBe(200);
-    expect(llamaService.relaunchLlamaServerWithAlias).toHaveBeenCalledTimes(1);
+  // PortOS manages exactly one llama-server. A provider pointed at a SECOND one
+  // on another loopback port must not restart the managed daemon under the
+  // second one's model id — that breaks the provider that was working and
+  // leaves the clicked one mismatched exactly as before.
+  it('refuses a provider pointed at a llama-server PortOS does not manage', async () => {
+    const response = await request(app([{ ...LLAMA_TUI, endpoint: 'http://127.0.0.1:5569/v1' }]))
+      .post('/api/providers/readiness/serve-model?provider=opencode-llama-tui');
+
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe('LLAMA_ENDPOINT_MISMATCH');
+    expect(response.body.error).toMatch(/--alias qwen3\.8-27b-dflash2/);
+    expect(llamaService.relaunchLlamaServerWithAlias).not.toHaveBeenCalled();
+  });
+
+  // A PM2 read that failed says nothing about the daemon — the fix is to retry,
+  // not to go edit a launch line, so it must not share the 409 refusal.
+  it('reports a PM2 read failure as retryable, not as an external daemon', async () => {
+    llamaService.relaunchLlamaServerWithAlias.mockResolvedValueOnce({
+      applied: false,
+      retryable: true,
+      reason: 'PortOS could not read PM2 to find out what llama-server is running. Try again in a moment.',
+      config: null,
+    });
+
+    const response = await request(app([LLAMA_TUI]))
+      .post('/api/providers/readiness/serve-model?provider=opencode-llama-tui');
+
+    expect(response.status).toBe(503);
+    expect(response.body.code).toBe('SERVE_MODEL_UNAVAILABLE');
   });
 });
