@@ -26,7 +26,7 @@ import { join } from 'path';
 import { resolveInstallRoot } from '../lib/dataRoot.js';
 import { PORTS } from '../lib/ports.js';
 import { getSelfHost } from '../lib/peerSelfHost.js';
-import { getCachedBuildIdentity, formatBuildIdentity } from '../lib/buildIdentity.js';
+import { getBuildIdentity, getCachedBuildIdentity, formatBuildIdentity } from '../lib/buildIdentity.js';
 import { setupProcessErrorHandlers, asyncHandler, ServerError, errorEvents } from '../lib/errorHandler.js';
 import { ERROR_CATEGORIES } from '../lib/aiToolkit/errorDetection.js';
 import { createAIToolkit } from '../lib/aiToolkit/index.js';
@@ -632,8 +632,21 @@ const announceListening = ({ io, httpServer, localHttpServer, httpsEnabled, port
   // lands at a DETERMINISTIC position in the banner instead of racing it.
   // Read synchronously from the cache primed at boot: this function's caller
   // does not await it, so an await here would let the lines below print around
-  // the yield and scramble the banner.
-  console.log(`   🧬 build ${formatBuildIdentity(getCachedBuildIdentity())}`);
+  // the yield and scramble the banner. In the normal case boot (migrations, DB)
+  // far outlasts one git call, so the value is ready and lands in place.
+  //
+  // If it is NOT ready — a git wedged on a locked index or a slow network mount
+  // — defer rather than printing `unknown`, which would be a permanent lie: the
+  // probe resolves moments later and every other consumer reports it correctly.
+  // Losing banner adjacency beats logging a wrong answer that never updates.
+  const identity = getCachedBuildIdentity();
+  if (identity) {
+    console.log(`   🧬 build ${formatBuildIdentity(identity)}`);
+  } else {
+    getBuildIdentity()
+      .then((late) => console.log(`   🧬 build ${formatBuildIdentity(late)} (probed late)`))
+      .catch((err) => console.error(`❌ Build identity probe failed: ${err.message}`));
+  }
   if (!httpsEnabled) {
     console.log(`   🌐 http://localhost:${port}`);
     console.log(`⚠️  HTTP only — getUserMedia (mic) won't work over Tailscale IP. Run "npm run setup:cert" to enable HTTPS.`);

@@ -43,8 +43,15 @@ const GIT_TIMEOUT_MS = 5000;
 
 // git's own "there is no value here" spellings in the porcelain-v2 header:
 // `(initial)` for a repo with no commits yet, `(detached)` for a detached HEAD.
-// Both must read as absent — a branch literally named "detached" is not what
-// git means here, and `(initial)` is not a commit.
+// Both read as absent.
+//
+// git permits a branch literally named `(detached)` and prints it in this header
+// byte-for-byte identically to a real detached HEAD, so the format itself cannot
+// separate the two and neither can any parser over it. Reading it as detached is
+// the right call anyway: the cost is one mislabeled branch in a display string,
+// and `commit` — the field the drift comparison actually uses — is unaffected.
+// (The mirror case does not exist on the client: git REFUSES to create a branch
+// named `HEAD`, so `rev-parse --abbrev-ref` printing `HEAD` is always detached.)
 const NO_COMMIT = '(initial)';
 const NO_BRANCH = '(detached)';
 
