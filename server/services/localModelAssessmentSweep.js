@@ -49,6 +49,15 @@ import { getAssessmentReport, runAssessment } from './localModelAssessments.js';
 // model at a time anyway.
 let sweep = null;
 
+// Held across `startSweep`'s `await getAssessmentReport()`. The `sweep` object
+// itself cannot be published until the targets are known, so without this a
+// second request arriving during that await passes the "already running" check,
+// and both requests go on to assign `sweep` and launch a detached loop — two
+// overnight queues measuring the same models against each other, with only the
+// second one's status visible. The slot has to be reserved SYNCHRONOUSLY, before
+// the first await, or the check and the claim are not atomic.
+let startingSweep = false;
+
 // A sweep is sequential BY DESIGN. Two models measured at once contend for the
 // same memory and the same GPU, and every number either one produces would
 // describe that contention rather than the model — which is the one thing this
@@ -115,6 +124,7 @@ export function cancelSweep() {
 export function __resetSweep() {
   sweep?.controller?.abort();
   sweep = null;
+  startingSweep = false;
 }
 
 // The sweep loop runs OUTSIDE the request lifecycle — there is no `next(err)` to
@@ -187,7 +197,20 @@ async function runSweepLoop(run, targets, contextTokens, emit) {
  *   sweep is already running or the scope covers nothing
  */
 export async function startSweep({ scope = 'unmeasured', contextTokens, onProgress } = {}) {
-  if (sweep?.status === 'running') return { ...snapshot(), rejected: 'a sweep is already running' };
+  if (sweep?.status === 'running' || startingSweep) return { ...snapshot(), rejected: 'a sweep is already running' };
+  // Reserved here, synchronously, so the check above and this claim cannot be
+  // split by the await inside. Released in the `finally` — by which point either
+  // `sweep` is published (and the `running` check covers the slot) or the start
+  // was refused and the slot is free again.
+  startingSweep = true;
+  try {
+    return await beginSweep({ scope, contextTokens, onProgress });
+  } finally {
+    startingSweep = false;
+  }
+}
+
+async function beginSweep({ scope, contextTokens, onProgress }) {
   const resolvedScope = SWEEP_SCOPES.includes(scope) ? scope : 'unmeasured';
 
   // Read the report ONCE, here, rather than per model: it lists installed models

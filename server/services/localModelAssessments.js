@@ -336,6 +336,22 @@ export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_
     throw new ServerError(claim.message, { status: 409, code: 'HEAVY_LOCAL_JOB_BUSY', context: { holder: claim.holder } });
   }
   try {
+    // The claim wait is bounded but can be minutes long, and it does not observe
+    // the abort signal. A cancel that landed while we waited must not turn into a
+    // measurement now that the machine is free — that would relaunch llama-server
+    // under the cancelled run's tuning and hold the claim against the sweep that
+    // replaced it. Nothing was measured, so nothing is recorded.
+    if (signal?.aborted) {
+      console.log(`📏 Local LLM: ${backend}/${modelId} cancelled while waiting for the accelerator — not measured`);
+      emit({ event: 'complete', cancelled: true, message: `${modelId}: cancelled before it started — nothing recorded` });
+      // Same record SHAPE as the mid-run cancel below, so a consumer reads one
+      // contract either way — just with nothing in it, because nothing ran.
+      // `unknown` is the verdict for "no evidence", which is exactly the case.
+      return {
+        backend, modelId, cancelled: true, verdict: 'unknown', samples: [],
+        performance: summarizePerformance([]),
+      };
+    }
     return await measureModel({ backend, modelId, contexts, tuning, signal, emit });
   } finally {
     await claim.release();

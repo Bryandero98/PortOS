@@ -214,6 +214,29 @@ describe('runAssessment — machine-wide accelerator claim', () => {
     }
   });
 
+  // The claim wait does not observe the abort signal, so a run cancelled WHILE
+  // waiting would otherwise wake up and measure — relaunching llama-server under
+  // the abandoned run's tuning and holding the machine against its replacement.
+  it('does not measure a run that was cancelled while waiting for the claim', async () => {
+    runLocalLlmTest.mockResolvedValue(okRun());
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await svc.runAssessment({
+      backend: 'ollama', modelId: 'example-model:7b', contextTokens: [512], signal: controller.signal,
+    });
+
+    expect(result.cancelled).toBe(true);
+    expect(runLocalLlmTest).not.toHaveBeenCalled();
+    expect(relaunchLlamaServerWithTuning).not.toHaveBeenCalled();
+    // Nothing measured means nothing recorded.
+    expect(await svc.loadAssessments()).toEqual([]);
+    // ...and the claim went back, so the replacement sweep can start.
+    const after = await claimHeavyLocalJob({ kind: 'probe', id: 'after-cancel' });
+    expect(after.ok).toBe(true);
+    await after.release();
+  });
+
   it('releases the claim afterwards, so the next measurement can run', async () => {
     runLocalLlmTest.mockResolvedValue(okRun());
     await svc.runAssessment({ backend: 'ollama', modelId: 'example-model:7b', contextTokens: [512] });

@@ -112,6 +112,37 @@ describe('startSweep', () => {
     expect(second.rejected).toBe('a sweep is already running');
   });
 
+  // The "already running" check and the slot claim must not be split by the
+  // report await: two requests landing in that window would each publish a
+  // `sweep` and launch a detached loop, so two overnight queues would measure the
+  // same models against each other with only the second one's status visible.
+  it('refuses a second sweep that arrives while the first is still reading the report', async () => {
+    let releaseReport;
+    getAssessmentReport.mockImplementationOnce(() => new Promise((resolve) => { releaseReport = resolve; }));
+    runAssessment.mockResolvedValue(measured());
+
+    const first = startSweep({ scope: 'unmeasured' });
+    // Arrives before the report resolves — the first sweep object does not exist yet.
+    const second = await startSweep({ scope: 'unmeasured' });
+    expect(second.rejected).toBe('a sweep is already running');
+
+    releaseReport(report({ unassessed: [{ backend: 'ollama', modelId: 'a' }] }));
+    expect((await first).status).toBe('running');
+    await settle();
+    expect(runAssessment).toHaveBeenCalledTimes(1);
+  });
+
+  // A refused start must free the slot again, or one empty scope wedges the
+  // feature until the process restarts.
+  it('frees the slot when the start is refused', async () => {
+    getAssessmentReport.mockResolvedValueOnce(report());
+    expect((await startSweep({ scope: 'all' })).rejected).toBe('nothing to measure for that scope');
+
+    getAssessmentReport.mockResolvedValue(report({ unassessed: [{ backend: 'ollama', modelId: 'a' }] }));
+    runAssessment.mockResolvedValue(measured());
+    expect((await startSweep({ scope: 'unmeasured' })).status).toBe('running');
+  });
+
   it('refuses a scope that covers nothing', async () => {
     getAssessmentReport.mockResolvedValue(report());
     const result = await startSweep({ scope: 'all' });
