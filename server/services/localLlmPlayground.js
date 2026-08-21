@@ -22,13 +22,41 @@ export function buildPrompt({ systemPrompt, prompt }) {
   return `System instructions:\n${system}\n\nUser prompt:\n${prompt}`;
 }
 
-export function summarizeTimings({ startedAt, firstChunkAt, endedAt, text }) {
+/**
+ * Collapse one generation's clock readings (and, when the daemon reported them,
+ * its token counts) into the numbers PortOS records.
+ *
+ * ## Why tokens/s is decode-only
+ *
+ * `tokensPerSecond` divides the completion tokens by the time spent GENERATING
+ * them — wall clock minus time-to-first-token — because that is what "tokens per
+ * second" means everywhere else in the local-LLM world (llama.cpp's `eval time`,
+ * Ollama's `eval_count / eval_duration`). Including prefill would make the same
+ * model look several times slower at 16k context than at 512 for a reason that
+ * has nothing to do with its decode speed, and TTFT is already reported beside
+ * it. Prefill gets its own honest number, `promptTokensPerSecond`.
+ *
+ * @param {{ completionTokens: number|null, promptTokens: number|null, estimated: boolean }} [usage]
+ *   token counts from `streamOpenAiChat`'s `onStats`. Absent entirely for a
+ *   caller that does not track usage, which records `null` — not zero.
+ */
+export function summarizeTimings({ startedAt, firstChunkAt, endedAt, text, usage }) {
   const totalMs = endedAt - startedAt;
   const ttftMs = firstChunkAt ? firstChunkAt - startedAt : null;
   const chars = text.length;
   // A sub-millisecond total makes a rate meaningless — report n/a (null)
   // rather than `chars`, which would surface the char COUNT as a chars/sec rate.
   const charsPerSecond = totalMs > 0 ? Number((chars / (totalMs / 1000)).toFixed(2)) : null;
+
+  const completionTokens = Number.isFinite(usage?.completionTokens) ? usage.completionTokens : null;
+  const promptTokens = Number.isFinite(usage?.promptTokens) ? usage.promptTokens : null;
+  // Decode window: everything after the first token arrived. Falls back to the
+  // full wall clock when TTFT was never observed (a non-streamed response), which
+  // understates the rate rather than inventing a prefill split that wasn't seen.
+  const decodeMs = Number.isFinite(ttftMs) ? totalMs - ttftMs : totalMs;
+  const rate = (tokens, ms) =>
+    (Number.isFinite(tokens) && tokens > 0 && ms > 0 ? Number((tokens / (ms / 1000)).toFixed(2)) : null);
+
   return {
     startedAt: new Date(startedAt).toISOString(),
     endedAt: new Date(endedAt).toISOString(),
@@ -36,6 +64,20 @@ export function summarizeTimings({ startedAt, firstChunkAt, endedAt, text }) {
     totalMs,
     chars,
     charsPerSecond,
+    // `null` throughout = the daemon reported no usage and nothing streamed to
+    // count. Never 0, which a reader would take for a measured standstill.
+    completionTokens,
+    promptTokens,
+    tokensPerSecond: rate(completionTokens, decodeMs),
+    // Prompt processing (prefill) speed: how fast the daemon chewed through the
+    // context before the first token. Needs BOTH a prompt-token count and a
+    // measured TTFT, so it is null on a non-streamed response.
+    promptTokensPerSecond: Number.isFinite(ttftMs) ? rate(promptTokens, ttftMs) : null,
+    // Whether the token count came from the daemon's own tokenizer (`false`) or
+    // from counting streamed frames (`true`). `null` = no token count at all.
+    // A consumer must label an estimate as one — PortOS has no tokenizer, and
+    // presenting a frame count as a measurement is the thing this flag prevents.
+    tokensEstimated: completionTokens === null ? null : Boolean(usage?.estimated),
   };
 }
 
@@ -57,7 +99,7 @@ async function resolveLocalProvider(backend) {
   return provider;
 }
 
-async function streamChatCompletion({ provider, backend, modelId, prompt, systemPrompt, temperature, maxTokens, extraBody = {}, signal, onChunk }) {
+async function streamChatCompletion({ provider, backend, modelId, prompt, systemPrompt, temperature, maxTokens, extraBody = {}, signal, onChunk, onStats }) {
   if (backend === 'ollama') {
     const ready = await ensureOllamaProviderReady(provider).catch((err) => ({ success: false, error: err.message }));
     if (!ready.success) {
@@ -85,6 +127,9 @@ async function streamChatCompletion({ provider, backend, modelId, prompt, system
     extraBody: { ...(Number(provider.numCtx) > 0 ? { num_ctx: Number(provider.numCtx) } : {}), ...extraBody },
     signal,
     onChunk,
+    // Registering `onStats` is what asks the daemon for token counts; a runtime
+    // that does not support the ask is handled inside `streamOpenAiChat`.
+    onStats,
   });
 }
 
@@ -112,6 +157,11 @@ export async function runLocalLlmTest({
   const startedAt = Date.now();
   let firstChunkAt = null;
   let runId = null;
+  // Filled by the stream's terminal usage frame (or the frame-count fallback).
+  // Stays null until then so a run that died before any frame records "no token
+  // count" rather than a fabricated zero.
+  let usage = null;
+  const onStats = (stats) => { usage = stats; };
 
   try {
     const run = await createRun({
@@ -144,6 +194,7 @@ export async function runLocalLlmTest({
       maxTokens,
       extraBody,
       signal,
+      onStats,
       onChunk: (chunk, kind = 'content') => {
         // First token of EITHER channel marks TTFT: for a reasoning model the
         // first thing it emits is reasoning, so timing it from that chunk is the
@@ -166,7 +217,7 @@ export async function runLocalLlmTest({
       providerId: provider.id,
       runId,
       text,
-      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt, text }),
+      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt, text, usage }),
       options: { temperature, maxTokens, timeoutMs },
     };
   } catch (err) {
@@ -195,7 +246,7 @@ export async function runLocalLlmTest({
       runId,
       error,
       text: partialText,
-      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt, text: partialText }),
+      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt, text: partialText, usage }),
       options: { temperature, maxTokens, timeoutMs },
     };
   }
@@ -233,6 +284,7 @@ export async function runEndpointLlmTest({
 }) {
   const startedAt = Date.now();
   let firstChunkAt = null;
+  let usage = null;
   const timeoutController = new AbortController();
   const timeoutHandle = setTimeout(() => timeoutController.abort(), timeoutMs);
   const signal = anyAbortSignal([clientSignal, timeoutController.signal]);
@@ -247,6 +299,7 @@ export async function runEndpointLlmTest({
       maxTokens,
       extraBody,
       signal,
+      onStats: (stats) => { usage = stats; },
       onChunk: (chunk, kind = 'content') => {
         if (!firstChunkAt && chunk) firstChunkAt = Date.now();
         if (chunk) return onToken?.(chunk, kind);
@@ -258,7 +311,7 @@ export async function runEndpointLlmTest({
       modelId,
       endpoint,
       text,
-      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt: Date.now(), text }),
+      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt: Date.now(), text, usage }),
       options: { temperature, maxTokens, timeoutMs },
     };
   } catch (err) {
@@ -271,7 +324,7 @@ export async function runEndpointLlmTest({
       endpoint,
       error,
       text: partialText,
-      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt: Date.now(), text: partialText }),
+      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt: Date.now(), text: partialText, usage }),
       options: { temperature, maxTokens, timeoutMs },
     };
   }

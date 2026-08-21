@@ -7,6 +7,7 @@ import { listModels, listVisionModels, listToolUseModels, installModel } from '.
 import { enrichCatalogWithVariants, applyMeasuredFit } from '../services/huggingFaceCatalog.js';
 import { getMeasuredFits } from '../services/localModelAssessmentStore.js';
 import { runAssessment } from '../services/localModelAssessments.js';
+import { startSweep, getSweepStatus, cancelSweep } from '../services/localModelAssessmentSweep.js';
 import { getLoadedModels, unloadModel } from '../services/ollamaManager.js';
 import { getLoadedModels as getLoadedLmStudioModels, getLastLoadedModelsError as getLmStudioResidencyError } from '../services/lmStudioManager.js';
 import { getSettings } from '../services/settings.js';
@@ -69,6 +70,12 @@ vi.mock('../services/localModelAssessments.js', () => ({
   getAssessmentReport: vi.fn(async () => ({ ranked: [], excluded: [] })),
   runAssessment: vi.fn(async () => ({ verdict: 'fits' })),
   deleteAssessment: vi.fn(async () => ({ deleted: true })),
+}));
+
+vi.mock('../services/localModelAssessmentSweep.js', () => ({
+  startSweep: vi.fn(async () => ({ status: 'running', total: 3, completed: 0 })),
+  getSweepStatus: vi.fn(() => ({ status: 'idle', total: 0, completed: 0, results: [] })),
+  cancelSweep: vi.fn(() => ({ status: 'cancelled', total: 3, completed: 1, results: [] })),
 }));
 
 vi.mock('../services/llamaServerManager.js', () => ({
@@ -504,6 +511,69 @@ describe('measured assessments wiring', () => {
     expect(app.get('io').emit).toHaveBeenCalledWith('localLlm:progress', {
       scope: 'assessment', backend: 'ollama', modelId: 'example-model:14b', event: 'start', sampleIndex: 1, sampleCount: 3,
     });
+  });
+
+  // The sweep is the overnight path: it must return as soon as the queue exists,
+  // because the run outlives the request that started it.
+  it('POST /assessments/sweep starts a queue and returns its snapshot', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/assessments/sweep')
+      .send({ scope: 'all' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: 'running', total: 3 });
+    expect(startSweep).toHaveBeenCalledWith(expect.objectContaining({ scope: 'all' }));
+  });
+
+  it('POST /assessments/sweep defaults to the unmeasured scope', async () => {
+    const res = await request(makeApp()).post('/api/local-llm/assessments/sweep').send({});
+    expect(res.status).toBe(200);
+    expect(startSweep).toHaveBeenCalledWith(expect.objectContaining({ scope: 'unmeasured' }));
+  });
+
+  it('POST /assessments/sweep rejects an unknown scope rather than silently narrowing it', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/assessments/sweep')
+      .send({ scope: 'everything-please' });
+
+    expect(res.status).toBe(400);
+    expect(startSweep).not.toHaveBeenCalled();
+  });
+
+  // A refused start has to be visible: a 200 with no queue behind it would leave
+  // the page waiting on progress that never comes.
+  it('POST /assessments/sweep 409s when the service refuses to start', async () => {
+    startSweep.mockResolvedValueOnce({ status: 'running', rejected: 'a sweep is already running' });
+    const res = await request(makeApp()).post('/api/local-llm/assessments/sweep').send({ scope: 'all' });
+    expect(res.status).toBe(409);
+  });
+
+  it('forwards sweep progress to the shared localLlm:progress socket event', async () => {
+    startSweep.mockImplementation(async ({ onProgress }) => {
+      onProgress({ scope: 'assessment-sweep', event: 'start', total: 2, completed: 0 });
+      return { status: 'running', total: 2, completed: 0 };
+    });
+    const app = makeApp();
+    await request(app).post('/api/local-llm/assessments/sweep').send({ scope: 'unmeasured' });
+
+    expect(app.get('io').emit).toHaveBeenCalledWith('localLlm:progress', {
+      scope: 'assessment-sweep', event: 'start', total: 2, completed: 0,
+    });
+  });
+
+  it('GET /assessments/sweep reports the queue without touching a provider', async () => {
+    const res = await request(makeApp()).get('/api/local-llm/assessments/sweep');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: 'idle' });
+    expect(getSweepStatus).toHaveBeenCalled();
+    expect(startSweep).not.toHaveBeenCalled();
+  });
+
+  it('POST /assessments/sweep/cancel stops the queue', async () => {
+    const res = await request(makeApp()).post('/api/local-llm/assessments/sweep/cancel');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: 'cancelled', completed: 1 });
+    expect(cancelSweep).toHaveBeenCalled();
   });
 });
 

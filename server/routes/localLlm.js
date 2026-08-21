@@ -26,6 +26,7 @@ import {
   localLlmAssessmentRunSchema,
   localLlmAssessmentIntentSchema,
   localLlmAssessmentDeleteSchema,
+  localLlmAssessmentSweepSchema,
   localLlmLlamaServerStartSchema,
   localLlmSpecModelDownloadSchema
 } from '../lib/validation.js'
@@ -44,6 +45,7 @@ import {
 import { getSettings } from '../services/settings.js'
 import { runLocalLlmTest, compareLocalLlmModels } from '../services/localLlmPlayground.js'
 import { getAssessmentReport, runAssessment, deleteAssessment } from '../services/localModelAssessments.js'
+import { startSweep, getSweepStatus, cancelSweep } from '../services/localModelAssessmentSweep.js'
 import { listUserModels } from '../services/audioModels.js'
 import { ENGINES } from '../services/pipeline/musicGen.js'
 import { abortSignalFromResponse } from '../lib/requestAbort.js'
@@ -454,6 +456,37 @@ router.post('/assessments/run', asyncHandler(async (req, res) => {
   // frame from a model pull streaming on the same event.
   const onProgress = (frame) => io?.emit('localLlm:progress', frame)
   res.json(await runAssessment({ backend, modelId, contextTokens, tuning, signal: abortSignalFromResponse(res), onProgress }))
+}))
+
+// POST /api/local-llm/assessments/sweep — measure EVERY model the scope covers.
+// User-triggered only, same as the single-model run: the UI names the model and
+// generation count before this fires.
+//
+// Unlike /run this returns immediately and the queue keeps going server-side —
+// a full sweep is hours of work started at the end of the day, so it must not
+// depend on the browser tab staying open. Progress rides the same
+// `localLlm:progress` socket event under `scope: 'assessment-sweep'`, and the
+// GET below is the reload-safe source of truth.
+router.post('/assessments/sweep', asyncHandler(async (req, res) => {
+  const { scope, contextTokens } = validateRequest(localLlmAssessmentSweepSchema, req.body)
+  const io = req.app.get('io')
+  const status = await startSweep({ scope, contextTokens, onProgress: (frame) => io?.emit('localLlm:progress', frame) })
+  // A refused start (one already running, or nothing to measure) is a 409, not a
+  // silent no-op that would leave the page waiting for progress that never comes.
+  if (status.rejected) throw new ServerError(status.rejected, { status: 409, context: { scope } })
+  res.json(status)
+}))
+
+// GET /api/local-llm/assessments/sweep — queue status. Module state only, zero
+// LLM calls, so the page can poll it and a reload can pick a running sweep back up.
+router.get('/assessments/sweep', asyncHandler(async (_req, res) => {
+  res.json(getSweepStatus())
+}))
+
+// POST /api/local-llm/assessments/sweep/cancel — stop the queue and the model in
+// flight. Everything already measured stays on disk.
+router.post('/assessments/sweep/cancel', asyncHandler(async (_req, res) => {
+  res.json(cancelSweep())
 }))
 
 // POST /api/local-llm/assessments/delete — drop one stale measurement (e.g. after

@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildMessages, extractStreamDelta, resolvePartialOutput } from './openAiChatStream.js';
+import { buildMessages, normalizeUsage, parseStreamFrame, resolvePartialOutput } from './openAiChatStream.js';
 
 describe('buildMessages', () => {
   it('omits the system message when blank', () => {
@@ -27,30 +27,30 @@ describe('buildMessages', () => {
   });
 });
 
-describe('extractStreamDelta', () => {
+describe('parseStreamFrame — deltas', () => {
   it('parses an OpenAI-style content delta', () => {
     const line = 'data: {"choices":[{"delta":{"content":"Hi"}}]}';
-    expect(extractStreamDelta(line)).toEqual({ content: 'Hi', reasoning: '' });
+    expect(parseStreamFrame(line)).toEqual({ content: 'Hi', reasoning: '', usage: null });
   });
 
   it('parses a reasoning delta', () => {
     const line = 'data: {"choices":[{"delta":{"reasoning":"thinking"}}]}';
-    expect(extractStreamDelta(line)).toEqual({ content: '', reasoning: 'thinking' });
+    expect(parseStreamFrame(line)).toEqual({ content: '', reasoning: 'thinking', usage: null });
   });
 
   it('skips non-data lines and the [DONE]/✅ sentinels', () => {
-    expect(extractStreamDelta(': keep-alive')).toBeNull();
-    expect(extractStreamDelta('data: [DONE]')).toBeNull();
-    expect(extractStreamDelta('data: ✅')).toBeNull();
-    expect(extractStreamDelta('')).toBeNull();
+    expect(parseStreamFrame(': keep-alive')).toBeNull();
+    expect(parseStreamFrame('data: [DONE]')).toBeNull();
+    expect(parseStreamFrame('data: ✅')).toBeNull();
+    expect(parseStreamFrame('')).toBeNull();
   });
 
   it('skips a malformed frame instead of throwing (one bad frame must not abort the stream)', () => {
-    expect(extractStreamDelta('data: {not json')).toBeNull();
+    expect(parseStreamFrame('data: {not json')).toBeNull();
   });
 
   it('tolerates a frame with no delta', () => {
-    expect(extractStreamDelta('data: {"choices":[{}]}')).toEqual({ content: '', reasoning: '' });
+    expect(parseStreamFrame('data: {"choices":[{}]}')).toEqual({ content: '', reasoning: '', usage: null });
   });
 });
 
@@ -66,5 +66,46 @@ describe('resolvePartialOutput', () => {
   it('returns empty string when neither content nor reasoning streamed', () => {
     expect(resolvePartialOutput({ output: '', reasoning: '' })).toBe('');
     expect(resolvePartialOutput({})).toBe('');
+  });
+});
+
+describe('parseStreamFrame', () => {
+  it('carries the usage block off the terminal frame (which has no choices)', () => {
+    const line = 'data: {"choices":[],"usage":{"completion_tokens":42,"prompt_tokens":900}}';
+    expect(parseStreamFrame(line)).toEqual({
+      content: '', reasoning: '', usage: { completion_tokens: 42, prompt_tokens: 900 },
+    });
+  });
+
+  it('reports usage null on an ordinary delta frame', () => {
+    const line = 'data: {"choices":[{"delta":{"content":"Hi"}}]}';
+    expect(parseStreamFrame(line)).toEqual({ content: 'Hi', reasoning: '', usage: null });
+  });
+});
+
+describe('normalizeUsage', () => {
+  it('reads the OpenAI snake_case keys', () => {
+    expect(normalizeUsage({ completion_tokens: 12, prompt_tokens: 500 }))
+      .toEqual({ completionTokens: 12, promptTokens: 500 });
+  });
+
+  it('accepts camelCase and Ollama eval counts', () => {
+    expect(normalizeUsage({ completionTokens: 7, promptTokens: 8 }))
+      .toEqual({ completionTokens: 7, promptTokens: 8 });
+    expect(normalizeUsage({ eval_count: 30, prompt_eval_count: 1200 }))
+      .toEqual({ completionTokens: 30, promptTokens: 1200 });
+  });
+
+  // The sentinel contract: an absent count must stay distinguishable from a
+  // reported zero, or a daemon that reports nothing looks like one that
+  // generated nothing.
+  it('reports null for an absent count and keeps a reported zero', () => {
+    expect(normalizeUsage(null)).toEqual({ completionTokens: null, promptTokens: null });
+    expect(normalizeUsage({ completion_tokens: 0 }).completionTokens).toBe(0);
+  });
+
+  it('ignores non-numeric and negative values rather than recording them', () => {
+    expect(normalizeUsage({ completion_tokens: 'lots', prompt_tokens: -3 }))
+      .toEqual({ completionTokens: null, promptTokens: null });
   });
 });

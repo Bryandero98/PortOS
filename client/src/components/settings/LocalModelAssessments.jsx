@@ -11,10 +11,15 @@
  * 1. **No cold-bootstrap LLM calls** (root CLAUDE.md). Reading assessments hits
  *    disk only, so it loads with the tab. Running one calls a provider, so it
  *    fires only from an explicit click AND a consent modal that names the
- *    backend, the model, and how many generations are about to happen.
+ *    backend, the model, and how many generations are about to happen. The
+ *    batch run (`AssessmentSweepPanel`) is held to exactly the same gate.
  * 2. **Unknown is not bad.** A model with no evidence is listed under "Not yet
  *    measured" with a Measure button — never ranked last, never shown as a poor
  *    choice. Same for an axis that wasn't measured: it is omitted, not zeroed.
+ *
+ * Throughput is reported in tokens/s wherever the runtime reported token counts,
+ * with chars/s as the universal fallback — `ModelThroughputReport` is the full
+ * per-context table. PortOS never derives one unit from the other.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -25,7 +30,9 @@ import BrailleSpinner from '../BrailleSpinner';
 import toast from '../ui/Toast';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import useMounted from '../../hooks/useMounted';
-import { formatContextLength, formatDurationMs } from '../../utils/formatters';
+import AssessmentSweepPanel from './AssessmentSweepPanel';
+import ModelThroughputReport from './ModelThroughputReport';
+import { formatContextTokens, formatDurationMs, throughputLabel } from '../../utils/formatters';
 import {
   getLocalLlmAssessments, runLocalLlmAssessment, deleteLocalLlmAssessment,
 } from '../../services/api';
@@ -60,10 +67,6 @@ const VERDICT_META = {
 };
 
 const AXIS_LABEL = { capability: 'Capability', speed: 'Speed', fidelity: 'Context stability', memory: 'Memory headroom' };
-
-// The shared formatter, minus its standalone-badge suffix — the prose around
-// every call site here already says "tokens of context".
-const formatContext = (tokens) => formatContextLength(tokens, { suffix: '' });
 
 const backendLabel = (report, id) =>
   report?.runtimes?.find((r) => r.id === id)?.label || BACKEND_LABEL[id] || id;
@@ -195,7 +198,7 @@ function AssessmentConsentModal({
           PortOS will run <span className="text-gray-200 font-mono break-all">{target.modelId}</span> on{' '}
           <span className="text-gray-200">{runtimeLabel}</span>{' '}
           {contextTokens.length} time{contextTokens.length === 1 ? '' : 's'} — one short generation at each of{' '}
-          {contextTokens.map(formatContext).join(', ')} tokens of context — and record what it measured.
+          {contextTokens.map(formatContextTokens).join(', ')} tokens of context — and record what it measured.
         </p>
         <p className="text-xs text-gray-500">
           Nothing else on this page calls a model. This can take several minutes on a large model, and it
@@ -337,7 +340,18 @@ function RankedRow({ entry, runtimeLabel, onRemeasure, onDelete, busy }) {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
         <div>
           <div className="text-gray-500">Throughput</div>
-          <div className="text-gray-200"><Measured value={perf.meanCharsPerSecond} suffix=" chars/s" /></div>
+          {/* Tokens/s where the runtime reported token counts — the figure people
+              compare local models on — with chars/s underneath as the universal
+              one. A runtime that reports no usage shows chars/s alone rather than
+              a tokens/s figure divided out of it. */}
+          <div className="text-gray-200">
+            {throughputLabel(perf) || <span className="text-gray-600 italic">not measured</span>}
+            {Number.isFinite(perf.meanTokensPerSecond) && (
+              <span className="text-gray-600 ml-1.5 text-[10px]">
+                <Measured value={perf.meanCharsPerSecond} suffix=" chars/s" />
+              </span>
+            )}
+          </div>
         </div>
         <div>
           <div className="text-gray-500">First token</div>
@@ -351,7 +365,7 @@ function RankedRow({ entry, runtimeLabel, onRemeasure, onDelete, busy }) {
           <div className="text-gray-500">Max context</div>
           <div className="text-gray-200">
             {Number.isFinite(perf.maxWorkingContextTokens)
-              ? `${formatContext(perf.maxWorkingContextTokens)} tokens`
+              ? `${formatContextTokens(perf.maxWorkingContextTokens)} tokens`
               : <span className="text-gray-600 italic">not measured</span>}
           </div>
         </div>
@@ -476,6 +490,9 @@ export function LocalModelAssessments() {
   // Per-sample progress for the run in flight. `null` = no frame yet, which is
   // rendered as "no progress bar" rather than as 0 of N.
   const [progress, setProgress] = useState(null);
+  // Whether the server-side sweep is working. Owned here rather than in the
+  // sweep panel because it gates this panel's per-model buttons too.
+  const [sweepRunning, setSweepRunning] = useState(false);
 
   const load = useCallback(async (nextIntent) => {
     setLoading(true);
@@ -612,7 +629,21 @@ export function LocalModelAssessments() {
     setPendingTarget(entry);
   };
 
-  const busy = running || removing;
+  // A sweep holds the provider for hours. A single-model run started on top of
+  // it would measure the contention between the two, so every per-model action
+  // goes quiet while the queue is working.
+  // O(1) label lookup with a stable identity: the throughput table calls it once
+  // per row, and a fresh closure each render would forbid ever memoizing that
+  // table. The report's roster is authoritative; BACKEND_LABEL is the fallback.
+  const runtimeLabelFor = useCallback(
+    (id) => report?.runtimes?.find((r) => r.id === id)?.label || BACKEND_LABEL[id] || id,
+    [report?.runtimes],
+  );
+
+  // The sweep is excluded from the panel's OWN disable: pressing Stop has to stay
+  // available while the queue is what is busy.
+  const localBusy = running || removing;
+  const busy = localBusy || sweepRunning;
   const activeIntent = INTENTS.find((i) => i.id === intent);
 
   return (
@@ -637,12 +668,25 @@ export function LocalModelAssessments() {
         The install catalog estimates fit from a model&apos;s file size. This measures it: one short
         generation at each of several context lengths, recording throughput, time to first token, and how
         far throughput falls off as context grows — across every local runtime PortOS can reach
-        (Ollama, LM Studio, llama.cpp, MTPLX, vLLM). Measure a model under more than one launch tuning to
-        see which configuration this machine actually prefers. Results stay on this machine — they
-        describe this hardware, so they are never synced to a peer.
+        (Ollama, LM Studio, llama.cpp, MTPLX, vLLM). Throughput is reported in tokens per second wherever
+        the runtime reports token counts. Measure a model under more than one launch tuning to
+        see which configuration this machine actually prefers, or start a sweep to measure everything at
+        once. Results stay on this machine — they describe this hardware, so they are never synced to a peer.
       </p>
 
       <RuntimeRoster runtimes={report?.runtimes} />
+
+      {/* The batch run. Kept above the ranking because it is what you come here
+          to press at the end of the day; the results below are what you read the
+          next morning. Disabled while a single-model run holds the provider —
+          two measurements at once would measure the contention. */}
+      <AssessmentSweepPanel
+        counts={report?.sweepScopes}
+        contextTokens={report?.defaultContextTokens || []}
+        disabled={localBusy}
+        onRunningChange={setSweepRunning}
+        onSweepFinished={() => load(intent)}
+      />
 
       <div className="flex items-center gap-2 flex-wrap">
         <label htmlFor="assessment-intent" className="text-xs text-gray-400">Rank for</label>
@@ -714,9 +758,14 @@ export function LocalModelAssessments() {
             </div>
           )}
 
+          <ModelThroughputReport
+            report={report.throughputReport}
+            runtimeLabelFor={runtimeLabelFor}
+          />
+
           <TuningComparison
             rows={report.tuningComparison}
-            runtimeLabelFor={(id) => backendLabel(report, id)}
+            runtimeLabelFor={runtimeLabelFor}
           />
 
           {report.unassessed?.length > 0 && (

@@ -194,6 +194,27 @@ export const getLocalLlmAssessments = (intent = 'balanced', options) =>
 export const runLocalLlmAssessment = (payload, options) =>
   request('/local-llm/assessments/run', { method: 'POST', body: JSON.stringify(payload), ...options });
 
+// === The overnight sweep =====================================================
+// Measure every model the scope covers, in one server-side queue. Unlike
+// `runLocalLlmAssessment` this returns as soon as the queue is built — the run
+// itself keeps going with the tab closed, which is the whole point of starting
+// one at the end of the day. Same consent rule: it only fires from a click that
+// was shown the model and generation count first.
+
+// Queue status: what is running, what has finished, what it measured. Module
+// state on the server, so it is safe to poll and a reload picks a sweep back up.
+export const getLocalLlmAssessmentSweep = (options) =>
+  request('/local-llm/assessments/sweep', options);
+
+// `scope` is 'unmeasured' | 'stale' | 'all'. 409s when a sweep is already
+// running or the scope covers nothing.
+export const startLocalLlmAssessmentSweep = (payload, options) =>
+  request('/local-llm/assessments/sweep', { method: 'POST', body: JSON.stringify(payload), ...options });
+
+// Stop the queue and the model in flight. Everything already measured stays.
+export const cancelLocalLlmAssessmentSweep = (options) =>
+  request('/local-llm/assessments/sweep/cancel', { method: 'POST', ...options });
+
 // Drop a stale measurement — after a RAM upgrade or a backend update the
 // recorded evidence describes a machine that no longer exists.
 //

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
 vi.mock('../../services/api', () => ({
@@ -29,6 +29,7 @@ vi.mock('../ui/Toast', () => ({
 }));
 
 import { getLocalLlmStatus, getLocalLlmCatalog, patchSettingsSlice, installLocalLlmModel } from '../../services/api';
+import socket from '../../services/socket';
 import { LocalLlmTab } from './LocalLlmTab';
 
 // A realistically long HF model id — the shape that got ellipsised to
@@ -730,6 +731,34 @@ describe('LocalLlmTab llama-server management', () => {
 
     await waitFor(() => {
       expect(stopLlamaServer).toHaveBeenCalled();
+    });
+  });
+
+  // `localLlm:progress` is shared with the measurement paths, and an overnight
+  // sweep emits a `complete` frame PER MODEL. Answering those here would reload
+  // the status and re-query the Hugging Face catalog once per measured model,
+  // all night, and paint sweep text into the install banner.
+  describe('shared progress channel', () => {
+    const fireFrame = async (frame) => {
+      const handler = socket.on.mock.calls.find(([event]) => event === 'localLlm:progress')?.[1];
+      await act(async () => handler(frame));
+    };
+
+    it('ignores assessment and sweep frames on the shared progress event', async () => {
+      await renderTab();
+      const catalogCalls = getLocalLlmCatalog.mock.calls.length;
+
+      await fireFrame({ scope: 'assessment', event: 'complete', message: 'example-model: fits' });
+      await fireFrame({ scope: 'assessment-sweep', event: 'complete', message: 'Sweep complete: 30/30 measured' });
+
+      expect(getLocalLlmCatalog.mock.calls.length).toBe(catalogCalls);
+      expect(screen.queryByText(/Sweep complete/)).not.toBeInTheDocument();
+    });
+
+    it('still answers the install frames this tab owns', async () => {
+      await renderTab();
+      await fireFrame({ event: 'progress', message: 'pulling manifest' });
+      expect(await screen.findByText(/pulling manifest/)).toBeInTheDocument();
     });
   });
 });

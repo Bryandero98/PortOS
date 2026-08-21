@@ -11,6 +11,9 @@ import {
   scoreAssessment,
   scoreForIntent,
   summarizePerformance,
+  buildThroughputReport,
+  selectSweepTargets,
+  summarizeSweepScopes,
   compareEnvironments,
   describeStaleness,
   measuredFitVerdict,
@@ -534,5 +537,172 @@ describe('rankByIntent staleness', () => {
       assessment('fresh:14b', 20, { comparable: true, stale: false, changes: [] }),
     ], 'fastest');
     expect(ranked[0].modelId).toBe('unannotated:14b');
+  });
+});
+
+// ---- tokens per second -------------------------------------------------------
+
+const tokenSample = (contextTokens, tokensPerSecond, { estimated = false, promptRate = null } = {}) => ({
+  ...okSample(contextTokens, 200),
+  tokensPerSecond,
+  promptTokensPerSecond: promptRate,
+  completionTokens: 96,
+  tokensEstimated: estimated,
+});
+
+describe('summarizePerformance — token throughput', () => {
+  it('averages the measured tokens/s alongside chars/s', () => {
+    const perf = summarizePerformance([tokenSample(512, 40), tokenSample(4096, 20)]);
+    expect(perf.meanTokensPerSecond).toBe(30);
+    expect(perf.peakTokensPerSecond).toBe(40);
+    expect(perf.tokensEstimated).toBe(false);
+  });
+
+  // A runtime that reports no usage block must not have a tokens/s figure
+  // invented from its character count.
+  it('reports null token rates when no sample carried one', () => {
+    const perf = summarizePerformance([okSample(512, 200), okSample(4096, 100)]);
+    expect(perf.meanTokensPerSecond).toBeNull();
+    expect(perf.peakTokensPerSecond).toBeNull();
+    expect(perf.tokensEstimated).toBeNull();
+    expect(perf.meanCharsPerSecond).toBe(150);
+  });
+
+  it('marks the mean as estimated when ANY contributing sample was frame-counted', () => {
+    const perf = summarizePerformance([tokenSample(512, 40), tokenSample(4096, 20, { estimated: true })]);
+    expect(perf.tokensEstimated).toBe(true);
+  });
+});
+
+describe('explainAssessment — throughput clause', () => {
+  it('leads with tokens/s when it was measured', () => {
+    const text = explainAssessment({ performance: summarizePerformance([tokenSample(512, 40)]) }, 'fastest');
+    expect(text).toContain('40 tok/s');
+    expect(text).not.toContain('chars/s');
+  });
+
+  it('falls back to chars/s, and never reports both', () => {
+    const text = explainAssessment({ performance: summarizePerformance([okSample(512, 200)]) }, 'fastest');
+    expect(text).toContain('200 chars/s');
+    expect(text).not.toContain('tok/s');
+  });
+});
+
+describe('buildThroughputReport', () => {
+  const record = (modelId, rates) => ({
+    backend: 'ollama',
+    modelId,
+    tuningKey: '',
+    verdict: 'fits',
+    samples: rates.map(([context, rate]) => tokenSample(context, rate)),
+    performance: summarizePerformance(rates.map(([context, rate]) => tokenSample(context, rate))),
+  });
+
+  it('sorts fastest first and collects every sampled context as a column', () => {
+    const report = buildThroughputReport([
+      record('slow-model', [[512, 10], [4096, 8]]),
+      record('fast-model', [[512, 60], [4096, 40]]),
+    ]);
+    expect(report.rows.map((r) => r.modelId)).toEqual(['fast-model', 'slow-model']);
+    expect(report.contexts).toEqual([512, 4096]);
+    expect(report.rows[0].points.map((p) => p.tokensPerSecond)).toEqual([60, 40]);
+    expect(report.modelsWithTokenRates).toBe(2);
+  });
+
+  // Unmeasured is not slow. A runtime that reports no token counts still gets a
+  // row — dropping it would make the table look complete when it isn't.
+  it('keeps a row with no token rate, and sorts it last rather than as zero', () => {
+    const quiet = {
+      backend: 'llama',
+      modelId: 'quiet-model',
+      verdict: 'fits',
+      samples: [okSample(512, 300)],
+      performance: summarizePerformance([okSample(512, 300)]),
+    };
+    const report = buildThroughputReport([quiet, record('fast-model', [[512, 5]])]);
+    expect(report.rows.map((r) => r.modelId)).toEqual(['fast-model', 'quiet-model']);
+    expect(report.rows[1].meanTokensPerSecond).toBeNull();
+    expect(report.rows[1].meanCharsPerSecond).toBe(300);
+    expect(report.modelsWithTokenRates).toBe(1);
+  });
+
+  it('carries a failed sample as failed rather than dropping the context', () => {
+    const report = buildThroughputReport([{
+      backend: 'ollama',
+      modelId: 'big-model',
+      verdict: 'fits',
+      samples: [tokenSample(512, 12), failSample(16384, 'out of memory')],
+      performance: summarizePerformance([tokenSample(512, 12), failSample(16384, 'out of memory')]),
+    }]);
+    expect(report.contexts).toEqual([512, 16384]);
+    const failed = report.rows[0].points.find((p) => p.contextTokens === 16384);
+    expect(failed.ok).toBe(false);
+    expect(failed.tokensPerSecond).toBeNull();
+    expect(failed.error).toBe('out of memory');
+  });
+
+  it('returns an empty report for no assessments rather than throwing', () => {
+    expect(buildThroughputReport(null)).toEqual({ rows: [], contexts: [], modelsWithTokenRates: 0 });
+  });
+});
+
+// ---- sweep target selection --------------------------------------------------
+
+describe('selectSweepTargets', () => {
+  const stale = {
+    backend: 'ollama', modelId: 'stale-model', tuningKey: 'ctx=8192', tuningLabel: '8k context',
+    tuning: { numCtx: 8192 }, staleness: { stale: true },
+  };
+  const fresh = {
+    backend: 'ollama', modelId: 'fresh-model', tuningKey: '', tuningLabel: null,
+    tuning: {}, staleness: { stale: false },
+  };
+  const unassessed = [{ backend: 'lmstudio', modelId: 'new-model' }];
+
+  it('queues only never-measured models for the unmeasured scope', () => {
+    const targets = selectSweepTargets({ assessments: [stale, fresh], unassessed, scope: 'unmeasured' });
+    expect(targets.map((t) => t.modelId)).toEqual(['new-model']);
+  });
+
+  it('queues only stale readings for the stale scope', () => {
+    const targets = selectSweepTargets({ assessments: [stale, fresh], unassessed, scope: 'stale' });
+    expect(targets.map((t) => t.modelId)).toEqual(['stale-model']);
+  });
+
+  // A re-measure has to reproduce the configuration that produced the record, or
+  // the sweep quietly replaces every tuned reading with a defaults one.
+  it('re-uses each record\'s tuning so a re-measure reproduces its configuration', () => {
+    const [target] = selectSweepTargets({ assessments: [stale], unassessed: [], scope: 'stale' });
+    expect(target.tuning).toEqual({ numCtx: 8192 });
+    expect(target.tuningKey).toBe('ctx=8192');
+  });
+
+  it('covers unmeasured models FIRST in the all scope, so a cut-short run got the unknowns', () => {
+    const targets = selectSweepTargets({ assessments: [stale, fresh], unassessed, scope: 'all' });
+    expect(targets.map((t) => t.modelId)).toEqual(['new-model', 'stale-model', 'fresh-model']);
+  });
+
+  it('never queues the same model+tuning twice', () => {
+    const targets = selectSweepTargets({
+      assessments: [fresh, fresh],
+      unassessed: [{ backend: 'ollama', modelId: 'fresh-model' }],
+      scope: 'all',
+    });
+    expect(targets).toHaveLength(1);
+  });
+
+  it('falls back to the unmeasured scope for an unrecognized scope', () => {
+    const targets = selectSweepTargets({ assessments: [stale], unassessed, scope: 'everything-please' });
+    expect(targets.map((t) => t.modelId)).toEqual(['new-model']);
+  });
+});
+
+describe('summarizeSweepScopes', () => {
+  it('counts exactly what each scope would run', () => {
+    const counts = summarizeSweepScopes({
+      assessments: [{ backend: 'ollama', modelId: 'a', staleness: { stale: true } }],
+      unassessed: [{ backend: 'ollama', modelId: 'b' }, { backend: 'ollama', modelId: 'c' }],
+    });
+    expect(counts).toEqual({ unmeasured: 2, stale: 1, all: 3 });
   });
 });
