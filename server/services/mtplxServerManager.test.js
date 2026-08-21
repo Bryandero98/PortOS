@@ -254,11 +254,19 @@ describe('mtplxServerManager', () => {
       expect(launch[launch.indexOf('--context-window') + 1]).toBe('32768');
     });
 
-    it('merges onto the tuning already on the launch line rather than replacing it', async () => {
+    // The reading is labelled with the knob set the caller named, and nothing
+    // else. Merging the previous run's flags in would launch a configuration
+    // the record does not describe — and `compareTunings` would then rank two
+    // readings against each other on labels neither one actually ran under.
+    it('launches exactly the tuning it was given, not that plus the last one', async () => {
       await startMtplxServer({ tuning: { depth: 4 } });
       answerOnceRunning();
       const result = await relaunchMtplxServerWithTuning({ kvQuant: 'q8' });
-      expect(result.config.tuning).toEqual({ depth: 4, kvQuant: 'q8' });
+
+      expect(result.config.tuning).toEqual({ kvQuant: 'q8' });
+      const launch = execPm2Calls.filter((a) => a[0] === 'start').pop();
+      expect(launch).not.toContain('--depth');
+      expect(launch[launch.indexOf('--kv-quant') + 1]).toBe('q8');
     });
 
     // A sweep EXPECTS launch lines that do not work. Leaving the daemon down

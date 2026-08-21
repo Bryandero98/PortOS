@@ -507,9 +507,15 @@ export async function relaunchMtplxServerWithTuning(tuning = {}) {
   }
 
   const previous = status.config;
-  // Merged onto what is already on the launch line, not replacing it: a sweep
-  // that varies one knob must not silently drop the ones already set.
-  const next = { ...previous, tuning: { ...(previous.tuning || {}), ...Object.fromEntries(knobs) } };
+  // REPLACES the tuning on the launch line rather than merging onto it, so the
+  // flags `mtplx serve` runs with are exactly the knob set the caller named —
+  // and the assessment's `tuningKey`/`tuningLabel`, which describe only that
+  // set, describe the whole configuration. Merging would leave the second run
+  // of a sweep carrying the first run's flags while labelled with only its own,
+  // which makes `compareTunings` rank two readings that were not what they say.
+  // Replacing is exact here because an absent `mtplx serve` flag IS the daemon
+  // default — the same sentinel contract `lib/localModelTuning.js` documents.
+  const next = { ...previous, tuning: Object.fromEntries(knobs) };
   const port = next.port ?? DEFAULT_PORT;
   console.log(`🚄 MTPLX: relaunching to apply tuning (${knobs.map(([k, v]) => `${k}=${v}`).join(', ')})`);
 

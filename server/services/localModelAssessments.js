@@ -417,8 +417,8 @@ const LAUNCH_APPLIERS = {
   mtplx: {
     transport: 'cli',
     // Takes the knob set as-is rather than rendered flags: `mtplxServerManager`
-    // renders it with the same catalog on the way to the launch line, and needs
-    // the ids to merge this tuning onto what the daemon is already running with.
+    // renders it with the same catalog on the way to the launch line, and keeps
+    // the ids so it can report back which tuning the daemon came up under.
     apply: ({ launch }) => relaunchMtplxServerWithTuning(launch),
   },
 };
