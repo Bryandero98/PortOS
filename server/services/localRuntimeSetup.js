@@ -21,7 +21,9 @@
  *   - **Weights are never downloaded.** llama.cpp cannot be started without a
  *     GGUF path the user chooses, and no runtime's *model* check is auto-fixed
  *     — a multi-gigabyte download is a decision, and the Local LLM tab already
- *     owns that flow with a picker.
+ *     owns that flow with a picker. MTPLX is started on a checkpoint ALREADY in
+ *     its cache (`lib/mtplxModels.js`); an empty cache is reported with the
+ *     `mtplx pull` command that fixes it, never fetched.
  *   - **MTPLX's privileged paths are never touched.** Upstream ships an
  *     optional `mtplx max --install` fan-control helper behind a sudo prompt.
  *     PortOS installs the package and starts the loopback API server; that
@@ -34,8 +36,10 @@ import { spawn } from '../lib/childProcess.js';
 import { commandExists } from '../lib/commandExists.js';
 import { sleep } from '../lib/fileUtils.js';
 import { LOCAL_RUNTIMES, localEndpointPort } from '../lib/localProviderRuntime.js';
+import { listMtplxCachedModels, pickMtplxCachedModel } from '../lib/mtplxModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
+import { createLineReader, createOutputTail } from '../lib/streamLines.js';
 import { runStreamingCommand } from '../lib/streamingSpawn.js';
 import { installLlamaServer } from './llamaServerManager.js';
 import { controlOllamaServer, installBackend } from './localLlm.js';
@@ -72,6 +76,13 @@ const START_POLL_MS = 1_500;
 const PROBE_TIMEOUT_MS = 2_000;
 const CONFIRM_TIMEOUT_MS = 5_000;
 
+/**
+ * Why an installed MTPLX still cannot be started. Weights are a multi-gigabyte
+ * download and stay the user's decision (`docs/features/mtplx.md`), so the
+ * button names the one command that fixes this instead of running it.
+ */
+const MTPLX_NO_MODEL_ERROR = 'no model weights are cached, so its server exits before it binds a port. Run `mtplx pull` in a terminal to fetch its default checkpoint (or `mtplx pull <hf-repo-id>` for another MTP model) — a multi-gigabyte download PortOS will not start for you — then click Start MTPLX again.';
+
 /** What each `action` is called on the button and in the log. */
 const ACTION_LABELS = {
   install: (label) => `Install ${label}`,
@@ -99,14 +110,23 @@ async function startDaemon({ command, args, endpoint, emit, isCancelled = () => 
   }));
 
   let exited = null;
-  const onData = (chunk) => {
-    for (const line of chunk.toString().split(/\r?\n/)) {
-      const text = line.trim();
-      if (text) emit(text);
-    }
+  // Recent output, so a daemon that dies before it binds reports what it
+  // printed rather than only its exit code.
+  const tail = createOutputTail();
+  const onLine = (line) => {
+    const text = line.trim();
+    if (!text) return;
+    tail.remember(text);
+    emit(text);
   };
-  child.stdout?.on('data', onData);
-  child.stderr?.on('data', onData);
+  // One reader per stream: a shared carry buffer splices a half-written stdout
+  // line onto the next stderr chunk (see `lib/streamLines.js`).
+  const stdoutReader = createLineReader(onLine);
+  const stderrReader = createLineReader(onLine);
+  const onStdout = stdoutReader.push;
+  const onStderr = stderrReader.push;
+  child.stdout?.on('data', onStdout);
+  child.stderr?.on('data', onStderr);
   // Outside the request lifecycle: an unhandled 'error' on a child is a process
   // crash, and the exit code is what turns "still waiting" into a real reason.
   const onError = (err) => { exited = `failed to start: ${err.message}`; };
@@ -128,8 +148,9 @@ async function startDaemon({ command, args, endpoint, emit, isCancelled = () => 
    * cannot throw on an emitter with no listener.
    */
   const stopStreaming = () => {
+    child.stdout?.off('data', onStdout);
+    child.stderr?.off('data', onStderr);
     for (const stream of [child.stdout, child.stderr]) {
-      stream?.off('data', onData);
       stream?.resume();
     }
     child.off('error', onError);
@@ -154,8 +175,13 @@ async function startDaemon({ command, args, endpoint, emit, isCancelled = () => 
       return { success: true, models: probe.models };
     }
     if (exited) {
+      // Flush FIRST: the reason a daemon dies is often its last line, and a
+      // child that exited without a trailing newline leaves it in the carry.
+      stdoutReader.flush();
+      stderrReader.flush();
       stopStreaming();
-      return { success: false, error: `${command} ${exited}.` };
+      const detail = tail.text();
+      return { success: false, error: `${command} ${exited}.${detail ? ` ${detail}` : ''}` };
     }
   }
 
@@ -189,12 +215,37 @@ const SETUP_ROWS = Object.freeze({
       }
       return { success: false, error: 'Neither Homebrew nor python3 is available. Install Homebrew from https://brew.sh, then try again.' };
     },
-    start({ emit, endpoint, isCancelled }) {
+    async start({ emit, endpoint, isCancelled }) {
+      // `mtplx serve` defaults `--model` to ONE hard-coded checkpoint and exits
+      // 1 before binding when that repo is not in its cache — even on a machine
+      // holding a different MTP model that would have served fine. Ask the
+      // cache first and name what is actually there.
+      const cache = await listMtplxCachedModels();
+      if (cache.models === null) {
+        // The cache could not be READ — which is not "read, and empty". Fall
+        // through to MTPLX's own default rather than blocking a start that may
+        // well work.
+        emit(`Could not read MTPLX's model cache (${cache.error}) — starting with its default model.`);
+      } else if (cache.models.length === 0) {
+        return { success: false, error: MTPLX_NO_MODEL_ERROR };
+      }
+      const model = pickMtplxCachedModel(cache.models);
+      if (cache.models && !model) {
+        const count = cache.models.length;
+        return { success: false, error: `its cache holds ${count} model${count === 1 ? '' : 's'}, but none passed its own file check — an interrupted \`mtplx pull\` leaves a partial download behind. Re-run \`mtplx pull <hf-repo-id>\` in a terminal, then try again.` };
+      }
+      if (model) emit(`Serving the cached MTPLX model ${model}.`);
+      // The cache lookup is an awaited subprocess — the modal can close while it
+      // runs, and the caller's cancellation check happened BEFORE it. Without
+      // this, a cancelled setup still spawns a detached daemon nobody asked to
+      // keep.
+      if (isCancelled()) return { success: false, error: 'Cancelled before the server was started.' };
       // `mtplx start` is interactive (it prompts for a model); `serve` is the
       // API-only server, which is the half PortOS actually talks to. The daemon
       // must bind where the PROVIDER points — a user who moved MTPLX to 8010
       // would otherwise get a second server on 8000 that nothing talks to.
-      return startDaemon({ command: 'mtplx', args: ['serve', '--port', localEndpointPort(endpoint) || '8000'], endpoint, emit, isCancelled });
+      const args = ['serve', '--port', localEndpointPort(endpoint) || '8000', ...(model ? ['--model', model] : [])];
+      return startDaemon({ command: 'mtplx', args, endpoint, emit, isCancelled });
     },
   }),
 
