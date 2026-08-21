@@ -214,6 +214,20 @@ describe('useKeyCapture', () => {
     expect(up).not.toHaveBeenCalled();
   });
 
+  // A keyup-only caller has no keydown decision to mirror, so it must evaluate
+  // the guards itself rather than waving every release through.
+  it('guards a keyup-only caller directly, with no keydown to mirror', () => {
+    const up = vi.fn(() => true);
+    const { getByRole, getByLabelText } = render(<Probe onKeyUp={up} />);
+
+    fireEvent.keyUp(getByRole('button', { name: 'act' }), { code: 'Space', key: ' ' });
+    fireEvent.keyUp(getByLabelText('note'), { code: 'Space', key: ' ' });
+    expect(up).not.toHaveBeenCalled();
+
+    fireEvent.keyUp(document.body, { code: 'Space', key: ' ' });
+    expect(up).toHaveBeenCalledTimes(1);
+  });
+
   it('reads the latest handler without re-subscribing', () => {
     const first = vi.fn(() => true);
     const second = vi.fn(() => true);

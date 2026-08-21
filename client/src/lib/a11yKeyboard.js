@@ -195,8 +195,30 @@ export function shouldIgnoreGlobalKey(event, { enabledInDialog = false, ignoreRe
  * across several child components. One capture-phase handler at the root covers
  * all of them, including ones that don't exist yet.
  */
+// The control whose pointer focus was last suppressed. A button that opens a
+// dialog never becomes `document.activeElement`, so `useFocusTrap` would capture
+// `<body>` as the element to restore focus to on close (WCAG 2.4.3) — this is
+// what it falls back to instead. No staleness guard is needed beyond
+// `isConnected`: the fallback is only ever consulted when nothing else holds
+// focus, and anything else taking focus is exactly what makes that untrue.
+let pointerFocusSuppressed = null;
+
 export const noPointerFocusSurfaceProps = {
   onMouseDownCapture: (event) => {
-    if (event.target?.closest?.('button, [role="button"]')) event.preventDefault();
+    const control = event.target?.closest?.('button, [role="button"]');
+    if (!control) return;
+    event.preventDefault();
+    pointerFocusSuppressed = control;
   },
 };
+
+/**
+ * The control `noPointerFocusSurfaceProps` last kept focus off, if it is still
+ * in the document. Focus restoration consults this when it finds nothing
+ * focused; everything else should read `document.activeElement`.
+ *
+ * @returns {Element | null}
+ */
+export function pointerFocusSuppressedElement() {
+  return pointerFocusSuppressed?.isConnected ? pointerFocusSuppressed : null;
+}

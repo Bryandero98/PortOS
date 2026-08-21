@@ -560,7 +560,14 @@ export default function MorseTrainer({ mode = null, onSelectMode, onExitMode, on
         </div>
       </div>
 
-      <div className={`grid grid-cols-1 ${showReference ? 'xl:grid-cols-[minmax(0,1fr)_24rem]' : ''} gap-6`}>
+      {/* In send mode the keyer owns the spacebar across BOTH columns — the
+          drill on the left and the practice key / reference tabs on the right —
+          so the guard belongs on the grid that holds them, not on either one.
+          Off send mode nothing owns Space and this is inert. */}
+      <div
+        className={`grid grid-cols-1 ${showReference ? 'xl:grid-cols-[minmax(0,1fr)_24rem]' : ''} gap-6`}
+        {...(mode === 'send' ? noPointerFocusSurfaceProps : null)}
+      >
         <div className="space-y-6 min-w-0 max-w-2xl">
           <SettingsPanel prefs={prefs} updatePrefs={updatePrefs} onResetProgress={resetProgress} trainingStats={trainingStats} progress={morseProgress} />
           {!mode && <ModeGrid onPick={onSelectMode} />}
@@ -1324,9 +1331,7 @@ function SendDrill({ keying, prefs, progress, onExit, onContinue, onSessionCompl
   }
 
   return (
-    // The keyer owns the spacebar throughout send mode, so no control in here
-    // may keep focus from a click and turn the next press into a button press.
-    <div className="bg-port-card border border-port-border rounded-lg p-6 space-y-5" {...noPointerFocusSurfaceProps}>
+    <div className="bg-port-card border border-port-border rounded-lg p-6 space-y-5">
       <div className="text-center">
         <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Send this</div>
         <div className="text-3xl font-mono font-bold text-white tracking-widest">{prompt}</div>

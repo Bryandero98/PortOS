@@ -3,6 +3,7 @@ import { useRef } from 'react';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 
 import useFocusTrap from './useFocusTrap.js';
+import { noPointerFocusSurfaceProps } from '../lib/a11yKeyboard.js';
 
 afterEach(cleanup);
 
@@ -70,6 +71,32 @@ describe('useFocusTrap', () => {
       fireEvent.keyDown(screen.getByTestId('dialog'), { key: 'Tab' });
       expect(document.activeElement).toBe(screen.getByText('first'));
     });
+  });
+
+  // A surface that owns a key refuses pointer focus for its buttons, so a HUD
+  // button that opens a dialog never becomes document.activeElement. Restoring
+  // to <body> on close would strand the keyboard user (WCAG 2.4.3).
+  it('restores focus to a clicked opener whose pointer focus was suppressed', () => {
+    function PointerHarness({ active }) {
+      return (
+        <div {...noPointerFocusSurfaceProps}>
+          <button data-testid="opener">opener</button>
+          {active && <Dialog active={active} />}
+        </div>
+      );
+    }
+    const { rerender } = render(<PointerHarness active={false} />);
+    const opener = screen.getByTestId('opener');
+
+    // The surface cancels the mousedown, so the opener never takes focus.
+    fireEvent.mouseDown(opener);
+    expect(document.activeElement).not.toBe(opener);
+
+    rerender(<PointerHarness active />);
+    expect(document.activeElement).toBe(screen.getByText('first'));
+
+    rerender(<PointerHarness active={false} />);
+    expect(document.activeElement).toBe(opener);
   });
 
   it('wraps focus from the last element to the first on Tab', () => {

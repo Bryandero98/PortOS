@@ -81,7 +81,10 @@ export default function useKeyCapture({ enabled = true, enabledInDialog = false,
       if (isDown) {
         if (shouldIgnoreGlobalKey(e, guards)) { ignoredDown.add(e.code || e.key); return; }
         ignoredDown.delete(e.code || e.key);
-      } else if (ignoredDown.delete(e.code || e.key)) {
+      } else if (hasDown ? ignoredDown.delete(e.code || e.key) : shouldIgnoreGlobalKey(e, guards)) {
+        // Mirroring only works when this hook actually saw the keydown. A
+        // keyup-only caller has no decision to mirror, so it evaluates the
+        // guards directly — otherwise its releases would bypass them entirely.
         return;
       }
       if (ref.current?.(e) !== true) return;
