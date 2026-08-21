@@ -7,9 +7,18 @@ import useKeyCapture from './useKeyCapture';
 // Space push-to-talk hotkey from firing during a Space-driven drill. Every test
 // here installs a stand-in for that global listener and asserts on it.
 
-function Probe({ enabled = true, onKeyDown, onKeyUp }) {
-  useKeyCapture({ enabled, onKeyDown, onKeyUp });
+function Probe({ enabled = true, enabledInDialog = false, onKeyDown, onKeyUp }) {
+  useKeyCapture({ enabled, enabledInDialog, onKeyDown, onKeyUp });
   return <input aria-label="note" />;
+}
+
+// A stand-in for whatever dialog is on top — Modal and Drawer both render this
+// attribute, and the hook consults it, not either component.
+function openDialog() {
+  const dialog = document.createElement("div");
+  dialog.setAttribute("aria-modal", "true");
+  document.body.appendChild(dialog);
+  return () => dialog.remove();
 }
 
 function withGlobalHotkey(fn) {
@@ -88,6 +97,38 @@ describe('useKeyCapture', () => {
       expect(claimed).not.toHaveBeenCalled();
       expect(global).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('stands down while a dialog is open, so that layer owns the key', () => {
+    const claimed = vi.fn(() => true);
+    render(<Probe onKeyDown={claimed} />);
+    const close = openDialog();
+    withGlobalHotkey((global) => {
+      fireEvent.keyDown(document.body, { code: 'Space', key: ' ' });
+      expect(claimed).not.toHaveBeenCalled();
+      expect(global).toHaveBeenCalledTimes(1);
+    });
+    close();
+  });
+
+  it('keeps claiming inside a dialog when the surface opts in', () => {
+    const claimed = vi.fn(() => true);
+    render(<Probe enabledInDialog onKeyDown={claimed} />);
+    const close = openDialog();
+    withGlobalHotkey((global) => {
+      fireEvent.keyDown(document.body, { code: 'Space', key: ' ' });
+      expect(claimed).toHaveBeenCalledTimes(1);
+      expect(global).not.toHaveBeenCalled();
+    });
+    close();
+  });
+
+  it('subscribes no keyup listener when the caller passes no onKeyUp', () => {
+    const addSpy = vi.spyOn(window, 'addEventListener');
+    render(<Probe onKeyDown={() => true} />);
+    const captured = addSpy.mock.calls.filter(([, , capture]) => capture === true).map(([type]) => type);
+    expect(captured).toEqual(['keydown']);
+    addSpy.mockRestore();
   });
 
   it('reads the latest handler without re-subscribing', () => {

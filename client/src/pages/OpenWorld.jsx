@@ -5,6 +5,7 @@ import { useOpenWorldPlayback } from '../hooks/useOpenWorldPlayback';
 import useOpenWorldAudio from '../hooks/useOpenWorldAudio';
 import useKeyboardControls from '../hooks/useKeyboardControls';
 import useKeyboardShortcuts from '../hooks/useKeyboardShortcuts';
+import useKeyCapture from '../hooks/useKeyCapture';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { mergeFrameIntoOpenWorldProps } from '../lib/openWorldPlaybackFrame';
 import * as api from '../services/api';
@@ -307,36 +308,32 @@ function OpenWorldInner() {
   }, [clearFocusRoute, updateSetting, playback]);
 
   // Esc exits photo mode; ←/→ cycle the framing preset; D toggles depth-of-field. Bound only while
-  // photo mode is on so it doesn't shadow other shortcuts. Ignores key events while typing.
-  useEffect(() => {
-    if (!photoMode) return;
-    const onKey = (e) => {
-      const tag = e.target?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      if (e.key === 'Escape') setPhotoMode(false);
-      else if (e.key === 'ArrowLeft') setPhotoPresetId(id => cyclePreset(id, -1));
-      else if (e.key === 'ArrowRight') setPhotoPresetId(id => cyclePreset(id, 1));
-      else if (e.key === 'd' || e.key === 'D') setPhotoDof(v => !v);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [photoMode]);
+  // photo mode is on so it doesn't shadow other shortcuts. These are ordinary shortcuts, not keys
+  // an app-global handler already owns, so they ride useKeyboardShortcuts rather than a capture-phase
+  // claim — which also yields them to any dialog opened on top of photo mode.
+  useKeyboardShortcuts(photoMode, {
+    Escape: () => setPhotoMode(false),
+    ArrowLeft: () => setPhotoPresetId(id => cyclePreset(id, -1)),
+    ArrowRight: () => setPhotoPresetId(id => cyclePreset(id, 1)),
+    d: () => setPhotoDof(v => !v),
+    D: () => setPhotoDof(v => !v),
+  });
 
   // Playback keyboard transport: Esc exits, Space play/pause, ←/→ step a frame.
-  // Bound only while playback is active. Ignores key events while typing.
-  useEffect(() => {
-    if (!playback.active) return;
-    const onKey = (e) => {
-      const tag = e.target?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  // Bound only while playback is active. Claimed in the capture phase so Space
+  // toggles playback WITHOUT also tripping the voice widget's app-global
+  // push-to-talk hotkey; keys we do not handle pass through untouched.
+  useKeyCapture({
+    enabled: playback.active,
+    onKeyDown: (e) => {
       if (e.key === 'Escape') playback.exit();
-      else if (e.key === ' ') { e.preventDefault(); playback.togglePlay(); }
+      else if (e.key === ' ') playback.togglePlay();
       else if (e.key === 'ArrowLeft') playback.step(-1);
       else if (e.key === 'ArrowRight') playback.step(1);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [playback.active, playback]);
+      else return false;
+      return true;
+    },
+  });
 
   // Task-complete chime (roadmap 3.4): when a CoS task transitions to completed, play a reward
   // chime. Track the set of completed ids across socket updates and chime on each newly-seen one.

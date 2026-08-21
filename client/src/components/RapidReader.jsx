@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Play, Pause, RotateCcw, Rewind, FastForward, X, Zap } from 'lucide-react';
 import Modal from './ui/Modal';
+import useKeyCapture from '../hooks/useKeyCapture';
 
 // Optimal Recognition Point — the focal letter the eye lands on. Spritz-style:
 // shorter words use a left-shifted ORP, longer words shift right. Returns the
@@ -53,6 +54,7 @@ export default function RapidReader({
   focalColor = '#ef4444',
   autoPlay = false,
   compact = false,
+  inDialog = false,
   onClose,
   onComplete
 }) {
@@ -98,15 +100,13 @@ export default function RapidReader({
     return () => clearTimeout(timeoutRef.current);
   }, [playing, idx, total, current, delayFor, onComplete]);
 
-  // Keyboard controls — only active when this component is mounted.
-  // Registered in the capture phase so we run before bubble-phase window
-  // listeners (notably VoiceWidget's hotkey, which also claims Space). When
-  // we handle a key we call stopImmediatePropagation so the voice agent
-  // doesn't toggle its mic on the same press.
-  useEffect(() => {
-    const onKey = (e) => {
-      const tag = e.target?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return;
+  // Keyboard controls — only active while this component is mounted. Claimed in
+  // the capture phase so a handled key never reaches a bubble-phase window
+  // listener (notably VoiceWidget's hotkey, which also binds Space); keys we
+  // do not handle pass through untouched.
+  useKeyCapture({
+    enabledInDialog: inDialog,
+    onKeyDown: (e) => {
       if (e.key === ' ') setPlaying((p) => !p);
       else if (e.key === 'ArrowLeft') setIdx((i) => Math.max(0, i - 1));
       else if (e.key === 'ArrowRight') setIdx((i) => Math.min(total - 1, i + 1));
@@ -114,13 +114,10 @@ export default function RapidReader({
       else if (e.key === '+' || e.key === '=') setWpm((w) => Math.min(1200, w + 25));
       else if (e.key === '-' || e.key === '_') setWpm((w) => Math.max(100, w - 25));
       else if (e.key === 'Escape' && onClose) onClose();
-      else return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, [total, onClose]);
+      else return false;
+      return true;
+    },
+  });
 
   const restart = () => { setIdx(0); setPlaying(true); };
   const togglePlay = () => {
@@ -298,14 +295,10 @@ function FocalSlot({ chunk, focalColor }) {
 }
 
 // Modal wrapper — full-screen overlay so any page can pop the reader without
-// leaving its context. Closes on Esc or backdrop click. The inner RapidReader
-// registers a capture-phase window keydown listener (so Space / arrow keys
-// can be claimed before VoiceWidget sees them) that, on Esc, calls onClose
-// and then preventDefault() + stopImmediatePropagation(). Modal's window
-// listener is bubble-phase, so it never even reaches the same event — the
-// capture-phase stopImmediatePropagation cancels propagation entirely; even
-// if it did reach Modal, `defaultPrevented` would suppress the close
-// dispatch. RapidReader owns Esc unilaterally inside this wrapper.
+// leaving its context. `inDialog` is what lets the reader keep its keys in here:
+// its useKeyCapture claim otherwise stands down while an aria-modal layer is open,
+// and Modal IS that layer. The claim runs in the capture phase, so Esc reaches
+// onClose and never Modal's own bubble-phase close — the reader owns Esc here.
 export function RapidReaderModal({ open, text, title, onClose, ...readerProps }) {
   return (
     <Modal
@@ -329,7 +322,7 @@ export function RapidReaderModal({ open, text, title, onClose, ...readerProps })
           <X size={18} />
         </button>
       </div>
-      <RapidReader text={text} onClose={onClose} autoPlay {...readerProps} />
+      <RapidReader text={text} onClose={onClose} autoPlay inDialog {...readerProps} />
     </Modal>
   );
 }

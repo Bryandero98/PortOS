@@ -26,6 +26,7 @@ import {
 } from '../../services/voiceVisibility';
 import { MicroGlyph } from '../micrographics';
 import { isButtonActivation } from '../../lib/a11yKeyboard';
+import { isEditableTarget } from '../../hooks/useKeyboardShortcuts';
 import { safeReadStorage, safeWriteStorage } from '../../lib/safeStorage';
 
 // Peak below this (0..1) is usually whisper's [BLANK_AUDIO] territory.
@@ -582,14 +583,11 @@ export default function VoiceWidget() {
   // hears no audio cue and has no UI to confirm the mic is open.
   useEffect(() => {
     if (!enabled) return;
-    const isTypingTarget = (el) => {
-      if (!el) return false;
-      const tag = el.tagName;
-      return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
-    };
     const onKey = (e) => {
       if (e.code !== hotkey || e.repeat) return;
-      if (isTypingTarget(document.activeElement)) return;
+      // The shared guard, not a local copy: it also covers SELECT, where the default
+      // Space hotkey would open the mic instead of the element's own dropdown.
+      if (isEditableTarget(e.target)) return;
       // Space on a focused button must ACTIVATE it (standard browser behavior).
       // With the default Space hotkey, preventDefault-ing here would swallow
       // every keyboard button press in the app and open the mic instead — e.g.
