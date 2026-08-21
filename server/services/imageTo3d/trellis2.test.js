@@ -28,7 +28,6 @@ import {
   TRELLIS2_METAL_BAKE_MODULES,
   TRELLIS2_BAKE_QUALITY_MODULES,
   TRELLIS2_FALLBACK_BAKE_HELP,
-  missingBakeModulesLabel,
   resolveDegradedBakeRemedy,
   TRELLIS2_METAL_TOOLCHAIN_HINT,
   TRELLIS2_REQUIRES_XCODE_HINT,
@@ -424,27 +423,15 @@ describe('probeTrellis2TextureBake', () => {
       expect(resolveDegradedBakeRemedy(undefined, null)).toBeNull();
     });
   });
-  // #4636: one formatter feeds both the install's verify frame and the card's
-  // `degraded.detail`, so the two lanes cannot drift on the wording.
-  describe('missingBakeModulesLabel', () => {
-    it('names every missing Metal bake module', () => expect(
-      missingBakeModulesLabel({ missing: ['o_voxel', 'mtlbvh'] }),
-    ).toBe('Missing: o_voxel, mtlbvh'));
-
-    it('is empty when nothing is missing, so no bare "Missing:" can render', () => {
-      expect(missingBakeModulesLabel({ missing: [] })).toBe('');
-      expect(missingBakeModulesLabel({})).toBe('');
-      expect(missingBakeModulesLabel(undefined)).toBe('');
+  // `flex_gemm` lowers bake quality without forcing the fallback baker, so it must not
+  // reach `missing` — naming it there would blame it for the confetti surface it does
+  // not cause (#4636). The wording of the label itself is `degradedInstall.test.js`'s.
+  it('does not conflate degradedQuality with missing', async () => {
+    const result = await probeTrellis2TextureBake({
+      base: BASE, exists: () => true, execFileImpl: fakeExec({ ...allPresent, flex_gemm: false }),
     });
-
-    // `flex_gemm` lowers bake quality without forcing the fallback baker, so naming it
-    // here would blame it for the confetti surface it does not cause.
-    it('does not conflate degradedQuality with missing', async () => {
-      const result = await probeTrellis2TextureBake({
-        base: BASE, exists: () => true, execFileImpl: fakeExec({ ...allPresent, flex_gemm: false }),
-      });
-      expect(missingBakeModulesLabel(result)).toBe('');
-    });
+    expect(result.missing).toEqual([]);
+    expect(result.degradedQuality).toEqual(['flex_gemm']);
   });
 
   it('reports unknown — NOT fallback — when the probe itself fails', async () => {

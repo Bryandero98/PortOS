@@ -32,9 +32,11 @@
  *  - `describeInstallState?()` — optional extra per-target diagnostics: async,
  *    returns `{ warnings?: string[], fields?: object }`. `warnings` are generic
  *    user-facing strings the route can surface (e.g. on an "already installed"
- *    short-circuit) without knowing what they're about; `fields` are extra keys
- *    merged onto the target in `GET /targets` (e.g. TRELLIS.2's texture-bake
- *    quality). Omit when a target has nothing extra to report.
+ *    short-circuit) without knowing what they're about — replayed into a `verify`
+ *    stage that renders ONE prose string per frame, so anything a warning needs to
+ *    say has to fit in the sentence; `fields` are extra keys merged onto the target
+ *    in `GET /targets` (e.g. TRELLIS.2's texture-bake quality). Omit when a target
+ *    has nothing extra to report.
  *
  *    **A degraded-but-working install reports `fields.degraded`**:
  *    `{ label, help, repairable, detail? }`. This is the ONE shape the client renders,
@@ -43,8 +45,15 @@
  *    button is offered. `detail` is an optional short line naming the *specific* thing
  *    that is missing (`Missing: o_voxel`) — `help` says which remedy to run, `detail`
  *    says what is actually broken, so a user whose Repair keeps failing has something
- *    to act on instead of the same generic sentence. Omit it entirely rather than
- *    emitting an empty label when the probe could not determine anything.
+ *    to act on instead of the same generic sentence.
+ *
+ *    **`help` carries the remedy and NOTHING ELSE** — never the culprit names, even
+ *    though it reads fine on its own that way: the card renders both, so interpolating
+ *    them into the sentence prints them twice on one target and styles them on the
+ *    next (#4741). Build both halves with `describeDegradedInstall` from
+ *    `degradedInstall.js` rather than assembling the object here — it applies the
+ *    omit-`detail`-when-there-is-nothing-to-name rule (an empty label must never
+ *    render) and produces the matching `warnings` sentence in one place.
  *
  *    A target may also return its own narrow diagnostic field, but keep it small and
  *    keep the UI off it. `trellis2` still returns `textureBake` with **no in-repo
@@ -59,8 +68,6 @@ import {
   runTrellis2Generate,
   probeTrellis2TextureBake,
   probeMetalToolchain,
-  missingBakeModulesLabel,
-  appendMissingBakeModules,
   resolveDegradedBakeRemedy,
 } from './trellis2.js';
 import {
@@ -73,8 +80,9 @@ import {
   installPixal3dCuda,
   runPixal3dCudaGenerate,
   probePixal3dModules,
+  PIXAL3D_INCOMPLETE_INSTALL_HELP,
 } from './pixal3dCuda.js';
-import { missingModulesLabel, appendMissingModules } from './missingModules.js';
+import { describeDegradedInstall } from './degradedInstall.js';
 import { detectCudaComputeCapability } from '../../lib/cudaCapability.js';
 
 export const TARGET_ADAPTERS = Object.freeze({
@@ -100,7 +108,6 @@ export const TARGET_ADAPTERS = Object.freeze({
     async describeInstallState() {
       const bake = await probeTrellis2TextureBake();
       const degradedBake = bake.quality === 'fallback';
-      const missingModules = missingBakeModulesLabel(bake);
       const toolchain = degradedBake ? await probeMetalToolchain() : null;
       // A degraded bake has two very different remedies, and the card must not offer
       // the wrong one: when the Metal Toolchain is merely missing, Repair install
@@ -109,35 +116,29 @@ export const TARGET_ADAPTERS = Object.freeze({
       // install's own `verify` frame resolves it through the SAME helper, so the two
       // lanes cannot name different fixes for one host state (#4742).
       const textureBake = { ...bake, ...(resolveDegradedBakeRemedy(bake, toolchain) ?? {}) };
+      // Which modules failed to build is kept on the toolchain-`blocker` path too, where
+      // `help` becomes the Xcode hint but WHICH modules failed is still the useful half.
+      // `degradedQuality` is deliberately NOT passed: `flex_gemm` lowers bake quality
+      // without forcing the fallback baker, so naming it would blame it for a confetti
+      // surface it did not cause.
+      const projection = degradedBake ? describeDegradedInstall({
+        label: 'degraded textures',
+        help: textureBake.help,
+        repairable: textureBake.repairable !== false,
+        missing: bake.missing,
+      }) : null;
       return {
         fields: {
           textureBake,
           // Normalized degraded-state projection — see the `degraded` note in this
           // file's adapter contract. The client renders THIS, not `textureBake`, so a
           // target with a different kind of degradation needs no new UI branch.
-          ...(degradedBake ? {
-            degraded: {
-              label: 'degraded textures',
-              help: textureBake.help,
-              repairable: textureBake.repairable !== false,
-              // Which module actually failed to build. `help` names the remedy; without
-              // this the card can only repeat that remedy, so a Repair that keeps
-              // failing looks like an unbounded loop (#4636). Shares one formatter with
-              // the install's `verify` frame so the two lanes cannot drift. Kept on the
-              // toolchain-`blocker` path too, where `help` becomes the Xcode hint but
-              // WHICH modules failed is still the useful half. The emptiness guard is
-              // defensive only: a real probe reports `fallback` exactly when `missing`
-              // is non-empty, and the `quality: 'unknown'` case never reaches here — the
-              // outer `degradedBake` gate drops the whole `degraded` key first.
-              ...(missingModules ? { detail: missingModules } : {}),
-            },
-          } : {}),
+          ...(projection ? { degraded: projection.degraded } : {}),
         },
         // Replayed verbatim into the install route's `verify` stage on the
         // already-installed short-circuit — the SAME stage the install's own verify
-        // hook writes. Carry the module names here too, or one condition emits two
-        // different frames depending on which path the caller took (#4636).
-        warnings: degradedBake ? [appendMissingBakeModules(textureBake.help, bake)] : [],
+        // hook writes.
+        warnings: projection?.warnings ?? [],
       };
     },
   }),
@@ -204,26 +205,15 @@ export const TARGET_ADAPTERS = Object.freeze({
       const nafFallback = probe.naf === 'unavailable';
       // An incomplete install outranks a NAF fallback — it is the more severe problem,
       // and the same Repair action addresses both, so only the worse one is reported.
-      const degraded = incomplete
-        ? {
+      const projection = incomplete
+        ? describeDegradedInstall({
           label: 'incomplete install',
-          // `help` is the remedy ONLY. Which extensions failed goes in `detail`, the same
-          // split `trellis2` uses (#4741) — the card renders that as its own line, so
-          // interpolating the names into this sentence too would bury the one actionable
-          // half in prose for one target and style it for the other.
-          help: 'Pixal3D is installed but a required CUDA extension did not build, so renders '
-            + 'will fail in the mesh exporter. Repair install rebuilds the CUDA extensions; '
-            + 'your downloaded models are kept.',
-          repairable: true,
-          // Shares one formatter with the MPS lane so the two cannot word the same
-          // condition differently. No emptiness guard is needed: `incomplete` is the
-          // non-empty-or-null narrowing above, so this branch always has names.
-          detail: missingModulesLabel(incomplete),
-        }
+          help: PIXAL3D_INCOMPLETE_INSTALL_HELP,
+          missing: incomplete,
+        })
         : nafFallback
-          // No module list to name — NAF is absent as a whole, not half-built — so this
-          // branch stays `detail`-less rather than emitting an empty label.
-          ? { label: 'NAF fallback', help: probe.help, repairable: true }
+          // No module list to name — NATTEN is absent as a whole, not half-built.
+          ? describeDegradedInstall({ label: 'NAF fallback', help: probe.help })
           : null;
       return {
         fields: {
@@ -231,12 +221,12 @@ export const TARGET_ADAPTERS = Object.freeze({
           // `target.modules.modules` (a raw find_spec map) with no consumer.
           naf: probe.naf,
           // The normalized shape the client renders — see the adapter contract above.
-          ...(degraded ? { degraded } : {}),
+          ...(projection ? { degraded: projection.degraded } : {}),
         },
         // Replayed into the install route's `verify` stage on the already-installed
-        // short-circuit, which has one prose string and no second line — so the module
-        // names are appended here instead of dropped with the `help` interpolation.
-        warnings: degraded?.help ? [appendMissingModules(degraded.help, incomplete)] : [],
+        // short-circuit, which renders one prose string and has no second line for
+        // `detail` — so the module names ride along in the sentence there.
+        warnings: projection?.warnings ?? [],
       };
     },
   }),

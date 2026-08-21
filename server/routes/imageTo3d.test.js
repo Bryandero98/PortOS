@@ -39,7 +39,7 @@ vi.mock('../services/imageTo3d/targets.js', async (importOriginal) => ({
 }));
 
 vi.mock('../services/imageTo3d/trellis2.js', async (importOriginal) => ({
-  // Pure formatters (`missingBakeModulesLabel`) come through REAL — the adapter's
+  // Pure formatters (`degradedInstall.js`) come through REAL — the adapter's
   // `degraded.detail` is asserted below, so stubbing them would test the stub.
   ...(await importOriginal()),
   isTrellis2Installed: vi.fn(() => false),

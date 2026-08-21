@@ -32,7 +32,7 @@ import {
   probePythonModules,
 } from './laneRunner.js';
 import { renderOptionArgs } from './renderOptions.js';
-import { missingModulesLabel, appendMissingModules } from './missingModules.js';
+import { appendMissingModules } from './degradedInstall.js';
 import {
   selectTrellis2DecimationTarget,
   trellis2MeshQualityArgs,
@@ -190,45 +190,6 @@ export async function probeTrellis2TextureBake({
 }
 
 /**
- * The culprit modules from a bake probe, as one short human-readable label
- * (`Missing: o_voxel, mtlbvh`) — or `''` when there is nothing to name.
- *
- * The `degraded.detail` field is exactly this label, and the prose lanes get it through
- * `appendMissingBakeModules` below rather than re-assembling the sentence. The wording
- * itself lives in `missingModules.js`, shared with the Pixal3D CUDA lane, which reports
- * the same "these compiled modules did not build" condition (#4741) — this wrapper only
- * binds it to a bake probe's shape.
- *
- * `degradedQuality` is deliberately NOT passed through: `flex_gemm` lowers bake quality
- * without forcing the fallback baker, so naming it here would read as a cause of the
- * confetti surface when it isn't.
- *
- * @param {{missing?: string[]}} bake a result from `probeTrellis2TextureBake`
- * @returns {string}
- */
-export function missingBakeModulesLabel(bake) {
-  return missingModulesLabel(bake?.missing);
-}
-
-/**
- * A prose help string with the culprit modules appended as a closing sentence
- * (`… models are kept. Missing: o_voxel.`).
- *
- * Both server lanes that report a degraded bake in prose go through this: the install's
- * own `verify` hook, and the adapter `warnings` the install route replays into that
- * SAME `verify` stage on the already-installed short-circuit. Assembling the sentence
- * at each call site instead would let one condition emit two differently-worded frames
- * depending on which path the caller took.
- *
- * @param {string} help the remedy prose (already ends in its own punctuation)
- * @param {{missing?: string[]}} bake a result from `probeTrellis2TextureBake`
- * @returns {string}
- */
-export function appendMissingBakeModules(help, bake) {
-  return appendMissingModules(help, bake?.missing);
-}
-
-/**
  * Which remedy a degraded texture bake actually has, given the host's toolchain state.
  *
  * A `quality: 'fallback'` bake has two very different fixes and only one of them applies
@@ -238,8 +199,8 @@ export function appendMissingBakeModules(help, bake) {
  * offered at all. Both server lanes that report a degraded bake resolve it HERE — the
  * card/short-circuit projection in `adapters.js`, and the install's own `verify` frame —
  * so the two cannot promise different fixes for the same host state (#4742). Same
- * one-place-only reasoning as `appendMissingBakeModules` above, which fixed the
- * module-name half of that parity.
+ * one-place-only reasoning as `degradedInstall.js`, which fixed the module-name half
+ * of that parity.
  *
  * @param {{quality?: string, help?: string}} bake a result from `probeTrellis2TextureBake`
  * @param {{blocker?: string, hint?: string}|null} [toolchain] a result from `probeMetalToolchain`
@@ -815,7 +776,7 @@ export function installTrellis2({
         emit({
           type: 'log',
           stage: 'verify',
-          message: `⚠️ ${appendMissingBakeModules(remedy.help, bake)}`,
+          message: `⚠️ ${appendMissingModules(remedy.help, bake.missing)}`,
         });
       } else if (bake.quality === 'metal') {
         emit({ type: 'log', stage: 'verify', message: '✅ Metal texture baking is available.' });
