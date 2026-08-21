@@ -179,6 +179,14 @@ export const federatedMediaCapabilitySchema = z.object({
   })).max(100).nullable().optional(),
 });
 
+// Per-kind occupancy of the provider's own generation lanes. Counts only —
+// never a job id, an owner, or anything derived from a prompt (ADR
+// docs/decisions/2026-08-20-federated-visual-prompts.md rule 3).
+const federatedMediaKindOccupancySchema = z.object({
+  running: z.number().int().nonnegative(),
+  queued: z.number().int().nonnegative(),
+});
+
 const federatedMediaQueueStatusSchema = z.object({
   totalActive: z.number().int().nonnegative(),
   providerActive: z.number().int().nonnegative(),
@@ -186,6 +194,25 @@ const federatedMediaQueueStatusSchema = z.object({
   running: z.number().int().nonnegative(),
   maxQueuedJobs: z.number().int().positive(),
   accepting: z.boolean(),
+  // Added after wire v1 shipped, so both are optional AND nullable: a provider
+  // on an older build omits them, and reading an absent value as a number
+  // would invent capacity that was never reported. `null`/absent means
+  // "unknown", never "zero" — the sentinel rule in CLAUDE.md.
+  //
+  // `concurrency` is how many of the reported active jobs actually run at
+  // once here, which is what turns a queue depth into an expected wait: two
+  // jobs ahead of you on a serialized lane is a very different answer from two
+  // on a parallel one, and `maxQueuedJobs` alone cannot tell them apart.
+  concurrency: z.number().int().positive().max(64).nullable().optional(),
+  // `byKind` covers the federated kinds only. `totalActive` legitimately
+  // exceeds their sum: it also counts local media work of kinds this contract
+  // does not federate (e.g. LoRA training), which occupies the same lanes.
+  //
+  // `partialRecord`, not `record`: a Zod 4 record over an enum key is
+  // exhaustive, so the day a fourth kind joins KNOWN_MEDIA_KINDS every older
+  // provider's three-kind payload would fail validation on a newer consumer.
+  // The provider only ever reports the kinds the consumer negotiated anyway.
+  byKind: z.partialRecord(mediaKindSchema, federatedMediaKindOccupancySchema).optional(),
 });
 
 // Strip unknown fields from peer responses before persisting or exposing them

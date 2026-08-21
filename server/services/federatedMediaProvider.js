@@ -28,6 +28,7 @@ import {
   cancelJob,
   enqueueJob,
   getJob,
+  getQueueCapacity,
   isRemoteMediaJob,
   listJobs,
 } from './mediaJobQueue/index.js';
@@ -347,6 +348,22 @@ async function capabilitiesForKind(kind, config, { pythonPath = null } = {}) {
   return [];
 }
 
+/**
+ * How many of the locally-counted active jobs actually run at once here.
+ *
+ * `maxQueuedJobs` is an admission bound, not a rate: it says how much work this
+ * provider will hold, not how fast that work drains. Two jobs ahead of a
+ * submission mean two renders' wait on the serialized GPU lane and roughly none
+ * on the parallel cloud-CLI lane, and a consumer reading only the queue depth
+ * cannot tell those apart. Summing exactly the lanes `activeQueueSnapshot`
+ * counts — the local generation lanes, never the outgoing proxy lane — keeps
+ * the two numbers describing the same population.
+ */
+function localGenerationConcurrency() {
+  const { lanes } = getQueueCapacity();
+  return lanes.gpu.limit + lanes.cloud.limit;
+}
+
 function activeQueueSnapshot(config) {
   // Outgoing proxy jobs consume a remote peer's capacity, not this provider's
   // local generation resources. Counting them here can create a federation
@@ -356,6 +373,21 @@ function activeQueueSnapshot(config) {
     ACTIVE_STATUSES.has(job.status) && !isRemoteMediaJob(job),
   );
   const providerActive = active.filter((job) => job.owner?.startsWith(OWNER_PREFIX));
+  // Seed every federated kind so an idle lane reports 0 rather than being
+  // absent — an absent key and a zero read identically in a UI, and only one of
+  // them is true. Derived from the same filtered list as the slot count, not
+  // from getQueueCapacity().byKind, which also counts the outgoing proxy jobs
+  // this snapshot deliberately excludes.
+  const byKind = Object.fromEntries(
+    KNOWN_MEDIA_KINDS.map((kind) => [kind, { running: 0, queued: 0 }]),
+  );
+  for (const job of active) {
+    // A local job of a kind this contract does not federate (LoRA training)
+    // still occupies a lane, so it counts toward `totalActive` — it just has
+    // no bucket of its own, which is why the two need not sum.
+    const bucket = byKind[job.kind];
+    if (bucket) bucket[job.status === 'running' ? 'running' : 'queued'] += 1;
+  }
   return {
     totalActive: active.length,
     providerActive: providerActive.length,
@@ -363,6 +395,8 @@ function activeQueueSnapshot(config) {
     running: providerActive.filter((job) => job.status === 'running').length,
     maxQueuedJobs: config.maxQueuedJobs,
     accepting: active.length < config.maxQueuedJobs,
+    concurrency: localGenerationConcurrency(),
+    byKind,
   };
 }
 

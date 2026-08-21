@@ -6,6 +6,7 @@ import {
   federatedMediaModelKey as keyOf,
   peerMediaProviderConfig,
   resolvePeerMediaReadiness,
+  summarizePeerMediaQueue,
 } from '../../lib/federatedMediaReadiness.js';
 import Pill from '../ui/Pill';
 
@@ -47,7 +48,7 @@ export default function PeerMediaProviderPanel({ peer, onRefresh }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [config.raw, capabilities],
   );
-  const queue = readiness.queue;
+  const queueSummary = useMemo(() => summarizePeerMediaQueue(readiness.queue), [readiness.queue]);
 
   // Carry every kind's list forward on each write. The server merges the
   // mediaProvider object, but a patch that omitted a list this panel never
@@ -119,12 +120,12 @@ export default function PeerMediaProviderPanel({ peer, onRefresh }) {
 
           {config.enabled && (
             <>
-              {queue && (
-                <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
-                  <Gauge size={11} />
-                  <span>
-                    {queue.running} running · {queue.queued} queued · {queue.totalActive}/{queue.maxQueuedJobs} shared slots active
-                  </span>
+              {queueSummary.slots && (
+                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-gray-500">
+                  <Gauge size={11} className="shrink-0" />
+                  <span>{queueSummary.slots} active</span>
+                  {queueSummary.drain && <span>· runs {queueSummary.drain}</span>}
+                  {queueSummary.kinds.length > 0 && <span>· {queueSummary.kinds.join(' · ')}</span>}
                 </div>
               )}
 

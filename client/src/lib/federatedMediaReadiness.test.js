@@ -5,6 +5,7 @@ import {
   federatedMediaModelKey,
   peerMediaProviderConfig,
   resolvePeerMediaReadiness,
+  summarizePeerMediaQueue,
 } from './federatedMediaReadiness.js';
 
 const NOW = Date.parse('2026-08-20T12:00:00.000Z');
@@ -184,5 +185,53 @@ describe('federatedMediaModelKey', () => {
     expect(federatedMediaModelKey({ engine: 'local', modelId: 'ltx2' })).toBe('local\u0000ltx2');
     expect(federatedMediaModelKey({ engine: 'a', modelId: 'b-c' }))
       .not.toBe(federatedMediaModelKey({ engine: 'a-b', modelId: 'c' }));
+  });
+});
+
+describe('summarizePeerMediaQueue', () => {
+  const queue = (overrides = {}) => ({
+    totalActive: 2, providerActive: 1, queued: 1, running: 1, maxQueuedJobs: 4, accepting: true, ...overrides,
+  });
+
+  it('renders slots, drain rate, and only the kinds actually occupying a lane', () => {
+    const summary = summarizePeerMediaQueue(queue({
+      concurrency: 2,
+      byKind: {
+        audio: { running: 1, queued: 1 },
+        image: { running: 0, queued: 1 },
+        video: { running: 0, queued: 0 },
+      },
+    }));
+    expect(summary.slots).toBe('1 running · 1 queued · 2/4 slots');
+    expect(summary.drain).toBe('2 at a time');
+    expect(summary.kinds).toEqual(['audio 1 running, 1 queued', 'image 1 queued']);
+  });
+
+  // An older provider sends neither field. Rendering the absence as a zero
+  // would claim idle lanes the peer never reported on.
+  it('drops the segments an older provider never sent instead of showing zeroes', () => {
+    const summary = summarizePeerMediaQueue(queue());
+    expect(summary.slots).toBe('1 running · 1 queued · 2/4 slots');
+    expect(summary.drain).toBeNull();
+    expect(summary.kinds).toEqual([]);
+  });
+
+  it('drops a concurrency that is absent, zero, or not a whole count', () => {
+    expect(summarizePeerMediaQueue(queue({ concurrency: 0 })).drain).toBeNull();
+    expect(summarizePeerMediaQueue(queue({ concurrency: 1.5 })).drain).toBeNull();
+    expect(summarizePeerMediaQueue(queue({ concurrency: '4' })).drain).toBeNull();
+  });
+
+  it('omits a kind reporting no work rather than listing it as idle', () => {
+    const summary = summarizePeerMediaQueue(queue({
+      byKind: { audio: { running: 0, queued: 0 }, image: { running: 2, queued: 0 } },
+    }));
+    expect(summary.kinds).toEqual(['image 2 running']);
+  });
+
+  it('reports no slot line at all when the queue block is missing or malformed', () => {
+    for (const bad of [null, undefined, 'busy', queue({ maxQueuedJobs: null })]) {
+      expect(summarizePeerMediaQueue(bad).slots).toBeNull();
+    }
   });
 });

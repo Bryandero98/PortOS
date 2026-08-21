@@ -130,6 +130,56 @@ function verifiedState(status, now) {
   return state;
 }
 
+// Same rationale as NO_CAPABILITIES, for the queue summary's kind list.
+const NO_KIND_SUMMARY = Object.freeze([]);
+const isCount = (value) => Number.isInteger(value) && value >= 0;
+
+/**
+ * The peer's queue block as a display summary, shared by both surfaces.
+ *
+ * `concurrency` and `byKind` reached the wire after v1 shipped (#4348), so an
+ * older provider omits them and every segment here is independently optional —
+ * a missing field is dropped rather than rendered as a zero, which would claim
+ * an idle lane the peer never reported. `slots` stays first because it is the
+ * one segment every provider has always sent.
+ *
+ * @param {object|null} queue - `snapshot.queue` from a probed peer
+ * @returns {{slots: string|null, drain: string|null, kinds: string[]}}
+ */
+export function summarizePeerMediaQueue(queue) {
+  if (!isRecord(queue)) return { slots: null, drain: null, kinds: NO_KIND_SUMMARY };
+  const slots = isCount(queue.running) && isCount(queue.queued)
+    && isCount(queue.totalActive) && isCount(queue.maxQueuedJobs)
+    ? `${queue.running} running · ${queue.queued} queued · ${queue.totalActive}/${queue.maxQueuedJobs} slots`
+    : null;
+  // "How fast does that backlog drain?", which queue depth alone cannot answer:
+  // two jobs ahead on a 1-wide lane is a very different wait from two on a
+  // 10-wide one.
+  const drain = Number.isInteger(queue.concurrency) && queue.concurrency > 0
+    ? `${queue.concurrency} at a time`
+    : null;
+  // Only kinds actually occupying a lane. Listing three zeroes crowds out the
+  // one number that matters, and the `slots` segment above already reports
+  // whether anything is running at all.
+  const byKind = isRecord(queue.byKind) ? queue.byKind : null;
+  const kinds = byKind
+    ? FEDERATED_MEDIA_KINDS
+      .map(({ kind, label }) => {
+        const entry = byKind[kind];
+        if (!isRecord(entry)) return null;
+        const running = isCount(entry.running) ? entry.running : 0;
+        const queued = isCount(entry.queued) ? entry.queued : 0;
+        if (running + queued === 0) return null;
+        const parts = [];
+        if (running > 0) parts.push(`${running} running`);
+        if (queued > 0) parts.push(`${queued} queued`);
+        return `${label} ${parts.join(', ')}`;
+      })
+      .filter(Boolean)
+    : NO_KIND_SUMMARY;
+  return { slots, drain, kinds: kinds.length > 0 ? kinds : NO_KIND_SUMMARY };
+}
+
 /**
  * Resolve one peer's media-provider readiness for display.
  *

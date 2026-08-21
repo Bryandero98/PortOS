@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
   imageModels: [],
   videoModels: [],
   cachedRepos: new Set(),
+  queueCapacity: null,
 }));
 
 vi.mock('./settings.js', () => ({
@@ -53,6 +54,7 @@ vi.mock('./musicEngineCapabilities.js', () => ({
 
 vi.mock('./mediaJobQueue/index.js', () => ({
   listJobs: vi.fn(() => state.jobs),
+  getQueueCapacity: vi.fn(() => state.queueCapacity),
   isRemoteMediaJob: (job) => job?.kind === 'audio' && job.params?.remoteMedia !== undefined,
   getJob: vi.fn((id) => state.jobs.find((job) => job.id === id) || null),
   enqueueJob: vi.fn(({ kind, owner, params }) => {
@@ -151,6 +153,11 @@ beforeEach(() => {
   state.imageModels = [];
   state.videoModels = [];
   state.cachedRepos = new Set();
+  // Mirrors getQueueCapacity()'s real shape: a serialized GPU lane, a parallel
+  // cloud-CLI lane, and the outgoing proxy lane the provider must ignore.
+  state.queueCapacity = {
+    lanes: { gpu: { running: 0, queued: 0, limit: 1 }, cloud: { running: 0, queued: 0, limit: 3 }, remote: { running: 0, queued: 0, limit: 20 } },
+  };
   __resetFederatedMediaProviderForTests();
 });
 
@@ -205,6 +212,42 @@ describe('federated media provider capacity and idempotency', () => {
     expect(status).toMatchObject({ status: 'unavailable' });
     expect(status.capabilities[0]).toMatchObject({
       ready: false, unavailableReason: 'vram-unknown-size',
+    });
+  });
+
+  it('reports the local generation concurrency behind the queue depth', async () => {
+    const status = await getFederatedMediaProviderStatus(config());
+    // GPU (1) + cloud CLI (3). The 20-wide outgoing proxy lane is excluded for
+    // the same reason its jobs are: it renders on someone else's hardware.
+    expect(status.queue.concurrency).toBe(4);
+  });
+
+  it('breaks the shared queue down by federated kind, excluding outgoing proxy jobs', async () => {
+    state.jobs = [
+      { id: 'a', kind: 'audio', status: 'running', owner: 'federated-media:peer-example' },
+      { id: 'b', kind: 'audio', status: 'queued', owner: null },
+      { id: 'c', kind: 'image', status: 'queued', owner: null },
+      // Outgoing proxy work: rendered on a peer, so it occupies no lane here.
+      { id: 'd', kind: 'audio', status: 'running', owner: null, params: { remoteMedia: {} } },
+      // A kind this contract does not federate still holds a local lane, so it
+      // counts toward totalActive while having no bucket of its own.
+      { id: 'e', kind: 'training', status: 'running', owner: null },
+    ];
+    const status = await getFederatedMediaProviderStatus(config(), { kinds: ['audio', 'image', 'video'] });
+    expect(status.queue.byKind).toEqual({
+      audio: { running: 1, queued: 1 },
+      image: { running: 0, queued: 1 },
+      video: { running: 0, queued: 0 },
+    });
+    expect(status.queue.totalActive).toBe(4);
+  });
+
+  it('seeds an idle kind with zeroes rather than omitting it', async () => {
+    const status = await getFederatedMediaProviderStatus(config());
+    expect(status.queue.byKind).toEqual({
+      audio: { running: 0, queued: 0 },
+      image: { running: 0, queued: 0 },
+      video: { running: 0, queued: 0 },
     });
   });
 

@@ -263,7 +263,8 @@ An unreadable capacity report renders as unknown rather than as an idle machine.
 
 The **peer** half lists every peer enabled as a media provider with its
 readiness state, allowlisted kinds, the peer's own shared queue depth against its
-`maxQueuedJobs`, and how long ago it was probed — the same state vocabulary and
+`maxQueuedJobs`, how many of those jobs it runs in parallel, which kinds are
+occupying its lanes, and how long ago it was probed — the same state vocabulary and
 remedy text the Instances peer card uses, from one shared resolver
 (`client/src/lib/federatedMediaReadiness.js`), so the two screens cannot
 disagree.
@@ -313,6 +314,27 @@ All successful JSON responses include `wireVersion: 1`. The version is also fixe
 CUDA has three states: `available`, `absent`, and `unknown`. A CUDA model is ready only when the state is positively `available`; a failed or ambiguous probe blocks admission. Runtime, host-platform, exact fixed-checkpoint readiness, and queue capacity are similarly fail-closed.
 
 The configured `maxQueuedJobs` is conservative: all queued/running work that consumes this machine's media resources counts against it. Outgoing proxy jobs are excluded because they consume another peer's capacity; counting them could make two idle peers report busy while waiting on each other.
+
+The queue block also reports how fast that backlog drains, because a depth alone
+cannot say:
+
+| Field | Meaning |
+|-------|---------|
+| `totalActive` | every queued/running local media job, including kinds this contract does not federate |
+| `providerActive` / `queued` / `running` | the subset owned by federated callers |
+| `maxQueuedJobs` | the admission bound `accepting` is computed against |
+| `concurrency` | how many of those active jobs actually run at once here |
+| `byKind` | per-kind `{running, queued}` for `audio`/`image`/`video` |
+
+Two jobs ahead of a submission mean two renders' wait on a serialized lane and
+roughly none on a parallel one; `concurrency` is what tells those apart.
+`byKind` covers the federated kinds only, so it need not sum to `totalActive` —
+local work of an unfederated kind (LoRA training) occupies the same lanes.
+
+`concurrency` and `byKind` were added after wire v1 shipped, so both are
+optional: a provider on an older build omits them and a consumer must read the
+absence as **unknown**, never as zero. The UI drops the segment rather than
+rendering a lane as idle that the peer never reported on.
 
 Status never includes prompts, lyrics, credentials, local paths, commission records, or private creative metadata.
 
