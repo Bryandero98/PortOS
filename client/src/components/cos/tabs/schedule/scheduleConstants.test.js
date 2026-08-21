@@ -167,8 +167,15 @@ describe('describeNextRun', () => {
     expect(describeNextRun({ enabled: true, type: 'daily', status: { nextRunAt: '2999-01-01T00:00:00Z' } }).text).toMatch(/^in /);
   });
 
+  it('reports a relative countdown with cron description for a scheduled cron task with next run', () => {
+    const out = describeNextRun({ enabled: true, type: 'cron', cronExpression: '0 6 * * 1-5', status: { nextRunAt: '2999-01-01T00:00:00Z' } });
+    expect(out.text).toMatch(/^in .* · Weekdays at 06:00/);
+    expect(out.title).toBe('Weekdays at 06:00 (0 6 * * 1-5)');
+  });
+
   it('falls back to an interval-label pending string when no next run is known', () => {
     expect(describeNextRun({ enabled: true, type: 'daily' }).text).toBe('Daily — pending');
+    expect(describeNextRun({ enabled: true, type: 'cron', cronExpression: '0 6 * * 1-5' }).text).toBe('Weekdays at 06:00 — pending');
   });
 
   it('reports a draining perpetual task', () => {
