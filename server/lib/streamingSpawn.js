@@ -21,10 +21,7 @@
 
 import { spawn } from './childProcess.js';
 import { safeChildProcessEnv, safeChildProcessOptions } from './processEnv.js';
-import { createLineReader } from './streamLines.js';
-
-/** Char budget for the recent-output tail attached to a failure message. */
-const TAIL_BUDGET = 1024;
+import { createLineReader, createOutputTail } from './streamLines.js';
 
 /**
  * @param {string} cmd
@@ -44,20 +41,12 @@ export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env
     }));
 
     let settled = false;
-    const tail = []; // recent non-empty lines, capped by char budget for the error message
-    let tailChars = 0;
-
-    const rememberLine = (line) => {
-      tail.push(line);
-      tailChars += line.length + 1;
-      while (tailChars > TAIL_BUDGET && tail.length > 1) {
-        tailChars -= tail.shift().length + 1;
-      }
-    };
+    // Recent output, kept so a non-zero exit reports what the tool actually said.
+    const tail = createOutputTail();
 
     const safeLine = (line) => {
       if (!line) return;
-      rememberLine(line);
+      tail.remember(line);
       if (typeof onLine !== 'function') return;
       try { onLine(line); } catch (err) { console.error(`⚠️ streaming output hook failed: ${err.message}`); }
     };
@@ -94,7 +83,7 @@ export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env
       stdoutReader.flush();
       stderrReader.flush();
       if (code === 0) return finish({ success: true });
-      const detail = tail.join(' — ').trim();
+      const detail = tail.text();
       finish({ success: false, error: detail ? `exit ${code}: ${detail}` : `exited with code ${code}` });
     });
   });

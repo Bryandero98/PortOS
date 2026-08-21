@@ -65,3 +65,33 @@ export function createLineReader(onLine, { splitRe = DEFAULT_SPLIT_RE, maxCarry 
 
   return { push, flush };
 }
+
+/**
+ * A rolling buffer of the most recent output lines, capped by a char budget.
+ *
+ * The tail is what turns "exited with code 1" into the reason the tool printed
+ * — `runStreamingCommand` attaches it to every non-zero exit, and the daemon
+ * starter in `services/localRuntimeSetup.js` needs the same thing for a server
+ * that dies before it binds. Shared so those two cannot drift.
+ *
+ * `remember` ignores decoration-only lines (box drawing, rules, ASCII-art
+ * banners): a CLI that prints a 6-line logo before failing would otherwise
+ * spend the whole budget on it and push the actual error out of the tail.
+ */
+export function createOutputTail({ budget = 1024 } = {}) {
+  const lines = [];
+  let chars = 0;
+
+  const remember = (line) => {
+    const text = String(line ?? '').trim();
+    // Something readable, not `╭─────╮` / `====` / the logo's block glyphs.
+    if (!/[a-z0-9]/i.test(text)) return;
+    lines.push(text);
+    chars += text.length + 1;
+    while (chars > budget && lines.length > 1) {
+      chars -= lines.shift().length + 1;
+    }
+  };
+
+  return { remember, text: () => lines.join(' — ').trim() };
+}

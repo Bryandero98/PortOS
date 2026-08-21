@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pinPlatform } from '../lib/testHelper.js';
 
 const probe = vi.hoisted(() => ({ probeOpenAiModels: vi.fn() }));
@@ -29,6 +29,13 @@ vi.mock('./localLlm.js', () => localLlm);
 vi.mock('./lmStudioManager.js', () => ({ isAppInstalled: () => false }));
 const child = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock('../lib/childProcess.js', () => child);
+// MTPLX's model cache — the setup asks it what is actually cached before it
+// starts a server that would otherwise exit 1 looking for a checkpoint.
+const mtplxCache = vi.hoisted(() => ({
+  listMtplxCachedModels: vi.fn(),
+  pickMtplxCachedModel: vi.fn((models) => (Array.isArray(models) && models[0]?.repo_id) || null),
+}));
+vi.mock('../lib/mtplxModels.js', () => mtplxCache);
 vi.mock('../lib/fileUtils.js', () => ({ sleep: async () => {} }));
 
 import { describeRuntimeSetup, runLocalRuntimeSetup, SETUP_RUNTIME_KINDS } from './localRuntimeSetup.js';
@@ -48,6 +55,19 @@ const fakeChild = () => {
   };
 };
 const reachable = (models = ['mtplx']) => ({ reachable: true, models, error: null });
+
+const cachedModels = (models) => ({ models, error: null });
+
+beforeEach(() => {
+  // Implementations AND return values (not just call records) survive
+  // `clearAllMocks`. A probe implementation left over from an earlier test drives
+  // this module's poll loop for its full three-minute timeout, and a leftover
+  // `spawn` return value hands a stale child to whichever test spawns next.
+  probe.probeOpenAiModels.mockReset();
+  child.spawn.mockReset();
+  mtplxCache.listMtplxCachedModels.mockResolvedValue(cachedModels([{ repo_id: 'Example/MTP-Model', validation: { ok: true } }]));
+  mtplxCache.pickMtplxCachedModel.mockImplementation((models) => (Array.isArray(models) && models[0]?.repo_id) || null);
+});
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -239,7 +259,7 @@ describe('runLocalRuntimeSetup', () => {
 
     const [binary, args] = child.spawn.mock.calls[0];
     expect(binary).toBe('/opt/homebrew/bin/mtplx');
-    expect(args).toEqual(['serve', '--port', '8010']);
+    expect(args).toEqual(['serve', '--port', '8010', '--model', 'Example/MTP-Model']);
     expect(daemon.unref).toHaveBeenCalled();
     expect(result).toMatchObject({ success: true, message: expect.stringContaining('http://127.0.0.1:8010/v1') });
   });
@@ -289,6 +309,85 @@ describe('runLocalRuntimeSetup', () => {
     restore();
 
     expect(result).toMatchObject({ success: false, error: expect.stringMatching(/exited early \(code 1\)/) });
+  });
+
+  it('refuses to start MTPLX with an EMPTY model cache, naming the pull command', async () => {
+    // `mtplx serve` defaults to one hard-coded checkpoint and exits 1 before it
+    // binds when nothing is cached. Spawning it anyway is how "Start MTPLX"
+    // reported "exited early (code 1)" and left the user with no next step.
+    mtplxCache.listMtplxCachedModels.mockResolvedValue(cachedModels([]));
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    probe.probeOpenAiModels.mockResolvedValue(unreachable);
+    const restore = pinPlatform('darwin');
+
+    const result = await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1' });
+    restore();
+
+    expect(child.spawn).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('mtplx pull') });
+  });
+
+  it('refuses when every cached MTPLX model is an incomplete download', async () => {
+    mtplxCache.listMtplxCachedModels.mockResolvedValue(cachedModels([{ repo_id: 'Example/Partial', validation: { ok: false } }]));
+    mtplxCache.pickMtplxCachedModel.mockReturnValue(null);
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    probe.probeOpenAiModels.mockResolvedValue(unreachable);
+    const restore = pinPlatform('darwin');
+
+    const result = await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1' });
+    restore();
+
+    expect(child.spawn).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ success: false, error: expect.stringMatching(/none passed its own file check/) });
+  });
+
+  it('starts MTPLX on its own default when the cache cannot be READ', async () => {
+    // Unreadable is not empty: blocking here would refuse a start that works.
+    mtplxCache.listMtplxCachedModels.mockResolvedValue({ models: null, error: '`mtplx models` timed out' });
+    const daemon = fakeChild();
+    child.spawn.mockReturnValue(daemon);
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    probe.probeOpenAiModels
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(reachable(['mtplx']))
+      .mockResolvedValueOnce(reachable(['mtplx']));
+    const restore = pinPlatform('darwin');
+
+    const result = await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1' });
+    restore();
+
+    expect(child.spawn.mock.calls[0][1]).toEqual(['serve', '--port', '8000']);
+    expect(result.success).toBe(true);
+  });
+
+  it('reports what a dying daemon printed, skipping its ASCII-art banner', async () => {
+    const daemon = fakeChild();
+    child.spawn.mockReturnValue(daemon);
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    // The stdout handler is registered as `on('data', …)` — feed it the way the
+    // real stream would, split across chunks mid-line.
+    const feed = (chunk) => daemon.stdout.on.mock.calls.find(([event]) => event === 'data')?.[1](chunk);
+    let printed = false;
+    probe.probeOpenAiModels.mockImplementation(async () => {
+      // Only once the daemon has been spawned and its stdout hooked up.
+      if (daemon.stdout.on.mock.calls.length > 0 && !printed) {
+        printed = true;
+        feed('╭──────────╮\n╰──────────╯\nerror: model is not ava');
+        feed('ilable locally\ndetail: run mtplx pull\n');
+        daemon.emitEvent('exit', 1, null);
+      }
+      return unreachable;
+    });
+    const restore = pinPlatform('darwin');
+
+    const result = await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1' });
+    restore();
+
+    expect(result.error).toContain('exited early (code 1)');
+    // Line reassembled across the chunk boundary, box drawing left out of it.
+    expect(result.error).toContain('error: model is not available locally');
+    expect(result.error).not.toContain('╭');
   });
 
   it('refuses a runtime kind it has no row for', async () => {
