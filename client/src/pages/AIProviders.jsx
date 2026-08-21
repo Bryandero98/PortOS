@@ -4,7 +4,7 @@ import { AlertTriangle } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
-import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isGrokBuildCli, isLocalEndpoint, isLocalInstanceProvider, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, isOrcaRouterBackedProvider, providerRuntimeKey, providerCardState, PROVIDER_CARD_STATE } from '../utils/providers';
+import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isGrokBuildCli, isLocalEndpoint, isLocalInstanceProvider, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, isOrcaRouterBackedProvider, generationControlsFor, providerRuntimeKey, providerCardState, PROVIDER_CARD_STATE } from '../utils/providers';
 import useLocalModels from '../hooks/useLocalModels';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import BrailleSpinner from '../components/BrailleSpinner';
@@ -82,6 +82,7 @@ const PROVIDER_FIELD_RANGES = {
   contextWindow: { min: 512, max: 2097152 },
   numCtx: { min: 512, max: 1048576 },
   temperature: { min: 0, max: 2 },
+  topP: { min: 0, max: 1 },
 };
 
 const rangeMessage = (label, { min, max }, unit = '') =>
@@ -858,8 +859,12 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
     fallbackProvider: provider?.fallbackProvider || '',
     fallbackModel: provider?.fallbackModel || '',
     numCtx: provider?.numCtx ?? '',
-    temperature: provider?.temperature ?? 0.6,
-    thinking: provider?.thinking ?? true,
+    // All three seed from the record ONLY. Seeding a value the provider does not
+    // have would let an unrelated Save pin it — the editor must be able to leave
+    // "unset" alone, since unset is what lets each backend keep its own default.
+    temperature: provider?.temperature ?? '',
+    topP: provider?.topP ?? '',
+    thinking: provider?.thinking === true ? 'true' : provider?.thinking === false ? 'false' : '',
     contextWindow: provider?.contextWindow ?? '',
     timeout: provider?.timeout || 300000,
     enabled: provider?.enabled !== false,
@@ -941,6 +946,11 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
   // `ollamaBacked` marker that identifies opencode-ollama (whose envVars carry
   // no ANTHROPIC_BASE_URL) is not a form field.
   const showsNumCtx = formData.type === 'api' || isOllamaBackedProvider(capabilityProvider);
+  // Default sampling/reasoning controls, offered only for the backends PortOS
+  // actually forwards them to (see `generationControlsFor`). Reads
+  // `capabilityProvider` for the same reason `showsNumCtx` does: `llamaBacked`
+  // and friends are record markers, not form fields.
+  const generationControls = generationControlsFor(capabilityProvider);
   const parseOptionalIntField = (value) => {
     const input = String(value ?? '').trim();
     if (!input) return null;
@@ -993,13 +1003,14 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
     if (outOfRange(formData.contextWindow, PROVIDER_FIELD_RANGES.contextWindow)) {
       return { tab: 'generation', message: rangeMessage('Planning Window', PROVIDER_FIELD_RANGES.contextWindow, 'tokens') };
     }
-    if (showsNumCtx) {
-      if (outOfRange(formData.numCtx, PROVIDER_FIELD_RANGES.numCtx)) {
-        return { tab: 'generation', message: rangeMessage('Local num_ctx', PROVIDER_FIELD_RANGES.numCtx, 'tokens') };
-      }
-      if (outOfRange(formData.temperature, PROVIDER_FIELD_RANGES.temperature)) {
-        return { tab: 'generation', message: rangeMessage('Temperature', PROVIDER_FIELD_RANGES.temperature) };
-      }
+    if (showsNumCtx && outOfRange(formData.numCtx, PROVIDER_FIELD_RANGES.numCtx)) {
+      return { tab: 'generation', message: rangeMessage('Local num_ctx', PROVIDER_FIELD_RANGES.numCtx, 'tokens') };
+    }
+    if (generationControls?.temperature && outOfRange(formData.temperature, PROVIDER_FIELD_RANGES.temperature)) {
+      return { tab: 'generation', message: rangeMessage('Temperature', PROVIDER_FIELD_RANGES.temperature) };
+    }
+    if (generationControls?.topP && outOfRange(formData.topP, PROVIDER_FIELD_RANGES.topP)) {
+      return { tab: 'generation', message: rangeMessage('Top-P', PROVIDER_FIELD_RANGES.topP) };
     }
     return null;
   };
@@ -1028,8 +1039,23 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
       headlessArgs: formData.headlessArgs ? formData.headlessArgs.split(' ').filter(Boolean) : [],
       contextWindow: parseOptionalIntField(formData.contextWindow),
       numCtx: showsNumCtx ? parseOptionalIntField(formData.numCtx) : null,
-      ...(showsNumCtx ? { temperature: parseNumberField(formData.temperature), thinking: formData.thinking } : {}),
+      // A blank generation field clears back to "let the backend pick" — `null`
+      // rather than `undefined`, which the server's spread-merge would read as
+      // "unchanged" and leave the old pin in place.
+      ...(generationControls?.temperature ? { temperature: parseNumberField(formData.temperature) ?? null } : {}),
+      ...(generationControls?.topP ? { topP: parseNumberField(formData.topP) ?? null } : {}),
+      ...(generationControls?.thinking
+        ? { thinking: formData.thinking === '' ? null : formData.thinking === 'true' }
+        : {}),
     };
+    // `data` opens as a spread of the WHOLE form, so a control this provider
+    // doesn't offer rides along regardless of the branches above — and a blank
+    // field is `''`, which is not a number (or a boolean) the server schema
+    // accepts. Drop what can't be used; the server merges by spread, so
+    // anything already stored is left alone.
+    if (!generationControls?.temperature) delete data.temperature;
+    if (!generationControls?.topP) delete data.topP;
+    if (!generationControls?.thinking) delete data.thinking;
     // The generation/fallback pickers filter out embedding-only models, so a
     // stored embedding (from an older config) would be hidden in the UI yet
     // still spread into `data` and silently persisted on an unrelated edit.
@@ -1476,7 +1502,7 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                 value={formData.effort}
                 onChange={(effort) => setFormData(prev => ({ ...prev, effort }))}
                 label="Default Effort"
-                hint={showsNumCtx
+                hint={generationControls
                   ? 'Reasoning effort used when a run does not specify one — passed to the local model as reasoningEffort.'
                   : 'Reasoning effort used when a run does not specify one.'}
               />
@@ -1547,40 +1573,69 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                 </div>
               </div>
 
-              {showsNumCtx && (
+              {generationControls && (
                 <div className="border-t border-port-border pt-4 mt-4">
-                  <h4 className="text-sm font-medium text-gray-300 mb-3">Ollama Generation</h4>
+                  <h4 className="text-sm font-medium text-gray-300 mb-3">Generation Defaults</h4>
+                  <p className="text-xs text-gray-500 mb-3">
+                    Applied to every run this provider starts — HTTP, CLI, and TUI alike. OpenCode wrappers
+                    receive them as its <code className="text-gray-400">agent.build</code> options; a task can
+                    still override temperature and thinking for one run. Every field left blank is simply not
+                    sent, so the backend keeps its own default.
+                  </p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <FormField label="Temperature">
-                      <input
-                        type="number"
-                        min={PROVIDER_FIELD_RANGES.temperature.min}
-                        max={PROVIDER_FIELD_RANGES.temperature.max}
-                        step="0.1"
-                        value={formData.temperature}
-                        onChange={(e) => setFormData(prev => ({ ...prev, temperature: e.target.value }))}
-                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-                      />
-                      <p className="text-xs text-gray-500 mt-1">Defaults to 0.6 for local Ollama agent runs.</p>
-                    </FormField>
-                    {/* Hand-rolled rather than FormField: the control is a
-                        checkbox inside its own <label>, so FormField's
-                        "bind the label to the first child" rule would point
-                        htmlFor at that <label> instead of the input. */}
-                    <div>
-                      <span className="block text-sm text-gray-400 mb-1">Thinking mode</span>
-                      <label htmlFor="provider-thinking" className="flex items-center gap-2 min-h-10 text-sm text-gray-300">
+                    {generationControls.temperature && (
+                      <FormField label="Temperature">
                         <input
-                          id="provider-thinking"
-                          type="checkbox"
-                          checked={formData.thinking}
-                          onChange={(e) => setFormData(prev => ({ ...prev, thinking: e.target.checked }))}
-                          className="w-4 h-4 rounded border-port-border bg-port-bg"
+                          type="number"
+                          min={PROVIDER_FIELD_RANGES.temperature.min}
+                          max={PROVIDER_FIELD_RANGES.temperature.max}
+                          step="0.1"
+                          value={formData.temperature}
+                          onChange={(e) => setFormData(prev => ({ ...prev, temperature: e.target.value }))}
+                          placeholder="Backend default"
+                          className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                         />
-                        Enable model reasoning
-                      </label>
-                      <p className="text-xs text-gray-500 mt-1">Sent to thinking-capable Ollama models; unsupported models ignore it.</p>
-                    </div>
+                        <p className="text-xs text-gray-500 mt-1">Local Ollama agent runs fall back to 0.6 when this is blank.</p>
+                      </FormField>
+                    )}
+                    {generationControls.topP && (
+                      <FormField label="Top-P">
+                        <input
+                          type="number"
+                          min={PROVIDER_FIELD_RANGES.topP.min}
+                          max={PROVIDER_FIELD_RANGES.topP.max}
+                          step="0.05"
+                          value={formData.topP}
+                          onChange={(e) => setFormData(prev => ({ ...prev, topP: e.target.value }))}
+                          placeholder="Backend default"
+                          className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">Nucleus sampling. Leave blank to send no top_p at all.</p>
+                      </FormField>
+                    )}
+                    {generationControls.thinking && (
+                      /* Tri-state rather than a checkbox: a checkbox cannot say
+                         "leave the model's own reasoning mode alone", so it
+                         forced a pin onto every provider the moment anyone
+                         pressed Save. */
+                      <FormField label="Thinking mode">
+                        <select
+                          value={formData.thinking}
+                          onChange={(e) => setFormData(prev => ({ ...prev, thinking: e.target.value }))}
+                          className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                        >
+                          <option value="">Model default</option>
+                          <option value="true">Enabled</option>
+                          <option value="false">Disabled</option>
+                        </select>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Ollama receives its native <code className="text-gray-400">think</code> flag; llama.cpp and
+                          MTPLX get <code className="text-gray-400">enable_thinking</code> through the chat template;
+                          a Claude harness on Ollama gets <code className="text-gray-400">MAX_THINKING_TOKENS</code>.
+                          Models without a reasoning mode ignore it.
+                        </p>
+                      </FormField>
+                    )}
                   </div>
                 </div>
               )}

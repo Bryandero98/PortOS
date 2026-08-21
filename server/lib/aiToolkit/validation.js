@@ -86,10 +86,17 @@ export const providerSchema = z.object({
   // Per-request context window (Ollama num_ctx). Lifts the ~4K default so long
   // prompts (e.g. a whole manuscript) aren't silently truncated. Null = unset.
   numCtx: z.number().int().min(512).max(1048576).nullable().optional(),
-  // Ollama generation controls. These are provider-level so the same local
-  // model keeps its defaults across API, CLI, and TUI launchers.
-  temperature: z.number().min(0).max(2).optional(),
-  thinking: z.boolean().optional(),
+  // Default generation controls for the local OpenAI-compatible backends
+  // (Ollama, llama.cpp, MTPLX) and the OpenCode wrappers in front of them.
+  // Provider-level so the same local model keeps its defaults across API, CLI,
+  // and TUI launchers; a run may still override them per task.
+  // All three are nullable, and null is the UI's "unset" — a backend that is
+  // never told a temperature / top_p / thinking mode keeps its own, which is not
+  // the same as being pinned to a value. Without a clearable null the editor
+  // could only ever add a pin, never remove one.
+  temperature: z.number().min(0).max(2).nullable().optional(),
+  topP: z.number().min(0).max(1).nullable().optional(),
+  thinking: z.boolean().nullable().optional(),
   // Planning-time context window (tokens) the editorial budgeter may assume for
   // this provider — distinct from numCtx (what we *ask Ollama for*). For cloud
   // providers numCtx stays null and this reflects the model's real ceiling.

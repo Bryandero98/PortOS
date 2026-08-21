@@ -85,11 +85,75 @@ llama-server \
   --n-gpu-layers 99
 ```
 
+### 2b. Drafter-free speculation (n-gram spec types)
+
+`--spec-type` is a **comma-separated list**, and only its `draft-*` entries need a
+drafter GGUF. The `ngram-*` implementations draft by pattern-matching the tokens
+already in the context window — no second model, no extra VRAM — which makes them
+worth having even when you have no drafter for your target:
+
+| Spec type | Needs a drafter? | What it drafts from |
+| --- | --- | --- |
+| `draft-dspark` / `draft-dflash` / `draft-simple` / `draft-mtp` | yes | a second model |
+| `ngram-map-k` / `ngram-map-k4v` | no | repeated n-grams in the live context |
+| `ngram-simple` / `ngram-mod` / `ngram-cache` | no | n-gram lookup over token history |
+
+Mixing the two families in one server is supported and is the usual reason to
+comma-separate — the drafter handles novel text while the n-gram map catches the
+long verbatim repeats an agent produces (re-emitted file contents, diffs, JSON):
+
+```bash
+llama-server \
+  -m models/Qwen3.8-27B-Q4_K_M.gguf \
+  --model-draft models/Qwen3.8-27B-DSpark-BF16.gguf \
+  --spec-type draft-dspark,ngram-map-k \
+  --port 5568 --host 127.0.0.1 --alias dflash
+```
+
+In PortOS, set this in **Settings → Local LLMs → Speculative Decoding →
+Advanced options → Spec Type** (the picker suggests the types above). The two
+fields are resolved against each other at launch, so a preset's prefilled paths
+can't fight your choice:
+
+- **Drafter Model empty + `draft-*` types** — those entries are dropped (logged),
+  and the launch starts with whatever `ngram-*` half remains.
+- **Drafter Model set + only `ngram-*` types** — the drafter is ignored rather
+  than loaded, and Start is no longer blocked on a drafter GGUF that was never
+  downloaded.
+- **Spec Type empty + Drafter Model set** — left alone: llama.cpp speculates off
+  a bare `--model-draft`, so PortOS does not second-guess it.
+
+Vocabulary reference: llama.cpp `docs/speculative.md`.
+
 ### 3. Use in PortOS
 1. Navigate to **AI Providers** (`/ai`) or **Settings → Local LLMs**.
 2. Verify **OpenCode llama TUI** is enabled.
 3. Click **Refresh Models** to pull the live aliases from `llama-server`, or use the default `dflash` model.
 4. Select **OpenCode llama TUI** in the CoS task creator or terminal runner to execute coding and agent tasks with speculative acceleration.
+
+### Generation defaults
+
+**AI Providers → edit the provider → Generation** carries the defaults every run
+of that provider starts with — **Temperature**, **Top-P**, **Thinking mode**, and
+**Default Effort**. They apply to HTTP, CLI, and TUI launches alike, so the same
+local model keeps one posture however it is reached; OpenCode receives them as
+its `agent.build` options, and a CoS task can still override temperature and
+thinking for a single run.
+
+Each control appears only where PortOS actually forwards it. Sampling
+(temperature, top-p) reaches Ollama, llama.cpp, and MTPLX, plus the OrcaRouter
+gateway — but not a Claude Code harness pointed at Ollama, which owns its own
+sampling and takes only the thinking signal. Thinking itself is not a portable
+flag: Ollama gets its native `think` boolean, llama.cpp and MTPLX get
+`enable_thinking` through the chat template, a Claude/Ollama harness gets
+`MAX_THINKING_TOKENS`, and OrcaRouter gets nothing (its upstream models own the
+switch). A model with no reasoning mode ignores it either way.
+
+**Every field left blank is simply not sent**, so the backend keeps its own
+default — blank Top-P is not the same as pinning `1`, and blank Temperature is
+not the same as pinning `0.6` (though Ollama agent runs still fall back to `0.6`
+server-side). This is why the editor never seeds a value a provider does not
+already have: an unrelated Save must not silently pin one.
 
 ### Checking the requirements from the Providers page
 

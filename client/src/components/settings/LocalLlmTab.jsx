@@ -808,8 +808,29 @@ export function LocalLlmTab() {
     return Boolean(entry?.path && !entry.exists && entry.path === (field || '').trim());
   };
   const baseWeightMissing = missingWeight('model');
-  const draftWeightMissing = missingWeight('draftModel');
+  // Rendered from the server's list (status payload) so the card never carries a
+  // second copy of the llama.cpp vocabulary.
+  const specTypeSuggestions = llamaStatus?.specTypes || [];
+  // MIRROR of `parseSpecTypes` / `isDraftSpecType` in
+  // server/lib/specDecodePresets.js, and of how `startLlamaServer` resolves the
+  // two fields against each other. An EMPTY spec type still drafts (llama.cpp
+  // speculates off a bare `--model-draft`), so it counts as using the drafter.
+  const requestedSpecTypes = String(llamaForm.specType || '').split(',').map((t) => t.trim()).filter(Boolean);
+  const draftSpecTypes = requestedSpecTypes.filter((t) => t.startsWith('draft-'));
+  const drafterInUse = requestedSpecTypes.length === 0 || draftSpecTypes.length > 0;
+  const drafterConfigured = Boolean((llamaForm.draftModel || '').trim());
+  // Only block Start on a missing drafter GGUF when the launch would actually
+  // load one — an `ngram-*` run needs no drafter, so a preset's undownloaded
+  // drafter path must not hold it hostage.
+  const draftWeightMissing = drafterInUse && missingWeight('draftModel');
   const llamaStartBlocked = llamaModelMissing || baseWeightMissing || draftWeightMissing;
+  // Say what the launcher will do with a mismatched pair rather than letting the
+  // server quietly rewrite the launch line the user thought they were starting.
+  const specTypeNotice = !drafterConfigured && draftSpecTypes.length > 0
+    ? `${draftSpecTypes.join(', ')} will be skipped until a Drafter Model is set.`
+    : drafterConfigured && !drafterInUse
+      ? 'The Drafter Model will be ignored — none of these spec types use one.'
+      : '';
   const llamaStartBlockedReason = llamaModelMissing
     ? 'Enter a Target Base Model path to enable Start'
     : baseWeightMissing
@@ -949,7 +970,7 @@ export function LocalLlmTab() {
           Both backends can be installed and running at the same time — <span className="text-gray-400">Default</span> just sets which one PortOS routes local-LLM runs to. Use <span className="text-gray-400">Import from…</span> to copy or link models between them without re-downloading.
         </p>
         <p className="text-xs text-gray-500">
-          For Ollama coding agents, configure the shared <Link to="/ai" className="text-port-accent hover:underline">temperature and thinking defaults in AI Providers</Link>. Native Ollama and OpenCode receive both controls; Claude/Ollama honors the thinking toggle. New local providers start at temperature 0.6.
+          For local coding agents, configure the shared <Link to="/ai" className="text-port-accent hover:underline">temperature, top-p and thinking defaults in AI Providers</Link>. Every local OpenAI-compatible backend receives them — Ollama, llama.cpp and MTPLX, whether reached directly or through an OpenCode CLI/TUI wrapper. Every control left blank is simply not sent, so the backend keeps its own default — Ollama agent runs fall back to temperature 0.6.
         </p>
 
         {loading && !status ? (
@@ -1090,7 +1111,7 @@ export function LocalLlmTab() {
         </div>
 
         <p className="text-xs text-gray-400 leading-relaxed">
-          Speculative decoding pairs a small drafter with your target model for 2–3× faster generation at identical output. You can launch and manage a local <code className="text-gray-300">llama-server</code> from PortOS and connect using the <strong className="text-white">OpenCode llama TUI</strong> provider. <strong className="text-white">DSpark</strong> (<code className="text-gray-300">draft-dspark</code>) works on a stock <code className="text-gray-300">brew install llama.cpp</code>; the DFlash 2 presets need a from-source build of an unmerged llama.cpp branch.
+          Speculative decoding pairs a small drafter with your target model for 2–3× faster generation at identical output. You can launch and manage a local <code className="text-gray-300">llama-server</code> from PortOS and connect using the <strong className="text-white">OpenCode llama TUI</strong> provider. <strong className="text-white">DSpark</strong> (<code className="text-gray-300">draft-dspark</code>) works on a stock <code className="text-gray-300">brew install llama.cpp</code>; the DFlash 2 presets need a from-source build of an unmerged llama.cpp branch. No drafter GGUF to hand? The <code className="text-gray-300">ngram-*</code> spec types under Advanced options draft from the context window alone.
         </p>
 
         {llamaStatus?.running ? (
@@ -1102,7 +1123,7 @@ export function LocalLlmTab() {
                   <p><span className="text-gray-500">Base Model:</span> <code className="text-gray-300">{llamaStatus.config.model}</code></p>
                 )}
                 {llamaStatus.config?.draftModel && (
-                  <p><span className="text-gray-500">Drafter:</span> <code className="text-port-accent">{llamaStatus.config.draftModel}</code> ({llamaStatus.config.specType || 'draft-dflash'})</p>
+                  <p><span className="text-gray-500">Drafter:</span> <code className="text-port-accent">{llamaStatus.config.draftModel}</code></p>
                 )}
                 {llamaStatus.config && (
                   <p>
@@ -1111,6 +1132,16 @@ export function LocalLlmTab() {
                     {' '}— Providers must send this name. Change it under Advanced options before starting.
                   </p>
                 )}
+                {/* Split out from the Drafter line: an `ngram-*` launch runs
+                    speculative decoding with no drafter at all, so hanging the
+                    spec type off that line hid it exactly when it was the only
+                    thing configured. */}
+                <p>
+                  <span className="text-gray-500">Spec Type:</span>{' '}
+                  {llamaStatus.config?.specType
+                    ? <code className="text-port-accent">{llamaStatus.config.specType}</code>
+                    : <span className="text-gray-500">none — speculative decoding off</span>}
+                </p>
               </div>
               {llamaStatus.managed ? (
                 <button
@@ -1229,16 +1260,31 @@ export function LocalLlmTab() {
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>
-                <div>
+                <div className="col-span-2 sm:col-span-4">
                   <label htmlFor="llama-spec-type" className="text-[11px] text-gray-400 block mb-1">Spec Type</label>
                   <input
                     id="llama-spec-type"
                     aria-label="Spec Type"
                     type="text"
+                    list="llama-spec-type-options"
                     value={llamaForm.specType}
                     onChange={(e) => setLlamaField('specType', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
+                  <datalist id="llama-spec-type-options">
+                    {specTypeSuggestions.map((entry) => (
+                      <option key={entry.id} value={entry.id}>{entry.note}</option>
+                    ))}
+                  </datalist>
+                  <p className="text-[11px] text-gray-500 mt-1">
+                    Comma-separate to run several at once, e.g. <code className="text-gray-400">draft-dflash,ngram-map-k</code>.
+                    Only <code className="text-gray-400">draft-*</code> types need a drafter GGUF — the{' '}
+                    <code className="text-gray-400">ngram-*</code> ones speculate from the tokens already in context, so they run
+                    with the Drafter field empty.
+                  </p>
+                  {specTypeNotice && (
+                    <p className="text-[11px] text-port-warning mt-1">{specTypeNotice}</p>
+                  )}
                 </div>
                 <div>
                   <label htmlFor="llama-alias" className="text-[11px] text-gray-400 block mb-1">Model id (alias)</label>
@@ -1261,7 +1307,7 @@ export function LocalLlmTab() {
                 className="text-[11px] text-gray-500 hover:text-gray-300 flex items-center gap-1"
               >
                 {showLlamaAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                {showLlamaAdvanced ? 'Hide options' : 'Advanced options (port, ctx, GPU layers, model id)'}
+                {showLlamaAdvanced ? 'Hide options' : 'Advanced options (port, ctx, GPU layers, model id, spec type)'}
               </button>
               <div className="flex items-center gap-2">
                 {llamaStartBlocked && (

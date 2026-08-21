@@ -99,9 +99,9 @@ describe('LocalLlmTab backend disable state', () => {
 });
 
 describe('LocalLlmTab installed models', () => {
-  it('links to the shared Ollama generation controls', async () => {
+  it('links to the shared local generation controls', async () => {
     await renderTab();
-    expect(screen.getByRole('link', { name: /temperature and thinking defaults/i }).getAttribute('href')).toBe('/ai');
+    expect(screen.getByRole('link', { name: /temperature, top-p and thinking defaults/i }).getAttribute('href')).toBe('/ai');
   });
 
   it('lets a long model id wrap instead of truncating it', async () => {

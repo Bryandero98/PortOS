@@ -31,6 +31,7 @@ import {
 } from '../lib/validation.js'
 import { getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer } from '../services/llamaServerManager.js'
 import { getSpecDecodePresetStatus, downloadSpecDecodeModel } from '../services/specDecodeModels.js'
+import { SPEC_TYPE_SUGGESTIONS } from '../lib/specDecodePresets.js'
 import { resetProviderReadinessCache } from '../services/providerReadiness.js'
 import { getCatalog, searchCatalog, isBackend } from '../lib/localLlmCatalog.js'
 import { isAppleSilicon } from '../lib/platform.js'
@@ -473,7 +474,9 @@ router.post('/assessments/delete', asyncHandler(async (req, res) => {
 // Start to discover a missing file. Disk-only: no Hugging Face call here.
 router.get('/llama-server/status', asyncHandler(async (_req, res) => {
   const [status, presets] = await Promise.all([getLlamaServerStatus(), getSpecDecodePresetStatus()])
-  res.json({ ...status, presets })
+  // Spec-type suggestions ride along for the same reason the presets do: the
+  // card renders the server's list instead of keeping a copy that can rot.
+  res.json({ ...status, presets, specTypes: SPEC_TYPE_SUGGESTIONS })
 }))
 
 // POST /api/local-llm/llama-server/download-model — fetch one preset's GGUF from

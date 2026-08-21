@@ -594,6 +594,7 @@ export function createProviderService(config = {}) {
         fallbackModel: providerData.fallbackModel || null,
         numCtx: providerData.numCtx || null,
         temperature: providerData.temperature,
+        topP: providerData.topP,
         thinking: providerData.thinking,
         contextWindow: providerData.contextWindow || null,
         timeout: providerData.timeout || 300000,

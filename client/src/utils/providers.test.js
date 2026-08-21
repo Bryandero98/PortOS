@@ -45,6 +45,7 @@ import {
   supportsModelRefresh,
   isAntigravityProvider,
   effortLevelsForProvider,
+  generationControlsFor,
   resolveCliEffort,
   CLAUDE_EFFORT_LEVELS,
   CODEX_EFFORT_LEVELS,
@@ -123,6 +124,11 @@ describe('effortLevelsForProvider (server mirror)', () => {
     ['claude code', { id: 'claude-code', command: 'claude' }, CLAUDE_EFFORT_LEVELS],
     ['codex', { id: 'codex', command: 'codex' }, CODEX_EFFORT_LEVELS],
     ['OpenCode Ollama', { id: 'opencode-ollama', command: 'opencode', ollamaBacked: true }, ['low', 'medium', 'high']],
+    // OpenCode forwards `reasoningEffort` to whichever local backend it is wired
+    // to, so the ladder belongs to every local namespace, not just Ollama.
+    ['OpenCode llama TUI', { id: 'opencode-llama-tui', command: 'opencode', llamaBacked: true }, ['low', 'medium', 'high']],
+    ['OpenCode MTPLX', { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true }, ['low', 'medium', 'high']],
+    ['OpenCode with no local backend', { id: 'opencode', command: 'opencode' }, null],
     ['grok (no effort control)', { id: 'grok-cli', command: 'grok' }, null],
     ['blank command is not claude', { id: 'ollama' }, null],
   ];
@@ -130,6 +136,28 @@ describe('effortLevelsForProvider (server mirror)', () => {
   it.each(CASES)('%s', (_label, provider, expected) => {
     expect(effortLevelsForProvider(provider)).toEqual(expected);
     expect(serverEffortLevelsForProvider(provider)).toEqual(expected);
+  });
+});
+
+// Which providers the Generation Defaults block is offered for. The rule has to
+// match what the server actually forwards, or the editor advertises a control
+// that does nothing: `buildAgentGeneration` (server/lib/opencodeConfig.js) for
+// the OpenCode wrappers, `apiGenerationOptions`
+// (server/lib/aiToolkit/internal/generationOptions.js) for HTTP runs.
+describe('generationControlsFor', () => {
+  it.each([
+    ['OpenCode llama TUI', { id: 'opencode-llama-tui', command: 'opencode', llamaBacked: true }, { temperature: true, topP: true, thinking: true }],
+    ['OpenCode MTPLX', { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true }, { temperature: true, topP: true, thinking: true }],
+    // A Claude harness on Ollama is forwarded only MAX_THINKING_TOKENS
+    // (server/lib/cliChildEnv.js) — it owns its own sampling.
+    ['Claude Ollama TUI', { id: 'claude-ollama-tui', command: 'claude', ollamaBacked: true }, { temperature: false, topP: false, thinking: true }],
+    ['native Ollama API', { id: 'ollama', type: 'api', endpoint: 'http://localhost:11434/v1' }, { temperature: true, topP: true, thinking: true }],
+    // OrcaRouter proxies cloud models that own their own reasoning switch.
+    ['OpenCode OrcaRouter', { id: 'opencode-orcarouter', command: 'opencode', orcarouterBacked: true }, { temperature: true, topP: true, thinking: false }],
+    ['cloud API provider', { id: 'anthropic', type: 'api', endpoint: 'https://api.anthropic.com/v1' }, null],
+    ['vendor CLI', { id: 'claude-code', command: 'claude' }, null],
+  ])('%s', (_label, provider, expected) => {
+    expect(generationControlsFor(provider)).toEqual(expected);
   });
 });
 

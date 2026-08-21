@@ -12,6 +12,7 @@ import { commandExists } from '../lib/commandExists.js';
 import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
 import { expandHome, sleep } from '../lib/fileUtils.js';
 import { resolveSpecModelPath } from './specDecodeModels.js';
+import { parseSpecTypes, isDraftSpecType } from '../lib/specDecodePresets.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { isPortInUse } from '../lib/platform.js';
 import { PORTS } from '../lib/ports.js';
@@ -86,7 +87,9 @@ function parseConfigFromArgs(args) {
   if (!model) return null;
 
   const draftModel = getArg('--model-draft') || getArg('--spec-draft-model') || getArg('-md');
-  const specType = getArg('--spec-type') || 'draft-dflash';
+  // Absent means the process is running WITHOUT speculative decoding — don't
+  // invent a type the launch line never carried.
+  const specType = getArg('--spec-type');
   const port = getArg('--port') ? Number(getArg('--port')) : PORTS.LLAMA_SERVER;
   const host = getArg('--host') || '127.0.0.1';
   const ctxSize = getArg('--ctx-size') ? Number(getArg('--ctx-size')) : 32768;
@@ -209,16 +212,41 @@ export async function startLlamaServer(options = {}) {
 
   // Validate the weights before building the launch line
   await assertModelFileExists('The base model', model.trim());
-  const draftPath = typeof draftModel === 'string' && draftModel.trim()
+  const configuredDraftPath = typeof draftModel === 'string' && draftModel.trim()
     ? draftModel.trim()
     : null;
+
+  // `--spec-type` is a comma-separated LIST, and only its `draft-*` entries want
+  // a drafter GGUF — every `ngram-*` implementation speculates off the tokens
+  // already in the context window. Emitting the flag only alongside a drafter
+  // therefore threw away perfectly valid drafter-free launches
+  // (`--spec-type ngram-map-k`) and silently ignored the ngram half of a mixed
+  // one (`draft-dflash,ngram-map-k`).
+  //
+  // The two halves are resolved against each other, because the launcher card
+  // seeds BOTH fields from a preset: switching Spec Type to an `ngram-*` leaves
+  // the preset's drafter path sitting in the form, and passing that as
+  // `--model-draft` would load weights the run can't use — or fail the
+  // existence check below on a preset GGUF that was never downloaded. So a
+  // drafter is only carried when some requested type actually drafts with one,
+  // and drafter-based types are dropped (with a log line) when no drafter is
+  // set, which keeps the card's documented "clear the field to run without it"
+  // working. An EMPTY spec type deliberately still counts as wanting the
+  // drafter: llama.cpp speculates off a bare `--model-draft`, so dropping it
+  // there would silently disable a working configuration.
+  const requestedSpecTypes = parseSpecTypes(specType);
+  const drafterInUse = requestedSpecTypes.length === 0 || requestedSpecTypes.some(isDraftSpecType);
+  const draftPath = drafterInUse ? configuredDraftPath : null;
+  const effectiveSpecTypes = draftPath
+    ? requestedSpecTypes
+    : requestedSpecTypes.filter((type) => !isDraftSpecType(type));
+  const droppedSpecTypes = requestedSpecTypes.filter((type) => !effectiveSpecTypes.includes(type));
+
   if (draftPath) await assertModelFileExists('The drafter model', draftPath);
 
   const args = ['-m', expandHome(model.trim())];
-  if (draftPath) {
-    args.push('--model-draft', expandHome(draftPath));
-    if (specType) args.push('--spec-type', specType.trim());
-  }
+  if (draftPath) args.push('--model-draft', expandHome(draftPath));
+  if (effectiveSpecTypes.length > 0) args.push('--spec-type', effectiveSpecTypes.join(','));
   if (port) args.push('--port', String(port));
   if (host) args.push('--host', host);
   if (ctxSize) args.push('--ctx-size', String(ctxSize));
@@ -227,12 +255,24 @@ export async function startLlamaServer(options = {}) {
 
   lastExitError = null;
   recentLogs = [];
+  if (droppedSpecTypes.length > 0) {
+    appendLog(`Ignoring spec-type ${droppedSpecTypes.join(',')} — no drafter model is set`);
+    console.log(`🦙 llama-server dropping drafter-based spec types ${droppedSpecTypes.join(',')} (no --model-draft configured)`);
+  }
+  if (configuredDraftPath && !draftPath) {
+    appendLog(`Ignoring drafter ${configuredDraftPath} — no requested spec type uses one`);
+    console.log(`🦙 llama-server ignoring drafter ${configuredDraftPath} (spec types ${effectiveSpecTypes.join(',') || 'none'} need no drafter)`);
+  }
   appendLog(`Starting: llama-server ${args.join(' ')}`);
 
   currentConfig = {
     model,
-    draftModel: draftModel || null,
-    specType,
+    // The drafter actually on the launch line, so the status card reports what
+    // is running rather than what the form happened to be holding.
+    draftModel: draftPath,
+    // The types actually on the launch line, so the status card reports what is
+    // running rather than what was asked for.
+    specType: effectiveSpecTypes.join(','),
     port,
     host,
     ctxSize,

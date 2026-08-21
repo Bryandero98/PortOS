@@ -198,20 +198,29 @@ export const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhi
 export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 // OpenCode passes this through as `reasoningEffort` to its configured local
-// provider. Ollama's OpenAI-compatible API accepts this narrow ladder for
+// provider. The OpenAI-compatible local backends accept this narrow ladder for
 // thinking models; the broader vendor-CLI ladders are not portable here.
-export const OPENCODE_OLLAMA_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
+export const OPENCODE_LOCAL_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 // Cursor Agent. MIRROR of `CURSOR_EFFORT_LEVELS`. Cursor takes NO `--effort`
 // flag — the server folds the level into the model id as Cursor's own variant
 // syntax (`gpt-5[effort=max]`) — but the level is still user-pickable, so this
 // ladder drives the same selects as every other CLI's.
 export const CURSOR_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 
-/** True when an OpenCode process provider is backed by the local Ollama daemon. */
-export const isOpencodeOllamaProvider = (provider) =>
+/**
+ * True when an OpenCode process provider runs against one of the local
+ * OpenAI-compatible backends (Ollama / MTPLX / llama.cpp / OrcaRouter) rather
+ * than a vendor cloud model. MIRROR of `isOpencodeProvider(p) &&
+ * getOpencodeLocalProviderNamespace(p)` in server/lib/providerModels.js, which
+ * is exactly what gates the effort ladder there.
+ */
+export const isOpencodeLocalProvider = (provider) =>
   (['opencode', 'opencode-tui'].includes(String(provider?.id || '').toLowerCase())
     || commandBasename(provider?.command) === 'opencode')
-  && provider?.ollamaBacked === true;
+  && (provider?.ollamaBacked === true
+    || provider?.mtplxBacked === true
+    || provider?.llamaBacked === true
+    || provider?.orcarouterBacked === true);
 
 /**
  * Antigravity base-model ↔ effort-suffix split — MIRROR of
@@ -386,7 +395,7 @@ export const seedModelEffort = (provider, model, effort) => {
  */
 export const effortLevelsForProvider = (provider, model = null) => {
   if (!provider) return null;
-  if (isOpencodeOllamaProvider(provider)) return OPENCODE_OLLAMA_EFFORT_LEVELS;
+  if (isOpencodeLocalProvider(provider)) return OPENCODE_LOCAL_EFFORT_LEVELS;
   if (isCodexProvider(provider)) return CODEX_EFFORT_LEVELS;
   if (isAntigravityProvider(provider)) {
     const perModel = model ? antigravityModelEffortLevels(model, provider.models) : null;
@@ -979,6 +988,40 @@ export const isOllamaBackedProvider = (provider) => {
 * @param {{id?:string,orcarouterBacked?:boolean}} provider
 */
 export const isOrcaRouterBackedProvider = (provider) => provider?.orcarouterBacked === true;
+
+/**
+ * Which default generation controls the provider editor should offer, or null
+ * when the provider has none.
+ *
+ * Only the local OpenAI-compatible backends qualify — Ollama, llama.cpp and
+ * MTPLX (reached directly as an `api` provider, or through an OpenCode CLI/TUI
+ * wrapper), plus the OrcaRouter gateway. A hosted cloud provider is deliberately
+ * excluded: PortOS sends it no sampling fields at all, so offering a stored
+ * temperature there would be a control that silently does nothing.
+ *
+ * Each control is reported separately because the forwarding is uneven:
+ * OrcaRouter's upstream models own their own reasoning switch, so it has no
+ * thinking toggle; and the Claude Code harness pointed at Ollama takes ONLY a
+ * thinking signal (`MAX_THINKING_TOKENS=0` in server/lib/cliChildEnv.js) — it
+ * owns its own sampling, so a temperature or top-p stored on one of those
+ * records would never reach the daemon. MIRROR of `THINKING_STYLE` /
+ * `buildAgentGeneration` in server/lib/opencodeConfig.js and
+ * `apiGenerationOptions` in server/lib/aiToolkit/internal/generationOptions.js;
+ * keep in lockstep.
+ * @param {object|null|undefined} provider
+ * @returns {{temperature:boolean, topP:boolean, thinking:boolean}|null}
+ */
+export const generationControlsFor = (provider) => {
+  const orcarouter = isOrcaRouterBackedProvider(provider);
+  const local = isOllamaBackedProvider(provider)
+    || provider?.llamaBacked === true
+    || provider?.mtplxBacked === true;
+  if (!local && !orcarouter) return null;
+  if (commandBasename(provider?.command) === 'claude') {
+    return { temperature: false, topP: false, thinking: true };
+  }
+  return { temperature: true, topP: true, thinking: !orcarouter };
+};
 
 // Environment variables whose names are conventionally credentials. The
 // explicit secretEnvVars list remains the primary source, but it is a masking
