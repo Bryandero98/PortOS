@@ -158,7 +158,7 @@ function runtimeCheck(runtime, { onPath, appInstalled, installed, reachable, set
   const fixHint = installed ? null
     : setupHint(setup, 'install')
       || (runtime.manageUrl ? `Install ${runtime.label} from Settings → Local LLM.`
-        : `Follow the ${runtime.label} setup docs, then reload this page.`);
+        : `Use the setup button below to install ${runtime.label}.`);
   return { id: 'runtime', label: `${runtime.label} installed`, ok: installed, detail, fixHint };
 }
 
@@ -209,15 +209,22 @@ function modelCheck(runtime, wanted, served, probeError = null) {
   if (served.includes(wanted)) {
     return { id: 'model', label, ok: true, detail: `${runtime.label} is serving \`${wanted}\`.`, fixHint: null };
   }
+  const listed = served.slice(0, 3).map((id) => `\`${id}\``).join(', ');
   const detail = served.length === 0
     ? `${runtime.label} is running but has no model loaded.`
-    : `${runtime.label} is serving ${served.slice(0, 3).map((id) => `\`${id}\``).join(', ')}${served.length > 3 ? ` +${served.length - 3} more` : ''}.`;
+    : `${runtime.label} is serving ${listed}${served.length > 3 ? ` +${served.length - 3} more` : ''}.`;
+  const fixHint = served.length === 0
+    ? (runtime.manageUrl
+      ? 'No model is loaded. Start a preset from Settings → Local LLM.'
+      : 'No model is loaded. Use the setup controls on this card to load one.')
+    : `This provider will send \`${wanted}\`, but the running server only accepts ${listed}. Use the button below to match them${runtime.manageUrl ? ', or change the loaded weights in Local LLM settings' : ''}.`;
   return {
     id: 'model',
     label,
     ok: false,
     detail,
-    fixHint: `${runtime.modelsHint} Then set this provider's default model to one the server reports.`,
+    fixHint,
+    servedModels: served,
   };
 }
 
@@ -274,7 +281,6 @@ export async function getProviderReadiness(provider, deps = {}) {
     label: runtime.label,
     endpoint: runtime.endpoint,
     manageUrl: runtime.manageUrl,
-    docsUrl: runtime.docsUrl,
     // `ready` is strict: a check that could not be evaluated (`ok: null`) is not
     // a pass, so the card never claims a provider is good to go on unknowns.
     ready: checks.every((check) => check.ok === true),
@@ -282,7 +288,8 @@ export async function getProviderReadiness(provider, deps = {}) {
     // What a one-click "set this up for me" button can do about the unmet
     // checks, or `null` when nothing here is auto-fixable (see
     // `localRuntimeSetup.js`). Carried on the readiness payload so the card
-    // offers the ACTION next to the failing check instead of a setup-doc link.
+    // offers the ACTION next to the failing check instead of sending the user
+    // out of the app.
     setup,
   };
 }

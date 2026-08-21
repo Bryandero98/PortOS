@@ -319,6 +319,56 @@ describe('local-daemon readiness on the provider card', () => {
 
     expect(await screen.findByText(/llama\.cpp setup incomplete/)).toBeInTheDocument();
     expect(screen.getByText(/Install llama\.cpp from Settings/)).toBeInTheDocument();
+    expect(screen.queryByText(/setup docs/i)).not.toBeInTheDocument();
+  });
+
+  it('lets the user match this provider to the model llama.cpp is actually serving', async () => {
+    api.updateProvider.mockResolvedValue({ id: 'opencode-llama-tui', defaultModel: 'dflash' });
+    api.getProviderReadiness.mockResolvedValue({
+      readiness: {
+        'opencode-llama-tui': {
+          kind: 'llama',
+          label: 'llama.cpp',
+          endpoint: 'http://127.0.0.1:5568/v1',
+          manageUrl: '/settings/local-llm',
+          ready: false,
+          checks: [
+            { id: 'runtime', label: 'llama.cpp installed', ok: true, detail: 'on PATH', fixHint: null },
+            { id: 'server', label: 'llama.cpp server responding', ok: true, detail: 'answered', fixHint: null },
+            {
+              id: 'model',
+              label: 'Model `qwen3.8-27b-dflash2` available',
+              ok: false,
+              detail: 'llama.cpp is serving `dflash`.',
+              fixHint: 'This provider will send `qwen3.8-27b-dflash2`, but the running server only accepts `dflash`.',
+              servedModels: ['dflash'],
+            },
+          ],
+        },
+      },
+    });
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'opencode-llama-tui',
+        name: 'OpenCode llama TUI',
+        type: 'tui',
+        command: 'opencode',
+        args: [],
+        enabled: true,
+        endpoint: 'http://127.0.0.1:5568/v1',
+        llamaBacked: true,
+        models: ['dflash', 'qwen3.8-27b-dflash2'],
+        defaultModel: 'qwen3.8-27b-dflash2',
+      }],
+      activeProvider: null,
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Use dflash as default/ }));
+    await waitFor(() => {
+      expect(api.updateProvider).toHaveBeenCalledWith('opencode-llama-tui', { defaultModel: 'dflash' });
+    });
   });
 
   it('renders no checklist for a provider the server reports nothing about', async () => {

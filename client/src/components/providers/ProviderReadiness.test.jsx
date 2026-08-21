@@ -52,16 +52,17 @@ describe('ProviderReadiness', () => {
     expect(screen.getByText(/1 requirement unmet/)).toBeTruthy();
   });
 
-  it('links to the Local LLM tab and the vendor docs when the setup is incomplete', () => {
+  it('links to the Local LLM tab as an in-app action — never to vendor setup docs', () => {
     renderWithRouter(<ProviderReadiness readiness={readiness()} />);
     expect(screen.getByText('Open Local LLM settings').closest('a').getAttribute('href')).toBe('/settings/local-llm');
-    expect(screen.getByText('llama.cpp setup docs').closest('a').getAttribute('href')).toBe('https://example.com/llama-docs');
+    expect(screen.queryByText(/setup docs/i)).toBeNull();
+    expect(screen.queryByRole('link', { name: /llama\.cpp setup docs/i })).toBeNull();
   });
 
-  it('omits the manage link for a runtime PortOS does not install', () => {
+  it('omits the manage link for a runtime PortOS does not install, and still never points at docs', () => {
     renderWithRouter(<ProviderReadiness readiness={readiness({ label: 'MTPLX', manageUrl: null })} />);
     expect(screen.queryByText('Open Local LLM settings')).toBeNull();
-    expect(screen.getByText('MTPLX setup docs')).toBeTruthy();
+    expect(screen.queryByText(/setup docs/i)).toBeNull();
   });
 
   it('offers the one-click setup instead of leaving a docs link as the only way forward', () => {
@@ -73,8 +74,44 @@ describe('ProviderReadiness', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Install & start MTPLX/ }));
     expect(onAutoSetup).toHaveBeenCalledWith(setup);
-    // The docs stay reachable — they answer the checks a button cannot fix.
-    expect(screen.getByText('MTPLX setup docs')).toBeTruthy();
+    expect(screen.queryByText(/setup docs/i)).toBeNull();
+  });
+
+  it('offers a one-click default-model match when the daemon is serving a different id', () => {
+    const onUseServedModel = vi.fn();
+    const mismatch = readiness({
+      checks: [
+        { id: 'runtime', label: 'llama.cpp installed', ok: true, detail: 'on PATH', fixHint: null },
+        { id: 'server', label: 'llama.cpp server responding', ok: true, detail: 'answered', fixHint: null },
+        {
+          id: 'model',
+          label: 'Model `qwen3.8-27b-dflash2` available',
+          ok: false,
+          detail: 'llama.cpp is serving `dflash`.',
+          fixHint: 'This provider will send `qwen3.8-27b-dflash2`, but the running server only accepts `dflash`.',
+          servedModels: ['dflash'],
+        },
+      ],
+    });
+    renderWithRouter(<ProviderReadiness readiness={mismatch} onUseServedModel={onUseServedModel} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Use dflash as default/ }));
+    expect(onUseServedModel).toHaveBeenCalledWith('dflash');
+    expect(screen.queryByText(/setup docs/i)).toBeNull();
+  });
+
+  it('does not invent a use-as-default button when nothing is loaded', () => {
+    renderWithRouter(
+      <ProviderReadiness
+        readiness={readiness({
+          checks: [
+            { id: 'model', label: 'Model `dflash` available', ok: false, detail: 'no model loaded', fixHint: 'Start a preset from Settings → Local LLM.', servedModels: [] },
+          ],
+        })}
+        onUseServedModel={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /as default/ })).toBeNull();
   });
 
   it('shows no setup button when the host cannot run the runtime', () => {

@@ -558,6 +558,22 @@ describe('LocalLlmTab llama-server management', () => {
     });
   });
 
+  it('lets the user set the model id llama.cpp will answer as', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
+    startLlamaServer.mockResolvedValueOnce({ success: true, pid: 23 });
+
+    await renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Advanced options/ }));
+    fireEvent.change(screen.getByLabelText(/Model id \(alias\)/), { target: { value: 'dspark' } });
+    fireEvent.click(screen.getByRole('button', { name: /Start Speculative Server/ }));
+
+    await waitFor(() => {
+      expect(startLlamaServer).toHaveBeenCalledWith(expect.objectContaining({ alias: 'dspark' }));
+    });
+  });
+
   it('drops the preset label to Custom once a preset-supplied path is hand-edited', async () => {
     const { getLlamaServerStatus } = await import('../../services/api');
     getLlamaServerStatus.mockResolvedValue(llamaReady());
@@ -677,13 +693,15 @@ describe('LocalLlmTab llama-server management', () => {
       presets: specPresets(),
       pid: 9999,
       endpoint: 'http://127.0.0.1:5568/v1',
-      config: { model: 'models/base.gguf', draftModel: 'models/draft.gguf', specType: 'draft-dflash' },
+      config: { model: 'models/base.gguf', draftModel: 'models/draft.gguf', specType: 'draft-dflash', alias: 'dflash' },
     });
     stopLlamaServer.mockResolvedValueOnce({ success: true });
 
     await renderTab();
 
     expect(await screen.findByText(/Running \(PID 9999\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Providers must send/)).toBeInTheDocument();
+    expect(screen.getByText('dflash')).toBeInTheDocument();
     const stopBtn = screen.getByRole('button', { name: /Stop Server/ });
     fireEvent.click(stopBtn);
 

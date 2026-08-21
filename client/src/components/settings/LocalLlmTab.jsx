@@ -1104,6 +1104,13 @@ export function LocalLlmTab() {
                 {llamaStatus.config?.draftModel && (
                   <p><span className="text-gray-500">Drafter:</span> <code className="text-port-accent">{llamaStatus.config.draftModel}</code> ({llamaStatus.config.specType || 'draft-dflash'})</p>
                 )}
+                {llamaStatus.config && (
+                  <p>
+                    <span className="text-gray-500">Model id:</span>{' '}
+                    <code className="text-port-accent">{llamaStatus.config.alias || 'dflash'}</code>
+                    {' '}— Providers must send this name. Change it under Advanced options before starting.
+                  </p>
+                )}
               </div>
               {llamaStatus.managed ? (
                 <button
@@ -1233,6 +1240,17 @@ export function LocalLlmTab() {
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>
+                <div>
+                  <label htmlFor="llama-alias" className="text-[11px] text-gray-400 block mb-1">Model id (alias)</label>
+                  <input
+                    id="llama-alias"
+                    aria-label="Model id (alias)"
+                    type="text"
+                    value={llamaForm.alias}
+                    onChange={(e) => setLlamaForm((prev) => ({ ...prev, alias: e.target.value }))}
+                    className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
+                  />
+                </div>
               </div>
             )}
 
@@ -1243,7 +1261,7 @@ export function LocalLlmTab() {
                 className="text-[11px] text-gray-500 hover:text-gray-300 flex items-center gap-1"
               >
                 {showLlamaAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                {showLlamaAdvanced ? 'Hide options' : 'Advanced options (port, ctx, GPU layers)'}
+                {showLlamaAdvanced ? 'Hide options' : 'Advanced options (port, ctx, GPU layers, model id)'}
               </button>
               <div className="flex items-center gap-2">
                 {llamaStartBlocked && (

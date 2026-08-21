@@ -90,6 +90,7 @@ export default function ProviderCard({
   onRecover,
   onInstallRuntime,
   onAutoSetupRuntime,
+  onUseServedModel,
 }) {
   const style = CARD_STATE_STYLES[cardState.state];
   return (
@@ -262,6 +263,7 @@ export default function ProviderCard({
           className="max-w-3xl"
           readiness={daemonReadiness}
           onAutoSetup={(setup) => onAutoSetupRuntime?.({ ...setup, providerId: provider.id })}
+          onUseServedModel={(modelId) => onUseServedModel?.(provider, modelId)}
         />
 
         {provider.enabled && status?.available === false && (

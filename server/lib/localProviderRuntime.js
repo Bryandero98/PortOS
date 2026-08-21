@@ -134,7 +134,7 @@ export const LOCAL_RUNTIMES = Object.freeze({
     // Named so an unmet check can say what the user still has to fetch. GGUF
     // weights are a separate download from the binary — the single most common
     // reason a freshly-installed llama.cpp still cannot serve a request.
-    modelsHint: 'llama.cpp serves GGUF weights you download yourself — a base model, plus a drafter for speculative decoding.',
+    modelsHint: 'Pick a GGUF preset on that tab — PortOS downloads the weights and starts the server there.',
   }),
   ollama: Object.freeze({
     id: 'ollama',

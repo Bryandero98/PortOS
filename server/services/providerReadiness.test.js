@@ -106,7 +106,12 @@ describe('getProviderReadiness', () => {
     const model = checkById(readiness, 'model');
     expect(model.ok).toBe(false);
     expect(model.detail).toContain('dflash');
+    expect(model.servedModels).toEqual(['dflash', 'qwen3.8-27b']);
+    expect(model.fixHint).toMatch(/Use the button below/);
+    expect(model.fixHint).not.toMatch(/download yourself/i);
+    expect(model.fixHint).not.toMatch(/setup docs/i);
     expect(readiness.ready).toBe(false);
+    expect(readiness.docsUrl).toBeUndefined();
   });
 
   it('calls out a running server with nothing loaded', async () => {
@@ -114,7 +119,11 @@ describe('getProviderReadiness', () => {
       findCommand: () => '/opt/homebrew/bin/llama-server',
       probe: reachable([]),
     });
-    expect(checkById(readiness, 'model').detail).toMatch(/no model loaded/);
+    const model = checkById(readiness, 'model');
+    expect(model.detail).toMatch(/no model loaded/);
+    expect(model.servedModels).toEqual([]);
+    expect(model.fixHint).toMatch(/Local LLM/);
+    expect(model.fixHint).not.toMatch(/button below/);
   });
 
   it('leaves the model check unknown — never failed — while the server is down', async () => {
@@ -191,14 +200,14 @@ describe('getProviderReadiness', () => {
     );
     restore();
     expect(readiness.manageUrl).toBeNull();
-    // The docs link stays as a secondary affordance for the model choice.
-    expect(readiness.docsUrl).toBeTruthy();
+    // Setup lives in the PortOS UI — the payload never points at a vendor doc.
+    expect(readiness.docsUrl).toBeUndefined();
     expect(readiness.setup).toMatchObject({ runtime: 'mtplx', action: 'install-start', blockedReason: null });
     expect(checkById(readiness, 'runtime').fixHint).toMatch(/Install & start MTPLX/);
     expect(checkById(readiness, 'server').fixHint).toMatch(/Install & start MTPLX/);
   });
 
-  it('falls back to the setup docs on a host that cannot run the runtime', async () => {
+  it('explains why the host cannot run the runtime instead of pointing at a doc', async () => {
     const restore = pinPlatform('linux');
     const readiness = await getProviderReadiness(
       { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true, defaultModel: 'mtplx' },
