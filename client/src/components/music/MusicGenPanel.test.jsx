@@ -3,6 +3,7 @@ import { StrictMode } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import MusicGenPanel from './MusicGenPanel';
 import * as api from '../../services/api';
+import toast from '../ui/Toast';
 
 vi.mock('../../services/api', () => ({
   listMusicEngines: vi.fn(),
@@ -14,6 +15,10 @@ vi.mock('../../services/api', () => ({
   cancelMediaJob: vi.fn(),
   installAudioModel: vi.fn(),
   removeAudioModel: vi.fn(),
+}));
+
+vi.mock('../ui/Toast', () => ({
+  default: { error: vi.fn(), success: vi.fn(), info: vi.fn() },
 }));
 
 vi.mock('../install/RuntimeInstallModal', () => ({
@@ -298,6 +303,46 @@ describe('MusicGenPanel', () => {
     }), { silent: true }));
     const requestBody = api.generateMusic.mock.calls[0][0];
     expect(requestBody).not.toHaveProperty('lyrics');
+  });
+
+  // A capacity window expires on the clock, not on a state change, so between
+  // polls the button can still be enabled against a peer that has gone stale.
+  it('refuses at click time when the window expired since the last render', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    const freshUntil = new Date(Date.now() + 300).toISOString();
+    api.getInstances.mockResolvedValue({
+      peers: [{
+        id: 'peer-example',
+        name: 'Example GPU',
+        status: 'online',
+        mediaProvider: { enabled: true, audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }] },
+        mediaProviderStatus: {
+          state: 'ready',
+          checkedAt: new Date().toISOString(),
+          freshUntil,
+          snapshot: {
+            queue: { accepting: true, running: 0, queued: 0 },
+            capabilities: [{
+              kind: 'audio', engine: 'minimax-music3', engineName: 'MiniMax Music 3', modelId: 'minimax-music3',
+              modelName: 'MiniMax Music 3', ready: true, autoDuration: false, lyrics: true,
+              minDurationSec: 10, maxDurationSec: 300, defaultDurationSec: 60,
+            }],
+          },
+        },
+      }],
+    });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" />);
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    const generate = screen.getByRole('button', { name: /^generate$/i });
+    expect(generate).toBeEnabled();
+
+    // The window lapses without anything re-rendering the panel.
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    fireEvent.click(generate);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/capacity snapshot expired/i)));
+    expect(api.generateMusic).not.toHaveBeenCalled();
   });
 
   // The stored probe keeps saying `ready` long after the server would refuse

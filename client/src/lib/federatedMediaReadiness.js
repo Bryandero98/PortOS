@@ -7,10 +7,11 @@
  * worse than either alone. The state machine, its labels, and the remedy text
  * therefore live here rather than inside one component.
  *
- * The server stays authoritative. `assertFederatedMediaProviderSelection`
+ * The server stays authoritative: `assertFederatedMediaProviderSelection`
  * (server/services/federatedMediaConsumer.js) re-probes and fail-closes before
- * any job leaves this instance, so nothing here gates work — it only decides
- * what the user is shown.
+ * any job leaves this instance. What `usable` gates is the client's own
+ * submit affordance, so a peer the server would refuse is refused before the
+ * user commits to it rather than after.
  */
 
 import { Film, Image, Music2 } from 'lucide-react';
@@ -190,9 +191,10 @@ export function summarizePeerMediaQueue(queue) {
  *
  * @param {object} peer - a sanitized peer record from `GET /api/instances`
  * @param {{now?: number}} [options]
- * @returns {{configured: boolean, state: string|null, label: string, tone: string,
- *   help: string|null, queue: object|null, capabilities: object[], checkedAt: string|null,
- *   models: Record<string, object[]>, modelCount: number, kinds: string[]}}
+ * @returns {{configured: boolean, state: string|null, usable: boolean, label: string,
+ *   tone: string, help: string|null, queue: object|null, capabilities: object[],
+ *   checkedAt: string|null, models: Record<string, object[]>, modelCount: number,
+ *   kinds: string[]}}
  */
 export function resolvePeerMediaReadiness(peer, { now = Date.now() } = {}) {
   const config = peerMediaProviderConfig(peer);
@@ -201,16 +203,24 @@ export function resolvePeerMediaReadiness(peer, { now = Date.now() } = {}) {
   // An unverifiable status does not get to keep whatever the probe concluded —
   // including the `ready` it concluded at probe time.
   const state = status ? verifiedState(status, now) : null;
-  const meta = peer?.enabled === false
+  // `state` is the provider's own verdict on its provider surface — it says
+  // nothing about whether this peer is switched on or reachable. Composing the
+  // two happens once, here, rather than at each caller: a surface that gated a
+  // button on the bare `state` would enable it for a disabled or offline peer
+  // still holding a fresh snapshot from before it went away.
+  const blocked = peer?.enabled === false
     ? PEER_DISABLED
     : !config.enabled
       ? OFF
       : peer?.status !== 'online'
         ? PEER_OFFLINE
-        : (FEDERATED_MEDIA_STATE_META[state] || CHECKING);
+        : null;
+  const meta = blocked ?? (FEDERATED_MEDIA_STATE_META[state] || CHECKING);
   return {
     configured: config.enabled,
     state,
+    // The one reading a caller should gate work on.
+    usable: !blocked && state === 'ready',
     label: meta.label,
     tone: meta.tone,
     // A peer-level reading carries its own remedy; otherwise the remedy belongs

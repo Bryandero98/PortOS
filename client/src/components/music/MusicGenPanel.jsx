@@ -331,7 +331,7 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   const remoteReadiness = selectedRemotePeer ? resolvePeerMediaReadiness(selectedRemotePeer) : null;
   const remoteQueueSegments = remoteReadiness ? summarizePeerMediaQueue(remoteReadiness.queue) : [];
   const remoteReady = isRemote
-    && remoteReadiness?.state === 'ready'
+    && remoteReadiness?.usable === true
     && remoteReadiness.queue?.accepting === true
     && selectedRemoteModel?.ready === true;
   const canGenerate = (isRemote ? remoteReady : !!engine?.ready && selectedModelReady)
@@ -397,6 +397,18 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   const handleGenerate = async () => {
     if (!generationEngine) return;
     if (!prompt?.trim()) { toast.error('Add a generation prompt first'); return; }
+    // The button's own reading is as old as the last render, and a capacity
+    // window expires on the clock rather than on a state change — so between
+    // polls an enabled button can already be pointing at a stale peer. Re-derive
+    // now, and say so here instead of letting the server reject a submission the
+    // user just committed to.
+    if (isRemote) {
+      const fresh = resolvePeerMediaReadiness(selectedRemotePeer);
+      if (!fresh.usable) {
+        toast.error(fresh.help || 'The selected peer is no longer reporting available capacity');
+        return;
+      }
+    }
     setGenerating(true);
     const body = {
       prompt: prompt.trim(),

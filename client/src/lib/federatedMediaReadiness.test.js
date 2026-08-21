@@ -188,6 +188,47 @@ describe('federatedMediaModelKey', () => {
   });
 });
 
+describe('resolvePeerMediaReadiness usable', () => {
+  const freshReady = (overrides = {}) => ({
+    id: 'peer-1',
+    enabled: true,
+    status: 'online',
+    mediaProvider: { enabled: true, audioModels: [{ engine: 'e', modelId: 'm' }] },
+    mediaProviderStatus: {
+      state: 'ready',
+      checkedAt: iso(-1_000),
+      freshUntil: iso(60_000),
+      snapshot: { queue: { running: 0, queued: 0, totalActive: 0, maxQueuedJobs: 4, accepting: true }, capabilities: [] },
+    },
+    ...overrides,
+  });
+
+  it('is true only for an enabled, online, opted-in peer with a fresh ready snapshot', () => {
+    expect(resolvePeerMediaReadiness(freshReady(), { now: NOW }).usable).toBe(true);
+  });
+
+  // `state` is the provider's verdict on its own surface and says nothing about
+  // reachability, so a caller gating on it alone would enable work against a
+  // peer that is switched off or gone.
+  it('is false for a peer that is switched off, offline, or not opted in, however fresh its snapshot', () => {
+    for (const overrides of [
+      { enabled: false },
+      { status: 'offline' },
+      { mediaProvider: { enabled: false, audioModels: [] } },
+    ]) {
+      const readiness = resolvePeerMediaReadiness(freshReady(overrides), { now: NOW });
+      expect(readiness.state).toBe('ready');
+      expect(readiness.usable).toBe(false);
+    }
+  });
+
+  it('is false once the capacity window has expired', () => {
+    const stale = freshReady();
+    stale.mediaProviderStatus.freshUntil = iso(-1_000);
+    expect(resolvePeerMediaReadiness(stale, { now: NOW }).usable).toBe(false);
+  });
+});
+
 describe('summarizePeerMediaQueue', () => {
   const queue = (overrides = {}) => ({
     totalActive: 2, providerActive: 1, queued: 1, running: 1, maxQueuedJobs: 4, accepting: true, ...overrides,
