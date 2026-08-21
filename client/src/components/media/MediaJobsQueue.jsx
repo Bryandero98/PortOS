@@ -813,6 +813,7 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
           onChange={setSelectedLoras}
           currentRunnerFamily={loraFamily}
           currentCompatKey={loraFamily}
+          prompt={prompt}
         />
       )}
       {!isGrok && (

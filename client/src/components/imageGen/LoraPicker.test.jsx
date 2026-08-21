@@ -45,3 +45,46 @@ describe('LoraPicker compat filtering', () => {
     expect(screen.getByText('Legacy LoRA')).toBeTruthy();
   });
 });
+
+describe('LoraPicker trigger-word hint (#4665)', () => {
+  const TRIGGERED = [{
+    filename: 't.safetensors',
+    name: 'Aria LoRA',
+    loraCompatKey: 'flux2-4b',
+    runnerFamily: 'flux2',
+    triggerWords: ['aria_tok', 'portrait'],
+  }];
+  const base = { availableLoras: TRIGGERED, currentCompatKey: 'flux2-4b', currentRunnerFamily: 'flux2' };
+  const SELECTED = [{ filename: 't.safetensors', name: 'Aria LoRA', scale: 1.0 }];
+  const hint = () => screen.queryByText(/will be added to your prompt/i);
+
+  it('warns that the server will append the missing activation token', () => {
+    renderPicker({ ...base, selected: SELECTED, prompt: 'a rooftop at dusk' });
+    expect(hint()).toBeTruthy();
+    // Names the FIRST trigger word — the only one the server weaves in.
+    expect(screen.getByText('aria_tok')).toBeTruthy();
+  });
+
+  it('stays silent once the prompt already carries the token', () => {
+    renderPicker({ ...base, selected: SELECTED, prompt: 'aria_tok on a rooftop' });
+    expect(hint()).toBeNull();
+  });
+
+  it('is not fooled by the token appearing inside a longer word', () => {
+    renderPicker({ ...base, selected: SELECTED, prompt: 'a portrait of aria_token' });
+    expect(hint()).toBeTruthy();
+  });
+
+  it('stays silent for an unselected LoRA', () => {
+    renderPicker({ ...base, selected: [], prompt: 'a rooftop at dusk' });
+    expect(hint()).toBeNull();
+  });
+
+  it('stays silent when the host did not opt in by passing a prompt', () => {
+    // e.g. the pipeline/queue drawers, which have no single prompt textarea to
+    // judge against. Defaulting the hint ON there would flag every selected LoRA
+    // unconditionally, since an empty prompt contains no trigger word.
+    renderPicker({ ...base, selected: SELECTED });
+    expect(hint()).toBeNull();
+  });
+});

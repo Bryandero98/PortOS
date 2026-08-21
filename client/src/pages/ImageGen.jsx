@@ -21,6 +21,7 @@ import PromptFromMedia from '../components/media/PromptFromMedia';
 import BackendChipStrip from '../components/media/BackendChipStrip';
 import { normalizeImage } from '../components/media/normalize';
 import { RUNNER_FAMILIES, loraCompatKey } from '../lib/runnerFamilies';
+import { appendTriggerWords } from '../lib/loraTriggers';
 import Flux2InstallModal from '../components/imageGen/Flux2InstallModal';
 import HfTokenBanner from '../components/imageGen/HfTokenBanner';
 import ImageGenControls from '../components/imageGen/ImageGenControls';
@@ -69,27 +70,6 @@ const EMPTY_REF_SLOT = { file: null, previewUrl: null, strength: 1.0 };
 // previews must never be revoked.
 const revokeIfBlob = (url) => {
   if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
-};
-
-// Append LoRA trigger words to a prompt comma-separated, skipping any
-// already present. Compares against comma-separated prompt segments rather
-// than raw substrings so a short trigger like "cat" doesn't false-match
-// inside "concatenate". Civitai triggers are often phrases that themselves
-// contain spaces, so the match is whole-segment, case-insensitive.
-const appendTriggerWords = (prompt, words) => {
-  const list = (Array.isArray(words) ? words : [])
-    .filter((w) => typeof w === 'string' && w.trim())
-    .map((w) => w.trim());
-  if (!list.length) return prompt;
-  const segments = String(prompt || '')
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  const fresh = list.filter((w) => !segments.includes(w.toLowerCase()));
-  if (!fresh.length) return prompt;
-  const trimmed = String(prompt || '').trim();
-  const sep = !trimmed ? '' : trimmed.endsWith(',') ? ' ' : ', ';
-  return `${trimmed}${sep}${fresh.join(', ')}`;
 };
 
 // User-facing labels for STAGE markers emitted by FLUX.2 (and any future
@@ -662,6 +642,15 @@ export default function ImageGen() {
     maxSlots: REFERENCE_SLOT_COUNT,
     localSupportsReferences: isFlux2Model,
   });
+  // The exact prompt a render would be submitted with right now — the same
+  // composition submitGenerationPayload performs. The LoRA picker's #4665
+  // trigger-word hint and its "+ trigger" append both judge presence against
+  // THIS, not the raw textarea, so neither can disagree with the server-side
+  // weave when the style preset already supplies a trigger token.
+  const styledPrompt = useMemo(
+    () => composeStyledPrompt(prompt, negativePrompt, stylePreset).prompt,
+    [prompt, negativePrompt, stylePreset],
+  );
   const activeReferenceImages = useMemo(
     () => referenceImages.slice(0, referenceSlotCount),
     [referenceImages, referenceSlotCount],
@@ -1306,7 +1295,12 @@ export default function ImageGen() {
               onChange={setSelectedLoras}
               currentRunnerFamily={currentRunnerFamily}
               currentCompatKey={currentCompatKey}
-              onAppendTrigger={(words) => setPrompt((p) => appendTriggerWords(p, words))}
+              // Both the append and the hint judge presence against the STYLED
+              // prompt — that's what submit sends, so it's what the server weaves
+              // against. A trigger the style preset already supplies must neither
+              // raise a hint nor be appended a second time.
+              onAppendTrigger={(words) => setPrompt((p) => appendTriggerWords(p, words, styledPrompt))}
+              prompt={styledPrompt}
               disabled={statusLoading}
             />
           )}

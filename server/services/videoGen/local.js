@@ -44,7 +44,8 @@ import { hfChildEnv } from '../../lib/hfToken.js';
 import { inspectModelCache, findCachedRepoFile, findCachedRepoFiles } from '../../lib/hfCache.js';
 import { safeChildProcessEnv, safeChildProcessOptions } from '../../lib/processEnv.js';
 import { makeVideoGenLineHandler, finalizeGeneratedVideo, isWatchdogSuccess, describeSignalDeath, describeRenderConditioning, planPromptEncodingRetry, bufferChildExit, RENDER_INPUTS_VERSION } from './generateVideoHelpers.js';
-import { assertSafeLoraFilename, getLoraKeyLayout } from '../loras.js';
+import { assertSafeLoraFilename, getLoraKeyLayout, readTriggerWordsByFilename } from '../loras.js';
+import { weaveLoraTriggers } from '../../lib/loraTriggers.js';
 import { videoLoraFamily, isLtx2FamilyRuntime } from '../../lib/runners.js';
 import {
   publicVideoTextEncoderOptions, resolveVideoTextEncoder,
@@ -101,6 +102,12 @@ export async function updateHistoryItemPrompt(id, prompt) {
     const trimmedPrompt = typeof prompt === 'string' ? prompt.trim() : '';
     if (trimmedPrompt) item.prompt = trimmedPrompt;
     else delete item.prompt;
+    // The trigger-weave provenance (#4665) describes the prompt this render was
+    // MADE with, so it can't survive an edit to that prompt — leaving it would
+    // have the row claim a `renderPrompt` derived from text that is no longer
+    // there, and name tokens as "added" to a prompt they were never added to.
+    delete item.renderPrompt;
+    delete item.addedTriggerWords;
     result = { id, prompt: trimmedPrompt };
     return history;
   });
@@ -1261,6 +1268,22 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // jobId may be supplied by the queue so SSE clients (which attached against
   // the queue's id) reach the same generation events.
   const jobId = providedJobId || randomUUID();
+
+  // Weave each selected LoRA's activation token into the prompt the runner
+  // actually receives (#4665) — a video LoRA whose trigger word never reaches
+  // the model is loaded but inert, which reads to the user as "the LoRA didn't
+  // work". Only the FIRST trigger word per LoRA is used, and one already in the
+  // prompt is never duplicated. Done here rather than in the route so the chain
+  // orchestrator's per-chunk beats (`chunkPrompts`) get the tokens too — each
+  // chunk re-enters through this function with its own prompt.
+  const triggerWordsByLora = await readTriggerWordsByFilename(resolvedLoras.map((l) => l.filename));
+  const { prompt: renderPrompt, added: addedTriggerWords } = weaveLoraTriggers(
+    prompt,
+    resolvedLoras.map((l) => triggerWordsByLora[l.filename]),
+  );
+  if (addedTriggerWords.length) {
+    console.log(`🔤 Video LoRA trigger words woven [${jobId.slice(0, 8)}]: ${addedTriggerWords.join(', ')}`);
+  }
   const filename = `${jobId}.mp4`;
   const outputPath = join(PATHS.videos, filename);
   // Most local runners use PortOS's shared 64px grid. H3's released canvas
@@ -1554,6 +1577,12 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
       loraFilenames: resolvedLoras.map((l) => l.filename),
       loraScales: resolvedLoras.map((l) => l.strength),
     } : {}),
+    // Provenance for the trigger weave (#4665). `prompt` above stays the user's
+    // own text, so Remix re-derives triggers from whatever LoRAs are selected
+    // then instead of compounding this render's clause; these two record what
+    // was actually rendered. Present only when something was woven, so every
+    // other history row stays byte-identical to pre-feature renders.
+    ...(addedTriggerWords.length ? { renderPrompt, addedTriggerWords } : {}),
     ...(hidden ? { hidden: true } : {}),
   };
   const job = { ...meta, clients: [], status: 'running' };
@@ -1567,7 +1596,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // logic of the spawn-error handler so failure modes converge.
   let bin, args;
   try {
-    ({ bin, args } = buildArgs({ pythonPath, modelId, model: loraCapableModel, wanModelPath, wanRequiredWeights, ltxModelPath, prompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, textEncoder: resolvedTextEncoder, outputPath, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
+    ({ bin, args } = buildArgs({ pythonPath, modelId, model: loraCapableModel, wanModelPath, wanRequiredWeights, ltxModelPath, prompt: renderPrompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, textEncoder: resolvedTextEncoder, outputPath, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
   } catch (err) {
     job.status = 'error';
     const reason = err.message || 'Failed to build video gen args';
