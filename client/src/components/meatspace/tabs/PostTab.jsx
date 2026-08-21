@@ -14,6 +14,7 @@ import PostHistory from '../post/PostHistory';
 import PostProgress from '../post/PostProgress';
 import PostDrillConfig from '../post/PostDrillConfig';
 import PracticePlan from '../post/PracticePlan';
+import PracticeLibrary from '../post/PracticeLibrary';
 import MemoryBuilder from '../post/MemoryBuilder';
 import MemoryPractice, { MEMORY_PRACTICE_MODE_IDS } from '../post/MemoryPractice';
 import ElementsSong, { ELEMENTS_MODE_IDS } from '../post/ElementsSong';
@@ -259,6 +260,11 @@ export default function PostTab({ tab = 'launcher', subtab, mode }) {
       ) : (
         <div className="text-gray-500">Loading configuration...</div>
       );
+    case 'explore':
+      // The browsable catalog of every test type and study surface. Renders
+      // without waiting on `config` — an unloaded config just means no "In your
+      // plan" badges, and the catalog itself is static.
+      return <PracticeLibrary config={config} onBack={() => navigate('/post/launcher')} />;
     case 'plan':
       // Practice Plan owns "what am I studying" (issue #3252). Same null guard
       // as `config`: the editor seeds its draft state once from the loaded
@@ -379,10 +385,6 @@ export default function PostTab({ tab = 'launcher', subtab, mode }) {
           stats={stats}
           statsWeek={statsWeek}
           onStart={handleStart}
-          onViewHistory={() => navigate('/post/history')}
-          onViewConfig={() => navigate('/post/config')}
-          onViewMemory={() => navigate('/post/memory')}
-          onViewMorse={() => navigate('/post/morse')}
           autoStartRecommendationId={new URLSearchParams(location.search).get('continue')}
           onAutoStartConsumed={() => navigate('/post/launcher', { replace: true })}
           onNavigate={navigate}

@@ -1,12 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router';
-import { Zap, History, Settings, Play, Brain, BookOpen, Dumbbell, Timer, Radio, Target, TrendingUp, TrendingDown, Minus, Compass, ArrowRight, ChevronRight, Layers } from 'lucide-react';
+import { Zap, Play, Brain, Dumbbell, Timer, Target, TrendingUp, TrendingDown, Minus, Compass, ArrowRight, ChevronRight, Layers } from 'lucide-react';
 import { getPostReviewReps, getPostRecommendations, getMorseProgress, getPostProgress, getPostBenchmarkProtocol, getMemoryItems, updatePostConfig } from '../../../services/api';
 import { FormField } from '../../ui/FormField';
 import Pill from '../../ui/Pill';
 import { enabledApiProviderFilter } from '../../../utils/providers';
 import useProviderModels from '../../../hooks/useProviderModels.js';
 import { DOMAINS, DRILL_TO_DOMAIN, DRILL_LABELS, computeDomainAverages, computeGoalProgress, isTopicEnabled, selectMemoryItemForDrill, resolveTopicForDrillType } from './constants';
+import { otherPostSections, TOPIC_SURFACE_SECTIONS } from './practiceCatalog';
+import { postIcon } from './postIcons';
+import BrowseCatalogLink from './BrowseCatalogLink';
 import { streakGlyph } from '../../../lib/streakGlyph.js';
 import useUserTimezone from '../../../hooks/useUserTimezone.js';
 import { todayKeyInTimezone } from '../../../utils/timezone.js';
@@ -17,6 +20,19 @@ import {
   deriveQuickObservedDurations,
   composeQuickSession,
 } from '../../../lib/postQuickSession.js';
+
+// The launcher header's links to the rest of POST. These used to be four
+// `onView*` callback props, so the launcher could only offer whatever PostTab
+// happened to wire up — Practice Plan, Progress, and the Practice Library had no
+// link here at all. Now they're DERIVED: the section rows come from the shared
+// `POST_SECTIONS` (minus the launcher itself) and the per-topic shortcuts from
+// the catalog's topic groups, so a new POST page or topic tab gets a header link
+// without editing this file. Explore leads, styled as the primary action.
+const LAUNCHER_LINKS = [
+  ...otherPostSections('launcher').filter(s => s.id === 'explore').map(s => ({ ...s, primary: true })),
+  ...TOPIC_SURFACE_SECTIONS,
+  ...otherPostSections('launcher').filter(s => s.id !== 'explore'),
+];
 
 // Canonical domain visiting order for interleaved "Full POST" composition
 // (issue #2100): alternate domains — math → cognitive → memory → verbal — so a
@@ -119,10 +135,6 @@ export default function PostSessionLauncher({
   stats,
   statsWeek,
   onStart,
-  onViewHistory,
-  onViewConfig,
-  onViewMemory,
-  onViewMorse,
   autoStartRecommendationId,
   onAutoStartConsumed,
   onNavigate,
@@ -706,36 +718,25 @@ export default function PostSessionLauncher({
           <Zap size={24} className="text-port-accent" />
           <h2 className="text-xl font-bold text-white">Power On Self Test</h2>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={onViewMemory}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-400 hover:text-white bg-port-card border border-port-border rounded-lg transition-colors"
-          >
-            <BookOpen size={14} />
-            Memory
-          </button>
-          <button
-            onClick={onViewMorse}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-400 hover:text-white bg-port-card border border-port-border rounded-lg transition-colors"
-          >
-            <Radio size={14} />
-            Morse
-          </button>
-          <button
-            onClick={onViewHistory}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-400 hover:text-white bg-port-card border border-port-border rounded-lg transition-colors"
-          >
-            <History size={14} />
-            History
-          </button>
-          <button
-            onClick={onViewConfig}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-400 hover:text-white bg-port-card border border-port-border rounded-lg transition-colors"
-          >
-            <Settings size={14} />
-            Config
-          </button>
-        </div>
+        <nav aria-label="POST sections" className="flex flex-wrap gap-2">
+          {LAUNCHER_LINKS.map(({ to, label, icon, primary }) => {
+            const Icon = postIcon(icon);
+            return (
+            <Link
+              key={to}
+              to={to}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                primary
+                  ? 'text-port-accent bg-port-accent/10 border-port-accent/40 hover:bg-port-accent/20'
+                  : 'text-gray-400 hover:text-white bg-port-card border-port-border'
+              }`}
+            >
+              <Icon size={14} />
+              {label}
+            </Link>
+            );
+          })}
+        </nav>
       </div>
 
       {/* Main + sidebar: primary session flow on the left, drill summaries + history on the right */}
@@ -1171,11 +1172,21 @@ export default function PostSessionLauncher({
             </div>
           )}
 
+          {/* These cards list only the drills you have switched ON, so with
+              nothing enabled the sidebar would be blank and POST would look
+              empty. Point at the catalog and the plan, not just "configure". */}
           {!hasAnyDrills && (
-            <div className="bg-port-card border border-port-border rounded-lg p-4">
-              <p className="text-gray-500 text-sm">No drills enabled. Configure drills to get started.</p>
+            <div className="bg-port-card border border-port-border rounded-lg p-4 space-y-2">
+              <p className="text-gray-500 text-sm">No drills enabled yet.</p>
+              <BrowseCatalogLink />
+              <p className="text-xs text-gray-500">
+                Then switch on what you want in{' '}
+                <Link to="/post/plan" className="text-port-accent hover:underline">Practice Plan</Link>.
+              </p>
             </div>
           )}
+
+          {hasAnyDrills && <BrowseCatalogLink />}
 
           {/* Recent Scores */}
           {lastThree.length > 0 && (

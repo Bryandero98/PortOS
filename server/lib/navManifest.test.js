@@ -50,6 +50,9 @@ const TABBED_PAGES = [
       { parent: 'morse', file: 'client/src/components/meatspace/post/MorseTrainer.jsx', constName: 'MODES' },
       { parent: 'memory', file: 'client/src/components/meatspace/tabs/PostTab.jsx', constName: 'MEMORY_SUBROUTES' },
       { parent: 'memory/elements', file: 'client/src/components/meatspace/post/ElementsSong.jsx', constName: 'PRACTICE_MODES' },
+      { parent: 'wordplay', file: 'client/src/components/meatspace/post/WordplayTrainer.jsx', constName: 'GAME_MODES' },
+      { parent: 'rhetoric', file: 'client/src/components/meatspace/post/RhetoricTrainer.jsx', constName: 'RHETORIC_MODES' },
+      { parent: 'progress', file: 'client/src/components/meatspace/post/PostProgress.jsx', constName: 'PROGRESS_SUBROUTES' },
     ] },
 ];
 
@@ -505,4 +508,41 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
       .filter((p) => !routePaths.has(p) || navPaths.has(p));
     expect(stale).toEqual([]);
   });
+});
+
+// The POST Practice Library (`/post/explore`) is a page of hard-coded deep links
+// into every POST test surface — the one place a user can browse what exists.
+// A typo or a renamed mode there produces a card that opens a blank tab, and
+// nothing else in the app would notice. Every link it ships must therefore be a
+// path the nav manifest already registers, which is also what makes each of
+// those surfaces reachable from ⌘K and voice.
+describe('nav contract — POST Practice Library links are registered destinations', () => {
+  const CATALOG_FILES = [
+    // Owns DRILL_PRACTICE_LINKS — where most catalog cards get their href, so
+    // scanning only the catalog would leave the DERIVED half unguarded.
+    'client/src/components/meatspace/post/constants.js',
+    'client/src/components/meatspace/post/practiceCatalog.js',
+    'client/src/components/meatspace/post/PracticeLibrary.jsx',
+    'client/src/components/meatspace/post/PostSessionLauncher.jsx',
+    'client/src/components/meatspace/post/BrowseCatalogLink.jsx',
+    // The sidebar's POST section — a link there that no command registers is
+    // unreachable from ⌘K and voice.
+    'client/src/components/Layout.jsx',
+  ];
+  const navPaths = new Set(NAV_COMMANDS.map((c) => c.path));
+
+  for (const file of CATALOG_FILES) {
+    it(`${file} links only at registered POST paths`, () => {
+      const src = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
+      // Both quote styles: JS object values use single quotes, JSX `to="…"` uses
+      // double. Route PARAMS (`:id`) are excluded — those are dynamic detail
+      // routes that deliberately carry no manifest entry.
+      const links = [...src.matchAll(/['"](\/post\/[^'"${}]*)['"]/g)]
+        .map((m) => m[1])
+        .filter((p) => !p.includes(':'));
+      expect(links.length).toBeGreaterThan(0);
+      const unregistered = [...new Set(links)].filter((p) => !navPaths.has(p));
+      expect(unregistered).toEqual([]);
+    });
+  }
 });

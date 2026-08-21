@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
 // Mock the API surface the launcher touches on mount (providers + review reps +
@@ -36,6 +36,7 @@ vi.mock('../../../services/api', () => ({
 }));
 
 import PostSessionLauncher, { buildCleanConditions, cognitiveSummary, interleaveByDomain } from './PostSessionLauncher';
+import { otherPostSections, TOPIC_SURFACE_SECTIONS } from './practiceCatalog';
 import { getPostRecommendations, getMorseProgress, getPostProgress, getPostReviewReps, getPostBenchmarkProtocol, getMemoryItems, updatePostConfig } from '../../../services/api';
 
 // Pure-function tests for PostSessionLauncher's pre-submit helpers (issue
@@ -160,10 +161,6 @@ describe('PostSessionLauncher render (issue #2100)', () => {
         stats={stats}
         statsWeek={{ sessionCount: 2 }}
         onStart={vi.fn()}
-        onViewHistory={vi.fn()}
-        onViewConfig={vi.fn()}
-        onViewMemory={vi.fn()}
-        onViewMorse={vi.fn()}
         {...props}
       />
     </MemoryRouter>,
@@ -451,10 +448,6 @@ describe('PostSessionLauncher — Start card (issue #3249)', () => {
         stats={stats}
         statsWeek={{ sessionCount: 2 }}
         onStart={vi.fn()}
-        onViewHistory={vi.fn()}
-        onViewConfig={vi.fn()}
-        onViewMemory={vi.fn()}
-        onViewMorse={vi.fn()}
         {...props}
       />
     </MemoryRouter>,
@@ -572,10 +565,6 @@ describe('PostSessionLauncher topic gating (issue #3252)', () => {
         stats={{ sessionCount: 1, overall: 70, currentStreak: 1, longestStreak: 1, byDrill: {} }}
         statsWeek={{ sessionCount: 1 }}
         onStart={onStart}
-        onViewHistory={vi.fn()}
-        onViewConfig={vi.fn()}
-        onViewMemory={vi.fn()}
-        onViewMorse={vi.fn()}
       />
     </MemoryRouter>,
   );
@@ -651,10 +640,6 @@ describe('PostSessionLauncher review-rep topic gating (issue #3252)', () => {
         stats={{ sessionCount: 1, overall: 70, currentStreak: 1, longestStreak: 1, byDrill: {} }}
         statsWeek={{ sessionCount: 1 }}
         onStart={onStart}
-        onViewHistory={vi.fn()}
-        onViewConfig={vi.fn()}
-        onViewMemory={vi.fn()}
-        onViewMorse={vi.fn()}
       />
     </MemoryRouter>,
   );
@@ -717,10 +702,6 @@ describe('PostSessionLauncher honors the mentalMath module flag (issue #3252)', 
           stats={{ sessionCount: 1, overall: 70, currentStreak: 1, longestStreak: 1, byDrill: {} }}
           statsWeek={{ sessionCount: 1 }}
           onStart={onStart}
-          onViewHistory={vi.fn()}
-          onViewConfig={vi.fn()}
-          onViewMemory={vi.fn()}
-          onViewMorse={vi.fn()}
         />
       </MemoryRouter>,
     );
@@ -756,10 +737,6 @@ describe('PostSessionLauncher composed memory drills (issue #3254)', () => {
         stats={{ sessionCount: 1, overall: 70, currentStreak: 1, longestStreak: 1, byDrill: {} }}
         statsWeek={{ sessionCount: 1 }}
         onStart={onStart}
-        onViewHistory={vi.fn()}
-        onViewConfig={vi.fn()}
-        onViewMemory={vi.fn()}
-        onViewMorse={vi.fn()}
       />
     </MemoryRouter>,
   );
@@ -900,5 +877,60 @@ describe('PostSessionLauncher composed memory drills (issue #3254)', () => {
         config: { count: 4, memoryItemId: 'runnable' },
       }),
     ]));
+  });
+});
+
+describe('PostSessionLauncher — POST section discoverability', () => {
+  const config = {
+    mentalMath: { enabled: true, drillTypes: { multiplication: { enabled: true } } },
+    llmDrills: { enabled: false, drillTypes: {} },
+    cognitive: { enabled: false, drillTypes: {} },
+  };
+
+  const hrefs = (root) => [...root.querySelectorAll('a')].map(a => a.getAttribute('href'));
+
+  const renderIt = (props = {}) => render(
+    <MemoryRouter>
+      <PostSessionLauncher
+        config={config}
+        recentSessions={[]}
+        stats={null}
+        statsWeek={null}
+        onStart={vi.fn()}
+        {...props}
+      />
+    </MemoryRouter>,
+  );
+
+  it('links to every other POST section and every topic tab from the header', async () => {
+    renderIt();
+    // The launcher fetches providers/recs/progress on mount; settle them so the
+    // resulting state updates land inside act().
+    await act(async () => {});
+    const links = hrefs(screen.getByLabelText('POST sections'));
+    // Derived from the shared registries, not re-listed here: a POST page or a
+    // topic tab added to the catalog must show up in the header, and the
+    // launcher must not link at itself.
+    const expected = [
+      ...otherPostSections('launcher').map(s => s.to),
+      ...TOPIC_SURFACE_SECTIONS.map(s => s.to),
+    ];
+    expect(links.filter(to => !expected.includes(to))).toEqual([]);
+    expect(expected.filter(to => !links.includes(to))).toEqual([]);
+    expect(links).not.toContain('/post/launcher');
+    // Explore is the primary action, so it leads.
+    expect(links[0]).toBe('/post/explore');
+  });
+
+  it('offers the catalog alongside the enabled-drill summaries', async () => {
+    const { container } = renderIt();
+    await waitFor(() => expect(hrefs(container)).toContain('/post/explore'));
+    expect(screen.getByText('Browse every test type')).toBeInTheDocument();
+  });
+
+  it('points an install with nothing enabled at the catalog, not just Config', async () => {
+    const { container } = renderIt({ config: { mentalMath: { drillTypes: {} }, llmDrills: { drillTypes: {} }, cognitive: { drillTypes: {} } } });
+    await waitFor(() => expect(screen.getByText('No drills enabled yet.')).toBeInTheDocument());
+    expect(hrefs(container)).toEqual(expect.arrayContaining(['/post/explore', '/post/plan']));
   });
 });

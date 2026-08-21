@@ -4,6 +4,7 @@ import useDrawerTab from '../../../hooks/useDrawerTab';
 import useAudioSessionClaim from '../../../hooks/useAudioSessionClaim.js';
 import useKeyCapture from '../../../hooks/useKeyCapture';
 import { submitTrainingEntry, getTrainingStats, submitMorseRound, getMorseProgress, updateMorseLevel } from '../../../services/api';
+import { DRILL_DESCRIPTIONS } from './constants';
 import MorseProgressPanel from './MorseProgressPanel';
 import { streakGlyph } from '../../../lib/streakGlyph.js';
 import { safeReadJsonStorage, safeWriteStorage } from '../../../lib/safeStorage';
@@ -105,6 +106,8 @@ const DEFAULT_PREFS = { wpm: 18, effectiveWpm: 18, hz: 700, kochLevel: DEFAULT_K
 const RAMP_SEC = 0.005;
 const TONE_GAIN = 0.25;
 
+// Mode ids map to the `morse-<id>` drill types, so the blurb lives once in
+// DRILL_DESCRIPTIONS (constants.js) and is read below — no second copy here.
 export const MODES = [
   {
     id: 'copy',
@@ -112,7 +115,6 @@ export const MODES = [
     icon: Headphones,
     color: 'text-cyan-400',
     bgColor: 'bg-cyan-500/20',
-    description: 'Listen to Morse, type what you hear',
     example: 'Koch progression: K, M → add letters as you hit 90%',
   },
   {
@@ -121,7 +123,6 @@ export const MODES = [
     icon: EyeOff,
     color: 'text-purple-400',
     bgColor: 'bg-purple-500/20',
-    description: 'Audio-only — no on-screen code hints or cheat sheet',
     example: 'Same Koch pool, pure recall — nothing to look at',
   },
   {
@@ -130,7 +131,6 @@ export const MODES = [
     icon: Hand,
     color: 'text-amber-400',
     bgColor: 'bg-amber-500/20',
-    description: 'Hold spacebar (or tap) to key dits & dahs',
     example: 'Tap short for ·, hold long for —',
   },
 ];
@@ -686,7 +686,9 @@ function SliderRow({ label, value, min, max, step = 1, onChange, suffix = '', hi
   );
 }
 
-const REFERENCE_VIEWS = [
+// Exported for the same reason as MODES above: the Practice Library lists the
+// `?ref=` reference charts and must not keep its own copy of this list.
+export const REFERENCE_VIEWS = [
   { id: 'tree', label: 'Tree', icon: GitBranch },
   { id: 'length', label: 'Length', icon: Ruler },
   { id: 'list', label: 'List', icon: ListIcon },
@@ -895,7 +897,7 @@ function ModeGrid({ onPick }) {
               <Icon size={18} className={m.color} />
             </div>
             <div className="text-white font-medium">{m.label}</div>
-            <div className="text-xs text-gray-400 mt-1">{m.description}</div>
+            <div className="text-xs text-gray-400 mt-1">{DRILL_DESCRIPTIONS[`morse-${m.id}`]}</div>
             <div className="text-[11px] text-gray-500 mt-2 font-mono">{m.example}</div>
           </button>
         );

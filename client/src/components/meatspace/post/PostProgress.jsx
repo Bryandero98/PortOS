@@ -62,6 +62,13 @@ function buildDomainSeries(byDrill) {
   return out;
 }
 
+// Routed progress sub-pages (`/post/progress/:subtab`). Exported so the
+// nav-manifest contract test (server/lib/navManifest.test.js) can assert each one
+// is reachable from ⌘K and voice, mirroring MEMORY_SUBROUTES in PostTab.jsx.
+export const PROGRESS_SUBROUTES = [
+  { id: 'sessions', label: 'Sessions' },
+];
+
 export default function PostProgress({ subtab, onBack }) {
   const navigate = useNavigate();
   const chartColors = useChartColors();
@@ -465,8 +472,9 @@ const RETENTION_STATE_LABEL = {
 
 function ProgressTabs({ subtab, navigate }) {
   const tabs = [
+    // Trends is the bare `/post/progress`, so it has no sub-route id.
     { id: undefined, label: 'Trends', to: '/post/progress' },
-    { id: 'sessions', label: 'Sessions', to: '/post/progress/sessions' },
+    ...PROGRESS_SUBROUTES.map(t => ({ ...t, to: `/post/progress/${t.id}` })),
   ];
   return (
     <div className="flex gap-1 border-b border-port-border">
