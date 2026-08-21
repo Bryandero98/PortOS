@@ -3,34 +3,46 @@
  * ending flag + label, the intent-transition list, the scene image (prompt +
  * queued render via the shared image-gen lane), and the AI branch action.
  *
- * Fields save on blur (silent PATCH; the server returns the full loom, which
- * the parent folds into state). Transitions edit locally and save per-row on
- * blur through the same node PATCH.
+ * Fields save on blur (silent PATCH, skipped when unchanged; the server
+ * returns the full loom, which the parent folds into state). The AI actions
+ * read server-side state, so they gate on in-flight saves per the client
+ * save-gating convention.
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { GitBranch, ImagePlus, Loader2, Trash2 } from 'lucide-react';
 import toast from '../ui/Toast';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
+import { FormField } from '../ui/FormField.jsx';
 import MediaImage from '../MediaImage';
+import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import {
   branchLoomNode, deleteLoomNode, generateImage, updateLoomNode,
 } from '../../services/api';
+import { fieldClass, labelClass } from './fieldStyles';
 
-const field = 'w-full bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm';
-const label = 'block text-xs font-medium text-port-text-muted mb-1';
+const toRow = (t) => ({ ...t, triggersText: (t.triggers || []).join('; ') });
+const rowsToTransitions = (rows) => rows
+  .filter((t) => t.targetNodeId)
+  .map(({ id, targetNodeId, intent, triggersText, description }) => ({
+    id, targetNodeId, intent,
+    triggers: (triggersText || '').split(';').map((s) => s.trim()).filter(Boolean),
+    description: description || '',
+  }));
 
 export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onClearSelection, onMakeStart }) {
   const [form, setForm] = useState(null);
-  const [busy, setBusy] = useState('');
+  // In-flight blur-saves; the AI buttons (which read server-side state) stay
+  // disabled until every pending save settles.
+  const [pendingSaves, setPendingSaves] = useState(0);
   const del = useConfirmDelete();
 
   // Sync from the record on scene switch ONLY (the parent keys this component
   // by node.id, so this is effectively the mount). Re-syncing on every server
   // echo would clobber typing in a sibling field while a blur-save round-trips.
-  // Server-side additions that arrive mid-edit (AI branch, image attach) are
-  // folded in explicitly where they happen.
+  // Server-side additions that arrive mid-edit (AI branch) are folded in
+  // explicitly where they happen.
   useEffect(() => {
     setForm({
       title: node.title || '',
@@ -38,7 +50,7 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
       imagePrompt: node.imagePrompt || '',
       isEnding: !!node.isEnding,
       endingLabel: node.endingLabel || '',
-      transitions: (node.transitions || []).map((t) => ({ ...t, triggersText: (t.triggers || []).join('; ') })),
+      transitions: (node.transitions || []).map(toRow),
     });
   }, [node.id]);
 
@@ -47,45 +59,47 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
     [episode.nodes, node.id],
   );
 
-  if (!form) return null;
-
   const patchNode = async (patch) => {
+    setPendingSaves((n) => n + 1);
     const updated = await updateLoomNode(loom.id, episode.id, node.id, patch, { silent: true })
       .catch((err) => { toast.error(`Save failed: ${err.message}`); return null; });
+    setPendingSaves((n) => n - 1);
     if (updated) onLoomUpdate(updated);
     return updated;
+  };
+
+  // Blur-save helper: skip the round-trip when the value matches the record
+  // (tabbing through the panel shouldn't rewrite the loom).
+  const saveField = (key, value) => {
+    if (value === (node[key] || '')) return null;
+    return patchNode({ [key]: value });
   };
 
   const syncTransitionsFrom = (updatedLoom) => {
     const saved = updatedLoom?.episodes.find((e) => e.id === episode.id)
       ?.nodes.find((n) => n.id === node.id)?.transitions;
     if (!saved) return;
-    setForm((prev) => ({
-      ...prev,
-      transitions: saved.map((t) => ({ ...t, triggersText: (t.triggers || []).join('; ') })),
-    }));
+    setForm((prev) => ({ ...prev, transitions: saved.map(toRow) }));
   };
 
-  const saveTransitions = async (transitions) => {
-    const updated = await patchNode({
-      transitions: transitions
-        .filter((t) => t.targetNodeId)
-        .map(({ id, targetNodeId, intent, triggersText, description }) => ({
-          id, targetNodeId, intent,
-          triggers: (triggersText || '').split(';').map((s) => s.trim()).filter(Boolean),
-          description: description || '',
-        })),
-    });
+  const saveTransitions = async (rows) => {
+    const payload = rowsToTransitions(rows);
+    const current = (node.transitions || []).map((t) => ({
+      id: t.id, targetNodeId: t.targetNodeId, intent: t.intent, triggers: t.triggers, description: t.description,
+    }));
+    if (JSON.stringify(payload) === JSON.stringify(current)) return;
+    const updated = await patchNode({ transitions: payload });
     // Re-sync just the transition rows so server-minted ids replace the
     // locally-added rows' missing ones (id churn otherwise re-mints per save).
     syncTransitionsFrom(updated);
   };
 
-  const setTransition = (index, patch) => {
-    setForm((prev) => {
-      const transitions = prev.transitions.map((t, i) => (i === index ? { ...t, ...patch } : t));
-      return { ...prev, transitions };
-    });
+  // The save fires OUTSIDE the setState updater — StrictMode runs updaters
+  // twice, so a PATCH inside one double-fires.
+  const applyTransition = (index, patch, { save = false } = {}) => {
+    const transitions = form.transitions.map((t, i) => (i === index ? { ...t, ...patch } : t));
+    setForm((prev) => ({ ...prev, transitions }));
+    if (save) saveTransitions(transitions);
   };
 
   const removeTransition = (index) => {
@@ -106,36 +120,30 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
     }));
   };
 
-  const handleBranch = async () => {
-    setBusy('branch');
-    const result = await branchLoomNode(loom.id, episode.id, node.id, { branchCount: 2 })
-      .catch(() => null);
-    setBusy('');
-    if (result?.loom) {
-      onLoomUpdate(result.loom);
-      syncTransitionsFrom(result.loom);
-      toast.success('New branches woven');
-    }
-  };
+  const [runBranch, branching] = useAsyncAction(async () => {
+    const result = await branchLoomNode(loom.id, episode.id, node.id, { branchCount: 2 }, { silent: true });
+    onLoomUpdate(result.loom);
+    syncTransitionsFrom(result.loom);
+    toast.success('New branches woven');
+  }, { errorMessage: 'Branching failed' });
 
-  const handleGenerateImage = async () => {
+  const [runGenerateImage, rendering] = useAsyncAction(async () => {
     const prompt = form.imagePrompt.trim();
     if (!prompt) {
       toast.error('Write an image prompt first');
       return;
     }
-    setBusy('image');
-    // Persist the prompt, then queue the render with the fableLoom destination
-    // tag — the server-side completion hook files the finished image onto this
-    // node even if the page unmounts mid-render.
-    await patchNode({ imagePrompt: prompt });
-    const queued = await generateImage({
+    // Persist the prompt if the blur hasn't already, then queue the render
+    // with the fableLoom destination tag — the server-side completion hook
+    // files the finished image onto this node even if the page unmounts
+    // mid-render.
+    await saveField('imagePrompt', prompt);
+    await generateImage({
       prompt: loom.styleNotes ? `${prompt}\n\nStyle: ${loom.styleNotes}` : prompt,
       fableLoom: { loomId: loom.id, episodeId: episode.id, nodeId: node.id },
-    }).catch(() => null);
-    setBusy('');
-    if (queued) toast.success('Scene render queued — it will attach when it completes');
-  };
+    }, { silent: true });
+    toast.success('Scene render queued — it will attach when it completes');
+  }, { errorMessage: 'Could not queue the render' });
 
   const handleDelete = async () => {
     const updated = await deleteLoomNode(loom.id, episode.id, node.id).catch(() => null);
@@ -144,6 +152,9 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
       onClearSelection();
     }
   };
+
+  if (!form) return null;
+  const aiBlocked = pendingSaves > 0;
 
   return (
     <div className="space-y-4 p-4">
@@ -174,28 +185,24 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
         )}
       </div>
 
-      <div>
-        <label className={label} htmlFor="loom-node-title">Title</label>
+      <FormField label="Title" labelClassName={labelClass}>
         <input
-          id="loom-node-title"
-          className={field}
+          className={fieldClass}
           value={form.title}
           onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))}
-          onBlur={() => patchNode({ title: form.title })}
+          onBlur={() => saveField('title', form.title)}
         />
-      </div>
+      </FormField>
 
-      <div>
-        <label className={label} htmlFor="loom-node-prose">Scene prose</label>
+      <FormField label="Scene prose" labelClassName={labelClass}>
         <textarea
-          id="loom-node-prose"
           rows={7}
-          className={field}
+          className={fieldClass}
           value={form.prose}
           onChange={(e) => setForm((p) => ({ ...p, prose: e.target.value }))}
-          onBlur={() => patchNode({ prose: form.prose })}
+          onBlur={() => saveField('prose', form.prose)}
         />
-      </div>
+      </FormField>
 
       <div className="flex items-center gap-3">
         <label className="flex items-center gap-2 text-sm" htmlFor="loom-node-ending">
@@ -212,17 +219,15 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
         </label>
       </div>
       {form.isEnding && (
-        <div>
-          <label className={label} htmlFor="loom-node-ending-label">Ending name</label>
+        <FormField label="Ending name" labelClassName={labelClass}>
           <input
-            id="loom-node-ending-label"
-            className={field}
+            className={fieldClass}
             placeholder="e.g. Treasure found"
             value={form.endingLabel}
             onChange={(e) => setForm((p) => ({ ...p, endingLabel: e.target.value }))}
-            onBlur={() => patchNode({ endingLabel: form.endingLabel })}
+            onBlur={() => saveField('endingLabel', form.endingLabel)}
           />
-        </div>
+        </FormField>
       )}
 
       <div>
@@ -230,22 +235,22 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
           <span className="text-xs font-medium text-port-text-muted">Scene image</span>
           <button
             type="button"
-            onClick={handleGenerateImage}
-            disabled={busy === 'image'}
+            onClick={runGenerateImage}
+            disabled={rendering || aiBlocked}
             className="flex items-center gap-1 text-xs text-port-accent hover:underline disabled:opacity-50"
           >
-            {busy === 'image' ? <Loader2 size={12} className="animate-spin" /> : <ImagePlus size={12} />}
+            {rendering ? <Loader2 size={12} className="animate-spin" /> : <ImagePlus size={12} />}
             Generate
           </button>
         </div>
         <textarea
           rows={2}
-          className={field}
+          className={fieldClass}
           placeholder="Visual description for the image generator"
           aria-label="Image prompt"
           value={form.imagePrompt}
           onChange={(e) => setForm((p) => ({ ...p, imagePrompt: e.target.value }))}
-          onBlur={() => patchNode({ imagePrompt: form.imagePrompt })}
+          onBlur={() => saveField('imagePrompt', form.imagePrompt)}
         />
         {node.image && (
           <MediaImage
@@ -264,11 +269,11 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={handleBranch}
-              disabled={busy === 'branch'}
+              onClick={runBranch}
+              disabled={branching || aiBlocked}
               className="flex items-center gap-1 text-xs text-port-accent hover:underline disabled:opacity-50"
             >
-              {busy === 'branch' ? <Loader2 size={12} className="animate-spin" /> : <GitBranch size={12} />}
+              {branching ? <Loader2 size={12} className="animate-spin" /> : <GitBranch size={12} />}
               Branch with AI
             </button>
             <button type="button" onClick={addTransition} className="text-xs text-port-accent hover:underline">
@@ -284,11 +289,11 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
             <div key={tr.id || `new-${index}`} className="border border-port-border rounded p-2 space-y-2">
               <div className="flex items-center gap-2">
                 <input
-                  className={field}
+                  className={fieldClass}
                   placeholder='Reader intent, e.g. "search the wreck"'
                   aria-label="Intent"
                   value={tr.intent}
-                  onChange={(e) => setTransition(index, { intent: e.target.value })}
+                  onChange={(e) => applyTransition(index, { intent: e.target.value })}
                   onBlur={() => saveTransitions(form.transitions)}
                 />
                 <button
@@ -301,24 +306,21 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
                 </button>
               </div>
               <select
-                className={field}
+                className={fieldClass}
                 aria-label="Leads to scene"
                 value={tr.targetNodeId}
-                onChange={(e) => {
-                  setTransition(index, { targetNodeId: e.target.value });
-                  saveTransitions(form.transitions.map((t, i) => (i === index ? { ...t, targetNodeId: e.target.value } : t)));
-                }}
+                onChange={(e) => applyTransition(index, { targetNodeId: e.target.value }, { save: true })}
               >
                 {otherNodes.map((n) => (
                   <option key={n.id} value={n.id}>{n.title || 'Untitled scene'}</option>
                 ))}
               </select>
               <input
-                className={field}
+                className={fieldClass}
                 placeholder="Example phrasings, separated by ;"
                 aria-label="Trigger phrasings"
                 value={tr.triggersText}
-                onChange={(e) => setTransition(index, { triggersText: e.target.value })}
+                onChange={(e) => applyTransition(index, { triggersText: e.target.value })}
                 onBlur={() => saveTransitions(form.transitions)}
               />
             </div>

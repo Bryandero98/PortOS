@@ -15,15 +15,26 @@ vi.mock('../../lib/fileUtils.js', async (importOriginal) => {
   };
 });
 
+// createLoom/updateLoom validate soft refs through these services; default to
+// "exists" so fixtures with a universeId/seriesId pass, and individual tests
+// flip them to null to exercise the rejection.
+const getUniverseMock = vi.hoisted(() => vi.fn(async (id) => ({ id })));
+vi.mock('../universeBuilder.js', () => ({ getUniverse: getUniverseMock }));
+const getSeriesMock = vi.hoisted(() => vi.fn(async (id) => ({ id })));
+vi.mock('../pipeline/series.js', () => ({ getSeries: getSeriesMock }));
+
 const {
   addEpisode, addNode, attachNodeImage, createLoom, deleteEpisode, deleteLoom,
-  deleteNode, getLoom, listLooms, sanitizeLoom, updateEpisode, updateLoom, updateNode,
+  deleteNode, getLoom, listLooms, listLoomSummaries, sanitizeLoom, updateEpisode,
+  updateLoom, updateNode,
 } = await import('./records.js');
 const { _resetFableLoomBackend } = await import('./store.js');
 
 beforeEach(() => {
   rmSync(join(TEST_DATA_ROOT, 'fableloom'), { recursive: true, force: true });
   _resetFableLoomBackend();
+  getUniverseMock.mockClear().mockImplementation(async (id) => ({ id }));
+  getSeriesMock.mockClear().mockImplementation(async (id) => ({ id }));
 });
 
 afterAll(() => {
@@ -101,6 +112,41 @@ describe('loom CRUD', () => {
 
   it('rejects creating a loom without a name', async () => {
     await expect(createLoom({ name: '   ' })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('rejects refs to a missing universe or series at the service layer', async () => {
+    getUniverseMock.mockResolvedValue(null);
+    await expect(createLoom({ name: 'X', universeId: 'uni-gone' }))
+      .rejects.toMatchObject({ code: 'INVALID_UNIVERSE' });
+
+    const loom = await makeLoom();
+    getSeriesMock.mockResolvedValue(null);
+    await expect(updateLoom(loom.id, { seriesId: 'ser-gone' }))
+      .rejects.toMatchObject({ code: 'INVALID_SERIES' });
+    // Clearing a ref is always allowed — no lookup fires for null.
+    const cleared = await updateLoom(loom.id, { seriesId: null });
+    expect(cleared.seriesId).toBeNull();
+  });
+});
+
+describe('listLoomSummaries', () => {
+  it('projects counts without the episode graphs', async () => {
+    const loom = await makeLoom({ logline: 'A crown that remembers.' });
+    const withEp = await addEpisode(loom.id, { title: 'Pilot' });
+    const episodeId = withEp.episodes[0].id;
+    await addNode(loom.id, episodeId, { title: 'A' });
+    await addNode(loom.id, episodeId, { title: 'B', isEnding: true });
+
+    const [summary] = await listLoomSummaries();
+    expect(summary).toMatchObject({
+      id: loom.id,
+      name: 'The Hollow Crown',
+      logline: 'A crown that remembers.',
+      episodeCount: 1,
+      sceneCount: 2,
+      endingCount: 1,
+    });
+    expect(summary.episodes).toBeUndefined();
   });
 });
 

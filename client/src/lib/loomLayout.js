@@ -5,8 +5,10 @@
  * Default positions come from BFS layering (columns = depth from the opening
  * scene, rows = order within a layer; unreachable nodes trail in extra
  * columns). A node the author dragged carries a persisted `pos` override that
- * always wins. Mirrors the layering rule in `server/lib/fableLoomGraph.js`
- * `computeGraphLayers` — keep the two BFS orders in step.
+ * always wins. Layering here is a VIEW concern, deliberately not a mirror of
+ * the server's `computeGraphLayers` (which omits unreachable nodes — the
+ * canvas must show them so the author can fix them); the server's analysis
+ * remains authoritative for reachability/depth stats.
  */
 
 export const LOOM_NODE_W = 200;

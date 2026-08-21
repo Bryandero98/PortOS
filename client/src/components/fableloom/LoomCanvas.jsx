@@ -8,7 +8,7 @@
  * both axes so a wide graph pans instead of clipping.
  */
 
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef } from 'react';
 import { Play, Flag } from 'lucide-react';
 import { layoutLoomGraph, loomEdgePath, LOOM_NODE_W, LOOM_NODE_H } from '../../lib/loomLayout';
 
@@ -20,19 +20,16 @@ const truncate = (text, max) => {
 };
 
 export default function LoomCanvas({ episode, selectedNodeId, onSelectNode, onMoveNode }) {
-  // Live drag override: nodeId → { x, y } while a pointer drag is in flight,
-  // so the node follows the cursor without a server round-trip per move.
-  const [dragPos, setDragPos] = useState(null);
+  // An in-flight drag lives entirely outside React state: the dragged <g>'s
+  // transform is mutated directly per pointermove, and the position commits
+  // once on release. Routing it through setState re-rendered every node card
+  // (each with a foreignObject subtree) ~60×/s. Edges catch up on release.
   const dragRef = useRef(null);
 
   const layout = useMemo(() => layoutLoomGraph(episode), [episode]);
-  const positions = useMemo(() => {
-    if (!dragPos) return layout.positions;
-    return { ...layout.positions, [dragPos.id]: { x: dragPos.x, y: dragPos.y } };
-  }, [layout.positions, dragPos]);
+  const { positions } = layout;
 
   const nodes = episode?.nodes || [];
-  const nodeById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
 
   const handlePointerDown = (event, node) => {
     if (event.button !== 0) return;
@@ -40,10 +37,13 @@ export default function LoomCanvas({ episode, selectedNodeId, onSelectNode, onMo
     const start = positions[node.id] || { x: 0, y: 0 };
     dragRef.current = {
       id: node.id,
+      el: event.currentTarget,
       startX: event.clientX,
       startY: event.clientY,
       originX: start.x,
       originY: start.y,
+      x: start.x,
+      y: start.y,
       moved: false,
     };
   };
@@ -55,29 +55,25 @@ export default function LoomCanvas({ episode, selectedNodeId, onSelectNode, onMo
     const dy = event.clientY - drag.startY;
     if (!drag.moved && Math.abs(dx) < DRAG_THRESHOLD_PX && Math.abs(dy) < DRAG_THRESHOLD_PX) return;
     drag.moved = true;
-    setDragPos({
-      id: drag.id,
-      x: Math.max(0, drag.originX + dx),
-      y: Math.max(0, drag.originY + dy),
-    });
+    drag.x = Math.max(0, drag.originX + dx);
+    drag.y = Math.max(0, drag.originY + dy);
+    drag.el.setAttribute('transform', `translate(${drag.x}, ${drag.y})`);
   };
 
   const handlePointerUp = () => {
     const drag = dragRef.current;
     dragRef.current = null;
     if (!drag) return;
-    if (drag.moved && dragPos && dragPos.id === drag.id) {
-      onMoveNode?.(drag.id, { x: Math.round(dragPos.x), y: Math.round(dragPos.y) });
+    if (drag.moved) {
+      onMoveNode?.(drag.id, { x: Math.round(drag.x), y: Math.round(drag.y) });
     } else {
       onSelectNode?.(drag.id);
     }
-    setDragPos(null);
   };
 
   if (!nodes.length) return null;
 
-  const width = Math.max(layout.width, dragPos ? dragPos.x + LOOM_NODE_W + 24 : 0);
-  const height = Math.max(layout.height, dragPos ? dragPos.y + LOOM_NODE_H + 24 : 0);
+  const { width, height } = layout;
 
   return (
     <div className="overflow-auto h-full w-full" data-testid="loom-canvas">
@@ -86,7 +82,7 @@ export default function LoomCanvas({ episode, selectedNodeId, onSelectNode, onMo
           {nodes.flatMap((node) => (node.transitions || []).map((tr) => {
             const from = positions[node.id];
             const to = positions[tr.targetNodeId];
-            if (!from || !to || !nodeById.has(tr.targetNodeId)) return null;
+            if (!from || !to) return null;
             const { d, labelX, labelY } = loomEdgePath(from, to);
             const active = node.id === selectedNodeId;
             return (

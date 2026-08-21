@@ -13,6 +13,8 @@
 import { randomUUID } from 'crypto';
 import { ServerError } from '../../lib/errorHandler.js';
 import { isStr, trimTo } from '../../lib/storyBible.js';
+import { getUniverse } from '../universeBuilder.js';
+import { getSeries } from '../pipeline/series.js';
 import {
   deleteRaw,
   isValidLoomId,
@@ -21,27 +23,9 @@ import {
   readRaw,
   writeRaw,
 } from './store.js';
+import { LOOM_LIMITS } from './limits.js';
 
-export const LOOM_LIMITS = Object.freeze({
-  NAME_MAX: 200,
-  LOGLINE_MAX: 500,
-  PREMISE_MAX: 20000,
-  STYLE_NOTES_MAX: 4000,
-  REF_ID_MAX: 64,
-  EPISODES_MAX: 100,
-  EPISODE_TITLE_MAX: 300,
-  SYNOPSIS_MAX: 4000,
-  NODES_MAX: 200,
-  NODE_TITLE_MAX: 300,
-  PROSE_MAX: 20000,
-  IMAGE_PROMPT_MAX: 2000,
-  ENDING_LABEL_MAX: 200,
-  TRANSITIONS_MAX: 12,
-  INTENT_MAX: 120,
-  TRIGGER_MAX: 160,
-  TRIGGERS_MAX: 8,
-  TRANSITION_DESC_MAX: 500,
-});
+export { LOOM_LIMITS };
 
 const isSafeImageFilename = (value) =>
   typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*\.(png|jpg|jpeg|webp)$/i.test(value);
@@ -139,6 +123,24 @@ export function sanitizeLoom(raw) {
 
 const notFound = (what = 'Loom') => new ServerError(`${what} not found`, { status: 404, code: 'NOT_FOUND' });
 
+// Soft refs are validated at write time (against the trimmed value that will
+// actually persist) so a typo'd id fails loudly here rather than silently
+// producing an empty canon digest at weave time. Lives in the service — not
+// the route — because createLoom/updateLoom are public barrel exports any
+// non-HTTP caller can reach (games' requireApp precedent).
+async function assertRefsExist({ universeId, seriesId } = {}) {
+  const [universe, series] = await Promise.all([
+    universeId ? getUniverse(universeId).catch(() => null) : null,
+    seriesId ? getSeries(seriesId).catch(() => null) : null,
+  ]);
+  if (universeId && !universe) {
+    throw new ServerError('Linked universe not found', { status: 400, code: 'INVALID_UNIVERSE' });
+  }
+  if (seriesId && !series) {
+    throw new ServerError('Linked series not found', { status: 400, code: 'INVALID_SERIES' });
+  }
+}
+
 const requireLoomRaw = async (id) => {
   if (!isValidLoomId(id)) throw notFound();
   const loom = sanitizeLoom(await readRaw(id));
@@ -151,6 +153,26 @@ export async function listLooms() {
   return records.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.name.localeCompare(b.name));
 }
 
+/**
+ * Index-page projection: everything the list UI shows, WITHOUT the episode
+ * graphs — a woven episode carries up to 20k chars of prose per node, so the
+ * full records would make the index multi-MB to render three counts.
+ */
+export async function listLoomSummaries() {
+  return (await listLooms()).map(({ id, name, logline, universeId, seriesId, createdAt, updatedAt, episodes }) => ({
+    id,
+    name,
+    logline,
+    universeId,
+    seriesId,
+    createdAt,
+    updatedAt,
+    episodeCount: episodes.length,
+    sceneCount: episodes.reduce((sum, e) => sum + e.nodes.length, 0),
+    endingCount: episodes.reduce((sum, e) => sum + e.nodes.filter((n) => n.isEnding).length, 0),
+  }));
+}
+
 export async function getLoom(id) {
   if (!isValidLoomId(id)) return null;
   return sanitizeLoom(await readRaw(id));
@@ -158,6 +180,7 @@ export async function getLoom(id) {
 
 export async function createLoom({ name, logline, premise, styleNotes, universeId, seriesId } = {}) {
   const now = new Date().toISOString();
+  await assertRefsExist({ universeId: nullableRef(universeId), seriesId: nullableRef(seriesId) });
   const loom = sanitizeLoom({
     id: `loom-${randomUUID()}`,
     name,
@@ -195,7 +218,11 @@ export function mutateLoom(id, mutator) {
 
 const PATCH_FIELDS = ['name', 'logline', 'premise', 'styleNotes', 'universeId', 'seriesId'];
 
-export function updateLoom(id, patch = {}) {
+export async function updateLoom(id, patch = {}) {
+  await assertRefsExist({
+    universeId: 'universeId' in patch ? nullableRef(patch.universeId) : null,
+    seriesId: 'seriesId' in patch ? nullableRef(patch.seriesId) : null,
+  });
   return mutateLoom(id, (loom) => {
     const next = { ...loom };
     for (const key of PATCH_FIELDS) {
@@ -212,10 +239,16 @@ export async function deleteLoom(id) {
 
 // --- Episodes ---------------------------------------------------------------
 
-const findEpisode = (loom, episodeId) => {
+export const findEpisode = (loom, episodeId) => {
   const episode = loom.episodes.find((e) => e.id === episodeId);
   if (!episode) throw notFound('Episode');
   return episode;
+};
+
+export const findNode = (episode, nodeId) => {
+  const node = episode.nodes.find((n) => n.id === nodeId);
+  if (!node) throw notFound('Scene');
+  return node;
 };
 
 export function addEpisode(loomId, { title, synopsis } = {}) {
@@ -271,17 +304,12 @@ export function addNode(loomId, episodeId, fields = {}) {
     const node = { id: `node-${randomUUID()}`, ...fields };
     episode.nodes.push(node);
     if (!episode.startNodeId) episode.startNodeId = node.id;
-    // Optionally wire the new node in as a branch of an existing one.
+    // Optionally wire the new node in as a branch of an existing one. The
+    // sanitizer mints the transition id and fills triggers/description.
     if (isStr(fields.fromNodeId)) {
       const from = episode.nodes.find((n) => n.id === fields.fromNodeId);
       if (from) {
-        from.transitions = [...(from.transitions || []), {
-          id: `tr-${randomUUID()}`,
-          targetNodeId: node.id,
-          intent: fields.fromIntent,
-          triggers: [],
-          description: '',
-        }];
+        from.transitions = [...(from.transitions || []), { targetNodeId: node.id, intent: fields.fromIntent }];
       }
     }
     episode.updatedAt = new Date().toISOString();
@@ -292,8 +320,7 @@ export function addNode(loomId, episodeId, fields = {}) {
 export function updateNode(loomId, episodeId, nodeId, patch = {}) {
   return mutateLoom(loomId, (loom) => {
     const episode = findEpisode(loom, episodeId);
-    const node = episode.nodes.find((n) => n.id === nodeId);
-    if (!node) throw notFound('Scene');
+    const node = findNode(episode, nodeId);
     for (const key of NODE_PATCH_FIELDS) {
       if (key in patch) node[key] = patch[key];
     }

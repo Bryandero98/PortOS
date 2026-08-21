@@ -140,6 +140,7 @@ import { commissionStore, backfillAllCommissionFeedback } from './creativeCommis
 import { backfillProjectCommissionIds } from './creativeCommissions/projectControl.js';
 import { outcomesStore as liOutcomesStore } from './layeredIntelligenceOutcomes.js';
 import * as gameStore from './games/store.js';
+import * as fableLoomStore from './fableLoom/store.js';
 import { prerequisitesMetForRouting } from './providerPrerequisites.js';
 
 /**
@@ -223,7 +224,7 @@ export const bootstrapServices = async ({ io, dataDir, dataReferenceDir, serverD
     // but DO NOT crash the server. PortOS is single-user (CLAUDE.md "Security
     // Model"); a hard exit on startup is worse than a noisy log the user can act
     // on. Returns per-store statuses for downstream telemetry; we discard them.
-    verifyCollections: () => verifyCollectionVersions([universeStore(), seriesStore(), issueStore(), conflictJournalStore(), storyBuilderStore(), mediaCollectionStore(), loraDatasetStore, liOutcomesStore(), commissionStore(), gameStore, ...brainCollectionStores()]),
+    verifyCollections: () => verifyCollectionVersions([universeStore(), seriesStore(), issueStore(), conflictJournalStore(), storyBuilderStore(), mediaCollectionStore(), loraDatasetStore, liOutcomesStore(), commissionStore(), gameStore, fableLoomStore, ...brainCollectionStores()]),
 
     createToolkit: () => createAIToolkit({
       dataDir,

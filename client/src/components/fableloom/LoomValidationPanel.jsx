@@ -5,8 +5,9 @@
  * scene-anchored finding selects that node on the canvas.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, CircleAlert, Loader2, Sparkles } from 'lucide-react';
+import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { reviewLoomEpisode, validateLoomEpisode } from '../../services/api';
 
 const severityIcon = (severity) => (severity === 'error' || severity === 'high'
@@ -16,27 +17,31 @@ const severityIcon = (severity) => (severity === 'error' || severity === 'high'
 export default function LoomValidationPanel({ loom, episode, onSelectNode }) {
   const [structural, setStructural] = useState(null);
   const [review, setReview] = useState(null);
-  const [reviewing, setReviewing] = useState(false);
 
-  const refresh = useCallback(() => {
+  // Re-validate only when the graph STRUCTURE changes — a prose edit or a
+  // node drag bumps episode.updatedAt but can't change reachability, so
+  // keying on updatedAt would re-run the full-loom server analysis on every
+  // blur-save.
+  const structureKey = useMemo(
+    () => [
+      episode.startNodeId,
+      ...episode.nodes.map((n) =>
+        `${n.id}|${n.isEnding ? 1 : 0}|${(n.transitions || []).map((t) => `${t.targetNodeId}:${t.intent}`).join(',')}`),
+    ].join(';'),
+    [episode.startNodeId, episode.nodes],
+  );
+
+  useEffect(() => {
     validateLoomEpisode(loom.id, episode.id, { silent: true })
       .then(setStructural)
       .catch(() => setStructural(null));
-  }, [loom.id, episode.id]);
+  }, [loom.id, episode.id, structureKey]);
 
-  // Re-validate whenever the graph content changes (updatedAt moves on every
-  // node/transition mutation).
-  useEffect(() => { refresh(); }, [refresh, episode.updatedAt]);
-
-  const runReview = async () => {
-    setReviewing(true);
-    const result = await reviewLoomEpisode(loom.id, episode.id).catch(() => null);
-    setReviewing(false);
-    if (result) {
-      setReview(result.review);
-      setStructural(result.structural);
-    }
-  };
+  const [runReview, reviewing] = useAsyncAction(async () => {
+    const result = await reviewLoomEpisode(loom.id, episode.id, {}, { silent: true });
+    setReview(result.review);
+    setStructural(result.structural);
+  }, { errorMessage: 'Story review failed' });
 
   const findingRow = (item, key, nodeId) => (
     <button

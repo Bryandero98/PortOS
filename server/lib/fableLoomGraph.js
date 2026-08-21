@@ -128,17 +128,12 @@ export function analyzeEpisodeGraph(episode) {
     }
   }
 
-  const transitionCounts = nodes.map((n) => asArray(n?.transitions).length);
-  const branchingNodes = transitionCounts.filter((c) => c > 0);
   const stats = {
     nodeCount: nodes.length,
     endingCount: endings.length,
     reachableCount: depthById.size,
     reachableEndingCount: reachableEndings.length,
     maxDepth: depthById.size ? Math.max(...depthById.values()) : 0,
-    avgBranching: branchingNodes.length
-      ? Math.round((branchingNodes.reduce((a, b) => a + b, 0) / branchingNodes.length) * 10) / 10
-      : 0,
     errorCount: issues.filter((i) => i.severity === 'error').length,
     warningCount: issues.filter((i) => i.severity === 'warning').length,
   };

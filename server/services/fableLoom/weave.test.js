@@ -18,6 +18,9 @@ vi.mock('../../lib/stageRunner.js', () => ({ runStagedLLM }));
 
 const getUniverseMock = vi.hoisted(() => vi.fn(async () => null));
 vi.mock('../universeBuilder.js', () => ({ getUniverse: getUniverseMock }));
+// records.js validates soft refs at write time through these services.
+const getSeriesMock = vi.hoisted(() => vi.fn(async () => null));
+vi.mock('../pipeline/series.js', () => ({ getSeries: getSeriesMock }));
 
 const { createLoom, addEpisode, addNode, updateNode, getLoom } = await import('./records.js');
 const { _resetFableLoomBackend } = await import('./store.js');
@@ -37,6 +40,8 @@ afterAll(() => {
 });
 
 const setup = async () => {
+  // createLoom validates the universe ref exists before persisting it.
+  getUniverseMock.mockResolvedValueOnce({ id: 'uni-1' });
   const loom = await createLoom({ name: 'The Hollow Crown', universeId: 'uni-1' });
   const withEp = await addEpisode(loom.id, { title: 'Pilot', synopsis: 'A crown wakes.' });
   return { loomId: loom.id, episodeId: withEp.episodes[0].id };
@@ -214,17 +219,17 @@ describe('playTurn', () => {
 });
 
 describe('buildCanonDigest', () => {
-  it('renders linked-universe canon and returns empty for unlinked looms', async () => {
+  it('renders linked-universe canon via the shared renderer and returns empty for unlinked looms', async () => {
     getUniverseMock.mockResolvedValue({
-      characters: [{ name: 'Mara', appearance: 'silver-eyed' }],
+      characters: [{ name: 'Mara', description: 'silver-eyed courier' }],
       places: [{ name: 'The Hollow' }],
       objects: [],
     });
     const digest = await buildCanonDigest({ universeId: 'uni-1' });
-    expect(digest).toContain('Characters:');
+    expect(digest).toContain('characters:');
     expect(digest).toContain('- Mara');
-    expect(digest).toContain('Places:');
-    expect(digest).not.toContain('Objects:');
+    expect(digest).toContain('places:');
+    expect(digest).not.toContain('objects:');
 
     expect(await buildCanonDigest({ universeId: null })).toBe('');
   });

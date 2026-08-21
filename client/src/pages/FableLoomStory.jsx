@@ -13,11 +13,16 @@ import { ArrowLeft, BookOpenText, Loader2, Plus, Sparkles, Trash2, Waypoints } f
 import toast from '../components/ui/Toast';
 import Drawer from '../components/Drawer';
 import ConfirmButtonPair from '../components/ui/ConfirmButtonPair';
+import { FormField } from '../components/ui/FormField.jsx';
+import PageSkeleton from '../components/ui/PageSkeleton';
+import TabPills from '../components/ui/TabPills';
+import { useAsyncAction } from '../hooks/useAsyncAction';
 import { useConfirmDelete } from '../hooks/useConfirmDelete';
 import LoomCanvas from '../components/fableloom/LoomCanvas';
 import LoomNodeEditor from '../components/fableloom/LoomNodeEditor';
 import LoomPlayPanel from '../components/fableloom/LoomPlayPanel';
 import LoomValidationPanel from '../components/fableloom/LoomValidationPanel';
+import { fieldClass, labelClass } from '../components/fableloom/fieldStyles';
 import {
   addLoomEpisode, addLoomNode, deleteLoomEpisode, getLoom, updateLoomEpisode,
   updateLoomNode, weaveLoomEpisode,
@@ -45,8 +50,11 @@ export default function FableLoomStory() {
     (epId, nId) => `${basePath}/${epId}${nId ? `/${nId}` : ''}`,
     [basePath],
   );
-
-  const onLoomUpdate = useCallback((next) => setLoom(next), []);
+  // Node selection navigates (URL is the selection) and keeps the play
+  // drawer's ?play=1 across the move.
+  const selectNode = (id) => {
+    navigate(episodePath(episodeId, id) + (playOpen ? '?play=1' : ''));
+  };
 
   const setPlayOpen = (open) => {
     setSearchParams((prev) => {
@@ -80,6 +88,8 @@ export default function FableLoomStory() {
 
   const handleMoveNode = (movedNodeId, pos) => {
     // Optimistic: fold the new position into local state, persist silently.
+    // The echo is NOT folded back in — pos is already exact client-side, and
+    // replacing the loom would re-layout the whole canvas a second time.
     setLoom((prev) => ({
       ...prev,
       episodes: prev.episodes.map((e) => (e.id !== episode.id ? e : {
@@ -87,9 +97,7 @@ export default function FableLoomStory() {
         nodes: e.nodes.map((n) => (n.id === movedNodeId ? { ...n, pos } : n)),
       })),
     }));
-    updateLoomNode(loomId, episode.id, movedNodeId, { pos }, { silent: true })
-      .then(onLoomUpdate)
-      .catch(() => {});
+    updateLoomNode(loomId, episode.id, movedNodeId, { pos }, { silent: true }).catch(() => {});
   };
 
   if (notFound) {
@@ -101,7 +109,7 @@ export default function FableLoomStory() {
     );
   }
   if (!loom) {
-    return <div className="p-8 text-sm text-port-text-muted">Loading…</div>;
+    return <PageSkeleton label="Loading loom" fullHeight padded sidebar={false} />;
   }
 
   // Route normalization: no/stale episode id → first episode (or stay bare
@@ -150,21 +158,18 @@ export default function FableLoomStory() {
             </div>
           )}
         </div>
-        <div className="flex items-center gap-1.5 flex-wrap">
-          {loom.episodes.map((e) => (
-            <button
-              key={e.id}
-              type="button"
-              onClick={() => navigate(episodePath(e.id))}
-              className={`px-2.5 py-1 rounded-full text-xs border ${
-                e.id === episodeId
-                  ? 'border-port-accent text-port-accent bg-port-accent/10'
-                  : 'border-port-border text-port-text-muted hover:border-port-accent'
-              }`}
-            >
-              {e.number}. {e.title || 'Untitled'}
-            </button>
-          ))}
+        <div className="flex items-center gap-2 flex-wrap">
+          {loom.episodes.length > 0 && (
+            <TabPills
+              variant="pills"
+              size="sm"
+              ariaLabel="Episodes"
+              mobileDropdown
+              tabs={loom.episodes.map((e) => ({ id: e.id, label: `${e.number}. ${e.title || 'Untitled'}` }))}
+              activeTab={episodeId}
+              onChange={(id) => navigate(episodePath(id))}
+            />
+          )}
           <button
             type="button"
             onClick={handleAddEpisode}
@@ -198,7 +203,7 @@ export default function FableLoomStory() {
               <LoomCanvas
                 episode={episode}
                 selectedNodeId={nodeId || null}
-                onSelectNode={(id) => navigate(episodePath(episode.id, id) + (playOpen ? '?play=1' : ''))}
+                onSelectNode={selectNode}
                 onMoveNode={handleMoveNode}
               />
             ) : (
@@ -234,7 +239,7 @@ export default function FableLoomStory() {
                 loom={loom}
                 episode={episode}
                 node={node}
-                onLoomUpdate={onLoomUpdate}
+                onLoomUpdate={setLoom}
                 onClearSelection={() => navigate(episodePath(episode.id))}
                 onMakeStart={node.id !== episode.startNodeId ? async () => {
                   const updated = await updateLoomEpisode(loomId, episode.id, { startNodeId: node.id })
@@ -246,7 +251,7 @@ export default function FableLoomStory() {
               <LoomValidationPanel
                 loom={loom}
                 episode={episode}
-                onSelectNode={(id) => navigate(episodePath(episode.id, id))}
+                onSelectNode={selectNode}
               />
             )}
           </aside>
@@ -259,7 +264,7 @@ export default function FableLoomStory() {
           onClose={() => setSetupOpen(false)}
           loom={loom}
           episode={episode}
-          onLoomUpdate={onLoomUpdate}
+          onLoomUpdate={setLoom}
           onDeleted={() => {
             setSetupOpen(false);
             navigate(basePath);
@@ -282,7 +287,9 @@ export default function FableLoomStory() {
  */
 function EpisodeSetupDrawer({ open, onClose, loom, episode, onLoomUpdate, onDeleted }) {
   const [form, setForm] = useState({ title: '', synopsis: '', guidance: '', nodeTarget: 12, endingTarget: 3 });
-  const [weaving, setWeaving] = useState(false);
+  // The weave reads server-side state (title/synopsis), so it gates on
+  // in-flight meta saves per the client save-gating convention.
+  const [metaSaving, setMetaSaving] = useState(0);
   const del = useConfirmDelete();
   const hasScenes = episode.nodes.length > 0;
 
@@ -290,27 +297,26 @@ function EpisodeSetupDrawer({ open, onClose, loom, episode, onLoomUpdate, onDele
     setForm((prev) => ({ ...prev, title: episode.title || '', synopsis: episode.synopsis || '' }));
   }, [episode.id, episode.title, episode.synopsis]);
 
-  const saveMeta = (patch) => {
-    updateLoomEpisode(loom.id, episode.id, patch, { silent: true })
+  const saveMeta = async (key) => {
+    if (form[key] === (episode[key] || '')) return;
+    setMetaSaving((n) => n + 1);
+    await updateLoomEpisode(loom.id, episode.id, { [key]: form[key] }, { silent: true })
       .then(onLoomUpdate)
       .catch((err) => toast.error(`Save failed: ${err.message}`));
+    setMetaSaving((n) => n - 1);
   };
 
-  const handleWeave = async () => {
-    setWeaving(true);
+  const [runWeave, weaving] = useAsyncAction(async () => {
     const result = await weaveLoomEpisode(loom.id, episode.id, {
       guidance: form.guidance,
       nodeTarget: Number(form.nodeTarget) || 12,
       endingTarget: Number(form.endingTarget) || 3,
       replace: hasScenes,
-    }).catch(() => null);
-    setWeaving(false);
-    if (result?.loom) {
-      onLoomUpdate(result.loom);
-      toast.success('Episode woven');
-      onClose();
-    }
-  };
+    }, { silent: true });
+    onLoomUpdate(result.loom);
+    toast.success('Episode woven');
+    onClose();
+  }, { errorMessage: 'Weave failed' });
 
   const handleDelete = async () => {
     const updated = await deleteLoomEpisode(loom.id, episode.id).catch(() => null);
@@ -320,71 +326,58 @@ function EpisodeSetupDrawer({ open, onClose, loom, episode, onLoomUpdate, onDele
     }
   };
 
-  const field = 'w-full bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm';
-  const label = 'block text-xs font-medium text-port-text-muted mb-1';
-
   return (
     <Drawer open={open} onClose={onClose} title="Episode setup" subtitle={`${loom.name} — episode ${episode.number}`} size="sm">
       <div className="space-y-4">
-        <div>
-          <label className={label} htmlFor="loom-ep-title">Title</label>
+        <FormField label="Title" labelClassName={labelClass}>
           <input
-            id="loom-ep-title"
-            className={field}
+            className={fieldClass}
             value={form.title}
             onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))}
-            onBlur={() => saveMeta({ title: form.title })}
+            onBlur={() => saveMeta('title')}
           />
-        </div>
-        <div>
-          <label className={label} htmlFor="loom-ep-synopsis">Synopsis (feeds the weave)</label>
+        </FormField>
+        <FormField label="Synopsis (feeds the weave)" labelClassName={labelClass}>
           <textarea
-            id="loom-ep-synopsis"
             rows={4}
-            className={field}
+            className={fieldClass}
             placeholder="What this episode is about — setup, stakes, tone"
             value={form.synopsis}
             onChange={(e) => setForm((p) => ({ ...p, synopsis: e.target.value }))}
-            onBlur={() => saveMeta({ synopsis: form.synopsis })}
+            onBlur={() => saveMeta('synopsis')}
           />
-        </div>
+        </FormField>
 
         <div className="border-t border-port-border pt-4 space-y-3">
           <h4 className="text-sm font-semibold flex items-center gap-1.5">
             <Sparkles size={14} className="text-port-accent" /> Weave the scene graph
           </h4>
-          <div>
-            <label className={label} htmlFor="loom-ep-guidance">Guidance (optional)</label>
+          <FormField label="Guidance (optional)" labelClassName={labelClass}>
             <textarea
-              id="loom-ep-guidance"
               rows={2}
-              className={field}
+              className={fieldClass}
               placeholder="e.g. lean into dread; one ending must be hopeful"
               value={form.guidance}
               onChange={(e) => setForm((p) => ({ ...p, guidance: e.target.value }))}
             />
-          </div>
+          </FormField>
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={label} htmlFor="loom-ep-nodes">Scenes (approx.)</label>
+            <FormField label="Scenes (approx.)" labelClassName={labelClass}>
               <input
-                id="loom-ep-nodes"
                 type="number" min={3} max={60}
-                className={field}
+                className={fieldClass}
                 value={form.nodeTarget}
                 onChange={(e) => setForm((p) => ({ ...p, nodeTarget: e.target.value }))}
               />
-            </div>
-            <div>
-              <label className={label} htmlFor="loom-ep-endings">Endings</label>
+            </FormField>
+            <FormField label="Endings" labelClassName={labelClass}>
               <input
-                id="loom-ep-endings"
                 type="number" min={1} max={12}
-                className={field}
+                className={fieldClass}
                 value={form.endingTarget}
                 onChange={(e) => setForm((p) => ({ ...p, endingTarget: e.target.value }))}
               />
-            </div>
+            </FormField>
           </div>
           {hasScenes && (
             <p className="text-xs text-port-warning">
@@ -393,8 +386,8 @@ function EpisodeSetupDrawer({ open, onClose, loom, episode, onLoomUpdate, onDele
           )}
           <button
             type="button"
-            onClick={handleWeave}
-            disabled={weaving}
+            onClick={runWeave}
+            disabled={weaving || metaSaving > 0}
             className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded bg-port-accent text-white text-sm disabled:opacity-60"
           >
             {weaving ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}

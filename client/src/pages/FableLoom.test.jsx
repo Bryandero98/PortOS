@@ -20,6 +20,7 @@ vi.mock('react-router', async (importOriginal) => {
 import * as api from '../services/api';
 import FableLoom from './FableLoom';
 
+// The list endpoint returns summaries, not the episode graphs.
 const looms = [
   {
     id: 'loom-1',
@@ -28,16 +29,9 @@ const looms = [
     universeId: 'uni-1',
     seriesId: null,
     updatedAt: '2026-08-20T00:00:00Z',
-    episodes: [
-      {
-        id: 'ep-1',
-        nodes: [
-          { id: 'n1', isEnding: false },
-          { id: 'n2', isEnding: true },
-          { id: 'n3', isEnding: true },
-        ],
-      },
-    ],
+    episodeCount: 1,
+    sceneCount: 3,
+    endingCount: 2,
   },
 ];
 
@@ -77,8 +71,8 @@ describe('FableLoom index', () => {
     await user.click(screen.getByRole('button', { name: 'Create loom' }));
 
     await waitFor(() => expect(api.createLoom).toHaveBeenCalledWith({
-      name: 'Gate of Ash', logline: '', premise: '', universeId: null, seriesId: null,
-    }));
+      name: 'Gate of Ash', logline: '', premise: '', styleNotes: '', universeId: null, seriesId: null,
+    }, { silent: true }));
     expect(navigate).toHaveBeenCalledWith('/fableloom/loom-9');
   });
 

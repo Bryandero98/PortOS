@@ -17,11 +17,8 @@
  * media job queue is running).
  */
 
-import { createMediaJobImageHook } from './mediaJobImageHook.js';
+import { createMediaJobImageHook, deriveRenderJobId } from './mediaJobImageHook.js';
 import { attachNodeImage } from './fableLoom/records.js';
-
-const deriveJobId = (job, filename) =>
-  (typeof job.id === 'string' && job.id ? job.id : filename.replace(/\.png$/, ''));
 
 const hook = createMediaJobImageHook({
   label: 'fableloom scene-image',
@@ -38,7 +35,7 @@ const hook = createMediaJobImageHook({
   sceneKey: ({ loomId, episodeId, nodeId }) => `${loomId}:${episodeId}:${nodeId}`,
   describe: ({ loomId, nodeId }) => `${loomId.slice(0, 13)}/${nodeId.slice(0, 13)}`,
   attach: ({ loomId, episodeId, nodeId, filename, job }) =>
-    attachNodeImage(loomId, episodeId, nodeId, { filename, jobId: deriveJobId(job, filename) }),
+    attachNodeImage(loomId, episodeId, nodeId, { filename, jobId: deriveRenderJobId(job, filename) }),
   onAttached: ({ loomId, nodeId, filename }, result) => {
     if (!result) return;
     console.log(`🧶 fableloom scene image ${loomId.slice(0, 13)}/${nodeId.slice(0, 13)} ← ${filename}`);

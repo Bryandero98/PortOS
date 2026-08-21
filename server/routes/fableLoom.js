@@ -33,7 +33,7 @@ import {
   deleteLoom,
   deleteNode,
   getLoom,
-  listLooms,
+  listLoomSummaries,
   playTurn,
   reviewEpisode,
   updateEpisode,
@@ -41,29 +41,19 @@ import {
   updateNode,
   weaveEpisode,
 } from '../services/fableLoom/index.js';
-import { getUniverse } from '../services/universeBuilder.js';
-import { getSeries } from '../services/pipeline/series.js';
 
 const router = Router();
 
-// Soft refs are validated at write time so a typo'd id fails loudly here
-// rather than silently producing an empty canon digest at weave time.
-async function assertRefsExist({ universeId, seriesId }) {
-  if (universeId && !(await getUniverse(universeId).catch(() => null))) {
-    throw new ServerError('Linked universe not found', { status: 400, code: 'INVALID_UNIVERSE' });
-  }
-  if (seriesId && !(await getSeries(seriesId).catch(() => null))) {
-    throw new ServerError('Linked series not found', { status: 400, code: 'INVALID_SERIES' });
-  }
-}
-
+// Summaries only — a woven episode carries pages of prose per node, and the
+// index renders three counts. The full record comes from GET /:id.
 router.get('/', asyncHandler(async (req, res) => {
-  res.json(await listLooms());
+  res.json(await listLoomSummaries());
 }));
 
+// Linked universe/series refs are validated by the service (createLoom /
+// updateLoom throw INVALID_UNIVERSE / INVALID_SERIES at 400).
 router.post('/', asyncHandler(async (req, res) => {
   const input = validateRequest(loomCreateSchema, req.body);
-  await assertRefsExist(input);
   res.status(201).json(await createLoom(input));
 }));
 
@@ -75,7 +65,6 @@ router.get('/:id', asyncHandler(async (req, res) => {
 
 router.patch('/:id', asyncHandler(async (req, res) => {
   const patch = validateRequest(loomPatchSchema, req.body);
-  await assertRefsExist(patch);
   res.json(await updateLoom(req.params.id, patch));
 }));
 

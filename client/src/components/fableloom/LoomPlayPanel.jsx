@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, RotateCcw, Send, Flag } from 'lucide-react';
 import MediaImage from '../MediaImage';
+import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { playLoomTurn } from '../../services/api';
 
 const findNode = (episode, id) => episode?.nodes.find((n) => n.id === id) || null;
@@ -28,50 +29,57 @@ const asPublic = (node) => (node ? {
 } : null);
 
 export default function LoomPlayPanel({ loom, episode }) {
-  const start = useMemo(() => asPublic(findNode(episode, episode?.startNodeId)), [episode]);
+  // Anchored on scalars so an authoring echo elsewhere in the loom (a node
+  // PATCH, a drag) doesn't mint a new `start` identity and wipe an
+  // in-progress read-through. The trade: mid-session edits to the opening
+  // scene's text don't reach an open drawer until restart.
+  const start = useMemo(
+    () => asPublic(findNode(episode, episode?.startNodeId)),
+    [episode.id, episode.startNodeId],
+  );
   const [scene, setScene] = useState(start);
   const [transcript, setTranscript] = useState([]);
   const [message, setMessage] = useState('');
-  const [sending, setSending] = useState(false);
-  const [ended, setEnded] = useState(!!start?.isEnding);
   const scrollRef = useRef(null);
+  // Mirrors the server's terminal rule: an ending, or a dead-end scene with
+  // no paths out, ends the read-through.
+  const ended = !!scene && (scene.isEnding || !scene.choices?.length);
 
   const restart = () => {
     setScene(start);
     setTranscript([]);
-    setEnded(!!start?.isEnding);
     setMessage('');
   };
 
-  // Scene changes (including an episode switch) re-anchor the session.
+  // An episode switch (or a changed opening scene) re-anchors the session.
   useEffect(() => { restart(); }, [start]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [transcript, scene]);
 
-  const send = async () => {
-    const text = message.trim();
-    if (!text || sending || !scene) return;
-    setMessage('');
-    setSending(true);
-    const history = [...transcript, { role: 'reader', text }];
-    setTranscript(history);
+  const [runTurn, sending] = useAsyncAction(async (text, history) => {
     const result = await playLoomTurn(loom.id, episode.id, {
       nodeId: scene.id,
       message: text,
       transcript: history.slice(-12).map(({ role, text: t }) => ({ role, text: t })),
-    }).catch(() => null);
-    setSending(false);
-    if (!result) return;
+    }, { silent: true });
     const additions = [];
     if (result.narration) additions.push({ role: 'narrator', text: result.narration });
     if (result.action === 'move' && result.node) {
       setScene(result.node);
       additions.push({ role: 'scene', node: result.node });
-      setEnded(!!result.ended);
     }
     if (additions.length) setTranscript((prev) => [...prev, ...additions]);
+  }, { errorMessage: 'The narrator lost the thread — try again' });
+
+  const send = () => {
+    const text = message.trim();
+    if (!text || sending || !scene) return;
+    setMessage('');
+    const history = [...transcript, { role: 'reader', text }];
+    setTranscript(history);
+    runTurn(text, history);
   };
 
   if (!start) {

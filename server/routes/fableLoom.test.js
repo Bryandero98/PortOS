@@ -12,7 +12,7 @@ vi.mock('../services/fableLoom/index.js', () => ({
   deleteLoom: vi.fn(),
   deleteNode: vi.fn(),
   getLoom: vi.fn(),
-  listLooms: vi.fn(async () => []),
+  listLoomSummaries: vi.fn(async () => []),
   playTurn: vi.fn(),
   reviewEpisode: vi.fn(),
   updateEpisode: vi.fn(),
@@ -20,12 +20,8 @@ vi.mock('../services/fableLoom/index.js', () => ({
   updateNode: vi.fn(),
   weaveEpisode: vi.fn(),
 }));
-vi.mock('../services/universeBuilder.js', () => ({ getUniverse: vi.fn() }));
-vi.mock('../services/pipeline/series.js', () => ({ getSeries: vi.fn() }));
 
 import * as fableLoom from '../services/fableLoom/index.js';
-import { getUniverse } from '../services/universeBuilder.js';
-import { getSeries } from '../services/pipeline/series.js';
 import routes from './fableLoom.js';
 
 const makeApp = () => {
@@ -39,24 +35,14 @@ const makeApp = () => {
 describe('FableLoom routes', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('GET / lists looms', async () => {
-    fableLoom.listLooms.mockResolvedValueOnce([{ id: 'loom-1', name: 'X' }]);
+  it('GET / lists loom summaries', async () => {
+    fableLoom.listLoomSummaries.mockResolvedValueOnce([{ id: 'loom-1', name: 'X', sceneCount: 3 }]);
     const response = await request(makeApp()).get('/api/fableloom');
     expect(response.status).toBe(200);
-    expect(response.body).toEqual([{ id: 'loom-1', name: 'X' }]);
+    expect(response.body).toEqual([{ id: 'loom-1', name: 'X', sceneCount: 3 }]);
   });
 
-  it('POST / validates linked refs before creating', async () => {
-    getUniverse.mockResolvedValueOnce(null);
-    const missing = await request(makeApp())
-      .post('/api/fableloom')
-      .send({ name: 'X', universeId: 'uni-gone' });
-    expect(missing.status).toBe(400);
-    expect(missing.body.code).toBe('INVALID_UNIVERSE');
-    expect(fableLoom.createLoom).not.toHaveBeenCalled();
-
-    getUniverse.mockResolvedValueOnce({ id: 'uni-1' });
-    getSeries.mockResolvedValueOnce({ id: 'ser-1' });
+  it('POST / forwards the validated create payload (refs are checked in the service)', async () => {
     fableLoom.createLoom.mockResolvedValueOnce({ id: 'loom-1', name: 'X' });
     const created = await request(makeApp())
       .post('/api/fableloom')
@@ -84,9 +70,6 @@ describe('FableLoom routes', () => {
       .send({ name: 'Y' });
     expect(response.status).toBe(200);
     expect(fableLoom.updateLoom).toHaveBeenCalledWith('loom-1', { name: 'Y' });
-    // No refs in the patch → no existence lookups.
-    expect(getUniverse).not.toHaveBeenCalled();
-    expect(getSeries).not.toHaveBeenCalled();
   });
 
   it('episode + node CRUD dispatches with route params', async () => {

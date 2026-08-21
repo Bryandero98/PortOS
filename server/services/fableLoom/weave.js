@@ -8,21 +8,23 @@
  * (button click / chat message), per the AI Provider Usage Policy — nothing
  * fires at boot or in the background. LLM execution rides `runStagedLLM`, so
  * provider/model resolution, run records, and JSON extraction follow the same
- * rules as every other stage.
+ * rules as every other stage. Generated content is passed to `mutateLoom`
+ * raw — the record sanitizer owns id minting, trims, and caps.
  */
 
 import { randomUUID } from 'crypto';
 import { ServerError } from '../../lib/errorHandler.js';
 import { runStagedLLM } from '../../lib/stageRunner.js';
 import { isStr, trimTo } from '../../lib/storyBible.js';
-import { descriptorForCanonEntry } from '../../lib/canonPrompt.js';
+import { renderCanonForPrompt } from '../../lib/universePromptRenderers.js';
 import { analyzeEpisodeGraph, describeGraphForPrompt } from '../../lib/fableLoomGraph.js';
 import { getUniverse } from '../universeBuilder.js';
-import { pickCanon } from '../pipeline/seriesCanon.js';
-import { LOOM_LIMITS, getLoom, mutateLoom } from './records.js';
+import { LOOM_LIMITS, findEpisode, findNode, getLoom, mutateLoom } from './records.js';
 
-const CANON_ENTRIES_PER_KIND = 20;
 const TRANSCRIPT_TURNS_MAX = 12;
+
+const clamp = (value, min, max, fallback) =>
+  (Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : fallback);
 
 const aiShapeError = (message) =>
   new ServerError(message, { status: 502, code: 'AI_RESPONSE_INVALID' });
@@ -33,12 +35,6 @@ const requireLoom = async (loomId) => {
   return loom;
 };
 
-const requireEpisode = (loom, episodeId) => {
-  const episode = loom.episodes.find((e) => e.id === episodeId);
-  if (!episode) throw new ServerError('Episode not found', { status: 404, code: 'NOT_FOUND' });
-  return episode;
-};
-
 const llmOptions = ({ providerId, model } = {}, source) => ({
   source,
   returnsJson: true,
@@ -47,29 +43,15 @@ const llmOptions = ({ providerId, model } = {}, source) => ({
 });
 
 /**
- * Render the linked universe's canon as a compact digest for prompts. Empty
- * string when the loom has no universe (the stages treat it as optional).
+ * Render the linked universe's canon as a prompt digest via the shared
+ * renderer (field precedence, per-kind caps, and the "+ N more" truncation
+ * footer every generative prompt gets). Empty string when the loom has no
+ * universe — the stages treat it as optional.
  */
 export async function buildCanonDigest(loom) {
   if (!loom.universeId) return '';
   const universe = await getUniverse(loom.universeId).catch(() => null);
-  if (!universe) return '';
-  const canon = pickCanon(universe);
-  const lines = [];
-  const section = (label, kind, entries) => {
-    const named = entries.filter((e) => isStr(e?.name) && e.name).slice(0, CANON_ENTRIES_PER_KIND);
-    if (!named.length) return;
-    lines.push(`${label}:`);
-    for (const entry of named) {
-      const descriptor = descriptorForCanonEntry(kind, entry);
-      lines.push(`- ${entry.name}${descriptor ? ` — ${descriptor}` : ''}`);
-    }
-    lines.push('');
-  };
-  section('Characters', 'character', canon.characters);
-  section('Places', 'place', canon.places);
-  section('Objects', 'object', canon.objects);
-  return lines.join('\n').trim();
+  return universe ? renderCanonForPrompt(universe) : '';
 }
 
 const storyContext = (loom, episode) => [
@@ -82,32 +64,20 @@ const storyContext = (loom, episode) => [
 
 // --- Weave: generate a full episode graph -----------------------------------
 
-const sanitizeGeneratedTransitions = (rawTransitions, idByKey, selfId) =>
-  (Array.isArray(rawTransitions) ? rawTransitions : [])
-    .filter((t) => t && typeof t === 'object' && idByKey.has(t.targetKey) && idByKey.get(t.targetKey) !== selfId)
-    .slice(0, LOOM_LIMITS.TRANSITIONS_MAX)
-    .map((t) => ({
-      id: `tr-${randomUUID()}`,
-      targetNodeId: idByKey.get(t.targetKey),
-      intent: trimTo(t.intent, LOOM_LIMITS.INTENT_MAX),
-      triggers: (Array.isArray(t.triggers) ? t.triggers : [])
-        .map((s) => trimTo(s, LOOM_LIMITS.TRIGGER_MAX)).filter(Boolean)
-        .slice(0, LOOM_LIMITS.TRIGGERS_MAX),
-      description: trimTo(t.description, LOOM_LIMITS.TRANSITION_DESC_MAX),
-    }));
-
+// Raw generated node fields, passed through for the sanitizer to trim/cap.
 const generatedNodeFields = (raw) => ({
-  title: trimTo(raw.title, LOOM_LIMITS.NODE_TITLE_MAX),
-  prose: trimTo(raw.prose, LOOM_LIMITS.PROSE_MAX),
-  imagePrompt: trimTo(raw.imagePrompt, LOOM_LIMITS.IMAGE_PROMPT_MAX),
+  title: raw.title,
+  prose: raw.prose,
+  imagePrompt: raw.imagePrompt,
   isEnding: raw.isEnding === true,
-  endingLabel: trimTo(raw.endingLabel, LOOM_LIMITS.ENDING_LABEL_MAX),
+  endingLabel: raw.endingLabel,
 });
 
 /**
  * Map an LLM graph (`{ startKey, nodes: [{ key, …, transitions: [{ targetKey,
- * … }] }] }`) onto server-minted node ids. Throws AI_RESPONSE_INVALID when the
- * shape is unusable (too few scenes, no ending, unknown start).
+ * … }] }] }`) onto server-minted node ids. Transitions pointing at unknown
+ * keys or back at their own node are dropped. Throws AI_RESPONSE_INVALID when
+ * the shape is unusable (too few scenes, no ending).
  */
 export function mapGeneratedGraph(parsed) {
   const rawNodes = Array.isArray(parsed?.nodes) ? parsed.nodes.filter((n) => n && typeof n === 'object' && isStr(n.key)) : [];
@@ -119,7 +89,11 @@ export function mapGeneratedGraph(parsed) {
   const nodes = rawNodes.slice(0, LOOM_LIMITS.NODES_MAX).map((raw) => ({
     id: idByKey.get(raw.key),
     ...generatedNodeFields(raw),
-    transitions: sanitizeGeneratedTransitions(raw.transitions, idByKey, idByKey.get(raw.key)),
+    transitions: (Array.isArray(raw.transitions) ? raw.transitions : [])
+      .filter((t) => t && typeof t === 'object' && idByKey.has(t.targetKey) && idByKey.get(t.targetKey) !== idByKey.get(raw.key))
+      .map(({ targetKey, intent, triggers, description }) => ({
+        targetNodeId: idByKey.get(targetKey), intent, triggers, description,
+      })),
     pos: null,
   }));
   if (!nodes.some((n) => n.isEnding)) throw aiShapeError('The model returned a graph with no endings');
@@ -128,10 +102,10 @@ export function mapGeneratedGraph(parsed) {
 }
 
 export async function weaveEpisode(loomId, episodeId, {
-  guidance = '', nodeTarget = 12, endingTarget = 3, replace = false, providerId, model,
+  guidance = '', nodeTarget, endingTarget, replace = false, providerId, model,
 } = {}) {
   const loom = await requireLoom(loomId);
-  const episode = requireEpisode(loom, episodeId);
+  const episode = findEpisode(loom, episodeId);
   if (episode.nodes.length && !replace) {
     throw new ServerError('Episode already has scenes — pass replace to regenerate', { status: 409, code: 'EPISODE_NOT_EMPTY' });
   }
@@ -140,14 +114,13 @@ export async function weaveEpisode(loomId, episodeId, {
     storyContext: storyContext(loom, episode),
     canonDigest: canonDigest || '(none — invent what the story needs)',
     guidance: guidance || '(none)',
-    nodeTarget: String(nodeTarget),
-    endingTarget: String(endingTarget),
+    nodeTarget: String(clamp(nodeTarget, 3, 60, 12)),
+    endingTarget: String(clamp(endingTarget, 1, 12, 3)),
   }, llmOptions({ providerId, model }, 'fableloom-weave'));
 
   const { nodes, startNodeId } = mapGeneratedGraph(content);
   const updated = await mutateLoom(loomId, (current) => {
-    const ep = current.episodes.find((e) => e.id === episodeId);
-    if (!ep) throw new ServerError('Episode not found', { status: 404, code: 'NOT_FOUND' });
+    const ep = findEpisode(current, episodeId);
     ep.nodes = nodes;
     ep.startNodeId = startNodeId;
     ep.updatedAt = new Date().toISOString();
@@ -159,13 +132,12 @@ export async function weaveEpisode(loomId, episodeId, {
 // --- Branch: grow new paths out of one scene --------------------------------
 
 export async function branchNode(loomId, episodeId, nodeId, {
-  guidance = '', branchCount = 2, providerId, model,
+  guidance = '', branchCount, providerId, model,
 } = {}) {
   const loom = await requireLoom(loomId);
-  const episode = requireEpisode(loom, episodeId);
-  const node = episode.nodes.find((n) => n.id === nodeId);
-  if (!node) throw new ServerError('Scene not found', { status: 404, code: 'NOT_FOUND' });
-  const count = Math.min(4, Math.max(1, Math.round(branchCount)));
+  const episode = findEpisode(loom, episodeId);
+  const node = findNode(episode, nodeId);
+  const count = clamp(branchCount, 1, 4, 2);
 
   const canonDigest = await buildCanonDigest(loom);
   const { content, runId } = await runStagedLLM('fableloom-branch-node', {
@@ -184,27 +156,18 @@ export async function branchNode(loomId, episodeId, nodeId, {
   if (!branches.length) throw aiShapeError('The model returned no usable branches');
 
   const updated = await mutateLoom(loomId, (current) => {
-    const ep = current.episodes.find((e) => e.id === episodeId);
-    const source = ep?.nodes.find((n) => n.id === nodeId);
-    if (!source) throw new ServerError('Scene not found', { status: 404, code: 'NOT_FOUND' });
+    const ep = findEpisode(current, episodeId);
+    const source = findNode(ep, nodeId);
     for (const branch of branches) {
       if (ep.nodes.length >= LOOM_LIMITS.NODES_MAX) break;
-      const newNode = {
-        id: `node-${randomUUID()}`,
-        ...generatedNodeFields(branch.node),
-        transitions: [],
-        pos: null,
-      };
+      const newNode = { id: `node-${randomUUID()}`, ...generatedNodeFields(branch.node), transitions: [], pos: null };
       ep.nodes.push(newNode);
       source.transitions = [...(source.transitions || []), {
-        id: `tr-${randomUUID()}`,
         targetNodeId: newNode.id,
-        intent: trimTo(branch.intent, LOOM_LIMITS.INTENT_MAX),
-        triggers: (Array.isArray(branch.triggers) ? branch.triggers : [])
-          .map((s) => trimTo(s, LOOM_LIMITS.TRIGGER_MAX)).filter(Boolean)
-          .slice(0, LOOM_LIMITS.TRIGGERS_MAX),
-        description: trimTo(branch.description, LOOM_LIMITS.TRANSITION_DESC_MAX),
-      }].slice(0, LOOM_LIMITS.TRANSITIONS_MAX);
+        intent: branch.intent,
+        triggers: branch.triggers,
+        description: branch.description,
+      }];
     }
     ep.updatedAt = new Date().toISOString();
     return current;
@@ -218,7 +181,7 @@ const REVIEW_SEVERITIES = new Set(['high', 'medium', 'low']);
 
 export async function reviewEpisode(loomId, episodeId, { providerId, model } = {}) {
   const loom = await requireLoom(loomId);
-  const episode = requireEpisode(loom, episodeId);
+  const episode = findEpisode(loom, episodeId);
   const structural = analyzeEpisodeGraph(episode);
   const { content, runId } = await runStagedLLM('fableloom-review', {
     storyContext: storyContext(loom, episode),
@@ -268,9 +231,8 @@ export async function playTurn(loomId, episodeId, {
   nodeId, message, transcript = [], providerId, model,
 } = {}) {
   const loom = await requireLoom(loomId);
-  const episode = requireEpisode(loom, episodeId);
-  const node = episode.nodes.find((n) => n.id === nodeId);
-  if (!node) throw new ServerError('Scene not found', { status: 404, code: 'NOT_FOUND' });
+  const episode = findEpisode(loom, episodeId);
+  const node = findNode(episode, nodeId);
   if (node.isEnding || !(node.transitions || []).length) {
     return { action: 'stay', narration: '', node: publicNode(node), ended: true };
   }
@@ -294,12 +256,10 @@ export async function playTurn(loomId, episodeId, {
   const chosen = content?.action === 'move'
     ? node.transitions.find((t) => t.id === content?.transitionId)
     : null;
-  if (!chosen) {
-    return { action: 'stay', narration, node: publicNode(node), ended: false };
-  }
-  const next = episode.nodes.find((n) => n.id === chosen.targetNodeId);
+  // No usable choice — including a dangling edge whose target was deleted —
+  // stays in place rather than crashing the read.
+  const next = chosen ? episode.nodes.find((n) => n.id === chosen.targetNodeId) : null;
   if (!next) {
-    // Dangling edge (authored, then target deleted) — stay rather than crash the read.
     return { action: 'stay', narration, node: publicNode(node), ended: false };
   }
   return {
