@@ -1,7 +1,15 @@
 // Single source of truth for PortOS navigation. Consumed by
 // server/services/voice/tools.js#ui_navigate and the Cmd+K palette.
-// Entry: { id, path, label, section, aliases?, keywords? }. See CLAUDE.md
-// "Command Palette & Voice Nav" for the contract.
+// Entry: { id, path, label, section, aliases?, keywords?, previousPaths? }.
+// See CLAUDE.md "Command Palette & Voice Nav" for the contract.
+//
+// `previousPaths` lists every path this page has ANSWERED TO BEFORE. Bookmarks,
+// stale palette history, and links held by other installs all still say the old
+// path, so a move that drops the redirect 404s them — and nothing else notices,
+// because every other guard here only looks at where a route points now. Declare
+// the old path when you move a page and `navManifest.test.js` proves App.jsx
+// still redirects it; the data lives next to the thing that moved, so the next
+// move needs no edit to the test.
 
 import { PORTOS_APP_ID } from './appIdentity.js';
 
@@ -267,16 +275,16 @@ export const NAV_COMMANDS = [
   // prefix: they are opaque and stored in palette history, so renaming them
   // would orphan those entries — only the path, label and section move.
   { id: 'nav.models.3d', path: '/models/3d', label: '3D Runtimes', section: 'Models', aliases: ['3d-runtimes', 'image-to-3d-runtimes', 'trellis-install', 'pixal3d-install'], keywords: ['trellis', 'pixal3d', 'install', 'repair', 'runtime', 'mesh', 'image to 3d', 'on-device'] },
-  { id: 'nav.settings.embeddings', path: '/models/embeddings', label: 'Embeddings', section: 'Models', aliases: ['settings-embeddings', 'embeddings', 'embedding'], keywords: ['vector', 'pgvector', 'semantic search', 'nomic', 'ollama', 'lm studio'] },
-  { id: 'nav.settings.local-llm', path: '/models/llms', label: 'LLMs', section: 'Models', aliases: ['local-llm', 'local-llms', 'llms', 'models-llms', 'ollama', 'lm-studio', 'lmstudio'], keywords: ['ollama', 'lm studio', 'local model', 'local llm', 'gguf', 'pull model', 'install model', 'migrate', 'switch backend', 'llama.cpp'] },
-  { id: 'nav.media.loras', path: '/models/loras', label: 'LoRAs', section: 'Models', aliases: ['loras', 'lora', 'lora-manager', 'civitai'], keywords: ['lora', 'civitai', 'fine-tune', 'style adapter', 'realstagram', 'photoreal', 'flux lora'] },
-  { id: 'nav.media.training', path: '/models/training', label: 'LoRA Training', section: 'Models', aliases: ['training', 'lora-training', 'train-lora', 'datasets', 'character-lora'], keywords: ['fine-tune', 'dataset', 'caption', 'dreambooth', 'character consistency', 'train', 'flux lora'] },
-  { id: 'nav.media.models', path: '/models/media', label: 'Media Models', section: 'Models', aliases: ['media-models', 'image-models', 'video-models', 'huggingface'], keywords: ['hf cache', 'model storage', 'disk', 'add model', 'install model', 'custom model'] },
+  { id: 'nav.settings.embeddings', path: '/models/embeddings', label: 'Embeddings', section: 'Models', previousPaths: ['/settings/embeddings'], aliases: ['settings-embeddings', 'embeddings', 'embedding'], keywords: ['vector', 'pgvector', 'semantic search', 'nomic', 'ollama', 'lm studio'] },
+  { id: 'nav.settings.local-llm', path: '/models/llms', label: 'LLMs', section: 'Models', previousPaths: ['/settings/local-llm'], aliases: ['local-llm', 'local-llms', 'llms', 'models-llms', 'ollama', 'lm-studio', 'lmstudio'], keywords: ['ollama', 'lm studio', 'local model', 'local llm', 'gguf', 'pull model', 'install model', 'migrate', 'switch backend', 'llama.cpp'] },
+  { id: 'nav.media.loras', path: '/models/loras', label: 'LoRAs', section: 'Models', previousPaths: ['/media/loras'], aliases: ['loras', 'lora', 'lora-manager', 'civitai'], keywords: ['lora', 'civitai', 'fine-tune', 'style adapter', 'realstagram', 'photoreal', 'flux lora'] },
+  { id: 'nav.media.training', path: '/models/training', label: 'LoRA Training', section: 'Models', previousPaths: ['/media/training'], aliases: ['training', 'lora-training', 'train-lora', 'datasets', 'character-lora'], keywords: ['fine-tune', 'dataset', 'caption', 'dreambooth', 'character consistency', 'train', 'flux lora'] },
+  { id: 'nav.media.models', path: '/models/media', label: 'Media Models', section: 'Models', previousPaths: ['/media/models', '/media-models'], aliases: ['media-models', 'image-models', 'video-models', 'huggingface'], keywords: ['hf cache', 'model storage', 'disk', 'add model', 'install model', 'custom model'] },
   { id: 'nav.models.performance', path: '/models/performance', label: 'Model Performance', section: 'Models', aliases: ['model-performance', 'performance', 'assessments', 'model-assessments', 'benchmark-models', 'tuning'], keywords: ['measure', 'assessment', 'benchmark', 'throughput', 'chars per second', 'ttft', 'context', 'tuning', 'llama.cpp', 'mtplx', 'vllm', 'which model', 'fastest model'] },
   // Absorbed the Dev Tools 'Model Resources' page (#4728), so its aliases and
   // keywords live here — 'model resources' and 'downloaded models' must keep
   // resolving after the fold.
-  { id: 'nav.models.status', path: '/models/status', label: 'Model Status', section: 'Models', aliases: ['model-status', 'models-status', 'memory-management', 'resident-models', 'model-resources', 'loaded-models', 'downloaded-models', 'model-memory'], keywords: ['memory', 'resident', 'loaded', 'unload', 'ram', 'vram', 'free memory', 'what is loaded', 'ollama', 'lm studio', 'hugging face', 'lora', 'delete model', 'disk'] },
+  { id: 'nav.models.status', path: '/models/status', label: 'Model Status', section: 'Models', previousPaths: ['/system-resources/models'], aliases: ['model-status', 'models-status', 'memory-management', 'resident-models', 'model-resources', 'loaded-models', 'downloaded-models', 'model-memory'], keywords: ['memory', 'resident', 'loaded', 'unload', 'ram', 'vram', 'free memory', 'what is loaded', 'ollama', 'lm studio', 'hugging face', 'lora', 'delete model', 'disk'] },
   { id: 'nav.settings.local-llm-playground', path: '/local-llm/playground', label: 'Local LLM Playground', section: 'Models', aliases: ['llm-playground', 'playground', 'model-playground', 'compare-models'], keywords: ['ollama', 'lm studio', 'compare', 'benchmark', 'chat', 'test model', 'ttft', 'tokens per second', 'local llm'] },
   { id: 'nav.settings.mortalloom', path: '/settings/mortalloom', label: 'MortalLoom', section: 'Settings', aliases: ['settings-mortalloom', 'mortalloom'] },
   { id: 'nav.settings.openclaw', path: '/openclaw', label: 'OpenClaw', section: 'Settings', aliases: ['openclaw', 'settings-openclaw'], keywords: ['operator', 'chat', 'agent', 'runtime', 'sessions', 'streaming'] },

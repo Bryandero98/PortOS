@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
+import { imageTo3dTarget } from '../../lib/imageTo3dTargetFixture';
 import Image3dRuntimes from './Image3dRuntimes';
 
 const getImageTo3dTargets = vi.fn();
@@ -25,26 +26,7 @@ vi.mock('../install/RuntimeInstallModal', () => ({
   </div> : null),
 }));
 
-const target = (over = {}) => ({
-  id: 'trellis2',
-  label: 'TRELLIS.2',
-  description: 'Microsoft TRELLIS.2 — single image to a PBR-textured GLB mesh.',
-  executionLane: 'local-mps',
-  outputKind: 'glb-mesh',
-  available: true,
-  installed: false,
-  unavailableReason: null,
-  upstream: 'https://github.com/microsoft/TRELLIS.2',
-  port: 'https://github.com/shivampkumar/trellis-mac',
-  gatedRepos: [
-    {
-      label: 'facebook/dinov3-vitl16-pretrain-lvd1689m',
-      url: 'https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m',
-    },
-    { label: 'briaai/RMBG-2.0', url: 'https://huggingface.co/briaai/RMBG-2.0' },
-  ],
-  ...over,
-});
+const target = imageTo3dTarget;
 
 const renderPanel = () => render(<MemoryRouter><Image3dRuntimes /></MemoryRouter>);
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router';
+import { imageTo3dTarget } from '../lib/imageTo3dTargetFixture';
 import Media3D from './Media3D';
 
 const getImageTo3dTargets = vi.fn();
@@ -31,26 +32,7 @@ vi.mock('../components/imageGen/GalleryImagePicker', () => ({
 
 vi.mock('../components/MediaImage', () => ({ default: ({ alt }) => <img alt={alt} /> }));
 
-const target = (over = {}) => ({
-  id: 'trellis2',
-  label: 'TRELLIS.2',
-  description: 'Microsoft TRELLIS.2 — single image to a PBR-textured GLB mesh.',
-  executionLane: 'local-mps',
-  outputKind: 'glb-mesh',
-  available: true,
-  installed: false,
-  unavailableReason: null,
-  upstream: 'https://github.com/microsoft/TRELLIS.2',
-  port: 'https://github.com/shivampkumar/trellis-mac',
-  gatedRepos: [
-    {
-      label: 'facebook/dinov3-vitl16-pretrain-lvd1689m',
-      url: 'https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m',
-    },
-    { label: 'briaai/RMBG-2.0', url: 'https://huggingface.co/briaai/RMBG-2.0' },
-  ],
-  ...over,
-});
+const target = imageTo3dTarget;
 
 function LocationProbe() {
   return <output aria-label="Current query">{useLocation().search}</output>;

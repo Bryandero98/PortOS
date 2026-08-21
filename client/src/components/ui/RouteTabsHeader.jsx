@@ -1,6 +1,12 @@
 import { useNavigate } from 'react-router';
 import TabPills from './TabPills';
 
+// Above this many tabs, a phone-width pill row is a horizontal scroll nobody
+// finds the far end of. Six fits 375px; nine (Models) does not.
+const MOBILE_DROPDOWN_THRESHOLD = 6;
+
+const selectIdFor = (ariaLabel) => `${String(ariaLabel || 'section').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-select`;
+
 /**
  * A `TabPills` bar whose tabs are ROUTES rather than local state.
  *
@@ -15,14 +21,19 @@ import TabPills from './TabPills';
  * whose `to` lives outside their route prefix (Models → Playground) — the id
  * still selects it, so the host page passes its own `activeTab`.
  *
- * Sections with more tabs than a pill bar reads well at (Models) pass
- * `mobileDropdown` — plus `mobileSelectId`, so the collapsed `<select>` gets a
- * real `<label htmlFor>` rather than only an aria-label.
+ * Past `MOBILE_DROPDOWN_THRESHOLD` tabs the bar collapses to a `<select>` under
+ * `sm`. That is decided HERE rather than per section: every caller has the same
+ * phone width and the same pill sizes, so leaving it to each one meant Settings
+ * (19 tabs) kept scrolling horizontally while Models (9) collapsed. The select's
+ * id is derived from `ariaLabel` for the same reason — a caller that passed
+ * `mobileDropdown` but forgot the id silently downgraded from a real
+ * `<label htmlFor>` to a bare aria-label, and nothing failed.
  *
- * @param {{ tabs: Array<{id:string,label:string,to:string}>, activeTab: string, ariaLabel: string, mobileDropdown?: boolean, mobileSelectId?: string }} props
+ * @param {{ tabs: Array<{id:string,label:string,to:string}>, activeTab: string, ariaLabel: string }} props
  */
-export default function RouteTabsHeader({ tabs, activeTab, ariaLabel, mobileDropdown = false, mobileSelectId }) {
+export default function RouteTabsHeader({ tabs, activeTab, ariaLabel }) {
   const navigate = useNavigate();
+  const mobileDropdown = tabs.length > MOBILE_DROPDOWN_THRESHOLD;
 
   const handleChange = (tabId) => {
     const target = tabs.find((t) => t.id === tabId);
@@ -36,7 +47,7 @@ export default function RouteTabsHeader({ tabs, activeTab, ariaLabel, mobileDrop
       onChange={handleChange}
       ariaLabel={ariaLabel}
       mobileDropdown={mobileDropdown}
-      mobileSelectId={mobileSelectId}
+      mobileSelectId={mobileDropdown ? selectIdFor(ariaLabel) : undefined}
       className="w-full min-w-0 shrink-0"
     />
   );

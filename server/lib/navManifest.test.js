@@ -531,21 +531,33 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
   // stale ⌘K history, and in links other installs' peers may hold. A move that
   // forgets the redirect 404s all of them, and nothing else in this file would
   // notice — the coverage guard above only looks at where routes point NOW.
-  it('keeps a redirect for every relocated model-management path', () => {
-    const moved = [
-      ['/media/models', '/models/media'],
-      ['/media/loras', '/models/loras'],
-      ['/media/training', '/models/training'],
-      ['/settings/embeddings', '/models/embeddings'],
-      ['/settings/local-llm', '/models/llms'],
-      ['/system-resources/models', '/models/status'],
-      ['/media-models', '/models/media'],
-    ];
+  //
+  // Driven by each command's own `previousPaths`, NOT a list maintained here: the
+  // declaration then lives beside the path that moved, and the next move is one
+  // edit in navManifest.js instead of two files that can disagree.
+  it('keeps a redirect from every declared previous path to its current one', () => {
     const byFrom = new Map(scan.redirects.map((r) => [r.from, r.to]));
-    const broken = moved
-      .filter(([from, to]) => byFrom.get(from) !== to)
-      .map(([from, to]) => `${from} → ${byFrom.get(from) ?? 'NO REDIRECT'} (want ${to})`);
+    const broken = NAV_COMMANDS
+      .flatMap((c) => (c.previousPaths || []).map((from) => ({ from, to: c.path.split(/[?#]/)[0], id: c.id })))
+      .filter(({ from, to }) => byFrom.get(from) !== to)
+      .map(({ from, to, id }) => `${id}: ${from} → ${byFrom.get(from) ?? 'NO REDIRECT'} (want ${to})`);
     expect(broken).toEqual([]);
+  });
+
+  // The guard above is only as good as what it is pointed at, and it reads a
+  // field that is easy to simply not add. Pin the moves already made so deleting
+  // a `previousPaths` entry fails here rather than silently shrinking coverage.
+  it('still declares the previous paths of the pages already moved', () => {
+    const declared = new Set(NAV_COMMANDS.flatMap((c) => c.previousPaths || []));
+    const missing = [
+      '/settings/local-llm',   // #4736 — Local LLM management left Settings
+      '/media/models',         // #4728 — the rest of model management left Create/Settings/Dev Tools
+      '/media/loras',
+      '/media/training',
+      '/settings/embeddings',
+      '/system-resources/models',
+    ].filter((p) => !declared.has(p));
+    expect(missing).toEqual([]);
   });
 
   // A redirect that forwards to a path nothing serves is a 404 with extra steps.

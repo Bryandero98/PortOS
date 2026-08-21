@@ -20,7 +20,7 @@
  * Returns `{ report, setReport, loading, runReport, cleanup }`, where `cleanup`
  * is the prop bag `StoragePanel` / `ModelsPanel` / `CleanupControl` expect.
  */
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import * as api from '../services/api';
 import toast from '../components/ui/Toast';
 import { useConfirmDelete } from './useConfirmDelete.js';
@@ -83,14 +83,14 @@ export function useSystemResourceReport() {
     setBusyId(null);
   }, [runReport]);
 
-  const cleanup = {
+  const cleanup = useMemo(() => ({
     busyId,
     locked: busyId != null || loading,
     isConfirming,
     request: requestDelete,
     cancel: cancelDelete,
     confirm: (candidate) => confirmDelete(() => removeCandidate(candidate)),
-  };
+  }), [busyId, loading, isConfirming, requestDelete, cancelDelete, confirmDelete, removeCandidate]);
 
   return { report, setReport, loading, runReport, cleanup };
 }

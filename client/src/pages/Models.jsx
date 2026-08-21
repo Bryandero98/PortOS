@@ -1,15 +1,24 @@
+import { Suspense } from 'react';
 import { useParams, Navigate } from 'react-router';
 import { Cpu } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import ModelsTabsHeader from '../components/models/ModelsTabsHeader';
 import Image3dRuntimes from '../components/models/Image3dRuntimes';
 import ModelStatusTab from '../components/models/ModelStatusTab';
 import EmbeddingsTab from '../components/settings/EmbeddingsTab';
 import LocalModelAssessments from '../components/settings/LocalModelAssessments.jsx';
 import { LocalLlmTab } from '../components/settings/LocalLlmTab';
-import Loras from './Loras';
-import LoraTraining from './LoraTraining';
-import MediaModels from './MediaModels';
+import { lazyWithReload } from '../utils/lazyWithReload';
+
+// The three panels moved in from the Media Gen tabs were each their own route
+// chunk before the move (#4728) — keep them split, or landing on Performance
+// downloads the whole LoRA manager and HF-cache browser to render an
+// assessments table. The small always-on tabs above stay static.
+const Loras = lazyWithReload(() => import('./Loras'));
+const LoraTraining = lazyWithReload(() => import('./LoraTraining'));
+const LoraDatasetDetail = lazyWithReload(() => import('./LoraDatasetDetail'));
+const MediaModels = lazyWithReload(() => import('./MediaModels'));
 
 /**
  * Models — the top-level home for everything about the models this machine runs.
@@ -46,14 +55,32 @@ const TAB_CONTENT = {
   training: LoraTraining,
 };
 
+/**
+ * Drill-downs rendered INSIDE the section shell, keyed by the tab that owns them.
+ *
+ * A tab's detail view is still that tab — the LoRA dataset workbench is Training
+ * with one dataset open — so it keeps the section header and tab bar rather than
+ * becoming a bare route that drops both. Under `/media` these pages got that for
+ * free, because MediaGen was a layout route; declaring them here gives the same
+ * result without every future detail view needing its own special case in
+ * App.jsx.
+ */
+const TAB_DETAIL = {
+  training: LoraDatasetDetail,
+};
+
 export default function Models() {
-  const { tab } = useParams();
+  const { tab, recordId } = useParams();
   // An unknown slug lands on Performance rather than rendering a blank page —
   // it is the tab that answers "which model should I use?", which is what most
   // people arrive here for.
   const activeTab = tab && TAB_CONTENT[tab] ? tab : null;
   if (!activeTab) return <Navigate to="/models/performance" replace />;
 
+  // A record id in the URL selects the tab's drill-down, when it has one. A tab
+  // with no detail view ignores the extra segment and renders its index — better
+  // than 404ing a link that merely carries one segment too many.
+  const DetailContent = recordId ? TAB_DETAIL[activeTab] : null;
   const TabContent = TAB_CONTENT[activeTab];
 
   return (
@@ -63,7 +90,11 @@ export default function Models() {
       <ModelsTabsHeader activeTab={activeTab} />
 
       <div className="flex-1 min-w-0 overflow-auto p-4">
-        <TabContent />
+        {/* Local boundary rather than the App-level one: a lazy tab must not blank
+            out the section header and tab bar while its chunk loads. */}
+        <Suspense fallback={<PageSkeleton />}>
+          {DetailContent ? <DetailContent recordId={recordId} /> : <TabContent />}
+        </Suspense>
       </div>
     </div>
   );

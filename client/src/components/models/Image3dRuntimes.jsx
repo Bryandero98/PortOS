@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Download, ExternalLink, Loader2 } from 'lucide-react';
-import { getImageTo3dTargets } from '../../services/api';
 import { useHfTokenStatus } from '../../hooks/useHfTokenStatus';
-import { unavailableReasonLabel } from '../../lib/imageTo3dReasons';
+import { useImageTo3dTargets } from '../../hooks/useImageTo3dTargets';
+import { isTargetReady, unavailableReasonLabel } from '../../lib/imageTo3dReasons';
+import Banner from '../ui/Banner.jsx';
 import RuntimeInstallModal from '../install/RuntimeInstallModal';
 import Image3dHfAccessNotice from '../media/Image3dHfAccessNotice';
 
@@ -31,7 +32,7 @@ function StatusBadge({ target }) {
       </span>
     );
   }
-  if (target.installed) {
+  if (isTargetReady(target)) {
     // An installed-but-degraded target still renders — TRELLIS.2 with no Metal bake
     // produces correct geometry with a scrambled surface; Pixal3D with no NATTEN
     // falls back to DINO projection features — so "Ready" alone would be a lie. The
@@ -119,22 +120,10 @@ function TargetCard({ target, onInstall }) {
 }
 
 export default function Image3dRuntimes() {
-  const [targets, setTargets] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const { targets, loading, error, reload } = useImageTo3dTargets();
   // The target whose install modal is open (only local-install targets); null = closed.
   const [installTarget, setInstallTarget] = useState(null);
   const { present: hfTokenPresent, source: hfTokenSource, refresh: refreshHfToken } = useHfTokenStatus();
-
-  const load = useCallback(() => {
-    setLoading(true);
-    getImageTo3dTargets()
-      .then((data) => { setTargets(data?.targets || []); setError(null); })
-      .catch((err) => setError(err?.message || 'Failed to load 3D targets'))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
 
   // Every gated repo across the runnable targets, deduped by id — the token is
   // central, so listing one target's repos twice would just be noise. Unavailable
@@ -175,12 +164,18 @@ export default function Image3dRuntimes() {
       )}
 
       {error && !loading && (
-        <div className="flex items-center justify-between rounded-lg border border-port-error/40 bg-port-error/10 p-4 text-sm text-port-error">
-          <span>{error}</span>
-          <button onClick={load} className="rounded-md border border-port-error/50 px-3 py-1 text-xs hover:bg-port-error/20">
-            Retry
-          </button>
-        </div>
+        <Banner tone="error" icon={AlertTriangle}>
+          <div className="flex items-center justify-between gap-3">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={reload}
+              className="shrink-0 rounded-md border border-port-error/50 px-3 py-1 text-xs hover:bg-port-error/20"
+            >
+              Retry
+            </button>
+          </div>
+        </Banner>
       )}
 
       {!loading && !error && (
@@ -222,7 +217,7 @@ export default function Image3dRuntimes() {
               : null,
           ].filter(Boolean).join(' ') || undefined}
         onClose={() => setInstallTarget(null)}
-        onComplete={() => { setInstallTarget(null); load(); }}
+        onComplete={() => { setInstallTarget(null); reload(); }}
       />
     </div>
   );

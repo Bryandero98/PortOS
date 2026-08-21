@@ -278,8 +278,10 @@ export default function Loras() {
 
   return (
     <div className="space-y-6">
+      {/* An h2, not an h1: this page is the LoRAs tab under the Models section
+          (#4728), whose PageHeader already owns the page's h1. */}
       <div>
-        <h1 className="text-2xl font-bold text-white mb-1">LoRA Manager</h1>
+        <h2 className="text-2xl font-bold text-white mb-1">LoRA Manager</h2>
         <p className="text-sm text-gray-400">
           Install LoRA fine-tunes from Civitai or HuggingFace and apply them to your Image Gen and Video Gen renders.
         </p>

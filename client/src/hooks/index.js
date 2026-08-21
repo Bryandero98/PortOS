@@ -123,6 +123,7 @@ export * from './useOpenClawStream.js';
 export * from './usePipelineProgress.js';
 export * from './useReaderPanel.js';
 export * from './useSeriesEditorial.js';
+export * from './useImageTo3dTargets.js';
 export * from './useSseProgress.js';
 export * from './useStoryStepRuns.jsx';
 export * from './useModelDownloadStatus.js';

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { Boxes, CheckCircle2, AlertTriangle, Loader2, ImagePlus, Sparkles, Settings2 } from 'lucide-react';
-import { getImageTo3dTargets, createImageTo3dModel, getImageTo3dModel, listImageTo3dModels } from '../services/api';
+import { createImageTo3dModel, getImageTo3dModel, listImageTo3dModels } from '../services/api';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
+import { useImageTo3dTargets } from '../hooks/useImageTo3dTargets';
 import useMounted from '../hooks/useMounted';
 import { nameFromImageFilename, timeAgo } from '../utils/formatters';
 import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
@@ -14,15 +15,10 @@ import MediaImage from '../components/MediaImage';
 import { imageTo3dStatusMeta } from '../components/media/imageTo3dStatus';
 import ImageTo3dRenderOptions from '../components/media/ImageTo3dRenderOptions';
 import { renderOptionsBody } from '../lib/imageTo3dRenderOptions';
-import { unavailableReasonLabel } from '../lib/imageTo3dReasons';
+import { isTargetReady, unavailableReasonLabel } from '../lib/imageTo3dReasons';
 
 // Poll cadence while a render is in flight (a real TRELLIS.2 render is multi-minute).
 const POLL_INTERVAL_MS = 2500;
-
-// A target is generation-ready when it can run on this host and its local model
-// is present (installed:null means "no install concept" — a hosted target that's
-// ready as soon as it's available).
-const isTargetReady = (t) => !!t && t.available && t.installed !== false;
 
 export default function Media3D() {
   const [searchParams, updateParams] = useUrlParams();
@@ -32,9 +28,7 @@ export default function Media3D() {
   const targetFromRoute = searchParams.get('target') || '';
   const glbFromRoute = searchParams.get('glb') || '';
 
-  const [targets, setTargets] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const { targets, loading, error } = useImageTo3dTargets();
   const [pickerOpen, setPickerOpen] = useState(false);
   // Render lifecycle: a create kicks off an on-device render, then we poll the
   // record (via useAutoRefetch below) until it lands (ready → preview) or fails
@@ -58,14 +52,6 @@ export default function Media3D() {
   const { present: hfTokenPresent, source: hfTokenSource, refresh: refreshHfToken } = useHfTokenStatus();
   const mountedRef = useMounted(); // gate setState after the create/poll awaits
 
-  const load = useCallback(() => {
-    setLoading(true);
-    getImageTo3dTargets()
-      .then((data) => { setTargets(data?.targets || []); setError(null); })
-      .catch((err) => setError(err?.message || 'Failed to load 3D targets'))
-      .finally(() => setLoading(false));
-  }, []);
-
   const loadRecords = useCallback(() => {
     listImageTo3dModels({ silent: true })
       .then((data) => { if (mountedRef.current) setRecords(Array.isArray(data) ? data : []); })
@@ -81,7 +67,6 @@ export default function Media3D() {
       : [record, ...prev]));
   }, [mountedRef]);
 
-  useEffect(() => { load(); }, [load]);
   useEffect(() => { loadRecords(); }, [loadRecords]);
 
   const selectedImage = useMemo(
@@ -166,6 +151,16 @@ export default function Media3D() {
     if (!selectedTarget.available) return unavailableReasonLabel(selectedTarget.unavailableReason, 'This model can’t run on this host.');
     if (selectedTarget.installed === false) return `Install ${selectedTarget.label} from Models → 3D before generating.`;
     return null;
+  })();
+
+  // One sentence describing runtime availability. A failed registry read reports
+  // the error rather than "0 registered" — a list that could not be READ is not an
+  // empty list, and the remedy differs.
+  const runtimeSummary = (() => {
+    if (loading) return 'Checking which image-to-3D runtimes are installed…';
+    if (error) return error;
+    if (!targets.length) return 'No image-to-3D models are registered.';
+    return `${targets.filter(isTargetReady).length} of ${targets.length} ready on this host.`;
   })();
 
   const gatedHfModels = selectedTarget?.available ? selectedTarget.gatedRepos : null;
@@ -348,15 +343,7 @@ export default function Media3D() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-sm font-semibold text-white">Runtimes</h2>
-            <p className="mt-1 text-xs text-gray-400">
-              {loading
-                ? 'Checking which image-to-3D runtimes are installed…'
-                : error
-                  ? error
-                  : targets.length === 0
-                    ? 'No image-to-3D models are registered.'
-                    : `${targets.filter(isTargetReady).length} of ${targets.length} ready on this host.`}
-            </p>
+            <p className="mt-1 text-xs text-gray-400">{runtimeSummary}</p>
           </div>
           <Link
             to="/models/3d"

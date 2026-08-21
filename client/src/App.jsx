@@ -54,7 +54,6 @@ const ThreejsModels = lazyWithReload(() => import('./pages/ThreejsModels'));
 const Media3D = lazyWithReload(() => import('./pages/Media3D'));
 const Media3DDetail = lazyWithReload(() => import('./pages/Media3DDetail'));
 const ThreejsModelDetail = lazyWithReload(() => import('./pages/ThreejsModelDetail'));
-const LoraDatasetDetail = lazyWithReload(() => import('./pages/LoraDatasetDetail'));
 const UniverseBuilder = lazyWithReload(() => import('./pages/UniverseBuilder'));
 const Universes = lazyWithReload(() => import('./pages/Universes'));
 const Authors = lazyWithReload(() => import('./pages/Authors'));
@@ -316,11 +315,11 @@ export default function App() {
           <Route path="settings/embeddings" element={<Navigate to="/models/embeddings" replace />} />
           <Route path="settings/:tab" element={<Settings />} />
           <Route path="models" element={<Navigate to="/models/performance" replace />} />
-          {/* The training tab has a routed dataset workbench. React Router ranks
-              the static `training` segment above `:tab`, so the drill-down wins
-              over the tab route without depending on declaration order. */}
-          <Route path="models/training/:datasetId" element={<LoraDatasetDetail />} />
+          {/* A tab's drill-down (today: the LoRA dataset workbench) renders through
+              Models itself, so it keeps the section header and tab bar — see
+              TAB_DETAIL there. */}
           <Route path="models/:tab" element={<Models />} />
+          <Route path="models/:tab/:recordId" element={<Models />} />
           <Route path="local-llm/playground" element={<LocalLlmPlayground />} />
           <Route path="uploads" element={<Uploads />} />
           <Route path="shell" element={<Shell />} />

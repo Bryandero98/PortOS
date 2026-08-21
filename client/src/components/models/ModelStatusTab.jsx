@@ -1,4 +1,4 @@
-import ModelsPanel from '../system-resources/ModelsPanel.jsx';
+import ModelsPanel from './ModelsPanel.jsx';
 import { useSystemResourceReport } from '../../hooks/useSystemResourceReport.js';
 
 /**

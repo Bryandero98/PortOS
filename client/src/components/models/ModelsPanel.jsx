@@ -3,7 +3,7 @@ import { AlertTriangle, Box, Download, HardDrive, RefreshCw } from 'lucide-react
 import { Link } from 'react-router';
 import MemoryManagement from '../settings/MemoryManagement.jsx';
 import Banner from '../ui/Banner.jsx';
-import CleanupControl from './CleanupControl.jsx';
+import CleanupControl from '../system-resources/CleanupControl.jsx';
 import { formatBytes } from '../../utils/formatters.js';
 
 const BACKEND_LABEL = {

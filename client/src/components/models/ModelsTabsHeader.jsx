@@ -19,9 +19,9 @@ import RouteTabsHeader from '../ui/RouteTabsHeader';
 // section and the path is in ⌘K history — but it renders this header too, so
 // selecting it does not strand the user outside the tab bar.
 //
-// Keep this list alphabetical by label, matching the sidebar convention. It is
-// past the width a scrolling pill bar reads well at, so the header collapses to
-// a `<select>` under `sm`.
+// Keep this list alphabetical by label, matching the sidebar convention.
+// RouteTabsHeader collapses a list this long to a `<select>` under `sm` on its
+// own — no per-section flag to remember.
 export const TABS = [
   { id: '3d', label: '3D', to: '/models/3d' },
   { id: 'embeddings', label: 'Embeddings', to: '/models/embeddings' },
@@ -35,13 +35,5 @@ export const TABS = [
 ];
 
 export default function ModelsTabsHeader({ activeTab }) {
-  return (
-    <RouteTabsHeader
-      tabs={TABS}
-      activeTab={activeTab}
-      ariaLabel="Models sections"
-      mobileDropdown
-      mobileSelectId="models-section-select"
-    />
-  );
+  return <RouteTabsHeader tabs={TABS} activeTab={activeTab} ariaLabel="Models sections" />;
 }

@@ -1,5 +1,9 @@
 /**
- * LoRA dataset workbench (/models/training/:datasetId).
+ * LoRA dataset workbench (/models/training/:recordId).
+ *
+ * Rendered by `pages/Models.jsx` inside the Models section shell (its TAB_DETAIL
+ * map), not as a bare route — so it keeps the section header and tab bar the way
+ * it used to under the Media Gen shell.
  *
  * Build reference material for one universe bible subject (generate via the image
  * queue, upload, slice the reference-sheet turnaround), caption it with
@@ -268,8 +272,11 @@ function ReassignDialog({ dataset, onClose, onReassigned }) {
   );
 }
 
-export default function LoraDatasetDetail() {
-  const { datasetId } = useParams();
+export default function LoraDatasetDetail({ recordId }) {
+  // Models renders this inside the section shell and passes the id from
+  // `/models/training/:recordId`; `:datasetId` is the fallback for a direct mount.
+  const params = useParams();
+  const datasetId = recordId ?? params.datasetId;
   const [dataset, setDataset] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [subject, setSubject] = useState(null);
