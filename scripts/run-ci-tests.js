@@ -173,7 +173,12 @@ function main() {
     const listed = listRelatedFiles(scope, baseSha);
     if (listed) {
       relatedFiles = listed;
-    } else if (mode === 'related') {
+    } else {
+      // The list failed, so the union cannot be built. Run the import-graph
+      // half through Vitest directly and the planner's explicit half after
+      // it — two processes instead of one, but never a green run that
+      // quietly dropped every related test. This fallback covers a `files`
+      // plan as much as a `related` one: both union the same two halves.
       const relatedStatus = spawnNpm(scope, ['--changed', baseSha], 'related tests');
       if (relatedStatus !== 0) process.exit(relatedStatus);
       process.exit(selectedFiles.length ? spawnNpm(scope, selectedFiles, 'explicit structural tests') : 0);

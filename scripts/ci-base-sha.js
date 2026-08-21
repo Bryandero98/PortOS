@@ -53,13 +53,24 @@ export function resolveBaseSha({ eventName, revParse = gitRevParse } = {}) {
 }
 
 function main() {
-  const baseSha = resolveBaseSha({ eventName: process.env.GITHUB_EVENT_NAME });
-  if (!baseSha) {
-    console.log('No pull-request merge base to resolve — this run tests the complete suite.');
+  const eventName = process.env.GITHUB_EVENT_NAME;
+  const baseSha = resolveBaseSha({ eventName });
+  if (baseSha) {
+    writeStepEnv('CI_BASE_SHA', baseSha);
+    console.log(`📌 Diff base for this pull request: ${baseSha}`);
     return;
   }
-  writeStepEnv('CI_BASE_SHA', baseSha);
-  console.log(`📌 Diff base for this pull request: ${baseSha}`);
+  if (eventName === 'pull_request') {
+    // Say so here rather than leaving the reader with "tests the complete
+    // suite", which describes a forced-full run and is the opposite of what
+    // happens next: a scoped pull request with no base fails loudly one step
+    // later, on the planner's throw or the runner's requiresBaseSha guard.
+    // Not fatal on its own — a pull request into the release branch forces
+    // the complete suite and legitimately needs no base.
+    console.error('❌ pull_request checkout is not a merge ref — no diff base to resolve.');
+    return;
+  }
+  console.log('No pull-request merge base to resolve — this run tests the complete suite.');
 }
 
 const isMain = process.argv[1]
