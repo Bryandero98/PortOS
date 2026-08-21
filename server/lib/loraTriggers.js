@@ -11,7 +11,7 @@
  * This module is the pure half of the fix: given the user's prompt and the
  * trigger words of the LoRAs selected for THIS render, decide which activation
  * tokens are missing and append them. The render call sites (imageGen/local.js,
- * videoGen/prepareParams.js) own the sidecar reads and the provenance stamping.
+ * videoGen/local.js) own the sidecar reads and the provenance stamping.
  */
 
 // Only the FIRST trigger word of each LoRA is woven. Civitai's `trainedWords`
@@ -27,7 +27,12 @@ export const firstTriggerWord = (words) => {
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const WORD_CHAR = /[A-Za-z0-9_]/;
+// What counts as "inside a word" for the boundary assertions below. Unicode
+// letters/digits, not just ASCII, so a non-ASCII trigger or an accented prompt
+// gets the same treatment — `\b` and a bare `[A-Za-z0-9_]` class would both
+// read `aria` as present inside `ariaé` and silently skip the activation token.
+const WORD_CLASS = '\\p{L}\\p{N}_';
+const WORD_CHAR = new RegExp(`[${WORD_CLASS}]`, 'u');
 
 /**
  * Whole-token presence test. `\b`-style boundaries are applied only where the
@@ -45,9 +50,9 @@ export const promptHasTriggerWord = (prompt, word) => {
   const text = typeof prompt === 'string' ? prompt : '';
   const token = typeof word === 'string' ? word.trim() : '';
   if (!text || !token) return false;
-  const lead = WORD_CHAR.test(token[0]) ? '(?<![A-Za-z0-9_])' : '';
-  const tail = WORD_CHAR.test(token[token.length - 1]) ? '(?![A-Za-z0-9_])' : '';
-  return new RegExp(`${lead}${escapeRegExp(token)}${tail}`, 'i').test(text);
+  const lead = WORD_CHAR.test(token[0]) ? `(?<![${WORD_CLASS}])` : '';
+  const tail = WORD_CHAR.test(token[token.length - 1]) ? `(?![${WORD_CLASS}])` : '';
+  return new RegExp(`${lead}${escapeRegExp(token)}${tail}`, 'iu').test(text);
 };
 
 /**

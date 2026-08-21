@@ -32,6 +32,9 @@ const PRESENCE_CASES = [
   ['an audio reactive visualizer', 'audio reactive'],
   ['style: c.a.t art', 'c.a.t'],
   ['style: cXaYt art', 'c.a.t'],
+  ['a portrait of ariaé', 'aria'],
+  ['a portrait of éclairs', 'éclair'],
+  ['a portrait of éclair', 'éclair'],
   ['aria_tok, rooftop', 'aria_tok'],
   ['rooftop', 'aria_tok'],
   ['', 'aria_tok'],
@@ -74,6 +77,7 @@ describe('LoRA trigger words — server↔client parity', () => {
     for (const has of [serverPromptHasTriggerWord, clientPromptHasTriggerWord]) {
       expect(has('a portrait of aria_token', 'aria_tok')).toBe(false);
       expect(has('a portrait of aria_tok', 'aria_tok')).toBe(true);
+      expect(has('a portrait of ariaé', 'aria')).toBe(false);
     }
     for (const first of [serverFirstTriggerWord, clientFirstTriggerWord]) {
       expect(first(['rstgrm', 'film grain'])).toBe('rstgrm');

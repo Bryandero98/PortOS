@@ -38,6 +38,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
 import { isMiniMaxH3Runtime, isLtx2FamilyRuntime } from '../lib/runnerFamilies';
+import { composeStyledPrompt } from '../lib/composeStyledPrompt';
 import Drawer from '../components/Drawer';
 import { ImageGenTab } from '../components/settings/ImageGenTab';
 import LocalSetupPanel from '../components/settings/LocalSetupPanel';
@@ -1193,7 +1194,10 @@ export default function VideoGen() {
                     const add = triggers.join(', ');
                     return p && p.trim() ? `${p}, ${add}` : add;
                   })}
-                  prompt={prompt}
+                  // The STYLED prompt, not the raw one — buildGeneratePayload's
+                  // envelope prefixes the style preset, so that is what the server
+                  // weaves against and what the hint must be judged on.
+                  prompt={composeStyledPrompt(prompt, negativePrompt, stylePreset).prompt}
                   disabled={generating}
                 />
               </div>

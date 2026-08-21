@@ -34,6 +34,15 @@ describe('promptHasTriggerWord', () => {
     expect(promptHasTriggerWord('an audio reactive visualizer', 'audio reactive')).toBe(true);
   });
 
+  it('applies the word boundary to non-ASCII letters too', () => {
+    // An ASCII-only word class would read 'aria' as present inside 'ariaé'
+    // (the trailing char is not in [A-Za-z0-9_]), silently skipping the
+    // activation token — the failure mode is a LoRA that stays inert.
+    expect(promptHasTriggerWord('a portrait of ariaé', 'aria')).toBe(false);
+    expect(promptHasTriggerWord('a portrait of éclairs', 'éclair')).toBe(false);
+    expect(promptHasTriggerWord('a portrait of éclair', 'éclair')).toBe(true);
+  });
+
   it('treats regex metacharacters in the trigger literally', () => {
     expect(promptHasTriggerWord('style: c.a.t art', 'c.a.t')).toBe(true);
     expect(promptHasTriggerWord('style: cXaYt art', 'c.a.t')).toBe(false);

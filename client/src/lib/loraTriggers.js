@@ -19,7 +19,12 @@ export const firstTriggerWord = (words) => {
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const WORD_CHAR = /[A-Za-z0-9_]/;
+// What counts as "inside a word" for the boundary assertions below. Unicode
+// letters/digits, not just ASCII, so a non-ASCII trigger or an accented prompt
+// gets the same treatment — `\b` and a bare `[A-Za-z0-9_]` class would both
+// read `aria` as present inside `ariaé` and silently skip the activation token.
+const WORD_CLASS = '\\p{L}\\p{N}_';
+const WORD_CHAR = new RegExp(`[${WORD_CLASS}]`, 'u');
 
 // Whole-token, case-insensitive presence test, applied anywhere in the prompt
 // (Civitai triggers are commonly woven mid-sentence). Boundaries are asserted
@@ -29,7 +34,7 @@ export const promptHasTriggerWord = (prompt, word) => {
   const text = typeof prompt === 'string' ? prompt : '';
   const token = typeof word === 'string' ? word.trim() : '';
   if (!text || !token) return false;
-  const lead = WORD_CHAR.test(token[0]) ? '(?<![A-Za-z0-9_])' : '';
-  const tail = WORD_CHAR.test(token[token.length - 1]) ? '(?![A-Za-z0-9_])' : '';
-  return new RegExp(`${lead}${escapeRegExp(token)}${tail}`, 'i').test(text);
+  const lead = WORD_CHAR.test(token[0]) ? `(?<![${WORD_CLASS}])` : '';
+  const tail = WORD_CHAR.test(token[token.length - 1]) ? `(?![${WORD_CLASS}])` : '';
+  return new RegExp(`${lead}${escapeRegExp(token)}${tail}`, 'iu').test(text);
 };

@@ -328,11 +328,6 @@ export function buildSidecarMeta({
   // passes the map so this stays pure. Keyed rather than positional because the
   // valid-LoRA order is only known after the prefix-check below.
   loraTriggerWords = null,
-  // Opt-out for callers that already wove the activation tokens into `prompt`
-  // themselves — the comic/visual pipeline builds a trigger clause from
-  // `applyCharacterLorasToRender` before enqueueing, and appending again would
-  // double-weight the token.
-  weaveTriggerWords = true,
   initImagePath = null,
   initImageStrength = null,
   referenceImagePaths = [],
@@ -446,9 +441,10 @@ export function buildSidecarMeta({
   // render-time text and what was added are recorded alongside it, and only when
   // something was actually appended — an un-woven render's sidecar stays
   // byte-identical to every sidecar written before this feature.
-  const { prompt: wovenPrompt, added: addedTriggerWords } = weaveTriggerWords
-    ? weaveLoraTriggers(prompt, validLoraFilenames.map((f) => loraTriggerWords?.[f]))
-    : { prompt, added: [] };
+  const { prompt: wovenPrompt, added: addedTriggerWords } = weaveLoraTriggers(
+    prompt,
+    validLoraFilenames.map((f) => loraTriggerWords?.[f]),
+  );
   const renderPrompt = addedTriggerWords.length ? wovenPrompt : prompt;
   if (addedTriggerWords.length) {
     meta.renderPrompt = renderPrompt;
@@ -491,7 +487,7 @@ export function resolveOutputPlacement(outputTarget) {
   return { outputDir, skipSidecar, isGallery };
 }
 
-export async function generateImage({ pythonPath, prompt = '', negativePrompt = '', weaveTriggerWords = true, modelId = LOCAL_IMAGEGEN_DEFAULT_MODEL, width = 1024, height = 1024, steps, guidance, seed, quantize = '8', loraFilenames = [], loraPaths = [], loraScales = [], initImagePath = null, initImageStrength = null, referenceImagePaths = [], referenceImageStrengths = [], jobId: providedJobId = null, cleanC2PA = false, denoise = false, regenOf = null, upscaleTo = null, outputTarget = null }) {
+export async function generateImage({ pythonPath, prompt = '', negativePrompt = '', modelId = LOCAL_IMAGEGEN_DEFAULT_MODEL, width = 1024, height = 1024, steps, guidance, seed, quantize = '8', loraFilenames = [], loraPaths = [], loraScales = [], initImagePath = null, initImageStrength = null, referenceImagePaths = [], referenceImageStrengths = [], jobId: providedJobId = null, cleanC2PA = false, denoise = false, regenOf = null, upscaleTo = null, outputTarget = null }) {
   // Empty prompt is allowed: img2img / edit / unconditional renders are driven
   // by the init image (or run unconditionally), so text isn't required. The
   // mflux/diffusers runners accept an empty `--prompt` — the regen pass (#912)
@@ -539,12 +535,9 @@ export async function generateImage({ pythonPath, prompt = '', negativePrompt = 
   // Trigger words for the selected LoRAs (#4665). Read against the RAW request
   // (a superset of what survives the prefix-check inside buildSidecarMeta) so
   // the map is available before validation runs; an absent or legacy sidecar
-  // simply contributes nothing and the render is unchanged. Skipped entirely
-  // when the caller opted out or selected no LoRAs, so the default no-LoRA
-  // render does zero extra I/O.
-  const loraTriggerWords = weaveTriggerWords
-    ? await readTriggerWordsByFilename([...loraFilenames, ...loraPaths])
-    : null;
+  // simply contributes nothing and the render is unchanged. A no-LoRA render
+  // short-circuits inside the helper, so the common case does zero extra I/O.
+  const loraTriggerWords = await readTriggerWordsByFilename([...loraFilenames, ...loraPaths]);
   const {
     meta,
     renderPrompt,
@@ -578,7 +571,6 @@ export async function generateImage({ pythonPath, prompt = '', negativePrompt = 
     referenceImageStrengths,
     regenOf,
     loraTriggerWords,
-    weaveTriggerWords,
     resolveInputPath: resolveImageInputPath,
     loraExists: existsSync,
   });

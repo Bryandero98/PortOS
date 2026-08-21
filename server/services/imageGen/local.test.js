@@ -847,14 +847,20 @@ describe('imageGen local.buildSidecarMeta', () => {
     expect(addedTriggerWords).toEqual([]);
   });
 
-  it('honors weaveTriggerWords:false so the comic pipeline does not double-weight its own clause', () => {
+  it('adds nothing to a pipeline prompt that already carries the trigger in its own clause', () => {
+    // The comic/visual pipeline weaves its own "<Name> (<trigger>): <desc>" /
+    // "Featuring <Name> (<trigger>)" clause before enqueueing, using the SAME
+    // first-trigger-word token. Idempotence is what lets those renders share
+    // this weave instead of opting out — and opting out is what would have
+    // left a description-less character's LoRA inert, since comicPages drops
+    // any character with no description from its clause.
     const { meta, renderPrompt, addedTriggerWords } = buildSidecarMeta({
       ...baseMetaInput,
+      prompt: 'Aria (aria_tok): a tall figure in a red coat. A rooftop at dusk.',
       loraFilenames: ['aria.safetensors'],
       loraTriggerWords: { 'aria.safetensors': ['aria_tok'] },
-      weaveTriggerWords: false,
     });
-    expect(renderPrompt).toBe('a red cube');
+    expect(renderPrompt).toBe('Aria (aria_tok): a tall figure in a red coat. A rooftop at dusk.');
     expect(addedTriggerWords).toEqual([]);
     expect(meta.renderPrompt).toBeUndefined();
   });

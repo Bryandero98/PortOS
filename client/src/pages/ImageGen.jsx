@@ -1311,7 +1311,10 @@ export default function ImageGen() {
               currentRunnerFamily={currentRunnerFamily}
               currentCompatKey={currentCompatKey}
               onAppendTrigger={(words) => setPrompt((p) => appendTriggerWords(p, words))}
-              prompt={prompt}
+              // The STYLED prompt, not the raw one — that's what submit sends and
+              // therefore what the server weaves against, so a trigger already
+              // present in the style preset must not raise a 'will be added' hint.
+              prompt={composeStyledPrompt(prompt, negativePrompt, stylePreset).prompt}
               disabled={statusLoading}
             />
           )}
