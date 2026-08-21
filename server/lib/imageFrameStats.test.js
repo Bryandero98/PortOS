@@ -105,6 +105,15 @@ describe('describeFrameStats', () => {
     expect(isDegenerateFrame(stats)).toBe(false);
   });
 
+  it('rejects a solid RGBA fill with only a few transparent pixels', async () => {
+    const buf = await fromPixels((x, y) => (
+      x < 41 && y === 0 ? [40, 40, 40, 0] : [40, 40, 40, 255]
+    ), { channels: 4 });
+    const stats = await describeFrameStats(buf);
+    expect(stats.ok).toBe(false);
+    expect(stats.reason).toBe(FRAME_REASON.SOLID_FILL);
+  });
+
   it('rejects an RGBA frame with only a few visible pixels', async () => {
     const buf = await fromPixels((x, y) => (
       x === 0 && y === 0 ? [255, 255, 255, 255] : [0, 0, 0, 0]
@@ -114,11 +123,8 @@ describe('describeFrameStats', () => {
     expect(stats.reason).toBe(FRAME_REASON.NEAR_EMPTY);
   });
 
-  it('rejects a flat RGBA frame with only a few transparent pixels', async () => {
-    const buf = await fromPixels((x, y) => (
-      x < 2 && y === 0 ? [40, 40, 40, 0] : [40, 40, 40, 255]
-    ), { channels: 4 });
-    const stats = await describeFrameStats(buf);
+  it('rejects a fully opaque RGBA solid fill', async () => {
+    const stats = await describeFrameStats(await solid({ r: 0, g: 0, b: 0, alpha: 1 }, 4));
     expect(stats.ok).toBe(false);
     expect(stats.reason).toBe(FRAME_REASON.SOLID_FILL);
   });

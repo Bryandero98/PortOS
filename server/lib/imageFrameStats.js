@@ -58,6 +58,11 @@ export const MIN_JUDGEABLE_PIXELS = 256;
 // meaningful silhouette.
 export const ALPHA_COVERAGE_FLOOR = 255 * 0.005;
 
+// A silhouette needs a substantial minority of the alpha distribution to be
+// present, not merely one-pixel speckle. This is the binary-mask stdev for a
+// 5% minority and keeps alpha noise from rescuing a flat colour fill.
+export const ALPHA_SILHOUETTE_STDEV_FLOOR = 255 * Math.sqrt(0.05 * 0.95);
+
 export const FRAME_REASON = {
   SOLID_FILL: 'solid-fill',
   FULLY_TRANSPARENT: 'fully-transparent',
@@ -129,7 +134,7 @@ export async function describeFrameStats(input) {
     alpha
       && !stats.isOpaque
       && alpha.max > alpha.min
-      && alpha.stdev >= SOLID_FILL_STDEV_EPSILON
+      && alpha.stdev >= ALPHA_SILHOUETTE_STDEV_FLOOR
       && alpha.mean >= ALPHA_COVERAGE_FLOOR
       && alpha.mean <= 255 - ALPHA_COVERAGE_FLOOR,
   );
