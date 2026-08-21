@@ -403,6 +403,40 @@ export function formatContextLength(tokens, { suffix = ' ctx' } = {}) {
 }
 
 /**
+ * Context length with NO unit suffix — `4096` → `"4K"` — for prose that
+ * already says "tokens of context" around it.
+ *
+ * Three surfaces in the Models section had each declared this same one-line
+ * alias privately; it lives here, beside `formatContextLength`, so a change to
+ * the K/M thresholds reaches all of them.
+ */
+export function formatContextTokens(tokens) {
+  return formatContextLength(tokens, { suffix: '' });
+}
+
+/**
+ * How fast a measured model generated, as one label: `"58.5 tok/s"`,
+ * `"~58.5 tok/s"` for a frame-counted estimate, or `"240 chars/s"` when the
+ * runtime reported no token counts at all. `null` when neither was measured.
+ *
+ * Tokens/s leads because it is the figure people compare local models on, and
+ * the two are never shown together — one row carrying both units reads as a
+ * contradiction. The `~` is not decoration: PortOS has no tokenizer, so a count
+ * derived from counting streamed frames must never be presented as one the
+ * daemon's tokenizer produced.
+ *
+ * @param {{meanTokensPerSecond?: number|null, meanCharsPerSecond?: number|null, tokensEstimated?: boolean|null}} perf
+ */
+export function throughputLabel(perf) {
+  const tokens = perf?.meanTokensPerSecond;
+  if (typeof tokens === 'number' && Number.isFinite(tokens)) {
+    return `${perf?.tokensEstimated ? '~' : ''}${tokens} tok/s`;
+  }
+  const chars = perf?.meanCharsPerSecond;
+  return typeof chars === 'number' && Number.isFinite(chars) ? `${chars} chars/s` : null;
+}
+
+/**
  * Count whitespace-separated words in a string. Mirrors the canonical
  * server-side `countWords` in `server/lib/textUtils.js` (the client cannot
  * import from `server/`) so client + server word counts always agree.

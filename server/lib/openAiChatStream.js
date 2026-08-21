@@ -22,13 +22,19 @@
 import { readResponseJson } from './readResponseJson.js';
 
 /**
- * Parse one OpenAI-style SSE `data:` line into its content/reasoning delta.
+ * Parse one OpenAI-style SSE `data:` line into its content/reasoning delta and,
+ * when the daemon sent one, its `usage` block.
+ *
  * Returns null for non-data lines, the `[DONE]`/`✅` sentinels, or a malformed
  * frame: a single bad frame must SKIP, not abort the stream — one non-JSON
  * keep-alive would otherwise throw out of the read loop and discard every
  * token already received.
+ *
+ * `usage` rides on a terminal frame that carries an EMPTY `choices` array (that
+ * is how `stream_options.include_usage` reports it), so a frame can legitimately
+ * carry a usage block and no delta at all.
  */
-export function extractStreamDelta(rawLine) {
+export function parseStreamFrame(rawLine) {
   const line = rawLine.trim();
   if (!line.startsWith('data: ')) return null;
   const data = line.slice(6).trim();
@@ -40,7 +46,49 @@ export function extractStreamDelta(rawLine) {
     return null;
   }
   const delta = parsed?.choices?.[0]?.delta;
-  return { content: delta?.content || '', reasoning: delta?.reasoning || '' };
+  return {
+    content: delta?.content || '',
+    reasoning: delta?.reasoning || '',
+    // `null` = this frame reported no usage, which is every frame but the last.
+    usage: parsed?.usage && typeof parsed.usage === 'object' ? parsed.usage : null,
+  };
+}
+
+// Endpoints that answered 4xx to `stream_options`. A sweep runs hundreds of
+// samples against the same daemon, and re-discovering its incompatibility on
+// every one would double the prefill cost of each — including a 16k-token
+// context. Absent from the set = never rejected (which covers "never tried"),
+// the same "validate, don't infer" shape the local-LLM model caches use.
+const usageUnsupportedEndpoints = new Set();
+
+/** Test seam: forget which endpoints rejected `stream_options`. */
+export function __resetUsageSupport() {
+  usageUnsupportedEndpoints.clear();
+}
+
+/**
+ * Normalize a provider `usage` block into the token counts PortOS records.
+ *
+ * Every OpenAI-compatible local daemon reports snake_case (`completion_tokens`),
+ * but Ollama's native passthrough and a few forks use camelCase — accept both
+ * rather than silently recording "no tokens" for half the runtimes.
+ *
+ * `null` on either field means NOT REPORTED. It never means zero: a zero-token
+ * completion is a real (failed) measurement, and collapsing the two would let a
+ * daemon that reports nothing masquerade as one that generated nothing.
+ */
+export function normalizeUsage(usage) {
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const value = usage?.[key];
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+    }
+    return null;
+  };
+  return {
+    completionTokens: pick('completion_tokens', 'completionTokens', 'eval_count'),
+    promptTokens: pick('prompt_tokens', 'promptTokens', 'prompt_eval_count'),
+  };
 }
 
 /**
@@ -80,6 +128,13 @@ export function buildMessages({ systemPrompt, prompt }) {
  * @param {AbortSignal} [options.signal]
  * @param {(chunk: string, kind: 'content'|'reasoning') => any} [options.onChunk]
  *   awaited, so a consumer's backpressure reaches the upstream read loop.
+ * @param {(stats: object) => void} [options.onStats] registering one is what
+ *   asks the daemon for a terminal usage frame (`stream_options.include_usage`);
+ *   a daemon that rejects the key is retried once without it and remembered, so
+ *   no caller has to know which runtimes support it. Called exactly once, before
+ *   this resolves or throws, with `{ completionTokens, promptTokens, estimated }`.
+ *   Token counts are `null` when the daemon reported none AND nothing streamed
+ *   to estimate from — never 0, which would read as "generated nothing".
  * @returns {Promise<string>} the streamed text. Throws on transport/HTTP
  *   failure; an abort mid-stream throws with `.partialOutput` carrying whatever
  *   had already streamed.
@@ -94,11 +149,16 @@ export async function streamOpenAiChat({
   extraBody = {},
   signal,
   onChunk,
+  onStats,
 }) {
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const url = `${String(endpoint || '').replace(/\/+$/, '')}/chat/completions`;
+  // Ask for usage whenever anyone is listening — unless this endpoint already
+  // told us it does not understand the key.
+  const includeUsage = typeof onStats === 'function' && !usageUnsupportedEndpoints.has(url);
 
-  const response = await fetch(`${String(endpoint || '').replace(/\/+$/, '')}/chat/completions`, {
+  const post = (withUsage) => fetch(url, {
     method: 'POST',
     headers,
     signal,
@@ -108,14 +168,41 @@ export async function streamOpenAiChat({
       stream: true,
       temperature,
       max_tokens: maxTokens,
+      ...(withUsage ? { stream_options: { include_usage: true } } : {}),
       ...extraBody,
     }),
   }).catch((err) => ({ ok: false, status: 0, error: err.message }));
+
+  let response = await post(includeUsage);
+  // `stream_options` is standard OpenAI, but a stricter daemon (or an older
+  // build) can reject an unknown body key outright. Token counts are a
+  // nice-to-have; the generation is not — so drop the ask and retry once rather
+  // than failing a run over a metric. Narrowed to the two codes that actually
+  // mean "I did not like this body": a 401 (key-gated vLLM), a 404, a 5xx, or a
+  // transport error all say nothing about `stream_options`, and retrying them
+  // would double every real failure.
+  if (!response.ok && includeUsage && (response.status === 400 || response.status === 422) && !signal?.aborted) {
+    console.log(`⚠️  Local LLM: ${model} rejected stream_options (${response.status}) — retrying without usage reporting`);
+    usageUnsupportedEndpoints.add(url);
+    // Drain the rejected response so its socket is released before the retry.
+    await response.body?.cancel?.().catch(() => {});
+    response = await post(false);
+  }
 
   if (!response.ok) {
     const body = response.text ? await response.text().catch(() => '') : response.error || '';
     throw new Error(`Provider returned ${response.status || 0}: ${body || response.error || response.statusText || 'request failed'}`);
   }
+
+  // A stats listener must fire on EVERY exit path, including the abort/throw one
+  // — a timed-out run still measured real tokens up to the cut, and dropping
+  // them would report "not measured" for a sample that was in fact measured.
+  // Guarded because a broken listener must not take down a live generation.
+  const emitStats = (stats) => {
+    if (typeof onStats !== 'function') return;
+    try { onStats(stats); }
+    catch (err) { console.error(`❌ Local LLM: usage listener failed: ${err.message}`); }
+  };
 
   if (!response.body?.getReader) {
     // A non-streaming 200 (some daemons ignore `stream: true`). Read it whole
@@ -125,6 +212,10 @@ export async function streamOpenAiChat({
     const data = await readResponseJson(response, { fallback: null, emptyValue: null });
     if (!data) throw new Error(`Provider returned a non-JSON response (${response.status})`);
     const text = data.choices?.[0]?.message?.content || '';
+    // A whole-body response reports usage the same way a non-streamed call does.
+    // There is no per-chunk fallback here — nothing streamed — so an absent usage
+    // block stays `null` rather than being estimated from a count we never made.
+    emitStats({ ...normalizeUsage(data.usage), estimated: false });
     if (text) await onChunk?.(text, 'content');
     return text;
   }
@@ -134,10 +225,25 @@ export async function streamOpenAiChat({
   let buffer = '';
   let output = '';
   let reasoning = '';
+  // Token counts as the daemon reported them, plus the streamed-frame fallback.
+  // A frame carrying content is one decode step on every local runtime PortOS
+  // talks to, so counting frames approximates the completion length closely —
+  // but it is an ESTIMATE and is labelled as one, never merged into the reported
+  // figure. `null` until a usage frame arrives keeps "reported none" distinct
+  // from "reported zero".
+  //
+  // CONTENT frames only, deliberately: the text this returns is content-only
+  // (`resolvePartialOutput` prefers it), so counting reasoning frames too would
+  // report a tokens/s figure covering more output than the chars/s figure beside
+  // it — the two would disagree systematically on every reasoning model.
+  let usage = null;
+  let contentFrames = 0;
 
   const consumeLine = async (rawLine) => {
-    const delta = extractStreamDelta(rawLine);
+    const delta = parseStreamFrame(rawLine);
     if (!delta) return;
+    if (delta.usage) usage = delta.usage;
+    if (delta.content) contentFrames += 1;
     if (delta.content) {
       output += delta.content;
       await onChunk?.(delta.content, 'content');
@@ -170,6 +276,13 @@ export async function streamOpenAiChat({
     err.partialOutput = resolvePartialOutput({ output, reasoning });
     throw err;
   } finally {
+    const reported = normalizeUsage(usage);
+    emitStats(reported.completionTokens !== null
+      ? { ...reported, estimated: false }
+      // No usage block: fall back to the streamed-frame count, which is the only
+      // token-shaped evidence we have. `null` when nothing streamed at all —
+      // reporting 0 would file a transport failure as a zero-token generation.
+      : { completionTokens: contentFrames > 0 ? contentFrames : null, promptTokens: reported.promptTokens, estimated: contentFrames > 0 });
     await reader.cancel().catch(() => {});
   }
 

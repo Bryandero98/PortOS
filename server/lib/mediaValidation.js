@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { PORTS } from './ports.js';
 import { ASSESSABLE_RUNTIMES } from './localProviderRuntime.js';
+import { SWEEP_SCOPES } from './localModelAssessment.js';
 
 // OpenWorld snapshot pipeline (issue #877): how often to capture a city-state
 // frame and how many to retain. Validated as a settings slice on PUT /api/settings;
@@ -238,6 +239,14 @@ export const localLlmAssessmentRunSchema = z.object({
   modelId: localLlmModelIdSchema,
   contextTokens: z.array(z.coerce.number().int().min(64).max(131072)).min(1).max(5).optional(),
   tuning: localLlmTuningSchema,
+});
+// "Measure everything" — one request, one server-side queue, hours of provider
+// work. The scope decides WHICH models (see `selectSweepTargets`); the target
+// list itself is derived server-side rather than sent, so a client can't ask for
+// an arbitrary batch of models.
+export const localLlmAssessmentSweepSchema = z.object({
+  scope: z.enum(SWEEP_SCOPES).optional().default('unmeasured'),
+  contextTokens: z.array(z.coerce.number().int().min(64).max(131072)).min(1).max(5).optional(),
 });
 export const localLlmAssessmentIntentSchema = z.object({
   intent: z.enum(['balanced', 'smartest', 'fastest', 'lightweight']).optional().default('balanced'),

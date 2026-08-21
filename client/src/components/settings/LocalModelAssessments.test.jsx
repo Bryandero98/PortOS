@@ -6,6 +6,11 @@ vi.mock('../../services/api', () => ({
   getLocalLlmAssessments: vi.fn(),
   runLocalLlmAssessment: vi.fn(),
   deleteLocalLlmAssessment: vi.fn(),
+  // The sweep panel is a child of this one and polls the queue on mount. Its own
+  // behavior has a dedicated suite; here it just has to be idle and quiet.
+  getLocalLlmAssessmentSweep: vi.fn(async () => ({ status: 'idle', total: 0, completed: 0, results: [] })),
+  startLocalLlmAssessmentSweep: vi.fn(),
+  cancelLocalLlmAssessmentSweep: vi.fn(),
 }));
 
 vi.mock('../ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
@@ -16,7 +21,10 @@ vi.mock('../../services/socket', () => ({
   default: { on: vi.fn(), off: vi.fn() },
 }));
 
-import { getLocalLlmAssessments, runLocalLlmAssessment, deleteLocalLlmAssessment } from '../../services/api';
+import {
+  getLocalLlmAssessments, runLocalLlmAssessment, deleteLocalLlmAssessment,
+  getLocalLlmAssessmentSweep, cancelLocalLlmAssessmentSweep,
+} from '../../services/api';
 import toast from '../ui/Toast';
 import socket from '../../services/socket';
 import LocalModelAssessments from './LocalModelAssessments.jsx';
@@ -34,6 +42,8 @@ const report = (overrides = {}) => ({
   runtimes: RUNTIMES,
   tuningComparison: [],
   uninstalled: [],
+  throughputReport: { rows: [], contexts: [], modelsWithTokenRates: 0 },
+  sweepScopes: { unmeasured: 0, stale: 0, all: 0 },
   ...overrides,
 });
 
@@ -50,6 +60,11 @@ const RUNTIMES = [
   ] },
   { id: 'mtplx', label: 'MTPLX', managed: false, modelCount: null, error: 'not reachable at http://127.0.0.1:8000/v1 (ECONNREFUSED)', tuningSpecs: [] },
 ];
+
+// The sweep queue is server state the panel reads on mount. Every suite here
+// starts from "nothing running" — a test that wants a live queue says so.
+const idleSweep = () =>
+  getLocalLlmAssessmentSweep.mockResolvedValue({ status: 'idle', total: 0, completed: 0, current: null, results: [] });
 
 const rankedEntry = (overrides = {}) => ({
   backend: 'ollama',
@@ -77,6 +92,7 @@ const rankedEntry = (overrides = {}) => ({
 describe('LocalModelAssessments', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    idleSweep();
     getLocalLlmAssessments.mockResolvedValue(report());
   });
 
@@ -123,7 +139,7 @@ describe('LocalModelAssessments', () => {
     runLocalLlmAssessment.mockResolvedValue({ verdict: 'fits' });
     render(<LocalModelAssessments />);
 
-    await user.click(await screen.findByRole('button', { name: /measure/i }));
+    await user.click(await screen.findByRole('button', { name: 'Measure' }));
     // Nothing has been sent yet — the click opens the ask, it does not run.
     expect(runLocalLlmAssessment).not.toHaveBeenCalled();
     expect(screen.getByText(/Measure this model\?/)).toBeInTheDocument();
@@ -144,7 +160,7 @@ describe('LocalModelAssessments', () => {
     }));
     render(<LocalModelAssessments />);
 
-    await user.click(await screen.findByRole('button', { name: /measure/i }));
+    await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(screen.getByRole('button', { name: /cancel/i }));
     expect(runLocalLlmAssessment).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByText(/Measure this model\?/)).not.toBeInTheDocument());
@@ -157,6 +173,44 @@ describe('LocalModelAssessments', () => {
     render(<LocalModelAssessments />);
     expect(await screen.findByText(/Not yet measured \(1\)/)).toBeInTheDocument();
     expect(screen.getByText(/not a mark against them/)).toBeInTheDocument();
+  });
+
+  // Two measurements at once measure the contention between them, not the
+  // models — so the queue holding the provider has to quiet the per-model buttons.
+  it('disables the per-model Measure button while the sweep holds the provider', async () => {
+    getLocalLlmAssessments.mockResolvedValue(report({
+      unassessed: [{ backend: 'ollama', modelId: 'example-model:7b', params: '7B' }],
+    }));
+    getLocalLlmAssessmentSweep.mockResolvedValue({ status: 'running', total: 4, completed: 1, current: null, results: [] });
+    render(<LocalModelAssessments />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Measure' })).toBeDisabled());
+  });
+
+  it('re-reads the ranking once the sweep finishes, so the morning view is current', async () => {
+    const user = userEvent.setup();
+    getLocalLlmAssessmentSweep.mockResolvedValue({ status: 'running', total: 2, completed: 1, current: null, results: [] });
+    cancelLocalLlmAssessmentSweep.mockResolvedValue({ status: 'cancelled', total: 2, completed: 1, current: null, results: [] });
+    render(<LocalModelAssessments />);
+
+    await user.click(await screen.findByRole('button', { name: /stop sweep/i }));
+    // Once for the mount, once because the queue's evidence just changed.
+    await waitFor(() => expect(getLocalLlmAssessments).toHaveBeenCalledTimes(2));
+  });
+
+  it('renders throughput in tokens/s when the runtime reported token counts', async () => {
+    getLocalLlmAssessments.mockResolvedValue(report({
+      ranked: [rankedEntry({ performance: { ...rankedEntry().performance, meanTokensPerSecond: 58.5, tokensEstimated: false } })],
+    }));
+    render(<LocalModelAssessments />);
+    expect(await screen.findByText(/58.5 tok\/s/)).toBeInTheDocument();
+  });
+
+  it('shows chars/s alone for a runtime that reported no token counts', async () => {
+    getLocalLlmAssessments.mockResolvedValue(report({ ranked: [rankedEntry()] }));
+    render(<LocalModelAssessments />);
+    expect(await screen.findByText('120 chars/s')).toBeInTheDocument();
+    expect(screen.queryByText(/tok\/s/)).not.toBeInTheDocument();
   });
 
   it('refetches for the selected intent', async () => {
@@ -197,7 +251,7 @@ describe('LocalModelAssessments', () => {
     });
     render(<LocalModelAssessments />);
 
-    await user.click(await screen.findByRole('button', { name: /measure/i }));
+    await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(screen.getByRole('button', { name: /run assessment/i }));
     await waitFor(() => expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument());
 
@@ -220,7 +274,7 @@ describe('LocalModelAssessments', () => {
     });
     const { unmount } = render(<LocalModelAssessments />);
 
-    await user.click(await screen.findByRole('button', { name: /measure/i }));
+    await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(screen.getByRole('button', { name: /run assessment/i }));
     await waitFor(() => expect(capturedSignal).toBeDefined());
 
@@ -302,7 +356,7 @@ describe('LocalModelAssessments', () => {
       // Never resolves during the test — the run stays in flight so progress renders.
       runLocalLlmAssessment.mockImplementation(() => new Promise(() => {}));
       render(<LocalModelAssessments />);
-      await user.click(await screen.findByRole('button', { name: /measure/i }));
+      await user.click(await screen.findByRole('button', { name: 'Measure' }));
       await user.click(await screen.findByRole('button', { name: /run assessment/i }));
       return user;
     };
@@ -350,6 +404,7 @@ describe('LocalModelAssessments', () => {
 describe('LocalModelAssessments — runtimes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    idleSweep();
     getLocalLlmAssessments.mockResolvedValue(report());
   });
 
@@ -383,6 +438,7 @@ describe('LocalModelAssessments — runtimes', () => {
 describe('LocalModelAssessments — tuning', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    idleSweep();
     getLocalLlmAssessments.mockResolvedValue(report({
       unassessed: [{ backend: 'llama', modelId: 'dflash', params: null }],
     }));
@@ -392,7 +448,7 @@ describe('LocalModelAssessments — tuning', () => {
     runLocalLlmAssessment.mockResolvedValue({ verdict: 'fits', tuningApplied: true });
     const user = userEvent.setup();
     render(<LocalModelAssessments />);
-    await user.click(await screen.findByRole('button', { name: /Measure/ }));
+    await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(await screen.findByRole('button', { name: /Tuning/ }));
     await user.type(screen.getByLabelText('Micro-batch size'), '512');
     await user.click(screen.getByRole('button', { name: 'Run assessment' }));
@@ -408,7 +464,7 @@ describe('LocalModelAssessments — tuning', () => {
     runLocalLlmAssessment.mockResolvedValue({ verdict: 'fits', tuningApplied: true });
     const user = userEvent.setup();
     render(<LocalModelAssessments />);
-    await user.click(await screen.findByRole('button', { name: /Measure/ }));
+    await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(await screen.findByRole('button', { name: /Tuning/ }));
     await user.click(screen.getByRole('button', { name: 'Run assessment' }));
     await waitFor(() => expect(runLocalLlmAssessment).toHaveBeenCalledWith(
@@ -420,7 +476,7 @@ describe('LocalModelAssessments — tuning', () => {
   it('says what PortOS can and cannot set for each knob', async () => {
     const user = userEvent.setup();
     render(<LocalModelAssessments />);
-    await user.click(await screen.findByRole('button', { name: /Measure/ }));
+    await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(await screen.findByRole('button', { name: /Tuning/ }));
     expect(screen.getAllByText(/puts this on the launch line/).length).toBe(2);
   });
@@ -431,7 +487,7 @@ describe('LocalModelAssessments — tuning', () => {
     });
     const user = userEvent.setup();
     render(<LocalModelAssessments />);
-    await user.click(await screen.findByRole('button', { name: /Measure/ }));
+    await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(screen.getByRole('button', { name: 'Run assessment' }));
     await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(expect.stringMatching(/tuning not applied/)));
     expect(toast.success).not.toHaveBeenCalled();
@@ -439,7 +495,7 @@ describe('LocalModelAssessments — tuning', () => {
 });
 
 describe('LocalModelAssessments — tuning comparison', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); idleSweep(); });
 
   it('shows each tuning against the winner once a model has two', async () => {
     getLocalLlmAssessments.mockResolvedValue(report({
@@ -488,6 +544,7 @@ describe('LocalModelAssessments — one row per tuning', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    idleSweep();
     getLocalLlmAssessments.mockResolvedValue(report({
       ranked: [rankedEntry({ backend: 'llama', modelId: 'dflash', tuningKey: '' }), tunedEntry()],
       assessments: [{ backend: 'llama', modelId: 'dflash', tuningKey: '' }, { backend: 'llama', modelId: 'dflash', tuningKey: 'ubatchSize=512' }],

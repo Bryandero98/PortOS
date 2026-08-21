@@ -67,6 +67,9 @@ const svc = await import('./localModelAssessments.js');
 // The durable store is a separate module (no path to a provider); the read-only
 // projections the catalog badge consumes live there.
 const store = await import('./localModelAssessmentStore.js');
+// Dynamic, like the two above: a static import hoists ABOVE the fileUtils mock,
+// and this module resolves its claim path from `PATHS.data` at load time.
+const { claimHeavyLocalJob } = await import('../lib/heavyJobClaim.js');
 
 const STORE = join(tempRoot, 'local-llm', 'assessments.json');
 
@@ -190,6 +193,68 @@ describe('loadAssessments / getAssessmentReport (read path)', () => {
 
   it('falls back to the balanced intent for an unrecognized one', async () => {
     expect((await svc.getAssessmentReport({ intent: 'nonsense' })).intent).toBe('balanced');
+  });
+});
+
+describe('runAssessment — machine-wide accelerator claim', () => {
+  // A measurement is only valid if it had the machine to itself, so this is
+  // enforced in the SERVICE, not by a disabled button: a second tab, ⌘K, or curl
+  // has to hit the same wall. Refusing beats recording a corrupt reading.
+  it('refuses when another heavy local job already holds the machine', async () => {
+    runLocalLlmTest.mockResolvedValue(okRun());
+    const held = await claimHeavyLocalJob({ kind: 'LoRA training', id: 'run-1' });
+    expect(held.ok).toBe(true);
+    try {
+      await expect(svc.runAssessment({ backend: 'ollama', modelId: 'example-model:7b', contextTokens: [512] }))
+        .rejects.toMatchObject({ code: 'HEAVY_LOCAL_JOB_BUSY' });
+      // Nothing was measured, so nothing was recorded.
+      expect(runLocalLlmTest).not.toHaveBeenCalled();
+    } finally {
+      await held.release();
+    }
+  });
+
+  // The claim wait does not observe the abort signal, so a run cancelled WHILE
+  // waiting would otherwise wake up and measure — relaunching llama-server under
+  // the abandoned run's tuning and holding the machine against its replacement.
+  it('does not measure a run that was cancelled while waiting for the claim', async () => {
+    runLocalLlmTest.mockResolvedValue(okRun());
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await svc.runAssessment({
+      backend: 'ollama', modelId: 'example-model:7b', contextTokens: [512], signal: controller.signal,
+    });
+
+    expect(result.cancelled).toBe(true);
+    expect(runLocalLlmTest).not.toHaveBeenCalled();
+    expect(relaunchLlamaServerWithTuning).not.toHaveBeenCalled();
+    // Nothing measured means nothing recorded.
+    expect(await svc.loadAssessments()).toEqual([]);
+    // ...and the claim went back, so the replacement sweep can start.
+    const after = await claimHeavyLocalJob({ kind: 'probe', id: 'after-cancel' });
+    expect(after.ok).toBe(true);
+    await after.release();
+  });
+
+  it('releases the claim afterwards, so the next measurement can run', async () => {
+    runLocalLlmTest.mockResolvedValue(okRun());
+    await svc.runAssessment({ backend: 'ollama', modelId: 'example-model:7b', contextTokens: [512] });
+    const after = await claimHeavyLocalJob({ kind: 'probe', id: 'after' });
+    expect(after.ok).toBe(true);
+    await after.release();
+  });
+
+  it('releases the claim even when the run throws', async () => {
+    // A relaunch failure escapes before any sample runs; a leaked claim would
+    // wedge every local render on the machine until the process exited.
+    relaunchLlamaServerWithTuning.mockRejectedValueOnce(new Error('boom'));
+    getLlamaServerEndpoint.mockResolvedValue(null);
+    await svc.runAssessment({ backend: 'llama', modelId: 'dflash', contextTokens: [512], tuning: { ubatchSize: 512 } })
+      .catch(() => null);
+    const after = await claimHeavyLocalJob({ kind: 'probe', id: 'after-throw' });
+    expect(after.ok).toBe(true);
+    await after.release();
   });
 });
 

@@ -585,6 +585,13 @@ export function LocalLlmTab() {
 
   useEffect(() => {
     const handleProgress = (data) => {
+      // `localLlm:progress` is a shared channel. Measurement frames (`assessment`,
+      // `assessment-sweep`) belong to the Performance tab and say nothing about
+      // what is installed here — and an overnight sweep emits a `complete` frame
+      // per model, so answering them would reload the status AND re-query the
+      // Hugging Face catalog once per measured model, all night. This tab owns
+      // the unscoped install/migrate/upgrade frames only.
+      if (data?.scope === 'assessment' || data?.scope === 'assessment-sweep') return;
       clearTimeout(progressTimer.current);
       setProgressMsg(data.message || '');
       if (data.event === 'complete') {

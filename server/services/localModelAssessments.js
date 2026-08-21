@@ -27,9 +27,13 @@
  *     user action whose UI names the backend, the model, and the number of runs
  *     before it fires.
  *
- * There is NO scheduler, NO boot hook, and NO "assess everything installed"
- * background sweep. Do not add one: a fresh install must be silent on the LLM
- * front until the user asks.
+ * There is NO scheduler and NO boot hook. Do not add one: a fresh install must be
+ * silent on the LLM front until the user asks.
+ *
+ * `localModelAssessmentSweep.js` measures every installed model in one pass, and
+ * is not an exception to that — it runs only from a button press behind a consent
+ * gate that names the model and generation count, which is the user asking. What
+ * stays forbidden is anything that starts it WITHOUT that press.
  *
  * ## Where the pieces live
  *
@@ -42,10 +46,12 @@
 
 import {
   ASSESSMENT_INTENTS,
+  buildThroughputReport,
   classifyFitVerdict,
   classifySampleFailure,
   rankByIntent,
   summarizePerformance,
+  summarizeSweepScopes,
 } from '../lib/localModelAssessment.js';
 import {
   assessmentKey,
@@ -73,6 +79,8 @@ import {
   tuningSignature,
   tuningSpecsFor,
 } from '../lib/localModelTuning.js';
+import { claimHeavyLocalJob } from '../lib/heavyJobClaim.js';
+import { ServerError } from '../lib/errorHandler.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { getAllProviders } from './providers.js';
 import { runEndpointLlmTest, runLocalLlmTest } from './localLlmPlayground.js';
@@ -227,14 +235,26 @@ export async function listRuntimeModels(runtime) {
 export function toSample(contextTokens, result) {
   const timings = result?.timings || {};
   const ok = !result?.error && typeof result?.text === 'string' && result.text.trim().length > 0;
+  const measured = (value) => (ok && Number.isFinite(value) ? value : null);
   return {
     contextTokens,
     ok,
     // Every timing is null-or-measured; nothing is defaulted to 0.
-    charsPerSecond: ok && Number.isFinite(timings.charsPerSecond) ? timings.charsPerSecond : null,
-    ttftMs: ok && Number.isFinite(timings.ttftMs) ? timings.ttftMs : null,
+    charsPerSecond: measured(timings.charsPerSecond),
+    ttftMs: measured(timings.ttftMs),
     totalMs: Number.isFinite(timings.totalMs) ? timings.totalMs : null,
     chars: Number.isFinite(timings.chars) ? timings.chars : null,
+    // Token-denominated throughput, when the daemon reported token counts (see
+    // `summarizeTimings`). `null` = the daemon reported none — NOT zero, and not
+    // a chars/s figure divided by a guessed chars-per-token ratio, which would
+    // dress arithmetic up as a measurement.
+    completionTokens: measured(timings.completionTokens),
+    promptTokens: measured(timings.promptTokens),
+    tokensPerSecond: measured(timings.tokensPerSecond),
+    promptTokensPerSecond: measured(timings.promptTokensPerSecond),
+    // `true` = the count came from counting streamed frames rather than the
+    // daemon's tokenizer, and every figure derived from it must be labelled.
+    tokensEstimated: ok && typeof timings.tokensEstimated === 'boolean' ? timings.tokensEstimated : null,
     error: result?.error || (ok ? null : 'model produced no output'),
   };
 }
@@ -282,6 +302,10 @@ function describeVerdict(verdict, samples) {
  *   rest are recorded so two readings of one model stay comparable. The tuning
  *   is part of the record's identity, so a second tuning of the same model is a
  *   NEW record rather than an overwrite.
+ * @param {number} [options.claimTimeoutMs] how long to WAIT for the machine-wide
+ *   accelerator claim before giving up. 0 (the default) refuses immediately,
+ *   which is right for an interactive click; the sweep waits, so one image
+ *   render slipping in between two models does not kill an overnight queue.
  * @param {AbortSignal} [options.signal] client disconnect
  * @param {(frame: object) => void} [options.onProgress] per-sample progress.
  *   A run is minutes long on a large model, so the caller (the route) forwards
@@ -290,7 +314,7 @@ function describeVerdict(verdict, samples) {
  *   THIS run apart from an unrelated model install streaming on the same event.
  * @returns {Promise<object>} the persisted assessment record
  */
-export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_CONTEXT_TOKENS, tuning, signal, onProgress } = {}) {
+export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_CONTEXT_TOKENS, tuning, signal, onProgress, claimTimeoutMs = 0 } = {}) {
   const contexts = [...new Set(contextTokens)].filter((n) => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
   // The listener runs outside the request lifecycle's error path in some callers
   // (a socket emit can throw on a closed io), and a broken progress consumer must
@@ -300,6 +324,44 @@ export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_
     try { onProgress({ scope: 'assessment', backend, modelId, ...frame }); }
     catch (err) { console.error(`❌ Local LLM: assessment progress listener failed: ${err.message}`); }
   };
+  // A measurement is only valid if it had the machine to itself. This is the
+  // SAME machine-wide claim local image/video/3D rendering and LoRA training
+  // take (`lib/heavyJobClaim.js`), for a stronger reason than theirs: a
+  // contending job does not merely slow this run down, it silently changes the
+  // number being recorded. It also makes the "one at a time" rule real for every
+  // caller — a second browser tab, ⌘K, or curl — rather than resting on a
+  // disabled button. Refusing is far better than recording a corrupt reading.
+  const claim = await claimHeavyLocalJob({ kind: 'local-model assessment', id: `${backend}/${modelId}`, timeoutMs: claimTimeoutMs });
+  if (!claim.ok) {
+    throw new ServerError(claim.message, { status: 409, code: 'HEAVY_LOCAL_JOB_BUSY', context: { holder: claim.holder } });
+  }
+  try {
+    // The claim wait is bounded but can be minutes long, and it does not observe
+    // the abort signal. A cancel that landed while we waited must not turn into a
+    // measurement now that the machine is free — that would relaunch llama-server
+    // under the cancelled run's tuning and hold the claim against the sweep that
+    // replaced it. Nothing was measured, so nothing is recorded.
+    if (signal?.aborted) {
+      console.log(`📏 Local LLM: ${backend}/${modelId} cancelled while waiting for the accelerator — not measured`);
+      emit({ event: 'complete', cancelled: true, message: `${modelId}: cancelled before it started — nothing recorded` });
+      // Same record SHAPE as the mid-run cancel below, so a consumer reads one
+      // contract either way — just with nothing in it, because nothing ran.
+      // `unknown` is the verdict for "no evidence", which is exactly the case.
+      return {
+        backend, modelId, cancelled: true, verdict: 'unknown', samples: [],
+        performance: summarizePerformance([]),
+      };
+    }
+    return await measureModel({ backend, modelId, contexts, tuning, signal, emit });
+  } finally {
+    await claim.release();
+  }
+}
+
+// The measurement itself, with the accelerator already claimed by the caller
+// above. Split out so the claim's release is one `finally` around one call
+// rather than wrapped around a 100-line body.
+async function measureModel({ backend, modelId, contexts, tuning, signal, emit }) {
   const normalizedTuning = normalizeTuning(backend, tuning);
   const tuningKey = tuningSignature(normalizedTuning);
   const tuningLabel = describeTuning(backend, normalizedTuning);
@@ -548,6 +610,16 @@ export async function getAssessmentReport({ intent = 'balanced' } = {}) {
     runtimes,
     // Which tuning won, per model, for models measured under two or more.
     tuningComparison: compareTunings(scorable),
+    // Every measurement as a tokens-per-second table, fastest first, with the
+    // per-context readings intact. Unlike `ranked` this is not a recommendation
+    // — it is the raw speed answer, which is what you read the morning after a
+    // sweep. Built from still-installed records only: a table row for a model
+    // that can no longer run is noise.
+    throughputReport: buildThroughputReport(stillInstalled),
+    // How many measurements each sweep scope would run right now, so the
+    // "Measure all" consent gate can name a real number rather than an estimate.
+    // Derived from the same selector the sweep uses, so the two cannot disagree.
+    sweepScopes: summarizeSweepScopes({ assessments: stillInstalled, unassessed }),
     // Runtimes whose model list could not be trusted — distinct from "listed,
     // and legitimately empty".
     listErrors,
