@@ -106,7 +106,12 @@ With the right parser the same request comes back as `finish_reason:
 without which the whole point of the preset — a CoS agent editing files — does
 not work.
 
-**On WSL2, `VLLM_WSL2_ENABLE_PIN_MEMORY=1` is mandatory, not a tuning knob.**
+### 1a. Extra requirements on WSL2
+
+Three settings native Linux does not need. Each one fails in a way that points
+somewhere other than WSL, which is why they are spelled out separately.
+
+**`VLLM_WSL2_ENABLE_PIN_MEMORY=1` is mandatory, not a tuning knob.**
 vLLM turns pinned host memory off whenever it detects WSL, and its GPU model
 runner allocates UVA buffers that require it — so without this the engine never
 initializes. The container dies with `RuntimeError: UVA is not available` and,
@@ -121,9 +126,9 @@ echo 'VLLM_WSL2_ENABLE_PIN_MEMORY=1' >> .env
 Upstream's WSL2 notes predate this code path and do not mention it. On native
 Linux it is unnecessary.
 
-**On WSL2, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False` is also
-mandatory.** Expandable segments rely on CUDA's virtual-memory-management APIs,
-which WSL2 supports only partially. With them on, weight loading dies seconds in,
+**`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False` is also mandatory.**
+Expandable segments rely on CUDA's virtual-memory-management APIs, which WSL2
+supports only partially. With them on, weight loading dies seconds in,
 inside `gptq_marlin_repack`, with a generic
 `torch_call_dispatcher("aten::empty", …) API call failed` — which reads like an
 out-of-memory error and is not one. It reproduces on a completely idle 24 GB card
@@ -132,7 +137,7 @@ op itself works correctly when called directly. Upstream lists this as an
 escape hatch for memory trouble; on WSL2 it is a precondition for starting at
 all.
 
-**On WSL2, raise the VM's memory ceiling before running `prepare`.** The
+**Raise the VM's memory ceiling before running `prepare`.** The
 requantization step is CPU-side and memory-hungry — `quant_lm_head.py` holds a
 whole 2.5 GB shard plus several float32 copies of a 248k-row `lm_head` — and
 WSL2 defaults to a ceiling of half the host's RAM. On a 32 GB machine that 16 GB
@@ -151,6 +156,8 @@ including a PostgreSQL container a PortOS install is using. The download half of
 `prepare` is unaffected and resumes where it left off, so a run killed here costs
 minutes, not the 20 GB again.
 
+### 1b. Start it and confirm
+
 **The card must be otherwise empty.** vLLM's startup gate compares free VRAM
 against `GPU_UTIL`, so another model server holding a few GB — LM Studio, Ollama,
 a local image/video job — makes the container exit rather than start small. Stop
@@ -168,7 +175,7 @@ On Windows, confirm the same URL answers from the PortOS side too — Docker
 Desktop / WSL2 localhost forwarding is what makes a container in the VM
 reachable at `127.0.0.1` on the host.
 
-### 1b. Point PortOS at the project (Windows only)
+### 1c. Point PortOS at the project (Windows only)
 
 A native-Win32 PortOS resolves the default `~/qwen-serving` to a *Windows* home
 directory, where the project is not. Set `VLLM_QWEN_PROJECT_DIR` to the distro's
@@ -237,4 +244,6 @@ one-shot completion.
   engine patch. That conclusion still holds; what changed is that upstream froze
   a working container for this exact card, so PortOS points at it instead of
   building it.
+- [The 3090 bring-up record](../research/2026-08-21-qwen38-rtx3090-vllm.md) — the
+  measurements behind the numbers above, and how each required setting was found.
 - [docs/PORTS.md](../PORTS.md) — why `:18020` sits outside the 5553–5569 range.
