@@ -162,3 +162,46 @@ describe('syncRunnerAgents runner-owned TUI recovery', () => {
     expect(shellService.registerExternalSession).not.toHaveBeenCalled();
   });
 });
+
+describe('syncRunnerAgents — reconnect boundary (#4540)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    runnerAgents.clear();
+    activeAgents.clear();
+    vi.mocked(shellService.getSession).mockReturnValue(null);
+    vi.mocked(getAgent).mockResolvedValue({ metadata: { runId: 'run-abc123' } });
+  });
+
+  const survivingTui = {
+    id: 'agent-1', taskId: 'task-1', pid: 42, startedAt: Date.now(),
+    kind: 'tui', sessionId: 'tui-session-1', workspacePath: '/repo/worktree', command: 'claude',
+  };
+
+  it('records the PTY re-attach separately from the run re-adoption', async () => {
+    // Two different things can fail on a restart: re-adopting the RUN and
+    // re-plumbing its terminal stream. One event for both would make a run whose
+    // stream never came back read as fully recovered.
+    vi.mocked(getActiveAgentsFromRunner).mockResolvedValue([survivingTui]);
+
+    await syncRunnerAgents();
+
+    const kinds = appendRunEvent.mock.calls.map(([e]) => e.kind);
+    expect(kinds).toEqual(['run.runner-recovered', 'run.reconnected']);
+    expect(appendRunEvent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'run.reconnected',
+      runId: 'run-abc123',
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      data: expect.objectContaining({ transport: 'runner-pty', sessionId: 'tui-session-1' })
+    }));
+  });
+
+  it('records no reconnect when the stream was already attached', async () => {
+    vi.mocked(shellService.getSession).mockReturnValue({ sessionId: 'tui-session-1' });
+    vi.mocked(getActiveAgentsFromRunner).mockResolvedValue([survivingTui]);
+
+    await syncRunnerAgents();
+
+    expect(appendRunEvent.mock.calls.map(([e]) => e.kind)).toEqual(['run.runner-recovered']);
+  });
+});

@@ -4,6 +4,7 @@ import CronInput from '../../../CronInput';
 import { AGENT_OPTIONS, BRANCHES_PER_AGENT_DEFAULT, BRANCHES_PER_AGENT_OPTIONS, BRANCHES_PER_AGENT_TASK_TYPES, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES, toggleAppMetadataOverride, agentOptionButtonClass } from '../../constants';
 import { isCronExpression, describeCron } from '../../../../utils/cronHelpers';
 import ToggleSwitch from '../../../ToggleSwitch';
+import useFieldDraft from '../../../../hooks/useFieldDraft';
 import { INTERVAL_LABELS, setMetadataOverride } from './scheduleConstants';
 
 const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalIntervalType, globalTaskMetadata, managedAgentOptions, fileIssuesCapable, defaultFileIssues, override, onUpdate }) {
@@ -69,6 +70,27 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
   // the absent key, distinct from a stored 0.
   const handleSwarmCountChange = (raw) => handleOverrideChange('swarmCount', raw === '' ? '' : Number(raw));
   const handleBranchesPerAgentChange = (raw) => handleOverrideChange('branchesPerAgent', raw === '' ? '' : Number(raw));
+
+  // Comma-separated free text for the issueExcludeLabels override — an array
+  // field, so it doesn't fit the scalar '' = inherit select pattern the other
+  // overrides use. An empty BOX clears the override (inherits the global
+  // list) — but a blank box is also what an EXPLICIT `[]` override renders
+  // as (nothing to join), so the two states are visually identical in the
+  // text field alone. The "None" checkbox below disambiguates: it reflects
+  // (and sets) the explicit-empty-array override distinctly from "no
+  // override key at all," letting an app opt OUT of every inherited
+  // exclusion — e.g. reclaim `good first issue` for this app's own
+  // automation — which a merely-blank box could never express.
+  const excludeLabelsExplicitlyEmpty = Array.isArray(override?.taskMetadata?.issueExcludeLabels)
+    && override.taskMetadata.issueExcludeLabels.length === 0;
+  const excludeLabelsDraft = useFieldDraft(
+    (override?.taskMetadata?.issueExcludeLabels || []).join(', '),
+    (next) => {
+      const trimmed = next.trim();
+      const value = trimmed === '' ? '' : trimmed.split(',').map((s) => s.trim()).filter(Boolean);
+      return handleOverrideChange('issueExcludeLabels', value);
+    }
+  );
 
   return (
     <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 py-2 px-3 rounded hover:bg-port-card/30">
@@ -193,6 +215,32 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
+        )}
+
+        {ISSUE_AUTHOR_FILTER_TASK_TYPES.has(taskType) && (
+          <span className="flex items-center gap-1">
+            <input
+              type="text"
+              value={excludeLabelsDraft.value}
+              onChange={excludeLabelsDraft.onChange}
+              onBlur={excludeLabelsDraft.onBlur}
+              disabled={updating}
+              aria-label={`Labels to leave for humans for ${app.name}`}
+              title={`Comma-separated labels to skip when auto-claiming (blank inherits: ${(globalTaskMetadata?.issueExcludeLabels || []).join(', ') || 'none'})`}
+              placeholder="Inherit"
+              className="bg-port-card border border-port-border rounded px-2 py-1.5 text-xs text-white min-w-[140px] min-h-[40px]"
+            />
+            <label htmlFor={`exclude-labels-none-${app.id}-${taskType}`} className="flex items-center gap-1 text-[10px] text-gray-500 whitespace-nowrap" title="Explicitly claim ALL labels for this app, ignoring the global exclusion list — a blank box alone means inherit, this means override to none">
+              <input
+                type="checkbox"
+                id={`exclude-labels-none-${app.id}-${taskType}`}
+                checked={excludeLabelsExplicitlyEmpty}
+                onChange={(e) => handleOverrideChange('issueExcludeLabels', e.target.checked ? [] : '')}
+                disabled={updating}
+              />
+              None
+            </label>
+          </span>
         )}
 
         {SWARM_TASK_TYPES.has(taskType) && (

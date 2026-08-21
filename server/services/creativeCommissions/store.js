@@ -690,14 +690,28 @@ export async function updateCommission(id, patch) {
         ? nowIso : current.briefUpdatedAt,
     });
     await store.writeRaw(id, next);
-    return next;
+    // The keys whose VALUE actually changed — not the keys the patch mentioned.
+    // The commission editor posts the whole form on every save (its `assignment`
+    // rides along even when the user only fixed a typo in the brief), so a
+    // patch-key list would tell the project reconciler "the provider changed" on
+    // every single save and it would kill a healthy in-flight agent each time.
+    const changedFields = Object.keys(next).filter(
+      (k) => JSON.stringify(next[k]) !== JSON.stringify(current[k]),
+    );
+    return { next, changedFields };
   });
   if (!merged) throw makeErr(`Commission not found: ${id}`, ERR_NOT_FOUND);
-  commissionEvents.emit('commission:changed', { id, action: 'update' });
+  const { next: mergedRecord, changedFields } = merged;
+  // Carry the CHANGED key set: the project reconciler only cares about `enabled`
+  // and `assignment`, so an edit that touched neither skips its project lookup —
+  // and, more importantly, never tears down a healthy in-flight agent stage.
+  // Absent (other emitters) must mean "reconcile" — we cannot prove a change was
+  // irrelevant — never "skip".
+  commissionEvents.emit('commission:changed', { id, action: 'update', fields: changedFields });
   // Push the brief change to subscribed peers (the schedule/runs/assignment are
   // stripped from the wire, so only the brief travels).
   emitRecordUpdated(CREATIVE_COMMISSION_KIND, id);
-  return merged;
+  return mergedRecord;
 }
 
 export async function deleteCommission(id) {
@@ -911,6 +925,13 @@ export async function mergeCommissionsFromSync(remoteRecords, { source = { via: 
   if (!Array.isArray(remoteRecords)) return { applied: false, count: 0 };
   const store = commissionStore();
   let changed = 0;
+  // Commissions whose tombstone arrived in THIS batch. The batch event below
+  // carries no id, so the project reconciler can't act on it — but a delete the
+  // user performed on another machine still has to stop the work THIS machine is
+  // running for that commission (the projects live here; only the brief travels).
+  // Collected on the transition only: re-emitting for an already-tombstoned record
+  // on every sync would re-stop a project the user had since resumed.
+  const newlyDeleted = [];
   for (const remote of remoteRecords) {
     const id = remote?.id;
     if (!isStr(id) || !COMMISSION_ID_RE.test(id)) continue;
@@ -924,12 +945,14 @@ export async function mergeCommissionsFromSync(remoteRecords, { source = { via: 
       }
       await store.writeRaw(id, next);
       await setSyncBaseHash(CREATIVE_COMMISSION_KIND, next.id, contentHashForRecord(CREATIVE_COMMISSION_KIND, next));
+      if (next.deleted === true && local?.deleted !== true) newlyDeleted.push(id);
       return true;
     });
     if (applied) changed += 1;
   }
   await flushBaseHashes();
   if (changed > 0) commissionEvents.emit('commission:changed', { action: 'merge' });
+  for (const id of newlyDeleted) commissionEvents.emit('commission:changed', { id, action: 'delete' });
   return changed === 0 ? { applied: false, count: 0 } : { applied: true, count: changed };
 }
 

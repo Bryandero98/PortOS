@@ -132,7 +132,7 @@ ${ticketData}`;
     const aiResult = await callProviderAISimple(provider, provider.lightModel || provider.defaultModel, prompt, {
       temperature: 0.3,
       max_tokens: 1500,
-      // Associate this call with the app it's reporting on so the CyberCity AI Core aims
+      // Associate this call with the app it's reporting on so the OpenWorld AI Core aims
       // its activity beam at that building.
       appId
     }).catch(err => ({ error: err.message }));

@@ -62,3 +62,55 @@ describe('TasksTab Run Now', () => {
     expect(row).toHaveFocus();
   });
 });
+
+// The server registers an agent as `running` BEFORE it flips the agent's task
+// off `pending`, so between those two writes a task legitimately reads as
+// pending on one list and running on the other. The tab must settle that from
+// the agent list rather than rendering the task in both sections at once.
+describe('TasksTab spawning window', () => {
+  const pendingTask = (id, extra = {}) => ({ id, description: `Task ${id}`, status: 'pending', metadata: {}, ...extra });
+
+  it('moves a pending task with a live agent out of Pending and into Active', async () => {
+    renderTab({
+      tasks: { user: { tasks: [pendingTask('task-spawning'), pendingTask('task-waiting')] }, cos: { tasks: [] } },
+      agents: [{ id: 'agent-1', status: 'running', taskId: 'task-spawning' }],
+    });
+
+    await waitFor(() => expect(screen.getByText(/^Pending \(/)).toBeInTheDocument());
+    expect(screen.getByText('Pending (1)')).toBeInTheDocument();
+    expect(screen.getByText('Active (1)')).toBeInTheDocument();
+  });
+
+  it('leaves a pending system task pending when its agent has already completed', async () => {
+    renderTab({
+      tasks: { user: { tasks: [] }, cos: { tasks: [pendingTask('cos-task-1')] } },
+      agents: [{ id: 'agent-1', status: 'completed', taskId: 'cos-task-1' }],
+    });
+
+    await waitFor(() => expect(screen.getByText('Pending (1)')).toBeInTheDocument());
+    expect(screen.queryByText(/^Active \(/)).not.toBeInTheDocument();
+  });
+
+  it('keeps Process now reachable for a task whose agent record is stuck running', async () => {
+    renderTab({
+      tasks: { user: { tasks: [pendingTask('task-spawning')] }, cos: { tasks: [] } },
+      agents: [{ id: 'agent-1', status: 'running', taskId: 'task-spawning' }],
+    });
+
+    await waitFor(() => expect(screen.getByText('Active (1)')).toBeInTheDocument());
+    // An agent stuck at `running` (the zombie state cleanupZombieAgents clears)
+    // would otherwise leave the row with no way to re-dispatch it. Duplicate
+    // dispatch is refused server-side by forceSpawnTask, not by hiding this.
+    expect(screen.getByRole('button', { name: /Process task now/i })).toBeInTheDocument();
+  });
+
+  it('still offers Process now for a genuinely queued task', async () => {
+    renderTab({
+      tasks: { user: { tasks: [pendingTask('task-waiting')] }, cos: { tasks: [] } },
+      agents: [],
+    });
+
+    await waitFor(() => expect(screen.getByText('Pending (1)')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /Process task now/i })).toBeInTheDocument();
+  });
+});

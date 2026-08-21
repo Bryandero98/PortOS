@@ -16,6 +16,7 @@ const PARK_REASON_LABELS = {
   'owner-is-group': 'the "owner" filter matches a group, which can\'t author issues — set it to "self" or "any"',
   'no-in-flight-branches': 'no branches in flight',
   'branches-held-by-live-owners': 'the only branches left belong to sessions still running — nothing to finish',
+  'merged-branches-held-back': 'every remaining branch is already merged and waiting on a protected worktree',
   'no-zombie-issues': 'no stale issues to reconcile',
   'no-actionable-plan-items': 'no unblocked PLAN items',
   'no-progress': 'already up to date',
@@ -83,7 +84,12 @@ export function useOnDemandTaskToast() {
       // when the detector reported a denominator (open > 0).
       const c = data?.counts;
       let countSuffix = '';
-      if (c && typeof c.open === 'number' && c.open > 0) {
+      // branch-reconcile's breakdown instead names merged branches whose worktree
+      // a protection guard still holds — the park is a wait, not an empty repo, so
+      // the count has to show or the toast reads as "nothing exists".
+      if (c && typeof c.heldBackMerged === 'number' && c.heldBackMerged > 0) {
+        countSuffix = ` (${c.heldBackMerged} merged branch(es) held back)`;
+      } else if (c && typeof c.open === 'number' && c.open > 0) {
         const parts = [];
         if (c.inFlight) parts.push(`${c.inFlight} in-flight`);
         if (c.filtered) parts.push(`${c.filtered} filtered`);

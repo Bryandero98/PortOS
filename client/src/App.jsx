@@ -16,7 +16,6 @@ const Ambient = lazyWithReload(() => import('./pages/Ambient'));
 // DevTools pages are large (~2300 lines total) so lazy load them
 const AIProviders = lazyWithReload(() => import('./pages/AIProviders'));
 const HistoryPage = lazyWithReload(() => import('./pages/DevTools').then(m => ({ default: m.HistoryPage })));
-const RunsHistoryPage = lazyWithReload(() => import('./pages/DevTools').then(m => ({ default: m.RunsHistoryPage })));
 const RunnerPage = lazyWithReload(() => import('./pages/DevTools').then(m => ({ default: m.RunnerPage })));
 const UsagePage = lazyWithReload(() => import('./pages/DevTools').then(m => ({ default: m.UsagePage })));
 const ProcessesPage = lazyWithReload(() => import('./pages/DevTools').then(m => ({ default: m.ProcessesPage })));
@@ -195,10 +194,10 @@ const MEDIA_3D_PREFIX = /^\/media\/3d/;
 // is what a bookmark, a typed URL, or a half-remembered path lands on — alias it
 // rather than letting the catch-all swallow it (issue #3793).
 const ANNOTATE_PREFIX = /^\/annotate/;
-// CyberCity became OpenWorld. Bookmarks, pinned sidebar entries, stored palette
+// The old city page became OpenWorld. Bookmarks, pinned sidebar entries, stored palette
 // history, and peers' deep links all still say /city — alias the whole prefix
 // (including /city/settings and /city/apps/:appId) rather than 404ing them.
-const CITY_PREFIX = /^\/city/;
+const LEGACY_CITY_PREFIX = /^\/city/;
 
 // Normalize a tab-less /creative-director/:id URL to its overview tab while
 // preserving any query string + hash. A bare `<Navigate to="overview">` would
@@ -255,7 +254,7 @@ export default function App() {
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />
           <Route path="apps" element={<Apps />} />
-          <Route path="devtools" element={<Navigate to="/devtools/runs" replace />} />
+          <Route path="devtools" element={<Navigate to="/devtools/agents" replace />} />
           <Route path="devtools/datadog" element={<DataDog />} />
           <Route path="devtools/flows" element={<FlowsDoc />} />
           <Route path="devtools/github" element={<GitHub />} />
@@ -263,7 +262,9 @@ export default function App() {
           <Route path="devtools/image-clean" element={<ImageClean />} />
           <Route path="devtools/quota-burn" element={<QuotaBurn />} />
           <Route path="devtools/quota-burn/:familyId" element={<QuotaBurn />} />
-          <Route path="devtools/runs" element={<RunsHistoryPage />} />
+          {/* AI run history moved under the Chief of Staff (/cos/runs); keep old
+              links and bookmarks working. */}
+          <Route path="devtools/runs" element={<RedirectWithSearch to="/cos/runs" />} />
           <Route path="devtools/runner" element={<RunnerPage />} />
           {/* Submodules moved onto the managed-app detail page (one tab per repo).
               Keeps old links/bookmarks working by landing on PortOS's own tab. */}
@@ -273,6 +274,14 @@ export default function App() {
           <Route path="devtools/processes" element={<ProcessesPage />} />
           <Route path="devtools/agents" element={<AgentsPage />} />
           <Route path="ai" element={<AIProviders />} />
+          {/* The provider editor is a deep-linkable slide-in over the same page:
+              /ai/new creates, /ai/edit/:providerId edits. The id sits under its
+              own `edit` segment rather than directly under /ai so the create
+              route can't be shadowed by a real provider: ids are slugified from
+              the display name, so a provider named "New" gets the id `new` and
+              /ai/new would otherwise match the static create route instead. */}
+          <Route path="ai/new" element={<AIProviders />} />
+          <Route path="ai/edit/:providerId" element={<AIProviders />} />
           <Route path="prompts" element={<PromptManager />} />
           <Route path="cos" element={<Navigate to="/cos/tasks" replace />} />
           <Route path="cos/:tab" element={<ChiefOfStaff />} />
@@ -298,6 +307,8 @@ export default function App() {
           <Route path="templates" element={<Templates />} />
           <Route path="security" element={<Security />} />
           <Route path="settings" element={<Navigate to="/settings/backup" replace />} />
+          {/* Legacy /settings/contacts → Comms Messages → Contacts tab */}
+          <Route path="settings/contacts" element={<Navigate to="/messages/contacts" replace />} />
           <Route path="settings/:tab" element={<Settings />} />
           <Route path="local-llm/playground" element={<LocalLlmPlayground />} />
           <Route path="uploads" element={<Uploads />} />
@@ -350,8 +361,8 @@ export default function App() {
           <Route path="openworld/settings" element={<OpenWorld />} />
           <Route path="openworld/apps/:appId" element={<OpenWorld />} />
           <Route path="openworld/region/:regionId" element={<OpenWorld />} />
-          <Route path="city" element={<PrefixRedirect from={CITY_PREFIX} to="/openworld" />} />
-          <Route path="city/*" element={<PrefixRedirect from={CITY_PREFIX} to="/openworld" />} />
+          <Route path="city" element={<PrefixRedirect from={LEGACY_CITY_PREFIX} to="/openworld" />} />
+          <Route path="city/*" element={<PrefixRedirect from={LEGACY_CITY_PREFIX} to="/openworld" />} />
           <Route path="data" element={<DataManager />} />
           <Route path="character" element={<CharacterSheet />} />
           <Route path="ask" element={<Ask />} />

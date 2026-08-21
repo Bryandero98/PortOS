@@ -594,7 +594,7 @@ export const onVoiceEvent = (event, handler) => {
 
 // Persistent, user-authorized screen-capture stream for the voice agent's
 // ui_describe_visually tool. getDisplayMedia is the only browser-native way to
-// grab WebGL/canvas content (CyberCity, charts) without a heavy DOM-to-canvas
+// grab WebGL/canvas content (OpenWorld, charts) without a heavy DOM-to-canvas
 // dependency — but browsers REQUIRE a transient user gesture to call it, and the
 // screenshot request is server-initiated (mid voice turn), not a click. So the
 // user authorizes a capture stream ONCE via a click (enableVisionCapture, which

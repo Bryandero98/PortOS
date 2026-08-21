@@ -45,8 +45,9 @@ const DEFAULT_CHAT_DB = '~/Library/Messages/chat.db';
 const STATE_FILE = 'imessage-sync-state.json';
 
 // Config defaults — surfaced via getImessageConfig(). Sync is OFF by default;
-// the user opts in from Settings → iMessage. Reading chat.db needs Full Disk
-// Access, so we never enable it silently.
+// the user opts in from the iMessage Settings drawer (Comms → Messages →
+// iMessage). Reading chat.db needs Full Disk Access, so we never enable it
+// silently.
 const DEFAULT_CONFIG = {
   enabled: false,
   intervalMinutes: 30,

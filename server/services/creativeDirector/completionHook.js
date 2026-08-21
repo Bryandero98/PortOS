@@ -33,6 +33,7 @@ import { runStitch } from './stitchRunner.js';
 import { sampleEvaluationFrames } from '../videoGen/local.js';
 import { listJobs, mediaJobEvents } from '../mediaJobQueue/index.js';
 import { PATHS } from '../../lib/fileUtils.js';
+import { PROJECT_TERMINAL_STATUSES, RUN_TERMINAL_STATUSES } from '../../lib/creativeDirectorPresets.js';
 import {
   DELIVERABLE_KINDS,
   blockedStageReason,
@@ -61,6 +62,17 @@ export async function handleCreativeDirectorCompletion(task, agentId, success) {
   // the guard reaps it LIVE instead of waiting for boot recovery.
   const runId = meta.runId;
   const priorRun = runId ? (project.runs || []).find((r) => r.runId === runId) : null;
+
+  // A run row that is ALREADY terminal was settled by somebody else — boot
+  // recovery, or a deliberate stop/restart (see creativeDirector/stopProject.js,
+  // which settles the row and then SIGKILLs the agent, in that order). This
+  // completion is the echo of a kill we asked for; re-settling it would overwrite
+  // the stop's explanatory reason with a generic one.
+  if (priorRun && RUN_TERMINAL_STATUSES.has(priorRun.status)) {
+    console.log(`↩️ CD completion for ${meta.kind} run ${runId} on ${project.id} ignored — run already settled (${priorRun.status})`);
+    return;
+  }
+
   const deliverableKind = DELIVERABLE_KINDS.has(meta.kind) ? meta.kind : null;
   const missedDeliverable = Boolean(success && deliverableKind
     && !deliverableLanded(project, deliverableKind, priorRun?.deliverableMark));
@@ -104,6 +116,17 @@ export async function handleCreativeDirectorCompletion(task, agentId, success) {
   }
 
   if (!success) {
+    // Record the run, but never OVERWRITE a status the user (or a stop) already
+    // chose. A failed agent exit is not always the project's verdict: the exit
+    // may be the echo of a deliberate kill — the CoS Kill button, the idle/
+    // max-runtime reapers, `stopProject` — fired at a project that is already
+    // `paused` (the user pressed Pause, or a commission stopped it) or already
+    // terminal. Flipping those to `failed` clobbers the explanatory reason the
+    // user is looking at and makes a paused project un-Resumable.
+    if (PROJECT_TERMINAL_STATUSES.has(project.status) || project.status === 'paused') {
+      console.log(`↩️ CD ${meta.kind} agent failure on ${project.id} recorded on the run only — project is already ${project.status}`);
+      return;
+    }
     // Surface a concrete reason on the project so the UI's failure banner
     // has actionable context. Without this, a project flips to 'failed'
     // with whatever stale failureReason it had before (often null), and

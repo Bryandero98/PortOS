@@ -231,6 +231,29 @@ describe.skipIf(SKIP_HEAVY_INTEGRATION)('reapMergedWorktrees', () => {
     expect(branches).toContain('dry-br');
   });
 
+  // This reaper knows only "merged + clean", which is equally true of a claim a
+  // human paused ten minutes ago. Reclaiming one turns on idle time AND on
+  // whether the branch was provably shipped — both computed by branchReconcile,
+  // not here — so it deliberately passes neither `allowStaleClaim` nor an age
+  // and a claim tree is always skipped. Asserted through the real reaper, so a
+  // later change to its roots or gate options cannot quietly lose the skip.
+  it('never reaps a human /claim worktree, even merged + clean', async () => {
+    const claimPath = await addWorktree(dir, 'claim-issue-42', 'claim/issue-42');
+    const agentPath = await addWorktree(dir, 'agent-abc12345', 'cos/task-1/agent-abc12345');
+    await execGit(['merge', '--no-ff', 'claim/issue-42', '--no-edit'], dir);
+    await execGit(['merge', '--no-ff', 'cos/task-1/agent-abc12345', '--no-edit'], dir);
+
+    const result = await reapMergedWorktrees(dir, { includeClaudeTrees: true });
+
+    // The equally merged+clean agent tree IS reaped, so the claim skip is the
+    // claim policy and not some unrelated gate refusing both.
+    expect(result.reaped.map(r => r.branch)).toContain('cos/task-1/agent-abc12345');
+    expect(result.reaped.map(r => r.branch)).not.toContain('claim/issue-42');
+    expect(skipReason(result, claimPath)).toBe('worktree-human-claim');
+    expect(existsSync(claimPath)).toBe(true);
+    expect(existsSync(agentPath)).toBe(false);
+  });
+
   it('excludes .claude trees when includeClaudeTrees is false', async () => {
     const path = await addWorktree(dir, 'excluded', 'excluded-br');
     await execGit(['merge', '--no-ff', 'excluded-br', '--no-edit'], dir);

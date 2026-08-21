@@ -10,6 +10,11 @@
 import { z } from 'zod';
 
 import { failValidation } from './errorHandler.js';
+import {
+  resolveThreejsEnvironment,
+  THREEJS_ENVIRONMENT_PRESETS,
+  THREEJS_RENDER_PROFILE,
+} from './threejsModelEnvironment.js';
 import { THREEJS_PLAYER_SOURCE } from './threejsModelPlayerSource.js';
 
 const idSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z][A-Za-z0-9_-]*$/);
@@ -260,6 +265,7 @@ export const threejsGeometrySchema = z.discriminatedUnion('type', [
 
 export const threejsMaterialSchema = z.object({
   type: z.enum(['standard', 'physical', 'basic']).default('standard'),
+  side: z.enum(['front', 'double']).default('front'),
   color: colorSchema,
   metalness: z.number().finite().min(0).max(1).default(0),
   roughness: z.number().finite().min(0).max(1).default(0.65),
@@ -316,6 +322,14 @@ const lightSchema = z.object({
   penumbra: z.number().finite().min(0).max(1).default(0.25),
 });
 
+// The environment/render-profile half of the contract lives in its own
+// dependency-free module so the client suite can import it to assert parity —
+// this file imports zod, which the client CI job does not install.
+const environmentSchema = z.object({
+  preset: z.enum(THREEJS_ENVIRONMENT_PRESETS).default('none'),
+  intensity: z.number().finite().min(0).max(4).default(1),
+});
+
 const socketSchema = z.object({
   name: idSchema,
   parentPartId: idSchema,
@@ -344,13 +358,55 @@ const jointSchema = z.object({
 
 const MAX_JOINTS = 64;
 
+// How far an attachment's bounds may sit from its anchor's surface before the
+// physical audit calls the relationship broken. A correctly worn hat overlaps
+// the head it sits on, so the AABB gap is zero; a charm on a short chain is a
+// fraction of a unit away. The default is deliberately tight — a provider that
+// needs slack says so per attachment rather than the gate guessing generously,
+// because the defects this catches (a hat at hip height, a charm below the
+// ground plane) are off by whole model-heights, not by fractions.
+export const DEFAULT_ATTACHMENT_MAX_OFFSET = 0.25;
+const MAX_ATTACHMENT_OFFSET = 10;
+const MAX_ATTACHMENTS = 40;
+
+// An attachment is only meaningful relative to the thing it hangs from, so this
+// entry carries that relationship: the part being carried, and EXACTLY ONE of
+// the part or the socket it is carried by. Declaring an attachment without an
+// anchor is still accepted through the older `attachmentPartIds` list, which is
+// what every spec authored before this field existed uses — those read forward
+// as anchor-less entries and the gates report them as unanchored rather than
+// rejecting a stored record.
+const attachmentSchema = z.object({
+  partId: idSchema,
+  anchorPartId: idSchema.nullable().default(null),
+  anchorSocket: idSchema.nullable().default(null),
+  maxOffset: z.number().finite().min(0).max(MAX_ATTACHMENT_OFFSET).default(DEFAULT_ATTACHMENT_MAX_OFFSET),
+}).superRefine((attachment, ctx) => {
+  const anchors = [attachment.anchorPartId, attachment.anchorSocket].filter((value) => value !== null);
+  if (anchors.length !== 1) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `attachment ${attachment.partId} needs exactly one of anchorPartId or anchorSocket, found ${anchors.length}`,
+      path: ['anchorPartId'],
+    });
+  }
+});
+
 const articulationSchema = z.object({
   joints: z.array(jointSchema).min(1).max(MAX_JOINTS),
   // Parts explicitly declared as carried attachments — a pack, a weapon, a hat.
   // They ride an articulated part rather than articulating, and saying so is the
   // point: without the declaration "not a joint" and "nobody classified it" are
   // the same silence.
-  attachmentPartIds: z.array(idSchema).max(40).default([]),
+  //
+  // Kept unchanged and still accepted: this is the anchor-less form. `attachments`
+  // below is additive, not a replacement, so a stored spec stays valid.
+  attachmentPartIds: z.array(idSchema).max(MAX_ATTACHMENTS).default([]),
+  // The same declaration plus the one thing the list above cannot say: what each
+  // attachment is carried BY. Without it "declared as an attachment" and
+  // "parented at the model root and related to nothing" are indistinguishable,
+  // and every downstream gate credits the second as though it were the first.
+  attachments: z.array(attachmentSchema).max(MAX_ATTACHMENTS).default([]),
 });
 
 const detailSchema = z.object({
@@ -538,6 +594,11 @@ const makeSpecSchema = (scaleSchema) => z.object({
     .refine((materials) => Object.keys(materials).length > 0, 'at least one material is required')
     .refine((materials) => Object.keys(materials).length <= 50, 'at most 50 materials are allowed'),
   lights: z.array(lightSchema).min(1).max(8),
+  // Optional and additive, same contract as `articulation` and `animation`: a
+  // spec authored before image-based lighting shipped simply has no key, which
+  // `resolveThreejsEnvironment` reads as the `none` it was actually rendered
+  // with. A newly authored spec is asked for a real preset.
+  environment: environmentSchema.optional(),
   parts: z.array(makePartSchema(scaleSchema)).min(1).max(40),
   sockets: z.array(socketSchema).max(40).default([]),
   // Optional and additive: a spec written before articulation shipped simply has
@@ -636,6 +697,82 @@ const makeSpecSchema = (scaleSchema) => z.object({
         ctx.addIssue({ code: 'custom', message: `part ${partId} is declared as an attachment and also driven by a joint`, path });
       }
     }
+
+    // The model root carries no relationship to any body part, so anchoring to
+    // it is the literal defect this field exists to catch. PortOS has no scene
+    // root PART — `parts` is an array — so the root is the sole top-level part
+    // when there is exactly one: that part IS the whole assembly. A spec with
+    // several top-level parts has no such container, and each of them is a real
+    // component worth anchoring to.
+    const rootPartId = spec.parts.length === 1 ? spec.parts[0].id : null;
+    const socketParentByName = new Map(spec.sockets.map((socket) => [socket.name, socket.parentPartId]));
+    const anchorPartByAttachment = new Map();
+    const seenAttachmentPartIds = new Set();
+
+    for (const [index, attachment] of spec.articulation.attachments.entries()) {
+      const at = (key) => ['articulation', 'attachments', index, key];
+      if (!partIds.has(attachment.partId)) {
+        ctx.addIssue({ code: 'custom', message: `unknown attachment part: ${attachment.partId}`, path: at('partId') });
+      } else if (jointPartIds.has(attachment.partId)) {
+        ctx.addIssue({ code: 'custom', message: `part ${attachment.partId} is declared as an attachment and also driven by a joint`, path: at('partId') });
+      }
+      if (seenAttachmentPartIds.has(attachment.partId)) {
+        ctx.addIssue({ code: 'custom', message: `duplicate attachment part: ${attachment.partId}`, path: at('partId') });
+      }
+      seenAttachmentPartIds.add(attachment.partId);
+
+      // Resolve whichever anchor form was given down to the part it names, so
+      // self-anchoring, root-anchoring, and cycles are one check apiece rather
+      // than one per form.
+      let anchorPartId = null;
+      if (attachment.anchorPartId !== null) {
+        if (!partIds.has(attachment.anchorPartId)) {
+          ctx.addIssue({ code: 'custom', message: `unknown attachment anchor part: ${attachment.anchorPartId}`, path: at('anchorPartId') });
+        } else {
+          anchorPartId = attachment.anchorPartId;
+        }
+      } else if (attachment.anchorSocket !== null) {
+        if (!socketNames.has(attachment.anchorSocket)) {
+          ctx.addIssue({ code: 'custom', message: `unknown attachment anchor socket: ${attachment.anchorSocket}`, path: at('anchorSocket') });
+        } else {
+          anchorPartId = socketParentByName.get(attachment.anchorSocket) ?? null;
+        }
+      }
+
+      if (anchorPartId !== null) {
+        const anchorPath = attachment.anchorPartId !== null ? at('anchorPartId') : at('anchorSocket');
+        if (anchorPartId === attachment.partId) {
+          ctx.addIssue({ code: 'custom', message: `attachment ${attachment.partId} is anchored to itself`, path: anchorPath });
+        } else if (anchorPartId === rootPartId) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `attachment ${attachment.partId} is anchored to the model root ${anchorPartId}, which names no body part to hang from`,
+            path: anchorPath,
+          });
+        } else {
+          anchorPartByAttachment.set(attachment.partId, { anchorPartId, path: anchorPath });
+        }
+      }
+    }
+
+    // An anchor chain that closes on itself describes no position: a pack on a
+    // strap on the pack. Walk each chain to its end; every hop is an attachment
+    // that was itself anchored, so the walk is bounded by the entry count.
+    for (const [partId, entry] of anchorPartByAttachment) {
+      const visited = new Set([partId]);
+      let cursor = entry.anchorPartId;
+      while (cursor && anchorPartByAttachment.has(cursor) && !visited.has(cursor)) {
+        visited.add(cursor);
+        cursor = anchorPartByAttachment.get(cursor).anchorPartId;
+      }
+      if (cursor && visited.has(cursor)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `attachment ${partId} sits on an anchor chain that cycles back through ${cursor}`,
+          path: entry.path,
+        });
+      }
+    }
   }
 
   if (spec.animation) {
@@ -682,6 +819,47 @@ export const threejsSculptSpecSchema = makeSpecSchema(scale3Schema);
  * renders, while the bound above keeps any NEW spec from acquiring the problem.
  */
 export const storedThreejsSculptSpecSchema = makeSpecSchema(vec3Schema);
+
+/**
+ * One canonical attachment list from the two forms a spec may declare.
+ *
+ * `attachmentPartIds` (the original, anchor-less form) and `attachments` (the
+ * anchored one) both mean "this part is carried", so every gate that reasons
+ * about attachments reads them through here rather than each picking a form and
+ * disagreeing with the next. An anchored entry wins over a bare id for the same
+ * part — the richer declaration is the one the author meant.
+ *
+ * @param {object|null} articulation a spec's `articulation` object, or null
+ * @returns {Array<{partId: string, anchorPartId: string|null, anchorSocket: string|null, maxOffset: number}>}
+ */
+export function resolveThreejsAttachments(articulation) {
+  const entries = new Map();
+  const bareIds = Array.isArray(articulation?.attachmentPartIds) ? articulation.attachmentPartIds : [];
+  for (const partId of bareIds) {
+    if (typeof partId !== 'string' || entries.has(partId)) continue;
+    entries.set(partId, { partId, anchorPartId: null, anchorSocket: null, maxOffset: DEFAULT_ATTACHMENT_MAX_OFFSET });
+  }
+  const anchored = Array.isArray(articulation?.attachments) ? articulation.attachments : [];
+  for (const attachment of anchored) {
+    if (typeof attachment?.partId !== 'string') continue;
+    entries.set(attachment.partId, {
+      partId: attachment.partId,
+      anchorPartId: attachment.anchorPartId ?? null,
+      anchorSocket: attachment.anchorSocket ?? null,
+      maxOffset: Number.isFinite(attachment.maxOffset) ? attachment.maxOffset : DEFAULT_ATTACHMENT_MAX_OFFSET,
+    });
+  }
+  return [...entries.values()];
+}
+
+/**
+ * Whether a resolved attachment names something to hang from at all.
+ * @param {{anchorPartId: string|null, anchorSocket: string|null}} attachment
+ * @returns {boolean}
+ */
+export const isThreejsAttachmentAnchored = (attachment) => (
+  Boolean(attachment?.anchorPartId) || Boolean(attachment?.anchorSocket)
+);
 
 const MAX_NAMES_IN_MESSAGE = 8;
 
@@ -733,6 +911,11 @@ const RELATIVE_PLANE_QUANTUM = 1e-3;
 // an essentially zero-thickness cloud qualifies, leaving thin-but-real parts to
 // the plane count above rather than double-jeopardy here.
 const COPLANAR_DETERMINANT = 1e-6;
+
+// An extrude can represent a membrane only when its sweep is negligible at the
+// scale of its outline. Keep this relative so the declaration works for both a
+// small fin and a large cape, while a positive-depth plate remains a solid slab.
+const OPEN_SHELL_DEPTH_RATIO = 1e-3;
 
 // Aggregate, never per-part: `extrude` is the RIGHT answer for a plate, a badge,
 // or a sign, so a flat part is only evidence when the model's identity rides on
@@ -787,6 +970,90 @@ const isCoplanarCloud = (vertices) => {
   return Math.abs(determinant) / (meanVariance ** 3) < COPLANAR_DETERMINANT;
 };
 
+// Three.js composes a part's local transform as rotation * scale, then applies
+// each ancestor's transform from the outside. Keeping the linear part here is
+// enough for the relative thickness check and avoids making the server-side gate
+// depend on Three.js just to answer a geometry question.
+const IDENTITY_LINEAR = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+
+const multiplyLinear = (a, b) => [
+  (a[0] * b[0]) + (a[1] * b[3]) + (a[2] * b[6]),
+  (a[0] * b[1]) + (a[1] * b[4]) + (a[2] * b[7]),
+  (a[0] * b[2]) + (a[1] * b[5]) + (a[2] * b[8]),
+  (a[3] * b[0]) + (a[4] * b[3]) + (a[5] * b[6]),
+  (a[3] * b[1]) + (a[4] * b[4]) + (a[5] * b[7]),
+  (a[3] * b[2]) + (a[4] * b[5]) + (a[5] * b[8]),
+  (a[6] * b[0]) + (a[7] * b[3]) + (a[8] * b[6]),
+  (a[6] * b[1]) + (a[7] * b[4]) + (a[8] * b[7]),
+  (a[6] * b[2]) + (a[7] * b[5]) + (a[8] * b[8]),
+];
+
+const rotationLinear = (degrees = [0, 0, 0]) => {
+  const [x = 0, y = 0, z = 0] = degrees;
+  const ax = (Number.isFinite(x) ? x : 0) * (Math.PI / 180);
+  const ay = (Number.isFinite(y) ? y : 0) * (Math.PI / 180);
+  const az = (Number.isFinite(z) ? z : 0) * (Math.PI / 180);
+  const a = Math.cos(ax);
+  const b = Math.sin(ax);
+  const c = Math.cos(ay);
+  const d = Math.sin(ay);
+  const e = Math.cos(az);
+  const f = Math.sin(az);
+  // Row-major equivalent of THREE.Euler's default XYZ matrix.
+  return [
+    c * e, -c * f, d,
+    (b * d * e) + (a * f), (-b * d * f) + (a * e), -b * c,
+    (-a * d * e) + (b * f), (a * d * f) + (b * e), a * c,
+  ];
+};
+
+const scaleLinear = (scale = [1, 1, 1]) => [
+  Number.isFinite(scale[0]) ? scale[0] : 1, 0, 0,
+  0, Number.isFinite(scale[1]) ? scale[1] : 1, 0,
+  0, 0, Number.isFinite(scale[2]) ? scale[2] : 1,
+];
+
+const partLinear = (part) => multiplyLinear(
+  rotationLinear(part.rotationDegrees),
+  scaleLinear(part.scale),
+);
+
+const applyLinear = (matrix, vector) => [
+  (matrix[0] * vector[0]) + (matrix[1] * vector[1]) + (matrix[2] * vector[2]),
+  (matrix[3] * vector[0]) + (matrix[4] * vector[1]) + (matrix[5] * vector[2]),
+  (matrix[6] * vector[0]) + (matrix[7] * vector[1]) + (matrix[8] * vector[2]),
+];
+
+const vectorLength = (vector) => Math.hypot(...vector);
+
+const transformVertices = (vertices, matrix) => {
+  const transformed = [];
+  for (let index = 0; index + 2 < vertices.length; index += 3) {
+    transformed.push(...applyLinear(matrix, vertices.slice(index, index + 3)));
+  }
+  return transformed;
+};
+
+const isZeroThicknessGeometry = (geometry, worldLinear = IDENTITY_LINEAR) => {
+  if (!geometry) return false;
+  if (geometry.type === 'custom') {
+    const vertices = Array.isArray(geometry.vertices) ? geometry.vertices : [];
+    return vertices.length >= 9 && isCoplanarCloud(transformVertices(vertices, worldLinear));
+  }
+  if (geometry.type !== 'extrude') return false;
+  const outline = Array.isArray(geometry.outline) ? geometry.outline : [];
+  if (outline.length < 3 || !(geometry.depth > 0)) return false;
+  const xs = outline.map(([x]) => x);
+  const ys = outline.map(([, y]) => y);
+  const spanX = Math.max(...xs) - Math.min(...xs);
+  const spanY = Math.max(...ys) - Math.min(...ys);
+  const xSpan = spanX * vectorLength(applyLinear(worldLinear, [1, 0, 0]));
+  const ySpan = spanY * vectorLength(applyLinear(worldLinear, [0, 1, 0]));
+  const span = Math.max(xSpan, ySpan);
+  const thickness = geometry.depth * vectorLength(applyLinear(worldLinear, [0, 0, 1]));
+  return span > 0 && thickness > 0 && thickness / span <= OPEN_SHELL_DEPTH_RATIO;
+};
+
 const isSlabGeometry = (geometry) => {
   if (!geometry) return false;
   if (geometry.type === 'extrude') {
@@ -817,15 +1084,18 @@ const collectMeshes = (part, out = []) => {
  */
 export function evaluateThreejsFlatness(spec) {
   const byId = new Map();
-  const indexPart = (part) => {
+  const worldLinearById = new Map();
+  const indexPart = (part, parentLinear = IDENTITY_LINEAR) => {
     byId.set(part.id, part);
-    for (const child of part.children || []) indexPart(child);
+    const worldLinear = multiplyLinear(parentLinear, partLinear(part));
+    worldLinearById.set(part.id, worldLinear);
+    for (const child of part.children || []) indexPart(child, worldLinear);
   };
   for (const part of spec?.parts || []) indexPart(part);
 
   const details = Array.isArray(spec?.detailInventory) ? spec.detailInventory : [];
   const slabPartIds = new Set();
-  const flatFeatures = [];
+  const flatDetails = [];
   let evaluated = 0;
 
   for (const detail of details) {
@@ -845,30 +1115,61 @@ export function evaluateThreejsFlatness(spec) {
     evaluated += 1;
     const implementing = [...meshes.values()];
     if (!implementing.every((mesh) => isSlabGeometry(mesh.geometry))) continue;
-    flatFeatures.push(detail.feature);
+    flatDetails.push({
+      feature: detail.feature,
+      partIds: implementing.map((mesh) => mesh.id),
+      isIntentionalMembrane: implementing.every((mesh) => (
+        spec?.materials?.[mesh.material]?.side === 'double'
+        && isZeroThicknessGeometry(mesh.geometry, worldLinearById.get(mesh.id))
+      )),
+    });
     for (const mesh of implementing) slabPartIds.add(mesh.id);
   }
 
   // `null`, not 0: a spec with no buildable identity feature was not measured
   // flat, it was not measured at all, and a 0 would read as a clean result.
+  const flatFeatures = flatDetails.map(({ feature }) => feature);
+  const intentionalMembraneDetails = flatDetails.filter(({ isIntentionalMembrane }) => isIntentionalMembrane);
+  const intentionalMembraneFeatures = intentionalMembraneDetails.map(({ feature }) => feature);
+  const unintentionalDetails = flatDetails.filter(({ isIntentionalMembrane }) => !isIntentionalMembrane);
+  const unintentionalFeatures = unintentionalDetails.map(({ feature }) => feature);
+  const intentionalMembranePartIds = new Set(intentionalMembraneDetails.flatMap(({ partIds }) => partIds));
   const flatRatio = evaluated === 0 ? null : flatFeatures.length / evaluated;
   const findings = [];
   if (flatRatio !== null && flatRatio > FLAT_IDENTITY_RATIO_THRESHOLD) {
-    const offenders = [...slabPartIds];
-    findings.push({
-      code: 'flat-identity-parts',
-      severity: 'warning',
-      partIds: offenders,
-      features: flatFeatures,
-      message: `${flatFeatures.length} of ${evaluated} identity-defining features are built only from flat parts (${listSpecNames(offenders.map((id) => byId.get(id)?.name || id))}). The model will read as a projection the moment it is orbited — give the parts the subject's identity rides on a real cross-section instead of stacking unbevelled extrusions and planar triangle fans.`,
-    });
+    const nonMembraneFeatureCount = evaluated - intentionalMembraneDetails.length;
+    const nonMembraneFlatRatio = nonMembraneFeatureCount === 0
+      ? 0
+      : unintentionalFeatures.length / nonMembraneFeatureCount;
+    if (intentionalMembraneFeatures.length > 0) {
+      findings.push({
+        code: 'flat-identity-parts',
+        severity: 'note',
+        partIds: [...intentionalMembranePartIds],
+        features: intentionalMembraneFeatures,
+        message: `${intentionalMembraneFeatures.length} of ${evaluated} identity-defining features are intentional membrane surfaces (zero-thickness open shells: ${listSpecNames(intentionalMembraneFeatures)}). Their materials are double-sided (side "double"), so they remain visible from both sides.`,
+      });
+    }
+    if (nonMembraneFlatRatio > FLAT_IDENTITY_RATIO_THRESHOLD) {
+      const offenders = [...new Set(unintentionalDetails.flatMap(({ partIds }) => partIds))];
+      findings.push({
+        code: 'flat-identity-parts',
+        severity: 'warning',
+        partIds: offenders,
+        features: unintentionalFeatures,
+        message: `${unintentionalFeatures.length} of ${nonMembraneFeatureCount} identity-defining features are built only from flat parts (${listSpecNames(offenders.map((id) => byId.get(id)?.name || id))}). The model will read as a projection the moment it is orbited — give the parts the subject's identity rides on a real cross-section instead of stacking unbevelled extrusions and planar triangle fans. If a part is genuinely a zero-thickness membrane, make its material double-sided (side "double") instead; do not use that declaration to avoid giving a solid part real depth.`,
+      });
+    }
   }
+
+  const warningCount = findings.filter((finding) => finding.severity === 'warning').length;
+  const noteCount = findings.filter((finding) => finding.severity === 'note').length;
 
   return {
     findings,
     errorCount: 0,
-    warningCount: findings.length,
-    noteCount: 0,
+    warningCount,
+    noteCount,
     identityDetailCount: evaluated,
     flatIdentityDetailCount: flatFeatures.length,
     flatRatio,
@@ -887,7 +1188,7 @@ export function buildThreejsFlatnessFeedback(flatness) {
   return [
     'The previous pass failed the cross-section check — it reads as a flat projection rather than a solid:',
     ...warnings.map((finding, index) => `${index + 1}. ${finding.message}`),
-    'Rebuild those parts with genuine depth: compose them from primitives, or give an extrude a bevel, so the model holds up from any orbit angle.',
+    'Rebuild those parts with genuine depth: compose them from primitives, or give an extrude a bevel, so the model holds up from any orbit angle. If a part is genuinely a zero-thickness membrane — such as a cape, leaf, fin, or wing — make its material double-sided (side "double") instead, but never use that declaration to avoid giving a solid part real depth.',
   ].join('\n');
 }
 
@@ -989,6 +1290,24 @@ const MATERIAL_CHANNELS_BY_TYPE = {
   physical: ['metalness', 'roughness', 'clearcoat', 'ior', 'transmission', 'sheen'],
 };
 
+// The channels that read off an ENVIRONMENT rather than off the punctual lights:
+// with nothing to reflect, a conductor renders near-black and transmission,
+// clearcoat and iridescence do essentially nothing. Same type filter as above —
+// `basic` is unlit and the physical-only channels are forwarded only by
+// `type: 'physical'` — so the note never names a channel that could not have
+// rendered anyway. The metalness threshold is the metal family's own floor: a
+// dielectric with a little metalness has almost nothing to lose here.
+const REFLECTIVE_METALNESS_FLOOR = 0.6;
+const REFLECTIVE_CHANNELS_BY_TYPE = {
+  basic: [],
+  standard: ['metalness'],
+  physical: ['metalness', 'transmission', 'clearcoat', 'iridescence'],
+};
+
+// A channel counts as authored when it is above the floor its own absence would
+// sit at: metalness has a real threshold, the rest are opt-in from zero.
+const reflectiveChannelFloor = (channel) => (channel === 'metalness' ? REFLECTIVE_METALNESS_FLOOR : 0);
+
 /**
  * Split a material id into lowercase word tokens, breaking on separators AND on
  * camelCase boundaries so `oakTrim` and `oak_trim` tokenize the same. A trailing
@@ -1035,9 +1354,19 @@ const matchMaterialFamily = (id) => {
 export function evaluateThreejsMaterialPlausibility(spec) {
   const materials = (spec?.materials && typeof spec.materials === 'object') ? spec.materials : {};
   const findings = [];
+  const unlitReflective = [];
+  const environment = resolveThreejsEnvironment(spec);
   let matched = 0;
 
   for (const [id, material] of Object.entries(materials)) {
+    if (environment.preset === 'none') {
+      const reflective = (REFLECTIVE_CHANNELS_BY_TYPE[material?.type] || REFLECTIVE_CHANNELS_BY_TYPE.standard)
+        .filter((channel) => {
+          const value = material?.[channel];
+          return typeof value === 'number' && Number.isFinite(value) && value > reflectiveChannelFloor(channel);
+        });
+      if (reflective.length > 0) unlitReflective.push({ id, channels: reflective });
+    }
     const prior = matchMaterialFamily(id);
     if (!prior) continue;
     matched += 1;
@@ -1066,13 +1395,28 @@ export function evaluateThreejsMaterialPlausibility(spec) {
     });
   }
 
+  // One finding per implausible material, so the warning tally is also the count
+  // of materials that failed — no separate tally that could disagree with it.
+  const warningCount = findings.length;
+
+  // One note for the whole spec rather than one per material: the remedy is a
+  // single spec-level choice, and repeating it per material would bury the
+  // substance warnings above it.
+  if (unlitReflective.length > 0) {
+    findings.push({
+      code: 'reflective-material-without-environment',
+      severity: 'note',
+      materialIds: unlitReflective.map((entry) => entry.id),
+      channels: unlitReflective,
+      message: `${listSpecNames(unlitReflective.map((entry) => entry.id))} author reflective channels (${listSpecNames([...new Set(unlitReflective.flatMap((entry) => entry.channels))])}) while "environment.preset" is "none". Those channels read off an environment, so in this scene a conductor renders near-black and transmission, clearcoat and iridescence do essentially nothing — the values cannot be judged as authored. Give the spec an environment ("neutral" or "studio") to see them.`,
+    });
+  }
+
   return {
     findings,
     errorCount: 0,
-    warningCount: findings.length,
-    noteCount: 0,
-    // One finding per implausible material, so `warningCount` is also the count
-    // of materials that failed — no separate tally that could disagree with it.
+    warningCount,
+    noteCount: findings.length - warningCount,
     materialCount: Object.keys(materials).length,
     matchedMaterialCount: matched,
   };
@@ -1080,17 +1424,24 @@ export function evaluateThreejsMaterialPlausibility(spec) {
 
 /**
  * Default refinement feedback derived from a stored material-plausibility
- * result. Returns '' when every recognized material is plausible, so the caller
- * falls through to whatever other feedback it has.
+ * result: the substance warnings, then the unlit-reflective note if the spec
+ * authored reflective channels with no environment. Returns '' when there is
+ * neither, so the caller falls through to whatever other feedback it has.
  */
 export function buildThreejsMaterialFeedback(plausibility) {
-  const warnings = (plausibility?.findings || []).filter((finding) => finding.severity === 'warning');
-  if (warnings.length === 0) return '';
-  return [
+  const findings = plausibility?.findings || [];
+  const warnings = findings.filter((finding) => finding.severity === 'warning');
+  const substance = warnings.length === 0 ? [] : [
     'The previous pass gave some materials values that do not match the substance they are named for:',
     ...warnings.map((finding, index) => `${index + 1}. ${finding.message}`),
     'Set each channel from what the surface actually is — bare metal is metallic and fairly smooth, wood and stone are rough dielectrics, glass transmits — and keep any deliberate stylization you still want.',
-  ].join('\n');
+  ];
+  // The unlit-reflective note is fed back as well as displayed: choosing an
+  // environment preset is a change the next pass can actually make, and leaving
+  // it out is what lets a refinement "fix" a black conductor by dropping its
+  // metalness instead.
+  const unlit = findings.filter((finding) => finding.code === 'reflective-material-without-environment');
+  return [...substance, ...unlit.map((finding) => finding.message)].join('\n');
 }
 
 const toIdentifier = (name) => {
@@ -1114,12 +1465,28 @@ export function buildThreejsFactorySource(input) {
   const spec = parsed.data;
   const factoryName = `create${toIdentifier(spec.name)}Model`;
   const serialized = JSON.stringify(spec, null, 2);
+  // The renderer contract the spec was composed against. Serialized rather than
+  // derived in the emitted source, because the colour-management half of it is
+  // PortOS's viewer contract and is not in the spec at all.
+  const renderProfile = JSON.stringify(
+    { ...THREEJS_RENDER_PROFILE, environment: resolveThreejsEnvironment(spec) },
+    null,
+    2
+  );
 
   return `// Generated by PortOS Three.js Models.
 // Procedural image-to-Three.js workflow inspired by https://github.com/hoainho/img2threejs
 import * as THREE from 'three';
 
 const spec = ${serialized};
+
+// The renderer settings this model was authored against. Configure your own
+// WebGLRenderer and scene to match, or it will not reproduce: without the
+// environment its metals have nothing to reflect, and a different tone map or
+// exposure changes every value on screen. Data only — this module builds no
+// renderer, and the environment preset is yours to construct.
+const renderProfile = ${renderProfile};
+
 const radians = (degrees) => THREE.MathUtils.degToRad(degrees);
 const rotation = (value) => value.map(radians);
 
@@ -1177,11 +1544,13 @@ function createGeometry(definition) {
 }
 
 function createMaterial(definition) {
+  const doubleSided = definition.side === 'double' ? { side: THREE.DoubleSide } : {};
   const unlit = {
     color: definition.color,
     opacity: definition.opacity,
     transparent: definition.transparent,
     wireframe: definition.wireframe,
+    ...doubleSided,
   };
   if (definition.type === 'basic') {
     return new THREE.MeshBasicMaterial(unlit);
@@ -1192,6 +1561,9 @@ function createMaterial(definition) {
     roughness: definition.roughness,
     emissive: definition.emissive,
     emissiveIntensity: definition.emissiveIntensity,
+    // The spec's environment intensity, so the reflective channels below read at
+    // the strength they were authored at once you assign the environment.
+    envMapIntensity: renderProfile.environment.intensity,
   };
   if (definition.type === 'physical') {
     return new THREE.MeshPhysicalMaterial({
@@ -1254,10 +1626,13 @@ export function ${factoryName}() {
     animation: spec.animation || null,
     detailInventory: spec.detailInventory,
     limitations: spec.limitations,
+    // The renderer contract above, carried on the model so a consumer that only
+    // ever sees the Group still knows what it has to match to reproduce it.
+    render: renderProfile,
   };
   return root;
 }
 ${THREEJS_PLAYER_SOURCE}
-export { spec };
+export { spec, renderProfile };
 `;
 }

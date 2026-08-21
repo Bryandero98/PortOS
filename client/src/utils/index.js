@@ -36,40 +36,42 @@ export * from './staleChunkReload.js';
 // === File handling ===
 export * from './fileUpload.js';
 
-// === CyberCity — character & avatar ===
+// === OpenWorld — character & avatar ===
 export * from './characterXp.js';
 
-// === CyberCity — scene compute helpers (one per district / feature) ===
-export * from './cityActivityHeatmap.js';
-export * from './cityAgentMotion.js';
-export * from './cityAiCore.js';
-export * from './cityArtifacts.js';
-export * from './cityBackupVault.js';
-export * from './cityChronotype.js';
-export * from './cityDataHarbor.js';
-export * from './cityDistrictLayout.js';
-export * from './cityEasterEggs.js';
-export * from './cityFederation.js';
-export * from './cityFilter.js';
-export * from './cityFocusCamera.js';
-export * from './cityFocusState.js';
-export * from './cityFlowLines.js';
-export * from './cityGoalMonuments.js';
-export * from './cityHealthTower.js';
-export * from './cityInteriorWindows.js';
-export * from './cityJiraDistrict.js';
-export * from './cityMemoryDistrict.js';
-export * from './cityMiniMap.js';
-export * from './cityPhotoMode.js';
-export * from './cityPlan.js';
-export * from './cityPlayerRig.js';
-export * from './cityRenderBudget.js';
-export * from './cityRooftops.js';
-export * from './cityProductivity.js';
-export * from './citySeasonalDecor.js';
-export * from './citySoundscape.js';
-export * from './cityTaskFlowRiver.js';
-export * from './cityTaskQueue.js';
-export * from './cityTimeline.js';
-export * from './cityVoiceMarker.js';
+// === OpenWorld — scene compute helpers (one per district / feature) ===
+export * from './openWorldActivityHeatmap.js';
+export * from './openWorldAgentMotion.js';
+export * from './openWorldAiCore.js';
+export * from './openWorldArtifacts.js';
+export * from './openWorldBackupVault.js';
+export * from './openWorldChronotype.js';
+export * from './openWorldDataHarbor.js';
+export * from './openWorldDistrictLayout.js';
+export * from './openWorldEasterEggs.js';
+export * from './openWorldFederation.js';
+export * from './openWorldFilter.js';
+export * from './openWorldFocusCamera.js';
+export * from './openWorldFocusState.js';
+export * from './openWorldFlowLines.js';
+export * from './openWorldGoalMonuments.js';
+export * from './openWorldHealthTower.js';
+export * from './openWorldInteriorWindows.js';
+export * from './openWorldJiraDistrict.js';
+export * from './openWorldMemoryDistrict.js';
+export * from './openWorldMiniMap.js';
+export * from './openWorldPhotoMode.js';
+export * from './openWorldPlan.js';
+export * from './openWorldPlayerRig.js';
+export * from './openWorldRenderBudget.js';
+export * from './openWorldRooftops.js';
+export * from './openWorldProductivity.js';
+export * from './openWorldSoundscape.js';
+export * from './openWorldCollectibles.js';
+export * from './openWorldProximity.js';
+export * from './openWorldSpeedPads.js';
+export * from './openWorldTaskFlowRiver.js';
+export * from './openWorldTaskQueue.js';
+export * from './openWorldTimeline.js';
+export * from './openWorldVoiceMarker.js';
 export * from './openWorldRegions.js';

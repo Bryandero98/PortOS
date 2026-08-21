@@ -32,7 +32,13 @@ import {
   isCliProvider,
   isApiProvider,
   isProcessProvider,
+  providerRuntimeKey,
+  credentialSource,
+  providerCardState,
+  isPrivateNetworkEndpoint,
+  PROVIDER_CARD_STATE,
   isOllamaBackedProvider,
+  isOrcaRouterBackedProvider,
   isGrokBuildCli,
   isKimiProvider,
   isCodexProvider,
@@ -47,6 +53,7 @@ import {
   isConfiguredDefaultModel,
   configuredDefaultIn,
   isLocalEndpoint,
+  isLocalInstanceProvider,
   enabledApiProviderFilter,
   providerTypeClass,
   getProviderTimeout,
@@ -93,11 +100,8 @@ describe('resolveCliEffort (server mirror)', () => {
     ['codex-only ultra clamps on claude', 'ultra', CLAUDE, 'max'],
     ['codex-only minimal clamps on claude', 'minimal', CLAUDE, 'low'],
     ['codex accepts its whole ladder', 'minimal', CODEX, 'minimal'],
-    // codex's config enum stops at `xhigh`; `-c model_reasoning_effort=max`
-    // makes it fail while loading its config, so the picker must never show a
-    // level the run can't use.
-    ['max clamps to codex xhigh', 'max', CODEX, 'xhigh'],
-    ['ultra clamps to codex xhigh', 'ultra', CODEX, 'xhigh'],
+    ['codex accepts max', 'max', CODEX, 'max'],
+    ['legacy ultra resolves to codex max', 'ultra', CODEX, 'max'],
     ['unknown value yields no flag', 'bogus', AGY, null],
     ['effort-less provider yields no flag', 'high', GROK, null],
     ['unset yields no flag', '', AGY, null],
@@ -430,6 +434,19 @@ describe('provider type predicates', () => {
     expect(isProcessProvider(api)).toBe(false);
   });
 
+  it('isOrcaRouterBackedProvider matches only the orcarouterBacked marker', () => {
+    expect(isOrcaRouterBackedProvider({ id: 'opencode-orcarouter', orcarouterBacked: true })).toBe(true);
+    expect(isOrcaRouterBackedProvider({ id: 'opencode-orcarouter-tui', orcarouterBacked: true })).toBe(true);
+    // A renamed wrapper that keeps the marker still inherits the sibling key.
+    expect(isOrcaRouterBackedProvider({ id: 'my-orca', orcarouterBacked: true })).toBe(true);
+    // The sibling API provider itself is NOT orcarouter-backed (it owns the key).
+    expect(isOrcaRouterBackedProvider({ id: 'orcarouter', type: 'api' })).toBe(false);
+    // An ollama-backed OpenCode wrapper shares the form shape but not the marker.
+    expect(isOrcaRouterBackedProvider({ id: 'opencode-ollama', ollamaBacked: true })).toBe(false);
+    expect(isOrcaRouterBackedProvider(null)).toBe(false);
+    expect(isOrcaRouterBackedProvider(undefined)).toBe(false);
+   });
+
   it('isOllamaBackedProvider matches the marker or an Ollama base URL', () => {
     // explicit marker (Claude Ollama CLI + TUI samples carry this)
     expect(isOllamaBackedProvider({ type: 'tui', ollamaBacked: true })).toBe(true);
@@ -469,6 +486,17 @@ describe('isLocalEndpoint', () => {
     expect(isLocalEndpoint('localhost:11434')).toBe(true);
   });
 
+  it('matches the whole loopback block, not just 127.0.0.1', () => {
+    // A daemon on a loopback alias is as local as one on `.1`, and the server's
+    // `isLocalInstanceHost` accepts the full block — while they disagreed, a
+    // provider on 127.0.0.2 was badged NEEDS SETUP for a key it never needs.
+    expect(isLocalEndpoint('http://127.0.0.2:11434/v1')).toBe(true);
+    expect(isLocalEndpoint('http://127.5.5.5:8080')).toBe(true);
+    expect(isLocalEndpoint('http://[::]:1234')).toBe(true);
+    // …without letting a loopback prefix vouch for a public host.
+    expect(isLocalEndpoint('http://127.0.0.1.evil.com/v1')).toBe(false);
+  });
+
   it('rejects hosted endpoints and non-strings', () => {
     expect(isLocalEndpoint('https://api.cerebras.ai/v1')).toBe(false);
     expect(isLocalEndpoint('https://api.openai.com/v1')).toBe(false);
@@ -476,6 +504,24 @@ describe('isLocalEndpoint', () => {
     expect(isLocalEndpoint('https://localhost.evil.com/v1')).toBe(false);
     expect(isLocalEndpoint('')).toBe(false);
     expect(isLocalEndpoint(undefined)).toBe(false);
+  });
+});
+
+describe('isLocalInstanceProvider', () => {
+  it('accepts a loopback endpoint and a record that names none', () => {
+    expect(isLocalInstanceProvider({ endpoint: 'http://localhost:1234/v1' })).toBe(true);
+    expect(isLocalInstanceProvider({ endpoint: 'http://127.0.0.1:11434' })).toBe(true);
+    // No endpoint = the stock local default every backend manager targets.
+    expect(isLocalInstanceProvider({ id: 'lmstudio' })).toBe(true);
+    expect(isLocalInstanceProvider({ endpoint: '  ' })).toBe(true);
+  });
+
+  it('rejects another machine, however local the provider is NAMED', () => {
+    // This is the case that put "Install LM Studio" on a card for a server
+    // running on a different box.
+    expect(isLocalInstanceProvider({ name: 'LM Studio peer', endpoint: 'http://192.168.1.50:1234/v1' })).toBe(false);
+    expect(isLocalInstanceProvider({ id: 'ollama', endpoint: 'http://10.0.0.4:11434/v1' })).toBe(false);
+    expect(isLocalInstanceProvider({ endpoint: 'https://api.openai.com/v1' })).toBe(false);
   });
 });
 
@@ -1138,4 +1184,436 @@ describe('AI Assignments option helpers', () => {
     });
   });
 });
+
+describe('providerRuntimeKey', () => {
+  // The key is what a provider card looks its runtime up by in the server's
+  // `runtimes` map, so a path-qualified or Windows command must normalize to
+  // the same bare binary name the server publishes.
+  it('normalizes a process provider command to its bare binary name', () => {
+    expect(providerRuntimeKey({ type: 'cli', command: 'codex' })).toBe('codex');
+    expect(providerRuntimeKey({ type: 'tui', command: '/opt/homebrew/bin/opencode' })).toBe('opencode');
+    expect(providerRuntimeKey({ type: 'cli', command: 'C:\\tools\\claude.exe' })).toBe('claude');
+    expect(providerRuntimeKey({ type: 'cli', command: '  agy  ' })).toBe('agy');
+  });
+
+  // API providers have no CLI runtime — the two fronted by a local app resolve
+  // through localBackendForProvider instead, so this must not claim a key for
+  // every cloud provider id.
+  it('has no runtime key for an API provider', () => {
+    expect(providerRuntimeKey({ type: 'api', id: 'lmstudio', endpoint: 'http://localhost:1234/v1' })).toBeNull();
+    expect(providerRuntimeKey({ type: 'api', id: 'cerebras' })).toBeNull();
+  });
+
+  it('returns null when there is nothing to look up', () => {
+    expect(providerRuntimeKey(null)).toBeNull();
+    expect(providerRuntimeKey({ type: 'cli', command: '   ' })).toBeNull();
+  });
+});
+
+describe('credentialSource', () => {
+  it('identifies a stored public-provider key', () => {
+    expect(credentialSource({ id: 'cloud', type: 'api', endpoint: 'https://api.example.com/v1' }))
+      .toEqual({ kind: 'stored', ref: 'cloud' });
+  });
+
+  it('does not require a credential for a local API endpoint', () => {
+    expect(credentialSource({ id: 'ollama', type: 'api', endpoint: 'http://localhost:11434/v1', hasApiKey: false }))
+      .toEqual({ kind: 'none', ref: null });
+  });
+
+  it('identifies an inherited OrcaRouter key', () => {
+    expect(credentialSource({ id: 'opencode-orcarouter', type: 'cli', orcarouterBacked: true }))
+      .toEqual({ kind: 'inherited', ref: 'orcarouter' });
+  });
+
+  it('identifies env credentials from explicit metadata and conventional names', () => {
+    expect(credentialSource({
+      id: 'bedrock', type: 'cli', secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'], envVars: { AWS_BEARER_TOKEN_BEDROCK: '' },
+    })).toEqual({ kind: 'env', ref: 'AWS_BEARER_TOKEN_BEDROCK' });
+    expect(credentialSource({
+      id: 'claude-ollama', type: 'cli', envVars: { ANTHROPIC_AUTH_TOKEN: 'ollama' },
+    })).toEqual({ kind: 'env', ref: 'ANTHROPIC_AUTH_TOKEN' });
+    expect(credentialSource({
+      id: 'custom-cli', type: 'cli', envVars: { MY_LLM_KEY: '' }, secretEnvVars: ['MY_LLM_KEY'],
+    })).toEqual({ kind: 'env', ref: 'MY_LLM_KEY' });
+  });
+
+  it('does not treat API env settings or legacy process keys as credentials', () => {
+    expect(credentialSource({
+      id: 'cloud', type: 'api', endpoint: 'https://api.example.com/v1',
+      envVars: { OPENAI_API_KEY: 'token-example' },
+    })).toEqual({ kind: 'stored', ref: 'cloud' });
+    expect(credentialSource({
+      id: 'custom-cli', type: 'cli', apiKey: 'legacy-key', envVars: {},
+    })).toEqual({ kind: 'none', ref: null });
+  });
+
+  it('lets a wrapper carrying its own key stand down from inheritance', () => {
+    expect(credentialSource({ id: 'wrapper', type: 'cli', apiKey: 'sk-example', orcarouterBacked: true }))
+      .toEqual({ kind: 'stored', ref: 'wrapper' });
+  });
+
+  it('covers the shipped Bedrock and Claude-Ollama provider shapes', () => {
+    expect(credentialSource(SHIPPED_PROVIDERS.providers['claude-code-bedrock']))
+      .toEqual({ kind: 'env', ref: 'AWS_BEARER_TOKEN_BEDROCK' });
+    expect(credentialSource(SHIPPED_PROVIDERS.providers['claude-ollama']))
+      .toEqual({ kind: 'env', ref: 'ANTHROPIC_AUTH_TOKEN' });
+  });
+});
+
+describe('providerCardState', () => {
+  const cli = (over = {}) => ({ id: 'p1', type: 'cli', command: 'opencode', enabled: true, ...over });
+  const cloudApi = (over = {}) => ({ id: 'p2', type: 'api', endpoint: 'https://api.example.com/v1', enabled: true, ...over });
+
+  it('reports an enabled provider with every prerequisite met as ready', () => {
+    expect(providerCardState(cli(), { runtime: { label: 'OpenCode CLI', installed: true } }))
+      .toEqual({ state: PROVIDER_CARD_STATE.READY, missing: [] });
+    expect(providerCardState(cloudApi({ hasApiKey: true })))
+      .toEqual({ state: PROVIDER_CARD_STATE.READY, missing: [] });
+  });
+
+  // An unprobed runtime (older server, or the card drawn before the probe
+  // lands) must read as "can't tell", never as a missing binary.
+  it('never blocks on an unprobed runtime', () => {
+    expect(providerCardState(cli(), { runtime: null }).state).toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('blocks a provider whose CLI is not installed, and names it', () => {
+    const readiness = providerCardState(cli(), { runtime: { label: 'OpenCode CLI', installed: false } });
+    expect(readiness.state).toBe(PROVIDER_CARD_STATE.BLOCKED);
+    expect(readiness.missing).toEqual([{ code: 'runtime', label: 'OpenCode CLI is not installed' }]);
+  });
+
+  it('blocks a cloud API provider with no key', () => {
+    const readiness = providerCardState(cloudApi({ hasApiKey: false }));
+    expect(readiness.state).toBe(PROVIDER_CARD_STATE.BLOCKED);
+    expect(readiness.missing).toEqual([{ code: 'apiKey', label: 'API key is not set' }]);
+  });
+
+  // Ollama / LM Studio need no key at all — absence there is not a prerequisite.
+  it('does not demand a key from a local endpoint', () => {
+    expect(providerCardState({ id: 'ollama', type: 'api', endpoint: 'http://localhost:11434/v1', enabled: true }).state)
+      .toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  // A LAN box or a tailnet peer running LM Studio / Ollama serves keylessly, and
+  // PortOS is a tailnet-first product — flagging those as unconfigured would be
+  // a false alarm on a supported deployment.
+  it.each([
+    ['http://192.168.1.50:1234/v1'],
+    ['http://10.0.0.4:11434/v1'],
+    ['http://100.64.0.5:11434/v1'],
+    ['http://desk-machine.ts.net:1234/v1'],
+    ['http://nas:11434/v1'],
+  ])('does not demand a key from the private-network endpoint %s', (endpoint) => {
+    expect(providerCardState({ id: 'lan', type: 'api', endpoint, enabled: true }).state)
+      .toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  // The RFC1918 test matches a prefix; without an IPv4-literal gate it also
+  // claims DNS names that merely start like one, waving a real public endpoint
+  // through as needing no key.
+  it.each([
+    'https://10.evil.example/v1',
+    'https://172.16.evil.example/v1',
+    'https://100.64.evil.example/v1',
+  ])('still demands a key from %s, which only LOOKS like a private range', (endpoint) => {
+    expect(providerCardState({ id: 'spoof', type: 'api', endpoint, enabled: true }).state)
+      .toBe(PROVIDER_CARD_STATE.BLOCKED);
+  });
+
+  it('still demands a key from a public endpoint', () => {
+    expect(providerCardState({ id: 'cloud', type: 'api', endpoint: 'https://api.example.com/v1', enabled: true }).state)
+      .toBe(PROVIDER_CARD_STATE.BLOCKED);
+  });
+
+  it('blocks an OrcaRouter wrapper when the sibling API provider holds no key', () => {
+    const wrapper = cli({ id: 'opencode-orcarouter', orcarouterBacked: true });
+    expect(providerCardState(wrapper, { keySetFor: id => id === 'orcarouter' ? false : null }).missing)
+      .toEqual([{ code: 'inheritedApiKey', label: 'OrcaRouter API provider has no API key' }]);
+    // Sibling absent from the list = unknown, which must not accuse the wrapper.
+    expect(providerCardState(wrapper, { keySetFor: () => null }).state).toBe(PROVIDER_CARD_STATE.READY);
+    expect(providerCardState(wrapper, { keySetFor: () => true }).state).toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('does not require the inherited key when a wrapper carries its own key', () => {
+    const wrapper = cli({ id: 'opencode-orcarouter', apiKey: 'sk-example', orcarouterBacked: true });
+    expect(providerCardState(wrapper, { keySetFor: id => id === wrapper.id })).toEqual({
+      state: PROVIDER_CARD_STATE.READY,
+      missing: [],
+    });
+  });
+
+  it('keeps the inherited-key check when an Orca wrapper also has an env credential', () => {
+    const wrapper = cli({
+      id: 'opencode-orcarouter',
+      orcarouterBacked: true,
+      envVars: { OPENROUTER_API_KEY: 'token-example' },
+    });
+    expect(providerCardState(wrapper, { keySetFor: () => false }).missing).toEqual([{
+      code: 'inheritedApiKey',
+      label: 'OrcaRouter API provider has no API key',
+    }]);
+  });
+
+  it('blocks an env-credential provider whose configured value is empty, naming the variable', () => {
+    const readiness = providerCardState(cli({
+      id: 'claude-code-bedrock',
+      envVars: { AWS_BEARER_TOKEN_BEDROCK: '' },
+      secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+    }));
+    expect(readiness.state).toBe(PROVIDER_CARD_STATE.BLOCKED);
+    expect(readiness.missing).toEqual([{
+      code: 'envVar',
+      label: 'AWS_BEARER_TOKEN_BEDROCK environment variable is not set',
+    }]);
+  });
+
+  it('derives an empty env credential even when the server published no findings', () => {
+    const readiness = providerCardState(cli({
+      id: 'claude-code-bedrock',
+      missingPrerequisites: [],
+      envVars: { AWS_BEARER_TOKEN_BEDROCK: '' },
+      secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+    }));
+    expect(readiness).toEqual({
+      state: PROVIDER_CARD_STATE.BLOCKED,
+      missing: [{
+        code: 'envVar',
+        label: 'AWS_BEARER_TOKEN_BEDROCK environment variable is not set',
+      }],
+    });
+  });
+
+  it('accepts a configured env credential', () => {
+    expect(providerCardState(cli({
+      id: 'claude-ollama',
+      envVars: { ANTHROPIC_AUTH_TOKEN: 'ollama' },
+    })).state).toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('blocks a shipped Claude-Ollama provider whose auth token is blank', () => {
+    const provider = SHIPPED_PROVIDERS.providers['claude-ollama'];
+    const readiness = providerCardState({
+      ...provider,
+      envVars: { ...provider.envVars, ANTHROPIC_AUTH_TOKEN: '' },
+    });
+    expect(readiness.missing).toEqual([{
+      code: 'envVar',
+      label: 'ANTHROPIC_AUTH_TOKEN environment variable is not set',
+    }]);
+  });
+
+  it('does not let a legacy CLI key satisfy an empty process credential', () => {
+    const readiness = providerCardState(cli({
+      apiKey: 'legacy-key',
+      envVars: { AWS_BEARER_TOKEN_BEDROCK: '' },
+      secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+    }));
+    expect(readiness.missing).toEqual([{
+      code: 'envVar',
+      label: 'AWS_BEARER_TOKEN_BEDROCK environment variable is not set',
+    }]);
+  });
+
+  it('ignores optional secret env settings and checks every credential variable', () => {
+    const readiness = providerCardState(cli({
+      envVars: {
+        AWS_PROFILE: '',
+        AWS_ACCESS_KEY_ID: '',
+        AWS_SECRET_ACCESS_KEY: '',
+      },
+      secretEnvVars: ['AWS_PROFILE', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'],
+    }));
+    expect(readiness.missing).toEqual([
+      { code: 'envVar', label: 'AWS_ACCESS_KEY_ID environment variable is not set' },
+      { code: 'envVar', label: 'AWS_SECRET_ACCESS_KEY environment variable is not set' },
+    ]);
+  });
+
+  it('reports only the missing half of a known AWS access-key pair', () => {
+    const readiness = providerCardState(cli({
+      envVars: {
+        AWS_ACCESS_KEY_ID: 'key-example',
+        AWS_SECRET_ACCESS_KEY: '',
+      },
+      secretEnvVars: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'],
+    }));
+    expect(readiness.missing).toEqual([{
+      code: 'envVar',
+      label: 'AWS_SECRET_ACCESS_KEY environment variable is not set',
+    }]);
+  });
+
+  it('accepts a configured alternative credential when another env value is blank', () => {
+    expect(providerCardState(cli({
+      envVars: {
+        AWS_BEARER_TOKEN_BEDROCK: '',
+        AWS_ACCESS_KEY_ID: 'key-example',
+        AWS_SECRET_ACCESS_KEY: 'secret-example',
+      },
+      secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+    })).state).toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('does not use API env settings in place of the stored API key', () => {
+    const readiness = providerCardState(cloudApi({
+      hasApiKey: false,
+      envVars: { OPENAI_API_KEY: 'token-example' },
+    }));
+    expect(readiness.missing).toEqual([{ code: 'apiKey', label: 'API key is not set' }]);
+  });
+
+  it('does not block an unmarked empty env value that clears an ambient credential', () => {
+    expect(providerCardState(cli({ envVars: { ANTHROPIC_API_KEY: '' } })).state)
+      .toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('keeps a redacted secret unknown while an explicit blank is missing', () => {
+    const provider = (value) => cli({
+      envVars: { AWS_BEARER_TOKEN_BEDROCK: value },
+      secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+    });
+    expect(providerCardState(provider('***')).state).toBe(PROVIDER_CARD_STATE.READY);
+    expect(providerCardState(provider('')).state).toBe(PROVIDER_CARD_STATE.BLOCKED);
+  });
+
+  it('does not treat an unknown env lookup as a missing credential', () => {
+    expect(providerCardState(cli({
+      id: 'claude-code-bedrock',
+      envVars: { AWS_BEARER_TOKEN_BEDROCK: '***' },
+      secretEnvVars: ['AWS_BEARER_TOKEN_BEDROCK'],
+    }), { envVarSet: () => null }).state).toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('benches an enabled provider the server marked unavailable', () => {
+    const readiness = providerCardState(cli(), { status: { available: false, reason: 'usage-limit' } });
+    expect(readiness.state).toBe(PROVIDER_CARD_STATE.BENCHED);
+    // A benched provider is fully configured — nothing to install or paste.
+    expect(readiness.missing).toEqual([]);
+  });
+
+  it('reads a switched-off but fully configured provider as disabled, not blocked', () => {
+    expect(providerCardState(cli({ enabled: false }), { runtime: { label: 'OpenCode CLI', installed: true } }).state)
+      .toBe(PROVIDER_CARD_STATE.DISABLED);
+  });
+
+  // The toggle is not what's stopping a provider whose CLI is missing, so the
+  // missing prerequisite outranks it — that's the bucket the user must act in.
+  it('keeps a switched-off provider with a missing prerequisite in the blocked bucket', () => {
+    expect(providerCardState(cli({ enabled: false }), { runtime: { label: 'OpenCode CLI', installed: false } }).state)
+      .toBe(PROVIDER_CARD_STATE.BLOCKED);
+  });
+
+  it('collects every missing prerequisite at once', () => {
+    const readiness = providerCardState(
+      { id: 'lmstudio-remote', type: 'api', endpoint: 'https://api.example.com/v1', hasApiKey: false, enabled: true },
+      { runtime: { label: 'LM Studio', installed: false } },
+    );
+    expect(readiness.missing.map(m => m.code)).toEqual(['runtime', 'apiKey']);
+  });
+
+  // The server publishes its own verdict on GET /api/providers and routes the
+  // fallback chain on the same computation (#4611) — the card must read that
+  // rather than re-deriving it, or the badge and the router can disagree.
+  describe('server-published prerequisites', () => {
+    it('paints a blocked card from the published findings', () => {
+      const readiness = providerCardState(cli({
+        missingPrerequisites: [{ code: 'runtime', label: 'OpenCode CLI is not installed' }],
+      }));
+      expect(readiness.state).toBe(PROVIDER_CARD_STATE.BLOCKED);
+      expect(readiness.missing).toEqual([{ code: 'runtime', label: 'OpenCode CLI is not installed' }]);
+    });
+
+    // An EMPTY array is a real answer ("nothing missing"), not an absent one —
+    // so it must SUPPRESS the local derivation, not fall back to it.
+    it('trusts an empty published list over its own credential derivation', () => {
+      expect(providerCardState(cloudApi({ hasApiKey: false, missingPrerequisites: [] })).state)
+        .toBe(PROVIDER_CARD_STATE.READY);
+    });
+
+    it('falls back to deriving locally when the server published nothing', () => {
+      expect(providerCardState(cloudApi({ hasApiKey: false })).state).toBe(PROVIDER_CARD_STATE.BLOCKED);
+      expect(providerCardState(cloudApi({ hasApiKey: false, missingPrerequisites: null })).state)
+        .toBe(PROVIDER_CARD_STATE.BLOCKED);
+    });
+
+    // The local-app runtime shape (an LM Studio / Ollama app installed with no
+    // CLI shim on PATH) is derived from the local-LLM status, which the server's
+    // runtime table does not cover — so it must still be added on top.
+    it('adds a client-only local-app runtime finding to the published list', () => {
+      const readiness = providerCardState(
+        { id: 'lmstudio', type: 'api', endpoint: 'http://localhost:1234/v1', enabled: true, missingPrerequisites: [] },
+        { runtime: { id: 'lmstudio', label: 'LM Studio', installed: false } },
+      );
+      expect(readiness.missing).toEqual([{ code: 'runtime', label: 'LM Studio is not installed' }]);
+    });
+
+    // The runtime row answers "is the BARE binary on PortOS's PATH?" — which is
+    // not this provider's question. The server declines to route on it, so the
+    // badge must not accuse it either.
+    it.each([
+      ['an explicit command path', { command: '/opt/example/bin/opencode' }],
+      ['a PATH of its own in envVars', { envVars: { PATH: '/opt/example/bin' } }],
+    ])('does not badge a provider that resolves outside PortOS PATH — %s', (_label, over) => {
+      const readiness = providerCardState(cli(over), { runtime: { label: 'OpenCode CLI', installed: false } });
+      expect(readiness.state).toBe(PROVIDER_CARD_STATE.READY);
+      expect(readiness.missing).toEqual([]);
+    });
+
+    it('does not double-report a runtime both sides found missing', () => {
+      const readiness = providerCardState(
+        cli({ missingPrerequisites: [{ code: 'runtime', label: 'OpenCode CLI is not installed' }] }),
+        { runtime: { label: 'OpenCode CLI', installed: false } },
+      );
+      expect(readiness.missing).toHaveLength(1);
+    });
+  });
+});
+
+describe('isPrivateNetworkEndpoint', () => {
+  it.each([
+    'http://localhost:11434/v1',
+    'http://127.0.0.1:1234',
+    '192.168.1.5:1234/v1',
+    'http://172.16.4.4:11434',
+    'http://172.31.255.1:11434',
+    'http://100.64.0.1:11434',
+    'http://host.local:1234',
+    'http://box.internal/v1',
+    'http://ollama',
+    // IPv6 unique-local — Tailscale hands out a ULA address alongside the CGNAT
+    // v4 one, so a tailnet peer reached over IPv6 must not read as public.
+    'http://[fd7a:115c:a1e0::1]:11434/v1',
+    'http://[fc00::5]:1234',
+    // IPv6 link-local (fe80::/10).
+    'http://[fe80::1]:1234',
+    'http://[febf::1]:1234',
+  ])('treats %s as inside the private network', (endpoint) => {
+    expect(isPrivateNetworkEndpoint(endpoint)).toBe(true);
+  });
+
+  it.each([
+    'https://api.example.com/v1',
+    'https://example.com:8443/v1',
+    // 172.32 is outside RFC1918 (which stops at 172.31), and 100.128 is above
+    // the Tailscale CGNAT range — both are public space.
+    'http://172.32.0.1:11434',
+    'http://100.128.0.1:11434',
+    'http://9.9.9.9/v1',
+    // A HOSTNAME starting with fc/fd is not an IPv6 ULA — a bare prefix test on
+    // the host would hand these the no-key-needed pass.
+    'https://fdrive.example.com:1234/v1',
+    'https://fc-api.example.com/v1',
+    // 2001:… is public IPv6, and `fd::1` expands to a leading hextet of 0x00fd,
+    // which is outside fc00::/7 despite the `fd` spelling.
+    'http://[2001:db8::1]:1234',
+    'http://[fd::1]:1234',
+    '',
+    null,
+  ])('treats %s as public', (endpoint) => {
+    expect(isPrivateNetworkEndpoint(endpoint)).toBe(false);
+  });
+});
+
 // @vitest-environment node

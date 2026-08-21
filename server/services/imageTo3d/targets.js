@@ -49,6 +49,19 @@ export const OUTPUT_KINDS = Object.freeze(Object.values(OUTPUT_KIND));
  * `requires` states the hardware floor for the target's declared lane; the pure
  * resolvers below read it. A target's installer/runner is wired in `adapters.js`,
  * keyed by this registry's `id` (not imported here — see the file header).
+ *
+ * Beyond `id`/`label`/`description`/`executionLane`/`outputKind`/`requires`, a
+ * descriptor carries:
+ *  - `installNotes` — prose for the shared install modal. **Required for a target with
+ *    an install step**, because that modal is shared by every target and has no
+ *    per-target copy of its own; `registry.test.js` enforces it.
+ *  - `gatedRepos` — Hugging Face repos whose terms the user must accept. Omit when the
+ *    target pulls only ungated weights; the auth-failure help reads it.
+ *  - `supportsRenderOptions` — per-run knobs the target's runner does NOT honor, e.g.
+ *    `{ steps: false }`. Absent means all of them are honored. This is what stops the
+ *    UI offering a control that does nothing and stops the run ledger recording a
+ *    value the subprocess never received.
+ *  - `upstream` / `port` / `weightsRepo` — links surfaced on the target card.
  */
 export const IMAGE_TO_3D_TARGETS = Object.freeze({
   trellis2: Object.freeze({
@@ -67,10 +80,31 @@ export const IMAGE_TO_3D_TARGETS = Object.freeze({
       diskGb: 15,
       python: '3.11',
     }),
+    // Maps the shared abstract detail tiers onto this port's own `--pipeline-type`
+    // values. `auto` is absent deliberately: it means "derive from unified memory"
+    // and is resolved by the runner, not by a lookup here.
+    //
+    // The 512 tier is genuinely fast rather than merely smaller — upstream's own
+    // benchmark is ~3m20s of generate+bake on an M4 Pro, against 13–20 minutes
+    // measured for 1024_cascade on a 64 GB M5 Max. It is worth exposing as a
+    // preview tier even on a host whose memory qualifies for max.
+    detailTiers: Object.freeze({
+      fast: '512',
+      balanced: '1024',
+      max: '1024_cascade',
+    }),
     upstream: 'https://github.com/microsoft/TRELLIS.2',
     // Community MPS port that makes the CUDA-only upstream run on Apple Silicon.
     port: 'https://github.com/shivampkumar/trellis-mac',
     weightsRepo: 'microsoft/TRELLIS.2-4B',
+    // Fresh-install copy for the shared install modal. Lives on the descriptor, not
+    // in the page, so registering a target does not mean editing UI prose — the page
+    // would otherwise show TRELLIS.2's text for every target.
+    installNotes:
+      'Cloning the TRELLIS.2 (Apple Silicon) port and installing its Python '
+      + 'environment (~15 GB on first run). Missing build dependencies (the Xcode '
+      + "Metal Toolchain, the mesh baker's Eigen submodule) are fetched first, so "
+      + 'textures bake at full quality.',
     // Optional user-actionable prerequisites. The target descriptor is the source
     // for both the API/UI notice and runner auth guidance, so new targets do not
     // need their gated Hugging Face dependencies duplicated in either consumer.
@@ -106,17 +140,83 @@ export const IMAGE_TO_3D_TARGETS = Object.freeze({
       diskGb: 15,
       python: '3.10',
     }),
+    // Upstream's CUDA entrypoint takes no pipeline-type override and PortOS's
+    // runner for it emits no alpha-mode flag, so both controls are declared
+    // unsupported rather than rendered as settings the runner would drop.
+    supportsRenderOptions: Object.freeze({ detail: false, alphaMode: false, normalMap: false }),
     upstream: 'https://github.com/microsoft/TRELLIS.2',
     weightsRepo: 'microsoft/TRELLIS.2-4B',
-    // The 4B model conditions on DINOv3, which is gated. Unlike the MPS port this
-    // lane does not use RMBG-2.0 (upstream's own example feeds the image straight
-    // to the pipeline), so it is deliberately absent here rather than copied over.
+    installNotes:
+      'Cloning microsoft/TRELLIS.2 with its CUDA extension submodules and running '
+      + 'upstream setup.sh, which builds flash-attn, nvdiffrast, nvdiffrec and cumesh '
+      + 'from source into a new `trellis2` conda environment (~15 GB, and the compile '
+      + 'takes a while).',
+    // Same two gated repos as the MPS port, because this lane loads the same weights:
+    // `microsoft/TRELLIS.2-4B`'s `pipeline.json` names `briaai/RMBG-2.0` as its
+    // `rembg_model`, and `Trellis2ImageTo3DPipeline.run` defaults `preprocess_image=True`
+    // — so feeding it the raw image (which is what both upstream's example and PortOS's
+    // runner do) is precisely what makes it matte the background with RMBG. An earlier
+    // revision claimed this lane "does not use RMBG-2.0" and omitted the repo, which
+    // would leave a CUDA user whose HF account hasn't accepted the RMBG terms staring at
+    // a 401 at pipeline load with nothing naming the repo to go accept.
     gatedRepos: Object.freeze([
       Object.freeze({
         label: 'facebook/dinov3-vitl16-pretrain-lvd1689m',
         url: 'https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m',
       }),
+      Object.freeze({
+        label: 'briaai/RMBG-2.0',
+        url: 'https://huggingface.co/briaai/RMBG-2.0',
+      }),
     ]),
+  }),
+  pixal3dCuda: Object.freeze({
+    id: 'pixal3dCuda',
+    label: 'Pixal3D (CUDA)',
+    description:
+      'TencentARC Pixal3D — pixel-aligned single image to a PBR-textured GLB mesh, run '
+      + 'on-device on an NVIDIA GPU. Built on the TRELLIS.2 backbone, with higher '
+      + 'geometry fidelity at a longer render time.',
+    executionLane: EXECUTION_LANE.LOCAL_CUDA,
+    outputKind: OUTPUT_KIND.GLB_MESH,
+    // The floor is DELIBERATELY lower than the TRELLIS.2 CUDA lane's 24 GB, not an
+    // oversight: upstream's merged low-VRAM mode loads one pipeline stage onto the GPU
+    // at a time, bringing peak to ~10-12 GB at 1024 (Pixal3D issue #12). Full-quality 1536
+    // wants up to ~36 GB, but that is a QUALITY tier the runner selects from the card's
+    // actual VRAM (`selectPixal3dRenderBudget`) — not an availability gate, because a
+    // 12 GB card still produces a real mesh. `diskGb` covers ~24 GB of Pixal3D weights
+    // plus its own TRELLIS.2 checkout and conda env.
+    requires: Object.freeze({
+      cuda: true,
+      minVramGb: 12,
+      linuxHost: true,
+      diskGb: 40,
+      python: '3.10',
+    }),
+    upstream: 'https://github.com/TencentARC/Pixal3D',
+    weightsRepo: 'TencentARC/Pixal3D',
+    // Upstream's `inference.py` has no per-phase step override, so its runner validates
+    // `steps` and drops it. Declared here so the UI disables the Quality control rather
+    // than offering a setting that silently does nothing, and so the run entry records
+    // `steps: null` instead of a value that never applied.
+    // `detail: false` even though this lane DOES have 1024/1536 resolutions, and
+    // that is deliberate rather than an oversight. Its tier is chosen from the
+    // card's actual VRAM by `selectPixal3dRenderBudget` (1536 wants up to ~36 GB),
+    // so letting a request override it would hand a 12 GB card a configuration
+    // that OOMs mid-render. Exposing it needs a VRAM-safety story first — until
+    // then the honest answer is that the runner does not honor a caller's choice.
+    // `alphaMode: false` because its runner emits no such flag.
+    supportsRenderOptions: Object.freeze({ steps: false, detail: false, alphaMode: false, normalMap: false }),
+    installNotes:
+      'Creating a dedicated `pixal3d` conda environment (kept separate so Pixal3D\u2019s '
+      + 'pinned dependencies cannot disturb the TRELLIS.2 target), cloning both repos, '
+      + 'building the CUDA extensions and NATTEN for this GPU, then fetching ~24 GB of '
+      + 'weights. Budget ~40 GB of disk and a long first build.',
+    // No `gatedRepos`, and that is verified rather than assumed: `inference.py` loads
+    // DINOv3 from the ungated `camenduru/dinov3-vitl16-pretrain-lvd1689m` mirror and
+    // MoGe from `Ruicheng/moge-2-vitl`, so unlike `trellis2Cuda` nothing here needs
+    // terms accepted. A Hugging Face token still helps with download rate limits,
+    // which is why the adapter still resolves one.
   }),
 });
 
@@ -177,6 +277,18 @@ export function unavailableReason(target, caps = {}) {
 }
 
 /**
+ * Which per-run render options a target's runner does NOT honor, or null when it honors
+ * all of them. Pure. Read by the record route so a detail view (which loads a record,
+ * not the target list) can disable a control the runner would silently ignore, and by
+ * `beginRender` so the run ledger records what the subprocess actually received.
+ * @param {string} targetId
+ * @returns {object|null}
+ */
+export function renderOptionSupportFor(targetId) {
+  return getTarget(targetId)?.supportsRenderOptions || null;
+}
+
+/**
  * Is this target runnable on a host with the given capabilities? Pure.
  * @param {string|object} target
  * @param {object} [caps]
@@ -198,10 +310,13 @@ export function isTargetAvailable(target, caps = {}) {
  * adding a code without a label fails CI instead of rendering as the generic
  * "Unsupported on this host" fallback.
  *
- * The GB figures restate the registry floors (`minUnifiedMemoryGb` /
- * `minVramGb`, both 24) as prose rather than interpolating them: the labels are
- * mirrored to the client, which has no registry to read, and both lanes would
- * have to move for the numbers to diverge.
+ * These labels are mirrored to the client, which has no registry to read, so they are
+ * prose rather than interpolated values. **Only mention a GB figure when every target
+ * that can produce the code shares it.** `insufficient-memory` names 24 GB because one
+ * MPS target produces it; `insufficient-vram` names none, because the CUDA lanes'
+ * floors have diverged (24 GB for TRELLIS.2, 12 GB for Pixal3D) and a single number
+ * would be wrong for one of them. The per-target figure travels to the client on the
+ * descriptor (`requires.minVramGb`) for any UI that wants to name it.
  */
 export const UNAVAILABLE_REASONS = Object.freeze({
   'unknown-target': 'Unavailable',
@@ -211,8 +326,17 @@ export const UNAVAILABLE_REASONS = Object.freeze({
   // Shown on a Windows host that HAS a qualifying card: upstream TRELLIS.2 builds
   // its CUDA extensions against a POSIX toolchain and is Linux-only, so WSL2 is the
   // supported route — name it, since this blocker is the one the user can act on.
+  // Caveat this label cannot express (it is per-CODE, not per-target): WSL2 gets the
+  // TRELLIS.2 lane running, but Pixal3D has a known NAF-upsampler driver fault there
+  // (Pixal3D issue #31). That one surfaces at render time via
+  // `PIXAL3D_CUDA_NAF_DEVICE_NOT_READY`, whose help text names native Linux.
   'requires-linux-host': 'Requires a Linux host (use WSL2 on Windows)',
-  'insufficient-vram': 'Needs a 24 GB+ NVIDIA GPU',
+  // Deliberately carries NO GB figure. It used to read "Needs a 24 GB+ NVIDIA GPU"
+  // when every CUDA target shared that floor; `pixal3dCuda` runs from 12 GB, so a
+  // single number here would be wrong for one lane or the other. The per-target
+  // requirement travels to the client on the descriptor (`requires.minVramGb`) for a
+  // UI that wants to name it.
+  'insufficient-vram': 'This NVIDIA GPU has too little VRAM',
   // The probe itself failed — say so rather than claiming the GPU isn't there.
   'cuda-probe-failed': 'Could not detect this host’s GPU',
 });

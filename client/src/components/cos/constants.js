@@ -11,7 +11,9 @@ import {
   Bot,
   Flame,
   Newspaper,
-  ChartGantt
+  ChartGantt,
+  Play,
+  ScrollText
 } from 'lucide-react';
 import { normalizeReviewerSlug } from '../../lib/reviewerPins';
 import { inPlaceClipName } from '../../utils/animationClips';
@@ -21,6 +23,8 @@ export const TABS = [
   { id: 'tasks', label: 'Tasks', icon: FileText },
   { id: 'agents', label: 'Agents', icon: Cpu },
   { id: 'jobs', label: 'System Tasks', icon: Bot },
+  { id: 'runs', label: 'Runs', icon: Play },
+  { id: 'run-events', label: 'Run Events', icon: ScrollText },
   { id: 'schedule', label: 'Schedule', icon: Clock },
   { id: 'workflow', label: 'Timeline', icon: ChartGantt },
   { id: 'digest', label: 'Digest', icon: Calendar },
@@ -189,6 +193,52 @@ export const STATE_MESSAGES = {
   ideating: "Analyzing options...",
 };
 
+// A health issue is the ONLY thing that flips an idle-but-running CoS into
+// `investigating`, so the status bubble has to say *which* issue. Falling back
+// to the generic STATE_MESSAGES line left the avatar parked on "Investigating
+// issue..." with zero agents running and the detail reachable only by guessing
+// at the Health tab. Returns null when there is nothing to report so callers
+// can fall back to their own default. Issue shape mirrors the server's
+// `runHealthCheck` (`{ type, category, message }` — server/services/cosHealthMonitor.js).
+export const summarizeHealthIssues = (issues) => {
+  if (!Array.isArray(issues) || issues.length === 0) return null;
+  const messages = issues.map((issue) => issue?.message).filter(Boolean);
+  // Counts come from `issues`, never from `messages` — a mixed list like
+  // [{message:'A'}, {}] has two problems and one description, and counting the
+  // descriptions would under-report it as a single issue.
+  const plural = issues.length > 1 ? 's' : '';
+  // A message-less issue still has to read as an issue — `null` means "nothing
+  // to report", so callers that already know the list is non-empty never need a
+  // fallback of their own.
+  if (messages.length === 0) return `${issues.length} health issue${plural} detected`;
+  if (issues.length === 1) return messages[0];
+  return `${issues.length} health issues: ${messages.join(' · ')}`;
+};
+
+// Which of two health snapshots to keep. `getCosHealth` reads the *pre-check*
+// persisted health while the same fetch batch triggers a fresh server-side check
+// whose `cos:health:check` socket event can land first — so the slow read must
+// not clobber the fresher socket result. Keep whichever check is newer by
+// `lastCheck` (Date.parse normalizes the ISO timestamps so the compare never
+// goes lexicographic), keep `prev` when the incoming read has no comparable
+// timestamp but `prev` does, and treat a failed read (null) as "keep prev".
+export const fresherHealth = (prev, next) => {
+  if (!next) return prev ?? null;
+  const prevT = Date.parse(prev?.lastCheck ?? '');
+  const nextT = Date.parse(next.lastCheck ?? '');
+  if (!Number.isNaN(prevT) && (Number.isNaN(nextT) || nextT < prevT)) return prev;
+  return next;
+};
+
+// StatCard tone for the Issues tile. `error`-type issues mean something is
+// broken; a warning-only check (e.g. a memory-hungry process) stays amber
+// rather than screaming red — the same severity split HealthTab draws when it
+// renders the list. 'default' (not null) so a zero-issue tile keeps its gray icon.
+export const healthIssueTone = (issues) => {
+  if (!Array.isArray(issues) || issues.length === 0) return 'default';
+  return issues.some((issue) => issue?.type === 'error') ? 'critical' : 'warning';
+};
+
 // Agent option toggles for task metadata (useWorktree, openPR, simplify, requireApproval).
 export const AGENT_OPTIONS = [
   { field: 'requireApproval', label: 'Require approval', shortLabel: 'Apr', description: 'Queue as awaiting-approve and do not auto-run — including Run Now — until you approve. Off (default): Run Now starts immediately; scheduled runs still follow the confidence and safety gates.' },
@@ -228,14 +278,14 @@ export function pinnedPrCompletion(metadata) {
 // review via the native reviewer API; CLI reviewers (claude/antigravity/codex/grok/cursor)
 // instruct the follow-up agent to invoke the named CLI; local-LLM reviewers
 // (lmstudio/ollama) route the diff through PortOS's `POST /api/code-review/local`
-// endpoint, which runs the model configured on the AI Providers → Code Review
-// Defaults panel. Keep in sync with the `REVIEWER_VALUES` enum in
+// endpoint, which runs the model configured on the Settings → Code Reviewers
+// page. Keep in sync with the `REVIEWER_VALUES` enum in
 // `server/lib/validation.js`.
 export const REVIEWER_OPTIONS = [
   { value: 'copilot', label: 'Copilot', description: 'GitHub Copilot (GitHub-only)' },
-  { value: 'claude', label: 'Claude', description: 'Claude CLI reviews the PR diff (optional model on AI Providers → Code Review Defaults; supports an Ollama-backed Claude for local-only setups)' },
+  { value: 'claude', label: 'Claude', description: 'Claude CLI reviews the PR diff (optional model on Settings → Code Reviewers; supports an Ollama-backed Claude for local-only setups)' },
   { value: 'antigravity', label: 'Antigravity', description: 'Antigravity CLI (agy) reviews the PR diff' },
-  { value: 'codex', label: 'Codex', description: 'Codex CLI reviews the PR diff (optional model tier on AI Providers → Code Review Defaults)' },
+  { value: 'codex', label: 'Codex', description: 'Codex CLI reviews the PR diff (optional model tier on Settings → Code Reviewers)' },
   { value: 'grok', label: 'Grok', description: 'Grok Build CLI (grok) reviews the PR diff' },
   { value: 'cursor', label: 'Cursor Agent', description: 'Cursor Agent CLI (cursor-agent) reviews the PR diff' },
   { value: 'lmstudio', label: 'LM Studio', description: 'Local LM Studio model reviews the diff (set model on AI Providers)' },

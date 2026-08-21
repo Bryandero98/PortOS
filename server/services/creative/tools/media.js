@@ -5,7 +5,7 @@
  */
 
 import { z } from 'zod';
-import { enqueueJob } from '../../mediaJobQueue/index.js';
+import { enqueueUnattendedMediaJob, hasConfiguredMediaRoute } from '../../federatedMedia/defaultRouting.js';
 import { ASPECT_PRESETS, QUALITY_PRESETS, presetToRenderParams } from '../../../lib/creativeDirectorPresets.js';
 import { getSettings } from '../../settings.js';
 import { IMAGE_GEN_MODE, resolveQueueImageMode } from '../../imageGen/modes.js';
@@ -356,11 +356,28 @@ const mediaTool = (kind, label) => ({
       // Gen's visible controls then snap the autonomous job onto that model's
       // canvas/FPS/frame options and remove controls the UI disables (for
       // example MiniMax H3's negative prompt and sampler knobs).
-      if (kind === 'video' && params?.mode !== VIDEO_GEN_MODE.GROK) {
+      //
+      // SKIPPED for a routed job: the local model is not the one rendering, so
+      // snapping to its catalog is meaningless — and actively harmful, because
+      // it DELETES controls that model doesn't support. A dropped
+      // `disableAudio: true` is invisible to the route's own guard, which would
+      // then happily ship a job the peer renders with audio; a dropped
+      // `negativePrompt` just silently changes the render.
+      if (kind === 'video'
+        && params?.mode !== VIDEO_GEN_MODE.GROK
+        && !(await hasConfiguredMediaRoute('video'))) {
         params = reconcileVideoParamsWithModel(params, project);
       }
     }
-    return enqueueJob({ kind, params, owner: resolveOwner(args, ctx) });
+    // Unattended jobs never name a peer — the planner is an LLM, and letting
+    // it pick one is exactly the arbitrary-peer routing the provider contract
+    // forbids. Routing comes from this instance's own settings instead, applied
+    // by the shared unattended enqueue helper (which every autonomous render
+    // path goes through, so a configured route can't apply to a project's
+    // planner renders but not its scene renders). It resolves LAST, after the
+    // project/install pin ladder above: a configured remote provider overrides
+    // those local backend choices, and an unrouted job is unaffected.
+    return enqueueUnattendedMediaJob({ kind, params, owner: resolveOwner(args, ctx) });
   },
 });
 

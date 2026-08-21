@@ -1,10 +1,10 @@
-// Pure, deterministic helpers for CyberCity's character HUD badge (roadmap 2.11): given the
+// Pure, deterministic helpers for OpenWorld's character HUD badge (roadmap 2.11): given the
 // character sheet from GET /api/character, compute the badge view-model and detect XP gains
 // by diffing two successive snapshots. No React imports so the math is unit-testable.
 //
 // As of #2673 the badge shows an **age-based level** (`computeAgeView`) — level = years lived
 // — with a progress bar toward the next birthday. The only surviving XP-threshold helper is
-// `levelFromXP`, used by `cityArtifacts` to unlock level artifacts when a character has XP but
+// `levelFromXP`, used by `openWorldArtifacts` to unlock level artifacts when a character has XP but
 // no usable birth date; the badge no longer uses it.
 
 // MIRRORS the server constant `LEGACY_XP_THRESHOLDS` in server/services/character.js — index i
@@ -27,7 +27,7 @@ export function levelFromXP(xp) {
   return 1;
 }
 
-// Age-based level view-model for the CyberCity badge (#2673, epic #2672). The Character's
+// Age-based level view-model for the OpenWorld badge (#2673, epic #2672). The Character's
 // level is now life experience = age: `level = floor(ageYears)`, derived server-side from
 // the canonical birthDate. The badge shows that age level and a progress bar = fractional
 // part of the current year of life (progress toward the next birthday). Tolerates a missing

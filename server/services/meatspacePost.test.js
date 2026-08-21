@@ -57,7 +57,10 @@ import {
   getSessionSkillContext,
   getPostReviewReps,
   getPostBenchmarkProtocol,
+  POST_BENCHMARK_PROTOCOL,
+  benchmarkCompatibility,
 } from './meatspacePost.js';
+import { generateCognitiveDrill } from './meatspacePostCognitive.js';
 
 describe('Quick POST config', () => {
   it('defaults a new install to the five-minute preset', async () => {
@@ -77,7 +80,7 @@ describe('Fixed POST benchmark protocol', () => {
     expect(protocol).toMatchObject({
       protocolId: 'post-foundation-battery',
       protocolVersion: 1,
-      scorerVersion: 'post-deterministic-v1',
+      scorerVersion: POST_BENCHMARK_PROTOCOL.scorerVersion,
       nextFormId: 'a',
     });
     expect(protocol.forms).toHaveLength(2);
@@ -97,10 +100,200 @@ describe('Fixed POST benchmark protocol', () => {
       benchmark: {
         protocolId: 'post-foundation-battery',
         protocolVersion: 1,
-        scorerVersion: 'post-deterministic-v1',
+        scorerVersion: POST_BENCHMARK_PROTOCOL.scorerVersion,
         formId: 'a',
       },
     })).rejects.toMatchObject({ code: 'INVALID_BENCHMARK', status: 400 });
+  });
+});
+
+// A benchmark's score must be comparable across runs regardless of the
+// user's live scoring.weights / drill-timeLimit config — otherwise two
+// "compatible" (same protocol/version/scorer) runs could land on different
+// scales and the benchmark trend (getPostProgress's series.benchmark) would
+// silently compare apples to oranges (issue #4442 codex review).
+describe('submitPostSession — benchmark scoring is fixed by the protocol', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const FORM_A = POST_BENCHMARK_PROTOCOL.forms.find(f => f.formId === 'a');
+  const MATH_TASK_CONFIG = FORM_A.tasks.find(t => t.type === 'doubling-chain').config;
+  const MATH_TASK_TIME_LIMIT_SEC = FORM_A.tasks.find(t => t.type === 'doubling-chain').timeLimitSec;
+  const COGNITIVE_TASK_CONFIG = FORM_A.tasks.find(t => t.type === 'task-switching').config;
+
+  function benchmarkFormATasks({ mathResponseMs = 100 } = {}) {
+    const cognitiveDrill = generateCognitiveDrill('task-switching', COGNITIVE_TASK_CONFIG);
+    return [
+      {
+        module: 'mental-math',
+        type: 'doubling-chain',
+        config: MATH_TASK_CONFIG,
+        // All 8 answered correctly and fast — deterministically scores ~100
+        // (default responseMs), or a caller-tuned response time for probing
+        // the speed-bonus / time-limit behavior.
+        questions: Array.from({ length: 8 }, () => ({ prompt: '2 x 2', expected: 4, answered: 4, responseMs: mathResponseMs })),
+        totalMs: mathResponseMs * 8,
+      },
+      {
+        module: 'cognitive',
+        type: 'task-switching',
+        config: COGNITIVE_TASK_CONFIG,
+        drillData: cognitiveDrill,
+        // Zero trials attempted — deterministically scores 0 (0% completion).
+        questions: [],
+        totalMs: 1000,
+      },
+    ];
+  }
+
+  function benchmarkSubmission(taskOpts) {
+    return {
+      modules: ['mental-math', 'cognitive'],
+      tasks: benchmarkFormATasks(taskOpts),
+      benchmark: {
+        protocolId: POST_BENCHMARK_PROTOCOL.protocolId,
+        protocolVersion: POST_BENCHMARK_PROTOCOL.protocolVersion,
+        scorerVersion: POST_BENCHMARK_PROTOCOL.scorerVersion,
+        formId: 'a',
+      },
+    };
+  }
+
+  it('scores a plain unweighted mean of the two task scores (100 and 0 → 50)', async () => {
+    readJSONFile.mockImplementation((path, defaultValue) => Promise.resolve(defaultValue));
+    const session = await submitPostSession(benchmarkSubmission());
+    expect(session.score).toBe(50);
+  });
+
+  it('ignores a configured scoring.weights skew that would otherwise shift the score', async () => {
+    readJSONFile.mockImplementation((path, defaultValue) => {
+      const p = String(path);
+      if (p.includes('post-config')) {
+        // Heavily favor cognitive (score 0) over mental-math (score ~100) —
+        // if this leaked through, the blended score would collapse toward 0.
+        return Promise.resolve({ scoring: { weights: { 'mental-math': 0.1, cognitive: 5 } } });
+      }
+      return Promise.resolve(defaultValue);
+    });
+    const session = await submitPostSession(benchmarkSubmission());
+    // Same 50 as the uniform-weights case above — the skewed config never applied.
+    expect(session.score).toBe(50);
+  });
+
+  it('a non-benchmark session with the SAME tasks still honors configured weights', async () => {
+    readJSONFile.mockImplementation((path, defaultValue) => {
+      const p = String(path);
+      if (p.includes('post-config')) {
+        return Promise.resolve({ scoring: { weights: { 'mental-math': 0.1, cognitive: 5 } } });
+      }
+      return Promise.resolve(defaultValue);
+    });
+    const { benchmark: _benchmark, ...plainSubmission } = benchmarkSubmission();
+    const session = await submitPostSession(plainSubmission);
+    // (100*0.1 + 0*5) / (0.1+5) ≈ 1.96 → rounds to 2 — confirms the fixed-weights
+    // behavior above is benchmark-specific, not a global scoring regression.
+    expect(session.score).toBe(2);
+  });
+
+  it("ignores the user's configured mentalMath timeLimitSec, using the registered form's instead", async () => {
+    readJSONFile.mockImplementation((path, defaultValue) => {
+      const p = String(path);
+      if (p.includes('post-config')) {
+        // A user-configured 1s time limit — if this leaked into a benchmark
+        // rescore, a 900ms response would blow almost the whole window and
+        // tank the speed bonus. The form's real limit is 60s (MATH_TASK_TIME_LIMIT_SEC).
+        return Promise.resolve({ mentalMath: { drillTypes: { 'doubling-chain': { timeLimitSec: 1 } } } });
+      }
+      return Promise.resolve(defaultValue);
+    });
+    const session = await submitPostSession(benchmarkSubmission({ mathResponseMs: 900 }));
+    const mathTask = session.tasks.find(t => t.type === 'doubling-chain');
+    // speedBonus = 1 - 900/(MATH_TASK_TIME_LIMIT_SEC*1000) ≈ 0.985 (form limit),
+    // not 1 - 900/1000 = 0.1 (the buggy user-configured 1s limit) — the two
+    // round to very different task scores (100 vs 82).
+    expect(MATH_TASK_TIME_LIMIT_SEC).toBe(60);
+    expect(mathTask.score).toBe(100);
+  });
+
+  it("a non-benchmark session with the SAME task honors the user's configured timeLimitSec", async () => {
+    readJSONFile.mockImplementation((path, defaultValue) => {
+      const p = String(path);
+      if (p.includes('post-config')) {
+        return Promise.resolve({ mentalMath: { drillTypes: { 'doubling-chain': { timeLimitSec: 1 } } } });
+      }
+      return Promise.resolve(defaultValue);
+    });
+    const { benchmark: _benchmark, ...plainSubmission } = benchmarkSubmission({ mathResponseMs: 900 });
+    const session = await submitPostSession(plainSubmission);
+    const mathTask = session.tasks.find(t => t.type === 'doubling-chain');
+    // Confirms the fixed-time-limit behavior above is benchmark-specific.
+    expect(mathTask.score).toBe(82);
+  });
+
+  it('accepts an in-flight run tagged with a RETIRED scorer version instead of losing it (issue #4442 codex review round 3)', async () => {
+    readJSONFile.mockImplementation((path, defaultValue) => Promise.resolve(defaultValue));
+    const submission = benchmarkSubmission();
+    submission.benchmark.scorerVersion = 'post-deterministic-v1'; // client fetched the protocol before the server upgraded
+    const session = await submitPostSession(submission);
+    // Not rejected, still scored under the CURRENT (fixed-weights) rules.
+    expect(session.score).toBe(50);
+    // The retired tag is preserved as submitted, not silently upgraded —
+    // benchmarkCompatibility() still correctly excludes it from the v2 trend.
+    expect(session.benchmark.scorerVersion).toBe('post-deterministic-v1');
+    expect(benchmarkCompatibility(session)).toBe('legacy');
+  });
+
+  it('still rejects a benchmark submission tagged with an unrecognized scorer version', async () => {
+    readJSONFile.mockImplementation((path, defaultValue) => Promise.resolve(defaultValue));
+    const submission = benchmarkSubmission();
+    submission.benchmark.scorerVersion = 'some-made-up-version';
+    await expect(submitPostSession(submission)).rejects.toMatchObject({ code: 'INVALID_BENCHMARK', status: 400 });
+  });
+});
+
+// Structured session conditions (issue #4442) — sleepQuality/caffeine/stress
+// enums plus an optional note, persisted independently of the legacy
+// free-text `tags` map.
+describe('submitPostSession — structured conditions', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    readJSONFile.mockImplementation((path, defaultValue) => Promise.resolve(defaultValue));
+  });
+
+  const baseSession = (overrides = {}) => ({
+    modules: ['mental-math'],
+    tasks: [{
+      module: 'mental-math',
+      type: 'doubling-chain',
+      questions: [{ prompt: '2 x 2', expected: 4, answered: 4, responseMs: 100 }],
+      totalMs: 100,
+    }],
+    ...overrides,
+  });
+
+  it('persists a filled-in conditions object', async () => {
+    const session = await submitPostSession(baseSession({
+      conditions: { sleepQuality: 'good', caffeine: 'low', stress: 'moderate', note: 'felt sharp' },
+    }));
+    expect(session.conditions).toEqual({ sleepQuality: 'good', caffeine: 'low', stress: 'moderate', note: 'felt sharp' });
+  });
+
+  it('omits the conditions field entirely when nothing was set', async () => {
+    const session = await submitPostSession(baseSession({ conditions: {} }));
+    expect(session.conditions).toBeUndefined();
+  });
+
+  it('omits conditions when the field is absent altogether', async () => {
+    const session = await submitPostSession(baseSession());
+    expect(session.conditions).toBeUndefined();
+  });
+
+  it('keeps legacy tags and structured conditions independent when both are present', async () => {
+    const session = await submitPostSession(baseSession({
+      tags: { sleep: 'hand-typed legacy value' },
+      conditions: { sleepQuality: 'fair' },
+    }));
+    expect(session.tags).toEqual({ sleep: 'hand-typed legacy value' });
+    expect(session.conditions).toEqual({ sleepQuality: 'fair' });
   });
 });
 

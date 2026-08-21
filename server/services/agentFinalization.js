@@ -33,12 +33,14 @@ import { release } from './executionLanes.js';
 import { completeExecution, errorExecution } from './toolStateMachine.js';
 import { resolveFailedTaskUpdate, resolveTypeFailureSignal } from './agentErrorAnalysis.js';
 import { completeAgentRun } from './agentRunTracking.js';
+import { appendRunEvent } from './agentRunEventLog.js';
 import { committedDuringRun } from '../lib/gitCommitProbe.js';
 import { SKIP_LEARNING_VERDICT } from '../lib/learningVerdict.js';
 import { detectPrimaryCheckoutDrift, PRIMARY_CHECKOUT_MUTATED_ESCALATION, PRIMARY_CHECKOUT_MUTATED_REASON } from '../lib/primaryCheckoutGuard.js';
 import { canRunTaskOutputHookWithoutPayload, getTaskOutputPayloadPredicate, isProgrammaticIoTaskType, resolveTaskHookType, declaresNoCommitCriterion } from './taskTypeHooks.js';
 import { processAgentCompletion } from './agentCompletion.js';
 import { extractSimplifySummaries } from './agentSummaryExtraction.js';
+import { usesCreativeDirectorScratchCwd, removeCreativeDirectorScratchCwd } from '../lib/spawnCwd.js';
 
 /**
  * Release the execution lane and complete tool-execution tracking for a
@@ -646,13 +648,53 @@ export async function finalizeAgent({
   // successfully" the UI renders off `result.success`) sees the corrected value.
   // A THROW here is not a verdict — fall back to the reported outcome rather
   // than manufacturing a failure out of a check that never ran.
+  let prCheckThrew = false;
   const prVerdict = terminatedByUser
     ? { ok: true }
     : await verifyPrClaim({ task, workspacePath, success: reportedSuccess, prExpected })
       .catch(err => {
+        prCheckThrew = true;
         emitLog('warn', `⚠️ PR verification failed for ${agentId}: ${err.message}`, { agentId });
         return { ok: true };
       });
+
+  // Record the verdict in the lifecycle ledger (#4540) — but ONLY when the
+  // check actually reached one. `verifyPrClaim` returns the same `{ ok: true }`
+  // for "the PR is there", for "this run never promised one", for "there was no
+  // branch to ask about", and (via the catch above) for "the check threw";
+  // appending on every call would file four different facts under one word and
+  // make the ledger lie about the one transition it exists to explain.
+  //
+  // A BRANCH is the tell: every path that actually consulted a forge returns the
+  // branch it asked about, and every path that did not returns no branch at all.
+  // So gate on the branch rather than re-deriving the service's own
+  // applicability rules here, where they would drift apart.
+  //
+  // `forge-unreachable` is excluded for the same reason a throw is: the forge
+  // being down is not evidence about the PR. Recording it as `verified: false`
+  // would put "this run shipped no PR" on the record for a run that may well
+  // have shipped one.
+  if (!prCheckThrew && typeof prVerdict.branch === 'string' && prVerdict.category !== FORGE_UNREACHABLE_CATEGORY) {
+    const verified = prVerdict.ok === true;
+    await appendRunEvent({
+      kind: 'run.pr-verified',
+      runId,
+      agentId,
+      taskId: task?.id,
+      // Keyed on the run AND the verdict. The run part collapses a retried
+      // finalize (the close handler and the orphan sweep can both reach this
+      // path) into one entry; the verdict part keeps a run whose SECOND check
+      // found the PR its first check missed from being silently suppressed by
+      // the miss — that transition is the whole reason to look at the ledger.
+      eventId: `pr-verify:${agentId}:${runId || 'no-run'}:${verified ? 'ok' : prVerdict.category || 'failed'}`,
+      data: {
+        verified,
+        branch: prVerdict.branch ?? null,
+        category: prVerdict.category ?? null,
+        noChangesToShip: prVerdict.noChangesToShip === true,
+      },
+    });
+  }
 
   // #3680: a worktree agent that committed to the PRIMARY checkout left
   // unreviewed commits on an unprotected branch. Same posture as the PR check —
@@ -879,6 +921,12 @@ export async function finalizeAgent({
   }
 
   await processAgentCompletion(agentId, task, success, outputBuffer);
+
+  if (usesCreativeDirectorScratchCwd(task)) {
+    await removeCreativeDirectorScratchCwd(agentId).catch((err) => {
+      emitLog('warn', `⚠️ CD scratch cleanup failed for ${agentId}: ${err.message}`, { agentId });
+    });
+  }
 
   // Hand the CORRECTED verdict back so the caller's worktree cleanup runs on the
   // same answer this function just persisted (#3358). Without it, a run

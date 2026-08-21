@@ -27,7 +27,10 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('./cosRunnerClient.js', () => ({
+// Real module except for the two rpcs: the spawn-failure classifier under test
+// stays the production one rather than a copy of itself (#4615).
+vi.mock('./cosRunnerClient.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   spawnAgentViaRunner: vi.fn(),
   // Reported healthy and long-lived so waitForRunnerStability returns on its
   // first check — the failure under test is the spawn call, not the wait.
@@ -88,6 +91,12 @@ vi.mock('./agentWorktreeCleanup.js', () => ({
 vi.mock('./agentCompletionCleanup.js', () => ({ runAgentCompletionCleanup: vi.fn() }));
 vi.mock('./agentSummaryExtraction.js', () => ({ extractFinalSummary: vi.fn() }));
 vi.mock('./agentManagement.js', () => ({ handleOrphanedTask: vi.fn() }));
+
+// The lifecycle ledger is a real file writer (data/cos/run-events.jsonl) — mocked
+// so handoff telemetry lands in a spy rather than the developing install's
+// ledger, and so the boundary assertions below can read the envelope (#4540).
+const { appendRunEvent } = vi.hoisted(() => ({ appendRunEvent: vi.fn(async () => ({ appended: true })) }));
+vi.mock('./agentRunEventLog.js', () => ({ appendRunEvent }));
 vi.mock('./agentPromptBuilder.js', () => ({ buildAgentPrompt: vi.fn(), getAppWorkspace: vi.fn() }));
 // The real classification of a `spawn-rejected` reason (non-actionable, so the
 // task is budgeted a retry rather than blocked) is pinned in
@@ -110,7 +119,7 @@ vi.mock('./executionLanes.js', () => ({
 }));
 
 import { spawnViaRunner } from './agentLifecycle.js';
-import { spawnAgentViaRunner } from './cosRunnerClient.js';
+import { spawnAgentViaRunner, RUNNER_SPAWN_REFUSED, RUNNER_SPAWN_AMBIGUOUS } from './cosRunnerClient.js';
 import { completeAgent, updateAgent } from './cosAgentLifecycle.js';
 import { completeAgentRun } from './agentRunTracking.js';
 import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
@@ -120,6 +129,12 @@ import { handleOrphanedTask } from './agentManagement.js';
 import { runnerAgents } from './agentState.js';
 
 const REJECTION = 'Command not allowed: grok. Permitted commands: claude, codex';
+
+// The runner ANSWERED and declined. The shape mirrors what `spawnAgentViaRunner`
+// stamps on a non-2xx (pinned in cosRunnerClient.test.js); a bare Error would
+// classify as AMBIGUOUS, which is the whole point of the split (#4615).
+const refusal = (message = REJECTION) =>
+  Object.assign(new Error(message), { spawnOutcome: RUNNER_SPAWN_REFUSED, status: 400 });
 
 function runnerOpts() {
   return {
@@ -141,12 +156,12 @@ describe('spawnViaRunner — the runner rejects the spawn', () => {
   });
 
   it('resolves instead of throwing, so the caller is not left to log-and-forget', async () => {
-    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(new Error(REJECTION));
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(refusal());
     await expect(spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts())).resolves.toBeNull();
   });
 
   it('finalizes through finalizeAgent with the runner\'s actual error, not a bare completeAgent', async () => {
-    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(new Error(REJECTION));
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(refusal());
 
     await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
 
@@ -169,7 +184,7 @@ describe('spawnViaRunner — the runner rejects the spawn', () => {
   });
 
   it('classifies the rejection under the spawn-rejected reason, carrying the runner message', async () => {
-    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(new Error(REJECTION));
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(refusal());
 
     await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
 
@@ -181,7 +196,7 @@ describe('spawnViaRunner — the runner rejects the spawn', () => {
 
   it('releases the retry hold so the task returns to pending instead of waiting on the orphan sweep', async () => {
     const task = { id: 'task-1' };
-    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(new Error(REJECTION));
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(refusal());
 
     await spawnViaRunner('agent-1', task, runnerOpts());
 
@@ -198,7 +213,7 @@ describe('spawnViaRunner — the runner rejects the spawn', () => {
   });
 
   it('still finalizes when releaseRetryHold rejects — the orphan sweep is the fallback, not a crash', async () => {
-    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(new Error(REJECTION));
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(refusal());
     vi.mocked(releaseRetryHold).mockRejectedValueOnce(new Error('task store unreadable'));
 
     await expect(spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts())).resolves.toBeNull();
@@ -206,7 +221,7 @@ describe('spawnViaRunner — the runner rejects the spawn', () => {
   });
 
   it('drops the runnerAgents entry so the orphan sweep can see the record', async () => {
-    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(new Error(REJECTION));
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(refusal());
 
     await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
 
@@ -216,7 +231,7 @@ describe('spawnViaRunner — the runner rejects the spawn', () => {
   });
 
   it('releases the lane and tool execution', async () => {
-    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(new Error(REJECTION));
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(refusal());
 
     await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
 
@@ -231,7 +246,7 @@ describe('spawnViaRunner — the runner rejects the spawn', () => {
 
   it('cancels the 3s initialization timer so the record cannot flip to "working"', async () => {
     vi.useFakeTimers();
-    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(new Error(REJECTION));
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(refusal());
 
     await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
     vi.mocked(updateAgent).mockClear();
@@ -252,5 +267,147 @@ describe('spawnViaRunner — the runner rejects the spawn', () => {
     expect(finalizeAgent).not.toHaveBeenCalled();
     expect(releaseRetryHold).not.toHaveBeenCalled();
     expect(runnerAgents.has('agent-1')).toBe(true);
+  });
+});
+
+// ─── Ambiguous transport failures (#4615) ────────────────────────────────────
+
+/**
+ * A spawn rpc that never got an answer cannot say the run did not start. The
+ * rpc reconciles against the runner's own /agents view first, so what reaches
+ * `spawnViaRunner` is either a resolved (possibly ADOPTED) spawn or a failure
+ * for which no child exists. Both endings are pinned here: the adopted one must
+ * NOT be finalized — it is a live run — and the unadopted one must keep the
+ * existing non-actionable `spawn-rejected` retry semantics.
+ */
+describe('spawnViaRunner — an ambiguous spawn failure', () => {
+  const transportFailure = () =>
+    Object.assign(new Error('fetch failed'), { spawnOutcome: RUNNER_SPAWN_AMBIGUOUS });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    runnerAgents.clear();
+  });
+
+  it('keeps an adopted spawn tracked instead of finalizing a live agent as rejected', async () => {
+    vi.mocked(spawnAgentViaRunner).mockResolvedValueOnce({ pid: 4242, adopted: true, adoptedReason: 'fetch failed' });
+
+    await expect(spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts())).resolves.toBe('agent-1');
+
+    // Dropping the entry here is what strands the process: nothing local would
+    // own its completion event and the orphan sweep skips it either way.
+    expect(runnerAgents.has('agent-1')).toBe(true);
+    expect(updateAgent).toHaveBeenCalledWith('agent-1', { pid: 4242 });
+    expect(finalizeAgent).not.toHaveBeenCalled();
+    expect(releaseRetryHold).not.toHaveBeenCalled();
+    expect(releaseAgentLane).not.toHaveBeenCalled();
+  });
+
+  it('still finalizes as spawn-rejected when the runner does not have the agent', async () => {
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(transportFailure());
+
+    await expect(spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts())).resolves.toBeNull();
+
+    // Unchanged from a refusal: `spawn-rejected` is non-actionable, so the task
+    // is budgeted a retry rather than blocked for a human.
+    expect(finalizeAgent).toHaveBeenCalledWith(expect.objectContaining({
+      completionReason: 'spawn-rejected',
+      error: 'fetch failed',
+    }));
+    expect(runnerAgents.has('agent-1')).toBe(false);
+  });
+});
+
+// ─── Lifecycle ledger — the handoff boundary (#4540) ─────────────────────────
+
+describe('spawnViaRunner — records who owns the process', () => {
+  const handoffs = () => appendRunEvent.mock.calls.map(([e]) => e).filter((e) => e.kind === 'run.handoff');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    runnerAgents.clear();
+  });
+
+  it('records the handoff only AFTER the runner accepted the spawn', async () => {
+    // `runnerAgents` — the map that says which process owns this run — is
+    // in-memory and gone on the next restart. This is the only durable record
+    // that the answer was ever "the CoS Runner".
+    vi.mocked(spawnAgentViaRunner).mockResolvedValueOnce({ pid: 4242 });
+
+    await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
+
+    expect(handoffs()).toEqual([expect.objectContaining({
+      runId: 'run-1',
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      data: expect.objectContaining({ to: 'cos-runner', accepted: true, pid: 4242, providerId: 'grok-cli' })
+    })]);
+  });
+
+  it('records a REFUSED handoff as its own boundary', async () => {
+    // "The runner would not take it" and "it ran and failed" collapse into the
+    // same terminal record; only the ledger can still tell them apart.
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(refusal());
+
+    await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
+
+    expect(handoffs()).toEqual([expect.objectContaining({
+      eventId: 'handoff:agent-1:run-1:rejected',
+      data: expect.objectContaining({ to: 'none', accepted: false, outcome: RUNNER_SPAWN_REFUSED, reason: REJECTION })
+    })]);
+  });
+
+it('records an AMBIGUOUS handoff as unaccepted-but-unknown, never as a refusal', async () => {
+    // The runner never answered, and the spawn rpc's own reconcile found no
+    // agent. "Never started" and "refused" are different claims, and only one
+    // of them the server can actually have observed (#4615).
+    vi.mocked(spawnAgentViaRunner).mockRejectedValueOnce(
+      Object.assign(new Error('fetch failed'), { spawnOutcome: RUNNER_SPAWN_AMBIGUOUS })
+    );
+
+    await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
+
+    expect(handoffs()).toEqual([expect.objectContaining({
+      eventId: 'handoff:agent-1:run-1:unconfirmed',
+      data: expect.objectContaining({
+        to: 'none',
+        accepted: null,
+        outcome: RUNNER_SPAWN_AMBIGUOUS,
+        reason: 'fetch failed',
+      }),
+    })]);
+  });
+
+  it('records an ADOPTED handoff as accepted, naming the lost acknowledgement', async () => {
+    vi.mocked(spawnAgentViaRunner).mockResolvedValueOnce({
+      pid: 4242,
+      adopted: true,
+      adoptedReason: 'fetch failed',
+    });
+
+    await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
+
+    expect(handoffs()).toEqual([expect.objectContaining({
+      eventId: 'handoff:agent-1:run-1:cos-runner',
+      data: expect.objectContaining({
+        to: 'cos-runner',
+        accepted: true,
+        adopted: true,
+        outcome: RUNNER_SPAWN_AMBIGUOUS,
+        pid: 4242,
+        reason: 'fetch failed',
+      }),
+    })]);
+  });
+
+  it('keys the handoff on the run, so a retried spawn cannot double-count it', async () => {
+    vi.mocked(spawnAgentViaRunner).mockResolvedValue({ pid: 4242 });
+
+    await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
+    await spawnViaRunner('agent-1', { id: 'task-1' }, runnerOpts());
+
+    const ids = handoffs().map((e) => e.eventId);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(1);
   });
 });

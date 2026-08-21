@@ -24,6 +24,10 @@ const api = vi.hoisted(() => ({
   getCosTodayActivity: vi.fn(),
   getCosLearning: vi.fn(),
   getProviderStatuses: vi.fn(),
+  // TasksTab + TaskAddForm, rendered by the task-event tests below.
+  getCosLearningDurations: vi.fn(),
+  getCosPopularTemplates: vi.fn(),
+  getCodeReviewDefaults: vi.fn(),
 }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 const socketStub = vi.hoisted(() => ({ connected: false, on: vi.fn(), off: vi.fn(), emit: vi.fn() }));
@@ -31,6 +35,9 @@ const socketStub = vi.hoisted(() => ({ connected: false, on: vi.fn(), off: vi.fn
 vi.mock('../services/api', () => api);
 vi.mock('../components/ui/Toast', () => ({ default: toast }));
 vi.mock('../services/socket', () => ({ default: socketStub }));
+// TaskAddForm drags in the reviewer/model picker plumbing (local-LLM status,
+// prompt templates) that the task-event tests below have no stake in.
+vi.mock('../components/cos/TaskAddForm', () => ({ default: () => null }));
 // ConfigTab's provider/model hook fetches over the network — stub it.
 vi.mock('../hooks/useProviderModels', () => ({
   default: () => ({
@@ -75,6 +82,9 @@ beforeEach(() => {
   api.getCosBudgetUsage.mockResolvedValue({ usage: {} });
   api.pauseCos.mockResolvedValue({ success: true, pausedAt: '2026-01-01T00:00:00.000Z' });
   api.resumeCos.mockResolvedValue({ success: true });
+  api.getCosLearningDurations.mockResolvedValue(null);
+  api.getCosPopularTemplates.mockResolvedValue([]);
+  api.getCodeReviewDefaults.mockResolvedValue({});
 });
 
 const renderConfigTab = () => render(
@@ -445,5 +455,284 @@ describe('ChiefOfStaff insight freshness (#2654)', () => {
     await waitFor(() => expect(api.getApps.mock.calls.length).toBeGreaterThan(1));
     expect(screen.getByText('FRESH_ISSUE')).toBeInTheDocument();
     expect(screen.queryByText('All Systems Healthy')).not.toBeInTheDocument();
+  });
+});
+
+// A scheduled CoS run is an INTERNAL task, and the page used to subscribe only
+// to `cos:tasks:user:changed` — so a freshly queued scheduled task didn't appear
+// until the 30s poll, and the pending→in_progress flip that ends a task's
+// "queued" life was equally invisible. Since the server registers an agent as
+// running BEFORE flipping its task off `pending`, the fetch fired by
+// `cos:agent:spawned` always reads the task as still-queued, which is what left
+// the row showing as pending AND active for up to a poll interval.
+describe('ChiefOfStaff task-change subscriptions', () => {
+  const getSocketHandler = (event) => socketStub.on.mock.calls.find(([evt]) => evt === event)?.[1];
+
+  const renderTasksTab = () => render(
+    <MemoryRouter initialEntries={['/cos/tasks']}>
+      <Routes>
+        <Route path="/cos/:tab" element={<ChiefOfStaff />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  it('renders a newly queued system task straight off the watcher event', async () => {
+    renderTasksTab();
+    await waitFor(() => expect(api.getCosTasks).toHaveBeenCalled());
+    const before = api.getCosTasks.mock.calls.length;
+
+    const handleCosTasksChanged = getSocketHandler('cos:tasks:cos:changed');
+    expect(handleCosTasksChanged).toBeTypeOf('function');
+    await act(async () => {
+      handleCosTasksChanged({
+        exists: true,
+        tasks: [{ id: 'cos-task-1', description: 'Example scheduled task', status: 'pending', metadata: {} }],
+      });
+    });
+
+    expect(await screen.findByText('Example scheduled task')).toBeInTheDocument();
+    // The event carries the whole list, so it must not cost a round trip.
+    expect(api.getCosTasks.mock.calls.length).toBe(before);
+  });
+
+  it('coalesces a burst of task-store changes into a single refetch', async () => {
+    renderTasksTab();
+    await waitFor(() => expect(api.getCosTasks).toHaveBeenCalled());
+    const before = api.getCosTasks.mock.calls.length;
+
+    const handleTasksChanged = getSocketHandler('cos:tasks:changed');
+    expect(handleTasksChanged).toBeTypeOf('function');
+    await act(async () => {
+      handleTasksChanged({ type: 'internal', action: 'added' });
+      handleTasksChanged({ type: 'internal', action: 'updated' });
+      handleTasksChanged({ type: 'user', action: 'updated' });
+    });
+
+    await waitFor(() => expect(api.getCosTasks.mock.calls.length).toBe(before + 1), { timeout: 2000 });
+    // `tasks:changed` also fires for writes with nothing to show here (every
+    // running task's federation lease heartbeat), so the burst must settle into
+    // one refresh rather than one per event. Any extra flush would land inside
+    // the 400ms window the first one already closed.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 200)); });
+    expect(api.getCosTasks.mock.calls.length).toBe(before + 1);
+  });
+
+  it('refreshes the queue without re-running the health-checking insights read', async () => {
+    renderTasksTab();
+    await waitFor(() => expect(api.getCosActionableInsights).toHaveBeenCalled());
+    const insightsBefore = api.getCosActionableInsights.mock.calls.length;
+
+    await act(async () => { getSocketHandler('cos:tasks:changed')({ type: 'internal', action: 'updated' }); });
+    await waitFor(() => expect(api.getCosAgents.mock.calls.length).toBeGreaterThan(1), { timeout: 2000 });
+
+    // /cos/actionable-insights runs a health check that AUTO-RESTARTS errored PM2
+    // processes. Every task add, status flip, delete and lease heartbeat emits
+    // `tasks:changed`, so this handler must never reach that endpoint.
+    expect(api.getCosActionableInsights.mock.calls.length).toBe(insightsBefore);
+  });
+});
+
+// fetchData reads 8 endpoints, one of which runs a server-side health check, so a
+// queue refresh started LATER routinely resolves FIRST. Without a guard, the slow
+// batch's pre-flip task payload lands last and restores the pending-AND-active
+// render — the exact symptom the queue refresh exists to clear.
+describe('ChiefOfStaff stale queue-read guard', () => {
+  const getSocketHandler = (event) => socketStub.on.mock.calls.find(([evt]) => evt === event)?.[1];
+
+  it('does not let a slow full fetch overwrite a fresher queue refresh', async () => {
+    const stale = { user: { tasks: [{ id: 'task-1', description: 'STALE pending copy', status: 'pending', metadata: {} }] }, cos: { tasks: [] } };
+    const fresh = { user: { tasks: [{ id: 'task-1', description: 'FRESH in-progress copy', status: 'in_progress', metadata: {} }] }, cos: { tasks: [] } };
+
+    // Initial paint.
+    api.getCosTasks.mockResolvedValue(stale);
+    render(
+      <MemoryRouter initialEntries={['/cos/tasks']}>
+        <Routes>
+          <Route path="/cos/:tab" element={<ChiefOfStaff />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('STALE pending copy')).toBeInTheDocument();
+
+    // A spawn kicks off the slow full fetch, whose insights read we hold open so
+    // the whole batch resolves only after the queue refresh below has landed.
+    let releaseInsights;
+    api.getCosActionableInsights.mockReturnValue(new Promise((resolve) => { releaseInsights = resolve; }));
+    await act(async () => { getSocketHandler('cos:agent:spawned')({ agentId: 'agent-1', metadata: {} }); });
+
+    // The store event's queue refresh resolves first, with the post-flip truth.
+    api.getCosTasks.mockResolvedValue(fresh);
+    await act(async () => { getSocketHandler('cos:tasks:changed')({ type: 'user', action: 'updated' }); });
+    expect(await screen.findByText('FRESH in-progress copy')).toBeInTheDocument();
+
+    // Now the slow batch finally returns — carrying the stale pre-flip snapshot.
+    api.getCosTasks.mockResolvedValue(stale);
+    await act(async () => {
+      releaseInsights({ insights: [] });
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    expect(screen.queryByText('STALE pending copy')).not.toBeInTheDocument();
+    expect(screen.getByText('FRESH in-progress copy')).toBeInTheDocument();
+  });
+});
+
+// A single warning-level health issue parked the avatar on "Investigating
+// issue..." with Active 0. Nothing on screen said what was being investigated,
+// and the Issues tile was an inert <div> holding the number 1, so the detail was
+// reachable only by guessing at the Health tab.
+describe('ChiefOfStaff Issues card', () => {
+  const memoryWarning = {
+    type: 'warning',
+    category: 'memory',
+    message: 'High memory usage in: example-app (900MB)',
+  };
+
+  const renderWithIssues = (issues) => {
+    api.getCosStatus.mockResolvedValue({ running: true, config, stats: {} });
+    api.getCosHealth.mockResolvedValue({ lastCheck: '2026-01-01T00:00:00.000Z', issues });
+    return render(
+      <MemoryRouter initialEntries={['/cos/config']}>
+        <Routes>
+          <Route path="/cos/:tab" element={<ChiefOfStaff />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+  };
+
+  // Same "never index a match list" rule as the Learning card above: the page
+  // paints the Issues tile in up to four places (desktop sidebar, mobile grid,
+  // the compressed header, and the Tailwind-`hidden` ascii `mini` bar, all still
+  // in the jsdom tree). Hold every variant to the contract.
+  const issueCards = async () => {
+    const cards = await screen.findAllByRole('button', { name: /^Issues:/ });
+    expect(cards.length).toBeGreaterThan(0);
+    return cards;
+  };
+
+  it('names the health issue in the status bubble instead of the generic investigating line', async () => {
+    renderWithIssues([memoryWarning]);
+
+    expect(await screen.findByText(memoryWarning.message)).toBeInTheDocument();
+    expect(screen.queryByText('Investigating issue...')).not.toBeInTheDocument();
+  });
+
+  it('summarizes the count when more than one issue is open', async () => {
+    renderWithIssues([memoryWarning, { type: 'error', category: 'processes', message: 'example-app failed to auto-restart' }]);
+
+    expect(await screen.findByText(/^2 health issues: /)).toBeInTheDocument();
+  });
+
+  it('makes every Issues tile a button that carries the issue summary', async () => {
+    renderWithIssues([memoryWarning]);
+
+    for (const card of await issueCards()) {
+      expect(card).toHaveAttribute('title', memoryWarning.message);
+      expect(within(card).getByText('1')).toBeInTheDocument();
+    }
+  });
+
+  it('opens the Health tab when the tile is clicked', async () => {
+    renderWithIssues([memoryWarning]);
+    const cards = await issueCards();
+
+    // Clicking the first is enough: the assertion above pins every variant to
+    // the same props object, and the click swaps the route out from under the
+    // rest of the list.
+    fireEvent.click(cards[0]);
+
+    const panel = await screen.findByRole('tabpanel');
+    expect(panel).toHaveAttribute('id', 'tabpanel-health');
+    expect(within(panel).getByText(memoryWarning.message)).toBeInTheDocument();
+  });
+
+  // The live path: a health check finishing while the page is open pushes the
+  // issue over the socket rather than through fetchData.
+  it('names the issue arriving on a live health-check socket event', async () => {
+    renderWithIssues([]);
+    // Wait for the clean first paint so the socket handler is registered.
+    for (const card of await issueCards()) expect(within(card).getByText('0')).toBeInTheDocument();
+
+    const handleHealthCheck = socketStub.on.mock.calls.find(([evt]) => evt === 'cos:health:check')?.[1];
+    expect(handleHealthCheck).toBeTypeOf('function');
+    await act(async () => {
+      handleHealthCheck({ metrics: { timestamp: '2026-01-02T00:00:00.000Z' }, issues: [memoryWarning] });
+    });
+
+    expect(await screen.findByText(memoryWarning.message)).toBeInTheDocument();
+    for (const card of await issueCards()) {
+      expect(card).toHaveAttribute('title', memoryWarning.message);
+      expect(within(card).getByText('1')).toBeInTheDocument();
+    }
+    // Drain the >0 branch's speaking timer so no state update escapes act.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2100)); });
+  });
+
+  // Without these, deleting the `tone` prop would leave every tile neutral gray
+  // while the helper's own unit tests stayed green.
+  it('colors the tile amber for a warning-only check', async () => {
+    renderWithIssues([memoryWarning]);
+
+    for (const card of await issueCards()) {
+      expect(card.className).toContain('border-port-warning');
+      expect(card.className).not.toContain('border-port-error');
+    }
+  });
+
+  it('escalates the tile to red when an issue is error-level', async () => {
+    renderWithIssues([memoryWarning, { type: 'error', category: 'processes', message: 'example-app failed to auto-restart' }]);
+
+    for (const card of await issueCards()) {
+      expect(card.className).toContain('border-port-error');
+    }
+  });
+
+  it('stays a click-through to Health when there are no issues at all', async () => {
+    renderWithIssues([]);
+
+    for (const card of await issueCards()) {
+      expect(card).toHaveAttribute('title', 'No issues detected — view system health');
+      expect(within(card).getByText('0')).toBeInTheDocument();
+      expect(card.className).not.toContain('border-port-warning');
+      expect(card.className).not.toContain('border-port-error');
+    }
+  });
+
+  // fetchData's health read is the SLOW one — it resolves after the socket event
+  // for the check that same batch triggered. Everything the page derives from
+  // health (tile, avatar state, status bubble) must come from the merged
+  // snapshot, or the bubble names an older issue than the tile is counting.
+  it('does not let a slow health read clobber a fresher socket-delivered check', async () => {
+    const staleWarning = { type: 'warning', category: 'memory', message: 'Stale issue from the older read' };
+    api.getCosStatus.mockResolvedValue({ running: true, config, stats: {} });
+    // The slow read carries the OLDER timestamp; the socket event below is newer.
+    api.getCosHealth.mockResolvedValue({ lastCheck: '2026-01-01T00:00:00.000Z', issues: [staleWarning] });
+    render(
+      <MemoryRouter initialEntries={['/cos/config']}>
+        <Routes>
+          <Route path="/cos/:tab" element={<ChiefOfStaff />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(staleWarning.message)).toBeInTheDocument();
+
+    const handleHealthCheck = socketStub.on.mock.calls.find(([evt]) => evt === 'cos:health:check')?.[1];
+    await act(async () => {
+      handleHealthCheck({ metrics: { timestamp: '2026-01-02T00:00:00.000Z' }, issues: [memoryWarning] });
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2100)); });
+
+    // Now force the slow batch to run again with its stale payload — the merge
+    // must keep the socket's newer check, for the tile AND the bubble.
+    await act(async () => {
+      socketStub.on.mock.calls.find(([evt]) => evt === 'apps:changed')?.[1]?.();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(screen.getByText(memoryWarning.message)).toBeInTheDocument();
+    expect(screen.queryByText(staleWarning.message)).not.toBeInTheDocument();
+    for (const card of await issueCards()) {
+      expect(card).toHaveAttribute('title', memoryWarning.message);
+    }
   });
 });

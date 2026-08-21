@@ -43,7 +43,7 @@ describe('GET /api/character', () => {
   it('skips BOTH fan-outs for a legacy ?skills=0 caller that predates the metrics flag', async () => {
     // Back-compat: `?skills=0` has only ever meant "give me the cheap sheet". A caller that
     // predates #2676 (a browser on a stale bundle, an external script) has no way to ask for
-    // `metrics=0`, so it must not silently start paying the new fan-out — the CyberCity HUD
+    // `metrics=0`, so it must not silently start paying the new fan-out — the OpenWorld HUD
     // issues exactly this request every 15s.
     for (const value of ['0', 'false']) {
       vi.clearAllMocks();

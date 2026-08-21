@@ -3,7 +3,7 @@ import express from 'express';
 import { request } from '../lib/testHelper.js';
 import localLlmRoutes from './localLlm.js';
 import { runLocalLlmTest, compareLocalLlmModels } from '../services/localLlmPlayground.js';
-import { listModels, listVisionModels, listToolUseModels } from '../services/localLlm.js';
+import { listModels, listVisionModels, listToolUseModels, installModel } from '../services/localLlm.js';
 import { enrichCatalogWithVariants, applyMeasuredFit } from '../services/huggingFaceCatalog.js';
 import { getMeasuredFits } from '../services/localModelAssessmentStore.js';
 import { runAssessment } from '../services/localModelAssessments.js';
@@ -24,6 +24,7 @@ vi.mock('../services/localLlm.js', () => ({
   listVisionModels: vi.fn(async () => []),
   listToolUseModels: vi.fn(async () => []),
   installModel: vi.fn(),
+  describeInstallProgress: vi.fn((p) => p?.status || null),
   deleteModel: vi.fn(),
   switchBackend: vi.fn(),
   migrateBackend: vi.fn(),
@@ -77,6 +78,13 @@ vi.mock('../services/llamaServerManager.js', () => ({
   installLlamaServer: vi.fn(async () => ({ success: true, message: 'installed' })),
 }));
 
+// The launcher's curated presets (and their weights' on-disk state) ride along
+// on the status response so the card can offer a Download button per GGUF.
+vi.mock('../services/specDecodeModels.js', () => ({
+  getSpecDecodePresetStatus: vi.fn(async () => ([{ id: 'test-preset', label: 'Test', specType: 'draft-dspark', model: null, draftModel: null }])),
+  downloadSpecDecodeModel: vi.fn(async () => ({ success: true, path: 'models/base.gguf', file: 'base.gguf' })),
+}));
+
 // /loaded reads getSettings() to honor a user's intentionally-disabled backends,
 // so mock it (defaults to no backends disabled; the disabled-case test flips it).
 vi.mock('../services/settings.js', () => ({
@@ -119,6 +127,33 @@ describe('local LLM playground routes', () => {
     expect(Array.isArray(res.body.models)).toBe(true);
     // The playground only needs catalog metadata — it must not pay for HF probes.
     expect(enrichCatalogWithVariants).not.toHaveBeenCalled();
+  });
+
+  it('POST /install forwards force so a redownload can replace on-disk weights', async () => {
+    installModel.mockResolvedValue({ success: true, modelId: 'unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M' });
+
+    const res = await request(makeApp())
+      .post('/api/local-llm/install')
+      .send({ backend: 'lmstudio', modelId: 'unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M', force: true });
+
+    expect(res.status).toBe(200);
+    expect(installModel).toHaveBeenCalledWith(
+      'lmstudio',
+      'unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M',
+      expect.any(Function),
+      { force: true }
+    );
+  });
+
+  it('POST /install without force still pulls as a regular install', async () => {
+    installModel.mockResolvedValue({ success: true, modelId: 'llama3.2' });
+
+    const res = await request(makeApp())
+      .post('/api/local-llm/install')
+      .send({ backend: 'ollama', modelId: 'llama3.2' });
+
+    expect(res.status).toBe(200);
+    expect(installModel).toHaveBeenCalledWith('ollama', 'llama3.2', expect.any(Function), { force: false });
   });
 
   it('runs a single local model test with validated defaults', async () => {
@@ -473,10 +508,33 @@ describe('measured assessments wiring', () => {
 });
 
 describe('llama-server routes', () => {
-  it('GET /api/local-llm/llama-server/status returns status', async () => {
+  it('GET /api/local-llm/llama-server/status returns status with the weight presets', async () => {
     const res = await request(makeApp()).get('/api/local-llm/llama-server/status');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ installed: true, running: false });
+    expect(res.body).toEqual({
+      installed: true,
+      running: false,
+      presets: [{ id: 'test-preset', label: 'Test', specType: 'draft-dspark', model: null, draftModel: null }],
+    });
+  });
+
+  it('POST /api/local-llm/llama-server/download-model fetches one preset GGUF', async () => {
+    const { downloadSpecDecodeModel } = await import('../services/specDecodeModels.js');
+    const res = await request(makeApp())
+      .post('/api/local-llm/llama-server/download-model')
+      .send({ presetId: 'test-preset', role: 'model' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ success: true, path: 'models/base.gguf' });
+    expect(downloadSpecDecodeModel).toHaveBeenCalledWith(expect.objectContaining({ presetId: 'test-preset', role: 'model' }));
+  });
+
+  it('POST /api/local-llm/llama-server/download-model rejects an unknown role', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/llama-server/download-model')
+      .send({ presetId: 'test-preset', role: 'sneaky' });
+
+    expect(res.status).toBe(400);
   });
 
   it('POST /api/local-llm/llama-server/start launches server with valid payload', async () => {

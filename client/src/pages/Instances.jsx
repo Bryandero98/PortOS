@@ -24,6 +24,7 @@ import PeerAppsList from '../components/instances/PeerAppsList';
 import PeerAgentsSection from '../components/instances/PeerAgentsSection';
 import { SchemaGapBadge } from '../components/instances/SchemaGapBadge';
 import PeerMediaProviderPanel from '../components/instances/PeerMediaProviderPanel';
+import UnattendedRenderRouting from '../components/instances/UnattendedRenderRouting';
 import BrainParityPanel from '../components/instances/BrainParityPanel';
 import BrainParitySchedule from '../components/instances/BrainParitySchedule';
 import { timeAgo, timeUntil } from '../utils/formatters';
@@ -1453,6 +1454,13 @@ export default function Instances() {
         <SelfCard self={self} onUpdate={fetchData} syncStatus={syncStatus} tailnetInfo={tailnetInfo} />
         <AddPeerForm onAdd={fetchData} />
       </div>
+
+      {/* Outside the peer-count guard on purpose: removing the last peer must
+          not hide the only control that can clear a stale saved route, or every
+          unattended render keeps failing its preflight with no way back. The
+          component renders nothing when there is neither an option nor a saved
+          route. */}
+      <UnattendedRenderRouting peers={peers} />
 
       {peers.length > 0 && (
         <div>

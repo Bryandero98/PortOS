@@ -1,4 +1,6 @@
 import { spawn } from '../lib/childProcess.js';
+import { safeJSONParse } from '../lib/fileUtils.js';
+import { withGlabJson } from '../lib/glabArgs.js';
 
 // Mirrors execGh's DEFAULT_EXEC_GH_TIMEOUT_MS. `glab` hits the network, so a
 // stalled call (hung keychain prompt, dead VPN) would otherwise leave the
@@ -16,12 +18,16 @@ const DEFAULT_EXEC_GLAB_TIMEOUT_MS = 60000;
  * — callers treat null as "unavailable / transient", mirroring the
  * `.catch(() => null)` pattern used around `execGh`.
  *
- * @param {string[]} args - glab arguments (e.g. ['issue', 'list', '-F', 'json'])
+ * Module-local on purpose: every PortOS caller wants JSON, so they go through
+ * `execGlabJson`, which owns the output flag (see lib/glabArgs.js). Export this
+ * only when a genuine non-JSON `glab` call appears.
+ *
+ * @param {string[]} args - glab arguments (e.g. ['issue', 'list', '--output', 'json'])
  * @param {string} cwd - repo root the glab command runs in
  * @param {number} [timeoutMs] - kills the child and resolves null past this
  * @returns {Promise<string|null>}
  */
-export function execGlab(args, cwd, timeoutMs = DEFAULT_EXEC_GLAB_TIMEOUT_MS) {
+function execGlab(args, cwd, timeoutMs = DEFAULT_EXEC_GLAB_TIMEOUT_MS) {
   return new Promise((resolve) => {
     const child = spawn('glab', args, { cwd, shell: false });
     let stdout = '';
@@ -46,6 +52,40 @@ export function execGlab(args, cwd, timeoutMs = DEFAULT_EXEC_GLAB_TIMEOUT_MS) {
 }
 
 /**
+ * Run a `glab … list` command and parse its JSON array. Three answers, not two —
+ * the absent-vs-empty split every caller needs (CLAUDE.md):
+ *
+ *   - `ok`         — glab answered; `rows` is the (possibly empty) array.
+ *   - `cli-failed` — we could not ask (non-zero exit: unauthenticated, no
+ *                    network, `glab` not installed, timed out).
+ *   - `not-json`   — glab answered at exit 0 with something that is not a JSON
+ *                    array, which means its output flags moved (lib/glabArgs.js)
+ *                    and NOT that the user is logged out. It gets its own reason
+ *                    so callers stop sending a working CLI to re-authenticate.
+ *
+ * `reason` is only meaningful when `rows` is null. `args` must NOT carry an
+ * output flag — this appends the one correct spelling.
+ *
+ * @param {string[]} args - glab arguments without the JSON output flag
+ * @param {string} cwd - repo root the glab command runs in
+ * @param {number} [timeoutMs]
+ * @returns {Promise<{rows: object[]|null, reason: 'ok'|'cli-failed'|'not-json'}>}
+ */
+export async function execGlabJson(args, cwd, timeoutMs = DEFAULT_EXEC_GLAB_TIMEOUT_MS) {
+  const raw = await execGlab(withGlabJson(args), cwd, timeoutMs);
+  if (raw === null) return { rows: null, reason: 'cli-failed' };
+  // The `null` default is load-bearing: safeJSONParse only applies its
+  // salvage-an-array-from-noisy-output affordance when the default IS an array,
+  // and that path yields `[]` for prose — so passing `[]` here would parse
+  // glab's human table into a trustworthy-looking empty list, re-creating the
+  // very bug this function exists to catch.
+  const rows = safeJSONParse(raw, null);
+  if (Array.isArray(rows)) return { rows, reason: 'ok' };
+  console.error(`❌ execGlabJson: 'glab ${args.join(' ')}' exited 0 without JSON — glab's output flags have changed; check 'glab ${args.slice(0, 2).join(' ')} --help'`);
+  return { rows: null, reason: 'not-json' };
+}
+
+/**
  * Does a merge request exist for `branch`? The GitLab mirror of
  * `github.js#findPullRequestForBranch` (#3358), with the same three answers
  * rather than two: `found`, `none` (glab answered, none exist), `unavailable`
@@ -61,13 +101,14 @@ export function execGlab(args, cwd, timeoutMs = DEFAULT_EXEC_GLAB_TIMEOUT_MS) {
  */
 export async function findMergeRequestForBranch(branch, cwd) {
   if (!branch || !cwd) return { status: 'unavailable', number: null, url: null, detail: 'no branch or repo path' };
-  const raw = await execGlab(['mr', 'list', '--source-branch', branch, '--all', '-P', '1', '-F', 'json'], cwd);
-  if (raw === null) return { status: 'unavailable', number: null, url: null, detail: 'glab call failed' };
-  let parsed;
-  try { parsed = JSON.parse(raw); } catch { parsed = null; }
-  // A zero-exit glab that emitted nothing parseable told us nothing.
-  if (!Array.isArray(parsed)) return { status: 'unavailable', number: null, url: null, detail: 'glab returned unparseable output' };
-  const mr = parsed[0];
+  const { rows, reason } = await execGlabJson(['mr', 'list', '--source-branch', branch, '--all', '-P', '1'], cwd);
+  // Both failure modes are "we could not ask" here — a zero-exit glab that
+  // emitted nothing parseable told us nothing either.
+  if (!rows) {
+    const detail = reason === 'not-json' ? 'glab returned unparseable output' : 'glab call failed';
+    return { status: 'unavailable', number: null, url: null, detail };
+  }
+  const mr = rows[0];
   if (!mr) return { status: 'none', number: null, url: null, detail: null };
   return { status: 'found', number: mr.iid ?? null, url: mr.web_url || null, detail: mr.state || null };
 }

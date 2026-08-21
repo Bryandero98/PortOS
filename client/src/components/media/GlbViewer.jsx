@@ -6,8 +6,10 @@ import {
   OrbitControls,
   useGLTF,
 } from '@react-three/drei';
-import { Download, Rotate3d, SlidersHorizontal } from 'lucide-react';
+import { AlertTriangle, Download, RefreshCw, Rotate3d, SlidersHorizontal } from 'lucide-react';
+import ErrorBoundary from '../ErrorBoundary';
 import { GltfPrimitive } from '../../hooks/useClonedGltf';
+import { glbErrorText, glbFailureHint } from '../../lib/glbFailure';
 
 const DEFAULT_BACKGROUND = '#050505';
 const ENVIRONMENT_HDRI = '/hdri/studio-small-08-1k.hdr';
@@ -75,6 +77,43 @@ function GlbModel({ src, forceOpaque }) {
   return <GltfPrimitive object={renderedScene} />;
 }
 
+// r3f prefixes every loader failure with "Could not load <url>", so this is what
+// separates "the bytes never arrived" from a failure thrown after the mesh was
+// already parsed (context loss, a throw downstream of the load). Only the former
+// justifies evicting drei's cache on retry — see retryLoad.
+const isLoadFailure = (error) => /^Could not load/i.test(glbErrorText(error));
+
+function GlbLoadFailure({ error, onRetry }) {
+  const hint = glbFailureHint(error);
+  return (
+    // `.port-media-overlay` (not `bg-black/NN` + `text-gray-200`) because this
+    // panel floats over the canvas surface, whose backdrop is a user-picked
+    // color: on a day theme the hardcoded light ink is remapped to dark and the
+    // heading renders near-invisible. See "Media overlay chrome" in index.css.
+    // Deliberately not `ui/Banner`: its `bg-port-error/10` tint is built to sit
+    // on a page, not over an arbitrary canvas backdrop.
+    <div
+      data-testid="glb-load-error"
+      role="alert"
+      className="port-media-overlay absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center"
+    >
+      <AlertTriangle className="h-6 w-6 text-port-error" aria-hidden="true" />
+      <p className="text-sm font-medium">This 3D model could not be loaded</p>
+      {hint && <p className="max-w-sm text-xs text-port-text-muted">{hint}</p>}
+      <p className="max-w-full break-all font-mono text-[10px] leading-snug text-port-text-muted">
+        {glbErrorText(error)}
+      </p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="port-media-overlay-item mt-1 inline-flex items-center gap-1.5 rounded-md border border-port-border px-3 py-1.5 text-xs font-medium"
+      >
+        <RefreshCw className="h-3.5 w-3.5" /> Retry
+      </button>
+    </div>
+  );
+}
+
 // Own `scene.environmentIntensity` directly rather than passing drei's
 // `environmentIntensity` prop: drei applies it from an effect that doesn't
 // declare it as a dependency. drei's `applyProps` skips `undefined`, so omitting
@@ -137,7 +176,28 @@ export default function GlbViewer({
   const [environmentIntensity, setEnvironmentIntensity] = useState(0.6);
   const [showEnvironmentBackground, setShowEnvironmentBackground] = useState(true);
   const [controlsOpen, setControlsOpen] = useState(false);
+  // A load failure is stored WITH the src it belongs to, so pointing the viewer
+  // at a different mesh drops the panel without an effect — and one record's
+  // failure never sticks to the next one.
+  const [failure, setFailure] = useState(null);
+  // The HDRI degrades on its own (see the boundary around <Environment>), but the
+  // two controls that drive it would keep sitting in the panel doing nothing —
+  // exactly the dead-knob shape this change exists to remove.
+  const [environmentFailed, setEnvironmentFailed] = useState(false);
   if (!src) return null;
+  const loadError = failure?.src === src ? failure.error : null;
+  const retryLoad = () => {
+    // suspend-react (under drei's useGLTF) caches the REJECTION against the URL
+    // and re-throws it on every later render, so clearing the panel alone would
+    // show the same error straight back — drop the cache entry first. Dropping
+    // the panel is what remounts the boundary and the canvas.
+    //
+    // Only for a load failure: the same call evicts a SUCCESSFULLY parsed scene
+    // just as readily, so clearing after (say) a lost WebGL context would throw
+    // away a good multi-MB mesh and re-download it.
+    if (isLoadFailure(loadError)) useGLTF.clear(src);
+    setFailure(null);
+  };
   const href = downloadHref || src;
   // With an explicit download endpoint the server's Content-Disposition wins, so
   // a bare `download` attribute is enough; otherwise infer a name from the URL.
@@ -152,43 +212,73 @@ export default function GlbViewer({
         {/* Settings live in a collapsed strip BELOW the canvas, not an overlay —
             an always-on panel covered the upper-right quadrant of the model.
             `aria-controls` is set only while the panel is mounted; the collapsed
-            state removes it, and a dangling IDREF is invalid ARIA. */}
-        <button
-          type="button"
-          onClick={() => setControlsOpen((open) => !open)}
-          aria-expanded={controlsOpen}
-          aria-controls={controlsOpen ? controlsPanelId : undefined}
-          aria-label="Preview display settings"
-          title="Preview display settings"
-          className={`port-media-overlay-strong port-media-overlay-item absolute right-2 top-2 z-10 inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-port-border focus-visible:ring-2 focus-visible:ring-port-accent sm:min-h-0 sm:min-w-0 sm:p-1.5 ${controlsOpen ? 'ring-1 ring-port-accent' : ''}`}
-        >
-          <SlidersHorizontal className="h-4 w-4" />
-        </button>
+            state removes it, and a dangling IDREF is invalid ARIA. Gone while the
+            failure panel is up: it is `z-10` over that panel, and every control
+            behind it drives a canvas that is no longer mounted. */}
+        {!loadError && (
+          <button
+            type="button"
+            onClick={() => setControlsOpen((open) => !open)}
+            aria-expanded={controlsOpen}
+            aria-controls={controlsOpen ? controlsPanelId : undefined}
+            aria-label="Preview display settings"
+            title="Preview display settings"
+            className={`port-media-overlay-strong port-media-overlay-item absolute right-2 top-2 z-10 inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-port-border focus-visible:ring-2 focus-visible:ring-port-accent sm:min-h-0 sm:min-w-0 sm:p-1.5 ${controlsOpen ? 'ring-1 ring-port-accent' : ''}`}
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+          </button>
+        )}
         {/* No `<color attach="background">`: r3f canvases are alpha-clear, so the
             surface's CSS color already IS the backdrop. A scene-level color only
             duplicates it while racing Environment's own scene.background
             save/restore whenever the HDRI toggle or the picker changes. */}
-        <Canvas camera={{ position: [0, 0, 3], fov: 45 }} dpr={[1, 2]}>
-          <ambientLight intensity={ambientIntensity} />
-          <directionalLight position={[4, 6, 5]} intensity={keyIntensity} />
-          <directionalLight position={[-4, -2, -5]} intensity={fillIntensity} />
-          <Suspense fallback={null}>
-            {/* Keep the HDRI in public/ instead of using drei's remote presets:
-                preview lighting and the default backdrop must work offline. */}
-            <Environment
-              files={ENVIRONMENT_HDRI}
-              background={showEnvironmentBackground}
-              backgroundBlurriness={ENVIRONMENT_BACKGROUND_BLUR}
-            />
-            <EnvironmentIntensity value={environmentIntensity} reassertOn={showEnvironmentBackground} />
-            <Bounds fit clip observe margin={1.2}>
-              <GlbModel src={src} forceOpaque={forceOpaque} />
-            </Bounds>
-          </Suspense>
-          <OrbitControls makeDefault enablePan enableZoom enableRotate />
-        </Canvas>
+        {/* A mesh that fails to load must not take the page with it. Anything
+            thrown inside an r3f `<Canvas>` — a 404 on the .glb, a non-glTF body
+            reaching the parser, a WebGL context failure — is caught by the Canvas
+            and re-thrown from its OWN render (`if (error) throw error`), so with
+            no boundary here the nearest one is the router's errorElement and the
+            whole route becomes "PortOS could not load this page". `fallback={null}`
+            degrades the scene (the shared boundary's documented r3f mode) while
+            `onError` hands the failure to this component, which owns the DOM
+            chrome and swaps in the panel. */}
+        {loadError ? (
+          <GlbLoadFailure error={loadError} onRetry={retryLoad} />
+        ) : (
+          <ErrorBoundary fallback={null} onError={(error) => setFailure({ src, error })}>
+            <Canvas camera={{ position: [0, 0, 3], fov: 45 }} dpr={[1, 2]}>
+              <ambientLight intensity={ambientIntensity} />
+              <directionalLight position={[4, 6, 5]} intensity={keyIntensity} />
+              <directionalLight position={[-4, -2, -5]} intensity={fillIntensity} />
+              {/* The HDRI gets its OWN boundary + Suspense, not the mesh's. Sharing
+                  one meant a missing or corrupt .hdr (a partial checkout, a stale
+                  service-worker cache) reported "This 3D model could not be
+                  loaded" and took the mesh down with it — while the file is only
+                  image-based LIGHTING, which the three lights below already
+                  stand in for. Same shape OpenWorldScene documents for its
+                  galaxy spheremap: degrade to lights-only, keep the scene. */}
+              <ErrorBoundary fallback={null} onError={() => setEnvironmentFailed(true)}>
+                <Suspense fallback={null}>
+                  {/* Keep the HDRI in public/ instead of using drei's remote presets:
+                      preview lighting and the default backdrop must work offline. */}
+                  <Environment
+                    files={ENVIRONMENT_HDRI}
+                    background={showEnvironmentBackground}
+                    backgroundBlurriness={ENVIRONMENT_BACKGROUND_BLUR}
+                  />
+                  <EnvironmentIntensity value={environmentIntensity} reassertOn={showEnvironmentBackground} />
+                </Suspense>
+              </ErrorBoundary>
+              <Suspense fallback={null}>
+                <Bounds fit clip observe margin={1.2}>
+                  <GlbModel src={src} forceOpaque={forceOpaque} />
+                </Bounds>
+              </Suspense>
+              <OrbitControls makeDefault enablePan enableZoom enableRotate />
+            </Canvas>
+          </ErrorBoundary>
+        )}
       </div>
-      {controlsOpen && (
+      {controlsOpen && !loadError && (
         <div
           id={controlsPanelId}
           className="grid gap-x-6 gap-y-2 border-t border-port-border bg-port-card px-3 py-2.5 text-xs text-gray-200 sm:grid-cols-2"
@@ -196,12 +286,18 @@ export default function GlbViewer({
           <LightingControl label="Ambient" max={2} value={ambientIntensity} onChange={setAmbientIntensity} />
           <LightingControl label="Key" max={3} value={keyIntensity} onChange={setKeyIntensity} />
           <LightingControl label="Fill" max={2} value={fillIntensity} onChange={setFillIntensity} />
-          <LightingControl
-            label="Environment"
-            max={2}
-            value={environmentIntensity}
-            onChange={setEnvironmentIntensity}
-          />
+          {environmentFailed ? (
+            <p className="text-xs text-port-text-muted">
+              Environment lighting unavailable — the HDRI could not be loaded, so the scene is lit by the sliders alone.
+            </p>
+          ) : (
+            <LightingControl
+              label="Environment"
+              max={2}
+              value={environmentIntensity}
+              onChange={setEnvironmentIntensity}
+            />
+          )}
           <div className="flex items-center gap-2">
             <label htmlFor={backgroundInputId} className="w-20">Background</label>
             <input
@@ -213,20 +309,24 @@ export default function GlbViewer({
               className="h-7 w-10 cursor-pointer rounded border border-port-border bg-transparent p-0.5"
             />
           </div>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={showEnvironmentBackground}
-              onChange={(event) => setShowEnvironmentBackground(event.target.checked)}
-              className="accent-port-accent"
-            />
-            Show HDRI background
-          </label>
+          {!environmentFailed && (
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={showEnvironmentBackground}
+                onChange={(event) => setShowEnvironmentBackground(event.target.checked)}
+                className="accent-port-accent"
+              />
+              Show HDRI background
+            </label>
+          )}
         </div>
       )}
       <div className="flex items-center justify-between gap-2 border-t border-port-border px-3 py-2">
+        {/* Kept mounted while errored so `justify-between` still parks the
+            download link on the right — the orbit hint is what drops out. */}
         <span className="inline-flex items-center gap-1.5 text-xs text-gray-500">
-          <Rotate3d className="h-3.5 w-3.5" /> Drag to orbit · scroll to zoom
+          {!loadError && <><Rotate3d className="h-3.5 w-3.5" /> Drag to orbit · scroll to zoom</>}
         </span>
         <a
           href={href}

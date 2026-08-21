@@ -210,6 +210,13 @@ export const SELF_IMPROVEMENT_TASK_TYPES = [
   // copy-paste drift — distinct from `code-quality` (which is the broader DRY /
   // long-function / TODO pass). Defaults to file-issues.
   'simplify',
+  // Audits `git stash list` for {appName} and drops entries already superseded
+  // by (or a subset of) current `main`/HEAD, or that are stale/abandoned scratch
+  // work — without discarding real unlanded work. On-demand only (no cadence
+  // makes sense for something the user notices ad hoc); non-committing
+  // coordinator posture, since a cleared stash is a repo-hygiene side effect,
+  // never a commit. See DEFAULT_TASK_PROMPTS['stash-cleanup'].
+  'stash-cleanup',
   // PortOS-only: researches the current best local LLMs per category and
   // refreshes the bundled suggested-models catalog (server/lib/localLlmCatalog.js)
   // + the editorial family ranking (server/lib/localModelHeuristics.js), opening a
@@ -380,7 +387,12 @@ export const DEFAULT_TASK_INTERVALS = {
   // access (GitHub collaborators / GitLab project members); 'owner' only claims
   // issues the repo owner filed; 'any' claims any open issue. Per-app override
   // supported via taskTypeOverrides.
-  'claim-issue':         { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true, issueAuthorFilter: 'self' } },
+  // `issueExcludeLabels` (default `[]`) lists ADDITIONAL labels to skip when
+  // auto-claiming, on top of the fixed NON_ACTIONABLE_ISSUE_LABELS set
+  // (perpetualWork.js) — e.g. `good first issue`, to leave those open for human
+  // contributors. Per-app override supported via taskTypeOverrides, like
+  // `issueAuthorFilter`.
+  'claim-issue':         { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true, issueAuthorFilter: 'self', issueExcludeLabels: [] } },
   // claim-work is the SINGLE-SOURCE router: one toggle per app that ships the
   // next work item from whatever tracker the app is configured for
   // (app.workTracker, default 'auto' → resolved from the git origin host). At
@@ -392,9 +404,9 @@ export const DEFAULT_TASK_INTERVALS = {
   // Both `useWorktree` and `openPR` are OFF on the CoS side
   // for the SAME reasons as plan-task/claim-issue (a CoS-managed worktree would
   // hide the claim slug and trigger cleanupAgentWorktree's auto-merge).
-  // `issueAuthorFilter` applies only when the resolved tracker is a forge
-  // (github/gitlab); it's inert for plan/jira.
-  'claim-work':          { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true, issueAuthorFilter: 'self' } },
+  // `issueAuthorFilter` / `issueExcludeLabels` apply only when the resolved
+  // tracker is a forge (github/gitlab); both are inert for plan/jira.
+  'claim-work':          { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true, simplify: true, issueAuthorFilter: 'self', issueExcludeLabels: [] } },
   'error-handling':      { type: INTERVAL_TYPES.ROTATION, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
   'typing':              { type: INTERVAL_TYPES.ONCE, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { fileIssues: false } },
   // Release-check inspects and mutates release state (for example, the main →
@@ -402,6 +414,14 @@ export const DEFAULT_TASK_INTERVALS = {
   // live main checkout so its branch/ref checks describe the real release flow;
   // a CoS worktree hides that checkout and creates an irrelevant task branch.
   'release-check':       { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { ...NON_COMMITTING_COORDINATOR_METADATA } },
+  // stash-cleanup triages `git stash list` and drops what's superseded/stale,
+  // leaving real unlanded work in place for the user to recover by hand. It
+  // runs in the app's live checkout (never a CoS worktree — a stash is a
+  // property of the checkout it was taken in) and, like the other coordinators,
+  // ships no code of its own. On-demand only: unlike branch/issue reconcile,
+  // there's no useful cadence for a stash a user hasn't necessarily touched
+  // since the last run — they trigger it when they notice stash clutter.
+  'stash-cleanup':       { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { ...NON_COMMITTING_COORDINATOR_METADATA } },
   'pr-reviewer':         { type: INTERVAL_TYPES.CUSTOM, intervalMs: 7200000, enabled: false, weekdaysOnly: true, providerId: null, model: null, prompt: null, taskMetadata: { readOnly: true, pipeline: { stages: [{ name: 'Security Scan', promptKey: 'pr-reviewer-security', readOnly: true }, { name: 'Code Review & Merge', promptKey: 'pr-reviewer-review', readOnly: false }] } } },
   'code-reviewer-a':     { ...CODE_REVIEWER_INTERVAL },
   'code-reviewer-b':     { ...CODE_REVIEWER_INTERVAL },
@@ -498,7 +518,8 @@ export const MANAGED_AGENT_OPTIONS = {
   // claim-work delegates to one of the above prompt bodies, each of which
   // creates its own worktree + PR — so the same lock applies to the router.
   'claim-work': ['useWorktree', 'openPR', 'claimFlow'],
-  'release-check': ['useWorktree', 'openPR', 'worktreeChangesExpected']
+  'release-check': ['useWorktree', 'openPR', 'worktreeChangesExpected'],
+  'stash-cleanup': ['useWorktree', 'openPR', 'worktreeChangesExpected']
 };
 
 // Strip managed-agent fields from a per-app override map before merging on top
@@ -884,7 +905,7 @@ export async function updateTaskInterval(taskType, settings) {
       const records = [exec, ...Object.values(exec.perApp || {})];
       for (const rec of records) {
         if (parkedUntilMs(rec) > nowMs) {
-          rec.parkedUntil = await computePerpetualRecheckAt(merged);
+          rec.parkedUntil = boundParkedUntil(await computePerpetualRecheckAt(merged), rec.parkNotLaterThan);
         }
       }
     }
@@ -972,6 +993,35 @@ export async function computePerpetualRecheckAt(interval, fromMs = Date.now()) {
     ? Number(interval.recheckIntervalMs)
     : DEFAULT_PERPETUAL_RECHECK_MS;
   return new Date(fromMs + ms).toISOString();
+}
+
+/**
+ * Shorten a computed park so it cannot sleep past a moment the caller already
+ * KNOWS the situation changes on its own.
+ *
+ * The recheck cadence is a poll interval — the right default when nothing is
+ * known about *when* new work appears. But some parks wait on a deadline the
+ * detector can name: branch-reconcile holds a merged branch whose claim worktree
+ * is still inside its grace window, and that hold lifts at a computable instant.
+ * Parking past it compounds two waits (the grace window, then the next cron
+ * fire) into a stall several times longer than either — on a weekly recheck a
+ * 7-day hold becomes up to 14 days of a task that looks idle.
+ *
+ * Only ever SHORTENS: a bound that is unparseable, already elapsed, or later
+ * than the recheck is ignored, so a bad bound can never extend a park (nor spin
+ * one into a hot retry loop).
+ *
+ * @param {string} recheckAt - ISO timestamp from computePerpetualRecheckAt
+ * @param {string|null|undefined} notLaterThan - ISO instant the hold self-lifts
+ * @param {number} [nowMs]
+ * @returns {string} ISO timestamp
+ */
+export function boundParkedUntil(recheckAt, notLaterThan, nowMs = Date.now()) {
+  const bound = Date.parse(notLaterThan);
+  const recheck = Date.parse(recheckAt);
+  if (!Number.isFinite(bound) || !Number.isFinite(recheck)) return recheckAt;
+  if (bound <= nowMs || bound >= recheck) return recheckAt;
+  return new Date(bound).toISOString();
 }
 
 /**
@@ -1093,7 +1143,7 @@ function resolveExecutionRecord(schedule, taskType, appId = null) {
 // Every field parkPerpetual stamps for a park. Kept as one list so the clear /
 // reset paths can't drift from what park writes (adding a park field here is the
 // single edit that keeps all three in sync).
-const PARK_FIELDS = ['parkedUntil', 'parkReason', 'parkActionableCount', 'parkCounts', 'parkedAt'];
+const PARK_FIELDS = ['parkedUntil', 'parkReason', 'parkActionableCount', 'parkCounts', 'parkNotLaterThan', 'parkedAt'];
 
 /**
  * Park a perpetual task: its work-detector reported nothing actionable, so stop
@@ -1107,6 +1157,10 @@ const PARK_FIELDS = ['parkedUntil', 'parkReason', 'parkActionableCount', 'parkCo
  * makes the NEXT fresh drain cap out early, which looks exactly like the task
  * silently doing nothing.
  *
+ * `notLaterThan` is an optional ISO instant at which the caller knows the hold
+ * lifts on its own; the park is shortened to it when that is sooner than the
+ * recheck cadence, and ignored otherwise.
+ *
  * `dispatchCount` therefore DEFAULTS to 0: a park ends the drain window by
  * definition, so zeroing the budget is the invariant, not an opt-in every caller
  * has to remember. The churn detector's park in agentChurn.js relies on this
@@ -1116,10 +1170,13 @@ const PARK_FIELDS = ['parkedUntil', 'parkReason', 'parkActionableCount', 'parkCo
  * zeroing the counter there would reset the budget before every dispatch, so the
  * cap could never fire.
  */
-export async function parkPerpetual(taskType, appId = null, { reason = null, actionableCount = 0, counts = null, signature, dispatchCount = 0 } = {}) {
+export async function parkPerpetual(taskType, appId = null, { reason = null, actionableCount = 0, counts = null, signature, dispatchCount = 0, notLaterThan = null } = {}) {
   const schedule = await loadSchedule();
   const interval = schedule.tasks[taskType] || {};
-  const parkedUntil = await computePerpetualRecheckAt(interval);
+  // Bound HERE, not at the assignment: `parkedUntil` is also what the log line and
+  // the schedule:perpetual-parked event publish, and a change whose whole point is
+  // an honest "when will this actually run" must not report the un-shortened time.
+  const parkedUntil = boundParkedUntil(await computePerpetualRecheckAt(interval), notLaterThan);
   const record = ensureExecutionRecord(schedule, taskType, appId);
   record.parkedUntil = parkedUntil;
   record.parkReason = reason;
@@ -1130,6 +1187,12 @@ export async function parkPerpetual(taskType, appId = null, { reason = null, act
   // breakdown (e.g. the reconcile scans), so the field is left off the record.
   if (counts != null) record.parkCounts = counts;
   else delete record.parkCounts;
+  // The self-expiry has to OUTLIVE this call: updateTaskInterval restamps every
+  // un-elapsed park from the new cadence, and without a remembered bound it would
+  // stretch a correctly-shortened park back out — reintroducing the stacking this
+  // option exists to remove, via an unrelated settings edit.
+  if (notLaterThan) record.parkNotLaterThan = notLaterThan;
+  else delete record.parkNotLaterThan;
   record.parkedAt = new Date().toISOString();
   // A drain that parks because a full cycle made NO progress (branch-reconcile's
   // 'no-progress' park) records the actionable signature it was stuck on, so the
@@ -2250,6 +2313,7 @@ export const TASK_TYPE_DESCRIPTIONS = {
   'ux': 'UX/design audit — file issues (default) or implement fixes',
   'data-safety': 'Data/upgrade-safety audit — file issues (default) or implement fixes',
   'simplify': 'Dead-code/duplication audit — file issues (default) or implement removals',
+  'stash-cleanup': 'Triage git stash list — drop entries superseded by or stale relative to main, leave real unlanded work in place',
   'refresh-local-llm-catalog': "Refresh PortOS's bundled suggested local-model catalog + editorial ranking (PortOS repo only)",
   'layered-intelligence': "Read this app's goals + telemetry, ask a reasoning model for one improvement, and file one deduplicated tracker issue — no code, no agent"
 };

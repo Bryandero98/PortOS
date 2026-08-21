@@ -166,6 +166,89 @@ describe('mediaJobs routes', () => {
     expect(call.params.steps).toBe(40);
   });
 
+  it('POST /:id/retry hands a federated job back to enqueueJob with its marker intact', async () => {
+    // The retry route deliberately does NOT special-case a federated job:
+    // enqueueJob re-normalizes anything carrying a marker into the
+    // downgrade-safe shape (#4683), so the override the user typed — which
+    // never reached the peer anyway, the remote executor renders from
+    // `remoteMedia.request` — cannot restore a locally-renderable job.
+    const remoteMedia = {
+      wireVersion: 1,
+      peerId: '00000000-0000-4000-8000-0000000004f1',
+      request: { kind: 'image', engine: 'local', modelId: 'dev', prompt: 'a lighthouse at dusk' },
+    };
+    jobStore.set('j-remote', {
+      id: 'j-remote', kind: 'image', owner: null, status: 'failed',
+      params: { prompt: '', modelId: null, pythonPath: null, width: 512, remoteMedia },
+    });
+    const r = await request(makeApp())
+      .post('/api/media-jobs/j-remote/retry')
+      .send({ params: { prompt: 'something else', modelId: 'sdxl-base' } });
+    expect(r.status).toBe(200);
+    const { params } = stubs.enqueueJob.mock.calls[0][0];
+    expect(params.remoteMedia.request).toEqual(remoteMedia.request);
+    expect(params.remoteMedia.peerId).toBe(remoteMedia.peerId);
+    expect(params.width).toBe(512);
+  });
+
+  it('POST /:id/retry clears the marker run state so a CANCELED federated render can actually re-run', async () => {
+    // `cancelRequested` describes the finished attempt. Inherited, it makes the
+    // remote executor's preflight abort the retry on its first line — and rides
+    // along again on every further retry, so the render could never be re-run.
+    // `reconcile` is "recover the provider job for this Idempotency-Key"; the
+    // retry gets a fresh queue id, which IS the key, so there is nothing to
+    // recover and it must submit instead of skipping preflight.
+    jobStore.set('j-canceled', {
+      id: 'j-canceled', kind: 'image', owner: null, status: 'canceled',
+      params: {
+        prompt: '', modelId: null, pythonPath: null,
+        remoteMedia: {
+          wireVersion: 1,
+          peerId: '00000000-0000-4000-8000-0000000004f1',
+          cancelRequested: true,
+          reconcile: true,
+          request: { kind: 'image', engine: 'local', modelId: 'dev', prompt: 'a lighthouse at dusk' },
+        },
+      },
+    });
+    const r = await request(makeApp()).post('/api/media-jobs/j-canceled/retry').send({});
+    expect(r.status).toBe(200);
+    const { params } = stubs.enqueueJob.mock.calls[0][0];
+    expect(params.remoteMedia.cancelRequested).toBe(false);
+    expect(params.remoteMedia.reconcile).toBe(false);
+    // Everything that identifies the render survives.
+    expect(params.remoteMedia.peerId).toBe('00000000-0000-4000-8000-0000000004f1');
+    expect(params.remoteMedia.request.prompt).toBe('a lighthouse at dusk');
+  });
+
+  it('POST /:id/retry survives a corrupt null marker instead of 500ing', async () => {
+    // `isRemoteMediaJob` gates on presence, not truthiness — a hand-edited
+    // media-jobs.json (or a peer-merged record) can hold `remoteMedia: null`
+    // and still be classified as routed. The queue's remote module is where a
+    // malformed marker fails closed; the retry route must not crash first.
+    jobStore.set('j-null-marker', {
+      id: 'j-null-marker', kind: 'image', owner: null, status: 'failed',
+      params: { prompt: '', modelId: null, remoteMedia: null },
+    });
+    const r = await request(makeApp()).post('/api/media-jobs/j-null-marker/retry').send({});
+    expect(r.status).toBe(200);
+    const { params } = stubs.enqueueJob.mock.calls[0][0];
+    expect(params.remoteMedia).toEqual({ cancelRequested: false, reconcile: false });
+  });
+
+  it('POST /:id/retry leaves a local job\'s params alone', async () => {
+    // Bypass probe for the marker reset above: a training job carrying a stray
+    // marker has no federated contract, so it must keep the local path.
+    jobStore.set('j-training', {
+      id: 'j-training', kind: 'training', owner: null, status: 'failed',
+      params: { runId: 'run-1', runtime: 'mflux', remoteMedia: { wireVersion: 1, cancelRequested: true } },
+    });
+    const r = await request(makeApp()).post('/api/media-jobs/j-training/retry').send({});
+    expect(r.status).toBe(200);
+    const { params } = stubs.enqueueJob.mock.calls[0][0];
+    expect(params.remoteMedia.cancelRequested).toBe(true);
+  });
+
   it('POST /:id/retry accepts the editable video generation controls', async () => {
     jobStore.set('j-video-edit', {
       id: 'j-video-edit', kind: 'video', owner: null, status: 'failed',

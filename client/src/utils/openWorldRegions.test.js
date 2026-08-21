@@ -5,11 +5,12 @@ import {
   getRegion,
   listRegions,
   regionArrivalPoint,
+  regionWarpPadPosition,
   regionPath,
   searchRegions,
   REGION_ARRIVAL_SETBACK,
 } from './openWorldRegions';
-import { PARCELS, isWalkable } from './cityPlan';
+import { PARCELS, isWalkable } from './openWorldPlan';
 
 describe('OPEN_WORLD_REGIONS registry', () => {
   it('has unique, URL-safe ids', () => {
@@ -115,5 +116,12 @@ describe('regionArrivalPoint', () => {
   it('is null-safe', () => {
     expect(regionArrivalPoint(null)).toBeNull();
     expect(regionArrivalPoint(undefined)).toBeNull();
+  });
+
+  it('puts the warp pad at the same ground point as the walking arrival', () => {
+    const region = getRegion('memory');
+    const arrival = regionArrivalPoint(region);
+    expect(regionWarpPadPosition(region)).toEqual([arrival.x, 0.12, arrival.z]);
+    expect(regionWarpPadPosition(null)).toBeNull();
   });
 });

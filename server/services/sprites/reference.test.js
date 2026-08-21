@@ -493,6 +493,36 @@ describe('attachReferenceCandidate', () => {
     expect(sidecar.model).toBe('retried-model');
   });
 
+  it('reads a federated render\'s provenance through to the wire request', async () => {
+    // A routed job blanks `params.prompt` and nulls `params.modelId` so a build
+    // rolled back past `remoteMedia` fails closed (#4683) — reading them
+    // directly would record a sidecar with no provenance at all.
+    const id = newId();
+    await createCharacter(id);
+    await mkdir(join(TEST_ROOT, 'images'), { recursive: true });
+    await writeCandidatePng(join(TEST_ROOT, 'images', 'render-remote.png'));
+    await attachReferenceCandidate({
+      recordId: id, target: 'main', direction: 'south', anchorId: 'walk-south',
+      chromaKey: '#FF00FF', jobId: 'j-remote', filename: 'render-remote.png',
+      job: {
+        params: {
+          prompt: '',
+          modelId: null,
+          remoteMedia: {
+            wireVersion: 1,
+            peerId: '00000000-0000-4000-8000-0000000004f1',
+            request: { kind: 'image', engine: 'local', modelId: 'dev', prompt: 'a sprite facing south' },
+          },
+        },
+      },
+    });
+    const sidecar = JSON.parse(await readFile(
+      join(TEST_ROOT, 'sprites', id, 'reference', 'candidates', 'walk-south-candidate-01.generation.json'), 'utf8',
+    ));
+    expect(sidecar.model).toBe('dev');
+    expect(sidecar.prompt).toBe('a sprite facing south');
+  });
+
   it('records an anchor correction prompt in the sidecar as provenance', async () => {
     const id = newId();
     await createCharacter(id);

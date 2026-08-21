@@ -4,7 +4,7 @@
 // the data isn't already a Blob (defaults to application/octet-stream).
 //
 // Collapses the inline `URL.createObjectURL` + `<a download>` + `revokeObjectURL`
-// dance (e.g. the soul ExportTab). Data-URL downloads (CityPhotoOverlay) don't
+// dance (e.g. the soul ExportTab). Data-URL downloads (OpenWorldPhotoOverlay) don't
 // fit — they have no object URL to revoke, and a data-URL string would get
 // re-wrapped in a Blob here.
 export function downloadBlob(data, filename, type = 'application/octet-stream') {

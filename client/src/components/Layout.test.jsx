@@ -275,6 +275,9 @@ describe('Layout — isFullWidthRoute classification', () => {
     ['/universes', false], ['/universes/u1', true],
     ['/rounds', false], ['/rounds/guide', true],
     ['/story-builder', false], ['/story-builder/s1/step', true],
+    // AI Providers: the index AND its editor sub-routes (a drawer over the same
+    // page) are full-width, but a sibling path sharing the `/ai` prefix is not.
+    ['/ai', true], ['/ai/new', true], ['/ai/edit/codex', true], ['/airlock', false],
     ['/pipeline', false], ['/pipeline/series/s1', true],
     ['/local-llm', false], ['/local-llm/m', true],
     // Music owns the same full-bleed title/tab/body shell as Media Gen, but

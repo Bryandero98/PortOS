@@ -52,6 +52,16 @@ export const PROJECT_STATUSES = Object.freeze([
   'draft', 'planning', 'rendering', 'stitching', 'complete', 'paused', 'failed',
 ]);
 
+// Project states that are FINISHED — a stop, a re-pin, or any other "act on
+// work still in flight" sweep must skip them (and must never rewrite a
+// `complete` project's status). Derived vocabulary over PROJECT_STATUSES.
+export const PROJECT_TERMINAL_STATUSES = Object.freeze(new Set(['complete', 'failed']));
+
+// Agent-run states that are SETTLED. Anything else is in flight — which is what
+// every re-dispatch guard, the boot-recovery reaper, and the stop path all key
+// on, so they must agree on the vocabulary rather than each open-coding it.
+export const RUN_TERMINAL_STATUSES = Object.freeze(new Set(['completed', 'failed']));
+
 // Per-scene lifecycle states. Used by the validation schemas + the
 // orchestrator's "next pending scene" logic.
 export const SCENE_STATUSES = Object.freeze([

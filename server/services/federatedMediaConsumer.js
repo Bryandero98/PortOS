@@ -9,6 +9,7 @@ import { ServerError } from '../lib/errorHandler.js';
 import {
   federatedMediaProviderStatusSchema,
   inspectFederatedMediaStatusFreshness,
+  KNOWN_MEDIA_KINDS,
 } from '../lib/federatedMediaWire.js';
 import { peerFetch } from '../lib/peerHttpClient.js';
 import { peerBaseUrl } from '../lib/peerUrl.js';
@@ -17,6 +18,8 @@ import { readResponseJson } from '../lib/readResponseJson.js';
 export const DEFAULT_FEDERATED_MEDIA_PEER_CONFIG = Object.freeze({
   enabled: false,
   audioModels: Object.freeze([]),
+  imageModels: Object.freeze([]),
+  videoModels: Object.freeze([]),
 });
 
 const isRecord = (value) => value && typeof value === 'object' && !Array.isArray(value);
@@ -43,11 +46,13 @@ function sanitizeModels(models, { preserveUnknown = false } = {}) {
 export function normalizePeerMediaProviderConfig(peer) {
   const raw = peer?.mediaProvider;
   if (!isRecord(raw)) {
-    return { ...DEFAULT_FEDERATED_MEDIA_PEER_CONFIG, audioModels: [] };
+    return { ...DEFAULT_FEDERATED_MEDIA_PEER_CONFIG, audioModels: [], imageModels: [], videoModels: [] };
   }
   return {
     enabled: raw.enabled === true,
     audioModels: sanitizeModels(raw.audioModels),
+    imageModels: sanitizeModels(raw.imageModels),
+    videoModels: sanitizeModels(raw.videoModels),
   };
 }
 
@@ -64,6 +69,8 @@ export function mergePeerMediaProviderConfig(current, patch) {
     ...merged,
     enabled: merged.enabled === true,
     audioModels: sanitizeModels(merged.audioModels, { preserveUnknown: true }),
+    imageModels: sanitizeModels(merged.imageModels, { preserveUnknown: true }),
+    videoModels: sanitizeModels(merged.videoModels, { preserveUnknown: true }),
   };
 }
 
@@ -83,6 +90,29 @@ function responseState(response, body) {
   return ['unavailable', body?.code || `http-${response.status || 'error'}`];
 }
 
+// Ask for EVERY kind this build understands, not just the kinds already
+// allowlisted here.
+//
+// Scoping the request to already-allowlisted kinds was a chicken-and-egg bug:
+// a fresh consumer has no visual models allowlisted, so it asked for audio
+// only, so the peer advertised no image/video capabilities, so the Instances
+// panel had no visual rows to check — and re-probing repeated the same
+// audio-only question forever. Nothing could ever seed the first image or
+// video allowlist.
+//
+// Asking for all kinds is safe in both directions of the version skew the
+// opt-in negotiation exists to protect (see normalizeRequestedMediaKinds in
+// federatedMediaWire.js). That negotiation protects an older CONSUMER, whose
+// own copy of the schema validates `kinds` against a literal('audio') and can
+// never be patched retroactively — it does not protect the provider. A
+// provider too old to know the query parameter simply ignores it and returns
+// the audio-only projection it always did.
+const requestedKinds = () => KNOWN_MEDIA_KINDS;
+
+function statusUrl(peer) {
+  return `${peerBaseUrl(peer)}/api/federation/media/v1/status?kinds=${requestedKinds().join(',')}`;
+}
+
 /**
  * Fetch and sanitize one opted-in peer's live status. All failures become a
  * typed local projection instead of escaping into the background probe loop.
@@ -92,7 +122,7 @@ export async function probeFederatedMediaProvider(peer, { signal, now = Date.now
   if (!config.enabled) return probeResult(now, 'disabled', 'not-configured');
 
   const outcome = await peerFetch(
-    `${peerBaseUrl(peer)}/api/federation/media/v1/status`,
+    statusUrl(peer),
     { signal },
     peer,
   ).then((response) => ({ response }), (error) => ({ error }));
@@ -147,12 +177,14 @@ export function assertFederatedMediaProviderSelection(peer, selection, probe, { 
   if (!config.enabled) {
     rejectSelection('Peer is not enabled as a media provider', 'MEDIA_PROVIDER_NOT_CONFIGURED', 409);
   }
-  if (selection?.kind !== 'audio' || typeof selection.engine !== 'string' || typeof selection.modelId !== 'string') {
-    rejectSelection('Only an explicit audio engine and model can be selected', 'MEDIA_PROVIDER_SELECTION_INVALID', 400);
+  if (!KNOWN_MEDIA_KINDS.includes(selection?.kind)
+    || typeof selection.engine !== 'string' || typeof selection.modelId !== 'string') {
+    rejectSelection('Only an explicit media kind, engine, and model can be selected', 'MEDIA_PROVIDER_SELECTION_INVALID', 400);
   }
   const requested = { engine: selection.engine.trim(), modelId: selection.modelId.trim() };
+  const allowlist = config[`${selection.kind}Models`] || [];
   if (!requested.engine || !requested.modelId
-    || !config.audioModels.some((model) => modelKey(model) === modelKey(requested))) {
+    || !allowlist.some((model) => modelKey(model) === modelKey(requested))) {
     rejectSelection('Requested model is not allowlisted for this peer', 'MEDIA_PROVIDER_MODEL_NOT_ALLOWED', 403);
   }
 
@@ -185,7 +217,7 @@ export function assertFederatedMediaProviderSelection(peer, selection, probe, { 
   }
 
   const capability = snapshot.capabilities.find((candidate) =>
-    candidate.kind === 'audio'
+    candidate.kind === selection.kind
     && candidate.engine === requested.engine
     && candidate.modelId === requested.modelId,
   );

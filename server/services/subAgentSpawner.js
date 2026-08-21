@@ -42,6 +42,7 @@ import { syncRunnerAgents } from './agentRunnerSync.js';
 import { handleAgentCompletion } from './agentLifecycle.js';
 import { cleanupOrphanedAgents } from './agentManagement.js';
 import { completeAgentRun } from './agentRunTracking.js';
+import { appendRunEvent } from './agentRunEventLog.js';
 import { runnerAgents, setUseRunner, useRunner } from './agentState.js';
 import { releaseAppReviewMarker } from './appActivity.js';
 import { isUpdateInProgress } from './updateChecker.js';
@@ -253,8 +254,23 @@ async function runInitSpawner() {
     if (!runnerAgents.has(agentId)) return;
     getRunnerOutputBatcher(agentId).push(text);
 
-    // Update phase on first output
     const agent = runnerAgents.get(agentId);
+    // Once per run, on the first byte the runner forwards (#4540). Tracked on
+    // its own flag rather than `hasStartedWorking` below, which also flips on a
+    // 3s no-output timeout — a run that never spoke must not get an output event.
+    if (agent && !agent.firstOutputRecorded) {
+      agent.firstOutputRecorded = true;
+      await appendRunEvent({
+        kind: 'run.output',
+        runId: agent.runId ?? null,
+        agentId,
+        taskId: agent.taskId ?? null,
+        eventId: `output:${agentId}:${agent.runId || 'no-run'}:first`,
+        data: { source: 'runner', firstChunkChars: typeof text === 'string' ? text.length : null },
+      });
+    }
+
+    // Update phase on first output
     if (agent && !agent.hasStartedWorking) {
       agent.hasStartedWorking = true;
       clearTimeout(agent.initializationTimeout);

@@ -276,7 +276,7 @@ ${forgeLabelContract}
 
     gitlab: `This app tracks autonomous work in **GitLab Issues** (via the \`glab\` CLI), NOT PLAN.md — do NOT edit PLAN.md.
 
-- **Inventory:** From {repoPath}, confirm the forge (\`glab repo view\`) and list existing ${label} issues so you don't duplicate: \`glab issue list --label ${issueLabel} --per-page 100 -F json\` (also scan titles for the \`[${slugPrefix}…]\` slug). Collect the existing slugs. If \`glab\` is not authenticated or the remote is not GitLab, exit cleanly.
+- **Inventory:** From {repoPath}, confirm the forge (\`glab repo view\`) and list existing ${label} issues so you don't duplicate: \`glab issue list --label ${issueLabel} --per-page 100 --output json\` (also scan titles for the \`[${slugPrefix}…]\` slug). Collect the existing slugs. If \`glab\` is not authenticated or the remote is not GitLab, exit cleanly.
 - **Record** each NEW proposal as a GitLab issue. Do not relabel or edit an existing issue you skipped as a duplicate. Keep the \`[<slug>]\` inventory tag in the title so later runs can de-duplicate; do NOT add \`[category]\` / \`[SEVERITY]\` / \`[model:…]\` / \`[effort:…]\` prefixes (those belong in labels).
   1. Ensure each label you will apply exists. Create the category label first (\`glab label create --name ${issueLabel} --color "#0366D6" --description "${labelDescription}" 2>/dev/null || true\`) and the same for \`plan\`. Then create each justified dispatch-hint label immediately before applying it (glab needs \`--name\` and \`#<hex>\`).
   2. ${DISPATCH_HINT_GUIDANCE.split('\n').join('\n     ')}

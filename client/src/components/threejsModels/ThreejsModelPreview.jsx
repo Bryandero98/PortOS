@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Bounds, OrbitControls, useBounds } from '@react-three/drei';
 import * as THREE from 'three';
 import { createSculptBufferGeometry, needsSculptBufferGeometry, sculptMaterialProps } from '../../lib/threejsSculpt';
+import { createSculptEnvironmentTarget, resolveSculptEnvironment, THREEJS_RENDER_PROFILE } from '../../lib/threejsEnvironment';
 import {
   collectThreejsCues,
   evaluateThreejsClipPose,
@@ -15,12 +17,13 @@ import {
 import { buildPartSelectionIndex, computeExplodeLayout, isReliefPart } from '../../lib/threejsExplode';
 import { summarizeThreejsArticulation } from '../../lib/threejsRig';
 import ThreejsClipTransport from './ThreejsClipTransport';
+import ErrorBoundary from '../ErrorBoundary';
 import {
   createRenderBudget,
   getEffectiveTier,
   recordFrame,
   resetRenderBudget,
-} from '../../utils/cityRenderBudget';
+} from '../../utils/openWorldRenderBudget';
 
 const radians = (degrees = 0) => THREE.MathUtils.degToRad(degrees);
 const rotation = (degrees = [0, 0, 0]) => degrees.map(radians);
@@ -129,14 +132,14 @@ function Geometry({ definition }) {
   }
 }
 
-function Material({ definition, highlighted = false, auditMode = 'final', partId, opacity }) {
+function Material({ definition, highlighted = false, auditMode = 'final', partId, opacity, envMapIntensity = 1 }) {
   if (auditMode === 'normals') return <meshNormalMaterial />;
   if (auditMode === 'wireframe') return <meshBasicMaterial color="#cbd5e1" wireframe />;
   if (auditMode === 'boundaries') {
     return <meshStandardMaterial color={auditPartColor(partId)} metalness={0} roughness={0.62} />;
   }
   if (auditMode === 'neutral') return <meshStandardMaterial color="#a8b0bd" metalness={0} roughness={0.72} />;
-  const authored = sculptMaterialProps(definition);
+  const authored = sculptMaterialProps(definition, envMapIntensity);
   // A clip's opacity channel overrides the authored value for as long as the
   // clip drives it. `transparent` has to come with it — Three.js ignores an
   // opacity below 1 on an opaque material — but the authored flag still wins
@@ -161,7 +164,7 @@ function Material({ definition, highlighted = false, auditMode = 'final', partId
 const offsetPosition = (position = [0, 0, 0], offset) =>
   (Array.isArray(offset) ? position.map((value, axis) => value + offset[axis]) : position);
 
-function Part({ part, materials, layout, selection, selectedId, onSelect, auditMode, pose }) {
+function Part({ part, materials, layout, selection, selectedId, onSelect, auditMode, pose, envMapIntensity }) {
   // The clip's pose for this part, or nothing — a part no sequence drives keeps
   // exactly the transform the spec authored, which is also what every part of a
   // model with no clips at all gets.
@@ -191,11 +194,11 @@ function Part({ part, materials, layout, selection, selectedId, onSelect, auditM
       {part.geometry && (
         <mesh castShadow={part.castShadow} receiveShadow={part.receiveShadow} onClick={select}>
           <Geometry definition={part.geometry} />
-          <Material definition={materials[part.material]} highlighted={highlighted} auditMode={auditMode} partId={part.id} opacity={posed?.opacity} />
+          <Material definition={materials[part.material]} highlighted={highlighted} auditMode={auditMode} partId={part.id} opacity={posed?.opacity} envMapIntensity={envMapIntensity} />
         </mesh>
       )}
       {part.children.filter(isReliefPart).map((child) => (
-        <Part key={child.id} part={child} materials={materials} layout={layout} selection={selection} selectedId={selectedId} onSelect={onSelect} auditMode={auditMode} pose={pose} />
+        <Part key={child.id} part={child} materials={materials} layout={layout} selection={selection} selectedId={selectedId} onSelect={onSelect} auditMode={auditMode} pose={pose} envMapIntensity={envMapIntensity} />
       ))}
     </>
   );
@@ -214,6 +217,7 @@ function Part({ part, materials, layout, selection, selectedId, onSelect, auditM
           onSelect={onSelect}
           auditMode={auditMode}
           pose={pose}
+          envMapIntensity={envMapIntensity}
         />
       ))}
     </group>
@@ -239,8 +243,8 @@ function SceneRefit({ growth, clipId }) {
 }
 
 // The preview owns only the R3F sampling boundary; the quality decisions stay in
-// cityRenderBudget so its warm-up, hysteresis, cooldown, and gap handling remain
-// deterministic and shared with CyberCity.
+// openWorldRenderBudget so its warm-up, hysteresis, cooldown, and gap handling remain
+// deterministic and shared with OpenWorld.
 function PreviewAdaptiveQuality({ enabled, resetToken, onTierChange }) {
   const stateRef = useRef(null);
   if (stateRef.current === null) stateRef.current = createRenderBudget('high', 0);
@@ -289,10 +293,41 @@ function SceneLight({ light }) {
   return <directionalLight color={light.color} intensity={light.intensity} position={light.position} castShadow />;
 }
 
+// The image-based lighting `spec.lights` cannot supply. Punctual lights light a
+// surface; only an environment gives it something to REFLECT, so without this a
+// physically plausible conductor renders near-black and transmission, clearcoat
+// and iridescence do nothing — and the next refinement pass "fixes" that by
+// authoring implausible values back in.
+//
+// Assigned imperatively rather than through drei's <Environment preset=…>, which
+// fetches an HDR from a CDN: rendering a local model must make no outbound
+// request. The texture is owned here, so switching presets or unmounting
+// releases the GPU memory the PMREM pass allocated.
+function SceneEnvironment({ preset }) {
+  const gl = useThree((state) => state.gl);
+  const scene = useThree((state) => state.scene);
+  useEffect(() => {
+    if (!scene) return undefined;
+    // The render TARGET, not just its texture: disposing the texture alone
+    // leaves the framebuffer behind it allocated on every preset swap.
+    const target = preset === 'none' ? null : createSculptEnvironmentTarget(gl, preset);
+    scene.environment = target?.texture || null;
+    return () => {
+      // Only clear what this effect set — a later effect may already have
+      // installed the next preset's texture.
+      if (scene.environment === (target?.texture || null)) scene.environment = null;
+      target?.dispose();
+    };
+  }, [gl, scene, preset]);
+  return null;
+}
+
 function ProceduralScene({ spec, background, layout, selection, selectedId, onSelect, auditMode, pose, clipId }) {
+  const environment = resolveSculptEnvironment(spec);
   return (
     <>
       {background && <color attach="background" args={[background]} />}
+      <SceneEnvironment preset={environment.preset} />
       {spec.lights.map((light, index) => <SceneLight key={`${light.type}-${index}`} light={light} />)}
       <Bounds fit clip observe margin={1.25}>
         <SceneRefit growth={layout.growth} clipId={clipId} />
@@ -311,6 +346,7 @@ function ProceduralScene({ spec, background, layout, selection, selectedId, onSe
               onSelect={onSelect}
               auditMode={auditMode}
               pose={pose}
+              envMapIntensity={environment.intensity}
             />
           ))}
         </group>
@@ -442,6 +478,44 @@ function useClipPlayback({ clip, cuesById, onCue }) {
   return { timeSeconds, playing, speed, setSpeed, togglePlay, stop, setPlayhead, duration };
 }
 
+// The spec this preview builds geometry from is LLM-generated, so a malformed
+// one can throw inside geometry construction — three.js is not defensive about
+// a NaN radius or a missing vertex array. Without a boundary that throw escapes
+// to the router and blanks the whole page; this is the same inline panel
+// GlbViewer shows for a mesh that cannot load, for the same reason.
+function SpecRenderFailure({ error, onRetry }) {
+  return (
+    // `.port-media-overlay` (not a hardcoded `bg-black/NN`) because the panel
+    // floats over a surface whose backdrop is a user-picked colour — a day theme
+    // remaps hardcoded light ink to dark and the heading goes near-invisible.
+    <div
+      data-testid="threejs-spec-error"
+      role="alert"
+      className="port-media-overlay absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 p-4 text-center"
+    >
+      <AlertTriangle className="h-6 w-6 text-port-error" aria-hidden="true" />
+      <p className="text-sm font-medium">This model spec could not be rendered</p>
+      <p className="max-w-sm text-xs text-port-text-muted">
+        The generated spec produced geometry three.js could not build. Regenerate the model, or edit the spec and try again.
+      </p>
+      <p className="max-w-full break-all font-mono text-[10px] leading-snug text-port-text-muted">
+        {String(error?.message || error || '')}
+      </p>
+      {/* The boundary catches a lost WebGL context just as readily as a bad
+          spec, and that one can come back — but only a NEW spec clears the
+          panel on its own, so without this the preview is stuck until the model
+          is regenerated. Dropping the failure is what remounts the canvas. */}
+      <button
+        type="button"
+        onClick={onRetry}
+        className="port-media-overlay-item mt-1 inline-flex items-center gap-1.5 rounded-md border border-port-border px-3 py-1.5 text-xs font-medium"
+      >
+        <RefreshCw className="h-3.5 w-3.5" /> Retry
+      </button>
+    </div>
+  );
+}
+
 export default function ThreejsModelPreview({ spec, family = null, className = '', onCue = null }) {
   const [background, setBackground] = useState(() => spec?.background || '#000000');
   const [explode, setExplode] = useState(0);
@@ -476,6 +550,11 @@ export default function ThreejsModelPreview({ spec, family = null, className = '
   // model change must start a fresh measurement window instead of borrowing the
   // previous model's pressure history.
   const modelSignature = useMemo(() => JSON.stringify(spec), [spec]);
+  // A render failure is stored WITH the spec signature it belongs to, so
+  // regenerating the model drops the panel without an effect — and one spec's
+  // bad geometry never sticks to the next one.
+  const [failure, setFailure] = useState(null);
+  const specError = failure?.signature === modelSignature ? failure.error : null;
   const effectiveTier = qualityMode === 'auto' ? autoTier : fixedTier;
   const quality = PREVIEW_QUALITY[effectiveTier];
   const handleAutoTierChange = useCallback((tier) => {
@@ -555,136 +634,158 @@ export default function ThreejsModelPreview({ spec, family = null, className = '
       className={`relative overflow-hidden bg-port-bg ${className}`}
       style={transparent ? checkerboardStyle : undefined}
     >
-      <Canvas
-        key={`${spec.name}-${spec.schemaVersion}-${transparent ? 'transparent' : background}-${auditCamera}-${auditMode}`}
-        shadows={quality.shadows}
-        camera={{ position: auditCameraPosition, fov: spec.camera.fov, near: 0.01, far: 10_000 }}
-        dpr={quality.dpr}
-        gl={{ alpha: transparent }}
-      >
-        <PreviewAdaptiveQuality
-          enabled={qualityMode === 'auto'}
-          resetToken={modelSignature}
-          onTierChange={handleAutoTierChange}
-        />
-        <ProceduralScene
-          spec={spec}
-          background={background}
-          layout={layout}
-          selection={selection}
-          selectedId={selectedId}
-          onSelect={handleSelect}
-          auditMode={auditMode}
-          pose={pose}
-          clipId={clip?.id || null}
-        />
-      </Canvas>
-      <div className="port-media-overlay absolute left-2 top-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 rounded-lg px-2 py-1.5 text-[10px]">
-        <span className="mr-1 whitespace-nowrap text-port-text-muted">Background</span>
-        <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Preview background">
-          {BACKGROUND_PRESETS.map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              aria-label={preset.label}
-              aria-pressed={selectedPreset === preset.id}
-              onClick={() => setBackground(preset.value)}
-              className="port-media-overlay-item rounded px-1.5 py-1"
-            >
-              {preset.label}
-            </button>
-          ))}
-        </div>
-        <label className="port-media-overlay-item flex items-center gap-1 rounded px-1.5 py-1">
-          Custom
-          <input
-            type="color"
-            aria-label="Custom preview background color"
-            value={background || '#000000'}
-            onChange={(event) => setBackground(event.target.value)}
-            className="h-4 w-5 rounded border-0 bg-transparent p-0"
-          />
-        </label>
-        <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
-        <label htmlFor={qualitySelectId} className="whitespace-nowrap text-port-text-muted">
-          Quality
-        </label>
-        <select
-          id={qualitySelectId}
-          value={qualityMode === 'auto' ? 'auto' : fixedTier}
-          onChange={handleQualityChange}
-          className="port-media-overlay-item rounded px-1.5 py-1 text-[10px]"
+      {specError ? (
+        <SpecRenderFailure error={specError} onRetry={() => setFailure(null)} />
+      ) : (
+        /* Anything thrown inside an r3f `<Canvas>` is caught by the Canvas and
+           re-thrown from its OWN render, so with no boundary here the nearest one
+           is the router's errorElement and the whole route becomes "PortOS could
+           not load this page". `fallback={null}` degrades the scene (the shared
+           boundary's documented r3f mode) while `onError` hands the failure to
+           this component, which owns the DOM chrome and swaps in the panel. */
+        <ErrorBoundary
+          fallback={null}
+          onError={(error) => setFailure({ signature: modelSignature, error })}
         >
-          <option value="auto">Auto</option>
-          {PREVIEW_QUALITY_TIERS.map((tier) => <option key={tier} value={tier}>{tier}</option>)}
-        </select>
-        <span className="whitespace-nowrap text-port-text-muted">
-          {qualityMode === 'auto' ? `Auto · ${effectiveTier}` : `Fixed · ${effectiveTier}`}
-        </span>
-        <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
-        <label htmlFor={explodeSliderId} className="whitespace-nowrap text-port-text-muted">
-          Explode
-        </label>
-        <input
-          id={explodeSliderId}
-          type="range"
-          min="0"
-          max="1"
-          step="0.02"
-          value={explode}
-          disabled={layout.unitIds.length < 2}
-          onChange={(event) => setExplode(Number(event.target.value))}
-          className="h-1 w-20 cursor-pointer accent-port-accent disabled:cursor-not-allowed disabled:opacity-40 sm:w-28"
-        />
-        <span className="w-8 tabular-nums text-port-text-muted">{Math.round(explode * 100)}%</span>
-        {explode > 0 && (
-          <button
-            type="button"
-            onClick={() => setExplode(0)}
-            className="port-media-overlay-item rounded px-1.5 py-1"
+          <Canvas
+            key={`${spec.name}-${spec.schemaVersion}-${transparent ? 'transparent' : background}-${auditCamera}-${auditMode}`}
+            shadows={quality.shadows}
+            camera={{ position: auditCameraPosition, fov: spec.camera.fov, near: 0.01, far: 10_000 }}
+            dpr={quality.dpr}
+            // The colour-management half of the render profile the export stamps on
+            // every model. outputColorSpace and toneMapping come from r3f own
+            // defaults for linear={false} flat={false} — so neither flag is passed
+            // here — while exposure is the one r3f leaves to three, stated outright
+            // rather than inherited so the exported claim stays true.
+            gl={{ alpha: transparent, toneMappingExposure: THREEJS_RENDER_PROFILE.toneMappingExposure }}
           >
-            Reassemble
-          </button>
-        )}
-        <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
-        <span className="whitespace-nowrap text-port-text-muted">Audit camera</span>
-        <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Audit camera">
-          {AUDIT_CAMERAS.map((camera) => {
-            const unavailable = camera.id === 'family' && !family;
-            return (
+            <PreviewAdaptiveQuality
+              enabled={qualityMode === 'auto'}
+              resetToken={modelSignature}
+              onTierChange={handleAutoTierChange}
+            />
+            <ProceduralScene
+              spec={spec}
+              background={background}
+              layout={layout}
+              selection={selection}
+              selectedId={selectedId}
+              onSelect={handleSelect}
+              auditMode={auditMode}
+              pose={pose}
+              clipId={clip?.id || null}
+            />
+          </Canvas>
+        </ErrorBoundary>
+      )}
+      {!specError && (
+        <div className="port-media-overlay absolute left-2 top-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 rounded-lg px-2 py-1.5 text-[10px]">
+          <span className="mr-1 whitespace-nowrap text-port-text-muted">Background</span>
+          <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Preview background">
+            {BACKGROUND_PRESETS.map((preset) => (
               <button
-                key={camera.id}
+                key={preset.id}
                 type="button"
-                aria-label={camera.label}
-                aria-pressed={auditCamera === camera.id}
-                disabled={unavailable}
-                title={unavailable ? 'Choose a subject family to enable family review' : undefined}
-                onClick={() => setPreviewParam('auditCamera', camera.id)}
-                className="port-media-overlay-item rounded px-1.5 py-1 disabled:cursor-not-allowed disabled:opacity-40"
+                aria-label={preset.label}
+                aria-pressed={selectedPreset === preset.id}
+                onClick={() => setBackground(preset.value)}
+                className="port-media-overlay-item rounded px-1.5 py-1"
               >
-                {camera.label}
+                {preset.label}
               </button>
-            );
-          })}
-        </div>
-        <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
-        <span className="whitespace-nowrap text-port-text-muted">Inspection</span>
-        <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Inspection mode">
-          {AUDIT_RENDER_MODES.map((mode) => (
+            ))}
+          </div>
+          <label className="port-media-overlay-item flex items-center gap-1 rounded px-1.5 py-1">
+            Custom
+            <input
+              type="color"
+              aria-label="Custom preview background color"
+              value={background || '#000000'}
+              onChange={(event) => setBackground(event.target.value)}
+              className="h-4 w-5 rounded border-0 bg-transparent p-0"
+            />
+          </label>
+          <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
+          <label htmlFor={qualitySelectId} className="whitespace-nowrap text-port-text-muted">
+            Quality
+          </label>
+          <select
+            id={qualitySelectId}
+            value={qualityMode === 'auto' ? 'auto' : fixedTier}
+            onChange={handleQualityChange}
+            className="port-media-overlay-item rounded px-1.5 py-1 text-[10px]"
+          >
+            <option value="auto">Auto</option>
+            {PREVIEW_QUALITY_TIERS.map((tier) => <option key={tier} value={tier}>{tier}</option>)}
+          </select>
+          <span className="whitespace-nowrap text-port-text-muted">
+            {qualityMode === 'auto' ? `Auto · ${effectiveTier}` : `Fixed · ${effectiveTier}`}
+          </span>
+          <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
+          <label htmlFor={explodeSliderId} className="whitespace-nowrap text-port-text-muted">
+            Explode
+          </label>
+          <input
+            id={explodeSliderId}
+            type="range"
+            min="0"
+            max="1"
+            step="0.02"
+            value={explode}
+            disabled={layout.unitIds.length < 2}
+            onChange={(event) => setExplode(Number(event.target.value))}
+            className="h-1 w-20 cursor-pointer accent-port-accent disabled:cursor-not-allowed disabled:opacity-40 sm:w-28"
+          />
+          <span className="w-8 tabular-nums text-port-text-muted">{Math.round(explode * 100)}%</span>
+          {explode > 0 && (
             <button
-              key={mode.id}
               type="button"
-              aria-label={mode.label}
-              aria-pressed={auditMode === mode.id}
-              onClick={() => setPreviewParam('auditMode', mode.id)}
+              onClick={() => setExplode(0)}
               className="port-media-overlay-item rounded px-1.5 py-1"
             >
-              {mode.label}
+              Reassemble
             </button>
-          ))}
+          )}
+          <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
+          <span className="whitespace-nowrap text-port-text-muted">Audit camera</span>
+          <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Audit camera">
+            {AUDIT_CAMERAS.map((camera) => {
+              const unavailable = camera.id === 'family' && !family;
+              return (
+                <button
+                  key={camera.id}
+                  type="button"
+                  aria-label={camera.label}
+                  aria-pressed={auditCamera === camera.id}
+                  disabled={unavailable}
+                  title={unavailable ? 'Choose a subject family to enable family review' : undefined}
+                  onClick={() => setPreviewParam('auditCamera', camera.id)}
+                  className="port-media-overlay-item rounded px-1.5 py-1 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {camera.label}
+                </button>
+              );
+            })}
+          </div>
+          <span className="port-media-overlay-divider mx-1 hidden h-3 w-px sm:block" />
+          <span className="whitespace-nowrap text-port-text-muted">Inspection</span>
+          <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Inspection mode">
+            {AUDIT_RENDER_MODES.map((mode) => (
+              <button
+                key={mode.id}
+                type="button"
+                aria-label={mode.label}
+                aria-pressed={auditMode === mode.id}
+                onClick={() => setPreviewParam('auditMode', mode.id)}
+                className="port-media-overlay-item rounded px-1.5 py-1"
+              >
+                {mode.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
-      {selectedId && (
+      )}
+      {selectedId && !specError && (
         <div className="port-media-overlay absolute right-2 top-2 flex max-w-[calc(100%-1rem)] items-center gap-2 rounded-lg px-2 py-1.5 text-[10px]">
           <span className="truncate font-medium">{selection.names[selectedId] || selectedId}</span>
           <code className="truncate text-port-text-muted">{selectedId}</code>
@@ -708,43 +809,45 @@ export default function ThreejsModelPreview({ spec, family = null, className = '
           </button>
         </div>
       )}
-      <div className="pointer-events-none absolute bottom-2 left-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 text-[10px]">
-        <ThreejsClipTransport
-          clips={clips}
-          clip={clip}
-          duration={playback.duration}
-          time={playback.timeSeconds}
-          playing={playback.playing}
-          speed={playback.speed}
-          activeSequenceNames={activeSequenceNames}
-          onSelectClip={(clipId) => setPreviewParam('clip', clipId)}
-          onTogglePlay={playback.togglePlay}
-          onStop={playback.stop}
-          onScrub={playback.setPlayhead}
-          onSpeedChange={playback.setSpeed}
-        />
-        <span className="port-media-overlay rounded px-2 py-1">
-          Drag to orbit · scroll to zoom · click a part to identify it · audit controls never change the saved model
-        </span>
-        {family && (
-          <span className="port-media-overlay rounded px-2 py-1 text-port-text-muted">
-            Family review: {(family.orbitViews || []).join(', ') || 'review the authored subject'}
-            {family.reviewAxes?.length > 0 ? ` · ${family.reviewAxes.join('; ')}` : ''}
+      {!specError && (
+        <div className="pointer-events-none absolute bottom-2 left-2 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1.5 text-[10px]">
+          <ThreejsClipTransport
+            clips={clips}
+            clip={clip}
+            duration={playback.duration}
+            time={playback.timeSeconds}
+            playing={playback.playing}
+            speed={playback.speed}
+            activeSequenceNames={activeSequenceNames}
+            onSelectClip={(clipId) => setPreviewParam('clip', clipId)}
+            onTogglePlay={playback.togglePlay}
+            onStop={playback.stop}
+            onScrub={playback.setPlayhead}
+            onSpeedChange={playback.setSpeed}
+          />
+          <span className="port-media-overlay rounded px-2 py-1">
+            Drag to orbit · scroll to zoom · click a part to identify it · audit controls never change the saved model
           </span>
-        )}
-        {/* Never "animation-ready": nothing here is skinned. The badge says only
-            whether the spec declared a usable articulation graph, and a model
-            that predates the contract has none and reads as a static assembly. */}
-        <span
-          className={articulation.articulationReady
-            ? 'port-media-overlay rounded px-2 py-1 text-port-success'
-            : 'port-media-overlay rounded px-2 py-1 text-port-text-muted'}
-        >
-          {articulation.articulationReady
-            ? `Articulation-ready · ${articulation.jointCount} joints · ${articulation.socketCount} pivot${articulation.socketCount === 1 ? '' : 's'}`
-            : `Static assembly${articulation.jointCount > 0 ? ` · ${articulation.jointCount} joints declared` : ''}`}
-        </span>
-      </div>
+          {family && (
+            <span className="port-media-overlay rounded px-2 py-1 text-port-text-muted">
+              Family review: {(family.orbitViews || []).join(', ') || 'review the authored subject'}
+              {family.reviewAxes?.length > 0 ? ` · ${family.reviewAxes.join('; ')}` : ''}
+            </span>
+          )}
+          {/* Never "animation-ready": nothing here is skinned. The badge says only
+              whether the spec declared a usable articulation graph, and a model
+              that predates the contract has none and reads as a static assembly. */}
+          <span
+            className={articulation.articulationReady
+              ? 'port-media-overlay rounded px-2 py-1 text-port-success'
+              : 'port-media-overlay rounded px-2 py-1 text-port-text-muted'}
+          >
+            {articulation.articulationReady
+              ? `Articulation-ready · ${articulation.jointCount} joints · ${articulation.socketCount} pivot${articulation.socketCount === 1 ? '' : 's'}`
+              : `Static assembly${articulation.jointCount > 0 ? ` · ${articulation.jointCount} joints declared` : ''}`}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

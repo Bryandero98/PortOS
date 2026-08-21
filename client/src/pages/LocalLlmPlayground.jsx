@@ -163,7 +163,7 @@ function ResultPanel({ result }) {
 
       <div className="flex items-center gap-2 flex-wrap">
         {result.runId && (
-          <Link to={`/devtools/runs?run=${encodeURIComponent(result.runId)}`} className="text-xs text-port-accent hover:underline">
+          <Link to={`/cos/runs?run=${encodeURIComponent(result.runId)}`} className="text-xs text-port-accent hover:underline">
             Run {result.runId.slice(0, 8)}
           </Link>
         )}

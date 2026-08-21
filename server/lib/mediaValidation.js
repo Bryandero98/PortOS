@@ -3,18 +3,19 @@
  * validation.js, issue #1831).
  *
  * Covers LoRA training config + run params, the local-LLM (Ollama / LM Studio)
- * backend management routes, CyberCity snapshot config/query, and the media-
+ * backend management routes, OpenWorld snapshot config/query, and the media-
  * collection bulk add/remove payloads. validation.js re-exports everything here
  * (flat) so existing deep imports keep working; the barrel surfaces it as the
  * `mediaValidation` namespace.
  */
 import { z } from 'zod';
+import { PORTS } from './ports.js';
 
-// CyberCity snapshot pipeline (issue #877): how often to capture a city-state
+// OpenWorld snapshot pipeline (issue #877): how often to capture a city-state
 // frame and how many to retain. Validated as a settings slice on PUT /api/settings;
 // service-side defaults (DEFAULT_SNAPSHOT_CONFIG) fill any absent field so an
-// install with no `citySnapshots` key still captures.
-export const citySnapshotConfigSchema = z.object({
+// install with no `openWorldSnapshots` key still captures.
+export const openWorldSnapshotConfigSchema = z.object({
   enabled: z.boolean().optional(),
   intervalMinutes: z.number().int().min(1).max(1440).optional(),
   maxSnapshots: z.number().int().min(10).max(100000).optional()
@@ -124,9 +125,9 @@ export const startTrainingRunSchema = z.object({
   acknowledgeCaptionLeak: z.boolean().optional(),
 });
 
-// Query for GET /api/city/snapshots — `since` (ISO timestamp) and `limit`
+// Query for GET /api/openworld/snapshots — `since` (ISO timestamp) and `limit`
 // (most-recent N) both arrive as strings on the query string.
-export const citySnapshotsQuerySchema = z.object({
+export const openWorldSnapshotsQuerySchema = z.object({
   since: z.string().datetime().optional(),
   limit: z.coerce.number().int().min(1).max(100000).optional()
 });
@@ -141,6 +142,9 @@ export const localLlmModelIdSchema = z.string().min(1).max(256)
 export const localLlmInstallSchema = z.object({
   backend: localLlmBackendSchema,
   modelId: localLlmModelIdSchema,
+  // Re-pull even when the model is already on disk. Needed when a publisher
+  // replaces GGUF files in place (e.g. Unsloth Dynamic 3.0) under the same id.
+  force: z.boolean().optional(),
 });
 export const localLlmDeleteSchema = localLlmInstallSchema;
 // Memory-management unload: same `backend` + `modelId` shape as install/delete
@@ -162,11 +166,18 @@ export const localLlmLlamaServerStartSchema = z.object({
   model: z.string().trim().min(1).max(500),
   draftModel: z.string().trim().max(500).optional().nullable(),
   specType: z.string().trim().max(100).optional().default('draft-dflash'),
-  port: z.coerce.number().int().min(1).max(65535).optional().default(8080),
+  port: z.coerce.number().int().min(1).max(65535).optional().default(PORTS.LLAMA_SERVER),
   host: z.string().trim().max(100).optional().default('127.0.0.1'),
   ctxSize: z.coerce.number().int().min(512).max(1048576).optional().default(32768),
   nGpuLayers: z.coerce.number().int().min(0).max(999).optional().default(99),
   alias: z.string().trim().max(100).optional().default('dflash'),
+});
+// Speculative-decoding weight download: which curated preset, and which half of
+// the pair. Both are enum-ish server-owned ids — no path or repo ever arrives
+// from the client, so a request can only ever write to a curated `models/` file.
+export const localLlmSpecModelDownloadSchema = z.object({
+  presetId: z.string().trim().min(1).max(100),
+  role: z.enum(['model', 'draftModel']),
 });
 export const localLlmHuggingFaceSearchSchema = z.object({
   backend: localLlmBackendSchema,

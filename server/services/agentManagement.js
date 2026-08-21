@@ -157,6 +157,37 @@ async function markPausedTask(agentInfo, agentId, pausedAt, reason) {
   }, task.taskType || 'user');
 }
 
+/**
+ * Record a stop REQUEST against a live run (#4540).
+ *
+ * The request is the fact, not the exit it causes: a run still reading
+ * `interrupted` with no `run.finalized` after it is a kill that never took —
+ * the process ignored SIGTERM, or the runner RPC failed — and that discrepancy
+ * is invisible in the mutable record, which only ever shows the last state
+ * something managed to write.
+ *
+ * Ids come from whichever ownership map holds the agent: neither is
+ * authoritative alone (a runner-backed TUI registers in `activeAgents` while a
+ * runner-spawned CLI lives in `runnerAgents`), so reading only one would
+ * silently drop half the runs. An agent in NEITHER map has nothing to interrupt
+ * — its caller is about to 404 or return not-found — so no event is written
+ * rather than minting a projection for a run that isn't there.
+ *
+ * No explicit idempotency key: every termination request is a distinct fact,
+ * including a second one aimed at an agent that ignored the first.
+ */
+async function recordInterrupt(agentId, data) {
+  const info = activeAgents.get(agentId) ?? runnerAgents.get(agentId);
+  if (!info) return;
+  await appendRunEvent({
+    kind: 'run.interrupted',
+    runId: info.runId ?? null,
+    agentId,
+    taskId: info.taskId ?? null,
+    data: { ...data, mode: runnerAgents.has(agentId) ? 'runner' : 'direct' },
+  });
+}
+
 async function markAgentPaused(agentId, agentInfo, pausedAt, reason) {
   await updateAgent(agentId, {
     status: 'paused',
@@ -169,6 +200,21 @@ async function markAgentPaused(agentId, agentInfo, pausedAt, reason) {
     }
   });
   await markPausedTask(agentInfo, agentId, pausedAt, reason);
+  // Recorded AFTER the persist, not before (#4540): both pause arms funnel
+  // through here, and both roll their in-memory flag back when this function
+  // throws. An event written ahead of the writes would leave the projection
+  // reading `paused` for a pause that never stuck — the exact class of lie the
+  // ledger exists to catch. `at: pausedAt` is the same instant the agent record
+  // carries, so the content-derived id is stable and a retried persist files one
+  // paused event rather than two.
+  await appendRunEvent({
+    kind: 'run.paused',
+    runId: agentInfo?.runId ?? null,
+    agentId,
+    taskId: agentInfo?.taskId ?? null,
+    at: pausedAt,
+    data: { reason: reason || null, workspacePath: agentInfo?.workspacePath ?? null },
+  });
   release(agentId);
   if (agentInfo?.executionId) {
     errorExecution(agentInfo.executionId, { message: reason ? `Agent paused by user: ${reason}` : 'Agent paused by user', code: 'agent-paused' });
@@ -347,6 +393,21 @@ export async function resumeAgent(agentId, overrides = {}) {
   // resume branch before the spawn it triggers can pick it up. Paused records are
   // explicitly completable (see the idempotence guard in `completeAgent`).
   pausedAgents.delete(agentId);
+  // A paused run was released back to the queue (#4540). Only the modes that
+  // actually CONTINUE the work qualify: 'already-active' and 'superseded' retire
+  // the paused record without queueing anything, so recording them as a resume
+  // would show a run going back to `running` that nothing is running. `mode` is
+  // the part the mutable record still loses — 'requeued' and 'new-task' both
+  // read as a completed paused agent afterwards, and only one left a fresh task.
+  if (mode === 'requeued' || mode === 'new-task') {
+    await appendRunEvent({
+      kind: 'run.resumed',
+      runId: agent.metadata?.runId ?? null,
+      agentId,
+      taskId: resumed.taskId ?? taskId,
+      data: { mode: resumed.mode ?? mode, branchName: resumed.branchName ?? null },
+    });
+  }
   await completeAgent(agentId, {
     success: false,
     resumed: true,
@@ -474,6 +535,9 @@ function resumeOverrideMetadata({ context, provider, model, effort, app, screens
  * Terminate an agent (graceful SIGTERM with SIGKILL fallback).
  */
 export async function terminateAgent(agentId) {
+  // Recorded ahead of both arms, so the request lands whichever one runs.
+  await recordInterrupt(agentId, { reason: 'terminated-by-user', signal: 'SIGTERM' });
+
   // Check if agent is in runner mode
   if (runnerAgents.has(agentId)) {
     return terminateRunnerAgent(agentId, terminateAgentViaRunner, 'Agent terminated by user', 'Terminated by user');
@@ -573,6 +637,8 @@ export function getActiveAgents() {
  * Force kill an agent immediately with SIGKILL (no graceful shutdown).
  */
 export async function killAgent(agentId) {
+  await recordInterrupt(agentId, { reason: 'killed-by-user', signal: 'SIGKILL' });
+
   // Check if agent is in runner mode
   if (runnerAgents.has(agentId)) {
     const result = await terminateRunnerAgent(agentId, killAgentViaRunner, 'Agent force killed by user (SIGKILL)', 'Force killed by user');

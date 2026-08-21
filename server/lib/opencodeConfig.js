@@ -19,6 +19,9 @@
  */
 
 import { getOpencodeLocalProviderNamespace, isOpencodeCommand } from './providerModels.js';
+import { PORTS } from './ports.js';
+
+const LLAMA_SERVER_BASE_URL = `http://127.0.0.1:${PORTS.LLAMA_SERVER}/v1`;
 
 /**
  * Base OpenCode provider entries for the local OpenAI-compatible daemons.
@@ -39,7 +42,7 @@ const OPENCODE_LOCAL_BASE_PROVIDERS = {
   llama: {
     npm: '@ai-sdk/openai-compatible',
     name: 'llama.cpp (local)',
-    options: { baseURL: 'http://127.0.0.1:8080/v1' },
+    options: { baseURL: LLAMA_SERVER_BASE_URL },
   },
   orcarouter: {
     npm: '@ai-sdk/openai-compatible',
@@ -47,6 +50,17 @@ const OPENCODE_LOCAL_BASE_PROVIDERS = {
     options: { baseURL: 'https://api.orcarouter.ai/v1' },
   },
 };
+
+/**
+ * The canonical base URL PortOS declares for one local OpenCode provider entry
+ * — what a spawned OpenCode talks to when the provider stores no config of its
+ * own. Read by `lib/localProviderRuntime.js` so the readiness probe and the
+ * spawn agree on the endpoint instead of keeping two copies of these ports.
+ * @param {'ollama'|'mtplx'|'llama'|'orcarouter'} providerKey
+ * @returns {string|null}
+ */
+export const opencodeLocalBaseUrl = (providerKey) =>
+  OPENCODE_LOCAL_BASE_PROVIDERS[providerKey]?.options?.baseURL || null;
 
 const localProviderBase = (providerKey) => {
   if (!Object.hasOwn(OPENCODE_LOCAL_BASE_PROVIDERS, providerKey)) {

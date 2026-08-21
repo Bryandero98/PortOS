@@ -69,7 +69,18 @@ export const DEFAULT_EXCLUDES = [
   // frames, strips, manifests, and runtime atlases ARE backed up. `runs/` is
   // the live (vendor-neutral) layout; `grok/` covers pre-migration-202 runs.
   { path: '/sprites/*/grok/*/generated/raw/', reason: 'Sprite walk-run raw extracted frames — regenerable from the archived source video', overridable: true },
-  { path: '/sprites/*/runs/*/generated/raw/', reason: 'Imported sprite-run raw extracted frames — regenerable from the archived source video', overridable: true }
+  { path: '/sprites/*/runs/*/generated/raw/', reason: 'Imported sprite-run raw extracted frames — regenerable from the archived source video', overridable: true },
+  // Anchored with a leading `/` like every entry here — an unanchored `model.obj`
+  // would match at any depth and silently drop unrelated user data.
+  //
+  // TRELLIS.2's `generate.py` writes this full-resolution OBJ next to the GLB it
+  // exports: the decoder's mesh before bake-time decimation, measured at 930 MB /
+  // 22.7M faces for one 1024_cascade render. It is regenerable by re-rendering the
+  // same source at the same seed, it is not what the 3D page loads (that is
+  // model.glb, which IS backed up), and at ~1 GB per render it would otherwise
+  // dominate every snapshot. Overridable, because it is the only copy of the
+  // discarded detail and someone archiving finished work may want it.
+  { path: '/image-to-3d/*/model.obj', reason: 'TRELLIS.2 full-resolution mesh sidecar — ~1 GB per render, regenerable by re-rendering at the same seed. The exported model.glb and keyed source ARE backed up.', overridable: true }
   // NOTE: legacy file→Postgres migration artifacts (`.imported` / `.bak-NNN`)
   // are intentionally NOT excluded here. They are deleted on disk by the
   // boot-time prune (pruneImportedLegacyFiles.js) the same boot the migration

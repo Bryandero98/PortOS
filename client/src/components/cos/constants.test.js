@@ -13,7 +13,10 @@ import {
   MUSE_ROOT_MOTION_CLIPS,
   resolveMuseMotion,
   MODEL_CAPABLE_CLI_REVIEWERS,
-  reviewerLabel
+  reviewerLabel,
+  summarizeHealthIssues,
+  healthIssueTone,
+  fresherHealth
 } from './constants';
 
 // These mirror the server's domainBudgets/domainAutonomy helpers so the UI's
@@ -217,4 +220,84 @@ describe('reviewerLabel', () => {
     expect(reviewerLabel('@octocat')).toBe('@octocat');
   });
 });
+
+// A warning-level health issue put the CoS avatar in `investigating` while the
+// status bubble showed the generic "Investigating issue..." and the Issues tile
+// was an inert number. Both helpers exist so the UI can name the issue and color
+// the tile by severity.
+describe('summarizeHealthIssues', () => {
+  it('returns null when there is nothing to report', () => {
+    expect(summarizeHealthIssues([])).toBeNull();
+    expect(summarizeHealthIssues(null)).toBeNull();
+    expect(summarizeHealthIssues(undefined)).toBeNull();
+  });
+
+  it('names the single issue verbatim', () => {
+    expect(summarizeHealthIssues([{ type: 'warning', category: 'memory', message: 'High memory usage in: example-app (900MB)' }]))
+      .toBe('High memory usage in: example-app (900MB)');
+  });
+
+  it('counts and joins multiple issues', () => {
+    expect(summarizeHealthIssues([{ message: 'a' }, { message: 'b' }])).toBe('2 health issues: a \u00b7 b');
+  });
+
+  it('still reads as an issue when the payload carries no message', () => {
+    expect(summarizeHealthIssues([{ type: 'error' }])).toBe('1 health issue detected');
+    expect(summarizeHealthIssues([{ type: 'error' }, {}])).toBe('2 health issues detected');
+  });
+
+  // Counting the descriptions instead of the issues under-reported a mixed
+  // list as a single issue, hiding the message-less one entirely.
+  it('counts issues, not messages, when only some carry one', () => {
+    expect(summarizeHealthIssues([{ message: 'A' }, {}])).toBe('2 health issues: A');
+    expect(summarizeHealthIssues([{ message: 'A' }, {}, { message: 'B' }])).toBe('3 health issues: A \u00b7 B');
+  });
+});
+
+// The slow `getCosHealth` read routinely resolves AFTER the socket event for the
+// check that same fetch batch triggered, so "newest wins" is what keeps the
+// Issues tile and the status bubble describing the same check.
+describe('fresherHealth', () => {
+  const older = { lastCheck: '2026-01-01T00:00:00.000Z', issues: [] };
+  const newer = { lastCheck: '2026-01-02T00:00:00.000Z', issues: [{ type: 'warning' }] };
+
+  it('takes the newer check', () => {
+    expect(fresherHealth(older, newer)).toBe(newer);
+  });
+
+  it('keeps the newer previous check against a stale read', () => {
+    expect(fresherHealth(newer, older)).toBe(newer);
+  });
+
+  it('keeps the last-good check when the read failed', () => {
+    expect(fresherHealth(newer, null)).toBe(newer);
+    expect(fresherHealth(null, null)).toBeNull();
+  });
+
+  it('keeps a timestamped previous check over an untimed read', () => {
+    expect(fresherHealth(newer, { issues: [] })).toBe(newer);
+  });
+
+  it('accepts any read when there is no comparable previous check', () => {
+    const untimed = { issues: [] };
+    expect(fresherHealth(null, untimed)).toBe(untimed);
+    expect(fresherHealth({ issues: [] }, untimed)).toBe(untimed);
+  });
+});
+
+describe('healthIssueTone', () => {
+  it('stays neutral with no issues', () => {
+    expect(healthIssueTone([])).toBe('default');
+    expect(healthIssueTone(null)).toBe('default');
+  });
+
+  it('keeps warning-only checks amber rather than red', () => {
+    expect(healthIssueTone([{ type: 'warning' }, { type: 'warning' }])).toBe('warning');
+  });
+
+  it('escalates to critical when any issue is an error', () => {
+    expect(healthIssueTone([{ type: 'warning' }, { type: 'error' }])).toBe('critical');
+  });
+});
+
 // @vitest-environment node

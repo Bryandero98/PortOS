@@ -249,6 +249,56 @@ describe('checkPeerBrainParity', () => {
     expect(await checkPeerBrainParity(PEER)).toMatchObject({ available: false, reason: 'peer-too-old' });
   });
 
+  it('treats a 200 with a malformed manifest body (missing types) as fetch-failed rather than divergence', async () => {
+    stores({ people: { p1: { id: 'p1', updatedAt: 'T1' } } });
+    peerRoutes({
+      '/api/brain/reconcile/manifest': jsonResponse({ ok: true }),
+    });
+
+    const report = await checkPeerBrainParity(PEER);
+
+    expect(report.available).toBe(false);
+    expect(report.reason).toBe('fetch-failed');
+    expect(report.summary.total).toBe(0);
+  });
+
+  it('preserves empty-but-valid manifest { types: {} } as valid parity check reporting local-only', async () => {
+    stores({ people: { p1: { id: 'p1', updatedAt: 'T1' } } });
+    peerRoutes({
+      '/api/brain/reconcile/manifest': jsonResponse({ types: {} }),
+      '/api/brain/reconcile/checksum': jsonResponse({ checksum: 'peer-checksum' }),
+    });
+
+    const report = await checkPeerBrainParity(PEER);
+
+    expect(report.available).toBe(true);
+    expect(report.summary).toMatchObject({ total: 1, 'local-only': 1 });
+  });
+
+  it('treats a 200 with an array-shaped types property as fetch-failed', async () => {
+    stores({ people: { p1: { id: 'p1', updatedAt: 'T1' } } });
+    peerRoutes({
+      '/api/brain/reconcile/manifest': jsonResponse({ types: [] }),
+    });
+
+    const report = await checkPeerBrainParity(PEER);
+
+    expect(report.available).toBe(false);
+    expect(report.reason).toBe('fetch-failed');
+  });
+
+  it('treats a malformed snapshot fallback body (missing or array records) as fetch-failed', async () => {
+    stores({ people: { p1: { id: 'p1', updatedAt: 'T1' } } });
+    peerRoutes({
+      '/api/brain/reconcile/snapshot': jsonResponse({ records: [] }),
+    });
+
+    const report = await checkPeerBrainParity(PEER);
+
+    expect(report.available).toBe(false);
+    expect(report.reason).toBe('fetch-failed');
+  });
+
   it('ignores malformed peer manifest rows instead of throwing', async () => {
     stores({ people: { p1: { id: 'p1', updatedAt: 'T1' } } });
     peerRoutes({
@@ -302,6 +352,34 @@ describe('checkPeerBrainParity', () => {
 });
 
 describe('runBrainParityCheck', () => {
+  it('flags an unreadable peer registry instead of reporting a peerless sweep', async () => {
+    getPeers.mockRejectedValue(new Error('peer registry read failed'));
+
+    const result = await runBrainParityCheck();
+
+    expect(result.peerRegistryUnavailable).toBe(true);
+    expect(result.reports).toEqual([]);
+    expect(peerFetch).not.toHaveBeenCalled();
+  });
+
+  it('treats a non-array peer registry as unreadable rather than throwing on filter', async () => {
+    getPeers.mockResolvedValue(undefined);
+
+    const result = await runBrainParityCheck();
+
+    expect(result.peerRegistryUnavailable).toBe(true);
+    expect(result.reports).toEqual([]);
+  });
+
+  it('leaves peerRegistryUnavailable unset for a genuinely peerless install', async () => {
+    getPeers.mockResolvedValue([]);
+
+    const result = await runBrainParityCheck();
+
+    expect(result.peerRegistryUnavailable).toBeUndefined();
+    expect(result.reports).toEqual([]);
+  });
+
   it('returns peer-not-found for an unknown peer id without contacting anyone', async () => {
     getPeers.mockResolvedValue([PEER]);
 

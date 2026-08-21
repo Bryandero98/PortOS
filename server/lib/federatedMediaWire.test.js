@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   federatedMediaAudioProfileSchema,
+  federatedMediaCapabilitySchema,
+  federatedMediaProviderStatusSchema,
   federatedMediaProviderJobSchema,
+  effectiveJobPrompt,
   isFederatedMediaAudioPrompt,
+  normalizeRequestedMediaKinds,
   renderFederatedMediaAudioPrompt,
 } from './federatedMediaWire.js';
 
@@ -26,7 +30,7 @@ describe('federated media provider job wire projection', () => {
     expect(parsed.privateFutureField).toBeUndefined();
   });
 
-  it('rejects invalid integrity metadata and future media kinds', () => {
+  it('rejects invalid integrity metadata and kinds outside the known wire-v1 alphabet', () => {
     expect(federatedMediaProviderJobSchema.safeParse(job({
       status: 'completed',
       completedAt: '2026-08-17T12:01:00.000Z',
@@ -41,7 +45,144 @@ describe('federated media provider job wire projection', () => {
         durationSec: 30,
       },
     })).success).toBe(false);
-    expect(federatedMediaProviderJobSchema.safeParse(job({ kind: 'video' })).success).toBe(false);
+    expect(federatedMediaProviderJobSchema.safeParse(job({ kind: 'holo' })).success).toBe(false);
+  });
+
+  it('accepts image and video as first-class kinds, each with their own result mime type', () => {
+    expect(federatedMediaProviderJobSchema.safeParse(job({ kind: 'video' })).success).toBe(true);
+    expect(federatedMediaProviderJobSchema.safeParse(job({
+      kind: 'image',
+      status: 'completed',
+      completedAt: '2026-08-17T12:01:00.000Z',
+      result: {
+        available: true,
+        mimeType: 'image/png',
+        sizeBytes: 10,
+        sha256: 'a'.repeat(64),
+        downloadUrl: '/result',
+        engine: 'local',
+        modelId: 'flux-dev',
+        durationSec: null,
+      },
+    })).success).toBe(true);
+    expect(federatedMediaProviderJobSchema.safeParse(job({
+      kind: 'image',
+      status: 'completed',
+      completedAt: '2026-08-17T12:01:00.000Z',
+      result: {
+        available: true,
+        mimeType: 'video/mp4',
+        sizeBytes: 10,
+        sha256: 'a'.repeat(64),
+        downloadUrl: '/result',
+        engine: 'local',
+        modelId: 'example/model',
+        durationSec: null,
+      },
+    })).success).toBe(false);
+  });
+});
+
+describe('federated media status kind projection', () => {
+  const status = (overrides = {}) => ({
+    wireVersion: 1,
+    generatedAt: '2026-08-17T12:00:00.000Z',
+    staleAfterMs: 60_000,
+    status: 'ready',
+    kinds: ['audio'],
+    queue: {
+      totalActive: 0,
+      providerActive: 0,
+      queued: 0,
+      running: 0,
+      maxQueuedJobs: 2,
+      accepting: true,
+    },
+    capabilities: [],
+    ...overrides,
+  });
+
+  it('rejects a capability kind omitted from the negotiated projection', () => {
+    expect(federatedMediaProviderStatusSchema.safeParse(status({
+      capabilities: [{
+        kind: 'image', engine: 'local', engineName: 'Local', modelId: 'example/model', modelName: 'Example',
+        ready: true, unavailableReason: null, runtimeReady: true, platformSupported: true,
+        cudaRequired: false, cudaState: 'available', minDurationSec: null, maxDurationSec: null,
+        defaultDurationSec: null, lyrics: false, autoDuration: false,
+      }],
+    })).success).toBe(false);
+  });
+
+  it('validates capabilities with frameStride, maxNumFrames, frameOptions, and resolutionOptions', () => {
+    const capability = {
+      kind: 'video',
+      engine: 'local',
+      engineName: 'Local',
+      modelId: 'wan22_t2v_a14b',
+      modelName: 'Wan 2.2 T2V A14B',
+      ready: true,
+      unavailableReason: null,
+      runtimeReady: true,
+      platformSupported: true,
+      cudaRequired: false,
+      cudaState: 'available',
+      minDurationSec: null,
+      maxDurationSec: null,
+      defaultDurationSec: null,
+      lyrics: false,
+      autoDuration: false,
+      frameStride: 4,
+      maxNumFrames: 121,
+      frameOptions: [25, 49, 73, 97, 121],
+      fpsOptions: [16, 20, 24],
+      resolutionOptions: [{ w: 1344, h: 768, label: '16:9 H3 default' }],
+    };
+
+    expect(federatedMediaCapabilitySchema.safeParse(capability).success).toBe(true);
+    expect(federatedMediaProviderStatusSchema.safeParse(status({
+      kinds: ['video'],
+      capabilities: [capability],
+    })).success).toBe(true);
+  });
+
+  it('validates an older provider payload omitting the frame and canvas constraint fields', () => {
+    const legacyCapability = {
+      kind: 'video',
+      engine: 'local',
+      engineName: 'Local',
+      modelId: 'ltx23_distilled_q4',
+      modelName: 'LTX-2.3 Distilled Q4',
+      ready: true,
+      unavailableReason: null,
+      runtimeReady: true,
+      platformSupported: true,
+      cudaRequired: false,
+      cudaState: 'available',
+      minDurationSec: null,
+      maxDurationSec: null,
+      defaultDurationSec: null,
+      lyrics: false,
+      autoDuration: false,
+    };
+
+    expect(federatedMediaCapabilitySchema.safeParse(legacyCapability).success).toBe(true);
+    const parsed = federatedMediaCapabilitySchema.parse(legacyCapability);
+    expect(parsed.frameStride).toBeUndefined();
+    expect(parsed.maxNumFrames).toBeUndefined();
+    expect(parsed.resolutionOptions).toBeUndefined();
+  });
+});
+
+describe('normalizeRequestedMediaKinds', () => {
+  it('defaults to audio-only so an unopted-in caller gets the original shape', () => {
+    expect(normalizeRequestedMediaKinds()).toEqual(['audio']);
+    expect(normalizeRequestedMediaKinds('')).toEqual(['audio']);
+    expect(normalizeRequestedMediaKinds('nonsense,also-bad')).toEqual(['audio']);
+  });
+
+  it('parses a comma-separated list down to the known, deduplicated subset', () => {
+    expect(normalizeRequestedMediaKinds('audio,image,image,video,holo')).toEqual(['audio', 'image', 'video']);
+    expect(normalizeRequestedMediaKinds(['video', ' image '])).toEqual(['video', 'image']);
   });
 });
 
@@ -64,5 +205,46 @@ describe('federated media privacy-safe audio profiles', () => {
       subject: 'alice@example.com',
     }).success).toBe(false);
     expect(renderFederatedMediaAudioPrompt({ ...profile, mood: 'a named person' })).toBeNull();
+  });
+});
+
+describe('effectiveJobPrompt', () => {
+  it('reads a routed job through to the wire request, not the blanked params', () => {
+    // A routed job's top-level prompt is blank on purpose (#4683). Anything
+    // recording what was rendered must read the marker, or it files a finished
+    // render with no prompt at all.
+    expect(effectiveJobPrompt({
+      kind: 'image',
+      params: {
+        prompt: '',
+        remoteMedia: { wireVersion: 1, request: { kind: 'image', modelId: 'dev', prompt: 'a lighthouse at dusk' } },
+      },
+    })).toBe('a lighthouse at dusk');
+  });
+
+  it('renders an audio job from its fixed-vocabulary profile', () => {
+    expect(effectiveJobPrompt({
+      kind: 'audio',
+      params: {
+        prompt: '',
+        remoteMedia: {
+          wireVersion: 1,
+          profile: { style: 'ambient', mood: 'calm', tempo: 'slow', energy: 'low', instruments: [] },
+          request: { engine: 'remote-audio', modelId: 'example/model' },
+        },
+      },
+    })).toBe('Instrumental ambient music with a calm mood, slow tempo, low energy. No vocals or spoken words.');
+  });
+
+  it('returns a local job\'s own prompt untouched', () => {
+    expect(effectiveJobPrompt({ kind: 'image', params: { prompt: 'a fox' } })).toBe('a fox');
+  });
+
+  it('distinguishes no prompt at all from a legitimately empty one', () => {
+    expect(effectiveJobPrompt({ kind: 'image', params: {} })).toBeNull();
+    expect(effectiveJobPrompt(undefined)).toBeNull();
+    // An img2img render genuinely has no text — that is an empty string, not
+    // "nothing was recorded".
+    expect(effectiveJobPrompt({ kind: 'image', params: { prompt: '' } })).toBe('');
   });
 });

@@ -75,6 +75,13 @@ export async function getProjectsByIds(ids, { includeDeleted = false } = {}) {
   return all.filter((p) => wanted.has(p.id) && (includeDeleted || !p.deleted));
 }
 
+/** Every LIVE project a given Creative Commission spawned — mirrors the PG backend. */
+export async function listProjectsByCommissionId(commissionId) {
+  if (!commissionId) return [];
+  const all = await loadAll();
+  return all.filter((p) => !p.deleted && p.commissionId === commissionId);
+}
+
 /** Live project ids (or all when includeDeleted) — used by tombstone GC sweeps. */
 export async function listProjectIds({ includeDeleted = false } = {}) {
   const all = await loadAll();

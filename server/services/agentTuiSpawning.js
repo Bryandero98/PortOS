@@ -17,6 +17,7 @@ import { resolveErrorAnalysis } from './agentTuiSpawning/finalizeHelpers.js';
 import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
 import { activeAgents, userTerminatedAgents, pausedAgents, registerSpawnedAgent, unregisterSpawnedAgent } from './agentState.js';
 import { PATHS, watchForFile } from '../lib/fileUtils.js';
+import { resolveAgentCliCwd } from '../lib/spawnCwd.js';
 import { doneSentinelName, doneSentinelPath as resolveDoneSentinelPath, parseSentinelPayload } from '../lib/agentSentinel.js';
 import { shouldAbandonForHostShutdown, HOST_SHUTDOWN_REASON } from '../lib/hostShutdown.js';
 import { SENTINEL_COMPLETION_MARKER } from '../lib/agentOutputMarkers.js';
@@ -26,8 +27,9 @@ import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { normalizeReviewers } from '../lib/validation.js';
 import * as git from './git.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
-import { spawnTuiSessionViaRunner } from './cosRunnerClient.js';
-import { shellQuote } from '../lib/shellQuote.js';
+import { spawnTuiSessionViaRunner, classifyRunnerSpawnFailure, RUNNER_SPAWN_REFUSED, RUNNER_SPAWN_AMBIGUOUS } from './cosRunnerClient.js';
+import { resolveInteractiveShell } from '../lib/interactiveShellResolver.js';
+import { formatShellCommandLine } from '../lib/shellCd.js';
 import { isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
@@ -57,13 +59,15 @@ import {
   PASTE_RETRY_BASE_DELAY_MS,
   extractVerifiablePromptPrefix,
   isPasteConfirmed,
+  SUBMIT_KEY,
 } from '../lib/tuiHandshake.js';
 import { injectTuiModelAndEffort } from '../lib/providerVendors.js';
 import { agentGuardEnv } from '../lib/agentGuard/index.js';
 import { composeProviderEnv } from '../lib/cliChildEnv.js';
 import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
 import { isOllamaBackedProvider } from './providers.js';
-import { execFile } from '../lib/childProcess.js';
+import { shellHasLiveChild } from '../lib/shellLivenessProbe.js';
+import { appendRunEvent } from './agentRunEventLog.js';
 
 // Agent-specific timing/lifecycle constants (not shared with the one-shot
 // runner — agents stay alive much longer and write a sentinel file when done).
@@ -132,18 +136,20 @@ export async function createAgentTuiSession({
     return session;
   }
 
-  // This shell exists only to host the CoS TUI. Make it follow the TUI's
-  // lifetime and preserve the TUI exit status; otherwise the login shell
-  // returns to its prompt when the provider exits and the spawner cannot
-  // observe completion until the wall-clock backstop fires.
-  const initialCommand = `${tuiConfig.commandLine}; exit $?`;
+  // This shell exists only to host the CoS TUI. `exitWithCommand` makes it
+  // follow the TUI's lifetime and preserve the TUI exit status; otherwise the
+  // login shell returns to its prompt when the provider exits and the spawner
+  // cannot observe completion until the wall-clock backstop fires. The wrapper
+  // is dialect-specific, so shell.js renders it once it knows which shell the
+  // session got (see lib/shellExit.js).
   const sessionId = shellService.createShellSession(null, {
     cwd,
+    initialCommand: tuiConfig.commandLine,
+    exitWithCommand: true,
     kind: 'agent-tui',
     agentId,
     label: `${provider.name} ${agentId}`,
     command: tuiConfig.commandLine,
-    initialCommand,
     // Wait until the shell can actually RUN commands before injecting the CLI
     // command — a fixed delay races a heavy interactive shell and the launched
     // TUI can fall straight back to a half-loaded prompt (see shell.js
@@ -178,26 +184,11 @@ export async function createAgentTuiSession({
   return { sessionId, ptyProcess, pid: ptyProcess?.pid || null };
 }
 
-// Best-effort liveness probe for the launched TUI command. The TUI runs e.g.
-// `claude` as a CHILD of a persistent PTY shell (see createShellSession writing
-// initialCommand), so when that command exits at startup the PTY itself stays
-// open — the shell just returns to its prompt — and the spawner's onExit never
-// fires. "The shell PID has no live child process" therefore means the launched
-// command has already exited. Resolves true (assume alive) when the probe can't
-// run, so a flaky/absent `ps` never blocks an otherwise-healthy paste.
-function shellHasLiveChild(shellPid) {
-  if (!shellPid) return Promise.resolve(true);
-  return new Promise((resolve) => {
-    // `-Ao ppid=` is POSIX (all processes, ppid column only, no header) and
-    // works on both macOS (BSD ps) and Linux (procps).
-    execFile('ps', ['-Ao', 'ppid='], { timeout: 2000 }, (err, stdout) => {
-      if (err) { resolve(true); return; }
-      resolve(stdout.split('\n').some((line) => parseInt(line, 10) === shellPid));
-    });
-  });
-}
-
-export function buildTuiSpawnConfig(provider, model, { systemPromptFile = null, effort = null } = {}) {
+export function buildTuiSpawnConfig(provider, model, {
+  systemPromptFile = null,
+  effort = null,
+  shell = resolveInteractiveShell(),
+} = {}) {
   const command = provider?.command || inferTuiCommand(provider?.id);
   const baseArgs = applyCommandDefaults(command, [...(provider?.args || [])]);
   // Model+effort injection (including the antigravity-validates-the-pair special
@@ -212,11 +203,12 @@ export function buildTuiSpawnConfig(provider, model, { systemPromptFile = null, 
   if (systemPromptFile && isClaudeCommand(command)) {
     args = [...args, '--append-system-prompt-file', systemPromptFile];
   }
+  const commandLine = formatShellCommandLine(command, args, shell);
 
   return {
     command,
     args,
-    commandLine: [command, ...args].map(shellQuote).join(' '),
+    commandLine,
     promptDelayMs: provider?.tuiPromptDelayMs || DEFAULT_TUI_PROMPT_DELAY_MS
   };
 }
@@ -369,7 +361,7 @@ function createPasteRetryController({
       // window (issue #1229 review).
       markPromptSubmitted();
       submitEnterTimer = scheduleSubmitEnters(
-        () => shellService.writeToSession(sessionId, '\r'),
+        () => shellService.writeToSession(sessionId, SUBMIT_KEY),
         () => isFinalized()
       );
     };
@@ -534,7 +526,10 @@ export async function spawnTuiAgent({
   // state writes must batch"), and `analyzeAgentFailure` reads the file on
   // failure so it gets the full PTY stream regardless of run length.
   const rawFile = join(agentDir, 'raw.txt');
-  const cwd = workspacePath && typeof workspacePath === 'string' ? workspacePath : PATHS.root;
+  // CD no-worktree tasks get an isolated scratch cwd so native CLAUDE.md
+  // discovery cannot reach the PortOS repo tree (#4650). Everyone else keeps
+  // workspacePath, falling back to the repo root when it was omitted.
+  const cwd = resolveAgentCliCwd({ workspacePath, fallbackRoot: PATHS.root, task, agentId });
   // The agent writes `.agent-done` in its workspace to signal completion (see
   // the sentinel watcher below) and then stops — it does NOT run `/quit` (that
   // is a UI command the agent can't invoke). The file watcher is the primary
@@ -543,7 +538,7 @@ export async function spawnTuiAgent({
   // up front so both the watcher AND finish() can read it (see ingestDoneSentinel).
   // Resolved from the shared helper, so this is byte-identical to the path the
   // prompt told the agent to write (see resolveSentinelPath).
-  const doneSentinelPath = resolveDoneSentinelPath(workspacePath, agentId);
+  const doneSentinelPath = resolveDoneSentinelPath(cwd, agentId);
   const promptPreview = prompt.replace(/\s+/g, ' ').slice(0, 100);
   const commandName = tuiConfig.command.split('/').pop();
   let finalized = false;
@@ -558,6 +553,34 @@ export async function spawnTuiAgent({
   // read-at-most-once invariant at the helper.
   let sentinelIngested = false;
   let hasStartedWorking = false;
+  // Guards the once-per-run `run.output` boundary (#4540). Kept separate from
+  // `firstOutputAt` / `hasStartedWorking`: both of those are also set by paths
+  // with no real output behind them, and a run that never spoke is exactly the
+  // run this boundary must not vouch for.
+  let firstOutputRecorded = false;
+  /**
+   * Record the run's first observed output, once. Called from the live PTY
+   * stream and from the exit-tail fallback — a durable runner can deliver a
+   * short-lived agent's entire output as `outputTail` on `tui:exit`, and that
+   * output is no less real for having lost the race with process exit.
+   *
+   * Not awaited: the live caller is on the hot output path, and
+   * `appendRunEvent` is a serialized queue that never rejects — blocking a
+   * terminal repaint on a telemetry write would be the wrong trade. The
+   * explicit key makes the append idempotent however the two callers race.
+   */
+  const recordFirstOutput = (source) => {
+    if (firstOutputRecorded) return;
+    firstOutputRecorded = true;
+    appendRunEvent({
+      kind: 'run.output',
+      runId,
+      agentId,
+      taskId: task.id,
+      eventId: `output:${agentId}:${runId || 'no-run'}:first`,
+      data: { source },
+    });
+  };
   let promptSentAt = null;
   // When the submit-Enter is first written (NOT when the paste starts). Provider
   // signal handling keys on this so a startup banner is not treated as a signal
@@ -837,7 +860,7 @@ export async function spawnTuiAgent({
         isTruthyMetaFn,
         error: finalError || undefined,
         completionReason: reason,
-        workspacePath,
+        workspacePath: cwd,
         prExpected: prClaimExpected,
         // The run window the commit criterion is evaluated against (#3637).
         startedAt: agentData?.startedAt ?? null,
@@ -1019,8 +1042,21 @@ export async function spawnTuiAgent({
       // still latches — the swallowed paste never sets promptSubmittedAt.
       if (isCodexSession && !promptSubmittedAt && stripped && !mcpBoot.active) mcpBoot.observe(stripped);
       const now = Date.now();
-      lastOutputAt = now;
-      if (firstOutputAt === null) firstOutputAt = lastOutputAt;
+      // Startup-idle detection (the promptTimer's non-inputReady branch below)
+      // reads lastOutputAt/firstOutputAt to decide the TUI has gone quiet and is
+      // ready for the prompt paste. Gate them on commandInjected for the same
+      // reason inputReady.observe is gated above: the shell-level readiness
+      // probe (posix printf / PowerShell Write-Output) round-trips its own
+      // marker through this same onData hook BEFORE the real CLI command is
+      // injected, so counting it would seed the idle clock from probe echo
+      // instead of the CLI's own output — falsely satisfying "quiet" while a
+      // still-loading CLI (e.g. PowerShell's heavier startup) hasn't painted
+      // anything yet, and pasting the prompt into it.
+      if (commandInjected) {
+        lastOutputAt = now;
+        if (firstOutputAt === null) firstOutputAt = lastOutputAt;
+      }
+      recordFirstOutput('tui-pty');
 
       if (!hasStartedWorking) {
         hasStartedWorking = true;
@@ -1088,6 +1124,7 @@ export async function spawnTuiAgent({
     if (!receivedTuiOutput && typeof outputTail === 'string' && outputTail) {
       receivedTuiOutput = true;
       pushRaw(outputTail.slice(-16 * 1024));
+      recordFirstOutput('tui-exit-tail');
     }
     // A host restart reaches here as a plain PTY exit (pm2's TreeKill walks
     // portos-server's descendants), which the `success` reading below would
@@ -1172,6 +1209,31 @@ export async function spawnTuiAgent({
     const reason = useDurableRunner && /^Command executable unavailable:/i.test(message)
       ? 'command-not-found'
       : useDurableRunner ? 'spawn-rejected' : 'spawn-error';
+    if (useDurableRunner) {
+      // A handoff that did not land (#4540), recorded like the CLI path's. A
+      // LOCAL PTY that won't open is a host problem, not a handoff, so it is
+      // deliberately not recorded here.
+      //
+      // `accepted: false` is reserved for an explicit refusal. An ambiguous
+      // transport failure records the `null` sentinel instead — the spawn rpc
+      // already asked the runner whether it has the PTY (and would have adopted
+      // it), so what is unknown here is the CAUSE, not the outcome (#4615).
+      const refused = classifyRunnerSpawnFailure(err) === RUNNER_SPAWN_REFUSED;
+      await appendRunEvent({
+        kind: 'run.handoff',
+        runId,
+        agentId,
+        taskId: task.id,
+        eventId: `handoff:${agentId}:${runId || 'no-run'}:${refused ? 'rejected' : 'unconfirmed'}`,
+        data: {
+          to: 'none',
+          accepted: refused ? false : null,
+          outcome: refused ? RUNNER_SPAWN_REFUSED : RUNNER_SPAWN_AMBIGUOUS,
+          kind: 'tui',
+          reason: message,
+        },
+      });
+    }
     await finish({
       success: false,
       exitCode: 1,
@@ -1181,6 +1243,33 @@ export async function spawnTuiAgent({
     return null;
   }
   sessionId = session.sessionId;
+  if (useDurableRunner) {
+    // A durable TUI's PTY lives in the CoS Runner, not this server — the same
+    // ownership transfer `spawnViaRunner` records for CLI agents (#4540).
+    // Without it, the longest-lived runs in the system are the only ones whose
+    // ledger never says who owns their process.
+    await appendRunEvent({
+      kind: 'run.handoff',
+      runId,
+      agentId,
+      taskId: task.id,
+      eventId: `handoff:${agentId}:${runId || 'no-run'}:cos-runner`,
+      data: {
+        to: 'cos-runner',
+        accepted: true,
+        kind: 'tui',
+        providerId: provider.id,
+        sessionId: session.sessionId ?? null,
+        // The handoff landed but its acknowledgement was lost; the relay was
+        // re-attached to the PTY the runner already had (#4615).
+        ...(session.adopted ? { outcome: RUNNER_SPAWN_AMBIGUOUS, adopted: true, reason: session.adoptedReason ?? null } : {}),
+      },
+    });
+    if (session.adopted) {
+      appendLine(`🔁 Spawn acknowledgement lost (${session.adoptedReason}) — re-attached to the live runner PTY`);
+      emitLog('warn', `TUI agent ${agentId} spawn acknowledgement was lost; adopted the live runner PTY`, { agentId, taskId: task.id });
+    }
+  }
 
   // A durable runner can emit tui:exit before its spawn POST response reaches
   // this process. handleExit() then finalizes the run while createAgentTuiSession
@@ -1204,7 +1293,7 @@ export async function spawnTuiAgent({
       agentId,
       taskId: task.id,
       model,
-      workspacePath,
+      workspacePath: cwd,
       prompt: (task.description || '').substring(0, 500)
     });
   }
@@ -1326,7 +1415,7 @@ export async function spawnTuiAgent({
       // Send Enter once.
       if (inputReady.needsTrust && !trustAccepted) {
         trustAccepted = true;
-        shellService.writeToSession(sessionId, '\r');
+        shellService.writeToSession(sessionId, SUBMIT_KEY);
         appendLine(`📟 Auto-confirmed ${tuiConfig.command} folder-trust prompt for session ${sessionId.slice(0, 8)}`);
         return;
       }

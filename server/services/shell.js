@@ -2,7 +2,11 @@ import * as pty from 'node-pty';
 import os from 'os';
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import { withSpawnCwdEnv } from '../lib/spawnCwd.js';
-import { scheduleSubmitEnters } from '../lib/tuiHandshake.js';
+import { scheduleSubmitEnters, SUBMIT_KEY } from '../lib/tuiHandshake.js';
+import { buildCdCommand } from '../lib/shellCd.js';
+import { resolveInteractiveShell } from '../lib/interactiveShellResolver.js';
+import { buildRunThenExitCommand } from '../lib/shellExit.js';
+import { buildReadinessProbe } from '../lib/shellReadinessProbe.js';
 
 // Store active shell sessions (persist across socket reconnects)
 const shellSessions = new Map();
@@ -12,6 +16,10 @@ const shellSessions = new Map();
 // on a private network — so this is a sanity bound against runaway tab-spamming,
 // not a resource/abuse defense. External views (TUI runs) don't count.
 const MAX_TOTAL_SESSIONS = 20;
+
+// Re-exported so a session caller reaches the Enter byte without importing the
+// TUI-handshake module directly. See lib/tuiHandshake.js for why it is CR.
+export { SUBMIT_KEY };
 
 // PTY event handlers run outside the Express middleware chain — uncaught throws here
 // crash the Node process instead of bubbling to res.next. try/catch is therefore
@@ -112,13 +120,10 @@ export function buildSafeEnv(env = process.env, platform = process.platform) {
 }
 
 /**
- * Get the default shell for the current OS
+ * The shell a session runs when the caller doesn't name one.
  */
 function getDefaultShell() {
-  if (process.platform === 'win32') {
-    return process.env.COMSPEC || 'cmd.exe';
-  }
-  return process.env.SHELL || '/bin/zsh';
+  return resolveInteractiveShell();
 }
 
 /**
@@ -181,6 +186,9 @@ export function createShellSession(socket, options = {}) {
     pty: ptyProcess,
     socket,
     cwd,
+    // The spawned shell binary — kept so cd-style commands injected later can be
+    // written in the dialect this session actually speaks (see changeSessionDirectory).
+    shell,
     createdAt: Date.now(),
     label: options.label || null,
     kind: options.kind || 'shell',
@@ -229,14 +237,43 @@ export function createShellSession(socket, options = {}) {
   releaseExternalViews(socket, sessionId);
   broadcastSessionList();
   if (options.initialCommand) {
+    // `exitWithCommand` wraps the command so the shell dies with it, carrying its
+    // status out (an agent-TUI shell exists only to host one CLI). Rendered HERE
+    // rather than by the caller because only this function knows which shell the
+    // session actually got, and the wrapper is dialect-specific — see
+    // lib/shellExit.js. Same reason changeSessionDirectory renders its own `cd`.
+    const initialCommand = options.exitWithCommand
+      ? buildRunThenExitCommand(options.initialCommand, shell)
+      : options.initialCommand;
     // onInitialCommandSent fires at the exact moment the command is injected,
     // regardless of which branch sent it. The agent-TUI spawner uses this to
     // start observing claude's input-readiness ONLY after the real command is
     // in flight — so the readiness probe's own shell activity (below) can't
     // prematurely satisfy its bracketed-paste gate.
+    //
+    // For the waitForPromptReady path, `sendInitial` runs from the probe's
+    // `ptyProcess.onData` listener (below), registered AFTER the main output
+    // listener above that dispatches `session.onData` via `runHook`/
+    // `session.hookQueue`. node-pty invokes same-event listeners in
+    // registration order, but `runHook` only QUEUES the caller's onData
+    // handler as a microtask — it doesn't run it inline. So calling
+    // `options.onInitialCommandSent?.()` synchronously here would fire it
+    // BEFORE the caller's onData handler has actually processed the very
+    // chunk that proved the probe round-tripped, even though that handler was
+    // enqueued first. A consumer gating output on "has the command been
+    // injected yet" (see agentTuiSpawning.js's commandInjected) would then
+    // misread the probe's own echoed marker as post-injection output. Routing
+    // this callback through the SAME `session.hookQueue` guarantees it runs
+    // only after that chunk's onData handler has finished — while the actual
+    // PTY write below stays synchronous/immediate, unaffected.
     const sendInitial = () => {
-      options.onInitialCommandSent?.();
-      writeToSession(sessionId, `${options.initialCommand}\n`);
+      const session = shellSessions.get(sessionId);
+      if (session && options.onInitialCommandSent) {
+        runHook('onInitialCommandSent', session, options.onInitialCommandSent);
+      } else {
+        options.onInitialCommandSent?.();
+      }
+      submitToSession(sessionId, initialCommand);
     };
     if (options.waitForPromptReady) {
       // Inject the command only once the shell can ACTUALLY run commands. A fixed
@@ -249,22 +286,18 @@ export function createShellSession(socket, options = {}) {
       // exactly the wedged `claude …` at a bare prompt users hit). Instead, PROVE
       // the shell is executing commands with a round-trip probe: print a unique
       // nonce and wait until we SEE it in the OUTPUT. The nonce is split in the
-      // probe source (`'PORTOSRDY' '<nonce>'`) so the command ECHO never contains
+      // probe source (see buildReadinessProbe) so the command ECHO never contains
       // the assembled string — only the executed output matches, so a single
       // sighting is unambiguous. Instant-prompt keystroke buffering replays the
-      // probe into the real shell, so this is theme- and shell-agnostic. A
-      // bounded fallback still injects the command if the probe never round-trips.
-      // NOTE: the probe is POSIX (`printf`). The only caller of waitForPromptReady
-      // is the agent-TUI path, which is developer-machine (mac/linux) only; on a
-      // Windows cmd.exe shell `printf` no-ops and the command simply injects on the
-      // bounded fallback below (slower, never broken). A Windows port would need a
-      // platform-aware probe.
+      // probe into the real shell, so this is theme-agnostic. A bounded fallback
+      // still injects the command if the probe never round-trips (or the dialect
+      // has none — cmd.exe, see buildReadinessProbe).
       let sent = false;
       let sub = null;
       let exitSub = null;
       const nonce = uuidv4().replace(/-/g, '').slice(0, 12);
       const marker = `PORTOSRDY${nonce}`;
-      const probe = `printf '%s\\n' 'PORTOSRDY''${nonce}'\n`;
+      const probe = buildReadinessProbe(nonce, shell);
       let seen = '';
       // Tear down every pending timer + listener. Called both on success
       // (fire) and when the PTY exits before the probe round-trips, so no
@@ -281,7 +314,11 @@ export function createShellSession(socket, options = {}) {
         stop();
         sendInitial();
       };
+      // No probe for this dialect (cmd.exe, probe === null) — the guard inside
+      // each callback below is a no-op and the fallback timer alone injects the
+      // command, same as a probe that never round-trips.
       sub = ptyProcess.onData((chunk) => {
+        if (!probe) return;
         seen += chunk;
         if (seen.length > 8192) seen = seen.slice(-8192);
         if (seen.includes(marker)) fire();
@@ -294,7 +331,7 @@ export function createShellSession(socket, options = {}) {
       // Writing earlier is harmless (zsh's line editor / p10k instant-prompt
       // buffer holds it until the prompt is live and replays it), but a small
       // delay avoids racing node-pty's own spawn handshake.
-      const probeTimer = setTimeout(() => { if (!sent) writeToSession(sessionId, probe); }, 50);
+      const probeTimer = setTimeout(() => { if (probe && !sent) submitToSession(sessionId, probe); }, 50);
       const fallback = setTimeout(fire, options.initialCommandDelayMs ?? 8000);
     } else {
       setTimeout(sendInitial, options.initialCommandDelayMs ?? 200);
@@ -549,6 +586,54 @@ export function writeToSession(sessionId, data) {
 }
 
 /**
+ * Type a command line into a session and press Enter.
+ *
+ * Every "inject a command the user didn't type" path goes through here so the
+ * terminator is decided once — see SUBMIT_KEY for why it isn't a newline.
+ *
+ * @param {string} sessionId
+ * @param {string} line - command line, WITHOUT a trailing terminator
+ * @returns {boolean} false when the session is unknown
+ */
+export function submitToSession(sessionId, line) {
+  return writeToSession(sessionId, `${line}${SUBMIT_KEY}`);
+}
+
+/**
+ * Change a session's working directory.
+ *
+ * Goes through the service rather than the client emitting its own `cd` string,
+ * because only the server knows which shell this PTY is running — and the command
+ * differs per shell. See lib/shellCd.js for why.
+ *
+ * Updates `session.cwd` on success — see the body for why that is optimistic.
+ *
+ * @param {string} sessionId
+ * @param {string} dirPath
+ * @returns {boolean} false when the session is unknown or is an external TUI run
+ */
+export function changeSessionDirectory(sessionId, dirPath) {
+  const session = shellSessions.get(sessionId);
+  if (!session) return false;
+  // An external (TUI-run) session has no shell reading that line: the bytes land in
+  // the agent as typed text and the trailing Enter posts them as a message. Refuse
+  // rather than type into someone else's run — socket.js turns this into an error the
+  // Shell page shows. Its `cwd` also stays pinned to the repo the RUN was spawned in,
+  // which is what workspaceContext groups runs by.
+  if (session.external) return false;
+  if (!submitToSession(sessionId, buildCdCommand(dirPath, session.shell))) return false;
+  // Track the cd optimistically so the Shell tab label and the Workspace Contexts
+  // widget follow the session instead of staying pinned to its spawn directory.
+  // `cwd` is display-only after spawn — nothing functional reads it — and the paths
+  // come from the managed-apps list, so they exist. Asking the PTY for its REAL cwd
+  // would need a per-platform probe plus a round-trip, which is not worth it for a
+  // label; a rejected path just leaves the label wrong until the next cd.
+  session.cwd = dirPath;
+  broadcastSessionList();
+  return true;
+}
+
+/**
  * Deliver `text` to a session as a SINGLE bracketed-paste event, then submit it.
  *
  * This is how you hand a message to a live agent TUI rather than to a shell:
@@ -571,7 +656,7 @@ export function pasteToSession(sessionId, text, { label = 'paste' } = {}) {
   let expectedInputRevision = session.inputRevision;
   const writeEnter = () => {
     try {
-      writeToSession(sessionId, '\r');
+      writeToSession(sessionId, SUBMIT_KEY);
       expectedInputRevision = session.inputRevision;
     } catch (err) {
       // Timer callbacks run outside the request lifecycle, and a write to a

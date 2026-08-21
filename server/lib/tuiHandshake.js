@@ -667,6 +667,21 @@ export function createSelfClearingSignalGate() {
 export const SUBMIT_ENTER_ATTEMPTS = 3;
 export const SUBMIT_ENTER_SPACING_MS = 700;
 
+// The byte a real terminal sends when the user presses Enter — the one every
+// `write()` above hands to a PTY, and the terminator on any command PortOS
+// injects into a shell session (services/shell.js#submitToSession).
+//
+// CR, never LF. A POSIX pty's line discipline sets ICRNL, which translates an
+// incoming CR into NL, so on macOS/Linux either byte submits the line and the
+// difference is invisible. Windows ConPTY does no such translation: cmd.exe's
+// line input accepts ONLY CR, and an LF-terminated write leaves the command
+// typed at the prompt but never executed — the next injection then concatenates
+// onto it. That is why the Shell page's "cd to app" picker and quick-command
+// buttons still did nothing on Windows after the cd line itself was rendered in
+// the right dialect (lib/shellCd.js). xterm.js already sends CR for a real Enter
+// keypress, so an injected command submits exactly the way typing does.
+export const SUBMIT_KEY = '\r';
+
 /**
  * Submit a freshly-pasted TUI prompt by sending Enter SUBMIT_ENTER_ATTEMPTS
  * times: once immediately, then on a SUBMIT_ENTER_SPACING_MS interval until the

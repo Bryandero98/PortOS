@@ -33,6 +33,7 @@ import { commissionToCron } from './directive.js';
 import { buildCommissionDirective, getAbilityAdapter } from './abilityAdapters.js';
 import { buildMusicTasteRecipe } from './musicTasteRecipe.js';
 import { surfaceCommissionRun } from './surface.js';
+import { registerCommissionProjectReconciler } from './projectControl.js';
 
 const eventId = (commissionId) => `creative-commission-${commissionId}`;
 const registered = new Set();
@@ -47,6 +48,11 @@ function triggerResync() {
 // Re-arm crons whenever a commission is created/updated/deleted through ANY
 // writer, not just the REST route — decoupled from the HTTP handler.
 commissionEvents.on('commission:changed', triggerResync);
+// Cancelling the cron only stops FUTURE fires. projectControl owns the other half
+// — reconciling the work a commission ALREADY spawned when it is paused, deleted,
+// or re-providered. Registered from here because this module is already the one
+// the boot sequence pulls in; the logic itself stays out of the cron concern.
+registerCommissionProjectReconciler();
 // Also re-sync on a settings save so a global timezone change re-registers the
 // crons of commissions that use the fallback tz (schedule.timezone == null) —
 // same reason seriesAutopilotScheduler subscribes here. The signature guard
@@ -297,45 +303,6 @@ async function fireCommission(commission, trigger) {
       effectiveVideoMode,
       effectiveVideoModelId,
     });
-    // Fan the commission's single LLM pin onto BOTH CD cognitive stages
-    // (treatment + plan) as the project's `modelOverrides`, so the scheduled
-    // fire is processed by the provider/model the user chose rather than the
-    // install default. An unset pin yields `{}` → each stage inherits the global
-    // AI Assignment (createProject.normalizeModelOverrides drops empty stages).
-    // Evaluation is deliberately left inheriting the default: it's a vision API
-    // call, not a CoS agent, and pinning it to a CLI/TUI agent provider would
-    // trip agentBridge's harness-boundary guard.
-    //
-    // Guard the pin at fire time: treatment/plan run as CoS agent tasks, which
-    // only accept an ENABLED agent-harness (cli/tui) provider. A pin becomes
-    // unusable three ways — an api-type provider (trips agentBridge's
-    // harness-boundary guard), a removed provider, or a provider the user later
-    // DISABLED (the agent runner honors an explicit task pin without re-checking
-    // `enabled`, so a disabled provider would keep launching commissions and
-    // defeat the disable control). The UI only offers enabled agent-harness
-    // providers, but a direct REST write, a provider whose type later changed to
-    // `api`, or a post-pin disable could slip a bad pin past it. Resolve the
-    // provider now and DROP an unusable pin (falling back to the install default)
-    // so the commission still generates rather than stalling or running through a
-    // disabled provider. Fail open: an unresolvable provider (toolkit hiccup)
-    // also falls back.
-    let modelOverrides = {};
-    if (commission.assignment?.providerId) {
-      const [{ getProviderById }, { PROVIDER_TYPES }] = await Promise.all([
-        import('../providers.js'),
-        import('../../lib/aiToolkit/constants.js'),
-      ]);
-      const provider = await getProviderById(commission.assignment.providerId).catch(() => null);
-      const isAgentHarness = provider?.type === PROVIDER_TYPES.CLI || provider?.type === PROVIDER_TYPES.TUI;
-      const agentCapable = isAgentHarness && provider?.enabled !== false;
-      if (agentCapable) {
-        const pin = { providerId: commission.assignment.providerId, ...(commission.assignment.model ? { model: commission.assignment.model } : {}) };
-        modelOverrides = { treatment: pin, plan: pin };
-      } else {
-        const reason = !provider ? 'missing' : (!isAgentHarness ? `non-agent:${provider.type}` : 'disabled');
-        console.warn(`⚠️ Creative commission ${commissionId} pins unusable provider '${commission.assignment.providerId}' (${reason}) — falling back to the default CD assignment`);
-      }
-    }
     // createProject prefixes "Creative Director: " (19 chars) before a
     // mediaCollections name capped at 80, so cap our derived name at 61 — a long
     // commission name would otherwise fail the collection create on every run.
@@ -354,7 +321,12 @@ async function fireCommission(commission, trigger) {
       ...projectParams,
       styleSpec: commission.brief?.styleSpec || '',
       directive,
-      modelOverrides,
+      // The back-pointer, NOT a copy of the commission's provider pin. agentBridge
+      // resolves that pin live from this id at every dispatch, so an edit to the
+      // commission reaches a project already in flight; a snapshot written here
+      // would freeze the provider for the life of the project. It is also how
+      // pause/delete finds this project in order to stop it.
+      commissionId,
     });
 
     startedProjectId = project.id;

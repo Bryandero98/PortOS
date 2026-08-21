@@ -1,15 +1,17 @@
 # Federated Media Providers
 
-PortOS can opt in to serving local media-generation capacity to another registered PortOS peer. The first wire contract, `/api/federation/media/v1`, supports queued audio generation through the existing durable `mediaJobQueue` and local music engines.
+PortOS can opt in to serving local media-generation capacity to another registered PortOS peer. The wire contract, `/api/federation/media/v1`, carries queued **audio, image, and video** generation through the existing durable `mediaJobQueue` and this machine's local engines.
 
-Provider-side queued audio, consumer-side capacity discovery, and durable remote audio execution are available. Multi-provider scheduling, image/video transfer, and higher-level commission routing remain later slices of issue #4348.
+Provider-side queueing, consumer-side capacity discovery, durable remote execution, and unattended (Creative Director / Commission) routing are available for all three kinds. Interactive provider selection is exposed through the generation APIs and the Music Studio panel; Image Gen / Video Gen pickers, multi-provider scheduling, and input-asset transfer remain later slices of issue #4348.
 
 ## Enable a provider
 
 1. In **Settings → Security**, configure an instance password. The provider API remains closed when authentication is off, even though ordinary PortOS APIs normally trust the private network in that posture.
 2. Register the consumer under **Instances**. The consumer must store this provider's Basic credential on its peer record and send its own registered instance id on every request.
 3. Install and verify the desired music runtime and model under **Music**. A model must be locally ready before it can be advertised or accept work.
-4. In **Settings → Sharing → Federated media provider**, select the allowed audio models, choose the shared active-job limit, and enable the provider.
+4. In **Settings → Sharing → Federated media provider**, select the allowed models per kind, choose the shared active-job limit, and enable the provider.
+
+Audio models come from the Music engine registry (`engine` is the music engine id). Image and video models come from this install's local generator, so their `engine` is always `local` — the cloud-CLI image/video backends (codex/grok/agy) spend a *provider's own* account quota rather than sharing this machine's GPU, and are deliberately not federatable.
 
 The default is disabled:
 
@@ -19,7 +21,9 @@ The default is disabled:
     "mediaProvider": {
       "enabled": false,
       "maxQueuedJobs": 2,
-      "audioModels": []
+      "audioModels": [],
+      "imageModels": [],
+      "videoModels": []
     }
   }
 }
@@ -27,12 +31,20 @@ The default is disabled:
 
 An older install without this settings slice behaves exactly like the default above. Known fields are validated while unknown future fields are preserved, so rolling an install back does not erase newer provider settings.
 
+Image and video models are selected the same way as audio, from
+**Settings → Sharing**. Their candidate list comes from
+`GET /api/settings/media-share-candidates`, which enumerates this instance's local
+image/video model catalogs with the same readiness projection the wire status
+reports. That endpoint is **local-only and never exposed to peers** — it lists
+unshared local model inventory, which is exactly what a peer has no business
+reading.
+
 ## Configure a consumer
 
 1. Register the provider under **Instances** and make the relationship mutual so the provider recognizes this consumer's instance id.
 2. Store the provider's instance-password credential on its peer card. The normal peer health probe may work without it when provider auth is off, but the federated-media API intentionally does not.
-3. Expand **Remote media provider** on the peer card and enable **Use this peer for remote audio**. PortOS immediately probes the versioned status endpoint through `peerFetch`.
-4. Select the exact advertised engine/model pairs this instance may use. This local allowlist is independent from the provider's sharing allowlist; both sides must permit a model.
+3. Expand **Remote media provider** on the peer card and enable **Use this peer for remote media**. PortOS immediately probes the versioned status endpoint through `peerFetch`.
+4. Select the exact advertised engine/model pairs this instance may use, per kind — the panel lists an **Allowed audio / image / video models** group. This local allowlist is independent from the provider's sharing allowlist; both sides must permit a model.
 
 The consumer default is also disabled:
 
@@ -40,10 +52,20 @@ The consumer default is also disabled:
 {
   "mediaProvider": {
     "enabled": false,
-    "audioModels": []
+    "audioModels": [],
+    "imageModels": [],
+    "videoModels": []
   }
 }
 ```
+
+A probe asks each peer for **every** kind this build knows
+(`?kinds=audio,image,video`), not just the kinds already allowlisted here. Scoping
+the question to the allowlist was a chicken-and-egg bug: a fresh consumer
+allowlists nothing, so it asked for audio only, so the peer advertised no visual
+capabilities, so there was never an image or video row to check. A provider too
+old to know the query parameter ignores it and returns the audio-only projection
+it always did.
 
 This configuration and the last sanitized capacity snapshot live only on the local peer record. They are stripped from announce responses and do not become federation records. Older peers without the wire-v1 endpoint show as **older peer** rather than making the normal instance probe fail.
 
@@ -69,6 +91,196 @@ An API caller deliberately selects remote execution on Music generation by sendi
 
 `POST /api/music/generate` performs the fresh capacity preflight before returning the normal queued media-job response. Omitting `mediaProviderPeerId` keeps the existing local-engine behavior. The peer id and free-form `prompt` stay local. The worker renders the provider prompt only from the profile's enum values; non-empty remote lyrics are rejected so arbitrary personal text cannot cross the federation boundary.
 
+
+### Remote image and video renders
+
+`POST /api/image-gen/generate` and `POST /api/video-gen` take the same
+`mediaProviderPeerId` selection. `mediaProviderEngine` names the provider-side
+engine and defaults to `local`:
+
+```json
+{
+  "prompt": "a lighthouse at dusk",
+  "modelId": "dev",
+  "width": 1024,
+  "height": 1024,
+  "mediaProviderPeerId": "00000000-0000-4000-8000-000000000001"
+}
+```
+
+Both routes run the same fresh capacity preflight and then return the normal
+queued media-job response, with `mode: null` (no local backend is rendering
+it) and the peer id echoed back as `mediaProviderPeerId`. Omitting
+`mediaProviderPeerId` keeps the existing local/cloud behavior byte for byte.
+
+Wire v1 is **text-to-image and text-to-video only**. A federated request that
+carries an init image, reference images, keyframes, a clip to extend, IC-LoRA
+references, LoRA weights, a chained (multi-chunk) render, or a non-`text` render
+mode is rejected with `400 MEDIA_PROVIDER_INPUT_UNSUPPORTED` naming what has to
+go. That is deliberate: silently dropping the source image a user pinned would
+return a plausible render of the wrong thing. Input-asset transfer is a later
+slice.
+
+Unlike audio, image and video prompts cross as submitted rather than being
+re-rendered from a fixed vocabulary. Why that is not a hole in the "no PII on
+federation" rule, what stays absolutely prompt-free, and what a future standing
+(unattended) route may not do are all decided in ADR
+[federated visual prompts](./decisions/2026-08-20-federated-visual-prompts.md).
+
+### Video frame and canvas constraint negotiation
+
+Providers advertise their model geometry and frame constraints in their capability status:
+- `frameStride`: Stride multiplier for continuous frame models (e.g. Wan 2.2 uses stride 4, legal counts `4n + 1`).
+- `maxNumFrames`: Maximum allowed frame count for the model.
+- `frameOptions`: Discrete allowed frame counts for fixed-cadence models (e.g. MiniMax H3 `17n + 5` grid).
+- `fpsOptions`: Supported frame rates for models with fixed/preset fps requirements.
+- `resolutionOptions`: Allowed canvas presets (`w`, `h`, `label`).
+
+When preparing a remote video job, the consumer negotiates requested parameters against the provider's advertised constraints:
+- Frame count snaps down to the nearest legal discrete option or `n * stride + 1` (or up to the model's minimum option if below the floor), bounded by `maxNumFrames`.
+- Frame rate snaps to the nearest supported `fpsOptions` entry.
+- Canvas dimensions snap to the closest aspect ratio and area preset in `resolutionOptions`.
+- Adjustments are logged (`🌐 Federated render: adjusted ...`), and the negotiated parameters are persisted inside `remoteMedia.request` so reconciles replay the exact negotiated job. Requests that cannot be made legal fail closed with `400 MEDIA_PROVIDER_INPUT_UNSUPPORTED`.
+
+### Unattended renders (Creative Director / Creative Commission)
+
+Everything above is a *per-request* choice: a human picks a peer in the UI and
+the server validates it. Creative Director and Creative Commission have no human
+in the loop at enqueue time, and their planners are LLMs — so "let the caller
+name a peer" would be exactly the arbitrary-peer routing this contract exists to
+prevent. Their routing lives in this instance's own settings instead:
+
+```json
+{
+  "federation": {
+    "mediaRouting": {
+      "image": {
+        "peerId": "00000000-0000-4000-8000-000000000001",
+        "engine": "comfy",
+        "modelId": "sdxl-base"
+      },
+      "video": null
+    }
+  }
+}
+```
+
+Set it under **Instances → Unattended render routing**, which offers only
+(peer, model) pairs that are both locally allowlisted and currently advertised
+by that peer. A kind set to `null` (the default) renders locally.
+
+An unattended route inherits the same text-to-image/text-to-video boundary the
+interactive routes enforce. A job carrying an init image, reference images,
+keyframes, a clip to extend, IC-LoRA references, LoRA weights, or chained chunks
+is rejected with `400 MEDIA_PROVIDER_INPUT_UNSUPPORTED` naming what has to go,
+rather than being silently rendered without its conditioning — a shot that
+quietly ignores its reference frame is worse unattended than interactively,
+because nobody is watching to notice.
+
+Output semantics the wire cannot express are rejected the same way: a scene
+asking for a silent (audio-disabled) render would come back **with** audio, so it
+is refused rather than rendered wrong. Post-processing passes (`cleanC2PA`,
+`denoise`) are the one thing dropped rather than refused, with a log — they
+polish the produced file rather than change what is rendered, and `cleanC2PA`
+defaults on for cloud modes nobody explicitly chose. Re-applying them after
+download is a follow-up.
+
+A local-readiness gate never suppresses a routed render. "No local Python
+runtime" is exactly the state a machine that routes its renders is in, so the
+Creative Director first-pass and scene paths consult `hasConfiguredMediaRoute`
+before skipping work the peer was going to do. A routed enqueue can also *throw*
+where a local one could not (busy/stale/unauthorized provider); the scene runner
+settles the scene through its normal failure path instead of leaving it stuck in
+`rendering`.
+
+**A standing route requires a Tailscale peer.** A non-tailnet peer is refused
+with `403 MEDIA_ROUTING_PEER_NOT_TAILNET`, and the Instances picker does not
+offer one. Interactive routing is unchanged — the difference is review cadence:
+a standing route exports every future prompt of its kind with nobody looking, so
+a misconfigured counterparty is a permanent leak rather than a one-time mistake,
+and `peerFetch`'s `rejectUnauthorized: false` leaves a plain-LAN or non-`.ts.net`
+hop with no server authentication at all. Authentication would not save it
+either: the prompt rides the request body, so an impostor holding the connection
+reads it before failing to answer. Required by ADR
+[federated visual prompts](./decisions/2026-08-20-federated-visual-prompts.md)
+(rule 5); the gate is its own fail-closed predicate (`server/lib/tailnetPeer.js`)
+rather than a re-export of the probe-deferral heuristic, so tuning that heuristic
+can never widen this boundary.
+
+Three properties are worth stating explicitly:
+
+- **Every unattended path routes, or none does.** The Creative Director planner
+  tool, the scene runner, and first-pass portraits/scene frames all enqueue
+  through one helper (`enqueueUnattendedMediaJob`). A route that applied to a
+  project's planner renders but not its scene renders would be worse than no
+  routing: half the shots would come off the peer's model and half off the local
+  one, with nothing to explain why they don't match.
+- **The agent names nothing.** The planner's own `modelId` is discarded in favour
+  of the route's — a peer advertises its own model ids, and a local model name
+  would fail the peer's allowlist check with a confusing "not allowlisted".
+- **A routed kind fails closed, it does not fall back.** When the provider is
+  stale, busy, unauthorized, or unavailable, the enqueue fails with that typed
+  reason. It does not quietly render locally: that would burn hours of local GPU
+  on work deliberately routed to another machine, invisibly.
+- **Audio is deliberately unroutable.** A federated audio submission may carry
+  only a canonical prompt rendered from a fixed enum profile, and a Creative
+  Director music bed is free-form by construction — so it stays local rather
+  than being silently rewritten into a profile the user never chose.
+
+Destination tags on the job (`creativeDirectorSceneImage`, `musicVideo`,
+`catalogAttach`, …) survive routing untouched, so the same completion hooks file
+a federated render exactly where a local one would land.
+
+An **unreadable** settings file fails the enqueue with `MEDIA_ROUTING_UNREADABLE`
+rather than falling back to a local render. It is not the same as a settings file
+that parses and simply configures no route (that renders locally, as it should):
+a failed read cannot tell us whether a route exists, and guessing "no route"
+would silently spend local GPU on work the operator deliberately sent to another
+machine. A provider rejection inside a batch is contained rather than fatal —
+one refused portrait or scene frame is recorded in that run's `skipped` list and
+the rest of the batch still queues.
+
+## Capacity at a glance (System Health)
+
+**System Health → Overview → Media capacity** answers "can this install render
+right now, here or on a peer, and if not, why not?" in one card.
+
+The **local** half comes from `GET /api/system/health/details` under a `media`
+key: this machine's CUDA state and, per lane, how many renders are running
+against that lane's configured concurrency plus how deep its queue is.
+
+| Lane | Concurrency | What runs there |
+|------|-------------|-----------------|
+| Local GPU | 1 (serialized) | local image/video/audio/training renders |
+| Cloud CLI | `imageGen.codex.parallelLimit` | codex/grok/agy renders — external quota, no local GPU |
+| Federated | 20 | outgoing proxy jobs rendering on a peer |
+
+CUDA is reported with the same three states the wire uses — `available`,
+`absent`, and `unknown` — and the card labels them distinctly. A probe that
+could not run is not the claim "this machine has no GPU", and collapsing the two
+is what would make an operator go hunting for a card that is sitting there fine.
+An unreadable capacity report renders as unknown rather than as an idle machine.
+
+The **peer** half lists every peer enabled as a media provider with its
+readiness state, allowlisted kinds, the peer's own shared queue depth against its
+`maxQueuedJobs`, and how long ago it was probed — the same state vocabulary and
+remedy text the Instances peer card uses, from one shared resolver
+(`client/src/lib/federatedMediaReadiness.js`), so the two screens cannot
+disagree.
+
+Both surfaces re-derive **stale** at render time from the stored snapshot's
+`freshUntil`. A snapshot probed as `ready` sits on the peer record until the
+next poll, so without that check it would keep reading `ready` well after the
+server would refuse to submit against it — the inverse of the fail-closed rule
+the capacity contract is built on. Nothing here gates work either way: the
+server re-probes and fail-closes before any job leaves.
+
+The peer half is assembled in the browser from `GET /api/instances`, a local
+read. It is deliberately **not** folded into `/api/system/health/details`
+alongside the local half: registered peers fetch that endpoint on every probe,
+so our peer list and routing policy would ride federation with it — exactly what
+`redactPeerForWire` keeps machine-local.
+
 ## Authentication and identity
 
 Every request requires both:
@@ -87,12 +299,14 @@ All successful JSON responses include `wireVersion: 1`. The version is also fixe
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | `GET` | `/api/federation/media/v1/status` | Fresh allowlisted capabilities, CUDA/runtime/model readiness, queue depth, and staleness window |
-| `POST` | `/api/federation/media/v1/jobs` | Submit an idempotent audio job; returns `202` for new work and `200` for a replay |
+| `POST` | `/api/federation/media/v1/jobs` | Submit an idempotent audio/image/video job; returns `202` for new work and `200` for a replay |
 | `GET` | `/api/federation/media/v1/jobs/:id` | Read an owner-scoped sanitized job projection |
 | `POST` | `/api/federation/media/v1/jobs/:id/cancel` | Cancel the caller's queued or running job |
-| `GET` | `/api/federation/media/v1/jobs/:id/result` | Download completed WAV bytes with integrity metadata |
+| `GET` | `/api/federation/media/v1/jobs/:id/result` | Download the completed WAV / PNG / MP4 bytes with integrity metadata |
 
 ### Capacity status
+
+`GET /status` reports **audio only** unless the caller opts in with `?kinds=audio,image,video`. That default is what keeps an already-deployed audio-only consumer working: its own copy of the wire schema validates `kinds`/`capabilities` against a literal `audio`, can never be patched retroactively, and would reject a capability naming a kind it has not heard of. A consumer asks for a kind only when it has models allowlisted for it.
 
 `GET /status` is computed live and carries `generatedAt` plus `staleAfterMs`. Consumers must stop assigning new work after that window instead of treating stale capacity as available. A provider timestamp more than 30 seconds in the future is also rejected as unknown clock state rather than extending capacity indefinitely.
 
@@ -130,12 +344,24 @@ Provider filesystem paths and original filenames never cross the API boundary.
 
 ### Consumer reconciliation
 
-Remote audio jobs use a dedicated non-GPU lane in the consumer's durable media queue. The local job UUID is also the stable provider `Idempotency-Key`. If the consumer restarts while the job is running, it requeues that same local record, replays the submission to recover the provider job id, and resumes status/progress polling. Temporary peer and provider outages remain queued rather than creating duplicate work.
+Remote jobs of every kind use a dedicated non-GPU lane in the consumer's durable media queue — work running on a peer must never occupy this machine's single GPU slot. The local job UUID is also the stable provider `Idempotency-Key`. If the consumer restarts while the job is running, it requeues that same local record, replays the submission to recover the provider job id, and resumes status/progress polling. Temporary peer and provider outages remain queued rather than creating duplicate work.
 
 Cancellation intent is persisted before the consumer contacts the provider. After a restart it is replayed against the recovered provider job instead of resurrecting the render. A provider restart is handled by its own durable media queue; the consumer continues polling the owner-scoped wire job.
 
-On completion, the consumer ignores the advisory download URL and derives the fixed owner-scoped v1 result endpoint from the validated provider job id. It streams into a local partial file, verifies `Content-Length`, MIME type, both advertised digests, actual byte count, and SHA-256, then atomically promotes the WAV into the local Music library. Only that verified local filename is handed to the normal Music Studio completion hook.
+On completion, the consumer ignores the advisory download URL and derives the fixed owner-scoped v1 result endpoint from the validated provider job id. It streams into a local partial file, verifies `Content-Length`, MIME type, both advertised digests, actual byte count, and SHA-256, then atomically promotes the file into the local library. Only that verified local filename reaches the normal completion hooks.
+
+Each kind then registers the render exactly as a local one would, which is what makes it visible at all:
+
+| Kind | Lands at | Also registers |
+|------|----------|----------------|
+| audio | `data/music/music-gen-<jobId>.wav` | the Music Studio completion hook |
+| image | `data/images/<jobId>.png` | a `<jobId>.metadata.json` gallery sidecar the media index re-reads |
+| video | `data/videos/<jobId>.mp4` | a video-history row plus a thumbnail |
+
+The sidecar and history row record the render's provenance as `federatedPeerId` / `federatedJobId` — instance-level identifiers already shared across the federation, never a hostname, address, or credential.
+
+A remote job's conditioning prompt is persisted **only inside its versioned `remoteMedia` marker**, never in top-level job params. That is what makes a rolled-back install fail closed: an older build cannot route the marker, so it falls through to the local generator with an empty prompt and no configured runtime instead of quietly re-rendering the job on local hardware. The queue's public job projection rebuilds the prompt for display without exposing peer routing state.
 
 ## Current boundary
 
-Wire v1 currently provides instrumental audio only, and remote selection is exposed through the generation API rather than a Music-page peer picker. Still remaining from #4348 are that Music UI, a privacy-preserving design for remote lyrical conditioning, multi-provider fairness/failover, remote image/video jobs and input-asset transfer, Creative Commission routing/UX, and aggregate provider health on System Health.
+Wire v1 carries instrumental audio, text-to-image, and text-to-video. Interactive remote selection is exposed through the Music Studio panel and the generation APIs rather than a peer picker on the Image Gen / Video Gen pages; unattended work routes through **Instances → Unattended render routing**. Still remaining from #4348: those Image Gen / Video Gen pickers, a privacy-preserving design for remote lyrical conditioning (which is also what keeps unattended audio local), input-asset transfer (init/reference images, LoRAs, chained renders), and multi-provider fairness/failover.

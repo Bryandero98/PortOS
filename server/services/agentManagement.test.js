@@ -110,14 +110,14 @@ vi.mock('./creativeDirector/local.js', () => ({
 vi.mock('./creativeDirector/planAdvance.js', () => ({ advanceAfterPlanStepSettled: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./creativeDirector/completionHook.js', () => ({ advanceAfterSceneSettled: vi.fn().mockResolvedValue(undefined) }));
 
-import { handleOrphanedTask, pauseAgent, resumeAgent, settleOrphanedCreativeDirectorRun, cleanupOrphanedAgents } from './agentManagement.js';
+import { handleOrphanedTask, pauseAgent, resumeAgent, settleOrphanedCreativeDirectorRun, cleanupOrphanedAgents, terminateAgent, killAgent } from './agentManagement.js';
 import { cleanupAgentWorktree, resolveTaskResumePatch } from './agentWorktreeCleanup.js';
 import { getAgents, updateAgent, getAgentRecord, completeAgent as markAgentComplete } from './cosAgentLifecycle.js';
 import { updateRun, getProject } from './creativeDirector/local.js';
 import { advanceAfterPlanStepSettled } from './creativeDirector/planAdvance.js';
 import { advanceAfterSceneSettled } from './creativeDirector/completionHook.js';
 import { updateTask, addTask, getTaskById, getAllTasks, reviveBlockedTask } from './cos.js';
-import { pauseAgentViaRunner } from './cosRunnerClient.js';
+import { pauseAgentViaRunner, terminateAgentViaRunner } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
 import { readHostShutdownMarker, clearHostShutdownMarker } from '../lib/hostShutdown.js';
 import { completeAgentRun } from './agentRunTracking.js';
@@ -869,6 +869,22 @@ describe('resumeAgent — requeues the paused agent\'s own task', () => {
     expect(addTask).not.toHaveBeenCalled();
     expect(reviveBlockedTask).not.toHaveBeenCalled();
     expect(markAgentComplete).toHaveBeenCalledWith('agent-paused-1', expect.objectContaining({ resumed: true }));
+  });
+
+  // The lifecycle ledger (#4540) records a RESUME, not a retirement. The two
+  // non-continuing modes retire the paused record without queueing anything, so
+  // recording them would show a run going back to `running` that nothing runs.
+  it('records run.resumed only for the modes that actually continued the work', async () => {
+    appendRunEvent.mockClear();
+    await resumeAgent('agent-paused-1');
+    expect(appendRunEvent.mock.calls.map(([e]) => e).filter((e) => e.kind === 'run.resumed')).toEqual([
+      expect.objectContaining({ agentId: 'agent-paused-1', data: expect.objectContaining({ mode: 'requeued' }) })
+    ]);
+
+    appendRunEvent.mockClear();
+    getTaskById.mockResolvedValue({ ...PAUSED_TASK, status: 'in_progress', metadata: { context: 'original context' } });
+    await resumeAgent('agent-paused-1');
+    expect(appendRunEvent.mock.calls.map(([e]) => e).filter((e) => e.kind === 'run.resumed')).toHaveLength(0);
   });
 
   // A user asking to resume is an explicit dispatch, and reviveBlockedTask resets the
@@ -1672,5 +1688,83 @@ describe('the sweep retires paused records whose task moved on', () => {
     await cleanupOrphanedAgents();
     expect(getTaskById).not.toHaveBeenCalled();
     expect(markAgentComplete).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Lifecycle ledger — pause / interruption boundaries (#4540) ──────────────
+
+describe('lifecycle ledger — pause and interruption', () => {
+  const ledgerCalls = (kind) => appendRunEvent.mock.calls.map(([e]) => e).filter((e) => e.kind === kind);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    activeAgents.clear();
+    runnerAgents.clear();
+    pausedAgents.clear();
+    getTaskById.mockResolvedValue({ id: 'task-1', taskType: 'user', description: 'Do work', metadata: {} });
+  });
+
+  it('records a pause once, stamped with the same instant the agent record gets', async () => {
+    // markAgentPaused is the single chokepoint both pause arms funnel through,
+    // and `at: pausedAt` is what makes a retried persist file one paused event
+    // instead of two.
+    activeAgents.set('agent-1', { process: { kill: vi.fn() }, taskId: 'task-1', runId: 'run-1', pid: 123, workspacePath: '/repo/worktree' });
+
+    await pauseAgent('agent-1', 'billing window');
+
+    const [paused] = ledgerCalls('run.paused');
+    expect(paused).toMatchObject({ runId: 'run-1', agentId: 'agent-1', taskId: 'task-1', data: { reason: 'billing window' } });
+    const persisted = updateAgent.mock.calls.find(([id]) => id === 'agent-1')?.[1];
+    expect(paused.at).toBe(persisted.pausedAt);
+    clearTimeout(activeAgents.get('agent-1')?.killTimer);
+  });
+
+  it('writes no paused event when the persist that pause depends on failed', async () => {
+    // Both pause arms roll their in-memory flag back when the persist throws.
+    // An event written ahead of it would leave the projection reading `paused`
+    // for a pause that never stuck — the exact class of lie the ledger exists
+    // to catch.
+    const kill = vi.fn();
+    activeAgents.set('agent-1', { process: { kill }, taskId: 'task-1', runId: 'run-1', pid: 123 });
+    updateAgent.mockRejectedValueOnce(new Error('agent record unwritable'));
+
+    await pauseAgent('agent-1', 'billing window').catch(() => null);
+
+    expect(ledgerCalls('run.paused')).toHaveLength(0);
+    clearTimeout(activeAgents.get('agent-1')?.killTimer);
+  });
+
+  it('records a termination REQUEST before either arm runs', async () => {
+    activeAgents.set('agent-1', { process: { kill: vi.fn() }, taskId: 'task-1', runId: 'run-1', pid: 123 });
+
+    await terminateAgent('agent-1');
+
+    expect(ledgerCalls('run.interrupted')).toEqual([expect.objectContaining({
+      runId: 'run-1',
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      data: expect.objectContaining({ reason: 'terminated-by-user', signal: 'SIGTERM', mode: 'direct' })
+    })]);
+    clearTimeout(activeAgents.get('agent-1')?.killTimer);
+  });
+
+  it('reads the ids out of the RUNNER map when that is where the agent lives', async () => {
+    // A runner-spawned agent is absent from activeAgents entirely; a boundary
+    // that consulted only that map would record the interrupt with no run id.
+    runnerAgents.set('runner-1', { taskId: 'task-1', runId: 'run-9' });
+    terminateAgentViaRunner.mockResolvedValue({ success: true });
+
+    await terminateAgent('runner-1');
+
+    expect(ledgerCalls('run.interrupted')).toEqual([expect.objectContaining({
+      runId: 'run-9', agentId: 'runner-1', data: expect.objectContaining({ mode: 'runner' })
+    })]);
+  });
+
+  it('writes nothing for a kill aimed at an agent that is already gone', async () => {
+    // Nothing live to interrupt — minting an event here would create a
+    // projection for a run that does not exist.
+    await expect(killAgent('ghost')).rejects.toMatchObject({ status: 404 });
+    expect(ledgerCalls('run.interrupted')).toHaveLength(0);
   });
 });

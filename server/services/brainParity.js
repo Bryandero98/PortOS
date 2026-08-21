@@ -99,14 +99,15 @@ export async function buildBrainManifest() {
  * store we don't have yet is not divergence, it's a version gap.
  */
 function normalizeRemoteManifest(body) {
+  if (!body || typeof body !== 'object') return null;
+  const types = body.types;
+  if (!types || typeof types !== 'object' || Array.isArray(types)) return null;
   const out = {};
-  const types = body?.types;
-  if (!types || typeof types !== 'object') return out;
   for (const type of BRAIN_ENTITY_TYPES) {
     const rows = types[type];
     if (!Array.isArray(rows)) continue;
     out[type] = rows
-      .filter((r) => r && typeof r === 'object' && isNonEmptyStr(r.id))
+      .filter((r) => r && typeof r === 'object' && !Array.isArray(r) && isNonEmptyStr(r.id))
       .map((r) => ({ id: r.id, updatedAt: r.updatedAt ?? null, deleted: r.deleted === true }));
   }
   return out;
@@ -121,14 +122,15 @@ function normalizeRemoteManifest(body) {
  * every peer that supports reconcile at all, not just upgraded ones.
  */
 function manifestFromSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  const records = snapshot.records;
+  if (!records || typeof records !== 'object' || Array.isArray(records)) return null;
   const out = {};
-  const records = snapshot?.records;
-  if (!records || typeof records !== 'object') return out;
   for (const type of BRAIN_ENTITY_TYPES) {
     const byId = records[type];
-    if (!byId || typeof byId !== 'object') continue;
+    if (!byId || typeof byId !== 'object' || Array.isArray(byId)) continue;
     out[type] = Object.entries(byId)
-      .filter(([, rec]) => rec && typeof rec === 'object')
+      .filter(([, rec]) => rec && typeof rec === 'object' && !Array.isArray(rec))
       .map(([id, rec]) => ({ id, updatedAt: rec.updatedAt ?? null, deleted: rec._deleted === true }));
   }
   return out;
@@ -157,7 +159,11 @@ async function fetchPeerJson(peer, path) {
  */
 async function fetchRemoteManifest(peer) {
   const direct = await fetchPeerJson(peer, '/api/brain/reconcile/manifest');
-  if (!direct.reason) return { reason: null, byType: normalizeRemoteManifest(direct.body) };
+  if (!direct.reason) {
+    const normalized = normalizeRemoteManifest(direct.body);
+    if (!normalized) return { reason: 'fetch-failed', byType: null };
+    return { reason: null, byType: normalized };
+  }
   if (direct.reason !== 'peer-too-old') return { reason: direct.reason, byType: null };
 
   const snapshot = await fetchPeerJson(peer, '/api/brain/reconcile/snapshot');
@@ -166,7 +172,9 @@ async function fetchRemoteManifest(peer) {
     // all — still "too old", just further back.
     return { reason: snapshot.reason === 'peer-too-old' ? 'peer-too-old' : snapshot.reason, byType: null };
   }
-  return { reason: null, byType: manifestFromSnapshot(snapshot.body) };
+  const normalized = manifestFromSnapshot(snapshot.body);
+  if (!normalized) return { reason: 'fetch-failed', byType: null };
+  return { reason: null, byType: normalized };
 }
 
 const emptyCounts = () => ({
@@ -307,10 +315,25 @@ export async function getBrainParityReports() {
  *
  * @param {{ peerId?: string }} [opts] - Local peer-registry id. Omitted runs
  *   every federating peer.
- * @returns {Promise<{ reports: object[] }>}
+ * @returns {Promise<{ reports: object[], peerRegistryUnavailable?: true }>}
+ *   `peerRegistryUnavailable` is set only when the peer registry could not be
+ *   read, so a caller can tell that apart from a genuinely peerless install.
  */
 export async function runBrainParityCheck({ peerId } = {}) {
-  const peers = await getPeers().catch(() => []);
+  // Sentinel, not `.catch(() => [])`: an unreadable peer registry must not look
+  // like "this install federates with nobody". Both collapse to zero reports,
+  // and the sweep job then logs a clean "no federating peers to check" run —
+  // the same absent-vs-empty conflation this module's manifest parsers guard
+  // against. A non-array return (corrupt `data.peers`) is a read failure too,
+  // and would otherwise throw on the `.filter` below.
+  const peers = await getPeers().then(
+    (list) => (Array.isArray(list) ? list : null),
+    () => null,
+  );
+  if (!peers) {
+    console.error('🧠🔍 Brain parity: peer registry unreadable — sweep skipped, parity is unknown');
+    return { reports: [], peerRegistryUnavailable: true };
+  }
   // The sweep deliberately does NOT filter on the peer's brain sync CATEGORY.
   // A peer whose brain category was turned off (or never turned on) is exactly
   // where silent divergence accumulates — filtering it out would hide the case

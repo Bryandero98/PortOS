@@ -19,8 +19,25 @@ describe('buildThreejsGenerationPrompt', () => {
     }
   });
 
+  it('warns that non-uniform parent scale cascades to nested parts', () => {
+    const prompt = build();
+    expect(prompt).toContain("A part's scale applies to its whole group and cascades to everything nested under it");
+    expect(prompt).toMatch(/Keep a\s+container part that owns other components near-uniformly scaled/);
+    expect(prompt).toContain('box width/height/depth, sphere radius');
+  });
+
   it('gates on the model coming apart into readable components', () => {
     expect(build()).toContain('The model must come apart into readable components');
+  });
+
+  // Without this the model authors a physically correct conductor into a scene
+  // with nothing to reflect, sees it render near-black, and "fixes" it next pass
+  // by authoring implausible values back in.
+  it('offers the environment block and gates reflective channels on having one', () => {
+    const prompt = build();
+    expect(prompt).toContain('"environment": {"preset":"none" | "neutral" | "studio","intensity":0..4}');
+    expect(prompt).toContain('reflect an environment or they reflect nothing');
+    expect(prompt).toContain('sets an "environment" preset other than "none"');
   });
 
   it('says when extrude is the WRONG answer and gates on cross-section', () => {
@@ -30,6 +47,13 @@ describe('buildThreejsGenerationPrompt', () => {
     expect(prompt).toContain('When extrude is the WRONG answer');
     expect(prompt).toContain('"bevelEnabled":true');
     expect(prompt).toContain('must not have every identity part flat along one axis');
+  });
+
+  it('teaches the intentional open-shell declaration without weakening the depth gate', () => {
+    const prompt = build();
+    expect(prompt).toContain('"side":"front" | "double"');
+    expect(prompt).toContain('needs a material with "side":"double" or it disappears from behind');
+    expect(prompt).toContain('must not be used to dodge giving a solid part a real cross-section');
   });
 
   it('carries the reference path, name, and direction into the prompt', () => {
@@ -93,7 +117,12 @@ describe('buildThreejsGenerationPrompt articulation', () => {
       const prompt = build({ family });
       expect(prompt).toContain('ARTICULATION (character and hybrid subjects only)');
       expect(prompt).toContain('"parentJointId":null');
-      expect(prompt).toContain('"attachmentPartIds"');
+      expect(prompt).toContain('"attachments"');
+      // An attachment with no anchor is the defect the field exists to remove,
+      // so the contract has to ask for one — and rule out the root by name.
+      expect(prompt).toContain('"anchorPartId"');
+      expect(prompt).toContain('"anchorSocket"');
+      expect(prompt).toContain('MODEL ROOT is not an');
       // The contract has to say what it is NOT, or the model invents weights.
       expect(prompt).toContain('not a skeleton');
     }

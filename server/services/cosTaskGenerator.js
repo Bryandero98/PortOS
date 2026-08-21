@@ -43,6 +43,7 @@ import { getSkipReason } from './cosTaskClaim.js';
 import { ensureInstanceId } from './instances.js';
 import { PR_COMPLETION_VALUES } from '../lib/prDisposition.js';
 import { resolveTrackerFilingBlock } from '../lib/workTracker.js';
+import { NON_ACTIONABLE_ISSUE_LABELS } from './perpetualWork.js';
 import {
   isAuditTaskType,
   isFileIssuesMode,
@@ -235,7 +236,7 @@ const COLLABORATOR_FORGE = {
     who: 'project members (direct, or inherited from the project\'s group)',
     membersCmd: 'glab api --paginate "projects/:id/members/all" -q ".[].username"',
     selfCmd: 'glab api user -q .username',
-    listHint: 'list open issues WITHOUT `--author` (`glab issue list -F json`, whose payload already carries the author) and keep only issues whose `.author.username`',
+    listHint: 'list open issues WITHOUT `--author` (`glab issue list --output json`, whose payload already carries the author) and keep only issues whose `.author.username`',
     verb: 'opened',
     failHint: 'the account lacks access to the member list, or `glab` is unauthenticated'
   }
@@ -286,6 +287,22 @@ export function resolveIssueAuthorFilterBlock(promptTaskType, mode = 'self') {
       : null;
   const blocks = ISSUE_AUTHOR_FILTER_BLOCKS[issueForge] || ISSUE_AUTHOR_FILTER_BLOCKS.gh;
   return blocks[ISSUE_AUTHOR_FILTERS.includes(mode) ? mode : 'self'];
+}
+
+/**
+ * Resolve the {issueExcludeLabels} directive for the GitHub/GitLab claim-issue
+ * prompt bodies' Phase 1 step 4 blocking-label check. Renders the fixed
+ * `NON_ACTIONABLE_ISSUE_LABELS` set (perpetualWork.js — MUST stay in sync with
+ * the perpetual-drain detector) plus any app-configured `issueExcludeLabels`
+ * extras (e.g. `good first issue`), so the LIVE claim agent honors the same
+ * exclusions the perpetual detector applies — not just the perpetual drain.
+ * With no configured extras this renders identically to the prior static
+ * prompt text.
+ */
+export function resolveIssueExcludeLabelsBlock(extraLabels = []) {
+  const extras = Array.isArray(extraLabels) ? extraLabels.filter((l) => typeof l === 'string' && l.trim()) : [];
+  const all = [...NON_ACTIONABLE_ISSUE_LABELS, ...extras];
+  return all.map((l) => `\`${l}\``).join(', ');
 }
 
 // Per-forge nouns/commands for the swarm directive. The orchestration shape is
@@ -496,6 +513,7 @@ export async function buildClaimWorkTask(app, {
   }, codeReviewDefaults);
   const reviewersCsv = buildReviewersCsv(reviewersList, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels, promptReviewerEfforts);
   const issueAuthorFilterBlock = resolveIssueAuthorFilterBlock(promptTaskType, resolvedAuthorFilter);
+  const issueExcludeLabelsBlock = resolveIssueExcludeLabelsBlock(metadata.issueExcludeLabels);
   // Swarm mode (`/do:next --swarm`) is prepended (not an in-template
   // placeholder) so it stays an opt-in orchestration wrapper that needs no
   // prompt-default version bump; empty when swarmCount is off or the tracker
@@ -513,7 +531,8 @@ export async function buildClaimWorkTask(app, {
     // interpreted as a backreference (see the scheduler's same-pattern note).
     .replace(/\{reviewers\}/g, () => reviewersCsv)
     .replace(/\{issueAuthorFilter\}/g, () => issueAuthorFilterBlock)
-    + appendTargetWorkItemBlock(promptTaskType, targetRef)
+    .replace(/\{issueExcludeLabels\}/g, () => issueExcludeLabelsBlock)
+    + appendTargetWorkItemBlock(promptTaskType, targetRef, issueExcludeLabelsBlock)
     + appendPrefetchedIssueContext(promptTaskType, targetRef, issueContext)
     + appendClaimOverrideContext(overrideContext)
     + appendReviewerEffortBlock(reviewersList, promptReviewerEfforts, promptReviewerModels)
@@ -577,13 +596,30 @@ export function normalizeWorkItemRef(ref) {
 // GitHub and GitLab share one claim flow (identical phases, branch naming, and
 // skip-list — only the forge CLI differs), so their constraint copy is one
 // factory rather than two paragraphs that must be edited in lockstep.
-const forgeIssueConstraint = (forge) => (ref) => `## Target Issue Constraint
+// `excludeLabelsBlock` is the SAME resolved list Phase 1 checks against
+// (fixed NON_ACTIONABLE_ISSUE_LABELS plus any configured issueExcludeLabels)
+// — a pinned target still must not re-claim an issue the user reserved for
+// humans, including one that gained the label AFTER the picker snapshot the
+// user selected from was taken (the picker itself already excludes these
+// issues; this is the staleness/race backstop, same reason the pinned-target
+// block already re-checks closed/assigned/epic/stale rather than trusting
+// the snapshot).
+const forgeIssueConstraint = (forge) => (ref, excludeLabelsBlock) => {
+  // Fall back to the original fixed-3 text when no resolved block is passed
+  // (a caller that doesn't thread issueExcludeLabels, or a 2-arg test call)
+  // rather than interpolating an empty string into the sentence.
+  const labels = excludeLabelsBlock || '`in-progress`, `blocked`, `needs-input`';
+  return `## Target Issue Constraint
 
-The user explicitly selected ${forge} issue #${ref}. Override Phase 1 ("Pick the target issue"): do NOT pick a different issue and do NOT scan for the next eligible one — claim exactly #${ref}, and ignore the author filter above (an explicit selection overrides it). Still honor the safety checks: if #${ref} is already closed, already assigned, already carries \`in-progress\` / \`blocked\` / \`needs-input\`, is already on a \`claim/issue-${ref}\` (or \`cos/.../issue-${ref}/...\`) branch, is a tracking epic, or is stale (Phase 3), exit cleanly rather than forcing it. Otherwise run Phases 2–7 against #${ref}.`;
+The user explicitly selected ${forge} issue #${ref}. Override Phase 1 ("Pick the target issue"): do NOT pick a different issue and do NOT scan for the next eligible one — claim exactly #${ref}, and ignore the author filter above (an explicit selection overrides it). Still honor the safety checks: if #${ref} is already closed, already assigned, already carries any of ${labels}, is already on a \`claim/issue-${ref}\` (or \`cos/.../issue-${ref}/...\`) branch, is a tracking epic, or is stale (Phase 3), exit cleanly rather than forcing it. Otherwise run Phases 2–7 against #${ref}.`;
+};
 
 // Per-claim-flow copy for the "claim exactly this item" constraint. Each entry
 // renders the tracker's own vocabulary (issue / ticket / PLAN item) over one
-// shared shape, so the four flows can't drift apart.
+// shared shape, so the four flows can't drift apart. Every render fn takes
+// `(ref, excludeLabelsBlock)` even though only the forge-issue flows use the
+// second argument — plan-task/jira ignore it — so buildTargetWorkItemBlock
+// can call all four uniformly.
 const TARGET_ITEM_BLOCKS = {
   // Provenance-neutral: the same copy serves a user-picked target and a
   // scheduler-reserved planId (see buildPlanConstraintBlock).
@@ -607,10 +643,13 @@ The user explicitly selected JIRA ticket \`${ref}\` from the board. Override Pha
  * (already-claimed, stale, too-large → exit cleanly). Returns the bare block
  * (callers own their own separators), or '' when there is no target (the
  * agent-picks default) or the flow has no constraint copy.
+ *
+ * `excludeLabelsBlock` (optional, default '') is only consumed by the
+ * forge-issue flows' render fn — plan-task/jira ignore the third argument.
  */
-export function buildTargetWorkItemBlock(promptTaskType, ref) {
+export function buildTargetWorkItemBlock(promptTaskType, ref, excludeLabelsBlock = '') {
   const render = TARGET_ITEM_BLOCKS[promptTaskType];
-  return (!ref || !render) ? '' : render(ref);
+  return (!ref || !render) ? '' : render(ref, excludeLabelsBlock);
 }
 
 const PREFETCHED_ISSUE_BODY_MAX_CHARS = 12_000;
@@ -690,8 +729,8 @@ const appendClaimOverrideContext = (overrideContext) => {
 };
 
 /** The same block with the leading blank-line separator a prompt append needs. */
-const appendTargetWorkItemBlock = (promptTaskType, ref) => {
-  const block = buildTargetWorkItemBlock(promptTaskType, ref);
+const appendTargetWorkItemBlock = (promptTaskType, ref, excludeLabelsBlock = '') => {
+  const block = buildTargetWorkItemBlock(promptTaskType, ref, excludeLabelsBlock);
   return block ? `\n\n${block}` : '';
 };
 
@@ -2424,6 +2463,7 @@ async function applyPerpetualWorkGate(app, taskType, promptTaskType, metadata, i
   const { detectActionableWork } = await import('./perpetualWork.js');
   const detection = await detectActionableWork(promptTaskType, app, {
     issueAuthorFilter: metadata.issueAuthorFilter || 'self',
+    issueExcludeLabels: metadata.issueExcludeLabels || [],
     // A detector that counts in-flight work must skip the task whose completion
     // triggered this refill — it is already recorded, just not yet marked done.
     ignoreTaskId
@@ -2571,7 +2611,7 @@ export async function resolveReconcileDrainGate(taskSchedule, taskType, app, { s
  */
 async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule) {
   if (taskType !== 'branch-reconcile') return { skip: false, block: '' };
-  const { reconcile, filterActionable, limitBranchesForAgent, formatInFlightForPrompt, actionableSignature } = await import('./branchReconcile.js');
+  const { reconcile, filterActionable, limitBranchesForAgent, formatInFlightForPrompt, actionableSignature, describeIdleReconcilePark } = await import('./branchReconcile.js');
   const { formatSupersededForPrompt } = await import('./supersededLedger.js');
   const { getActiveAgentIds } = await import('./agentState.js');
   // Action toggles were merged (global → per-app override) + value-constrained
@@ -2630,14 +2670,14 @@ async function resolveBranchReconcileBlock(app, taskType, metadata, taskSchedule
     // Definitive idle: nothing in-flight to drive. Park on the recheck cadence,
     // clearing the progress signature so a fresh set later dispatches and zeroing the
     // dispatch budget — this drain converged, so the next one gets a full one.
-    const reason = heldLive.length ? 'branches-held-by-live-owners' : 'no-in-flight-branches';
-    await taskSchedule.parkPerpetual(taskType, app.id, { reason, actionableCount: 0, signature: null });
+    // "Held back" vs "quiet repo", plus the early-wake deadline — see describeIdleReconcilePark.
+    const { reason, heldBackMerged, counts, notLaterThan } = describeIdleReconcilePark(result.skipped || [], heldLive);
+    await taskSchedule.parkPerpetual(taskType, app.id, {
+      reason, actionableCount: 0, signature: null, counts, notLaterThan
+    });
     // Surface merged branches held back by a protection guard so a lingering
     // worktree isn't an invisible "cleaned 0".
-    const heldSuffix = countSuffix(
-      (result.skipped || []).filter((s) => s.reason?.startsWith('worktree-')),
-      'merged branch(es) held back', (s) => s.reason
-    );
+    const heldSuffix = countSuffix(heldBackMerged, 'merged branch(es) held back', (s) => s.reason);
     // In-flight branches that exist but were filtered out by a disabled action
     // toggle are the OTHER way "nothing in-flight" can lie — say so, or the user
     // sees a park while real branches sit there (the same invisibility that hid
@@ -2833,7 +2873,7 @@ async function resolvePrWatcherBlock(app, taskType, metadata, taskSchedule) {
 async function buildImprovementTaskDescription({ promptTemplate, app, promptTaskType, metadata, blocks }) {
   // Resolve the `{reviewers}` the agent is told to run. When the task itself
   // didn't pin reviewers, fall back to the user's PortOS Code Review Defaults
-  // (AI Providers → Code Review Defaults) rather than the hardcoded `copilot` —
+  // (Settings → Code Reviewers) rather than the hardcoded `copilot` —
   // otherwise scheduled tasks like claim-issue, whose prompt drives the review
   // loop directly, would always tell the agent to use Copilot regardless of the
   // user's configured reviewers. Settings I/O failures degrade to the hardcoded
@@ -2860,6 +2900,9 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
   // from `metadata` (default 'self', the slashdo `/do:next --self` security
   // boundary — only claim issues you filed).
   const issueAuthorFilterBlock = resolveIssueAuthorFilterBlock(promptTaskType, metadata.issueAuthorFilter || 'self');
+  // {issueExcludeLabels} directive — merged + normalized by sanitizeTaskMetadata
+  // the same way, so read it straight from `metadata`.
+  const issueExcludeLabelsBlock = resolveIssueExcludeLabelsBlock(metadata.issueExcludeLabels);
   // Swarm directive — prepended (see buildClaimWorkTask note). swarmCount was
   // merged (global → per-app override) + value-constrained by
   // sanitizeTaskMetadata, so read it from `metadata`. Empty for non-issue
@@ -2883,6 +2926,7 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
     // the {referenceData}/{prData} comment below for why this form is needed.
     .replace(/\{reviewers\}/g, () => reviewersCsv)
     .replace(/\{issueAuthorFilter\}/g, () => issueAuthorFilterBlock)
+    .replace(/\{issueExcludeLabels\}/g, () => issueExcludeLabelsBlock)
     // Use a replacer function — String.replace with a replacement STRING
     // interprets `$&`, `$1`, etc. as backreferences. Commit subjects/authors
     // legitimately contain `$` (env-var docs, prices, awk snippets) and

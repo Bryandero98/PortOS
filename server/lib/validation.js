@@ -14,6 +14,7 @@ import { PR_COMPLETION_VALUES } from './prDisposition.js';
 import { EFFORT_LEVELS } from './providerModels.js';
 import { MAX_TIMEOUT as AI_RUN_TIMEOUT_MAX_MS, MIN_TIMEOUT as AI_RUN_TIMEOUT_MIN_MS } from './aiToolkit/constants.js';
 import { isFederatedMediaAudioPrompt } from './federatedMediaWire.js';
+import { isPlainObject } from './objects.js';
 
 // gpt-image-2 (codex backend) caps at 3840px per edge and 8,294,400 total
 // pixels. Mirror the ceiling for every image-gen route. Local mflux can
@@ -714,13 +715,23 @@ export const federatedMediaModelSchema = z.object({
 
 const federatedMediaModelListSchema = z.array(federatedMediaModelSchema).max(100).refine(
   (models) => new Set(models.map((model) => `${model.engine}\u0000${model.modelId}`)).size === models.length,
-  { message: 'audioModels must not contain duplicate engine/model pairs' },
+  { message: 'models must not contain duplicate engine/model pairs' },
 );
 
+// Image/video federation shares this same model-pair shape (`{ engine,
+// modelId }`) as audio for wire uniformity, but only `engine: 'local'`
+// resolves to a live capability today — the provider only has readiness
+// signals for this install's own local generator, not the cloud-CLI image/
+// video backends (codex/grok/agy/external), which spend a *provider's own*
+// account quota rather than sharing this machine's GPU. A peer that
+// configures a non-local engine simply reports 'unknown-engine' and never
+// admits a job, so this schema doesn't need to special-case it.
 export const federatedMediaProviderSettingsSchema = z.object({
   enabled: z.boolean().optional(),
   maxQueuedJobs: z.number().int().min(1).max(20).optional(),
   audioModels: federatedMediaModelListSchema.optional(),
+  imageModels: federatedMediaModelListSchema.optional(),
+  videoModels: federatedMediaModelListSchema.optional(),
 }).passthrough();
 
 // Consumer-side peer selection is independent from the provider's local queue
@@ -729,11 +740,30 @@ export const federatedMediaProviderSettingsSchema = z.object({
 export const federatedMediaPeerSettingsSchema = z.object({
   enabled: z.boolean().optional(),
   audioModels: federatedMediaModelListSchema.optional(),
+  imageModels: federatedMediaModelListSchema.optional(),
+  videoModels: federatedMediaModelListSchema.optional(),
+}).passthrough();
+
+// Where UNATTENDED jobs (Creative Director / Creative Commission) of a given
+// kind render. One peer + one model per kind, chosen by the local operator and
+// stored server-side, so an LLM planner never names a peer. Nullable because
+// clearing a kind is how routing is turned back off — an absent key means
+// "unchanged", an explicit null means "render locally again".
+export const federatedMediaRouteSchema = z.object({
+  peerId: z.string().trim().min(1).max(200),
+  engine: z.string().trim().min(1).max(80),
+  modelId: z.string().trim().min(1).max(256),
+}).strict();
+
+export const federatedMediaRoutingSchema = z.object({
+  image: federatedMediaRouteSchema.nullable().optional(),
+  video: federatedMediaRouteSchema.nullable().optional(),
 }).passthrough();
 
 export const federationSettingsSchema = z.object({
   strictPullAuthorization: z.boolean().optional(),
   mediaProvider: federatedMediaProviderSettingsSchema.optional(),
+  mediaRouting: federatedMediaRoutingSchema.optional(),
 }).passthrough();
 
 export const federatedMediaJobRoutingSchema = z.object({
@@ -747,7 +777,8 @@ export const federatedMediaJobRoutingSchema = z.object({
 // canonical fixed-vocabulary instrumental prompt. Free-form prompt/lyrics can
 // contain PII and must remain on the consumer; URLs, paths, commands, provider
 // credentials, and unknown fields are excluded by the strict object as before.
-export const federatedMediaJobSubmissionSchema = federatedMediaJobRoutingSchema.extend({
+const federatedMediaAudioJobSubmissionSchema = federatedMediaJobRoutingSchema.extend({
+  kind: z.literal('audio'),
   prompt: z.string().trim().min(1).max(8000),
   lyrics: z.string().max(50_000).optional(),
 }).strict().superRefine((value, ctx) => {
@@ -767,12 +798,65 @@ export const federatedMediaJobSubmissionSchema = federatedMediaJobRoutingSchema.
   }
 });
 
+// Image/video prompts cross as submitted, with no fixed-vocabulary rendering
+// like audio's: there is no closed taxonomy for arbitrary visual/motion content
+// the way audio has a finite style/mood/instrument alphabet. Why that does not
+// breach the "no PII on federation" rule — a submitted job body is not a status
+// payload, and status/capability payloads stay absolutely prompt-free — is
+// ADR docs/decisions/2026-08-20-federated-visual-prompts.md. Local input assets
+// (init/reference images, LoRAs) are refused by the routes, not here.
+export const federatedMediaImageJobSubmissionSchema = federatedMediaJobRoutingSchema.omit({
+  durationSec: true, durationMode: true,
+}).extend({
+  kind: z.literal('image'),
+  prompt: z.string().trim().min(1).max(4000),
+  negativePrompt: z.string().trim().max(4000).optional(),
+  width: imageEdgeSchema,
+  height: imageEdgeSchema,
+  steps: z.number().int().min(1).max(150).optional(),
+  guidance: z.number().finite().min(0).max(30).optional(),
+  seed: z.number().int().min(0).optional(),
+}).strict().refine(refineImagePixelCap, { message: PIXEL_CAP_MESSAGE, path: ['width'] });
+
+// Same boundary as the image schema above — see the ADR named there.
+export const federatedMediaVideoJobSubmissionSchema = federatedMediaJobRoutingSchema.omit({
+  durationSec: true, durationMode: true,
+}).extend({
+  kind: z.literal('video'),
+  prompt: z.string().trim().min(1).max(4000),
+  negativePrompt: z.string().trim().max(4000).optional(),
+  width: z.number().int().min(64).max(2048).optional(),
+  height: z.number().int().min(64).max(2048).optional(),
+  numFrames: z.number().int().min(1).max(600).optional(),
+  fps: z.number().int().min(1).max(60).optional(),
+  steps: z.number().int().min(1).max(150).optional(),
+  guidance: z.number().finite().min(0).max(30).optional(),
+  seed: z.number().int().min(0).optional(),
+}).strict();
+
+// An already-shipped consumer's request body never carries `kind` — it only
+// knows the pre-existing audio-only shape. Defaulting the missing field to
+// 'audio' before the discriminated union runs keeps that body validating
+// exactly as before; a new consumer names its kind explicitly.
+export const federatedMediaJobSubmissionSchema = z.preprocess(
+  (value) => (isPlainObject(value) && value.kind === undefined ? { ...value, kind: 'audio' } : value),
+  z.discriminatedUnion('kind', [
+    federatedMediaAudioJobSubmissionSchema,
+    federatedMediaImageJobSubmissionSchema,
+    federatedMediaVideoJobSubmissionSchema,
+  ]),
+);
+
 export const federatedMediaIdempotencyKeySchema = z.string().trim().min(1).max(200)
   .regex(/^[A-Za-z0-9._:-]+$/, 'Idempotency-Key contains unsupported characters');
 
 export const federatedMediaJobParamsSchema = z.object({
   id: z.string().uuid(),
 }).strict();
+
+export const federatedMediaStatusQuerySchema = z.object({
+  kinds: z.string().trim().max(40).regex(/^[a-z]+(,[a-z]+)*$/).optional(),
+}).passthrough();
 
 // Creative Director settings slice. Each LLM-backed stage can pin its own
 // provider/model instead of inheriting the system default. `evaluation` is a

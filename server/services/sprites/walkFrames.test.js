@@ -1,7 +1,7 @@
 /**
  * verifyPackagedFrames (#3001) — the single definition of "this manifest's
  * packaged frames are valid", shared by the approve gate (existence-only) and
- * the compile gate (existence + sha256 + gait-phase/order, read once). These
+ * the compile gate (existence + sha256 + content + gait-phase/order, read once). These
  * tests assert the two modes agree on resolution and that the compile mode is a
  * strict superset: it rejects present-but-tampered frames the approve mode lets
  * through, and reads each frame's bytes exactly once.
@@ -14,6 +14,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { mkdir, writeFile } from 'fs/promises';
 import { createHash } from 'crypto';
+import sharp from 'sharp';
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'sprite-frames-test-'));
 
@@ -44,6 +45,31 @@ afterAll(() => rmSync(TEST_ROOT, { recursive: true, force: true }));
 
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
+const makeRgbaPng = (pixelAt) => {
+  const side = 32;
+  const raw = Buffer.alloc(side * side * 4);
+  for (let y = 0; y < side; y++) {
+    for (let x = 0; x < side; x++) {
+      raw.set(pixelAt(x, y), (y * side + x) * 4);
+    }
+  }
+  return sharp(raw, { raw: { width: side, height: side, channels: 4 } }).png().toBuffer();
+};
+
+let healthyPngPromise;
+const healthyPng = () => {
+  healthyPngPromise ??= makeRgbaPng((x, y) => {
+    const inSubject = x >= 8 && x < 24 && y >= 8 && y < 24;
+    return inSubject ? [220, 80, 40, 255] : [0, 0, 0, 0];
+  });
+  return healthyPngPromise;
+};
+
+const transparentPng = () => makeRgbaPng(() => [0, 0, 0, 0]);
+const nearEmptyPng = () => makeRgbaPng((x, y) => (
+  x === 0 && y === 0 ? [255, 255, 255, 255] : [0, 0, 0, 0]
+));
+
 let seq = 0;
 const newId = () => `frametest-${++seq}`;
 
@@ -56,13 +82,15 @@ const newId = () => `frametest-${++seq}`;
  */
 async function makeFrames(id, {
   count = 8, runId = 'run-abcdef', fileLayout = 'grok', declaredLayout = 'grok', anchored = false, track = 'walk',
+  frameBytes: customFrameBytes = null,
 } = {}) {
   const labels = track === 'walk'
     ? walkPhaseLabels(count)
     : Array.from({ length: count }, (_, i) => `${track}-${String(i).padStart(2, '0')}`);
+  const defaultFrameBytes = customFrameBytes ? null : await healthyPng();
   const frames = [];
   for (let i = 0; i < count; i++) {
-    const bytes = Buffer.from(`frame-${id}-${i}`);
+    const bytes = customFrameBytes?.[i] ?? defaultFrameBytes;
     const fileRel = `${fileLayout}/${runId}/generated/frames/f${i}.png`;
     const abs = join(TEST_ROOT, 'sprites', id, fileRel);
     await mkdir(join(abs, '..'), { recursive: true }); // eslint-disable-line no-await-in-loop
@@ -137,6 +165,59 @@ describe('verifyPackagedFrames — existence mode (approve gate)', () => {
 });
 
 describe('verifyPackagedFrames — byte mode (compile gate)', () => {
+  it('rejects a transparent frame by index and gait phase while approve stays existence-only', async () => {
+    const id = newId();
+    const healthy = await healthyPng();
+    const empty = await transparentPng();
+    const frameBytes = Array(8).fill(healthy);
+    frameBytes[5] = empty;
+    const manifest = await makeFrames(id, { frameBytes });
+
+    await expect(verifyPackagedFrames(id, manifest)).resolves.toMatchObject({ total: 8, missing: 0 });
+    await expect(verifyPackagedFrames(id, manifest, { bytes: true }))
+      .rejects.toMatchObject({
+        status: 422,
+        code: 'ATLAS_COMPILE_INVALID',
+        message: expect.stringContaining(`Direction east frame 5 (${manifest.frames[5].phase}) has no content`),
+      });
+  });
+
+  it('rejects a near-empty packed frame instead of treating alpha speckle as content', async () => {
+    const id = newId();
+    const healthy = await healthyPng();
+    const frameBytes = Array(8).fill(healthy);
+    frameBytes[4] = await nearEmptyPng();
+    const manifest = await makeFrames(id, { frameBytes });
+
+    await expect(verifyPackagedFrames(id, manifest, { bytes: true }))
+      .rejects.toMatchObject({
+        status: 422,
+        code: 'ATLAS_COMPILE_INVALID',
+        message: expect.stringContaining(`Direction east frame 4 (${manifest.frames[4].phase}) has no content`),
+      });
+  });
+
+  it('compiles a set when every decoded frame has content', async () => {
+    const id = newId();
+    const healthy = await healthyPng();
+    const manifest = await makeFrames(id, { frameBytes: Array(8).fill(healthy) });
+
+    const result = await verifyPackagedFrames(id, manifest, { bytes: true });
+    expect(result).toMatchObject({ total: 8, missing: 0 });
+    expect(result.frameBytes).toHaveLength(8);
+  });
+
+  it('passes an undecodable frame through without treating the null stats sentinel as degenerate', async () => {
+    const id = newId();
+    const healthy = await healthyPng();
+    const frameBytes = Array(8).fill(healthy);
+    frameBytes[2] = Buffer.from('not an image at all');
+    const manifest = await makeFrames(id, { frameBytes });
+
+    const result = await verifyPackagedFrames(id, manifest, { bytes: true });
+    expect(result.frameBytes[2]).toEqual(frameBytes[2]);
+  });
+
   it('returns the verified bytes and reads each frame exactly once', async () => {
     const id = newId();
     const manifest = await makeFrames(id);
@@ -145,7 +226,7 @@ describe('verifyPackagedFrames — byte mode (compile gate)', () => {
     expect(total).toBe(8);
     expect(missing).toBe(0);
     expect(frameBytes).toHaveLength(8);
-    expect(frameBytes[0].toString()).toBe(`frame-${id}-0`);
+    expect(frameBytes[0]).toEqual(await healthyPng());
     // Read-once-verify-in-memory: every frame read exactly once, none twice.
     const frameReads = readCalls.filter((p) => posixPath(p).includes('/frames/'));
     expect(frameReads).toHaveLength(8);

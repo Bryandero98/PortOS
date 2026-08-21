@@ -2,9 +2,40 @@ import { useEffect, useState } from 'react';
 import { Save, Loader2, Users, ShieldCheck, Network } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
-import { getAuthStatus, getSettings, listMusicEngines, updateSettings } from '../../services/api';
+import { getAuthStatus, getMediaShareCandidates, getSettings, listMusicEngines, updateSettings } from '../../services/api';
 
+const isRecord = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const modelKey = ({ engine, modelId }) => `${engine}\u0000${modelId}`;
+
+// Image and video share one shape: a flat candidate list from the server, each
+// entry already carrying the readiness projection the wire status reports. Audio
+// is not in this table — its picker is driven by the music-engine catalog, which
+// nests models under engines.
+// A model the operator already shares must stay visible even after it leaves
+// the local catalog (uninstalled, or newly reported broken), or there is no
+// checkbox left to un-share it and the provider keeps advertising a stale
+// `unknown-model` entry forever. Mirrors the peer panel's `not-advertised` rows.
+function candidateRows(candidates, selected) {
+  const rows = [...candidates];
+  const known = new Set(candidates.map(modelKey));
+  for (const model of selected) {
+    if (!model?.engine || !model.modelId || known.has(modelKey(model))) continue;
+    rows.push({
+      kind: null,
+      engine: model.engine,
+      modelId: model.modelId,
+      modelName: model.modelId,
+      ready: false,
+      unavailableReason: 'no longer installed',
+    });
+  }
+  return rows;
+}
+
+const VISUAL_KINDS = Object.freeze([
+  { kind: 'image', label: 'image', field: 'imageModels' },
+  { kind: 'video', label: 'video', field: 'videoModels' },
+]);
 const normalizeSelectedModels = (models) => Array.isArray(models)
   ? models.filter((model) => model && typeof model.engine === 'string' && typeof model.modelId === 'string')
     .map((model) => ({ ...model, engine: model.engine, modelId: model.modelId }))
@@ -27,15 +58,22 @@ export function SharingTab() {
   const [saving, setSaving] = useState(false);
   const [strictPull, setStrictPull] = useState(false);
   const [strictPullSaving, setStrictPullSaving] = useState(false);
-  // The settings PATCH shallow-merges top-level keys, so `federation` is
-  // replaced wholesale — carry the rest of the slice forward on every write.
-  const [federationSettings, setFederationSettings] = useState({});
+  // No mount-time copy of the whole `federation` slice is kept: this tab owns
+  // only `mediaProvider` and `strictPullAuthorization`, and patches those
+  // sub-keys alone (the server merges the slice per sub-key, #4703).
   const [authEnabled, setAuthEnabled] = useState(false);
   const [musicEngines, setMusicEngines] = useState([]);
   const [providerSettings, setProviderSettings] = useState({});
   const [providerEnabled, setProviderEnabled] = useState(false);
   const [providerMaxQueuedJobs, setProviderMaxQueuedJobs] = useState(2);
   const [providerModels, setProviderModels] = useState([]);
+  // `null` per kind = the candidate list could not be fetched, which is NOT the
+  // same as a genuinely empty local catalog — reporting "no models installed"
+  // for a transient API failure would send the user hunting for a model they
+  // already have.
+  const [visualCandidates, setVisualCandidates] = useState({ image: null, video: null });
+  const [providerVisualModels, setProviderVisualModels] = useState({ image: [], video: [] });
+  const [savedProviderVisualModels, setSavedProviderVisualModels] = useState({ image: [], video: [] });
   const [savedProviderEnabled, setSavedProviderEnabled] = useState(false);
   const [savedProviderMaxQueuedJobs, setSavedProviderMaxQueuedJobs] = useState(2);
   const [savedProviderModels, setSavedProviderModels] = useState([]);
@@ -48,6 +86,14 @@ export function SharingTab() {
     listMusicEngines({ silent: true })
       .then((music) => setMusicEngines(Array.isArray(music?.engines) ? music.engines : []))
       .catch(() => setMusicEngines([]));
+    // Same rationale as the engine probe above: readiness inspection can touch
+    // the model cache, so keep it off the critical path for the other controls.
+    getMediaShareCandidates({ silent: true })
+      .then((candidates) => setVisualCandidates({
+        image: Array.isArray(candidates?.image) ? candidates.image : null,
+        video: Array.isArray(candidates?.video) ? candidates.video : null,
+      }))
+      .catch(() => setVisualCandidates({ image: null, video: null }));
     Promise.all([
       getSettings({ silent: true }),
       getAuthStatus({ silent: true }).catch(() => ({ enabled: false })),
@@ -59,16 +105,15 @@ export function SharingTab() {
         setBio(b);
         setSavedDisplayName(display);
         setSavedBio(b);
-        const federation = settings?.federation && typeof settings.federation === 'object' ? settings.federation : {};
-        setFederationSettings(federation);
+        const federation = isRecord(settings?.federation) ? settings.federation : {};
         setStrictPull(federation.strictPullAuthorization === true);
         setAuthEnabled(auth?.enabled === true);
-        const provider = federation.mediaProvider && typeof federation.mediaProvider === 'object'
-          ? federation.mediaProvider
-          : {};
+        const provider = isRecord(federation.mediaProvider) ? federation.mediaProvider : {};
         const enabled = provider.enabled === true;
         const maxQueuedJobs = Number.isInteger(provider.maxQueuedJobs) ? provider.maxQueuedJobs : 2;
         const models = normalizeSelectedModels(provider.audioModels);
+        const visual = Object.fromEntries(VISUAL_KINDS.map(({ kind, field }) =>
+          [kind, normalizeSelectedModels(provider[field])]));
         setProviderSettings(provider);
         setProviderEnabled(enabled);
         setProviderMaxQueuedJobs(maxQueuedJobs);
@@ -76,6 +121,8 @@ export function SharingTab() {
         setSavedProviderEnabled(enabled);
         setSavedProviderMaxQueuedJobs(maxQueuedJobs);
         setSavedProviderModels(models);
+        setProviderVisualModels(visual);
+        setSavedProviderVisualModels(visual);
       })
       .catch(() => toast.error('Failed to load settings'))
       .finally(() => setLoading(false));
@@ -84,7 +131,9 @@ export function SharingTab() {
   const dirty = displayName !== savedDisplayName || bio !== savedBio;
   const providerDirty = providerEnabled !== savedProviderEnabled
     || providerMaxQueuedJobs !== savedProviderMaxQueuedJobs
-    || stableModels(providerModels) !== stableModels(savedProviderModels);
+    || stableModels(providerModels) !== stableModels(savedProviderModels)
+    || VISUAL_KINDS.some(({ kind }) =>
+      stableModels(providerVisualModels[kind]) !== stableModels(savedProviderVisualModels[kind]));
 
   const handleSave = async () => {
     setSaving(true);
@@ -104,11 +153,16 @@ export function SharingTab() {
 
   const handleStrictPullToggle = async (next) => {
     setStrictPullSaving(true);
-    const federation = { ...federationSettings, strictPullAuthorization: next };
-    const merged = await updateSettings({ federation }).catch(() => null);
+    // Same reachability precheck as the provider save below.
+    const fresh = await getSettings({ silent: true }).catch(() => null);
+    if (fresh === null) {
+      setStrictPullSaving(false);
+      toast.error('Could not read current settings — not saved');
+      return;
+    }
+    const merged = await updateSettings({ federation: { strictPullAuthorization: next } }).catch(() => null);
     setStrictPullSaving(false);
     if (!merged) return;
-    setFederationSettings(federation);
     setStrictPull(next);
     toast.success(next ? 'Strict pull authorization on' : 'Strict pull authorization off');
   };
@@ -121,13 +175,29 @@ export function SharingTab() {
       : current.filter((model) => modelKey(model) !== key));
   };
 
+  const toggleVisualModel = (kind, candidate, checked) => {
+    const key = modelKey(candidate);
+    setProviderVisualModels((current) => ({
+      ...current,
+      [kind]: checked
+        ? (current[kind].some((model) => modelKey(model) === key)
+          ? current[kind]
+          : [...current[kind], { engine: candidate.engine, modelId: candidate.modelId }])
+        : current[kind].filter((model) => modelKey(model) !== key),
+    }));
+  };
+
   const handleProviderSave = async () => {
     if (providerEnabled && !authEnabled) {
       toast.error('Enable an instance password before sharing media capacity');
       return;
     }
-    if (providerEnabled && providerModels.length === 0) {
-      toast.error('Select at least one audio model');
+    const visualSelections = Object.fromEntries(VISUAL_KINDS.map(({ kind }) =>
+      [kind, normalizeSelectedModels(providerVisualModels[kind])]));
+    const totalSelected = providerModels.length
+      + VISUAL_KINDS.reduce((sum, { kind }) => sum + visualSelections[kind].length, 0);
+    if (providerEnabled && totalSelected === 0) {
+      toast.error('Select at least one model to share');
       return;
     }
     const maxQueuedJobs = Math.max(1, Math.min(20, Number(providerMaxQueuedJobs) || 1));
@@ -136,21 +206,34 @@ export function SharingTab() {
       enabled: providerEnabled,
       maxQueuedJobs,
       audioModels: normalizeSelectedModels(providerModels),
+      ...Object.fromEntries(VISUAL_KINDS.map(({ kind, field }) => [field, visualSelections[kind]])),
     };
-    const federation = { ...federationSettings, mediaProvider };
     setProviderSaving(true);
-    const merged = await updateSettings({ federation }, { silent: true }).catch(() => null);
+    // /api/settings merges the `federation` slice per sub-key (#4703), so this
+    // write carries `mediaProvider` alone and can no longer clear the
+    // `mediaRouting` the Instances page owns.
+    //
+    // The read stays as a reachability precheck: without it an unreachable
+    // server would surface only as a generic save failure, and the user would
+    // not know their earlier edits were never loaded. A failed read aborts.
+    const fresh = await getSettings({ silent: true }).catch(() => null);
+    if (fresh === null) {
+      setProviderSaving(false);
+      toast.error('Could not read current settings — provider not saved');
+      return;
+    }
+    const merged = await updateSettings({ federation: { mediaProvider } }, { silent: true }).catch(() => null);
     setProviderSaving(false);
     if (!merged) {
       toast.error('Failed to save media provider settings');
       return;
     }
-    setFederationSettings(federation);
     setProviderSettings(mediaProvider);
     setProviderMaxQueuedJobs(maxQueuedJobs);
     setSavedProviderEnabled(providerEnabled);
     setSavedProviderMaxQueuedJobs(maxQueuedJobs);
     setSavedProviderModels(normalizeSelectedModels(providerModels));
+    setSavedProviderVisualModels(visualSelections);
     toast.success(providerEnabled ? 'Media provider enabled' : 'Media provider disabled');
   };
 
@@ -239,8 +322,11 @@ export function SharingTab() {
           <h3 className="text-lg font-semibold text-white">Federated media provider</h3>
         </div>
         <p className="text-sm text-gray-400 mb-4">
-          Let registered PortOS peers submit allowlisted audio renders to this machine&apos;s durable media queue.
-          Prompts and job details stay out of capability status, and completed downloads include a SHA-256 integrity hash.
+          Let registered PortOS peers submit allowlisted audio, image, and video renders to this
+          machine&apos;s durable media queue. Only models you allowlist below can be requested.
+          Capability status never carries prompts or job details, and completed downloads include a
+          SHA-256 integrity hash. An image or video peer sends the prompt it wants rendered; an audio
+          peer can only send a fixed musical profile, never free text or lyrics.
         </p>
 
         {!authEnabled && (
@@ -259,7 +345,7 @@ export function SharingTab() {
               onChange={(event) => setProviderEnabled(event.target.checked)}
               className="mt-1 h-4 w-4 accent-port-accent disabled:opacity-40"
             />
-            <span className="text-sm text-white">Accept audio generation jobs from authenticated registered peers</span>
+            <span className="text-sm text-white">Accept media generation jobs from authenticated registered peers</span>
           </label>
 
           <div>
@@ -319,11 +405,55 @@ export function SharingTab() {
             )}
           </fieldset>
 
+          {VISUAL_KINDS.map(({ kind, label, field }) => {
+            const unavailable = visualCandidates[kind] === null;
+            const rows = candidateRows(visualCandidates[kind] || [], providerVisualModels[kind]);
+            return (
+            <fieldset key={field}>
+              <legend className="block text-xs uppercase tracking-wider text-gray-500 mb-2">Allowed {label} models</legend>
+              {rows.length === 0 ? (
+                <p className="text-sm text-gray-500">
+                  {unavailable
+                    ? `Could not load the local ${label} model list. Reload to try again.`
+                    : `No local ${label} models are installed to share.`}
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+                  {rows.map((candidate, index) => {
+                    const checked = providerVisualModels[kind].some((model) => modelKey(model) === modelKey(candidate));
+                    const inputId = `federated-media-${kind}-model-${index}`;
+                    return (
+                      <label key={modelKey(candidate)} htmlFor={inputId} className="flex items-start gap-2 text-sm cursor-pointer">
+                        <input
+                          id={inputId}
+                          type="checkbox"
+                          checked={checked}
+                          // An already-shared model stays togglable even when it
+                          // reports not-ready, or a model that broke after being
+                          // shared could never be un-shared.
+                          disabled={providerSaving || strictPullSaving || (!candidate.ready && !checked)}
+                          onChange={(event) => toggleVisualModel(kind, candidate, event.target.checked)}
+                          className="mt-0.5 h-4 w-4 accent-port-accent disabled:opacity-40"
+                        />
+                        <span className={candidate.ready ? 'text-gray-200' : 'text-gray-500'}>
+                          {candidate.modelName}
+                          {!candidate.ready && ` (${candidate.unavailableReason || 'not ready'})`}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </fieldset>
+            );
+          })}
+
           <button
             type="button"
             onClick={handleProviderSave}
             disabled={!providerDirty || providerSaving || strictPullSaving
-              || (providerEnabled && (!authEnabled || providerModels.length === 0))}
+              || (providerEnabled && (!authEnabled || (providerModels.length === 0
+                && VISUAL_KINDS.every(({ kind }) => providerVisualModels[kind].length === 0))))}
             className="inline-flex items-center justify-center gap-2 min-h-[40px] px-4 py-2 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded-lg text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {providerSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}

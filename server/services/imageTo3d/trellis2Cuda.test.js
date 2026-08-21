@@ -13,7 +13,6 @@ import {
   TRELLIS2_CUDA_HIGH_QUALITY_MIN_VRAM_GB,
   trellis2CudaRoot,
   trellis2CudaPython,
-  trellis2CudaPythonCandidates,
   trellis2CudaGenerateRunnerScript,
   isTrellis2CudaInstalled,
   buildCudaInstallSteps,
@@ -54,18 +53,12 @@ describe('trellis2Cuda path resolution', () => {
     expect(trellis2CudaRoot(BASE)).not.toBe(join(BASE, 'trellis2'));
   });
 
-  it('probes conda roots for the env setup.sh --new-env creates', () => {
-    const candidates = trellis2CudaPythonCandidates({ env: CONDA_ENV });
-    expect(candidates).toContain(CONDA_PY);
-    expect(candidates.every((p) => p.includes(join('envs', TRELLIS2_CUDA_CONDA_ENV)))).toBe(true);
-  });
-
-  it('walks up from an active envs/<name> CONDA_PREFIX to find the base install', () => {
-    // PortOS itself running under some other conda env must still locate `trellis2`.
-    const candidates = trellis2CudaPythonCandidates({
-      env: { CONDA_PREFIX: join(CONDA, 'envs', 'portos') },
-    });
-    expect(candidates.some((p) => p.includes(join('conda', 'envs', 'trellis2')))).toBe(true);
+  // The candidate-list shape and the CONDA_PREFIX walk-up now live with the shared
+  // resolver (`lib/pythonSetup.test.js`); what matters here is that this lane asks for
+  // its OWN env name.
+  it('resolves the env setup.sh --new-env creates', () => {
+    expect(trellis2CudaPython({ exists: existsFor(CONDA_PY), env: CONDA_ENV })).toBe(CONDA_PY);
+    expect(CONDA_PY).toContain(join('envs', TRELLIS2_CUDA_CONDA_ENV));
   });
 
   it('returns the first existing candidate, or null when none is present', () => {
@@ -197,6 +190,21 @@ describe('buildCudaGenerateArgs', () => {
   it('rejects an unsupported texture size here rather than in the child’s argparse', () => {
     expect(() => args({ textureSize: 8192 })).toThrow(/must be one of/);
     expect(TRELLIS2_CUDA_TEXTURE_SIZES).not.toContain(8192);
+  });
+
+  it('passes --seed and --steps when provided and omits both by default (MPS-lane parity)', () => {
+    const { args: argv } = args({ seed: 1234, steps: 24 });
+    expect(argv[argv.indexOf('--seed') + 1]).toBe('1234');
+    expect(argv[argv.indexOf('--steps') + 1]).toBe('24');
+
+    const { args: defaults } = args();
+    expect(defaults).not.toContain('--seed');
+    expect(defaults).not.toContain('--steps');
+  });
+
+  it('rejects out-of-range steps and seed here rather than in the child’s argparse', () => {
+    expect(() => args({ steps: 0 })).toThrow(/steps must be an integer/);
+    expect(() => args({ seed: -1 })).toThrow(/seed must be an integer/);
   });
 });
 

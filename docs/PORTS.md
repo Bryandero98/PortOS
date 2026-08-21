@@ -34,6 +34,7 @@ Common port labels:
 | 5559 | portos-autofixer | api | Autofixer daemon API |
 | 5560 | portos-autofixer-ui | ui | Autofixer web UI |
 | 5561 | portos-db (Docker container) | - | Infrastructure dependency: PostgreSQL Docker container provisioned by `scripts/setup-db.js` / Docker Compose (not a PM2 process in `server/services/apps.js`; native mode uses system pg on 5432). |
+| 5568 | llama-server | - | Loopback speculative-decoding server managed from Settings → Local LLM |
 
 ## How `:5555`, `:5553`, and `:5554` Relate
 
@@ -52,7 +53,11 @@ vite dev (npm run dev)  ──── :5554 ─ Vite dev server (dev only, separa
 Rules of thumb:
 1. **`:5555` is the only port a remote user ever needs.** The scheme (HTTP vs HTTPS) flips based on whether a TLS cert is provisioned (`npm run setup:cert`); the port number does not.
 2. **`:5553` is a convenience for local terminals.** When HTTPS is on, `https://localhost:5555` would trip a cert warning (the cert covers `<machine>.<tailnet>.ts.net`, not `localhost`). The loopback HTTP mirror on `:5553` lets curl/scripts skip TLS entirely. It binds to `127.0.0.1` only — never reachable over the network.
-3. **`:5554` is `vite dev` only.** In `npm run dev`, Vite serves the React UI from `:5554` and proxies `/api` calls to `:5555`. In `npm start` (production), the React build is served from `:5555` itself; `:5554` is unused.
+3. **`:5554` is `vite dev` only.** In `npm run dev`, Vite serves the React UI from `:5554` and proxies `/api`, `/data` and `/socket.io` to `:5555`. In `npm start` (production), the React build is served from `:5555` itself; `:5554` is unused.
+   - **A server-owned path must never be answered by an SPA fallback — and there are two of them.** Neither 404s. In dev, Vite answers an unproxied path with `index.html` and a `200`; in production the fallback in `server/index.js` skips a request only when its path carries a file extension, so an EXTENSIONLESS one falls through the same way. Either shape hands a binary loader HTML, which fails far from the cause (a missing `/data/image-to-3d` proxy entry surfaced as `Unexpected token '<' … is not valid JSON` from the GLB viewer, which took its whole route down), or hands an API client HTML with a success status.
+   - **Dev side:** `/data` is proxied as one wildcard prefix, so a new mount is covered the moment it is added.
+   - **Production side:** `server/lib/assetRoutePrefixes.js` lists the namespaces the server owns (`SERVER_OWNED_PREFIXES`) alongside the exact client routes inside them (`spaPaths` — `/data` itself is the Data Manager page), and `mountAssetRoutes` closes each one with a terminating 404 (#4688).
+   - `scripts/dev-proxy-drift.test.js` fails if the proxy, the mounts, and the client's own routes drift apart. It reads both `NAV_COMMANDS` and `App.jsx`'s nested `<Route>` tree, so a new page under a server-owned prefix — which the terminator would otherwise 404 silently — fails the build even when only its `:id` detail route exists.
 
 ## Defining Ports in ecosystem.config.cjs
 
@@ -118,7 +123,7 @@ PortOS automatically detects ports from env vars:
 | Range | Purpose |
 |-------|---------|
 | 5553-5561 | PortOS core services (includes the `:5553` loopback mirror and the `portos-db` Docker container on `:5561`) |
-| 5562-5569 | Reserved for PortOS extensions |
+| 5562-5569 | Reserved for PortOS extensions (5568 is the managed llama-server default) |
 | 5570-5599 | User applications |
 
 PostgreSQL in native mode listens on the system default `:5432`, outside these ranges.

@@ -6,7 +6,7 @@ export const getAlertsSummary = (options) => request('/alerts/summary', options)
 // Character sheet (age-based level / XP / HP / usage-derived skills + metrics grid).
 // `skills: false` / `metrics: false` skip the server's domain stat fan-out for each derived
 // registry — pass them from callers that only read the persisted fields or the level (e.g.
-// the polling CyberCity XP HUD badge). Both default on, so a caller that wants the whole
+// the polling OpenWorld XP HUD badge). Both default on, so a caller that wants the whole
 // sheet just calls getCharacter().
 export const getCharacter = ({ skills = true, metrics = true, ...options } = {}) => {
   const params = new URLSearchParams();
@@ -68,6 +68,10 @@ export const updateSettings = (data, options) => request('/settings', {
   ...options
 });
 export const getAiAssignments = (options) => request('/settings/ai-assignments', options);
+// Local image/video models this instance could offer as a federated media
+// provider — what the Sharing tab lets you pick from. Local-only inventory;
+// the peer-facing status endpoint only ever reports already-shared models.
+export const getMediaShareCandidates = (options) => request('/settings/media-share-candidates', options);
 
 // API Access — the OpenAPI 3.1 spec for the public API surface (built from the
 // exposed entries in apiAccess settings). Rendered by the API Access settings tab.

@@ -4,15 +4,32 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // boundary — every assertion here is about the params that land on it, because
 // `job.params.mode` is the ONLY thing mediaJobQueue routes the backend on.
 vi.mock('../../mediaJobQueue/index.js', () => ({ enqueueJob: vi.fn(() => ({ jobId: 'mj-test' })) }));
-vi.mock('../../settings.js', () => ({ getSettings: vi.fn(async () => ({})) }));
+const getSettings = vi.fn(async () => ({}));
+vi.mock('../../settings.js', () => ({
+  getSettings: (...args) => getSettings(...args),
+  // getSettings() hands back {} for a corrupt settings.json rather than
+  // rejecting, so the router reads through this failure-aware wrapper instead.
+  // Deriving it from the same mock keeps every existing setup working and makes
+  // a mockRejectedValue model a corrupt read, which is what those tests mean.
+  getSettingsWithStatus: async (...args) => {
+    try {
+      return { corrupt: false, settings: await getSettings(...args) };
+    } catch {
+      return { corrupt: true, settings: null };
+    }
+  },
+}));
 vi.mock('../../creativeDirector/local.js', () => ({ getProject: vi.fn(async () => null) }));
 const getCommissionMusicContextForProject = vi.fn(async () => null);
 vi.mock('../../creativeCommissions/store.js', () => ({
   getCommissionMusicContextForProject: (...args) => getCommissionMusicContextForProject(...args),
 }));
+const prepareRemoteMediaJob = vi.fn();
+vi.mock('../../federatedMedia/remoteSubmission.js', () => ({
+  prepareRemoteMediaJob: (...args) => prepareRemoteMediaJob(...args),
+}));
 
 import { enqueueJob } from '../../mediaJobQueue/index.js';
-import { getSettings } from '../../settings.js';
 import { getProject } from '../../creativeDirector/local.js';
 import { MEDIA_TOOLS, reconcileVideoParamsWithModel } from './media.js';
 
@@ -220,11 +237,19 @@ describe('render-backend pin — image (#3135)', () => {
     expect(enqueued().params.modelId).toBe('planner-model');
   });
 
-  it('falls through untouched when settings are unreadable', async () => {
+  // The backend PIN still falls through untouched on an unreadable read — but
+  // since #4348 the enqueue itself now fails instead of completing. An
+  // unreadable settings file cannot tell us whether a federated route is
+  // configured, and treating that as "no route" would silently render on local
+  // GPU work the user deliberately sent to another machine. Failing loudly is
+  // the project's sentinel rule (never collapse failed-to-fetch into
+  // legitimately-empty) applied to a spend-bearing decision.
+  it('fails the enqueue rather than guessing at routing when settings are unreadable', async () => {
     getSettings.mockRejectedValue(new Error('settings unavailable'));
     getProject.mockResolvedValue(projectWithPin({ image: { mode: 'grok' } }));
-    await run('media_enqueueImageJob', { prompt: 'p' }, { projectId: 'cd-1' });
-    expect(enqueued().params).toEqual({ prompt: 'p' });
+    await expect(run('media_enqueueImageJob', { prompt: 'p' }, { projectId: 'cd-1' }))
+      .rejects.toMatchObject({ code: 'MEDIA_ROUTING_UNREADABLE' });
+    expect(enqueueJob).not.toHaveBeenCalled();
   });
 });
 
@@ -437,5 +462,104 @@ describe('audio enqueues', () => {
     await expect(run('media_enqueueAudioJob', { prompt: 'planner guess' }, { projectId: 'cd-1' }))
       .rejects.toThrow('taste-commission-prompt-unavailable');
     expect(enqueueJob).not.toHaveBeenCalled();
+  });
+});
+
+// #4348 — unattended jobs route to a peer only because THIS instance's settings
+// say so. The planner never names a peer, so these assertions are all about
+// what reaches the queue when `federation.mediaRouting` is (and is not) set.
+describe('federated default provider routing (#4348)', () => {
+  const route = { peerId: 'peer-1', engine: 'comfy', modelId: 'sdxl-remote' };
+  const routedSettings = (mediaRouting) => ({ federation: { mediaRouting } });
+
+  beforeEach(() => {
+    prepareRemoteMediaJob.mockReset();
+    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => ({
+      peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+      request,
+      remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request },
+    }));
+  });
+
+  it('renders locally, with its prompt intact, when no route is configured', async () => {
+    getSettings.mockResolvedValue({});
+    await run('media_enqueueImageJob', { prompt: 'a lighthouse' }, { projectId: 'cd-1' });
+    expect(prepareRemoteMediaJob).not.toHaveBeenCalled();
+    expect(enqueued().params.prompt).toBe('a lighthouse');
+    expect(enqueued().params).not.toHaveProperty('remoteMedia');
+  });
+
+  it('routes an image job to the configured peer without the planner naming one', async () => {
+    getSettings.mockResolvedValue(routedSettings({ image: route }));
+    await run('media_enqueueImageJob', { prompt: 'a lighthouse', modelId: 'local-sdxl' }, { projectId: 'cd-1' });
+    expect(prepareRemoteMediaJob).toHaveBeenCalledWith(expect.objectContaining({ peerId: 'peer-1', kind: 'image' }));
+    const { params } = enqueued();
+    // The prompt rides ONLY inside the versioned marker, so a build that cannot
+    // read `remoteMedia` fails closed instead of re-rendering on local hardware.
+    expect(params.prompt).toBe('');
+    expect(params.remoteMedia.request.prompt).toBe('a lighthouse');
+    // The route's model wins: a peer advertises its own ids, not the planner's.
+    expect(params.modelId).toBe('sdxl-remote');
+  });
+
+  it('keeps the owner tag so a routed render stays attributable to its project', async () => {
+    getSettings.mockResolvedValue(routedSettings({ image: route }));
+    await run('media_enqueueImageJob', { prompt: 'a lighthouse' }, { projectId: 'cd-1' });
+    expect(enqueued().owner).toBe('creative-director:cd-1');
+  });
+
+  it('routes a video job independently of the image route', async () => {
+    getSettings.mockResolvedValue(routedSettings({ video: { ...route, modelId: 'wan-remote' } }));
+    await run('media_enqueueVideoJob', { prompt: 'a drifting balloon' }, { projectId: 'cd-1' });
+    expect(prepareRemoteMediaJob).toHaveBeenCalledWith(expect.objectContaining({ kind: 'video' }));
+    expect(enqueued().params.modelId).toBe('wan-remote');
+  });
+
+  it('leaves audio local — free-form music prompts cannot cross the wire', async () => {
+    getSettings.mockResolvedValue(routedSettings({ audio: route, image: route }));
+    await run('media_enqueueAudioJob', { prompt: 'a warm ambient bed' });
+    expect(prepareRemoteMediaJob).not.toHaveBeenCalled();
+    expect(enqueued().params.prompt).toBe('a warm ambient bed');
+  });
+
+  it('fails the enqueue rather than silently burning local GPU when the peer is busy', async () => {
+    getSettings.mockResolvedValue(routedSettings({ image: route }));
+    prepareRemoteMediaJob.mockRejectedValue(
+      Object.assign(new Error('Media provider is at capacity'), { code: 'MEDIA_PROVIDER_BUSY' }),
+    );
+    await expect(run('media_enqueueImageJob', { prompt: 'a lighthouse' }, { projectId: 'cd-1' }))
+      .rejects.toThrow('Media provider is at capacity');
+    expect(enqueueJob).not.toHaveBeenCalled();
+  });
+});
+
+describe('routed video keeps the controls its guard inspects (#4348)', () => {
+  const route = { peerId: 'peer-1', engine: 'comfy', modelId: 'wan-remote' };
+
+  // reconcileVideoParamsWithModel snaps a job onto the LOCAL model's catalog and
+  // DELETES controls that model doesn't support. For a routed job the local
+  // model isn't the one rendering, and a dropped disableAudio is invisible to
+  // the route's own guard — which would then ship a job the peer renders WITH
+  // audio, the exact opposite of what was asked for.
+  it('does not snap a routed job onto the local model, so disableAudio still reaches the guard', async () => {
+    getSettings.mockResolvedValue({ federation: { mediaRouting: { video: route } } });
+    getProject.mockResolvedValue({
+      id: 'cd-1', aspectRatio: '16:9', quality: 'standard', targetDurationSeconds: 10,
+      modelId: 'minimax-h3-example',
+    });
+
+    await expect(run('media_enqueueVideoJob', { prompt: 'p', disableAudio: true }, { projectId: 'cd-1' }))
+      .rejects.toMatchObject({ code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' });
+    expect(enqueueJob).not.toHaveBeenCalled();
+  });
+
+  it('still reconciles against the local model when nothing is routed', async () => {
+    getSettings.mockResolvedValue({});
+    getProject.mockResolvedValue({
+      id: 'cd-1', aspectRatio: '16:9', quality: 'standard', targetDurationSeconds: 10,
+    });
+
+    await run('media_enqueueVideoJob', { prompt: 'p', disableAudio: true }, { projectId: 'cd-1' });
+    expect(enqueued().params.disableAudio).toBe(true);
   });
 });

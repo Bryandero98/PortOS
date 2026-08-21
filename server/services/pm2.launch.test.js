@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
 
 const mockPm2 = vi.hoisted(() => ({
@@ -15,7 +15,7 @@ vi.mock('../lib/childProcess.js', async (importOriginal) => ({
   spawn: mockSpawn,
 }));
 
-import { startApp, startWithCommand } from './pm2.js';
+import { startApp, startWithCommand, execPm2 } from './pm2.js';
 
 // Fake child_process.spawn result: closes with the given exit code on next tick.
 function fakeChild(exitCode = 0) {
@@ -66,6 +66,42 @@ describe('PM2 command launch interpreters', () => {
       args: 'run dev',
       interpreter: 'none'
     }), expect.any(Function));
+  });
+
+  // PortOS itself runs under PM2, which exports its pm2_env into our
+  // environment as lowercase config keys — and the PM2 CLI reads those keys
+  // back as config, outranking explicit flags. Unstripped, portos-server's own
+  // 4GB `max_memory_restart` reached every app it launched: PM2's memory
+  // watchdog then killed a fully loaded 25GB llama-server seconds after each
+  // successful start, in a loop that read as "the server won't start".
+  describe('inherited PM2 config in the environment', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('strips PM2\'s own config keys before spawning the CLI', async () => {
+      vi.stubEnv('max_memory_restart', '4294967296');
+      vi.stubEnv('exec_mode', 'cluster_mode');
+      vi.stubEnv('watch', 'true');
+
+      await execPm2(['start', '/usr/local/bin/llama-server', '--name', 'portos-llama-server']);
+
+      const [, , spawnOpts] = mockSpawn.mock.calls[0];
+      expect(spawnOpts.env).not.toHaveProperty('max_memory_restart');
+      expect(spawnOpts.env).not.toHaveProperty('exec_mode');
+      expect(spawnOpts.env).not.toHaveProperty('watch');
+      expect(spawnOpts.env.PATH).toBe(process.env.PATH);
+    });
+
+    it('strips them from a caller-supplied env too, which inherits the same keys', async () => {
+      vi.stubEnv('max_memory_restart', '4294967296');
+
+      await execPm2(['jlist'], { env: { ...process.env, PM2_HOME: '/tmp/example-pm2' } });
+
+      const [, , spawnOpts] = mockSpawn.mock.calls[0];
+      expect(spawnOpts.env).not.toHaveProperty('max_memory_restart');
+      expect(spawnOpts.env.PM2_HOME).toBe('/tmp/example-pm2');
+    });
   });
 
   describe('with a custom pm2Home', () => {

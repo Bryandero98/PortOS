@@ -37,7 +37,7 @@ import TabPills from './ui/TabPills';
 // site has to remember it; React still routes events and context through the
 // React tree, so nesting a Drawer deep in a page keeps working unchanged.
 // A caller sitting inside a page-scoped CSS theming root whose rules are written
-// as descendant selectors (e.g. `.cybercity-themed` in `index.css`) must pass
+// as descendant selectors (e.g. `.openworld-themed` in `index.css`) must pass
 // that class as `portalClassName`, since the portal leaves that ancestor behind.
 
 // Desktop width brackets. Mobile is always `w-full`. `lg`/`xl` intentionally use

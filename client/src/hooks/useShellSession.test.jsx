@@ -80,6 +80,26 @@ describe('useShellSession', () => {
     expect(lastEmit('shell:input')).toEqual(['shell:input', { sessionId: 'abc', data: '\x02' }]);
   });
 
+  // cd goes over its own event carrying the PATH — the server owns the quoting,
+  // because only it knows whether the session runs cmd.exe, PowerShell, or a
+  // POSIX shell (the hard-coded POSIX form was unusable on Windows).
+  it('sends the folder path over shell:cd rather than composing a cd command', () => {
+    const { result } = renderHook(() => useShellSession({}), { wrapper });
+    fire('shell:sessions', []);
+    fire('shell:started', { sessionId: 'abc' });
+    act(() => result.current.sendCd('I:\\code\\example-app'));
+    expect(lastEmit('shell:cd')).toEqual(['shell:cd', { sessionId: 'abc', path: 'I:\\code\\example-app' }]);
+  });
+
+  // LF would leave the command typed-but-unexecuted on cmd.exe — see SUBMIT_KEY.
+  it('submits a quick command with a carriage return, not a line feed', () => {
+    const { result } = renderHook(() => useShellSession({}), { wrapper });
+    fire('shell:sessions', []);
+    fire('shell:started', { sessionId: 'abc' });
+    act(() => result.current.sendCommand('claude'));
+    expect(lastEmit('shell:input')).toEqual(['shell:input', { sessionId: 'abc', data: 'claude\r' }]);
+  });
+
   it('ignores a shell:attached whose id does not match the pending target (strict-equality guard)', () => {
     const { result } = renderHook(() => useShellSession({}), { wrapper });
     // First load with one free survivor → auto-attach to s1 (claim:true), pending target 's1'.
@@ -306,6 +326,48 @@ describe('useShellSession', () => {
       act(() => result.current.switchToSession('s2'));
       await expect(result.current.sendImage(photo, 'hi')).resolves.toBe(false);
       expect(readFileAsBase64).not.toHaveBeenCalled();
+    });
+  });
+
+  // The `?cmd=` deep link is a contract with every page that links INTO the
+  // shell — the AI Providers card's "Launch in Shell" button, the GSD/Apps
+  // "open claude here" buttons. If this hook stopped consuming the param the
+  // buttons would silently drop the user at a bare prompt with no error, so pin
+  // that the query param reaches the server as `shell:start { initialCommand }`.
+  describe('?cmd= / ?cwd= / ?provider= deep links', () => {
+    const at = (entry) => ({ children }) => (
+      <MemoryRouter initialEntries={[entry]}>{children}</MemoryRouter>
+    );
+
+    it('starts a new session carrying the ?cmd= line as initialCommand', () => {
+      const cmd = 'codex --dangerously-bypass-approvals-and-sandbox --model gpt-5';
+      renderHook(() => useShellSession({}), { wrapper: at(`/shell?cmd=${encodeURIComponent(cmd)}`) });
+      fire('shell:sessions', []);
+      expect(lastEmit('shell:start')).toEqual(['shell:start', { initialCommand: cmd }]);
+    });
+
+    it('starts a NEW session rather than adopting a live one, so the command actually runs', () => {
+      renderHook(() => useShellSession({}), { wrapper: at('/shell?cmd=claude&cwd=%2Ftmp%2Fapp') });
+      fire('shell:sessions', [session('already-running')]);
+      expect(lastEmit('shell:start')).toEqual(['shell:start', { cwd: '/tmp/app', initialCommand: 'claude' }]);
+      expect(lastEmit('shell:attach')).toBeUndefined();
+    });
+    // The AI Providers card links by provider ID so the SERVER can pair the
+    // command with that provider's env (its backend/auth live in secret
+    // envVars). If the hook dropped the param, the shell would open at a bare
+    // prompt and the button would look broken with no error anywhere.
+    it('forwards ?provider= to the server as shell:start { providerId }', () => {
+      renderHook(() => useShellSession({}), { wrapper: at('/shell?provider=claude-ollama-tui') });
+      fire('shell:sessions', []);
+      expect(lastEmit('shell:start')).toEqual(['shell:start', { providerId: 'claude-ollama-tui' }]);
+    });
+
+    it('sends no command of its own for a provider launch — the server owns it', () => {
+      renderHook(() => useShellSession({}), { wrapper: at('/shell?provider=codex') });
+      fire('shell:sessions', [session('already-running')]);
+      const [, opts] = lastEmit('shell:start');
+      expect(opts.initialCommand).toBeUndefined();
+      expect(lastEmit('shell:attach')).toBeUndefined();
     });
   });
 });

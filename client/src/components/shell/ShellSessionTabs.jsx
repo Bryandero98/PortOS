@@ -4,6 +4,13 @@ import { clickableProps } from '../../lib/a11yKeyboard.js';
 
 const shortId = (id) => id?.slice(0, 6) ?? '';
 
+// Separator-agnostic basename for the tab label. A Windows cwd (`I:\code\example-app`)
+// contains no `/`, so a POSIX-only split leaves the whole path in the tab and blows
+// out its width. `filter(Boolean)` drops the empty tail a trailing separator leaves.
+// POSIX `/` has no segment left and yields undefined, so the caller falls through to
+// the short id; a Windows drive root keeps its `C:` segment, which reads fine as a label.
+const folderName = (cwd) => cwd?.split(/[\\/]/).filter(Boolean).pop();
+
 // Presentational session-tab strip for the Shell page. External TUI runs get a
 // distinct bot icon + accent tint + pulsing dot so they read as "live run you can
 // watch and drive"; interactive shells use the terminal icon. All session actions
@@ -23,7 +30,7 @@ export default function ShellSessionTabs({ sessions, activeSessionId, onSwitch, 
     <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide touch-pan-x">
       {sessions.map((s) => {
         const isActive = s.sessionId === activeSessionId;
-        const label = s.label || s.cwd?.split('/').pop() || shortId(s.sessionId);
+        const label = s.label || folderName(s.cwd) || shortId(s.sessionId);
         const isRun = s.external;
         const TabIcon = isRun ? Bot : TerminalIcon;
         const age = formatDurationMs(Date.now() - s.createdAt);

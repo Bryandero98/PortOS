@@ -2,18 +2,52 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// The preview reads the live renderer and scene off the r3f context to install a
+// PMREM environment. There is no GL context under jsdom, so the stand-ins below
+// are what the environment effect writes to — and `scene.environment` is the one
+// observable that says whether a spec's preset reached the scene at all.
+const threeState = vi.hoisted(() => ({ gl: { isWebGLRenderer: true }, scene: { environment: null } }));
+const environmentBuilds = vi.hoisted(() => []);
+vi.mock('../../lib/threejsEnvironment', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    // PMREM needs a real renderer; what matters here is WHICH preset the preview
+    // asked for, that its texture reached the scene, and that the whole render
+    // TARGET is released again — disposing the texture alone leaks the
+    // framebuffer behind it.
+    createSculptEnvironmentTarget: (_renderer, preset) => {
+      const target = { preset, texture: { preset }, dispose: vi.fn() };
+      environmentBuilds.push(target);
+      return target;
+    },
+  };
+});
+
+// Fails the CANVAS ITSELF, which is how r3f surfaces a throw from inside the
+// scene: it catches whatever the tree threw and re-throws it from its own
+// render. Nothing under jsdom can build real geometry, so this is the only way
+// to reach the boundary the preview now wraps the canvas in.
+const canvasFailure = vi.hoisted(() => ({ error: null }));
 vi.mock('@react-three/fiber', () => ({
-  Canvas: ({ children, ...props }) => (
+  useThree: (selector) => selector(threeState),
+  Canvas: ({ children, ...props }) => {
+    if (canvasFailure.error) throw canvasFailure.error;
+    return (
     <div
       data-testid="threejs-canvas"
       data-alpha={String(props.gl?.alpha)}
+      data-tone-exposure={String(props.gl?.toneMappingExposure)}
+      data-linear={String(props.linear)}
+      data-flat={String(props.flat)}
       data-dpr={Array.isArray(props.dpr) ? props.dpr.join(',') : String(props.dpr)}
       data-shadows={String(props.shadows)}
       data-camera-position={props.camera?.position?.join(',')}
     >
       {children}
     </div>
-  ),
+    );
+  },
   useFrame: vi.fn(),
 }));
 // A chainable stand-in for drei's Bounds api, so the explode re-fit is
@@ -47,6 +81,7 @@ vi.mock('../../lib/threejsSculpt', async (importOriginal) => {
   };
 });
 
+import { THREEJS_RENDER_PROFILE } from '../../lib/threejsEnvironment';
 import ThreejsModelPreview from './ThreejsModelPreview';
 
 const SPEC = {
@@ -229,6 +264,74 @@ describe('ThreejsModelPreview', () => {
     const standard = container.querySelector('meshStandardMaterial');
     expect(standard.getAttribute('ior')).toBeNull();
     expect(standard.getAttribute('transmission')).toBeNull();
+  });
+});
+
+// Punctual lights light a surface; only an environment gives it something to
+// REFLECT. Without one, a physically plausible conductor renders near-black and
+// the next refinement pass "fixes" that by authoring implausible values back in.
+describe('ThreejsModelPreview environment', () => {
+  const metalSpec = (environment) => ({
+    ...SPEC,
+    ...(environment ? { environment } : {}),
+    materials: { chrome: material({ metalness: 1, roughness: 0.1 }) },
+    parts: [part('shell', box, 'chrome')],
+  });
+  const intensityOf = (container) =>
+    container.querySelector('meshStandardMaterial').getAttribute('envMapIntensity');
+
+  beforeEach(() => {
+    environmentBuilds.length = 0;
+    threeState.scene.environment = null;
+  });
+
+  // Every export stamps THREEJS_RENDER_PROFILE onto the model as the settings it
+  // was authored against. r3f installs sRGB + ACESFilmic for `linear={false}
+  // flat={false}`, so passing either flag here would quietly make that claim
+  // false; exposure is the one r3f leaves alone, so the preview states it.
+  it('renders at the render profile the export promises', () => {
+    renderPreview(<ThreejsModelPreview spec={SPEC} />);
+    const canvas = screen.getByTestId('threejs-canvas');
+    expect(canvas).toHaveAttribute('data-tone-exposure', String(THREEJS_RENDER_PROFILE.toneMappingExposure));
+    expect(canvas).toHaveAttribute('data-linear', 'undefined');
+    expect(canvas).toHaveAttribute('data-flat', 'undefined');
+  });
+
+  it('assigns the authored preset to the scene and forwards its intensity to the material', () => {
+    const { container } = renderPreview(<ThreejsModelPreview spec={metalSpec({ preset: 'studio', intensity: 2 })} />);
+
+    expect(environmentBuilds.map((target) => target.preset)).toEqual(['studio']);
+    expect(threeState.scene.environment).toBe(environmentBuilds[0].texture);
+    expect(intensityOf(container)).toBe('2');
+  });
+
+  // A record stored before the environment block shipped has no key and was
+  // rendered with none, so it must keep rendering exactly that way.
+  it('builds nothing for a spec that predates the environment block', () => {
+    const { container } = renderPreview(<ThreejsModelPreview spec={metalSpec(null)} />);
+
+    expect(environmentBuilds).toHaveLength(0);
+    expect(threeState.scene.environment).toBeNull();
+    expect(intensityOf(container)).toBe('1');
+  });
+
+  it('swaps presets without leaking the previous PMREM target', () => {
+    const { rerender } = renderPreview(<ThreejsModelPreview spec={metalSpec({ preset: 'neutral', intensity: 1 })} />);
+    const [first] = environmentBuilds;
+
+    rerender(<ThreejsModelPreview spec={metalSpec({ preset: 'studio', intensity: 1 })} />);
+    expect(first.dispose).toHaveBeenCalled();
+    expect(threeState.scene.environment).toBe(environmentBuilds[1].texture);
+    expect(environmentBuilds[1].preset).toBe('studio');
+  });
+
+  it('releases the render target and clears the scene on unmount', () => {
+    const { unmount } = renderPreview(<ThreejsModelPreview spec={metalSpec({ preset: 'studio', intensity: 1 })} />);
+    const [target] = environmentBuilds;
+
+    unmount();
+    expect(target.dispose).toHaveBeenCalled();
+    expect(threeState.scene.environment).toBeNull();
   });
 });
 
@@ -714,5 +817,80 @@ describe('ThreejsModelPreview clip refresh', () => {
     refined.animation.clips[0].sequences[0].endSeconds = 3;
     rerender(<ThreejsModelPreview spec={refined} />);
     expect(screen.getByText('0.00/5.00s')).toBeInTheDocument();
+  });
+});
+
+describe('ThreejsModelPreview spec-render failures', () => {
+  // React and the shared ErrorBoundary both log every caught error.
+  let logged;
+  beforeEach(() => {
+    logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    canvasFailure.error = null;
+    vi.restoreAllMocks();
+  });
+
+  // The spec is LLM-generated, so a malformed one throws inside geometry
+  // construction. Without a boundary the throw escapes to the router and blanks
+  // the page — the same class of failure the GLB viewer had for meshes.
+  it('shows an inline panel instead of letting a bad spec take the page down', () => {
+    canvasFailure.error = new Error('THREE.BufferGeometry.computeBoundingSphere(): NaN position values');
+    // Nothing catches this above the preview: without its own boundary the throw
+    // escapes `render` here, exactly as it escapes to the router in the app.
+    renderPreview(<ThreejsModelPreview spec={SPEC} />);
+
+    expect(screen.getByTestId('threejs-spec-error')).toBeInTheDocument();
+    expect(screen.getByText('This model spec could not be rendered')).toBeInTheDocument();
+    expect(screen.getByText(/NaN position values/)).toBeInTheDocument();
+    expect(screen.queryByTestId('threejs-canvas')).not.toBeInTheDocument();
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('💥 React Error'), expect.anything());
+    // The overlay chrome is a DOM peer that comes AFTER the panel, so leaving it
+    // mounted paints it over the message — and every control on it drives a
+    // canvas that no longer exists.
+    expect(screen.queryByRole('radiogroup', { name: 'Preview background' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Explode')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Drag to orbit/)).not.toBeInTheDocument();
+  });
+
+  // The selected-part badge is the third piece of chrome gated on the failure,
+  // and it only mounts with a part in the URL — so the case above never reaches
+  // it. Same defect either way: it is a DOM peer that follows the panel, so it
+  // paints over the message and its Clear button drives an unmounted canvas.
+  it('hides the selected-part badge behind the failure too', () => {
+    canvasFailure.error = new Error('bad geometry');
+    renderPreview(<ThreejsModelPreview spec={knifeSpec()} />, '/?part=handle');
+
+    expect(screen.getByTestId('threejs-spec-error')).toBeInTheDocument();
+    expect(screen.queryByText('Handle')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Clear part selection' })).not.toBeInTheDocument();
+  });
+
+  // A lost WebGL context throws the same way a bad spec does, but it can come
+  // back — and the spec signature never changes, so nothing else would clear it.
+  it('recovers from a failure the spec signature can never clear', () => {
+    canvasFailure.error = new Error('THREE.WebGLRenderer: Error creating WebGL context.');
+    renderPreview(<ThreejsModelPreview spec={SPEC} />);
+    expect(screen.getByTestId('threejs-spec-error')).toBeInTheDocument();
+
+    canvasFailure.error = null;
+    fireEvent.click(screen.getByRole('button', { name: /Retry/i }));
+
+    expect(screen.queryByTestId('threejs-spec-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('threejs-canvas')).toBeInTheDocument();
+  });
+
+  // The failure is remembered against the spec that produced it, so a
+  // regeneration is not stuck behind the previous spec's bad geometry.
+  it('clears the panel when a different spec arrives', () => {
+    canvasFailure.error = new Error('bad geometry');
+    const { rerender } = renderPreview(<ThreejsModelPreview spec={SPEC} />);
+    expect(screen.getByTestId('threejs-spec-error')).toBeInTheDocument();
+
+    canvasFailure.error = null;
+    rerender(<ThreejsModelPreview spec={{ ...SPEC, name: 'Regenerated model' }} />);
+
+    expect(screen.queryByTestId('threejs-spec-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('threejs-canvas')).toBeInTheDocument();
   });
 });

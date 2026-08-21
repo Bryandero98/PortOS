@@ -255,7 +255,7 @@ describe('getCharacterSkills — populated domains', () => {
 
   it('counts media assets without materializing every row', async () => {
     // countAssets() is a COUNT(*); listAssets() selects and JSON-parses the full payload of
-    // every rendered image and video. GET /api/character is polled every 15s by the CyberCity
+    // every rendered image and video. GET /api/character is polled every 15s by the OpenWorld
     // HUD, so this must never regress back to `(await listAssets()).length`.
     vi.mocked(countAssets).mockClear();
     await getCharacterSkills();

@@ -35,6 +35,13 @@ vi.mock('./worktreeManager.js', () => ({
     };
   }),
 }));
+// Worktree age drives the claim windows (STALE_CLAIM_IDLE_MS / SHIPPED_CLAIM_IDLE_MS),
+// and gatherBranchState reads it via stat(). Default to "ancient" so tests that
+// don't care about age behave as before; set worktreeMtimeMs to pin a specific age.
+let worktreeMtimeMs = 0;
+vi.mock('node:fs/promises', () => ({
+  stat: vi.fn(async () => ({ mtimeMs: worktreeMtimeMs })),
+}));
 const ensureForgeReachableMock = vi.fn(async () => ({ ok: true, status: 'ok', detail: null, remedy: null }));
 vi.mock('./github.js', () => ({
   execGh: vi.fn(async () => '[]'),
@@ -63,7 +70,8 @@ import {
   isAbandonedAgentWorktree, resolveLiveOwnerReason, gatherDivergence,
   actionOn, filterActionable, desiredEndState, formatInFlightForPrompt, actionableSignature,
   limitBranchesForAgent,
-  branchPriorityRank, prioritizeBranches,
+  branchPriorityRank, prioritizeBranches, worktreeProtectionExpiresAt, describeIdleReconcilePark,
+  SHIPPED_CLAIM_IDLE_MS, STALE_CLAIM_IDLE_MS,
   upstreamBranchName, parseRemoteHeads, partitionRemoteOrphans, reapOrphanedRemotes
 } from './branchReconcile.js';
 import * as git from './git.js';
@@ -74,6 +82,9 @@ import { getOriginInfo } from '../lib/gitRemote.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Ancient by default, so age-indifferent tests keep their pre-window behavior;
+  // a test that pins a specific age must not leak it into the next one.
+  worktreeMtimeMs = 0;
   // clearAllMocks keeps implementations, so restore the default GitHub origin —
   // a case that swaps in a GitLab/origin-less remote would otherwise leak into
   // every test after it.
@@ -230,16 +241,74 @@ describe('cleanupMerged', () => {
     expect(git.deleteBranch).toHaveBeenCalledWith('/repo', 'claim/issue-1933', { local: true });
   });
 
-  it('still protects a RECENT claim worktree even when merged + clean', async () => {
+  it('still protects a RECENT claim worktree even when merged + clean, and says when the hold lifts', async () => {
     git.isBranchMergedInto.mockResolvedValue(true);
     execGit.mockResolvedValue({ stdout: '', exitCode: 0 }); // clean
+    const before = Date.now();
     const res = await cleanupMerged('/repo', 'main', [
       { branch: 'claim/issue-9999', worktreePath: '/repo/data/cos/worktrees/claim-issue-9999', worktreeAgeMs: 60 * 1000 } // 1 min old
     ]);
     expect(res.cleaned).toEqual([]);
-    expect(res.skipped).toEqual([{ branch: 'claim/issue-9999', reason: 'worktree-human-claim' }]);
+    expect(res.skipped).toHaveLength(1);
+    expect(res.skipped[0]).toMatchObject({ branch: 'claim/issue-9999', reason: 'worktree-human-claim' });
+    // The whole point of retryAt: the caller can park until the grace window
+    // lapses instead of sleeping to the next recheck. ~7 days minus 1 minute out.
+    const retryMs = Date.parse(res.skipped[0].retryAt);
+    expect(retryMs).toBeGreaterThan(before + 6.9 * 24 * 60 * 60 * 1000);
+    expect(retryMs).toBeLessThanOrEqual(Date.now() + 7 * 24 * 60 * 60 * 1000);
     expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
     expect(git.deleteBranch).not.toHaveBeenCalled();
+  });
+
+  it('reaps a SHIPPED claim once idle, but not while dirty, un-shipped, or still busy', async () => {
+    const HOUR = 60 * 60 * 1000;
+    const shipped = (over) => ({
+      worktreePath: '/repo/data/cos/worktrees/claim-x', worktreeAgeMs: 2 * HOUR, upstreamGone: true, ...over
+    });
+    git.isBranchMergedInto.mockResolvedValue(true);
+
+    execGit.mockResolvedValue({ stdout: '', exitCode: 0 }); // clean
+    const reaped = await cleanupMerged('/repo', 'main', [{ branch: 'claim/issue-0', ...shipped() }]);
+    expect(reaped.cleaned).toEqual(['claim/issue-0']);
+
+    // The dirty gate is independent — a shorter window never overrides it.
+    execGit.mockResolvedValue({ stdout: ' M server/index.js', exitCode: 0 }); // dirty
+    const dirty = await cleanupMerged('/repo', 'main', [{ branch: 'claim/issue-1', ...shipped() }]);
+    expect(dirty.cleaned).toEqual([]);
+    expect(dirty.skipped).toEqual([{ branch: 'claim/issue-1', reason: 'worktree-dirty' }]);
+
+    execGit.mockResolvedValue({ stdout: '', exitCode: 0 }); // clean
+    // No completion proof — never pushed, remote ref still on origin, or the
+    // remote could not be read. The week-long window still applies.
+    const unshipped = await cleanupMerged('/repo', 'main', [
+      { branch: 'claim/issue-2', ...shipped({ upstreamGone: false }) }
+    ]);
+    expect(unshipped.cleaned).toEqual([]);
+    expect(unshipped.skipped[0]).toMatchObject({ branch: 'claim/issue-2', reason: 'worktree-human-claim' });
+
+    // Shipped but touched a minute ago — a claim process mid-teardown, or a peer
+    // machine merged the PR while this session is still running. Held, and the
+    // caller is told when the short window lapses.
+    const busy = await cleanupMerged('/repo', 'main', [
+      { branch: 'claim/issue-3', ...shipped({ worktreeAgeMs: 60 * 1000 }) }
+    ]);
+    expect(busy.cleaned).toEqual([]);
+    expect(busy.skipped[0]).toMatchObject({ branch: 'claim/issue-3', reason: 'worktree-human-claim' });
+    expect(Date.parse(busy.skipped[0].retryAt)).toBeLessThanOrEqual(Date.now() + SHIPPED_CLAIM_IDLE_MS);
+  });
+
+  it('omits retryAt for holds that do NOT lift on a clock', async () => {
+    git.isBranchMergedInto.mockResolvedValue(true);
+    const res = await cleanupMerged('/repo', 'main', [
+      { branch: 'locked-b', worktreePath: '/wt/locked', worktreeLocked: true, worktreeAgeMs: 60 * 1000 },
+      { branch: 'active-b', worktreePath: '/repo/data/cos/worktrees/agent-abc12345', worktreeAgeMs: 60 * 1000 }
+    ], { activeAgentIds: new Set(['agent-abc12345']) });
+    // A lock and a running agent both end at a time nothing here can predict —
+    // inventing one would park the drain past a hold that may already be gone.
+    expect(res.skipped).toEqual([
+      { branch: 'locked-b', reason: 'worktree-locked' },
+      { branch: 'active-b', reason: 'worktree-active-agent' }
+    ]);
   });
 });
 
@@ -261,6 +330,23 @@ describe('worktreeProtectionReason', () => {
     expect(worktreeProtectionReason({ path: '/x/claim-foo', ageMs: null, staleClaimIdleMs })).toBe('worktree-human-claim');
     // locked always wins even when stale
     expect(worktreeProtectionReason({ path: '/x/claim-foo', locked: true, ageMs: 3 * 24 * 60 * 60 * 1000, staleClaimIdleMs })).toBe('worktree-locked');
+  });
+
+  // A shipped claim gets a SHORTER window, not a bypass — so a worktree a live
+  // claim process is still standing in (it just merged, or a peer machine merged
+  // for it) is protected until it has been idle, and an unreadable mtime still
+  // fails safe. Both properties come free from reusing the window; a bypass had
+  // neither.
+  it('honors the short shipped-claim window without abandoning the window itself', () => {
+    const at = (ageMs, staleClaimIdleMs) => worktreeProtectionReason({ path: '/x/claim-foo', ageMs, staleClaimIdleMs });
+    // Just-merged and still busy: inside the short window, still protected.
+    expect(at(60 * 1000, SHIPPED_CLAIM_IDLE_MS)).toBe('worktree-human-claim');
+    // Idle past it: reaped, without waiting out the week-long window.
+    expect(at(2 * 60 * 60 * 1000, SHIPPED_CLAIM_IDLE_MS)).toBeNull();
+    expect(at(2 * 60 * 60 * 1000, STALE_CLAIM_IDLE_MS)).toBe('worktree-human-claim');
+    // Unreadable mtime fails safe even for a shipped claim.
+    expect(at(null, SHIPPED_CLAIM_IDLE_MS)).toBe('worktree-human-claim');
+    expect(SHIPPED_CLAIM_IDLE_MS).toBeLessThan(STALE_CLAIM_IDLE_MS);
   });
 });
 
@@ -364,10 +450,22 @@ describe('resolveLiveOwnerReason', () => {
   it('reports dispatch-side ownership while cleanup keeps claim worktrees protected', () => {
     expect(resolveLiveOwnerReason({ path: '/wt/agent-aaaaaaaa', activeAgentIds: live })).toBe('worktree-active-agent');
     expect(resolveLiveOwnerReason({ path: '/wt/agent-bbbbbbbb', locked: true, activeAgentIds: live })).toBe('worktree-locked');
-    // A claim directory identifies the claim, but not a live process. The
-    // cleanup-side protection remains covered by worktreeProtectionReason.
+    // A claim directory identifies the claim, but not a live process — this side
+    // passes allowLiveClaim. The cleanup-side protection remains covered by
+    // worktreeProtectionReason. A lock still wins, structurally: the gate tests
+    // it before the claim, so no slug rewriting happens here.
     expect(resolveLiveOwnerReason({ path: '/wt/claim-fix-thing', activeAgentIds: live })).toBeNull();
     expect(resolveLiveOwnerReason({ path: '/wt/claim-fix-thing', locked: true, activeAgentIds: live })).toBe('worktree-locked');
+  });
+
+  it('lets a LIVE owner outrank the claim exception, not the other way round', () => {
+    // activeAgentIds holds `agent-<id>` keys, so a claim basename can only land
+    // there out of contract — but the gate tests liveness BEFORE the claim, so
+    // if one ever did, the branch is held rather than dispatched. That is the
+    // intended direction: never hand a branch to an agent while something says
+    // a process still owns it.
+    expect(resolveLiveOwnerReason({ path: '/wt/claim-fix-thing', activeAgentIds: new Set(['claim-fix-thing']) }))
+      .toBe('worktree-active-agent');
   });
 
   it('is null for a free worktree, a dead agent, and no worktree at all', () => {
@@ -642,6 +740,61 @@ describe('reconcile', () => {
     const res = await reconcile('/repo');
     expect(res.inFlight.map((i) => i.branch)).toEqual(['claim/issue-42', 'feature/new-thing', 'scratch-thing']);
     expect(res.inFlight.every((i) => i.state === 'NEEDS_PR')).toBe(true);
+  });
+
+  // The regression this whole `upstreamGone` path exists for: four claims whose
+  // PRs had merged (deleting their remote branches) sat with their worktrees
+  // intact, and every run reported "cleaned 0 / merged branches held back" for a
+  // week because the claim grace window outranked the fact that they were done.
+  it('cleans a SHIPPED claim end to end instead of parking on the grace window', async () => {
+    git.getBranches.mockResolvedValue([
+      { name: 'claim/issue-4348', isDefault: false, current: false, tracking: 'origin/claim/issue-4348', merged: true }
+    ]);
+    wt.listWorktrees.mockResolvedValue([
+      { path: '/repo/data/cos/worktrees/claim-issue-4348', branch: 'refs/heads/claim/issue-4348' }
+    ]);
+    execGh.mockResolvedValue('[]');
+    // ls-remote reports origin has only main — the claim's remote branch was
+    // deleted when its PR merged. Everything else (status, etc.) reads clean.
+    execGit.mockImplementation(async (args) => args[0] === 'ls-remote'
+      ? { stdout: 'abc123\trefs/heads/main\n', exitCode: 0 }
+      : { stdout: '', exitCode: 0 });
+    // Idle for hours — past SHIPPED_CLAIM_IDLE_MS, so no live session is implied.
+    worktreeMtimeMs = Date.now() - 4 * 60 * 60 * 1000;
+    git.isBranchMergedInto.mockResolvedValue(true);
+
+    const res = await reconcile('/repo');
+    expect(res.cleaned).toEqual(['claim/issue-4348']);
+    expect(res.skipped).toEqual([]);
+    // Nothing left to report as held back — the park reason must be "quiet repo",
+    // not "waiting on a protected worktree".
+    expect(describeIdleReconcilePark(res.skipped, res.wip).reason).toBe('no-in-flight-branches');
+    expect(wt.forceRemoveWorktreeDir).toHaveBeenCalledWith('/repo', '/repo/data/cos/worktrees/claim-issue-4348', expect.any(Object));
+  });
+
+  // The fail-safe half of the same signal: "we could not read origin" must never
+  // read as "the remote branch is gone", or an unreachable network would start
+  // reaping claim worktrees that were never shipped.
+  it('does NOT treat an unreadable remote as proof a claim shipped', async () => {
+    git.getBranches.mockResolvedValue([
+      { name: 'claim/issue-4348', isDefault: false, current: false, tracking: 'origin/claim/issue-4348', merged: true }
+    ]);
+    wt.listWorktrees.mockResolvedValue([
+      { path: '/repo/data/cos/worktrees/claim-issue-4348', branch: 'refs/heads/claim/issue-4348' }
+    ]);
+    execGh.mockResolvedValue('[]');
+    execGit.mockImplementation(async (args) => args[0] === 'ls-remote'
+      ? { stdout: '', exitCode: 1 } // ls-remote failed → listRemoteHeads returns null
+      : { stdout: '', exitCode: 0 });
+    // Idle long enough that the SHORT window would have released it — so the only
+    // thing holding it back is the unreadable remote, which is what this pins.
+    worktreeMtimeMs = Date.now() - 4 * 60 * 60 * 1000;
+    git.isBranchMergedInto.mockResolvedValue(true);
+
+    const res = await reconcile('/repo');
+    expect(res.cleaned).toEqual([]);
+    expect(res.skipped[0]).toMatchObject({ branch: 'claim/issue-4348', reason: 'worktree-human-claim' });
+    expect(wt.forceRemoveWorktreeDir).not.toHaveBeenCalled();
   });
 
   it('cleans merged, returns in-flight + wip partitions', async () => {
@@ -1422,5 +1575,107 @@ describe('orphaned remote branches', () => {
       const res = await reconcile('/repo');
       expect(res.orphanRemotes).toEqual({ reaped: [], reported: [] });
     });
+  });
+});
+
+describe('worktreeProtectionExpiresAt', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const CLAIM = '/repo/data/cos/worktrees/claim-issue-42';
+  const at = (over = {}) => worktreeProtectionExpiresAt({ path: CLAIM, ageMs: 2 * DAY, ...over });
+
+  it('dates a claim hold to the end of its grace window', () => {
+    const before = Date.now();
+    const ms = Date.parse(at());
+    // 7-day default window, 2 days elapsed ⇒ ~5 days out.
+    expect(ms).toBeGreaterThanOrEqual(before + 5 * DAY);
+    expect(ms).toBeLessThanOrEqual(Date.now() + 5 * DAY);
+  });
+
+  it('returns null for holds nothing can schedule', () => {
+    // A locked or agent-owned tree lifts when a human or a process decides to,
+    // not on a clock — promising a time would be a guess.
+    expect(at({ locked: true })).toBeNull();
+    expect(worktreeProtectionExpiresAt({
+      path: '/repo/data/cos/worktrees/agent-abc12345', ageMs: 2 * DAY, activeAgentIds: new Set(['agent-abc12345'])
+    })).toBeNull();
+    expect(worktreeProtectionExpiresAt({ path: null, ageMs: 2 * DAY })).toBeNull();
+  });
+
+  it('returns null when the age is unknown rather than guessing one', () => {
+    // An unmeasured age must not date the window from zero — that would park a
+    // full window out on a tree that may already be reapable.
+    for (const ageMs of [null, undefined, NaN, 'old']) expect(at({ ageMs })).toBeNull();
+  });
+
+  it('returns null once the window has already lapsed', () => {
+    expect(at({ ageMs: 9 * DAY })).toBeNull();
+  });
+
+  it('gives no expiry to a claim worktree that is ALSO locked', () => {
+    // The lock outlives the grace window, and the gate reports it as such: it
+    // tests the lock BEFORE the claim, so a locked claim tree reads
+    // 'worktree-locked' and there is no window here to date.
+    expect(worktreeProtectionExpiresAt({ path: CLAIM, ageMs: 2 * DAY, locked: true })).toBeNull();
+  });
+
+  it('gives no expiry to a non-claim worktree that is not held at all', () => {
+    expect(worktreeProtectionExpiresAt({ path: '/repo/data/cos/worktrees/agent-abc12345', ageMs: 2 * DAY, activeAgentIds: new Set() })).toBeNull();
+  });
+});
+
+describe('describeIdleReconcilePark', () => {
+  const CLAIM_HOLD = { branch: 'claim/issue-4348', reason: 'worktree-human-claim', retryAt: '2026-01-15T00:00:00.000Z' };
+
+  it('reports a quiet repo when nothing is held', () => {
+    expect(describeIdleReconcilePark([], [])).toEqual({
+      reason: 'no-in-flight-branches', heldBackMerged: [], counts: null, notLaterThan: null
+    });
+    expect(describeIdleReconcilePark()).toMatchObject({ reason: 'no-in-flight-branches' });
+  });
+
+  it('names merged branches held back, with the count and the earliest lift', () => {
+    // The regression this exists for: four merged claim branches queued behind a
+    // grace window used to persist as 'no-in-flight-branches' / zero counts, so
+    // the task read as idle — indistinguishable from not running at all.
+    const out = describeIdleReconcilePark([
+      CLAIM_HOLD,
+      { branch: 'claim/issue-4442', reason: 'worktree-human-claim', retryAt: '2026-01-13T00:00:00.000Z' }
+    ], []);
+    expect(out.reason).toBe('merged-branches-held-back');
+    expect(out.counts).toEqual({ heldBackMerged: 2 });
+    expect(out.notLaterThan).toBe('2026-01-13T00:00:00.000Z');
+    expect(out.heldBackMerged).toHaveLength(2);
+  });
+
+  it('live owners outrank a held-back merge — a running session is why it is idle', () => {
+    const out = describeIdleReconcilePark([CLAIM_HOLD], [{ branch: 'cos/x', liveOwnerReason: 'worktree-active-agent' }]);
+    expect(out.reason).toBe('branches-held-by-live-owners');
+    // The held-back set still travels, so the log/UI can name both.
+    expect(out.counts).toEqual({ heldBackMerged: 1 });
+  });
+
+  it('ignores skips that are not holds', () => {
+    // 'cleanup-disabled' (a toggle) and 'not-merged-on-recheck' (never eligible)
+    // are not pending work — counting them would invent a queue that does not exist.
+    const out = describeIdleReconcilePark([
+      { branch: 'a', reason: 'cleanup-disabled' },
+      { branch: 'b', reason: 'not-merged-on-recheck' },
+      { branch: 'c', reason: 'delete-failed: boom' }
+    ], []);
+    expect(out).toEqual({ reason: 'no-in-flight-branches', heldBackMerged: [], counts: null, notLaterThan: null });
+  });
+
+  it('ignores an unreadable retryAt rather than parking on NaN', () => {
+    const out = describeIdleReconcilePark([
+      { branch: 'a', reason: 'worktree-human-claim', retryAt: 'not-a-date' },
+      { branch: 'b', reason: 'worktree-human-claim', retryAt: '2026-01-14T00:00:00.000Z' }
+    ], []);
+    expect(out.notLaterThan).toBe('2026-01-14T00:00:00.000Z');
+  });
+
+  it('holds with no scheduled lift park on the normal cadence', () => {
+    const out = describeIdleReconcilePark([{ branch: 'a', reason: 'worktree-locked' }], []);
+    expect(out.reason).toBe('merged-branches-held-back');
+    expect(out.notLaterThan).toBeNull();
   });
 });

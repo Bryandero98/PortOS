@@ -96,8 +96,13 @@ import { buildLightContextPrompt, buildAgentPrompt, buildCompletionGuidelineBull
 import { getCodeReviewDefaults } from './codeReview.js'; // mocked above — control the configured default
 import { isTruthyMeta } from './agentState.js';
 import { buildPrompt } from './promptService.js'; // mocked above — inspect call args
+import { getMemorySection } from './memoryRetriever.js';
+import { getDigitalTwinForPrompt } from './digital-twin.js';
+import { getToolsSummaryForPrompt } from './tools.js';
 import { loadSlashdoFile, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js'; // mocked above — control the inlined body
 import { SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
+// The heading a task-type hook's prompt points at to locate the sentinel path.
+import { PROGRAMMATIC_OUTPUT_COMPLETION_HEADING } from '../lib/agentSentinel.js';
 
 function makeTask(overrides = {}) {
   return {
@@ -699,7 +704,7 @@ describe('buildLightContextPrompt', () => {
         { isTui: true, providerId: 'opencode-ollama-tui', providerCommand: 'opencode' });
 
       expect(prompt).toMatch(/PR_URL=\$\(glab mr create --source-branch claim\/issue-4363 --target-branch main/);
-      expect(prompt).toMatch(/PR_NUMBER=\$\(glab mr view "\$PR_URL" -F json \| jq -r \.iid\)/);
+      expect(prompt).toMatch(/PR_NUMBER=\$\(glab mr view "\$PR_URL" --output json \| jq -r \.iid\)/);
       expect(prompt).toMatch(/glab mr diff \$PR_NUMBER/);
       expect(prompt).toMatch(/glab mr merge "\$PR_NUMBER" --yes --remove-source-branch/);
       expect(prompt).toMatch(/glab mr view "\$PR_NUMBER"/);
@@ -2042,6 +2047,12 @@ describe('discardWorktree (reasoning-only) completion contract', () => {
 
   const assertReasoningOnly = (prompt) => {
     expect(prompt).toMatch(/## Completion \(Reasoning-Only Task\)/);
+    // Same heading via the exported constant: a pre-spawn task-type hook
+    // (layered-intelligence) can't know the per-instance sentinel filename, so
+    // its prompt points the agent at THIS section by name. Re-typing the
+    // heading as a literal here would aim that pointer at a section the
+    // briefing never emits.
+    expect(prompt).toContain(`## ${PROGRAMMATIC_OUTPUT_COMPLETION_HEADING}`);
     expect(prompt).toMatch(/discarded on exit/);
     expect(prompt).toMatch(/\.agent-done/);
     // The whole point: no push/PR/merge instructions anywhere.
@@ -2202,6 +2213,79 @@ describe('discardWorktree (reasoning-only) completion contract', () => {
       // …and the positive half of the same contract still renders.
       expect(builderAuthored).toMatch(/## Completion \(Reasoning-Only Task\)/);
       expect(builderAuthored).toMatch(/Do NOT commit, push, or open a PR/);
+    });
+
+    it('a Creative Director task on the full (api) path never splices CLAUDE.md — the fixture is reachable but irrelevant to a content-judging prompt', async () => {
+      const cdTask = makeTask({
+        metadata: { creativeDirector: { projectId: 'p', kind: 'evaluate' }, useWorktree: false, openPR: false },
+      });
+      const prompt = await buildAgentPrompt(cdTask, {}, '/r', null, isTruthyMeta, { providerType: 'api' });
+      expect(prompt).not.toMatch(/## CLAUDE\.md Instructions/);
+      expect(prompt).not.toMatch(/Example Global Instructions/);
+    });
+
+    it('a Creative Director task on the full (api) path also omits memory, digital-twin, and onboard-tools sections (#4650)', async () => {
+      // Distinctive sentinels so a skipped fetch cannot be confused with an
+      // empty-but-called fetch. Restored after so sibling tests keep the empty
+      // default (null/'') the rest of the file relies on.
+      vi.mocked(getMemorySection).mockClear().mockResolvedValue('## Memory Context\nCD_MEMORY_SENTINEL');
+      vi.mocked(getDigitalTwinForPrompt).mockClear().mockResolvedValue('## Digital Twin\nCD_TWIN_SENTINEL');
+      vi.mocked(getToolsSummaryForPrompt).mockClear().mockResolvedValue('## Available Tools\nCD_TOOLS_SENTINEL');
+      vi.mocked(buildPrompt).mockClear();
+      const cdTask = makeTask({
+        metadata: { creativeDirector: { projectId: 'p', kind: 'evaluate' }, useWorktree: false, openPR: false },
+      });
+      const prompt = await buildAgentPrompt(cdTask, {}, '/r', null, isTruthyMeta, { providerType: 'api' });
+      expect(getMemorySection).not.toHaveBeenCalled();
+      expect(getDigitalTwinForPrompt).not.toHaveBeenCalled();
+      expect(getToolsSummaryForPrompt).not.toHaveBeenCalled();
+      const [, context] = vi.mocked(buildPrompt).mock.calls.at(-1);
+      expect(context.memorySection).toBeNull();
+      expect(context.digitalTwinSection).toBeNull();
+      expect(context.toolsSection).toBe('');
+      expect(context.claudeMdSection).toBeNull();
+      expect(prompt).not.toContain('CD_MEMORY_SENTINEL');
+      expect(prompt).not.toContain('CD_TWIN_SENTINEL');
+      expect(prompt).not.toContain('CD_TOOLS_SENTINEL');
+      vi.mocked(getMemorySection).mockResolvedValue(null);
+      vi.mocked(getDigitalTwinForPrompt).mockResolvedValue(null);
+      vi.mocked(getToolsSummaryForPrompt).mockResolvedValue('');
+    });
+
+    it('a non-CD api task still loads memory, digital-twin, and onboard-tools sections', async () => {
+      vi.mocked(getMemorySection).mockClear().mockResolvedValue('## Memory Context\nNONCD_MEMORY_SENTINEL');
+      vi.mocked(getDigitalTwinForPrompt).mockClear().mockResolvedValue('## Digital Twin\nNONCD_TWIN_SENTINEL');
+      vi.mocked(getToolsSummaryForPrompt).mockClear().mockResolvedValue('## Available Tools\nNONCD_TOOLS_SENTINEL');
+      vi.mocked(buildPrompt).mockClear();
+      const prompt = await buildAgentPrompt(makeTask(), {}, '/r', null, isTruthyMeta, { providerType: 'api' });
+      expect(getMemorySection).toHaveBeenCalled();
+      expect(getDigitalTwinForPrompt).toHaveBeenCalled();
+      expect(getToolsSummaryForPrompt).toHaveBeenCalled();
+      const [, context] = vi.mocked(buildPrompt).mock.calls.at(-1);
+      expect(context.memorySection).toContain('NONCD_MEMORY_SENTINEL');
+      expect(context.digitalTwinSection).toContain('NONCD_TWIN_SENTINEL');
+      expect(context.toolsSection).toContain('NONCD_TOOLS_SENTINEL');
+      // Fallback template (buildPrompt is mocked null) still inlines memory + tools.
+      expect(prompt).toContain('NONCD_MEMORY_SENTINEL');
+      expect(prompt).toContain('NONCD_TOOLS_SENTINEL');
+      vi.mocked(getMemorySection).mockResolvedValue(null);
+      vi.mocked(getDigitalTwinForPrompt).mockResolvedValue(null);
+      vi.mocked(getToolsSummaryForPrompt).mockResolvedValue('');
+    });
+
+    it('a CD scratch cwd does not leak repo CLAUDE.md into getClaudeMdContext', async () => {
+      // Mirrors the fixture-pinning in this block: a dir with no CLAUDE.md
+      // (the CD scratch shape) must not surface content that lives in a sibling
+      // "repo" fixture. Global ~/.claude/CLAUDE.md still splices here because
+      // this describe points homedir at a live fixture — that is a different
+      // channel than native project discovery from cwd.
+      const repo = mkdtempSync(join(tmpdir(), 'portos-cd-repo-'));
+      writeFileSync(join(repo, 'CLAUDE.md'), 'REPO_CLAUDE_MD_LEAK_SENTINEL');
+      const scratch = mkdtempSync(join(tmpdir(), 'portos-cd-scratch-'));
+      expect(await getClaudeMdContext(repo)).toContain('REPO_CLAUDE_MD_LEAK_SENTINEL');
+      expect(await getClaudeMdContext(scratch)).not.toContain('REPO_CLAUDE_MD_LEAK_SENTINEL');
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(scratch, { recursive: true, force: true });
     });
 
     it('light TUI path suppresses the merge instruction and never splices the global CLAUDE.md at all', () => {

@@ -3,14 +3,7 @@ import { createReadStream } from 'node:fs';
 import { z } from 'zod';
 import { asyncHandler, ServerError, sendErrorResponse } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
-import {
-  getTarget,
-  listTargets,
-  detectHostCapabilities,
-  unavailableReason,
-  unavailableReasonLabel,
-  IMAGE_TO_3D_TARGET_IDS,
-} from '../services/imageTo3d/targets.js';
+import { getTarget, listTargets, detectHostCapabilities, unavailableReason, unavailableReasonLabel, IMAGE_TO_3D_TARGET_IDS, renderOptionSupportFor } from '../services/imageTo3d/targets.js';
 import { getTargetAdapter } from '../services/imageTo3d/adapters.js';
 import {
   listModels,
@@ -19,7 +12,11 @@ import {
   startGeneration,
   deleteModel,
   getModelAsset,
+  getModelFullMesh,
 } from '../services/imageTo3d/models.js';
+import {
+  RENDER_STEPS_MIN, RENDER_STEPS_MAX, RENDER_SEED_MAX, DETAIL_TIERS, ALPHA_MODES,
+} from '../services/imageTo3d/renderOptions.js';
 import { createInstallLogger } from '../lib/installLogger.js';
 import { openSseStream } from '../lib/sseDownload.js';
 
@@ -28,11 +25,27 @@ const router = Router();
 const galleryFilenameSchema = z.string().trim().min(1).max(256)
   .regex(/^[^/\\]+\.(png|jpe?g|webp)$/i, 'filename must be a gallery image basename');
 
+// PER-RUN sampler knobs, shared by create and re-generate. Nothing persists
+// between runs: absent steps → the pipeline default, absent seed → a fresh
+// random roll for that run, absent keyBackground → no keying (the pipeline's own
+// learned matte runs instead).
+const renderOptionsSchema = z.object({
+  steps: z.number().int().min(RENDER_STEPS_MIN).max(RENDER_STEPS_MAX).optional(),
+  seed: z.number().int().min(0).max(RENDER_SEED_MAX).optional(),
+  keyBackground: z.boolean().optional(),
+  // Abstract tier, not a lane's raw pipeline value — the target maps it (see
+  // renderOptions.js). Enums come from there so the route can't accept a tier the
+  // normalizer would silently discard.
+  detail: z.enum([...DETAIL_TIERS]).optional(),
+  alphaMode: z.enum([...ALPHA_MODES]).optional(),
+  normalMap: z.boolean().optional(),
+});
+
 const createModelSchema = z.object({
   name: z.string().trim().min(1).max(120),
   filename: galleryFilenameSchema,
   target: z.enum([...IMAGE_TO_3D_TARGET_IDS]).optional(),
-});
+}).extend(renderOptionsSchema.shape);
 
 // Target ids with an install currently running — a rapid double-click would
 // otherwise race two clone/setup processes against the same install dir.
@@ -240,20 +253,45 @@ router.get('/models', asyncHandler(async (_req, res) => {
   res.json(await listModels());
 }));
 
+/**
+ * Attach the target's render-option support to a model response.
+ *
+ * Projected at the response boundary, never stored: the detail view loads a RECORD
+ * rather than the target list, and still has to know which per-run knobs this record's
+ * target honors. Derived from the descriptor on every read, so it cannot go stale.
+ *
+ * Applied to EVERY response that returns a model, not just the GET. The client does
+ * `setRecord(next)` with the POST body, so a create/re-render response that omitted the
+ * field would blank it — flipping the disabled Quality control and its hint back on
+ * until the next poll restored them.
+ */
+const withRenderSupport = (model) => {
+  const supportsRenderOptions = renderOptionSupportFor(model.target);
+  return supportsRenderOptions ? { ...model, supportsRenderOptions } : model;
+};
+
 router.post('/models', asyncHandler(async (req, res) => {
   const input = validateRequest(createModelSchema, req.body);
   const model = await createModel(input);
-  res.status(202).json(model);
+  res.status(202).json(withRenderSupport(model));
 }));
 
-router.get('/models/:id/asset', asyncHandler(async (req, res) => {
-  const { path, filename } = await getModelAsset(req.params.id);
-  res.set('Content-Type', 'model/gltf-binary');
+/**
+ * Stream a resolved mesh file as an attachment.
+ *
+ * Shared by the GLB and full-mesh OBJ downloads: the error handling below is the
+ * whole reason this is a function rather than two copies. The 'error' event fires
+ * OUTSIDE the asyncHandler promise chain, so a throw there would crash the
+ * process — it has to go through sendErrorResponse (shared envelope +
+ * headers-sent guard).
+ *
+ * @param {import('express').Response} res
+ * @param {{path: string, filename: string}} file
+ * @param {string} contentType
+ */
+function streamMeshDownload(res, { path, filename }, contentType) {
+  res.set('Content-Type', contentType);
   res.set('Content-Disposition', `attachment; filename="${filename}"`);
-  // The 'error' event fires outside the asyncHandler promise chain, so a throw
-  // here would crash the process — route it through sendErrorResponse (the shared
-  // envelope + headers-sent guard) instead. A file removed between the readiness
-  // check and the stream just 404s the download.
   const stream = createReadStream(path);
   stream.on('error', (err) => {
     console.warn(`⚠️ Image-to-3D asset stream error: ${err.code || err.message}`);
@@ -263,24 +301,39 @@ router.get('/models/:id/asset', asyncHandler(async (req, res) => {
     if (res.headersSent) {
       res.destroy(err);
     } else {
-      // Drop the GLB download headers set above so the JSON error body isn't
-      // offered to the browser as a "<name>.glb" attachment.
+      // Drop the download headers set above so the JSON error body isn't offered
+      // to the browser as an attachment named like a mesh file.
       res.removeHeader('Content-Disposition');
       sendErrorResponse(res, new ServerError('Mesh file not found', { status: 404, code: 'ASSET_MISSING' }));
     }
   });
   stream.pipe(res);
+}
+
+router.get('/models/:id/asset', asyncHandler(async (req, res) => {
+  streamMeshDownload(res, await getModelAsset(req.params.id), 'model/gltf-binary');
+}));
+
+// The decoder's pre-decimation mesh. Registered before `/models/:id` so the more
+// specific path wins, and kept off `/asset` because it is a different artifact
+// with a different failure mode (see getModelFullMesh) rather than a variant of
+// the served GLB.
+router.get('/models/:id/full-mesh', asyncHandler(async (req, res) => {
+  streamMeshDownload(res, await getModelFullMesh(req.params.id), 'model/obj');
 }));
 
 router.get('/models/:id', asyncHandler(async (req, res) => {
   const model = await getModel(req.params.id);
   if (!model) throw new ServerError('Image-to-3D model not found', { status: 404, code: 'NOT_FOUND' });
-  res.json(model);
+  res.json(withRenderSupport(model));
 }));
 
 router.post('/models/:id/generate', asyncHandler(async (req, res) => {
-  const model = await startGeneration(req.params.id);
-  res.status(202).json(model);
+  // Re-render accepts the same per-run knobs as create; they apply to this run
+  // only and are recorded on its run entry.
+  const options = validateRequest(renderOptionsSchema, req.body ?? {});
+  const model = await startGeneration(req.params.id, { options });
+  res.status(202).json(withRenderSupport(model));
 }));
 
 router.delete('/models/:id', asyncHandler(async (req, res) => {

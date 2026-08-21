@@ -80,6 +80,90 @@ describe('AppOverrideRow — After opening PR override', () => {
   });
 });
 
+describe('AppOverrideRow — issue exclude labels override', () => {
+  const excludeLabelsInput = () => screen.queryByLabelText('Labels to leave for humans for Acme');
+
+  it('is absent for a task type without the issue author filter', () => {
+    renderRow({ taskType: 'feature-ideas' });
+    expect(excludeLabelsInput()).not.toBeInTheDocument();
+  });
+
+  it('seeds from an existing override and commits a parsed list on blur', async () => {
+    const onUpdate = renderRow({
+      taskType: 'claim-issue',
+      globalTaskMetadata: { issueExcludeLabels: [] },
+      override: { taskMetadata: { issueExcludeLabels: ['good first issue'] } },
+    });
+    expect(excludeLabelsInput()).toHaveValue('good first issue');
+
+    fireEvent.change(excludeLabelsInput(), { target: { value: 'good first issue, help wanted' } });
+    await act(async () => { fireEvent.blur(excludeLabelsInput()); });
+
+    expect(onUpdate).toHaveBeenCalledWith('app-1', 'claim-issue', {
+      taskMetadata: { issueExcludeLabels: ['good first issue', 'help wanted'] },
+    });
+  });
+
+  it('clears the override back to inherit when the input is emptied', async () => {
+    const onUpdate = renderRow({
+      taskType: 'claim-work',
+      globalTaskMetadata: { issueExcludeLabels: ['good first issue'] },
+      override: { taskMetadata: { issueExcludeLabels: ['help wanted'] } },
+    });
+
+    fireEvent.change(excludeLabelsInput(), { target: { value: '' } });
+    await act(async () => { fireEvent.blur(excludeLabelsInput()); });
+
+    expect(onUpdate).toHaveBeenCalledWith('app-1', 'claim-work', { taskMetadata: null });
+  });
+
+  describe('explicit-empty override ("None" checkbox)', () => {
+    const noneCheckbox = () => screen.getByLabelText('None');
+
+    it('is unchecked when there is no override, and when the override is a non-empty list', () => {
+      renderRow({ taskType: 'claim-issue', globalTaskMetadata: { issueExcludeLabels: ['good first issue'] } });
+      expect(noneCheckbox()).not.toBeChecked();
+    });
+
+    it('reflects an existing explicit-empty override distinctly from inherit — both render a blank text box', () => {
+      renderRow({
+        taskType: 'claim-issue',
+        globalTaskMetadata: { issueExcludeLabels: ['good first issue'] },
+        override: { taskMetadata: { issueExcludeLabels: [] } },
+      });
+      expect(excludeLabelsInput()).toHaveValue('');
+      expect(noneCheckbox()).toBeChecked();
+    });
+
+    it('checking it submits an explicit empty array override, letting this app opt out of every inherited exclusion', async () => {
+      const onUpdate = renderRow({
+        taskType: 'claim-issue',
+        globalTaskMetadata: { issueExcludeLabels: ['good first issue'] },
+      });
+      expect(noneCheckbox()).not.toBeChecked();
+
+      await act(async () => { fireEvent.click(noneCheckbox()); });
+
+      expect(onUpdate).toHaveBeenCalledWith('app-1', 'claim-issue', {
+        taskMetadata: { issueExcludeLabels: [] },
+      });
+    });
+
+    it('unchecking it clears the override back to inherit', async () => {
+      const onUpdate = renderRow({
+        taskType: 'claim-work',
+        globalTaskMetadata: { issueExcludeLabels: ['good first issue'] },
+        override: { taskMetadata: { issueExcludeLabels: [] } },
+      });
+      expect(noneCheckbox()).toBeChecked();
+
+      await act(async () => { fireEvent.click(noneCheckbox()); });
+
+      expect(onUpdate).toHaveBeenCalledWith('app-1', 'claim-work', { taskMetadata: null });
+    });
+  });
+});
+
 describe('AppOverrideRow — file issues only', () => {
   it('shows the Iss toggle for audit-capable tasks and hides it otherwise', () => {
     renderRow({ taskType: 'feature-ideas' });

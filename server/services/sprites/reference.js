@@ -58,6 +58,7 @@ import {
 import {
   analyzeForeground, paletteFromAnalysis, normalizeFromAnalysis, recompositeOnKey,
 } from './normalize.js';
+import { effectiveJobPrompt } from '../../lib/federatedMediaWire.js';
 
 // Default i2i strengths: a render that redraws a NEW figure from the frozen
 // sheet (every anchor, and the main in the turnaround-first flow) mostly
@@ -812,12 +813,19 @@ export async function attachReferenceCandidate(ctx) {
     // Prefer the completed job's live params — Render Queue's Edit & Retry
     // rewrites top-level params but carries the original tag through, so the
     // tag's model can be stale provenance.
-    model: ctx.job?.params?.model || ctx.job?.params?.modelId || ctx.model || null,
+    // A federated render nulls the top-level model and blanks the prompt to
+    // fail closed on a downgrade (#4683), so read through to the wire request
+    // before falling back — otherwise the sidecar records no provenance at all.
+    model: ctx.job?.params?.model
+      || ctx.job?.params?.modelId
+      || ctx.job?.params?.remoteMedia?.request?.modelId
+      || ctx.model
+      || null,
     // The literal prompt sent to the provider — the completed job's live params
     // are canonical (Render Queue's Edit & Retry can rewrite it). Persisting it
     // lets the preview modals show exactly what was rendered; older sidecars
     // without it fall back to a deterministic rebuild (services/sprites/assetPrompt.js).
-    prompt: ctx.job?.params?.prompt || null,
+    prompt: effectiveJobPrompt(ctx.job) || null,
     jobId: ctx.jobId || null,
     ...(ctx.designPrompt ? { designPrompt: ctx.designPrompt } : {}),
     ...(ctx.correctionPrompt ? { correctionPrompt: ctx.correctionPrompt } : {}),

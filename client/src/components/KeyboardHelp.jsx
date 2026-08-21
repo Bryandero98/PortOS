@@ -24,7 +24,7 @@ const SHORTCUT_SECTIONS = [
     ],
   },
   {
-    title: 'City',
+    title: 'OpenWorld',
     shortcuts: [
       { keys: ['W', 'A', 'S', 'D'], description: 'Move around' },
       { keys: ['Tab'], description: 'Toggle mode' },

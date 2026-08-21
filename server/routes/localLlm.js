@@ -26,9 +26,12 @@ import {
   localLlmAssessmentRunSchema,
   localLlmAssessmentIntentSchema,
   localLlmAssessmentDeleteSchema,
-  localLlmLlamaServerStartSchema
+  localLlmLlamaServerStartSchema,
+  localLlmSpecModelDownloadSchema
 } from '../lib/validation.js'
 import { getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer } from '../services/llamaServerManager.js'
+import { getSpecDecodePresetStatus, downloadSpecDecodeModel } from '../services/specDecodeModels.js'
+import { resetProviderReadinessCache } from '../services/providerReadiness.js'
 import { getCatalog, searchCatalog, isBackend } from '../lib/localLlmCatalog.js'
 import { isAppleSilicon } from '../lib/platform.js'
 import { searchHuggingFaceModels, enrichCatalogWithVariants, applyMeasuredFit } from '../services/huggingFaceCatalog.js'
@@ -210,9 +213,9 @@ router.post('/ollama-service', asyncHandler(async (req, res) => {
 
 // POST /api/local-llm/install — pull/download a model (streams progress)
 router.post('/install', asyncHandler(async (req, res) => {
-  const { backend, modelId } = validateRequest(localLlmInstallSchema, req.body)
+  const { backend, modelId, force } = validateRequest(localLlmInstallSchema, req.body)
   const emit = emitter(req)
-  emit('start', `Installing ${modelId} on ${backend}…`)
+  emit('start', `${force ? 'Redownloading' : 'Installing'} ${modelId} on ${backend}…`)
   // A thrown rejection (e.g. the pull stream dropping mid-download) would 500
   // via asyncHandler but never emit a terminal progress frame, leaving the
   // client's progress banner stuck on the last 'start'. Surface it as 'error'.
@@ -222,7 +225,7 @@ router.post('/install', asyncHandler(async (req, res) => {
   const result = await installModel(backend, modelId, (p) => {
     const label = describeInstallProgress(p)
     if (label) emit('start', `${modelId}: ${label}`)
-  }).catch((err) => {
+  }, { force: !!force }).catch((err) => {
     emit('error', `Install failed: ${err.message}`)
     throw err
   })
@@ -235,7 +238,7 @@ router.post('/install', asyncHandler(async (req, res) => {
   }
   emit('complete', result.pending
     ? `${modelId} download started in LM Studio — it'll finish in the background`
-    : `${modelId} installed on ${backend}`)
+    : `${modelId} ${force ? 'redownloaded' : 'installed'} on ${backend}`)
   res.json({ success: true, ...result })
 }))
 
@@ -463,27 +466,58 @@ router.post('/assessments/delete', asyncHandler(async (req, res) => {
 }))
 
 // === llama-server (DFlash 2 / Speculative Decoding) ==========================
-// GET /api/local-llm/llama-server/status — binary availability, process state, logs
+// GET /api/local-llm/llama-server/status — binary availability, process state,
+// logs, and the curated target/drafter presets with each GGUF's on-disk state.
+// The presets ride along on the status call the launcher already makes so the
+// card can render "not downloaded + Download" instead of making the user press
+// Start to discover a missing file. Disk-only: no Hugging Face call here.
 router.get('/llama-server/status', asyncHandler(async (_req, res) => {
-  res.json(await getLlamaServerStatus())
+  const [status, presets] = await Promise.all([getLlamaServerStatus(), getSpecDecodePresetStatus()])
+  res.json({ ...status, presets })
 }))
+
+// POST /api/local-llm/llama-server/download-model — fetch one preset's GGUF from
+// Hugging Face into the exact path the launcher will pass llama.cpp. Byte
+// progress streams over `llamaServer:download`; the card renders it as a bar on
+// the row that started it.
+router.post('/llama-server/download-model', asyncHandler(async (req, res) => {
+  const { presetId, role } = validateRequest(localLlmSpecModelDownloadSchema, req.body)
+  const io = req.app.get('io')
+  const result = await downloadSpecDecodeModel({
+    presetId,
+    role,
+    onProgress: (frame) => io?.emit('llamaServer:download', frame),
+  })
+  res.json(result)
+}))
+
+// Each of the three actions below changes exactly what the provider-readiness
+// probes remember — is the binary there, is something answering — so each drops
+// those caches. Without it the Providers page keeps reporting "llama.cpp setup
+// incomplete" for up to a cache TTL after the user fixed it right here.
 
 // POST /api/local-llm/llama-server/start — launch llama-server
 router.post('/llama-server/start', asyncHandler(async (req, res) => {
   const options = validateRequest(localLlmLlamaServerStartSchema, req.body)
-  res.json(await startLlamaServer(options))
+  const result = await startLlamaServer(options)
+  resetProviderReadinessCache()
+  res.json(result)
 }))
 
 // POST /api/local-llm/llama-server/stop — stop managed llama-server
 router.post('/llama-server/stop', asyncHandler(async (_req, res) => {
-  res.json(await stopLlamaServer())
+  const result = await stopLlamaServer()
+  resetProviderReadinessCache()
+  res.json(result)
 }))
 
 // POST /api/local-llm/llama-server/install — install llama.cpp via Homebrew
 router.post('/llama-server/install', asyncHandler(async (req, res) => {
   const io = req.app.get('io')
   const onProgress = (data) => io?.emit('localLlm:progress', data)
-  res.json(await installLlamaServer({ onProgress }))
+  const result = await installLlamaServer({ onProgress })
+  resetProviderReadinessCache()
+  res.json(result)
 }))
 
 export default router

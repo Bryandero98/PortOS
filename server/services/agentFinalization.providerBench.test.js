@@ -290,3 +290,34 @@ describe('finalizeAgent provider sidelining', () => {
     expect(markProviderUnavailableMock).not.toHaveBeenCalled();
   });
 });
+
+describe('finalizeAgent — Creative Director scratch cleanup (#4650)', () => {
+  it('removes the per-agent scratch cwd when the CD run finishes', async () => {
+    const { mkdirSync, writeFileSync, existsSync } = await import('fs');
+    const { join } = await import('path');
+    const { creativeDirectorScratchCwd } = await import('../lib/spawnCwd.js');
+    const dir = creativeDirectorScratchCwd('agent-cd-fin');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'leftover.txt'), 'x');
+    await finalizeAgent({
+      agentId: 'agent-cd-fin',
+      task: {
+        id: 'task-cd',
+        taskType: 'internal',
+        description: 'CD plan',
+        metadata: { creativeDirector: { projectId: 'p', kind: 'plan' }, useWorktree: false },
+      },
+      runId: 'run-cd',
+      providerId: 'codex',
+      success: true,
+      exitCode: 0,
+      duration: 1000,
+      outputBuffer: '',
+      terminatedByUser: false,
+      isTruthyMetaFn: () => false,
+      workspacePath: dir,
+      prExpected: false,
+    });
+    expect(existsSync(dir)).toBe(false);
+  });
+});

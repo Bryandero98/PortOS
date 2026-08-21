@@ -3,7 +3,9 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   TRELLIS2_REPO,
+  TRELLIS2_APPLE_REPO,
   trellis2Root,
+  trellis2AppleDepDir,
   trellis2VenvPython,
   trellis2GenerateScript,
   trellis2GenerateRunnerScript,
@@ -16,6 +18,11 @@ import {
   installTrellis2,
   isTransientInstallError,
   isHfAuthError,
+  isMpsWatchdogError,
+  resolveTrellis2PipelineType,
+  resolveGlbPostprocess,
+  getTarget,
+  TRELLIS2_WATCHDOG_HELP,
   probeTrellis2TextureBake,
   probeMetalToolchain,
   TRELLIS2_METAL_BAKE_MODULES,
@@ -32,7 +39,14 @@ import {
   TRELLIS2_HIGH_QUALITY_MIN_MEMORY_GB,
   selectTrellis2PipelineType,
   selectTrellis2TextureSize,
+  hfGatedRepoHelp,
 } from './trellis2.js';
+import { rewriteGlbMaterialsOpaque } from './glbMaterials.js';
+import {
+  TRELLIS2_DECIMATION_BASELINE,
+  TRELLIS2_DECIMATION_HIGH,
+  TRELLIS2_NORMAL_SOURCE_FACE_CAP,
+} from './trellis2MeshQuality.js';
 import { getTarget } from './targets.js';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -74,31 +88,49 @@ describe('isTrellis2Installed', () => {
 describe('buildInstallSteps', () => {
   it('clones the MPS port then runs its setup.sh when nothing is on disk', () => {
     const steps = buildInstallSteps(BASE, { exists: () => false });
-    expect(steps.map((s) => s.stage)).toEqual(['clone', 'setup']);
+    // apple-deps sits between the two for reasons both load-bearing: after the clone
+    // because `git clone <root>` refuses a non-empty root, before setup.sh because that
+    // is what makes upstream's `if [ ! -d deps/trellis2-apple ]` guard skip its clone.
+    expect(steps.map((s) => s.stage)).toEqual(['clone', 'apple-deps', 'setup', 'fill-holes-gate']);
     expect(steps[0]).toMatchObject({ command: 'git' });
     expect(steps[0].args).toContain(TRELLIS2_REPO);
     expect(steps[0].args).toContain(trellis2Root(BASE));
-    expect(steps[1]).toMatchObject({ command: 'bash', args: ['setup.sh'], cwd: trellis2Root(BASE) });
+    expect(steps[2]).toMatchObject({ command: 'bash', args: ['setup.sh'], cwd: trellis2Root(BASE) });
   });
 
   // #3041: setup.sh compiles the Metal packages from .metal sources, so the
   // toolchain must land BEFORE it runs or those builds fail silently.
   it('leads with the Metal Toolchain step when the toolchain is missing but fetchable', () => {
     const steps = buildInstallSteps(BASE, { exists: () => false, installMetalToolchain: true });
-    expect(steps.map((s) => s.stage)).toEqual(['metal-toolchain', 'clone', 'setup']);
+    expect(steps.map((s) => s.stage)).toEqual(['metal-toolchain', 'clone', 'apple-deps', 'setup', 'fill-holes-gate']);
     expect(steps[0]).toMatchObject({ command: 'xcodebuild', args: ['-downloadComponent', 'MetalToolchain'] });
   });
 
-  it('marks the toolchain step optional — a missing bake degrades output, it does not break it', () => {
-    const [toolchainStep] = buildInstallSteps(BASE, { exists: () => false, installMetalToolchain: true });
-    expect(toolchainStep.optional).toBe(true);
-    // The required steps stay required, or a real failure would be swallowed.
-    expect(buildInstallSteps(BASE, { exists: () => false }).every((s) => !s.optional)).toBe(true);
+  it('marks the bake-only steps optional — a missing bake degrades output, it does not break it', () => {
+    // Only the quality-affecting steps degrade. The clone and setup.sh stay
+    // required, or a real failure would be swallowed. `fill-holes-gate` is
+    // optional because hole filling is opt-in anyway: without the gate the
+    // render behaves exactly as it does today, and asking for --fill-holes on
+    // such a host errors in the runner instead of silently skipping it.
+    const optionalStages = buildInstallSteps(BASE, { exists: () => false, installMetalToolchain: true })
+      .filter((s) => s.optional).map((s) => s.stage);
+    expect(optionalStages).toEqual(['metal-toolchain', 'apple-deps', 'fill-holes-gate']);
   });
 
   it('omits the toolchain step by default (already present / not macOS / not fetchable)', () => {
     expect(buildInstallSteps(BASE, { exists: () => false }).map((s) => s.stage))
-      .toEqual(['clone', 'setup']);
+      .toEqual(['clone', 'apple-deps', 'setup', 'fill-holes-gate']);
+  });
+
+  // Ordering is the whole correctness argument for this step: setup.sh runs
+  // patches/mps_compat.py, which is what WRITES the stub the gate rewrites.
+  it('puts the fill-holes gate after setup.sh, under the venv python', () => {
+    const steps = buildInstallSteps(BASE, { exists: () => false });
+    const setupIdx = steps.findIndex((s) => s.stage === 'setup');
+    const gateIdx = steps.findIndex((s) => s.stage === 'fill-holes-gate');
+    expect(gateIdx).toBeGreaterThan(setupIdx);
+    expect(steps[gateIdx].command).toBe(trellis2VenvPython(BASE));
+    expect(steps[gateIdx].args[1]).toBe(trellis2Root(BASE));
   });
 
   it('does not let a caller mutate the shared toolchain step template', () => {
@@ -114,8 +146,60 @@ describe('buildInstallSteps', () => {
     // begin at the idempotent setup.sh.
     const gitDir = join(trellis2Root(BASE), '.git');
     const steps = buildInstallSteps(BASE, { exists: (p) => p === gitDir });
-    expect(steps.map((s) => s.stage)).toEqual(['setup']);
-    expect(steps[0]).toMatchObject({ command: 'bash', args: ['setup.sh'], cwd: trellis2Root(BASE) });
+    expect(steps.map((s) => s.stage)).toEqual(['apple-deps', 'setup', 'fill-holes-gate']);
+    expect(steps[1]).toMatchObject({ command: 'bash', args: ['setup.sh'], cwd: trellis2Root(BASE) });
+  });
+
+  // The bug behind #2952's long tail: o_voxel compiles against Eigen, which
+  // trellis2-apple carries as a submodule. Upstream's clone_dep never fetches it, the
+  // build dies on 'Eigen/Dense' not found, setup.sh swallows it, and the install lands
+  // permanently on the confetti fallback baker — unfixable by installing Xcode.
+  describe('apple-deps (the Eigen submodule upstream never fetches)', () => {
+    const appleGitDir = join(trellis2AppleDepDir(BASE), '.git');
+    const appleOVoxelDir = join(trellis2AppleDepDir(BASE), 'o-voxel');
+    // A healthy existing checkout has both the git dir and the subdirectory upstream
+    // pip-installs from.
+    const healthyCheckout = (p) => p === appleGitDir || p === appleOVoxelDir;
+    const appleStep = (exists) => buildInstallSteps(BASE, { exists })
+      .find((s) => s.stage === 'apple-deps');
+
+    it('clones trellis2-apple WITH submodules when the dep is not on disk', () => {
+      const step = appleStep(() => false);
+      expect(step).toMatchObject({ command: 'git', optional: true });
+      expect(step.args).toContain('--recurse-submodules');
+      // Eigen's full history is ~117 MB against ~10 MB shallow, for zero benefit.
+      expect(step.args).toContain('--shallow-submodules');
+      expect(step.args).toContain(TRELLIS2_APPLE_REPO);
+      expect(step.args).toContain(trellis2AppleDepDir(BASE));
+      // Cloned into place, so there is nothing to cd into yet.
+      expect(step.cwd).toBeUndefined();
+    });
+
+    // Re-cloning over an existing checkout would abort the way the root clone does, so
+    // the repair path updates in place instead. `optional` matters most on THIS branch:
+    // it is the one a user reaches by clicking Repair, and Eigen is the install's only
+    // gitlab.com fetch — the likeliest to be blocked.
+    it('initializes submodules in place when an older setup.sh already cloned it', () => {
+      expect(appleStep(healthyCheckout)).toMatchObject({
+        command: 'git',
+        args: ['submodule', 'update', '--init', '--recursive', '--depth', '1'],
+        cwd: trellis2AppleDepDir(BASE),
+        optional: true,
+      });
+    });
+
+    // A clone killed partway can leave `.git` with no worktree. `git submodule update`
+    // cannot restore a missing superproject, so treating that as "already cloned" would
+    // succeed as a no-op while leaving o_voxel unbuildable forever — upstream's `! -d`
+    // guard skips its clone, and its `pip install …/o-voxel` then targets a path that
+    // does not exist. Route it to the clone branch, which fails loudly instead.
+    it('does NOT treat a partial checkout (.git but no o-voxel/) as already cloned', () => {
+      const step = appleStep((p) => p === appleGitDir);
+      expect(step.args).toContain('clone');
+      expect(step.args).toContain('--recurse-submodules');
+      expect(step.args).not.toContain('submodule');
+      expect(step.cwd).toBeUndefined();
+    });
   });
 });
 
@@ -134,12 +218,20 @@ describe('trellis2OutputStem', () => {
   });
 });
 
+// The runner adapter now fronts EVERY generate invocation (it carries the mesh-quality
+// overrides, not just the 4K atlas widening), and its own flags are terminated by `--`
+// before upstream's argv begins. `head()` is that prefix, so a test asserting on
+// upstream's arguments does not have to restate the adapter's calling convention.
+const head = (base, extra = []) => [
+  trellis2GenerateRunnerScript(), ...extra, '--', trellis2GenerateScript(base),
+];
+
 describe('buildGenerateArgs', () => {
   it('invokes the venv python with generate.py, the image, and the default texture size', () => {
     const { command, args } = buildGenerateArgs({ imagePath: '/data/images/x.png', base: BASE });
     expect(command).toBe(trellis2VenvPython(BASE));
     expect(args).toEqual([
-      trellis2GenerateScript(BASE), '/data/images/x.png',
+      ...head(BASE), '/data/images/x.png',
       '--pipeline-type', TRELLIS2_BASELINE_PIPELINE_TYPE,
       '--texture-size', String(TRELLIS2_DEFAULT_TEXTURE_SIZE),
     ]);
@@ -147,7 +239,7 @@ describe('buildGenerateArgs', () => {
 
   it('passes --output as a STEM — the port appends .glb, so a full path would double it', () => {
     const { args } = buildGenerateArgs({ imagePath: 'in.png', outputPath: '/out/model.glb', base: BASE });
-    expect(args.slice(0, 4)).toEqual([trellis2GenerateScript(BASE), 'in.png', '--output', '/out/model']);
+    expect(args.slice(0, 6)).toEqual([...head(BASE), 'in.png', '--output', '/out/model']);
   });
 
   it('defaults direct command building to the proven 2K atlas', () => {
@@ -158,7 +250,7 @@ describe('buildGenerateArgs', () => {
   it('honors an explicit texture size', () => {
     const { args } = buildGenerateArgs({ imagePath: 'in.png', base: BASE, textureSize: 1024 });
     expect(args).toEqual([
-      trellis2GenerateScript(BASE), 'in.png',
+      ...head(BASE), 'in.png',
       '--pipeline-type', TRELLIS2_BASELINE_PIPELINE_TYPE,
       '--texture-size', '1024',
     ]);
@@ -167,10 +259,32 @@ describe('buildGenerateArgs', () => {
   it('uses the compatibility runner for the underlying exporter\'s 4K atlas size', () => {
     const { args } = buildGenerateArgs({ imagePath: 'in.png', base: BASE, textureSize: 4096 });
     expect(args).toEqual([
-      trellis2GenerateRunnerScript(), trellis2GenerateScript(BASE), 'in.png',
+      ...head(BASE), 'in.png',
       '--pipeline-type', TRELLIS2_BASELINE_PIPELINE_TYPE,
       '--texture-size', '4096',
     ]);
+  });
+
+  it('forwards mesh-quality flags to the adapter, ahead of the `--` separator', () => {
+    const { args } = buildGenerateArgs({
+      imagePath: 'in.png',
+      base: BASE,
+      meshQuality: { decimationTarget: 1000000, fillHoles: true, alphaMode: 'auto' },
+    });
+    expect(args).toEqual([
+      ...head(BASE, ['--decimation-target', '1000000', '--fill-holes', '--alpha-mode', 'auto']),
+      'in.png',
+      '--pipeline-type', TRELLIS2_BASELINE_PIPELINE_TYPE,
+      '--texture-size', String(TRELLIS2_DEFAULT_TEXTURE_SIZE),
+    ]);
+  });
+
+  it('emits only the separator when no mesh-quality override is requested', () => {
+    // Upstream-identical behaviour has to stay reachable: an empty override set
+    // must not smuggle in a decimation target.
+    const { args } = buildGenerateArgs({ imagePath: 'in.png', base: BASE });
+    expect(args).not.toContain('--decimation-target');
+    expect(args.indexOf('--')).toBe(1);
   });
 
   it('rejects a texture size outside the supported baker sizes instead of letting the render abort', () => {
@@ -191,6 +305,28 @@ describe('buildGenerateArgs', () => {
 
   it('throws when no source image is given', () => {
     expect(() => buildGenerateArgs({ base: BASE })).toThrow(/imagePath is required/);
+  });
+
+  it('passes --seed and --steps when provided and omits both by default', () => {
+    const { args } = buildGenerateArgs({ imagePath: 'in.png', base: BASE, seed: 1234, steps: 24 });
+    expect(args.slice(-4)).toEqual(['--seed', '1234', '--steps', '24']);
+
+    const { args: defaults } = buildGenerateArgs({ imagePath: 'in.png', base: BASE });
+    expect(defaults).not.toContain('--seed');
+    expect(defaults).not.toContain('--steps');
+  });
+
+  it('rejects out-of-range or non-integer steps and seed instead of letting argparse abort', () => {
+    expect(() => buildGenerateArgs({ imagePath: 'in.png', base: BASE, steps: 0 }))
+      .toThrow(/steps must be an integer/);
+    expect(() => buildGenerateArgs({ imagePath: 'in.png', base: BASE, steps: 65 }))
+      .toThrow(/steps must be an integer/);
+    expect(() => buildGenerateArgs({ imagePath: 'in.png', base: BASE, steps: 12.5 }))
+      .toThrow(/steps must be an integer/);
+    expect(() => buildGenerateArgs({ imagePath: 'in.png', base: BASE, seed: -1 }))
+      .toThrow(/seed must be an integer/);
+    expect(() => buildGenerateArgs({ imagePath: 'in.png', base: BASE, seed: 2147483648 }))
+      .toThrow(/seed must be an integer/);
   });
 });
 
@@ -408,7 +544,7 @@ describe('runTrellis2Generate', () => {
     expect(spawnImpl).toHaveBeenCalledWith(
       trellis2VenvPython(BASE),
       [
-        trellis2GenerateScript(BASE), 'a.png',
+        ...head(BASE, ['--decimation-target', String(TRELLIS2_DECIMATION_BASELINE)]), 'a.png',
         '--pipeline-type', TRELLIS2_BASELINE_PIPELINE_TYPE,
         '--texture-size', String(TRELLIS2_DEFAULT_TEXTURE_SIZE),
       ],
@@ -488,10 +624,15 @@ describe('runTrellis2Generate', () => {
     const args = spawnImpl.mock.calls[0][1];
     expect(args).toContain(TRELLIS2_HIGH_QUALITY_PIPELINE_TYPE);
     expect(args).toContain(String(TRELLIS2_HIGH_QUALITY_TEXTURE_SIZE));
-    expect(args.slice(0, 2)).toEqual([
+    // High-memory host also gets the high decimation tier, so the runner's own
+    // flags sit between the adapter and the `--` separator.
+    expect(args).toContain(String(TRELLIS2_DECIMATION_HIGH));
+    expect(args.slice(0, 4)).toEqual([
       trellis2GenerateRunnerScript(),
-      trellis2GenerateScript(BASE),
+      '--decimation-target', String(TRELLIS2_DECIMATION_HIGH),
+      '--',
     ]);
+    expect(args[4]).toBe(trellis2GenerateScript(BASE));
     child.emit('close', 0);
     await expect(promise).resolves.toEqual({ assetPath: '/out/a.glb' });
   });
@@ -582,7 +723,7 @@ describe('runTrellis2Generate', () => {
     expect(spawnImpl).toHaveBeenCalledWith(
       trellis2VenvPython(BASE),
       [
-        trellis2GenerateScript(BASE), 'a.png',
+        ...head(BASE, ['--decimation-target', String(TRELLIS2_DECIMATION_BASELINE)]), 'a.png',
         '--pipeline-type', TRELLIS2_BASELINE_PIPELINE_TYPE,
         '--texture-size', String(TRELLIS2_DEFAULT_TEXTURE_SIZE),
       ],
@@ -678,7 +819,206 @@ describe('isHfAuthError', () => {
   });
 });
 
+describe('resolveTrellis2PipelineType', () => {
+  // This is the entire server-side resolution of the detail knob and it had no tests:
+  // nothing pinned the descriptor lookup, the 'auto' passthrough, or the deliberate
+  // no-throw fallback the docstring spends a paragraph justifying.
+  it("'auto' defers to the host-derived choice", () => {
+    expect(resolveTrellis2PipelineType('auto', 24)).toBe(selectTrellis2PipelineType(24));
+    expect(resolveTrellis2PipelineType('auto', 64)).toBe(selectTrellis2PipelineType(64));
+  });
+
+  it('maps each tier through the target descriptor, not a local table', () => {
+    const tiers = getTarget('trellis2').detailTiers;
+    for (const [tier, expected] of Object.entries(tiers)) {
+      expect(resolveTrellis2PipelineType(tier, 64), tier).toBe(expected);
+    }
+  });
+
+  it('lets a small host opt UP past what its memory would have chosen', () => {
+    // The override is the whole point of the knob — PortOS's 48 GB threshold is an
+    // admitted guess, so a 24 GB host asking for max must get max.
+    expect(selectTrellis2PipelineType(24)).toBe(TRELLIS2_BASELINE_PIPELINE_TYPE);
+    expect(resolveTrellis2PipelineType('max', 24)).toBe(TRELLIS2_HIGH_QUALITY_PIPELINE_TYPE);
+  });
+
+  it('lets a large host opt DOWN to a fast preview', () => {
+    expect(selectTrellis2PipelineType(64)).toBe(TRELLIS2_HIGH_QUALITY_PIPELINE_TYPE);
+    expect(resolveTrellis2PipelineType('fast', 64)).toBe(TRELLIS2_BASELINE_PIPELINE_TYPE);
+  });
+
+  it('falls back to the host choice on an unmapped tier instead of throwing', () => {
+    // Reaching this means a registry edit went wrong; degrading to the tier the host
+    // would have picked beats failing a render the user already waited on.
+    expect(resolveTrellis2PipelineType('bogus', 64)).toBe(selectTrellis2PipelineType(64));
+    expect(resolveTrellis2PipelineType('', 24)).toBe(selectTrellis2PipelineType(24));
+  });
+});
+
+describe('runTrellis2Generate render-option wiring', () => {
+  const installed = () => true;
+  const makeChild = () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = vi.fn();
+    return child;
+  };
+  const argvFor = (opts) => {
+    const child = makeChild();
+    const spawnImpl = vi.fn(() => child);
+    const { promise } = runTrellis2Generate({
+      imagePath: 'a.png', base: BASE, unifiedMemoryGb: 24, exists: installed, spawnImpl, ...opts,
+    });
+    promise.catch(() => {}); // settle; we only care about argv
+    child.emit('close', null);
+    return spawnImpl.mock.calls[0][1];
+  };
+
+  it('translates a detail tier into the pipeline type the runner receives', () => {
+    // Nothing previously pinned that `detail` reaches argv at all.
+    expect(argvFor({ detail: 'max' })).toContain(TRELLIS2_HIGH_QUALITY_PIPELINE_TYPE);
+    expect(argvFor({ detail: 'fast' })).toContain(TRELLIS2_BASELINE_PIPELINE_TYPE);
+  });
+
+  it('passes alphaMode and the normal-map flags through to the adapter', () => {
+    const argv = argvFor({ alphaMode: 'BLEND', normalMap: true });
+    expect(argv).toContain('--alpha-mode');
+    expect(argv).toContain('BLEND');
+    expect(argv).toContain('--normal-map');
+    // The source cap must actually be emitted — it was dead config, so lowering it
+    // changed nothing while its own tests kept passing.
+    expect(argv).toContain('--normal-map-max-source-faces');
+    expect(argv).toContain(String(TRELLIS2_NORMAL_SOURCE_FACE_CAP));
+  });
+
+  it('emits neither normal-map flag when the bake is off', () => {
+    const argv = argvFor({ normalMap: false });
+    expect(argv).not.toContain('--normal-map');
+    expect(argv).not.toContain('--normal-map-max-source-faces');
+  });
+
+  it.each([
+    [null, true],
+    [undefined, true],
+    ['OPAQUE', true],
+    ['MASK', false],
+    ['BLEND', false],
+    ['auto', false],
+  ])('force-opaque with alphaMode=%s -> applied=%s', (alphaMode, applied) => {
+    // The layer that rewrites the GLB on disk had no test, only the viewer's. A
+    // regression re-enabling it for BLEND would ship a silently-solid mesh.
+    expect(resolveGlbPostprocess(alphaMode, undefined) === rewriteGlbMaterialsOpaque)
+      .toBe(applied);
+  });
+
+  it('lets an explicit override win, and treats null as "run nothing"', () => {
+    const custom = async () => {};
+    expect(resolveGlbPostprocess(null, custom)).toBe(custom);
+    // `??` would have turned this back into force-opaque.
+    expect(resolveGlbPostprocess(null, null)).toBeUndefined();
+  });
+
+  it('honors an explicit null postprocess as "run nothing"', async () => {
+    // `??` would have turned an explicit null back into force-opaque.
+    const child = makeChild();
+    const { promise } = runTrellis2Generate({
+      imagePath: 'a.png', outputPath: '/out/a.glb', base: BASE, unifiedMemoryGb: 24,
+      exists: installed, spawnImpl: () => child, postprocessGlb: null,
+    });
+    child.stdout.emit('data', '  Saved: /out/a.glb\n');
+    child.emit('close', 0);
+    await expect(promise).resolves.toEqual({ assetPath: '/out/a.glb' });
+  });
+});
+
+describe('isMpsWatchdogError', () => {
+  // Local copies: the equivalents in the runTrellis2Generate block are scoped to it.
+  const installed = () => true;
+  const makeChild = () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = vi.fn();
+    return child;
+  };
+
+  it.each([
+    'ERROR: The decoder produced an empty mesh.',
+    'On Apple Silicon this is almost always the macOS GPU watchdog',
+    "Error Domain=MTLCommandBufferErrorDomain Code=4 kIOGPUCommandBufferCallbackErrorImpactingInteractivity",
+    'AssertionError: BVH needs at least 8 triangles, got 0',
+  ])('flags a watchdog kill: %s', (line) => {
+    expect(isMpsWatchdogError(line)).toBe(true);
+  });
+
+  it.each([
+    'Baking PBR textures via Metal (4096x4096)...',
+    '  Simplifying mesh: 22,746,188 -> ~1,000,000 faces',
+    'Mesh: 383,818 vertices, 196,918 triangles',
+    'GatedRepoError: Access to model facebook/dinov3 is restricted.',
+    '',
+    null,
+    undefined,
+  ])('does NOT flag healthy or unrelated output: %s', (line) => {
+    expect(isMpsWatchdogError(line)).toBe(false);
+  });
+
+  // The help text is the deliverable here: the port's own suggestions include two
+  // remedies independently reported as ineffective, so the wording must not drift
+  // back toward them.
+  it('names sleeping the display and avoids the remedies reported not to work', () => {
+    expect(TRELLIS2_WATCHDOG_HELP).toMatch(/displaysleepnow/);
+    // Single-source claim that produced a shattered mesh in the one report — must
+    // never be offered as advice.
+    expect(TRELLIS2_WATCHDOG_HELP).not.toMatch(/MTL_CAPTURE_ENABLED/);
+    // Unplugging displays and lowering steps may be MENTIONED, but only as things
+    // that do not work — so each has to sit ahead of the "NOT help" clause.
+    const ineffective = TRELLIS2_WATCHDOG_HELP.indexOf('NOT to help');
+    expect(ineffective).toBeGreaterThan(-1);
+    for (const claim of [/unplugging/i, /sampler steps/i, /headless/i]) {
+      const at = TRELLIS2_WATCHDOG_HELP.search(claim);
+      expect(at).toBeGreaterThan(-1);
+      expect(at).toBeLessThan(ineffective);
+    }
+  });
+
+  it('classifies a watchdog exit distinctly from a generic failure', async () => {
+    const child = makeChild();
+    const { promise } = runTrellis2Generate({
+      imagePath: 'a.png',
+      base: BASE,
+      unifiedMemoryGb: 24,
+      exists: installed,
+      spawnImpl: () => child,
+    });
+    child.stdout.emit('data', 'ERROR: The decoder produced an empty mesh.\n');
+    child.emit('close', 2);
+    await expect(promise).rejects.toMatchObject({ code: 'TRELLIS2_MPS_WATCHDOG' });
+  });
+
+  it('leaves an unrecognized failure as the generic code', async () => {
+    const child = makeChild();
+    const { promise } = runTrellis2Generate({
+      imagePath: 'a.png',
+      base: BASE,
+      unifiedMemoryGb: 24,
+      exists: installed,
+      spawnImpl: () => child,
+    });
+    child.stdout.emit('data', 'RuntimeError: something else entirely\n');
+    child.emit('close', 1);
+    await expect(promise).rejects.toMatchObject({ code: 'TRELLIS2_GENERATE_FAILED' });
+  });
+});
+
 describe('installTrellis2', () => {
+  // Deliberately larger than the install step count. These tests drive children
+  // positionally and assert exact spawn order, so spare entries are inert — but
+  // pre-sizing to the exact step count meant every added step (apple-deps, then
+  // fill-holes-gate) broke all ten tests at once.
+  const CHILD_POOL = () => Array.from({ length: 8 }, () => makeChild());
+
   const makeChild = () => {
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
@@ -688,7 +1028,7 @@ describe('installTrellis2', () => {
   };
 
   it('runs each install step in order and emits stage + complete events', async () => {
-    const children = [makeChild(), makeChild()];
+    const children = CHILD_POOL();
     let i = 0;
     const spawnImpl = vi.fn(() => children[i++]);
     const events = [];
@@ -698,11 +1038,18 @@ describe('installTrellis2', () => {
     expect(spawnImpl).toHaveBeenNthCalledWith(1, 'git', expect.arrayContaining(['clone']), {});
     children[0].emit('close', 0);
     await flush(); // let the await in the loop (through the retry wrapper) advance
-    expect(spawnImpl).toHaveBeenNthCalledWith(2, 'bash', ['setup.sh'], { cwd: trellis2Root(BASE) });
+    // step 2 (apple-deps) — the submodule-aware clone upstream's setup.sh cannot do.
+    expect(spawnImpl).toHaveBeenNthCalledWith(2, 'git', expect.arrayContaining(['--recurse-submodules']), {});
     children[1].emit('close', 0);
+    await flush();
+    expect(spawnImpl).toHaveBeenNthCalledWith(3, 'bash', ['setup.sh'], { cwd: trellis2Root(BASE) });
+    children[2].emit('close', 0);
+    await flush();
+    children[3].emit('close', 0); // fill-holes-gate
     await expect(promise).resolves.toEqual({ ok: true });
 
-    expect(events.filter((e) => e.type === 'stage').map((e) => e.stage)).toEqual(['clone', 'setup']);
+    expect(events.filter((e) => e.type === 'stage').map((e) => e.stage))
+      .toEqual(['clone', 'apple-deps', 'setup', 'fill-holes-gate']);
     expect(events.at(-1)).toMatchObject({ type: 'complete' });
   });
 
@@ -710,15 +1057,19 @@ describe('installTrellis2', () => {
   // install must verify what landed and report it BEFORE the terminal `complete`
   // frame — which closes the client's EventSource (#2952).
   const runToCompletion = async (probeBake) => {
-    const children = [makeChild(), makeChild()];
+    const children = CHILD_POOL();
     let i = 0;
     const events = [];
     const { promise } = installTrellis2({
       base: BASE, spawnImpl: () => children[i++], onEvent: (e) => events.push(e), probeBake,
     });
-    children[0].emit('close', 0);
+    children[0].emit('close', 0); // clone
     await flush();
-    children[1].emit('close', 0);
+    children[1].emit('close', 0); // apple-deps
+    await flush();
+    children[2].emit('close', 0); // setup
+    await flush();
+    children[3].emit('close', 0); // fill-holes-gate
     await promise;
     return events;
   };
@@ -726,7 +1077,7 @@ describe('installTrellis2', () => {
   // #3041: the caller (the route) resolves the toolchain situation and passes a
   // plain boolean, so installTrellis2 keeps returning { promise, kill } synchronously.
   it('downloads the Metal Toolchain first when the caller says it is needed', async () => {
-    const children = [makeChild(), makeChild(), makeChild()];
+    const children = CHILD_POOL();
     let i = 0;
     const spawnImpl = vi.fn(() => children[i++]);
     const { promise } = installTrellis2({
@@ -741,14 +1092,18 @@ describe('installTrellis2', () => {
     expect(spawnImpl).toHaveBeenNthCalledWith(2, 'git', expect.arrayContaining(['clone']), {});
     children[1].emit('close', 0);
     await flush();
-    children[2].emit('close', 0);
+    children[2].emit('close', 0); // apple-deps
+    await flush();
+    children[3].emit('close', 0); // setup
+    await flush();
+    children[4].emit('close', 0); // fill-holes-gate
     await expect(promise).resolves.toEqual({ ok: true });
   });
 
   it('continues the install when the optional toolchain step fails, and still verifies', async () => {
     // Geometry is unaffected by a missing bake, so a host that cannot fetch the
     // toolchain must still end up with a working (if degraded) install.
-    const children = [makeChild(), makeChild(), makeChild()];
+    const children = CHILD_POOL();
     let i = 0;
     const events = [];
     const { promise } = installTrellis2({
@@ -760,9 +1115,13 @@ describe('installTrellis2', () => {
     });
     children[0].emit('close', 1); // toolchain download failed
     await flush();
-    children[1].emit('close', 0);
+    children[1].emit('close', 0); // clone
     await flush();
-    children[2].emit('close', 0);
+    children[2].emit('close', 0); // apple-deps
+    await flush();
+    children[3].emit('close', 0); // setup
+    await flush();
+    children[4].emit('close', 0); // fill-holes-gate
     await expect(promise).resolves.toEqual({ ok: true });
     expect(events.find((e) => e.stage === 'metal-toolchain' && /Optional step/.test(e.message || ''))).toBeTruthy();
     expect(events.find((e) => e.stage === 'verify')?.message).toContain('degraded');
@@ -771,7 +1130,7 @@ describe('installTrellis2', () => {
   it('retries a TRANSIENT optional-step failure before giving up on it', async () => {
     // Optional-ness must not short-circuit the retry path — a dropped connection
     // during the toolchain download deserves the same retries as any other step.
-    const children = [makeChild(), makeChild(), makeChild(), makeChild()];
+    const children = CHILD_POOL();
     let i = 0;
     const spawnImpl = vi.fn(() => children[i++]);
     const { promise } = installTrellis2({
@@ -792,12 +1151,16 @@ describe('installTrellis2', () => {
     expect(spawnImpl).toHaveBeenNthCalledWith(3, 'git', expect.arrayContaining(['clone']), {});
     children[2].emit('close', 0);
     await flush();
-    children[3].emit('close', 0);
+    children[3].emit('close', 0); // apple-deps
+    await flush();
+    children[4].emit('close', 0); // setup
+    await flush();
+    children[5].emit('close', 0); // fill-holes-gate
     await expect(promise).resolves.toEqual({ ok: true });
   });
 
   it('still aborts when a REQUIRED step fails, so optional-ness is not blanket', async () => {
-    const children = [makeChild(), makeChild()];
+    const children = CHILD_POOL();
     let i = 0;
     const { promise } = installTrellis2({
       base: BASE,
@@ -831,7 +1194,7 @@ describe('installTrellis2', () => {
   });
 
   it('spawns install steps under the caller-supplied env, alongside each step cwd', async () => {
-    const children = [makeChild(), makeChild()];
+    const children = CHILD_POOL();
     let i = 0;
     const spawnImpl = vi.fn(() => children[i++]);
     const env = { PATH: '/usr/bin', HF_TOKEN: 'hf_test' };
@@ -841,8 +1204,14 @@ describe('installTrellis2', () => {
     expect(spawnImpl).toHaveBeenNthCalledWith(1, 'git', expect.arrayContaining(['clone']), { env });
     children[0].emit('close', 0);
     await flush();
-    expect(spawnImpl).toHaveBeenNthCalledWith(2, 'bash', ['setup.sh'], { cwd: trellis2Root(BASE), env });
+    // Same for the apple-deps clone, which also runs without a cwd.
+    expect(spawnImpl).toHaveBeenNthCalledWith(2, 'git', expect.arrayContaining(['--recurse-submodules']), { env });
     children[1].emit('close', 0);
+    await flush();
+    expect(spawnImpl).toHaveBeenNthCalledWith(3, 'bash', ['setup.sh'], { cwd: trellis2Root(BASE), env });
+    children[2].emit('close', 0);
+    await flush();
+    children[3].emit('close', 0); // fill-holes-gate
     await expect(promise).resolves.toEqual({ ok: true });
   });
 
@@ -865,22 +1234,29 @@ describe('installTrellis2', () => {
 
   it('resumes at setup (no re-clone) when the repo is already on disk', async () => {
     // Re-running Install after a setup-stage failure must NOT re-clone into the
-    // existing root; it must go straight to the idempotent setup.sh.
-    const child = makeChild();
-    const spawnImpl = vi.fn(() => child);
+    // existing root; it must go straight to the apple-deps fix and the idempotent
+    // setup.sh.
+    const children = CHILD_POOL();
+    let i = 0;
+    const spawnImpl = vi.fn(() => children[i++]);
     const gitDir = join(trellis2Root(BASE), '.git');
     const { promise } = installTrellis2({
       base: BASE, spawnImpl, exists: (p) => p === gitDir, sleep: () => Promise.resolve(),
     });
-    expect(spawnImpl).toHaveBeenCalledTimes(1);
-    expect(spawnImpl).toHaveBeenNthCalledWith(1, 'bash', ['setup.sh'], { cwd: trellis2Root(BASE) });
-    child.emit('close', 0);
+    expect(spawnImpl).not.toHaveBeenCalledWith('git', expect.arrayContaining([TRELLIS2_REPO]), expect.anything());
+    expect(spawnImpl).toHaveBeenNthCalledWith(1, 'git', expect.arrayContaining(['--recurse-submodules']), {});
+    children[0].emit('close', 0);
+    await flush();
+    expect(spawnImpl).toHaveBeenNthCalledWith(2, 'bash', ['setup.sh'], { cwd: trellis2Root(BASE) });
+    children[1].emit('close', 0);
+    await flush();
+    children[2].emit('close', 0); // fill-holes-gate
     await expect(promise).resolves.toEqual({ ok: true });
   });
 
   it('retries a transient network failure in place and succeeds on the retry', async () => {
-    // clone attempt 1 (transient fail) → clone attempt 2 (ok) → setup (ok)
-    const children = [makeChild(), makeChild(), makeChild()];
+    // clone attempt 1 (transient fail) → clone attempt 2 (ok) → apple-deps → setup
+    const children = CHILD_POOL();
     let i = 0;
     const spawnImpl = vi.fn(() => children[i++]);
     const events = [];
@@ -896,7 +1272,11 @@ describe('installTrellis2', () => {
     expect(spawnImpl).toHaveBeenNthCalledWith(2, 'git', expect.arrayContaining(['clone']), {});
     children[1].emit('close', 0);
     await flush();
-    children[2].emit('close', 0); // setup
+    children[2].emit('close', 0); // apple-deps
+    await flush();
+    children[3].emit('close', 0); // setup
+    await flush();
+    children[4].emit('close', 0); // fill-holes-gate
     await expect(promise).resolves.toEqual({ ok: true });
 
     expect(events.some((e) => e.type === 'log' && /retrying/i.test(e.message))).toBe(true);
@@ -913,7 +1293,7 @@ describe('installTrellis2', () => {
   });
 
   it('gives up after maxRetries and surfaces a transient-flagged error', async () => {
-    const children = [makeChild(), makeChild()];
+    const children = CHILD_POOL();
     let i = 0;
     const spawnImpl = vi.fn(() => children[i++]);
     const { promise } = installTrellis2({
@@ -931,7 +1311,7 @@ describe('installTrellis2', () => {
   });
 
   it('kill() SIGTERMs the running child and cancels before the next step', async () => {
-    const children = [makeChild(), makeChild()];
+    const children = CHILD_POOL();
     let i = 0;
     const { promise, kill } = installTrellis2({ base: BASE, spawnImpl: () => children[i++] });
     kill();
@@ -939,5 +1319,35 @@ describe('installTrellis2', () => {
     children[0].emit('close', 0); // step 1 finishes, but canceled flag stops step 2
     await expect(promise).rejects.toMatchObject({ code: 'TRELLIS2_INSTALL_CANCELED' });
     expect(i).toBe(1); // the second step never spawned
+  });
+});
+
+describe('hfGatedRepoHelp', () => {
+  it('names the target whose auth failed, not always TRELLIS.2', () => {
+    // It takes a target id, so it must not hardcode one product's name: a Pixal3D
+    // auth failure previously read "TRELLIS.2 could not download…".
+    expect(hfGatedRepoHelp('trellis2')).toContain('TRELLIS.2');
+    expect(hfGatedRepoHelp('pixal3dCuda')).toContain('Pixal3D (CUDA)');
+    expect(hfGatedRepoHelp('pixal3dCuda')).not.toContain('TRELLIS.2');
+  });
+
+  it('lists the gated repos to accept when the target has them', () => {
+    const help = hfGatedRepoHelp('trellis2');
+    expect(help).toContain('facebook/dinov3-vitl16-pretrain-lvd1689m');
+    expect(help).toContain('briaai/RMBG-2.0');
+    expect(help).toContain('Accept the terms');
+  });
+
+  it('gives rate-limit advice — not "accept the terms" — for a target with no gated repos', () => {
+    // Pixal3D loads DINOv3 from an ungated mirror, so there are no terms to accept;
+    // telling the user to accept terms for an unnamed model is advice they cannot act on.
+    const help = hfGatedRepoHelp('pixal3dCuda');
+    expect(help).toContain('rate limit');
+    expect(help).not.toContain('Accept the terms');
+    expect(help).toContain('HF_TOKEN');
+  });
+
+  it('degrades to a generic name for an unknown target id', () => {
+    expect(hfGatedRepoHelp('nope')).toContain('This model');
   });
 });

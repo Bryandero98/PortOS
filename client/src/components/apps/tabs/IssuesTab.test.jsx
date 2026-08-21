@@ -81,7 +81,9 @@ describe('IssuesTab', () => {
     expect(await screen.findByText('Crash on save')).toBeInTheDocument();
     expect(api.getAppIssues).toHaveBeenCalledWith('app-1');
     expect(screen.getByText('#42')).toBeInTheDocument();
-    expect(screen.getByText('bug')).toBeInTheDocument();
+    // Scoped by the row chip's own title — the label also appears as a filter
+    // toggle in the header, so a bare getByText('bug') is ambiguous.
+    expect(screen.getByTitle('Something is broken')).toHaveTextContent('bug');
     expect(screen.getByText(/alice/)).toBeInTheDocument();
     expect(screen.getByText('acme/widget')).toBeInTheDocument();
   });
@@ -231,6 +233,123 @@ describe('IssuesTab', () => {
     expect(screen.queryByText('Crash on save')).not.toBeInTheDocument();
   });
 
+  it('filters to unassigned issues when the toggle is enabled', async () => {
+    api.getAppIssues.mockResolvedValue(okPayload([
+      ISSUE,
+      { ...ISSUE, number: 43, title: 'Add CSV export', labels: [], assignees: [] },
+    ]));
+    await renderTab();
+
+    await screen.findByText('Crash on save');
+    const toggle = screen.getByRole('button', { name: 'Unassigned only' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(toggle);
+
+    expect(await screen.findByText('Add CSV export')).toBeInTheDocument();
+    expect(screen.queryByText('Crash on save')).not.toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(toggle);
+    expect(await screen.findByText('Crash on save')).toBeInTheDocument();
+  });
+
+  it('hides in-progress issues by default and lists them once the chip is toggled on', async () => {
+    api.getAppIssues.mockResolvedValue(okPayload([
+      ISSUE,
+      {
+        ...ISSUE,
+        number: 43,
+        title: 'Being worked right now',
+        labels: [
+          { name: 'bug', color: '#d73a4a', description: '' },
+          { name: 'in-progress', color: '#0e8a16', description: '' },
+        ],
+      },
+    ]));
+    await renderTab();
+
+    await screen.findByText('Crash on save');
+    expect(screen.queryByText('Being worked right now')).not.toBeInTheDocument();
+    expect(screen.getByText('1 of 2 open')).toBeInTheDocument();
+
+    const chip = screen.getByRole('button', { name: /in-progress/ });
+    expect(chip).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(chip);
+    expect(await screen.findByText('Being worked right now')).toBeInTheDocument();
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('hides blocked issues by default and lists them once the chip is toggled on', async () => {
+    api.getAppIssues.mockResolvedValue(okPayload([
+      ISSUE,
+      {
+        ...ISSUE,
+        number: 43,
+        title: 'Waiting on a dependency',
+        labels: [{ name: 'blocked', color: '#b60205', description: '' }],
+      },
+    ]));
+    await renderTab();
+
+    await screen.findByText('Crash on save');
+    expect(screen.queryByText('Waiting on a dependency')).not.toBeInTheDocument();
+    expect(screen.getByText('1 of 2 open')).toBeInTheDocument();
+
+    const chip = screen.getByRole('button', { name: 'blocked (1)' });
+    expect(chip).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(chip);
+    expect(await screen.findByText('Waiting on a dependency')).toBeInTheDocument();
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('toggles a label chip off to hide every issue carrying that label', async () => {
+    api.getAppIssues.mockResolvedValue(okPayload([
+      ISSUE,
+      { ...ISSUE, number: 43, title: 'Add CSV export', labels: [{ name: 'feature', color: null, description: '' }] },
+    ]));
+    await renderTab();
+
+    await screen.findByText('Crash on save');
+    // Facet counts come from the fetched issues, one chip per distinct label.
+    const bugChip = screen.getByRole('button', { name: 'bug (1)' });
+    expect(screen.getByRole('button', { name: 'feature (1)' })).toBeInTheDocument();
+
+    fireEvent.click(bugChip);
+    await waitFor(() => expect(screen.queryByText('Crash on save')).not.toBeInTheDocument());
+    expect(screen.getByText('Add CSV export')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all labels' }));
+    expect(await screen.findByText('Crash on save')).toBeInTheDocument();
+  });
+
+  it('resets label and assignee filters when the app changes', async () => {
+    const inProgress = {
+      ...ISSUE,
+      number: 43,
+      title: 'Being worked right now',
+      labels: [{ name: 'in-progress', color: '#0e8a16', description: '' }],
+    };
+    api.getAppIssues.mockResolvedValue(okPayload([ISSUE, inProgress]));
+    const { rerender } = await renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: /in-progress/ }));
+    expect(await screen.findByText('Being worked right now')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Unassigned only' }));
+
+    rerender(
+      <MemoryRouter>
+        <IssuesTab appId="app-2" appName="Other" />
+      </MemoryRouter>
+    );
+    await act(async () => {});
+
+    await waitFor(() => expect(screen.queryByText('Being worked right now')).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Unassigned only' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
   it('ignores a stale in-flight response when the app changes mid-request', async () => {
     // Switching apps updates this component in place, so a slow first response
     // must not land on top of the newer app's list.
@@ -257,13 +376,47 @@ describe('IssuesTab', () => {
   it('says "couldn\'t reach" for a transient failure — never "no open issues"', async () => {
     api.getAppIssues.mockResolvedValue({
       forge: 'github', fullName: 'acme/widget', issues: [],
-      reason: 'gh-unauthenticated', transient: true, remedy: 'run gh auth login',
+      reason: 'gh-unauthenticated', transient: true, headline: null, remedy: 'run gh auth login',
     });
     await renderTab();
 
     expect(await screen.findByText(/Couldn't reach GitHub/)).toBeInTheDocument();
     expect(screen.getByText(/run gh auth login/)).toBeInTheDocument();
     expect(screen.queryByText(/No open issues on this tracker/)).not.toBeInTheDocument();
+  });
+
+  it('renders the server\'s headline verbatim instead of inferring one from the reason', async () => {
+    // A glab whose JSON output flag moved answers with its human table at exit 0
+    // — reachable, just unreadable. Only the server-side classifier can tell
+    // those apart, so it ships the sentence; the client must not second-guess it
+    // with a reason table, which is how an authenticated user got told to
+    // authenticate.
+    api.getAppIssues.mockResolvedValue({
+      forge: 'gitlab', fullName: 'group/proj', issues: [],
+      reason: 'glab-output-not-json', transient: true,
+      headline: "Reached GitLab, but couldn't read its answer",
+      remedy: 'update `glab` — its JSON output flag moved (check `glab issue list --help`)',
+    });
+    await renderTab();
+
+    expect(await screen.findByText(/Reached GitLab, but couldn't read its answer/)).toBeInTheDocument();
+    expect(screen.getByText(/its JSON output flag moved/)).toBeInTheDocument();
+    expect(screen.queryByText(/Couldn't reach GitLab/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/retry once the CLI is authenticated/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No open issues on this tracker/)).not.toBeInTheDocument();
+  });
+
+  it('falls back to the reachability framing when the server ships no headline', async () => {
+    // Older reasons (and any the server adds without copy) still read sensibly
+    // rather than rendering a blank banner.
+    api.getAppIssues.mockResolvedValue({
+      forge: 'gitlab', fullName: 'group/proj', issues: [],
+      reason: 'some-new-reason', transient: true, headline: null, remedy: null,
+    });
+    await renderTab();
+
+    expect(await screen.findByText(/Couldn't reach GitLab/)).toBeInTheDocument();
+    expect(screen.getByText(/some-new-reason/)).toBeInTheDocument();
   });
 
   it('explains a non-forge origin instead of showing an empty list', async () => {

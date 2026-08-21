@@ -19,7 +19,7 @@ import { readJSONFile, PATHS, tryReadFile, expandHome } from '../lib/fileUtils.j
 import { loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, resolveReviewerConfig, reviewerEffortArgs, reviewerModelArg, buildReviewerEffortNote, resolveKeyedReviewers, buildReviewWithArgs, buildReviewersCsv } from '../lib/validation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
-import { doneSentinelName } from '../lib/agentSentinel.js';
+import { doneSentinelName, PROGRAMMATIC_OUTPUT_COMPLETION_HEADING } from '../lib/agentSentinel.js';
 import { canTypeSlashCommands, agentOwnsPrWorkflow, resolveSlashdoInvocation, buildSlashdoSection, oversizedBodyPointer, unreachableReviewerIncludes, SLASHDO_INLINE_BUDGET_CHARS } from '../lib/slashdoInvocation.js';
 import { shellQuote } from '../lib/shellQuote.js';
 import { TASK_PROMPT_KEY, TASK_CONTEXT_KEY, taskContextBlock } from '../lib/cosTaskPrompt.js';
@@ -1441,7 +1441,8 @@ and do NOT revert its commits unless they are actually wrong.
  */
 export function buildProgrammaticOutputCompletionSection(sentinelPath) {
   return [
-    '## Completion (Reasoning-Only Task)',
+    // Shared constant: a pre-spawn task-type hook's prompt points here BY NAME.
+    `## ${PROGRAMMATIC_OUTPUT_COMPLETION_HEADING}`,
     'This is a reasoning task, not a code change. The worktree you are in is **discarded on exit** — any commits, pushes, or PRs are thrown away and have no effect. Do NOT run `/do:push`, `/do:pr`, `git commit`, `git push`, or open a pull request.',
     '',
     `When you have finished reasoning, write your result to \`${sentinelPath}\` in the exact payload format described in your task instructions, then stop. PortOS watches this sentinel and finalizes the run shortly after it appears — do NOT run \`/quit\` and do NOT wait for anything after writing the sentinel.`
@@ -1642,18 +1643,33 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
       : buildLightContextPrompt(task, workspaceDir, worktreeInfo, isTruthyMetaFn, lightOptions);
   }
 
-  // Full path: API providers don't read CLAUDE.md natively, so always include it.
-  const skipClaudeMd = false;
+  // Creative Director tasks (scene evaluation, treatment/plan run via API) judge
+  // generated content rather than writing PortOS code — shared below by both
+  // `skipDevContext` (the repo's CLAUDE.md files plus memory / digital-twin /
+  // onboard-tools are pure noise for that prompt) and `noCodeOutput` (the
+  // deliverable is an HTTP PATCH, not a commit).
+  const isCreativeDirectorTask = !!task.metadata?.creativeDirector;
+  // Full path: API providers don't read CLAUDE.md natively, so always include it —
+  // except for Creative Director tasks, per above. Memory, digital-twin, and the
+  // onboard-tools catalog are the same category of dev-oriented noise for a
+  // vision/PATCH task (#4650) — CD evaluate uses native Read + HTTP PATCH, and
+  // CD plan already receives creative-tool specs via `getToolSpecs()` in its
+  // own prompt, not this section.
+  const skipDevContext = isCreativeDirectorTask;
   // Fetch independent context sections in parallel
   const [memorySection, claudeMdSection, digitalTwinSection] = await Promise.all([
-    getMemorySection(task, { maxTokens: config.memory?.maxContextTokens || 2000 })
-      .catch(err => { console.log(`⚠️ Memory retrieval failed: ${err.message}`); return null; }),
-    skipClaudeMd
+    skipDevContext
+      ? Promise.resolve(null)
+      : getMemorySection(task, { maxTokens: config.memory?.maxContextTokens || 2000 })
+          .catch(err => { console.log(`⚠️ Memory retrieval failed: ${err.message}`); return null; }),
+    skipDevContext
       ? Promise.resolve(null)
       : getClaudeMdContext(workspaceDir)
           .catch(err => { console.log(`⚠️ CLAUDE.md retrieval failed: ${err.message}`); return null; }),
-    getDigitalTwinForPrompt({ maxTokens: config.digitalTwin?.maxContextTokens || config.soul?.maxContextTokens || 2000, personaId: 'active' })
-      .catch(err => { console.log(`⚠️ Digital twin context retrieval failed: ${err.message}`); return null; })
+    skipDevContext
+      ? Promise.resolve(null)
+      : getDigitalTwinForPrompt({ maxTokens: config.digitalTwin?.maxContextTokens || config.soul?.maxContextTokens || 2000, personaId: 'active' })
+          .catch(err => { console.log(`⚠️ Digital twin context retrieval failed: ${err.message}`); return null; })
   ]);
 
   // Build context compaction section if task is retrying after a context-limit failure
@@ -1672,7 +1688,7 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   // derive from a CD task's own `creativeDirector` marker so tasks queued as
   // `pending` BEFORE this flag existed (persisted across an upgrade) are still
   // recognized without a metadata migration.
-  const noCodeOutput = isTruthyMetaFn(task.metadata?.noCodeOutput) || !!task.metadata?.creativeDirector;
+  const noCodeOutput = isTruthyMetaFn(task.metadata?.noCodeOutput) || isCreativeDirectorTask;
   const isWorktreeOnExistingBranch = isPrBranchWorktree(task, worktreeInfo);
   const worktreeSection = worktreeInfo ? `
 ## Git Worktree Context
@@ -1867,10 +1883,12 @@ ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch 
   const skillSection = await loadSkillTemplates(detectSkillTemplates(task));
 
   // Build onboard tools section for agent awareness
-  const toolsSection = await getToolsSummaryForPrompt().catch(err => {
-    console.log(`⚠️ Tools summary retrieval failed: ${err.message}`);
-    return '';
-  });
+  const toolsSection = skipDevContext
+    ? ''
+    : await getToolsSummaryForPrompt().catch(err => {
+        console.log(`⚠️ Tools summary retrieval failed: ${err.message}`);
+        return '';
+      });
 
   // Build .planning/ context section for GSD-enabled apps
   let planningContextSection = '';
@@ -2535,7 +2553,7 @@ function buildManualPrCreateStep(step, { branchName, baseBranch, forgeCli = 'gh'
       ? `   PR_URL=$(glab mr create --source-branch ${branch} --target-branch ${base} --title "<conventional title>" --description "<description>" | grep -Eo 'https?://[^[:space:]]+' | tail -n 1)`
       : `   PR_URL=$(gh pr create --base ${base} --head ${branch} --title "<conventional title>" --body "<description>")`,
     gitlab
-      ? '   PR_NUMBER=$(glab mr view "$PR_URL" -F json | jq -r .iid)'
+      ? '   PR_NUMBER=$(glab mr view "$PR_URL" --output json | jq -r .iid)'
       : '   PR_NUMBER=$(gh pr view "$PR_URL" --json number -q .number)',
     '   ```',
     // `--fill` on a one-line commit produces an empty description; PortOS used

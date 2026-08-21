@@ -80,7 +80,7 @@ import { startPrivacyRecheckScheduler } from './privacyRecheckScheduler.js';
 import { startQuotaBurnScheduler } from './quotaBurnRunner.js';
 import { startSeriesAutopilotScheduler } from './seriesAutopilotScheduler.js';
 import { startCommissionScheduler } from './creativeCommissions/scheduler.js';
-import { startCitySnapshotScheduler } from './citySnapshotScheduler.js';
+import { startOpenWorldSnapshotScheduler } from './openWorldSnapshotScheduler.js';
 import { startImessageScheduler } from './imessageScheduler.js';
 import { startSignalScheduler } from './signalScheduler.js';
 import { startSpotifyScheduler } from './spotifyScheduler.js';
@@ -135,8 +135,10 @@ import { writersRoomStore } from './writersRoom/store.js';
 import { mediaCollectionStore } from './mediaCollections.js';
 import { loraDatasetStore } from './loraDatasets.js';
 import { commissionStore, backfillAllCommissionFeedback } from './creativeCommissions/store.js';
+import { backfillProjectCommissionIds } from './creativeCommissions/projectControl.js';
 import { outcomesStore as liOutcomesStore } from './layeredIntelligenceOutcomes.js';
 import * as gameStore from './games/store.js';
+import { prerequisitesMetForRouting } from './providerPrerequisites.js';
 
 /**
  * Pre-route boot. Everything a route handler may depend on being ready the
@@ -233,7 +235,12 @@ export const bootstrapServices = async ({ io, dataDir, dataReferenceDir, serverD
       // Inject PortOS's ServerError so toolkit route errors normalize into the
       // canonical `{ error, code, timestamp, context? }` envelope (issue #1084).
       ServerError,
-      hooks: aiToolkitHooks
+      hooks: aiToolkitHooks,
+      // Keep the fallback chain off providers whose CLI is not installed on
+      // this host (#4611), so a run falls through to the next candidate instead
+      // of dying at spawn time. Sync by contract: it reads the runtime probe's
+      // cache and never blocks.
+      prerequisitesMet: prerequisitesMetForRouting
     }),
 
     // Compatibility shims for services that import from the old service files.
@@ -372,13 +379,15 @@ const startBackgroundServices = ({ spawnerReady }) => {
   // bootstrapSequence.js.
   armCommissionScheduler({
     backfillCommissionFeedback: backfillAllCommissionFeedback,
+    backfillProjectCommissionIds,
     startCommissionScheduler
   });
-  // Initialize CyberCity snapshot scheduler — records periodic city-state frames
+  // Initialize OpenWorld snapshot scheduler — records periodic city-state frames
   // for the historical timeline scrubber (issue #877).
-  startCitySnapshotScheduler().catch(err => console.error(`❌ City snapshot scheduler init failed: ${err.message}`));
+  startOpenWorldSnapshotScheduler().catch(err => console.error(`❌ OpenWorld snapshot scheduler init failed: ${err.message}`));
   // Initialize iMessage sync scheduler — OFF by default; only polls chat.db when
-  // the user opts in via Settings → iMessage (needs macOS Full Disk Access) (#2151).
+  // the user opts in from the iMessage Settings drawer on Comms → Messages → iMessage
+  // (needs macOS Full Disk Access) (#2151).
   startImessageScheduler().catch(err => console.error(`❌ iMessage sync scheduler init failed: ${err.message}`));
   // Initialize Signal sync scheduler — OFF by default; only reads the SQLCipher
   // chat DB (via the keychain-wrapped key) when the user opts in via

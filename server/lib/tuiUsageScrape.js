@@ -5,6 +5,7 @@ import { join } from 'path';
 import { stripAnsi } from './ansiStrip.js';
 import { sleep } from './fileUtils.js';
 import { buildCliChildEnv } from './cliChildEnv.js';
+import { SUBMIT_KEY } from './tuiHandshake.js';
 
 /**
  * Drive an interactive coding-agent TUI (Antigravity `agy`, Grok Build `grok`)
@@ -180,7 +181,7 @@ export async function scrapeTuiUsage({
     // "Yes, I trust"), grok shows a start menu (default highlighted item). One
     // Enter clears either. On an already-trusted sandbox there is no gate and
     // this is a harmless empty-prompt submit. Wait for the dismissal to repaint.
-    if (!exited) { pty.write('\r'); lastDataAt = Date.now(); }
+    if (!exited) { pty.write(SUBMIT_KEY); lastDataAt = Date.now(); }
     await waitForIdle(primerCapMs);
 
     // Bracketed-paste the command so multi-word input (`/usage show`) lands
@@ -188,7 +189,7 @@ export async function scrapeTuiUsage({
     if (!exited) {
       pty.write(`\x1b[200~${slashCommand}\x1b[201~`);
       await Promise.race([sleep(400), hardStop]);
-      pty.write('\r');
+      pty.write(SUBMIT_KEY);
       lastDataAt = Date.now();
     }
     await waitForIdle(renderCapMs, {

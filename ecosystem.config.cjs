@@ -48,6 +48,7 @@ const PORTS = {
   AUTOFIXER: 5559,     // Autofixer API
   AUTOFIXER_UI: 5560,  // Autofixer UI
   POSTGRES_DOCKER: 5561, // PostgreSQL Docker container (host port mapping)
+  LLAMA_SERVER: 5568,  // Loopback llama.cpp speculative-decoding server
   POSTGRES: pgMode === 'native' ? 5432 : 5561 // Active PostgreSQL port (unused in file mode)
 };
 

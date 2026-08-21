@@ -15,6 +15,18 @@ const jlistCache = new Map();
 const jlistInflight = new Map();
 const cacheKey = (pm2Home) => pm2Home || '_default';
 
+/**
+ * Invalidate the jlist TTL cache (e.g. after mutations like start/stop/delete).
+ * @param {string|null} [pm2Home=null]
+ */
+export function clearJlistCache(pm2Home = null) {
+  if (pm2Home !== undefined && pm2Home !== null) {
+    jlistCache.delete(cacheKey(pm2Home));
+  } else {
+    jlistCache.clear();
+  }
+}
+
 // Resolve PM2 CLI binary path from our local dependency using require.resolve
 // to handle hoisted node_modules correctly.
 const require = createRequire(import.meta.url);
@@ -27,6 +39,27 @@ const PM2_BIN = join(dirname(require.resolve('pm2/package.json')), 'bin', 'pm2')
  */
 function isJsScript(script) {
   return /\.(?:js|mjs|cjs|ts)$/i.test(script);
+}
+
+/**
+ * PM2 exports a managed process's own `pm2_env` into that process's environment
+ * as lowercase config keys, and the PM2 CLI reads those keys back as config —
+ * where they outrank an explicit CLI flag. Since PortOS itself runs under PM2,
+ * every `pm2 start` it spawns would otherwise inherit *portos-server's* config.
+ *
+ * That is how a loaded, serving llama-server kept dying: it was handed
+ * portos-server's 4GB `max_memory_restart`, so PM2's memory watchdog (which
+ * fires regardless of `--no-autorestart`) killed the 25GB model process seconds
+ * after every successful load, forever. `exec_mode` and `watch` leak the same
+ * way — verified by starting a process with each key set in the environment.
+ */
+const INHERITED_PM2_CONFIG_KEYS = ['max_memory_restart', 'exec_mode', 'watch'];
+
+/** Drop the PM2 config keys PM2 injected into our own environment. */
+function withoutInheritedPm2Config(env) {
+  const clean = { ...env };
+  for (const key of INHERITED_PM2_CONFIG_KEYS) delete clean[key];
+  return clean;
 }
 
 /**
@@ -48,7 +81,12 @@ function isJsScript(script) {
 export function spawnPm2(pm2Args, opts = {}) {
   // windowsHide comes from lib/childProcess.js. Re-asserting it here would also
   // outrank a caller's explicit opt-out, which the wrapper deliberately honors.
-  const child = spawn(process.execPath, [PM2_BIN, ...pm2Args], opts);
+  // The env sanitize applies to a caller-supplied env too — it inherits
+  // `process.env`, so it carries the same injected keys.
+  const child = spawn(process.execPath, [PM2_BIN, ...pm2Args], {
+    ...opts,
+    env: withoutInheritedPm2Config(opts.env || process.env),
+  });
   // Default error handler — prevents an uncaught EventEmitter 'error' crash
   // when no caller attaches its own handler. Callers that do attach their own
   // 'error' listener receive the event too (multiple listeners are additive).
@@ -295,7 +333,8 @@ function shapeProcStatus(proc) {
     uptime: proc.pm2_env?.pm_uptime ? Date.now() - proc.pm2_env.pm_uptime : null,
     restarts: proc.pm2_env?.restart_time || 0,
     unstableRestarts: proc.pm2_env?.unstable_restarts || 0,
-    createdAt: proc.pm2_env?.created_at || null
+    createdAt: proc.pm2_env?.created_at || null,
+    args: proc.pm2_env?.args || null
   };
 }
 

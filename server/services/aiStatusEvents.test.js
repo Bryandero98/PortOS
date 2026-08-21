@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { aiStatusEvents, startAIOp } from './aiStatusEvents.js';
 
 // Capture every emitted status event so we can assert which fields cross the
-// `ai:status` channel that the CyberCity AI Core landmark consumes.
+// `ai:status` channel that the OpenWorld AI Core landmark consumes.
 function captureEvents(fn) {
   const events = [];
   const handler = (e) => events.push(e);

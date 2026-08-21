@@ -1,0 +1,87 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import * as fetchWithTimeoutModule from './fetchWithTimeout.js';
+import { probeOpenAiModels } from './openAiModelsProbe.js';
+
+const jsonResponse = (body) => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
+
+const mockFetch = (impl) => vi.spyOn(fetchWithTimeoutModule, 'fetchWithTimeout').mockImplementation(impl);
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('probeOpenAiModels', () => {
+  it('asks {base}/models with the caller bound, tolerating a trailing slash', async () => {
+    const fetchMock = mockFetch(async () => jsonResponse({ data: [] }));
+
+    await probeOpenAiModels('http://127.0.0.1:8080/v1/', { timeoutMs: 1234 });
+
+    // The bound is fetchWithTimeout's THIRD argument — passing it inside the
+    // init object (the bug this module consolidated away) silently kept the 15s
+    // default.
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:8080/v1/models', { method: 'GET' }, 1234);
+  });
+
+  it('reads both the OpenAI `data` shape and a bare `models` array', async () => {
+    mockFetch(async () => jsonResponse({ data: [{ id: 'dflash' }, { name: 'qwen' }, 'bare-string', { id: '' }] }));
+    await expect(probeOpenAiModels('http://x/v1')).resolves.toMatchObject({
+      reachable: true,
+      models: ['dflash', 'qwen', 'bare-string'],
+      error: null,
+    });
+
+    mockFetch(async () => jsonResponse({ models: ['a'] }));
+    await expect(probeOpenAiModels('http://x/v1')).resolves.toMatchObject({ reachable: true, models: ['a'] });
+  });
+
+  it('tells a server with nothing loaded from one whose listing is unreadable', async () => {
+    mockFetch(async () => jsonResponse({ data: [] }));
+    // Up and serving nothing — an actionable "load a model", not a connection problem.
+    await expect(probeOpenAiModels('http://x/v1')).resolves.toMatchObject({ reachable: true, models: [] });
+
+    mockFetch(async () => ({ ok: true, status: 200, text: async () => 'not json at all' }));
+    const unreadable = await probeOpenAiModels('http://x/v1');
+    expect(unreadable).toMatchObject({ reachable: true, models: null });
+    expect(unreadable.error).toMatch(/not readable/i);
+  });
+
+  it('survives a body that rejects mid-read', async () => {
+    // A daemon that accepts the connection and then drops it rejects in
+    // res.text(), not at the fetch. Escaping here would fail the whole
+    // readiness request and blank the checklist for every provider.
+    mockFetch(async () => ({ ok: true, status: 200, text: async () => { throw new Error('terminated'); } }));
+
+    await expect(probeOpenAiModels('http://x/v1')).resolves.toMatchObject({ reachable: true, models: null });
+  });
+
+  it('names the real transport failure instead of undici bare "fetch failed"', async () => {
+    const err = new TypeError('fetch failed');
+    err.cause = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8080'), { code: 'ECONNREFUSED' });
+    mockFetch(async () => { throw err; });
+
+    await expect(probeOpenAiModels('http://127.0.0.1:8080/v1')).resolves.toEqual({
+      reachable: false,
+      models: null,
+      error: 'ECONNREFUSED',
+    });
+  });
+
+  it('collapses the timeout spellings to one phrase', async () => {
+    mockFetch(async () => { throw Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }); });
+    await expect(probeOpenAiModels('http://x/v1')).resolves.toMatchObject({ reachable: false, error: 'timed out' });
+  });
+
+  it('reports a non-OK response as unreachable and releases its body', async () => {
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    mockFetch(async () => ({ ok: false, status: 404, body: { cancel } }));
+
+    await expect(probeOpenAiModels('http://x/v1')).resolves.toEqual({
+      reachable: false,
+      models: null,
+      error: 'HTTP 404',
+    });
+    // Undici holds the socket until an unread body is consumed; this path runs
+    // on a poll loop.
+    expect(cancel).toHaveBeenCalled();
+  });
+});

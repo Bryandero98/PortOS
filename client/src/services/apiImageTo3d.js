@@ -21,9 +21,13 @@ export const createImageTo3dModel = (input, options) =>
   });
 
 // Re-run the render for an existing record (status → generating again).
-export const generateImageTo3dModel = (id, options) =>
+// `input` carries the optional per-run knobs ({ steps, seed, keyBackground }) —
+// they apply to this run only: absent steps → the pipeline default, absent
+// seed → the server rolls a fresh random one, absent keyBackground → no keying.
+export const generateImageTo3dModel = (id, input = {}, options) =>
   request(`/image-to-3d/models/${encodeURIComponent(id)}/generate`, {
     method: 'POST',
+    body: JSON.stringify(input),
     ...options,
   });
 
@@ -38,3 +42,11 @@ export const deleteImageTo3dModel = (id, options) =>
 // GlbViewer renders; this URL is for an explicit "download the file" action.
 export const imageTo3dAssetUrl = (id) =>
   `/api/image-to-3d/models/${encodeURIComponent(id)}/asset`;
+
+// The decoder's pre-decimation mesh, as written by upstream `generate.py` next to
+// the GLB. A separate endpoint rather than a query on `asset` because it is a
+// different artifact: plain `v`/`f` OBJ with no UVs, normals or material, often
+// several hundred MB, and absent on renders that never wrote the sidecar (a plain
+// 404 — not a sign the record is broken). The GLB stays the thing the viewer loads.
+export const imageTo3dFullMeshUrl = (id) =>
+  `/api/image-to-3d/models/${encodeURIComponent(id)}/full-mesh`;

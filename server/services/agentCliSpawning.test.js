@@ -41,6 +41,12 @@ vi.mock('./toolStateMachine.js', () => ({
   errorExecution: vi.fn(),
 }));
 vi.mock('./agentErrorAnalysis.js', () => ({ analyzeAgentFailure: vi.fn().mockResolvedValue(null) }));
+// The lifecycle ledger is a real file writer (data/cos/run-events.jsonl) — mocked
+// so first-output telemetry lands in a spy rather than the developing install's
+// ledger, and because this suite's fileUtils mock carries no PATHS.cos (#4540).
+const { appendRunEvent } = vi.hoisted(() => ({ appendRunEvent: vi.fn(async () => ({ appended: true })) }));
+vi.mock('./agentRunEventLog.js', () => ({ appendRunEvent }));
+
 vi.mock('./agentRunTracking.js', () => ({ completeAgentRun: vi.fn().mockResolvedValue(undefined) }));
 // Mock git.js directly so spawnDirectly's GH_TOKEN pinning is exercised without
 // pulling in the real worktreeManager → instances module graph. Default: no
@@ -394,18 +400,12 @@ describe('buildCliSpawnConfig', () => {
       expect(config.args).toContain('model_reasoning_effort=xhigh');
     });
 
-    // Regression for the 2026-08-17 incident: codex's config enum stops at
-    // `xhigh`, so a task dispatched at `effort:max` used to spawn
-    // `codex -c model_reasoning_effort=max`, which codex rejects while LOADING
-    // its config — before the prompt is read, so every retry died identically.
-    // The TUI builder has the twin of this assertion; the CLI builder is the one
-    // that actually shipped the bad argv.
-    it('clamps max/ultra down to xhigh for codex rather than emitting a value it rejects', () => {
-      for (const effort of ['max', 'ultra']) {
-        const config = buildCliSpawnConfig({ id: 'codex', command: 'codex' }, 'gpt-5.4', {}, { effort });
-        expect(config.args).toContain('model_reasoning_effort=xhigh');
-        expect(config.args.join(' ')).not.toContain(`model_reasoning_effort=${effort}`);
-      }
+    it('passes max to codex and resolves legacy ultra to max', () => {
+      const codex = { id: 'codex', command: 'codex' };
+      const maxConfig = buildCliSpawnConfig(codex, 'gpt-5.4', {}, { effort: 'max' });
+      expect(maxConfig.args).toContain('model_reasoning_effort=max');
+      const legacyConfig = buildCliSpawnConfig(codex, 'gpt-5.4', {}, { effort: 'ultra' });
+      expect(legacyConfig.args).toContain('model_reasoning_effort=max');
     });
 
     it('adds --effort for claude', () => {
@@ -563,6 +563,60 @@ describe('stream error containment', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  // ─── Lifecycle ledger — the first-output boundary (#4540) ─────────────────
+
+  it('records ONE run.output on the first real byte, and never again', async () => {
+    // Bounded on purpose: a per-chunk event would make the ledger a copy of the
+    // output it deliberately redacts. What one event buys is time-to-first-output
+    // — the only thing that separates a run that stalled after speaking from one
+    // that never spoke at all.
+    appendRunEvent.mockClear();
+    const spawnPromise = spawnDirectly(minimalArgs);
+    await new Promise((r) => setTimeout(r, 10));
+
+    fakeProcess.stdout.emit('data', Buffer.from('{\"type\":\"result\",\"result\":\"one\"}\n'));
+    fakeProcess.stdout.emit('data', Buffer.from('{\"type\":\"result\",\"result\":\"two\"}\n'));
+    await new Promise((r) => setTimeout(r, 20));
+
+    const outputs = appendRunEvent.mock.calls.map(([e]) => e).filter((e) => e.kind === 'run.output');
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]).toMatchObject({ runId: 'run-1', agentId: 'agent-test', taskId: 'task-1', data: { source: 'cli-stdout' } });
+
+    fakeProcess.emit('close', 0);
+    await spawnPromise.catch(() => {});
+  });
+
+  it('counts stderr-only output too — several providers say everything there', async () => {
+    // codex's entire progress feed is stderr and lands in the same transcript.
+    // A stdout-only recorder would file those runs as having produced nothing.
+    appendRunEvent.mockClear();
+    const spawnPromise = spawnDirectly(minimalArgs);
+    await new Promise((r) => setTimeout(r, 10));
+
+    fakeProcess.stderr.emit('data', Buffer.from('thinking...\n'));
+    await new Promise((r) => setTimeout(r, 20));
+
+    const outputs = appendRunEvent.mock.calls.map(([e]) => e).filter((e) => e.kind === 'run.output');
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0].data).toMatchObject({ source: 'cli-stderr' });
+
+    fakeProcess.emit('close', 0);
+    await spawnPromise.catch(() => {});
+  });
+
+  it('records no run.output for a run that never produced any', async () => {
+    // The 3s initialization timer flips the record to "working" with nothing
+    // behind it, which is exactly the run this boundary must NOT vouch for.
+    appendRunEvent.mockClear();
+    const spawnPromise = spawnDirectly(minimalArgs);
+    await new Promise((r) => setTimeout(r, 10));
+
+    fakeProcess.emit('close', 1);
+    await spawnPromise.catch(() => {});
+
+    expect(appendRunEvent.mock.calls.map(([e]) => e.kind)).not.toContain('run.output');
   });
 
   it('drains stdout output on close and a failed batch flush is logged, not leaked as an unhandled rejection', async () => {
@@ -768,6 +822,29 @@ describe('stream error containment', () => {
       expect.objectContaining({ env: expect.objectContaining({ GH_TOKEN: 'ghp_pinned_owner_token' }) }),
     );
 
+    fakeProcess.emit('close', 0);
+    await spawnPromise.catch(() => {});
+  });
+
+  it('spawns a Creative Director task in an isolated scratch cwd, not the PortOS root (#4650)', async () => {
+    const { creativeDirectorScratchCwd } = await import('../lib/spawnCwd.js');
+    const args = {
+      ...minimalArgs,
+      task: {
+        id: 'task-cd',
+        description: 'Evaluate scene',
+        metadata: { creativeDirector: { projectId: 'p', kind: 'evaluate' }, useWorktree: false },
+      },
+      workspacePath: '/tmp', // the previous default — must not win over the scratch path
+    };
+    const spawnPromise = spawnDirectly(args);
+    await new Promise((r) => setTimeout(r, 10));
+    const expectedCwd = creativeDirectorScratchCwd('agent-test');
+    expect(spawn).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ cwd: expectedCwd }),
+    );
     fakeProcess.emit('close', 0);
     await spawnPromise.catch(() => {});
   });

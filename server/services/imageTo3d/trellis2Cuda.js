@@ -17,8 +17,10 @@
  * 1. **Conda, not a venv.** Upstream's `setup.sh` creates and activates a conda
  *    environment named `trellis2` (PyTorch 2.6 / CUDA 12.4) rather than a `.venv`
  *    inside the clone. So "installed" is resolved by probing the usual conda roots
- *    for `envs/trellis2/bin/python` instead of a fixed path under the repo — the
- *    same candidate-probe shape `pythonSetup.js#resolveFlux2Python` already uses.
+ *    for `envs/trellis2/bin/python` instead of a fixed path under the repo — via the
+ *    shared `resolveCondaEnvPython` (`lib/condaEnv.js`), which the Pixal3D CUDA
+ *    lane uses too. (Distinct from that file's venv resolvers like
+ *    `resolveFlux2Python`, which probe a different layout entirely.)
  *
  * 2. **Upstream ships no CLI.** `microsoft/TRELLIS.2` has only `example.py`, a demo
  *    with hard-coded paths — there is no `generate.py` to shell into the way the mac
@@ -37,6 +39,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from '../../lib/childProcess.js';
+import { resolveCondaEnvPython } from '../../lib/condaEnv.js';
 import { rewriteGlbMaterialsOpaque } from './glbMaterials.js';
 import {
   hfGatedRepoHelp,
@@ -46,6 +49,7 @@ import {
   trellis2OutputStem,
 } from './trellis2.js';
 import { textMatcher, runInstallSteps, runGenerateSubprocess } from './laneRunner.js';
+import { renderOptionArgs } from './renderOptions.js';
 
 const HOME = homedir();
 
@@ -70,44 +74,15 @@ function trellis2CudaPackageDir(base) {
 }
 
 /**
- * Where `setup.sh --new-env` may have put the `trellis2` conda environment. Probed
- * as an ordered candidate list rather than configured separately, mirroring
- * `resolveFlux2Python`. `CONDA_PREFIX` (when PortOS itself runs under conda) and
- * `CONDA_ROOT` come first because they are the machine's actual answer; the rest are
- * the standard miniconda/anaconda/miniforge install locations.
- *
- * Linux-only paths (`bin/python`) — the CUDA lane is gated to a Linux host by the
- * target descriptor's `linuxHost` requirement, so there is no Windows branch here to
- * bit-rot. A Windows machine reaches this lane through WSL2, which is Linux.
- *
- * @param {{env?: object}} [opts]
- * @returns {string[]}
- */
-export function trellis2CudaPythonCandidates({ env = process.env } = {}) {
-  const roots = [
-    // `CONDA_PREFIX` points at the ACTIVE env, which may itself be `envs/trellis2`
-    // or the base install — handle both by walking up from an `envs/<name>` prefix.
-    env.CONDA_PREFIX && /[/\\]envs[/\\][^/\\]+$/.test(env.CONDA_PREFIX)
-      ? join(env.CONDA_PREFIX, '..', '..')
-      : env.CONDA_PREFIX,
-    env.CONDA_ROOT,
-    join(HOME, 'miniconda3'),
-    join(HOME, 'anaconda3'),
-    join(HOME, 'miniforge3'),
-    join(HOME, 'mambaforge'),
-    '/opt/conda',
-  ].filter(Boolean);
-  return roots.map((root) => join(root, 'envs', TRELLIS2_CUDA_CONDA_ENV, 'bin', 'python'));
-}
-
-/**
- * The conda Python upstream's `setup.sh` built, or null when no candidate exists.
+ * The conda Python upstream's `setup.sh --new-env` built, or null when its env doesn't
+ * exist. A one-line wrapper over the shared resolver (`lib/condaEnv.js`), which owns
+ * the conda-root candidate list and the `CONDA_PREFIX` walk-up both CUDA lanes need.
  * `exists` is injectable so the probe is deterministic in tests.
  * @param {{exists?: (p: string) => boolean, env?: object}} [opts]
  * @returns {string|null}
  */
 export function trellis2CudaPython({ exists = existsSync, env } = {}) {
-  return trellis2CudaPythonCandidates({ env }).find((p) => exists(p)) || null;
+  return resolveCondaEnvPython(TRELLIS2_CUDA_CONDA_ENV, { exists, env });
 }
 
 /** PortOS's own generate entrypoint (upstream ships only a hard-coded `example.py`). */
@@ -241,8 +216,13 @@ export function selectTrellis2CudaExportBudget(vramGb) {
  * disk path, reduced to the stem the runner appends `.glb` to (shared with the MPS
  * lane via `trellis2OutputStem`).
  *
+ * `seed`/`steps` mirror the MPS lane's contract (see `buildGenerateArgs` in
+ * trellis2.js): both optional, `steps: null` omits the flag so the pipeline's
+ * per-phase default applies.
+ *
  * @param {{imagePath: string, outputPath?: string, base?: string, python?: string,
- *          textureSize?: number, decimationTarget?: number}} opts
+ *          textureSize?: number, decimationTarget?: number,
+ *          steps?: number|null, seed?: number|null}} opts
  * @returns {{command: string, args: string[]}}
  */
 export function buildCudaGenerateArgs({
@@ -252,6 +232,8 @@ export function buildCudaGenerateArgs({
   python,
   textureSize = TRELLIS2_CUDA_DEFAULT_TEXTURE_SIZE,
   decimationTarget = TRELLIS2_CUDA_DEFAULT_DECIMATION,
+  steps = null,
+  seed = null,
 } = {}) {
   if (!imagePath) throw new Error('buildCudaGenerateArgs: imagePath is required');
   if (!TRELLIS2_CUDA_TEXTURE_SIZES.includes(textureSize)) {
@@ -259,6 +241,8 @@ export function buildCudaGenerateArgs({
       `buildCudaGenerateArgs: textureSize must be one of ${TRELLIS2_CUDA_TEXTURE_SIZES.join(', ')}`,
     );
   }
+  // Shared validate-and-emit with the MPS lane — see renderOptions.js.
+  const optionArgs = renderOptionArgs('buildCudaGenerateArgs', { steps, seed });
   const args = [
     trellis2CudaGenerateRunnerScript(),
     imagePath,
@@ -267,6 +251,7 @@ export function buildCudaGenerateArgs({
     '--decimation-target', String(decimationTarget),
   ];
   if (outputPath) args.push('--output', trellis2OutputStem(outputPath));
+  args.push(...optionArgs);
   return { command: python || trellis2CudaPython({}) || 'python', args };
 }
 
@@ -348,6 +333,7 @@ export function installTrellis2Cuda({
  *
  * @param {{imagePath: string, outputPath?: string, base?: string, textureSize?: number,
  *          decimationTarget?: number, vramGb?: number|null,
+ *          steps?: number|null, seed?: number|null,
  *          onProgress?: (frame: object) => void, spawnImpl?: Function,
  *          exists?: (p: string) => boolean, env?: NodeJS.ProcessEnv,
  *          postprocessGlb?: (path: string) => void|Promise<void>}} opts
@@ -360,6 +346,8 @@ export function runTrellis2CudaGenerate({
   textureSize,
   decimationTarget,
   vramGb = null,
+  steps = null,
+  seed = null,
   onProgress,
   spawnImpl = spawn,
   exists = existsSync,
@@ -382,6 +370,8 @@ export function runTrellis2CudaGenerate({
     python,
     textureSize: textureSize ?? budget.textureSize,
     decimationTarget: decimationTarget ?? budget.decimationTarget,
+    steps,
+    seed,
   });
   return runGenerateSubprocess({
     command,

@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { ArrowLeft, Boxes, AlertTriangle, Loader2, RefreshCw, Trash2 } from 'lucide-react';
-import { getImageTo3dModel, generateImageTo3dModel, deleteImageTo3dModel, imageTo3dAssetUrl } from '../services/api';
+import { getImageTo3dModel, generateImageTo3dModel, deleteImageTo3dModel, imageTo3dAssetUrl, imageTo3dFullMeshUrl } from '../services/api';
 import useMounted from '../hooks/useMounted';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { timeAgo } from '../utils/formatters';
 import GlbViewer from '../components/media/GlbViewer';
 import MediaImage from '../components/MediaImage';
 import InlineConfirmRow from '../components/ui/InlineConfirmRow';
+import ImageTo3dRenderOptions from '../components/media/ImageTo3dRenderOptions';
+import { fieldsFromRun, renderOptionsBody, runWantsTransparency } from '../lib/imageTo3dRenderOptions';
 import { imageTo3dStatusMeta } from '../components/media/imageTo3dStatus';
 import toast from '../components/ui/Toast';
 
@@ -27,6 +29,16 @@ export default function Media3DDetail() {
   const [notFound, setNotFound] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // Per-run knobs, seeded from the latest run once per id (NOT on every poll
+  // tick — that would clobber in-progress edits). Seed stays blank by design:
+  // see fieldsFromRun.
+  const [steps, setSteps] = useState('');
+  const [seed, setSeed] = useState('');
+  const [keyBackground, setKeyBackground] = useState(false);
+  const [detail, setDetail] = useState('auto');
+  const [alphaMode, setAlphaMode] = useState('');
+  const [normalMap, setNormalMap] = useState(false);
+  const optionsSeededFor = useRef(null);
 
   const load = useCallback(async ({ initial = false } = {}) => {
     const next = await getImageTo3dModel(id, { silent: true }).catch((err) => {
@@ -57,16 +69,33 @@ export default function Media3DDetail() {
     enabled: !notFound && record?.status === 'generating',
   });
 
+  // Seed the option fields from the latest run once per id.
+  useEffect(() => {
+    if (!record || optionsSeededFor.current === record.id) return;
+    optionsSeededFor.current = record.id;
+    const fields = fieldsFromRun(record.runs?.at?.(-1));
+    setSteps(fields.steps);
+    setSeed(fields.seed);
+    setKeyBackground(fields.keyBackground);
+    setDetail(fields.detail);
+    setAlphaMode(fields.alphaMode);
+    setNormalMap(fields.normalMap);
+  }, [record]);
+
   const handleRegenerate = useCallback(async () => {
     if (busy || record?.status === 'generating') return;
     setBusy(true);
-    const next = await generateImageTo3dModel(id, { silent: true }).catch((err) => {
+    const next = await generateImageTo3dModel(
+      id,
+      renderOptionsBody({ steps, seed, keyBackground, detail, alphaMode, normalMap }),
+      { silent: true },
+    ).catch((err) => {
       toast.error(err?.message || 'Could not start the render.');
       return null;
     });
     if (mountedRef.current) setBusy(false);
     if (next && mountedRef.current) setRecord(next);
-  }, [busy, record?.status, id, mountedRef]);
+  }, [busy, record?.status, id, steps, seed, keyBackground, detail, alphaMode, normalMap, mountedRef]);
 
   const handleDelete = useCallback(async () => {
     const ok = await deleteImageTo3dModel(id, { silent: true }).then(() => true).catch((err) => {
@@ -101,6 +130,9 @@ export default function Media3DDetail() {
   // Re-renders overwrite the same model.glb path. Key the fetch to the completed
   // generation so drei's URL cache loads the new bytes when this record is rendered
   // again, while old records without generatedAt retain their historical URL.
+  // Read from the last run rather than the live form: the form is what the NEXT
+  // render will use, while the mesh on screen came from the last one.
+  const renderedTransparent = runWantsTransparency(record?.runs?.at?.(-1));
   const meshSrc = record.generatedAt
     ? `${record.assetPath}?v=${encodeURIComponent(record.generatedAt)}`
     : record.assetPath;
@@ -136,9 +168,35 @@ export default function Media3DDetail() {
         </div>
         <p className="mt-1 text-xs text-gray-500">
           {imageTo3dStatusMeta(record.status).label}
-          {isGenerating && percent !== null ? ` · ${percent}%` : ''} · updated {timeAgo(record.updatedAt)}
+          {isGenerating && percent !== null ? ` · ${percent}%` : ''}
+          {Number.isInteger(latestRun?.seed) ? ` · seed ${latestRun.seed}` : ''}
+          {Number.isInteger(latestRun?.steps) ? ` · ${latestRun.steps} steps` : ''}
+          {latestRun?.sourceKeyed ? ' · background keyed' : ''}
+          {' '}· updated {timeAgo(record.updatedAt)}
         </p>
       </header>
+
+      <div className="mb-4 rounded-lg border border-port-border bg-port-card p-3">
+        <ImageTo3dRenderOptions
+          stepsSupported={record.supportsRenderOptions?.steps !== false}
+          detailSupported={record.supportsRenderOptions?.detail !== false}
+          alphaModeSupported={record.supportsRenderOptions?.alphaMode !== false}
+          steps={steps}
+          onStepsChange={setSteps}
+          seed={seed}
+          onSeedChange={setSeed}
+          keyBackground={keyBackground}
+          onKeyBackgroundChange={setKeyBackground}
+          detail={detail}
+          onDetailChange={setDetail}
+          alphaMode={alphaMode}
+          onAlphaModeChange={setAlphaMode}
+          normalMapSupported={record.supportsRenderOptions?.normalMap !== false}
+          normalMap={normalMap}
+          onNormalMapChange={setNormalMap}
+          disabled={busy || isGenerating}
+        />
+      </div>
 
       {confirmingDelete && (
         <InlineConfirmRow
@@ -168,11 +226,27 @@ export default function Media3DDetail() {
         <div>
           <span className="mb-1 block text-xs text-gray-400">Mesh</span>
           {record.status === 'ready' && record.assetPath ? (
-            <GlbViewer
-              src={meshSrc}
-              downloadHref={imageTo3dAssetUrl(record.id)}
-              forceOpaque
-            />
+            <>
+              {/* The viewer is the THIRD layer that can flatten alpha, after the
+                  exporter's own alpha_mode and PortOS's GLB rewrite. It has to agree
+                  with the run's request, or a mesh exported as BLEND still renders
+                  solid here and reads as a broken exporter. */}
+              <GlbViewer
+                src={meshSrc}
+                downloadHref={imageTo3dAssetUrl(record.id)}
+                forceOpaque={!renderedTransparent}
+              />
+              {/* The viewer loads the decimated GLB because that is what a browser
+                  can render; the decoder's full mesh is an order of magnitude
+                  larger. Offer it, but say what it actually is so nobody downloads
+                  several hundred MB expecting a textured model. */}
+              <a
+                href={imageTo3dFullMeshUrl(record.id)}
+                className="mt-2 inline-block text-xs text-gray-400 underline decoration-dotted hover:text-gray-200"
+              >
+                Download full-resolution mesh (.obj — geometry only, no textures)
+              </a>
+            </>
           ) : (
             <div className="flex aspect-square items-center justify-center rounded-xl border border-dashed border-port-border bg-port-bg text-center text-sm text-gray-500">
               {isGenerating ? (

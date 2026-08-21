@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 
 // The two hooks are the component's only API callers — stub them so the test
 // exercises the config controls, not the network.
@@ -32,7 +32,7 @@ const BASE_CONFIG = {
   status: {},
 };
 
-function renderControls({ taskMetadata, onUpdate = vi.fn(), taskType = 'feature-ideas', config: extraConfig = {} } = {}) {
+function renderControls({ taskMetadata, onUpdate = vi.fn(), taskType = 'feature-ideas', config: extraConfig = {}, setUpdating = () => {} } = {}) {
   render(
     <GlobalConfigControls
       taskType={taskType}
@@ -43,7 +43,7 @@ function renderControls({ taskMetadata, onUpdate = vi.fn(), taskType = 'feature-
       providers={[]}
       apps={[]}
       updating={false}
-      setUpdating={() => {}}
+      setUpdating={setUpdating}
       allTaskTypes={['feature-ideas']}
     />
   );
@@ -146,6 +146,71 @@ describe('GlobalConfigControls — branch-reconcile batch size', () => {
     expect(onUpdate).toHaveBeenCalledWith('branch-reconcile', {
       taskMetadata: { cleanupMerged: true, branchesPerAgent: 5 }
     });
+  });
+});
+
+describe('GlobalConfigControls — issue exclude labels', () => {
+  it('is hidden for a task type without the issue author filter', () => {
+    renderControls({ taskType: 'feature-ideas' });
+    expect(screen.queryByLabelText('Leave issues with these labels for humans')).toBeNull();
+  });
+
+  it('seeds the input from the configured labels and commits a parsed list on blur', () => {
+    const onUpdate = renderControls({
+      taskType: 'claim-issue',
+      taskMetadata: { issueAuthorFilter: 'self', issueExcludeLabels: ['good first issue'] },
+      onUpdate: vi.fn().mockResolvedValue(undefined),
+    });
+    const input = screen.getByLabelText('Leave issues with these labels for humans');
+    expect(input).toHaveValue('good first issue');
+
+    fireEvent.change(input, { target: { value: 'good first issue, help wanted' } });
+    fireEvent.blur(input);
+
+    expect(onUpdate).toHaveBeenCalledWith('claim-issue', {
+      taskMetadata: { issueAuthorFilter: 'self', issueExcludeLabels: ['good first issue', 'help wanted'] }
+    });
+  });
+
+  it('commits an empty array when the input is cleared', () => {
+    const onUpdate = renderControls({
+      taskType: 'claim-work',
+      taskMetadata: { issueExcludeLabels: ['good first issue'] },
+      onUpdate: vi.fn().mockResolvedValue(undefined),
+    });
+    const input = screen.getByLabelText('Leave issues with these labels for humans');
+
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.blur(input);
+
+    expect(onUpdate).toHaveBeenCalledWith('claim-work', {
+      taskMetadata: { issueExcludeLabels: [] }
+    });
+  });
+
+  it('gates RunTaskButton on the in-flight save (setUpdating around the commit)', async () => {
+    let resolveUpdate;
+    const onUpdate = vi.fn(() => new Promise((resolve) => { resolveUpdate = resolve; }));
+    const setUpdating = vi.fn();
+    renderControls({
+      taskType: 'claim-issue',
+      taskMetadata: { issueExcludeLabels: [] },
+      onUpdate,
+      setUpdating,
+    });
+    const input = screen.getByLabelText('Leave issues with these labels for humans');
+
+    fireEvent.change(input, { target: { value: 'good first issue' } });
+    fireEvent.blur(input);
+
+    // setUpdating(true) must fire BEFORE the PATCH resolves, not after — a
+    // caller that gates RunTaskButton on it needs the disable to take effect
+    // while onUpdate is still in flight.
+    expect(setUpdating).toHaveBeenCalledWith(true);
+    expect(setUpdating).not.toHaveBeenCalledWith(false);
+
+    await act(async () => { resolveUpdate(); await Promise.resolve(); });
+    expect(setUpdating).toHaveBeenLastCalledWith(false);
   });
 });
 

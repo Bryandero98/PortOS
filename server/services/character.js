@@ -196,7 +196,7 @@ async function loadRawCharacter() {
 // DERIVED_FIELDS / saveCharacter.
 //
 // `withSkills` / `withMetrics: false` skip their registry's fan-out for callers that only
-// want the persisted fields plus the age level (the CyberCity HUD, askService, city
+// want the persisted fields plus the age level (the OpenWorld HUD, askService, city
 // snapshots) — deriving stats nobody reads is pure waste. ONE signal context is shared by
 // both registries, so the signals they have in common cost a single read even with both on.
 //
@@ -213,7 +213,7 @@ async function enrichCharacter(raw, { withSkills = true, withMetrics = true } = 
   ]);
   // One shared `now` for both derivations so status and level can't disagree at the future
   // boundary (a birthDate a millisecond apart from two separate `new Date()` clocks) — the
-  // invariant CityXpBadge/CityHudCompact rely on (#2757, claude review).
+  // invariant OpenWorldXpBadge/OpenWorldHudCompact rely on (#2757, claude review).
   const now = new Date();
   const ageYears = ageYearsFromBirthDate(birthDate, now);
   // birthDateStatus (#2757) lets the CTA branch "set" (unset) vs "fix" (invalid/future/unreadable)

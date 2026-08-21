@@ -108,6 +108,10 @@ export async function createModel(input) {
     // `coverage` and `flatness`: an older record reads back undefined, which
     // every consumer treats as "not evaluated" rather than "plausible".
     materialPlausibility: null,
+    // Physical-conformance findings for `spec`, written alongside it by
+    // `evaluateThreejsPhysicalAudit`. Same additive-field contract: an older
+    // record reads back undefined, which every consumer treats as "not evaluated".
+    physicalAudit: null,
     error: null,
     generationOperationId: null,
     runs: [],

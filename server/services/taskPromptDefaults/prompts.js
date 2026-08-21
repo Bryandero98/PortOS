@@ -175,10 +175,14 @@ repo (a globally-configured \`gh\` will silently target an unrelated GitHub repo
 1. List the open PRs. If the repo has no GitHub/GitLab remote, or the matching CLI is
    unavailable or unauthenticated, say so and skip straight to Phase 2:
    \`gh pr list --state open --limit 500 --json number,title,headRefName,author,mergeable,mergeStateStatus\`
-   (GitLab: \`glab mr list --state opened --per-page 100 --page <n>\`, paging until a page
-   comes back short.) The limit has to cover EVERY open PR, not just a first page — a bot
-   PR you never listed looks bot-uncovered to Phase 2, which then files the duplicate bump
-   this phase exists to prevent. If the result is exactly at your limit, raise it and re-run.
+   (GitLab: \`glab mr list --per-page 100 --page <n> --output json\`, paging until a page
+   comes back short; \`glab mr list\` lists OPEN MRs by default and has NO
+   \`--state\` flag — passing one exits 1.) The limit has to cover EVERY open PR,
+   not just a first page — a bot PR you never listed looks bot-uncovered to Phase 2,
+   which then files the duplicate bump this phase exists to prevent. If the result is
+   exactly at your limit, raise it and re-run. The GitLab listing needs
+   \`--output json\` because the human table carries the branch but NOT the author,
+   and the classification below reads both.
    An automated dependency PR is one authored by \`dependabot[bot]\`, \`app/dependabot\`,
    \`renovate[bot]\`, or whose head branch starts with \`dependabot/\` or \`renovate/\`.
 
@@ -250,7 +254,7 @@ repo (a globally-configured \`gh\` will silently target an unrelated GitHub repo
    owns the bump. Phase 1's list is the first filter, and when Phase 1 had forge access,
    confirm per package before you bump one it didn't mention
    (\`gh pr list --state open --search "<package> in:title"\` /
-   \`glab mr list --state opened --search "<package>"\`), so a PR that fell outside the
+   \`glab mr list --search "<package>"\`), so a PR that fell outside the
    listing can't still get double-bumped here. If Phase 1 was skipped for lack of a
    working \`gh\`/\`glab\`, skip this confirmation too — there is nothing to query — and
    say in your summary that bot-PR overlap could not be checked.
@@ -756,8 +760,11 @@ Run steps 1–5 in order.
    # do NOT pack flag+value into one variable: a bare \`$VAR\` holding "--author x"
    # is a single argv token in zsh (no word-splitting) and gh rejects it.
    #   Owner-only mode (default): resolve the owner, then add  --author "$OWNER"
+   #   --limit 500 (not 100): the blocking-label filter below runs on this
+   #   fetched page, so a small cap risks missing eligible work further down
+   #   a busy queue when the first page is full of excluded/in-flight issues.
    OWNER="$(gh repo view --json owner -q .owner.login)"
-   gh issue list --state open --author "$OWNER" --search "sort:created-asc" --json number,title,author,assignees,labels,createdAt --limit 100
+   gh issue list --state open --author "$OWNER" --search "sort:created-asc" --json number,title,author,assignees,labels,createdAt --limit 500
    #   Any-author mode: run the SAME command WITHOUT the --author "$OWNER" flag.
    \`\`\`
 3. Build the in-flight set. Collect every branch/PR ref:
@@ -769,7 +776,7 @@ Run steps 1–5 in order.
 4. **Pick the target issue:** walk the candidate list oldest-first and pick the FIRST issue where ALL of the following are true:
    - Its number is NOT in the in-flight set.
    - It has NO assignees (an assignee means another machine/human already claimed it).
-   - It does NOT carry any of these blocking labels: \`in-progress\`, \`blocked\`, \`needs-input\`, \`future\`, \`wontfix\`, \`question\`, \`discussion\`.
+   - It does NOT carry any of these blocking labels: {issueExcludeLabels}.
    - It is NOT a tracking/umbrella **epic** — recognized by an \`epic\` label, a title ending in "(epic)", OR a title beginning with an \`[epic]\` bracket or \`Epic:\` tag (e.g. "[Epic] …" / "Epic: …", case-insensitive). An epic needs per-slice partial-ship (each slice its own PR, \`Refs\` not \`Closes\`), so leave it for a human or \`/claim --issues\` to split — don't claim it wholesale here. **The bare \`plan\` label is NOT a skip signal.** \`do-replan --issues\` (and \`/do:replan --issues\`) labels EVERY migrated backlog item \`plan\` — atomic bug-fixes included — so \`plan\` marks the *claimable* queue exactly as \`/do:next --issues\` treats it (it is that flow's required candidate label). Skipping all \`plan\` issues would discard the entire actionable backlog and falsely report an empty queue.
 5. **If no eligible issue exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure.
 
@@ -900,19 +907,19 @@ Run steps 1–5 in order.
    \`\`\`bash
    git fetch --prune 2>/dev/null
    # Owner-only mode (default): add  --author <owner>  (resolve <owner> from the project namespace).
-   glab issue list --per-page 100 -F json
+   glab issue list --per-page 100 --output json
    # Any-author mode: run the SAME command WITHOUT --author.
    \`\`\`
 3. Build the in-flight set. Collect every branch/MR source ref:
    \`\`\`bash
    git branch -a --no-color --format='%(refname:short)'
-   glab mr list --per-page 100 -F json   # read each MR's source_branch
+   glab mr list --per-page 100 --output json   # read each MR's source_branch
    \`\`\`
    For each ref (after stripping any leading \`origin/\` prefix), extract the issue number **only when the ref matches** \`claim/issue-<num>\` (number after \`claim/issue-\`) or \`cos/<task>/issue-<num>/<agent>\` (the \`issue-<num>\` third segment). Do NOT flag an issue just because its bare number appears elsewhere in a ref.
 4. **Pick the target issue:** walk the candidate list oldest-first and pick the FIRST issue where ALL of the following are true:
    - Its number (\`iid\`) is NOT in the in-flight set.
    - It has NO assignees (an assignee means another machine/human already claimed it).
-   - It does NOT carry any of these blocking labels: \`in-progress\`, \`blocked\`, \`needs-input\`, \`future\`, \`wontfix\`, \`question\`, \`discussion\`.
+   - It does NOT carry any of these blocking labels: {issueExcludeLabels}.
    - It is NOT a tracking/umbrella **epic** — recognized by an \`epic\` label, a title ending in "(epic)", OR a title beginning with an \`[epic]\` bracket or \`Epic:\` tag (e.g. "[Epic] …" / "Epic: …", case-insensitive). Leave epics for a human to split. **The bare \`plan\` label is NOT a skip signal** — it marks the claimable queue, not a blocker.
 5. **If no eligible issue exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure.
 
@@ -992,12 +999,12 @@ Every local reviewer's fixes are already committed, so the MR opens against fini
 4. **Let required CI finish and go green** — inspect the MR's pipeline (\`glab ci status\` on the branch, or \`glab mr view "\${MR_IID}"\`). A red required pipeline is not merge-eligible: fix it and re-push (same 3-round cap), or, if it stays red, stop exactly as the review-stuck cleanup above does.
 5. **Merge immediately via \`glab mr merge\`** — NEVER a local \`git merge\`. \`glab mr merge\` takes the **MR IID**, which is NOT the issue number — resolve it from the source branch first, merge, then verify remote state:
    \`\`\`bash
-   MR_IID="$(glab mr list --source-branch "claim/issue-\${NUM}" -F json | sed -n 's/.*"iid":\\([0-9]\\{1,\\}\\).*/\\1/p' | head -1)"
+   MR_IID="$(glab mr list --source-branch "claim/issue-\${NUM}" --output json | sed -n 's/.*"iid":\\([0-9]\\{1,\\}\\).*/\\1/p' | head -1)"
    glab mr merge "\${MR_IID}" --yes --remove-source-branch || {
-     glab mr view "\${MR_IID}" -F json | jq -e 'select((.state | ascii_downcase) == "merged")' >/dev/null || \
+     glab mr view "\${MR_IID}" --output json | jq -e 'select((.state | ascii_downcase) == "merged")' >/dev/null || \
        glab mr merge "\${MR_IID}" --yes --squash --remove-source-branch
    }
-   glab mr view "\${MR_IID}" -F json | jq -er 'select((.state | ascii_downcase) == "merged") | .state'
+   glab mr view "\${MR_IID}" --output json | jq -er 'select((.state | ascii_downcase) == "merged") | .state'
    \`\`\`
    The verification command must succeed and print a merged state. An opened/closed state or missing value is not success; investigate CI, review, and branch protection, then retry. Do not enter Phase 7 until the forge confirms the MR is merged.
 
@@ -1339,7 +1346,24 @@ Then search for release documentation. Check your CLAUDE.md context (already pro
 
 If no documentation specifies a release flow, fall back to: source=dev, target=main.
 
-## Step 1: Evaluate Readiness
+## Step 1: Reconcile Missing Releases
+
+BEFORE evaluating unreleased work, check for existing release tags that lack a corresponding GitHub Release:
+1. \`git -C {repoPath} fetch --tags origin\`
+2. List all version tags (e.g., \`v*\`) on \`<TARGET_BRANCH>\` / \`origin\` and list published GitHub Releases:
+   \`\`\`bash
+   gh release list --repo <OWNER>/<REPO> --limit 100
+   \`\`\`
+3. Compare every release tag \`vX.Y.Z\` against published GitHub Releases. If a tag \`vX.Y.Z\` exists but has no corresponding GitHub Release:
+   - Report the missing release version explicitly: "Unpublished release detected: vX.Y.Z".
+   - Locate the changelog body for \`vX.Y.Z\` (e.g., \`.changelog/vX.Y.Z.md\` or \`.changelog/vX.Y.x.md\`).
+   - Check if a newer version tag or release exists.
+   - Publish the missing release using \`gh release create "vX.Y.Z"\`:
+     - Use \`.changelog/vX.Y.Z.md\` (or the assembled changelog for that version) as the release body (\`--notes-file\` or \`--body-file\`).
+     - Pass \`--latest=false\` if a newer version tag or release is already published, so backfilling an old version never displaces the current Latest release. Pass \`--latest\` only if \`vX.Y.Z\` is the newest version.
+4. Report any missing releases reconciled before proceeding to Step 2.
+
+## Step 2: Evaluate Readiness
 
 Using the changelog location discovered in Step 0:
 - Read the current changelog (e.g., \`.changelog/NEXT.md\` or \`.changelog/v*.x.md\`)
@@ -1348,7 +1372,7 @@ Using the changelog location discovered in Step 0:
 
 Count substantive entries (lines starting with "###" or "- **" under Features, Fixes, Improvements sections) across the **assembled** unreleased notes — the staged file plus any uncollected fragments. If fewer than 2 substantive entries exist, stop and report: "Not enough work accumulated for a release." Do NOT create a PR.
 
-## Step 2: Verify Clean State
+## Step 3: Verify Clean State
 
 Run these checks on \`<SOURCE_BRANCH>\` (stop if any fail):
 1. \`git -C {repoPath} fetch origin\` and ensure \`<SOURCE_BRANCH>\` is up to date
@@ -1361,7 +1385,7 @@ Run these checks on \`<SOURCE_BRANCH>\` (stop if any fail):
    environmental blocker and stop before creating the release PR.
 3. Run the project's build (use the command from release docs)
 
-## Step 3: Create or Find PR
+## Step 4: Create or Find PR
 
 Check for existing PR: \`gh pr list --repo <OWNER>/<REPO> --base <TARGET_BRANCH> --head <SOURCE_BRANCH> --state open --json number,url\`
 
@@ -1369,7 +1393,7 @@ If a PR exists, use it. If not, create one following the project's documented re
 
 Capture the PR number as \`<PR_NUM>\` and URL.
 
-## Step 4: Wait for Copilot Review
+## Step 5: Wait for Copilot Review
 
 Copilot review is triggered automatically on push. Poll every 15 seconds until the review appears:
 \`\`\`bash
@@ -1378,9 +1402,9 @@ gh api repos/<OWNER>/<REPO>/pulls/<PR_NUM>/reviews --jq '.[] | select(.user.logi
 
 Wait until you see APPROVED or CHANGES_REQUESTED. Timeout after 5 minutes of polling.
 
-## Step 5: Address Feedback Loop (max 5 iterations)
+## Step 6: Address Feedback Loop (max 5 iterations)
 
-### 5a. Fetch unresolved review threads
+### 6a. Fetch unresolved review threads
 
 Use gh api graphql (JSON input to avoid shell escaping issues with GraphQL variables):
 
@@ -1388,9 +1412,9 @@ Use gh api graphql (JSON input to avoid shell escaping issues with GraphQL varia
 echo '{"query":"query{repository(owner:\\"<OWNER>\\",name:\\"<REPO>\\"){pullRequest(number:<PR_NUM>){reviewThreads(first:100){nodes{id,isResolved,comments(first:10){nodes{body,path,line,author{login}}}}}}}}"}' | gh api graphql --input -
 \`\`\`
 
-### 5b. If no unresolved threads: skip to Step 6 (Merge).
+### 6b. If no unresolved threads: skip to Step 7 (Merge).
 
-### 5c. If unresolved threads exist, evaluate each one:
+### 6c. If unresolved threads exist, evaluate each one:
 
 For each comment, read the referenced file and critically evaluate the suggestion:
 - **If the suggestion is valid and improves the code**: apply the fix
@@ -1401,20 +1425,20 @@ Either way, resolve every thread — the goal is zero unresolved threads before 
 After evaluating all threads:
 - If any code changes were made: run the project's test suite to verify, then commit and push using \`/do:push\` (or manually: stage specific files, conventional commit prefix, \`git pull --rebase && git push\`)
 
-### 5d. Resolve ALL threads via GraphQL mutation (both fixed and dismissed):
+### 6d. Resolve ALL threads via GraphQL mutation (both fixed and dismissed):
 
 For each thread, use the thread node id from 5a:
 \`\`\`bash
 echo '{"query":"mutation{resolveReviewThread(input:{threadId:\\"THREAD_NODE_ID\\"}){thread{isResolved}}}"}' | gh api graphql --input -
 \`\`\`
 
-### 5e. Wait for new Copilot review if code was pushed (repeat Step 4)
+### 6e. Wait for new Copilot review if code was pushed (repeat Step 5)
 
-If you pushed changes in 5c, the push automatically triggers a new Copilot review. Poll for it, then loop back to 5a. If no code changes were made (all threads were false positives), skip straight to Step 6.
+If you pushed changes in 6c, the push automatically triggers a new Copilot review. Poll for it, then loop back to 6a. If no code changes were made (all threads were false positives), skip straight to Step 7.
 
 If after 5 iterations there are still unresolved threads, stop and report what remains.
 
-## Step 6: Merge
+## Step 7: Merge
 
 Only merge when Copilot's most recent review has NO unresolved threads:
 \`\`\`bash
@@ -1423,13 +1447,52 @@ gh pr merge <PR_NUM> --merge
 
 If merge fails (e.g., branch protections), try: \`gh pr merge <PR_NUM> --merge --admin\`
 
-## Step 7: Report
+## Step 8: Report
 
 Summarize:
 - Version released
 - Key changes (from changelog)
 - Number of review iterations needed
 - Any unresolved issues`,
+
+  'stash-cleanup': `[Improvement: {appName}] Git Stash Cleanup
+
+Repository: {repoPath}
+
+Audit every entry in \`git stash list\` for {appName} and clear out anything that is stale, superseded, or unrecoverable — without losing real unlanded work. This never produces a commit; it is a working-tree hygiene pass.
+
+## Step 0: Handle a mid-flight conflict first
+
+Run \`git status\` (\`cd {repoPath}\` first). If it shows unmerged paths (a \`git stash pop\` left the tree conflicted), resolve that BEFORE touching the rest of the stash list:
+
+1. For each conflicted file, read the conflict markers and compare the stashed side against the current HEAD/\`main\` side for that region.
+2. If the stashed side is fully superseded — HEAD already contains the same change or a superset of it (verify by grepping the file for the added identifiers/lines and reading the surrounding code, not just eyeballing the diff) — resolve with \`git checkout --ours <file>\` and \`git add <file>\`.
+3. If the stashed side adds anything HEAD does not already have, STOP. Do not attempt to hand-merge two live versions of the same logic. Leave the conflict markers in place, note exactly which file(s) and which lines are in conflict, and report it — this needs a human to resolve.
+4. Once every conflicted file is resolved (or none were conflicted), confirm \`git status\` is clean before continuing to Step 1. A conflict resolved this way produces no diff against HEAD by construction, so there is nothing to commit.
+
+If Step 0 stopped on an unresolved conflict, skip the rest of this task and go straight to Step 3 (Report).
+
+## Step 1: Triage every remaining stash
+
+Run \`git stash list\`. For each \`stash@{N}\`:
+
+1. \`git stash show -p stash@{N} --stat\` for an overview, then the full \`git stash show -p stash@{N}\` for the patch.
+2. For every changed symbol or section in the patch, check whether current \`main\`/HEAD already contains the same change or a superset of it — grep the target file(s) for the added identifiers, read the surrounding code, and compare. If the stash's message references a branch name, also check \`git branch -a\` and \`git log --all --oneline\` for whether that branch was already merged or deleted (a strong signal the stash is redundant leftover cruft).
+3. Classify each stash:
+   - **SUPERSEDED** — the change (or a superset of it) already exists on \`main\`. Safe to drop.
+   - **STALE/ABANDONED** — old WIP, exploratory scratch, lockfile-only diff noise, a reference to a file that no longer exists in the repo, or a change that contradicts current architecture/policy (check this repo's CLAUDE.md before assuming). Safe to drop.
+   - **REAL UNLANDED WORK** — a coherent change that is not on \`main\` and is not obviously abandoned. Do NOT drop it. Note what it does, which files it touches, and how stale the underlying branch/context looks.
+4. Before diffing two stashes independently, check for duplicates: \`diff <(git stash show -p stash@{A}) <(git stash show -p stash@{B})\`. Identical stashes are one unit — classify and act on them together.
+
+## Step 2: Act
+
+- Drop every stash classified SUPERSEDED or STALE/ABANDONED: \`git stash drop stash@{N}\`. Re-run \`git stash list\` after each drop, since indices shift.
+- Leave every stash classified REAL UNLANDED WORK in place. Do not apply, pop, or drop it.
+- Only run \`git stash clear\` once you have classified the ENTIRE list and confirmed nothing in it is REAL UNLANDED WORK.
+
+## Step 3: Report
+
+Summarize: how many stashes were reviewed, how many were dropped (grouped by reason: superseded vs. stale/abandoned), and — for anything classified REAL UNLANDED WORK — what it is, which files it touches, and a recommendation (recover as a branch, cherry-pick specific hunks, or leave it for the user to decide). When in doubt about whether a stash is safe to drop, leave it in the stash and say so in the report rather than dropping it.`,
 
   'jira-sprint-manager': `[Improvement: {appName}] JIRA Sprint Manager
 
@@ -1635,13 +1698,14 @@ Repository: {repoPath}
    - Contains "gitlab" -> use \`glab\` CLI
 3. List open PRs/MRs authored by others (not by atomantic):
    - GitHub: \`gh pr list --state open --json number,author,headRefName,updatedAt,title\`
-   - GitLab: \`glab mr list --state opened -F json\`
+   - GitLab: \`glab mr list --output json\`
+     (open is the default there; passing a \`--state\` flag exits 1 — it does not exist)
 
 ## Phase 2 — Check Review Status
 
 4. For each PR/MR from other contributors:
    - GitHub: \`gh pr view <number> --json reviews,commits\` — check if I have a review newer than the latest commit
-   - GitLab: \`glab mr view <iid> -F json\` — check notes/approvals vs last commit date
+   - GitLab: \`glab mr view <iid> --output json\` — check notes/approvals vs last commit date
 5. Skip PRs where I already have a review posted after the most recent commit push
 
 ## Phase 3 — Security Scan
@@ -1715,7 +1779,7 @@ Repository: {repoPath}
 6. For each approved PR:
    - Check CI/CD status:
      - GitHub: \`gh pr checks <number>\` — wait for all checks to complete (poll every 30s, up to 10 minutes)
-     - GitLab: \`glab mr view <iid> -F json\` — check pipeline status
+     - GitLab: \`glab mr view <iid> --output json\` — check pipeline status
    - Run the project's test suite locally: check for a test script in package.json, Makefile, or similar and run it
    - If all CI checks pass AND local tests pass (prefer a true merge commit so the branch tip stays in the default branch's history — if the repo disallows merge commits, fall back to \`--squash\`):
      - GitHub: \`gh pr merge <number> --merge --delete-branch || gh pr merge <number> --squash --delete-branch\`

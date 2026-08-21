@@ -41,7 +41,7 @@ export const WORKFLOW_STAGES = [
     id: 'hygiene',
     label: 'Hygiene',
     description: 'Reset state: clean up merged branches and stale agent data so downstream stages start clean.',
-    taskTypes: ['branch-reconcile'],
+    taskTypes: ['branch-reconcile', 'stash-cleanup'],
     jobIds: ['job-agent-data-cleanup']
   },
   {

@@ -8,9 +8,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 
 const spawnMock = vi.fn();
-vi.mock('../lib/childProcess.js', () => ({ spawn: (...args) => spawnMock(...args) }));
+// `execFile` is unused here, but gitlab.js reaches safeJSONParse through
+// lib/fileUtils.js, which promisifies it at module load — a spawn-only mock
+// makes the import itself throw.
+vi.mock('../lib/childProcess.js', () => ({
+  spawn: (...args) => spawnMock(...args),
+  execFile: () => { throw new Error('execFile is not used by gitlab.js'); },
+}));
 
-const { findMergeRequestForBranch } = await import('./gitlab.js');
+const { findMergeRequestForBranch, execGlabJson } = await import('./gitlab.js');
 
 /** A fake `glab` child that writes `stdout` then exits with `code`. */
 const glabChild = ({ code = 0, stdout = '' } = {}) => {
@@ -38,10 +44,10 @@ describe('findMergeRequestForBranch (#3358)', () => {
       .resolves.toMatchObject({ status: 'found', number: 12 });
   });
 
-  it('queries by source branch across every state', async () => {
+  it('queries by source branch across every state, asking for JSON with the long --output form', async () => {
     await findMergeRequestForBranch('claim/issue-1', '/repo');
     const [, args, opts] = spawnMock.mock.calls[0];
-    expect(args).toEqual(['mr', 'list', '--source-branch', 'claim/issue-1', '--all', '-P', '1', '-F', 'json']);
+    expect(args).toEqual(['mr', 'list', '--source-branch', 'claim/issue-1', '--all', '-P', '1', '--output', 'json']);
     expect(opts.cwd).toBe('/repo');
   });
 
@@ -89,5 +95,48 @@ describe('execGlab timeout (#3358)', () => {
     hung.emit('close', 0);
     await expect(pending).resolves.toMatchObject({ status: 'unavailable' });
     vi.useRealTimers();
+  });
+});
+
+describe('execGlabJson', () => {
+  it('appends the JSON flag itself so no caller can re-copy the wrong one', async () => {
+    await execGlabJson(['issue', 'list', '--per-page', '100'], '/repo');
+    const [, args] = spawnMock.mock.calls[0];
+    expect(args).toEqual(['issue', 'list', '--per-page', '100', '--output', 'json']);
+  });
+
+  it('returns the parsed rows on an answered list', async () => {
+    spawnMock.mockImplementationOnce(() => glabChild({ stdout: '[{"iid":7}]' }));
+    await expect(execGlabJson(['issue', 'list'], '/repo'))
+      .resolves.toEqual({ rows: [{ iid: 7 }], reason: 'ok' });
+  });
+
+  it('an ANSWERED empty list is rows:[] / ok — never conflated with a failed read', async () => {
+    await expect(execGlabJson(['issue', 'list'], '/repo'))
+      .resolves.toEqual({ rows: [], reason: 'ok' });
+  });
+
+  it('reports `cli-failed` when glab exits non-zero (unauthenticated / offline / missing)', async () => {
+    spawnMock.mockImplementationOnce(() => glabChild({ code: 1 }));
+    await expect(execGlabJson(['issue', 'list'], '/repo'))
+      .resolves.toEqual({ rows: null, reason: 'cli-failed' });
+  });
+
+  it('reports `not-json` — NOT `cli-failed` — when glab exits 0 with its human table', async () => {
+    // The exact regression: a working, authenticated glab whose output flag
+    // moved answers with a table at exit 0. Collapsing that into the
+    // reachability failure is what produced the false "retry once the CLI is
+    // authenticated" advice.
+    spawnMock.mockImplementationOnce(() => glabChild({
+      stdout: 'Showing 12 open issues in group/proj (Page 1)\n\n#356\tSomething\t(plan)\t1 hour ago'
+    }));
+    await expect(execGlabJson(['issue', 'list'], '/repo'))
+      .resolves.toEqual({ rows: null, reason: 'not-json' });
+  });
+
+  it('a JSON OBJECT is not a row list either', async () => {
+    spawnMock.mockImplementationOnce(() => glabChild({ stdout: '{"message":"404 Not Found"}' }));
+    await expect(execGlabJson(['issue', 'list'], '/repo'))
+      .resolves.toEqual({ rows: null, reason: 'not-json' });
   });
 });

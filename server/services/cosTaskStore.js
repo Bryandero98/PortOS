@@ -1285,7 +1285,7 @@ export async function resolveTaskChallengeWithRecheck(taskId, { recheck, resolve
   // upstream-reviewer failure — surface it as a 4xx (RECHECK_NO_MODEL → 400), not
   // the 502 bucket reserved for a reviewer that's actually unreachable.
   if (!model) {
-    return { error: `No model configured for the ${backend} reviewer — set one on the AI Providers → Code Review Defaults panel.`, code: 'RECHECK_NO_MODEL' };
+    return { error: `No model configured for the ${backend} reviewer — set one on the Settings → Code Reviewers page.`, code: 'RECHECK_NO_MODEL' };
   }
   console.log(`⚖️ Re-checking challenge on ${taskId} via ${backend} (${model}${effort ? `, ${effort} effort` : ''})`);
   const review = await runLocalCodeReview({ backend, model, effort, diff: recheck?.diff });

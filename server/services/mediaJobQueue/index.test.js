@@ -44,11 +44,15 @@ tryReadFile: vi.fn().mockResolvedValue(null), jobId: 'whatever' })),
   generateImageCodex: vi.fn(async () => ({ jobId: 'whatever' })),
   generateAudio: vi.fn(async () => ({ jobId: 'whatever' })),
   generateAudioRemote: vi.fn(async () => ({ jobId: 'whatever' })),
+  generateImageRemote: vi.fn(async () => ({ jobId: 'whatever' })),
+  generateVideoRemote: vi.fn(async () => ({ jobId: 'whatever' })),
   cancelVideo: vi.fn(),
   cancelImage: vi.fn(),
   cancelImageCodex: vi.fn(),
   cancelAudio: vi.fn(),
   cancelAudioRemote: vi.fn(),
+  cancelImageRemote: vi.fn(),
+  cancelVideoRemote: vi.fn(),
   // #1332: loraTraining is dynamically imported by the queue for runTraining
   // (worker) and hasSurvivingTrainer (boot reconcile). Stub both so the boot
   // re-attach decision is testable without loading the real trainer module.
@@ -80,6 +84,17 @@ vi.mock('../audioGen/local.js', () => ({
 vi.mock('../audioGen/remote.js', () => ({
   generateAudio: (...args) => stubs.generateAudioRemote(...args),
   cancel: (...args) => stubs.cancelAudioRemote(...args),
+}));
+
+vi.mock('../imageGen/remote.js', () => ({
+  generateImage: (...args) => stubs.generateImageRemote(...args),
+  cancel: (...args) => stubs.cancelImageRemote(...args),
+}));
+
+vi.mock('../videoGen/remote.js', () => ({
+  generateVideo: (...args) => stubs.generateVideoRemote(...args),
+  generateChainedVideo: (...args) => stubs.generateVideoRemote(...args),
+  cancel: (...args) => stubs.cancelVideoRemote(...args),
 }));
 
 vi.mock('../loraTraining/index.js', () => ({
@@ -116,6 +131,22 @@ const remoteMediaParams = () => ({
   request: { engine: 'remote-audio', modelId: 'example/model' },
 });
 
+const remoteImageMediaParams = () => ({
+  wireVersion: 1,
+  peerId: '00000000-0000-4000-8000-000000000001',
+  request: {
+    kind: 'image', engine: 'local', modelId: 'dev', prompt: 'a harbour', width: 512, height: 512,
+  },
+});
+
+const remoteVideoMediaParams = () => ({
+  wireVersion: 1,
+  peerId: '00000000-0000-4000-8000-000000000001',
+  request: {
+    kind: 'video', engine: 'local', modelId: 'ltx2', prompt: 'a harbour', numFrames: 121, fps: 24,
+  },
+});
+
 beforeEach(async () => {
   tempDataDir = mkdtempSync(join(tmpdir(), 'mediaJobQueue-test-'));
   Object.values(stubs).forEach((fn) => fn.mockReset());
@@ -149,6 +180,65 @@ describe('mediaJobQueue', () => {
     expect(r1.jobId).toMatch(/^[0-9a-f-]{36}$/);
     expect(r1.position).toBe(1);
     expect(r2.position).toBe(2);
+  });
+
+  describe('getQueueCapacity', () => {
+    it('separates the serialized GPU lane from the parallel remote lane', async () => {
+      // Both lanes run concurrently, so a remote job must NOT be reported as
+      // waiting behind the local GPU render — that conflation is what made two
+      // idle peers each read as busy while waiting on the other.
+      stubs.generateVideo.mockImplementation(() => new Promise(() => {}));
+      stubs.generateAudioRemote.mockImplementation(() => new Promise(() => {}));
+      mediaJobQueue.enqueueJob({ kind: 'video', params: { prompt: 'local' } });
+      mediaJobQueue.enqueueJob({ kind: 'video', params: { prompt: 'waiting' } });
+      mediaJobQueue.enqueueJob({
+        kind: 'audio',
+        params: {
+          prompt: '',
+          engine: 'remote-audio',
+          modelId: 'example/model',
+          remoteMedia: remoteMediaParams(),
+        },
+      });
+      await waitFor(() => stubs.generateVideo.mock.calls.length === 1
+        && stubs.generateAudioRemote.mock.calls.length === 1);
+
+      const capacity = mediaJobQueue.getQueueCapacity();
+      // The remote render runs concurrently with the local one and the second
+      // video still waits — the remote job neither occupies the GPU lane nor
+      // queues behind it.
+      expect(capacity.lanes.gpu).toMatchObject({ running: 1, queued: 1, limit: 1 });
+      expect(capacity.lanes.remote).toMatchObject({ running: 1, queued: 0 });
+      expect(capacity.runningKind).toBe('video');
+      expect(capacity.totals).toEqual({ running: 2, queued: 1 });
+    });
+
+    it('counts queue depth per kind', async () => {
+      stubs.generateVideo.mockImplementation(() => new Promise(() => {}));
+      mediaJobQueue.enqueueJob({ kind: 'video', params: {} });
+      mediaJobQueue.enqueueJob({ kind: 'video', params: {} });
+      mediaJobQueue.enqueueJob({ kind: 'image', params: {} });
+      await waitFor(() => stubs.generateVideo.mock.calls.length === 1);
+
+      const { byKind } = mediaJobQueue.getQueueCapacity();
+      expect(byKind.video).toEqual({ running: 1, queued: 1 });
+      expect(byKind.image).toEqual({ running: 0, queued: 1 });
+    });
+
+    // An absent key and a zero read identically in a UI, and only one of them
+    // is true — every known kind must be present even with no work.
+    it('reports every known kind on an empty queue', () => {
+      const { byKind, totals, runningKind } = mediaJobQueue.getQueueCapacity();
+      expect(Object.keys(byKind).sort()).toEqual([...mediaJobQueue.JOB_KINDS].sort());
+      expect(Object.values(byKind).every((c) => c.running === 0 && c.queued === 0)).toBe(true);
+      expect(totals).toEqual({ running: 0, queued: 0 });
+      expect(runningKind).toBeNull();
+    });
+
+    it('reports the remote lane bound', () => {
+      expect(mediaJobQueue.getQueueCapacity().lanes.remote.limit)
+        .toBe(mediaJobQueue.REMOTE_MEDIA_PARALLEL_LIMIT);
+    });
   });
 
   it('rejects unknown kinds', () => {
@@ -357,6 +447,83 @@ describe('mediaJobQueue', () => {
     await waitFor(() => frames.some((f) => f.type === 'preview'));
     expect(frames.find((f) => f.type === 'preview'))
       .toMatchObject({ type: 'preview', currentImage: 'http://x/samples/step-000250.png', step: 250 });
+
+    videoGenEvents.emit('completed', { generationId: job.jobId, filename: `${job.jobId}.mp4` });
+    await waitFor(() => mediaJobQueue.getJob(job.jobId)?.status === 'completed');
+  });
+
+  it('forwards the resolved render geometry, isolated per job and out of the replay slot', async () => {
+    // #4588: a live preview stage must size itself by the geometry the render
+    // RESOLVED to (videoGen snaps both edges down to the model's grid), not by
+    // what the form submitted. The queue's own `started` SSE frame is broadcast
+    // before the gen run begins, so the geometry rides its own frame type.
+    const job = mediaJobQueue.enqueueJob({ kind: 'video', params: { prompt: 'geometry', width: 720, height: 484 } });
+    await waitFor(() => stubs.generateVideo.mock.calls.length === 1);
+    await waitFor(() => mediaJobQueue.getJob(job.jobId)?.status === 'running');
+
+    const frames = [];
+    const makeRes = (sink) => ({
+      writeHead: () => {},
+      write: (msg) => {
+        for (const line of msg.split('\n')) {
+          if (line.startsWith('data: ')) sink.push(JSON.parse(line.slice(6)));
+        }
+      },
+      end: () => {},
+      req: { on: () => {} },
+    });
+    expect(mediaJobQueue.attachSseClient(job.jobId, makeRes(frames))).toBe(true);
+
+    // A `started` event for an unrelated render must not stamp this job.
+    videoGenEvents.emit('started', { generationId: 'some-other-job', width: 1920, height: 1080 });
+    // Neither must a runner that reports no usable geometry — absent/zero edges
+    // emit no frame at all rather than a ratio the client has to defend against.
+    videoGenEvents.emit('started', { generationId: job.jobId, totalSteps: 30 });
+    videoGenEvents.emit('started', { generationId: job.jobId, width: 0, height: 480 });
+    expect(frames.some((f) => f.type === 'render-meta')).toBe(false);
+    expect(mediaJobQueue.getJob(job.jobId)?.render).toBeUndefined();
+
+    videoGenEvents.emit('started', { generationId: job.jobId, totalSteps: 30, width: 704, height: 480 });
+    await waitFor(() => frames.some((f) => f.type === 'render-meta'));
+    expect(frames.find((f) => f.type === 'render-meta')).toEqual({ type: 'render-meta', width: 704, height: 480 });
+    // Persisted on the job so a reload recovers it — the SSE entry keeps only
+    // ONE replay frame and it must hold what the run is doing.
+    expect(mediaJobQueue.getJob(job.jobId).render).toEqual({ width: 704, height: 480 });
+
+    videoGenEvents.emit('progress', { generationId: job.jobId, progress: 0.25 });
+    await waitFor(() => frames.some((f) => f.type === 'progress'));
+
+    // A client that attaches AFTER the geometry was announced (the normal case
+    // — the geometry lands before the submitting page's EventSource is even
+    // open) still gets it, replayed from the job rather than from the single
+    // retained slot, which keeps holding the frame that says what the run is
+    // doing.
+    const replayed = [];
+    expect(mediaJobQueue.attachSseClient(job.jobId, makeRes(replayed))).toBe(true);
+    expect(replayed).toHaveLength(2);
+    expect(replayed[0]).toMatchObject({ type: 'progress', progress: 0.25 });
+    expect(replayed[1]).toEqual({ type: 'render-meta', width: 704, height: 480 });
+
+    // A chained render emits `started` per CHUNK, under ids the queue ignores,
+    // so its geometry rides the outer progress frames instead — same handler,
+    // same dedupe, no second frame for an unchanged geometry.
+    videoGenEvents.emit('progress', { generationId: job.jobId, progress: 0.3, width: 704, height: 480 });
+    videoGenEvents.emit('progress', { generationId: job.jobId, progress: 0.4, width: 1280, height: 704 });
+    await waitFor(() => frames.filter((f) => f.type === 'render-meta').length === 2);
+    expect(frames.filter((f) => f.type === 'render-meta').at(-1))
+      .toEqual({ type: 'render-meta', width: 1280, height: 704 });
+    expect(mediaJobQueue.getJob(job.jobId).render).toEqual({ width: 1280, height: 704 });
+
+    // Restore the original geometry for the persistence assertion below.
+    videoGenEvents.emit('progress', { generationId: job.jobId, progress: 0.5, width: 704, height: 480 });
+    await waitFor(() => mediaJobQueue.getJob(job.jobId).render?.width === 704);
+
+    // Survives a server restart too — the geometry is part of the persisted
+    // projection, not just in-memory state.
+    await waitFor(() => {
+      const data = JSON.parse(readFileSync(join(tempDataDir, 'media-jobs.json'), 'utf-8'));
+      return data.jobs.find((j) => j.id === job.jobId)?.render?.width === 704;
+    });
 
     videoGenEvents.emit('completed', { generationId: job.jobId, filename: `${job.jobId}.mp4` });
     await waitFor(() => mediaJobQueue.getJob(job.jobId)?.status === 'completed');
@@ -849,6 +1016,123 @@ describe('Audio kind (#1928)', () => {
     await waitFor(() => mediaJobQueue.getJob(remote.jobId)?.status === 'completed');
   });
 
+  // #4683 — the downgrade contract is enforced HERE, not at each routed enqueue
+  // site, so a future caller that forgets to blank the local render fields can't
+  // ship a job a build rolled back past `remoteMedia` would render for real.
+  it('normalizes any enqueued job carrying a marker into the downgrade-safe shape', async () => {
+    stubs.generateImageRemote.mockImplementation(() => new Promise(() => {}));
+    // Deliberately hostile input: a caller that passed the local render fields
+    // straight through, exactly as a forgotten normalization would.
+    const remote = mediaJobQueue.enqueueJob({
+      kind: 'image',
+      params: {
+        prompt: 'a harbour',
+        modelId: 'dev',
+        pythonPath: '/usr/bin/python3',
+        width: 512,
+        remoteMedia: remoteImageMediaParams(),
+      },
+    });
+
+    const { params } = mediaJobQueue.getJob(remote.jobId);
+    expect(params.prompt).toBe('');
+    expect(params.modelId).toBeNull();
+    expect(params.pythonPath).toBeNull();
+    // Surviving job params and the marker itself ride through untouched, and
+    // the job still routes to the remote adapter on this build.
+    expect(params.width).toBe(512);
+    expect(params.remoteMedia.request.prompt).toBe('a harbour');
+    await waitFor(() => stubs.generateImageRemote.mock.calls.length === 1);
+    expect(stubs.generateImage).not.toHaveBeenCalled();
+  });
+
+  it('re-normalizes a routed job restored from a snapshot an older build wrote', async () => {
+    // Boot restoration is the second way a job enters the queue. A record
+    // persisted before #4683 still carries the top-level model id a legacy
+    // dispatcher would render from, so upgrading and then rolling back would
+    // otherwise resurrect a locally-renderable job.
+    writeFileSync(join(tempDataDir, 'media-jobs.json'), JSON.stringify({
+      jobs: [
+        {
+          id: 'aaaaaaaa-0000-4000-8000-000000000001',
+          kind: 'image',
+          status: 'queued',
+          queuedAt: '2026-08-01T00:00:00.000Z',
+          params: {
+            prompt: 'a harbour', modelId: 'dev', pythonPath: '/usr/bin/python3',
+            remoteMedia: remoteImageMediaParams(),
+          },
+        },
+        {
+          id: 'aaaaaaaa-0000-4000-8000-000000000002',
+          kind: 'image',
+          status: 'running',
+          queuedAt: '2026-08-01T00:00:00.000Z',
+          params: {
+            prompt: 'a harbour', modelId: 'dev', pythonPath: '/usr/bin/python3',
+            remoteMedia: remoteImageMediaParams(),
+          },
+        },
+      ],
+    }));
+    stubs.generateImageRemote.mockImplementation(() => new Promise(() => {}));
+    await importFresh();
+    await mediaJobQueue.initMediaJobQueue();
+
+    for (const id of ['aaaaaaaa-0000-4000-8000-000000000001', 'aaaaaaaa-0000-4000-8000-000000000002']) {
+      const { params } = mediaJobQueue.getJob(id);
+      expect(params.prompt).toBe('');
+      expect(params.modelId).toBeNull();
+      expect(params.pythonPath).toBeNull();
+      expect(params.remoteMedia.request.prompt).toBe('a harbour');
+    }
+    // The interrupted running job still gets its reconcile flag.
+    expect(mediaJobQueue.getJob('aaaaaaaa-0000-4000-8000-000000000002').params.remoteMedia.reconcile).toBe(true);
+  });
+
+  it('re-normalizes an ARCHIVED routed job too — the recent reel is a retry surface', async () => {
+    // A rolled-back build restores archived rows, shows them in the Render
+    // Queue's recent reel, and its Retry hands the stored params straight to a
+    // local render. Leaving the archive un-normalized would keep #4683 open
+    // through that path.
+    writeFileSync(join(tempDataDir, 'media-jobs.json'), JSON.stringify({
+      jobs: [{
+        id: 'bbbbbbbb-0000-4000-8000-000000000001',
+        kind: 'image',
+        status: 'failed',
+        error: 'peer unreachable',
+        queuedAt: new Date(Date.now() - 60_000).toISOString(),
+        // Inside the archive's 24h retention window, or the boot prune drops it.
+        completedAt: new Date().toISOString(),
+        params: {
+          prompt: 'a harbour', modelId: 'dev', pythonPath: '/usr/bin/python3',
+          remoteMedia: remoteImageMediaParams(),
+        },
+      }],
+    }));
+    await importFresh();
+    await mediaJobQueue.initMediaJobQueue();
+
+    const { params, status } = mediaJobQueue.getJob('bbbbbbbb-0000-4000-8000-000000000001');
+    expect(status).toBe('failed');
+    expect(params.prompt).toBe('');
+    expect(params.modelId).toBeNull();
+    expect(params.pythonPath).toBeNull();
+    expect(params.remoteMedia.request.prompt).toBe('a harbour');
+  });
+
+  it('leaves a training job carrying a stray marker on the local path', () => {
+    // Bypass probe for the normalization above: `training` has no federated
+    // contract, so a marker on one is corrupt state — blanking its params would
+    // destroy a real local run.
+    const job = mediaJobQueue.enqueueJob({
+      kind: 'training',
+      params: { runId: 'run-1', runtime: 'mflux', modelId: 'dev', remoteMedia: remoteImageMediaParams() },
+    });
+
+    expect(mediaJobQueue.getJob(job.jobId).params.modelId).toBe('dev');
+  });
+
   it('persists cancellation intent before signaling a running remote adapter', async () => {
     stubs.generateAudioRemote.mockImplementation(() => new Promise(() => {}));
     const remote = mediaJobQueue.enqueueJob({
@@ -896,6 +1180,61 @@ describe('Audio kind (#1928)', () => {
       remoteMedia: expect.objectContaining({ reconcile: true }),
     }));
     audioGenEvents.emit('completed', { generationId: id, filename: `${id}.wav` });
+    await waitFor(() => mediaJobQueue.getJob(id)?.status === 'completed');
+  });
+
+
+  it('routes an image remote job to the remote adapter and the remote lane, not the GPU', async () => {
+    stubs.generateImage.mockImplementation(() => new Promise(() => {}));
+    stubs.generateImageRemote.mockImplementation(() => new Promise(() => {}));
+
+    // A local image render occupies the single GPU slot; the federated one must
+    // still start, because it renders on the peer's hardware.
+    const local = mediaJobQueue.enqueueJob({ kind: 'image', params: { prompt: 'local render' } });
+    const remote = mediaJobQueue.enqueueJob({
+      kind: 'image',
+      params: { prompt: '', modelId: 'dev', remoteMedia: remoteImageMediaParams() },
+    });
+
+    await waitFor(() => stubs.generateImage.mock.calls.length === 1
+      && stubs.generateImageRemote.mock.calls.length === 1);
+    expect(mediaJobQueue.getJob(local.jobId).status).toBe('running');
+    expect(mediaJobQueue.getJob(remote.jobId).status).toBe('running');
+    // The local adapter must never see the federated job — it would re-render
+    // it here and spend this machine's GPU on work already queued on the peer.
+    expect(stubs.generateImage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: remote.jobId }),
+    );
+
+    imageGenEvents.emit('completed', { generationId: remote.jobId, filename: `${remote.jobId}.png` });
+    imageGenEvents.emit('failed', { generationId: local.jobId, error: 'cleanup' });
+    await waitFor(() => mediaJobQueue.getJob(remote.jobId)?.status === 'completed');
+  });
+
+  it('re-enqueues a persisted running remote VIDEO job with reconciliation enabled', async () => {
+    const id = '00000000-0000-4000-8000-000000000003';
+    writeFileSync(join(tempDataDir, 'media-jobs.json'), JSON.stringify({
+      jobs: [{
+        id,
+        kind: 'video',
+        owner: null,
+        status: 'running',
+        queuedAt: '2026-08-19T12:00:00.000Z',
+        startedAt: '2026-08-19T12:00:01.000Z',
+        params: { prompt: '', modelId: 'ltx2', remoteMedia: remoteVideoMediaParams() },
+      }],
+    }));
+    stubs.generateVideoRemote.mockImplementation(() => new Promise(() => {}));
+
+    await mediaJobQueue.initMediaJobQueue();
+    await waitFor(() => stubs.generateVideoRemote.mock.calls.length === 1);
+
+    expect(stubs.generateVideoRemote).toHaveBeenCalledWith(expect.objectContaining({
+      jobId: id,
+      remoteMedia: expect.objectContaining({ reconcile: true }),
+    }));
+    expect(stubs.generateVideo).not.toHaveBeenCalled();
+    videoGenEvents.emit('completed', { generationId: id, filename: `${id}.mp4` });
     await waitFor(() => mediaJobQueue.getJob(id)?.status === 'completed');
   });
 

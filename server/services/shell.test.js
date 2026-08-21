@@ -8,15 +8,29 @@ vi.mock('node-pty', () => ({
 }));
 
 const makeFakePty = () => {
+  // Real node-pty's onData supports MULTIPLE independent listeners (each
+  // registration returns its own IDisposable), all fired in registration
+  // order for every chunk — shell.js relies on this directly (one listener
+  // dispatches the caller's onData hook, a second — for waitForPromptReady —
+  // watches for the readiness-probe marker). A single-slot `_dataHandler`
+  // that the second registration overwrites would silently drop the first
+  // listener and make it impossible to test the interaction between them
+  // (see the onInitialCommandSent-ordering regression test below).
+  const dataHandlers = [];
   const fake = {
-    _dataHandler: null,
     _exitHandler: null,
-    onData: vi.fn((fn) => { fake._dataHandler = fn; }),
+    onData: vi.fn((fn) => {
+      dataHandlers.push(fn);
+      return { dispose: () => {
+        const idx = dataHandlers.indexOf(fn);
+        if (idx !== -1) dataHandlers.splice(idx, 1);
+      } };
+    }),
     onExit: vi.fn((fn) => { fake._exitHandler = fn; }),
     write: vi.fn(),
     resize: vi.fn(),
     kill: vi.fn(),
-    emitData: (chunk) => fake._dataHandler?.(chunk),
+    emitData: (chunk) => { for (const fn of [...dataHandlers]) fn(chunk); },
     emitExit: (payload) => fake._exitHandler?.(payload),
   };
   ptyInstances.push(fake);
@@ -184,15 +198,15 @@ describe('createShellSession', () => {
     const id = shell.createShellSession(makeSocket(), { initialCommand: 'ls', initialCommandDelayMs: 50 });
     expect(ptyInstances[0].write).not.toHaveBeenCalled();
     vi.advanceTimersByTime(50);
-    expect(ptyInstances[0].write).toHaveBeenCalledWith('ls\n');
+    expect(ptyInstances[0].write).toHaveBeenCalledWith('ls\r');
     expect(shell.getSession(id)).toBeTruthy();
     vi.useRealTimers();
   });
 
-  it('waitForPromptReady: holds initialCommand until the readiness probe round-trips, and fires onInitialCommandSent', () => {
+  it('waitForPromptReady: holds initialCommand until the readiness probe round-trips, and fires onInitialCommandSent', async () => {
     vi.useFakeTimers();
     const onInitialCommandSent = vi.fn();
-    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onInitialCommandSent });
+    shell.createShellSession(makeSocket(), { shell: '/bin/zsh', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onInitialCommandSent });
     const pty = ptyInstances[0];
     // The probe is written after a short PTY-spawn settle, not immediately.
     expect(pty.write).not.toHaveBeenCalled();
@@ -205,38 +219,125 @@ describe('createShellSession', () => {
     // assembled string never appears contiguously) must NOT trip readiness.
     pty.emitData('instant prompt rendering…');
     pty.emitData(`% printf '%s\\n' 'PORTOSRDY''${nonce}'`);
-    expect(pty.write).not.toHaveBeenCalledWith('claude\n');
+    expect(pty.write).not.toHaveBeenCalledWith('claude\r');
     expect(onInitialCommandSent).not.toHaveBeenCalled();
     // The assembled marker appears in the OUTPUT → shell proven, command injected.
+    // The actual PTY write stays synchronous, but onInitialCommandSent is now
+    // routed through the same per-session hook queue as onData (see shell.js
+    // sendInitial) so a native microtask tick — NOT the faked setImmediate
+    // flushMicrotasks() uses elsewhere — is needed before it's observed.
     pty.emitData(`${marker}\n`);
-    expect(pty.write).toHaveBeenCalledWith('claude\n');
+    expect(pty.write).toHaveBeenCalledWith('claude\r');
+    await Promise.resolve();
     expect(onInitialCommandSent).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  // Regression pin for codex review [P1] (#4638): the probe listener and the
+  // main onData listener are both registered on ptyProcess.onData for the
+  // SAME chunk, but onData is only dispatched via the async session.hookQueue
+  // (runHook), not called inline. Firing onInitialCommandSent synchronously
+  // from the probe listener would therefore let it "jump the queue" ahead of
+  // the marker chunk's own onData call — a consumer gating output on "has the
+  // command been injected yet" would misread the probe's own echo as
+  // post-injection output. This pins that onInitialCommandSent only observes
+  // AFTER the marker chunk's onData handler has fully settled, even when that
+  // handler is itself async and slow.
+  it('waitForPromptReady: onInitialCommandSent fires only after the marker chunk\'s onData handler settles', async () => {
+    vi.useFakeTimers();
+    const order = [];
+    const onData = vi.fn(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      order.push('onData');
+    });
+    const onInitialCommandSent = vi.fn(() => { order.push('onInitialCommandSent'); });
+    shell.createShellSession(makeSocket(), { shell: '/bin/zsh', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onData, onInitialCommandSent });
+    const pty = ptyInstances[0];
+    vi.advanceTimersByTime(50);
+    const probeCall = pty.write.mock.calls.find(([d]) => /printf/.test(d));
+    const nonce = probeCall[0].match(/PORTOSRDY''([0-9a-f]+)'/)[1];
+    const marker = `PORTOSRDY${nonce}`;
+    pty.emitData(`${marker}\n`);
+    // The PTY write for the real command stays synchronous/immediate...
+    expect(pty.write).toHaveBeenCalledWith('claude\r');
+    // ...but onInitialCommandSent must wait for onData's queued (and here,
+    // deliberately slow) handler to finish first.
+    expect(onInitialCommandSent).not.toHaveBeenCalled();
+    // Adopting a thenable into a promise chain costs extra microtask ticks per
+    // link (PromiseResolveThenableJob), and this chain has several links
+    // (onData's own two awaits, runHook's Promise.resolve(fn(arg)) wrapper,
+    // the .catch() continuation, then onInitialCommandSent's own link) — so
+    // drain generously rather than hand-count an exact number of ticks.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(order).toEqual(['onData', 'onInitialCommandSent']);
     vi.useRealTimers();
   });
 
   it('waitForPromptReady: injects the command on the fallback timeout if the probe never round-trips', () => {
     vi.useFakeTimers();
-    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
+    shell.createShellSession(makeSocket(), { shell: '/bin/zsh', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
     const pty = ptyInstances[0];
     vi.advanceTimersByTime(50); // probe written
     // Output streams but the assembled marker never appears.
     for (let i = 0; i < 10; i++) { pty.emitData('tick'); vi.advanceTimersByTime(500); }
-    expect(pty.write).not.toHaveBeenCalledWith('claude\n');
+    expect(pty.write).not.toHaveBeenCalledWith('claude\r');
     // …but the hard fallback (8000ms from creation) injects the command regardless.
     vi.advanceTimersByTime(8000);
-    expect(pty.write).toHaveBeenCalledWith('claude\n');
+    expect(pty.write).toHaveBeenCalledWith('claude\r');
     vi.useRealTimers();
   });
 
   it('waitForPromptReady: if the shell exits before the probe round-trips, the fallback never injects the command', () => {
     vi.useFakeTimers();
-    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
+    shell.createShellSession(makeSocket(), { shell: '/bin/zsh', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
     const pty = ptyInstances[0];
     vi.advanceTimersByTime(50); // probe written
     // The shell dies before the marker round-trips → cancels pending timers.
     pty.emitExit({ exitCode: 1 });
     vi.advanceTimersByTime(8000); // past the (now-cleared) fallback window
-    expect(pty.write).not.toHaveBeenCalledWith('claude\n');
+    expect(pty.write).not.toHaveBeenCalledWith('claude\r');
+    vi.useRealTimers();
+  });
+
+  it('waitForPromptReady: uses a Write-Output probe on PowerShell and round-trips it the same way', async () => {
+    vi.useFakeTimers();
+    const onInitialCommandSent = vi.fn();
+    shell.createShellSession(makeSocket(), { shell: 'pwsh.exe', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onInitialCommandSent });
+    const pty = ptyInstances[0];
+    expect(pty.write).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(50);
+    const probeCall = pty.write.mock.calls.find(([d]) => /Write-Output/.test(d));
+    expect(probeCall).toBeTruthy();
+    const nonce = probeCall[0].match(/'PORTOSRDY' \+ '([0-9a-f]+)'/)[1];
+    const marker = `PORTOSRDY${nonce}`;
+    // The echoed command line (split literals) must not trip readiness.
+    pty.emitData(`PS C:\\> Write-Output ('PORTOSRDY' + '${nonce}')`);
+    expect(pty.write).not.toHaveBeenCalledWith('claude\r');
+    expect(onInitialCommandSent).not.toHaveBeenCalled();
+    pty.emitData(`${marker}\r\n`);
+    expect(pty.write).toHaveBeenCalledWith('claude\r');
+    // See the native-microtask-tick comment in the zsh variant of this test above.
+    await Promise.resolve();
+    expect(onInitialCommandSent).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('waitForPromptReady: cmd.exe has no probe and relies solely on the fallback timeout', async () => {
+    vi.useFakeTimers();
+    const onInitialCommandSent = vi.fn();
+    shell.createShellSession(makeSocket(), { shell: 'cmd.exe', initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onInitialCommandSent });
+    const pty = ptyInstances[0];
+    vi.advanceTimersByTime(50);
+    // No probe is ever written — cmd has no safe split-literal marker.
+    expect(pty.write).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(7949); // total elapsed: 7999
+    expect(pty.write).not.toHaveBeenCalledWith('claude\r');
+    vi.advanceTimersByTime(1); // total elapsed: 8000
+    expect(pty.write).toHaveBeenCalledWith('claude\r');
+    // See the native-microtask-tick comment on the zsh waitForPromptReady test above.
+    await Promise.resolve();
+    expect(onInitialCommandSent).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
 });
@@ -369,6 +470,128 @@ describe('writeToSession / resizeSession', () => {
 
   it('resizeSession returns false for missing session', () => {
     expect(shell.resizeSession('missing', 80, 24)).toBe(false);
+  });
+});
+
+describe('changeSessionDirectory', () => {
+  it('writes the cd in the dialect of the shell THIS session spawned', () => {
+    // A Windows session runs cmd.exe, where the POSIX form the Shell page used to
+    // send is both mis-quoted and drive-blind — see lib/shellCd.js. The trailing CR
+    // is the other half of the Windows fix; see SUBMIT_KEY.
+    const winId = shell.createShellSession(makeSocket('sock-win'), { shell: 'C:\\WINDOWS\\system32\\cmd.exe' });
+    expect(shell.changeSessionDirectory(winId, 'I:\\code\\example-app')).toBe(true);
+    expect(ptyInstances[0].write).toHaveBeenCalledWith('cd /d "I:\\code\\example-app"\r');
+
+    const posixId = shell.createShellSession(makeSocket('sock-posix'), { shell: '/bin/zsh' });
+    expect(shell.changeSessionDirectory(posixId, '/Users/example/my app')).toBe(true);
+    expect(ptyInstances[1].write).toHaveBeenCalledWith("cd '/Users/example/my app'\r");
+  });
+
+  it('returns false for a missing session', () => {
+    expect(shell.changeSessionDirectory('missing', '/tmp')).toBe(false);
+  });
+
+  it('moves session.cwd to the new directory so the tab label stops showing the spawn dir', () => {
+    const sock = makeSocket('sock-cd');
+    const id = shell.createShellSession(sock, { shell: '/bin/zsh', cwd: '/home/user/example' });
+    expect(shell.listAllSessions(sock).find(s => s.sessionId === id).cwd).toBe('/home/user/example');
+
+    expect(shell.changeSessionDirectory(id, '/home/user/example-app')).toBe(true);
+    expect(shell.listAllSessions(sock).find(s => s.sessionId === id).cwd).toBe('/home/user/example-app');
+  });
+
+  it('broadcasts the refreshed session list so open Shell tabs relabel without a reload', () => {
+    const observer = makeSocket('obs-cd');
+    const id = shell.createShellSession(makeSocket('owner-cd'), { shell: '/bin/zsh', cwd: '/home/user/example' });
+    shell.subscribeSessionList(observer);
+
+    shell.changeSessionDirectory(id, '/home/user/example-app');
+
+    const broadcasts = observer.emit.mock.calls.filter(c => c[0] === 'shell:sessions');
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0][1].find(s => s.sessionId === id).cwd).toBe('/home/user/example-app');
+    shell.unsubscribeSessionList(observer);
+  });
+
+  it('refuses an external TUI run rather than typing the cd into the agent', () => {
+    // The run's PTY has no shell reading that line — it would post as a message —
+    // and workspaceContext groups runs by the repo they were spawned in.
+    const sock = makeSocket('sock-ext');
+    const pty = makeFakePty();
+    shell.registerExternalSession('run-1', pty, { cwd: '/home/user/example', label: 'Claude Code TUI' });
+
+    expect(shell.changeSessionDirectory('run-1', '/home/user/example-app')).toBe(false);
+    expect(pty.write).not.toHaveBeenCalled();
+    expect(shell.listAllSessions(sock).find(s => s.sessionId === 'run-1').cwd).toBe('/home/user/example');
+  });
+
+  it('leaves cwd untouched when the session is gone', () => {
+    const sock = makeSocket('sock-cd-gone');
+    const id = shell.createShellSession(sock, { shell: '/bin/zsh', cwd: '/home/user/example' });
+    shell.killSession(id);
+    expect(shell.changeSessionDirectory(id, '/home/user/example-app')).toBe(false);
+  });
+
+  it('records the shell it spawned when the caller names none', () => {
+    // The recorded shell is what picks the cd dialect, so a session started from
+    // the default must remember which binary that was rather than leaving
+    // detectShellFlavor to guess from the platform. Which binary gets resolved is
+    // covered by lib/interactiveShellResolver.test.js.
+    const id = shell.createShellSession(makeSocket('sock-default'));
+    const spawnedShell = vi.mocked(defaultSpawn).mock.calls[0][0];
+    expect(spawnedShell).toBeTruthy();
+    expect(shell.getSession(id).shell).toBe(spawnedShell);
+  });
+});
+
+describe('initialCommand + exitWithCommand', () => {
+  it('wraps the command so the shell exits with it, in that shell\'s dialect', () => {
+    // The wrapper is rendered here rather than by the caller because only this
+    // function knows which shell the session got. Under PowerShell the POSIX
+    // `exit $?` would report a successful run as 1 — see lib/shellExit.js.
+    vi.useFakeTimers();
+    shell.createShellSession(makeSocket('sock-pwsh'), {
+      shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+      initialCommand: 'codex',
+      exitWithCommand: true,
+      initialCommandDelayMs: 10,
+    });
+    vi.advanceTimersByTime(10);
+    expect(ptyInstances[0].write).toHaveBeenCalledWith(
+      `$LASTEXITCODE = 1; codex; exit $LASTEXITCODE${shell.SUBMIT_KEY}`,
+    );
+
+    shell.createShellSession(makeSocket('sock-zsh'), {
+      shell: '/bin/zsh',
+      initialCommand: 'codex',
+      exitWithCommand: true,
+      initialCommandDelayMs: 10,
+    });
+    vi.advanceTimersByTime(10);
+    expect(ptyInstances[1].write).toHaveBeenCalledWith(`codex; exit $?${shell.SUBMIT_KEY}`);
+    vi.useRealTimers();
+  });
+
+  it('sends the command untouched without the flag, so a user-typed command is never wrapped', () => {
+    // socket.js `shell:start` forwards whatever the user asked to run.
+    vi.useFakeTimers();
+    shell.createShellSession(makeSocket('sock-raw'), {
+      shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+      initialCommand: 'npm test',
+      initialCommandDelayMs: 10,
+    });
+    vi.advanceTimersByTime(10);
+    expect(ptyInstances[0].write).toHaveBeenCalledWith(`npm test${shell.SUBMIT_KEY}`);
+    vi.useRealTimers();
+  });
+});
+
+describe('submitToSession', () => {
+  it('appends the Enter byte, and returns false for a missing session', () => {
+    const id = shell.createShellSession(makeSocket('sock-submit'));
+    expect(shell.submitToSession(id, 'npm test')).toBe(true);
+    expect(ptyInstances[0].write).toHaveBeenCalledWith(`npm test${shell.SUBMIT_KEY}`);
+    expect(shell.submitToSession('missing', 'npm test')).toBe(false);
   });
 });
 

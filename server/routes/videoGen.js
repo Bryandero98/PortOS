@@ -13,7 +13,9 @@ import os from 'os';
 import { z } from 'zod';
 import { asyncHandler, ServerError, failValidation } from '../lib/errorHandler.js';
 import { uploadFields } from '../lib/multipart.js';
-import { videoModelTermsSchema } from '../lib/validation.js';
+import {
+  validateRequest, videoModelTermsSchema,
+} from '../lib/validation.js';
 import { grokVideoDurationSchema } from '../lib/sharedSchemas.js';
 import { MIN_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
 import {
@@ -66,6 +68,10 @@ import { startHfDownloadStream, openSseStream } from '../lib/sseDownload.js';
 import { saveUploadedGalleryVideo } from '../services/videoUpload.js';
 import { JSON_BODY_LIMIT_BYTES } from '../lib/uploadLimits.js';
 import { createInstallLogger } from '../lib/installLogger.js';
+import { prepareRemoteMediaJob } from '../services/federatedMedia/remoteSubmission.js';
+import { effectiveJobPrompt } from '../lib/federatedMediaWire.js';
+import { isRemoteMediaJob } from '../services/mediaJobQueue/remoteMediaJob.js';
+import { buildFederatedMediaRequest } from '../lib/federatedMediaRequest.js';
 
 const router = Router();
 
@@ -318,6 +324,15 @@ const generateBodySchema = z.object({
       sceneId: z.string().min(1).max(200),
     }).optional(),
   ),
+  // Federated media provider (#4348). When set, the render is submitted to
+  // THIS registered peer instead of local hardware. Server-validated against
+  // the per-peer allowlist, so naming a peer here cannot route work to one the
+  // local user never opted into. `mediaProviderEngine` names the provider-side
+  // engine inside that allowlist (local generation registers as 'local').
+  // What may cross to a peer, and what may not:
+  // docs/decisions/2026-08-20-federated-visual-prompts.md
+  mediaProviderPeerId: z.string().guid().optional(),
+  mediaProviderEngine: z.string().trim().min(1).max(80).optional(),
 });
 
 // Probes required-package imports on each call so a half-installed Python
@@ -997,6 +1012,76 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     failValidation(parsed);
   }
   const body = parsed.data;
+  // Federated render (#4348): submit to the selected peer instead of running
+  // locally. Handled BEFORE prepareVideoGenParams, which resolves this
+  // machine's backend and stages uploads a remote render can never use.
+  if (body.mediaProviderPeerId) {
+    // The federated wire is text-to-video only. Every input below changes what
+    // the clip actually is, and none of it can cross — refuse rather than
+    // render something the user didn't ask for.
+    const unsupported = [
+      ['uploaded files', Object.keys(uploads).length],
+      ['a source image', body.sourceImageFile],
+      ['an end frame', body.lastImageFile],
+      ['keyframes', body.keyframes?.length],
+      ['a source video to extend', body.extendFromVideoId],
+      ['IC-LoRA references', body.icReferenceVideoIds?.length || body.icReferenceImageFiles?.length],
+      ['LoRA weights', body.loraFilenames?.length],
+      ['chained chunks', body.chunks > 1],
+      ['the Grok backend', body.backend === 'grok'],
+      ['a non-text render mode', body.mode !== undefined && body.mode !== 'text'],
+      // A director-board render is image-to-video by construction (its scene
+      // reference frame conditions the shot), and its project/scene ids are
+      // validated inside prepareVideoGenParams, which this branch bypasses.
+      ['a music-video scene tag', body.musicVideo],
+    ].filter(([, present]) => present).map(([label]) => label);
+    if (unsupported.length) {
+      await cleanupMultipartTemp(uploads);
+      throw new ServerError(
+        `A federated media provider renders text-to-video only — this request uses ${unsupported.join(' and ')}. Render locally instead.`,
+        { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
+      );
+    }
+    // A peer advertises specific models; it has no notion of 'this caller's
+    // default'. Say so rather than letting the wire schema report a bare
+    // 'expected string, received undefined' for a field the local path defaults.
+    if (!body.modelId) {
+      throw new ServerError(
+        'A federated render must name the provider model explicitly (modelId)',
+        { status: 400, code: 'MEDIA_PROVIDER_MODEL_REQUIRED' },
+      );
+    }
+    // Re-validate against the wire schema rather than trusting this route
+    // schema's overlap with it: this object is persisted and replayed on every
+    // reconcile, so it must already be a body the provider accepts.
+    const request = buildFederatedMediaRequest({ kind: 'video', params: body });
+    const { peer, remoteMedia } = await prepareRemoteMediaJob({
+      peerId: body.mediaProviderPeerId,
+      kind: 'video',
+      request,
+    });
+    // Prompt and dials ride only inside the versioned marker: enqueueJob
+    // normalizes any job carrying one into the downgrade-safe shape, so a build
+    // rolled back past `remoteMedia` cannot re-render this locally. Contract:
+    // services/federatedMedia/routedJobParams.js.
+    const { jobId, position, status } = enqueueJob({
+      kind: 'video',
+      params: { remoteMedia },
+    });
+    return res.json({
+      jobId,
+      generationId: jobId,
+      filename: `${jobId}.mp4`,
+      model: request.modelId,
+      // No local backend is running this, so `mode` is null rather than a
+      // backend name the render never used.
+      mode: null,
+      mediaProviderPeerId: peer.id,
+      status,
+      position,
+    });
+  }
+
   // Everything between validation and enqueue — backend resolution, upload
   // staging with rollback, mode/reference validation, history lookups — lives
   // in the service (#3288), mirroring imageGen's prepareGenerateParams. It
@@ -1137,7 +1222,8 @@ const ACTIVE_JOB_PARAM_FIELDS = [
   // path, which the whitelist exists to keep off this surface).
   'icStrength', 'icAttentionStrength', 'icSkipStage2',
 ];
-const pickJobParams = (params) => {
+const pickJobParams = (job) => {
+  const params = job?.params;
   if (!params || typeof params !== 'object') return {};
   const out = {};
   for (const k of ACTIVE_JOB_PARAM_FIELDS) {
@@ -1173,6 +1259,17 @@ const pickJobParams = (params) => {
       out.icReferenceImageFiles = names;
     }
   }
+  // A federated render's prompt and model live only inside the versioned marker
+  // — the top-level copies are blanked so a downgraded build fails closed
+  // (#4683). Read through to the wire request, as the queue's own projection
+  // does, or a page reload mid-render resumes the form with an empty prompt and
+  // the LOCAL default model instead of the peer's.
+  if (isRemoteMediaJob(job)) {
+    const prompt = effectiveJobPrompt(job);
+    if (typeof prompt === 'string') out.prompt = prompt;
+    const { modelId } = params.remoteMedia.request ?? {};
+    if (typeof modelId === 'string' && modelId) out.modelId = modelId;
+  }
   return out;
 };
 
@@ -1188,7 +1285,14 @@ router.get('/active', (_req, res) => {
       generationId: job.id,
       status: job.status,
       position: job.position,
-      params: pickJobParams(job.params),
+      // Geometry the running render actually resolved to (#4588). `params`
+      // carries what the form ASKED for; videoGen/local.js snaps both edges
+      // down to the model's resolution grid, so a page that reloads mid-render
+      // has to size its preview stage by this, not by the request. `null` when
+      // the run hasn't reported it yet (still queued, or a runner that never
+      // does) — an explicit "unknown", never a guessed default.
+      render: job.render || null,
+      params: pickJobParams(job),
     },
   });
 });

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import useFieldDraft from '../../../../hooks/useFieldDraft';
 import { RotateCcw, AlertCircle } from 'lucide-react';
 import CronInput from '../../../CronInput';
 import { AGENT_OPTIONS, BRANCHES_PER_AGENT_DEFAULT, BRANCHES_PER_AGENT_OPTIONS, BRANCHES_PER_AGENT_TASK_TYPES, DEFAULT_REVIEW_STOP_MODE, IMPLICIT_PR_COMPLETION, PR_AUTHOR_FILTER_OPTIONS, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES } from '../../constants';
@@ -54,6 +55,21 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
   const [selectedType, setSelectedType] = useState(config.type);
   const [editingPrompt, setEditingPrompt] = useState(false);
   const [promptValue, setPromptValue] = useState(config.prompt || '');
+  // Comma-separated free text, committed to taskMetadata.issueExcludeLabels
+  // (an array) on blur. Routes through setUpdating like every other handler
+  // in this file so RunTaskButton (client/src/CLAUDE.md's "gate on in-flight
+  // saves, not just the form" rule) can't fire against the pre-edit list
+  // while this PATCH is still in flight.
+  const excludeLabelsDraft = useFieldDraft(
+    (config.taskMetadata?.issueExcludeLabels || []).join(', '),
+    async (next) => {
+      setUpdating(true);
+      await onUpdate(taskType, {
+        taskMetadata: { ...(config.taskMetadata || {}), issueExcludeLabels: next.split(',').map((s) => s.trim()).filter(Boolean) }
+      });
+      setUpdating(false);
+    }
+  );
   // Provider/model/effort pins are shared with the schedule card's quick
   // controls — same optimistic write + rollback, one implementation.
   const {
@@ -410,6 +426,26 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
           </select>
           <p className="text-xs text-gray-500 mt-1">
             {ISSUE_AUTHOR_FILTER_OPTIONS.find(o => o.value === (config.taskMetadata?.issueAuthorFilter || 'self'))?.description}.
+            {' '}This is the global default — individual apps can override it below.
+          </p>
+        </div>
+      )}
+
+      {ISSUE_AUTHOR_FILTER_TASK_TYPES.has(taskType) && (
+        <div>
+          <label htmlFor={`issue-exclude-labels-${taskType}`} className="text-sm text-gray-400 block mb-2">Leave issues with these labels for humans</label>
+          <input
+            id={`issue-exclude-labels-${taskType}`}
+            type="text"
+            value={excludeLabelsDraft.value}
+            onChange={excludeLabelsDraft.onChange}
+            onBlur={excludeLabelsDraft.onBlur}
+            disabled={updating}
+            placeholder="good first issue, help wanted"
+            className="w-full bg-port-card border border-port-border rounded px-3 py-2 text-white text-sm"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            Comma-separated labels. An issue carrying any of these is skipped by autonomous claiming, on top of the fixed <code>in-progress</code>/<code>blocked</code>/<code>needs-input</code>/<code>future</code>/<code>wontfix</code>/<code>question</code>/<code>discussion</code> set.
             {' '}This is the global default — individual apps can override it below.
           </p>
         </div>

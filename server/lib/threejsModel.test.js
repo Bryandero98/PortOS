@@ -3,12 +3,16 @@ import {
   buildThreejsFactorySource,
   buildThreejsFlatnessFeedback,
   buildThreejsMaterialFeedback,
+  DEFAULT_ATTACHMENT_MAX_OFFSET,
   evaluateThreejsFlatness,
   evaluateThreejsMaterialPlausibility,
+  isThreejsAttachmentAnchored,
+  resolveThreejsAttachments,
   storedThreejsSculptSpecSchema,
   threejsGeometrySchema,
   threejsSculptSpecSchema,
 } from './threejsModel.js';
+import { resolveThreejsEnvironment } from './threejsModelEnvironment.js';
 
 const squareOutline = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
 const validExtrude = () => ({
@@ -71,6 +75,7 @@ describe('threejsSculptSpecSchema', () => {
   it('accepts a bounded hierarchy and fills material/part defaults', () => {
     const parsed = threejsSculptSpecSchema.parse(validSpec());
     expect(parsed.materials.body.emissive).toBe('#000000');
+    expect(parsed.materials.body.side).toBe('front');
     expect(parsed.parts[0].castShadow).toBe(true);
     expect(parsed.parts[0].children[0].id).toBe('frontTrim');
   });
@@ -347,6 +352,14 @@ describe('buildThreejsFactorySource', () => {
     expect(source).toContain('"explodeWithParent": true');
   });
 
+  it('emits the declared double-sided material option for the standalone factory', () => {
+    const spec = validSpec();
+    spec.materials.body.side = 'double';
+    const source = buildThreejsFactorySource(spec);
+    expect(source).toContain('"side": "double"');
+    expect(source).toContain('const doubleSided = definition.side === \'double\' ? { side: THREE.DoubleSide } : {};');
+  });
+
   it('emits extrude, tube, and physical-channel construction', () => {
     const spec = validSpec();
     spec.parts[0].geometry = validExtrude();
@@ -424,6 +437,12 @@ const solidShellGeometry = () => {
   }
   for (let index = 0; index + 2 < vertices.length / 3; index += 3) indices.push(index, index + 1, index + 2);
   return { type: 'custom', vertices, indices };
+};
+
+const thinCustomGeometry = () => {
+  const outline = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+  const vertices = [-0.0005, 0.0005].flatMap((z) => outline.flatMap(([x, y]) => [x, y, z]));
+  return { type: 'custom', vertices, indices: [0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6] };
 };
 
 const geometryPart = (id, geometry) => ({
@@ -588,6 +607,79 @@ describe('evaluateThreejsFlatness', () => {
   it('returns a clean result for a missing spec', () => {
     expect(evaluateThreejsFlatness(null)).toMatchObject({ findings: [], flatRatio: null });
   });
+
+  it('notes a flat identity part as an intentional membrane when its material is double-sided', () => {
+    const spec = flatnessSpec([geometryPart('membrane', flatFanGeometry())]);
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({
+      warningCount: 0,
+      noteCount: 1,
+      flatIdentityDetailCount: 1,
+      flatRatio: 1,
+    });
+    expect(flatness.findings[0]).toMatchObject({
+      code: 'flat-identity-parts',
+      severity: 'note',
+      partIds: ['membrane'],
+      features: ['membrane part silhouette'],
+    });
+    expect(flatness.findings[0].message).toContain('intentional membrane surfaces');
+    expect(buildThreejsFlatnessFeedback(flatness)).toBe('');
+  });
+
+  it('keeps a positive-depth double-sided extrude in the solid-part warning', () => {
+    const spec = flatnessSpec([geometryPart('plate', validExtrude())]);
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 1, noteCount: 0, flatRatio: 1 });
+    expect(flatness.findings[0].severity).toBe('warning');
+    expect(buildThreejsFlatnessFeedback(flatness)).toContain('genuine depth');
+  });
+
+  it('accepts a double-sided near-zero-depth extrude as an intentional membrane', () => {
+    const spec = flatnessSpec([geometryPart('membrane', { ...validExtrude(), depth: 0.001 })]);
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 0, noteCount: 1, flatRatio: 1 });
+    expect(flatness.findings[0].severity).toBe('note');
+  });
+
+  it('keeps a scaled near-zero-depth child in the solid-part warning', () => {
+    const parent = geometryPart('parent', undefined);
+    delete parent.material;
+    parent.scale = [1, 1, 1_000];
+    parent.children = [geometryPart('plate', { ...validExtrude(), depth: 0.001 })];
+    const spec = flatnessSpec([parent]);
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 1, noteCount: 0, flatRatio: 1 });
+    expect(flatness.findings[0].severity).toBe('warning');
+  });
+
+  it('keeps a thin custom solid in the warning after normal-axis scaling', () => {
+    const spec = flatnessSpec([geometryPart('plate', thinCustomGeometry())]);
+    spec.parts[0].scale = [1, 1, 1_000];
+    spec.materials.body.side = 'double';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 1, noteCount: 0, flatRatio: 1 });
+    expect(flatness.findings[0].severity).toBe('warning');
+  });
+
+  it('keeps duplicate feature labels classified independently', () => {
+    const membrane = geometryPart('membrane', flatFanGeometry());
+    const plate = geometryPart('plate', validExtrude());
+    membrane.material = 'membrane';
+    plate.material = 'plate';
+    const spec = flatnessSpec([membrane, plate]);
+    spec.materials.membrane = { ...spec.materials.body, side: 'double' };
+    spec.materials.plate = { ...spec.materials.body, side: 'double' };
+    spec.detailInventory[0].feature = 'shared feature';
+    spec.detailInventory[1].feature = 'shared feature';
+    const flatness = evaluateThreejsFlatness(spec);
+    expect(flatness).toMatchObject({ warningCount: 1, noteCount: 1, flatRatio: 1 });
+    expect(flatness.findings.map((finding) => finding.severity)).toEqual(['note', 'warning']);
+  });
 });
 
 describe('buildThreejsFlatnessFeedback', () => {
@@ -630,6 +722,47 @@ const articulatedSpec = () => {
 
 const articulationIssues = (mutate) => {
   const spec = articulatedSpec();
+  mutate(spec);
+  const result = threejsSculptSpecSchema.safeParse(spec);
+  expect(result.success).toBe(false);
+  return result.error.issues.map((issue) => issue.message);
+};
+
+// The same graph plus a carried part and the plate it hangs from, both nested
+// under the single top-level part so the model root stays unambiguous.
+const anchoredSpec = () => {
+  const spec = articulatedSpec();
+  const body = spec.parts[0];
+  body.children.push({
+    id: 'backPlate',
+    name: 'Back plate',
+    geometry: { type: 'box', width: 1.6, height: 1, depth: 0.06 },
+    material: 'body',
+    position: [0, 0, -0.63],
+    rotationDegrees: [0, 0, 0],
+    scale: [1, 1, 1],
+    children: [],
+  });
+  body.children.push({
+    id: 'pack',
+    name: 'Pack',
+    geometry: { type: 'box', width: 0.8, height: 0.6, depth: 0.3 },
+    material: 'body',
+    position: [0, 0, -0.8],
+    rotationDegrees: [0, 0, 0],
+    scale: [1, 1, 1],
+    children: [],
+  });
+  spec.sockets = [
+    ...spec.sockets,
+    { name: 'packSocket', parentPartId: 'backPlate', position: [0, 0, -0.03], rotationDegrees: [0, 0, 0] },
+  ];
+  spec.articulation.attachments = [{ partId: 'pack', anchorPartId: 'backPlate' }];
+  return spec;
+};
+
+const anchorIssues = (mutate) => {
+  const spec = anchoredSpec();
   mutate(spec);
   const result = threejsSculptSpecSchema.safeParse(spec);
   expect(result.success).toBe(false);
@@ -709,7 +842,143 @@ describe('threejsSculptSpecSchema articulation', () => {
       'part frontTrim is declared as an attachment and also driven by a joint',
     ]));
   });
+
+  // Attachment anchors. `attachmentPartIds` says a part is CARRIED; only an
+  // anchor says what carries it, which is the difference between a hat on a head
+  // and a hat at hip height that every other gate reads as fine.
+  it('accepts an anchored attachment and defaults its offset tolerance', () => {
+    const parsed = threejsSculptSpecSchema.parse(anchoredSpec());
+    expect(parsed.articulation.attachments).toEqual([
+      { partId: 'pack', anchorPartId: 'backPlate', anchorSocket: null, maxOffset: DEFAULT_ATTACHMENT_MAX_OFFSET },
+    ]);
+  });
+
+  // Additive, not a replacement: a spec written before anchors shipped keeps
+  // parsing and simply carries an empty anchored list.
+  it('leaves a legacy attachmentPartIds spec valid, on both the authoring and stored schemas', () => {
+    const legacy = anchoredSpec();
+    legacy.articulation.attachmentPartIds = ['pack'];
+    delete legacy.articulation.attachments;
+    for (const schema of [threejsSculptSpecSchema, storedThreejsSculptSpecSchema]) {
+      const parsed = schema.parse(legacy);
+      expect(parsed.articulation.attachmentPartIds).toEqual(['pack']);
+      expect(parsed.articulation.attachments).toEqual([]);
+    }
+  });
+
+  it('requires exactly one anchor field per attachment', () => {
+    expect(anchorIssues((spec) => {
+      spec.articulation.attachments[0].anchorPartId = null;
+    })).toEqual(expect.arrayContaining([
+      'attachment pack needs exactly one of anchorPartId or anchorSocket, found 0',
+    ]));
+    expect(anchorIssues((spec) => {
+      spec.articulation.attachments[0].anchorSocket = 'packSocket';
+    })).toEqual(expect.arrayContaining([
+      'attachment pack needs exactly one of anchorPartId or anchorSocket, found 2',
+    ]));
+  });
+
+  it('rejects an anchor that names no declared part or socket', () => {
+    expect(anchorIssues((spec) => {
+      spec.articulation.attachments[0].anchorPartId = 'notARealPart';
+    })).toEqual(expect.arrayContaining(['unknown attachment anchor part: notARealPart']));
+    expect(anchorIssues((spec) => {
+      spec.articulation.attachments[0].anchorPartId = null;
+      spec.articulation.attachments[0].anchorSocket = 'notARealSocket';
+    })).toEqual(expect.arrayContaining(['unknown attachment anchor socket: notARealSocket']));
+  });
+
+  it('rejects an attachment anchored to itself', () => {
+    expect(anchorIssues((spec) => {
+      spec.articulation.attachments[0].anchorPartId = 'pack';
+    })).toEqual(expect.arrayContaining(['attachment pack is anchored to itself']));
+  });
+
+  // The literal defect this field exists for: the root carries no relationship
+  // to any body part, so "anchored to the root" is the same silence as no anchor.
+  it('rejects an anchor on the model root, named through a part or through a socket', () => {
+    expect(anchorIssues((spec) => {
+      spec.articulation.attachments[0].anchorPartId = 'crateBody';
+    })).toEqual(expect.arrayContaining([
+      'attachment pack is anchored to the model root crateBody, which names no body part to hang from',
+    ]));
+    expect(anchorIssues((spec) => {
+      spec.articulation.attachments[0].anchorPartId = null;
+      spec.articulation.attachments[0].anchorSocket = 'lidPivot';
+    })).toEqual(expect.arrayContaining([
+      'attachment pack is anchored to the model root crateBody, which names no body part to hang from',
+    ]));
+  });
+
+  // A model with several top-level parts has no single container, so each of
+  // them is a real component worth anchoring to.
+  it('allows a top-level anchor when the spec has more than one top-level part', () => {
+    const spec = anchoredSpec();
+    spec.parts.push({
+      id: 'standAlone',
+      name: 'Stand',
+      geometry: { type: 'box', width: 1, height: 0.2, depth: 1 },
+      material: 'body',
+      position: [0, 0.1, 0],
+      rotationDegrees: [0, 0, 0],
+      scale: [1, 1, 1],
+      children: [],
+    });
+    spec.articulation.attachments[0].anchorPartId = 'crateBody';
+    expect(threejsSculptSpecSchema.safeParse(spec).success).toBe(true);
+  });
+
+  it('rejects an anchor chain that cycles', () => {
+    expect(anchorIssues((spec) => {
+      spec.articulation.attachments = [
+        { partId: 'pack', anchorPartId: 'backPlate' },
+        { partId: 'backPlate', anchorPartId: 'pack' },
+      ];
+    })).toEqual(expect.arrayContaining([
+      expect.stringContaining('sits on an anchor chain that cycles back through'),
+    ]));
+  });
+
+  it('rejects a duplicate attachment entry and one that is also driven by a joint', () => {
+    expect(anchorIssues((spec) => {
+      spec.articulation.attachments.push({ partId: 'pack', anchorPartId: 'backPlate' });
+    })).toEqual(expect.arrayContaining(['duplicate attachment part: pack']));
+    expect(anchorIssues((spec) => {
+      spec.articulation.attachments[0].partId = 'frontTrim';
+    })).toEqual(expect.arrayContaining([
+      'part frontTrim is declared as an attachment and also driven by a joint',
+    ]));
+  });
 });
+
+describe('resolveThreejsAttachments', () => {
+  it('reads the legacy list forward as anchor-less entries', () => {
+    expect(resolveThreejsAttachments({ attachmentPartIds: ['pack'] })).toEqual([
+      { partId: 'pack', anchorPartId: null, anchorSocket: null, maxOffset: DEFAULT_ATTACHMENT_MAX_OFFSET },
+    ]);
+  });
+
+  // The richer declaration is the one the author meant, so it wins rather than
+  // the part being counted twice with contradictory anchors.
+  it('lets an anchored entry win over a bare id for the same part', () => {
+    const resolved = resolveThreejsAttachments({
+      attachmentPartIds: ['pack'],
+      attachments: [{ partId: 'pack', anchorPartId: 'backPlate', anchorSocket: null, maxOffset: 1 }],
+    });
+    expect(resolved).toEqual([
+      { partId: 'pack', anchorPartId: 'backPlate', anchorSocket: null, maxOffset: 1 },
+    ]);
+    expect(resolved.every(isThreejsAttachmentAnchored)).toBe(true);
+  });
+
+  it('reads a missing or malformed articulation as no attachments at all', () => {
+    for (const value of [null, undefined, {}, { attachmentPartIds: 'nope', attachments: 7 }]) {
+      expect(resolveThreejsAttachments(value)).toEqual([]);
+    }
+  });
+});
+
 
 describe('buildThreejsFactorySource articulation', () => {
   it('carries a validated graph into the exported runtime metadata', () => {
@@ -745,8 +1014,13 @@ describe('buildThreejsFactorySource articulation', () => {
 // crate hierarchy and swaps the material map. Every material is parsed through
 // the real schema first, so a fixture can never assert on a value the authoring
 // contract would have rejected anyway.
-const materialSpec = (materials) => threejsSculptSpecSchema.parse({
+// Every case that is about SUBSTANCE plausibility gets a real environment, so the
+// unlit-reflective note never lands in its findings; the environment cases pass
+// null to omit the key entirely, which is what a record stored before the block
+// shipped looks like.
+const materialSpec = (materials, environment = { preset: 'studio', intensity: 1 }) => threejsSculptSpecSchema.parse({
   ...validSpec(),
+  ...(environment ? { environment } : {}),
   materials,
   parts: [{ ...validSpec().parts[0], children: [], material: Object.keys(materials)[0] }],
   sockets: [],
@@ -838,6 +1112,124 @@ describe('evaluateThreejsMaterialPlausibility', () => {
       materialCount: 0,
       matchedMaterialCount: 0,
     });
+  });
+});
+
+describe('evaluateThreejsMaterialPlausibility environment', () => {
+  const notes = (result) => result.findings.filter((finding) => finding.severity === 'note');
+
+  // The whole point of the note: metalness 0.95 is exactly what the metal prior
+  // ASKS for, so it draws no substance warning — and in a scene with no
+  // environment it renders near-black anyway.
+  it('notes a plausible conductor that has nothing to reflect', () => {
+    const result = evaluateThreejsMaterialPlausibility(materialSpec({
+      steelPlate: { type: 'standard', color: '#8a8f98', metalness: 0.95, roughness: 0.2 },
+    }, null));
+    expect(result.warningCount).toBe(0);
+    expect(result.noteCount).toBe(1);
+    const [note] = notes(result);
+    expect(note.code).toBe('reflective-material-without-environment');
+    expect(note.materialIds).toEqual(['steelPlate']);
+    expect(note.message).toContain('metalness');
+    expect(note.message).toContain('"none"');
+  });
+
+  it('names transmission, clearcoat, and iridescence as reflective too', () => {
+    const result = evaluateThreejsMaterialPlausibility(materialSpec({
+      windowPane: { type: 'physical', color: '#cfe8ff', metalness: 0, roughness: 0.05, transmission: 0.9, ior: 1.5 },
+      lacquerShell: { type: 'physical', color: '#334155', metalness: 0, roughness: 0.3, clearcoat: 0.8 },
+      pearlInlay: { type: 'physical', color: '#f5f5f4', metalness: 0, roughness: 0.2, iridescence: 0.7 },
+    }, null));
+    const [note] = notes(result);
+    expect(note.materialIds).toEqual(['windowPane', 'lacquerShell', 'pearlInlay']);
+    expect(note.message).toContain('transmission');
+    expect(note.message).toContain('clearcoat');
+    expect(note.message).toContain('iridescence');
+  });
+
+  it('stays silent once the spec authors an environment', () => {
+    const materials = {
+      steelPlate: { type: 'standard', color: '#8a8f98', metalness: 0.95, roughness: 0.2 },
+    };
+    expect(notes(evaluateThreejsMaterialPlausibility(materialSpec(materials, { preset: 'neutral', intensity: 1 })))).toEqual([]);
+    expect(notes(evaluateThreejsMaterialPlausibility(materialSpec(materials, { preset: 'studio', intensity: 2 })))).toEqual([]);
+    // An explicit "none" is the same scene as no key at all, so it still notes.
+    expect(notes(evaluateThreejsMaterialPlausibility(materialSpec(materials, { preset: 'none', intensity: 1 })))).toHaveLength(1);
+  });
+
+  // A channel the material's type never forwards cannot render, so it cannot be
+  // the reason anything looks wrong — and a dielectric with a trace of metalness
+  // has essentially nothing to lose.
+  it('ignores channels the type drops, unlit materials, and non-reflective values', () => {
+    const result = evaluateThreejsMaterialPlausibility(materialSpec({
+      plasticShell: { type: 'standard', color: '#334155', metalness: 0.2, roughness: 0.5, transmission: 1, clearcoat: 1 },
+      decalSticker: { type: 'basic', color: '#8a8f98', metalness: 1, roughness: 0 },
+    }, null));
+    expect(notes(result)).toEqual([]);
+  });
+
+  it('feeds the note back so a refinement fixes the scene instead of the metal', () => {
+    const feedback = buildThreejsMaterialFeedback(evaluateThreejsMaterialPlausibility(materialSpec({
+      steelPlate: { type: 'standard', color: '#8a8f98', metalness: 0.95, roughness: 0.2 },
+    }, null)));
+    expect(feedback).toContain('steelPlate');
+    expect(feedback).toContain('environment');
+    // No substance warning fired, so the feedback must not open with one.
+    expect(feedback).not.toContain('do not match the substance');
+  });
+});
+
+describe('threejsSculptSpecSchema environment', () => {
+  it('accepts a bounded preset and intensity', () => {
+    const parsed = threejsSculptSpecSchema.parse({ ...validSpec(), environment: { preset: 'studio', intensity: 2.5 } });
+    expect(parsed.environment).toEqual({ preset: 'studio', intensity: 2.5 });
+    expect(threejsSculptSpecSchema.safeParse({ ...validSpec(), environment: { preset: 'hdri' } }).success).toBe(false);
+    expect(threejsSculptSpecSchema.safeParse({ ...validSpec(), environment: { preset: 'studio', intensity: 9 } }).success).toBe(false);
+  });
+
+  // Additive-optional, the same contract as `articulation` and `animation`: a
+  // record an install stored before this block shipped must parse untouched, and
+  // must not acquire a key claiming an environment it never had.
+  it('leaves a stored spec that predates it alone, and reads it as none', () => {
+    const legacy = validSpec();
+    const parsed = storedThreejsSculptSpecSchema.parse(legacy);
+    expect(parsed.environment).toBeUndefined();
+    expect(resolveThreejsEnvironment(parsed)).toEqual({ preset: 'none', intensity: 1 });
+  });
+
+  it('reads a partial or unrecognized block as the default for the missing half', () => {
+    // A newer peer's preset name resolves to `none` rather than to a guess.
+    expect(resolveThreejsEnvironment({ environment: { preset: 'hdri', intensity: 2 } })).toEqual({ preset: 'none', intensity: 2 });
+    expect(resolveThreejsEnvironment({ environment: { preset: 'studio' } })).toEqual({ preset: 'studio', intensity: 1 });
+    expect(resolveThreejsEnvironment(null)).toEqual({ preset: 'none', intensity: 1 });
+  });
+});
+
+describe('buildThreejsFactorySource render profile', () => {
+  it('stamps the renderer contract the model was authored against', () => {
+    const source = buildThreejsFactorySource({ ...validSpec(), environment: { preset: 'studio', intensity: 1.5 } });
+    expect(source).toContain('const renderProfile = {');
+    expect(source).toContain('export { spec, renderProfile };');
+    expect(source).toContain('render: renderProfile,');
+    const flat = source.replace(/\s+/g, '');
+    expect(flat).toContain('"outputColorSpace":"srgb"');
+    expect(flat).toContain('"toneMapping":"ACESFilmic"');
+    expect(flat).toContain('"toneMappingExposure":1');
+    expect(flat).toContain('"environment":{"preset":"studio","intensity":1.5}');
+    // The intensity has to REACH the material, or the profile is a claim the
+    // export does not honour.
+    expect(source).toContain('envMapIntensity: renderProfile.environment.intensity,');
+  });
+
+  it('stamps the none profile for a stored spec that predates the environment block', () => {
+    const source = buildThreejsFactorySource(validSpec());
+    expect(source.replace(/\s+/g, '')).toContain('"environment":{"preset":"none","intensity":1}');
+    // …without inventing the key on the serialized spec itself: the ONE
+    // occurrence is the render profile's, so the exported spec still round-trips
+    // as the environment-less record the install actually stored.
+    expect(source.match(/"environment"/g)).toHaveLength(1);
+    expect(buildThreejsFactorySource({ ...validSpec(), environment: { preset: 'neutral', intensity: 1 } })
+      .match(/"environment"/g)).toHaveLength(2);
   });
 });
 

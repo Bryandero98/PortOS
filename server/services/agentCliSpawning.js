@@ -19,6 +19,7 @@ import { release } from './executionLanes.js';
 import { completeExecution, errorExecution } from './toolStateMachine.js';
 import { analyzeAgentFailure } from './agentErrorAnalysis.js';
 import { completeAgentRun } from './agentRunTracking.js';
+import { appendRunEvent } from './agentRunEventLog.js';
 import { finalizeAgent, releaseAgentLane } from './agentFinalization.js';
 import { activeAgents, userTerminatedAgents, pausedAgents, registerSpawnedAgent, unregisterSpawnedAgent } from './agentState.js';
 import { normalizeReviewers } from '../lib/validation.js';
@@ -34,6 +35,7 @@ import { prepareCliPrompt } from '../lib/cliProviderArgs.js';
 import { buildVendorSpawnConfig } from '../lib/providerVendors.js';
 import { resolveCliModel, providerSuppliesGithubToken, isOllamaClaudeProvider } from '../lib/providerModels.js';
 import { resolveForgeTokenEnv } from './git.js';
+import { resolveAgentCliCwd } from '../lib/spawnCwd.js';
 import { prepareCliSpawn, killProcessTree } from '../lib/bufferedSpawn.js';
 import { buildCliChildEnv } from '../lib/cliChildEnv.js';
 import { prClaimWasVerified, resolvePrCompletion, resolvePrCreation } from '../lib/prDisposition.js';
@@ -340,8 +342,10 @@ export async function spawnDirectly({
   const fullCommand = `${cliConfig.command} ${cliConfig.args.join(' ')} <<< "${(task.description || '').substring(0, 100)}..."`;
 
   const ROOT_DIR = PATHS.root;
-  // Ensure workspacePath is valid
-  const cwd = workspacePath && typeof workspacePath === 'string' ? workspacePath : ROOT_DIR;
+  // CD no-worktree tasks get an isolated scratch cwd so native CLAUDE.md
+  // discovery cannot reach the PortOS repo tree (#4650). Everyone else keeps
+  // workspacePath, falling back to the repo root when it was omitted.
+  const cwd = resolveAgentCliCwd({ workspacePath, fallbackRoot: ROOT_DIR, task, agentId });
 
   // Direct CLI agents bypass runner.js, so their Ollama-backed harnesses need
   // the same daemon context preparation as runner and TUI launches. This is
@@ -409,7 +413,7 @@ export async function spawnDirectly({
     agentId,
     taskId: task.id,
     model,
-    workspacePath,
+    workspacePath: cwd,
     prompt: (task.description || '').substring(0, 500)
   });
 
@@ -433,6 +437,35 @@ export async function spawnDirectly({
   let outputBuffer = '';
   let rawStreamBuffer = ''; // Raw stdout for stream-json (used for error analysis)
   let hasStartedWorking = false;
+  // Deliberately NOT `hasStartedWorking`: that flag also flips on a 3s
+  // initialization timeout with no output behind it, so reusing it would file a
+  // `run.output` for a run that has produced nothing — the exact case (a
+  // provider that never spoke) the ledger is supposed to make visible.
+  let firstOutputRecorded = false;
+  /**
+   * Record the run's first observed output, once (#4540) — never per chunk. A
+   * per-chunk event would make the ledger a copy of the output it deliberately
+   * redacts and would exhaust the retention bound in minutes. What the one event
+   * buys is time-to-first-output: a run that stalled after speaking and a run
+   * that never spoke at all are indistinguishable in the mutable record.
+   *
+   * Called from BOTH streams. Several providers say everything they have to say
+   * on stderr (codex's whole progress feed is stderr), and that output lands in
+   * the same transcript — a stdout-only recorder would file those runs as silent.
+   * The explicit key keeps the append idempotent however the two callers race.
+   */
+  const recordFirstOutput = (source, chars) => {
+    if (firstOutputRecorded) return;
+    firstOutputRecorded = true;
+    return appendRunEvent({
+      kind: 'run.output',
+      runId,
+      agentId,
+      taskId: task.id,
+      eventId: `output:${agentId}:${runId || 'no-run'}:first`,
+      data: { source, firstChunkChars: chars },
+    });
+  };
   const outputFile = join(agentDir, 'output.txt');
   const isStreamJson = cliConfig.streamFormat === 'stream-json';
   const streamParser = isStreamJson ? createStreamJsonParser() : null;
@@ -522,6 +555,7 @@ export async function spawnDirectly({
       // Serialize the transcript body so two `data` events can't interleave their
       // awaits and reorder output.txt / the batched live tail.
       enqueueTranscriptWrite(async () => {
+        await recordFirstOutput('cli-stdout', text.length);
         if (!hasStartedWorking) {
           hasStartedWorking = true;
           await updateAgent(agentId, { metadata: { phase: 'working' } });
@@ -556,6 +590,7 @@ export async function spawnDirectly({
       // Synchronous fallback detection before the serialized write (see stdout).
       stopForImmediateFallbackSignal(`[stderr] ${text}`);
       enqueueTranscriptWrite(async () => {
+        await recordFirstOutput('cli-stderr', text.length);
         // Codex stderr: show thinking + tool names, skip config dump and command output
         if (codexStderrFormatter) {
           const lines = codexStderrFormatter.processChunk(text);
@@ -639,7 +674,7 @@ export async function spawnDirectly({
     if (terminatedByUser) userTerminatedAgents.delete(agentId);
     // This run's own sentinel (see doneSentinelName) — a worktree-less agent
     // shares its workspace and must not read a sibling's signal as its own.
-    const sentinelPath = doneSentinelPath(workspacePath, agentId);
+    const sentinelPath = doneSentinelPath(cwd, agentId);
     const completionSentinelPresent = !!sentinelPath && existsSync(sentinelPath);
     const completedBeforeHostShutdown = isHostShuttingDown() && completionSentinelPresent;
 
@@ -798,7 +833,7 @@ export async function spawnDirectly({
         isTruthyMetaFn,
         error: finalError || undefined,
         completionReason: terminatedByUser ? 'user-terminated' : undefined,
-        workspacePath,
+        workspacePath: cwd,
         prExpected: directPrClaimExpected,
         // The run window the commit criterion is evaluated against (#3637).
         startedAt: agentData?.startedAt ?? null,

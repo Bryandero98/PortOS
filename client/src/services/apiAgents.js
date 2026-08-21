@@ -35,6 +35,31 @@ export const getAgentActivityByAgent = (agentId, options = {}) => {
 export const getAgentActivityStats = (agentId, days = 7) =>
   request(`/agents/activity/agent/${agentId}/stats?days=${days}`);
 
+// CoS run event ledger (#4540) — diagnostics over the append-only lifecycle
+// stream. All reads except `repairRunRecords`, which is the one write: it closes
+// the run records the ledger proves are finished, and it is a POST because
+// rewriting a run record is a mutation a user has to ask for.
+const runEventQuery = (filters = {}) => {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, value);
+  }
+  const query = params.toString();
+  return query ? `?${query}` : '';
+};
+export const getRunEvents = (filters = {}, options = {}) =>
+  request(`/agents/activity/run-events${runEventQuery(filters)}`, options);
+export const getRunEventStats = (options = {}) =>
+  request('/agents/activity/run-events/stats', options);
+export const getRunEventProjections = (filters = {}, options = {}) =>
+  request(`/agents/activity/run-events/projections${runEventQuery(filters)}`, options);
+export const getRunEventDiagnostic = (id, options = {}) =>
+  request(`/agents/activity/run-events/run/${encodeURIComponent(id)}`, options);
+export const getRunReconciliation = (filters = {}, options = {}) =>
+  request(`/agents/activity/run-events/reconcile${runEventQuery(filters)}`, options);
+export const repairRunRecords = (body = {}, options = {}) =>
+  request('/agents/activity/run-events/reconcile', { method: 'POST', body: JSON.stringify(body), ...options });
+
 // Chief of Staff
 export const getCosStatus = () => request('/cos');
 export const startCos = (options = {}) => request('/cos/start', { method: 'POST', ...options });
@@ -103,7 +128,7 @@ export const forceCosEvaluate = (options = {}) => request('/cos/evaluate', { met
 export const forceSpawnTask = (taskId, options = {}) => request(`/cos/tasks/${taskId}/spawn`, { method: 'POST', ...options });
 export const getCosHealth = () => request('/cos/health');
 export const forceHealthCheck = (options = {}) => request('/cos/health/check', { method: 'POST', ...options });
-export const getCosAgents = () => request('/cos/agents');
+export const getCosAgents = (options) => request('/cos/agents', options);
 export const getCosAgentDates = () => request('/cos/agents/history');
 export const getCosAgentsByDate = (date) => request(`/cos/agents/history/${date}`);
 export const getCosAgent = (id) => request(`/cos/agents/${id}`);

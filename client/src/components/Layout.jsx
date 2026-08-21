@@ -19,6 +19,7 @@ import {
   ExternalLink,
   Crown,
   Play,
+  ScrollText,
   Camera,
   Brain,
   Heart,
@@ -61,6 +62,7 @@ import {
   ListMusic,
   Database,
   Shield,
+  ShieldCheck,
   Lock,
   Wand2,
   Rocket,
@@ -199,6 +201,8 @@ const navItems = [
       { to: '/cos/health', label: 'Health', icon: Activity },
       { to: '/cos/learning', label: 'Learning', icon: GraduationCap },
       { to: '/cos/memory', label: 'Memory', icon: Brain },
+      { to: '/cos/run-events', label: 'Run Events', icon: ScrollText },
+      { to: '/cos/runs', label: 'Runs', icon: Play },
       { to: '/cos/schedule', label: 'Schedule', icon: Clock },
       { to: '/agents', label: 'Social Agents', icon: Users },
       { to: '/cos/productivity', label: 'Streaks', icon: Flame },
@@ -254,7 +258,6 @@ const navItems = [
     icon: Terminal,
     children: [
       { to: '/devtools/agents', label: 'AI Agents', icon: Cpu },
-      { to: '/devtools/runs', label: 'AI Runs', icon: Play },
       { to: '/ambient', label: 'Ambient', icon: Sparkles },
       { href: '//:5560', label: 'Autofixer', icon: Wrench, external: true, dynamicHost: true },
       { to: '/browser', label: 'Browser', icon: Globe },
@@ -308,6 +311,7 @@ const navItems = [
       { to: '/settings/ai-assignments', label: 'AI Assignments', icon: Bot },
       { to: '/settings/api-access', label: 'API Access', icon: Globe },
       { to: '/settings/backup', label: 'Backup', icon: Download },
+      { to: '/settings/code-reviewers', label: 'Code Reviewers', icon: ShieldCheck },
       { to: '/settings/database', label: 'Database', icon: Database },
       { to: '/settings/general', label: 'General', icon: Settings },
       { to: '/settings/local-llm', label: 'Local LLMs', icon: Cpu },
@@ -410,7 +414,7 @@ function WorkingSetRow({ entry, pinned, onTogglePin, onNavigate, isActive }) {
   );
 }
 
-// A top-level *single* nav row (Dashboard / Review Hub / City / Goals). Unlike a
+// A top-level *single* nav row (Dashboard / Review Hub / OpenWorld / Goals). Unlike a
 // section, it links straight to one destination — and unlike WorkingSetRow it
 // carries the heavier top-level row weight plus the optional badge (Chief of
 // Staff unread count) and the collapsed-rail layout (icon-only, centered, badge
@@ -542,6 +546,12 @@ const FULL_WIDTH_PATH_PREFIXES = [
   // stepper that owns its own scroll; the bare /story-builder index
   // (list + create form) takes the normal padded+scrolling main.
   '/story-builder/',
+  // The AI Providers editor is a drawer over the same page (/ai/new,
+  // /ai/:providerId), so its sub-routes need the bare full-width main the
+  // bare /ai index gets from EXACT_FULL_WIDTH_PATHS above — without it the
+  // page's own `flex-1 overflow-auto` body sits inside a padded, scrolling
+  // main and double-pads.
+  '/ai/',
   '/writers-room',
   '/agents',
   '/shell/',

@@ -1528,6 +1528,47 @@ export const PR_AUTHOR_FILTERS = ['any', 'self', 'others'];
 // vocabulary.
 export const ISSUE_AUTHOR_FILTERS = ['self', 'collaborators', 'owner', 'any'];
 
+// `issueExcludeLabels` — extra labels a user wants left for human contributors
+// (e.g. `good first issue`) rather than auto-claimed by claim-issue/claim-work.
+// Unioned with the fixed NON_ACTIONABLE_ISSUE_LABELS set at read time
+// (perpetualWork.js#isActionableIssue) — never replacing it. Capped well below
+// GitHub/GitLab's own per-issue label limits; this is a short curated list, not
+// an arbitrary label dump.
+export const MAX_ISSUE_EXCLUDE_LABELS = 20;
+
+// Per-entry length cap. GitHub caps a label name at 50 chars; GitLab allows up
+// to 255. Cap at GitLab's (larger) limit rather than GitHub's — a GitHub
+// label can never exceed 50 anyway, so the wider cap is a no-op there, while
+// capping at 50 would silently truncate a valid long GitLab label to a prefix
+// that never matches the real label, making the exclusion silently no-op.
+const MAX_ISSUE_EXCLUDE_LABEL_LENGTH = 255;
+
+/**
+ * Normalize a raw `issueExcludeLabels` list: keep only non-empty strings,
+ * trim, cap length per entry (GitLab's label name limit — the larger of the
+ * two forges', see MAX_ISSUE_EXCLUDE_LABEL_LENGTH), case-insensitively
+ * dedupe (labels are compared lowercased at read time), and cap the list at
+ * MAX_ISSUE_EXCLUDE_LABELS. Unlike reviewer usernames, label text is
+ * free-form ("good first issue") so no character-class restriction is
+ * applied beyond trimming. Non-array input → [].
+ */
+export function normalizeIssueExcludeLabels(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of list) {
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim().slice(0, MAX_ISSUE_EXCLUDE_LABEL_LENGTH);
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+    if (out.length >= MAX_ISSUE_EXCLUDE_LABELS) break;
+  }
+  return out;
+}
+
 // claim-issue `--swarm` fan-out size. Mirrors slashdo `/do:next --swarm=<N>`,
 // which clamps N to 1..6 and treats bare `--swarm` as 3. Here a swarmCount of
 // 0 (or absent) means swarm OFF (the default one-issue-per-run flow); a value
@@ -1672,6 +1713,14 @@ export function sanitizeTaskMetadata(raw) {
     clean.issueAuthorFilter = raw.issueAuthorFilter;
     hasKeys = true;
   }
+  // `issueExcludeLabels` — like `usernames`/`optionalReviewers` above, an
+  // explicitly empty array is KEPT (not dropped): `[]` is a meaningful "no
+  // extra exclusions for this task/type" choice that must override a global
+  // default's non-empty list, not silently inherit it.
+  if (Array.isArray(raw.issueExcludeLabels)) {
+    clean.issueExcludeLabels = normalizeIssueExcludeLabels(raw.issueExcludeLabels);
+    hasKeys = true;
+  }
   // `swarmCount` turns claim-issue `--swarm` fan-out on (2..6 parallel agents)
   // or off. 0 is kept as an explicit "off" (so a per-app override can disable
   // swarm even when the global default has it on — `0` = off, absent = inherit);
@@ -1734,3 +1783,12 @@ export const runEventProjectionsQuerySchema = z.object({
 export const runEventProjectionIdSchema = z.object({
   id: z.string().min(1).max(140)
 });
+
+// Reconciliation report/repair (#4540). `runId` narrows to one run; `limit`
+// shares the ledger's read ceiling because the projections being reconciled
+// come straight off that read path — a separate ceiling here could only
+// disagree with it.
+export const runEventReconcileSchema = z.object({
+  runId: z.string().min(1).max(128).optional(),
+  limit: z.coerce.number().int().min(1).max(RUN_EVENT_READ_LIMITS.max).optional()
+}).strict();

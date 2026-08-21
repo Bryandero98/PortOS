@@ -10,7 +10,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, Route, Routes } from 'react-router';
 
 vi.mock('../services/api', async (importOriginal) => ({
   ...(await importOriginal()),
@@ -232,5 +232,64 @@ describe('CreativeCommissionDetail live render refresh (#4149)', () => {
       .toHaveBeenCalledWith(['cd-new'], { silent: true }));
     expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('appears below'));
     expect(toast.success).toHaveBeenCalledWith(expect.not.stringContaining('reload'));
+  });
+});
+
+describe('CreativeCommissionDetail stop controls', () => {
+  // These assert the id the page sends, so mount it behind its real route rather
+  // than the bare-element helper above (which leaves useParams() empty).
+  const renderRouted = async () => {
+    render(
+      <MemoryRouter initialEntries={['/creative-commission/cc-1']}>
+        <Routes>
+          <Route path="/creative-commission/:id" element={<CreativeCommissionDetail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await screen.findByRole('heading', { name: COMMISSION.name });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getCommission.mockResolvedValue(COMMISSION);
+    api.getCreativeDirectorProjectsByIds.mockResolvedValue([]);
+    api.updateCommission.mockResolvedValue({ ...COMMISSION, enabled: false });
+    api.deleteCommission.mockResolvedValue({ ok: true });
+  });
+
+  it('tells the user that pausing also stops generation already in flight', async () => {
+    await renderRouted();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Pause commission/i }));
+    });
+
+    expect(api.updateCommission).toHaveBeenCalledWith('cc-1', { enabled: false }, { silent: true });
+    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('still in flight'));
+  });
+
+  it('says nothing about in-flight work when RESUMING the schedule', async () => {
+    api.getCommission.mockResolvedValue({ ...COMMISSION, enabled: false });
+    await renderRouted();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Resume commission/i }));
+    });
+
+    expect(toast.success).toHaveBeenCalledWith('Schedule resumed');
+  });
+
+  it('reports the stop when the commission is deleted', async () => {
+    await renderRouted();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^Delete commission/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    });
+
+    expect(api.deleteCommission).toHaveBeenCalledWith('cc-1', { silent: true });
+    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('still in flight'));
   });
 });

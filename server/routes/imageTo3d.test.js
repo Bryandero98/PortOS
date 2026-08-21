@@ -73,6 +73,7 @@ vi.mock('../services/imageTo3d/models.js', () => ({
   startGeneration: vi.fn(),
   deleteModel: vi.fn(),
   getModelAsset: vi.fn(),
+  getModelFullMesh: vi.fn(),
 }));
 
 import * as targets from '../services/imageTo3d/targets.js';
@@ -160,6 +161,94 @@ describe('image-to-3d routes', () => {
     expect(res.body.targets[0].textureBake).toMatchObject({ quality: 'metal' });
     expect(res.body.targets[0].textureBake.repairable).toBeUndefined();
     expect(trellis2.probeMetalToolchain).not.toHaveBeenCalled();
+  });
+
+  // FINDING: the render-option projection had no route coverage at all, and the client
+  // does `setRecord(next)` with the POST bodies — so a create/re-render response that
+  // omitted the field blanked the disabled Quality control until the next poll.
+  describe('supportsRenderOptions projection', () => {
+    const record = (target) => ({ id: 'image3d-1', target, status: 'ready', runs: [] });
+
+    it('projects the field onto GET, create, and re-render responses', async () => {
+      const app = makeApp();
+      models.getModel.mockResolvedValue(record('pixal3dCuda'));
+      models.createModel.mockResolvedValue(record('pixal3dCuda'));
+      models.startGeneration.mockResolvedValue(record('pixal3dCuda'));
+      // Read from the registry rather than restated, so adding a knob to a
+      // descriptor does not need an edit here to stay honest.
+      const expected = targets.renderOptionSupportFor('pixal3dCuda');
+
+      const get = await request(app).get('/api/image-to-3d/models/image3d-1');
+      expect(get.body.supportsRenderOptions).toEqual(expected);
+
+      const created = await request(app).post('/api/image-to-3d/models')
+        .send({ filename: 'example.png', name: 'x' });
+      expect(created.body.supportsRenderOptions).toEqual(expected);
+
+      const regen = await request(app).post('/api/image-to-3d/models/image3d-1/generate').send({});
+      expect(regen.body.supportsRenderOptions).toEqual(expected);
+    });
+
+    it('tells the client the detail control is unusable on a VRAM-derived lane', () => {
+      // Pixal3D picks 1024/1536 from the card's VRAM, so a rendered-but-ignored
+      // Detail control would be a lie about what the render will do.
+      expect(targets.renderOptionSupportFor('pixal3dCuda').detail).toBe(false);
+      expect(targets.renderOptionSupportFor('trellis2Cuda').detail).toBe(false);
+      // The MPS lane is the one that honors it.
+      expect(targets.renderOptionSupportFor('trellis2')).toBeNull();
+    });
+
+    it('omits the field for a target that honors every knob', async () => {
+      // Absent must mean "all supported" so existing targets need no descriptor entry.
+      models.getModel.mockResolvedValue(record('trellis2'));
+      const res = await request(makeApp()).get('/api/image-to-3d/models/image3d-1');
+      expect(res.body.supportsRenderOptions).toBeUndefined();
+    });
+  });
+
+  // The `degraded` projection is what the CLIENT actually renders (badge, help panel,
+  // Repair button); `textureBake` above is retained only for API back-compat and has no
+  // in-repo reader. These cases pin the live contract, which was previously untested.
+  it('GET /targets projects a degraded bake into the normalized `degraded` shape', async () => {
+    trellis2.isTrellis2Installed.mockReturnValueOnce(true);
+    trellis2.probeTrellis2TextureBake.mockResolvedValueOnce({
+      quality: 'fallback', missing: ['mtldiffrast'], degradedQuality: [], modules: {}, help: 'fix it',
+    });
+    const res = await request(makeApp()).get('/api/image-to-3d/targets');
+    expect(res.body.targets[0].degraded).toEqual({
+      label: 'degraded textures', help: 'fix it', repairable: true,
+    });
+  });
+
+  it('GET /targets carries repairable:false into `degraded` when nothing PortOS runs can fix it', async () => {
+    trellis2.isTrellis2Installed.mockReturnValueOnce(true);
+    trellis2.probeTrellis2TextureBake.mockResolvedValueOnce({
+      quality: 'fallback', missing: ['mtldiffrast'], degradedQuality: [], modules: {}, help: 'fix it',
+    });
+    trellis2.probeMetalToolchain.mockResolvedValueOnce({
+      available: false, installable: false, blocker: 'requires-xcode', hint: 'install Xcode',
+    });
+    const res = await request(makeApp()).get('/api/image-to-3d/targets');
+    // The inversion here (`repairable !== false`) is easy to get backwards, and getting
+    // it backwards offers a Repair button that cannot work.
+    expect(res.body.targets[0].degraded).toMatchObject({ repairable: false, help: 'install Xcode' });
+  });
+
+  it('GET /targets omits `degraded` when the bake probe could not determine anything', async () => {
+    // The sentinel that matters: 'unknown' must NOT read as degraded, or a probe that
+    // simply failed makes a healthy install look broken.
+    trellis2.isTrellis2Installed.mockReturnValueOnce(true);
+    trellis2.probeTrellis2TextureBake.mockResolvedValueOnce({
+      quality: 'unknown', missing: [], degradedQuality: [], modules: {},
+    });
+    const res = await request(makeApp()).get('/api/image-to-3d/targets');
+    expect(res.body.targets[0].degraded).toBeUndefined();
+  });
+
+  it('GET /targets omits `degraded` for a healthy bake', async () => {
+    trellis2.isTrellis2Installed.mockReturnValueOnce(true);
+    const res = await request(makeApp()).get('/api/image-to-3d/targets');
+    expect(res.body.targets[0].degraded).toBeUndefined();
   });
 
   it('GET /targets skips the bake probe entirely when trellis2 is not installed', async () => {
@@ -371,7 +460,25 @@ describe('image-to-3d model records', () => {
     models.startGeneration.mockResolvedValue({ id: 'image3d-1', status: 'generating' });
     const res = await request(makeApp()).post('/api/image-to-3d/models/image3d-1/generate');
     expect(res.status).toBe(202);
-    expect(models.startGeneration).toHaveBeenCalledWith('image3d-1');
+    // A bodiless re-render forwards empty options — stored renderOptions apply.
+    expect(models.startGeneration).toHaveBeenCalledWith('image3d-1', { options: {} });
+  });
+
+  it('POST /models/:id/generate forwards per-run options and rejects invalid ones', async () => {
+    models.startGeneration.mockResolvedValue({ id: 'image3d-1', status: 'generating' });
+    const res = await request(makeApp())
+      .post('/api/image-to-3d/models/image3d-1/generate')
+      .send({ steps: 24, seed: 7, keyBackground: false });
+    expect(res.status).toBe(202);
+    expect(models.startGeneration).toHaveBeenCalledWith(
+      'image3d-1',
+      { options: { steps: 24, seed: 7, keyBackground: false } },
+    );
+
+    const bad = await request(makeApp())
+      .post('/api/image-to-3d/models/image3d-1/generate')
+      .send({ steps: 999 });
+    expect(bad.status).toBe(400);
   });
 
   it('DELETE /models/:id soft-deletes', async () => {
@@ -398,5 +505,38 @@ describe('image-to-3d model records', () => {
     models.getModelAsset.mockRejectedValue(new ServerError('not ready', { status: 409, code: 'MODEL_NOT_READY' }));
     const res = await request(makeApp()).get('/api/image-to-3d/models/image3d-1/asset');
     expect(res.status).toBe(409);
+  });
+
+  it('GET /models/:id/full-mesh streams the pre-decimation OBJ', async () => {
+    const tmp = join(tmpdir(), `it-full-${process.pid}.obj`);
+    await writeFile(tmp, 'v 0 0 0\nf 1 1 1\n');
+    models.getModelFullMesh.mockResolvedValue({ path: tmp, filename: 'beacon-full.obj' });
+    const res = await request(makeApp()).get('/api/image-to-3d/models/image3d-1/full-mesh');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/model\/obj/);
+    expect(res.headers['content-disposition']).toMatch(/beacon-full\.obj/);
+    await rm(tmp, { force: true });
+  });
+
+  it('GET /models/:id/full-mesh 404s when the sidecar was never written', async () => {
+    // A missing OBJ is NOT a broken record — older renders simply have none, so it
+    // must not read as the model being unavailable.
+    const { ServerError } = await import('../lib/errorHandler.js');
+    models.getModelFullMesh.mockRejectedValue(
+      new ServerError('no full mesh', { status: 404, code: 'FULL_MESH_MISSING' }),
+    );
+    const res = await request(makeApp()).get('/api/image-to-3d/models/image3d-1/full-mesh');
+    expect(res.status).toBe(404);
+    expect(res.body?.error?.code || res.body?.code).toBe('FULL_MESH_MISSING');
+  });
+
+  it('routes /full-mesh to its own handler with the record id', async () => {
+    // Deliberately NOT claiming this proves route ordering: Express's `:id` matches a
+    // single path segment, so `/models/x/full-mesh` can never match `/models/:id`
+    // regardless of registration order. What it does pin is that the id is parsed
+    // from the right segment and reaches the handler.
+    models.getModelFullMesh.mockRejectedValue(new Error('boom'));
+    await request(makeApp()).get('/api/image-to-3d/models/image3d-1/full-mesh');
+    expect(models.getModelFullMesh).toHaveBeenCalledWith('image3d-1');
   });
 });

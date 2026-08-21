@@ -11,10 +11,17 @@ import { stat } from 'node:fs/promises';
 import { ServerError } from '../lib/errorHandler.js';
 import { createMutex } from '../lib/asyncMutex.js';
 import { canonicalStringify } from '../lib/objects.js';
-import { PATHS, makePathResolver, sha256File, sha256Text } from '../lib/fileUtils.js';
 import {
+  PATHS, makePathResolver, resolveGalleryImage, sha256File, sha256Text,
+} from '../lib/fileUtils.js';
+import { findCachedRepoFiles, inspectModelCache } from '../lib/hfCache.js';
+import { getImageModels, getVideoModels, isEditOnly, isFlux2, repoForModel } from '../lib/mediaModels.js';
+import { isMiniMaxH3Runtime, usesDiffusersRunner } from '../lib/runners.js';
+import {
+  FEDERATED_MEDIA_RESULT_EXTENSION,
   FEDERATED_MEDIA_STALE_AFTER_MS,
   FEDERATED_MEDIA_WIRE_VERSION,
+  KNOWN_MEDIA_KINDS,
 } from '../lib/federatedMediaWire.js';
 import { getSettings } from './settings.js';
 import {
@@ -25,6 +32,8 @@ import {
   listJobs,
 } from './mediaJobQueue/index.js';
 import { listMusicEngineCapabilities } from './musicEngineCapabilities.js';
+import { BYOV_VIDEO_RUNTIMES, isByovRuntimeReady } from './videoGen/runtimes.js';
+import { minimaxH3ControlError } from './videoGen/minimaxH3Controls.js';
 import { readCallerInstanceId } from './sharing/peerPullAuthorization.js';
 import { findPeerById } from './sharing/peerSyncShared.js';
 
@@ -33,6 +42,8 @@ export const DEFAULT_FEDERATED_MEDIA_PROVIDER = Object.freeze({
   enabled: false,
   maxQueuedJobs: 2,
   audioModels: Object.freeze([]),
+  imageModels: Object.freeze([]),
+  videoModels: Object.freeze([]),
 });
 
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
@@ -47,10 +58,90 @@ const unavailable = (message, code, status = 503, context) => {
   throw new ServerError(message, { status, code, ...(context ? { context } : {}) });
 };
 
+const sanitizeModelList = (models) => (Array.isArray(models)
+  ? models
+    .filter((model) => model && typeof model === 'object' && !Array.isArray(model))
+    .map(({ engine, modelId }) => ({ engine, modelId }))
+    .filter(({ engine, modelId }) => typeof engine === 'string' && typeof modelId === 'string')
+  : []);
+
+const requiresConfiguredPython = (kind, model) => {
+  if (kind === 'image') return !isFlux2(model) && !usesDiffusersRunner(model);
+  if (kind === 'video') return !BYOV_VIDEO_RUNTIMES.has(model?.runtime);
+  return false;
+};
+
+// The federated wire intentionally carries no source image, keyframes, or
+// semantic video mode. Do not advertise a catalog model that cannot render a
+// text-only request through this contract; otherwise the provider accepts the
+// job, persists it, and only rejects it after a worker starts.
+const supportsFederatedInput = (kind, model) => {
+  if (kind === 'image') return !isEditOnly(model);
+  if (kind === 'video') {
+    return !Array.isArray(model?.supportedModes) || model.supportedModes.includes('text');
+  }
+  return true;
+};
+
+const requiredModelCacheGroups = (model) => {
+  const groups = [];
+  if (Array.isArray(model?.repoFiles)) {
+    groups.push({ repo: model.repo, revision: model.revision, files: model.repoFiles });
+  }
+  if (Array.isArray(model?.requiredWeights)) groups.push(...model.requiredWeights);
+  return groups;
+};
+
+const inspectFederatedModelCache = async (model, repo) => {
+  const revision = model?.revision ? { revision: model.revision } : undefined;
+  const base = repo
+    ? await inspectModelCache(repo, revision).catch(() => ({ cached: false }))
+    : { cached: requiredModelCacheGroups(model).length === 0 };
+  if (base.cached !== true) return false;
+
+  // Some video profiles are deliberately selective: the main snapshot is not
+  // sufficient without the exact pinned Wan adapters, H3 checkpoint files, or
+  // H3 CUDA repo-file subset that the runner will load.
+  for (const group of requiredModelCacheGroups(model)) {
+    if (!group || typeof group.repo !== 'string' || !group.repo
+      || !Array.isArray(group.files) || group.files.length === 0
+      || typeof group.revision !== 'string' || !group.revision) return false;
+    if (!await findCachedRepoFiles(group.repo, group.files, { revision: group.revision })) return false;
+  }
+  return true;
+};
+
+const FEDERATED_DEFAULT_VIDEO_FRAMES = 121;
+
+const validateFederatedVideoControls = (input, model) => {
+  if (input.kind !== 'video') return;
+  const numFrames = input.numFrames ?? model.defaultFrames ?? FEDERATED_DEFAULT_VIDEO_FRAMES;
+  const fps = input.fps ?? 24;
+  if (isMiniMaxH3Runtime(model.runtime)) {
+    const controlError = minimaxH3ControlError({
+      model,
+      negativePrompt: input.negativePrompt,
+      numFrames,
+      fps,
+    });
+    if (controlError) throw controlError;
+  }
+  if (model.runtime === 'wan22') {
+    const frameStride = Number(model.frameStride);
+    if (Number.isFinite(frameStride) && frameStride > 0 && (Number(numFrames) - 1) % frameStride !== 0) {
+      unavailable(
+        `${model.name} requires a ${frameStride}n+1 frame count; got ${numFrames}.`,
+        'WAN22_INVALID_FRAME_COUNT',
+        400,
+      );
+    }
+  }
+};
+
 export function normalizeFederatedMediaProviderConfig(settings) {
   const raw = settings?.federation?.mediaProvider;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ...DEFAULT_FEDERATED_MEDIA_PROVIDER, audioModels: [] };
+    return { ...DEFAULT_FEDERATED_MEDIA_PROVIDER, audioModels: [], imageModels: [], videoModels: [] };
   }
   return {
     ...raw,
@@ -58,12 +149,9 @@ export function normalizeFederatedMediaProviderConfig(settings) {
     maxQueuedJobs: Number.isInteger(raw.maxQueuedJobs)
       ? Math.max(1, Math.min(20, raw.maxQueuedJobs))
       : DEFAULT_FEDERATED_MEDIA_PROVIDER.maxQueuedJobs,
-    audioModels: Array.isArray(raw.audioModels)
-      ? raw.audioModels
-        .filter((model) => model && typeof model === 'object' && !Array.isArray(model))
-        .map(({ engine, modelId }) => ({ engine, modelId }))
-        .filter(({ engine, modelId }) => typeof engine === 'string' && typeof modelId === 'string')
-      : [],
+    audioModels: sanitizeModelList(raw.audioModels),
+    imageModels: sanitizeModelList(raw.imageModels),
+    videoModels: sanitizeModelList(raw.videoModels),
   };
 }
 
@@ -133,10 +221,130 @@ async function configuredAudioCapabilities(config) {
       defaultDurationSec: engine?.defaultDurationSec ?? null,
       lyrics: engine?.lyrics === true,
       autoDuration: engine?.autoDuration === true,
+      frameStride: null,
+      maxNumFrames: null,
+      frameOptions: null,
+      fpsOptions: null,
+      resolutionOptions: null,
       _engine: engine,
       _model: model,
     };
   });
+}
+
+// Local image/video generation (mflux on Apple Silicon, diffusers elsewhere)
+// has no per-engine CUDA/platform registry like music's ENGINES map — it's one
+// shared runtime gated on a single configured pythonPath, with per-model
+// readiness coming from the same HF-cache check music capabilities use.
+// Reported as platformSupported/cudaRequired: false rather than omitting
+// those fields, so this stays a single capability shape the wire schema
+// already validates instead of forking a second one per kind.
+//
+// `runtimeReady` here means "a local pythonPath is configured," not
+// "verified importable" — music's isEngineHealthy() and image regen's
+// resolveRegenBackend() (server/services/imageGen/regen.js) both go further
+// and probe the actual mflux binary / FLUX.2 venv per model family. Matching
+// that depth for every image/video model family (mflux vs FLUX.2 vs the
+// diffusers runners, plus per-runtime BYOV video probes) is real scope, not a
+// cleanup — left as follow-up work; a submission that clears this coarser
+// admission check still fails safely if the runtime turns out missing, since
+// the local generator itself errors and fails the queued job.
+async function localGeneratorCapabilities(kind, pythonPath, { models, configuredList }) {
+  const modelsById = new Map(models.map((model) => [model.id, model]));
+  return Promise.all(configuredList.map(async (selected) => {
+    const isLocal = selected.engine === 'local';
+    const model = isLocal ? modelsById.get(selected.modelId) : null;
+    const repo = model ? repoForModel(model) : null;
+    const modelSupportsInput = supportsFederatedInput(kind, model);
+    const needsPython = requiresConfiguredPython(kind, model);
+    const modelReady = !model ? false : await inspectFederatedModelCache(model, repo);
+    const runtimeReady = !isLocal ? false
+      : needsPython ? !!pythonPath
+        : kind === 'video' ? await isByovRuntimeReady(model?.runtime)
+          : true;
+    const reason = !isLocal ? 'unknown-engine'
+      : !model ? 'unknown-model'
+        : !modelSupportsInput ? 'unsupported-input'
+          : !runtimeReady ? 'runtime-unavailable'
+            : !modelReady ? 'model-unavailable'
+              : null;
+    const frameStride = Number.isInteger(Number(model?.frameStride)) && Number(model.frameStride) >= 1 && Number(model.frameStride) <= 64
+      ? Number(model.frameStride)
+      : null;
+    const validFrameOptions = Array.isArray(model?.frameOptions)
+      ? model.frameOptions.filter((f) => Number.isInteger(f) && f >= 1 && f <= 600).slice(0, 100)
+      : [];
+    const validFpsOptions = Array.isArray(model?.fpsOptions)
+      ? model.fpsOptions.filter((f) => Number.isInteger(f) && f >= 1 && f <= 60).slice(0, 20)
+      : [];
+    const rawMaxNumFrames = Number.isInteger(Number(model?.maxNumFrames)) && Number(model.maxNumFrames) >= 1 && Number(model.maxNumFrames) <= 600
+      ? Number(model.maxNumFrames)
+      : (validFrameOptions.length > 0 ? Math.max(...validFrameOptions) : null);
+    const maxNumFrames = rawMaxNumFrames && rawMaxNumFrames <= 600 ? rawMaxNumFrames : null;
+    const validResolutions = Array.isArray(model?.resolutionOptions)
+      ? model.resolutionOptions
+        .filter((opt) => Number.isInteger(Number(opt?.w)) && Number.isInteger(Number(opt?.h))
+          && Number(opt.w) >= 64 && Number(opt.w) <= 2048
+          && Number(opt.h) >= 64 && Number(opt.h) <= 2048)
+        .slice(0, 100)
+        .map(({ label, w, h }) => ({
+          w: Number(w),
+          h: Number(h),
+          ...(label ? { label: String(label).slice(0, 120) } : {}),
+        }))
+      : [];
+    return {
+      kind,
+      engine: selected.engine,
+      engineName: isLocal ? 'Local' : selected.engine,
+      modelId: selected.modelId,
+      modelName: model?.name ?? selected.modelId,
+      ready: reason === null,
+      unavailableReason: reason,
+      runtimeReady,
+      platformSupported: isLocal,
+      cudaRequired: false,
+      cudaState: 'available',
+      minDurationSec: null,
+      maxDurationSec: null,
+      defaultDurationSec: null,
+      lyrics: false,
+      autoDuration: false,
+      frameStride,
+      maxNumFrames: Number.isFinite(maxNumFrames) && maxNumFrames > 0 ? maxNumFrames : null,
+      frameOptions: validFrameOptions.length > 0 ? validFrameOptions : null,
+      fpsOptions: validFpsOptions.length > 0 ? validFpsOptions : null,
+      resolutionOptions: validResolutions.length > 0 ? validResolutions : null,
+      _pythonPath: isLocal ? pythonPath : null,
+      _model: model,
+    };
+  }));
+}
+
+const configuredImageCapabilities = (pythonPath, config) => localGeneratorCapabilities('image', pythonPath, {
+  models: getImageModels(), configuredList: config.imageModels,
+});
+
+const configuredVideoCapabilities = (pythonPath, config) => localGeneratorCapabilities('video', pythonPath, {
+  models: getVideoModels(), configuredList: config.videoModels,
+});
+
+// Local image/video readiness shares one settings field
+// (imageGen.local.pythonPath — video local generation reuses the same
+// Python venv). Resolve it once per top-level call rather than once per
+// requested kind, so asking for both image and video status in one request
+// doesn't fetch+clone the full settings object twice.
+async function resolveLocalRuntimePythonPath(kinds) {
+  if (!kinds.some((kind) => kind === 'image' || kind === 'video')) return null;
+  const settings = await getSettings();
+  return settings?.imageGen?.local?.pythonPath || null;
+}
+
+async function capabilitiesForKind(kind, config, { pythonPath = null } = {}) {
+  if (kind === 'audio') return configuredAudioCapabilities(config);
+  if (kind === 'image') return configuredImageCapabilities(pythonPath, config);
+  if (kind === 'video') return configuredVideoCapabilities(pythonPath, config);
+  return [];
 }
 
 function activeQueueSnapshot(config) {
@@ -158,10 +366,22 @@ function activeQueueSnapshot(config) {
   };
 }
 
-const publicCapability = ({ _engine, _model, ...capability }) => capability;
+// Strip every private (`_`-prefixed) helper field before a capability crosses
+// the wire — `_engine`/`_model` (audio) and `_pythonPath`/`_model` (image/
+// video) all carry local runtime state, never public capability data.
+const publicCapability = (capability) => Object.fromEntries(
+  Object.entries(capability).filter(([key]) => !key.startsWith('_')),
+);
 
-export async function getFederatedMediaProviderStatus(config) {
-  const capabilities = await configuredAudioCapabilities(config);
+// `kinds` defaults to audio-only so a caller that never opts in (every
+// already-shipped consumer) gets back the exact status shape it has always
+// understood — see normalizeRequestedMediaKinds in federatedMediaWire.js.
+export async function getFederatedMediaProviderStatus(config, { kinds = ['audio'] } = {}) {
+  const requestedKinds = kinds.filter((kind) => KNOWN_MEDIA_KINDS.includes(kind));
+  const pythonPath = await resolveLocalRuntimePythonPath(requestedKinds);
+  const capabilities = (await Promise.all(
+    requestedKinds.map((kind) => capabilitiesForKind(kind, config, { pythonPath })),
+  )).flat();
   const queue = activeQueueSnapshot(config);
   const anyReady = capabilities.some((capability) => capability.ready);
   return {
@@ -169,10 +389,44 @@ export async function getFederatedMediaProviderStatus(config) {
     generatedAt: new Date().toISOString(),
     staleAfterMs: FEDERATED_MEDIA_STALE_AFTER_MS,
     status: !anyReady ? 'unavailable' : (queue.accepting ? 'ready' : 'busy'),
-    kinds: ['audio'],
+    kinds: requestedKinds,
     queue,
     capabilities: capabilities.map(publicCapability),
   };
+}
+
+/**
+ * Every LOCAL model this instance could offer to share, per visual kind, with
+ * the same readiness projection the wire status uses.
+ *
+ * This is the provider-side answer to a chicken-and-egg problem: the status
+ * endpoint only ever describes models the operator has ALREADY allowlisted, so
+ * it can never tell the Sharing UI what there is to allowlist in the first
+ * place. Audio doesn't need this — its Sharing UI is driven by the music-engine
+ * catalog, which already enumerates candidates.
+ *
+ * LOCAL ONLY. This is exposed under `/api/` for this instance's own settings
+ * screen, never on the peer surface: it enumerates unshared local models, which
+ * is exactly the inventory a peer has no business reading.
+ *
+ * @returns {Promise<{image: object[], video: object[]}>}
+ */
+export async function listLocalMediaShareCandidates() {
+  const pythonPath = await resolveLocalRuntimePythonPath(['image', 'video']);
+  const catalogs = { image: getImageModels(), video: getVideoModels() };
+  const entries = await Promise.all(
+    Object.entries(catalogs).map(async ([kind, models]) => [
+      kind,
+      (await localGeneratorCapabilities(kind, pythonPath, {
+        models,
+        // Offer the whole local catalog as candidates rather than the
+        // configured subset — that subset is what this call exists to help the
+        // operator choose.
+        configuredList: models.map((model) => ({ engine: 'local', modelId: model.id })),
+      })).map(publicCapability),
+    ]),
+  );
+  return Object.fromEntries(entries);
 }
 
 const jobOwner = (callerId) => `${OWNER_PREFIX}${callerId}`;
@@ -195,17 +449,50 @@ function findIdempotentJob(callerId, idempotencyKey) {
   ) || null;
 }
 
+// The audio wire predates the explicit `kind` field. Its old idempotency hash
+// was computed from the kind-less parsed body, while the compatibility
+// preprocessor now adds `kind: 'audio'` before this service sees it. Keep the
+// canonical audio hash kind-less so an ambiguous submission can still replay
+// a queued job across this upgrade; image/video hashes retain their kind to
+// prevent cross-kind key reuse.
+const requestHashInput = (input) => {
+  if (input?.kind !== 'audio') return input;
+  const { kind: _kind, ...legacyAudioInput } = input;
+  return legacyAudioInput;
+};
+
+// Image/video results are named `<queue-job-uuid>.<ext>` by the local
+// generator itself (jobId: job.id passed straight through, same as audio's
+// music-gen-<uuid>.wav). Bind the provider only to that shape, not to
+// job.id specifically — mirrors MUSIC_RESULT_RE's leniency. Each kind gets
+// its own anchored extension (not one pattern shared across png/mp4) so a
+// hand-edited job.kind/result.filename mismatch can't pass the check and
+// get served under the wrong Content-Type.
+const IMAGE_RESULT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.png$/i;
+const VIDEO_RESULT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp4$/i;
+const resolveVideoResult = makePathResolver(() => PATHS.videos, { extensions: ['mp4'] });
+
+const RESULT_BY_KIND = {
+  audio: { mimeType: 'audio/wav', pattern: MUSIC_RESULT_RE, resolve: resolveMusicResult },
+  image: { mimeType: 'image/png', pattern: IMAGE_RESULT_RE, resolve: resolveGalleryImage },
+  video: { mimeType: 'video/mp4', pattern: VIDEO_RESULT_RE, resolve: resolveVideoResult },
+};
+
 async function describeResult(job) {
   if (job.status !== 'completed') return null;
-  const filename = job.result?.filename;
-  // The queue record is persisted and therefore could be hand-edited. Bind a
-  // provider job only to the filename shape generateMusic itself creates;
-  // makePathResolver confines the root, while this prevents cross-job file
-  // substitution inside that root.
-  if (typeof filename !== 'string' || !MUSIC_RESULT_RE.test(filename)) {
+  const shape = RESULT_BY_KIND[job.kind];
+  if (!shape) {
     unavailable('Provider result is unavailable', 'MEDIA_PROVIDER_RESULT_UNAVAILABLE', 410);
   }
-  const path = resolveMusicResult(filename);
+  const filename = job.result?.filename;
+  // The queue record is persisted and therefore could be hand-edited. Bind a
+  // provider job only to the filename shape its own generator creates;
+  // makePathResolver confines the root, while this prevents cross-job file
+  // substitution inside that root.
+  if (typeof filename !== 'string' || !shape.pattern.test(filename)) {
+    unavailable('Provider result is unavailable', 'MEDIA_PROVIDER_RESULT_UNAVAILABLE', 410);
+  }
+  const path = shape.resolve(filename);
   if (!path) {
     unavailable('Provider result is unavailable', 'MEDIA_PROVIDER_RESULT_UNAVAILABLE', 410);
   }
@@ -228,7 +515,7 @@ async function describeResult(job) {
   return {
     metadata: {
       available: true,
-      mimeType: 'audio/wav',
+      mimeType: shape.mimeType,
       sizeBytes: info.size,
       sha256,
       downloadUrl: `/api/federation/media/v1/jobs/${job.id}/result`,
@@ -249,7 +536,7 @@ export async function describeFederatedMediaJob(callerId, jobOrId) {
   return {
     wireVersion: FEDERATED_MEDIA_WIRE_VERSION,
     id: job.id,
-    kind: 'audio',
+    kind: job.kind,
     status: job.status,
     queuedAt: job.queuedAt,
     startedAt: job.startedAt ?? null,
@@ -264,7 +551,7 @@ export async function describeFederatedMediaJob(callerId, jobOrId) {
 
 export async function submitFederatedMediaJob({ callerId, config, input, idempotencyKey }) {
   return withAdmissionLock(async () => {
-    const requestHash = sha256Text(canonicalStringify(input));
+    const requestHash = sha256Text(canonicalStringify(requestHashInput(input)));
     const existing = findIdempotentJob(callerId, idempotencyKey);
     if (existing) {
       if (existing.params?.federatedMedia?.requestHash !== requestHash) {
@@ -281,7 +568,8 @@ export async function submitFederatedMediaJob({ callerId, config, input, idempot
       });
     }
 
-    const capabilities = await configuredAudioCapabilities(config);
+    const pythonPath = await resolveLocalRuntimePythonPath([input.kind]);
+    const capabilities = await capabilitiesForKind(input.kind, config, { pythonPath });
     const capability = capabilities.find((candidate) =>
       candidate.engine === input.engine && candidate.modelId === input.modelId,
     );
@@ -293,6 +581,7 @@ export async function submitFederatedMediaJob({ callerId, config, input, idempot
         reason: capability.unavailableReason,
       });
     }
+    validateFederatedVideoControls(input, capability._model);
     if (input.durationMode === 'auto' && !capability.autoDuration) {
       unavailable('Requested engine does not support automatic duration', 'MEDIA_PROVIDER_AUTO_DURATION_UNSUPPORTED', 400);
     }
@@ -304,30 +593,67 @@ export async function submitFederatedMediaJob({ callerId, config, input, idempot
       });
     }
 
+    const federatedMedia = {
+      wireVersion: FEDERATED_MEDIA_WIRE_VERSION,
+      callerInstanceId: callerId,
+      idempotencyKey,
+      requestHash,
+    };
     const queued = enqueueJob({
-      kind: 'audio',
+      kind: input.kind,
       owner: jobOwner(callerId),
-      params: {
-        prompt: input.prompt,
-        lyrics: input.lyrics,
-        engine: input.engine,
-        modelId: input.modelId,
-        ...(capability._model?.userAdded ? { repo: capability._model.repo } : {}),
-        ...(input.durationSec !== undefined ? { durationSec: input.durationSec } : {}),
-        ...(input.durationMode ? { durationMode: input.durationMode } : {}),
-        federatedMedia: {
-          wireVersion: FEDERATED_MEDIA_WIRE_VERSION,
-          callerInstanceId: callerId,
-          idempotencyKey,
-          requestHash,
-        },
-      },
+      params: buildQueueParams(input, capability, federatedMedia),
     });
     return {
       replayed: false,
       job: await describeFederatedMediaJob(callerId, queued.jobId),
     };
   });
+}
+
+// Per-kind mapping from the validated wire submission to the *local*
+// mediaJobQueue params the matching runner module expects — audio's shape
+// (engine/modelId/prompt/lyrics/duration) already matched generateMusic's
+// contract; image/video map onto imageGen/local.js's generateImage and
+// videoGen/local.js's generateVideo signatures. Omitting `mode` from the
+// image/video params keeps the queue's dispatcher on the local runner (see
+// getGenModuleForJob in mediaJobQueue/index.js): only the cloud-CLI modes
+// (codex/grok/agy) need an explicit mode, and those aren't federatable here.
+function buildQueueParams(input, capability, federatedMedia) {
+  if (input.kind === 'audio') {
+    return {
+      prompt: input.prompt,
+      lyrics: input.lyrics,
+      engine: input.engine,
+      modelId: input.modelId,
+      ...(capability._model?.userAdded ? { repo: capability._model.repo } : {}),
+      ...(input.durationSec !== undefined ? { durationSec: input.durationSec } : {}),
+      ...(input.durationMode ? { durationMode: input.durationMode } : {}),
+      federatedMedia,
+    };
+  }
+  const shared = {
+    pythonPath: capability._pythonPath,
+    prompt: input.prompt,
+    modelId: input.modelId,
+    ...(input.negativePrompt ? { negativePrompt: input.negativePrompt } : {}),
+    ...(input.width !== undefined ? { width: input.width } : {}),
+    ...(input.height !== undefined ? { height: input.height } : {}),
+    ...(input.steps !== undefined ? { steps: input.steps } : {}),
+    ...(input.seed !== undefined ? { seed: input.seed } : {}),
+    federatedMedia,
+  };
+  if (input.kind === 'image') {
+    return { ...shared, ...(input.guidance !== undefined ? { guidance: input.guidance } : {}) };
+  }
+  // video — videoGen/local.js's generateVideo takes `guidanceScale`, not
+  // `guidance` (image's field name).
+  return {
+    ...shared,
+    ...(input.numFrames !== undefined ? { numFrames: input.numFrames } : {}),
+    ...(input.fps !== undefined ? { fps: input.fps } : {}),
+    ...(input.guidance !== undefined ? { guidanceScale: input.guidance } : {}),
+  };
 }
 
 export async function cancelFederatedMediaJob(callerId, jobId) {

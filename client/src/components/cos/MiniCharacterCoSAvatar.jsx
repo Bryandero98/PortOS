@@ -169,7 +169,7 @@ export default function MiniCharacterCoSAvatar({ state, speaking, background = f
     <CoSCanvasGuard
       label="Mini-character avatar. Drag to rotate."
       background={background}
-      fallback={<MissingModelHint background={background} bundled={bundled} />}
+      resetKey={url}
     >
       <Canvas
         camera={{ position: [0, 0.2, 3.0], fov: 40 }}

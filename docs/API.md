@@ -65,8 +65,14 @@ PortOS is designed for personal/developer use on trusted networks. It implements
 | DELETE | `/providers/:id` | Delete provider |
 | POST | `/providers/:id/test` | Test provider connectivity |
 | PUT | `/providers/active` | Set active provider |
+| GET | `/providers/runtimes` | Per-runtime install status (`claude`, `codex`, `opencode`, `grok`, `kimi`, `agy`, `cursor-agent`): is the binary runnable here, and can PortOS install it? Booleans and labels only — never resolved filesystem paths. 60s TTL cache. Ollama / LM Studio are absent on purpose — Settings → Local LLM owns their install. |
+| POST | `/providers/runtimes/install?runtime=<id>` | Install one runtime from the installer's fixed table, streaming installer output as SSE. Rejects any id not in the table. |
+| GET | `/providers/readiness` | Requirements checklist per provider backed by a LOCAL daemon (llama.cpp / Ollama / LM Studio / MTPLX), keyed by provider id: is the daemon installed, is it answering at the endpoint THIS provider points at, and is it serving the provider's default model. Each entry also carries `setup` — what the one-click fix below can do about the unmet checks (`null` when nothing is auto-fixable here). Providers with no local dependency are absent from the map. Complements `/providers/runtimes` (which answers "can PortOS run this CLI?"). Booleans, labels, and the provider's own endpoint only — never a resolved binary path. Skips disabled providers; 15s endpoint-probe cache (one probe per distinct endpoint), 60s binary-PATH cache, both dropped by the llama-server start/stop/install routes. |
+| POST | `/providers/readiness/setup?provider=<id>` | Install and/or start the LOCAL DAEMON that provider points at (llama.cpp / Ollama / LM Studio / MTPLX), streaming progress as SSE — the "do it for me" half of `/providers/readiness`, so an unmet requirement is fixed from the card instead of from a vendor setup doc. The request names a PROVIDER only: the runtime kind and endpoint are re-derived server-side from the stored record, so no query value reaches a spawn argument (an optional `runtime=` is cross-checked and 409s on a mismatch). Every command comes from a fixed per-runtime table. Never downloads model weights, never starts llama-server (it needs a checkpoint you choose), and never runs MTPLX's privileged fan-control helper. Single-flight. |
+| GET | `/providers/opencode/installation` | **Legacy alias**, kept so a stale client bundle still renders: `{ installed, npmAvailable }` for the `opencode` runtime. New code uses `/providers/runtimes`. |
+| POST | `/providers/opencode/install` | **Legacy alias** for `/providers/runtimes/install?runtime=opencode`. |
 
-### AI Runs (DevTools)
+### AI Runs
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -408,9 +414,11 @@ See [Agent Context (MCP)](./features/agent-context.md) for setup, transport head
 | GET | `/agents/activity/agent/:agentId/stats` | Get agent statistics |
 | POST | `/agents/activity/cleanup` | Clean up old activity logs |
 | GET | `/agents/activity/run-events` | Read the append-only CoS run lifecycle ledger (filters: `runId`, `agentId`, `taskId`, `kind`, `since`, `limit`) |
-| GET | `/agents/activity/run-events/stats` | Ledger generation sizes and the retention bound |
+| GET | `/agents/activity/run-events/stats` | Ledger generation sizes and the count + age retention bounds |
 | GET | `/agents/activity/run-events/projections` | Current run status derived by replaying the ledger |
 | GET | `/agents/activity/run-events/run/:id` | One run's projection plus the events behind it |
+| GET | `/agents/activity/run-events/reconcile` | Where the ledger and the durable run records disagree (filters: `runId`, `limit`) — read-only |
+| POST | `/agents/activity/run-events/reconcile` | Close the run records the ledger proves are finished; reports what it closed |
 
 ### Notifications
 
@@ -680,22 +688,28 @@ socket.on('detect:complete', (appData) => {
 > **Security**: The shell WebSocket API provides full terminal access as the PortOS process user. It relies on PortOS's network-level access control (see [Security Model](#security-model)) — do not expose the PortOS server to untrusted networks.
 
 ```javascript
-// Start a shell session
-socket.emit('shell:start', { id: 'my-session' });
+// Start a shell session — the server assigns the id and replies with shell:started
+socket.emit('shell:start', {});
+socket.on('shell:started', ({ sessionId }) => console.log('session', sessionId));
 
-// Send input to shell
-socket.emit('shell:input', { id: 'my-session', data: 'ls -la\n' });
+// Send input to shell. Submit with `\r` (the byte Enter sends), never `\n` — cmd.exe
+// under Windows ConPTY ignores LF and the line is typed but never executed.
+socket.emit('shell:input', { sessionId, data: 'ls -la\r' });
 
 // Receive shell output
-socket.on('shell:output', ({ id, data }) => {
+socket.on('shell:output', ({ sessionId, data }) => {
   console.log(data); // Terminal output
 });
 
+// Change directory — send the PATH, not a command. The server renders the `cd` for
+// the shell this session runs (`cd /d "…"` on cmd.exe, Set-Location on PowerShell).
+socket.emit('shell:cd', { sessionId, path: '/path/to/app' });
+
 // Resize terminal
-socket.emit('shell:resize', { id: 'my-session', cols: 120, rows: 40 });
+socket.emit('shell:resize', { sessionId, cols: 120, rows: 40 });
 
 // Stop shell session
-socket.emit('shell:stop', { id: 'my-session' });
+socket.emit('shell:stop', { sessionId });
 ```
 
 ### Provider Status

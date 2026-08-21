@@ -190,13 +190,12 @@ export const filterSelectableModels = (models) =>
  * Claude Code and agy take `--effort <level>`, Codex takes
  * `-c model_reasoning_effort=<level>`.
  *
- * Codex's ladder stops at `xhigh`: its config enum is
- * `none|minimal|low|medium|high|xhigh`, and `-c model_reasoning_effort=max`
- * makes codex fail while LOADING ITS CONFIG, killing the agent at startup.
- * `resolveCliEffort` clamps `max`/`ultra` down to `xhigh` for codex.
+ * Codex's config enum includes `max` alongside
+ * `none|minimal|low|medium|high|xhigh`. `ultra` is retained only as a legacy
+ * stored value and resolves to `max` when sent to codex.
  */
 export const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
-export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
+export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 // OpenCode passes this through as `reasoningEffort` to its configured local
 // provider. Ollama's OpenAI-compatible API accepts this narrow ladder for
@@ -656,6 +655,14 @@ export const visionLocalModelFilter = (id, provider, visionIdsByProvider = null)
  * 11434; LM Studio defaults to 1234. The stable provider ids (`ollama` /
  * `lmstudio`) are checked too — AI Assignments' curated provider payload
  * omits `endpoint`, and a renamed display name would otherwise miss detection.
+ *
+ * Client mirror of `localBackendForProvider` in
+ * server/lib/localProviderRuntime.js — keep in lockstep. The SERVER copy is
+ * authoritative and stricter: it parses the endpoint as a URL and requires a
+ * loopback/bind-all host, so a peer machine's daemon on the same port is not
+ * claimed as local. This one only labels UI, so it stays a cheap regex; if it
+ * ever gates an action, take the server's rules with it.
+ *
  * @param {{id?:string,endpoint?:string,name?:string}} provider
  * @returns {'ollama'|'lmstudio'|null}
  */
@@ -675,9 +682,104 @@ export const localBackendForProvider = (provider) => {
   return null;
 };
 
-const LOCAL_ENDPOINT_RE = /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)(:|\/|$)/i;
+// The whole loopback block (`127.0.0.0/8`), not just `127.0.0.1` — a daemon on a
+// loopback alias (`127.0.0.2`) is as local as one on `.1`, and the server's
+// `isLocalInstanceHost` already accepts the full block. While they disagreed, a
+// provider on `http://127.0.0.2:11434` was badged NEEDS SETUP for an API key a
+// loopback endpoint never needs.
+const LOCAL_ENDPOINT_RE = /^(https?:\/\/)?(localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|0\.0\.0\.0|\[?::1\]?|\[?::\]?)(:|\/|$)/i;
 export const isLocalEndpoint = (endpoint) =>
   typeof endpoint === 'string' && LOCAL_ENDPOINT_RE.test(endpoint.trim());
+
+// Hosts inside the trust boundary, where an unauthenticated OpenAI-compatible
+// server is a normal setup rather than a misconfiguration: RFC1918 LAN ranges,
+// link-local, and the Tailscale CGNAT range 100.64.0.0/10 (PortOS is a
+// tailnet-first product — an API provider pointed at another machine's Ollama
+// is a first-class configuration, not an edge case).
+const PRIVATE_IP_RE = /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/;
+
+/**
+ * IPv6 counterpart to {@link PRIVATE_IP_RE}: unique-local (`fc00::/7`) and
+ * link-local (`fe80::/10`). Tailscale hands out a ULA address alongside the
+ * CGNAT v4 one, so without this a tailnet peer reached over IPv6 read as a
+ * public host and its keyless provider was blocked on a missing API key.
+ *
+ * Gated on the host being an IPv6 literal (it contains a `:`) and compared
+ * NUMERICALLY on the leading hextet — a bare `/^f[cd]/` prefix test would also
+ * claim hostnames like `fdrive.example.com`, and `fd::1` expands to a leading
+ * hextet of `0x00fd`, which is not in `fc00::/7` at all.
+ */
+/**
+ * Gate for {@link PRIVATE_IP_RE}: is this host an IPv4 literal at all?
+ *
+ * The range test above matches a PREFIX, which on its own also claims DNS names
+ * that merely start like one — `10.evil.example` — and would report a keyless
+ * PUBLIC endpoint as needing no key. Hosts arriving there have already been
+ * through `URL`, which canonicalizes any IPv4 spelling to a dotted quad.
+ * Mirror of the server helper in server/lib/providerPrerequisites.js.
+ */
+const isIpv4Literal = (host) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+
+const isPrivateIpv6 = (host) => {
+  if (!host.includes(':')) return false;
+  const first = host.split(':')[0];
+  if (!/^[0-9a-f]{1,4}$/.test(first)) return false; // '' for `::1` — loopback, already matched above
+  const n = parseInt(first, 16);
+  return (n >= 0xfc00 && n <= 0xfdff) || (n >= 0xfe80 && n <= 0xfebf);
+};
+
+/**
+ * Is this endpoint inside the private network — loopback, a LAN/tailnet address,
+ * a `.local`/`.ts.net`/`.internal` name, or a bare single-label host?
+ *
+ * Used to decide whether a missing API key is actually a missing prerequisite.
+ * The server only attaches an `Authorization` header when a key is stored, so a
+ * keyless call to a private OpenAI-compatible server (LM Studio on the desk
+ * machine, Ollama on a tailnet peer) works exactly as configured — reporting it
+ * as "needs setup" would be a false alarm on a supported deployment. A public
+ * endpoint with no key stays flagged: that one really is misconfigured.
+ *
+ * A host that cannot be parsed reads as NOT private, keeping the stricter of
+ * the two answers for input we don't understand.
+ */
+export const isPrivateNetworkEndpoint = (endpoint) => {
+  if (isLocalEndpoint(endpoint)) return true;
+  if (typeof endpoint !== 'string' || !endpoint.trim()) return false;
+  const trimmed = endpoint.trim();
+  // A scheme-less endpoint ("192.168.1.5:1234/v1") is still a host — give the
+  // parser one so it doesn't read the leading segment as a scheme.
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  if (!URL.canParse(candidate)) return false;
+  const host = new URL(candidate).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (isIpv4Literal(host) && PRIVATE_IP_RE.test(host)) return true;
+  if (isPrivateIpv6(host)) return true;
+  if (/\.(local|internal|lan|home\.arpa|ts\.net)$/.test(host)) return true;
+  // A single-label host resolves only inside the local network (`http://nas:11434`).
+  return !host.includes('.') && !host.includes(':');
+};
+
+/**
+ * Does this provider talk to a daemon on THIS machine?
+ *
+ * Client mirror of `isLocalInstanceEndpoint` in
+ * server/lib/localProviderRuntime.js, and the guard for anything that explains
+ * a provider by inspecting the machine PortOS runs on — "is `lms` installed
+ * here?", "start it from Settings → Local LLM". A provider named for LM Studio
+ * but pointed at another box on the tailnet matches
+ * {@link localBackendForProvider} by NAME, so without this it collected this
+ * machine's install state and offered to start a server it does not own.
+ *
+ * A blank endpoint reads as local, unlike the server's copy: the record simply
+ * hasn't named one, and every default it can fall back to is a loopback URL.
+ *
+ * @param {{endpoint?:string}} provider
+ * @returns {boolean}
+ */
+export const isLocalInstanceProvider = (provider) => {
+  const endpoint = provider?.endpoint;
+  if (typeof endpoint !== 'string' || endpoint.trim() === '') return true;
+  return isLocalEndpoint(endpoint);
+};
 
 export const isLikelyLargeContextProvider = (provider) => {
   if (isProcessProvider(provider)) return true;
@@ -806,6 +908,45 @@ export const isRunnerAllowedCommand = (command, allowedCommands) => {
 };
 
 /**
+ * The key a CLI/TUI provider's runtime is published under in the `runtimes` map
+ * from `GET /api/providers/runtimes` — the binary it spawns, basename-normalized
+ * so a provider pinned to an absolute path still matches.
+ *
+ * Deliberately NOT a client-side copy of the runtime table: the server owns
+ * which runtimes exist and how they install, and a key with no entry in the
+ * fetched map simply renders no install widget. That's the right default for a
+ * custom command PortOS has no installer for.
+ *
+ * API providers have no runtime here — the two fronted by a local app resolve
+ * through `localBackendForProvider` (which also matches a renamed provider by
+ * its endpoint) and get their install state from the local-LLM status.
+ */
+/**
+ * Does this provider resolve its binary somewhere PortOS's runtime probe never
+ * looked — an explicit path in `command`, or a `PATH` of its own in
+ * `envVars`?
+ *
+ * The runtime row answers one question, "does the bare binary resolve on
+ * PortOS's PATH?", and neither of these is that question: the runner spawns
+ * such a provider against its own resolution. MIRROR of the same two guards in
+ * `providerRuntimeKey` in server/lib/providerPrerequisites.js, which is what
+ * keeps the card's badge and the server's routing decision agreeing.
+ * @param {{type?:string,command?:string,envVars?:Record<string,string>}} provider
+ */
+export const resolvesOutsidePortosPath = (provider) => {
+  if (!isProcessProvider(provider)) return false;
+  if (/[\\/]/.test(String(provider?.command || '').trim())) return true;
+  return Object.keys(provider?.envVars || {}).some((key) => key.toUpperCase() === 'PATH');
+};
+
+export const providerRuntimeKey = (provider) => {
+  if (!isProcessProvider(provider)) return null;
+  const command = provider?.command;
+  if (typeof command !== 'string' || command.trim() === '') return null;
+  return runnerCommandBaseName(command.trim());
+};
+
+/**
  * Whether `provider` is served by an Ollama daemon rather than its nominal
  * cloud/CLI backend: the built-in `ollama` API provider itself (id match), an
  * `api`-type provider whose `endpoint` points at Ollama, or the Claude-Ollama
@@ -825,6 +966,164 @@ export const isOllamaBackedProvider = (provider) => {
 };
 
 /**
+* True when a provider is an OpenCode wrapper that front-ends the OrcaRouter
+* gateway (the shipped `opencode-orcarouter` / `opencode-orcarouter-tui`
+* presets, or any renamed wrapper carrying the `orcarouterBacked` marker).
+*
+* These wrappers deliberately carry NO key of their own: at spawn time the
+* server attaches the key from the sibling `orcarouter` API provider
+* (`server/lib/aiToolkit/providers.js` `withOrcaRouterApiKey`), so the one place
+* a user actually pastes the key is the `orcarouter` API provider, not this
+* form. MIRROR of the `orcarouterBacked` marker the server keys on — keep in
+* lockstep with `server/lib/providerModels.js#getOpencodeLocalProviderNamespace`.
+* @param {{id?:string,orcarouterBacked?:boolean}} provider
+*/
+export const isOrcaRouterBackedProvider = (provider) => provider?.orcarouterBacked === true;
+
+// Environment variables whose names are conventionally credentials. The
+// explicit secretEnvVars list remains the primary source, but it is a masking
+// list rather than a credential schema — providers may mark optional values
+// such as AWS_PROFILE secret too. Filter both sources so only actual credential
+// names participate in readiness. The explicit list can still name a custom
+// credential that does not follow this convention (for example MY_LLM_KEY).
+const CREDENTIAL_ENV_VAR_RE = /(?:^|_)(?:API_KEY|APIKEY|AUTH|ACCESS_KEY|ACCESS_TOKEN|BEARER|CLIENT_SECRET|CREDENTIALS?|KEY|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)(?:_|$)/i;
+const NON_CREDENTIAL_ENV_VAR_RE = /(?:^|_)(?:BASE_URL|CONFIG|CONFIG_CONTENT|ENDPOINT|HOST|MODEL|MODE|PATH|PORT|PROFILE|REGION)(?:_|$)/i;
+const NON_CREDENTIAL_ENV_VAR_NAMES = new Set(['CLAUDE_CODE_USE_BEDROCK']);
+
+const providerHasStoredKey = (provider) =>
+  provider?.hasApiKey === true || Boolean(provider?.apiKey);
+
+const credentialEnvVars = (provider) => {
+  if (!isProcessProvider(provider)) return [];
+  const envVars = provider?.envVars && typeof provider.envVars === 'object' ? provider.envVars : {};
+  const secretEnvVars = Array.isArray(provider?.secretEnvVars) ? provider.secretEnvVars : [];
+  const explicit = new Set(secretEnvVars.filter((name) => typeof name === 'string' && name !== ''));
+  const names = [...secretEnvVars, ...Object.keys(envVars)];
+  return [...new Set(names.filter((name) => typeof name === 'string'
+    && !NON_CREDENTIAL_ENV_VAR_NAMES.has(name)
+    && !NON_CREDENTIAL_ENV_VAR_RE.test(name)
+    && (explicit.has(name) || CREDENTIAL_ENV_VAR_RE.test(name))))];
+};
+
+/**
+ * Identify how a provider authenticates, without deciding whether that
+ * credential is present. `null` is a deliberate ref for `none`, while a
+ * credential ref names the provider id, inherited sibling, or env var to look
+ * up. An own key wins over the OrcaRouter marker because the server leaves a
+ * provider carrying `provider.apiKey` untouched at spawn time.
+ *
+ * @param {{id?:string,type?:string,endpoint?:string,apiKey?:string,hasApiKey?:boolean,orcarouterBacked?:boolean,envVars?:Record<string,string>,secretEnvVars?:string[]}|null|undefined} provider
+ * @returns {{kind:'stored'|'inherited'|'env'|'none',ref:string|null}}
+ */
+export const credentialSource = (provider) => {
+  // Local API endpoints need no credential, even if an old record happens to
+  // retain one from before the endpoint was changed.
+  if (isApiProvider(provider) && isPrivateNetworkEndpoint(provider?.endpoint)) {
+    return { kind: 'none', ref: null };
+  }
+  // API providers are the only ordinary providers whose stored key is read by
+  // PortOS itself. A legacy apiKey on a CLI/TUI record is not passed to the
+  // process and must not hide an empty process credential.
+  if (isApiProvider(provider)) {
+    return { kind: 'stored', ref: provider?.id || null };
+  }
+  // An OrcaRouter wrapper with its own key is the one process-backed exception:
+  // withOrcaRouterApiKey leaves it untouched, so that key really is used.
+  if (isOrcaRouterBackedProvider(provider) && providerHasStoredKey(provider)) {
+    return { kind: 'stored', ref: provider?.id || null };
+  }
+  const [envVar] = credentialEnvVars(provider);
+  if (envVar) return { kind: 'env', ref: envVar };
+  if (isOrcaRouterBackedProvider(provider)) return { kind: 'inherited', ref: 'orcarouter' };
+  return { kind: 'none', ref: null };
+};
+
+const normalizeCredentialState = (state) =>
+  state === true || state === false ? state : null;
+
+const defaultKeySetFor = (provider, id) =>
+  id && id === provider?.id ? providerHasStoredKey(provider) : null;
+
+const defaultEnvVarSet = (provider, name) => {
+  if (!name || !Object.hasOwn(provider?.envVars || {}, name)) return null;
+  const value = provider.envVars[name];
+  const isExplicitCredential = Array.isArray(provider?.secretEnvVars)
+    && provider.secretEnvVars.includes(name);
+  // `***` is the sanitized secret sentinel, not evidence that the value is
+  // present. A redacted value is unknown; an explicitly empty SECRET value is
+  // known missing. An unmarked empty value may deliberately clear an ambient
+  // host credential so the process can use another auth path, so it is unknown.
+  if (value === '***' || typeof value !== 'string') return null;
+  if (value === '' && !isExplicitCredential) return null;
+  return value !== '';
+};
+
+const credentialEnvGroups = (provider) => {
+  const names = credentialEnvVars(provider);
+  const groups = [];
+  const grouped = new Set();
+  const hasAwsAccessPair = names.includes('AWS_ACCESS_KEY_ID') && names.includes('AWS_SECRET_ACCESS_KEY');
+
+  for (const name of names) {
+    if (name === 'AWS_ACCESS_KEY_ID' && hasAwsAccessPair) {
+      groups.push(['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY']);
+      grouped.add('AWS_ACCESS_KEY_ID');
+      grouped.add('AWS_SECRET_ACCESS_KEY');
+    } else if (!grouped.has(name) && !(hasAwsAccessPair && name === 'AWS_SESSION_TOKEN')) {
+      groups.push([name]);
+      grouped.add(name);
+    }
+  }
+  return groups;
+};
+
+const inheritedCredentialMissing = (provider, keySetFor) => {
+  if (!isOrcaRouterBackedProvider(provider) || providerHasStoredKey(provider)) return null;
+  const rawState = typeof keySetFor === 'function'
+    ? keySetFor('orcarouter')
+    : defaultKeySetFor(provider, 'orcarouter');
+  return normalizeCredentialState(rawState) === false
+    ? { code: 'inheritedApiKey', label: 'OrcaRouter API provider has no API key' }
+    : null;
+};
+
+const credentialMissing = (provider, { keySetFor = null, envVarSet = null } = {}) => {
+  const source = credentialSource(provider);
+  if (source.kind === 'none' || !source.ref) return null;
+
+  if (source.kind === 'env') {
+    const groups = credentialEnvGroups(provider).map((group) => group.map((name) => {
+      const rawState = typeof envVarSet === 'function' ? envVarSet(name) : defaultEnvVarSet(provider, name);
+      return { name, state: normalizeCredentialState(rawState) };
+    }));
+    const inherited = inheritedCredentialMissing(provider, keySetFor);
+    // Providers can expose alternative credential schemes in one env map (for
+    // example Bedrock bearer auth or the AWS access-key pair). A complete known
+    // group satisfies the provider; a partial/unknown group keeps the result
+    // non-blocking rather than accusing a credential whose state is uncertain.
+    const satisfied = groups.some((group) => group.every(({ state }) => state === true));
+    const unknown = groups.some((group) => group.some(({ state }) => state === null));
+    if (satisfied || unknown) return inherited;
+    const missing = groups.flatMap((group) => group.filter(({ state }) => state === false).map(({ name }) => ({
+      code: 'envVar',
+      label: `${name} environment variable is not set`,
+    })));
+    if (inherited) missing.push(inherited);
+    return missing.length > 0 ? missing : null;
+  }
+
+  if (source.kind === 'inherited') {
+    return inheritedCredentialMissing(provider, keySetFor);
+  }
+  const rawState = typeof keySetFor === 'function'
+    ? keySetFor(source.ref)
+    : defaultKeySetFor(provider, source.ref);
+  return normalizeCredentialState(rawState) === false
+    ? { code: 'apiKey', label: 'API key is not set' }
+    : null;
+};
+
+/**
  * Check if a provider is the Grok Build CLI/TUI (the `grok` command harness).
  * Mirrors the Grok detection in `knownProviderContextWindow`: matches the shipped
  * `grok-cli` / `grok-tui` samples or any process provider whose command basename
@@ -837,6 +1136,126 @@ export const isGrokBuildCli = (provider) => {
   if (!isProcessProvider(provider)) return false;
   const id = String(provider?.id || '').toLowerCase();
   return id === 'grok-cli' || id === 'grok-tui' || commandBasename(provider?.command) === 'grok';
+};
+
+/**
+ * The four states a provider card can be in on the AI Providers page, ordered
+ * the way the page groups them: usable now, temporarily benched, missing a
+ * prerequisite, or simply switched off.
+ */
+export const PROVIDER_CARD_STATE = Object.freeze({
+  READY: 'ready',
+  BENCHED: 'benched',
+  BLOCKED: 'blocked',
+  DISABLED: 'disabled',
+});
+
+/**
+ * Which prerequisites a provider is missing, and the card state that follows
+ * from them — one place, so a card's border, its badge and the section the page
+ * files it under can never disagree with each other.
+ *
+ * NOT the same thing as `ProviderReadiness` /
+ * `GET /api/providers/readiness`, which probes whether the local DAEMON a
+ * provider points at (llama.cpp, Ollama, LM Studio, MTPLX) is up and serving
+ * the right model. This decides the card's bucket from its toggle, its
+ * credentials and the server's bench status; the two render side by side.
+ *
+ * The prerequisite half is the SERVER's answer now (#4611): `GET
+ * /api/providers` publishes `missingPrerequisites` per provider from
+ * server/lib/providerPrerequisites.js, and `getFallbackProvider` skips a
+ * provider whose CLI that same computation found missing — so a card blocked on
+ * an uninstalled binary is no longer a routing candidate that dies at spawn
+ * time on a raw ENOENT. (Routing acts only on that finding; stored, inherited,
+ * and env-var credential findings stay presentation-only, and the browser now
+ * derives known env-var gaps without over-reporting redacted values.)
+ *
+ * This function consumes the published list and adds what the browser alone
+ * can see (the local-app runtime shape and sanitized env-credential state
+ * below). With an older server publishing nothing, it falls back to deriving
+ * the credential checks itself.
+ *
+ * Inputs are passed in rather than read from globals so this stays pure:
+ *   runtime          — the provider's entry of the `runtimes` map (CLI binary)
+ *                      or the local-app shape the page derives from the
+ *                      local-LLM status. `null` = NOT PROBED, which must never
+ *                      read as "missing" (an older server, or a card drawn
+ *                      before the probe lands, would otherwise accuse every
+ *                      perfectly-installed CLI).
+ *   status           — the runtime-availability entry from
+ *                      `GET /api/providers/status`; `available === false`
+ *                      means the provider is benched after a failure.
+ *   keySetFor        — tri-state lookup for a stored or inherited key. It must
+ *                      return `true`/`false` when known and `null` or another
+ *                      non-boolean when unknown.
+ *   envVarSet        — tri-state lookup for an environment credential. An
+ *                      explicitly empty configured value is `false`; a missing
+ *                      or redacted value is unknown and must not be reported.
+ *
+ * `blocked` outranks `disabled`: a provider whose CLI isn't installed can't be
+ * enabled at all, so it belongs in the "needs setup" bucket whichever way its
+ * toggle happens to sit. `benched` only applies to an enabled provider that
+ * otherwise meets its prerequisites.
+ *
+ * @returns {{state: string, missing: {code: string, label: string}[]}}
+ */
+export const providerCardState = (provider, {
+  runtime = null,
+  status = null,
+  keySetFor = null,
+  envVarSet = null,
+} = {}) => {
+  // The server publishes its own verdict on `GET /api/providers`
+  // (`missingPrerequisites`, from server/lib/providerPrerequisites.js) and
+  // routes the fallback chain on exactly that computation. Where it has an
+  // answer it WINS, so the card and the router cannot drift.
+  //
+  // An ARRAY is the sentinel for "published" — including the empty array, which
+  // is a real answer ("nothing missing"). Anything else (an older server, a
+  // payload fetched before the field existed) means not published, and the
+  // local derivation below stands in.
+  const published = Array.isArray(provider?.missingPrerequisites) ? provider.missingPrerequisites : null;
+  const missing = published ? [...published] : [];
+  const addMissing = (code, label) => {
+    if (!missing.some((entry) => entry?.code === code && (code !== 'envVar' || entry?.label === label))) {
+      missing.push({ code, label });
+    }
+  };
+
+  // Kept client-side even when the server has published: `runtime` here may be
+  // the LOCAL-APP shape the page derives from the local-LLM status (an LM Studio
+  // / Ollama app installed with no CLI shim on PATH), which the server's runtime
+  // table does not cover. For a plain CLI provider this is the same row the
+  // server probed, and `addMissing` de-dupes it by code.
+  //
+  // Except when the provider resolves its binary somewhere else. The runtime row
+  // answers "does the bare binary resolve on PortOS's PATH?", which says nothing
+  // about a provider configured as `/opt/tools/codex` or one that overrides
+  // `PATH` in its own env — the runner spawns those against their own
+  // resolution. Badging them NEEDS SETUP accuses a working provider, and the
+  // server (which owns the routing decision) already declines to. The install
+  // widget still renders from the same row: "PortOS can install this for you"
+  // remains true and useful either way.
+  if (runtime && runtime.installed === false && !resolvesOutsidePortosPath(provider)) {
+    addMissing('runtime', `${runtime.label || 'Runtime'} is not installed`);
+  }
+  // The server's published findings remain authoritative for stored/inherited
+  // credentials. Env credentials are also derived here because their values
+  // are intentionally redacted in the payload; the tri-state lookup lets an
+  // explicitly empty value be reported without treating a redacted/absent
+  // value as missing.
+  const source = credentialSource(provider);
+  if (!published || source.kind === 'env') {
+    const missingCredential = credentialMissing(provider, { keySetFor, envVarSet });
+    for (const entry of Array.isArray(missingCredential) ? missingCredential : [missingCredential]) {
+      if (entry) addMissing(entry.code, entry.label);
+    }
+  }
+
+  if (missing.length > 0) return { state: PROVIDER_CARD_STATE.BLOCKED, missing };
+  if (!provider?.enabled) return { state: PROVIDER_CARD_STATE.DISABLED, missing };
+  if (status?.available === false) return { state: PROVIDER_CARD_STATE.BENCHED, missing };
+  return { state: PROVIDER_CARD_STATE.READY, missing };
 };
 
 /**

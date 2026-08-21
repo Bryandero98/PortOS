@@ -22,6 +22,7 @@ vi.mock('./targets.js', () => ({
       ? { targetId: 'trellis2', target: { id: 'trellis2', label: 'TRELLIS.2' }, available: true, reason: null }
       : { targetId: id, target: null, available: false, reason: 'unknown-target' }
   )),
+  renderOptionSupportFor: vi.fn(() => null),
 }));
 
 vi.mock('./trellis2.js', () => ({
@@ -38,6 +39,12 @@ vi.mock('./trellis2.js', () => ({
 // this suite mocks fileUtils down to `imageTo3d` alone).
 vi.mock('../../lib/hfToken.js', () => ({
   hfChildEnv: vi.fn(async () => ({ HF_TOKEN: 'hf_from_store', HUGGINGFACE_HUB_TOKEN: 'hf_from_store' })),
+}));
+
+// Background keying reads the source with sharp — mock it so the suite never
+// touches real files. Default: null = pass-through (no solid background).
+vi.mock('./sourceKeying.js', () => ({
+  prepareSourceImage: vi.fn(async () => null),
 }));
 
 const { claimRelease } = vi.hoisted(() => ({ claimRelease: vi.fn(async () => {}) }));
@@ -59,12 +66,13 @@ vi.mock('./db.js', () => ({
 
 import { rm } from 'node:fs/promises';
 import { ensureDir } from '../../lib/fileUtils.js';
-import { resolveTarget } from './targets.js';
+import { resolveTarget, renderOptionSupportFor } from './targets.js';
 import { isTrellis2Installed, runTrellis2Generate } from './trellis2.js';
 import { claimHeavyLocalJob } from '../../lib/heavyJobClaim.js';
+import { prepareSourceImage } from './sourceKeying.js';
 import * as store from './db.js';
 import {
-  createModel, startGeneration, getModelAsset, recoverInterruptedModels, deleteModel,
+  createModel, startGeneration, getModelAsset, getModelFullMesh, recoverInterruptedModels, deleteModel,
 } from './models.js';
 
 const draftRecord = () => ({
@@ -283,5 +291,170 @@ describe('image-to-3D model orchestration', () => {
     const asset = await getModelAsset('image3d-example');
     expect(posixPath(asset.path)).toMatch(/image-to-3d\/image3d-example\/model\.glb$/);
     expect(asset.filename).toBe('my-beacon.glb');
+  });
+
+  describe('getModelFullMesh', () => {
+    const ready = () => ({
+      ...draftRecord(),
+      status: 'ready',
+      name: 'My Beacon',
+      assetPath: '/data/image-to-3d/image3d-example/model.glb',
+    });
+
+    it('returns the OBJ sidecar when it is on disk', async () => {
+      store.getModel.mockResolvedValueOnce(ready());
+      const mesh = await getModelFullMesh('image3d-example', { exists: async () => true });
+      expect(posixPath(mesh.path)).toMatch(/image-to-3d\/image3d-example\/model\.obj$/);
+      expect(mesh.filename).toBe('my-beacon-full.obj');
+    });
+
+    it('404s when the sidecar was never written, rather than claiming the record is broken', async () => {
+      // Every readiness check the GLB passes can pass while the OBJ is absent — it
+      // is an upstream side-effect file, not something the pipeline guarantees. So
+      // this has to be its own probe rather than a read of `status`.
+      store.getModel.mockResolvedValueOnce(ready());
+      await expect(getModelFullMesh('image3d-example', { exists: async () => false }))
+        .rejects.toMatchObject({ status: 404, code: 'FULL_MESH_MISSING' });
+    });
+
+    it('409s before a render has produced anything, without probing disk', async () => {
+      store.getModel.mockResolvedValueOnce({ ...draftRecord(), status: 'generating' });
+      const exists = vi.fn(async () => true);
+      await expect(getModelFullMesh('image3d-example', { exists }))
+        .rejects.toMatchObject({ status: 409, code: 'MODEL_NOT_READY' });
+      expect(exists).not.toHaveBeenCalled();
+    });
+
+    it('404s on an unknown record', async () => {
+      store.getModel.mockResolvedValueOnce(null);
+      await expect(getModelFullMesh('nope', { exists: async () => true }))
+        .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+    });
+  });
+});
+
+describe('render options and source keying', () => {
+  // The standard live-record store harness: mutations apply to `current`.
+  let current;
+  const wireStore = (record) => {
+    current = record;
+    store.createModel.mockImplementation(async () => current);
+    store.getModel.mockImplementation(async () => current);
+    store.mutateModel.mockImplementation(async (_id, mutate) => {
+      const next = mutate(current);
+      if (next) current = next;
+      return current;
+    });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    claimHeavyLocalJob.mockResolvedValue({ ok: true, holder: {}, release: claimRelease });
+    isTrellis2Installed.mockReturnValue(true);
+    resolveTarget.mockImplementation(() => (
+      { targetId: 'trellis2', target: { id: 'trellis2', label: 'TRELLIS.2' }, available: true, reason: null }
+    ));
+    runTrellis2Generate.mockReturnValue({
+      promise: Promise.resolve({ assetPath: '/mock/data/image-to-3d/x/model.glb' }),
+      kill: vi.fn(),
+    });
+    prepareSourceImage.mockResolvedValue(null);
+    wireStore(draftRecord());
+  });
+
+  it('rolls a fresh random seed per unpinned run and records it on the run entry', async () => {
+    await createModel({ name: 'Beacon', filename: 'example.png' });
+    await vi.waitFor(() => expect(current.status).toBe('ready'));
+
+    const [generateArgs] = runTrellis2Generate.mock.calls[0];
+    expect(generateArgs.steps).toBeNull();
+    expect(Number.isInteger(generateArgs.seed)).toBe(true);
+    expect(generateArgs.seed).toBeGreaterThanOrEqual(0);
+    expect(generateArgs.seed).toBeLessThanOrEqual(2147483647);
+    // The run entry records the concrete values the subprocess received.
+    expect(current.runs.at(-1)).toMatchObject({
+      seed: generateArgs.seed, steps: null, keyBackground: false,
+    });
+  });
+
+  it('per-run options reach the runner and the run entry, and do not persist on the record', async () => {
+    await createModel({ name: 'Beacon', filename: 'example.png', steps: 24, seed: 7 });
+    await vi.waitFor(() => expect(current.status).toBe('ready'));
+
+    const [generateArgs] = runTrellis2Generate.mock.calls[0];
+    expect(generateArgs).toMatchObject({ steps: 24, seed: 7 });
+    expect(current.runs.at(-1)).toMatchObject({ steps: 24, seed: 7 });
+    // Options are per-run parameters, not a stored record preference.
+    expect(current.renderOptions).toBeUndefined();
+  });
+
+  // The run entry is the reproducible record of what the subprocess RECEIVED. A target
+  // whose runner drops a knob (Pixal3D has no per-phase step override) must therefore
+  // record it as unset AND not hand it to the runner — logging the requested value
+  // would make the ledger lie about a setting that never applied.
+  it('drops an unsupported render option from BOTH the runner call and the run entry', async () => {
+    renderOptionSupportFor.mockReturnValueOnce({ steps: false });
+    await createModel({ name: 'Beacon', filename: 'example.png', steps: 48, seed: 7 });
+    await vi.waitFor(() => expect(current.status).toBe('ready'));
+
+    const [generateArgs] = runTrellis2Generate.mock.calls[0];
+    expect(generateArgs.steps).toBeNull();
+    expect(current.runs.at(-1)).toMatchObject({ steps: null, seed: 7 });
+  });
+
+  it('a re-generate without options gets defaults, not the previous run’s values', async () => {
+    wireStore({
+      ...draftRecord(),
+      runs: [{ operationId: 'op-old', status: 'completed', steps: 24, seed: 7 }],
+    });
+
+    await startGeneration('image3d-example', { options: {} });
+    await vi.waitFor(() => expect(current.status).toBe('ready'));
+
+    const [generateArgs] = runTrellis2Generate.mock.calls[0];
+    expect(generateArgs.steps).toBeNull();
+    expect(Number.isInteger(generateArgs.seed)).toBe(true);
+  });
+
+  it('a keyed source image is what the render consumes', async () => {
+    prepareSourceImage.mockImplementation(async ({ targetPath }) => targetPath);
+
+    await createModel({ name: 'Beacon', filename: 'example.png', keyBackground: true });
+    await vi.waitFor(() => expect(current.status).toBe('ready'));
+
+    const [generateArgs] = runTrellis2Generate.mock.calls[0];
+    expect(posixPath(generateArgs.imagePath))
+      .toBe('/mock/data/image-to-3d/image3d-example/source-keyed.png');
+    expect(current.runs.at(-1).sourceKeyed).toBe(true);
+  });
+
+  // Keying writes an alpha channel, which makes TRELLIS.2 skip RMBG-2.0 — so the
+  // DEFAULT has to leave the source alone, or a cast shadow the flood fill can't
+  // reach survives into the mesh as geometry (#4684).
+  it.each([
+    ['omitted', {}],
+    ['explicitly false', { keyBackground: false }],
+  ])('keyBackground %s skips keying entirely', async (_label, options) => {
+    await createModel({ name: 'Beacon', filename: 'example.png', ...options });
+    await vi.waitFor(() => expect(current.status).toBe('ready'));
+
+    expect(prepareSourceImage).not.toHaveBeenCalled();
+    const [generateArgs] = runTrellis2Generate.mock.calls[0];
+    expect(posixPath(generateArgs.imagePath)).toBe('/mock/data/images/example.png');
+    expect(current.runs.at(-1).keyBackground).toBe(false);
+    // `sourceKeyed` stays truthful in BOTH directions — it records what the render
+    // consumed, not what was asked for.
+    expect(current.runs.at(-1).sourceKeyed).toBe(false);
+  });
+
+  it('a keying failure falls back to the raw source instead of failing the render', async () => {
+    prepareSourceImage.mockRejectedValue(new Error('unreadable image'));
+
+    await createModel({ name: 'Beacon', filename: 'example.png', keyBackground: true });
+    await vi.waitFor(() => expect(current.status).toBe('ready'));
+
+    const [generateArgs] = runTrellis2Generate.mock.calls[0];
+    expect(posixPath(generateArgs.imagePath)).toBe('/mock/data/images/example.png');
+    expect(current.runs.at(-1).sourceKeyed).toBe(false);
   });
 });

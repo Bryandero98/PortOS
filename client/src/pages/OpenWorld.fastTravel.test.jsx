@@ -7,13 +7,14 @@ import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
 // rendering WebGL in jsdom. The scene stub records the props it received so the assertions
 // can read them directly.
 const sceneProps = { current: null };
-vi.mock('../components/city/CityScene', () => ({
+const openWorldDataState = vi.hoisted(() => ({ loading: false }));
+vi.mock('../components/openworld/OpenWorldScene', () => ({
   default: (props) => {
     sceneProps.current = props;
     return <div data-testid="scene" />;
   },
 }));
-vi.mock('../components/city/CityHud', () => ({
+vi.mock('../components/openworld/OpenWorldHud', () => ({
   default: ({ onOpenFastTravel, activeRegion, onEnterPhotoMode }) => (
     <div>
       <button type="button" onClick={onOpenFastTravel}>hud-fast-travel</button>
@@ -22,28 +23,27 @@ vi.mock('../components/city/CityHud', () => ({
     </div>
   ),
 }));
-vi.mock('../components/city/CityScanlines', () => ({ default: () => null }));
-vi.mock('../components/city/CityPhotoOverlay', () => ({ default: () => null }));
-vi.mock('../components/city/CityPlaybackOverlay', () => ({ default: () => null }));
-vi.mock('../components/city/CitySettingsDrawer', () => ({ default: () => null }));
+vi.mock('../components/openworld/OpenWorldPhotoOverlay', () => ({ default: () => null }));
+vi.mock('../components/openworld/OpenWorldPlaybackOverlay', () => ({ default: () => null }));
+vi.mock('../components/openworld/OpenWorldSettingsDrawer', () => ({ default: () => null }));
 
-vi.mock('../hooks/useCityData', () => ({
-  useCityData: () => ({
+vi.mock('../hooks/useOpenWorldData', () => ({
+  useOpenWorldData: () => ({
     apps: [], cosAgents: [], cosStatus: {}, eventLogs: [], agentMap: new Map(),
     reviewCounts: {}, instances: {}, systemHealth: null, notificationCounts: {},
     backupStatus: null, cosTasks: [], healthMetrics: null, voiceState: null,
-    character: null, aiActivity: null, loading: false, connected: true,
+    character: null, aiActivity: null, loading: openWorldDataState.loading, connected: true,
   }),
 }));
-vi.mock('../hooks/useCityPlayback', () => ({
-  useCityPlayback: () => ({
+vi.mock('../hooks/useOpenWorldPlayback', () => ({
+  useOpenWorldPlayback: () => ({
     active: false, currentFrame: null, snapshots: [], frameIndex: 0, stats: null,
     playing: false, speed: 1, loading: false, error: null,
     enter: vi.fn(), exit: vi.fn(), seek: vi.fn(), step: vi.fn(),
     togglePlay: vi.fn(), cycleSpeed: vi.fn(),
   }),
 }));
-vi.mock('../hooks/useCityAudio', () => ({ default: () => ({ playSfx: vi.fn(), isAudioReady: false }) }));
+vi.mock('../hooks/useOpenWorldAudio', () => ({ default: () => ({ playSfx: vi.fn(), isAudioReady: false }) }));
 vi.mock('../hooks/useAutoRefetch', () => ({ useAutoRefetch: () => ({ data: null }) }));
 // Only the endpoints this page polls. `useAutoRefetch` is stubbed above so none of them
 // actually fire — the mock exists to keep the real api module (and its socket import) out
@@ -55,7 +55,7 @@ vi.mock('../services/api', () => ({
   getChronotype: vi.fn(async () => null),
   getMemoryGraph: vi.fn(async () => null),
   getBrainInbox: vi.fn(async () => null),
-  getCityIntrospection: vi.fn(async () => null),
+  getOpenWorldIntrospection: vi.fn(async () => null),
   getMySprintTickets: vi.fn(async () => []),
 }));
 
@@ -80,7 +80,17 @@ const renderAt = (path) => render(
 describe('OpenWorld — fast travel wiring', () => {
   beforeEach(() => {
     sceneProps.current = null;
+    openWorldDataState.loading = false;
     localStorage.clear();
+  });
+
+  it('keeps the scene mounted while the initial data bundle is loading', () => {
+    openWorldDataState.loading = true;
+
+    renderAt('/openworld');
+
+    expect(screen.getByTestId('scene')).toBeInTheDocument();
+    expect(screen.queryByText('ENTERING OPENWORLD')).not.toBeInTheDocument();
   });
 
   it('hands the scene no region on the plain overview route', () => {
@@ -93,6 +103,16 @@ describe('OpenWorld — fast travel wiring', () => {
     expect(sceneProps.current.focusedRegion.id).toBe('memory');
     // Geography comes from the master town plan, not from the route.
     expect(sceneProps.current.focusedRegion.anchor).toBeDefined();
+  });
+
+  it('arms the first-person arrival point for a direct region deep link', () => {
+    renderAt('/openworld/region/memory');
+    expect(sceneProps.current.playerTeleport).toMatchObject({
+      x: expect.any(Number),
+      z: expect.any(Number),
+      regionId: 'memory',
+      token: 1,
+    });
   });
 
   it('hands the scene a null region for an unknown id rather than crashing', () => {
@@ -111,7 +131,7 @@ describe('OpenWorld — fast travel wiring', () => {
     localStorage.setItem('portos-city-settings', JSON.stringify({ worldStyle: 'cyber' }));
     renderAt('/openworld');
     expect(sceneProps.current.settings.worldStyle).toBe('cyber');
-    expect(['noon', 'sunset']).toContain(sceneProps.current.settings.timeOfDay);
+    expect(sceneProps.current.settings.timeOfDay).toBe('sunset');
     expect(sceneProps.current.palette.lowPoly).toBe(false);
   });
 
@@ -119,7 +139,7 @@ describe('OpenWorld — fast travel wiring', () => {
     renderAt('/openworld');
     act(() => { fireEvent.keyDown(window, { key: 'm' }); });
 
-    fireEvent.click(screen.getByLabelText('Travel to Memory Quarter'));
+    fireEvent.click(screen.getByLabelText('Teleport to Memory Quarter'));
 
     expect(screen.getByTestId('path')).toHaveTextContent('/openworld/region/memory');
     expect(sceneProps.current.focusedRegion.id).toBe('memory');
@@ -128,7 +148,7 @@ describe('OpenWorld — fast travel wiring', () => {
   it('opens fast travel from the HUD button too', () => {
     renderAt('/openworld');
     fireEvent.click(screen.getByText('hud-fast-travel'));
-    expect(screen.getByLabelText('Travel to Memory Quarter')).toBeInTheDocument();
+    expect(screen.getByLabelText('Teleport to Memory Quarter')).toBeInTheDocument();
   });
 
   it('closes fast travel with Escape', () => {
@@ -151,7 +171,7 @@ describe('OpenWorld — fast travel wiring', () => {
     // land at the region rather than the old spawn.
     renderAt('/openworld');
     act(() => { fireEvent.keyDown(window, { key: 'm' }); });
-    fireEvent.click(screen.getByLabelText('Travel to Memory Quarter'));
+    fireEvent.click(screen.getByLabelText('Teleport to Memory Quarter'));
 
     const teleport = sceneProps.current.playerTeleport;
     expect(teleport).toMatchObject({ x: expect.any(Number), z: expect.any(Number) });
@@ -162,7 +182,7 @@ describe('OpenWorld — fast travel wiring', () => {
     localStorage.setItem('portos-city-settings', JSON.stringify({ explorationMode: true }));
     renderAt('/openworld');
     act(() => { fireEvent.keyDown(window, { key: 'm' }); });
-    fireEvent.click(screen.getByLabelText('Travel to Memory Quarter'));
+    fireEvent.click(screen.getByLabelText('Teleport to Memory Quarter'));
 
     const teleport = sceneProps.current.playerTeleport;
     expect(teleport).toMatchObject({ x: expect.any(Number), z: expect.any(Number) });
@@ -173,11 +193,11 @@ describe('OpenWorld — fast travel wiring', () => {
     renderAt('/openworld');
 
     act(() => { fireEvent.keyDown(window, { key: 'm' }); });
-    fireEvent.click(screen.getByLabelText('Travel to Memory Quarter'));
+    fireEvent.click(screen.getByLabelText('Teleport to Memory Quarter'));
     expect(sceneProps.current.playerTeleport.token).toBe(1);
 
     act(() => { fireEvent.keyDown(window, { key: 'm' }); });
-    fireEvent.click(screen.getByLabelText('Travel to Memory Quarter'));
+    fireEvent.click(screen.getByLabelText('Teleport to Memory Quarter'));
     // Same destination, new warp — a plain {x,z} identity check would have swallowed this.
     expect(sceneProps.current.playerTeleport.token).toBe(2);
   });
@@ -200,11 +220,11 @@ describe('OpenWorld — fast travel wiring', () => {
     expect(screen.getByTestId('hud-region')).toHaveTextContent('data-harbor');
   });
 
-  it('opens the PortOS page a region stands for', () => {
+  it('keeps map interactions inside OpenWorld', () => {
     renderAt('/openworld/region/memory');
     act(() => { fireEvent.keyDown(window, { key: 'm' }); });
-    fireEvent.click(screen.getByTitle('Open /brain/inbox'));
-    expect(screen.getByTestId('path')).toHaveTextContent('/brain/inbox');
+    expect(screen.queryByTitle(/Open\s+\//)).not.toBeInTheDocument();
+    expect(screen.getByTestId('path')).toHaveTextContent('/openworld/region/memory');
   });
 
   it('returns to the overview from the panel', () => {

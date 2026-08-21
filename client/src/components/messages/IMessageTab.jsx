@@ -5,9 +5,12 @@ import {
   Loader2, ExternalLink, ShieldOff, Settings, CalendarClock, Users,
 } from 'lucide-react';
 import BrailleSpinner from '../BrailleSpinner';
+import Drawer from '../Drawer';
 import toast from '../ui/Toast';
 import * as api from '../../services/api';
 import { formatClockTime, timeAgo, formatDateNumeric } from '../../utils/formatters';
+import useDrawerTab from '../../hooks/useDrawerTab';
+import { IMessageSettingsPanel } from './IMessageSettingsPanel';
 
 // Comms → Messages → iMessage (#2413). Browse / manage PortOS-side activity
 // ingested from macOS chat.db. Deletes and blocklists never write Apple's Messages database.
@@ -73,7 +76,7 @@ function ConversationList({ conversations, selectedKey, onSelect, query, onQuery
           <div className="px-4 py-10 text-center text-sm text-gray-500">
             No conversations yet.
             <div className="mt-1 text-xs text-gray-600">
-              Run a sync from Settings → iMessage, then refresh.
+              Run a sync from the Settings panel above, then refresh.
             </div>
           </div>
         ) : (
@@ -332,7 +335,7 @@ function ConversationDetail({
               </Link>
             ) : (
               <Link
-                to="/settings/contacts"
+                to="/messages/contacts"
                 className="inline-flex items-center gap-1.5 rounded border border-port-border bg-port-bg px-2.5 py-1.5 text-xs text-gray-200 hover:border-port-accent"
               >
                 <Users size={12} />
@@ -452,6 +455,16 @@ export default function IMessageTab() {
   const [eventsLoading, setEventsLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
+  // Ingestion config lives in a right-side drawer over this page (not its own
+  // Settings page), deep-linked as ?settings=1 so ⌘K / voice can open it. The
+  // drawer has a single section, so the "tab" id list is just ['1'] — a
+  // hand-edited ?settings=xyz degrades to closed, and the hook's `replace`
+  // writes keep opening/closing it out of the browser history.
+  const [settingsParam, setSettingsParam] = useDrawerTab('settings', null, ['1']);
+  const settingsOpen = settingsParam === '1';
+  const openSettings = () => setSettingsParam('1');
+  const closeSettings = () => setSettingsParam(null);
+
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(query.trim()), 250);
     return () => clearTimeout(t);
@@ -557,10 +570,19 @@ export default function IMessageTab() {
   const hasMore = stats?.sync?.state?.lastResult?.hasMore;
   const showDetailMobile = !!selectedKey;
 
+  // Rendered in both branches so a ?settings=1 deep link opens the drawer
+  // immediately instead of waiting on the conversation list.
+  const settingsDrawer = (
+    <Drawer open={settingsOpen} onClose={closeSettings} title="iMessage Settings" size="md">
+      <IMessageSettingsPanel onSynced={loadList} />
+    </Drawer>
+  );
+
   if (listLoading && conversations.length === 0 && !stats) {
     return (
       <div className="flex h-full items-center justify-center">
         <BrailleSpinner text="Loading iMessage" />
+        {settingsDrawer}
       </div>
     );
   }
@@ -573,19 +595,20 @@ export default function IMessageTab() {
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <Link
-            to="/settings/contacts"
+            to="/messages/contacts"
             className="inline-flex items-center gap-1.5 rounded border border-port-border bg-port-card px-3 py-1.5 text-xs text-gray-300 hover:border-port-accent"
           >
             <Users size={12} />
             Contacts
           </Link>
-          <Link
-            to="/settings/imessage"
+          <button
+            type="button"
+            onClick={openSettings}
             className="inline-flex items-center gap-1.5 rounded border border-port-border bg-port-card px-3 py-1.5 text-xs text-gray-300 hover:border-port-accent"
           >
             <Settings size={12} />
             Settings
-          </Link>
+          </button>
           <button
             type="button"
             onClick={handleSync}
@@ -622,9 +645,9 @@ export default function IMessageTab() {
 
       {stats?.eventCount === 0 && (
         <div className="shrink-0 rounded border border-dashed border-port-border px-4 py-3 text-sm text-gray-500">
-          Nothing ingested yet. Grant Full Disk Access if needed, then use{' '}
-          <Link to="/settings/imessage" className="text-port-accent hover:underline">Settings → iMessage</Link>
-          {' '}or <strong className="text-gray-400">Sync now</strong> above. Data also appears on the{' '}
+          Nothing ingested yet. Grant Full Disk Access if needed, then open{' '}
+          <button type="button" onClick={openSettings} className="text-port-accent hover:underline">Settings</button>
+          {' '}or hit <strong className="text-gray-400">Sync now</strong> above. Data also appears on the{' '}
           <Link to="/timeline" className="text-port-accent hover:underline">Timeline</Link>
           {' '}day view (navigate to the date range of your messages).
         </div>
@@ -660,6 +683,8 @@ export default function IMessageTab() {
       {(stats?.blockedCount > 0) && (
         <BlocklistPanel onChanged={loadList} />
       )}
+
+      {settingsDrawer}
     </div>
   );
 }

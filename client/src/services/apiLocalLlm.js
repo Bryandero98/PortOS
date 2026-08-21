@@ -27,8 +27,14 @@ export const getLocalLlmHuggingFaceSearch = (backend, q = '', category = 'all', 
 // `options` lets callers opt into `{ silent: true }` so structured failure codes
 // (e.g. OLLAMA_OUTDATED → offer to upgrade in place) can be handled by the UI
 // without the default error toast firing first and stacking with the prompt.
-export const installLocalLlmModel = (backend, modelId, options) =>
-  request('/local-llm/install', { method: 'POST', body: JSON.stringify({ backend, modelId }), ...options });
+export const installLocalLlmModel = (backend, modelId, options = {}) => {
+  const { force, ...rest } = options;
+  return request('/local-llm/install', {
+    method: 'POST',
+    body: JSON.stringify({ backend, modelId, ...(force ? { force: true } : {}) }),
+    ...rest,
+  });
+};
 
 export const deleteLocalLlmModel = (backend, modelId, options = {}) =>
   request('/local-llm/delete', { method: 'POST', body: JSON.stringify({ backend, modelId }), ...options });
@@ -57,6 +63,17 @@ export const stopLlamaServer = () =>
 
 export const installLlamaServer = () =>
   request('/local-llm/llama-server/install', { method: 'POST' });
+
+// Fetch one speculative-decoding preset's GGUF (role: 'model' | 'draftModel')
+// from Hugging Face into the path the launcher passes llama.cpp. Byte progress
+// arrives on the `llamaServer:download` socket event, not in this response —
+// a multi-GB transfer resolves only when the file is on disk.
+export const downloadSpecDecodeModel = (presetId, role, options) =>
+  request('/local-llm/llama-server/download-model', {
+    method: 'POST',
+    body: JSON.stringify({ presetId, role }),
+    ...options,
+  });
 
 // Set the default backend (which one PortOS routes local runs to) — does not move models.
 export const switchLocalLlmBackend = (to) =>

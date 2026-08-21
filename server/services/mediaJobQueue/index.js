@@ -9,8 +9,8 @@
  * an immediate `queued` ack and watch progress via SSE.
  *
  * Lanes: GPU jobs drain serially through `running`; cloud CLI jobs use the
- * bounded `cloudRunning` lane; federated audio uses `remoteRunning` so work on
- * another machine never occupies this machine's GPU slot.
+ * bounded `cloudRunning` lane; federated audio/image/video use `remoteRunning`
+ * so work on another machine never occupies this machine's GPU slot.
  *
  * Scope: gates `videoGen/local#generateVideo` (always),
  * `imageGen/local#generateImage` (when imageGen mode === 'local'), and
@@ -45,6 +45,8 @@ import { trainingEvents } from '../loraTraining/events.js';
 import { audioGenEvents } from '../audioGen/events.js';
 import { getSettings } from '../settings.js';
 import { IMAGE_GEN_MODE, CLOUD_IMAGE_GEN_MODES } from '../imageGen/modes.js';
+import { REMOTE_MEDIA_MODULES, isRemoteMediaJob } from './remoteMediaJob.js';
+import { routedJobParams } from '../federatedMedia/routedJobParams.js';
 
 // Cloud-CLI jobs (Codex/Grok/Agy images, Grok videos) share one parallel lane —
 // each render
@@ -57,18 +59,27 @@ const isCloudImageJob = (j) =>
   (j.kind === 'image' && CLOUD_IMAGE_GEN_MODES.includes(j.params?.mode))
   || (j.kind === 'video' && j.params?.mode === IMAGE_GEN_MODE.GROK);
 
-// Presence, not truthiness of individual nested fields, selects the remote
-// adapter. Persisted queue state is user-editable; a malformed marker must fail
-// closed in audioGen/remote rather than accidentally falling through to a local
-// engine with a remote-only model id.
-export const isRemoteMediaJob = (job) =>
-  job?.kind === 'audio' && job.params?.remoteMedia !== undefined;
+// The federated-kind map and its predicate live in ./remoteMediaJob.js so light
+// consumers (sanitizeJob, route handlers) can ask "is this routed?" without
+// pulling the queue in. Re-exported here because that is where callers have
+// always found it.
+export { isRemoteMediaJob };
 
 const jobLane = (job) => {
   if (isRemoteMediaJob(job)) return 'remote';
   if (isCloudImageJob(job)) return 'cloud';
   return 'gpu';
 };
+
+// Boot restoration is the second way a job enters the queue, so it needs the
+// same routed-job normalization enqueueJob applies (#4683). A job written by a
+// build older than that fix still carries the top-level model id a legacy
+// dispatcher would render from; re-normalizing on restore (and letting the boot
+// persist write the safe shape back) means upgrading and then rolling back
+// cannot resurrect a locally-renderable routed job.
+const restoredParams = (job) => (isRemoteMediaJob(job)
+  ? routedJobParams({ params: job.params })
+  : job.params);
 
 const JOBS_FILE = join(PATHS.data, 'media-jobs.json');
 const COMPLETED_TTL_MS = 24 * 60 * 60 * 1000;
@@ -144,10 +155,14 @@ export const JOB_STATUSES = Object.freeze(['queued', 'running', 'completed', 'fa
 // of provider-dispatch truth — used by the watchdog, runJob, and cancelJob
 // so a new provider addition is one edit instead of three.
 function getGenModuleForJob(job) {
+  // The remote check comes FIRST for every federatable kind: a remote job's
+  // params deliberately carry no local runtime fields (mode, pythonPath), so a
+  // later local branch would happily claim it and render a second time on this
+  // machine.
+  if (isRemoteMediaJob(job)) return REMOTE_MEDIA_MODULES[job.kind]();
   if (job.kind === 'video' && job.params?.mode === IMAGE_GEN_MODE.GROK) return import('../videoGen/grok.js');
   if (job.kind === 'video') return import('../videoGen/local.js');
   if (job.kind === 'training') return import('../loraTraining/index.js');
-  if (isRemoteMediaJob(job)) return import('../audioGen/remote.js');
   if (job.kind === 'audio') return import('../audioGen/local.js');
   if (job.kind === 'image' && job.params?.mode === IMAGE_GEN_MODE.CODEX) return import('../imageGen/codex.js');
   if (job.kind === 'image' && job.params?.mode === IMAGE_GEN_MODE.GROK) return import('../imageGen/grok.js');
@@ -173,6 +188,10 @@ async function jobHasSurvivingTrainer(runId) {
 // here so the seam stays in one place instead of accreting into runJob.
 // Mutates safeParams in place.
 async function resolveLiveParams(job, safeParams) {
+  // A remote job renders on the peer's runtime, so this machine's pythonPath is
+  // neither used nor meaningful — resolving it would only emit a confusing
+  // re-resolution log line for a render that never touches local Python.
+  if (isRemoteMediaJob(job)) return;
   // mflux training runs in the same venv as local image renders, so the
   // live settings pythonPath wins there too. flux2 training resolves its
   // own venv (resolveFlux2Python) inside runTraining — skip it here.
@@ -281,6 +300,55 @@ export function getRunningJob() {
   return running;
 }
 
+/**
+ * Lane occupancy and queue depth, reported by the queue itself.
+ *
+ * The lane split (serialized GPU vs. parallel cloud-CLI vs. parallel remote)
+ * and each lane's slot count are private to this module, so a caller that
+ * counted `listJobs()` by hand would have to re-derive `jobLane` and would
+ * drift from it the first time a new cloud mode is added. Capacity questions
+ * are answered here for the same reason `isRemoteMediaJob` has one definition.
+ *
+ * `limit` is the lane's configured concurrency, NOT a queue bound: work over
+ * the limit waits rather than being rejected. The federated-provider admission
+ * bound is a separate setting (see federatedMediaProvider.js).
+ *
+ * @returns {{lanes: Record<'gpu'|'cloud'|'remote', {running: number, queued: number, limit: number}>,
+ *   byKind: Record<string, {running: number, queued: number}>,
+ *   totals: {running: number, queued: number},
+ *   runningKind: string|null}}
+ */
+export function getQueueCapacity() {
+  const lanes = {
+    gpu: { running: running ? 1 : 0, queued: 0, limit: 1 },
+    cloud: { running: cloudRunning.length, queued: 0, limit: codexParallelLimit },
+    remote: { running: remoteRunning.length, queued: 0, limit: REMOTE_MEDIA_PARALLEL_LIMIT },
+  };
+  // Seed every known kind so a lane with no work reports 0 rather than being
+  // absent — an absent key and a zero read identically in a UI, and only one
+  // of them is true.
+  const byKind = Object.fromEntries(JOB_KINDS.map((kind) => [kind, { running: 0, queued: 0 }]));
+  // Lane `running` counts come straight off the lane arrays above; only the
+  // shared `queue` has to be classified, because it holds every lane's waiting
+  // work in one submission-ordered list.
+  for (const job of queue) {
+    lanes[jobLane(job)].queued += 1;
+    if (byKind[job.kind]) byKind[job.kind].queued += 1;
+  }
+  for (const job of [...(running ? [running] : []), ...cloudRunning, ...remoteRunning]) {
+    if (byKind[job.kind]) byKind[job.kind].running += 1;
+  }
+  return {
+    lanes,
+    byKind,
+    totals: {
+      running: lanes.gpu.running + lanes.cloud.running + lanes.remote.running,
+      queued: queue.length,
+    },
+    runningKind: running?.kind ?? null,
+  };
+}
+
 export function listJobs({ status, kind, owner } = {}) {
   const all = [
     ...(running ? [running] : []),
@@ -334,8 +402,8 @@ async function persistImpl() {
     ...archive,
   ];
   // Strip non-serializable bits.
-  const serializable = live.map(({ id, kind, owner, status, queuedAt, startedAt, completedAt, params, result, error, position, progress, statusMsg, etaMs }) =>
-    ({ id, kind, owner, status, queuedAt, startedAt, completedAt, params, result, error, position, progress, statusMsg, etaMs }),
+  const serializable = live.map(({ id, kind, owner, status, queuedAt, startedAt, completedAt, params, result, error, position, progress, statusMsg, etaMs, render }) =>
+    ({ id, kind, owner, status, queuedAt, startedAt, completedAt, params, result, error, position, progress, statusMsg, etaMs, render }),
   );
   await atomicWrite(JOBS_FILE, { jobs: serializable });
 }
@@ -394,15 +462,18 @@ export async function initMediaJobQueue() {
             ...j,
             status: 'queued',
             cancelRequested: marker?.cancelRequested === true,
-            params: {
-              ...j.params,
-              remoteMedia: {
-                ...(marker && typeof marker === 'object' && !Array.isArray(marker) ? marker : {}),
-                reconcile: true,
+            params: restoredParams({
+              ...j,
+              params: {
+                ...j.params,
+                remoteMedia: {
+                  ...(marker && typeof marker === 'object' && !Array.isArray(marker) ? marker : {}),
+                  reconcile: true,
+                },
               },
-            },
+            }),
           });
-          console.log(`🔁 media-job [${j.id.slice(0, 8)}] remote audio interrupted — re-enqueued for reconciliation`);
+          console.log(`🔁 media-job [${j.id.slice(0, 8)}] remote ${j.kind} interrupted — re-enqueued for reconciliation`);
           continue;
         }
         // #1332: a LoRA trainer is a detached child (spawnDetached) that can
@@ -439,9 +510,12 @@ export async function initMediaJobQueue() {
           safeUnlinkUpload(p);
         }
       } else if (j.status === 'queued') {
-        queue.push({ ...j });
+        queue.push({ ...j, params: restoredParams(j) });
       } else {
-        archive.push(j);
+        // The archive needs it too: a rolled-back build restores these rows,
+        // shows them in the Render Queue's recent reel, and its Retry hands the
+        // stored params straight to a local render.
+        archive.push({ ...j, params: restoredParams(j) });
       }
     }
     // Re-attach jobs resume ahead of everything else (they were mid-flight), so
@@ -688,9 +762,25 @@ function synthesizeMessage(e, kind) {
   }
   return undefined;
 }
+// Two finite positive edges, or nothing. A runner that reports no geometry —
+// or a heartbeat-shaped frame with a zero/NaN edge — must produce NO geometry
+// rather than a ratio the client would have to defend against.
+const renderGeometryOf = (e) => {
+  const width = Number(e.width);
+  const height = Number(e.height);
+  if (!Number.isFinite(width) || width <= 0) return null;
+  if (!Number.isFinite(height) || height <= 0) return null;
+  return { width, height };
+};
+
 function makeGenDispatcher(emitter, job, handlers) {
   const onProgress = (e) => {
     if (e.generationId !== job.id) return;
+    // A CHAINED video render never emits `started` under the queue's job id —
+    // `started` is per-chunk, under ids only the orchestrator knows — so its
+    // resolved geometry rides the outer progress frames instead (#4588).
+    const chainedGeometry = renderGeometryOf(e);
+    if (chainedGeometry) handlers.renderMeta?.(chainedGeometry);
     const hasProgress = typeof e.progress === 'number' && Number.isFinite(e.progress);
     const hasCurrentImage = typeof e.currentImage === 'string' && e.currentImage.length > 0;
     const message = e.message !== undefined ? e.message : synthesizeMessage(e, job.kind);
@@ -725,6 +815,18 @@ function makeGenDispatcher(emitter, job, handlers) {
       handlers.progress(payload);
     }
   };
+  // The gen module's `started` event carries the geometry the render actually
+  // resolved to — for video, the requested edges snapped DOWN to the model's
+  // resolution grid (videoGen/local.js), so it is routinely not what the client
+  // submitted. A live preview stage has to size itself by the resolved edges or
+  // a portrait render renders into a landscape box. The queue's own `started`
+  // SSE frame is broadcast before the gen run begins and cannot carry this, so
+  // it rides its own frame type (#4588).
+  const onStarted = (e) => {
+    if (e.generationId !== job.id) return;
+    const geometry = renderGeometryOf(e);
+    if (geometry) handlers.renderMeta?.(geometry);
+  };
   const onStatus = (e) => {
     // Optional explicit `status` event for gens that want to push a status
     // line independent of progress. Unused today; here so a future emitter
@@ -738,12 +840,14 @@ function makeGenDispatcher(emitter, job, handlers) {
   const onFailed = (e) => { if (e.generationId === job.id) handlers.failed({ error: e.error }); };
   return {
     attach() {
+      emitter.on('started', onStarted);
       emitter.on('progress', onProgress);
       emitter.on('status', onStatus);
       emitter.on('completed', onCompleted);
       emitter.on('failed', onFailed);
     },
     detach() {
+      emitter.off('started', onStarted);
       emitter.off('progress', onProgress);
       emitter.off('status', onStatus);
       emitter.off('completed', onCompleted);
@@ -857,6 +961,18 @@ async function runJob(job) {
       }
       if (didUpdatePersistedProgress) scheduleProgressPersist();
       broadcastSse(sseEntry, payload);
+    },
+    // Geometry the render resolved to (#4588) — see makeGenDispatcher's
+    // onStarted. `retain: false` because there is exactly ONE replay slot on
+    // the SSE entry and it must hold the frame that says what the run is doing;
+    // a reconnecting or reloading client recovers the geometry from the job
+    // projection instead, which is why it is persisted here as well.
+    renderMeta: ({ width, height }) => {
+      if (job.terminating || job.status !== 'running') return;
+      if (job.render?.width === width && job.render?.height === height) return;
+      job.render = { width, height };
+      scheduleProgressPersist();
+      broadcastSse(sseEntry, { type: 'render-meta', width, height }, { retain: false });
     },
     completed: (payload) => {
       trackTerminalOperation(
@@ -993,6 +1109,17 @@ async function runJob(job) {
   try {
     const mod = await getGenModuleForJob(job);
     if (!mod) throw new Error(`Unknown job kind: ${job.kind}`);
+    // A cancel that arrived while this job was still queued lives on the
+    // persisted marker, not on any in-memory adapter state. Re-stamp it for
+    // every remote kind so the adapter starts already knowing it must recover
+    // the provider job and cancel it rather than import its result.
+    if (isRemoteMediaJob(job)) {
+      safeParams.remoteMedia = {
+        ...(safeParams.remoteMedia && typeof safeParams.remoteMedia === 'object'
+          ? safeParams.remoteMedia : {}),
+        cancelRequested: job.params?.remoteMedia?.cancelRequested === true,
+      };
+    }
     if (job.kind === 'video' && safeParams.chunks > 1) {
       await mod.generateChainedVideo({ ...safeParams, jobId: job.id });
     } else if (job.kind === 'video') {
@@ -1000,13 +1127,6 @@ async function runJob(job) {
     } else if (job.kind === 'training') {
       await mod.runTraining({ ...safeParams, jobId: job.id });
     } else if (job.kind === 'audio') {
-      if (isRemoteMediaJob(job)) {
-        safeParams.remoteMedia = {
-          ...(safeParams.remoteMedia && typeof safeParams.remoteMedia === 'object'
-            ? safeParams.remoteMedia : {}),
-          cancelRequested: job.params?.remoteMedia?.cancelRequested === true,
-        };
-      }
       await mod.generateAudio({ ...safeParams, jobId: job.id });
     } else {
       await mod.generateImage({ ...safeParams, jobId: job.id });
@@ -1039,17 +1159,24 @@ export function enqueueJob({ kind, params, owner = null }) {
     throw new Error(`enqueueJob: invalid kind '${kind}'`);
   }
   const id = randomUUID();
+  // Every routed job is normalized HERE rather than at each caller (#4683): the
+  // downgrade contract only holds if it is unbypassable, and a future enqueue
+  // site that forgets the helper would ship a job a rolled-back build renders
+  // locally for real. See services/federatedMedia/routedJobParams.js.
+  const safeParams = isRemoteMediaJob({ kind, params })
+    ? routedJobParams({ params })
+    : params;
   const job = {
     id,
     kind,
     owner,
     status: 'queued',
     queuedAt: new Date().toISOString(),
-    params,
+    params: safeParams,
     // position counts "where you sit in your lane" — a running job in the
     // same lane occupies slot 1, then same-lane queued jobs follow.
     position: (() => {
-      const candidate = { kind, params };
+      const candidate = { kind, params: safeParams };
       const lane = jobLane(candidate);
       const laneQueue = queue.filter((j) => jobLane(j) === lane);
       const liveCount = lane === 'cloud'
@@ -1188,11 +1315,24 @@ function ensureSseEntry(jobId) {
 // 3. Terminal job after the grace window — entry is gone; we synthesize a
 //    one-shot terminal frame from the archived job and end the stream so
 //    a late client doesn't hang on an empty SSE stream forever.
+// A client attaching to a live job also needs the render's resolved geometry
+// (#4588), and it cannot come from the replay slot: that slot holds exactly one
+// frame and must hold the one that says what the run is DOING. The geometry is
+// announced once, very early — routinely before the submitting page's
+// EventSource has even opened — so replay it from the job to each client as it
+// attaches instead of retaining it on the wire.
+const replayRenderMeta = (job, res) => {
+  if (!job.render) return;
+  res.write(`data: ${JSON.stringify({ type: 'render-meta', ...job.render })}\n\n`);
+};
+
 export function attachSseClient(jobId, res) {
   const job = findJob(jobId);
   if (!job) return false;
   if (sseJobs.has(jobId)) {
-    return attachSse(sseJobs, jobId, res);
+    const attached = attachSse(sseJobs, jobId, res);
+    if (attached) replayRenderMeta(job, res);
+    return attached;
   }
   // No SSE entry but the job is still live (queued/running) — the entry was
   // dropped or never created (e.g. crash recovery). Create one on the fly
@@ -1206,7 +1346,9 @@ export function attachSseClient(jobId, res) {
       ? { type: 'queued', position: job.position }
       : { type: 'started', kind: job.kind };
     broadcastSse(entry, heartbeat);
-    return attachSse(sseJobs, jobId, res);
+    const attached = attachSse(sseJobs, jobId, res);
+    if (attached) replayRenderMeta(job, res);
+    return attached;
   }
   // Terminal job whose SSE entry was already cleaned up. Synthesize the
   // expected terminal payload from the archived state and end immediately.

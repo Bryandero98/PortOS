@@ -13,7 +13,7 @@ export { default as useAudioSessionClaim } from './useAudioSessionClaim.js';
 export { default as useAsyncCaptureGuard } from './useAsyncCaptureGuard.js';
 export { default as useAssignableInstances } from './useAssignableInstances.js';
 export { default as useAutoscroll } from './useAutoscroll.js';
-export { default as useCityAudio } from './useCityAudio.js';
+export { default as useOpenWorldAudio } from './useOpenWorldAudio.js';
 export { default as useClonedGltf } from './useClonedGltf.jsx';
 export * from './useClonedGltf.jsx';
 export { default as useAutoSizeTextarea } from './useAutoSizeTextarea.js';
@@ -99,8 +99,8 @@ export { default as useTokenPopover } from './useTokenPopover.js';
 // === Mixed (both default and named) — surface both ===
 export { default as useAsyncAction } from './useAsyncAction.js';
 export * from './useAsyncAction.js';
-export { default as useCitySettings } from './useCitySettings.js';
-export * from './useCitySettings.js';
+export { default as useOpenWorldSettings } from './useOpenWorldSettings.js';
+export * from './useOpenWorldSettings.js';
 
 // === Notifications & toasts ===
 export * from './useAIStatusNotifications.js';
@@ -178,16 +178,16 @@ export * from './useSidebarApps.js';
 export * from './useSidebarSeries.js';
 export * from './useSidebarUniverses.js';
 
-// === Domain: City / Voice / Mortality / Universe / Apps / Sessions ===
+// === Domain: OpenWorld / Voice / Mortality / Universe / Apps / Sessions ===
 export * from './useAppDeploy.js';
 export * from './useAppOperation.js';
 export * from './useAppOverrideActions.js';
 export * from './useTaskModelPins.js';
 export * from './useCanonPatch.js';
-export * from './useCityData.js';
-export * from './useCityPlayback.js';
-export { default as useCityViewport } from './useCityViewport.js';
-export * from './useCityViewport.js';
+export * from './useOpenWorldData.js';
+export * from './useOpenWorldPlayback.js';
+export { default as useOpenWorldViewport } from './useOpenWorldViewport.js';
+export * from './useOpenWorldViewport.js';
 export * from './useDeathClock.js';
 export * from './useGoalDetail.js';
 export * from './usePostSession.js';

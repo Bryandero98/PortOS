@@ -80,6 +80,11 @@ export async function getProjectsByIds(ids, options = {}) {
   return (await selectBackend()).getProjectsByIds(ids, options);
 }
 
+/** Every LIVE project a Creative Commission spawned — see the backends. */
+export async function listProjectsByCommissionId(commissionId) {
+  return (await selectBackend()).listProjectsByCommissionId(commissionId);
+}
+
 /** Live project ids (or all when includeDeleted) — used by tombstone GC sweeps. */
 export async function listProjectIds(options = {}) {
   return (await selectBackend()).listProjectIds(options);

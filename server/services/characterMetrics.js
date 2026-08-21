@@ -199,7 +199,7 @@ export const METRICS = [
     // Goals UI (`client/src/components/digital-twin/tabs/GoalsTab.jsx`) offers exactly two
     // terminal actions: Complete (writes `status: 'completed'`) and Delete (drops the record
     // outright). Nothing in the client ever writes `status: 'abandoned'` — it exists in
-    // `goalStatusEnum` and is honored by the API and the CyberCity monuments, but no UI
+    // `goalStatusEnum` and is honored by the API and the OpenWorld monuments, but no UI
     // produces it. So `abandoned` is always 0, `resolved === completed`, and the tile would
     // read a self-congratulatory constant 100% forever after the first completion.
     //

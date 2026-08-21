@@ -32,6 +32,13 @@ const hasMlx = (() => {
   }
 })();
 
+// The pin facts these corrections guard against moved to `_minimax_h3_mlx_pins.py`
+// so the install-time probe and these render-time guards read one copy. Reach the
+// module the RUNNER imported rather than loading a second one by spec: a private
+// copy would let a rebinding here pass while the code under test still read the
+// shipped digest.
+const importPins = 'pins = sys.modules["_minimax_h3_mlx_pins"]';
+
 const importRunner = [
   'import importlib.util, sys',
   'from pathlib import Path',
@@ -66,6 +73,46 @@ const argsExpr = (overrides = {}) => {
     .map(([key, value]) => `${key}=${value === null ? 'None' : JSON.stringify(value)}`);
   return `args = SimpleNamespace(${fields.join(', ')})`;
 };
+
+// Stand-in for the pinned runtime: the installers below reach for
+// `minimax_h3_mlx.text_encoder.MiniMaxH3TextEncoder`, so every case that
+// exercises one has to put a class there first. `preamble` runs before the
+// class body, for recorders the stub's methods close over.
+const stubPin = (classBody, preamble = []) => [
+  'import sys, types',
+  ...preamble,
+  'class MiniMaxH3TextEncoder:',
+  ...classBody,
+  'module = types.ModuleType("minimax_h3_mlx.text_encoder")',
+  'module.MiniMaxH3TextEncoder = MiniMaxH3TextEncoder',
+  'sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
+  'sys.modules["minimax_h3_mlx.text_encoder"] = module',
+].join('\n');
+
+// The merge correction guards itself with `inspect.getsource`, which needs a
+// real file — so that stand-in is written out and imported rather than declared
+// inline. Each `encodeBody` entry is a PYTHON expression evaluated against the
+// already-imported runner, so the line under test comes from the runner's own
+// constant instead of a copy that could drift from it. The result is carried as
+// a COMMENT: the stub only has to look like the pin to `getsource`, not run.
+const filePin = (encodeBody) => [
+  'import atexit, importlib.util, shutil, sys, tempfile, types',
+  'temp = tempfile.mkdtemp()',
+  'atexit.register(shutil.rmtree, temp, True)',
+  'pin = Path(temp) / "pinned_text_encoder.py"',
+  'pin.write_text("\\n".join([',
+  '    "class MiniMaxH3TextEncoder:",',
+  '    "    def encode(self, prompt, images=None):",',
+  ...encodeBody.map((expr) => `    "        # " + ${expr},`),
+  '    "        return (\'pinned\', prompt, images)",',
+  ']))',
+  'spec = importlib.util.spec_from_file_location("minimax_h3_mlx.text_encoder", pin)',
+  'module = importlib.util.module_from_spec(spec)',
+  'sys.modules["minimax_h3_mlx"] = types.ModuleType("minimax_h3_mlx")',
+  'sys.modules["minimax_h3_mlx.text_encoder"] = module',
+  'spec.loader.exec_module(module)',
+  'MiniMaxH3TextEncoder = module.MiniMaxH3TextEncoder',
+].join('\n');
 
 describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
   it('defaults the MLX runner to nine sigma points for eight forwards', () => {
@@ -497,5 +544,216 @@ describe.skipIf(!pyBin)('generate_minimax_h3.py', () => {
       'print(seen["timeout"])',
     ].join('\n')}`);
     expect(output.trim()).toBe('10');
+  });
+  // Keyframe conditioning is the one path with no torch under it: the MLX lock
+  // ships neither torch nor torchvision, and transformers 5 routes every auto
+  // image-processor load through them. Text-only renders never touch it, which
+  // is why image-to-video was the only mode that failed.
+  it('reads the runtime for the torch stack the auto processor needs', () => {
+    const output = runPython(`${importRunner}\n${[
+      'import json',
+      'present = {"torch": object(), "torchvision": object(), "numpy": object()}',
+      'runner.importlib.util.find_spec = present.get',
+      'both = runner.torch_image_stack_available()',
+      'present.pop("torchvision")',
+      'vision_only = runner.torch_image_stack_available()',
+      'present.pop("torch")',
+      'neither = runner.torch_image_stack_available()',
+      'print(json.dumps([both, vision_only, neither]))',
+    ].join('\n')}`);
+    // torch alone is not enough: it is the torchvision-backed video processor
+    // that `AutoProcessor.from_pretrained` builds and dies on.
+    expect(JSON.parse(output)).toEqual([true, false, false]);
+  });
+
+  it('loads the PIL twin of the image processor the checkpoint declares', () => {
+    const output = runPython(`${importRunner}\n${[
+      'import json, sys, tempfile, types',
+      'loaded = {}',
+      'class FakePil:',
+      '    @classmethod',
+      '    def from_pretrained(cls, path):',
+      '        loaded["path"] = path',
+      '        return "pil-image-processor"',
+      'transformers = types.ModuleType("transformers")',
+      'transformers.__version__ = "5.14.1"',
+      'transformers.Qwen2VLImageProcessorPil = FakePil',
+      'sys.modules["transformers"] = transformers',
+      'with tempfile.TemporaryDirectory() as temp:',
+      '    processor = Path(temp) / "processor"',
+      '    processor.mkdir()',
+      // The checkpoint names the torchvision class; the twin is derived off the
+      // `Fast`-stripped base name rather than hardcoded to one checkpoint.
+      '    (processor / "preprocessor_config.json").write_text(json.dumps({"image_processor_type": "Qwen2VLImageProcessorFast"}))',
+      '    result = runner.load_pil_image_processor(processor)',
+      '    print(json.dumps({"result": result, "path": loaded["path"] == str(processor)}))',
+    ].join('\n')}`);
+    expect(JSON.parse(output)).toEqual({ result: 'pil-image-processor', path: true });
+  });
+
+  it.each([
+    ['{}', /names no image_processor_type/],
+    ['{"image_processor_type": "InventedImageProcessor"}', /exposes no InventedImageProcessorPil/],
+  ])('refuses a processor config it cannot resolve a PIL twin from (%s)', (config, expected) => {
+    const output = runPython(`${importRunner}\n${[
+      'import sys, tempfile, types',
+      'transformers = types.ModuleType("transformers")',
+      'transformers.__version__ = "5.14.1"',
+      'sys.modules["transformers"] = transformers',
+      'with tempfile.TemporaryDirectory() as temp:',
+      '    processor = Path(temp) / "processor"',
+      '    processor.mkdir()',
+      `    (processor / "preprocessor_config.json").write_text(${JSON.stringify(config)})`,
+      '    try:',
+      '        runner.load_pil_image_processor(processor)',
+      '    except RuntimeError as exc:',
+      '        print(str(exc))',
+      '    else:',
+      '        raise SystemExit("an unresolvable processor config was accepted")',
+    ].join('\n')}`);
+    expect(output).toMatch(expected);
+  });
+
+  // The encoder reads exactly one thing off its processor, so the twin is bound
+  // to that one attribute: building the rest is what pulls in the video
+  // processor nothing here uses.
+  it('binds the PIL twin to the only sub-processor the pinned encoder reads', () => {
+    const output = runPython(`${importRunner}\n${stubPin([
+      '    def __init__(self, model_dir):',
+      '        self._model_dir = Path(model_dir)',
+      '        self._processor = None',
+      '    @property',
+      '    def processor(self):',
+      '        raise AssertionError("the pinned auto-processor property must not run")',
+    ])}\n${[
+      'import json',
+      'seen = []',
+      'runner.load_pil_image_processor = lambda directory: seen.append(directory) or "pil-image-processor"',
+      'runner.install_pil_image_processor()',
+      'encoder = MiniMaxH3TextEncoder("/checkpoint/text_encoder")',
+      'first = encoder.processor',
+      'print(json.dumps({',
+      '    "image_processor": first.image_processor,',
+      '    "cached": encoder.processor is first,',
+      '    "loads": [str(p) for p in seen],',
+      '}))',
+    ].join('\n')}`);
+    const result = JSON.parse(output);
+    expect(result.image_processor).toBe('pil-image-processor');
+    // One load per encoder — the pinned property memoizes on `_processor` and
+    // the twin has to keep doing that or every keyframe re-reads the config.
+    expect(result.cached).toBe(true);
+    // Resolved off the encoder's own model dir, so a composed text-encoder shim
+    // root keeps pointing at the processor it linked through.
+    expect(result.loads).toEqual([join('/checkpoint', 'processor')]);
+  });
+
+  // mlx-vlm's loader sanitizes `patch_embed.proj.weight` into MLX's conv layout;
+  // the pinned port loads the safetensors itself and skips it, so the tower gets
+  // torch's `(C_out, C_in, kD, kH, kW)` and conv3d rejects the first keyframe.
+  it('sanitizes the vision tower after the pinned load, not instead of it', () => {
+    const output = runPython(`${importRunner}\n${stubPin([
+      '    def _load_weights(self, model_dir, dtype, verbose):',
+      '        order.append(("pinned load", str(model_dir), str(dtype), verbose))',
+      '        self.vision = "vision-tower"',
+    ], ['order = []'])}\n${[
+      'import json',
+      'runner.sanitize_vision_weights = lambda vision: order.append(("sanitize", vision))',
+      'runner.install_vision_weight_sanitizer()',
+      'MiniMaxH3TextEncoder()._load_weights(Path("/checkpoint/text_encoder"), "bfloat16", False)',
+      'print(json.dumps(order))',
+    ].join('\n')}`);
+    // The pinned load runs first and unchanged — the correction is applied to
+    // what it produced, so a pin that starts loading a sanitized weight keeps
+    // working (mlx-vlm's own shape check makes the second pass a no-op).
+    expect(JSON.parse(output)).toEqual([
+      ['pinned load', join('/checkpoint', 'text_encoder'), 'bfloat16', false],
+      ['sanitize', 'vision-tower'],
+    ]);
+  });
+
+  it('leaves the vision tower alone when the encoder built none', () => {
+    const output = runPython(`${importRunner}\n${[
+      'runner.sanitize_vision_weights(None)',
+      'print("ok")',
+    ].join('\n')}`);
+    // Reached on a text-only encoder (`load_vision=False`); importing mlx to
+    // sanitize nothing would cost a load the run does not need.
+    expect(output.trim()).toBe('ok');
+  });
+
+  // Each adapter patches a different method, and each is only correct against
+  // the implementation it was written for — so a pin that moved has to be told
+  // apart from one that still fits, before a render spends minutes loading.
+  it.each([
+    ['install_pil_image_processor', 'processor'],
+    ['install_vision_weight_sanitizer', '_load_weights'],
+    ['install_vision_embed_merge', 'encode'],
+  ])('refuses to install %s onto a pin with no %s hook', (installer, hook) => {
+    const output = runPython(`${importRunner}\n${stubPin(['    pass'])}\n${[
+      'try:',
+      `    runner.${installer}()`,
+      'except RuntimeError as exc:',
+      '    print(str(exc))',
+      'else:',
+      `    raise SystemExit("a pin with no ${hook} hook was accepted")`,
+    ].join('\n')}`);
+    expect(output).toMatch(new RegExp(`no longer exposes MiniMaxH3TextEncoder\\.${hook}`));
+  });
+
+  // A `processor` that is no longer a property is as much a pin change as an
+  // absent one: the pinned caller would start calling it, and the replacement
+  // is a property.
+  it('refuses to bind the twin onto a processor that is no longer a property', () => {
+    const output = runPython(`${importRunner}\n${stubPin(['    processor = "not-a-property"'])}\n${[
+      'try:',
+      '    runner.install_pil_image_processor()',
+      'except RuntimeError as exc:',
+      '    print(str(exc))',
+      'else:',
+      '    raise SystemExit("a non-property processor was accepted")',
+    ].join('\n')}`);
+    expect(output).toMatch(/no longer exposes MiniMaxH3TextEncoder\.processor/);
+  });
+
+  // The pinned encode merges the keyframe's vision rows with a BROADCAST, which
+  // only lines up when the request is nothing but image tokens — every real
+  // prompt + keyframe pair dies in `[broadcast_shapes]`. The correction re-runs
+  // the pinned body with that one line swapped, so it is guarded twice: by the
+  // line it replaces, and by a digest over the whole body it copied.
+  it('corrects a pin that still merges by broadcast, and hands its text-only path back', () => {
+    const output = runPython(`${importRunner}\n${importPins}\n${filePin(["pins.PINNED_BROADCAST_MERGE"])}\n${[
+      'import hashlib, inspect',
+      'pins.PINNED_ENCODE_DIGEST = hashlib.sha256(',
+      '    inspect.getsource(MiniMaxH3TextEncoder.encode).encode("utf-8")',
+      ').hexdigest()',
+      'runner.install_vision_embed_merge()',
+      'print(MiniMaxH3TextEncoder().encode("a prompt"))',
+    ].join('\n')}`);
+    // A text-only request has no merge to correct, so it must come back from the
+    // pinned implementation untouched.
+    expect(output.trim()).toBe("('pinned', 'a prompt', None)");
+  });
+
+  it.each([
+    // Upstream fixed the merge: the correction has to retire, not shadow it.
+    [['pins.PINNED_BROADCAST_MERGE.replace("mx.where", "masked_scatter")'], 'digest-of-this-pin', /no longer merges keyframe embeddings/],
+    // The merge is untouched but something else in the body moved — the copy is
+    // stale in a way matching one line could never see.
+    [['pins.PINNED_BROADCAST_MERGE'], `"${'0'.repeat(64)}"`, /changed MiniMaxH3TextEncoder\.encode outside the merge/],
+  ])('refuses a pin the copied encode no longer matches (%j)', (body, digest, expected) => {
+    const output = runPython(`${importRunner}\n${importPins}\n${filePin(body)}\n${[
+      'import hashlib, inspect',
+      `pins.PINNED_ENCODE_DIGEST = ${digest === 'digest-of-this-pin'
+        ? 'hashlib.sha256(inspect.getsource(MiniMaxH3TextEncoder.encode).encode("utf-8")).hexdigest()'
+        : digest}`,
+      'try:',
+      '    runner.install_vision_embed_merge()',
+      'except RuntimeError as exc:',
+      '    print(str(exc))',
+      'else:',
+      '    raise SystemExit("a drifted pin was accepted")',
+    ].join('\n')}`);
+    expect(output).toMatch(expected);
   });
 });

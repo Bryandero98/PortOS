@@ -11,7 +11,9 @@ import {
   resolveTarget,
   listTargets,
   detectHostCapabilities,
+  renderOptionSupportFor,
 } from './targets.js';
+import { DEFAULT_DETAIL_TIER, DETAIL_TIERS } from './renderOptions.js';
 
 // A host that can run TRELLIS.2's local-MPS lane, and one that can't.
 const APPLE_128GB = { appleSilicon: true, unifiedMemoryGb: 128, cuda: false, cudaProbe: 'absent' };
@@ -59,8 +61,11 @@ describe('image-to-3d target registry', () => {
     // Upstream: "An NVIDIA GPU with at least 24GB of memory is necessary" and
     // "currently tested only on Linux".
     expect(t.requires).toMatchObject({ cuda: true, minVramGb: 24, linuxHost: true });
-    // Unlike the MPS port, this lane does not pull RMBG-2.0 — only DINOv3 is gated.
-    expect(t.gatedRepos.map((r) => r.label)).toEqual(['facebook/dinov3-vitl16-pretrain-lvd1689m']);
+    // Same gated repos as the MPS port: both lanes load microsoft/TRELLIS.2-4B, whose
+    // pipeline.json names briaai/RMBG-2.0 as the rembg model, and `run()` preprocesses
+    // by default. Omitting it here left a CUDA user's 401 at load time unexplained.
+    expect(t.gatedRepos.map((r) => r.label))
+      .toEqual(['facebook/dinov3-vitl16-pretrain-lvd1689m', 'briaai/RMBG-2.0']);
   });
 
   it('leaves trellis2 (MPS) as the default target', () => {
@@ -175,8 +180,25 @@ describe('listTargets', () => {
 
   it('applies that hiding symmetrically, not just to the newer lane', () => {
     // The mirror of the case above: an NVIDIA box is no more able to grow an Apple
-    // Silicon chip than a Mac is to grow a GPU, so neither gets a dead card.
-    expect(listTargets(CUDA_BOX).map((t) => t.id)).toEqual(['trellis2Cuda']);
+    // Silicon chip than a Mac is to grow a GPU, so neither gets a dead card. Asserted
+    // as "no MPS target" rather than an exact list, so registering another CUDA target
+    // doesn't churn this test — the property under test is the hiding, not the roster.
+    const ids = listTargets(CUDA_BOX).map((t) => t.id);
+    expect(ids).not.toContain('trellis2');
+    expect(ids).toContain('trellis2Cuda');
+  });
+
+  it('lists the CUDA targets independently, per their diverged VRAM floors', () => {
+    // The two CUDA lanes no longer share a floor: TRELLIS.2 needs 24 GB, while
+    // Pixal3D's low-VRAM mode renders from 12. A 16 GB card must therefore see
+    // exactly one of them — the whole reason `insufficient-vram` stopped naming a
+    // single GB figure.
+    const small = listTargets({ ...CUDA_BOX, cudaVramGb: 16 }).map((t) => t.id);
+    expect(small).toContain('pixal3dCuda');
+    expect(small).not.toContain('trellis2Cuda');
+
+    const big = listTargets({ ...CUDA_BOX, cudaVramGb: 48 }).map((t) => t.id);
+    expect(big).toEqual(expect.arrayContaining(['trellis2Cuda', 'pixal3dCuda']));
   });
 
   it('still SHOWS a target when the blocker is one the user can fix', () => {
@@ -306,5 +328,47 @@ describe('detectHostCapabilities', () => {
     const caps = await detectHostCapabilities({ cuda: false, totalMemBytes: 8 * 1024 ** 3 });
     expect(caps.cudaProbe).toBe('absent');
     expect(caps.cudaVramGb).toBeNull();
+  });
+});
+
+describe('renderOptionSupportFor', () => {
+  it('reports the unsupported knobs a target declares', () => {
+    // Pixal3D's runner drops `steps`; the descriptor is what tells the UI to disable
+    // the control and `beginRender` to record null instead of the requested value.
+    // `detail` is declared unsupported even though the lane HAS 1024/1536
+    // resolutions — they are picked from the card's VRAM, so honoring a caller's
+    // choice could hand a 12 GB card a config that OOMs mid-render.
+    expect(renderOptionSupportFor('pixal3dCuda'))
+      .toEqual({ steps: false, detail: false, alphaMode: false, normalMap: false });
+    // Upstream's CUDA entrypoint takes no pipeline-type override at all.
+    expect(renderOptionSupportFor('trellis2Cuda'))
+      .toEqual({ detail: false, alphaMode: false, normalMap: false });
+  });
+
+  it('returns null for a target that honors every knob, and for an unknown id', () => {
+    // Absent must mean "all supported", so existing targets need no descriptor entry
+    // and an unknown id can't be mistaken for "supports nothing".
+    expect(renderOptionSupportFor('trellis2')).toBeNull();
+    expect(renderOptionSupportFor('nope')).toBeNull();
+    expect(renderOptionSupportFor(undefined)).toBeNull();
+  });
+
+  // Guards the contract between the abstract tier and each lane's own vocabulary:
+  // a target that declares detail support must be able to resolve every tier, and
+  // one that declares it unsupported must not carry a half-filled mapping.
+  it('pairs detail support with a complete tier mapping', () => {
+    for (const id of IMAGE_TO_3D_TARGET_IDS) {
+      const target = IMAGE_TO_3D_TARGETS[id];
+      const supportsDetail = target.supportsRenderOptions?.detail !== false;
+      if (supportsDetail) {
+        expect(target.detailTiers, id).toBeDefined();
+        // Every non-auto tier must map, or picking it would silently fall back.
+        for (const tier of DETAIL_TIERS.filter((t) => t !== DEFAULT_DETAIL_TIER)) {
+          expect(target.detailTiers[tier], `${id}.${tier}`).toBeTruthy();
+        }
+      } else {
+        expect(target.detailTiers, id).toBeUndefined();
+      }
+    }
   });
 });

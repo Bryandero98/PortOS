@@ -12,11 +12,17 @@ import { getProject } from '../../creativeDirector/local.js';
 import { COST_LLM } from './shared.js';
 
 /**
- * The calling project's render pin (#3135), inherited by the teaser this tool
- * mints. A creative commission stamps its `generation.videoMode`/`.videoModelId`
- * onto the project it runs in (creativeCommissions/abilityAdapters.js), but the
- * teaser is a SEPARATE project — without this the pin stops at that boundary and
- * the teaser renders on the install default.
+ * What the teaser this tool mints inherits from the project that called it: the
+ * render pin (#3135) and the owning commission.
+ *
+ * A creative commission stamps its `generation.videoMode`/`.videoModelId` onto
+ * the project it runs in (creativeCommissions/abilityAdapters.js), but the teaser
+ * is a SEPARATE project — without this the pin stops at that boundary and the
+ * teaser renders on the install default. `commissionId` carries for the same
+ * reason and one more: it is how the commission finds this project to STOP it,
+ * and how the teaser's own cognitive stages resolve the commission's live
+ * provider. An orphaned teaser would keep generating after the commission that
+ * asked for it was paused or deleted.
  *
  * Deliberately NOT in the tool schema: the planner LLM must not be able to pick
  * a render backend. The pin is the user's configured choice, so it's read from
@@ -33,6 +39,7 @@ async function inheritedRenderSettings(ctx) {
   return {
     ...(project.renderBackend ? { renderBackend: project.renderBackend } : {}),
     ...(project.modelId ? { modelId: project.modelId } : {}),
+    ...(project.commissionId ? { commissionId: project.commissionId } : {}),
   };
 }
 

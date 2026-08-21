@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createLineReader } from './streamLines.js';
+import { createLineReader, createOutputTail } from './streamLines.js';
 
 const collect = (opts) => {
   const lines = [];
@@ -115,5 +115,45 @@ describe('createLineReader', () => {
     stderr.push('ERR-full\n');
     stdout.push('tial\n');
     expect(out).toEqual(['e:ERR-full', 'o:OUT-partial']);
+  });
+});
+
+describe('createOutputTail', () => {
+  it('joins the remembered lines into a failure detail', () => {
+    const tail = createOutputTail();
+    tail.remember('error: model is not available locally');
+    tail.remember('detail: run mtplx pull');
+    expect(tail.text()).toBe('error: model is not available locally — detail: run mtplx pull');
+  });
+
+  it('skips decoration-only lines so a banner cannot crowd out the error', () => {
+    // The MTPLX banner is six lines of block glyphs followed by a box rule; on a
+    // 1KB budget that alone can push the actual failure out of the tail.
+    const tail = createOutputTail({ budget: 60 });
+    for (const line of ['███╗   ███╗', '╭─────────╮', '│         │', '╰─────────╯', '====']) tail.remember(line);
+    tail.remember('error: model is not available locally');
+    expect(tail.text()).toBe('error: model is not available locally');
+  });
+
+  it('drops the OLDEST lines once the char budget is spent', () => {
+    const tail = createOutputTail({ budget: 30 });
+    tail.remember('first line of output');
+    tail.remember('second line');
+    tail.remember('third line');
+    expect(tail.text()).toBe('second line — third line');
+  });
+
+  it('keeps the last line even when it alone exceeds the budget', () => {
+    const tail = createOutputTail({ budget: 5 });
+    tail.remember('a much longer final line');
+    expect(tail.text()).toBe('a much longer final line');
+  });
+
+  it('is empty for blank and nullish input', () => {
+    const tail = createOutputTail();
+    tail.remember('   ');
+    tail.remember(null);
+    tail.remember(undefined);
+    expect(tail.text()).toBe('');
   });
 });

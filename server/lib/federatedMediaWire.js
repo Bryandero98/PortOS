@@ -55,6 +55,32 @@ export function renderFederatedMediaAudioPrompt(profile) {
 }
 
 /**
+ * The prompt a finished media job actually rendered from.
+ *
+ * A routed job's top-level `params.prompt` is deliberately blank — that is what
+ * makes it unrenderable by a build rolled back past `remoteMedia` (#4683) — so
+ * anything recording what was rendered (completion hooks, the public queue
+ * projection) must read the marker instead. Audio renders it from the
+ * fixed-vocabulary profile, since free-form personal text never reaches an audio
+ * provider at all; image and video carry the submitted prompt itself.
+ *
+ * Returns `null` only when there is no prompt to report, so callers can tell
+ * "nothing was recorded" apart from "rendered with an empty prompt".
+ *
+ * @param {object} job - A media job (or anything with `.params`).
+ * @returns {string|null}
+ */
+export function effectiveJobPrompt(job) {
+  const marker = job?.params?.remoteMedia;
+  if (marker) {
+    const audioPrompt = renderFederatedMediaAudioPrompt(marker.profile);
+    if (audioPrompt) return audioPrompt;
+    if (typeof marker.request?.prompt === 'string') return marker.request.prompt;
+  }
+  return typeof job?.params?.prompt === 'string' ? job.params.prompt : null;
+}
+
+/**
  * Validate that a prompt string conforms to the canonical federated audio grammar.
  * Provider-side validation receives only the rendered text (not the local profile)
  * so older wire-v1 providers can accept newer consumers. Parses the canonical grammar
@@ -81,12 +107,51 @@ export function isFederatedMediaAudioPrompt(value) {
   }) === value;
 }
 
-// Wire v1 intentionally exposes audio only. Later media kinds get their own
-// versioned capability shape instead of being accepted against audio-specific
-// readiness fields by an older consumer.
-const mediaKindSchema = z.literal('audio');
+// Wire v1 started audio-only; image and video share the same capability/job/
+// result projection (duration and lyrics fields simply go null/false for
+// kinds they don't apply to) rather than forking a second schema shape.
+//
+// Backward compatibility for kinds an ALREADY-DEPLOYED older consumer cannot
+// parse is handled at the transport layer, not by narrowing this enum: an
+// older consumer's own copy of this file still validates `kinds`/`capabilities`
+// against a literal('audio') schema and can never be patched retroactively, so
+// GET /status only reports non-audio kinds when the caller explicitly opts in
+// via `?kinds=` (see normalizeRequestedMediaKinds below). A caller that never
+// asks — every already-shipped consumer — gets back the exact audio-only shape
+// it has always understood.
+export const KNOWN_MEDIA_KINDS = Object.freeze(['audio', 'image', 'video']);
+const mediaKindSchema = z.enum(KNOWN_MEDIA_KINDS);
 
-const federatedMediaCapabilitySchema = z.object({
+/**
+ * Parse a requested-kinds value (a comma-separated query string or an array)
+ * down to the known, deduplicated subset, defaulting to `['audio']` when the
+ * input is absent, empty, or names nothing this build understands. The
+ * default is deliberate: an older consumer never sends this parameter, so it
+ * always gets the original audio-only status projection.
+ */
+export function normalizeRequestedMediaKinds(raw) {
+  const list = typeof raw === 'string' ? raw.split(',') : Array.isArray(raw) ? raw : [];
+  const kinds = [...new Set(list.map((value) => (typeof value === 'string' ? value.trim() : '')))]
+    .filter((value) => KNOWN_MEDIA_KINDS.includes(value));
+  return kinds.length ? kinds : ['audio'];
+}
+
+// { mimeType -> file extension } for the result Content-Disposition header
+// and any provider-side filename validation. One source so a new result kind
+// can't drift the two.
+export const FEDERATED_MEDIA_RESULT_EXTENSION = Object.freeze({
+  'audio/wav': 'wav',
+  'image/png': 'png',
+  'video/mp4': 'mp4',
+});
+
+const FEDERATED_MEDIA_RESULT_MIME = Object.freeze({
+  audio: 'audio/wav',
+  image: 'image/png',
+  video: 'video/mp4',
+});
+
+export const federatedMediaCapabilitySchema = z.object({
   kind: mediaKindSchema,
   engine: z.string().trim().min(1).max(80),
   engineName: z.string().trim().min(1).max(256),
@@ -103,6 +168,15 @@ const federatedMediaCapabilitySchema = z.object({
   defaultDurationSec: z.number().finite().positive().nullable(),
   lyrics: z.boolean(),
   autoDuration: z.boolean(),
+  frameStride: z.number().int().min(1).max(64).nullable().optional(),
+  maxNumFrames: z.number().int().min(1).max(600).nullable().optional(),
+  frameOptions: z.array(z.number().int().min(1).max(600)).max(100).nullable().optional(),
+  fpsOptions: z.array(z.number().int().min(1).max(60)).max(20).nullable().optional(),
+  resolutionOptions: z.array(z.object({
+    w: z.number().int().min(64).max(2048),
+    h: z.number().int().min(64).max(2048),
+    label: z.string().trim().max(120).optional(),
+  })).max(100).nullable().optional(),
 });
 
 const federatedMediaQueueStatusSchema = z.object({
@@ -123,14 +197,28 @@ export const federatedMediaProviderStatusSchema = z.object({
   generatedAt: z.string().datetime(),
   staleAfterMs: z.number().int().positive().max(300_000),
   status: z.enum(['ready', 'busy', 'unavailable']),
-  kinds: z.array(mediaKindSchema).max(1),
+  kinds: z.array(mediaKindSchema).max(KNOWN_MEDIA_KINDS.length),
   queue: federatedMediaQueueStatusSchema,
   capabilities: z.array(federatedMediaCapabilitySchema).max(300),
+}).superRefine((value, ctx) => {
+  const kinds = new Set(value.kinds);
+  if (kinds.size !== value.kinds.length) {
+    ctx.addIssue({ code: 'custom', path: ['kinds'], message: 'kinds must not contain duplicates' });
+  }
+  value.capabilities.forEach((capability, index) => {
+    if (!kinds.has(capability.kind)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['capabilities', index, 'kind'],
+        message: 'capability kind must be listed in kinds',
+      });
+    }
+  });
 });
 
 const federatedMediaResultSchema = z.object({
   available: z.literal(true),
-  mimeType: z.literal('audio/wav'),
+  mimeType: z.enum(Object.keys(FEDERATED_MEDIA_RESULT_EXTENSION)),
   sizeBytes: z.number().int().positive().max(4_294_967_296),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   downloadUrl: z.string().trim().min(1).max(500),
@@ -159,6 +247,14 @@ export const federatedMediaProviderJobSchema = z.object({
     message: z.string().trim().min(1).max(500),
   }).optional(),
   result: federatedMediaResultSchema.optional(),
+}).superRefine((value, ctx) => {
+  if (value.result && value.result.mimeType !== FEDERATED_MEDIA_RESULT_MIME[value.kind]) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['result', 'mimeType'],
+      message: 'result mimeType must match the job kind',
+    });
+  }
 });
 
 /**

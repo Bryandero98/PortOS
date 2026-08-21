@@ -14,7 +14,11 @@ vi.mock('./shell.js', () => ({
   registerExternalSession: vi.fn(),
 }));
 
-vi.mock('./cosRunnerClient.js', () => ({
+// Only the spawn rpc is faked. The refusal/ambiguity classifier is the real one
+// (importOriginal): re-implementing it here would make the ledger assertions
+// below agree with a copy of the rule rather than with the rule (#4615).
+vi.mock('./cosRunnerClient.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   spawnTuiSessionViaRunner: vi.fn(),
 }));
 
@@ -51,6 +55,12 @@ vi.mock('./agentErrorAnalysis.js', () => ({
   analyzeAgentFailure: vi.fn().mockReturnValue(null),
   resolveFailedTaskUpdate: vi.fn().mockResolvedValue({ status: 'failed' })
 }));
+
+// The lifecycle ledger is a real file writer (data/cos/run-events.jsonl) — mocked
+// so first-output telemetry lands in a spy rather than the developing install's
+// ledger, and because this suite's fileUtils mock carries no PATHS.cos (#4540).
+const { appendRunEvent } = vi.hoisted(() => ({ appendRunEvent: vi.fn(async () => ({ appended: true })) }));
+vi.mock('./agentRunEventLog.js', () => ({ appendRunEvent }));
 
 vi.mock('./agentRunTracking.js', () => ({
   completeAgentRun: vi.fn().mockResolvedValue(undefined)
@@ -110,6 +120,7 @@ vi.mock('./agentWorktreeCleanup.js', () => ({
 }));
 
 vi.mock('fs', () => ({
+  readdirSync: vi.fn().mockReturnValue([]),
   // Default: no .agent-done sentinel on disk. The completion-sentinel test
   // overrides this to true. Re-set in beforeEach so it can't leak between tests.
   existsSync: vi.fn().mockReturnValue(false),
@@ -209,7 +220,7 @@ import { readFile } from 'fs/promises';
 import { execFile } from '../lib/childProcess.js';
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
 import { releaseRetryHold } from './agentWorktreeCleanup.js';
-import { spawnTuiSessionViaRunner } from './cosRunnerClient.js';
+import { spawnTuiSessionViaRunner, RUNNER_SPAWN_REFUSED, RUNNER_SPAWN_AMBIGUOUS } from './cosRunnerClient.js';
 import * as shellService from './shell.js';
 import * as agentLifecycle from './agentFinalization.js';
 import { ensureOllamaAgentContext } from './ollamaAgentContext.js';
@@ -288,7 +299,7 @@ describe('agent TUI spawning', () => {
       type: 'tui',
       command: 'codex',
       args: []
-    }, 'codex-configured-default');
+    }, 'codex-configured-default', { shell: '/bin/zsh' });
 
     expect(config.command).toBe('codex');
     expect(config.args).toEqual(['--dangerously-bypass-approvals-and-sandbox', '-c', 'check_for_update_on_startup=false']);
@@ -334,7 +345,7 @@ describe('agent TUI spawning', () => {
       args: ['--dangerously-skip-permissions', '--add-dir', '/tmp/with space'],
       tuiPromptDelayMs: 1000,
       tuiMaxRuntimeMs: 7200000
-    }, 'claude-sonnet');
+    }, 'claude-sonnet', { shell: '/bin/zsh' });
 
     expect(config.args).toEqual([
       '--dangerously-skip-permissions',
@@ -347,6 +358,23 @@ describe('agent TUI spawning', () => {
     expect(config.promptDelayMs).toBe(1000);
     expect(config).not.toHaveProperty('maxRuntimeMs');
     expect(config).not.toHaveProperty('idleTimeoutMs');
+  });
+
+  it('quotes the command position for PowerShell and cmd.exe while preserving POSIX output', () => {
+    const provider = {
+      id: 'claude-code-tui',
+      name: 'Claude TUI',
+      type: 'tui',
+      command: 'C:\\Program Files\\Claude\\claude.cmd',
+      args: ['--append-system-prompt-file', "I:\\input folder\\it's.md"],
+    };
+
+    expect(buildTuiSpawnConfig(provider, null, { shell: '/bin/zsh' }).commandLine)
+      .toBe("'C:\\Program Files\\Claude\\claude.cmd' --append-system-prompt-file 'I:\\input folder\\it'\\''s.md'");
+    expect(buildTuiSpawnConfig(provider, null, { shell: 'pwsh.exe' }).commandLine)
+      .toBe("& 'C:\\Program Files\\Claude\\claude.cmd' '--append-system-prompt-file' 'I:\\input folder\\it''s.md'");
+    expect(buildTuiSpawnConfig(provider, null, { shell: 'cmd.exe' }).commandLine)
+      .toBe('"C:\\Program Files\\Claude\\claude.cmd" "--append-system-prompt-file" "I:\\input folder\\it\'s.md"');
   });
 
   it('namespaces the Ollama model under ollama/ for an OpenCode TUI', () => {
@@ -391,7 +419,11 @@ describe('agent TUI spawning', () => {
   });
 
   it('omits the --model flag when model is null/empty', () => {
-    const config = buildTuiSpawnConfig({ id: 'codex-tui', command: 'codex', type: 'tui', args: [] }, null);
+    const config = buildTuiSpawnConfig(
+      { id: 'codex-tui', command: 'codex', type: 'tui', args: [] },
+      null,
+      { shell: '/bin/zsh' },
+    );
     expect(config.args).toEqual(['--dangerously-bypass-approvals-and-sandbox', '-c', 'check_for_update_on_startup=false']);
     expect(config.commandLine).toBe('codex --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false');
   });
@@ -407,11 +439,9 @@ describe('agent TUI spawning', () => {
     const codex = buildTuiSpawnConfig(
       { id: 'codex-tui', command: 'codex', type: 'tui', args: [] },
       null,
-      // codex's config enum stops at `xhigh`; `max`/`ultra` clamp down rather
-      // than reaching the CLI, where they would fail its config load outright.
       { effort: 'max' },
     );
-    expect(codex.args).toContain('model_reasoning_effort=xhigh');
+    expect(codex.args).toContain('model_reasoning_effort=max');
     expect(codex.args).not.toContain('--effort');
   });
 
@@ -646,9 +676,12 @@ describe('spawnTuiAgent runtime', () => {
     runSpawn();
     await flushMicrotasks();
 
+    // The raw command plus the flag — the run-then-exit wrapper is rendered by
+    // shell.js, which is the only place that knows the session's shell dialect.
+    // Its rendering is covered by shell.test.js and lib/shellExit.test.js.
     expect(shellService.createShellSession).toHaveBeenCalledWith(
       null,
-      expect.objectContaining({ initialCommand: 'codex; exit $?' }),
+      expect.objectContaining({ initialCommand: 'codex', exitWithCommand: true }),
     );
   });
 
@@ -1385,6 +1418,55 @@ describe('spawnTuiAgent runtime', () => {
     expect(pasteWrites()).toHaveLength(1);
   });
 
+  // ── 1c2. The readiness probe's own echo must not seed the startup-idle clock ──
+  // shell.js's waitForPromptReady round-trips a shell-level probe (posix printf /
+  // PowerShell Write-Output) BEFORE injecting the real CLI command, and fires
+  // onInitialCommandSent only once that command is actually typed in. If PTY
+  // output that arrives before onInitialCommandSent counted toward
+  // lastOutputAt/firstOutputAt, a quiet gap after the probe's own echo — e.g.
+  // PowerShell's heavier startup, which is slower than bash — would satisfy the
+  // idle-based "ready" check and paste the prompt into a still-loading CLI (codex
+  // review [P1] on the dialect-aware probe, #4638).
+  it('idle-detection: pre-injection PTY output does not satisfy startup-idle readiness', async () => {
+    let sendInitialCommand = null;
+    vi.mocked(shellService.createShellSession).mockImplementation((_socket, opts) => {
+      capturedOnData = opts.onData;
+      capturedOnExit = opts.onExit;
+      // Do NOT fire onInitialCommandSent yet — mirrors the real shell.js
+      // waitForPromptReady gap between the probe round-trip and command
+      // injection, unlike the suite's default mock (which fires it immediately).
+      sendInitialCommand = () => opts.onInitialCommandSent?.();
+      return SESSION_ID;
+    });
+
+    runSpawn({ prompt: 'evaluate our animation prompts and generate drafts' });
+    await flushMicrotasks();
+
+    // Shell-level probe echo/noise arrives BEFORE the real command is injected.
+    await capturedOnData(Buffer.from("bash-5.2$ printf '%s\\n' 'PORTOSRDY''abc123'\nPORTOSRDYabc123\n"));
+    await flushMicrotasks();
+
+    // Advance well past promptDelayMs + the idle threshold. Pre-fix, this probe
+    // echo would have seeded firstOutputAt/lastOutputAt and the idle poll would
+    // have fired the paste here — before the CLI command was ever typed in.
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+
+    const pasteWrites = () => vi.mocked(shellService.writeToSession).mock.calls
+      .filter(([id, data]) => id === SESSION_ID && data.startsWith('\x1b[200~'));
+    expect(pasteWrites()).toHaveLength(0);
+
+    // Now the real command is injected and the CLI produces its own output —
+    // the idle clock should start from here and the paste should proceed.
+    sendInitialCommand();
+    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+
+    expect(pasteWrites()).toHaveLength(1);
+  });
+
   // ── 1d. Codex MCP-server boot patience (incident 2026-07-10, agent-c5a26b40) ──
   // Codex boots the user's globally-configured MCP servers (playwright via npx,
   // a node_repl with startup_timeout_sec=120) on every headless spawn. During
@@ -2002,6 +2084,74 @@ describe('spawnTuiAgent runtime', () => {
           error: expect.stringContaining('did not pass the CoS Runner capability check'),
         })
       );
+    });
+
+    // The ledger has to carry the outcome it actually knows (#4615). A runner
+    // that ANSWERED with a refusal and a transport failure that answered
+    // nothing are different facts, and a diagnostic that reads the second as
+    // the first sends the reader after a rejection that never happened.
+    const handoffs = () => appendRunEvent.mock.calls.map(([e]) => e).filter((e) => e.kind === 'run.handoff');
+
+    it('records a refused handoff as accepted:false', async () => {
+      vi.mocked(spawnTuiSessionViaRunner).mockRejectedValueOnce(
+        Object.assign(new Error('Command not allowed: grok'), { spawnOutcome: RUNNER_SPAWN_REFUSED, status: 400 }),
+      );
+
+      await runSpawn({ useDurableRunner: true });
+
+      expect(handoffs()).toEqual([expect.objectContaining({
+        eventId: 'handoff:agent-1:run-1:rejected',
+        data: expect.objectContaining({ to: 'none', accepted: false, outcome: RUNNER_SPAWN_REFUSED, kind: 'tui' }),
+      })]);
+    });
+
+    it('records an ambiguous handoff as accepted:null with the transport reason', async () => {
+      vi.mocked(spawnTuiSessionViaRunner).mockRejectedValueOnce(
+        Object.assign(new TypeError('fetch failed'), { spawnOutcome: RUNNER_SPAWN_AMBIGUOUS }),
+      );
+
+      await runSpawn({ useDurableRunner: true });
+
+      expect(handoffs()).toEqual([expect.objectContaining({
+        eventId: 'handoff:agent-1:run-1:unconfirmed',
+        data: expect.objectContaining({
+          to: 'none',
+          accepted: null,
+          outcome: RUNNER_SPAWN_AMBIGUOUS,
+          kind: 'tui',
+          reason: 'fetch failed',
+        }),
+      })]);
+    });
+
+    it('records an adopted PTY as an accepted handoff and keeps the run alive', async () => {
+      // The spawn rpc re-attached the relay to a PTY the runner already had, so
+      // this is a live run — it must not be finalized as a failed spawn.
+      const spawnDefault = vi.mocked(spawnTuiSessionViaRunner).getMockImplementation();
+      vi.mocked(spawnTuiSessionViaRunner).mockImplementationOnce(async (options) => ({
+        ...(await spawnDefault(options)),
+        adopted: true,
+        adoptedReason: 'fetch failed',
+      }));
+
+      const spawnPromise = runSpawn({ useDurableRunner: true });
+      await flushMicrotasks();
+
+      expect(handoffs()).toEqual([expect.objectContaining({
+        eventId: 'handoff:agent-1:run-1:cos-runner',
+        data: expect.objectContaining({
+          to: 'cos-runner',
+          accepted: true,
+          adopted: true,
+          outcome: RUNNER_SPAWN_AMBIGUOUS,
+          reason: 'fetch failed',
+        }),
+      })]);
+      expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
+
+      await capturedOnExit({ exitCode: 0, killed: false, signal: null });
+      await flushMicrotasks();
+      await spawnPromise;
     });
 
     it('keeps the actionable spawn-error when the local PTY path throws', async () => {

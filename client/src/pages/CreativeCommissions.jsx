@@ -26,6 +26,7 @@ import { useConfirmDelete } from '../hooks/useConfirmDelete';
 import CommissionConfigForm from '../components/creative-commission/CommissionConfigForm.jsx';
 import {
   blankForm, toPayload, patchFormState, validateForm, describeSchedule, describeAssignment,
+  COMMISSION_STOP_COPY,
 } from '../components/creative-commission/commissionForm.js';
 import {
   listCommissions, createCommission, updateCommission, deleteCommission, runCommissionNow,
@@ -81,7 +82,7 @@ export default function CreativeCommissions() {
     setCommissions((cur) => cur.filter((c) => c.id !== commission.id));
     try {
       await deleteCommission(commission.id, { silent: true });
-      toast.success('Commission deleted');
+      toast.success(COMMISSION_STOP_COPY.deletedToast);
     } catch (err) {
       setCommissions(prev); // rollback
       toast.error(err?.message || 'Delete failed');
@@ -114,6 +115,7 @@ export default function CreativeCommissions() {
     setCommissions((prev) => prev.map((c) => (c.id === commission.id ? { ...c, enabled: next } : c)));
     try {
       await updateCommission(commission.id, { enabled: next }, { silent: true });
+      toast.success(next ? COMMISSION_STOP_COPY.resumedToast : COMMISSION_STOP_COPY.pausedToast);
     } catch (err) {
       setCommissions((prev) => prev.map((c) => (c.id === commission.id ? { ...c, enabled: commission.enabled } : c)));
       toast.error(err?.message || 'Update failed');
@@ -198,7 +200,8 @@ export default function CreativeCommissions() {
               </button>
               <button
                 onClick={() => toggleEnabled(c)}
-                title={c.enabled ? 'Pause' : 'Resume'} aria-label={c.enabled ? 'Pause' : 'Resume'}
+                title={c.enabled ? COMMISSION_STOP_COPY.pauseTitle : COMMISSION_STOP_COPY.resumeTitle}
+                aria-label={c.enabled ? 'Pause' : 'Resume'}
                 className="p-2 text-gray-400 hover:text-gray-100"
               >
                 {c.enabled ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
@@ -214,7 +217,7 @@ export default function CreativeCommissions() {
                 <button
                   type="button"
                   onClick={() => requestDelete(c.id)}
-                  title="Delete commission"
+                  title={COMMISSION_STOP_COPY.deleteTitle}
                   aria-label={`Delete commission ${c.name}`}
                   className="p-2 text-gray-400 hover:text-port-error"
                 >

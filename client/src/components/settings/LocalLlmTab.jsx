@@ -10,11 +10,13 @@ import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import {
   getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
   deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService,
-  installAudioModel, patchSettingsSlice, getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer
+  installAudioModel, patchSettingsSlice, getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer,
+  downloadSpecDecodeModel
 } from '../../services/api';
 import socket from '../../services/socket';
 import MemoryManagement from './MemoryManagement.jsx';
 import LocalModelAssessments from './LocalModelAssessments.jsx';
+import SpecDecodeWeightRow from './SpecDecodeWeightRow.jsx';
 
 const BACKENDS = [
   { id: 'ollama', label: 'Ollama', icon: Cpu },
@@ -22,29 +24,37 @@ const BACKENDS = [
 ];
 const labelFor = (id) => BACKENDS.find((b) => b.id === id)?.label || id;
 
-const DFLASH_PRESETS = [
-  {
-    id: 'qwen3.8-27b',
-    label: 'Qwen 3.8 27B + DFlash 2 Drafter (Recommended)',
-    model: 'models/Qwen3.8-27B-Instruct-Q4_K_M.gguf',
-    draftModel: 'models/Qwen3.8-27B-DFlash2-Q4_K_M.gguf',
-    specType: 'draft-dflash',
-  },
-  {
-    id: 'muse-glimmer-30b',
-    label: 'Muse-Glimmer 30B + DFlash 2 Drafter',
-    model: 'models/Muse-Glimmer-30B-Instruct-Q4_K_M.gguf',
-    draftModel: 'models/Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf',
-    specType: 'draft-dflash',
-  },
-  {
-    id: 'custom',
-    label: 'Custom GGUF / Manual Paths',
-    model: '',
-    draftModel: '',
-    specType: 'draft-dflash',
-  },
-];
+// LM Studio's installed list is folder-scoped (`publisher/repo`) plus a separate
+// `quantization` field. A force redownload has to target a tagged id so the
+// server evicts that GGUF instead of no-op'ing on a bare repo.
+const redownloadInstallId = (model, backend) => {
+  if (backend !== 'lmstudio') return model.id;
+  if (/@/.test(model.id || '')) return model.id;
+  if (model?.quantization) return `${model.id}@${model.quantization}`;
+  // /v1/models fallback has no quantization — a bare repo force-redownload
+  // would skip existing GGUFs and still toast success.
+  return null;
+};
+
+// The speculative-decoding presets come from the server
+// (`server/lib/specDecodePresets.js`, surfaced on the llama-server status
+// response) rather than a table here: each preset names a multi-gigabyte GGUF,
+// and only the server knows which Hugging Face repo it comes from, whether it
+// is already on disk, and how to fetch it. A client-side copy would inevitably
+// list a path the Download button had no source for.
+const DEFAULT_SPEC_PRESET_ID = 'qwen3.8-27b-dspark';
+const downloadKey = (presetId, role) => `${presetId}:${role}`;
+// Each entry carries its own `role`, so the rows come straight off the preset
+// rather than from a second copy of the role list.
+const specWeightEntries = (preset) => [preset?.model, preset?.draftModel].filter((e) => e?.path);
+
+// Defaults for the advanced numeric fields. They are applied when the server is
+// launched rather than on every keystroke: a controlled number input that coerces
+// as you type snaps back to its default the moment you clear it to retype.
+// Keep the launcher default aligned with server/lib/ports.js. 8080 is a common
+// IPFS / Tomcat / local-dashboard port and is not a safe default for a managed
+// daemon.
+const LLAMA_NUMBER_DEFAULTS = { port: 5568, ctxSize: 32768, nGpuLayers: 99 };
 
 const btnClass = 'flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded transition-colors disabled:opacity-50';
 
@@ -408,16 +418,22 @@ export function LocalLlmTab() {
 
   const [llamaStatus, setLlamaStatus] = useState(null);
   const [llamaLoading, setLlamaLoading] = useState(false);
+  const [llamaPresetId, setLlamaPresetId] = useState(DEFAULT_SPEC_PRESET_ID);
   const [llamaForm, setLlamaForm] = useState({
     model: '',
     draftModel: '',
-    specType: 'draft-dflash',
-    port: 8080,
+    specType: 'draft-dspark',
+    port: 5568,
     host: '127.0.0.1',
     ctxSize: 32768,
     nGpuLayers: 99,
     alias: 'dflash',
   });
+  // Byte progress for downloads STARTED HERE, keyed `presetId:role`. A transfer
+  // another tab started still renders — the server reports it on the entry —
+  // but only the starting tab owns the toast and the cleanup.
+  const [llamaDownloads, setLlamaDownloads] = useState({});
+  const specPresetSeeded = useRef(false);
   const [showLlamaAdvanced, setShowLlamaAdvanced] = useState(false);
   const [showLlamaLogs, setShowLlamaLogs] = useState(false);
 
@@ -425,8 +441,9 @@ export function LocalLlmTab() {
     return getLlamaServerStatus({ silent: true })
       .then((res) => {
         if (res) setLlamaStatus(res);
+        return res;
       })
-      .catch(() => {});
+      .catch(() => null);
   }, []);
 
   const loadStatus = useCallback(() => {
@@ -482,6 +499,54 @@ export function LocalLlmTab() {
   }, []);
 
   useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  // The preset select mounts pre-selected, so the form has to be filled in the
+  // moment the presets land — otherwise the recommended preset reads as chosen
+  // while the required model path is still empty and Start sits disabled with
+  // nothing to act on. Seeds once, so a later status refresh can't overwrite
+  // paths the user has since edited.
+  useEffect(() => {
+    if (specPresetSeeded.current) return;
+    const presets = llamaStatus?.presets;
+    if (!presets?.length) return;
+    const preset = presets.find((p) => p.id === DEFAULT_SPEC_PRESET_ID) || presets[0];
+    specPresetSeeded.current = true;
+    setLlamaPresetId(preset.id);
+    setLlamaForm((prev) => ({
+      ...prev,
+      model: preset.model?.path || '',
+      draftModel: preset.draftModel?.path || '',
+      specType: preset.specType || prev.specType,
+    }));
+  }, [llamaStatus?.presets]);
+
+  // Byte progress for an in-flight GGUF download. Frames are adopted no matter
+  // who started the transfer — a reload mid-download, or a second tab, would
+  // otherwise sit on whatever byte count the last status fetch happened to
+  // carry and read as frozen. A terminal frame drops the row back to the
+  // server's own view of the file, which the refresh below re-reads.
+  useEffect(() => {
+    const handleDownloadProgress = (frame) => {
+      if (!frame?.presetId || !frame?.role) return;
+      const key = downloadKey(frame.presetId, frame.role);
+      if (frame.event === 'complete' || frame.event === 'error') {
+        setLlamaDownloads((prev) => {
+          if (!prev[key]) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+        loadLlamaStatus();
+        return;
+      }
+      setLlamaDownloads((prev) => ({
+        ...prev,
+        [key]: { received: frame.received || 0, total: frame.total || 0 },
+      }));
+    };
+    socket.on('llamaServer:download', handleDownloadProgress);
+    return () => socket.off('llamaServer:download', handleDownloadProgress);
+  }, [loadLlamaStatus]);
   // Debounce so typing in the search box doesn't fire a request per keystroke.
   //
   // `activeCategory` is a trigger for the Hugging Face source ONLY — the live
@@ -609,10 +674,10 @@ export function LocalLlmTab() {
   // queued, not finished — so don't claim "installed" in that case. Install is
   // silent so an OLLAMA_OUTDATED failure can take over the UI with the upgrade
   // banner instead of stacking a useless toast with the auto-upgrade flow.
-  const install = (modelId) => runAction(
+  const install = (modelId, { force = false } = {}) => runAction(
     `install-${modelId}`,
-    () => installLocalLlmModel(selected, modelId, { silent: true }),
-    (r) => r?.pending ? `${modelId} download started` : `${modelId} installed`,
+    () => installLocalLlmModel(selected, modelId, { silent: true, force }),
+    (r) => r?.pending ? `${modelId} download started` : `${modelId} ${force ? 'redownloaded' : 'installed'}`,
     {
       onError: (err) => {
         if (err?.code === 'OLLAMA_OUTDATED' && selected === 'ollama') {
@@ -715,17 +780,100 @@ export function LocalLlmTab() {
     });
   };
 
+  // Hand-editing a path the preset supplied means the form no longer describes
+  // that preset — say Custom rather than keep claiming the preset is in effect.
+  const setLlamaField = (field, value) => {
+    setLlamaPresetId('custom');
+    setLlamaForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  // Keep an emptied field empty so it can be retyped; the launch path fills in
+  // the default. `Number('')` is 0, hence the explicit empty check.
+  const setLlamaNumber = (field, raw) =>
+    setLlamaForm((prev) => ({ ...prev, [field]: raw === '' ? '' : Number(raw) }));
+
+  const specPresets = llamaStatus?.presets || [];
+  const activeSpecPreset = specPresets.find((p) => p.id === llamaPresetId) || null;
+  const activeSpecWeights = specWeightEntries(activeSpecPreset);
+  // Clearing the target path is the one way back to a disabled Start — say why
+  // rather than leaving a dead button.
+  const llamaModelMissing = !llamaForm.model.trim();
+  // A preset file the server says isn't on disk, still named by the form. This
+  // is what the launcher would reject with LLAMA_MODEL_FILE_MISSING, so block
+  // Start here and point at the Download button instead of spending a request
+  // to produce an error the card can already answer.
+  const missingWeight = (role) => {
+    const entry = activeSpecPreset?.[role];
+    const field = role === 'model' ? llamaForm.model : llamaForm.draftModel;
+    return Boolean(entry?.path && !entry.exists && entry.path === (field || '').trim());
+  };
+  const baseWeightMissing = missingWeight('model');
+  const draftWeightMissing = missingWeight('draftModel');
+  const llamaStartBlocked = llamaModelMissing || baseWeightMissing || draftWeightMissing;
+  const llamaStartBlockedReason = llamaModelMissing
+    ? 'Enter a Target Base Model path to enable Start'
+    : baseWeightMissing
+      ? 'Download the base model to enable Start'
+      : draftWeightMissing
+        ? 'Download the drafter, or clear the field to run without it'
+        : '';
+
+  const handleDownloadSpecModel = async (role) => {
+    const presetId = llamaPresetId;
+    const key = downloadKey(presetId, role);
+    setLlamaDownloads((prev) => ({ ...prev, [key]: { received: 0, total: 0 } }));
+    try {
+      // Custom catch below owns the failure toast — `silent` keeps apiCore from
+      // firing a second one for the same error.
+      const res = await downloadSpecDecodeModel(presetId, role, { silent: true });
+      toast.success(res?.alreadyDownloaded
+        ? `${res.path} is already on disk`
+        : `${res?.path || 'Model'} downloaded`);
+    } catch (err) {
+      // A multi-gigabyte transfer outlives plenty of things that can drop this
+      // request — a reload, a proxy's idle timeout. The download itself keeps
+      // running server-side, so ask the server before calling it a failure:
+      // reporting "Download failed" over a transfer that is still going is the
+      // one message guaranteed to send the user looking for a problem that
+      // isn't there.
+      const status = await loadLlamaStatus();
+      const stillRunning = status?.presets
+        ?.find((p) => p.id === presetId)?.[role]?.downloading;
+      if (stillRunning) {
+        toast.warning('Download still running in the background — this page lost the request, not the transfer.');
+      } else {
+        toast.error(err?.message || 'Download failed');
+      }
+    } finally {
+      setLlamaDownloads((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      loadLlamaStatus();
+    }
+  };
+
   const handleStartLlama = async (e) => {
     e?.preventDefault?.();
-    if (!llamaForm.model?.trim()) {
-      toast.error('Please specify a base model path (e.g. models/Qwen3.8-27B-Instruct-Q4_K_M.gguf)');
+    // Submitting with Enter bypasses the disabled button, so re-check here.
+    if (llamaModelMissing) {
+      toast.error('Please specify a base model path (e.g. models/Qwen3.8-27B-Q4_K_M.gguf)');
+      return;
+    }
+    if (baseWeightMissing || draftWeightMissing) {
+      toast.error(`${llamaStartBlockedReason} — the GGUF isn't on this machine yet.`);
       return;
     }
     setLlamaLoading(true);
+    const config = { ...llamaForm };
+    for (const [field, fallback] of Object.entries(LLAMA_NUMBER_DEFAULTS)) {
+      if (!Number.isFinite(config[field])) config[field] = fallback;
+    }
     try {
-      const res = await startLlamaServer(llamaForm);
+      const res = await startLlamaServer(config);
       if (res?.success) {
-        toast.success(`llama-server started (PID ${res.pid}) on port ${llamaForm.port || 8080}`);
+        toast.success(`llama-server started (PID ${res.pid}) on port ${config.port}`);
       }
       loadLlamaStatus();
     } catch (err) {
@@ -771,14 +919,16 @@ export function LocalLlmTab() {
   };
 
   const handlePresetSelect = (presetId) => {
-    const preset = DFLASH_PRESETS.find((p) => p.id === presetId);
+    const preset = specPresets.find((p) => p.id === presetId);
     if (!preset) return;
-    if (preset.id !== 'custom') {
+    setLlamaPresetId(preset.id);
+    // `custom` carries no paths — it exists so hand-entered fields keep a label.
+    if (preset.model?.path || preset.draftModel?.path) {
       setLlamaForm((prev) => ({
         ...prev,
-        model: preset.model,
-        draftModel: preset.draftModel,
-        specType: preset.specType,
+        model: preset.model?.path || '',
+        draftModel: preset.draftModel?.path || '',
+        specType: preset.specType || prev.specType,
       }));
     }
   };
@@ -940,7 +1090,7 @@ export function LocalLlmTab() {
         </div>
 
         <p className="text-xs text-gray-400 leading-relaxed">
-          DFlash 2 enables multi-token speculative drafting (yielding 2.5–3× speedups on local models like Qwen 2.5 / Qwen 3.8 and Muse-Glimmer). You can launch and manage a local <code className="text-gray-300">llama-server</code> with DFlash 2 speculative drafting directly from PortOS and connect using the <strong className="text-white">OpenCode llama TUI</strong> provider.
+          Speculative decoding pairs a small drafter with your target model for 2–3× faster generation at identical output. You can launch and manage a local <code className="text-gray-300">llama-server</code> from PortOS and connect using the <strong className="text-white">OpenCode llama TUI</strong> provider. <strong className="text-white">DSpark</strong> (<code className="text-gray-300">draft-dspark</code>) works on a stock <code className="text-gray-300">brew install llama.cpp</code>; the DFlash 2 presets need a from-source build of an unmerged llama.cpp branch.
         </p>
 
         {llamaStatus?.running ? (
@@ -952,7 +1102,7 @@ export function LocalLlmTab() {
                   <p><span className="text-gray-500">Base Model:</span> <code className="text-gray-300">{llamaStatus.config.model}</code></p>
                 )}
                 {llamaStatus.config?.draftModel && (
-                  <p><span className="text-gray-500">DFlash Drafter:</span> <code className="text-port-accent">{llamaStatus.config.draftModel}</code> ({llamaStatus.config.specType || 'draft-dflash'})</p>
+                  <p><span className="text-gray-500">Drafter:</span> <code className="text-port-accent">{llamaStatus.config.draftModel}</code> ({llamaStatus.config.specType || 'draft-dflash'})</p>
                 )}
               </div>
               {llamaStatus.managed ? (
@@ -981,10 +1131,10 @@ export function LocalLlmTab() {
                   id="llama-preset-select"
                   aria-label="Preset"
                   onChange={(e) => handlePresetSelect(e.target.value)}
-                  defaultValue="qwen3.8-27b"
+                  value={llamaPresetId}
                   className="bg-port-card border border-port-border rounded px-2 py-1 text-xs text-port-accent focus:outline-none"
                 >
-                  {DFLASH_PRESETS.map((p) => (
+                  {specPresets.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.label}
                     </option>
@@ -1001,24 +1151,41 @@ export function LocalLlmTab() {
                   aria-label="Target Base Model (GGUF Path)"
                   type="text"
                   value={llamaForm.model}
-                  onChange={(e) => setLlamaForm((prev) => ({ ...prev, model: e.target.value }))}
-                  placeholder="models/Qwen3.8-27B-Instruct-Q4_K_M.gguf"
+                  onChange={(e) => setLlamaField('model', e.target.value)}
+                  placeholder={activeSpecPreset?.model?.path || 'models/your-target-Q4_K_M.gguf'}
                   className="w-full bg-port-card border border-port-border rounded px-2.5 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
                 />
               </div>
               <div>
-                <label htmlFor="llama-draft-model" className="text-[11px] text-gray-400 block mb-1">DFlash 2 Draft Model (Optional)</label>
+                <label htmlFor="llama-draft-model" className="text-[11px] text-gray-400 block mb-1">Draft Model (Optional)</label>
                 <input
                   id="llama-draft-model"
-                  aria-label="DFlash 2 Draft Model (Optional)"
+                  aria-label="Draft Model (Optional)"
                   type="text"
                   value={llamaForm.draftModel}
-                  onChange={(e) => setLlamaForm((prev) => ({ ...prev, draftModel: e.target.value }))}
-                  placeholder="models/Qwen3.8-27B-DFlash2-Q4_K_M.gguf"
+                  onChange={(e) => setLlamaField('draftModel', e.target.value)}
+                  placeholder={activeSpecPreset?.draftModel?.path || 'models/your-drafter.gguf'}
                   className="w-full bg-port-card border border-port-border rounded px-2.5 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
                 />
               </div>
             </div>
+
+            {activeSpecWeights.length > 0 && (
+              <div className="space-y-1.5 pt-2 border-t border-port-border/40">
+                <p className="text-[11px] text-gray-500">
+                  Weights on this machine — each GGUF is a separate multi-gigabyte download from Hugging Face, fetched into the path above.
+                </p>
+                {activeSpecWeights.map((entry) => (
+                  <SpecDecodeWeightRow
+                    key={entry.role}
+                    entry={entry}
+                    progress={llamaDownloads[downloadKey(llamaPresetId, entry.role)]}
+                    onDownload={handleDownloadSpecModel}
+                    disabled={llamaLoading}
+                  />
+                ))}
+              </div>
+            )}
 
             {showLlamaAdvanced && (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 border-t border-port-border/40 text-xs">
@@ -1029,7 +1196,7 @@ export function LocalLlmTab() {
                     aria-label="Port"
                     type="number"
                     value={llamaForm.port}
-                    onChange={(e) => setLlamaForm((prev) => ({ ...prev, port: parseInt(e.target.value, 10) || 8080 }))}
+                    onChange={(e) => setLlamaNumber('port', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>
@@ -1040,7 +1207,7 @@ export function LocalLlmTab() {
                     aria-label="Context Size"
                     type="number"
                     value={llamaForm.ctxSize}
-                    onChange={(e) => setLlamaForm((prev) => ({ ...prev, ctxSize: parseInt(e.target.value, 10) || 32768 }))}
+                    onChange={(e) => setLlamaNumber('ctxSize', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>
@@ -1051,7 +1218,7 @@ export function LocalLlmTab() {
                     aria-label="GPU Layers (-ngl)"
                     type="number"
                     value={llamaForm.nGpuLayers}
-                    onChange={(e) => setLlamaForm((prev) => ({ ...prev, nGpuLayers: parseInt(e.target.value, 10) ?? 99 }))}
+                    onChange={(e) => setLlamaNumber('nGpuLayers', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>
@@ -1062,14 +1229,14 @@ export function LocalLlmTab() {
                     aria-label="Spec Type"
                     type="text"
                     value={llamaForm.specType}
-                    onChange={(e) => setLlamaForm((prev) => ({ ...prev, specType: e.target.value }))}
+                    onChange={(e) => setLlamaField('specType', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>
               </div>
             )}
 
-            <div className="flex items-center justify-between gap-2 pt-1">
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
               <button
                 type="button"
                 onClick={() => setShowLlamaAdvanced((prev) => !prev)}
@@ -1078,14 +1245,26 @@ export function LocalLlmTab() {
                 {showLlamaAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                 {showLlamaAdvanced ? 'Hide options' : 'Advanced options (port, ctx, GPU layers)'}
               </button>
-              <button
-                type="submit"
-                disabled={llamaLoading || !llamaForm.model.trim()}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
-              >
-                {llamaLoading ? <BrailleSpinner /> : <Power size={13} />}
-                Start Speculative Server
-              </button>
+              <div className="flex items-center gap-2">
+                {llamaStartBlocked && (
+                  <span className="text-[11px] text-port-warning text-right">
+                    {llamaStartBlockedReason}
+                  </span>
+                )}
+                <button
+                  type="submit"
+                  disabled={llamaLoading || llamaStartBlocked}
+                  title={llamaModelMissing
+                    ? 'Target Base Model (GGUF Path) is required before the server can start'
+                    : llamaStartBlocked
+                      ? `${llamaStartBlockedReason} — llama.cpp can't load a GGUF that isn't on disk`
+                      : 'Launch llama-server with these settings'}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent text-xs font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                >
+                  {llamaLoading ? <BrailleSpinner /> : <Power size={13} />}
+                  Start Speculative Server
+                </button>
+              </div>
             </div>
           </form>
         ) : (
@@ -1404,7 +1583,20 @@ export function LocalLlmTab() {
                         Desktop keeps them stacked at the card's right edge. */}
                     <div className="flex flex-row sm:flex-col items-center sm:items-end gap-2 sm:gap-1 shrink-0 justify-end flex-wrap">
                       {chosenInstalled ? (
-                        <span className="text-xs px-2 py-1 text-port-success">Installed</span>
+                        <>
+                          <span className="text-xs px-2 py-1 text-port-success">Installed</span>
+                          {!isAudio && (selected !== 'lmstudio' || /@/.test(chosenId || '')) && (
+                            <button
+                              onClick={() => install(chosenId, { force: true })}
+                              disabled={busy}
+                              title="Pull this build again. Updated GGUF files keep the same name, so an existing install will not refresh until you redownload."
+                              className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                            >
+                              {actionInProgress === `install-${chosenId}` ? <BrailleSpinner /> : <RefreshCw size={12} />}
+                              Redownload
+                            </button>
+                          )}
+                        </>
                       ) : m.installable === false ? (
                         // Audio models with no PortOS runtime (or a fixed-checkpoint
                         // engine like ACE-Step) are discovery-only — "Visit" below.
@@ -1515,6 +1707,18 @@ export function LocalLlmTab() {
                   <FlaskConical size={12} />
                   Chat
                 </Link>
+                {redownloadInstallId(m, selected) && (
+                <button
+                  onClick={() => install(redownloadInstallId(m, selected), { force: true })}
+                  disabled={busy}
+                  title="Pull this build again. Updated GGUF files keep the same name, so an existing install will not refresh until you redownload."
+                  className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 flex items-center gap-1 shrink-0"
+                  aria-label={`Redownload ${m.name || m.id}`}
+                >
+                  {actionInProgress === `install-${redownloadInstallId(m, selected)}` ? <BrailleSpinner /> : <RefreshCw size={12} />}
+                  Redownload
+                </button>
+                )}
                 {isConfirmingDelete(m.id) ? (
                   <ConfirmButtonPair
                     prompt="Delete?"

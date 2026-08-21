@@ -53,6 +53,7 @@ const mocks = vi.hoisted(() => ({
     modelIdsReferToSameRepo: vi.fn((left, right) => String(left).split('/').pop().replace(/-GGUF$/i, '').toLowerCase()
       === String(right).split('/').pop().replace(/-GGUF$/i, '').toLowerCase()),
     deleteModel: vi.fn(async (id) => ({ success: true, modelId: id })),
+    evictDownloadedQuant: vi.fn(async (id) => ({ success: true, modelId: id })),
     downloadModel: vi.fn(async (id) => ({ success: true, modelId: id })),
     getStatus: vi.fn(async () => ({ available: false, baseUrl: 'y', loadedModels: 0 })),
     resetCache: vi.fn(),
@@ -232,6 +233,36 @@ describe('localLlm', () => {
     it('routes Ollama install to pullModel', async () => {
       await svc.installModel('ollama', 'llama3.2');
       expect(mocks.ollama.pullModel).toHaveBeenCalledWith('llama3.2', undefined);
+    });
+    it('does not evict LM Studio files on a normal install', async () => {
+      await svc.installModel('lmstudio', 'unsloth/Qwen3.8-27B-GGUF');
+      expect(mocks.lmstudio.evictDownloadedQuant).not.toHaveBeenCalled();
+      expect(mocks.lmstudio.downloadModel).toHaveBeenCalledWith('unsloth/Qwen3.8-27B-GGUF');
+    });
+    it('evicts existing LM Studio files before a force redownload', async () => {
+      await svc.installModel('lmstudio', 'unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M', undefined, { force: true });
+      expect(mocks.lmstudio.evictDownloadedQuant).toHaveBeenCalledWith('unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M');
+      expect(mocks.lmstudio.downloadModel).toHaveBeenCalledWith('unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M');
+    });
+    it('does not download when a force LM Studio eviction fails', async () => {
+      mocks.lmstudio.evictDownloadedQuant.mockResolvedValueOnce({ success: false, error: 'ambiguous' });
+      const result = await svc.installModel('lmstudio', 'qwen3.8', undefined, { force: true });
+      expect(result).toMatchObject({ success: false, error: 'ambiguous' });
+      expect(mocks.lmstudio.downloadModel).not.toHaveBeenCalled();
+    });
+    it('does not download a force LM Studio redownload of a bare repo id', async () => {
+      mocks.lmstudio.evictDownloadedQuant.mockResolvedValueOnce({
+        success: false,
+        error: 'Redownload needs a quantization tag'
+      });
+      const result = await svc.installModel('lmstudio', 'unsloth/Qwen3.8-27B-GGUF', undefined, { force: true });
+      expect(result.success).toBe(false);
+      expect(mocks.lmstudio.downloadModel).not.toHaveBeenCalled();
+    });
+    it('force is a no-op for Ollama beyond a regular pull', async () => {
+      await svc.installModel('ollama', 'hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M', undefined, { force: true });
+      expect(mocks.ollama.pullModel).toHaveBeenCalledWith('hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M', undefined);
+      expect(mocks.lmstudio.evictDownloadedQuant).not.toHaveBeenCalled();
     });
     it('routes a curated Safetensors model through Ollama create instead of registry pull', async () => {
       const onProgress = vi.fn();

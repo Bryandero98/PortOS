@@ -11,6 +11,7 @@ vi.mock('../services/api', () => ({
   generateImageTo3dModel: (...a) => generateImageTo3dModel(...a),
   deleteImageTo3dModel: (...a) => deleteImageTo3dModel(...a),
   imageTo3dAssetUrl: (id) => `/api/image-to-3d/models/${id}/asset`,
+  imageTo3dFullMeshUrl: (id) => `/api/image-to-3d/models/${id}/full-mesh`,
 }));
 
 // GlbViewer wraps a WebGL canvas jsdom can't render — stub to a marker echoing src.
@@ -82,5 +83,127 @@ describe('Media3DDetail', () => {
     fireEvent.click(within(confirmRow.parentElement).getByRole('button', { name: /^delete$/i }));
     await waitFor(() => expect(deleteImageTo3dModel).toHaveBeenCalledWith('image3d-1', { silent: true }));
     expect(await screen.findByText('3D index')).toBeInTheDocument();
+  });
+
+  it('re-render sends the chosen per-run options (blank seed omitted → server rolls fresh)', async () => {
+    getImageTo3dModel.mockResolvedValue(record());
+    generateImageTo3dModel.mockResolvedValue(record({ status: 'generating' }));
+    renderAt();
+    await screen.findByText('Example Beacon');
+
+    fireEvent.change(screen.getByLabelText(/quality/i), { target: { value: '24' } });
+    fireEvent.click(screen.getByRole('button', { name: /re-render/i }));
+
+    await waitFor(() => expect(generateImageTo3dModel).toHaveBeenCalledWith(
+      'image3d-1',
+      // normalMap is sent explicitly rather than omitted. It defaults OFF (the bake
+      // can lose a render outright), and stating it keeps the body honest about what
+      // the run asked for even if that default ever moves.
+      { steps: 24, keyBackground: false, normalMap: false },
+      { silent: true },
+    ));
+  });
+
+  it('seeds steps/keying from the latest run but leaves the seed blank (stays random)', async () => {
+    getImageTo3dModel.mockResolvedValue(record({
+      runs: [{ operationId: 'op-1', status: 'completed', percent: 100, steps: 48, seed: 1234, keyBackground: false }],
+    }));
+    generateImageTo3dModel.mockResolvedValue(record({ status: 'generating' }));
+    renderAt();
+    await screen.findByText('Example Beacon');
+
+    // The seeding effect commits one render after the record lands — wait for it.
+    await waitFor(() => expect(screen.getByLabelText(/quality/i)).toHaveValue('48'));
+    // Blank by design — echoing the run's concrete seed back would silently pin
+    // it, reintroducing the deterministic-re-render trap.
+    expect(screen.getByLabelText(/seed/i)).toHaveValue(null);
+    expect(screen.getByLabelText(/key out flat backdrop/i)).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole('button', { name: /re-render/i }));
+    await waitFor(() => expect(generateImageTo3dModel).toHaveBeenCalledWith(
+      'image3d-1',
+      { steps: 48, keyBackground: false, normalMap: false },
+      { silent: true },
+    ));
+  });
+
+  it('carries the detail tier and normal-map choice over from the latest run', async () => {
+    // Deliberate quality choices, so they inherit like steps does — unlike seed,
+    // which must stay blank.
+    getImageTo3dModel.mockResolvedValue(record({
+      runs: [{
+        operationId: 'op-1', status: 'completed', percent: 100,
+        detail: 'fast', alphaMode: 'auto', normalMap: false,
+      }],
+    }));
+    generateImageTo3dModel.mockResolvedValue(record({ status: 'generating' }));
+    renderAt();
+    await screen.findByText('Example Beacon');
+
+    await waitFor(() => expect(screen.getByLabelText(/detail/i)).toHaveValue('fast'));
+    expect(screen.getByLabelText(/transparency/i)).toHaveValue('auto');
+    expect(screen.getByLabelText(/bake normal map/i)).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole('button', { name: /re-render/i }));
+    await waitFor(() => expect(generateImageTo3dModel).toHaveBeenCalledWith(
+      'image3d-1',
+      { keyBackground: false, detail: 'fast', alphaMode: 'auto', normalMap: false },
+      { silent: true },
+    ));
+  });
+
+  it('offers the full-resolution mesh download, labelled as geometry only', async () => {
+    // ~1 GB of untextured v/f OBJ. The label has to say so, or someone downloads it
+    // expecting a textured model.
+    getImageTo3dModel.mockResolvedValue(record());
+    renderAt();
+    await screen.findByText('Example Beacon');
+    const link = screen.getByRole('link', { name: /full-resolution mesh/i });
+    expect(link).toHaveAttribute('href', '/api/image-to-3d/models/image3d-1/full-mesh');
+    expect(link.textContent).toMatch(/geometry only/i);
+  });
+
+  describe('viewer transparency', () => {
+    // The viewer is the third layer able to flatten alpha, after the exporter's
+    // alpha_mode and PortOS's GLB rewrite. If it keeps forcing opaque, a mesh
+    // exported as BLEND still renders solid and reads as a broken exporter.
+    it('forces opaque when the run asked for no transparency', async () => {
+      getImageTo3dModel.mockResolvedValue(record({
+        runs: [{ operationId: 'op-1', status: 'completed', percent: 100 }],
+      }));
+      renderAt();
+      await screen.findByText('Example Beacon');
+      expect(screen.getByTestId('glb-viewer')).toHaveAttribute('data-force-opaque', 'true');
+    });
+
+    it('stops forcing opaque when the run requested a transparent material', async () => {
+      getImageTo3dModel.mockResolvedValue(record({
+        runs: [{ operationId: 'op-1', status: 'completed', percent: 100, alphaMode: 'BLEND' }],
+      }));
+      renderAt();
+      await screen.findByText('Example Beacon');
+      expect(screen.getByTestId('glb-viewer')).toHaveAttribute('data-force-opaque', 'false');
+    });
+
+    it('still forces opaque when the run explicitly asked for OPAQUE', async () => {
+      getImageTo3dModel.mockResolvedValue(record({
+        runs: [{ operationId: 'op-1', status: 'completed', percent: 100, alphaMode: 'OPAQUE' }],
+      }));
+      renderAt();
+      await screen.findByText('Example Beacon');
+      expect(screen.getByTestId('glb-viewer')).toHaveAttribute('data-force-opaque', 'true');
+    });
+  });
+
+  it('shows the latest run’s seed, steps, and keyed-background badge in the meta line', async () => {
+    getImageTo3dModel.mockResolvedValue(record({
+      runs: [{ operationId: 'op-1', status: 'completed', percent: 100, seed: 777, steps: 24, sourceKeyed: true }],
+    }));
+    renderAt();
+    await screen.findByText('Example Beacon');
+    // Scope to the meta paragraph — the quality <select> also mentions "24 steps".
+    const meta = screen.getByText(/seed 777/);
+    expect(meta.textContent).toContain('24 steps');
+    expect(meta.textContent).toContain('background keyed');
   });
 });

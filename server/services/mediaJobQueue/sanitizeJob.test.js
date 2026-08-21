@@ -28,6 +28,24 @@ describe('sanitizeJob', () => {
     });
   });
 
+  it('projects the resolved render geometry on the envelope, distinct from the requested params', () => {
+    // #4588: `params.width/height` is what was ASKED for; `render` is what the
+    // gen module resolved to after snapping to the model grid. A preview stage
+    // has to size itself by the latter.
+    const sanitized = sanitizeJob({
+      id: 'video-job',
+      kind: 'video',
+      status: 'running',
+      render: { width: 704, height: 480 },
+      params: { width: 720, height: 484 },
+    });
+    expect(sanitized.render).toEqual({ width: 704, height: 480 });
+    expect(sanitized.params).toEqual({ width: 720, height: 484 });
+  });
+
+  it('leaves render absent — not zeroed — when the run never reported a geometry', () => {
+    expect(sanitizeJob({ id: 'j', kind: 'video', status: 'queued' }).render).toBeUndefined();
+  });
   it('exposes instrumental mode without leaking authored Music Studio text', () => {
     const job = sanitizeJob({
       id: 'job-1',
@@ -55,8 +73,11 @@ describe('sanitizeJob', () => {
       kind: 'audio',
       status: 'queued',
       params: {
+        // Blank/nulled by routedJobParams, exactly as the queue persists it —
+        // if the fixture carried the model id here too, the marker rebuild
+        // below could stop working and this test would still pass.
         prompt: '',
-        modelId: 'example/model',
+        modelId: null,
         remoteMedia: {
           wireVersion: 1,
           peerId: '00000000-0000-4000-8000-000000000001',
@@ -79,6 +100,78 @@ describe('sanitizeJob', () => {
       prompt: 'Instrumental orchestral music with a triumphant mood, moderate tempo, high energy, featuring brass and strings. No vocals or spoken words.',
       modelId: 'example/model',
     });
+    expect(sanitized.renderer).toBe('remote');
     expect(sanitized.params).not.toHaveProperty('remoteMedia');
+  });
+
+  it('restores an image/video remote job prompt and model from its marker, not from params', () => {
+    const sanitized = sanitizeJob({
+      id: 'job-image',
+      kind: 'image',
+      status: 'running',
+      params: {
+        // Blank/nulled on purpose: the prompt and the model live only inside
+        // the versioned marker so an older build that cannot route it fails
+        // closed instead of rendering (#4683).
+        prompt: '',
+        modelId: null,
+        width: 512,
+        height: 512,
+        remoteMedia: {
+          wireVersion: 1,
+          peerId: '00000000-0000-4000-8000-000000000001',
+          request: {
+            kind: 'image',
+            engine: 'local',
+            modelId: 'dev',
+            prompt: 'a lighthouse at dusk',
+            width: 512,
+            height: 512,
+          },
+        },
+      },
+    });
+
+    expect(sanitized.params).toEqual({
+      prompt: 'a lighthouse at dusk',
+      modelId: 'dev',
+      width: 512,
+      height: 512,
+    });
+    expect(sanitized.params).not.toHaveProperty('remoteMedia');
+    // Job metadata, not a render input — the Render Queue badges this
+    // 'remote / dev' rather than claiming a local render produced it.
+    expect(sanitized.renderer).toBe('remote');
+    expect(sanitized.params).not.toHaveProperty('renderer');
+  });
+
+  it('reports a local job as locally rendered', () => {
+    const sanitized = sanitizeJob({
+      id: 'job-local',
+      kind: 'image',
+      status: 'running',
+      params: { prompt: 'a lighthouse at dusk', modelId: 'dev' },
+    });
+
+    expect(sanitized.params).toEqual({ prompt: 'a lighthouse at dusk', modelId: 'dev' });
+    expect(sanitized.renderer).toBe('local');
+  });
+
+  it('reports a training job carrying a stray marker as local — training has no federated contract', () => {
+    const sanitized = sanitizeJob({
+      id: 'job-training',
+      kind: 'training',
+      status: 'running',
+      params: {
+        runId: 'run-1',
+        runtime: 'mflux',
+        modelId: 'dev',
+        remoteMedia: { wireVersion: 1, request: { modelId: 'peer-model' } },
+      },
+    });
+
+    expect(sanitized.renderer).toBe('local');
+    // The marker must not rewrite a local training job's model either.
+    expect(sanitized.params.modelId).toBe('dev');
   });
 });

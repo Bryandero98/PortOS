@@ -1,35 +1,45 @@
 import { useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router';
-import { useCityData } from '../hooks/useCityData';
-import { useCityPlayback } from '../hooks/useCityPlayback';
-import useCityAudio from '../hooks/useCityAudio';
+import { useOpenWorldData } from '../hooks/useOpenWorldData';
+import { useOpenWorldPlayback } from '../hooks/useOpenWorldPlayback';
+import useOpenWorldAudio from '../hooks/useOpenWorldAudio';
 import useKeyboardControls from '../hooks/useKeyboardControls';
 import useKeyboardShortcuts from '../hooks/useKeyboardShortcuts';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
-import { mergeFrameIntoCityProps } from '../lib/cityPlaybackFrame';
+import { mergeFrameIntoOpenWorldProps } from '../lib/openWorldPlaybackFrame';
 import * as api from '../services/api';
-import CityScene from '../components/city/CityScene';
-import CityHud from '../components/city/CityHud';
-import CityScanlines from '../components/city/CityScanlines';
-import CityPhotoOverlay from '../components/city/CityPhotoOverlay';
-import CityPlaybackOverlay from '../components/city/CityPlaybackOverlay';
-import { CitySettingsProvider, useCitySettingsContext } from '../components/city/CitySettingsContext';
-import { QUALITY_PRESETS } from '../hooks/useCitySettings';
-import CitySettingsDrawer from '../components/city/CitySettingsDrawer';
-import { computeFilterResult } from '../utils/cityFilter';
-import { resolveCityFocus } from '../utils/cityFocusState';
-import useCityViewport from '../hooks/useCityViewport';
-import { DEFAULT_PRESET_ID, cyclePreset } from '../utils/cityPhotoMode';
-import { computeSoundscape } from '../utils/citySoundscape';
-import { deriveCityPalette, getTimeOfDayPreset, resolveCityTimeOfDay, resolveWorldStyle } from '../components/city/cityConstants';
-import OpenWorldFastTravel from '../components/city/OpenWorldFastTravel';
+import OpenWorldScene from '../components/openworld/OpenWorldScene';
+import OpenWorldHud from '../components/openworld/OpenWorldHud';
+import OpenWorldMobileControls from '../components/openworld/OpenWorldMobileControls';
+import OpenWorldPhotoOverlay from '../components/openworld/OpenWorldPhotoOverlay';
+import OpenWorldPlaybackOverlay from '../components/openworld/OpenWorldPlaybackOverlay';
+import { OpenWorldSettingsProvider, useOpenWorldSettingsContext } from '../components/openworld/OpenWorldSettingsContext';
+import OpenWorldSettingsDrawer from '../components/openworld/OpenWorldSettingsDrawer';
+import { computeFilterResult } from '../utils/openWorldFilter';
+import { resolveOpenWorldFocus } from '../utils/openWorldFocusState';
+import useOpenWorldViewport from '../hooks/useOpenWorldViewport';
+import { DEFAULT_PRESET_ID, cyclePreset } from '../utils/openWorldPhotoMode';
+import { computeSoundscape } from '../utils/openWorldSoundscape';
+import { deriveOpenWorldPalette, getTimeOfDayPreset, resolveOpenWorldTimeOfDay, resolveWorldStyle } from '../components/openworld/openWorldConstants';
+import OpenWorldFastTravel from '../components/openworld/OpenWorldFastTravel';
 import { getRegion, regionArrivalPoint, regionPath } from '../utils/openWorldRegions';
-import { CityPaletteProvider } from '../components/city/CityPaletteContext';
+import { loadCollectedShardIds, saveCollectedShardIds, TOTAL_SHARDS } from '../utils/openWorldCollectibles';
+import { OpenWorldPaletteProvider } from '../components/openworld/OpenWorldPaletteContext';
 import { useThemeContext } from '../components/ThemeContext';
 
+// Internal render budgets only. These tiers are selected from sustained frame time and are
+// deliberately not persisted or exposed as player settings; art direction stays coherent while
+// the renderer sheds work on slower hardware.
+const RENDER_TIERS = {
+  low: { particleDensity: 0.5, dpr: [1, 1] },
+  medium: { particleDensity: 0.75, dpr: [1, 1.25] },
+  high: { particleDensity: 1, dpr: [1, 1.25] },
+  ultra: { particleDensity: 1.5, dpr: [1, 1.5] },
+};
+
 function OpenWorldInner() {
-  const { apps, cosAgents, cosStatus, eventLogs, agentMap, reviewCounts, instances, systemHealth, notificationCounts, backupStatus, cosTasks, healthMetrics, voiceState, character, aiActivity, loading, connected } = useCityData();
-  const { settings, updateSetting, resetNonce } = useCitySettingsContext();
+  const { apps, cosAgents, cosStatus, eventLogs, agentMap, reviewCounts, instances, systemHealth, notificationCounts, backupStatus, cosTasks, healthMetrics, voiceState, character, aiActivity, loading, connected } = useOpenWorldData();
+  const { settings, updateSetting, resetNonce } = useOpenWorldSettingsContext();
 
   // Ambient soundscape (roadmap 3.4): the music's mood follows system health and its energy
   // follows live agent activity. Derived from data the page already has — no extra fetch.
@@ -41,17 +51,17 @@ function OpenWorldInner() {
     () => computeSoundscape({ systemHealth, agentCount: activeAgentCount }),
     [systemHealth, activeAgentCount]
   );
-  const { playSfx } = useCityAudio(settings, soundscape);
+  const { playSfx } = useOpenWorldAudio(settings, soundscape);
   const navigate = useNavigate();
   const location = useLocation();
   const { appId, regionId } = useParams();
-  const { isDesktop } = useCityViewport();
+  const { isDesktop } = useOpenWorldViewport();
 
   // URL-addressed building focus (issue #2593). The `/openworld/apps/:appId` route param is the
   // single source of truth for "which borough is focused" — reload/back-forward/deep-link all
   // restore it.
   const { hasFocus, focusedApp, notFound: focusNotFound } = useMemo(
-    () => resolveCityFocus(appId, apps, { loading }),
+    () => resolveOpenWorldFocus(appId, apps, { loading }),
     [appId, apps, loading],
   );
   // Fast travel: `/openworld/region/:regionId` is the same contract one level out — the URL says
@@ -68,63 +78,56 @@ function OpenWorldInner() {
   );
 
   // OpenWorld follows the active PortOS theme: the HUD recolors via the
-  // `cybercity-themed` CSS scope (see index.css) and the 3D scene's brand colors
+  // `openworld-themed` CSS scope (see index.css) and the 3D scene's brand colors
   // + surround are derived from the same theme here.
-  const { theme: cityTheme } = useThemeContext();
+  const { theme: openWorldTheme } = useThemeContext();
   // Art direction — 'vibes' (bright low-poly open world, the default) or 'cyber' (the
   // original neon night). It selects the time-of-day preset pair and the palette's
   // structural/decorative surfaces, so it must resolve before either.
   const worldStyle = resolveWorldStyle(settings?.worldStyle);
-  // Pure: derive the themed palette and hand it down through CityPaletteContext (and,
-  // inside <Canvas>, a second provider in CityScene since r3f's reconciler doesn't
+  // Pure: derive the themed palette and hand it down through OpenWorldPaletteContext (and,
+  // inside <Canvas>, a second provider in OpenWorldScene since r3f's reconciler doesn't
   // bridge context). No more during-render mutation of a shared singleton.
-  const cityPalette = useMemo(() => deriveCityPalette(cityTheme, worldStyle), [cityTheme, worldStyle]);
+  const openWorldPalette = useMemo(() => deriveOpenWorldPalette(openWorldTheme, worldStyle), [openWorldTheme, worldStyle]);
 
-  // The world renders day or night, following the theme mode by default (see
-  // resolveCityTimeOfDay). The resolved preset key is handed to the scene via a
-  // settings override (CitySky/CityLights/CityGround read settings.timeOfDay), and the
+  // Open World renders day or night, following the theme mode by default; Cyber City is
+  // always night (see resolveOpenWorldTimeOfDay). The resolved preset key is handed to the scene via a
+  // settings override (OpenWorldSky/OpenWorldLights/OpenWorldGround read settings.timeOfDay), and the
   // backdrop takes the matching preset's mid-sky band so the DOM surround behind the
   // canvas agrees with the sky the scene actually paints, in either art direction.
-  const cityTimeOfDay = resolveCityTimeOfDay(settings?.timeOfDay, cityPalette.isDay, worldStyle);
-  const sceneBackground = cityTimeOfDay.daytime
-    ? getTimeOfDayPreset(cityTimeOfDay.presetKey).midSky
-    : cityPalette.nightBackground;
+  const openWorldTimeOfDay = resolveOpenWorldTimeOfDay(settings?.timeOfDay, openWorldPalette.isDay, worldStyle);
+  const sceneBackground = openWorldTimeOfDay.daytime
+    ? getTimeOfDayPreset(openWorldTimeOfDay.presetKey).midSky
+    : openWorldPalette.nightBackground;
 
-  // Auto quality mode (issue #2592). In Auto, an adaptive render budget picks the
-  // effective tier at runtime (starting at High); in Manual, the effective tier is the
-  // saved preset. The runtime tier is deliberately separate from persisted settings —
-  // adaptation never rewrites localStorage. `autoDiagnostics` is a local-only readout
-  // (never persisted or transmitted). Auto always *starts* at High per the spec, even
-  // if the user last had a different manual preset.
-  const qualityMode = settings?.qualityMode === 'auto' ? 'auto' : 'manual';
+  // Rendering adapts silently. The player gets a stable art direction and the renderer
+  // chooses its detail tier from sustained frame time; low/medium/high/ultra are internal
+  // budgets, not design settings. This keeps the settings drawer focused on choices a player
+  // can actually feel (world style, audio, and controls).
   const [autoTier, setAutoTier] = useState('high');
-  const [autoDiagnostics, setAutoDiagnostics] = useState(null);
-  const effectiveTier = qualityMode === 'auto' ? autoTier : (settings?.qualityPreset ?? 'high');
-
-  // Clear the stale local diagnostics readout whenever the budget re-arms: a RESET DEFAULTS
-  // (resetNonce) or a quality-mode transition (Manual↔Auto). The adaptive budget itself
-  // re-arms via CityScene and re-reports tier + fresh samples on the next window.
-  useEffect(() => { setAutoDiagnostics(null); }, [resetNonce, qualityMode]);
+  const effectiveTier = autoTier;
 
   const sceneSettings = useMemo(() => {
-    const base = { ...settings, effectiveTier, skyTheme: 'cyberpunk', timeOfDay: cityTimeOfDay.presetKey };
-    if (qualityMode !== 'auto') return base;
-    // Derive the render-affecting fields (reflections, particle density, DPR) from the
-    // adaptive tier; leave user-tuned lighting/scanline toggles untouched.
-    const tierCfg = QUALITY_PRESETS[effectiveTier] || QUALITY_PRESETS.high;
+    // Derive render-affecting fields from the adaptive tier. The settings store contains
+    // player choices only, so old renderer knobs cannot override the coherent world look.
+    const tierCfg = RENDER_TIERS[effectiveTier] || RENDER_TIERS.high;
     return {
-      ...base,
-      reflectionsEnabled: tierCfg.reflectionsEnabled,
+      ...settings,
+      effectiveTier,
+      skyTheme: 'cyberpunk',
+      timeOfDay: openWorldTimeOfDay.presetKey,
       particleDensity: tierCfg.particleDensity,
       dpr: tierCfg.dpr,
+      ambientBrightness: 1,
+      neonBrightness: worldStyle === 'cyber' ? 1.1 : 1,
     };
-  }, [settings, effectiveTier, qualityMode, cityTimeOfDay.presetKey]);
+  }, [settings, effectiveTier, openWorldTimeOfDay.presetKey, worldStyle]);
 
   const [filter, setFilter] = useState(() => {
     // try/catch is necessary because sessionStorage values are external state
     // a corrupted/older-schema entry would throw and crash the page render.
     try {
-      const raw = sessionStorage.getItem('cybercity.filter');
+      const raw = sessionStorage.getItem('openworld.filter');
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed.status === 'string') {
@@ -144,7 +147,7 @@ function OpenWorldInner() {
     // setItem can throw (Safari private mode, storage quota); ignore — this
     // is a UX nicety, not load-bearing state.
     try {
-      sessionStorage.setItem('cybercity.filter', JSON.stringify(filter));
+      sessionStorage.setItem('openworld.filter', JSON.stringify(filter));
     } catch {
       // intentionally swallow
     }
@@ -171,37 +174,96 @@ function OpenWorldInner() {
 
   // V (in exploration mode) swaps the follow-camera character view and first person.
   const handleToggleCameraView = useCallback(() => {
-    updateSetting('cameraView', settings?.cameraView === 'first' ? 'third' : 'first');
+    updateSetting('cameraView', (settings?.cameraView ?? 'third') === 'first' ? 'third' : 'first');
   }, [updateSetting, settings?.cameraView]);
 
   const keysRef = useKeyboardControls(handleToggleExploration);
+  const mobileInputRef = useRef({
+    moveX: 0,
+    moveY: 0,
+    lookDeltaX: 0,
+    lookDeltaY: 0,
+    boost: false,
+    jump: false,
+  });
+  const playerActionRef = useRef(null);
+  const [proximityTarget, setProximityTarget] = useState(null);
 
-  // --- Fast travel ----------------------------------------------------------
-  // Warping navigates to `/openworld/region/:regionId`; the route param then drives the
-  // camera (CityFocusCamera) and, on foot, the player rig. Only the panel's open/closed
-  // state is local — the destination itself always lives in the URL.
+  // Cyber Shards collectible state + live player pose
+  const [collectedShardIds, setCollectedShardIds] = useState(() => loadCollectedShardIds());
+  const [activeBursts, setActiveBursts] = useState([]);
+  const [playerPose, setPlayerPose] = useState(null);
+
+  const handleCollectShard = useCallback((shard) => {
+    setCollectedShardIds((prev) => {
+      const next = new Set(prev);
+      next.add(shard.id);
+      saveCollectedShardIds(next);
+      return next;
+    });
+    const burstId = `${shard.id}-${Date.now()}`;
+    setActiveBursts((prev) => [
+      ...prev.slice(-4),
+      { id: burstId, x: shard.x, y: shard.y, z: shard.z, color: shard.color, age: 0 },
+    ]);
+    setTimeout(() => {
+      setActiveBursts((prev) => prev.filter((b) => b.id !== burstId));
+    }, 850);
+  }, []);
+
+  // --- World map / fast travel ----------------------------------------------
+  // Warping stays under `/openworld/region/:regionId`; the route param drives the orbital
+  // camera and, on foot, the player rig. The destination is still shareable, but it never
+  // sends the player to the 2D page represented by that district.
   const [fastTravelOpen, setFastTravelOpen] = useState(false);
   // The walking player's arrival point for the latest warp, carrying a monotonic token so
   // PlayerController can tell "warp again to the same place" from a re-render with equal
-  // coordinates — which is why it isn't derived from the region id. Set on every warp, not
-  // only while exploring: PlayerController mounts only in exploration mode and applies the
-  // current token on mount, so arming it unconditionally also means warping in the orbital
-  // overview and THEN dropping in (Tab) lands you at the region you were looking at,
+  // coordinates — which is why it isn't derived from the region id. Direct region deep links
+  // seed the first arrival synchronously; later route changes arm the same handoff in an effect.
+  // Set on every warp, not only while exploring: PlayerController mounts only in exploration mode
+  // and applies the current token on mount, so arming it unconditionally also means warping in the
+  // orbital overview and THEN dropping in (Tab) lands you at the region you were looking at,
   // instead of back at your old spawn.
-  const [playerTeleport, setPlayerTeleport] = useState(null);
+  const [playerTeleport, setPlayerTeleport] = useState(() => {
+    if (!focusedRegion) return null;
+    const arrival = regionArrivalPoint(focusedRegion);
+    return arrival ? { ...arrival, regionId: focusedRegion.id, token: 1 } : null;
+  });
+  const lastRoutedRegionIdRef = useRef(regionId);
+
+  const armPlayerTeleport = useCallback((region, force = false) => {
+    const arrival = regionArrivalPoint(region);
+    if (!arrival) return;
+    setPlayerTeleport(prev => {
+      if (!force && prev?.regionId === region.id) return prev;
+      return { ...arrival, regionId: region.id, token: (prev?.token ?? 0) + 1 };
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!focusedRegion) {
+      lastRoutedRegionIdRef.current = regionId;
+      return;
+    }
+    if (lastRoutedRegionIdRef.current === regionId) return;
+    lastRoutedRegionIdRef.current = regionId;
+    armPlayerTeleport(focusedRegion);
+  }, [armPlayerTeleport, focusedRegion, regionId]);
 
   const handleTravelToRegion = useCallback((region) => {
     if (!region?.id) return;
     navigate(regionPath(region.id));
-    const arrival = regionArrivalPoint(region);
-    if (arrival) setPlayerTeleport(prev => ({ ...arrival, token: (prev?.token ?? 0) + 1 }));
+    // A map pick is an explicit warp even when the destination matches the current route (or
+    // stale route state), so always re-arm it; browser back/forward and direct deep links are
+    // armed by the effect above.
+    armPlayerTeleport(region, true);
     playSfx?.('dataPulse');
-  }, [navigate, playSfx]);
+  }, [armPlayerTeleport, navigate, playSfx]);
 
   const openFastTravel = useCallback(() => setFastTravelOpen(true), []);
 
   // Photo mode (roadmap 3.3): a cinematic capture mode with framing presets and a postcard
-  // screenshot. The in-canvas CityPhotoCamera registers its capture function here via a ref so
+  // screenshot. The in-canvas OpenWorldPhotoCamera registers its capture function here via a ref so
   // the overlay (outside the Canvas) can trigger a grab. Exiting photo mode clears the fn.
   const [photoMode, setPhotoMode] = useState(false);
   const [photoPresetId, setPhotoPresetId] = useState(DEFAULT_PRESET_ID);
@@ -214,7 +276,7 @@ function OpenWorldInner() {
   // Playback / "history" mode (roadmap 3.6): scrub recorded city-state snapshots.
   // Transport state lives in the hook; the page swaps the current frame's data
   // into the scene props below. Mutually exclusive with photo mode.
-  const playback = useCityPlayback();
+  const playback = useOpenWorldPlayback();
 
   // M opens the fast-travel map. Deliberately open-only, not a toggle: the panel is a
   // <Modal>, which owns Esc/backdrop dismissal — and the shared shortcut hook suppresses
@@ -346,7 +408,7 @@ function OpenWorldInner() {
   // keeps the harbor current. `compare` strips the always-changing `ts` so a byte-identical
   // payload keeps its identity and the harbor subtree skips reconciliation.
   const { data: introspection } = useAutoRefetch(
-    () => api.getCityIntrospection({ silent: true }),
+    () => api.getOpenWorldIntrospection({ silent: true }),
     120_000,
     {
       compare: (prev, next) =>
@@ -382,26 +444,45 @@ function OpenWorldInner() {
     { enabled: jiraAppsKey.length > 0 },
   );
 
-  // Selecting a building focuses it in-place (issue #2593) — the URL becomes /city/apps/:id and the
-  // camera flies to frame the borough WITHOUT leaving City. In street-level exploration the old
-  // behavior stands (walking up to a building and interacting opens the app page).
+  // Selecting a building focuses it in-place (issue #2593) — the URL becomes /openworld/apps/:id and the
+  // camera/HUD stay inside OpenWorld. This is also the interaction target for the first-person player:
+  // walking up to a building and pressing F opens its live status panel, never the 2D app page.
   const handleBuildingClick = useCallback((app) => {
     if (!app?.id) return;
-    if (settings?.explorationMode) navigate(`/apps/${app.id}`);
-    else navigate(`/openworld/apps/${app.id}`);
-  }, [navigate, settings?.explorationMode]);
+    navigate(`/openworld/apps/${app.id}`);
+  }, [navigate]);
 
   const handleJumpToFirst = useCallback(() => {
     const first = filterResult.matches[0];
     if (!first?.id) return;
-    // Mirror handleBuildingClick: focus in-place from the overview, open the app page in exploration.
-    if (settings?.explorationMode) navigate(`/apps/${first.id}`);
-    else navigate(`/openworld/apps/${first.id}`);
-  }, [filterResult.matches, navigate, settings?.explorationMode]);
+    handleBuildingClick(first);
+  }, [filterResult.matches, handleBuildingClick]);
 
-  // Close focus → back to the plain overview. Open app → the existing app detail page (explicit).
+  const handleTravelToRegionId = useCallback((id) => {
+    const region = getRegion(id);
+    if (region) handleTravelToRegion(region);
+  }, [handleTravelToRegion]);
+
+  // Every HUD attention item resolves to a building/region in the world. There is no external
+  // page fallback: an item without a more specific destination opens the world map instead.
+  const handleAttentionItem = useCallback((item) => {
+    if (item?.appId) {
+      handleBuildingClick({ id: item.appId });
+      return;
+    }
+    if (item?.regionId) {
+      handleTravelToRegionId(item.regionId);
+      return;
+    }
+    openFastTravel();
+  }, [handleBuildingClick, handleTravelToRegionId, openFastTravel]);
+
+  // Close focus → back to the plain in-world overview. The panel's primary action also
+  // re-focuses the building in OpenWorld rather than opening a separate PortOS page.
   const handleCloseFocus = useCallback(() => navigate('/openworld'), [navigate]);
-  const handleOpenApp = useCallback((id) => { if (id) navigate(`/apps/${id}`); }, [navigate]);
+  const handleFocusInWorld = useCallback((id) => {
+    if (id) handleBuildingClick({ id });
+  }, [handleBuildingClick]);
 
   // Headline numbers baked onto a captured city postcard. Derived from data the page already
   // has — no extra fetch. buildPostcardStats (in the overlay) omits absent/zero fields.
@@ -418,7 +499,7 @@ function OpenWorldInner() {
   }, [apps, cosAgents, instances, character, productivityData]);
 
   // In playback mode, overlay the current snapshot frame's data onto the props
-  // the scene consumes. mergeFrameIntoCityProps returns ONLY the props the frame
+  // the scene consumes. mergeFrameIntoOpenWorldProps returns ONLY the props the frame
   // can faithfully drive (apps, agentMap, cosStatus, backupStatus, character),
   // so anything it omits (the count-only and rich-array landmarks: task queue,
   // federation, health tower, memory, goals, jira, activity, productivity) keeps
@@ -427,41 +508,31 @@ function OpenWorldInner() {
   // unplayable frame → keep live.
   const playbackProps = useMemo(() => {
     if (!playback.active || !playback.currentFrame) return null;
-    return mergeFrameIntoCityProps(playback.currentFrame, { apps, agentMap });
+    return mergeFrameIntoOpenWorldProps(playback.currentFrame, { apps, agentMap });
   }, [playback.active, playback.currentFrame, apps, agentMap]);
 
   const v = useCallback((key, live) => (playbackProps && key in playbackProps ? playbackProps[key] : live), [playbackProps]);
 
-  if (loading) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 cybercity-themed" style={{ background: cityPalette.background }}>
-        <div className="font-pixel text-cyan-400 text-lg tracking-widest animate-pulse" style={{ textShadow: '0 0 12px rgba(6,182,212,0.5)' }}>
-          ENTERING OPENWORLD
-        </div>
-        <div className="w-48 h-1 bg-gray-800 rounded-full overflow-hidden">
-          <div className="h-full bg-cyan-500 rounded-full animate-pulse" style={{ width: '60%', boxShadow: '0 0 8px rgba(6,182,212,0.5)' }} />
-        </div>
-        <div className="font-pixel text-[10px] text-cyan-500/40 tracking-wider">
-          LOADING WORLD...
-        </div>
-      </div>
-    );
-  }
+  // Keep the scene and app shell mounted while the initial data bundle arrives. The route's
+  // Suspense boundary already covers the lazy OpenWorld chunk; replacing the entire page here
+  // created a second full-screen loader after the first one, then remounted WebGL once the API
+  // calls settled. Empty/default props are safe for every landmark, and OpenWorldScene's own
+  // warm-up keeps the first data-driven layout cheap while the real values stream in.
 
   return (
-    <CityPaletteProvider palette={cityPalette}>
-    <div className="relative w-full h-full cybercity-themed" style={{ background: sceneBackground, isolation: 'isolate' }}>
-      <CityScene
+    <OpenWorldPaletteProvider palette={openWorldPalette}>
+    <div className="relative w-full h-full openworld-themed" style={{ background: sceneBackground, isolation: 'isolate' }}>
+      <OpenWorldScene
         // A theme switch recolors the live scene in place — NO full-scene remount.
         // Every themed surface either reads the palette fresh each render (declarative
         // `color=` props, palette helper fns) or carries the palette value in its
-        // useMemo deps so it rebuilds on a new palette object (CityGround, CityLandscape,
-        // CityTraffic, CityNeonSigns, …). The two persistent GPU shader materials whose
-        // uniforms are set once at construction (CityBillboards scan overlay,
-        // CityVolumetricLights cones) push the new accent into their uColor uniform
-        // imperatively, mirroring CitySky's per-frame uniform updates. Dropping the old
-        // `key={cityPalette.themeId}` avoids the jarring full-scene rebuild flash.
-        palette={cityPalette}
+        // useMemo deps so it rebuilds on a new palette object (WorldGround, OpenWorldLandscape,
+        // OpenWorldTraffic, OpenWorldNeonSigns, …). The two persistent GPU shader materials whose
+        // uniforms are set once at construction (OpenWorldBillboards scan overlay,
+        // OpenWorldVolumetricLights cones) push the new accent into their uColor uniform
+        // imperatively, mirroring OpenWorldSky's per-frame uniform updates. Dropping the old
+        // `key={openWorldPalette.themeId}` avoids the jarring full-scene rebuild flash.
+        palette={openWorldPalette}
         background={sceneBackground}
         apps={v('apps', apps)}
         agentMap={v('agentMap', agentMap)}
@@ -492,22 +563,28 @@ function OpenWorldInner() {
         settings={sceneSettings}
         playSfx={playSfx}
         keysRef={keysRef}
+        mobileInputRef={mobileInputRef}
+        playerActionRef={playerActionRef}
         dimmedAppIds={filterResult.dimmed}
-        autoQuality={qualityMode === 'auto'}
+        autoQuality
         autoStartTier="high"
         autoResetToken={resetNonce}
-        diagnosticsEnabled={showSettings}
         onAutoTierChange={setAutoTier}
-        onAutoDiagnostics={setAutoDiagnostics}
         focusedAppId={appId || null}
         focusedRegion={focusedRegion}
         playerTeleport={playerTeleport}
         hudSafe={focusHudSafe}
+        onTravelToRegion={handleTravelToRegion}
+        onProximityChange={setProximityTarget}
+        collectedShardIds={collectedShardIds}
+        onCollectShard={handleCollectShard}
+        activeBursts={activeBursts}
+        onPlayerPoseChange={setPlayerPose}
       />
       {/* The full HUD hides in photo + playback mode so the view is clean; each
           mode's overlay replaces it. */}
       {!photoMode && !playback.active && (
-        <CityHud
+        <OpenWorldHud
           cosStatus={cosStatus}
           cosAgents={cosAgents}
           agentMap={agentMap}
@@ -534,12 +611,26 @@ function OpenWorldInner() {
           focusNotFound={focusNotFound}
           focusAgents={focusAgents}
           onCloseFocus={handleCloseFocus}
-          onOpenApp={handleOpenApp}
+          onFocusInWorld={handleFocusInWorld}
           onOpenFastTravel={openFastTravel}
+          onOpenDestination={handleTravelToRegionId}
+          onAttentionItem={handleAttentionItem}
           activeRegion={focusedRegion}
+          proximityTarget={proximityTarget}
+          playerPose={playerPose}
+          collectedCount={collectedShardIds.size}
+          totalShards={TOTAL_SHARDS}
         />
       )}
-      <CityPhotoOverlay
+      {!photoMode && !playback.active && !isDesktop && settings?.explorationMode && !showSettings && !fastTravelOpen && (
+        <OpenWorldMobileControls
+          mobileInputRef={mobileInputRef}
+          playerActionRef={playerActionRef}
+          onToggleCameraView={handleToggleCameraView}
+          onToggleExploration={handleToggleExploration}
+        />
+      )}
+      <OpenWorldPhotoOverlay
         active={photoMode}
         presetId={photoPresetId}
         onPresetChange={setPhotoPresetId}
@@ -549,7 +640,7 @@ function OpenWorldInner() {
         dofEnabled={photoDof}
         onToggleDof={() => setPhotoDof(v => !v)}
       />
-      <CityPlaybackOverlay
+      <OpenWorldPlaybackOverlay
         active={playback.active}
         loading={playback.loading}
         error={playback.error}
@@ -565,37 +656,32 @@ function OpenWorldInner() {
         onCycleSpeed={playback.cycleSpeed}
         onExit={playback.exit}
       />
-      {/* Fast travel (M). Hidden in photo + playback mode, which own the camera and would
+      {/* World map (M). Hidden in photo + playback mode, which own the camera and would
           fight a warp. Mounted OUTSIDE the HUD's pointer-events-none shell so it can take
           clicks, and above the CRT overlay so its panel isn't scanlined. */}
       <OpenWorldFastTravel
         open={fastTravelOpen && !photoMode && !playback.active}
         onClose={() => setFastTravelOpen(false)}
         onTravel={handleTravelToRegion}
-        onOpenPage={(path) => navigate(path)}
         activeRegionId={focusedRegion?.id || null}
         onLeaveRegion={() => navigate('/openworld')}
       />
-      <CityScanlines settings={settings} crt={cityPalette.crt} />
-      {/* Settings on the shared Drawer (issue #2591). Closing preserves other query
-          params (e.g. an open cityPane) so the disclosure state survives. The Auto-quality
-          props (#2592) drive the Performance tab's effective-tier label + local diagnostics. */}
-      <CitySettingsDrawer
+      {/* Settings on the shared Drawer. Closing preserves other query params (e.g. an open
+          openWorldPane) so the disclosure state survives. Rendering quality is automatic and
+          intentionally absent from this player-facing surface. */}
+      <OpenWorldSettingsDrawer
         open={showSettings}
         onClose={() => navigate(`/openworld${location.search}`)}
-        qualityMode={qualityMode}
-        effectiveTier={effectiveTier}
-        diagnostics={qualityMode === 'auto' ? autoDiagnostics : null}
       />
     </div>
-    </CityPaletteProvider>
+    </OpenWorldPaletteProvider>
   );
 }
 
 export default function OpenWorld() {
   return (
-    <CitySettingsProvider>
+    <OpenWorldSettingsProvider>
       <OpenWorldInner />
-    </CitySettingsProvider>
+    </OpenWorldSettingsProvider>
   );
 }

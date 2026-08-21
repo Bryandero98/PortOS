@@ -159,6 +159,10 @@ function RigReadinessPanel({ rig, spec }) {
   const jointCount = count('jointCount');
   const socketCount = count('socketCount');
   const attachmentCount = count('attachmentCount');
+  // A report written before anchors shipped carries no split, and inferring one
+  // from the total would credit every legacy attachment as anchored — the exact
+  // overstatement the split exists to remove. Fall back to the spec instead.
+  const unanchoredAttachmentCount = count('unanchoredAttachmentCount');
   const reasons = Array.isArray(rig?.reasons) ? rig.reasons : [];
   return (
     <section className="rounded-xl border border-port-border bg-port-card p-4">
@@ -174,6 +178,7 @@ function RigReadinessPanel({ rig, spec }) {
       <p className="text-xs text-gray-400">
         {jointCount} joint{jointCount === 1 ? '' : 's'} · {socketCount} pivot socket{socketCount === 1 ? '' : 's'}
         {' · '}{attachmentCount} declared attachment{attachmentCount === 1 ? '' : 's'}
+        {attachmentCount > 0 && ` (${attachmentCount - unanchoredAttachmentCount} anchored, ${unanchoredAttachmentCount} unanchored)`}
       </p>
       {!rig && (
         <p className="mt-2 rounded-lg border border-port-border bg-port-bg/50 px-3 py-2 text-xs leading-relaxed text-gray-400">
@@ -405,7 +410,24 @@ export default function ThreejsModelDetail() {
   // the same as passing it — the panel is omitted rather than shown clean.
   const coverageFindings = Array.isArray(record.coverage?.findings) ? record.coverage.findings : null;
   const flatnessFindings = Array.isArray(record.flatness?.findings) ? record.flatness.findings : null;
+  const flatnessHasWarnings = flatnessFindings?.some((finding) => finding.severity === 'warning');
   const penetrationFindings = Array.isArray(record.penetration?.findings) ? record.penetration.findings : null;
+  // An attachment whose anchor could not be measured was not checked, so it is
+  // rendered as a note rather than left to the panel's clean label — "no
+  // findings" and "never verified" must not read the same on screen.
+  const unmeasuredAttachments = Array.isArray(record.physicalAudit?.unmeasuredAttachments)
+    ? record.physicalAudit.unmeasuredAttachments
+    : [];
+  const physicalAuditFindings = Array.isArray(record.physicalAudit?.findings)
+    ? [
+      ...record.physicalAudit.findings,
+      ...unmeasuredAttachments.map((entry) => ({
+        code: 'unmeasured-attachment',
+        severity: 'note',
+        message: `Attachment "${entry.partId}" could not be checked against ${entry.anchorSocket ? `socket "${entry.anchorSocket}"` : `"${entry.anchorPartId}"`} because ${entry.reason}.`,
+      })),
+    ]
+    : null;
   const materialFindings = Array.isArray(record.materialPlausibility?.findings)
     ? record.materialPlausibility.findings
     : null;
@@ -422,6 +444,7 @@ export default function ThreejsModelDetail() {
   // refinement is told to fix — so the footer only promises a refinement when
   // there is an actual defect above it.
   const penetrationDefects = countSeverities(penetrationFindings || []);
+  const physicalAuditDefects = countSeverities(physicalAuditFindings || []);
   const coverageErrors = countSeverities(coverageFindings || []).error;
   // Only present when the generation ran with a family — a record generated
   // under `general` (or before families shipped) has no checklist to render.
@@ -610,7 +633,7 @@ export default function ThreejsModelDetail() {
           findings={flatnessFindings}
           cleanLabel="Identity parts carry real depth"
           footer={`A model can match its reference head-on and still be a stack of cardboard cut-outs, so this check counts how many identity-defining features are built only from flat parts.${
-            flatnessFindings.length > 0 ? ' Refining without your own feedback will also ask for real depth.' : ''
+            flatnessHasWarnings ? ' Refining without your own feedback will also ask for real depth.' : ''
           }`}
         />
       )}
@@ -628,6 +651,19 @@ export default function ThreejsModelDetail() {
         />
       )}
 
+      {physicalAuditFindings && (
+        <GatePanel
+          title="Physical audit"
+          findings={physicalAuditFindings}
+          cleanLabel="Assembly satisfies physical attachment, exposure, and coplanarity rules"
+          footer={`This check inspects the model across resting and animation poses to detect floating parts, swallowed geometry, z-fighting coplanar surfaces, unprovenanced appearing geometry, non-uniform parent scales that distort nested parts, and attachments that name nothing to hang from or sit further from their declared anchor than the spec allows.${
+            physicalAuditDefects.error + physicalAuditDefects.warning > 0
+              ? ' Refining without your own feedback will also target physical conformance defects.'
+              : ''
+          }`}
+        />
+      )}
+
       {materialFindings && (
         <GatePanel
           title="Material plausibility"
@@ -636,7 +672,7 @@ export default function ThreejsModelDetail() {
             ? 'Recognized materials match their substance'
             : 'No material named a substance to check'}
           footer={`Every channel here is already inside what Three.js accepts, so this check asks the other question: whether the values suit the substance the material is named for — metallic wood and opaque glass both parse. Only materials whose id names exactly one substance are checked, and nothing is ever adjusted.${
-            materialFindings.length > 0
+            countSeverities(materialFindings).warning > 0
               ? ' Refining without your own feedback will also ask for values that match the substance — keep any deliberate stylization in your own feedback.'
               : ''
           }`}

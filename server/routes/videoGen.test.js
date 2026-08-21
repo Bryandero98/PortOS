@@ -149,6 +149,18 @@ vi.mock('../lib/sseDownload.js', () => ({
 
 // Render submissions go through the mediaJobQueue. Mock its surface so the
 // route tests stay synchronous and don't kick off the worker loop.
+// The federated branch resolves the peer + capacity preflight through this
+// helper; mock it so the route test asserts its own validation and enqueue
+// wiring without standing up a peer registry.
+const federatedPeerId = '00000000-0000-4000-8000-0000000000f2';
+vi.mock('../services/federatedMedia/remoteSubmission.js', () => ({
+  prepareRemoteMediaJob: vi.fn(async ({ peerId, kind, request }) => ({
+    peer: { id: peerId },
+    capability: { kind, engine: request.engine, modelId: request.modelId },
+    remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request },
+  })),
+}));
+
 vi.mock('../services/mediaJobQueue/index.js', () => ({
   enqueueJob: vi.fn(({ kind, params }) => ({ jobId: `mock-${kind}-job`, position: 1, status: 'queued' })),
   attachSseClient: vi.fn(() => false),
@@ -218,6 +230,7 @@ vi.mock('fs/promises', () => ({
 import { copyFile, unlink } from 'fs/promises';
 import * as videoGenService from '../services/videoGen/local.js';
 import * as mediaJobQueue from '../services/mediaJobQueue/index.js';
+import { prepareRemoteMediaJob } from '../services/federatedMedia/remoteSubmission.js';
 import { getProject as getMusicVideoProject } from '../services/musicVideo/projects.js';
 import { getTrack } from '../services/tracks/index.js';
 import { resolveGalleryImage } from '../lib/fileUtils.js';
@@ -1945,6 +1958,37 @@ describe('videoGen routes', () => {
       expect(r.body.activeJob.params.prompt).toBe('P running');
     });
 
+    it('resumes a federated render from its marker, not the blanked local fields', async () => {
+      // The routed job's top-level prompt/model are blanked so a downgraded
+      // build fails closed (#4683). Without reading through to the wire
+      // request, a reload mid-render would repopulate the form with an empty
+      // prompt and the LOCAL default model instead of the peer's.
+      mediaJobQueue.listJobs.mockImplementation(listJobsByFilter([{
+        id: 'remote-running',
+        kind: 'video',
+        status: 'running',
+        position: 1,
+        params: {
+          prompt: '',
+          modelId: null,
+          pythonPath: null,
+          remoteMedia: {
+            wireVersion: 1,
+            peerId: federatedPeerId,
+            request: {
+              kind: 'video', engine: 'local', modelId: 'ltx2', prompt: 'a slow pan across a harbour',
+            },
+          },
+        },
+      }]));
+      const r = await request(app).get('/api/video-gen/active');
+      expect(r.status).toBe(200);
+      expect(r.body.activeJob.params.prompt).toBe('a slow pan across a harbour');
+      expect(r.body.activeJob.params.modelId).toBe('ltx2');
+      // The marker itself stays off this surface — it carries peer routing state.
+      expect(r.body.activeJob.params).not.toHaveProperty('remoteMedia');
+    });
+
     // Selection of the newest queued (not oldest) matches /cancel's fallback
     // selection — see the surrounding comment in routes/videoGen.js. Diverging
     // would mean Cancel from a resumed-queued page targets a different job.
@@ -2158,7 +2202,7 @@ describe('videoGen routes', () => {
   describe('POST /last-frame/:id', () => {
     it('forwards a shared-gallery upload id to extractLastFrame', async () => {
       const uploadId = 'upload-ab12cd34';
-      videoGenService.extractLastFrame.mockResolvedValue({ filename: `lastframe-${uploadId}.png` });
+      videoGenService.extractLastFrame.mockResolvedValue({ filename: `anchor-${uploadId}.png` });
 
       const r = await request(app).post(`/api/video-gen/last-frame/${uploadId}`).send({});
 
@@ -2247,4 +2291,85 @@ describe('videoGen routes', () => {
       expect(r.body.error).toMatch(/not found/i);
     });
   });
+
+  describe('POST / — federated media provider', () => {
+    it('submits to the selected peer and keeps the prompt inside the versioned marker', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a slow pan across a harbour',
+        modelId: 'ltx2',
+        numFrames: 121,
+        fps: 24,
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({
+        jobId: 'mock-video-job',
+        // No local backend renders this, so `mode` must not name one.
+        mode: null,
+        model: 'ltx2',
+        mediaProviderPeerId: federatedPeerId,
+      });
+      expect(prepareRemoteMediaJob).toHaveBeenCalledWith({
+        peerId: federatedPeerId,
+        kind: 'video',
+        request: {
+          kind: 'video',
+          engine: 'local',
+          modelId: 'ltx2',
+          prompt: 'a slow pan across a harbour',
+          numFrames: 121,
+          fps: 24,
+        },
+      });
+
+      const [{ params }] = mediaJobQueue.enqueueJob.mock.calls[0];
+      // Prompt and dials ride only inside the versioned marker; no local render
+      // input is carried over at all. enqueueJob owns blanking the rest (#4683)
+      // — its own suites cover that, and enqueueJob is mocked here.
+      expect(params).toEqual({ remoteMedia: expect.objectContaining({ peerId: federatedPeerId }) });
+      expect(params.remoteMedia.request.prompt).toBe('a slow pan across a harbour');
+      expect(params.remoteMedia.request.modelId).toBe('ltx2');
+    });
+
+    it('requires an explicit provider model instead of falling back to a local default', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a slow pan across a harbour',
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body.code).toBe('MEDIA_PROVIDER_MODEL_REQUIRED');
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
+    });
+
+    it('refuses a federated render that carries conditioning the wire cannot take', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a slow pan across a harbour',
+        modelId: 'ltx2',
+        sourceImageFile: 'frame.png',
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body.code).toBe('MEDIA_PROVIDER_INPUT_UNSUPPORTED');
+      expect(r.body.error).toMatch(/source image/);
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
+      expect(prepareRemoteMediaJob).not.toHaveBeenCalled();
+    });
+
+    it('refuses a federated chained render rather than shipping one unchained clip', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a slow pan across a harbour',
+        modelId: 'ltx2',
+        chunks: 3,
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/chained chunks/);
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
+    });
+  });
+
 });

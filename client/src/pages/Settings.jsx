@@ -6,13 +6,12 @@ import { AutofixerTab } from '../components/settings/AutofixerTab';
 import AiAssignmentsTab from '../components/settings/AiAssignmentsTab';
 import { BackupTab } from '../components/settings/BackupTab';
 import { CatalogTypesTab } from '../components/settings/CatalogTypesTab';
+import CodeReviewersTab from '../components/settings/CodeReviewersTab';
 import { DatabaseTab } from '../components/settings/DatabaseTab';
 import EmbeddingsTab from '../components/settings/EmbeddingsTab';
 import { LocalLlmTab } from '../components/settings/LocalLlmTab';
 import { TelegramTab } from '../components/settings/TelegramTab';
 import { GeneralTab } from '../components/settings/GeneralTab';
-import { IMessageTab } from '../components/settings/IMessageTab';
-import { ContactsTab } from '../components/settings/ContactsTab';
 import { MortalLoomTab } from '../components/settings/MortalLoomTab';
 import { SecurityTab } from '../components/settings/SecurityTab';
 import { SharingTab } from '../components/settings/SharingTab';
@@ -26,7 +25,8 @@ import SettingsTabsHeader from '../components/settings/SettingsTabsHeader';
 // it makes sense. Redirect old direct URLs to the new home so bookmarks and
 // stale palette entries keep working.
 const REDIRECTS = {
-  'image-gen': '/media/image?settings=1'
+  'image-gen': '/media/image?settings=1',
+  imessage: '/messages/imessage?settings=1'
 };
 
 export default function Settings() {
@@ -40,13 +40,12 @@ export default function Settings() {
   const renderTabContent = () => {
     switch (activeTab) {
       case 'general': return <GeneralTab />;
-      case 'imessage': return <IMessageTab />;
-      case 'contacts': return <ContactsTab />;
       case 'ai-assignments': return <AiAssignmentsTab />;
       case 'api-access': return <ApiAccessTab />;
       case 'autofixer': return <AutofixerTab />;
       case 'backup': return <BackupTab />;
       case 'catalog': return <CatalogTypesTab />;
+      case 'code-reviewers': return <CodeReviewersTab />;
       case 'database': return <DatabaseTab />;
       case 'embeddings': return <EmbeddingsTab />;
       case 'local-llm': return <LocalLlmTab />;

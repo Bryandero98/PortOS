@@ -50,17 +50,16 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           secure: false
         },
-        '/data/images': {
-          target: API_TARGET,
-          changeOrigin: true,
-          secure: false
-        },
-        '/data/videos': {
-          target: API_TARGET,
-          changeOrigin: true,
-          secure: false
-        },
-        '/data/video-thumbnails': {
+        // Every `/data/**` asset mount at once, instead of a hand-maintained
+        // list that silently fell behind the server's (see docs/PORTS.md:
+        // an unproxied `/data` path is answered by Vite's SPA fallback with
+        // index.html and a 200, so a binary loader parses HTML). Anchored as a
+        // regex on purpose: Vite matches a plain context with a bare
+        // `url.startsWith`, so a `'/data'` key would also swallow the `/data`
+        // (Data Manager) and `/datadog` client routes and hand them the API's
+        // stale built index.html. `scripts/dev-proxy-drift.test.js` holds both
+        // halves of that — mounts covered, client routes untouched.
+        '^/data/': {
           target: API_TARGET,
           changeOrigin: true,
           secure: false

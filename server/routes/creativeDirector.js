@@ -41,6 +41,7 @@ import { enqueueFirstPassPortraits } from '../services/creativeDirector/firstPas
 import { enqueueFirstPassMusicBed } from '../services/creativeDirector/firstPassMusicGen.js';
 import { startCreativeDirectorProject } from '../services/creativeDirector/completionHook.js';
 import { createSmokeTestProject } from '../services/creativeDirector/smokeTest.js';
+import { stopProject } from '../services/creativeDirector/stopProject.js';
 
 const router = Router();
 
@@ -141,7 +142,24 @@ router.patch('/:id', asyncHandler(async (req, res) => {
   res.json(updated);
 }));
 
+// Stop: the hard counterpart to pause. Kills the live agent, retires the CoS
+// tasks behind the in-flight runs (otherwise the orphan sweep respawns them
+// every 15 minutes, forever), settles the run rows, and cancels the queued
+// renders — then parks the project as `paused` with the reason. Pause is still
+// the soft gesture ("stop queueing more, let the current render finish"); this
+// is the one to reach for when a project is wedged in a re-dispatch loop.
+router.post('/:id/stop', asyncHandler(async (req, res) => {
+  const project = await getProject(req.params.id);
+  if (!project) throw new ServerError('Project not found', { status: 404, code: 'NOT_FOUND' });
+  const result = await stopProject(project.id, { reason: 'Stopped by user' });
+  res.json(result);
+}));
+
 router.delete('/:id', asyncHandler(async (req, res) => {
+  // Stop before tombstoning. A tombstoned project keeps its `in_progress` CoS
+  // tasks and queued renders, and the orphan sweep happily respawns agents for a
+  // project the user just deleted.
+  await stopProject(req.params.id, { reason: 'Project deleted' });
   await deleteProject(req.params.id);
   res.json({ ok: true });
 }));
@@ -394,7 +412,12 @@ router.post('/:id/resume', asyncHandler(async (req, res) => {
     throw new ServerError('Project is not paused', { status: 400, code: 'INVALID_STATE' });
   }
   const restored = project.treatment ? 'rendering' : 'planning';
-  await updateProject(project.id, { status: restored });
+  // Clear the reason too. A stop parks the project as `paused` WITH a
+  // `failureReason` (that's what explains why it stopped), and the overview/plan
+  // tabs render any non-empty failureReason in a red "FAILURE REASON" box — so
+  // without this the resumed project runs its whole next pass under a banner
+  // reporting the stop the user just undid.
+  await updateProject(project.id, { status: restored, failureReason: null });
   startCreativeDirectorProject(project.id).catch((e) => console.log(`⚠️ CD resume failed: ${e.message}`));
   res.json({ ok: true });
 }));

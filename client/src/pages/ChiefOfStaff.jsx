@@ -5,6 +5,7 @@ import { useLocalStorageBool } from '../hooks/useLocalStorageBool';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { useValidTab } from '../hooks/useValidTab';
 import * as api from '../services/api';
+import { coalesce } from '../utils/coalesce';
 import { Play, Pause, Square, Clock, CheckCircle, AlertCircle, Cpu, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Brain, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import BrailleSpinner from '../components/BrailleSpinner';
@@ -15,6 +16,9 @@ import PageSkeleton from '../components/ui/PageSkeleton';
 import {
   TABS,
   STATE_MESSAGES,
+  summarizeHealthIssues,
+  healthIssueTone,
+  fresherHealth,
   CoSCharacter,
   StateLabel,
   TerminalCoSPanel,
@@ -39,6 +43,15 @@ import {
   BriefingTab
 } from '../components/cos';
 import { resolveDynamicAvatar } from '../components/cos/constants';
+
+// The Runs tab (full AI run history + its log modal) is lazy-loaded so its weight
+// stays out of the eager CoS chunk every /cos/* visit pays for — same reason the
+// avatars below are not re-exported from the components/cos barrel.
+const RunsTab = lazy(() => import('../components/cos/tabs/RunsTab'));
+// The run-event diagnostic is lazy for the same reason as Runs: it is a
+// post-mortem surface nobody opens on a normal day, and it pulls the whole
+// ledger read path with it.
+const RunEventsTab = lazy(() => import('../components/cos/tabs/RunEventsTab'));
 
 // Three.js-based avatars lazy-loaded so the R3F stack isn't bundled unless the
 // user's chosen avatar style actually needs it.
@@ -98,6 +111,9 @@ export default function ChiefOfStaff() {
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const tabsRef = useRef(null);
+  // Monotonic counter for queue-state writes, so a slow fetchData cannot overwrite
+  // a fresher fetchQueue result (see both functions below).
+  const queueSeqRef = useRef(0);
   const socket = useSocket();
 
   // Derive avatar style from server config, with optional dynamic override
@@ -116,6 +132,22 @@ export default function ChiefOfStaff() {
     setDesktopPanelCollapsed((prev) => !prev);
   }, [setDesktopPanelCollapsed]);
 
+  // ONE writer for the health snapshot, so the Issues tile, the avatar state and
+  // the status bubble can never describe different health checks. The ref is
+  // written synchronously alongside the state, which is what lets fetchData run
+  // the freshness rule and then derive from the value it actually committed —
+  // with a functional updater the merged result was only visible inside the
+  // updater, so the derivation below fell back to the raw (possibly older, or
+  // null) read. `merge` runs the freshness rule; the socket and manual paths
+  // deliver the newest check by definition and set it outright.
+  const healthRef = useRef(null);
+  const applyHealth = useCallback((next, { merge = false } = {}) => {
+    const resolved = merge ? fresherHealth(healthRef.current, next) : next;
+    healthRef.current = resolved;
+    setHealth(resolved);
+    return resolved;
+  }, []);
+
   // Derive agent state from system status
   const deriveAgentState = useCallback((statusData, agentsData, healthData) => {
     if (!statusData?.running) return 'sleeping';
@@ -131,6 +163,7 @@ export default function ChiefOfStaff() {
   }, []);
 
   const fetchData = useCallback(async () => {
+    const queueSeq = queueSeqRef.current;
     const [statusData, tasksData, agentsData, healthData, providersData, appsData, learningSummaryData, insightsData] = await Promise.all([
       api.getCosStatus().catch(() => null),
       api.getCosTasks().catch(() => ({ user: null, cos: null })),
@@ -144,26 +177,23 @@ export default function ChiefOfStaff() {
       api.getCosActionableInsights({ silent: true }).catch(() => null)
     ]);
     setStatus(statusData);
-    setTasks(tasksData);
-    setAgents(agentsData);
+    // fetchData is the SLOW read (8 endpoints, one of which runs a server health
+    // check), so a queue refresh started later routinely resolves first. Its task
+    // payload would then be clobbered by this older, pre-flip one — restoring the
+    // pending-AND-active render this change exists to remove. Drop only the queue
+    // half of a superseded read; the rest of the batch has no fresher writer.
+    if (queueSeqRef.current === queueSeq) {
+      setTasks(tasksData);
+      setAgents(agentsData);
+    }
     // `getCosHealth` above reads the *pre-check* persisted health, while the
     // getCosActionableInsights call in this same batch triggers a fresh server
     // health check (cos.runHealthCheck) that emits `cos:health:check` — the
-    // socket handler's setHealth can land in `prev` before this runs. Don't let
-    // this fetch's older read clobber that fresher result; keep whichever health
-    // check is newer by lastCheck (Date.parse normalizes the ISO timestamps so
-    // the compare never goes lexicographic). A failed read (null) keeps the
-    // last-good health rather than blanking a fresher socket-delivered one.
-    setHealth(prev => {
-      if (!healthData) return prev ?? null;
-      const prevT = Date.parse(prev?.lastCheck ?? '');
-      const newT = Date.parse(healthData.lastCheck ?? '');
-      // Keep prev when it is strictly newer, OR when this read has no comparable
-      // timestamp but prev does — a timestamped health check is fresher than an
-      // untimed read, so an absent/unparseable lastCheck must not clobber it.
-      if (!Number.isNaN(prevT) && (Number.isNaN(newT) || newT < prevT)) return prev;
-      return healthData;
-    });
+    // socket handler's health write can land before this runs. `fresherHealth`
+    // keeps whichever check is newer (and keeps the last-good one when this read
+    // failed); everything below derives from what it returned, never from the
+    // raw read, so the bubble can't name an older issue than the tile shows.
+    const mergedHealth = applyHealth(healthData, { merge: true });
     setProviders(providersData.providers || []);
     setActiveProviderId(providersData.activeProvider || null);
     // Filter out PortOS Autofixer (it's part of PortOS project)
@@ -175,17 +205,38 @@ export default function ChiefOfStaff() {
     if (insightsData?.insights) setInsights(insightsData.insights);
     setLoading(false);
 
-    const newState = deriveAgentState(statusData, agentsData, healthData);
+    const newState = deriveAgentState(statusData, agentsData, mergedHealth);
     setAgentState(newState);
-    // Use default state message - real messages come from socket events
+    // Default state message — richer messages come from socket events. The one
+    // state whose default is useless is `investigating`: only a health issue
+    // gets us here, so name it rather than saying "Investigating issue..." next
+    // to an Active count of 0 with no agent to inspect.
     setStatusMessage(statusData?.paused
       ? `Paused${statusData.pauseReason ? ` — ${statusData.pauseReason}` : ''}`
-      : STATE_MESSAGES[newState]);
+      : (newState === 'investigating' && summarizeHealthIssues(mergedHealth?.issues)) || STATE_MESSAGES[newState]);
 
     // Set active agent metadata for dynamic avatar (use first running agent)
     const runningAgent = agentsData.find(a => a.status === 'running');
     setActiveAgentMeta(runningAgent?.metadata || null);
-  }, [deriveAgentState]);
+  }, [deriveAgentState, applyHealth]);
+
+  // A cheap, read-only refresh of just the queue — the task lists plus the agent
+  // list the Tasks tab reads to tell an already-spawning task from a waiting one.
+  // Deliberately NOT fetchData: that batch also pulls actionable insights, whose
+  // endpoint runs a health check that auto-restarts errored PM2 processes (see
+  // the note below), which must never ride the store's per-mutation task stream.
+  const fetchQueue = useCallback(async () => {
+    const [tasksData, agentsData] = await Promise.all([
+      api.getCosTasks({ silent: true }).catch(() => null),
+      api.getCosAgents({ silent: true }).catch(() => null)
+    ]);
+    if (tasksData) setTasks(tasksData);
+    if (Array.isArray(agentsData)) setAgents(agentsData);
+    // Supersede any fetchData still in flight — see the guard in fetchData. Bumped
+    // even when both reads failed: a failed refresh still means this queue state
+    // is newer than whatever an older, slower batch is about to report.
+    queueSeqRef.current += 1;
+  }, []);
 
   // NOTE: there is deliberately no on-demand "refresh just the banner insights"
   // path. The /cos/actionable-insights endpoint runs a health check that
@@ -207,6 +258,7 @@ export default function ChiefOfStaff() {
 
   // Reduced polling since most updates come via socket events
   useAutoRefetch(fetchData, 30_000, { pollOnly: true });
+
 
   useEffect(() => {
     if (!socket) return;
@@ -238,6 +290,26 @@ export default function ChiefOfStaff() {
       setTasks(prev => ({ ...prev, user: data }));
     };
     socket.on('cos:tasks:user:changed', handleTasksUserChanged);
+
+    // System (COS-TASKS.md) tasks change on their own file-watcher event, and
+    // scheduled/on-demand CoS work IS an internal task — so without this handler
+    // a freshly queued scheduled task only appeared once the 30s poll came
+    // around. Same full-list payload as the user event, so swap it in directly.
+    const handleTasksCosChanged = (data) => {
+      setTasks(prev => ({ ...prev, cos: data }));
+    };
+    socket.on('cos:tasks:cos:changed', handleTasksCosChanged);
+
+    // The store's own per-mutation event, which fires the instant a task is added
+    // or its status flips — ahead of the debounced file watcher above. It carries
+    // one task rather than the list, and also fires for writes with nothing to
+    // show here (every running task's federation lease heartbeat), so it drives
+    // one coalesced queue refresh rather than a fetch per event. This is what
+    // collapses the pending→in_progress lag: 'cos:agent:spawned' fires BEFORE
+    // spawnAgentForTask flips the task off 'pending', so the fetch it triggers
+    // always reads the task as still-queued.
+    const refreshQueue = coalesce(fetchQueue, 400);
+    socket.on('cos:tasks:changed', refreshQueue);
 
     const handleAgentSpawned = (data) => {
       setAgentState('coding');
@@ -296,13 +368,13 @@ export default function ChiefOfStaff() {
     socket.on('cos:agent:completed', handleAgentCompleted);
 
     const handleHealthCheck = (data) => {
-      setHealth({ lastCheck: data.metrics?.timestamp, issues: data.issues });
+      applyHealth({ lastCheck: data.metrics?.timestamp, issues: data.issues });
       // Do NOT refresh banner insights here — /cos/actionable-insights runs a
       // health check that re-emits this very socket event, which would loop
       // (see the note by the redirect effect). Banner refreshes on the next poll.
       if (data.issues?.length > 0) {
         setAgentState('investigating');
-        setStatusMessage(`Health check: ${data.issues.length} issue${data.issues.length > 1 ? 's' : ''} found`);
+        setStatusMessage(summarizeHealthIssues(data.issues));
         setSpeaking(true);
         setTimeout(() => setSpeaking(false), 2000);
       }
@@ -333,13 +405,15 @@ export default function ChiefOfStaff() {
     socket.on('apps:changed', handleAppsChanged);
 
     // Don't emit cos:unsubscribe — the cos:* namespace is shared with
-    // useCityData (CyberCity), useAgentFeedbackToast, and other always-mounted
+    // useOpenWorldData (OpenWorld), useAgentFeedbackToast, and other always-mounted
     // consumers; the server's per-socket subscriber Set has no ref count.
     // Unsubscribing here would yank events out from under them.
     return () => {
       socket.off('connect', subscribe);
       socket.off('cos:status', handleCosStatus);
       socket.off('cos:tasks:user:changed', handleTasksUserChanged);
+      socket.off('cos:tasks:cos:changed', handleTasksCosChanged);
+      socket.off('cos:tasks:changed', refreshQueue);
       socket.off('cos:agent:spawned', handleAgentSpawned);
       socket.off('cos:agent:updated', handleAgentUpdated);
       socket.off('cos:agent:output', handleAgentOutput);
@@ -347,8 +421,9 @@ export default function ChiefOfStaff() {
       socket.off('cos:health:check', handleHealthCheck);
       socket.off('cos:log', handleCosLog);
       socket.off('apps:changed', handleAppsChanged);
+      refreshQueue.cancel();
     };
-  }, [socket, fetchData]);
+  }, [socket, fetchData, fetchQueue]);
 
   const handleStart = async () => {
     const result = await api.startCos({ silent: true }).catch(err => {
@@ -461,14 +536,14 @@ export default function ChiefOfStaff() {
     });
     setSpeaking(false);
     if (result) {
-      setHealth({ lastCheck: result.metrics?.timestamp, issues: result.issues });
+      applyHealth({ lastCheck: result.metrics?.timestamp, issues: result.issues });
       // Do NOT refresh the banner insights here — /cos/actionable-insights runs
       // a process-restarting health check, so an on-demand refresh would fire a
       // second restart ~1s after forceHealthCheck's own. The banner's health
       // count refreshes on the next fetchData poll instead (see the note above).
       toast.success('Health check complete');
       if (result.issues?.length > 0) {
-        setStatusMessage(`Health: ${result.issues.length} issue${result.issues.length > 1 ? 's' : ''} detected`);
+        setStatusMessage(summarizeHealthIssues(result.issues));
       } else {
         setAgentState('sleeping');
         setStatusMessage("Health check passed - all systems OK");
@@ -481,10 +556,6 @@ export default function ChiefOfStaff() {
   const activeAgentCount = useMemo(() =>
     agents.filter(a => a.status === 'running').length,
     [agents]
-  );
-  const hasIssues = useMemo(() =>
-    (health?.issues?.length || 0) > 0,
-    [health?.issues?.length]
   );
 
   // Memoize pending task count
@@ -537,6 +608,20 @@ export default function ChiefOfStaff() {
     onClick: () => navigate('/cos/learning'),
   };
 
+  // The Issues tile is the only place the UI admits CoS found something wrong,
+  // so it has to click through to the detail. Without that, a warning-level
+  // health issue parked the avatar on "Investigating" with Active 0, no agent
+  // to open, and the offending message reachable only by guessing at the Health
+  // tab. `title` surfaces the same summary on hover/touch-and-hold.
+  const healthIssues = health?.issues || [];
+  const issuesStatProps = {
+    label: 'Issues',
+    value: healthIssues.length,
+    tone: healthIssueTone(healthIssues),
+    title: summarizeHealthIssues(healthIssues) || 'No issues detected — view system health',
+    onClick: () => navigate('/cos/health'),
+  };
+
   // Compact stats card grid — rendered both inside the desktop CoS sidebar and
   // the mobile compressed header so the metrics always live "inside" CoS.
   const statsGridCards = (
@@ -561,9 +646,8 @@ export default function ChiefOfStaff() {
         compact
       />
       <StatCard
-        label="Issues"
-        value={health?.issues?.length || 0}
-        icon={<AlertCircle className={`w-4 h-4 ${hasIssues ? 'text-port-error' : 'text-gray-500'}`} />}
+        {...issuesStatProps}
+        icon={<AlertCircle className="w-4 h-4" />}
         compact
       />
       <StatCard
@@ -753,7 +837,7 @@ export default function ChiefOfStaff() {
                   <StatCard label="Active" value={activeAgentCount} icon={<Cpu className="w-4 h-4 text-port-accent" />} active={activeAgentCount > 0} compact />
                   <StatCard label="Pending" value={pendingTaskCount} icon={<Clock className="w-4 h-4 text-port-warning" />} compact />
                   <StatCard label="Done" value={status?.stats?.tasksCompleted || 0} icon={<CheckCircle className="w-4 h-4 text-port-success" />} compact />
-                  <StatCard label="Issues" value={health?.issues?.length || 0} icon={<AlertCircle className={`w-4 h-4 ${hasIssues ? 'text-port-error' : 'text-gray-500'}`} />} compact />
+                  <StatCard {...issuesStatProps} icon={<AlertCircle className="w-4 h-4" />} compact />
                 </div>
               </div>
             )}
@@ -897,9 +981,8 @@ export default function ChiefOfStaff() {
             mini
           />
           <StatCard
-            label="Issues"
-            value={health?.issues?.length || 0}
-            icon={<AlertCircle className={`w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5 ${hasIssues ? 'text-port-error' : 'text-gray-500'}`} />}
+            {...issuesStatProps}
+            icon={<AlertCircle className="w-3 h-3 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />}
             mini
           />
           {/* Learning Health - clickable to go to Learning tab */}
@@ -958,7 +1041,7 @@ export default function ChiefOfStaff() {
                 tabs that don't surface this data. */}
             <ActionableInsightsBanner insights={insights} onTaskUnblocked={handleTaskUnblocked} onRefresh={fetchData} />
             <QuickSummary />
-            <TasksTab tasks={tasks} onRefresh={fetchData} providers={providers} apps={apps} />
+            <TasksTab tasks={tasks} agents={agents} onRefresh={fetchData} providers={providers} apps={apps} />
           </div>
         )}
         {activeTab === 'agents' && (
@@ -969,6 +1052,20 @@ export default function ChiefOfStaff() {
         {activeTab === 'jobs' && (
           <div role="tabpanel" id="tabpanel-jobs" aria-labelledby="tab-jobs">
             <JobsTab />
+          </div>
+        )}
+        {activeTab === 'runs' && (
+          <div role="tabpanel" id="tabpanel-runs" aria-labelledby="tab-runs">
+            <Suspense fallback={<div className="flex items-center justify-center py-12"><BrailleSpinner text="Loading runs" /></div>}>
+              <RunsTab />
+            </Suspense>
+          </div>
+        )}
+        {activeTab === 'run-events' && (
+          <div role="tabpanel" id="tabpanel-run-events" aria-labelledby="tab-run-events">
+            <Suspense fallback={<div className="flex items-center justify-center py-12"><BrailleSpinner text="Loading run events" /></div>}>
+              <RunEventsTab />
+            </Suspense>
           </div>
         )}
         {activeTab === 'schedule' && (

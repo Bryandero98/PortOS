@@ -10,12 +10,18 @@ import { basename, join } from 'path';
 import { tmpdir, totalmem } from 'os';
 import { randomUUID } from 'crypto';
 
-const { heavyClaimRelease, mockPrepareLocalMemory } = vi.hoisted(() => ({
+const { heavyClaimRelease, heavyClaimHandoff, mockPrepareLocalMemory } = vi.hoisted(() => ({
   heavyClaimRelease: vi.fn(async () => {}),
+  // Repointing the machine claim at the render child's PID. Stubbed rather than
+  // omitted so a test can make it fail, which is how the relaunch path's
+  // spawned-but-never-wired child becomes observable.
+  heavyClaimHandoff: vi.fn(async () => {}),
   mockPrepareLocalMemory: vi.fn(async () => ({ unloaded: [], availableGb: 64, totalGb: 64, budgetGb: 64 })),
 }));
 vi.mock('../../lib/heavyJobClaim.js', () => ({
-  claimHeavyLocalJob: vi.fn(async () => ({ ok: true, holder: {}, release: heavyClaimRelease })),
+  claimHeavyLocalJob: vi.fn(async () => ({
+    ok: true, holder: {}, release: heavyClaimRelease, handoffTo: heavyClaimHandoff,
+  })),
 }));
 vi.mock('../../lib/localMemory.js', () => ({
   prepareLocalMemory: mockPrepareLocalMemory,
@@ -191,6 +197,10 @@ vi.mock('../../lib/ffmpeg.js', async () => ({
   // The real builder is pure and covered by ffmpeg.test.js; keep it real here
   // so the chain tests assert on the argv that actually reaches ffmpeg.
   buildTrimConcatArgs: (await vi.importActual('../../lib/ffmpeg.js')).buildTrimConcatArgs,
+  // Also real: it spawns through the mocked lib/childProcess.js, so the anchor
+  // tests still read the argv off the shared spawn mock. Stubbing it would hide
+  // the very args they assert on.
+  runFfmpegProcess: (await vi.importActual('../../lib/ffmpeg.js')).runFfmpegProcess,
   // Report the setparams filter as available so the chain tests assert on the
   // fully-tagged argv (the degraded, container-flags-only shape is covered in
   // ffmpeg.test.js).
@@ -230,9 +240,34 @@ vi.mock('../../lib/hfCache.js', () => ({
   },
 }));
 
+// Default: every path exists at 1000 bytes. `missOnce` lets one test drive a
+// cache MISS on a path that then exists after ffmpeg writes it — which is the
+// only way to reach extractLastFrame's extraction path at all, since a
+// stat-everything mock otherwise short-circuits on the cache hit.
+const fsState = vi.hoisted(() => ({ missOnce: [], candidateCount: null }));
 vi.mock('fs', () => ({
-  existsSync: vi.fn(() => true),
-  statSync: vi.fn(() => ({ size: 1000 })),
+  // `candidateCount` caps how many anchor candidates 'exist', so a test can
+  // model ffmpeg writing fewer frames than the window asked for.
+  existsSync: vi.fn((p) => {
+    const s = String(p);
+    if (fsState.candidateCount == null || !s.includes('anchorcand-')) return true;
+    const n = s.match(/cand-(\d+)\.png$/);
+    return n ? Number(n[1]) <= fsState.candidateCount : true;
+  }),
+  statSync: vi.fn((p) => {
+    const i = fsState.missOnce.findIndex((frag) => String(p).includes(frag));
+    if (i >= 0) { fsState.missOnce.splice(i, 1); return undefined; }
+    return { size: 1000 };
+  }),
+}));
+
+// Anchor scoring. The scorer itself is unit-tested in lib/frameQuality.test.js;
+// stub the pick here so these tests drive the two outcomes extractLastFrame
+// branches on — a scored winner, and a tail with nothing usable in it.
+const anchorPick = vi.hoisted(() => ({ best: null }));
+vi.mock('../../lib/frameQuality.js', async (importOriginal) => ({
+  ...await importOriginal(),
+  pickBestFrame: vi.fn(async () => anchorPick.best),
 }));
 
 // Whether the installed MiniMax H3 checkout can apply LoRAs to its quantized
@@ -263,6 +298,7 @@ vi.mock('fs/promises', () => ({
   unlink: vi.fn(async () => {}),
   writeFile: vi.fn(async () => {}),
   copyFile: vi.fn(async () => {}),
+  rm: vi.fn(async () => {}),
   // Unused by the code under test, but lib/ffmpeg.js imports it and the ffmpeg
   // mock above pulls the real module in for buildTrimConcatArgs.
   rename: vi.fn(async () => {}),
@@ -272,6 +308,11 @@ vi.mock('fs/promises', () => ({
 // Shared shape for both the child_process spawn mock (ffmpeg/probe) and the
 // detachedSpawn mock (the render child). Hoisted so the vi.mock factories
 // (themselves hoisted above normal declarations) can reference it.
+// When non-null, the NEXT spawn closes with this exit code — the only way to
+// drive a partial ffmpeg run (candidates written, non-zero exit) through the
+// shared proc mock.
+const spawnState = vi.hoisted(() => ({ nextExitCode: null }));
+
 const { makeProc } = vi.hoisted(() => ({
   makeProc: () => {
     const listeners = {};
@@ -283,12 +324,15 @@ const { makeProc } = vi.hoisted(() => ({
       stdout: { on: vi.fn() },
       stderr: { on: vi.fn() },
       on(event, fn) { listeners[event] = fn; return proc; },
+      off(event, fn) { if (listeners[event] === fn) delete listeners[event]; return proc; },
       kill: vi.fn(),
     };
     // fire close(0) async so the caller's .on('close') handler can register first
     setImmediate(() => {
-      proc.exitCode = 0;
-      listeners.close?.(0, null);
+      const code = spawnState.nextExitCode ?? 0;
+      spawnState.nextExitCode = null;
+      proc.exitCode = code;
+      listeners.close?.(code, null);
     });
     return proc;
   },
@@ -322,22 +366,253 @@ beforeEach(async () => {
 
 afterEach(() => {
   settingsState.acceptedModelTerms = [];
+  fsState.missOnce = [];
+  fsState.candidateCount = null;
+  spawnState.nextExitCode = null;
+  anchorPick.best = null;
   vi.clearAllMocks();
 });
 
-describe('extractLastFrame — shared-gallery uploads', () => {
-  it('accepts an uploaded gallery history id', async () => {
+describe('extractLastFrame — anchor selection', () => {
+  const ID = 'upload-ab12cd34';
+  const ANCHOR = 'anchor-upload-ab12cd34.png';
+
+  const seedHistory = async () => {
     const { readJSONFile } = await import('../../lib/fileUtils.js');
-    vi.mocked(readJSONFile).mockResolvedValueOnce([{
-      id: 'upload-ab12cd34',
-      filename: 'upload-ab12cd34.mp4',
+    vi.mocked(readJSONFile).mockResolvedValue([{
+      id: ID,
+      filename: `${ID}.mp4`,
       prompt: 'example',
     }]);
+  };
 
-    await expect(extractLastFrame('upload-ab12cd34')).resolves.toMatchObject({
-      filename: 'lastframe-upload-ab12cd34.png',
-      path: '/data/images/lastframe-upload-ab12cd34.png',
+  const ffmpegSpawns = async () => {
+    const { spawn } = await import('../../lib/childProcess.js');
+    return vi.mocked(spawn).mock.calls.map(([, args]) => (Array.isArray(args) ? args : []));
+  };
+
+  it('accepts an uploaded gallery history id and serves the cached anchor', async () => {
+    await seedHistory();
+    // Cache hit (statSync reports a non-empty file) — no ffmpeg at all.
+    await expect(extractLastFrame(ID)).resolves.toEqual({
+      filename: ANCHOR,
+      path: `/data/images/${ANCHOR}`,
     });
+    expect(await ffmpegSpawns()).toHaveLength(0);
+  });
+
+  it('scores the tail window and installs the winning candidate', async () => {
+    await seedHistory();
+    fsState.missOnce = [ANCHOR];
+    anchorPick.best = {
+      path: join(tmpdir(), `anchorcand-${ID}`, 'cand-003.png'),
+      index: 2,
+      focus: 0.81,
+      quality: 0.79,
+      score: 0.82,
+      usable: true,
+    };
+    const { copyFile, writeFile, rm } = await import('fs/promises');
+
+    await expect(extractLastFrame(ID)).resolves.toEqual({
+      filename: ANCHOR,
+      path: `/data/images/${ANCHOR}`,
+    });
+
+    // The winner is installed under the NEW cache name, not the legacy one, and
+    // straight to it — no `.tmp` alongside, which the peer media-library
+    // manifest would federate as an image asset (it skips only `.json`).
+    const dest = join(MOCK_PATHS.images, ANCHOR);
+    expect(vi.mocked(copyFile)).toHaveBeenCalledWith(anchorPick.best.path, dest);
+    expect(vi.mocked(copyFile).mock.calls.some(([, d]) => String(d).endsWith('.tmp'))).toBe(false);
+    // One decode pass over the tail window; the single-seek fallback must NOT
+    // have run — that would mean the scored pick was thrown away.
+    const spawns = await ffmpegSpawns();
+    expect(spawns).toHaveLength(1);
+    expect(spawns[0]).toEqual(expect.arrayContaining(['-sseof', '-1.00', '-vf', 'fps=12']));
+    expect(spawns[0]).not.toContain('-vframes');
+    // Temp candidates are cleaned up rather than left in tmpdir.
+    expect(vi.mocked(rm)).toHaveBeenCalledWith(
+      join(tmpdir(), `anchorcand-${ID}`),
+      { recursive: true, force: true },
+    );
+    // Sidecar names the offset the anchor actually came from, derived from the
+    // candidates actually decoded rather than a nominal window start. The fps
+    // grid stops one interval short of EOF, so index 2 of 12 at 12fps sits
+    // (12−2)/12 = 0.83s from the end — not 0.75s, which would be the distance
+    // to the newest CANDIDATE rather than to the cut.
+    const sidecar = JSON.parse(vi.mocked(writeFile).mock.calls.at(-1)[1]);
+    expect(sidecar).toMatchObject({ filename: ANCHOR, extractedAt: '-0.83s' });
+  });
+
+  it('reads back exactly the candidate files it told ffmpeg to write', async () => {
+    // The enumerator builds `cand-NNN.png` names by hand rather than reading the
+    // directory, so nothing else checks that they match the pattern ffmpeg
+    // actually received. A typo in the pattern or the padding would produce zero
+    // candidates in production with every other test still green — derive the
+    // expectation from the argv so the two sides can't drift apart.
+    await seedHistory();
+    fsState.missOnce = [ANCHOR];
+    fsState.candidateCount = 3; // ffmpeg only managed three frames
+    const { pickBestFrame } = await import('../../lib/frameQuality.js');
+
+    await extractLastFrame(ID);
+
+    const outPattern = (await ffmpegSpawns())[0].at(-1);
+    expect(outPattern).toContain('%03d');
+    const [scanned] = vi.mocked(pickBestFrame).mock.calls.at(-1);
+    expect(scanned).toEqual([1, 2, 3].map((n) => outPattern.replace('%03d', String(n).padStart(3, '0'))));
+    // Enumeration stops at the first gap instead of inventing a full window.
+    expect(scanned).toHaveLength(3);
+  });
+
+  it('reports the offset against the candidates it got, not a nominal window', async () => {
+    // The short-clip case the offset arithmetic exists for: `-sseof` clamps to
+    // the file start, so a sub-window clip yields fewer candidates and a
+    // TAIL_WINDOW_SECONDS-derived offset would name a time the frame does not
+    // have. (3 − 1) / 12fps = 0.17s from the cut.
+    await seedHistory();
+    fsState.missOnce = [ANCHOR];
+    fsState.candidateCount = 3;
+    anchorPick.best = {
+      path: join(tmpdir(), `anchorcand-${ID}`, 'cand-002.png'),
+      index: 1,
+      focus: 0.6,
+      quality: 0.6,
+      score: 0.65,
+      usable: true,
+    };
+    const { writeFile } = await import('fs/promises');
+
+    await extractLastFrame(ID);
+
+    const sidecar = JSON.parse(vi.mocked(writeFile).mock.calls.at(-1)[1]);
+    expect(sidecar).toMatchObject({ extractedAt: '-0.17s' });
+  });
+
+  it.each([
+    ['re-scans', 'last-frame-unscanned', true],
+    ['serves', '-0.42s', false],
+    ['serves', 'last-frame', false],
+  ])('%s a cached anchor whose sidecar says %s', async (_verb, extractedAt, rescans) => {
+    // A one-off ffmpeg or tmpdir failure used to pin the degraded end-seek frame
+    // to this clip forever behind the size>0 cache hit. The sidecar marker is
+    // what makes THAT attempt provisional — and the other two rows are the
+    // bypass probe: without the marker the cache must still short-circuit, or
+    // every click re-spawns ffmpeg and the cache stops existing.
+    const { tryReadFile } = await import('../../lib/fileUtils.js');
+    await seedHistory();
+    vi.mocked(tryReadFile).mockResolvedValueOnce(
+      JSON.stringify({ filename: ANCHOR, extractedAt }),
+    );
+    anchorPick.best = null;
+    fsState.candidateCount = 0; // the scan still can't produce anything
+
+    await extractLastFrame(ID);
+
+    // statSync reports a healthy non-zero file in every row; only the marker
+    // decides whether the scan runs anyway.
+    expect((await ffmpegSpawns()).length > 0).toBe(rescans);
+  });
+
+  it.each([
+    ['a scan that ran and found nothing usable', 12, 'last-frame'],
+    ['a scan that could not run at all', 0, 'last-frame-unscanned'],
+  ])('marks the fallback anchor from %s as %s', async (_label, count, expected) => {
+    // Only the second is provisional: a degenerate tail is a property of the
+    // clip and must stay cached, or every click re-spawns ffmpeg for nothing.
+    await seedHistory();
+    fsState.missOnce = [ANCHOR];
+    fsState.candidateCount = count;
+    anchorPick.best = null;
+    const { writeFile } = await import('fs/promises');
+
+    await extractLastFrame(ID);
+
+    const sidecar = JSON.parse(vi.mocked(writeFile).mock.calls.at(-1)[1]);
+    expect(sidecar).toMatchObject({ extractedAt: expected });
+  });
+
+  it('names the candidate rather than a time when the scan was truncated', async () => {
+    // A partial run's candidates end wherever ffmpeg stopped, not at EOF, so
+    // the grid gives no distance to the cut. Inventing one would put a silent
+    // lie in the gallery record.
+    await seedHistory();
+    fsState.missOnce = [ANCHOR];
+    fsState.candidateCount = 3;
+    spawnState.nextExitCode = 1; // ffmpeg wrote 3 frames, then died
+    anchorPick.best = {
+      path: join(tmpdir(), `anchorcand-${ID}`, 'cand-002.png'),
+      index: 1, focus: 0.6, quality: 0.6, score: 0.65, usable: true,
+    };
+    const { writeFile } = await import('fs/promises');
+
+    await extractLastFrame(ID);
+
+    const sidecar = JSON.parse(vi.mocked(writeFile).mock.calls.at(-1)[1]);
+    expect(sidecar).toMatchObject({ extractedAt: 'tail-candidate 2/3' });
+  });
+
+  it('treats a failed install as provisional, not as a degenerate tail', async () => {
+    // A winner WAS found; only the copy failed (ENOSPC/EIO/EACCES — all
+    // transient). Stamping that 'last-frame' would classify it as a property of
+    // the clip and pin the degraded end-seek anchor behind the cache forever.
+    await seedHistory();
+    fsState.missOnce = [ANCHOR];
+    anchorPick.best = {
+      path: join(tmpdir(), `anchorcand-${ID}`, 'cand-006.png'),
+      index: 5, focus: 0.7, quality: 0.7, score: 0.8, usable: true,
+    };
+    const { copyFile, writeFile } = await import('fs/promises');
+    vi.mocked(copyFile).mockRejectedValueOnce(new Error('ENOSPC'));
+
+    await extractLastFrame(ID);
+
+    const sidecar = JSON.parse(vi.mocked(writeFile).mock.calls.at(-1)[1]);
+    expect(sidecar).toMatchObject({ extractedAt: 'last-frame-unscanned' });
+  });
+
+  it('clears a stale provisional marker once a scan finally runs', async () => {
+    // call 1 could not scan → 'last-frame-unscanned'; call 2 scans and finds the
+    // tail genuinely degenerate. The `wx` sidecar write is a no-op against the
+    // surviving file, so without an unconditional unlink the marker outlives the
+    // scan and the clip re-scans on every click forever.
+    const { tryReadFile } = await import('../../lib/fileUtils.js');
+    await seedHistory();
+    vi.mocked(tryReadFile).mockResolvedValueOnce(
+      JSON.stringify({ filename: ANCHOR, extractedAt: 'last-frame-unscanned' }),
+    );
+    fsState.candidateCount = 12; // this time the scan runs...
+    anchorPick.best = null;      // ...and the tail really is degenerate
+    const { unlink, writeFile } = await import('fs/promises');
+
+    await extractLastFrame(ID);
+
+    const sidecarPath = join(MOCK_PATHS.images, ANCHOR.replace('.png', '.metadata.json'));
+    expect(vi.mocked(unlink)).toHaveBeenCalledWith(sidecarPath);
+    const sidecar = JSON.parse(vi.mocked(writeFile).mock.calls.at(-1)[1]);
+    expect(sidecar).toMatchObject({ extractedAt: 'last-frame' });
+  });
+
+  it('falls back to the end seek when no candidate is usable', async () => {
+    await seedHistory();
+    fsState.missOnce = [ANCHOR];
+    anchorPick.best = null;
+    const { copyFile, writeFile } = await import('fs/promises');
+
+    await expect(extractLastFrame(ID)).resolves.toEqual({
+      filename: ANCHOR,
+      path: `/data/images/${ANCHOR}`,
+    });
+
+    expect(vi.mocked(copyFile)).not.toHaveBeenCalled();
+    const spawns = await ffmpegSpawns();
+    expect(spawns).toHaveLength(2);
+    expect(spawns[1]).toEqual(expect.arrayContaining(['-sseof', '-1.0', '-vframes', '1']));
+    // The fallback genuinely doesn't know which frame it got, so the sidecar
+    // keeps the legacy value rather than inventing an offset.
+    const sidecar = JSON.parse(vi.mocked(writeFile).mock.calls.at(-1)[1]);
+    expect(sidecar).toMatchObject({ extractedAt: 'last-frame' });
   });
 });
 
@@ -647,6 +922,7 @@ describe('generateChainedVideo — continuation strategy (context window vs last
         stdout: { on: vi.fn() },
         stderr: { on: vi.fn() },
         on(event, fn) { listeners[event] = fn; return proc; },
+        off(event, fn) { if (listeners[event] === fn) delete listeners[event]; return proc; },
         kill: vi.fn(),
       };
       setImmediate(() => listeners.close?.(1, null));
@@ -788,6 +1064,33 @@ describe('generateChainedVideo — continuation strategy (context window vs last
     expect(flagValue(renders[1], '--image')).toBeTruthy();
   });
 
+  it.each([
+    ['a scored anchor', { path: join(tmpdir(), 'cand-006.png'), index: 5, focus: 0.7, quality: 0.7, score: 0.8, usable: true }],
+    ['the end-seek fallback', null],
+  ])('stages a continuation still for the next frame-hop chunk via %s', async (_label, best) => {
+    // The hop must survive BOTH anchor outcomes. A scoring failure degrades to
+    // the old single-seek behavior — it must never leave chunk 1 with no image,
+    // which would render it from the prompt alone and break the chain.
+    anchorPick.best = best;
+    // One hop → one anchor cache check; miss it so extraction actually runs.
+    fsState.missOnce = ['anchor-'];
+    const { copyFile } = await import('fs/promises');
+    vi.mocked(copyFile).mockClear();
+
+    const { renders, innerJobIds } = await runChain({
+      modelId: 'ltx23_unified',
+      mode: 'extend',
+      extendFromVideoPath: join(MOCK_PATHS.videos, 'original-video.mp4'),
+    }, 2);
+
+    expect(flagValue(renders[1], '--image')).toBeTruthy();
+    // A scored winner is copied into place under the new cache name; the
+    // fallback lets ffmpeg write that path directly, so there is no install.
+    const installedAnchor = vi.mocked(copyFile).mock.calls
+      .some(([, dest]) => dest === join(MOCK_PATHS.images, `anchor-${innerJobIds[0]}.png`));
+    expect(installedAnchor).toBe(!!best);
+  });
+
   it('keeps the first chunk of an extend chain whole, conditioned on the user source clip', async () => {
     // In an extend chain chunk 0's output is `user clip + extension`, and the
     // user clip belongs in the result exactly once — here. Trimming it would
@@ -805,6 +1108,68 @@ describe('generateChainedVideo — continuation strategy (context window vs last
     // that's what kept the chain from growing a copy of itself per hop.
     expect(flagValue(renders[1], '--extend-from-video'))
       .toBe(join(tmpdir(), `chaincontext-${innerJobIds[0]}.mp4`));
+  });
+});
+
+describe('generateChainedVideo — resolved geometry on the outer frames (#4588)', () => {
+  it('carries the chunk geometry on the chain progress frames without a synthetic outer started', async () => {
+    const { readJSONFile } = await import('../../lib/fileUtils.js');
+    const outerJobId = randomUUID();
+    const innerJobIds = [];
+    const startedIds = [];
+    const outerProgress = [];
+    const onStarted = (e) => {
+      startedIds.push(e.generationId);
+      if (e.generationId === outerJobId) return;
+      innerJobIds.push(e.generationId);
+      // Feed the live chunk a progress frame from a microtask: the chain's own
+      // `started` listener is registered AFTER this one, so it has to run (and
+      // record the geometry) before the progress frame goes out — and a
+      // microtask still lands before the chunk's first awaited I/O, while its
+      // per-chunk listeners are attached.
+      queueMicrotask(() => {
+        videoGenEvents.emit('progress', { generationId: e.generationId, progress: 0.5, step: 5, totalSteps: 10 });
+      });
+    };
+    const onProgress = (e) => { if (e.generationId === outerJobId) outerProgress.push(e); };
+    vi.mocked(readJSONFile).mockImplementation(async () =>
+      innerJobIds.map((id) => ({ id, filename: `${id}.mp4` })),
+    );
+    videoGenEvents.on('started', onStarted);
+    videoGenEvents.on('progress', onProgress);
+
+    generateChainedVideo({
+      chunks: 2,
+      jobId: outerJobId,
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a chained render',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+    });
+
+    const deadline = Date.now() + 5000;
+    while (outerProgress.length === 0 && Date.now() < deadline) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    expect(outerProgress[0]).toMatchObject({
+      generationId: outerJobId, width: 512, height: 512, step: 5, totalSteps: 10,
+    });
+    // No synthetic `started` under the outer id: consumers read that event as
+    // "the run begins", and a chain fires one per chunk.
+    expect(startedIds).not.toContain(outerJobId);
+
+    for (const id of [...innerJobIds]) {
+      videoGenEvents.emit('completed', { generationId: id, filename: `${id}.mp4`, path: `/data/videos/${id}.mp4` });
+    }
+    await waitForStitch();
+
+    videoGenEvents.off('started', onStarted);
+    videoGenEvents.off('progress', onProgress);
   });
 });
 
@@ -1382,6 +1747,7 @@ describe('generateVideo — panel-side completion watchdog', () => {
       stdout: { on: vi.fn((event, fn) => { if (event === 'data') stdoutData = fn; }) },
       stderr: { on: vi.fn() },
       on(event, fn) { listeners[event] = fn; return proc; },
+      off(event, fn) { if (listeners[event] === fn) delete listeners[event]; return proc; },
       kill: vi.fn((signal) => { proc.killed = true; proc.signalCode = signal; }),
     };
     return {
@@ -1621,6 +1987,7 @@ describe('generateVideo — pre-output idle-stall deadline', () => {
       stdout: { on: vi.fn((event, fn) => { if (event === 'data') stdoutData = fn; }) },
       stderr: { on: vi.fn((event, fn) => { if (event === 'data') stderrData = fn; }) },
       on(event, fn) { listeners[event] = fn; return proc; },
+      off(event, fn) { if (listeners[event] === fn) delete listeners[event]; return proc; },
       kill: vi.fn((signal) => { proc.killed = true; proc.signalCode = signal; }),
     };
     return {
@@ -2122,15 +2489,13 @@ describe('generateVideo — close-handler resilience (issue #1334)', () => {
   // `running` with no terminal SSE — it has to surface as a 'failed' event.
   it('routes a finalize throw to a terminal failed event instead of an unhandled rejection', async () => {
     vi.resetModules();
-    vi.doMock('./generateVideoHelpers.js', () => ({
-      makeVideoGenLineHandler: () => () => true,
+    // Spread the real module rather than enumerating the handful of exports
+    // generateVideo happens to use today: a listed-exports-only mock breaks the
+    // whole file the moment local.js imports one more helper (it did, twice).
+    vi.doMock('./generateVideoHelpers.js', async (importOriginal) => ({
+      ...(await importOriginal()),
       isWatchdogSuccess: () => false,
       finalizeGeneratedVideo: vi.fn(async () => { throw new Error('boom finalize'); }),
-      // Durable re-render inputs (#3696) — generateVideo reads both while
-      // building `meta`, so a partial mock has to carry them or every render
-      // in this file throws on the missing export.
-      describeRenderConditioning: () => [],
-      RENDER_INPUTS_VERSION: 1,
     }));
     const { generateVideo: gv } = await import('./local.js');
     const { videoGenEvents: events } = await import('./events.js');
@@ -2746,6 +3111,7 @@ describe('generateVideo — BYOV missing-python-module failure path (#1833 regre
         stdout: { on: vi.fn() },
         stderr: { on: (event, fn) => { stderrListeners[event] = fn; } },
         on(event, fn) { listeners[event] = fn; return proc; },
+        off(event, fn) { if (listeners[event] === fn) delete listeners[event]; return proc; },
         kill: vi.fn(),
       };
       // Feed the missing-module traceback to the stderr parser, then exit non-zero.
@@ -2819,6 +3185,7 @@ describe('generateVideo — chunk-boundary marker parsing (#2463)', () => {
       stdout: { on: vi.fn((event, fn) => { if (event === 'data') stdoutData = fn; }) },
       stderr: { on: vi.fn((event, fn) => { if (event === 'data') stderrData = fn; }) },
       on(event, fn) { listeners[event] = fn; return proc; },
+      off(event, fn) { if (listeners[event] === fn) delete listeners[event]; return proc; },
       kill: vi.fn((signal) => { proc.killed = true; proc.signalCode = signal; }),
     };
     return {
@@ -2925,6 +3292,7 @@ describe('generateVideo — signal-death diagnosis (#3101)', () => {
       stdout: { on: vi.fn((event, fn) => { if (event === 'data') stdoutData = fn; }) },
       stderr: { on: vi.fn((event, fn) => { if (event === 'data') stderrData = fn; }) },
       on(event, fn) { listeners[event] = fn; return proc; },
+      off(event, fn) { if (listeners[event] === fn) delete listeners[event]; return proc; },
       kill: vi.fn((signal) => { proc.killed = true; proc.signalCode = signal; }),
     };
     return {
@@ -3846,5 +4214,559 @@ describe('generateVideo — MiniMax H3 CUDA contract', () => {
 
     const [, args] = cudaCall(spawnMock);
     expect(args).not.toContain('--offload-profile');
+  });
+});
+
+// ── one-shot prompt-encode relaunch after a Metal watchdog abort (#4589) ─────
+// A real Metal abort can't be produced here, so the child is driven directly:
+// the marker lines and the abort banner are pushed onto its stderr, then it is
+// closed on SIGABRT exactly as the OS would. What is under test is the decision
+// generateVideo makes from that wreckage — relaunch or fail — plus the argv the
+// relaunch carries.
+describe('generateVideo — Gemma prompt-encode watchdog relaunch', () => {
+  const TIMEOUT_ABORT = 'libc++abi: terminating due to uncaught exception of type std::runtime_error: [METAL] Command buffer execution failed: Caused GPU Timeout Error (00000002:kIOGPUCommandBufferCallbackErrorTimeout)';
+  const INTERACTIVITY_ABORT = 'libc++abi: terminating due to uncaught exception: [METAL] Command buffer execution failed: (00000004:kIOGPUCommandBufferCallbackErrorImpactingInteractivity)';
+  const OOM_ABORT = '[METAL] Command buffer execution failed: (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)';
+
+  // A child whose stderr and terminal signal the test drives by hand. The
+  // shared makeProc() closes itself on exit 0, which is the opposite of every
+  // case here.
+  const makeDrivenProc = (pid, { failWiring = false } = {}) => {
+    const listeners = {};
+    const onData = {};
+    const proc = {
+      pid,
+      exitCode: null,
+      signalCode: null,
+      killed: false,
+      stdout: {
+        on: vi.fn((event, fn) => {
+          if (failWiring) throw new Error('stdout stream vanished');
+          onData[`stdout:${event}`] = fn;
+        }),
+      },
+      stderr: { on: vi.fn((event, fn) => { onData[`stderr:${event}`] = fn; }) },
+      on(event, fn) { listeners[event] = fn; return proc; },
+      off(event, fn) { if (listeners[event] === fn) delete listeners[event]; return proc; },
+      kill: vi.fn(),
+    };
+    return {
+      proc,
+      // Full wiring — the stdout reader goes on with the real terminal handler,
+      // and only there. The pre-handoff exit buffer subscribes to 'close'/'error'
+      // alone, so this stays false across the handoff window even though the
+      // child's exit can no longer be lost.
+      isWired: () => typeof onData['stdout:data'] === 'function',
+      stderr: (text) => onData['stderr:data']?.(Buffer.from(`${text}\n`)),
+      close: async (code, signal) => {
+        proc.exitCode = code;
+        proc.signalCode = signal;
+        await listeners.close?.(code, signal);
+      },
+      abort: async (signal = 'SIGABRT') => {
+        proc.signalCode = signal;
+        await listeners.close?.(null, signal);
+      },
+      finish: async () => {
+        proc.exitCode = 0;
+        await listeners.close?.(0, null);
+      },
+    };
+  };
+
+  let restorePlatform = () => {};
+  let failures;
+  let onFailed;
+
+  beforeEach(async () => {
+    // The command-buffer watchdog is a macOS construct and generateVideo gates
+    // the relaunch on the real platform, so pin it — otherwise this whole
+    // describe would silently assert "never relaunches" on Windows CI.
+    // Pinned inside the hook, never at module scope: local.js is already
+    // imported by then.
+    const { pinPlatform } = await import('../../lib/testHelper.js');
+    restorePlatform = pinPlatform('darwin');
+    failures = [];
+    onFailed = (payload) => failures.push(payload);
+    videoGenEvents.on('failed', onFailed);
+  });
+
+  afterEach(() => {
+    videoGenEvents.off('failed', onFailed);
+    restorePlatform();
+  });
+
+  const startRender = async (jobId, children) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    for (const child of children) spawnMock.mockResolvedValueOnce(child.proc);
+    await generateVideo({
+      jobId,
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a lighthouse in fog',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      seed: 987654,
+    });
+    return spawnMock;
+  };
+
+  const ltx2Calls = (spawnMock) => spawnMock.mock.calls.filter(([bin]) => isLtx2Python(bin));
+  const flagValue = (args, flag) => args[args.indexOf(flag) + 1];
+
+  it.each([
+    ['the classic timeout signature', TIMEOUT_ABORT],
+    ['the impacting-interactivity signature newer macOS reports', INTERACTIVITY_ABORT],
+  ])('relaunches once at a reduced Gemma budget on %s', async (_label, abort) => {
+    const first = makeDrivenProc(101);
+    const second = makeDrivenProc(102);
+    const spawnMock = await startRender(`pe-${abort.length}`, [first, second]);
+
+    first.stderr('STAGE:encode-prompt');
+    first.stderr(abort);
+    await first.abort();
+
+    const calls = ltx2Calls(spawnMock);
+    expect(calls).toHaveLength(2);
+    const [firstArgs, retryArgs] = calls.map(([, args]) => args);
+    // The original render never carries the flag — the reduced budget exists
+    // only as the mitigation, not as a new default.
+    expect(firstArgs).not.toContain('--gemma-max-length');
+    expect(flagValue(retryArgs, '--gemma-max-length')).toBe('512');
+    // Same render, smaller prompt budget: seed and output must survive verbatim
+    // or the relaunch silently produces a different clip than the user asked for.
+    expect(flagValue(retryArgs, '--seed')).toBe(flagValue(firstArgs, '--seed'));
+    expect(flagValue(retryArgs, '--seed')).toBe('987654');
+    expect(flagValue(retryArgs, '--output')).toBe(flagValue(firstArgs, '--output'));
+    expect(flagValue(retryArgs, '--prompt')).toBe(flagValue(firstArgs, '--prompt'));
+    // The aborted child must not surface as a terminal failure — the job is
+    // still running, on its replacement child.
+    expect(failures).toHaveLength(0);
+
+    await second.finish();
+  });
+
+  // The bypass probe for the phase gate: identical abort, identical signal, one
+  // extra marker line. If the gate were dropped this case would relaunch too.
+  it('does not relaunch once the prompt encode has finished', async () => {
+    const first = makeDrivenProc(103);
+    const spawnMock = await startRender('pe-after-encode', [first]);
+
+    first.stderr('STAGE:encode-prompt');
+    first.stderr('STAGE:encode-prompt-done');
+    first.stderr(TIMEOUT_ABORT);
+    await first.abort();
+
+    expect(ltx2Calls(spawnMock)).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect(failures[0].error).toMatch(/SIGABRT/);
+  });
+
+  // An OOM abort is not a watchdog timeout: a shorter prompt does not fix it,
+  // and relaunching burns another model load on a machine already out of room.
+  it('does not relaunch on an out-of-memory abort inside the encoder', async () => {
+    const first = makeDrivenProc(104);
+    const spawnMock = await startRender('pe-oom', [first]);
+
+    first.stderr('STAGE:encode-prompt');
+    first.stderr(OOM_ABORT);
+    await first.abort();
+
+    expect(ltx2Calls(spawnMock)).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+  });
+
+  it('relaunches at most once — a second abort at the reduced budget fails the job', async () => {
+    const first = makeDrivenProc(105);
+    const second = makeDrivenProc(106);
+    const spawnMock = await startRender('pe-twice', [first, second]);
+
+    first.stderr('STAGE:encode-prompt');
+    first.stderr(TIMEOUT_ABORT);
+    await first.abort();
+    expect(ltx2Calls(spawnMock)).toHaveLength(2);
+
+    second.stderr('STAGE:encode-prompt');
+    second.stderr(TIMEOUT_ABORT);
+    await second.abort();
+
+    expect(ltx2Calls(spawnMock)).toHaveLength(2);
+    expect(failures).toHaveLength(1);
+  });
+
+  it('never relaunches off macOS, where the command-buffer watchdog does not exist', async () => {
+    restorePlatform();
+    const { pinPlatform } = await import('../../lib/testHelper.js');
+    restorePlatform = pinPlatform('win32');
+    const first = makeDrivenProc(107);
+    const spawnMock = await startRender('pe-win32', [first]);
+
+    first.stderr('STAGE:encode-prompt');
+    first.stderr(TIMEOUT_ABORT);
+    await first.abort();
+
+    expect(ltx2Calls(spawnMock)).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+  });
+
+  // A cancel is answered by SIGTERM, so the child normally dies on a signal the
+  // classifier already ignores — but a cancel that RACES an abort already in
+  // flight still arrives as SIGABRT. Relaunching there would restart the render
+  // the user just stopped.
+  it('does not relaunch a child PortOS killed on purpose, even on SIGABRT', async () => {
+    const first = makeDrivenProc(108);
+    const spawnMock = await startRender('pe-killed', [first]);
+
+    first.stderr('STAGE:encode-prompt');
+    first.stderr(TIMEOUT_ABORT);
+    // What killWithEscalation() leaves behind on the handle when cancel() fires.
+    first.proc.killed = true;
+    await first.abort();
+
+    expect(ltx2Calls(spawnMock)).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+  });
+
+  // The relaunch clears activeProcess before it awaits the replacement spawn, so
+  // for that window cancel() has nothing to kill and reports false. The epoch
+  // check is the only thing that notices — without it the replacement child runs
+  // to completion after the user asked to stop.
+  it('abandons the replacement child when a cancel lands during the relaunch spawn', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const { cancel } = await import('./local.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    const first = makeDrivenProc(109);
+    const second = makeDrivenProc(110);
+    spawnMock.mockClear();
+    spawnMock.mockResolvedValueOnce(first.proc);
+    // Cancel from INSIDE the spawn await — the exact window activeProcess is null.
+    spawnMock.mockImplementationOnce(async () => {
+      cancel();
+      return second.proc;
+    });
+    await generateVideo({
+      jobId: 'pe-cancel-race',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a lighthouse in fog',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      seed: 987654,
+    });
+
+    first.stderr('STAGE:encode-prompt');
+    first.stderr(TIMEOUT_ABORT);
+    await first.abort();
+
+    // The replacement was spawned, then stopped rather than left running…
+    expect(ltx2Calls(spawnMock)).toHaveLength(2);
+    expect(second.proc.kill).toHaveBeenCalledWith('SIGTERM');
+    // …and the job still reports a terminal failure instead of hanging.
+    expect(failures).toHaveLength(1);
+  });
+
+  // A replacement child that never gets its close listener can never report a
+  // terminal event, so it must not be left running.
+  it('stops the replacement child when wiring it throws', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    const first = makeDrivenProc(111);
+    const second = makeDrivenProc(112, { failWiring: true });
+    spawnMock.mockClear();
+    spawnMock.mockResolvedValueOnce(first.proc).mockResolvedValueOnce(second.proc);
+    await generateVideo({
+      jobId: 'pe-wire-throws',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a lighthouse in fog',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      seed: 987654,
+    });
+
+    first.stderr('STAGE:encode-prompt');
+    first.stderr(TIMEOUT_ABORT);
+    await first.abort();
+
+    expect(second.proc.kill).toHaveBeenCalledWith('SIGTERM');
+    // The job still ends, reporting the abort that started all this.
+    expect(failures).toHaveLength(1);
+  });
+
+  // The replacement must not be reachable by cancel() until it is wired: an
+  // unwired child killed mid-handoff emits its exit into the void and strands the
+  // job `running`, and its close handler could otherwise release the accelerator
+  // claim while the handoff is still in flight — which would then rewrite the
+  // claim file with a dead PID and wedge every later render.
+  it('finishes the claim handoff before the replacement child is trackable', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    const first = makeDrivenProc(113);
+    const second = makeDrivenProc(114);
+    spawnMock.mockClear();
+    spawnMock.mockResolvedValueOnce(first.proc).mockResolvedValueOnce(second.proc);
+    await generateVideo({
+      jobId: 'pe-wire-order',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a lighthouse in fog',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      seed: 987654,
+    });
+    // Sampled from inside the handoff — the window where a wired-and-tracked
+    // child could run its close handler against the in-flight claim write.
+    let wiredDuringHandoff = null;
+    heavyClaimHandoff.mockImplementationOnce(async (pid) => {
+      if (pid === 114) wiredDuringHandoff = second.isWired();
+    });
+
+    first.stderr('STAGE:encode-prompt');
+    first.stderr(TIMEOUT_ABORT);
+    await first.abort();
+
+    expect(wiredDuringHandoff).toBe(false);
+    // …and the wiring does land right after, so the replacement can finalize.
+    expect(second.isWired()).toBe(true);
+    await second.finish();
+    expect(failures).toHaveLength(0);
+  });
+
+  // The cancel window does not close when the spawn resolves — the handoff is
+  // awaited too, and activeProcess is still null across it, so cancel() again
+  // leaves nothing behind but the epoch bump.
+  it('abandons the replacement child when a cancel lands during the claim handoff', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const { cancel } = await import('./local.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    const first = makeDrivenProc(115);
+    const second = makeDrivenProc(116);
+    spawnMock.mockClear();
+    spawnMock.mockResolvedValueOnce(first.proc).mockResolvedValueOnce(second.proc);
+    await generateVideo({
+      jobId: 'pe-cancel-handoff',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a lighthouse in fog',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      seed: 987654,
+    });
+    heavyClaimHandoff.mockImplementationOnce(async (pid) => {
+      if (pid === 116) cancel();
+    });
+
+    first.stderr('STAGE:encode-prompt');
+    first.stderr(TIMEOUT_ABORT);
+    await first.abort();
+
+    expect(second.proc.kill).toHaveBeenCalledWith('SIGTERM');
+    // Never wired, so it could not have reported anything — the job's terminal
+    // event has to come from the original abort instead.
+    expect(second.isWired()).toBe(false);
+    expect(failures).toHaveLength(1);
+  });
+
+  // The claim handoff yields to the event loop, so a replacement that dies in
+  // that window emits its 'close' before anything is listening. Nothing would
+  // ever reap it: the job would sit `running` forever, still holding the
+  // accelerator claim, with no terminal SSE or queue event.
+  it('reaps a replacement child that died before its listener was attached', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    const first = makeDrivenProc(117);
+    const second = makeDrivenProc(118);
+    spawnMock.mockClear();
+    spawnMock.mockResolvedValueOnce(first.proc).mockResolvedValueOnce(second.proc);
+    await generateVideo({
+      jobId: 'pe-early-death',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a lighthouse in fog',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      seed: 987654,
+    });
+    // Dies during the handoff, and its close() fires into the void — modelled by
+    // setting the exit state without invoking any listener.
+    heavyClaimHandoff.mockImplementationOnce(async (pid) => {
+      if (pid === 118) second.proc.exitCode = 3;
+    });
+
+    first.stderr('STAGE:encode-prompt');
+    first.stderr(TIMEOUT_ABORT);
+    await first.abort();
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0].error).toMatch(/Exit code 3/);
+    expect(heavyClaimRelease).toHaveBeenCalled();
+
+    // …and the real 'close' arriving late — carrying that same exit status —
+    // is absorbed rather than re-running the whole teardown and reporting the
+    // job as failed a second time.
+    await second.close(3, null);
+    expect(failures).toHaveLength(1);
+    expect(heavyClaimRelease).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── the first render child vs the accelerator handoff (#4617) ────────────────
+// Between `spawnDetached` resolving and the render child's real listeners going
+// on sits the machine-claim handoff — an await on real file I/O. A child that
+// dies inside that window emits with nobody subscribed: a lost 'close' leaves
+// the job `running` forever while still holding the accelerator claim (every
+// later render then 409s), and a lost 'error' is worse, since an EventEmitter
+// with no 'error' listener throws and takes the server down with it.
+describe('generateVideo — first render child dies during the accelerator handoff', () => {
+  // A child that never exits on its own, so the test decides exactly when — and
+  // from where — its terminal event fires.
+  const makeSilentProc = (pid, { failWiring = false } = {}) => {
+    const listeners = {};
+    const proc = {
+      pid,
+      exitCode: null,
+      signalCode: null,
+      killed: false,
+      stdout: { on: vi.fn(() => { if (failWiring) throw new Error('stdout stream vanished'); }) },
+      stderr: { on: vi.fn() },
+      on(event, fn) { listeners[event] = fn; return proc; },
+      off(event, fn) { if (listeners[event] === fn) delete listeners[event]; return proc; },
+      kill: vi.fn(),
+    };
+    return {
+      proc,
+      close: (code, signal) => {
+        proc.exitCode = code;
+        proc.signalCode = signal;
+        return listeners.close?.(code, signal);
+      },
+      // A spawn-side failure (no `sh`, no PID recorded) — the handle reports it
+      // as 'error' and never populates exitCode, so nothing but a listener can
+      // observe it.
+      error: (err) => listeners.error?.(err),
+    };
+  };
+
+  let failures;
+  let onFailed;
+
+  beforeEach(() => {
+    failures = [];
+    onFailed = (payload) => failures.push(payload);
+    videoGenEvents.on('failed', onFailed);
+  });
+
+  afterEach(() => {
+    videoGenEvents.off('failed', onFailed);
+  });
+
+  const render = async (jobId, child, duringHandoff) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    vi.mocked(spawnDetached).mockResolvedValueOnce(child.proc);
+    heavyClaimHandoff.mockImplementationOnce(async () => duringHandoff());
+    return generateVideo({
+      jobId,
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a lighthouse in fog',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      seed: 987654,
+    });
+  };
+
+  it('reports the exit and hands the accelerator claim back when the close lands unsubscribed', async () => {
+    const child = makeSilentProc(201);
+    await render('first-child-close-in-handoff', child, () => child.close(3, null));
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0].error).toMatch(/Exit code 3/);
+    expect(heavyClaimRelease).toHaveBeenCalled();
+
+    // …and the real 'close' arriving late carries the same status through a
+    // handler that already ran, so the job must not fail (or release) twice.
+    await child.close(3, null);
+    expect(failures).toHaveLength(1);
+    expect(heavyClaimRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a spawn error raised in the same window, which no exit status records', async () => {
+    const child = makeSilentProc(202);
+    await render('first-child-error-in-handoff', child, () => child.error(new Error('detached spawn produced no PID')));
+
+    // exitCode/signalCode stay null on a spawn failure — only a subscriber sees it.
+    expect(child.proc.exitCode).toBeNull();
+    expect(failures).toHaveLength(1);
+    expect(failures[0].error).toMatch(/produced no PID/);
+    expect(heavyClaimRelease).toHaveBeenCalled();
+  });
+
+  it('stops the child and releases the claim when the handoff itself throws', async () => {
+    const child = makeSilentProc(203);
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    vi.mocked(spawnDetached).mockResolvedValueOnce(child.proc);
+    heavyClaimHandoff.mockImplementationOnce(async () => { throw new Error('claim file vanished'); });
+
+    await expect(generateVideo({
+      jobId: 'first-child-handoff-throws',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a lighthouse in fog',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      seed: 987654,
+    })).rejects.toThrow('claim file vanished');
+
+    // Never wired, so it could never report anything — it must not be left
+    // running, and the claim it may already have been handed has to come back.
+    expect(child.proc.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(heavyClaimRelease).toHaveBeenCalled();
+    // …and the job converges instead of sitting `running` in the jobs map with
+    // its staged temp files, which is the same stranding #4617 is about.
+    expect(failures).toHaveLength(1);
+    expect(failures[0].error).toMatch(/claim file vanished/);
+  });
+
+  it('stops the child and fails the job when the wiring itself throws', async () => {
+    const child = makeSilentProc(204, { failWiring: true });
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    vi.mocked(spawnDetached).mockResolvedValueOnce(child.proc);
+
+    await expect(generateVideo({
+      jobId: 'first-child-wiring-throws',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a lighthouse in fog',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      seed: 987654,
+    })).rejects.toThrow('stdout stream vanished');
+
+    expect(child.proc.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(heavyClaimRelease).toHaveBeenCalled();
+    expect(failures).toHaveLength(1);
   });
 });

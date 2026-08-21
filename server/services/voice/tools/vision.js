@@ -7,13 +7,13 @@
 // chart/graph", "describe this", "what am I looking at", "what does this
 // look like". Kept distinct from `ui` (text read) so the LLM can choose
 // ui_read vs ui_describe_visually.
-export const VISION_INTENT_RE = /\b(chart|graph|diagram|cyber ?city|3d|render(?:ing)?|visualization|picture|image|screenshot)\b|\b(?:what(?:'s| does| am i)?|describe)\b[^.!?\n]{0,30}\b(?:look(?:ing|s)? like|on (?:this|the) (?:chart|graph|screen|map)|visual(?:ly)?)\b/i;
+export const VISION_INTENT_RE = /\b(chart|graph|diagram|open ?world|3d|render(?:ing)?|visualization|picture|image|screenshot)\b|\b(?:what(?:'s| does| am i)?|describe)\b[^.!?\n]{0,30}\b(?:look(?:ing|s)? like|on (?:this|the) (?:chart|graph|screen|map)|visual(?:ly)?)\b/i;
 
 export const VISION_TOOLS = [
   {
     name: 'ui_describe_visually',
     description:
-      "Take a screenshot of what the user is currently looking at and describe it using a vision model. Use when the user asks about VISUAL content the text-based ui_read can't capture — \"what's on this chart?\", \"describe this graph\", \"what does the CyberCity look like right now?\", \"what am I looking at?\". For plain text content prefer ui_read; only reach for this when the answer requires SEEING pixels (charts, 3D/WebGL views, images, diagrams). The screenshot is captured client-side (the browser may prompt for screen-capture permission the first time).",
+      "Take a screenshot of what the user is currently looking at and describe it using a vision model. Use when the user asks about VISUAL content the text-based ui_read can't capture — \"what's on this chart?\", \"describe this graph\", \"what does the OpenWorld look like right now?\", \"what am I looking at?\". For plain text content prefer ui_read; only reach for this when the answer requires SEEING pixels (charts, 3D/WebGL views, images, diagrams). The screenshot is captured client-side (the browser may prompt for screen-capture permission the first time).",
     parameters: {
       type: 'object',
       properties: {

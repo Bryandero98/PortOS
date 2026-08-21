@@ -101,8 +101,7 @@ Re-open this when **either** holds, because either one removes all the work:
 2. llama.cpp #27342 merges **and** Ollama's vendored engine picks it up.
 
 Either way PortOS's work is a catalog entry, not a backend. Tracked in
-[#4568](https://github.com/atomantic/PortOS/issues/4568) so the trigger does not
-live only in this note.
+[#4568](https://github.com/atomantic/PortOS/issues/4568) (closed: resolved in PR [#4570](https://github.com/atomantic/PortOS/pull/4570) with the `OpenCode llama TUI` provider and `llama-server` management).
 
 ## What shipped instead
 

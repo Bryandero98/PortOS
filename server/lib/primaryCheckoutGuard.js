@@ -23,8 +23,9 @@
  * --hard origin/main`) was actively wrong: the commits WERE `origin/main`. So the
  * guard reports only what a branch-jack actually leaves behind — commits the
  * branch's upstream does not have, or the checkout parked on a different branch.
- * A branch with no upstream to compare against can't be cleared, so it still
- * reports (an unpushed commit is unreviewed by definition).
+ * A branch with no upstream to compare against falls back to the remote's default
+ * branch, and a checkout with no remote at all can't be cleared, so it still
+ * reports (an unpushed commit is unreviewed by definition). See #4717 below.
  *
  * "The upstream does not have it" is a question about CONTENT, not SHAs (#3744).
  * This repo rebase-merges PRs, so a commit that merged upstream carries a
@@ -80,6 +81,25 @@
  * WHICH branch it landed on, so the agent's OWN worktree branch still fails (a
  * shape only the agent produces) and every other branch is `unattributed` —
  * worth surfacing, since the next spawn baselines against it, but not a failure.
+ *
+ * All of the above rests on there BEING an upstream to compare against, and the
+ * no-upstream fallback quietly kept the pre-#4098 behavior (#4717). A branch with no
+ * upstream is not a branch with nothing pushed: `git checkout -b my-feature` off
+ * `origin/main` leaves the whole of `main` underneath it. Reading that as "no
+ * comparison available" makes every commit since the baseline a stranded candidate,
+ * which stays harmless only while the baseline is ITSELF at `origin/main` — the
+ * `^runBase` exclusion then covers the shared history by accident. A primary parked
+ * on `release` broke that accident: the baseline sat 28 commits behind `main`, the
+ * human cut an unpushed feature branch off `main` mid-run, and the guard reported 39
+ * stranded commits. Attribution then matched, because the agent had branched from
+ * `main` and its PR had MERGED — so `main`'s own history was, commit for commit,
+ * also on the agent's branch. A run whose work was merged and reviewed was failed
+ * for the contents of `main`. The fix is to stop treating "this branch has no
+ * upstream" as "nothing here is pushed": the frontier falls back to the remote's
+ * default branch (`resolveRemoteDefaultRef`), which can only ever CLEAR content,
+ * since every commit it reaches is on the remote by definition. Only a checkout with
+ * no remote at all still has no frontier, and there an unpushed commit really is
+ * unreviewed by definition.
  *
  * Two halves, deliberately split so they can sit on opposite ends of a run:
  * `capturePrimaryCheckoutState` stamps a baseline at spawn time (onto the agent
@@ -209,6 +229,59 @@ async function resolveUpstreamSha(checkoutPath, branch) {
 async function resolveUpstreamRef(checkoutPath, branch) {
   const result = await execGit(
     ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`],
+    checkoutPath,
+    { ignoreExitCode: true, timeout: GIT_TIMEOUT_MS },
+  ).catch(() => null);
+  return firstLine(result);
+}
+
+/**
+ * The remote's DEFAULT-BRANCH tracking ref as `{ ref, sha }` — the pushed frontier
+ * to fall back on when `current.branch` has no upstream of its own (#4717).
+ *
+ * "No upstream" is not "nothing is pushed". A human on the shared primary running
+ * `git checkout -b my-feature` has a branch with no upstream sitting on top of the
+ * whole of `origin/main`, and treating that as "no comparison available" makes the
+ * guard read every commit since the baseline as stranded. That is survivable while
+ * the baseline is itself at `origin/main` — `^runBase` then excludes the shared
+ * history anyway — and it is exactly what broke when the baseline was NOT: a primary
+ * parked on `release` (behind `main`) was read as stranding 39 commits, 28 of which
+ * were ordinary merged `main` history. Every one of those was also on the agent's
+ * branch, because the agent branched from `main` and its PR had since merged, so
+ * attribution matched and the run was failed for `main`'s own history. This is the
+ * #4098 shape reached through the no-upstream fallback that #4098 did not touch.
+ *
+ * `origin/HEAD` first (the remote's own answer), then the conventional names. All
+ * three are remote-tracking refs, so anything they reach is by definition pushed —
+ * the frontier only ever CLEARS content, never invents a stranded commit. A repo
+ * with no remote at all resolves to null and keeps the pre-existing behavior: an
+ * unpushed commit is unreviewed by definition, so the guard still attributes it
+ * against the run baseline.
+ *
+ * NON-THROWING, like the rest of the module.
+ */
+async function resolveRemoteDefaultRef(checkoutPath) {
+  for (const ref of ['origin/HEAD', 'origin/main', 'origin/master']) {
+    const result = await execGit(
+      ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`],
+      checkoutPath,
+      { ignoreExitCode: true, timeout: GIT_TIMEOUT_MS },
+    ).catch(() => null);
+    const sha = firstLine(result);
+    if (!sha) continue;
+    // `origin/HEAD` is a symref; name the branch it points at, since the ref goes
+    // into a `reset --hard` command a human types later and `origin/HEAD` reads as
+    // a footgun even where it resolves.
+    if (ref !== 'origin/HEAD') return { ref, sha };
+    return { ref: (await resolveSymbolicRemoteHead(checkoutPath)) || ref, sha };
+  }
+  return null;
+}
+
+/** `origin/HEAD`'s target in `origin/<branch>` form, or null. Non-throwing. */
+async function resolveSymbolicRemoteHead(checkoutPath) {
+  const result = await execGit(
+    ['rev-parse', '--abbrev-ref', 'origin/HEAD'],
     checkoutPath,
     { ignoreExitCode: true, timeout: GIT_TIMEOUT_MS },
   ).catch(() => null);
@@ -494,7 +567,14 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
   // captured above), never the live `current.branch` — a concurrent commit or
   // fetch on the shared checkout must not make the two counts and the cherry walk
   // read different histories.
-  const upstream = await resolveUpstreamSha(baseline.path, current.branch);
+  //
+  // A branch with no upstream of its own falls back to the remote's default branch
+  // (#4717): a freshly-cut local branch is not "nothing is pushed", and reading it
+  // that way strands the whole of `main` whenever the baseline sits behind `main`.
+  // See `resolveRemoteDefaultRef`. Null only when the checkout has no remote at all.
+  const ownUpstream = await resolveUpstreamSha(baseline.path, current.branch);
+  const fallbackUpstream = ownUpstream ? null : await resolveRemoteDefaultRef(baseline.path);
+  const upstream = ownUpstream || fallbackUpstream?.sha || null;
   const [commitCount, unpushedCount] = await Promise.all([
     countCommitsAhead(baseline.path, baseline.head, current.head),
     // Commits the branch carries that its upstream does not — the only commits a
@@ -592,7 +672,13 @@ export async function detectPrimaryCheckoutDrift(baseline, { agentBranch = null 
       strandedCount,
       agentBranch,
       // Symbolic, not the pinned sha: this goes into a command a human runs later.
-      upstreamRef: await resolveUpstreamRef(baseline.path, current.branch),
+      // Must name the ref the stranded set was actually computed against, or the
+      // reader inspects a different range than the one the count came from — which
+      // for a branch with no upstream meant quoting an `origin/<branch>` that does
+      // not exist and whose `reset --hard` errors out (the #4098 lesson, reached
+      // through the fallback path).
+      upstreamRef: (await resolveUpstreamRef(baseline.path, current.branch)) || fallbackUpstream?.ref || null,
+      upstreamIsRemoteDefault: !ownUpstream && Boolean(fallbackUpstream),
     }),
   };
 }
@@ -626,8 +712,14 @@ export function formatDriftMessage({ baseline, current, commitCount, baselineRew
  * <branch>@{upstream}`), not an assumption that it is `origin/<branch>`; see
  * `resolveUpstreamRef`. It falls back to `origin/<branch>` only when the caller could
  * not resolve one, which is the pre-#4098 wording.
+ *
+ * `upstreamIsRemoteDefault` says that ref is the REMOTE'S DEFAULT BRANCH standing in
+ * for a branch that has no upstream (#4717), not something the branch tracks — the
+ * reset is just as wide either way, but telling a reader their branch "tracks"
+ * `origin/main` when it tracks nothing sends them to `git branch -u` to undo a
+ * setting that was never there.
  */
-export function formatDriftRecovery({ current, baseline = null, commitCount, unpushedCount = null, strandedCount = null, agentBranch, upstreamRef = null }) {
+export function formatDriftRecovery({ current, baseline = null, commitCount, unpushedCount = null, strandedCount = null, agentBranch, upstreamRef = null, upstreamIsRemoteDefault = false }) {
   if (unpushedCount === 0 && baseline?.branch && baseline.branch !== current.branch) {
     return [
       `A worktree-isolated agent left the PRIMARY checkout on its own worktree branch \`${current.branch}\` instead of \`${baseline.branch}\`.`,
@@ -650,7 +742,9 @@ export function formatDriftRecovery({ current, baseline = null, commitCount, unp
   // branch cut from `main` tracks `origin/main`) rewinds ONTO THAT — which is most of
   // the branch, not just the drift. Say so where the reader is about to type it.
   const trackingCaveat = upstreamRef && upstreamRef !== `origin/${current.branch}`
-    ? ` Note that \`${current.branch}\` tracks \`${upstreamRef}\` rather than a remote branch of its own, so that reset rewinds it onto \`${upstreamRef}\` and drops every local commit on it, not only the agent's.`
+    ? upstreamIsRemoteDefault
+      ? ` Note that \`${current.branch}\` has no upstream of its own, so \`${upstreamRef}\` is the remote's default branch standing in for one — that reset rewinds onto \`${upstreamRef}\` and drops every local commit on the branch, not only the agent's.`
+      : ` Note that \`${current.branch}\` tracks \`${upstreamRef}\` rather than a remote branch of its own, so that reset rewinds it onto \`${upstreamRef}\` and drops every local commit on it, not only the agent's.`
     : '';
   return [
     `A worktree-isolated agent committed to the PRIMARY checkout instead of its worktree, leaving \`${current.branch}\` carrying ${countPhrase} PortOS never reviewed.`,

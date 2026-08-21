@@ -26,7 +26,7 @@ import { stat } from 'node:fs/promises';
 import { getBranches, getDefaultBranch, isBranchMergedInto, deleteBranch } from './git.js';
 import { execGit } from '../lib/execGit.js';
 import { listWorktrees, forceRemoveWorktreeDir, classifyWorktreeDirt, reapMergedWorktrees } from './worktreeManager.js';
-import { isAgentWorktreeId, worktreeOwnershipReason } from '../lib/worktreeOwnership.js';
+import { isAgentWorktreeId, worktreeOwnershipReason, worktreeHoldExpiresAt } from '../lib/worktreeOwnership.js';
 import { execGh, ensureForgeReachable } from './github.js';
 import { getOriginInfo } from '../lib/gitRemote.js';
 import { githubRepoSpec, githubApiHost } from '../lib/workTracker.js';
@@ -98,6 +98,18 @@ export function prioritizeBranches(branches) {
 // its worktree, while a genuinely-leaked one (which persists indefinitely) is
 // reaped on the daily recheck once it crosses the threshold.
 export const STALE_CLAIM_IDLE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+// The same window, for a claim that has demonstrably SHIPPED (see SHIPPED_CLAIM
+// on cleanupMerged). Proof of completion collapses the wait but does not remove
+// it: the one thing "merged + clean + remote branch gone" does NOT prove is that
+// the local /claim PROCESS has exited. A session that just merged its own PR —
+// or whose PR was merged from a peer machine, which PortOS users routinely run —
+// sits in exactly that state for the seconds-to-minutes it spends on teardown,
+// and reaping there deletes a directory a live process is still standing in.
+// mtime is the only liveness proxy available (a claim has no durable local agent
+// id), so keep a short idle floor over it. An hour is far longer than any
+// teardown and still turns a week-long park into a single recheck.
+export const SHIPPED_CLAIM_IDLE_MS = 60 * 60 * 1000; // 1 hour
 
 // Bound the gh query (single-user repos never realistically truncate at 200).
 const PR_LIST_LIMIT = 200;
@@ -221,12 +233,14 @@ async function getOpenPrsByHead(repoPath) {
 /**
  * Reason a worktree must NOT be torn down, or null if it's safe to remove.
  * Pure — the dangerous-to-remove cases the deterministic cleanup must respect
- * (mirrors the guards the existing worktree reaper honors):
+ * (mirrors the guards the existing worktree reaper honors), in gate order — a
+ * tree held by more than one of these reports the FIRST:
  *   - locked            → the user explicitly `git worktree lock`ed it
+ *   - active CoS agent  → an agent (`agent-<id>`) is currently running in it
  *   - human `/claim`    → a `claim-<slug>` worktree self-cleaned by the /claim flow,
  *                         UNLESS it is an abandoned one older than `staleClaimIdleMs`
- *                         (`ageMs` supplied) — those are reaped (see STALE_CLAIM_IDLE_MS)
- *   - active CoS agent  → an agent (`agent-<id>`) is currently running in it
+ *                         (`ageMs` supplied) — those are reaped (see STALE_CLAIM_IDLE_MS,
+ *                         and SHIPPED_CLAIM_IDLE_MS for a claim proven shipped)
  * Sibling worktrees (`next-issue-*`, etc.) whose basename is none of these fall
  * through to null and are cleaned normally.
  *
@@ -236,6 +250,30 @@ async function getOpenPrsByHead(repoPath) {
 export function worktreeProtectionReason({ path, locked, activeAgentIds, ageMs, staleClaimIdleMs = STALE_CLAIM_IDLE_MS }) {
   if (!path) return null;
   return worktreeOwnershipReason({
+    path,
+    locked,
+    activeAgentIds,
+    allowStaleClaim: true,
+    ageMs,
+    staleClaimIdleMs,
+  });
+}
+
+/**
+ * When `worktreeProtectionReason`'s hold on this worktree lapses by itself, as an
+ * ISO instant — or null when it takes an outside change (a lock released, an
+ * agent exiting) that we cannot schedule.
+ *
+ * The exact mirror of the gate above, so cleanup can report not just THAT a
+ * merged branch was held back but WHEN it stops being held. Policy lives in
+ * worktreeOwnership.js; this only supplies this caller's defaults.
+ *
+ * @param {{ path:string|null, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number|null, staleClaimIdleMs?:number }} input
+ * @returns {string|null} ISO timestamp
+ */
+export function worktreeProtectionExpiresAt({ path, locked, activeAgentIds, ageMs, staleClaimIdleMs = STALE_CLAIM_IDLE_MS }) {
+  if (!path) return null;
+  return worktreeHoldExpiresAt({
     path,
     locked,
     activeAgentIds,
@@ -279,7 +317,7 @@ export function isAbandonedAgentWorktree({ path, locked, activeAgentIds }) {
 
 /**
  * Why this branch must be left ALONE this cycle — the dispatch-side counterpart to
- * `worktreeProtectionReason`'s teardown gate. Two cases that gate doesn't cover:
+ * `worktreeProtectionReason`'s teardown gate. Three cases that gate doesn't cover:
  *
  * 1. **Liveness we could not determine.** `worktreeProtectionReason` is only ever
  *    called with an authoritative `activeAgentIds` Set (cleanupMerged defaults it to
@@ -295,12 +333,25 @@ export function isAbandonedAgentWorktree({ path, locked, activeAgentIds }) {
  *    otherwise classifies IN_REVIEW and gets handed to the coordinator while its own
  *    agent is still working. That is the bug this whole guard exists to prevent,
  *    surviving in a narrower window. So the branch name is checked too.
+ * 3. **A claim directory, which is a claim MARKER and not a live process.** The
+ *    claim flow has no durable local agent id for its branch, so treating the
+ *    directory's existence as liveness hides clean, open-PR claims after the
+ *    claim agent has exited — exactly the branches branch-reconcile exists to
+ *    finish. So this side passes `allowLiveClaim`, while cleanup keeps the hold
+ *    through `worktreeProtectionReason` until the claim is stale or provably
+ *    shipped. A lock still outranks it: the gate tests the lock BEFORE the
+ *    claim, so a locked claim tree reports `worktree-locked` on its own — and
+ *    so does a live agent, on the same ordering. `activeAgentIds` holds
+ *    `agent-<id>` keys (case 2 above reads them as such), so a claim basename
+ *    can only appear there out of contract; if one ever did, holding the branch
+ *    is the fail-safe answer and the intended precedence.
+ *
  * A branch with no worktree at all and no live owner is simply free (null).
  *
- * @param {{ branch?:string|null, path:string|null, locked?:boolean, activeAgentIds?:Set<string>, ageMs?:number|null }} input
+ * @param {{ branch?:string|null, path:string|null, locked?:boolean, activeAgentIds?:Set<string> }} input
  * @returns {string|null} a stable reason slug, or null when nobody owns it
  */
-export function resolveLiveOwnerReason({ branch, path, locked, activeAgentIds, ageMs }) {
+export function resolveLiveOwnerReason({ branch, path, locked, activeAgentIds }) {
   // The branch's own trailing segment is an agent id for CoS branches — checked
   // FIRST because it holds even after the worktree is gone.
   const owner = (branch || '').split('/').pop() || '';
@@ -308,26 +359,13 @@ export function resolveLiveOwnerReason({ branch, path, locked, activeAgentIds, a
     return 'branch-active-agent';
   }
   if (!path) return null;
-  const reason = worktreeOwnershipReason({
+  return worktreeOwnershipReason({
     path,
     locked,
     activeAgentIds,
-    allowStaleClaim: true,
-    ageMs,
-    staleClaimIdleMs: STALE_CLAIM_IDLE_MS,
+    allowLiveClaim: true,
     requireKnownLiveness: true,
   });
-
-  // A `claim-*` directory is a claim marker, not a live-process marker. The
-  // claim flow has no durable local agent id for this branch, so treating the
-  // directory's existence as liveness hides clean, open-PR claims after the
-  // claim agent has exited — exactly the branches branch-reconcile exists to
-  // finish. Cleanup still uses worktreeProtectionReason and keeps every claim
-  // worktree protected; this dispatch-side exception only applies after the
-  // classifier has established that the tree is clean. A lock remains an
-  // explicit hold even for a claim worktree.
-  if (reason === 'worktree-human-claim') return locked ? 'worktree-locked' : null;
-  return reason;
 }
 
 /**
@@ -605,20 +643,24 @@ async function worktreeAgeMs(worktreePath) {
  * always-protected set. Effectful (git + gh).
  *
  * @param {string} repoPath
- * @param {{ defaultBranch:string, activeAgentIds?:Set<string> }} ctx - `activeAgentIds`
- *   distinguishes a live agent's worktree from an abandoned one (see
+ * @param {{ defaultBranch:string, activeAgentIds?:Set<string>, remoteHeads?:Map<string,string>|null }} ctx
+ *   `activeAgentIds` distinguishes a live agent's worktree from an abandoned one (see
  *   `isAbandonedAgentWorktree`); omitting it leaves every agent worktree protected.
+ *   `remoteHeads` is `listRemoteHeads`' answer when the caller already has it;
+ *   omitted, this reads it itself, and `null` (unreadable remote) is carried
+ *   through as "we could not ask" rather than "the remote is empty".
  * @returns {Promise<object[]>} one entry per candidate branch:
- *   { branch, tip, hasUpstream, tracking, isMerged, hasWorktree, worktreePath, worktreeDirty,
- *     dirtyPaths, behind, ahead, collisionPaths, abandonedAgentWorktree, openPr }
+ *   { branch, tip, hasUpstream, tracking, upstreamGone, isMerged, hasWorktree, worktreePath,
+ *     worktreeDirty, dirtyPaths, behind, ahead, collisionPaths, abandonedAgentWorktree, openPr }
  */
-export async function gatherBranchState(repoPath, { defaultBranch, activeAgentIds = null }) {
+export async function gatherBranchState(repoPath, { defaultBranch, activeAgentIds = null, remoteHeads: providedRemoteHeads } = {}) {
   const protectedSet = new Set([...PROTECTED_BRANCHES, defaultBranch]);
 
-  const [branches, worktrees, prsByHeadOrNull] = await Promise.all([
+  const [branches, worktrees, prsByHeadOrNull, remoteHeads] = await Promise.all([
     getBranches(repoPath),
     listWorktrees(repoPath).catch(() => []),
-    getOpenPrsByHead(repoPath)
+    getOpenPrsByHead(repoPath),
+    providedRemoteHeads === undefined ? listRemoteHeads(repoPath) : providedRemoteHeads
   ]);
   // null = the forge could not be read (see getOpenPrsByHead). Carried onto every
   // input so the classifier can refuse to conclude "no PR" from an unread forge.
@@ -638,6 +680,7 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
 
   const inputs = [];
   for (const b of candidates) {
+    const upstreamName = upstreamBranchName(b.tracking);
     const wt = worktreeByBranch.get(b.name) || null;
     const worktreePath = wt?.path || null;
     const worktreeLocked = Boolean(wt?.locked);
@@ -662,6 +705,14 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
       // fact: a branch may track a remote branch called something else, and the
       // remote-side delete has to name the right ref.
       tracking: b.tracking || null,
+      // This branch was pushed, and the ref it tracks is no longer on origin —
+      // the tell that its PR merged with `--delete-branch`. Read from
+      // `listRemoteHeads`, not `%(upstream:track)`'s `[gone]`: that marker is
+      // computed against `refs/remotes/origin/*`, which this module already
+      // documents as too stale to act on (see listRemoteHeads). An unreadable
+      // remote (`null`) yields false — "we could not ask" must not read as
+      // "the remote branch is gone". See the SHIPPED_CLAIM note on cleanupMerged.
+      upstreamGone: Boolean(remoteHeads) && upstreamName !== null && !remoteHeads.has(upstreamName),
       isMerged,
       hasWorktree: Boolean(worktreePath),
       worktreePath,
@@ -675,7 +726,7 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
       // the two must agree, or the reconciler protects a worktree from deletion and
       // then hands its branch to an agent that rebases underneath the live session.
       liveOwnerReason: resolveLiveOwnerReason({
-        branch: b.name, path: worktreePath, locked: worktreeLocked, activeAgentIds, ageMs: worktreeAge
+        branch: b.name, path: worktreePath, locked: worktreeLocked, activeAgentIds
       }),
       behind: divergence.behind,
       ahead: divergence.ahead,
@@ -689,6 +740,40 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
 }
 
 /**
+ * How an idle reconcile should PARK — the reason, the breakdown, and the instant
+ * the park may end early.
+ *
+ * "Nothing actionable" has three very different meanings and they used to
+ * collapse into one: branches belong to sessions still running, merged branches
+ * are queued behind a protected worktree, or the repo really is quiet. Only the
+ * last is "nothing to do". Reporting it for the middle case is what made a task
+ * with four stale claim branches waiting on it read as though it had stopped
+ * running — the persisted state said zero of everything.
+ *
+ * Pure.
+ * @param {{reason?:string, retryAt?:string|null}[]} [skipped] - cleanupMerged's skips
+ * @param {object[]} [heldLive] - WIP branches with a liveOwnerReason
+ * @returns {{reason:string, heldBackMerged:object[], counts:{heldBackMerged:number}|null, notLaterThan:string|null}}
+ */
+export function describeIdleReconcilePark(skipped = [], heldLive = []) {
+  // Only worktree-* skips are a HOLD; 'not-merged-on-recheck' and 'cleanup-disabled'
+  // mean the branch was never eligible, so they must not read as pending work.
+  const heldBackMerged = skipped.filter((s) => s.reason?.startsWith('worktree-'));
+  const lifts = heldBackMerged.map((entry) => Date.parse(entry.retryAt)).filter(Number.isFinite);
+  const reason = heldLive.length
+    ? 'branches-held-by-live-owners'
+    : heldBackMerged.length ? 'merged-branches-held-back' : 'no-in-flight-branches';
+  return {
+    reason,
+    heldBackMerged,
+    counts: heldBackMerged.length ? { heldBackMerged: heldBackMerged.length } : null,
+    // The soonest hold to lapse is when this park may end early; entries with no
+    // (or an unreadable) deadline simply don't vote, leaving the normal cadence.
+    notLaterThan: lifts.length ? new Date(Math.min(...lifts)).toISOString() : null
+  };
+}
+
+/**
  * Deterministically clean up fully-merged branches: remove the lingering
  * worktree, then delete the local branch. Safety gates (ALL must hold):
  *   1. `isBranchMergedInto(default)` re-verified true (fail closed).
@@ -696,12 +781,35 @@ export async function gatherBranchState(repoPath, { defaultBranch, activeAgentId
  * A failed gate skips the branch (with a reason) — never a force-delete of
  * unmerged or dirty work.
  *
+ * SHIPPED_CLAIM: a `claim-*` worktree holds for STALE_CLAIM_IDLE_MS on the chance
+ * a claim session is still using it. Waiting out a full week is pointless once
+ * the claim has demonstrably SHIPPED, and doing it anyway is what left four
+ * finished claims parked while every run reported "cleaned 0" and parked on
+ * "merged branches held back" — the exact stall this reconcile exists to clear.
+ *
+ * A shipped claim is one where all three hold, established here in order:
+ *   1. `stillMerged` — re-verified against the default branch just above.
+ *   2. `upstreamGone` — the branch was pushed and its remote ref is no longer on
+ *      origin, i.e. its PR merged with `--delete-branch`.
+ *   3. clean worktree — the dirty gate below, which this never overrides.
+ * Together they say the /claim flow finished everything except its own teardown.
+ * `upstreamGone` is the discriminator the long window was standing in for: a
+ * claim still being WORKED either has no upstream yet or has one that still
+ * exists.
+ *
+ * What it does NOT prove is that the claim PROCESS has exited — so this
+ * SHORTENS the idle window to SHIPPED_CLAIM_IDLE_MS rather than removing it,
+ * leaving one mechanism (the age window) with two durations instead of a second
+ * way past the gate. Everything the window already guarantees still holds: an
+ * unreadable mtime fails safe to protected, and an explicit lock still wins.
+ *
  * @param {string} repoPath
  * @param {string} defaultBranch
  * @param {object[]} merged - gathered inputs whose state === 'MERGED'
  * @param {{ activeAgentIds?: Set<string> }} [opts] - CoS agents currently running;
  *   their worktrees are never torn down even when the branch is merged + clean.
- * @returns {Promise<{cleaned:string[], skipped:{branch:string,reason:string}[]}>}
+ * @returns {Promise<{cleaned:string[], skipped:{branch:string,reason:string,retryAt?:string}[]}>}
+ *   A skip carries `retryAt` when its hold is known to lift at a specific time.
  */
 export async function cleanupMerged(repoPath, defaultBranch, merged, { activeAgentIds = new Set() } = {}) {
   const cleaned = [];
@@ -718,11 +826,23 @@ export async function cleanupMerged(repoPath, defaultBranch, merged, { activeAge
       // an active CoS agent workspace — even if its branch is merged and clean. An
       // abandoned claim worktree (merged + clean + older than STALE_CLAIM_IDLE_MS)
       // falls through and IS reaped; that's the "cleaned 0 forever" leak this fixes.
-      const protectedReason = worktreeProtectionReason({
-        path: b.worktreePath, locked: b.worktreeLocked, activeAgentIds, ageMs: b.worktreeAgeMs
-      });
+      // A SHIPPED claim (see SHIPPED_CLAIM above) waits out the short window
+      // instead of the week-long one — `stillMerged` is proven above, and the
+      // dirty gate below is still ahead of it.
+      const gate = {
+        path: b.worktreePath,
+        locked: b.worktreeLocked,
+        activeAgentIds,
+        ageMs: b.worktreeAgeMs,
+        staleClaimIdleMs: b.upstreamGone ? SHIPPED_CLAIM_IDLE_MS : STALE_CLAIM_IDLE_MS,
+      };
+      const protectedReason = worktreeProtectionReason(gate);
       if (protectedReason) {
-        skipped.push({ branch: b.branch, reason: protectedReason });
+        // Carry WHEN the hold lifts when it lifts on a clock (a claim worktree
+        // still inside its grace window). Without it the caller can only park on
+        // the recheck cadence and the two waits stack — see boundParkedUntil.
+        const retryAt = worktreeProtectionExpiresAt(gate);
+        skipped.push({ branch: b.branch, reason: protectedReason, ...(retryAt ? { retryAt } : {}) });
         continue;
       }
       const dirty = await isWorktreeDirty(b.worktreePath);
@@ -795,7 +915,18 @@ export async function reconcile(repoPath = PATHS.root, { cleanup = true, reapRem
   }
 
   const defaultBranch = await getDefaultBranch(repoPath).catch(() => 'main') || 'main';
-  const inputs = await gatherBranchState(repoPath, { defaultBranch, activeAgentIds });
+  // The gather needs origin's branch list to tell a shipped claim from a live
+  // one. A repo with no origin has no remote to ask (null → nothing reads as
+  // gone, which is the safe direction) — gated on `hasOrigin`, not on `origin`
+  // itself, which is a populated object even for an origin-less repo.
+  //
+  // Deliberately NOT shared with reapOrphanedRemotes below: that step DELETES
+  // remote branches, and this read happens before cleanupMerged runs, so handing
+  // it this list would have it act on a view of origin taken a step earlier —
+  // exactly the staleness listRemoteHeads exists to avoid. One extra ls-remote
+  // per cycle is the cost of each destructive step reading the remote itself.
+  const remoteHeads = origin?.hasOrigin ? await listRemoteHeads(repoPath) : null;
+  const inputs = await gatherBranchState(repoPath, { defaultBranch, activeAgentIds, remoteHeads });
   // A gh failure AFTER a passing probe (a blip mid-cycle, or an unparseable
   // page) is still "we could not ask" — surface it so the caller retries next
   // tick instead of parking on an in-flight set built from unknown PR state.

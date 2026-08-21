@@ -198,13 +198,17 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('THROWAWAY WORKTREE');
     // Rebasing the bot branch rewrites its commits, so the push needs a lease, not a ban.
     expect(current).toContain('--force-with-lease');
-    expect(PROMPT_VERSIONS['dependency-updates']).toBe(3);
+    // A FLOOR, not a pin — v3 introduced bot-PR triage and later revisions keep it.
+    expect(PROMPT_VERSIONS['dependency-updates']).toBeGreaterThanOrEqual(3);
 
+    // Located by CONTENT, not array position: later revisions append their own
+    // outgoing bodies after this one, and `findLast` picks the newest body that
+    // still predates bot-PR triage (index 0 is the older pre-genericization one).
     const previous = PREVIOUS_DEFAULT_PROMPTS['dependency-updates'];
-    const v2 = previous[previous.length - 1];
+    const v2 = previous.findLast((prompt) => !prompt.includes('dependabot'));
     // The outgoing v2 default knew nothing about bot PRs and is preserved verbatim so
     // installs holding it are recognized and upgraded.
-    expect(v2).not.toContain('dependabot');
+    expect(v2).toBeDefined();
     expect(v2).toContain('Only update one major version bump at a time');
     expect(v2).not.toBe(current);
   });
@@ -254,12 +258,15 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // claim/plan prompt that enumerates the CLI reviewers must name the binary.
   it.each([
     ['plan-task', 16],
-    ['claim-issue', 15],
-    ['claim-issue-gitlab', 14],
+    ['claim-issue', 16],
+    ['claim-issue-gitlab', 15],
     ['claim-issue-jira', 12],
-  ])('%s v%d names the antigravity reviewer\'s `agy` binary, preserving the pre-`agy` default', (key, version) => {
+  ])('%s (v%d onward) names the antigravity reviewer\'s `agy` binary, preserving the pre-`agy` default', (key, version) => {
     const current = DEFAULT_TASK_PROMPTS[key];
-    expect(PROMPT_VERSIONS[key]).toBe(version);
+    // A FLOOR, not a pin: the paired number is the version that INTRODUCED the
+    // property; it must keep holding through every later bump of that key, so an
+    // unrelated revision cannot fail a property it left intact.
+    expect(PROMPT_VERSIONS[key]).toBeGreaterThanOrEqual(version);
     // EVERY mention of the slug carries the binary — a bare `antigravity`
     // anywhere in the body is the regression.
     expect(current).not.toMatch(/`antigravity`(?! \(CLI binary: `agy`\))/);
@@ -287,12 +294,13 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // pointed the local-LLM reviewers at a `gh pr diff` that could not exist yet.
   it.each([
     ['plan-task', 16],
-    ['claim-issue', 15],
-    ['claim-issue-gitlab', 14],
+    ['claim-issue', 16],
+    ['claim-issue-gitlab', 15],
     ['claim-issue-jira', 12],
-  ])('%s v%d reviews locally before it opens the PR/MR', (key, version) => {
+  ])('%s (v%d onward) reviews locally before it opens the PR/MR', (key, version) => {
     const current = DEFAULT_TASK_PROMPTS[key];
-    expect(PROMPT_VERSIONS[key]).toBe(version);
+    // A FLOOR, not a pin — see the note on the first table above.
+    expect(PROMPT_VERSIONS[key]).toBeGreaterThanOrEqual(version);
 
     // The configured list is split by WHERE a reviewer can run.
     expect(current).toContain('LOCAL reviewers');
@@ -472,8 +480,12 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // release-check READS the changelog rather than writing it, so its fix is the
   // mirror image: an unreleased set that lives in uncollected fragments must not
   // read as "not enough work accumulated for a release".
-  it('release-check counts uncollected changelog fragments, preserving the outgoing default', () => {
+  it('release-check v9 reconciles missing releases before evaluating readiness, preserving the v8 default', () => {
     const current = DEFAULT_TASK_PROMPTS['release-check'];
+    expect(PROMPT_VERSIONS['release-check']).toBe(9);
+    expect(current).toContain('Reconcile Missing Releases');
+    expect(current).toContain('Unpublished release detected');
+    expect(current).toContain('--latest=false');
     expect(current).toContain('per-branch fragments');
     expect(current).toContain('assembled');
     // release-check is a generic {appName} prompt — it runs against managed apps,
@@ -486,10 +498,10 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('never substitute a production database');
 
     const previous = PREVIOUS_DEFAULT_PROMPTS['release-check'];
-    const outgoing = previous[previous.length - 1];
-    expect(outgoing).toContain('per-branch fragments');
-    expect(outgoing).not.toContain('database-backed test suite');
-    expect(outgoing).not.toBe(current);
+    const v8 = previous[previous.length - 1];
+    expect(v8).toContain('database-backed test suite');
+    expect(v8).not.toContain('Reconcile Missing Releases');
+    expect(v8).not.toBe(current);
   });
 
   // refresh-local-llm-catalog is the one PortOS-ONLY prompt in this set (it
@@ -544,5 +556,85 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(v2).toContain('not finished until it IS merged');
     expect(v2).not.toContain('SUPERSEDED');
     expect(v2).not.toBe(current);
+  });
+
+  // Phase 1's candidate fetch must match perpetualWork.js's detector — both
+  // apply the blocking-label filter (fixed set + configured issueExcludeLabels)
+  // to the fetched page, so a mismatched cap risks the live agent and the
+  // perpetual drain reaching different "actionable or not" verdicts on the
+  // same repo.
+  it('claim-issue Phase 1 fetches --limit 500, matching perpetualWork.js\'s widened detector fetch', () => {
+    expect(DEFAULT_TASK_PROMPTS['claim-issue']).toContain('--limit 500');
+    expect(DEFAULT_TASK_PROMPTS['claim-issue']).not.toContain('--limit 100');
+  });
+  // #4685: `glab issue list -F json` is accepted, IGNORED, and answers with the
+  // human table at exit 0 (`-F` is `--output-format` there, a different flag from
+  // `--output`), and `glab mr list --state <x>` does not exist at all. The tree
+  // guard in gitlab.glabFlags.test.js bans both spellings everywhere — including
+  // these bodies, which it used to exempt. What it cannot check is the migration:
+  // a stored prompt only picks the fix up when its PROMPT_VERSIONS entry moved AND
+  // its outgoing body is recognizable, so pin both here.
+  //
+  // The upgrade PATH for this key is exercised in taskSchedule.test.js's walk
+  // (loadSchedule preserves and upgrades a stored task type even without a
+  // DEFAULT_TASK_INTERVALS entry). What that walk cannot see is whether the body
+  // appended to PREVIOUS_DEFAULT_PROMPTS is the RIGHT one — it reads the fixture
+  // from the same array the recognition set is read from, so a mis-copied body
+  // would agree with itself. That is what this test pins.
+  it('claim-issue-gitlab v16 asks glab for JSON the one way that works, preserving the outgoing default', () => {
+    const current = DEFAULT_TASK_PROMPTS['claim-issue-gitlab'];
+    expect(current).toContain('glab issue list --per-page 100 --output json');
+    expect(PROMPT_VERSIONS['claim-issue-gitlab']).toBeGreaterThanOrEqual(16);
+
+    // The trap alone does not identify the OUTGOING body — every one of the 15
+    // historical claim-issue-gitlab defaults carries it, so a `find` on the flag
+    // would pass on a v1 body even if the v15 snapshot were never appended.
+    // `{issueExcludeLabels}` arrived in v15 and is what makes the match unique.
+    const previous = PREVIOUS_DEFAULT_PROMPTS['claim-issue-gitlab'];
+    const withBoth = previous.filter(
+      (prompt) => prompt.includes('glab issue list --per-page 100 -F json') && prompt.includes('{issueExcludeLabels}'),
+    );
+    expect(withBoth).toHaveLength(1);
+    // …and it is the newest entry, which is where an append lands.
+    expect(withBoth[0]).toBe(previous[previous.length - 1]);
+    expect(withBoth[0]).not.toBe(current);
+  });
+
+  // dependency-updates Phase 1 skipped its whole bot-PR triage on GitLab repos:
+  // the MR listing it depends on exited 1 with `Unknown flag: --state`.
+  it('dependency-updates v4 selects MR state the way glab does, preserving the outgoing default', () => {
+    const current = DEFAULT_TASK_PROMPTS['dependency-updates'];
+    expect(current).toContain('glab mr list --per-page 100 --page <n>');
+    expect(current).toContain('glab mr list --search "<package>"');
+    expect(PROMPT_VERSIONS['dependency-updates']).toBeGreaterThanOrEqual(4);
+
+    const outgoing = PREVIOUS_DEFAULT_PROMPTS['dependency-updates'].find(
+      (prompt) => prompt.includes('--state opened --search "<package>"'),
+    );
+    expect(outgoing).toBeDefined();
+    expect(outgoing).not.toBe(current);
+  });
+
+  // pr-reviewer-security / pr-reviewer-review carried the same wrong flags but
+  // take NO bump and NO preserved body: they are PIPELINE STAGE keys, read live
+  // from this catalog by getStagePrompt (taskPromptService.js) and never
+  // persisted, so an edit reaches every install on the next dispatch. Same
+  // treatment code-reviewer-review / code-reviewer-implement get; the versioned
+  // key for that pipeline is its SCHEDULE key, `pr-reviewer`.
+  //
+  // This pins the CONSTANTS only. The behavior it depends on — stage resolution
+  // ignoring stored state — is pinned in taskPromptService.test.js, which hands
+  // getStagePrompt an interval carrying a stale persisted prompt and asserts the
+  // catalog body still wins. Keep both: this catches a stray PROMPT_VERSIONS
+  // entry, that one catches a change in how a stage body is resolved.
+  it.each([
+    'pr-reviewer-security',
+    'pr-reviewer-review',
+    'code-reviewer-review',
+    'code-reviewer-implement',
+  ])('%s is an unversioned pipeline stage body, not a stored prompt', (stageKey) => {
+    expect(DEFAULT_TASK_PROMPTS[stageKey]).toBeTypeOf('string');
+    expect(PROMPT_VERSIONS[stageKey]).toBeUndefined();
+    expect(PREVIOUS_DEFAULT_PROMPTS[stageKey]).toBeUndefined();
   });
 });
