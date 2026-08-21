@@ -493,6 +493,23 @@ describe('LocalLlmTab llama-server management', () => {
     });
   });
 
+  it('sends --parallel 1 by default and honours an edited slot count', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
+    startLlamaServer.mockResolvedValueOnce({ success: true, pid: 99 });
+
+    await renderTab();
+    await screen.findByText(/Launch Speculative Decoding Server/);
+    await waitFor(() => expect(screen.queryByText(/Enter a Target Base Model path to enable Start/)).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: /Advanced options/ }));
+    fireEvent.change(screen.getByLabelText('Parallel slots'), { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: /Start Speculative Server/ }));
+
+    await waitFor(() => expect(startLlamaServer).toHaveBeenCalled());
+    expect(startLlamaServer.mock.calls[0][0].parallel).toBe(2);
+  });
+
   // An untouched tuning field means "llama.cpp's default", which is not a value
   // PortOS can name. Sending `''` (which the server coerces to 0) or a made-up
   // number would pin a setting the user never chose and make two "default"
@@ -544,6 +561,7 @@ describe('LocalLlmTab llama-server management', () => {
         model: 'models/Qwen3.8-27B-Instruct-Q4_K_M.gguf',
         draftModel: 'models/Qwen3.8-27B-DSpark-bf16.gguf',
         specType: 'draft-dspark',
+        parallel: 1,
       }));
     });
   });

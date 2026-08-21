@@ -55,7 +55,7 @@ const specWeightEntries = (preset) => [preset?.model, preset?.draftModel].filter
 // Keep the launcher default aligned with server/lib/ports.js. 8080 is a common
 // IPFS / Tomcat / local-dashboard port and is not a safe default for a managed
 // daemon.
-const LLAMA_NUMBER_DEFAULTS = { port: 5568, ctxSize: 32768, nGpuLayers: 99 };
+const LLAMA_NUMBER_DEFAULTS = { port: 5568, ctxSize: 32768, nGpuLayers: 99, parallel: 1 };
 // Optional llama.cpp tuning flags — unlike the fields above these have NO
 // PortOS default: an untouched one is stripped from the launch payload so
 // llama.cpp applies its own. Mirrors `server/lib/localModelTuning.js`.
@@ -372,6 +372,9 @@ export function LocalLlmTab() {
     ctxSize: 32768,
     nGpuLayers: 99,
     alias: 'dflash',
+    // Always sent — llama-server's own default is often 4 slots, which divides
+    // the context window and spends VRAM a TUI agent never uses.
+    parallel: 1,
     // Performance tuning (`server/lib/localModelTuning.js`). Empty = NOT SET:
     // the flag is left off the launch line entirely so llama.cpp applies its own
     // default. A number here would silently pin a value the user never chose and
@@ -1311,6 +1314,22 @@ export function LocalLlmTab() {
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>
+                <div className="col-span-2">
+                  <label htmlFor="llama-parallel" className="text-[11px] text-gray-400 block mb-1">Parallel slots</label>
+                  <input
+                    id="llama-parallel"
+                    aria-label="Parallel slots"
+                    type="number"
+                    min={1}
+                    max={16}
+                    value={llamaForm.parallel}
+                    onChange={(e) => setLlamaNumber('parallel', e.target.value)}
+                    className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
+                  />
+                  <p className="text-[11px] text-gray-500 mt-1">
+                    llama.cpp divides context across this many request slots. 1 is right for a TUI agent.
+                  </p>
+                </div>
                 <div className="col-span-2 sm:col-span-4">
                   <label htmlFor="llama-spec-type" className="text-[11px] text-gray-400 block mb-1">Spec Type</label>
                   <input
@@ -1440,7 +1459,7 @@ export function LocalLlmTab() {
                 className="text-[11px] text-gray-500 hover:text-gray-300 flex items-center gap-1"
               >
                 {showLlamaAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                {showLlamaAdvanced ? 'Hide options' : 'Advanced options (port, ctx, GPU layers, model id, spec type, performance tuning)'}
+                {showLlamaAdvanced ? 'Hide options' : 'Advanced options (port, ctx, GPU layers, parallel slots, model id, spec type, performance tuning)'}
               </button>
               <div className="flex items-center gap-2">
                 {llamaStartBlocked && (

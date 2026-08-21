@@ -196,6 +196,10 @@ export const localLlmLlamaServerStartSchema = z.object({
   ctxSize: z.coerce.number().int().min(512).max(1048576).optional().default(32768),
   nGpuLayers: z.coerce.number().int().min(0).max(999).optional().default(99),
   alias: z.string().trim().max(100).optional().default('dflash'),
+  // PortOS-opinionated, unlike the tuning flags below: llama-server's own
+  // default is often 4 slots, which divides `--ctx-size` and spends VRAM on
+  // unused batch buffers. A TUI agent is one long session, so 1 is the pin.
+  parallel: z.coerce.number().int().min(1).max(16).optional().default(1),
   // Tuning flags. Every one defaults to null = NOT SET, so the flag is left off
   // the launch line and llama.cpp applies its own default — a numeric default
   // here would silently pin a value the user never chose. Ranges mirror

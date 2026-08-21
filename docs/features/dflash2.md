@@ -60,7 +60,10 @@ the target can be any quant.
 
 DFlash 2 pairs (require a source build of llama.cpp [#27342](https://github.com/ggml-org/llama.cpp/pull/27342)):
 
-- **Qwen 3.8 27B Draft Pair**:
+- **Qwen 3.8 27B Draft Pair (Q2_K — preferred for TUI agents)**:
+  - Base: `ggml-org/Qwen3.8-27B-GGUF` (e.g. `Qwen3.8-27B-Q4_K_M.gguf`)
+  - Drafter: `analogalok/Qwen3.8-27B-DFlash2-Q2_K-GGUF` (`Qwen3.8-27B-DFlash2-Q2_K.gguf`, ~700 MB). Measured identical ~93.7% draft acceptance vs the official Q4_K_M drafter at ~1.1 GB — the ~450 MB saved goes to KV cache. Works with any Qwen3.8-27B target quant, including Unsloth UD-Q4_K_XL.
+- **Qwen 3.8 27B Draft Pair (official Q4_K_M)**:
   - Base: `ggml-org/Qwen3.8-27B-GGUF` (e.g. `Qwen3.8-27B-Q4_K_M.gguf`)
   - Drafter: `incoai/Qwen3.8-27B-DFlash2-GGUF` (e.g. `Qwen3.8-27B-DFlash2-Q4_K_M.gguf`)
 - **Muse-Glimmer 30B Draft Pair**:
@@ -82,10 +85,47 @@ llama-server \
   --host 127.0.0.1 \
   --alias dflash \
   --ctx-size 32768 \
-  --n-gpu-layers 99
+  --n-gpu-layers 99 \
+  --parallel 1
 ```
 
-### 2b. Drafter-free speculation (n-gram spec types)
+`--parallel 1` is a PortOS pin, not llama.cpp's default. `llama-server` often
+starts with 4 request slots and **divides `--ctx-size` across them**, so a 32k
+window becomes 8k per in-flight request and the unused slots sit on VRAM a
+single TUI agent never uses. PortOS's launcher always passes `--parallel 1`
+unless you raise it under Advanced options. Raise it only if you actually run
+several concurrent requests against the same server — each extra slot shrinks
+the context the OpenCode llama TUI agent sees.
+
+### 2b. 24 GB card, max TUI-agent context (DFlash 2)
+
+On a single 24 GB GPU (RTX 4090 / 3090) the Q2_K DFlash 2 drafter plus
+`--parallel 1` is what unlocks a quarter-million-token window. Measured on
+Qwen3.8-27B UD-Q4_K_XL with llama.cpp PR #27342 at `--spec-draft-n-max 3`
+(the engine default):
+
+| KV cache | Context | Decode | Notes |
+| --- | --- | --- | --- |
+| Q4_0 (`--cache-type-k/v q4_0`) | 250,000 | ~74 t/s | deepest "repo swallower" |
+| Q8_0 | 150,000 | ~75 t/s | higher-precision SWE |
+| FP16 (engine default) | 90,000 | ~81 t/s | unquantized attention |
+
+```bash
+llama-server \
+  -m models/Qwen3.8-27B-Q4_K_M.gguf \
+  --model-draft models/Qwen3.8-27B-DFlash2-Q2_K.gguf \
+  --spec-type draft-dflash \
+  --port 5568 --host 127.0.0.1 --alias dflash \
+  --ctx-size 250000 -ngl 99 --parallel 1 \
+  --cache-type-k q4_0 --cache-type-v q4_0
+```
+
+Do **not** ship 250k as PortOS's default `--ctx-size` — that OOMs every
+machine that is not a 24 GB NVIDIA card. Set Context Size and KV cache type
+under Advanced options on the machine that has the VRAM. The Q2_K preset and
+`--parallel 1` are the parts that apply everywhere.
+
+### 2c. Drafter-free speculation (n-gram spec types)
 
 `--spec-type` is a **comma-separated list**, and only its `draft-*` entries need a
 drafter GGUF. The `ngram-*` implementations draft by pattern-matching the tokens
@@ -107,7 +147,7 @@ llama-server \
   -m models/Qwen3.8-27B-Q4_K_M.gguf \
   --model-draft models/Qwen3.8-27B-DSpark-BF16.gguf \
   --spec-type draft-dspark,ngram-map-k \
-  --port 5568 --host 127.0.0.1 --alias dflash
+  --port 5568 --host 127.0.0.1 --alias dflash --parallel 1
 ```
 
 In PortOS, set this in **Settings → Local LLMs → Speculative Decoding →

@@ -56,8 +56,29 @@ export const SPEC_DECODE_PRESETS = Object.freeze([
     },
   },
   {
+    // analogalok's Q2_K DFlash 2 drafter (~700 MB) matches official Q4_K_M
+    // acceptance (~93.7%) and returns ~450 MB of VRAM to the KV cache — the
+    // difference between a 170k and a 250k window on a 24 GB card once
+    // llama-server is also pinned to `--parallel 1`. Pairs with any Qwen3.8-27B
+    // target quant, including Unsloth UD-Q4_K_XL.
+    // https://huggingface.co/analogalok/Qwen3.8-27B-DFlash2-Q2_K-GGUF
+    id: 'qwen3.8-27b-dflash2-q2k',
+    label: 'Qwen 3.8 27B + DFlash 2 Q2_K Drafter (max context — needs llama.cpp PR #27342)',
+    specType: 'draft-dflash',
+    model: {
+      path: 'models/Qwen3.8-27B-Q4_K_M.gguf',
+      repo: 'ggml-org/Qwen3.8-27B-GGUF',
+      quant: 'Q4_K_M',
+    },
+    draftModel: {
+      path: 'models/Qwen3.8-27B-DFlash2-Q2_K.gguf',
+      repo: 'analogalok/Qwen3.8-27B-DFlash2-Q2_K-GGUF',
+      quant: 'Q2_K',
+    },
+  },
+  {
     id: 'qwen3.8-27b',
-    label: 'Qwen 3.8 27B + DFlash 2 Drafter (needs llama.cpp PR #27342 build)',
+    label: 'Qwen 3.8 27B + DFlash 2 Q4_K_M Drafter (needs llama.cpp PR #27342 build)',
     specType: 'draft-dflash',
     model: {
       path: 'models/Qwen3.8-27B-Q4_K_M.gguf',

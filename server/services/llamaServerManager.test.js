@@ -176,6 +176,7 @@ describe('llamaServerManager', () => {
       '--host', '127.0.0.1',
       '--ctx-size', '32768',
       '-ngl', '99',
+      '--parallel', '1',
       '--alias', 'dflash',
     ]);
 
@@ -183,6 +184,7 @@ describe('llamaServerManager', () => {
     expect(status.running).toBe(true);
     expect(status.managed).toBe(true);
     expect(status.pid).toBe(12345);
+    expect(status.config.parallel).toBe(1);
   });
 
   it('starts an ngram spec type with no drafter model at all', async () => {
@@ -254,6 +256,16 @@ describe('llamaServerManager', () => {
     expect(startCall).not.toContain('--spec-type');
   });
 
+  it('honours an explicit parallel slot count', async () => {
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+
+    await startLlamaServer({ model: modelPath, parallel: 4 });
+
+    const startCall = execPm2Calls.find((c) => c[0] === 'start');
+    expect(startCall.slice(startCall.indexOf('--parallel'), startCall.indexOf('--parallel') + 2))
+      .toEqual(['--parallel', '4']);
+  });
+
   it('uses PortOS\'s extension port when no port is supplied', async () => {
     vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
 
@@ -321,7 +333,7 @@ describe('llamaServerManager', () => {
       name: LLAMA_APP,
       status: 'online',
       pid: 98765,
-      args: ['-m', modelPath, '--model-draft', draftPath, '--port', '8090', '--host', '127.0.0.1'],
+      args: ['-m', modelPath, '--model-draft', draftPath, '--port', '8090', '--host', '127.0.0.1', '--parallel', '4'],
     };
 
     const status = await getLlamaServerStatus();
@@ -331,6 +343,7 @@ describe('llamaServerManager', () => {
     expect(status.endpoint).toBe('http://127.0.0.1:8090/v1');
     expect(status.config?.model).toBe(modelPath);
     expect(status.config?.draftModel).toBe(draftPath);
+    expect(status.config?.parallel).toBe(4);
   });
 
   it('surfaces unknown/degraded state when PM2 read fails', async () => {

@@ -156,6 +156,12 @@ describe('launchTuning / launchConfig / launchEnv / launchArgs / requestBody', (
       .toEqual({ ubatchSize: 512, cacheTypeK: 'q8_0' });
   });
 
+  it('carries llama.cpp --parallel so a TUI-agent slot count can be measured', () => {
+    expect(launchConfig('llama', { parallel: 1 })).toEqual({ parallel: 1 });
+    expect(normalizeTuning('llama', { parallel: 0 })).toEqual({ parallel: 1 });
+    expect(normalizeTuning('llama', { parallel: 99 })).toEqual({ parallel: 16 });
+  });
+
   // A key no spec declares must never reach a launch line, whichever renderer
   // it is handed to.
   it('drops an undeclared key from every launch renderer', () => {

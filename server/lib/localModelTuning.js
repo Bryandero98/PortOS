@@ -104,6 +104,7 @@ const RAW_SPECS = {
   llama: [
     { id: 'ctxSize', label: 'Context size', type: 'number', config: true, min: 512, max: 1048576, unit: 'tokens', hint: 'KV cache is allocated for the whole window up front — a larger one costs memory even when prompts are short.' },
     { id: 'nGpuLayers', label: 'GPU layers', type: 'number', config: true, min: 0, max: 999, hint: 'Layers offloaded to the GPU. Fewer layers frees VRAM for a bigger context at the cost of throughput.' },
+    { id: 'parallel', label: 'Parallel slots', type: 'number', config: true, min: 1, max: 16, hint: 'Request slots llama-server reserves VRAM for. It divides the context window across them — 1 is right for a TUI agent (one long session). Raising it shrinks per-request context.' },
     { id: 'batchSize', label: 'Batch size', type: 'number', config: true, min: 1, max: 8192, hint: 'Logical prompt batch (-b). Raising it speeds up prefill on long prompts and raises peak memory.' },
     { id: 'ubatchSize', label: 'Micro-batch size', type: 'number', config: true, min: 1, max: 8192, hint: 'Physical micro-batch (-ub). The single knob that most often moves long-context throughput.' },
     { id: 'threads', label: 'CPU threads', type: 'number', config: true, min: 1, max: 256, hint: 'Threads for the CPU-resident layers. More is not always faster once you pass the physical core count.' },
