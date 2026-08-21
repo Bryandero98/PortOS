@@ -386,6 +386,12 @@ function activeQueueSnapshot(config, kinds) {
     // Local work of a kind this contract does not federate (LoRA training) still
     // holds a lane, so it counts toward `totalActive` while having no bucket —
     // which is why the two need not sum.
+    //
+    // This filter is a WIRE-COMPATIBILITY requirement, not just scoping: the
+    // consumer validates `byKind` with a partialRecord over its own kind enum,
+    // which rejects an unknown key outright. A kind the caller did not
+    // negotiate would therefore invalidate the whole status payload on an older
+    // consumer, not just drop that one bucket.
     if (!kinds.includes(job.kind)) continue;
     const bucket = byKind[job.kind] ?? (byKind[job.kind] = { running: 0, queued: 0 });
     bucket[job.status === 'running' ? 'running' : 'queued'] += 1;

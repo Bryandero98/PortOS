@@ -519,8 +519,12 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
         >
           <option value="">This instance</option>
           {peers.filter((peer) => peer.mediaProvider?.enabled === true).map((peer) => {
-            const status = peer.mediaProviderStatus;
-            const suffix = status?.state === 'ready' ? '' : ` (${status?.state || 'checking'})`;
+            // Same reading as the caption and the button below. The stored
+            // `state` alone would leave a switched-off or lapsed peer listed
+            // with no suffix — reading as ready — beside a caption explaining
+            // why it is not.
+            const readiness = resolvePeerMediaReadiness(peer);
+            const suffix = readiness.usable ? '' : ` (${readiness.label})`;
             return <option key={peer.id} value={peer.id}>{peer.name || peer.address || 'Federated peer'}{suffix}</option>;
           })}
         </select>
@@ -544,8 +548,10 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
             </select>
           </label>
           <p className="text-[11px] text-gray-400">
-            {remoteReadiness?.usable && remoteQueueSegments.length > 0
-              ? remoteQueueSegments.join(' · ')
+            {remoteReadiness?.usable
+              // A usable peer carries no remedy text, so falling through would
+              // print the not-ready sentence beside an enabled button.
+              ? (remoteQueueSegments.join(' · ') || 'Peer is ready.')
               : remoteReadiness?.help
                 || 'Remote generation requires a ready, authenticated peer with fresh capacity.'}
           </p>

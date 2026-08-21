@@ -341,11 +341,38 @@ describe('MusicGenPanel', () => {
     expect(screen.queryByText(/shared slots active/i)).not.toBeInTheDocument();
   });
 
+  // The dropdown, the caption and the button all describe the same peer. A
+  // switched-off peer keeps a stored `state: 'ready'` for as long as its
+  // snapshot stays fresh, so gating the suffix on `state` would list it with no
+  // suffix — reading as ready — beside a caption saying it is switched off.
+  it('marks a switched-off peer in the target dropdown, not just in the caption', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    api.getInstances.mockResolvedValue({
+      peers: [{
+        id: 'peer-example',
+        name: 'Example GPU',
+        status: 'online',
+        enabled: false,
+        mediaProvider: { enabled: true, audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }] },
+        mediaProviderStatus: {
+          state: 'ready',
+          checkedAt: new Date().toISOString(),
+          freshUntil: new Date(Date.now() + 60_000).toISOString(),
+          snapshot: { queue: { accepting: true, running: 0, queued: 0, totalActive: 0, maxQueuedJobs: 4 }, capabilities: [] },
+        },
+      }],
+    });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" />);
+    await screen.findByRole('combobox', { name: /generation target/i });
+    expect(screen.getByRole('option', { name: /Example GPU \(peer disabled\)/ })).toBeInTheDocument();
+  });
+
   // A capacity window expires on the clock, not on a state change, so between
   // polls the button can still be enabled against a peer that has gone stale.
   it('refuses at click time when the window expired since the last render', async () => {
     api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
-    const freshUntil = new Date(Date.now() + 300).toISOString();
+    const freshUntil = new Date(Date.now() + 60_000).toISOString();
     api.getInstances.mockResolvedValue({
       peers: [{
         id: 'peer-example',
@@ -373,12 +400,16 @@ describe('MusicGenPanel', () => {
     const generate = screen.getByRole('button', { name: /^generate$/i });
     expect(generate).toBeEnabled();
 
-    // The window lapses without anything re-rendering the panel.
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    // The window lapses without anything re-rendering the panel. Advancing the
+    // clock rather than sleeping keeps this instant and load-independent —
+    // `resolvePeerMediaReadiness` reads Date.now(), no timers are involved.
+    const realNow = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(realNow + 120_000);
     fireEvent.click(generate);
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/capacity snapshot expired/i)));
     expect(api.generateMusic).not.toHaveBeenCalled();
+    Date.now.mockRestore();
   });
 
   // The stored probe keeps saying `ready` long after the server would refuse

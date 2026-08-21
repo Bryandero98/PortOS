@@ -262,10 +262,16 @@ describe('federated media provider capacity and idempotency', () => {
   // would leave byKind as the one part of the payload the kind projection does
   // not govern.
   it('scopes the per-kind breakdown to the negotiated kinds', async () => {
-    state.jobs = [{ id: 'a', kind: 'image', status: 'running', owner: null }];
+    state.jobs = [
+      { id: 'a', kind: 'image', status: 'running', owner: null },
+      // Federated work of a kind this caller did not negotiate: invisible in
+      // byKind, but still part of the federated share of the machine — so a
+      // kind filter applied before the owner check would under-report it.
+      { id: 'b', kind: 'image', status: 'running', owner: 'federated-media:peer-example' },
+    ];
     const status = await getFederatedMediaProviderStatus(config());
     expect(status.queue.byKind).toEqual({});
-    expect(status.queue.totalActive).toBe(1);
+    expect(status.queue).toMatchObject({ totalActive: 2, providerActive: 1, running: 1, queued: 0 });
   });
 
   it('queues allowlisted audio without exposing the prompt in its response', async () => {
