@@ -80,11 +80,16 @@ const generatedNodeFields = (raw) => ({
  * the shape is unusable (too few scenes, no ending).
  */
 export function mapGeneratedGraph(parsed) {
-  const rawNodes = Array.isArray(parsed?.nodes) ? parsed.nodes.filter((n) => n && typeof n === 'object' && isStr(n.key)) : [];
+  // First occurrence wins on a duplicated key — keeping both would mint two
+  // nodes sharing one id, which corrupts every by-id lookup downstream.
+  const seenKeys = new Set();
+  const rawNodes = (Array.isArray(parsed?.nodes) ? parsed.nodes : [])
+    .filter((n) => n && typeof n === 'object' && isStr(n.key)
+      && !seenKeys.has(n.key) && seenKeys.add(n.key));
   if (rawNodes.length < 2) throw aiShapeError('The model returned too few scenes to form a story graph');
   const idByKey = new Map();
   for (const raw of rawNodes.slice(0, LOOM_LIMITS.NODES_MAX)) {
-    if (!idByKey.has(raw.key)) idByKey.set(raw.key, `node-${randomUUID()}`);
+    idByKey.set(raw.key, `node-${randomUUID()}`);
   }
   const nodes = rawNodes.slice(0, LOOM_LIMITS.NODES_MAX).map((raw) => ({
     id: idByKey.get(raw.key),

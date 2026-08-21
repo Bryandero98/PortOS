@@ -293,9 +293,12 @@ function EpisodeSetupDrawer({ open, onClose, loom, episode, onLoomUpdate, onDele
   const del = useConfirmDelete();
   const hasScenes = episode.nodes.length > 0;
 
+  // Sync from the record on episode switch ONLY — re-syncing on every server
+  // echo would clobber typing in a sibling field while a blur-save
+  // round-trips (same rule as the scene editor).
   useEffect(() => {
     setForm((prev) => ({ ...prev, title: episode.title || '', synopsis: episode.synopsis || '' }));
-  }, [episode.id, episode.title, episode.synopsis]);
+  }, [episode.id]);
 
   const saveMeta = async (key) => {
     if (form[key] === (episode[key] || '')) return;

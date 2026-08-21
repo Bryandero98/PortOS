@@ -80,9 +80,9 @@ function sanitizeEpisode(raw) {
     .filter(Boolean)
     .slice(0, LOOM_LIMITS.NODES_MAX);
   const nodeIds = new Set(nodes.map((n) => n.id));
-  // Transitions to nodes dropped by sanitize/caps would dangle forever with no
-  // UI to remove them — strip them here; authored dangling edges are still
-  // surfaced (not silently removed) because the target id survives sanitize.
+  // Dangling transitions (a target dropped by the node cap, or authored to a
+  // since-deleted id) are deliberately KEPT — the graph validation surfaces
+  // them as errors the author resolves, rather than silently rewriting edges.
   const now = new Date().toISOString();
   return {
     id: raw.id,

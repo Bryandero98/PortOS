@@ -70,6 +70,15 @@ describe('mapGeneratedGraph', () => {
     expect(nodes[0].transitions.map((t) => t.targetNodeId)).toEqual([nodes[1].id, nodes[2].id]);
   });
 
+  it('keeps only the first node when the model repeats a key', () => {
+    const graph = generatedGraph();
+    graph.nodes.push({ key: 's2', title: 'Duplicate Inside', isEnding: true, transitions: [] });
+    const { nodes } = mapGeneratedGraph(graph);
+    expect(nodes).toHaveLength(3);
+    expect(new Set(nodes.map((n) => n.id)).size).toBe(3);
+    expect(nodes.find((n) => n.title === 'Duplicate Inside')).toBeUndefined();
+  });
+
   it('rejects graphs with too few scenes or no endings', () => {
     expect(() => mapGeneratedGraph({ nodes: [{ key: 's1' }] })).toThrowError(/too few scenes/);
     expect(() => mapGeneratedGraph({
