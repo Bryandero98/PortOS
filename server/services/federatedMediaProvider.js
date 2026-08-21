@@ -268,18 +268,19 @@ async function localGeneratorCapabilities(kind, pythonPath, { models, configured
           : !runtimeReady ? 'runtime-unavailable'
             : !modelReady ? 'model-unavailable'
               : null;
-    const frameStride = Number.isInteger(Number(model?.frameStride)) && Number(model.frameStride) > 0
+    const frameStride = Number.isInteger(Number(model?.frameStride)) && Number(model.frameStride) >= 1 && Number(model.frameStride) <= 64
       ? Number(model.frameStride)
       : null;
     const validFrameOptions = Array.isArray(model?.frameOptions)
-      ? model.frameOptions.filter((f) => Number.isInteger(f) && f > 0).slice(0, 100)
+      ? model.frameOptions.filter((f) => Number.isInteger(f) && f >= 1 && f <= 600).slice(0, 100)
       : [];
     const validFpsOptions = Array.isArray(model?.fpsOptions)
-      ? model.fpsOptions.filter((f) => Number.isInteger(f) && f > 0).slice(0, 20)
+      ? model.fpsOptions.filter((f) => Number.isInteger(f) && f >= 1 && f <= 60).slice(0, 20)
       : [];
-    const maxNumFrames = Number.isInteger(Number(model?.maxNumFrames)) && Number(model.maxNumFrames) > 0
+    const rawMaxNumFrames = Number.isInteger(Number(model?.maxNumFrames)) && Number(model.maxNumFrames) >= 1 && Number(model.maxNumFrames) <= 600
       ? Number(model.maxNumFrames)
       : (validFrameOptions.length > 0 ? Math.max(...validFrameOptions) : null);
+    const maxNumFrames = rawMaxNumFrames && rawMaxNumFrames <= 600 ? rawMaxNumFrames : null;
     const validResolutions = Array.isArray(model?.resolutionOptions)
       ? model.resolutionOptions
         .filter((opt) => Number.isInteger(Number(opt?.w)) && Number.isInteger(Number(opt?.h))

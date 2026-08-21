@@ -302,6 +302,7 @@ export function routedJobParams(params, { request, remoteMedia }) {
     prompt: '',
     modelId: effectiveRequest.modelId,
     ...(effectiveRequest.numFrames !== undefined ? { numFrames: effectiveRequest.numFrames } : {}),
+    ...(effectiveRequest.fps !== undefined ? { fps: effectiveRequest.fps } : {}),
     ...(effectiveRequest.width !== undefined ? { width: effectiveRequest.width } : {}),
     ...(effectiveRequest.height !== undefined ? { height: effectiveRequest.height } : {}),
     remoteMedia,

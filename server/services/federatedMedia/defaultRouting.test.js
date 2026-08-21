@@ -591,11 +591,11 @@ describe('frame constraint negotiation (issue #4681)', () => {
     logSpy.mockRestore();
   });
 
-  it('propagates negotiated numFrames, width, and height in routedJobParams', () => {
+  it('propagates negotiated numFrames, fps, width, and height in routedJobParams', () => {
     const jobParams = routedJobParams(
-      { prompt: 'a balloon', width: 1280, height: 720, numFrames: 40, mode: 'local' },
+      { prompt: 'a balloon', width: 1280, height: 720, numFrames: 40, fps: 16, mode: 'local' },
       {
-        request: { modelId: 'wan22', numFrames: 33, width: 1344, height: 768 },
+        request: { modelId: 'wan22', numFrames: 33, fps: 24, width: 1344, height: 768 },
         remoteMedia: { wireVersion: 1, peerId: 'peer-1' },
       },
     );
@@ -604,6 +604,7 @@ describe('frame constraint negotiation (issue #4681)', () => {
       prompt: '',
       modelId: 'wan22',
       numFrames: 33,
+      fps: 24,
       width: 1344,
       height: 768,
       remoteMedia: { wireVersion: 1, peerId: 'peer-1' },

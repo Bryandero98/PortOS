@@ -57,14 +57,13 @@ describe('negotiateVideoConstraints', () => {
     expect(negotiateVideoConstraints({ numFrames: 200 }, capability).numFrames).toBe(158);
   });
 
-  it('rejects when requested numFrames is smaller than the minimum frameOption', () => {
+  it('snaps up to minimum frameOption when requested numFrames is below minimum option', () => {
     const capability = {
       modelId: 'minimax_h3',
       frameOptions: [107, 124, 141, 158],
     };
 
-    expect(() => negotiateVideoConstraints({ numFrames: 50 }, capability))
-      .toThrow(/cannot be satisfied/);
+    expect(negotiateVideoConstraints({ numFrames: 50 }, capability).numFrames).toBe(107);
   });
 
   it('snaps width and height to closest aspect ratio when resolutionOptions is present', () => {
