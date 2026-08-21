@@ -62,6 +62,33 @@ writes Vitest wall time to the job summary so later runs can be compared
 against the pre-change full-suite job wall on `main` (2026-08-16, run
 `31951919659`): server ~300s, client+build ~467s, Windows ~463s.
 
+### Shallow checkouts
+
+No job clones full history. `actions/checkout` runs at `fetch-depth: 2`,
+which on a pull request is the merge ref plus both of its parents — and the
+first parent *is* the base-branch commit the pull request is diffed against.
+`scripts/ci-base-sha.js` reads it (`HEAD^1`) and exports `CI_BASE_SHA` for the
+rest of the job, so both three-dot diffs that matter resolve without deeper
+history:
+
+- the planner's `git diff <base>...HEAD`;
+- Vitest's own `--changed <sha>`, which is also a three-dot diff internally.
+
+Reading the base off the checkout rather than `github.event.pull_request.base.sha`
+is also more correct: GitHub rebuilds the merge ref when the base branch moves,
+so the payload value can name a commit the tested tree was never merged with.
+
+Non-pull-request runs (nightly, dispatch, release fallback) force the complete
+suite, need no diff at all, and get no base.
+
+### Required checks
+
+The `main` ruleset — which also covers `release` — requires exactly one
+context: **`CI Gate`**. The workflow used to carry two extra jobs solely to
+publish historical required-check names (`lint`, which echoed the client job's
+result, and `test (24.x)` on the server job); both are retired. If a required
+check is ever added, require `CI Gate`, never a job name.
+
 The selected work is split across parallel jobs:
 
 - **Server tests** — full, related, or explicit feature test files. Smoke-boots
@@ -79,8 +106,6 @@ The selected work is split across parallel jobs:
   `bufferedSpawn`, `cos-runner`, shell/PM2, etc.). Docs-only and ordinary
   Linux-faithful PRs skip this job. `pinPlatform('win32')` tests still run on
   Linux.
-- **lint** — historical required-check name. The real lint step lives in the
-  client job; this job only mirrors that result.
 - **CI Gate** — always reports one stable required-check result and fails if any
   selected job failed or was cancelled.
 - **Full CI Gate** — published only when the plan chose the complete suite, and

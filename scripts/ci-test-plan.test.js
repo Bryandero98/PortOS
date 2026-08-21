@@ -296,6 +296,9 @@ describe('CI test impact planner', () => {
 
   it('routes CI pipeline scripts to the complete suite', () => {
     for (const path of [
+      'scripts/ci-base-sha.js',
+      'scripts/ci-base-sha.test.js',
+      'scripts/lib/githubOutput.js',
       'scripts/ci-test-plan.js',
       'scripts/run-ci-tests.js',
       'scripts/run-ci-lint.js',

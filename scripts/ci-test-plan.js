@@ -29,7 +29,7 @@ const FULL_TRIGGER_RULES = [
   // The scripts that decide what CI runs, run it, and gate the release on it.
   // A bug in any of them can make a scoped plan silently test nothing, so they
   // prove themselves against the complete suite rather than their own scope.
-  { re: /^scripts\/(?:ci-test-plan|run-ci-(?:lint|tests)|verify-ci-status)(?:\.test)?\.js$/, reason: 'CI pipeline script changed' },
+  { re: /^scripts\/(?:lib\/githubOutput|ci-base-sha|ci-test-plan|run-ci-(?:lint|tests)|verify-ci-status)(?:\.test)?\.js$/, reason: 'CI pipeline script changed' },
 ];
 
 // Files whose Windows behavior is not faithfully exercised by pinPlatform()
@@ -462,14 +462,17 @@ function main() {
     baseRef: process.env.CI_BASE_REF,
   });
   const forceFull = Boolean(forceFullReason);
+  // scripts/ci-base-sha.js exports this from the checkout: on a pull request
+  // HEAD is the merge ref and CI_BASE_SHA is its first parent, so the
+  // three-dot diff below resolves against a commit git already has. That is
+  // what lets every job clone at depth 2 instead of full history.
   const base = process.env.CI_BASE_SHA;
-  const head = process.env.CI_HEAD_SHA || 'HEAD';
   if (!forceFull && !base) {
     throw new Error('CI_BASE_SHA is required unless the run is forced full (CI_FORCE_FULL=true or CI_BASE_REF=release).');
   }
   const changedFiles = forceFull
     ? []
-    : gitLines(['diff', '--name-only', '--diff-filter=ACMRD', `${base}...${head}`]);
+    : gitLines(['diff', '--name-only', '--diff-filter=ACMRD', `${base}...HEAD`]);
   const trackedFiles = gitLines(['ls-files']);
   emitGitHubPlan(buildCiTestPlan(changedFiles, { trackedFiles, forceFull, forceFullReason }));
 }
