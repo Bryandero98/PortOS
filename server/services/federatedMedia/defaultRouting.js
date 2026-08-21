@@ -222,7 +222,7 @@ export async function resolveDefaultMediaRoute({ kind, params }) {
   // module is imported by agent-tool suites that mock the settings/DB layer,
   // and a static edge to the peer registry would drag that graph into them.
   const { prepareRemoteMediaJob } = await import('./remoteSubmission.js');
-  const { peer, remoteMedia } = await prepareRemoteMediaJob({
+  const { peer, request: negotiatedRequest, remoteMedia } = await prepareRemoteMediaJob({
     peerId: route.peerId,
     kind,
     request,
@@ -244,20 +244,18 @@ export async function resolveDefaultMediaRoute({ kind, params }) {
       { status: 403, code: 'MEDIA_ROUTING_PEER_NOT_TAILNET' },
     );
   }
-  // NOTE: the geometry forwarded here was snapped to the LOCAL model catalog by
-  // the enqueue path ahead of this resolver, and wire v1's capability payload
-  // publishes no frame-stride/canvas constraints to re-snap it against. A
-  // provider whose model has its own frame rule (Wan 2.2 needs
-  // `(numFrames - 1) % frameStride === 0`) therefore rejects such a job with a
-  // typed `WAN22_INVALID_FRAME_COUNT` — loud and fail-closed, but it makes that
-  // pairing unusable until the capability contract carries the constraint. That
-  // negotiation is its own slice; see the follow-up issue.
+  const finalRequest = negotiatedRequest || request;
+  // NOTE: Frame and canvas constraints are negotiated in prepareRemoteMediaJob
+  // against the peer's advertised capability (frameStride, maxNumFrames,
+  // frameOptions, resolutionOptions). Model-specific prompt constraints (e.g. MiniMax
+  // H3 rejecting negative prompts) remain provider-enforced.
+  //
   // Stamp the marker so the boundary survives the job, not just the enqueue.
   // The tailnet check above ran against the peer record as it looked NOW; a
   // queued or reconciling job re-resolves its peer from the registry on every
   // request, and that record can change (a host edited from a .ts.net name to a
   // LAN address) between enqueue and submit. The executor re-checks on this bit.
-  return { peer, request, remoteMedia: { ...remoteMedia, standingRoute: true } };
+  return { peer, request: finalRequest, remoteMedia: { ...remoteMedia, standingRoute: true } };
 }
 
 /**
@@ -291,6 +289,7 @@ const DROPPED_POST_PROCESSING = Object.freeze(['cleanC2PA', 'denoise']);
  * marker (see the generate routes for the same reasoning).
  */
 export function routedJobParams(params, { request, remoteMedia }) {
+  const effectiveRequest = request || remoteMedia?.request;
   const jobParams = { ...(params || {}) };
   for (const key of LOCAL_ONLY_ROUTED_PARAMS) delete jobParams[key];
   const dropped = DROPPED_POST_PROCESSING.filter((key) => jobParams[key] === true);
@@ -298,7 +297,16 @@ export function routedJobParams(params, { request, remoteMedia }) {
   if (dropped.length) {
     console.log(`🌐 Federated render: ${dropped.join(' and ')} will not run on a routed job`);
   }
-  return { ...jobParams, prompt: '', modelId: request.modelId, remoteMedia };
+  return {
+    ...jobParams,
+    prompt: '',
+    modelId: effectiveRequest.modelId,
+    ...(effectiveRequest.numFrames !== undefined ? { numFrames: effectiveRequest.numFrames } : {}),
+    ...(effectiveRequest.fps !== undefined ? { fps: effectiveRequest.fps } : {}),
+    ...(effectiveRequest.width !== undefined ? { width: effectiveRequest.width } : {}),
+    ...(effectiveRequest.height !== undefined ? { height: effectiveRequest.height } : {}),
+    remoteMedia,
+  };
 }
 
 /**

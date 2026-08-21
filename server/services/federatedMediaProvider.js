@@ -221,6 +221,11 @@ async function configuredAudioCapabilities(config) {
       defaultDurationSec: engine?.defaultDurationSec ?? null,
       lyrics: engine?.lyrics === true,
       autoDuration: engine?.autoDuration === true,
+      frameStride: null,
+      maxNumFrames: null,
+      frameOptions: null,
+      fpsOptions: null,
+      resolutionOptions: null,
       _engine: engine,
       _model: model,
     };
@@ -263,6 +268,31 @@ async function localGeneratorCapabilities(kind, pythonPath, { models, configured
           : !runtimeReady ? 'runtime-unavailable'
             : !modelReady ? 'model-unavailable'
               : null;
+    const frameStride = Number.isInteger(Number(model?.frameStride)) && Number(model.frameStride) >= 1 && Number(model.frameStride) <= 64
+      ? Number(model.frameStride)
+      : null;
+    const validFrameOptions = Array.isArray(model?.frameOptions)
+      ? model.frameOptions.filter((f) => Number.isInteger(f) && f >= 1 && f <= 600).slice(0, 100)
+      : [];
+    const validFpsOptions = Array.isArray(model?.fpsOptions)
+      ? model.fpsOptions.filter((f) => Number.isInteger(f) && f >= 1 && f <= 60).slice(0, 20)
+      : [];
+    const rawMaxNumFrames = Number.isInteger(Number(model?.maxNumFrames)) && Number(model.maxNumFrames) >= 1 && Number(model.maxNumFrames) <= 600
+      ? Number(model.maxNumFrames)
+      : (validFrameOptions.length > 0 ? Math.max(...validFrameOptions) : null);
+    const maxNumFrames = rawMaxNumFrames && rawMaxNumFrames <= 600 ? rawMaxNumFrames : null;
+    const validResolutions = Array.isArray(model?.resolutionOptions)
+      ? model.resolutionOptions
+        .filter((opt) => Number.isInteger(Number(opt?.w)) && Number.isInteger(Number(opt?.h))
+          && Number(opt.w) >= 64 && Number(opt.w) <= 2048
+          && Number(opt.h) >= 64 && Number(opt.h) <= 2048)
+        .slice(0, 100)
+        .map(({ label, w, h }) => ({
+          w: Number(w),
+          h: Number(h),
+          ...(label ? { label: String(label).slice(0, 120) } : {}),
+        }))
+      : [];
     return {
       kind,
       engine: selected.engine,
@@ -280,6 +310,11 @@ async function localGeneratorCapabilities(kind, pythonPath, { models, configured
       defaultDurationSec: null,
       lyrics: false,
       autoDuration: false,
+      frameStride,
+      maxNumFrames: Number.isFinite(maxNumFrames) && maxNumFrames > 0 ? maxNumFrames : null,
+      frameOptions: validFrameOptions.length > 0 ? validFrameOptions : null,
+      fpsOptions: validFpsOptions.length > 0 ? validFpsOptions : null,
+      resolutionOptions: validResolutions.length > 0 ? validResolutions : null,
       _pythonPath: isLocal ? pythonPath : null,
       _model: model,
     };

@@ -476,6 +476,7 @@ describe('federated default provider routing (#4348)', () => {
     prepareRemoteMediaJob.mockReset();
     prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => ({
       peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+      request,
       remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request },
     }));
   });

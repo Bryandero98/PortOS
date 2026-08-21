@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ServerError } from '../../lib/errorHandler.js';
 
 const getSettings = vi.fn();
 const prepareRemoteMediaJob = vi.fn();
@@ -17,9 +18,15 @@ vi.mock('../settings.js', () => ({
     }
   },
 }));
-vi.mock('./remoteSubmission.js', () => ({
-  prepareRemoteMediaJob: (...args) => prepareRemoteMediaJob(...args),
-}));
+vi.mock('./remoteSubmission.js', async () => {
+  const actual = await vi.importActual('./remoteSubmission.js');
+  return {
+    ...actual,
+    prepareRemoteMediaJob: (...args) => prepareRemoteMediaJob(...args),
+  };
+});
+
+const { negotiateVideoConstraints } = await import('./remoteSubmission.js');
 
 const enqueueJob = vi.fn(() => ({ jobId: 'mj-test' }));
 vi.mock('../mediaJobQueue/index.js', () => ({ enqueueJob: (...args) => enqueueJob(...args) }));
@@ -36,10 +43,26 @@ beforeEach(() => {
   getSettings.mockReset();
   enqueueJob.mockClear();
   prepareRemoteMediaJob.mockReset();
-  prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => ({
-    peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
-    remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request },
-  }));
+  prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => {
+    const capability = {
+      kind,
+      engine: request.engine,
+      modelId: request.modelId,
+      ready: true,
+      frameStride: null,
+      maxNumFrames: null,
+      resolutionOptions: null,
+    };
+    const effectiveRequest = kind === 'video'
+      ? negotiateVideoConstraints(request, capability)
+      : request;
+    return {
+      peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+      capability,
+      request: effectiveRequest,
+      remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request: effectiveRequest },
+    };
+  });
 });
 
 describe('normalizeMediaRoutingConfig', () => {
@@ -407,5 +430,185 @@ describe('a corrupt settings.json is not "no route"', () => {
     const resolved = await resolveDefaultMediaRoute({ kind: 'image', params: { prompt: 'p' } });
     expect(resolved.remoteMedia.standingRoute).toBe(true);
     expect(routedJobParams({ prompt: 'p' }, resolved).remoteMedia.standingRoute).toBe(true);
+  });
+});
+
+describe('frame constraint negotiation (issue #4681)', () => {
+  const videoRoute = { peerId: 'peer-1', engine: 'local', modelId: 'wan22_t2v_a14b' };
+
+  beforeEach(() => {
+    getSettings.mockResolvedValue({ federation: { mediaRouting: { video: videoRoute } } });
+  });
+
+  it('snaps a Wan-2.2-shaped capability frame count (33 -> 33 and 40 -> 33 with stride 8)', async () => {
+    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => {
+      const capability = {
+        kind,
+        engine: request.engine,
+        modelId: request.modelId,
+        ready: true,
+        frameStride: 8,
+      };
+      const effectiveRequest = negotiateVideoConstraints(request, capability);
+      return {
+        peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+        capability,
+        request: effectiveRequest,
+        remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request: effectiveRequest },
+      };
+    });
+
+    const exact = await resolveDefaultMediaRoute({
+      kind: 'video',
+      params: { prompt: 'a balloon', numFrames: 33 },
+    });
+    expect(exact.request.numFrames).toBe(33);
+    expect(exact.remoteMedia.request.numFrames).toBe(33);
+
+    const snapped = await resolveDefaultMediaRoute({
+      kind: 'video',
+      params: { prompt: 'a balloon', numFrames: 40 },
+    });
+    expect(snapped.request.numFrames).toBe(33);
+    expect(snapped.remoteMedia.request.numFrames).toBe(33);
+  });
+
+  it('snaps frame count down with stride 4 and maxNumFrames', async () => {
+    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => {
+      const capability = {
+        kind,
+        engine: request.engine,
+        modelId: request.modelId,
+        ready: true,
+        frameStride: 4,
+        maxNumFrames: 33,
+      };
+      const effectiveRequest = negotiateVideoConstraints(request, capability);
+      return {
+        peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+        capability,
+        request: effectiveRequest,
+        remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request: effectiveRequest },
+      };
+    });
+
+    const result = await resolveDefaultMediaRoute({
+      kind: 'video',
+      params: { prompt: 'a balloon', numFrames: 40 },
+    });
+    expect(result.request.numFrames).toBe(33);
+    expect(result.remoteMedia.request.numFrames).toBe(33);
+  });
+
+  it('leaves frame count untouched when capability has no frameStride', async () => {
+    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => {
+      const capability = {
+        kind,
+        engine: request.engine,
+        modelId: request.modelId,
+        ready: true,
+        frameStride: null,
+      };
+      const effectiveRequest = negotiateVideoConstraints(request, capability);
+      return {
+        peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+        capability,
+        request: effectiveRequest,
+        remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request: effectiveRequest },
+      };
+    });
+
+    const result = await resolveDefaultMediaRoute({
+      kind: 'video',
+      params: { prompt: 'a balloon', numFrames: 40 },
+    });
+    expect(result.request.numFrames).toBe(40);
+    expect(result.remoteMedia.request.numFrames).toBe(40);
+  });
+
+  it('validates an older provider payload without the fields and leaves numFrames untouched', async () => {
+    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => {
+      const capability = {
+        kind,
+        engine: request.engine,
+        modelId: request.modelId,
+        ready: true,
+      };
+      const effectiveRequest = negotiateVideoConstraints(request, capability);
+      return {
+        peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+        capability,
+        request: effectiveRequest,
+        remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request: effectiveRequest },
+      };
+    });
+
+    const result = await resolveDefaultMediaRoute({
+      kind: 'video',
+      params: { prompt: 'a balloon', numFrames: 40 },
+    });
+    expect(result.request.numFrames).toBe(40);
+    expect(result.remoteMedia.request.numFrames).toBe(40);
+  });
+
+  it('propagates provider constraint rejections', async () => {
+    prepareRemoteMediaJob.mockRejectedValue(new ServerError(
+      'Requested frame count is invalid',
+      { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
+    ));
+
+    await expect(resolveDefaultMediaRoute({
+      kind: 'video',
+      params: { prompt: 'a balloon', numFrames: 25 },
+    })).rejects.toMatchObject({ code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED', status: 400 });
+  });
+
+  it('logs the adjustment when numFrames is snapped', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => {
+      const capability = {
+        kind,
+        engine: request.engine,
+        modelId: 'wan22_t2v_a14b',
+        modelName: 'Wan 2.2 T2V A14B',
+        ready: true,
+        frameStride: 8,
+      };
+      const effectiveRequest = negotiateVideoConstraints(request, capability);
+      return {
+        peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+        capability,
+        request: effectiveRequest,
+        remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request: effectiveRequest },
+      };
+    });
+
+    await resolveDefaultMediaRoute({
+      kind: 'video',
+      params: { prompt: 'a balloon', numFrames: 40 },
+    });
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('adjusted numFrames from 40 to 33'));
+    logSpy.mockRestore();
+  });
+
+  it('propagates negotiated numFrames, fps, width, and height in routedJobParams', () => {
+    const jobParams = routedJobParams(
+      { prompt: 'a balloon', width: 1280, height: 720, numFrames: 40, fps: 16, mode: 'local' },
+      {
+        request: { modelId: 'wan22', numFrames: 33, fps: 24, width: 1344, height: 768 },
+        remoteMedia: { wireVersion: 1, peerId: 'peer-1' },
+      },
+    );
+
+    expect(jobParams).toMatchObject({
+      prompt: '',
+      modelId: 'wan22',
+      numFrames: 33,
+      fps: 24,
+      width: 1344,
+      height: 768,
+      remoteMedia: { wireVersion: 1, peerId: 'peer-1' },
+    });
+    expect(jobParams.mode).toBeUndefined();
   });
 });

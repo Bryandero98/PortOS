@@ -151,7 +151,7 @@ const FEDERATED_MEDIA_RESULT_MIME = Object.freeze({
   video: 'video/mp4',
 });
 
-const federatedMediaCapabilitySchema = z.object({
+export const federatedMediaCapabilitySchema = z.object({
   kind: mediaKindSchema,
   engine: z.string().trim().min(1).max(80),
   engineName: z.string().trim().min(1).max(256),
@@ -168,6 +168,15 @@ const federatedMediaCapabilitySchema = z.object({
   defaultDurationSec: z.number().finite().positive().nullable(),
   lyrics: z.boolean(),
   autoDuration: z.boolean(),
+  frameStride: z.number().int().min(1).max(64).nullable().optional(),
+  maxNumFrames: z.number().int().min(1).max(600).nullable().optional(),
+  frameOptions: z.array(z.number().int().min(1).max(600)).max(100).nullable().optional(),
+  fpsOptions: z.array(z.number().int().min(1).max(60)).max(20).nullable().optional(),
+  resolutionOptions: z.array(z.object({
+    w: z.number().int().min(64).max(2048),
+    h: z.number().int().min(64).max(2048),
+    label: z.string().trim().max(120).optional(),
+  })).max(100).nullable().optional(),
 });
 
 const federatedMediaQueueStatusSchema = z.object({

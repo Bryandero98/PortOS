@@ -640,4 +640,80 @@ describe('federated media provider — prompt-free status and projection payload
     expect(completed.result).toMatchObject({ available: true });
     expect(payload(completed)).not.toContain(scenario.sentinel);
   });
+
+  it('populates frameStride, maxNumFrames, and resolutionOptions for visual models and null for audio', async () => {
+    state.videoModels = [{
+      id: 'wan22_t2v_a14b',
+      name: 'Wan 2.2 T2V A14B',
+      runtime: 'wan22',
+      repo: 'example/wan22',
+      supportedModes: ['text'],
+      frameStride: 4,
+      frameOptions: [25, 49, 73, 97, 121],
+      resolutionOptions: [{ label: '1344x768 (16:9)', w: 1344, h: 768 }],
+    }];
+    state.cachedRepos = new Set(['example/wan22']);
+    const providerConfig = {
+      enabled: true,
+      maxQueuedJobs: 2,
+      audioModels: [selection],
+      imageModels: [],
+      videoModels: [{ engine: 'local', modelId: 'wan22_t2v_a14b' }],
+    };
+    state.settings = { federation: { mediaProvider: providerConfig } };
+
+    const status = await getFederatedMediaProviderStatus(providerConfig, { kinds: ['audio', 'video'] });
+    const audioCap = status.capabilities.find((c) => c.kind === 'audio');
+    const videoCap = status.capabilities.find((c) => c.kind === 'video');
+
+    expect(audioCap).toMatchObject({
+      frameStride: null,
+      maxNumFrames: null,
+      frameOptions: null,
+      fpsOptions: null,
+      resolutionOptions: null,
+    });
+    expect(videoCap).toMatchObject({
+      frameStride: 4,
+      maxNumFrames: 121,
+      frameOptions: [25, 49, 73, 97, 121],
+      resolutionOptions: [{ label: '1344x768 (16:9)', w: 1344, h: 768 }],
+    });
+  });
+
+  it('sanitizes out-of-range, non-integer, and oversized constraint arrays provider-side', async () => {
+    state.videoModels = [{
+      id: 'custom_model',
+      name: 'Custom Model',
+      runtime: 'wan22',
+      repo: 'example/wan22',
+      supportedModes: ['text'],
+      frameStride: -4,
+      maxNumFrames: 'not-a-number',
+      frameOptions: [25, 33.5, -10, 'invalid', 49],
+      resolutionOptions: [
+        { label: 'valid', w: 1344, h: 768 },
+        { label: '4k-too-large', w: 3840, h: 2160 },
+        { label: 'too-small', w: 32, h: 32 },
+        { label: 'invalid-w', w: 'NaN', h: 768 },
+      ],
+    }];
+    state.cachedRepos = new Set(['example/wan22']);
+    const providerConfig = {
+      enabled: true,
+      maxQueuedJobs: 2,
+      audioModels: [],
+      imageModels: [],
+      videoModels: [{ engine: 'local', modelId: 'custom_model' }],
+    };
+    state.settings = { federation: { mediaProvider: providerConfig } };
+
+    const status = await getFederatedMediaProviderStatus(providerConfig, { kinds: ['video'] });
+    const cap = status.capabilities[0];
+
+    expect(cap.frameStride).toBeNull();
+    expect(cap.maxNumFrames).toBe(49);
+    expect(cap.frameOptions).toEqual([25, 49]);
+    expect(cap.resolutionOptions).toEqual([{ label: 'valid', w: 1344, h: 768 }]);
+  });
 });
