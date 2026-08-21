@@ -343,6 +343,113 @@ export const GAIT_MIN_PERIOD = 6;
 const MIN_PERIOD_RATIO = 0.8;
 
 /**
+ * Estimate the dominant period of frame-to-frame motion via normalized autocorrelation.
+ * Returns { lag, strength } or null if motion is flat, too short, or lacks clear periodicity.
+ */
+export function estimateMotionPeriod(signatures) {
+  if (!Array.isArray(signatures) || signatures.length < 9) return null;
+  const motionSeries = [];
+  for (let i = 0; i < signatures.length - 1; i++) {
+    motionSeries.push(imageDistance(signatures[i], signatures[i + 1]));
+  }
+  const L = motionSeries.length;
+
+  let sum = 0;
+  for (let i = 0; i < L; i++) sum += motionSeries[i];
+  const mean = sum / L;
+
+  let varSum = 0;
+  for (let i = 0; i < L; i++) {
+    const diff = motionSeries[i] - mean;
+    varSum += diff * diff;
+  }
+  const variance = varSum / L;
+  // If variance is negligible or motion is virtually static, periodicity is unavailable.
+  if (variance < 1e-4) return null;
+
+  const minLag = 3;
+  // Search lags up to half the series length so each lag is supported by at least 2 full cycles
+  const maxLag = Math.min(24, Math.floor(L / 2));
+  if (maxLag < minLag) return null;
+  const maxComputedLag = Math.min(maxLag + 1, L - 2);
+
+  const correlations = [];
+  for (let lag = minLag - 1; lag <= maxComputedLag; lag++) {
+    if (lag < 1) continue;
+    let cov = 0;
+    for (let i = 0; i < L - lag; i++) {
+      cov += (motionSeries[i] - mean) * (motionSeries[i + lag] - mean);
+    }
+    const r = Math.max(-1, Math.min(1, cov / ((L - lag) * variance)));
+    correlations[lag] = r;
+  }
+
+  // Find strictly interior local peaks in autocorrelation that exceed the minimum strength threshold.
+  const MIN_AUTOCORR_STRENGTH = 0.25;
+  let bestPeak = null;
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    const r = correlations[lag];
+    if (r < MIN_AUTOCORR_STRENGTH) continue;
+    const prev = correlations[lag - 1];
+    const next = correlations[lag + 1];
+    if (prev != null && next != null && r > prev && r >= next) {
+      if (!bestPeak || r > bestPeak.strength) {
+        bestPeak = { lag, strength: pyRoundTo(r, 4) };
+      }
+    }
+  }
+
+  if (!bestPeak) return null;
+
+  // In a symmetric walk, frame-to-frame motion peaks at the half-stride (e.g. lag 4
+  // for an 8-frame gait). If 2 * lag shows stronger full-pose agreement between
+  // signatures, elevate to the full stride period so integer-multiple checks don't
+  // confuse a 1.5-stride window (3 * half-stride) with a whole cycle.
+  const doubleLag = bestPeak.lag * 2;
+  if (doubleLag <= maxComputedLag && (correlations[doubleLag] ?? 0) > MIN_AUTOCORR_STRENGTH) {
+    let d1Sum = 0;
+    let d1Count = 0;
+    for (let i = 0; i < signatures.length - bestPeak.lag; i++) {
+      d1Sum += imageDistance(signatures[i], signatures[i + bestPeak.lag]);
+      d1Count++;
+    }
+    let d2Sum = 0;
+    let d2Count = 0;
+    for (let i = 0; i < signatures.length - doubleLag; i++) {
+      d2Sum += imageDistance(signatures[i], signatures[i + doubleLag]);
+      d2Count++;
+    }
+    const d1 = d1Count > 0 ? d1Sum / d1Count : Infinity;
+    const d2 = d2Count > 0 ? d2Sum / d2Count : Infinity;
+    if (d2 < d1 * 0.85) {
+      bestPeak = { lag: doubleLag, strength: pyRoundTo(correlations[doubleLag], 4) };
+    }
+  }
+
+  return bestPeak;
+}
+
+/**
+ * Does the chosen cycle window match the estimated single-stride motion period?
+ *
+ * Accepts single-stride agreement (nearestK === 1) within either ±1 frame
+ * (integer sampling / quantization jitter) or < 12% relative drift. Multi-stride (k >= 2)
+ * and sub-stride (k < 1) windows are rejected as disagreeing so the advisory
+ * alerts the reviewer when a double-speed or fractional stride was packed.
+ */
+export function isPeriodAgreement(cycleLength, lag) {
+  if (!Number.isFinite(cycleLength) || !Number.isFinite(lag) || cycleLength <= 0 || lag <= 0) {
+    return false;
+  }
+  const ratio = cycleLength / lag;
+  const nearestK = Math.round(ratio);
+  if (nearestK === 1) {
+    if (Math.abs(cycleLength - lag) <= 1 || Math.abs(ratio - 1) < 0.12) return true;
+  }
+  return false;
+}
+
+/**
  * The best-scoring periodic window, by endpoint-seam continuity vs motion.
  *
  * `minLength` is what separates the two callers, and it is the whole point of
@@ -369,7 +476,24 @@ export function findCycleWindow(signatures, frameCount, minLength) {
       if (!best || candLess(cand, best)) best = cand;
     }
   }
-  if (!best) throw new Error('No detectable moving walk cycle in the source video');
+  if (!best) {
+    let maxAdjacentMotion = 0;
+    for (let i = 0; i < n - 1; i++) {
+      const d = imageDistance(signatures[i], signatures[i + 1]);
+      if (d > maxAdjacentMotion) maxAdjacentMotion = d;
+    }
+    if (maxAdjacentMotion < 0.01) {
+      throw new Error('No detectable moving walk cycle in the source video (no motion detected)');
+    }
+    if (maxAdjacentMotion < MIN_CYCLE_MOTION) {
+      throw new Error('No detectable moving walk cycle in the source video (motion too faint to score as a gait cycle)');
+    }
+    const period = estimateMotionPeriod(signatures);
+    if (!period) {
+      throw new Error('No detectable moving walk cycle in the source video (motion has no detectable periodicity)');
+    }
+    throw new Error(`No detectable moving walk cycle in the source video (motion is periodic at ~${period.lag} frames, but no window scored as a clean gait cycle)`);
+  }
   const [, start, cycleLength, seam, motion] = best;
   return { start, cycleLength, seam, motion };
 }
@@ -404,6 +528,13 @@ export function selectCycleIndices(signatures, frameCount = WALK_FRAME_COUNT) {
   // period would be mostly held frames, and a longer window wins there.
   const shortFloor = Math.min(frameCount, Math.max(GAIT_MIN_PERIOD, Math.ceil(frameCount * MIN_PERIOD_RATIO)));
   const { start, cycleLength, seam, motion } = findCycleWindow(signatures, frameCount, shortFloor);
+
+  const motionPeriod = estimateMotionPeriod(signatures);
+  let periodAgreement = 'unavailable';
+  if (motionPeriod && Number.isInteger(motionPeriod.lag)) {
+    periodAgreement = isPeriodAgreement(cycleLength, motionPeriod.lag) ? 'ok' : 'disagree';
+  }
+
   // Even phase distribution, in integer arithmetic (#3050).
   //
   // This is the ONE place that deliberately does not use `pyRound`. Banker's
@@ -447,6 +578,8 @@ export function selectCycleIndices(signatures, frameCount = WALK_FRAME_COUNT) {
       // the requested count. 0 for every window at or above `frameCount`, so an
       // existing manifest's shape is unchanged in the common case.
       heldFrames: Math.max(0, frameCount - cycleLength),
+      periodEstimate: motionPeriod ? motionPeriod.lag : null,
+      periodAgreement,
     },
   };
 }
@@ -489,6 +622,8 @@ export function selectAmbientLoopIndices(signatures, frameCount) {
       windowLength,
       endpointSeamScore: pyRoundTo(seam, 4),
       heldFrames: 0,
+      periodEstimate: null,
+      periodAgreement: 'unavailable',
     },
   };
 }
