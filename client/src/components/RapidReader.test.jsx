@@ -67,6 +67,23 @@ describe('RapidReader keyboard transport', () => {
     expect(screen.getByLabelText('Play')).toBeInTheDocument();
   });
 
+  // A dialog focuses its first focusable descendant. That used to be the header
+  // Close button — and Space on a focused button belongs to the browser, so the
+  // reader's own Space dismissed the reader instead of pausing it (#4748).
+  it('keeps initial focus off the modal Close button, so Space still pauses', () => {
+    const onClose = vi.fn();
+    render(<RapidReaderModal open text="alpha bravo charlie delta" title="Notes" onClose={onClose} />);
+
+    expect(document.activeElement).not.toBe(screen.getByLabelText('Close rapid reader'));
+
+    // Aimed at whatever actually holds focus, not at document.body — the whole
+    // point is where the browser would route a real keystroke.
+    act(() => { fireEvent.keyDown(document.activeElement, { key: ' ', code: 'Space' }); });
+
+    expect(screen.getByLabelText('Play')).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('keeps its keys inside RapidReaderModal, whose own Modal is that dialog', () => {
     render(<RapidReaderModal open text="alpha bravo charlie delta" title="Notes" onClose={vi.fn()} />);
 

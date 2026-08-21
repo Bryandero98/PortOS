@@ -4,7 +4,7 @@ import { DRILL_LABELS, nBackBalancedAccuracy, effectiveCognitiveDrillConfig, cog
 import { safeReadJsonStorage, safeWriteStorage } from '../../../lib/safeStorage.js';
 import useMounted from '../../../hooks/useMounted';
 import useKeyCapture from '../../../hooks/useKeyCapture';
-import { isPressKey } from '../../../lib/a11yKeyboard.js';
+import { isPressKey, noPointerFocusProps } from '../../../lib/a11yKeyboard.js';
 import Modal from '../../ui/Modal';
 
 /**
@@ -908,7 +908,7 @@ function NBackRunner({ drill, drillIndex, drillCount, onComplete, isTraining }) 
 
       <button
         type="button"
-        onClick={registerMatch}
+        onClick={registerMatch} {...noPointerFocusProps}
         disabled={!active || pos < n}
         className="w-full px-6 py-4 bg-rose-500/20 hover:bg-rose-500/30 disabled:opacity-40 disabled:cursor-not-allowed text-rose-300 border border-rose-500/40 font-semibold rounded-lg transition-colors"
       >
@@ -1576,7 +1576,7 @@ function ReactionTimeRunner({ drill, drillIndex, drillCount, onComplete, isTrain
         {phase === 'waiting' && (
           <button
             type="button"
-            onClick={() => respond(0)}
+            onClick={() => respond(0)} {...noPointerFocusProps}
             aria-label="Wait for the signal"
             className="w-32 h-32 rounded-full bg-port-border/30 text-gray-500 text-sm flex items-center justify-center"
           >
@@ -1587,7 +1587,7 @@ function ReactionTimeRunner({ drill, drillIndex, drillCount, onComplete, isTrain
         {phase === 'go' && mode === 'simple' && (
           <button
             type="button"
-            onClick={() => respond(0)}
+            onClick={() => respond(0)} {...noPointerFocusProps}
             className="w-32 h-32 rounded-full bg-port-success/80 hover:bg-port-success text-white font-bold text-lg transition-colors"
           >
             GO!
@@ -1602,7 +1602,7 @@ function ReactionTimeRunner({ drill, drillIndex, drillCount, onComplete, isTrain
                 <button
                   key={i}
                   type="button"
-                  onClick={() => respond(i)}
+                  onClick={() => respond(i)} {...noPointerFocusProps}
                   className={`flex items-center justify-center gap-2 px-4 py-6 rounded-lg border font-semibold transition-colors ${
                     isTarget
                       ? 'bg-port-success/80 hover:bg-port-success border-port-success text-white'
@@ -1778,10 +1778,10 @@ function BinaryChoiceRunner({ type, drill, drillIndex, drillCount, onComplete, i
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <button type="button" onClick={() => recordRef.current('left')} disabled={phase !== 'stimulus'} className="px-5 py-4 rounded-lg border border-port-border bg-port-card hover:bg-port-bg disabled:opacity-40 text-white font-medium">
+        <button type="button" onClick={() => recordRef.current('left')} {...noPointerFocusProps} disabled={phase !== 'stimulus'} className="px-5 py-4 rounded-lg border border-port-border bg-port-card hover:bg-port-bg disabled:opacity-40 text-white font-medium">
           ← {leftLabel}
         </button>
-        <button type="button" onClick={() => recordRef.current('right')} disabled={phase !== 'stimulus'} className="px-5 py-4 rounded-lg border border-port-border bg-port-card hover:bg-port-bg disabled:opacity-40 text-white font-medium">
+        <button type="button" onClick={() => recordRef.current('right')} {...noPointerFocusProps} disabled={phase !== 'stimulus'} className="px-5 py-4 rounded-lg border border-port-border bg-port-card hover:bg-port-bg disabled:opacity-40 text-white font-medium">
           {rightLabel} →
         </button>
       </div>
@@ -1895,7 +1895,7 @@ function GoNoGoRunner({ drill, drillIndex, drillCount, onComplete, isTraining })
       <button
         type="button"
         aria-label={symbolLabel}
-        onClick={() => recordRef.current(true)}
+        onClick={() => recordRef.current(true)} {...noPointerFocusProps}
         disabled={!accepting}
         className="mx-auto w-48 h-48 rounded-2xl border border-port-border bg-port-card flex items-center justify-center disabled:opacity-70 motion-reduce:transition-none"
       >

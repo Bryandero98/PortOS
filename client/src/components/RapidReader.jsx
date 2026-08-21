@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Play, Pause, RotateCcw, Rewind, FastForward, X, Zap } from 'lucide-react';
 import Modal from './ui/Modal';
 import useKeyCapture from '../hooks/useKeyCapture';
+import { noPointerFocusProps } from '../lib/a11yKeyboard';
 
 // Optimal Recognition Point — the focal letter the eye lands on. Spritz-style:
 // shorter words use a left-shifted ORP, longer words shift right. Returns the
@@ -170,7 +171,7 @@ export default function RapidReader({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={back}
+            onClick={back} {...noPointerFocusProps}
             className="min-h-10 min-w-10 flex items-center justify-center rounded-lg border border-port-border text-gray-400 hover:text-white hover:bg-port-bg/60"
             title="Back 5 (←)"
             aria-label="Back 5 words"
@@ -179,7 +180,7 @@ export default function RapidReader({
           </button>
           <button
             type="button"
-            onClick={togglePlay}
+            onClick={togglePlay} {...noPointerFocusProps}
             className="min-h-10 min-w-10 flex items-center justify-center rounded-lg bg-port-accent/15 border border-port-accent/40 text-port-accent hover:bg-port-accent/25"
             title={playing ? 'Pause (space)' : 'Play (space)'}
             aria-label={playing ? 'Pause' : 'Play'}
@@ -188,7 +189,7 @@ export default function RapidReader({
           </button>
           <button
             type="button"
-            onClick={fwd}
+            onClick={fwd} {...noPointerFocusProps}
             className="min-h-10 min-w-10 flex items-center justify-center rounded-lg border border-port-border text-gray-400 hover:text-white hover:bg-port-bg/60"
             title="Forward 5 (→)"
             aria-label="Forward 5 words"
@@ -197,7 +198,7 @@ export default function RapidReader({
           </button>
           <button
             type="button"
-            onClick={restart}
+            onClick={restart} {...noPointerFocusProps}
             className="min-h-10 min-w-10 flex items-center justify-center rounded-lg border border-port-border text-gray-400 hover:text-white hover:bg-port-bg/60"
             title="Restart (R)"
             aria-label="Restart"
@@ -300,6 +301,11 @@ function FocalSlot({ chunk, focalColor }) {
 // and Modal IS that layer. The claim runs in the capture phase, so Esc reaches
 // onClose and never Modal's own bubble-phase close — the reader owns Esc here.
 export function RapidReaderModal({ open, text, title, onClose, ...readerProps }) {
+  // Aim the dialog's initial focus at the header ROW, not at the Close button
+  // inside it. Focus otherwise lands on the first focusable descendant, and
+  // Space on a focused button belongs to the browser — so the reader's own
+  // Space (play/pause) would have dismissed the reader instead.
+  const headerRef = useRef(null);
   return (
     <Modal
       open={open}
@@ -307,8 +313,9 @@ export function RapidReaderModal({ open, text, title, onClose, ...readerProps })
       size="xl"
       ariaLabel={title || 'Rapid Reader'}
       panelClassName="bg-port-card border border-port-border rounded-xl shadow-2xl"
+      initialFocusRef={headerRef}
     >
-      <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-port-border">
+      <div ref={headerRef} tabIndex={-1} className="flex items-center justify-between gap-2 px-4 py-2 border-b border-port-border">
         <div className="flex items-center gap-2 text-sm text-gray-300 truncate">
           <Zap size={14} className="text-port-accent shrink-0" />
           <span className="truncate">{title || 'Rapid Reader'}</span>
@@ -316,6 +323,7 @@ export function RapidReaderModal({ open, text, title, onClose, ...readerProps })
         <button
           type="button"
           onClick={onClose}
+          {...noPointerFocusProps}
           className="min-h-[44px] min-w-[44px] flex items-center justify-center text-gray-400 hover:text-white"
           aria-label="Close rapid reader"
         >

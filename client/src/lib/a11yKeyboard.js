@@ -176,3 +176,21 @@ export function shouldIgnoreGlobalKey(event, { enabledInDialog = false, ignoreRe
   if (!enabledInDialog && document.querySelector('[aria-modal="true"]')) return true;
   return false;
 }
+
+/**
+ * Props that stop a POINTER press from parking keyboard focus on a button.
+ *
+ * On a surface that owns a key globally — a drill scored on Space, the Morse
+ * keyer, the OpenWorld rig — a button that keeps focus after a mouse click
+ * silently takes that key over: `shouldIgnoreGlobalKey` correctly stands the
+ * global handler down for native button activation, so the next Space presses
+ * the lingering button instead of driving the surface. Spread this on the
+ * buttons of such a surface.
+ *
+ * `preventDefault` on `mousedown` suppresses only the focus, not the click — and
+ * only for pointer input, so a keyboard user who tabs to the button still
+ * focuses and activates it normally.
+ */
+export const noPointerFocusProps = {
+  onMouseDown: (event) => event.preventDefault(),
+};

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { onActivateKeyDown, clickableProps, isButtonActivation, isPressKey, isEditableTarget, shouldIgnoreGlobalKey } from './a11yKeyboard.js';
+import { onActivateKeyDown, clickableProps, isButtonActivation, isPressKey, isEditableTarget, shouldIgnoreGlobalKey, noPointerFocusProps } from './a11yKeyboard.js';
 
 describe('onActivateKeyDown', () => {
   it('returns undefined when handler is not a function', () => {
@@ -203,5 +203,25 @@ describe('shouldIgnoreGlobalKey', () => {
     openDialog();
     expect(shouldIgnoreGlobalKey({ key: 'a', target: plainTarget })).toBe(true);
     expect(shouldIgnoreGlobalKey({ key: 'a', target: plainTarget }, { enabledInDialog: true })).toBe(false);
+  });
+});
+
+describe('noPointerFocusProps', () => {
+  it('cancels the mousedown default, which is what would focus the button', () => {
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    button.addEventListener('mousedown', noPointerFocusProps.onMouseDown);
+
+    const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    button.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    // Only focus is suppressed — the click still reaches the handler.
+    const clicked = vi.fn();
+    button.addEventListener('click', clicked);
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(clicked).toHaveBeenCalledTimes(1);
+
+    button.remove();
   });
 });
