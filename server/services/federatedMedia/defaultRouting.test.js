@@ -17,9 +17,15 @@ vi.mock('../settings.js', () => ({
     }
   },
 }));
-vi.mock('./remoteSubmission.js', () => ({
-  prepareRemoteMediaJob: (...args) => prepareRemoteMediaJob(...args),
-}));
+vi.mock('./remoteSubmission.js', async () => {
+  const actual = await vi.importActual('./remoteSubmission.js');
+  return {
+    ...actual,
+    prepareRemoteMediaJob: (...args) => prepareRemoteMediaJob(...args),
+  };
+});
+
+const { negotiateVideoConstraints } = await import('./remoteSubmission.js');
 
 const enqueueJob = vi.fn(() => ({ jobId: 'mj-test' }));
 vi.mock('../mediaJobQueue/index.js', () => ({ enqueueJob: (...args) => enqueueJob(...args) }));
@@ -36,10 +42,26 @@ beforeEach(() => {
   getSettings.mockReset();
   enqueueJob.mockClear();
   prepareRemoteMediaJob.mockReset();
-  prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => ({
-    peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
-    remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request },
-  }));
+  prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => {
+    const capability = {
+      kind,
+      engine: request.engine,
+      modelId: request.modelId,
+      ready: true,
+      frameStride: null,
+      maxNumFrames: null,
+      resolutionOptions: null,
+    };
+    const effectiveRequest = kind === 'video'
+      ? negotiateVideoConstraints(request, capability)
+      : request;
+    return {
+      peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+      capability,
+      request: effectiveRequest,
+      remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request: effectiveRequest },
+    };
+  });
 });
 
 describe('normalizeMediaRoutingConfig', () => {
@@ -418,17 +440,22 @@ describe('frame constraint negotiation (issue #4681)', () => {
   });
 
   it('snaps a Wan-2.2-shaped capability frame count (33 -> 33 and 40 -> 33 with stride 8)', async () => {
-    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => ({
-      peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
-      capability: {
+    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => {
+      const capability = {
         kind,
         engine: request.engine,
         modelId: request.modelId,
         ready: true,
         frameStride: 8,
-      },
-      remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request },
-    }));
+      };
+      const effectiveRequest = negotiateVideoConstraints(request, capability);
+      return {
+        peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+        capability,
+        request: effectiveRequest,
+        remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request: effectiveRequest },
+      };
+    });
 
     const exact = await resolveDefaultMediaRoute({
       kind: 'video',
@@ -446,18 +473,23 @@ describe('frame constraint negotiation (issue #4681)', () => {
   });
 
   it('snaps frame count down with stride 4 and maxNumFrames', async () => {
-    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => ({
-      peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
-      capability: {
+    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => {
+      const capability = {
         kind,
         engine: request.engine,
         modelId: request.modelId,
         ready: true,
         frameStride: 4,
         maxNumFrames: 33,
-      },
-      remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request },
-    }));
+      };
+      const effectiveRequest = negotiateVideoConstraints(request, capability);
+      return {
+        peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+        capability,
+        request: effectiveRequest,
+        remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request: effectiveRequest },
+      };
+    });
 
     const result = await resolveDefaultMediaRoute({
       kind: 'video',
@@ -468,17 +500,22 @@ describe('frame constraint negotiation (issue #4681)', () => {
   });
 
   it('leaves frame count untouched when capability has no frameStride', async () => {
-    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => ({
-      peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
-      capability: {
+    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => {
+      const capability = {
         kind,
         engine: request.engine,
         modelId: request.modelId,
         ready: true,
         frameStride: null,
-      },
-      remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request },
-    }));
+      };
+      const effectiveRequest = negotiateVideoConstraints(request, capability);
+      return {
+        peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+        capability,
+        request: effectiveRequest,
+        remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request: effectiveRequest },
+      };
+    });
 
     const result = await resolveDefaultMediaRoute({
       kind: 'video',
@@ -489,16 +526,21 @@ describe('frame constraint negotiation (issue #4681)', () => {
   });
 
   it('validates an older provider payload without the fields and leaves numFrames untouched', async () => {
-    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => ({
-      peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
-      capability: {
+    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => {
+      const capability = {
         kind,
         engine: request.engine,
         modelId: request.modelId,
         ready: true,
-      },
-      remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request },
-    }));
+      };
+      const effectiveRequest = negotiateVideoConstraints(request, capability);
+      return {
+        peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+        capability,
+        request: effectiveRequest,
+        remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request: effectiveRequest },
+      };
+    });
 
     const result = await resolveDefaultMediaRoute({
       kind: 'video',
@@ -509,18 +551,23 @@ describe('frame constraint negotiation (issue #4681)', () => {
   });
 
   it('rejects when frame count cannot be made legal at all', async () => {
-    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => ({
-      peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
-      capability: {
+    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => {
+      const capability = {
         kind,
         engine: request.engine,
         modelId: request.modelId,
         ready: true,
         frameStride: 8,
         maxNumFrames: 0,
-      },
-      remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request },
-    }));
+      };
+      const effectiveRequest = negotiateVideoConstraints(request, capability);
+      return {
+        peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+        capability,
+        request: effectiveRequest,
+        remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request: effectiveRequest },
+      };
+    });
 
     await expect(resolveDefaultMediaRoute({
       kind: 'video',
@@ -530,18 +577,23 @@ describe('frame constraint negotiation (issue #4681)', () => {
 
   it('logs the adjustment when numFrames is snapped', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => ({
-      peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
-      capability: {
+    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => {
+      const capability = {
         kind,
         engine: request.engine,
         modelId: 'wan22_t2v_a14b',
         modelName: 'Wan 2.2 T2V A14B',
         ready: true,
         frameStride: 8,
-      },
-      remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request },
-    }));
+      };
+      const effectiveRequest = negotiateVideoConstraints(request, capability);
+      return {
+        peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
+        capability,
+        request: effectiveRequest,
+        remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request: effectiveRequest },
+      };
+    });
 
     await resolveDefaultMediaRoute({
       kind: 'video',

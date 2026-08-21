@@ -222,7 +222,7 @@ export async function resolveDefaultMediaRoute({ kind, params }) {
   // module is imported by agent-tool suites that mock the settings/DB layer,
   // and a static edge to the peer registry would drag that graph into them.
   const { prepareRemoteMediaJob } = await import('./remoteSubmission.js');
-  const { peer, capability, remoteMedia } = await prepareRemoteMediaJob({
+  const { peer, capability, request: finalRequest, remoteMedia } = await prepareRemoteMediaJob({
     peerId: route.peerId,
     kind,
     request,
@@ -244,52 +244,12 @@ export async function resolveDefaultMediaRoute({ kind, params }) {
       { status: 403, code: 'MEDIA_ROUTING_PEER_NOT_TAILNET' },
     );
   }
-  // Frame constraint negotiation (issue #4681): re-snap numFrames against the
-  // remote provider capability's frameStride and maxNumFrames down to the
-  // nearest legal n*stride + 1 (never up — spending unbudgeted provider GPU
-  // time). Reject rather than snap when the request cannot be made legal at all.
-  let finalRequest = request;
-  if (kind === 'video' && finalRequest.numFrames !== undefined) {
-    const frameStride = Number(capability?.frameStride);
-    const maxNumFrames = Number(capability?.maxNumFrames);
-    const hasStride = Number.isFinite(frameStride) && frameStride > 0;
-    const hasMax = Number.isFinite(maxNumFrames);
-
-    if (hasStride || hasMax) {
-      const requestedFrames = Number(finalRequest.numFrames);
-      if (requestedFrames < 1) {
-        throw new ServerError(
-          `Requested frame count (${requestedFrames}) is invalid for ${capability?.modelName || capability?.modelId || route.modelId}`,
-          { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
-        );
-      }
-      let legalFrames = requestedFrames;
-      if (hasStride) {
-        legalFrames = Math.floor((legalFrames - 1) / frameStride) * frameStride + 1;
-      }
-      if (hasMax && legalFrames > maxNumFrames) {
-        legalFrames = hasStride
-          ? Math.floor((maxNumFrames - 1) / frameStride) * frameStride + 1
-          : maxNumFrames;
-      }
-      if (legalFrames < 1) {
-        throw new ServerError(
-          `Requested frame count (${requestedFrames}) cannot be satisfied by ${capability?.modelName || capability?.modelId || route.modelId}`,
-          { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
-        );
-      }
-      if (legalFrames !== requestedFrames) {
-        console.log(`🌐 Federated render: adjusted numFrames from ${requestedFrames} to ${legalFrames} for ${capability?.modelName || capability?.modelId || route.modelId}`);
-        finalRequest = { ...finalRequest, numFrames: legalFrames };
-      }
-    }
-  }
   // Stamp the marker so the boundary survives the job, not just the enqueue.
   // The tailnet check above ran against the peer record as it looked NOW; a
   // queued or reconciling job re-resolves its peer from the registry on every
   // request, and that record can change (a host edited from a .ts.net name to a
   // LAN address) between enqueue and submit. The executor re-checks on this bit.
-  return { peer, request: finalRequest, remoteMedia: { ...remoteMedia, request: finalRequest, standingRoute: true } };
+  return { peer, capability, request: finalRequest, remoteMedia: { ...remoteMedia, standingRoute: true } };
 }
 
 /**
