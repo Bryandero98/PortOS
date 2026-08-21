@@ -9,7 +9,9 @@ import Banner from '../../ui/Banner';
 import Pill from '../../ui/Pill';
 import toast from '../../ui/Toast';
 import ProviderModelSelector from '../../ProviderModelSelector';
+import { useThemeContext } from '../../ThemeContext';
 import useProviderModels from '../../../hooks/useProviderModels';
+import { chipColors } from '../../../lib/chipContrast';
 import { isProcessProvider } from '../../../utils/providers';
 import * as api from '../../../services/api';
 import socket from '../../../services/socket';
@@ -59,24 +61,25 @@ const EMPTY_REASONS = {
 /**
  * Label chips carry the forge's own color, which is arbitrary per-repo data —
  * so it can't be a Tailwind class (those must be literal strings in source).
- * Render it as a tinted chip via inline style: the color for text and border,
- * a low-alpha wash of it for the background, which stays legible on the dark
- * surface for the full hue range. A label with no color gets no inline style, so
+ * Render it as a tinted chip via inline style: a low-alpha wash of the label's
+ * own color for the background, and `chipContrast` for the text/border, which
+ * keeps the hue but moves its lightness until it clears WCAG AA on the ACTIVE
+ * theme mode. Verbatim label color only ever worked on night themes — GitHub's
+ * pale defaults (`plan` #fef2c0, `effort:*` #c5def5) rendered as ~1.1:1 on the
+ * day themes, i.e. invisible.
+ *
+ * A label with no color — or a color we can't parse — gets no inline style, so
  * the chip keeps its own neutral look (the `muted` Pill tone on a row chip).
  */
-const labelChipStyle = (color) => (color ? {
-  color,
-  borderColor: `${color}66`,
-  backgroundColor: `${color}1a`
-} : undefined);
-
 function LabelChip({ label }) {
+  const { theme } = useThemeContext();
+  const style = chipColors(label.color, theme?.mode);
   return (
     <Pill
       size="xs"
-      tone={label.color ? 'bare' : 'muted'}
+      tone={style ? 'bare' : 'muted'}
       title={label.description || undefined}
-      style={labelChipStyle(label.color)}
+      style={style}
     >
       {label.name}
     </Pill>
@@ -98,6 +101,16 @@ function LabelChip({ label }) {
  * routinely runs 20+ labels wide.
  */
 function LabelFilterChip({ facet, hidden, onToggle }) {
+  const { theme } = useThemeContext();
+  const style = hidden ? null : chipColors(facet.color, theme?.mode);
+  // The theme utilities carry `!important` (index.css remaps `.bg-port-bg`,
+  // `.border-port-border`, and day-mode `.text-gray-300`), and author
+  // `!important` beats an inline declaration — so a chip that ships BOTH renders
+  // in theme neutrals with its graded color silently dead. Emit the neutrals
+  // only when there's no graded style to paint, the way `Pill tone="bare"` does.
+  const neutral = hidden
+    ? 'border-port-border bg-port-bg text-gray-500 line-through opacity-60 hover:opacity-100'
+    : 'border-port-border bg-port-bg text-gray-300 hover:opacity-80';
   return (
     <button
       type="button"
@@ -108,11 +121,9 @@ function LabelFilterChip({ facet, hidden, onToggle }) {
         ? `${facet.description} — click to ${hidden ? 'show' : 'hide'} these issues`
         : `Click to ${hidden ? 'show' : 'hide'} issues labeled ${facet.name}`}
       className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] transition-opacity ${
-        hidden
-          ? 'border-port-border bg-port-bg text-gray-500 line-through opacity-60 hover:opacity-100'
-          : 'border-port-border bg-port-bg text-gray-300 hover:opacity-80'
+        style ? 'hover:opacity-80' : neutral
       }`}
-      style={hidden ? undefined : labelChipStyle(facet.color)}
+      style={style}
     >
       {facet.name}
       <span className="font-mono opacity-70">{facet.count}</span>

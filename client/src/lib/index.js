@@ -72,6 +72,7 @@ export * from './audioRecorder.js';
 export * from './bareUrl.js';
 export * from './boundedMap.js';
 export * from './buildStamp.js';
+export * from './chipContrast.js';
 export * from './clientErrorReporter.js';
 export * from './clinicianReport.js';
 export * from './clipboard.js';
