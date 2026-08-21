@@ -112,6 +112,11 @@ describe('getSpecDecodePresetStatus', () => {
     expect(recommended.model.exists).toBe(false);
     expect(recommended.model.downloadable).toBe(true);
     expect(recommended.model.repoUrl).toContain('huggingface.co');
+    const q2k = presets.find((p) => p.id === 'qwen3.8-27b-dflash2-q2k');
+    expect(q2k.specType).toBe('draft-dflash');
+    expect(q2k.draftModel.path).toMatch(/DFlash2-Q2_K\.gguf$/);
+    expect(q2k.draftModel.repo).toBe('analogalok/Qwen3.8-27B-DFlash2-Q2_K-GGUF');
+    expect(q2k.draftModel.downloadable).toBe(true);
     // `custom` carries no paths, so it has no weights rows to render.
     expect(presets.find((p) => p.id === 'custom').model).toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();

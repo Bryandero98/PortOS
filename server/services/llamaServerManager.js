@@ -91,6 +91,11 @@ function parseConfigFromArgs(args) {
   const ctxSize = getArg('--ctx-size') ? Number(getArg('--ctx-size')) : 32768;
   const nGpuLayers = getArg('-ngl') !== null ? Number(getArg('-ngl')) : 99;
   const alias = getArg('--alias') || 'dflash';
+  // Absent is not 1: an older launch line with no `--parallel` is running
+  // llama.cpp's own default (often 4 slots), which is distinct from a value
+  // PortOS chose. A relaunch still pins 1 — see startLlamaServer.
+  const parallelRaw = getArg('--parallel') ?? getArg('-np');
+  const parallel = parallelRaw !== null ? Number(parallelRaw) : null;
 
   return {
     model,
@@ -101,6 +106,7 @@ function parseConfigFromArgs(args) {
     ctxSize,
     nGpuLayers,
     alias,
+    parallel,
     // Tuning flags. `null` means the flag was NOT on the launch line, so
     // llama.cpp's own default applied — distinct from a value we chose. A
     // caller re-launching with this config must leave a null off the line
@@ -212,6 +218,7 @@ export async function startLlamaServer(options = {}) {
     ctxSize = 32768,
     nGpuLayers = 99,
     alias = 'dflash',
+    parallel = 1,
     // Tuning knobs (`lib/localModelTuning.js`). Every one defaults to `null` =
     // NOT SET: the flag is left off the launch line entirely so llama.cpp
     // applies its own default. Substituting a number here would silently pin a
@@ -282,6 +289,11 @@ export async function startLlamaServer(options = {}) {
   if (host) args.push('--host', host);
   if (ctxSize) args.push('--ctx-size', String(ctxSize));
   if (nGpuLayers !== undefined && nGpuLayers !== null) args.push('-ngl', String(nGpuLayers));
+  // Always on the line — leaving it off reverts to llama.cpp's multi-slot
+  // default, which is the VRAM tax this pin exists to avoid. `null` from a
+  // recovered pre-flag launch still means 1, not "daemon default".
+  const parallelSlots = Number.isFinite(parallel) && parallel >= 1 ? parallel : 1;
+  args.push('--parallel', String(parallelSlots));
   if (Number.isFinite(batchSize)) args.push('-b', String(batchSize));
   if (Number.isFinite(ubatchSize)) args.push('-ub', String(ubatchSize));
   if (Number.isFinite(threads)) args.push('-t', String(threads));
@@ -318,6 +330,7 @@ export async function startLlamaServer(options = {}) {
     ctxSize,
     nGpuLayers,
     alias,
+    parallel: parallelSlots,
     batchSize,
     ubatchSize,
     threads,
