@@ -94,6 +94,39 @@ describe('negotiateVideoConstraints', () => {
     expect(snapped.height).toBe(768);
   });
 
+  it('snaps width and height when only one dimension is supplied', () => {
+    const capability = {
+      modelId: 'minimax_h3',
+      resolutionOptions: [
+        { label: '21:9', w: 1536, h: 672 },
+        { label: '16:9', w: 1344, h: 768 },
+        { label: '9:16', w: 768, h: 1344 },
+      ],
+    };
+
+    const snappedHeight = negotiateVideoConstraints({ height: 750 }, capability);
+    expect(snappedHeight.width).toBe(1344);
+    expect(snappedHeight.height).toBe(768);
+
+    const snappedWidth = negotiateVideoConstraints({ width: 800 }, capability);
+    expect(snappedWidth.width).toBe(768);
+    expect(snappedWidth.height).toBe(1344);
+  });
+
+  it('clamps rescaled frame count to maxNumFrames and 600', () => {
+    const capability = {
+      modelId: 'wan22',
+      frameStride: 4,
+      fpsOptions: [24],
+      maxNumFrames: 300,
+    };
+
+    // 250 frames at 16 fps -> rescaled to (250/16)*24 = 375 -> clamped to maxNumFrames 300 -> snapped to stride 297
+    const result = negotiateVideoConstraints({ numFrames: 250, fps: 16 }, capability);
+    expect(result.fps).toBe(24);
+    expect(result.numFrames).toBe(297);
+  });
+
   it('tie-breaks equal aspect ratios by closest area and ignores out-of-bounds options', () => {
     const capability = {
       modelId: 'custom',

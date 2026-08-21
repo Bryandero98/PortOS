@@ -40,7 +40,9 @@ export function negotiateVideoConstraints(request, capability) {
         console.log(`🌐 Federated render: adjusted fps from ${requestedFps} to ${bestFps} for ${capability.modelName || capability.modelId}`);
         // Rescale frame count to preserve clip duration (matches local reconciler)
         if (negotiated.numFrames !== undefined && Number.isFinite(Number(negotiated.numFrames)) && requestedFps > 0) {
-          const rescaledFrames = Math.max(1, Math.round((Number(negotiated.numFrames) / requestedFps) * bestFps));
+          const maxNumFrames = capability.maxNumFrames != null ? Number(capability.maxNumFrames) : 600;
+          const maxAllowed = Math.min(600, maxNumFrames > 0 ? maxNumFrames : 600);
+          const rescaledFrames = Math.min(maxAllowed, Math.max(1, Math.round((Number(negotiated.numFrames) / requestedFps) * bestFps)));
           negotiated = { ...negotiated, numFrames: rescaledFrames };
         }
         negotiated = { ...negotiated, fps: bestFps };
@@ -121,20 +123,32 @@ export function negotiateVideoConstraints(request, capability) {
         && Number(opt.w) >= 64 && Number(opt.w) <= 2048 && Number(opt.h) >= 64 && Number(opt.h) <= 2048,
     );
     if (validOptions.length > 0) {
-      const currentWidth = negotiated.width ?? validOptions[0].w;
-      const currentHeight = negotiated.height ?? validOptions[0].h;
-      const requestedAspect = Number(currentWidth) / Number(currentHeight);
-      const requestedArea = Number(currentWidth) * Number(currentHeight);
-      const bestOption = validOptions.reduce((best, option) => {
-        const aspectDiff = Math.abs((Number(option.w) / Number(option.h)) - requestedAspect);
-        const areaDiff = Math.abs((Number(option.w) * Number(option.h)) - requestedArea);
-        if (!best) return { option, aspectDiff, areaDiff };
-        if (aspectDiff < best.aspectDiff - 0.001) return { option, aspectDiff, areaDiff };
-        if (Math.abs(aspectDiff - best.aspectDiff) <= 0.001 && areaDiff < best.areaDiff) {
-          return { option, aspectDiff, areaDiff };
-        }
-        return best;
-      }, null)?.option;
+      let bestOption = null;
+      if (negotiated.width !== undefined && negotiated.height !== undefined) {
+        const requestedAspect = Number(negotiated.width) / Number(negotiated.height);
+        const requestedArea = Number(negotiated.width) * Number(negotiated.height);
+        bestOption = validOptions.reduce((best, option) => {
+          const aspectDiff = Math.abs((Number(option.w) / Number(option.h)) - requestedAspect);
+          const areaDiff = Math.abs((Number(option.w) * Number(option.h)) - requestedArea);
+          if (!best) return { option, aspectDiff, areaDiff };
+          if (aspectDiff < best.aspectDiff - 0.001) return { option, aspectDiff, areaDiff };
+          if (Math.abs(aspectDiff - best.aspectDiff) <= 0.001 && areaDiff < best.areaDiff) {
+            return { option, aspectDiff, areaDiff };
+          }
+          return best;
+        }, null)?.option;
+      } else if (negotiated.width !== undefined) {
+        const reqW = Number(negotiated.width);
+        bestOption = validOptions.reduce((closest, opt) =>
+          Math.abs(Number(opt.w) - reqW) < Math.abs(Number(closest.w) - reqW) ? opt : closest,
+        validOptions[0]);
+      } else {
+        const reqH = Number(negotiated.height);
+        bestOption = validOptions.reduce((closest, opt) =>
+          Math.abs(Number(opt.h) - reqH) < Math.abs(Number(closest.h) - reqH) ? opt : closest,
+        validOptions[0]);
+      }
+
       if (bestOption && (negotiated.width !== Number(bestOption.w) || negotiated.height !== Number(bestOption.h))) {
         console.log(`🌐 Federated render: adjusted resolution from ${negotiated.width ?? '?'}x${negotiated.height ?? '?'} to ${bestOption.w}x${bestOption.h} for ${capability.modelName || capability.modelId}`);
         negotiated = { ...negotiated, width: Number(bestOption.w), height: Number(bestOption.h) };
@@ -145,8 +159,9 @@ export function negotiateVideoConstraints(request, capability) {
   // Defensive validation against the wire schema bounds before persisting/returning
   const validationResult = partialVideoJobSubmissionSchema.safeParse(negotiated);
   if (!validationResult.success) {
+    const issueMessages = validationResult.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', ');
     throw new ServerError(
-      `Negotiated video parameters violate schema: ${validationResult.error.message}`,
+      `Negotiated video parameters violate schema: ${issueMessages}`,
       { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
     );
   }
