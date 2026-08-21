@@ -109,6 +109,7 @@ import {
 // not honour ESLint-style "global" block comments, so it is declared in
 // biome.jsonc's `javascript.globals` instead.
 import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage';
+import { TRUSTED_BUNDLE_STAMP, describeBuild } from '../lib/buildStamp.js';
 import Logo from './Logo';
 import { useErrorNotifications } from '../hooks/useErrorNotifications';
 import { useNotifications } from '../hooks/useNotifications';
@@ -1201,7 +1202,18 @@ export default function Layout() {
         {/* Footer with version and notifications */}
         <div className={`border-t border-port-border ${collapsed ? 'lg:flex lg:justify-center lg:p-2 p-4' : 'p-4'}`}>
           <div className={`flex flex-col items-center gap-2 sm:flex-row sm:gap-0 ${collapsed ? 'lg:flex-col lg:justify-center lg:gap-1' : 'sm:justify-between'}`}>
-            <span className={`text-sm text-gray-500 ${collapsed ? 'lg:hidden' : ''}`}>
+            <span
+              className={`text-sm text-gray-500 ${collapsed ? 'lg:hidden' : ''}`}
+              // The version is identical across every development commit (it
+              // reflects the last RELEASE), so hovering it gives the one fact it
+              // cannot carry: which commit is actually running (#4694). This is
+              // the zero-navigation surface — the full read-out, including
+              // bundle/server drift, is on /system-resources/overview.
+              // TRUSTED_, not BUNDLE_: under `npm run dev` the Vite define is
+              // frozen at dev-server start while HMR serves every commit since,
+              // so a tooltip there would confidently report the wrong commit.
+              title={TRUSTED_BUNDLE_STAMP ? `v${__APP_VERSION__} · ${describeBuild(TRUSTED_BUNDLE_STAMP) ?? 'commit unknown'}` : undefined}
+            >
               v{__APP_VERSION__}
             </span>
             <div className={`flex items-center gap-1 ${collapsed ? 'lg:flex-col' : ''}`}>

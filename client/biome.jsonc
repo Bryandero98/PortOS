@@ -18,11 +18,13 @@
     // __dirname/__filename/require/module/exports are deliberately absent — they
     // are not valid in the ESM browser bundles this client ships.
     //
-    // `__APP_VERSION__` is a Vite build-time define (see vite.config.js). ESLint
-    // picked it up from a `/* global __APP_VERSION__ */` comment in Layout.jsx;
-    // Biome does not honour those comments, so it is declared here instead.
+    // `__APP_VERSION__` and `__BUILD_STAMP__` are Vite build-time defines (see
+    // vite.config.js). ESLint picked `__APP_VERSION__` up from a
+    // `/* global __APP_VERSION__ */` comment in Layout.jsx; Biome does not honour
+    // those comments, so both are declared here instead.
     "globals": [
       "__APP_VERSION__",
+      "__BUILD_STAMP__",
       "AbortController", "AbortSignal", "ArrayBuffer", "Audio", "AudioContext",
       "AudioWorkletNode", "Blob", "BroadcastChannel", "Buffer", "CSS", "CustomEvent",
       "DOMException", "DOMParser", "DataView", "DecompressionStream", "Element", "Event",

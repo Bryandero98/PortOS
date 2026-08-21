@@ -8,6 +8,7 @@ import { existsSync } from 'fs';
 import { createTailscaleServers } from '../lib/tailscale-https.js';
 import { certPaths } from '../lib/certPaths.js';
 import { getBuildId, getStampedIndexHtml } from './lib/buildId.js';
+import { getBuildIdentity } from './lib/buildIdentity.js';
 import { PORTS } from './lib/ports.js';
 
 import alertsRoutes from './routes/alerts.js';
@@ -441,6 +442,12 @@ app.use((req, res) => {
 
 // Error middleware (must be last)
 app.use(errorMiddleware);
+
+// Warm the build-identity cache (one git spawn, no output) so the boot banner
+// and the first socket handshake read it synchronously rather than waiting on
+// git (#4694). Fire-and-forget and outside the request lifecycle, so it carries
+// its own catch; nothing downstream depends on when it lands.
+getBuildIdentity().catch((err) => console.error(`❌ Build identity probe failed: ${err.message}`));
 
 // Post-route boot: background service inits + schedulers, then the ordered
 // instance/sync/media-queue/DB chain that ends in httpServer.listen(). Not

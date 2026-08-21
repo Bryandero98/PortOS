@@ -16,6 +16,7 @@ import { isAuthEnabled } from '../services/auth.js';
 import { getHttpsEnabledAtBoot } from '../lib/httpsState.js';
 import { getActiveProcessing } from '../services/activeProcessing.js';
 import { getMediaCapacity } from '../services/mediaCapacity.js';
+import { getBuildIdentity } from '../lib/buildIdentity.js';
 
 // Defaults are tuned for a real dev machine: memory routinely sits in the
 // 75-85% band on a host with a couple of LLMs loaded, and big SSDs commonly
@@ -44,6 +45,30 @@ const router = Router();
 
 router.get('/processing', asyncHandler(async (req, res) => {
   res.json(await getActiveProcessing());
+}));
+
+/**
+ * GET /api/system/build — which git commit THIS server process is running (#4694).
+ *
+ * Deliberately its OWN route rather than a field on /health/details, which
+ * looks auth-gated but is not private: `probePeer` in services/instances.js
+ * fetches /health/details from every configured peer and persists the whole
+ * JSON verbatim as `peer.lastHealth`. Anything added there therefore leaves
+ * the machine and is written to disk on someone else's install — and a branch
+ * name can carry an issue title. Nothing PortOS does automatically fetches this
+ * path — `probePeer` reads /health/details, /api/apps and /api/instances/
+ * sync-status only — so the stamp never leaves the machine on its own.
+ *
+ * That is the guarantee being made, and the limit of it: the generic
+ * `queryPeer` proxy (routes/instances.js, predates this) lets an authenticated
+ * peer deliberately GET any /api/* path, as it can for every other endpoint on
+ * this server. The point here is that the stamp is not PUSHED into a payload
+ * that federates unprompted.
+ * See the root CLAUDE.md privacy rules and #4694 ("local-only diagnostic data
+ * — must not join a sync payload"). `health.test.js` pins both halves.
+ */
+router.get('/build', asyncHandler(async (req, res) => {
+  res.json(await getBuildIdentity());
 }));
 
 router.get('/health', asyncHandler(async (req, res) => {

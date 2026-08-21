@@ -208,6 +208,13 @@ export function initSocket(io) {
     // to its own embedded <meta name="portos-build-id"> value; a mismatch
     // means the tab is running stale code against a freshly-rebuilt server
     // and the user is offered a reload.
+    //
+    // The bundle HASH is safe to push to every socket. The git identity is
+    // deliberately NOT here: `connection` fires for every socket, and
+    // `peerSocketRelay.js` connects PortOS installs to each other over
+    // Socket.IO, so anything pushed here reaches other people's machines. The
+    // client reads the commit from `GET /api/system/build` instead — see that
+    // route in routes/systemHealth.js for the full reasoning (#4694).
     socket.emit('build:id', { buildId: getBuildId() });
 
     // Replay the in-flight importer analyze snapshot ON DEMAND so a tab that

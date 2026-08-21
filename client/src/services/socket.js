@@ -1,5 +1,8 @@
 import { io } from 'socket.io-client';
-import { showStaleBuildToast } from './staleBuildToast';
+import { showStaleBuildToast, showBuildDriftToast } from './staleBuildToast';
+import { createBuildDriftWatcher, SERVED_BUILD_ID } from '../lib/buildStamp.js';
+import { getSystemBuild } from './apiSystem';
+import toast from '../components/ui/Toast';
 
 // Connect to Socket.IO using relative path (works with Tailscale)
 // The connection will use the same host the page was loaded from
@@ -32,23 +35,32 @@ socket.on('connect_error', (err) => {
   // Other connection errors: Socket.IO will retry automatically.
 });
 
-// Embedded build id from the served index.html. The server injects a
-// <meta name="portos-build-id" content="..."> tag into index.html at boot;
-// a freshly-rebuilt-and-restarted server will have a different id, and the
-// `build:id` socket event below catches the mismatch so the tab can reload.
-const EMBEDDED_BUILD_ID = (() => {
-  if (typeof document === 'undefined') return null;
-  const el = document.querySelector('meta[name="portos-build-id"]');
-  return el ? el.getAttribute('content') : null;
-})();
+// Embedded build id from the served index.html — the server injects a
+// <meta name="portos-build-id"> tag at boot, and a freshly-rebuilt-and-restarted
+// server carries a different one. Defined in lib/buildStamp.js so the drift
+// check here and the surfaces that DISPLAY the bundle stamp share one answer to
+// "was this page served from a real build?".
+const EMBEDDED_BUILD_ID = SERVED_BUILD_ID;
 
-let staleToastShown = false;
-socket.on('build:id', ({ buildId } = {}) => {
-  if (!buildId || !EMBEDDED_BUILD_ID || buildId === EMBEDDED_BUILD_ID) return;
-  if (staleToastShown) return;
-  staleToastShown = true;
-  showStaleBuildToast();
+// One frame, two different staleness problems with two different remedies —
+// `resolveBuildFrame` owns that decision (it is pure and tested); this just
+// dispatches, once per kind per tab.
+const TOAST_IDS = { reload: 'portos-stale-build', drift: 'portos-build-drift' };
+
+// The bundle hash arrives on the socket; the commit is FETCHED over the
+// authenticated API, because the server's `connection` handler also fires for
+// peer relays and must not ship this machine's branch name to another install
+// (see server/services/socket.js and routes/systemHealth.js). The merge and
+// the once-per-kind latching live in a tested factory.
+const buildWatcher = createBuildDriftWatcher({
+  embeddedBuildId: EMBEDDED_BUILD_ID,
+  fetchIdentity: () => getSystemBuild({ silent: true }),
+  onShow: (action) => (action === 'reload' ? showStaleBuildToast() : showBuildDriftToast()),
+  onClear: (action) => toast.dismiss(TOAST_IDS[action])
 });
+
+socket.on('build:id', ({ buildId } = {}) => buildWatcher.onBuildId(buildId));
+socket.on('connect', () => { buildWatcher.refreshIdentity(); });
 
 export default socket;
 
