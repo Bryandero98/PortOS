@@ -17,7 +17,7 @@ import {
 } from '../services/providerRuntimeInstaller.js';
 import { getProviderReadinessMap, resetProviderReadinessCache } from '../services/providerReadiness.js';
 import { getProviderPrerequisiteMap } from '../services/providerPrerequisites.js';
-import { runLocalRuntimeSetup } from '../services/localRuntimeSetup.js';
+import { runLocalRuntimeSetup, SETUP_ACTIONS } from '../services/localRuntimeSetup.js';
 import { localRuntimeForProvider } from '../lib/localProviderRuntime.js';
 import { buildTuiShellLaunch } from '../lib/tuiShellLaunch.js';
 
@@ -379,6 +379,14 @@ export function createPortOSProviderRoutes(aiToolkit) {
     if (requested !== runtime.kind) {
       throw new ServerError('This provider no longer uses that runtime — reload the page and try again.', { status: 409, code: 'RUNTIME_MISMATCH' });
     }
+    // Which of the fixed steps the checklist's button named. Matched against the
+    // closed set rather than passed through, so the only thing an unexpected
+    // value can do is 400 — it never reaches a command. `install-start` is the
+    // default because that is the shape every pre-`action` client sends.
+    const action = req.query.action ? String(req.query.action) : 'install-start';
+    if (!SETUP_ACTIONS.includes(action)) {
+      throw new ServerError('Unknown setup action.', { status: 400, code: 'UNKNOWN_SETUP_ACTION', context: { action } });
+    }
 
     const { send, safeEnd } = openSseStream(res);
     const installLog = createInstallLogger({ installer: runtime.label, target: runtime.endpoint });
@@ -419,6 +427,7 @@ export function createPortOSProviderRoutes(aiToolkit) {
       endpoint: runtime.endpoint,
       emit,
       isCancelled: () => clientGone,
+      action,
     }).catch((err) => ({ success: false, error: err.message }));
 
     if (holdsLock) { runtimeSetupInFlight = false; holdsLock = false; }

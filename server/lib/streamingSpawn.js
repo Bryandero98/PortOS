@@ -27,11 +27,14 @@ import { createLineReader, createOutputTail } from './streamLines.js';
  * @param {string} cmd
  * @param {string[]} args
  * @param {(line: string) => void} [onLine] - called once per non-empty line
- * @param {{timeoutMs?: number, cwd?: string, env?: object, spawnImpl?: Function}} [options]
- *   `timeoutMs: 0` (default) means no timeout.
+ * @param {{timeoutMs?: number, cwd?: string, env?: object, spawnImpl?: Function, splitRe?: RegExp}} [options]
+ *   `timeoutMs: 0` (default) means no timeout. `splitRe` is forwarded to the
+ *   line readers — pass `/[\r\n]+/` for a tool whose progress bar redraws the
+ *   same line with a bare `\r`, so each redraw surfaces instead of the stream
+ *   going silent for the length of a multi-gigabyte download.
  * @returns {Promise<{success: boolean, error?: string}>}
  */
-export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env, spawnImpl = spawn } = {}) {
+export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env, spawnImpl = spawn, splitRe } = {}) {
   return new Promise((resolve) => {
     const child = spawnImpl(cmd, args, safeChildProcessOptions({
       env: env ? safeChildProcessEnv(env) : process.env,
@@ -71,8 +74,9 @@ export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env
     // `added 42 ` and a warning arriving mid-line yields one corrupt line and
     // loses both real ones. (Inherited from the hand-rolled splitter this was
     // extracted from; `streamLines.js` carries the rule.)
-    const stdoutReader = createLineReader((line) => safeLine(line.trim()));
-    const stderrReader = createLineReader((line) => safeLine(line.trim()));
+    const readerOptions = splitRe ? { splitRe } : undefined;
+    const stdoutReader = createLineReader((line) => safeLine(line.trim()), readerOptions);
+    const stderrReader = createLineReader((line) => safeLine(line.trim()), readerOptions);
 
     child.stdout?.on('data', stdoutReader.push);
     child.stderr?.on('data', stderrReader.push);

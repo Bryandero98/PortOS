@@ -35,6 +35,7 @@
 
 import { localRuntimeForProvider } from '../lib/localProviderRuntime.js';
 import { isConfiguredDefaultModel } from '../lib/providerModels.js';
+import { describeMtplxCache, listMtplxCachedModels } from '../lib/mtplxModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
 import { describeRuntimeSetup } from './localRuntimeSetup.js';
@@ -65,6 +66,26 @@ const PROBE_TTL_MS = 15_000;
  */
 const BINARY_TTL_MS = 60_000;
 
+/**
+ * A `mtplx models --json` listing walks the cache directories to size them, so
+ * it is far too expensive to repeat on every 20s page poll — and the answer
+ * only changes when a `mtplx pull` finishes, which is minutes of downloading
+ * away. Longer than the probe TTL for exactly that reason.
+ */
+const WEIGHTS_TTL_MS = 60_000;
+
+/**
+ * How to read a runtime's model cache WITHOUT starting it, for the runtimes
+ * where that is possible. Ollama and LM Studio need their daemon up to list
+ * anything (and the Models → LLMs page owns their downloads anyway);
+ * llama.cpp's weights are a GGUF path the user picks; the vLLM stack's weights
+ * ship inside an operator-prepared compose project. MTPLX alone answers
+ * `mtplx models --json` offline.
+ */
+const WEIGHT_CACHE_READERS = Object.freeze({
+  mtplx: async () => describeMtplxCache(await listMtplxCachedModels()).state,
+});
+
 // endpoint + key → { at, promise } — the PROMISE, not the settled value, so N
 // providers sharing one endpoint in the same batch share one socket instead of
 // all missing a not-yet-written cache entry at once. The key is part of the
@@ -74,6 +95,9 @@ const BINARY_TTL_MS = 60_000;
 const probeCache = new Map();
 // command → { at, path }
 const binaryCache = new Map();
+// runtime kind → { at, promise } — the local model cache behind a daemon that
+// is NOT running, which is the only time PortOS cannot ask `/v1/models`.
+const weightsCache = new Map();
 
 /**
  * Ask an OpenAI-compatible endpoint what it serves. `llamaServerManager` runs the
@@ -106,6 +130,40 @@ ${apiKey}`;
     throw err;
   });
   probeCache.set(cacheKey, { at: now, promise });
+  return promise;
+}
+
+/**
+ * What a runtime's own model cache holds, for the runtimes that have one PortOS
+ * can read without starting them (today: MTPLX).
+ *
+ * This is the fact that turned the MTPLX checklist into a catch-22: "installed
+ * ✓ / server not responding ✗ — use Start MTPLX, PortOS does this for you",
+ * and Start then failed with "no model weights are cached, so its server exits
+ * before it binds a port". Reading the cache HERE is what lets the checklist
+ * say so up front and offer the download instead of the start.
+ *
+ * A cache that could not be read reports `'unknown'` — never `'empty'`, which
+ * would claim a fact PortOS does not have. Only called for a kind in
+ * `WEIGHT_CACHE_READERS`; everything else answers `'unknown'` at the call site
+ * without spending a subprocess.
+ *
+ * TTL-cached — see WEIGHTS_TTL_MS.
+ *
+ * @returns {Promise<'unknown'|'empty'|'partial'|'ready'>}
+ */
+function readWeightsStateCached(kind) {
+  const now = Date.now();
+  const cached = weightsCache.get(kind);
+  if (cached && now - cached.at < WEIGHTS_TTL_MS) return cached.promise;
+  // Cached BEFORE the await so concurrent providers on one runtime share the
+  // subprocess; dropped on an unexpected throw so a transient failure cannot
+  // poison the entry for its whole TTL (same shape as the probe cache above).
+  const promise = WEIGHT_CACHE_READERS[kind]().catch((err) => {
+    weightsCache.delete(kind);
+    throw err;
+  });
+  weightsCache.set(kind, { at: now, promise });
   return promise;
 }
 
@@ -149,6 +207,22 @@ function setupHint(setup, covers) {
   return setup.action?.includes(covers) ? `Use “${setup.actionLabel}” below — PortOS does this for you.` : null;
 }
 
+/**
+ * What a runtime's own model cache says while its server is down — the half of
+ * the model check `GET /v1/models` cannot answer because nothing is listening.
+ *
+ * `null` when there is nothing to add, so the caller keeps its own prose.
+ */
+function weightsDetail(runtime, weights) {
+  if (weights === 'empty') return `${runtime.label} has no model weights cached, so its server exits before it binds a port.`;
+  if (weights === 'partial') return `${runtime.label}'s cache holds only an unfinished download — no complete checkpoint to serve.`;
+  if (weights === 'ready') return 'Weights are cached locally; this can be confirmed once the server is running.';
+  return null;
+}
+
+/** True for the cache states that make a start impossible. */
+const blocksStart = (weights) => weights === 'empty' || weights === 'partial';
+
 /** The `runtime` check — is the daemon's software here at all? */
 function runtimeCheck(runtime, { onPath, appInstalled, installed, reachable, setup }) {
   const detail = onPath ? `\`${runtime.command}\` is on PortOS's PATH.`
@@ -163,7 +237,7 @@ function runtimeCheck(runtime, { onPath, appInstalled, installed, reachable, set
 }
 
 /** The `server` check — is it running where THIS provider points? */
-function serverCheck(runtime, { installed, result, setup }) {
+function serverCheck(runtime, { installed, result, setup, weights = 'unknown' }) {
   if (result.reachable) {
     return {
       id: 'server',
@@ -177,11 +251,15 @@ function serverCheck(runtime, { installed, result, setup }) {
   const fallback = installed
     ? `${start} ${runtime.modelsHint}`
     : `Install ${runtime.label} first, then start it. ${runtime.modelsHint}`;
+  // Name the blocker in the SAME line that says nothing answered. Otherwise the
+  // checklist reads "installed ✓ / not responding — just press Start", and
+  // Start is the thing that cannot work until the weights land.
+  const blocked = blocksStart(weights) ? weightsDetail(runtime, weights) : null;
   return {
     id: 'server',
     label: `${runtime.label} server responding`,
     ok: false,
-    detail: `Nothing answered at ${runtime.endpoint}${result.error ? ` (${result.error})` : ''}.`,
+    detail: `Nothing answered at ${runtime.endpoint}${result.error ? ` (${result.error})` : ''}.${blocked ? ` ${blocked}` : ''}`,
     fixHint: setupHint(setup, 'start') || fallback,
   };
 }
@@ -195,7 +273,7 @@ function serverCheck(runtime, { installed, result, setup }) {
  * which says nothing about the model — reported as unknown, never as missing,
  * so the user chases the check that IS actionable.
  */
-function modelCheck(runtime, wanted, served, probeError = null) {
+function modelCheck(runtime, wanted, served, probeError = null, { weights = 'unknown', setup = null } = {}) {
   const label = `Model \`${wanted}\` available`;
   if (!Array.isArray(served)) {
     // A server that answered 401 IS responding — "until the server responds"
@@ -203,8 +281,11 @@ function modelCheck(runtime, wanted, served, probeError = null) {
     // actual fix is to paste its key onto this provider.
     const detail = probeError === 'authentication required'
       ? `${runtime.label} refused the model listing without an API key — paste the server's key on this provider.`
-      : 'Cannot be checked until the server responds.';
-    return { id: 'model', label, ok: null, detail, fixHint: null };
+      : weightsDetail(runtime, weights) || 'Cannot be checked until the server responds.';
+    // An unservable cache is the ONE unknown here that has a fix: the download
+    // that makes a start possible at all.
+    const fixHint = blocksStart(weights) ? setupHint(setup, 'pull') : null;
+    return { id: 'model', label, ok: null, detail, fixHint };
   }
   if (served.includes(wanted)) {
     return { id: 'model', label, ok: true, detail: `${runtime.label} is serving \`${wanted}\`.`, fixHint: null };
@@ -263,18 +344,25 @@ export async function getProviderReadiness(provider, deps = {}) {
   const appInstalled = runtime.kind === 'lmstudio' && (deps.isAppInstalled || isLmStudioAppInstalled)();
   const installed = onPath || appInstalled || result.reachable;
 
+  // What the runtime's own model cache holds. Only worth asking when the daemon
+  // is installed and NOT answering: a running server's `/v1/models` is the
+  // better answer, and an uninstalled runtime has no cache to read.
+  const weights = installed && !result.reachable && WEIGHT_CACHE_READERS[runtime.kind]
+    ? await (deps.readWeights || readWeightsStateCached)(runtime.kind)
+    : 'unknown';
+
   // Resolved BEFORE the checks so each unmet one can point at the button that
   // fixes it rather than at a setup doc.
-  const setup = describeRuntimeSetup(runtime.kind, { installed, running: result.reachable });
+  const setup = describeRuntimeSetup(runtime.kind, { installed, running: result.reachable, weights });
 
   const checks = [
     runtimeCheck(runtime, { onPath, appInstalled, installed, reachable: result.reachable, setup }),
-    serverCheck(runtime, { installed, result, setup }),
+    serverCheck(runtime, { installed, result, setup, weights }),
   ];
   const wanted = servedModelId(provider, runtime.kind);
   // `probeEndpoint` returns `models: null` on every unreachable path, so this
   // needs no second reachability test.
-  if (wanted) checks.push(modelCheck(runtime, wanted, result.models, result.error));
+  if (wanted) checks.push(modelCheck(runtime, wanted, result.models, result.error, { weights, setup }));
 
   return {
     kind: runtime.kind,
@@ -313,11 +401,14 @@ export async function getProviderReadinessMap(providers, deps = {}) {
   // would otherwise bypass the module-level caches that normally collapse them.
   const findCommand = memoize(deps.findCommand || findCommandCached);
   const probe = memoize(deps.probe || probeEndpointCached);
+  // Same reasoning as the two above: one `mtplx models` subprocess per batch,
+  // not one per provider pointed at the same runtime.
+  const readWeights = memoize(deps.readWeights || readWeightsStateCached);
 
   const entries = await Promise.all(list.map(async (provider) => {
     // Spread `deps` first so any other injected dep (isAppInstalled) survives,
-    // then override the two the batch memoizes.
-    const readiness = await getProviderReadiness(provider, { ...deps, findCommand, probe });
+    // then override the three the batch memoizes.
+    const readiness = await getProviderReadiness(provider, { ...deps, findCommand, probe, readWeights });
     return readiness ? [provider.id, readiness] : null;
   }));
   return Object.fromEntries(entries.filter(Boolean));
@@ -347,4 +438,5 @@ function memoize(fn) {
 export function resetProviderReadinessCache() {
   probeCache.clear();
   binaryCache.clear();
+  weightsCache.clear();
 }
