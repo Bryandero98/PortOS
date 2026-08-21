@@ -245,9 +245,9 @@ export async function resolveDefaultMediaRoute({ kind, params }) {
     );
   }
   const finalRequest = negotiatedRequest || request;
-  // NOTE: Frame count and frame rate are negotiated in prepareRemoteMediaJob
+  // NOTE: Frame and canvas constraints are negotiated in prepareRemoteMediaJob
   // against the peer's advertised capability (frameStride, maxNumFrames,
-  // frameOptions, fpsOptions). Model-specific prompt constraints (e.g. MiniMax
+  // frameOptions, resolutionOptions). Model-specific prompt constraints (e.g. MiniMax
   // H3 rejecting negative prompts) remain provider-enforced.
   //
   // Stamp the marker so the boundary survives the job, not just the enqueue.

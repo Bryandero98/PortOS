@@ -121,11 +121,18 @@ go. That is deliberate: silently dropping the source image a user pinned would
 return a plausible render of the wrong thing. Input-asset transfer is a later
 slice.
 
-Unlike audio, image and video prompts cross as submitted rather than being
-re-rendered from a fixed vocabulary. Why that is not a hole in the "no PII on
-federation" rule, what stays absolutely prompt-free, and what a future standing
-(unattended) route may not do are all decided in ADR
-[federated visual prompts](./decisions/2026-08-20-federated-visual-prompts.md).
+### Video frame and canvas constraint negotiation
+
+Providers advertise their model geometry and frame constraints in their capability status:
+- `frameStride`: Stride multiplier for continuous frame models (e.g. Wan 2.2 uses stride 4, legal counts `4n + 1`).
+- `maxNumFrames`: Maximum allowed frame count for the model.
+- `frameOptions`: Discrete allowed frame counts for fixed-cadence models (e.g. MiniMax H3 `17n + 5` grid).
+- `resolutionOptions`: Allowed canvas presets (`w`, `h`, `label`).
+
+When preparing a remote video job, the consumer negotiates requested parameters against the provider's advertised constraints:
+- Frame count snaps down to the nearest legal discrete option or `n * stride + 1` (never up, to avoid spending unbudgeted GPU compute), bounded by `maxNumFrames`.
+- Canvas dimensions snap to the closest aspect ratio and area preset in `resolutionOptions`.
+- Adjustments are logged (`🌐 Federated render: adjusted ...`), and the negotiated parameters are persisted inside `remoteMedia.request` so reconciles replay the exact negotiated job. Requests that cannot be made legal fail closed with `400 MEDIA_PROVIDER_INPUT_UNSUPPORTED`.
 
 ### Unattended renders (Creative Director / Creative Commission)
 

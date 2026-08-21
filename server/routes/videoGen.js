@@ -1055,7 +1055,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     // schema's overlap with it: this object is persisted and replayed on every
     // reconcile, so it must already be a body the provider accepts.
     const request = buildFederatedMediaRequest({ kind: 'video', params: body });
-    const { peer, request: negotiatedRequest, remoteMedia } = await prepareRemoteMediaJob({
+    const { peer, remoteMedia } = await prepareRemoteMediaJob({
       peerId: body.mediaProviderPeerId,
       kind: 'video',
       request,
