@@ -4,7 +4,7 @@
  * and inline (user-defined) manuscript runners, and raw-finding normalization.
  */
 
-import { estimateTokens } from './externals.js';
+import { estimateTokens, CREATIVE_LATITUDE_TOKENS } from './externals.js';
 import { SEVERITIES, CUSTOM_CHECK_MAX_FINDINGS_DEFAULT } from './taxonomy.js';
 
 // ---------------------------------------------------------------------------
@@ -417,7 +417,12 @@ export async function runManuscriptLlmCheckInline(ctx, { category, instructions 
   // Fixed per-call overhead = the contract wrapper + the instructions (only the
   // manuscript var changes per chunk). Measure it by rendering the prompt with an
   // empty manuscript so the chunk budget accounts for everything riding along.
+  // The IP-latitude clause is prepended downstream (in the runner, keyed on
+  // CUSTOM_CHECK_RUN_SOURCE), i.e. AFTER this measurement — so reserve it here or
+  // every chunk ships tokens the budget never counted. A stage-template check
+  // needs no equivalent: buildPrompt stamps before the chunk planner measures.
   const overheadTokens = EDITORIAL_PROMPT_OVERHEAD_TOKENS
+    + CREATIVE_LATITUDE_TOKENS
     + estimateTokens(buildCustomCheckPrompt({ instructions, manuscript: '', maxFindings: max }));
   const chunks = await ctx.planManuscriptChunks(null, { overheadTokens });
   return runChunkedManuscriptCheck(ctx, {

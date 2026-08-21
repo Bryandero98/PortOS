@@ -686,6 +686,9 @@ Respond with a concise profile in this exact structure:
   const result = await callProviderAISimple(provider, modelId, prompt, {
     temperature: 0.3,
     max_tokens: 1000,
+    // The whole point is to cite the named films/albums/artists the user
+    // mentioned; a model that genericizes them produces a useless profile.
+    creative: true,
     op: `taste-summary:${sectionId}`,
     opLabel: `Generating ${config.label} taste summary`
   });
@@ -759,6 +762,7 @@ ${allTranscripts}
   const result = await callProviderAISimple(provider, modelId, prompt, {
     temperature: 0.3,
     max_tokens: 1500,
+    creative: true,
     op: 'taste-summary:overall',
     opLabel: 'Generating unified taste profile'
   });
@@ -943,6 +947,7 @@ Generate exactly ONE question. Do not include any preamble, numbering, or explan
   const result = await callProviderAISimple(provider, modelId, prompt, {
     temperature: 0.8,
     max_tokens: 200,
+    creative: true,
     op: `taste-deep-question:${sectionId}`,
     opLabel: `Crafting a deeper ${config.label} question`
   });

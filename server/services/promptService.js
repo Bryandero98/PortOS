@@ -13,6 +13,7 @@
 import { join } from 'path';
 import { applyTemplate } from '../lib/promptTemplate.js';
 import { expandPartials } from '../lib/promptPartials.js';
+import { isCreativeStage, withCreativeLatitude } from '../lib/creativeLatitude.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { setAIToolkitInstance, requireToolkit } from '../lib/aiToolkitState.js';
 
@@ -88,7 +89,12 @@ export async function buildPrompt(stageName, data = {}) {
     const v = variables[varName];
     if (v && allVars[varName] === undefined) allVars[varName] = v.content;
   }
-  return applyTemplate(template, allVars);
+  const rendered = applyTemplate(template, allVars);
+  // Creative stages carry the IP-latitude clause (lib/creativeLatitude.js) so a
+  // model doesn't quietly genericize a deliberate reference. Stamping HERE — the
+  // one place every stage template is rendered — covers runStagedLLM and every
+  // other buildPrompt caller without touching 117 template files.
+  return isCreativeStage(stageName) ? withCreativeLatitude(rendered) : rendered;
 }
 
 export async function previewPrompt(stageName, testData = {}) {

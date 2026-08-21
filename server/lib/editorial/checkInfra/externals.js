@@ -9,6 +9,7 @@
 
 import { z } from 'zod';
 import { estimateTokens } from '../../contextBudget.js';
+import { CREATIVE_LATITUDE_TOKENS } from '../../creativeLatitude.js';
 import { renderCharacterArcsForPrompt } from '../../seriesCharacterArc.js';
 import { parseComicScript } from '../../comicScriptParser.js';
 import {
@@ -60,6 +61,7 @@ import { revealGatedCanonRows, canonHasRevealGated } from '../../storyBible.js';
 
 // Re-exported so ./checks/*.js and ./checkRegistry.js import everything from here.
 export {
+  CREATIVE_LATITUDE_TOKENS,
   DEFAULT_LETTERING_THRESHOLDS,
   MIN_DENSITY_OCCURRENCES,
   analyzeBalloonAttribution,
