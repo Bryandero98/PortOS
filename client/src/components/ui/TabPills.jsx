@@ -1,6 +1,11 @@
-// Shared tab-nav primitive. Two visual families: `underline` (default — flat
-// bottom border with port-accent marker; used across page-level tabs) and
-// `pills` (rounded card with internal pill rows; used by UniverseBuilder).
+// Shared tab-nav primitive. Three visual families: `underline` (default — flat
+// bottom border with port-accent marker; used across page-level tabs),
+// `pills` (rounded card with internal pill rows; used by UniverseBuilder), and
+// `filter` (pills' markup, toggle-button semantics). `filter` exists because a
+// faceted count chip row (Settings > AI Assignments) narrows rows in place
+// rather than swapping panels: a tab promises a panel it never shows, so those
+// chips are a `role="group"` of `aria-pressed` buttons — the same semantics the
+// app's other toggle filters use — while sharing this component's styling.
 // Knobs cover the call-site quirks: `runningKind` swaps a per-tab icon for a
 // spinner; `stretch` makes each tab `flex-1` (StoryboardPanel); `mobileDropdown`
 // collapses to a `<select>` below `sm` (UniverseBuilder); `controlsIdPrefix`
@@ -56,7 +61,8 @@ export default function TabPills({
     </div>
   ) : null;
 
-  if (variant === 'pills') {
+  if (variant === 'pills' || variant === 'filter') {
+    const isFilter = variant === 'filter';
     return (
       <>
         {mobileSelect}
@@ -64,7 +70,7 @@ export default function TabPills({
           ref={listRef}
           onScroll={onScroll}
           className={`${mobileDropdown ? 'hidden sm:flex' : 'flex'} shrink-0 items-center gap-1 bg-port-card border border-port-border rounded p-1 overflow-x-auto scrollbar-hide touch-pan-x ${className}`}
-          role="tablist"
+          role={isFilter ? 'group' : 'tablist'}
           aria-label={ariaLabel}
         >
           {visibleTabs.map((t) => {
@@ -75,10 +81,11 @@ export default function TabPills({
               <button
                 key={t.id}
                 type="button"
-                role="tab"
-                aria-selected={active}
-                aria-controls={controlsIdPrefix ? `${controlsIdPrefix}-${t.id}` : undefined}
-                id={controlsIdPrefix ? `tab-${t.id}` : undefined}
+                role={isFilter ? undefined : 'tab'}
+                aria-selected={isFilter ? undefined : active}
+                aria-pressed={isFilter ? active : undefined}
+                aria-controls={!isFilter && controlsIdPrefix ? `${controlsIdPrefix}-${t.id}` : undefined}
+                id={!isFilter && controlsIdPrefix ? `tab-${t.id}` : undefined}
                 disabled={t.disabled}
                 onClick={() => onChange(t.id)}
                 className={`flex items-center ${sz.gap} ${sz.padding} rounded ${sz.text} transition-colors whitespace-nowrap ${
