@@ -113,24 +113,26 @@ describe('negotiateVideoConstraints', () => {
     expect(snapped1080.height).toBe(1080);
   });
 
-  it('snaps fps to the nearest option when fpsOptions is present', () => {
+  it('snaps fps to the nearest option and rescales frame count to preserve clip duration', () => {
     const capability = {
       modelId: 'minimax_h3',
-      fpsOptions: [24, 25],
+      fpsOptions: [24],
+      frameOptions: [107, 124, 141, 158, 175, 192, 209, 226, 243],
     };
 
-    expect(negotiateVideoConstraints({ fps: 16 }, capability).fps).toBe(24);
-    expect(negotiateVideoConstraints({ fps: 30 }, capability).fps).toBe(25);
+    // 241 frames at 30 fps ≈ 8.03s -> rescaled to (241/30)*24 ≈ 193 frames -> snapped to nearest frameOption 192 (8.0s)
+    const result = negotiateVideoConstraints({ numFrames: 241, fps: 30 }, capability);
+    expect(result.fps).toBe(24);
+    expect(result.numFrames).toBe(192);
   });
 
-  it('rejects when requested numFrames is below minimum stride frames', () => {
+  it('snaps requested numFrames up to minLegal when below stride floor', () => {
     const capability = {
       modelId: 'wan22_t2v_a14b',
       frameStride: 4,
     };
 
-    expect(() => negotiateVideoConstraints({ numFrames: 3 }, capability))
-      .toThrow(/cannot be satisfied.*minimum 5/);
+    expect(negotiateVideoConstraints({ numFrames: 3 }, capability).numFrames).toBe(5);
   });
 
   it('rejects when requested numFrames is invalid (< 1)', () => {
