@@ -123,13 +123,35 @@ describe('getBuildIdentity', () => {
   it('retries after a TRANSIENT probe failure instead of caching null forever', async () => {
     // A 5s timeout can elapse once at boot while migrations hammer the disk.
     // Caching that would disable the whole feature for the process lifetime on
-    // a checkout that is perfectly fine.
+    // a checkout that is perfectly fine. The retry is behind a cooldown (see the
+    // storm test below), so the clock has to move for it to be attempted.
+    vi.useFakeTimers();
     mocks.execGit.mockRejectedValueOnce(new Error('git command timed out after 5s'));
     mocks.execGit.mockResolvedValue(ok(CLEAN));
     const { getBuildIdentity } = await loadModule();
 
     expect((await getBuildIdentity()).commit).toBeNull();
+
+    vi.advanceTimersByTime(60_000);
+
     expect((await getBuildIdentity()).commit).toBe('1234567890abcdef1234567890abcdef12345678');
+    vi.useRealTimers();
+  });
+
+  it('does not re-spawn git per caller while a transient failure is cooling down', async () => {
+    // The identity is read per socket reconnect and per /api/system/build, and
+    // Socket.IO retries up to 10 times per tab — on a host where git is missing
+    // or wedged, an unbounded retry would spawn a git for every attempt.
+    mocks.execGit.mockRejectedValue(new Error('git command timed out after 5s'));
+    const { getBuildIdentity } = await loadModule();
+
+    await getBuildIdentity();
+    await getBuildIdentity();
+    await getBuildIdentity();
+
+    expect(mocks.execGit).toHaveBeenCalledTimes(1);
+    // Still reports not-known rather than throwing or inventing a value.
+    expect((await getBuildIdentity()).commit).toBeNull();
   });
 
   it('caches a DEFINITIVE not-a-repo answer rather than re-spawning git per request', async () => {
@@ -232,6 +254,18 @@ describe('getCachedBuildIdentity', () => {
     const identity = await getBuildIdentity();
 
     expect(getCachedBuildIdentity()).toBe(identity);
+  });
+
+  it('stays null after a TRANSIENT failure so the boot banner defers instead of lying', async () => {
+    // The banner reads this synchronously and prints whatever it gets. Parking
+    // an all-null tuple here would be truthy, so it would print "unknown" and
+    // never correct itself — the permanent lie this accessor must avoid.
+    mocks.execGit.mockRejectedValue(new Error('git command timed out after 5s'));
+    const { getBuildIdentity, getCachedBuildIdentity } = await loadModule();
+
+    await getBuildIdentity();
+
+    expect(getCachedBuildIdentity()).toBeNull();
   });
 
   it('caches the all-null identity too, so a non-repo does not re-probe forever', async () => {

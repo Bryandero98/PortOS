@@ -58,7 +58,7 @@ router.get('/processing', asyncHandler(async (req, res) => {
  * name can carry an issue title. Peers do not probe this path, so the stamp
  * stays local by construction rather than by a promise nobody can enforce.
  * See the root CLAUDE.md privacy rules and #4694 ("local-only diagnostic data
- * — must not join a sync payload"). `systemHealth.test.js` pins both halves.
+ * — must not join a sync payload"). `health.test.js` pins both halves.
  */
 router.get('/build', asyncHandler(async (req, res) => {
   res.json(await getBuildIdentity());

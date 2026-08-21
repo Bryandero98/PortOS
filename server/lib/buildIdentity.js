@@ -16,8 +16,9 @@
  * hash says nothing about which commit either side was built from: a `dist/`
  * built three days ago and one built this minute are both "current" to buildId
  * as long as the browser matches the file. This module answers the other half —
- * WHICH CODE is up. The two ride the same `build:id` socket frame precisely
- * because they are complementary halves of one question.
+ * WHICH CODE is up. They travel separately on purpose: the bundle hash is pushed
+ * to every socket, while this is served only over `GET /api/system/build`,
+ * because the socket path also reaches peer relays (see services/socket.js).
  *
  * Privacy: commit / branch / dirty only. No absolute paths (they embed the OS
  * username), no hostname, no checkout directory — see the Sensitive Data
@@ -124,8 +125,13 @@ async function probe() {
   return { identity: parsePorcelainV2(result.stdout), definitive: true };
 }
 
+// Backoff after a transient probe failure — long enough that a burst of socket
+// reconnects collapses to one attempt, short enough to self-heal unattended.
+const RETRY_COOLDOWN_MS = 30_000;
+
 let cached = null;
 let resolved = null;
+let retryBlockedUntil = 0;
 
 /**
  * Resolve the running build's git identity. Cached for the life of the process:
@@ -140,18 +146,33 @@ let resolved = null;
  *
  * Non-throwing. Every field is independently nullable: a tarball install with
  * no `.git`, a detached checkout, or a git timeout reports `commit: null`. A
- * timeout is retried on the next call; a definitive "not a repo" is not.
+ * timeout is retried (after a cooldown); a definitive "not a repo" is not.
  *
  * @returns {Promise<{commit: string|null, shortCommit: string|null, branch: string|null, dirty: boolean|null}>}
  */
 export function getBuildIdentity() {
+  if (!cached && retryBlockedUntil > Date.now()) return Promise.resolve(UNKNOWN_IDENTITY);
   cached ??= probe().then(({ identity, definitive }) => {
-    resolved = identity;
     // Release the cache when the probe merely FAILED, so the next caller retries
     // instead of inheriting a transient null forever. A definitive answer —
     // including "not a git checkout" — is kept, preserving the one-spawn
     // property for real repos and tarball installs alike.
-    if (!definitive) cached = null;
+    //
+    // `resolved` is set ONLY on a definitive answer, for the same reason: it
+    // backs the synchronous accessor, and an all-null tuple parked there is
+    // truthy, so the boot banner would print "unknown" instead of taking its
+    // defer-and-retry path.
+    if (definitive) {
+      resolved = identity;
+    } else {
+      // Retry, but not on every caller. This is now read per socket reconnect
+      // and per /api/system/build request, and Socket.IO retries up to 10 times
+      // per tab — so on a host where git is missing (spawn ENOENT) or wedged
+      // (the 5s timeout), an unbounded release would spawn a git per attempt,
+      // per tab. The cooldown keeps the recovery while capping the cost.
+      cached = null;
+      retryBlockedUntil = Date.now() + RETRY_COOLDOWN_MS;
+    }
     return identity;
   });
   return cached;

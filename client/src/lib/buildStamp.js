@@ -99,28 +99,99 @@ export function describeBuild({ commit, branch, dirty } = {}) {
 }
 
 /**
- * Decide what a `build:id` socket frame means for THIS tab (#4694).
+ * Decide what the server's build signals mean for THIS tab (#4694).
  *
- * Two different staleness problems arrive on one frame, and they have different
- * remedies — conflating them tells the user to do something that cannot work:
+ * Two different staleness problems, with different remedies — conflating them
+ * tells the user to do something that cannot work:
  *
  *   `'reload'` — the bundle on disk moved since this tab loaded. Reloading picks
  *     up the new one.
  *   `'drift'`  — this tab IS current with the dist on disk, but that dist was
- *     built from a different commit than the server is running. Reloading
- *     re-serves the same stale dist and changes nothing; it needs a rebuild or a
+ *     built from a different commit than the server is running. Reloading alone
+ *     re-serves the same stale dist; it needs a rebuild (then a reload) or a
  *     server restart.
  *   `null`     — nothing to say.
  *
- * `embeddedBuildId` is null under `npm run dev` (Vite serves its own index.html,
- * so the server never injects the build-id meta tag). That is the gate for BOTH
- * checks: in dev there is no dist to be stale, and the Vite define is frozen at
+ * The two signals arrive by different routes — the bundle hash is pushed on the
+ * `build:id` socket frame, while the commit is fetched from
+ * `GET /api/system/build`, because the socket path reaches peer relays and the
+ * commit must stay machine-local (see services/socket.js). So this takes a
+ * merged view rather than one frame.
+ *
+ * `embeddedBuildId` is null under `npm run dev` (Vite serves its own
+ * index.html, so the server never injects the meta tag). That gates BOTH checks:
+ * in dev there is no dist to be stale, and the Vite define is frozen at
  * dev-server start, so a drift check there would fire the moment you commit.
  *
  * @returns {'reload'|'drift'|null}
  */
-export function resolveBuildFrame({ buildId, commit } = {}, { embeddedBuildId, bundle = BUNDLE_STAMP } = {}) {
+export function resolveBuildFrame({ buildId, commit } = {}, { embeddedBuildId, bundle = TRUSTED_BUNDLE_STAMP } = {}) {
   if (!buildId || !embeddedBuildId) return null;
   if (buildId !== embeddedBuildId) return 'reload';
   return compareBuildStamps(bundle, { commit }).state === 'mismatch' ? 'drift' : null;
+}
+
+/**
+ * The stateful half of the drift check: merge the two signals as they arrive,
+ * decide once per kind, and clear a toast when its problem goes away.
+ *
+ * A factory taking its effects as arguments, rather than reaching for the socket
+ * and the toast module directly, so the dispatch logic is testable — the module
+ * that wires it opens a real Socket.IO connection at import and cannot be loaded
+ * in a unit test.
+ *
+ * @param {object} deps
+ * @param {string|null} deps.embeddedBuildId - see `SERVED_BUILD_ID`
+ * @param {() => Promise<{commit?: string|null}|null>} deps.fetchIdentity
+ * @param {(action: 'reload'|'drift') => void} deps.onShow
+ * @param {(action: 'reload'|'drift') => void} deps.onClear
+ */
+export function createBuildDriftWatcher({ embeddedBuildId, fetchIdentity, onShow, onClear }) {
+  const signals = { buildId: null, commit: null };
+  const shown = { reload: false, drift: false };
+
+  const evaluate = () => {
+    const action = resolveBuildFrame(signals, { embeddedBuildId });
+
+    // Both notices are sticky, and the drift one has no button (a bare reload
+    // cannot fix it). Clearing on the signal that says the problem is gone is
+    // the only way they come down — otherwise one keeps asserting a mismatch
+    // that no longer exists for the rest of the tab's life.
+    for (const kind of ['reload', 'drift']) {
+      if (kind !== action && shown[kind]) {
+        shown[kind] = false;
+        onClear(kind);
+      }
+    }
+
+    if (!action || shown[action]) return;
+    shown[action] = true;
+    onShow(action);
+  };
+
+  return {
+    /** The pushed bundle hash. */
+    onBuildId(buildId) {
+      signals.buildId = buildId ?? null;
+      evaluate();
+    },
+    /**
+     * Re-read the server's commit. Called on every (re)connect, because a server
+     * restart is one of the remedies and the reconnect is where we learn the
+     * drift is gone.
+     *
+     * Clears the previous commit FIRST: it belongs to the server we were talking
+     * to before. Keeping it while the fetch is in flight would judge the new
+     * server by the old one's commit — and if the fetch fails outright (an older
+     * server with no such route), a stale commit would have the toast asserting
+     * drift against a server that no longer exists.
+     */
+    async refreshIdentity() {
+      signals.commit = null;
+      evaluate();
+      const identity = await fetchIdentity().catch(() => null);
+      signals.commit = identity?.commit ?? null;
+      evaluate();
+    }
+  };
 }

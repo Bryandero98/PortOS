@@ -22,8 +22,8 @@ import { timeAgo } from '../../utils/formatters';
  *
  * The mismatch banner is the point of the panel — it turns "my change isn't
  * showing up" from a debugging session into a visible fact. The same comparison
- * runs unprompted on every page via the `build:id` socket frame; this is the
- * read-out, not the only detector.
+ * runs unprompted on every page load (services/socket.js wires the watcher);
+ * this is the read-out, not the only detector.
  */
 export default function BuildStampPanel({ uptimeFormatted }) {
   const [build, setBuild] = useState(null);

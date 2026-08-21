@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { compareBuildStamps, describeBuild, resolveBuildFrame } from './buildStamp.js';
+import { describe, it, expect, vi } from 'vitest';
+import { compareBuildStamps, createBuildDriftWatcher, describeBuild, resolveBuildFrame } from './buildStamp.js';
 
 describe('compareBuildStamps', () => {
   it('matches a bundle short commit against the server short commit', () => {
@@ -143,5 +143,102 @@ describe('resolveBuildFrame', () => {
       { buildId: embeddedBuildId, commit: 'def5678' },
       { embeddedBuildId, bundle: { commit: null } }
     )).toBeNull();
+  });
+});
+
+describe('createBuildDriftWatcher', () => {
+  const embeddedBuildId = 'aaaa1111bbbb';
+
+  // `__BUILD_STAMP__` is absent under vitest, so the bundle side is always
+  // unknown here and every case below turns on the reload half plus the
+  // never-assert-drift-without-both-sides rule. The commit comparison itself is
+  // covered directly by the compareBuildStamps cases above.
+  function makeWatcher({ commit = 'abc1234', fail = false } = {}) {
+    const shown = [];
+    const cleared = [];
+    const fetchIdentity = vi.fn(() =>
+      fail ? Promise.reject(new Error('404')) : Promise.resolve({ commit }));
+    const watcher = createBuildDriftWatcher({
+      embeddedBuildId,
+      fetchIdentity,
+      onShow: (a) => shown.push(a),
+      onClear: (a) => cleared.push(a)
+    });
+    return { watcher, shown, cleared, fetchIdentity };
+  }
+
+  it('raises the reload notice when the bundle hash moved', () => {
+    const { watcher, shown } = makeWatcher();
+
+    watcher.onBuildId('cccc2222dddd');
+
+    expect(shown).toEqual(['reload']);
+  });
+
+  it('raises each notice at most once, however many signals arrive', () => {
+    const { watcher, shown } = makeWatcher();
+
+    watcher.onBuildId('cccc2222dddd');
+    watcher.onBuildId('cccc2222dddd');
+    watcher.onBuildId('cccc2222dddd');
+
+    expect(shown).toEqual(['reload']);
+  });
+
+  it('clears the reload notice once the tab is current again', () => {
+    // A sticky notice with no path down is worse than none: it keeps asserting
+    // a problem the user already fixed.
+    const { watcher, shown, cleared } = makeWatcher();
+
+    watcher.onBuildId('cccc2222dddd');
+    watcher.onBuildId(embeddedBuildId);
+
+    expect(shown).toEqual(['reload']);
+    expect(cleared).toEqual(['reload']);
+  });
+
+  it('re-raises after a clear, so a second genuine problem is not swallowed', () => {
+    const { watcher, shown } = makeWatcher();
+
+    watcher.onBuildId('cccc2222dddd');
+    watcher.onBuildId(embeddedBuildId);
+    watcher.onBuildId('eeee3333ffff');
+
+    expect(shown).toEqual(['reload', 'reload']);
+  });
+
+  it('drops the previous commit before re-reading it on reconnect', async () => {
+    // The old commit belongs to the server we were talking to before. Judging a
+    // restarted server by it would assert drift against a server that is gone.
+    const { watcher, fetchIdentity } = makeWatcher();
+
+    await watcher.refreshIdentity();
+    await watcher.refreshIdentity();
+
+    expect(fetchIdentity).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not assert drift when the identity fetch fails (older server)', async () => {
+    const { watcher, shown } = makeWatcher({ fail: true });
+
+    watcher.onBuildId(embeddedBuildId);
+    await watcher.refreshIdentity();
+
+    expect(shown).toEqual([]);
+  });
+
+  it('stays silent under the dev server, where no build id is embedded', async () => {
+    const shown = [];
+    const watcher = createBuildDriftWatcher({
+      embeddedBuildId: null,
+      fetchIdentity: () => Promise.resolve({ commit: 'def5678' }),
+      onShow: (a) => shown.push(a),
+      onClear: () => {},
+    });
+
+    watcher.onBuildId('dev');
+    await watcher.refreshIdentity();
+
+    expect(shown).toEqual([]);
   });
 });

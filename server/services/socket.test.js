@@ -22,17 +22,9 @@ vi.mock('./notifications.js', () => ({ notificationEvents: { on: vi.fn() } }));
 vi.mock('./agentPersonalities.js', () => ({ agentPersonalityEvents: { on: vi.fn() } }));
 vi.mock('./platformAccounts.js', () => ({ platformAccountEvents: { on: vi.fn() } }));
 vi.mock('./updateChecker.js', () => ({ updateEvents: { on: vi.fn() } }));
-// The build stamp would otherwise spawn git against whatever checkout the
-// suite runs from, making the assertion depend on the clone.
+// Pin the bundle hash so the assertion does not depend on whether a dist
+// happens to exist in the checkout the suite runs from.
 vi.mock('../lib/buildId.js', () => ({ getBuildId: vi.fn(() => 'test-build-id') }));
-vi.mock('../lib/buildIdentity.js', () => ({
-  getBuildIdentity: vi.fn().mockResolvedValue({
-    commit: 'abc1234567890abcdef1234567890abcdef12345',
-    shortCommit: 'abc1234',
-    branch: 'main',
-    dirty: false
-  })
-}));
 vi.mock('./automationScheduler.js', () => ({ scheduleEvents: { on: vi.fn() } }));
 vi.mock('./agentActivity.js', () => ({ activityEvents: { on: vi.fn() } }));
 vi.mock('./brainStorage.js', () => ({ brainEvents: { on: vi.fn() } }));
@@ -143,22 +135,26 @@ describe('socket.js — initSocket', () => {
   // ===========================================================================
   // cos:subscribe — socket joins cosSubscribers, receives cos:subscribed ack
   // ===========================================================================
-  it('tells a connecting client both the bundle id AND the running commit (#4694)', async () => {
-    // One frame carries both staleness signals: `buildId` (this tab's bundle vs
-    // the dist on disk — a reload fixes it) and `commit` (that dist vs the code
-    // the server runs — a reload does NOT). The emit is deferred on the cached
-    // identity promise, so it lands a microtask after connect.
-    const socket = makeSocket('build-stamp');
+  it('pushes only the bundle id at connection time, never the git identity (#4694)', async () => {
+    // THE federation boundary for the socket half. `connection` fires for every
+    // socket, and peerSocketRelay.js opens a Socket.IO CLIENT to every online
+    // peer — so this handler runs for other installs' relays too, and anything
+    // pushed here leaves the machine. The commit is served over the API instead
+    // (GET /api/system/build), which peers do not call.
+    const socket = makeSocket('build-push');
     createdSockets.push(socket);
     io.connect(socket);
-    await vi.waitFor(() =>
-      expect(socket.emitted.some(([ev]) => ev === 'build:id')).toBe(true));
+    await Promise.resolve();
 
-    const [, frame] = socket.emitted.find(([ev]) => ev === 'build:id');
-    expect(frame.buildId).toBe('test-build-id');
-    expect(frame.commit).toBe('abc1234567890abcdef1234567890abcdef12345');
-    expect(frame.branch).toBe('main');
-    expect(frame.dirty).toBe(false);
+    const pushed = socket.emitted.filter(([ev]) => ev === 'build:id');
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0][1]).toEqual({ buildId: 'test-build-id' });
+
+    // No commit, branch, or dirty flag anywhere in what this socket received,
+    // and no handler a peer could call to ask for one.
+    expect(JSON.stringify(socket.emitted)).not.toContain('main');
+    expect(JSON.stringify(socket.emitted)).not.toContain('abc1234');
+    expect(Object.keys(socket.handlers)).not.toContain('build:identity');
   });
 
   it('socket receives cos:subscribed ack after emitting cos:subscribe', () => {

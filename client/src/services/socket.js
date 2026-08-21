@@ -1,6 +1,7 @@
 import { io } from 'socket.io-client';
 import { showStaleBuildToast, showBuildDriftToast } from './staleBuildToast';
-import { resolveBuildFrame, SERVED_BUILD_ID } from '../lib/buildStamp.js';
+import { createBuildDriftWatcher, SERVED_BUILD_ID } from '../lib/buildStamp.js';
+import { getSystemBuild } from './apiSystem';
 import toast from '../components/ui/Toast';
 
 // Connect to Socket.IO using relative path (works with Tailscale)
@@ -45,28 +46,21 @@ const EMBEDDED_BUILD_ID = SERVED_BUILD_ID;
 // `resolveBuildFrame` owns that decision (it is pure and tested); this just
 // dispatches, once per kind per tab.
 const TOAST_IDS = { reload: 'portos-stale-build', drift: 'portos-build-drift' };
-const shown = { reload: false, drift: false };
-socket.on('build:id', (frame) => {
-  const action = resolveBuildFrame(frame, { embeddedBuildId: EMBEDDED_BUILD_ID });
 
-  // Both toasts are sticky, and the drift one deliberately offers no button
-  // (its remedy is a rebuild or a server restart, which reloading cannot do).
-  // A server restart drops and re-establishes this socket, so the reconnect
-  // frame is exactly where we learn the drift is gone — clear the toast and the
-  // latch there, or the pill keeps asserting a mismatch that no longer exists
-  // for the rest of the tab's life.
-  for (const [kind, id] of Object.entries(TOAST_IDS)) {
-    if (kind !== action && shown[kind]) {
-      shown[kind] = false;
-      toast.dismiss(id);
-    }
-  }
-
-  if (!action || shown[action]) return;
-  shown[action] = true;
-  if (action === 'reload') showStaleBuildToast();
-  else showBuildDriftToast();
+// The bundle hash arrives on the socket; the commit is FETCHED over the
+// authenticated API, because the server's `connection` handler also fires for
+// peer relays and must not ship this machine's branch name to another install
+// (see server/services/socket.js and routes/systemHealth.js). The merge and
+// the once-per-kind latching live in a tested factory.
+const buildWatcher = createBuildDriftWatcher({
+  embeddedBuildId: EMBEDDED_BUILD_ID,
+  fetchIdentity: () => getSystemBuild({ silent: true }),
+  onShow: (action) => (action === 'reload' ? showStaleBuildToast() : showBuildDriftToast()),
+  onClear: (action) => toast.dismiss(TOAST_IDS[action])
 });
+
+socket.on('build:id', ({ buildId } = {}) => buildWatcher.onBuildId(buildId));
+socket.on('connect', () => { buildWatcher.refreshIdentity(); });
 
 export default socket;
 

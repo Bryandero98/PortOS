@@ -35,6 +35,27 @@ function gitStamp(args) {
   }
 }
 
+// Separate from `gitStamp` on purpose: `status --porcelain` prints NOTHING for
+// a clean tree, so that helper's `|| null` would make clean and failed
+// identical — and reading a failure as clean is exactly what lets the panel
+// claim an agreement it never verified. Here the empty string IS the answer,
+// and only a throw means "could not check".
+//
+// Returns true (dirty) / false (clean) / null (unknown).
+function gitDirty() {
+  try {
+    const out = execFileSync('git', ['status', '--porcelain', '--', '.'], {
+      cwd: CONFIG_DIR,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000
+    });
+    return out.trim() !== '';
+  } catch {
+    return null;
+  }
+}
+
 function buildStamp() {
   const head = gitStamp(['rev-parse', '--abbrev-ref', 'HEAD']);
   // Were the CLIENT sources uncommitted when this bundle was built? Scoped to
@@ -43,12 +64,6 @@ function buildStamp() {
   // ordinary server work. Without this the commit id alone is not enough — a
   // dist built from an edited tree carries its parent's clean commit, and the
   // panel would assert full agreement for code that was never committed.
-  //
-  // `--porcelain` prints nothing for a clean tree, so `gitStamp` returns null
-  // there — which is indistinguishable from a failed probe. Re-probe with a
-  // marker instead: `--porcelain` plus `rev-parse --is-inside-work-tree` tells
-  // us the command CAN run, so a null status means clean rather than unknown.
-  const inRepo = gitStamp(['rev-parse', '--is-inside-work-tree']) === 'true';
   return {
     commit: gitStamp(['rev-parse', '--short=7', 'HEAD']),
     // `rev-parse --abbrev-ref` prints the literal string `HEAD` on a detached
@@ -56,7 +71,7 @@ function buildStamp() {
     // named HEAD, so this is never a real branch.)
     branch: head === 'HEAD' ? null : head,
     // null = we could not check, distinct from false = checked and clean.
-    dirty: inRepo ? gitStamp(['status', '--porcelain', '--', '.']) !== null : null,
+    dirty: gitDirty(),
     // Commit / branch / dirty / timestamp only. No paths (they embed the OS
     // username), no hostname — this ships to every browser that loads the app.
     builtAt: new Date().toISOString()
