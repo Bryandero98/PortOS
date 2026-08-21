@@ -51,6 +51,13 @@ let runtimeInstallInFlight = null;
 // never what a double-click meant.
 let runtimeSetupInFlight = false;
 
+// And for the model-id relaunch lane. Two providers can point at ONE
+// llama-server, so a second relaunch arriving mid-flight would stop the daemon
+// the first one just started and leave whichever finished last on the port —
+// with the first caller reporting a success that no longer describes anything
+// running. Single-flight for the same reason the setup lane above is.
+let serveModelInFlight = false;
+
 /**
  * Sanitize a provider object for client responses.
  * Strips apiKey (replaces with hasApiKey boolean) and redacts secretEnvVars
@@ -482,7 +489,14 @@ export function createPortOSProviderRoutes(aiToolkit) {
       throw new ServerError('This provider selects no specific model, so there is nothing to serve it as.', { status: 400, code: 'NO_DEFAULT_MODEL' });
     }
 
-    const result = await relaunchLlamaServerWithAlias(wanted);
+    if (serveModelInFlight) {
+      throw new ServerError('Another local-server relaunch is already running. Wait for it to finish.', { status: 409, code: 'SERVE_MODEL_IN_FLIGHT' });
+    }
+    serveModelInFlight = true;
+    // `relaunchLlamaServerWithAlias` resolves for every expected refusal, so
+    // this covers the unexpected throw — the lock must not survive it, or the
+    // route is dead until the process restarts.
+    const result = await relaunchLlamaServerWithAlias(wanted).finally(() => { serveModelInFlight = false; });
     // The daemon's launch line just changed under the readiness caches, and the
     // page polls them within seconds.
     resetProviderReadinessCache();
