@@ -61,6 +61,7 @@ import {
   probeMetalToolchain,
   missingBakeModulesLabel,
   appendMissingBakeModules,
+  resolveDegradedBakeRemedy,
 } from './trellis2.js';
 import {
   isTrellis2CudaInstalled,
@@ -100,14 +101,13 @@ export const TARGET_ADAPTERS = Object.freeze({
       const degradedBake = bake.quality === 'fallback';
       const missingModules = missingBakeModulesLabel(bake);
       const toolchain = degradedBake ? await probeMetalToolchain() : null;
-      // A degraded bake has two very different remedies, and the card must not
-      // offer the wrong one: when the Metal Toolchain is merely missing, Repair
-      // install fetches it and rebuilds (#3041); when only the Command Line Tools
-      // are active there is nothing PortOS can run, and the user has to install
-      // Xcode first.
-      const textureBake = toolchain?.blocker
-        ? { ...bake, repairable: false, blocker: toolchain.blocker, help: toolchain.hint }
-        : { ...bake, ...(degradedBake ? { repairable: true } : {}) };
+      // A degraded bake has two very different remedies, and the card must not offer
+      // the wrong one: when the Metal Toolchain is merely missing, Repair install
+      // fetches it and rebuilds (#3041); when only the Command Line Tools are active
+      // there is nothing PortOS can run, and the user has to install Xcode first. The
+      // install's own `verify` frame resolves it through the SAME helper, so the two
+      // lanes cannot name different fixes for one host state (#4742).
+      const textureBake = { ...bake, ...(resolveDegradedBakeRemedy(bake, toolchain) ?? {}) };
       return {
         fields: {
           textureBake,
