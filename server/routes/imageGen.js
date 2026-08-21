@@ -455,7 +455,7 @@ router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
     // schema's overlap with it: this object is what gets persisted and replayed
     // on every reconcile, so it must already be a body the provider accepts.
     const request = buildFederatedMediaRequest({ kind: 'image', params });
-    const { peer, request: negotiatedRequest, remoteMedia } = await prepareRemoteMediaJob({
+    const { peer, remoteMedia } = await prepareRemoteMediaJob({
       peerId: params.mediaProviderPeerId,
       kind: 'image',
       request,
@@ -477,11 +477,10 @@ router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
       kind: 'image',
       params: { ...jobParams, remoteMedia },
     });
-    const effectiveRequest = negotiatedRequest || request;
     return res.json(queuedImageResponse({
       ...queued,
       mode: null,
-      model: effectiveRequest.modelId,
+      model: request.modelId,
       mediaProviderPeerId: peer.id,
     }));
   }

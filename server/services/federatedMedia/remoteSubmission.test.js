@@ -45,36 +45,59 @@ describe('negotiateVideoConstraints', () => {
     expect(negotiateVideoConstraints({ numFrames: 40 }, {}).numFrames).toBe(40);
   });
 
-  it('snaps numFrames to the nearest discrete option when frameOptions is present', () => {
+  it('snaps numFrames down to the nearest discrete option when frameOptions is present', () => {
     const capability = {
       modelId: 'minimax_h3',
       frameOptions: [107, 124, 141, 158],
     };
 
-    expect(negotiateVideoConstraints({ numFrames: 50 }, capability).numFrames).toBe(107);
-    expect(negotiateVideoConstraints({ numFrames: 121 }, capability).numFrames).toBe(124);
+    expect(negotiateVideoConstraints({ numFrames: 121 }, capability).numFrames).toBe(107);
     expect(negotiateVideoConstraints({ numFrames: 124 }, capability).numFrames).toBe(124);
     expect(negotiateVideoConstraints({ numFrames: 130 }, capability).numFrames).toBe(124);
     expect(negotiateVideoConstraints({ numFrames: 200 }, capability).numFrames).toBe(158);
   });
 
-  it('snaps fps to the nearest option when fpsOptions is present', () => {
+  it('rejects when requested numFrames is smaller than the minimum frameOption', () => {
     const capability = {
       modelId: 'minimax_h3',
-      fpsOptions: [24, 25],
+      frameOptions: [107, 124, 141, 158],
     };
 
-    expect(negotiateVideoConstraints({ fps: 16 }, capability).fps).toBe(24);
-    expect(negotiateVideoConstraints({ fps: 30 }, capability).fps).toBe(25);
+    expect(() => negotiateVideoConstraints({ numFrames: 50 }, capability))
+      .toThrow(/cannot be satisfied/);
   });
 
-  it('floors frameStride at stride + 1 rather than emitting 1-frame video', () => {
+  it('snaps width and height to closest aspect ratio when resolutionOptions is present', () => {
     const capability = {
-      modelId: 'wan22_t2v_a14b',
-      frameStride: 4,
+      modelId: 'minimax_h3',
+      resolutionOptions: [
+        { label: '16:9', w: 1344, h: 768 },
+        { label: '9:16', w: 768, h: 1344 },
+      ],
     };
 
-    expect(negotiateVideoConstraints({ numFrames: 3 }, capability).numFrames).toBe(5);
+    const snapped = negotiateVideoConstraints({ width: 1280, height: 720 }, capability);
+    expect(snapped.width).toBe(1344);
+    expect(snapped.height).toBe(768);
+  });
+
+  it('tie-breaks equal aspect ratios by closest area and ignores out-of-bounds options', () => {
+    const capability = {
+      modelId: 'custom',
+      resolutionOptions: [
+        { label: '4k-out-of-bounds', w: 3840, h: 2160 },
+        { label: '1080p', w: 1920, h: 1080 },
+        { label: '720p', w: 1280, h: 720 },
+      ],
+    };
+
+    const snapped720 = negotiateVideoConstraints({ width: 1024, height: 576 }, capability);
+    expect(snapped720.width).toBe(1280);
+    expect(snapped720.height).toBe(720);
+
+    const snapped1080 = negotiateVideoConstraints({ width: 1800, height: 1012 }, capability);
+    expect(snapped1080.width).toBe(1920);
+    expect(snapped1080.height).toBe(1080);
   });
 
   it('rejects when requested numFrames is invalid (< 1)', () => {
