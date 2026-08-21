@@ -315,8 +315,9 @@ export default function PlayerController({
 
   // In exploration mode, Space is the jump key — claim it in the capture phase so it
   // never reaches the global voice push-to-talk hotkey (VoiceWidget listens for the
-  // same key on `window`). Only the keydown is claimed; the matching keyup just
-  // clears the held-key state, matching how the rig reads every other movement key.
+  // same key on `window`). Claiming the keydown is also what stops useKeyboardControls
+  // from recording the hold, hence the manual add here; the release needs no handler,
+  // because that keyup is NOT claimed and useKeyboardControls clears the key itself.
   useKeyCapture({
     enabled: active,
     onKeyDown: (e) => {
@@ -324,19 +325,11 @@ export default function PlayerController({
       keysRef.current.add(' ');
       return true;
     },
-    onKeyUp: (e) => {
-      if (e.code !== 'Space') return false;
-      keysRef.current.delete(' ');
-      return false;
-    },
   });
 
-  // Drop a held jump when exploration mode ends, so re-entering it does not start
-  // mid-jump from a keyup that fired after the listeners went away.
-  useEffect(() => {
-    if (!active) return undefined;
-    return () => { keysRef.current.delete(' '); };
-  }, [active, keysRef]);
+  // Drop a held jump when exploration mode ends — the keyup that would have cleared it
+  // can land after the mode switch, and the rig would resume mid-jump on re-entry.
+  useEffect(() => () => { keysRef.current.delete(' '); }, [active, keysRef]);
 
   useFrame((_, delta) => {
     if (!active) return;

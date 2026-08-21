@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, fireEvent, act } from '@testing-library/react';
 import * as THREE from 'three';
+import { installVoiceHotkeySpy } from '../../test/voiceHotkeySpy';
 
 // PlayerController is an r3f component, but its Space handling is plain DOM wiring. The
 // fiber hooks are stubbed so it can mount in jsdom without a WebGL canvas; rendering in
@@ -13,20 +14,10 @@ vi.mock('@react-three/fiber', () => ({
 const PlayerController = (await import('./PlayerController')).default;
 
 describe('PlayerController Space (jump) capture', () => {
-  // Stands in for VoiceWidget's app-global push-to-talk hotkey, which binds the same
-  // Space on `window` in the bubble phase.
-  let voiceHotkey;
+  const voiceHotkey = installVoiceHotkeySpy();
   let keysRef;
 
-  beforeEach(() => {
-    voiceHotkey = vi.fn();
-    window.addEventListener('keydown', voiceHotkey);
-    keysRef = { current: new Set() };
-  });
-
-  afterEach(() => {
-    window.removeEventListener('keydown', voiceHotkey);
-  });
+  beforeEach(() => { keysRef = { current: new Set() }; });
 
   const renderRig = (props = {}) => render(
     <PlayerController keysRef={keysRef} active cameraView="first" positions={new Map()} apps={[]} {...props} />,
@@ -36,14 +27,14 @@ describe('PlayerController Space (jump) capture', () => {
     renderRig();
 
     act(() => { fireEvent.keyDown(document.body, { key: ' ', code: 'Space' }); });
-    expect(keysRef.current.has(' ')).toBe(true);
-    expect(voiceHotkey).not.toHaveBeenCalled();
 
-    act(() => { fireEvent.keyUp(document.body, { key: ' ', code: 'Space' }); });
-    expect(keysRef.current.has(' ')).toBe(false);
+    expect(keysRef.current.has(' ')).toBe(true);
+    expect(voiceHotkey()).not.toHaveBeenCalled();
   });
 
   it('ignores Space typed into a text field', () => {
+    // The old guard read document.activeElement, so an un-focused field did not
+    // suppress the jump; the shared isEditableTarget reads the event target.
     const { container } = renderRig();
     const input = document.createElement('input');
     container.appendChild(input);
@@ -51,6 +42,18 @@ describe('PlayerController Space (jump) capture', () => {
     act(() => { fireEvent.keyDown(input, { key: ' ', code: 'Space' }); });
 
     expect(keysRef.current.has(' ')).toBe(false);
+  });
+
+  it('stands down while a dialog is open, so Space can activate its buttons', () => {
+    const { container } = renderRig();
+    const dialog = document.createElement('div');
+    dialog.setAttribute('aria-modal', 'true');
+    container.appendChild(dialog);
+
+    act(() => { fireEvent.keyDown(document.body, { key: ' ', code: 'Space' }); });
+
+    expect(keysRef.current.has(' ')).toBe(false);
+    expect(voiceHotkey()).toHaveBeenCalledTimes(1);
   });
 
   it('drops a held jump when exploration mode ends', () => {
@@ -73,6 +76,6 @@ describe('PlayerController Space (jump) capture', () => {
     act(() => { fireEvent.keyDown(document.body, { key: ' ', code: 'Space' }); });
 
     expect(keysRef.current.has(' ')).toBe(false);
-    expect(voiceHotkey).toHaveBeenCalledTimes(1);
+    expect(voiceHotkey()).toHaveBeenCalledTimes(1);
   });
 });

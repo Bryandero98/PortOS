@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router';
+import { installVoiceHotkeySpy } from '../test/voiceHotkeySpy';
 
 // Same stubbing strategy as OpenWorld.fastTravel.test.jsx: the 3D scene and the HUD are
 // replaced with inert divs so the page's keyboard WIRING can be exercised in jsdom.
@@ -50,10 +51,7 @@ const renderPage = () => render(
 );
 
 describe('OpenWorld playback transport keys', () => {
-  // Stands in for VoiceWidget's app-global push-to-talk hotkey, which binds the same
-  // Space on `window` in the bubble phase. If the transport ever stops CLAIMING the
-  // key in the capture phase, this spy fires and the mic opens mid-playback.
-  let voiceHotkey;
+  const voiceHotkey = installVoiceHotkeySpy();
 
   beforeEach(() => {
     playback.active = true;
@@ -61,12 +59,6 @@ describe('OpenWorld playback transport keys', () => {
     playback.step.mockClear();
     playback.togglePlay.mockClear();
     localStorage.clear();
-    voiceHotkey = vi.fn();
-    window.addEventListener('keydown', voiceHotkey);
-  });
-
-  afterEach(() => {
-    window.removeEventListener('keydown', voiceHotkey);
   });
 
   it('toggles play on Space without leaking the key to the global voice hotkey', () => {
@@ -75,7 +67,7 @@ describe('OpenWorld playback transport keys', () => {
     act(() => { fireEvent.keyDown(document.body, { key: ' ', code: 'Space' }); });
 
     expect(playback.togglePlay).toHaveBeenCalledTimes(1);
-    expect(voiceHotkey).not.toHaveBeenCalled();
+    expect(voiceHotkey()).not.toHaveBeenCalled();
   });
 
   it('claims Escape and the arrow keys too', () => {
@@ -87,7 +79,7 @@ describe('OpenWorld playback transport keys', () => {
 
     expect(playback.step.mock.calls).toEqual([[-1], [1]]);
     expect(playback.exit).toHaveBeenCalledTimes(1);
-    expect(voiceHotkey).not.toHaveBeenCalled();
+    expect(voiceHotkey()).not.toHaveBeenCalled();
   });
 
   it('lets unhandled keys through to app-global listeners', () => {
@@ -95,7 +87,7 @@ describe('OpenWorld playback transport keys', () => {
 
     act(() => { fireEvent.keyDown(document.body, { key: 'j' }); });
 
-    expect(voiceHotkey).toHaveBeenCalledTimes(1);
+    expect(voiceHotkey()).toHaveBeenCalledTimes(1);
     expect(playback.togglePlay).not.toHaveBeenCalled();
   });
 
@@ -112,7 +104,8 @@ describe('OpenWorld playback transport keys', () => {
 
   it('yields the transport keys to an open dialog layer', () => {
     // The settings drawer renders aria-modal and closes on its own Escape handler; the
-    // transport must not swallow that keystroke out from under it.
+    // transport must not swallow that keystroke out from under it (useKeyCapture's
+    // enabledInDialog default).
     const { container } = renderPage();
     const drawer = document.createElement('div');
     drawer.setAttribute('aria-modal', 'true');
@@ -123,7 +116,7 @@ describe('OpenWorld playback transport keys', () => {
 
     expect(playback.exit).not.toHaveBeenCalled();
     expect(playback.togglePlay).not.toHaveBeenCalled();
-    expect(voiceHotkey).toHaveBeenCalledTimes(2);
+    expect(voiceHotkey()).toHaveBeenCalledTimes(2);
   });
 
   it('binds nothing while playback is inactive', () => {
@@ -133,6 +126,6 @@ describe('OpenWorld playback transport keys', () => {
     act(() => { fireEvent.keyDown(document.body, { key: ' ', code: 'Space' }); });
 
     expect(playback.togglePlay).not.toHaveBeenCalled();
-    expect(voiceHotkey).toHaveBeenCalledTimes(1);
+    expect(voiceHotkey()).toHaveBeenCalledTimes(1);
   });
 });

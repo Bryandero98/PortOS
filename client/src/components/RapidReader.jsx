@@ -54,6 +54,7 @@ export default function RapidReader({
   focalColor = '#ef4444',
   autoPlay = false,
   compact = false,
+  inDialog = false,
   onClose,
   onComplete
 }) {
@@ -104,6 +105,7 @@ export default function RapidReader({
   // listener (notably VoiceWidget's hotkey, which also binds Space); keys we
   // do not handle pass through untouched.
   useKeyCapture({
+    enabledInDialog: inDialog,
     onKeyDown: (e) => {
       if (e.key === ' ') setPlaying((p) => !p);
       else if (e.key === 'ArrowLeft') setIdx((i) => Math.max(0, i - 1));
@@ -293,14 +295,10 @@ function FocalSlot({ chunk, focalColor }) {
 }
 
 // Modal wrapper — full-screen overlay so any page can pop the reader without
-// leaving its context. Closes on Esc or backdrop click. The inner RapidReader
-// uses useKeyCapture, a capture-phase window keydown listener (so Space / arrow
-// keys can be claimed before VoiceWidget sees them) that, on Esc, calls onClose
-// and then preventDefault() + stopImmediatePropagation(). Modal's window
-// listener is bubble-phase, so it never even reaches the same event — the
-// capture-phase stopImmediatePropagation cancels propagation entirely; even
-// if it did reach Modal, `defaultPrevented` would suppress the close
-// dispatch. RapidReader owns Esc unilaterally inside this wrapper.
+// leaving its context. `inDialog` is what lets the reader keep its keys in here:
+// its useKeyCapture claim otherwise stands down while an aria-modal layer is open,
+// and Modal IS that layer. The claim runs in the capture phase, so Esc reaches
+// onClose and never Modal's own bubble-phase close — the reader owns Esc here.
 export function RapidReaderModal({ open, text, title, onClose, ...readerProps }) {
   return (
     <Modal
@@ -324,7 +322,7 @@ export function RapidReaderModal({ open, text, title, onClose, ...readerProps })
           <X size={18} />
         </button>
       </div>
-      <RapidReader text={text} onClose={onClose} autoPlay {...readerProps} />
+      <RapidReader text={text} onClose={onClose} autoPlay inDialog {...readerProps} />
     </Modal>
   );
 }
