@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { StrictMode } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import MusicGenPanel from './MusicGenPanel';
@@ -69,6 +69,13 @@ describe('MusicGenPanel', () => {
     vi.clearAllMocks();
     api.getActiveProcessing.mockResolvedValue({ jobs: [] });
     api.getInstances.mockResolvedValue({ peers: [] });
+  });
+
+  // `clearAllMocks` resets calls but leaves a spy installed. A test that pins
+  // Date.now and then fails before restoring it would leave the clock frozen
+  // for every test after it, turning one failure into a cascade.
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('does not show a missing-runtime warning immediately for an empty saved track', async () => {
@@ -305,6 +312,40 @@ describe('MusicGenPanel', () => {
     expect(requestBody).not.toHaveProperty('lyrics');
   });
 
+  // The usable branch has no remedy text behind it, so without an assertion
+  // here collapsing it back to `help || 'requires a ready peer'` would print
+  // the not-ready sentence beside an enabled button and still ship green.
+  it('reports a usable peer’s queue, and says it is ready when there is nothing to report', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    const peer = (queue) => ({
+      id: 'peer-example',
+      name: 'Example GPU',
+      status: 'online',
+      enabled: true,
+      mediaProvider: { enabled: true, audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }] },
+      mediaProviderStatus: {
+        state: 'ready',
+        checkedAt: new Date().toISOString(),
+        freshUntil: new Date(Date.now() + 60_000).toISOString(),
+        snapshot: { queue, capabilities: [] },
+      },
+    });
+
+    api.getInstances.mockResolvedValue({
+      peers: [peer({ accepting: true, running: 0, queued: 0, totalActive: 1, maxQueuedJobs: 4 })],
+    });
+    const { unmount } = render(<MusicGenPanel track={{ id: 'track-1' }} prompt="p" />);
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    expect(screen.getByText(/1\/4 shared slots active/)).toBeInTheDocument();
+    unmount();
+
+    // Same peer, but a queue block with no reportable counts at all.
+    api.getInstances.mockResolvedValue({ peers: [peer({ accepting: true })] });
+    render(<MusicGenPanel track={{ id: 'track-2' }} prompt="p" />);
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    expect(screen.getByText('Peer is ready.')).toBeInTheDocument();
+  });
+
   // `state` is the provider's verdict on its own surface, so a peer switched off
   // inside its freshness window still reads `ready`. Showing its queue there
   // suppressed the one line explaining why Generate was disabled.
@@ -409,7 +450,6 @@ describe('MusicGenPanel', () => {
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/capacity snapshot expired/i)));
     expect(api.generateMusic).not.toHaveBeenCalled();
-    Date.now.mockRestore();
   });
 
   // The stored probe keeps saying `ready` long after the server would refuse

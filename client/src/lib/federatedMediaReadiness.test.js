@@ -273,13 +273,17 @@ describe('summarizePeerMediaQueue', () => {
 
   // The provider omits an idle kind, but a build that sent one must not add a
   // segment saying nothing.
+  // Asserted as an exact array: `toContain` on an array is element identity,
+  // not substring, so `.not.toContain('audio')` would pass against a segment
+  // reading 'audio 0 running' and verify nothing.
   it('omits a kind reporting no work', () => {
     expect(summarizePeerMediaQueue(queue({
       byKind: { audio: { running: 0, queued: 0 }, image: { running: 2, queued: 0 } },
-    }))).toContain('image 2 running');
-    expect(summarizePeerMediaQueue(queue({
-      byKind: { audio: { running: 0, queued: 0 } },
-    }))).not.toContain('audio');
+    }))).toEqual([
+      '2/4 shared slots active',
+      'image 2 running',
+      'federated 1 running, 1 queued',
+    ]);
   });
 
   it('reports nothing at all when the queue block is missing', () => {
