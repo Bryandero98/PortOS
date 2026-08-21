@@ -1,0 +1,231 @@
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+const TEST_DATA_ROOT = mkdtempSync(join(tmpdir(), 'fableloom-weave-test-'));
+
+vi.mock('../../lib/fileUtils.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    PATHS: { ...actual.PATHS, data: TEST_DATA_ROOT },
+  };
+});
+
+const runStagedLLM = vi.hoisted(() => vi.fn());
+vi.mock('../../lib/stageRunner.js', () => ({ runStagedLLM }));
+
+const getUniverseMock = vi.hoisted(() => vi.fn(async () => null));
+vi.mock('../universeBuilder.js', () => ({ getUniverse: getUniverseMock }));
+
+const { createLoom, addEpisode, addNode, updateNode, getLoom } = await import('./records.js');
+const { _resetFableLoomBackend } = await import('./store.js');
+const {
+  branchNode, buildCanonDigest, mapGeneratedGraph, playTurn, reviewEpisode, weaveEpisode,
+} = await import('./weave.js');
+
+beforeEach(() => {
+  rmSync(join(TEST_DATA_ROOT, 'fableloom'), { recursive: true, force: true });
+  _resetFableLoomBackend();
+  runStagedLLM.mockReset();
+  getUniverseMock.mockReset().mockResolvedValue(null);
+});
+
+afterAll(() => {
+  rmSync(TEST_DATA_ROOT, { recursive: true, force: true });
+});
+
+const setup = async () => {
+  const loom = await createLoom({ name: 'The Hollow Crown', universeId: 'uni-1' });
+  const withEp = await addEpisode(loom.id, { title: 'Pilot', synopsis: 'A crown wakes.' });
+  return { loomId: loom.id, episodeId: withEp.episodes[0].id };
+};
+
+const generatedGraph = () => ({
+  startKey: 's1',
+  nodes: [
+    { key: 's1', title: 'The Gate', prose: 'You stand before it.', imagePrompt: 'a vast gate at dusk', transitions: [
+      { targetKey: 's2', intent: 'enter', triggers: ['go in'], description: 'Step through.' },
+      { targetKey: 's3', intent: 'walk away', triggers: [], description: 'Leave.' },
+      { targetKey: 'missing', intent: 'dangling — dropped' },
+    ] },
+    { key: 's2', title: 'Inside', prose: 'Torchlight.', transitions: [{ targetKey: 's3', intent: 'give up' }] },
+    { key: 's3', title: 'The Road Home', isEnding: true, endingLabel: 'Turned back', transitions: [] },
+  ],
+});
+
+describe('mapGeneratedGraph', () => {
+  it('mints server ids, remaps targets, and drops unknown-target transitions', () => {
+    const { nodes, startNodeId } = mapGeneratedGraph(generatedGraph());
+    expect(nodes).toHaveLength(3);
+    expect(nodes.every((n) => n.id.startsWith('node-'))).toBe(true);
+    expect(startNodeId).toBe(nodes[0].id);
+    expect(nodes[0].transitions).toHaveLength(2);
+    expect(nodes[0].transitions.map((t) => t.targetNodeId)).toEqual([nodes[1].id, nodes[2].id]);
+  });
+
+  it('rejects graphs with too few scenes or no endings', () => {
+    expect(() => mapGeneratedGraph({ nodes: [{ key: 's1' }] })).toThrowError(/too few scenes/);
+    expect(() => mapGeneratedGraph({
+      startKey: 's1',
+      nodes: [{ key: 's1', transitions: [] }, { key: 's2', transitions: [] }],
+    })).toThrowError(/no endings/);
+  });
+});
+
+describe('weaveEpisode', () => {
+  it('replaces the episode graph from the LLM response', async () => {
+    const { loomId, episodeId } = await setup();
+    runStagedLLM.mockResolvedValue({ content: generatedGraph(), runId: 'run-1' });
+
+    const { loom, runId } = await weaveEpisode(loomId, episodeId, { guidance: 'darker' });
+    expect(runId).toBe('run-1');
+    const ep = loom.episodes[0];
+    expect(ep.nodes).toHaveLength(3);
+    expect(ep.startNodeId).toBe(ep.nodes[0].id);
+
+    const [stage, variables] = runStagedLLM.mock.calls[0];
+    expect(stage).toBe('fableloom-weave-episode');
+    expect(variables.storyContext).toContain('The Hollow Crown');
+    expect(variables.guidance).toBe('darker');
+  });
+
+  it('refuses to clobber a non-empty episode without replace', async () => {
+    const { loomId, episodeId } = await setup();
+    await addNode(loomId, episodeId, { title: 'Handwritten' });
+    await expect(weaveEpisode(loomId, episodeId, {})).rejects.toMatchObject({ code: 'EPISODE_NOT_EMPTY' });
+    expect(runStagedLLM).not.toHaveBeenCalled();
+
+    runStagedLLM.mockResolvedValue({ content: generatedGraph(), runId: 'run-2' });
+    const { loom } = await weaveEpisode(loomId, episodeId, { replace: true });
+    expect(loom.episodes[0].nodes).toHaveLength(3);
+  });
+});
+
+describe('branchNode', () => {
+  it('adds new scenes wired as transitions from the source node', async () => {
+    const { loomId, episodeId } = await setup();
+    const withNode = await addNode(loomId, episodeId, { title: 'The Gate', prose: 'You stand before it.' });
+    const nodeId = withNode.episodes[0].nodes[0].id;
+
+    runStagedLLM.mockResolvedValue({
+      content: {
+        branches: [
+          { intent: 'scale the wall', triggers: ['climb'], description: 'Up and over.', node: { title: 'The Wall', prose: 'Cold stone.' } },
+          { intent: 'bribe the guard', node: { title: 'A Deal', prose: 'He smiles.', isEnding: true, endingLabel: 'Bought passage' } },
+          'garbage',
+        ],
+      },
+      runId: 'run-3',
+    });
+
+    const { loom } = await branchNode(loomId, episodeId, nodeId, { branchCount: 2 });
+    const ep = loom.episodes[0];
+    expect(ep.nodes).toHaveLength(3);
+    const source = ep.nodes.find((n) => n.id === nodeId);
+    expect(source.transitions.map((t) => t.intent)).toEqual(['scale the wall', 'bribe the guard']);
+    const ending = ep.nodes.find((n) => n.title === 'A Deal');
+    expect(ending).toMatchObject({ isEnding: true, endingLabel: 'Bought passage' });
+  });
+
+  it('rejects when the model returns no usable branches', async () => {
+    const { loomId, episodeId } = await setup();
+    const withNode = await addNode(loomId, episodeId, { title: 'A' });
+    runStagedLLM.mockResolvedValue({ content: { branches: [] }, runId: 'r' });
+    await expect(branchNode(loomId, episodeId, withNode.episodes[0].nodes[0].id, {}))
+      .rejects.toMatchObject({ code: 'AI_RESPONSE_INVALID' });
+  });
+});
+
+describe('reviewEpisode', () => {
+  it('combines structural analysis with sanitized LLM findings', async () => {
+    const { loomId, episodeId } = await setup();
+    const withNode = await addNode(loomId, episodeId, { title: 'Lone scene' }); // dead end → structural error
+    const nodeId = withNode.episodes[0].nodes[0].id;
+    runStagedLLM.mockResolvedValue({
+      content: {
+        summary: 'Thin.',
+        findings: [
+          { severity: 'high', nodeId, problem: 'Only one scene', suggestion: 'Branch it' },
+          { severity: 'nonsense', nodeId: 'node-unknown', problem: 'Vague', suggestion: '' },
+          { problem: null },
+        ],
+      },
+      runId: 'run-4',
+    });
+
+    const result = await reviewEpisode(loomId, episodeId, {});
+    expect(result.structural.stats.errorCount).toBeGreaterThan(0);
+    expect(result.review.summary).toBe('Thin.');
+    expect(result.review.findings).toEqual([
+      { severity: 'high', nodeId, problem: 'Only one scene', suggestion: 'Branch it' },
+      { severity: 'medium', nodeId: null, problem: 'Vague', suggestion: '' },
+    ]);
+  });
+});
+
+describe('playTurn', () => {
+  const playSetup = async () => {
+    const { loomId, episodeId } = await setup();
+    let updated = await addNode(loomId, episodeId, { title: 'The Gate', prose: 'You stand before it.' });
+    const gateId = updated.episodes[0].nodes[0].id;
+    updated = await addNode(loomId, episodeId, { title: 'Inside', prose: 'Torchlight.', fromNodeId: gateId, fromIntent: 'enter the gate' });
+    const insideId = updated.episodes[0].nodes.find((n) => n.title === 'Inside').id;
+    await updateNode(loomId, episodeId, insideId, { isEnding: true, endingLabel: 'Within' });
+    const gate = (await getLoom(loomId)).episodes[0].nodes.find((n) => n.id === gateId);
+    return { loomId, episodeId, gate, insideId };
+  };
+
+  it('moves through the matched transition and flags endings', async () => {
+    const { loomId, episodeId, gate, insideId } = await playSetup();
+    runStagedLLM.mockResolvedValue({
+      content: { action: 'move', transitionId: gate.transitions[0].id, narration: 'You step through.' },
+    });
+
+    const result = await playTurn(loomId, episodeId, { nodeId: gate.id, message: 'go inside' });
+    expect(result).toMatchObject({
+      action: 'move', narration: 'You step through.', ended: true,
+    });
+    expect(result.node).toMatchObject({ id: insideId, isEnding: true, endingLabel: 'Within' });
+    // Reader-facing shape: choices carry intents only, no trigger phrases.
+    expect(result.node.choices).toEqual([]);
+
+    const [stage, variables] = runStagedLLM.mock.calls[0];
+    expect(stage).toBe('fableloom-play-turn');
+    expect(variables.readerMessage).toBe('go inside');
+    expect(variables.choicesDigest).toContain('enter the gate');
+  });
+
+  it('stays in place when the model declines or names an invalid transition', async () => {
+    const { loomId, episodeId, gate } = await playSetup();
+    runStagedLLM.mockResolvedValue({ content: { action: 'move', transitionId: 'tr-bogus', narration: 'Hmm.' } });
+    const result = await playTurn(loomId, episodeId, { nodeId: gate.id, message: 'fly to the moon' });
+    expect(result).toMatchObject({ action: 'stay', ended: false });
+    expect(result.node.id).toBe(gate.id);
+  });
+
+  it('short-circuits on ending nodes without calling the LLM', async () => {
+    const { loomId, episodeId, insideId } = await playSetup();
+    const result = await playTurn(loomId, episodeId, { nodeId: insideId, message: 'now what' });
+    expect(result).toMatchObject({ action: 'stay', ended: true });
+    expect(runStagedLLM).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildCanonDigest', () => {
+  it('renders linked-universe canon and returns empty for unlinked looms', async () => {
+    getUniverseMock.mockResolvedValue({
+      characters: [{ name: 'Mara', appearance: 'silver-eyed' }],
+      places: [{ name: 'The Hollow' }],
+      objects: [],
+    });
+    const digest = await buildCanonDigest({ universeId: 'uni-1' });
+    expect(digest).toContain('Characters:');
+    expect(digest).toContain('- Mara');
+    expect(digest).toContain('Places:');
+    expect(digest).not.toContain('Objects:');
+
+    expect(await buildCanonDigest({ universeId: null })).toBe('');
+  });
+});

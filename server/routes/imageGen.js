@@ -157,6 +157,17 @@ const generateSchema = z.object({
     analysisId: z.string().min(1).max(200),
     sceneId: z.string().min(1).max(200),
   }).optional(),
+  // FableLoom scene render. When present, the mediaJobQueue completion hook
+  // (`fableLoomSceneImageHook`) files the finished render onto that loom
+  // episode's scene node — durably, even if the editor unmounted mid-render.
+  // Only the async local/Codex lanes ride the queue; the synchronous external
+  // SD-API lane returns the filename inline and the client PATCHes the node.
+  // Rides into job.params untouched via `...params`. JSON-only.
+  fableLoom: z.object({
+    loomId: z.string().min(1).max(200),
+    episodeId: z.string().min(1).max(200),
+    nodeId: z.string().min(1).max(200),
+  }).optional(),
   // Music Video scene reference-frame render (#1760 Phase 1b). When present, the
   // mediaJobQueue completion hook (`musicVideoSceneImageHook`) files the finished
   // render onto the project scene's `referenceImageId` — durably, even if the

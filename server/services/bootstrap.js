@@ -117,6 +117,7 @@ import { initMortalLoomStore } from './mortalLoomStore.js';
 import { initUniverseBuilderCollectionHook } from './universeBuilderCollectionHook.js';
 import { initCatalogImageAttachHook } from './catalogImageAttachHook.js';
 import { initWritersRoomSceneImageHook } from './writersRoomSceneImageHook.js';
+import { initFableLoomSceneImageHook } from './fableLoomSceneImageHook.js';
 import { initMusicVideoSceneImageHook } from './musicVideoSceneImageHook.js';
 import { initMusicVideoSceneVideoHook } from './musicVideoSceneVideoHook.js';
 import { initCreativeDirectorMusicBedHook } from './creativeDirectorMusicBedHook.js';
@@ -477,6 +478,9 @@ const initMediaJobDependentHooks = () => {
   // Writers-Room scene-image hook — durably files a queued storyboard render
   // onto its analysis snapshot + work collection on completion (#1363).
   initWritersRoomSceneImageHook();
+  // FableLoom scene-image hook — durably files a queued scene render onto its
+  // loom episode's node on completion, even if the editor unmounted mid-render.
+  initFableLoomSceneImageHook();
   // Music Video scene-image hook — durably files a queued reference-frame
   // render onto its project scene's `referenceImageId` on completion, even if
   // the director board unmounted mid-render (#1760 Phase 1b).

@@ -988,6 +988,34 @@
       "model": "default",
       "returnsJson": true,
       "variables": []
+    },
+    "fableloom-weave-episode": {
+      "name": "FableLoom — Weave Episode Graph",
+      "description": "Generates a complete branching-narrative episode as a directed graph of scenes: an opening, 2–4 intent-labeled paths per scene (with example reader phrasings), and multiple distinct endings. Grounded in the loom's premise plus the linked universe's canon. Returns { startKey, nodes[] } with author-stable keys the service maps onto server-minted node ids.",
+      "model": "heavy",
+      "returnsJson": true,
+      "variables": []
+    },
+    "fableloom-branch-node": {
+      "name": "FableLoom — Branch a Scene",
+      "description": "Grows new paths out of ONE scene of a branching-narrative episode: each branch is a new scene plus the reader intent (label + example phrasings + spoiler-safe description) that leads to it, kept distinct from the scene's existing paths. Returns { branches[] }.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
+    },
+    "fableloom-play-turn": {
+      "name": "FableLoom — Play Turn",
+      "description": "Narrates one turn of an interactive read-through: matches the reader's free-text message against the current scene's intent-labeled paths (move) or responds in-world without leaving the scene (stay). Returns { action, transitionId?, narration }.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
+    },
+    "fableloom-review": {
+      "name": "FableLoom — Episode Review",
+      "description": "Story-editor critique of a branching episode's narrative layer — intent clarity, branch coherence, ending payoff, scene craft, canon fit — layered over the deterministic graph checks (which run separately and are passed in so the model doesn't repeat them). Returns { summary, findings[] } with node-anchored findings.",
+      "model": "heavy",
+      "returnsJson": true,
+      "variables": []
     }
   }
 }
