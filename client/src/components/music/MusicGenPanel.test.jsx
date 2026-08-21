@@ -305,6 +305,42 @@ describe('MusicGenPanel', () => {
     expect(requestBody).not.toHaveProperty('lyrics');
   });
 
+  // `state` is the provider's verdict on its own surface, so a peer switched off
+  // inside its freshness window still reads `ready`. Showing its queue there
+  // suppressed the one line explaining why Generate was disabled.
+  it('explains a switched-off peer instead of showing its last queue reading', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    api.getInstances.mockResolvedValue({
+      peers: [{
+        id: 'peer-example',
+        name: 'Example GPU',
+        status: 'online',
+        enabled: false,
+        mediaProvider: { enabled: true, audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }] },
+        mediaProviderStatus: {
+          state: 'ready',
+          checkedAt: new Date().toISOString(),
+          freshUntil: new Date(Date.now() + 60_000).toISOString(),
+          snapshot: {
+            queue: { accepting: true, running: 0, queued: 0, totalActive: 0, maxQueuedJobs: 4 },
+            capabilities: [{
+              kind: 'audio', engine: 'minimax-music3', engineName: 'MiniMax Music 3', modelId: 'minimax-music3',
+              modelName: 'MiniMax Music 3', ready: true, autoDuration: false, lyrics: true,
+              minDurationSec: 10, maxDurationSec: 300, defaultDurationSec: 60,
+            }],
+          },
+        },
+      }],
+    });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" />);
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+
+    expect(screen.getByRole('button', { name: /^generate$/i })).toBeDisabled();
+    expect(screen.getByText(/peer connection is switched off/i)).toBeInTheDocument();
+    expect(screen.queryByText(/shared slots active/i)).not.toBeInTheDocument();
+  });
+
   // A capacity window expires on the clock, not on a state change, so between
   // polls the button can still be enabled against a peer that has gone stale.
   it('refuses at click time when the window expired since the last render', async () => {

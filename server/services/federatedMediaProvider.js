@@ -353,9 +353,11 @@ async function capabilitiesForKind(kind, config, { pythonPath = null } = {}) {
 // so the lane a submission lands on is decided by its kind alone. The queue
 // answers how wide that lane is; the minimum across the negotiated kinds is the
 // fail-closed reading if two kinds ever route differently.
-const federatedLaneConcurrency = (kinds) => Math.min(
+// Serialized is the fail-closed answer for an empty kind list: Math.min() over
+// nothing is Infinity, which serializes to null and reads as "unknown".
+const federatedLaneConcurrency = (kinds) => (kinds.length === 0 ? 1 : Math.min(
   ...kinds.map((kind) => laneConcurrencyFor({ kind, params: {} })),
-);
+));
 
 /**
  * Jobs occupying this machine's own generation lanes, and whether another fits.

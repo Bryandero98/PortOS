@@ -13,7 +13,7 @@ const state = vi.hoisted(() => ({
   imageModels: [],
   videoModels: [],
   cachedRepos: new Set(),
-  cloudLaneLimit: 3,
+  laneWidthByKind: {},
 }));
 
 vi.mock('./settings.js', () => ({
@@ -54,9 +54,10 @@ vi.mock('./musicEngineCapabilities.js', () => ({
 
 vi.mock('./mediaJobQueue/index.js', () => ({
   listJobs: vi.fn(() => state.jobs),
-  // Mirrors the real lane routing: a federated job never sets a cloud `mode`,
-  // so every kind this contract carries lands on the serialized GPU lane.
-  laneConcurrencyFor: vi.fn((job) => (job?.params?.mode ? state.cloudLaneLimit : 1)),
+  // Widths deliberately differ per kind so a test can tell a minimum from a sum
+  // or a max; the real queue routes every federated kind to the same lane, but
+  // that is the thing under test, not a premise of it.
+  laneConcurrencyFor: vi.fn((job) => state.laneWidthByKind[job?.kind] ?? 1),
   isRemoteMediaJob: (job) => job?.kind === 'audio' && job.params?.remoteMedia !== undefined,
   getJob: vi.fn((id) => state.jobs.find((job) => job.id === id) || null),
   enqueueJob: vi.fn(({ kind, owner, params }) => {
@@ -87,7 +88,7 @@ import {
   submitFederatedMediaJob,
   __resetFederatedMediaProviderForTests,
 } from './federatedMediaProvider.js';
-import { enqueueJob } from './mediaJobQueue/index.js';
+import { enqueueJob, laneConcurrencyFor } from './mediaJobQueue/index.js';
 import { PATHS, sha256Text } from '../lib/fileUtils.js';
 import { canonicalStringify } from '../lib/objects.js';
 
@@ -155,7 +156,7 @@ beforeEach(() => {
   state.imageModels = [];
   state.videoModels = [];
   state.cachedRepos = new Set();
-  state.cloudLaneLimit = 3;
+  state.laneWidthByKind = { audio: 1, image: 1, video: 1 };
   __resetFederatedMediaProviderForTests();
 });
 
@@ -215,11 +216,21 @@ describe('federated media provider capacity and idempotency', () => {
 
   // The bug this replaced: summing every local lane told an audio-only provider
   // it "runs 4 at a time" because the parallel cloud-CLI lane is wide, when its
-  // music renders serialize one at a time.
-  it('reports the lane a federated job actually lands on, not a whole-machine sum', async () => {
-    state.cloudLaneLimit = 10;
-    const status = await getFederatedMediaProviderStatus(config());
+  // music renders serialize one at a time. Widths differ per kind here so a sum
+  // (12), a max (10), and the fail-closed minimum (1) are all distinguishable.
+  it('reports the narrowest lane a negotiated kind lands on, never a sum or a max', async () => {
+    state.laneWidthByKind = { audio: 1, image: 10, video: 1 };
+    const status = await getFederatedMediaProviderStatus(config(), { kinds: ['audio', 'image', 'video'] });
     expect(status.queue.concurrency).toBe(1);
+    // And it asks about the job shape the provider actually enqueues: adding a
+    // cloud `mode` would route the probe to a lane no federated job uses.
+    expect(laneConcurrencyFor).toHaveBeenCalledWith({ kind: 'image', params: {} });
+  });
+
+  it('reports the width of the one negotiated kind when only one was asked for', async () => {
+    state.laneWidthByKind = { audio: 4, image: 1, video: 1 };
+    const status = await getFederatedMediaProviderStatus(config());
+    expect(status.queue.concurrency).toBe(4);
   });
 
   it('breaks the shared queue down by federated kind, excluding outgoing proxy jobs', async () => {
@@ -238,9 +249,13 @@ describe('federated media provider capacity and idempotency', () => {
       audio: { running: 1, queued: 1 },
       image: { running: 0, queued: 1 },
     });
-    // The training job holds a lane but has no bucket, which is why byKind
-    // need not sum to totalActive.
-    expect(status.queue.totalActive).toBe(4);
+    // byKind is machine-wide while these are the federated share, counted in
+    // the same pass — only job 'a' is owned by a federated caller. The training
+    // job holds a lane but has no bucket, which is why byKind need not sum to
+    // totalActive.
+    expect(status.queue).toMatchObject({
+      providerActive: 1, running: 1, queued: 0, totalActive: 4,
+    });
   });
 
   // Reporting image/video occupancy to a consumer that negotiated audio only

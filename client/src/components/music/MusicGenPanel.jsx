@@ -544,7 +544,7 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
             </select>
           </label>
           <p className="text-[11px] text-gray-400">
-            {remoteReadiness?.state === 'ready' && remoteQueueSegments.length > 0
+            {remoteReadiness?.usable && remoteQueueSegments.length > 0
               ? remoteQueueSegments.join(' · ')
               : remoteReadiness?.help
                 || 'Remote generation requires a ready, authenticated peer with fresh capacity.'}
