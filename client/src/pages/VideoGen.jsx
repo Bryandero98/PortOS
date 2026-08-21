@@ -1193,6 +1193,7 @@ export default function VideoGen() {
                     const add = triggers.join(', ');
                     return p && p.trim() ? `${p}, ${add}` : add;
                   })}
+                  prompt={prompt}
                   disabled={generating}
                 />
               </div>

@@ -88,6 +88,25 @@ export const readSidecar = async (filename) => {
   return isPlainObject(parsed) ? parsed : null;
 };
 
+// Read the `triggerWords` of several LoRAs at once, keyed by basename — the
+// input to the render-time trigger weave (`lib/loraTriggers.js`, #4665).
+// `filenames` may mix bare basenames (the current client surface) and absolute
+// paths (legacy sidecar replays); both collapse to the basename key. A LoRA
+// with no sidecar, or a legacy sidecar predating `triggerWords`, simply gets no
+// entry, so the weave is a no-op for it rather than an error.
+export const readTriggerWordsByFilename = async (filenames) => {
+  const names = [...new Set(
+    (Array.isArray(filenames) ? filenames : [])
+      .filter((f) => typeof f === 'string' && f)
+      .map((f) => basename(f)),
+  )];
+  if (!names.length) return {};
+  const sidecars = await Promise.all(names.map((n) => readSidecar(n)));
+  return Object.fromEntries(
+    names.map((n, i) => [n, sidecars[i]?.triggerWords]).filter(([, words]) => Array.isArray(words)),
+  );
+};
+
 // Validate a basename so it can't escape PATHS.loras. Delegates to the
 // shared `assertSafeFilename` helper in fileUtils.js (which also handles
 // gallery .png assertions). Substring `..` is allowed because

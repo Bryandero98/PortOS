@@ -41,6 +41,8 @@ const IS_WIN = process.platform === 'win32';
 
 import { getImageModels, isFlux2, isErnie, isHiDream, isQwen } from '../../lib/mediaModels.js';
 import { usesDiffusersRunner, flux2Bf16BaseRepo } from '../../lib/runners.js';
+import { weaveLoraTriggers } from '../../lib/loraTriggers.js';
+import { readTriggerWordsByFilename } from '../loras.js';
 
 // Read the registry lazily — callers below hit getImageModels() at request
 // time. A prior `IMAGE_MODELS = Object.fromEntries(getImageModels()...)`
@@ -298,6 +300,9 @@ const clampStrength01 = (raw, fallback) => {
  *   (production passes `resolveImageInputPath`).
  * - `loraExists(absPath)` — whether a prefix-checked LoRA path exists on disk
  *   (production passes `existsSync`).
+ * - `loraTriggerWords` — `{ [loraBasename]: string[] }` read from the LoRA
+ *   sidecars by `generateImage`, so the trigger-word weave (#4665) needs no I/O
+ *   of its own.
  *
  * `meta` is the exact object `generateImage` persists as the `<jobId>.metadata.json`
  * sidecar AND spreads into the in-memory job + activeJob snapshots, so the
@@ -318,6 +323,16 @@ export function buildSidecarMeta({
   loraFilenames = [],
   loraPaths = [],
   loraScales = [],
+  // LoRA trigger-word weaving (#4665). `loraTriggerWords` maps a LoRA basename
+  // to its sidecar `triggerWords` array; `generateImage` reads the sidecars and
+  // passes the map so this stays pure. Keyed rather than positional because the
+  // valid-LoRA order is only known after the prefix-check below.
+  loraTriggerWords = null,
+  // Opt-out for callers that already wove the activation tokens into `prompt`
+  // themselves — the comic/visual pipeline builds a trigger clause from
+  // `applyCharacterLorasToRender` before enqueueing, and appending again would
+  // double-weight the token.
+  weaveTriggerWords = true,
   initImagePath = null,
   initImageStrength = null,
   referenceImagePaths = [],
@@ -424,8 +439,25 @@ export function buildSidecarMeta({
     meta.regenSteps = actualSteps;
     meta.regenModelId = modelId;
   }
+  // Weave each selected LoRA's activation token into the prompt that actually
+  // reaches the runner (#4665). Provenance stays honest: `meta.prompt` remains
+  // the user's own text, so a Remix re-derives triggers from whatever LoRAs are
+  // selected at THAT time instead of compounding this render's clause. The
+  // render-time text and what was added are recorded alongside it, and only when
+  // something was actually appended — an un-woven render's sidecar stays
+  // byte-identical to every sidecar written before this feature.
+  const { prompt: wovenPrompt, added: addedTriggerWords } = weaveTriggerWords
+    ? weaveLoraTriggers(prompt, validLoraFilenames.map((f) => loraTriggerWords?.[f]))
+    : { prompt, added: [] };
+  const renderPrompt = addedTriggerWords.length ? wovenPrompt : prompt;
+  if (addedTriggerWords.length) {
+    meta.renderPrompt = renderPrompt;
+    meta.addedTriggerWords = addedTriggerWords;
+  }
   return {
     meta,
+    renderPrompt,
+    addedTriggerWords,
     actualSeed,
     actualSteps,
     actualGuidance,
@@ -459,7 +491,7 @@ export function resolveOutputPlacement(outputTarget) {
   return { outputDir, skipSidecar, isGallery };
 }
 
-export async function generateImage({ pythonPath, prompt = '', negativePrompt = '', modelId = LOCAL_IMAGEGEN_DEFAULT_MODEL, width = 1024, height = 1024, steps, guidance, seed, quantize = '8', loraFilenames = [], loraPaths = [], loraScales = [], initImagePath = null, initImageStrength = null, referenceImagePaths = [], referenceImageStrengths = [], jobId: providedJobId = null, cleanC2PA = false, denoise = false, regenOf = null, upscaleTo = null, outputTarget = null }) {
+export async function generateImage({ pythonPath, prompt = '', negativePrompt = '', weaveTriggerWords = true, modelId = LOCAL_IMAGEGEN_DEFAULT_MODEL, width = 1024, height = 1024, steps, guidance, seed, quantize = '8', loraFilenames = [], loraPaths = [], loraScales = [], initImagePath = null, initImageStrength = null, referenceImagePaths = [], referenceImageStrengths = [], jobId: providedJobId = null, cleanC2PA = false, denoise = false, regenOf = null, upscaleTo = null, outputTarget = null }) {
   // Empty prompt is allowed: img2img / edit / unconditional renders are driven
   // by the init image (or run unconditionally), so text isn't required. The
   // mflux/diffusers runners accept an empty `--prompt` — the regen pass (#912)
@@ -504,8 +536,19 @@ export async function generateImage({ pythonPath, prompt = '', negativePrompt = 
   // non-gallery render has no static mount, so the queue reads the finished
   // bytes off `outputPath` directly (surfaced as `outputPath` in the result).
   const publicPath = outputDir === PATHS.images ? `/data/images/${filename}` : null;
+  // Trigger words for the selected LoRAs (#4665). Read against the RAW request
+  // (a superset of what survives the prefix-check inside buildSidecarMeta) so
+  // the map is available before validation runs; an absent or legacy sidecar
+  // simply contributes nothing and the render is unchanged. Skipped entirely
+  // when the caller opted out or selected no LoRAs, so the default no-LoRA
+  // render does zero extra I/O.
+  const loraTriggerWords = weaveTriggerWords
+    ? await readTriggerWordsByFilename([...loraFilenames, ...loraPaths])
+    : null;
   const {
     meta,
+    renderPrompt,
+    addedTriggerWords,
     actualSeed,
     actualSteps,
     actualGuidance,
@@ -534,9 +577,14 @@ export async function generateImage({ pythonPath, prompt = '', negativePrompt = 
     referenceImagePaths,
     referenceImageStrengths,
     regenOf,
+    loraTriggerWords,
+    weaveTriggerWords,
     resolveInputPath: resolveImageInputPath,
     loraExists: existsSync,
   });
+  if (addedTriggerWords.length) {
+    console.log(`🔤 LoRA trigger words woven [${jobId.slice(0, 8)}]: ${addedTriggerWords.join(', ')}`);
+  }
   const job = { ...meta, clients: [], status: 'running' };
   jobs.set(jobId, job);
 
@@ -544,7 +592,9 @@ export async function generateImage({ pythonPath, prompt = '', negativePrompt = 
   // per inference step here; we watch and stream the latest as `currentImage`.
   const stepwiseDir = await mkdtemp(join(tmpdir(), 'portos-stepwise-'));
 
-  const { bin, args } = buildArgs({ pythonPath, model, prompt, negativePrompt, width: Number(width), height: Number(height), steps: actualSteps, guidance: actualGuidance, seed: actualSeed, quantize, outputPath, loraPaths: validLoras, loraScales, stepwiseDir, initImagePath: validInitImagePath, initImageStrength: validInitImageStrength, referenceImagePaths: validReferenceImagePaths, referenceImageStrengths: validReferenceImageStrengths });
+  // `renderPrompt` — the user's prompt plus any LoRA activation tokens it was
+  // missing (#4665). Identical to `prompt` when nothing was woven.
+  const { bin, args } = buildArgs({ pythonPath, model, prompt: renderPrompt, negativePrompt, width: Number(width), height: Number(height), steps: actualSteps, guidance: actualGuidance, seed: actualSeed, quantize, outputPath, loraPaths: validLoras, loraScales, stepwiseDir, initImagePath: validInitImagePath, initImageStrength: validInitImageStrength, referenceImagePaths: validReferenceImagePaths, referenceImageStrengths: validReferenceImageStrengths });
   const heavyClaim = await claimHeavyLocalJob({ kind: 'local image generation', id: jobId });
   if (!heavyClaim.ok) {
     jobs.delete(jobId);

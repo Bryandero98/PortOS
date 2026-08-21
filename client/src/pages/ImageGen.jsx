@@ -21,6 +21,7 @@ import PromptFromMedia from '../components/media/PromptFromMedia';
 import BackendChipStrip from '../components/media/BackendChipStrip';
 import { normalizeImage } from '../components/media/normalize';
 import { RUNNER_FAMILIES, loraCompatKey } from '../lib/runnerFamilies';
+import { promptHasTriggerWord } from '../lib/loraTriggers';
 import Flux2InstallModal from '../components/imageGen/Flux2InstallModal';
 import HfTokenBanner from '../components/imageGen/HfTokenBanner';
 import ImageGenControls from '../components/imageGen/ImageGenControls';
@@ -71,21 +72,24 @@ const revokeIfBlob = (url) => {
   if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
 };
 
-// Append LoRA trigger words to a prompt comma-separated, skipping any
-// already present. Compares against comma-separated prompt segments rather
-// than raw substrings so a short trigger like "cat" doesn't false-match
-// inside "concatenate". Civitai triggers are often phrases that themselves
-// contain spaces, so the match is whole-segment, case-insensitive.
+// Append LoRA trigger words to a prompt comma-separated, skipping any already
+// present. Presence uses the SHARED `promptHasTriggerWord` predicate (#4665) so
+// the button, the picker's "will be added" hint, and the server-side weave all
+// agree on what counts as present: a whole-token, case-insensitive match
+// anywhere in the prompt. That matters because a trigger is commonly woven
+// mid-sentence ("a portrait of aria_tok on a rooftop"), which the old
+// comma-segment comparison read as absent and re-appended — while still not
+// false-matching a short trigger like "cat" inside "concatenate".
+//
+// Unlike the server weave, this appends ALL of the LoRA's trigger words: the
+// user clicked "+ trigger" with the full list in the tooltip, so honoring it is
+// the point. The server only ever adds the first, and never duplicates.
 const appendTriggerWords = (prompt, words) => {
   const list = (Array.isArray(words) ? words : [])
     .filter((w) => typeof w === 'string' && w.trim())
     .map((w) => w.trim());
   if (!list.length) return prompt;
-  const segments = String(prompt || '')
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  const fresh = list.filter((w) => !segments.includes(w.toLowerCase()));
+  const fresh = list.filter((w) => !promptHasTriggerWord(prompt, w));
   if (!fresh.length) return prompt;
   const trimmed = String(prompt || '').trim();
   const sep = !trimmed ? '' : trimmed.endsWith(',') ? ' ' : ', ';
@@ -1307,6 +1311,7 @@ export default function ImageGen() {
               currentRunnerFamily={currentRunnerFamily}
               currentCompatKey={currentCompatKey}
               onAppendTrigger={(words) => setPrompt((p) => appendTriggerWords(p, words))}
+              prompt={prompt}
               disabled={statusLoading}
             />
           )}

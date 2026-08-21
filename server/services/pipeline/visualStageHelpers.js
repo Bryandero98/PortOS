@@ -127,8 +127,18 @@ async function applyCharacterLorasToRender({ matchedCharacters, mode, options, s
   return { loras, triggerByKey };
 }
 
+// `weaveTriggerWords: false` opts these renders out of the server-side trigger
+// weave in imageGen/local.js (#4665). Both pipeline callers already build their
+// own trigger clause from `applyCharacterLorasToRender` — comicPages composes
+// per-character triggers into the page prompt, and the visual stage appends a
+// "Featuring <name> (<trigger>)" sentence — so a second append would double the
+// token's weight.
 const loraRenderOptions = (loras) => (loras.length
-  ? { loraFilenames: loras.map((l) => l.filename), loraScales: loras.map((l) => l.scale) }
+  ? {
+    loraFilenames: loras.map((l) => l.filename),
+    loraScales: loras.map((l) => l.scale),
+    weaveTriggerWords: false,
+  }
   : {});
 
 // Defensive fallback — an unrecognized value must never land in the final
@@ -257,7 +267,14 @@ const enqueueImageJob = ({ prompt, world, settings, options, mode, owner, logLin
     // Character LoRAs resolved by applyCharacterLorasToRender — only the
     // local runner honors these (codex has no LoRA support; the resolver is
     // skipped there so the spread stays empty).
-    ...(options.loraFilenames?.length ? { loraFilenames: options.loraFilenames, loraScales: options.loraScales } : {}),
+    ...(options.loraFilenames?.length
+      ? {
+        loraFilenames: options.loraFilenames,
+        loraScales: options.loraScales,
+        // Carries loraRenderOptions' opt-out through to generateImage (#4665).
+        ...(options.weaveTriggerWords === false ? { weaveTriggerWords: false } : {}),
+      }
+      : {}),
   };
   // The queue dispatches directly to imageGen/{codex,local}.generateImage,
   // bypassing imageGen/index.js's dispatcher that resolves cleaners for

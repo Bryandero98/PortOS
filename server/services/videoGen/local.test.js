@@ -289,9 +289,18 @@ vi.mock('./runtimes.js', async (importOriginal) => ({
 // the permissive default so the pre-existing LoRA-threading tests below still
 // reach the spawn path; the gate's own tests set a layout explicitly.
 const loraLayoutState = vi.hoisted(() => ({ layout: null }));
+const loraSidecarState = vi.hoisted(() => ({ byFilename: {} }));
 vi.mock('../loras.js', () => ({
   assertSafeLoraFilename: vi.fn(),
   getLoraKeyLayout: vi.fn(async () => loraLayoutState.layout),
+  // Trigger-word weaving (#4665) reads each selected LoRA's sidecar. Default to
+  // "no trigger words" so every pre-existing LoRA test renders its prompt
+  // unchanged; the weave tests populate `loraSidecarState.byFilename`.
+  readTriggerWordsByFilename: vi.fn(async (names) => Object.fromEntries(
+    (names || [])
+      .map((n) => [n, loraSidecarState.byFilename[n]?.triggerWords])
+      .filter(([, words]) => Array.isArray(words)),
+  )),
 }));
 
 vi.mock('fs/promises', () => ({
@@ -2463,6 +2472,92 @@ describe('generateVideo — LoRA history-record contract (Remix round-trip)', ()
     expect(startedMeta.loraFilenames).toEqual(['a.safetensors', 'b.safetensors']);
     expect(startedMeta.loraScales).toEqual([0.7, 1.0]);
     expect(startedMeta.loras).toBeUndefined();
+  });
+});
+
+describe('generateVideo — LoRA trigger-word weaving (#4665)', () => {
+  const promptFrom = (spawnMock, jobId) => {
+    const call = spawnMock.mock.calls.find(([, args]) =>
+      Array.isArray(args) && args.some((a) => typeof a === 'string' && a.includes(jobId)));
+    if (!call) return null;
+    const i = call[1].indexOf('--prompt');
+    return i === -1 ? null : call[1][i + 1];
+  };
+
+  const renderWithLoras = async ({ jobId, prompt, loras }) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    let startedMeta = null;
+    const onStarted = (e) => { if (e.generationId === jobId) startedMeta = e; };
+    videoGenEvents.on('started', onStarted);
+    await generateVideo({
+      jobId,
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt,
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      mode: 'text',
+      loras,
+    });
+    videoGenEvents.off('started', onStarted);
+    return { renderedPrompt: promptFrom(spawnMock, jobId), startedMeta };
+  };
+
+  beforeEach(() => { loraSidecarState.byFilename = {}; });
+  afterEach(() => { loraSidecarState.byFilename = {}; });
+
+  it('appends the selected LoRA trigger word to the prompt the runner receives', async () => {
+    loraSidecarState.byFilename = { 'fox.safetensors': { triggerWords: ['fox_tok', 'animal'] } };
+    const { renderedPrompt, startedMeta } = await renderWithLoras({
+      jobId: 'weave-basic',
+      prompt: 'a clip in the rain',
+      loras: [{ filename: 'fox.safetensors', scale: 0.8 }],
+    });
+    // Only the FIRST trigger word — 'animal' is a loose Civitai tag, not an
+    // activation token.
+    expect(renderedPrompt).toBe('a clip in the rain, fox_tok');
+    // Provenance: history keeps the user's prompt so Remix re-derives triggers
+    // from whatever LoRAs are selected then rather than compounding this clause.
+    expect(startedMeta.prompt).toBe('a clip in the rain');
+    expect(startedMeta.renderPrompt).toBe('a clip in the rain, fox_tok');
+    expect(startedMeta.addedTriggerWords).toEqual(['fox_tok']);
+  });
+
+  it('does not duplicate a trigger word the prompt already carries', async () => {
+    loraSidecarState.byFilename = { 'fox.safetensors': { triggerWords: ['fox_tok'] } };
+    const { renderedPrompt, startedMeta } = await renderWithLoras({
+      jobId: 'weave-present',
+      prompt: 'fox_tok running through the rain',
+      loras: [{ filename: 'fox.safetensors', scale: 0.8 }],
+    });
+    expect(renderedPrompt).toBe('fox_tok running through the rain');
+    // No provenance fields — this history row stays byte-identical to a
+    // pre-feature one.
+    expect(startedMeta.renderPrompt).toBeUndefined();
+    expect(startedMeta.addedTriggerWords).toBeUndefined();
+  });
+
+  it('leaves the prompt untouched when the LoRA sidecar has no trigger words', async () => {
+    loraSidecarState.byFilename = { 'legacy.safetensors': { triggerWords: [] } };
+    const { renderedPrompt, startedMeta } = await renderWithLoras({
+      jobId: 'weave-legacy',
+      prompt: 'a clip in the rain',
+      loras: [{ filename: 'legacy.safetensors', scale: 1.0 }],
+    });
+    expect(renderedPrompt).toBe('a clip in the rain');
+    expect(startedMeta.renderPrompt).toBeUndefined();
+  });
+
+  it('is a no-op for a render with no LoRAs', async () => {
+    loraSidecarState.byFilename = { 'fox.safetensors': { triggerWords: ['fox_tok'] } };
+    const { renderedPrompt, startedMeta } = await renderWithLoras({
+      jobId: 'weave-no-loras',
+      prompt: 'a clip in the rain',
+      loras: undefined,
+    });
+    expect(renderedPrompt).toBe('a clip in the rain');
+    expect(startedMeta.renderPrompt).toBeUndefined();
   });
 });
 

@@ -10,8 +10,14 @@
 // gets a `+ trigger` button — typically wired to append the trigger tokens to
 // the caller's prompt. Omit it (or pass `null`) where there's no prompt to
 // append into (batch render with per-variation prompts).
+//
+// Pass `prompt` (the caller's current prompt text) to surface the #4665 hint on
+// any selected LoRA whose activation token is missing from it. Purely
+// informational — the server weaves the token in at render time either way; the
+// hint just stops that from being a surprise.
 
 import { Link } from 'react-router';
+import { firstTriggerWord, promptHasTriggerWord } from '../../lib/loraTriggers.js';
 
 // Matches /api/image-gen/generate and /api/universe-builder/:id/render's
 // .max(8) on the LoRA list. Hard cap stops the user from queuing a render
@@ -33,6 +39,7 @@ export default function LoraPicker({
   // load. Falls back to `currentRunnerFamily` for older callers.
   currentCompatKey = null,
   onAppendTrigger = null,
+  prompt = null,
   disabled = false,
 }) {
   if (!availableLoras.length) return null;
@@ -86,53 +93,69 @@ export default function LoraPicker({
             const sel = selected.find((s) => s.filename === lora.filename);
             const recommended = typeof lora.recommendedScale === 'number' ? lora.recommendedScale : 1.0;
             const triggers = lora.triggerWords || [];
+            // The exact token the server will weave in at render time (#4665) —
+            // only flagged while this LoRA is selected and the word isn't
+            // already in the prompt, so the hint disappears the moment the user
+            // types it (or hits "+ trigger").
+            const activation = firstTriggerWord(triggers);
+            // `prompt === null` means the host didn't opt in (it has no single prompt to
+            // weave into, or its renders opt out of the server weave) — stay silent
+            // rather than claiming an append that may never happen.
+            const willAddTrigger = Boolean(typeof prompt === 'string' && sel && activation && !promptHasTriggerWord(prompt, activation));
             return (
-              <div key={lora.filename} className="flex items-center gap-2">
-                <label className={`flex items-center gap-2 flex-1 min-w-0 ${atCap && !sel ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
-                  <input
-                    type="checkbox"
-                    checked={!!sel}
-                    disabled={disabled || (atCap && !sel)}
-                    onChange={(e) => toggle(lora, e.target.checked)}
-                    className="rounded"
-                    title={atCap && !sel ? `Maximum ${MAX_SELECTED_LORAS} LoRAs per render — uncheck one to swap` : undefined}
-                  />
-                  <span className="text-xs text-gray-300 truncate flex-1" title={triggers.length ? `Trigger words: ${triggers.join(', ')}` : lora.name}>
-                    {lora.name}
-                    {/* baseModel suffix disambiguates multiple installed
-                        versions of the same model (e.g. ZImageBase vs
-                        ZImageTurbo, both mapping to 'z-image' family). */}
-                    {lora.civitai?.baseModel && (
-                      <span className="ml-1.5 text-[10px] text-gray-600 font-mono">[{lora.civitai.baseModel}]</span>
-                    )}
-                    {triggers.length > 0 && (
-                      <span className="ml-2 text-[10px] text-gray-500 font-mono">{triggers.slice(0, 2).join(', ')}{triggers.length > 2 ? '…' : ''}</span>
-                    )}
-                  </span>
-                </label>
-                {sel && (
-                  <div className="flex items-center gap-2">
-                    {triggers.length > 0 && onAppendTrigger && (
-                      <button
-                        type="button"
-                        onClick={() => onAppendTrigger(triggers)}
-                        disabled={disabled}
-                        title={`Append to prompt: ${triggers.join(', ')}`}
-                        className="text-[11px] px-2 py-1 rounded bg-port-accent/10 text-port-accent border border-port-accent/30 hover:bg-port-accent/20 disabled:opacity-50 whitespace-nowrap"
-                      >
-                        + trigger
-                      </button>
-                    )}
-                    <span className="text-xs text-gray-500" title={`Recommended: ${recommended.toFixed(2)}`}>Scale</span>
+              <div key={lora.filename}>
+                <div className="flex items-center gap-2">
+                  <label className={`flex items-center gap-2 flex-1 min-w-0 ${atCap && !sel ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
                     <input
-                      type="number" min={0} max={2} step={0.1}
-                      aria-label={`Scale for ${lora.filename}`}
-                      value={sel.scale}
-                      disabled={disabled}
-                      onChange={(e) => setScale(lora.filename, parseFloat(e.target.value) || 0)}
-                      className="w-20 bg-port-bg border border-port-border rounded px-2 py-1 text-sm text-gray-200"
+                      type="checkbox"
+                      checked={!!sel}
+                      disabled={disabled || (atCap && !sel)}
+                      onChange={(e) => toggle(lora, e.target.checked)}
+                      className="rounded"
+                      title={atCap && !sel ? `Maximum ${MAX_SELECTED_LORAS} LoRAs per render — uncheck one to swap` : undefined}
                     />
-                  </div>
+                    <span className="text-xs text-gray-300 truncate flex-1" title={triggers.length ? `Trigger words: ${triggers.join(', ')}` : lora.name}>
+                      {lora.name}
+                      {/* baseModel suffix disambiguates multiple installed
+                          versions of the same model (e.g. ZImageBase vs
+                          ZImageTurbo, both mapping to 'z-image' family). */}
+                      {lora.civitai?.baseModel && (
+                        <span className="ml-1.5 text-[10px] text-gray-600 font-mono">[{lora.civitai.baseModel}]</span>
+                      )}
+                      {triggers.length > 0 && (
+                        <span className="ml-2 text-[10px] text-gray-500 font-mono">{triggers.slice(0, 2).join(', ')}{triggers.length > 2 ? '…' : ''}</span>
+                      )}
+                    </span>
+                  </label>
+                  {sel && (
+                    <div className="flex items-center gap-2">
+                      {triggers.length > 0 && onAppendTrigger && (
+                        <button
+                          type="button"
+                          onClick={() => onAppendTrigger(triggers)}
+                          disabled={disabled}
+                          title={`Append to prompt: ${triggers.join(', ')}`}
+                          className="text-[11px] px-2 py-1 rounded bg-port-accent/10 text-port-accent border border-port-accent/30 hover:bg-port-accent/20 disabled:opacity-50 whitespace-nowrap"
+                        >
+                          + trigger
+                        </button>
+                      )}
+                      <span className="text-xs text-gray-500" title={`Recommended: ${recommended.toFixed(2)}`}>Scale</span>
+                      <input
+                        type="number" min={0} max={2} step={0.1}
+                        aria-label={`Scale for ${lora.filename}`}
+                        value={sel.scale}
+                        disabled={disabled}
+                        onChange={(e) => setScale(lora.filename, parseFloat(e.target.value) || 0)}
+                        className="w-20 bg-port-bg border border-port-border rounded px-2 py-1 text-sm text-gray-200"
+                      />
+                    </div>
+                  )}
+                </div>
+                {willAddTrigger && (
+                  <p className="text-[10px] text-amber-400/90 pl-6 mt-0.5">
+                    Trigger word <span className="font-mono">{activation}</span> is missing — it will be added to your prompt at render time.
+                  </p>
                 )}
               </div>
             );

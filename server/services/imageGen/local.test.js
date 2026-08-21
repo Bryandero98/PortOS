@@ -771,6 +771,94 @@ describe('imageGen local.buildSidecarMeta', () => {
     expect(meta.seed).toBeGreaterThanOrEqual(0);
     expect(meta.seed).toBeLessThan(2147483647);
   });
+
+  // --- LoRA trigger-word weaving (#4665) ---------------------------------
+  // `loraTriggerWords` is the sidecar map generateImage reads before calling
+  // in; the LoRA candidates go through the same prefix-check as every other
+  // test here (LORAS_ROOT + injected `loraExists`).
+
+  it('weaves a selected LoRA trigger word into the render prompt, keeping meta.prompt the user text', () => {
+    const { meta, renderPrompt, addedTriggerWords } = buildSidecarMeta({
+      ...baseMetaInput,
+      loraFilenames: ['aria.safetensors'],
+      loraTriggerWords: { 'aria.safetensors': ['aria_tok', 'portrait'] },
+    });
+    // What the runner renders.
+    expect(renderPrompt).toBe('a red cube, aria_tok');
+    expect(addedTriggerWords).toEqual(['aria_tok']);
+    // Provenance: the user's own text is what a Remix reads back.
+    expect(meta.prompt).toBe('a red cube');
+    expect(meta.renderPrompt).toBe('a red cube, aria_tok');
+    expect(meta.addedTriggerWords).toEqual(['aria_tok']);
+  });
+
+  it('uses only the FIRST trigger word of each LoRA, in selection order', () => {
+    const { renderPrompt } = buildSidecarMeta({
+      ...baseMetaInput,
+      loraFilenames: ['aria.safetensors', 'grain.safetensors'],
+      loraTriggerWords: {
+        'aria.safetensors': ['aria_tok', 'portrait', 'closeup'],
+        'grain.safetensors': ['rstgrm', 'film grain'],
+      },
+    });
+    expect(renderPrompt).toBe('a red cube, aria_tok, rstgrm');
+  });
+
+  it('does not weave a word the prompt already contains', () => {
+    const { meta, renderPrompt, addedTriggerWords } = buildSidecarMeta({
+      ...baseMetaInput,
+      prompt: 'aria_tok holding a red cube',
+      loraFilenames: ['aria.safetensors'],
+      loraTriggerWords: { 'aria.safetensors': ['aria_tok'] },
+    });
+    expect(renderPrompt).toBe('aria_tok holding a red cube');
+    expect(addedTriggerWords).toEqual([]);
+    // No provenance fields when nothing was woven — the sidecar stays
+    // byte-identical to every one written before this feature.
+    expect(meta.renderPrompt).toBeUndefined();
+    expect(meta.addedTriggerWords).toBeUndefined();
+  });
+
+  it('is a no-op when the render selected no LoRAs', () => {
+    const { meta, renderPrompt, addedTriggerWords } = buildSidecarMeta({ ...baseMetaInput });
+    expect(renderPrompt).toBe('a red cube');
+    expect(addedTriggerWords).toEqual([]);
+    expect(meta.renderPrompt).toBeUndefined();
+  });
+
+  it('skips a LoRA whose sidecar carries no trigger words (legacy / pre-Civitai)', () => {
+    const { renderPrompt, addedTriggerWords } = buildSidecarMeta({
+      ...baseMetaInput,
+      loraFilenames: ['legacy.safetensors', 'aria.safetensors'],
+      loraTriggerWords: { 'legacy.safetensors': [], 'aria.safetensors': ['aria_tok'] },
+    });
+    expect(renderPrompt).toBe('a red cube, aria_tok');
+    expect(addedTriggerWords).toEqual(['aria_tok']);
+  });
+
+  it('never weaves a trigger for a LoRA that failed the prefix/existence check', () => {
+    const { renderPrompt, addedTriggerWords } = buildSidecarMeta({
+      ...baseMetaInput,
+      loraFilenames: ['aria.safetensors'],
+      loraTriggerWords: { 'aria.safetensors': ['aria_tok'] },
+      loraExists: () => false,
+    });
+    expect(renderPrompt).toBe('a red cube');
+    expect(addedTriggerWords).toEqual([]);
+  });
+
+  it('honors weaveTriggerWords:false so the comic pipeline does not double-weight its own clause', () => {
+    const { meta, renderPrompt, addedTriggerWords } = buildSidecarMeta({
+      ...baseMetaInput,
+      loraFilenames: ['aria.safetensors'],
+      loraTriggerWords: { 'aria.safetensors': ['aria_tok'] },
+      weaveTriggerWords: false,
+    });
+    expect(renderPrompt).toBe('a red cube');
+    expect(addedTriggerWords).toEqual([]);
+    expect(meta.renderPrompt).toBeUndefined();
+  });
+
 });
 
 describe('imageGen local.resolveOutputPlacement (issue #2264 non-gallery render seam)', () => {
