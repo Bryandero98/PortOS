@@ -300,6 +300,55 @@ export function getRunningJob() {
   return running;
 }
 
+/**
+ * Lane occupancy and queue depth, reported by the queue itself.
+ *
+ * The lane split (serialized GPU vs. parallel cloud-CLI vs. parallel remote)
+ * and each lane's slot count are private to this module, so a caller that
+ * counted `listJobs()` by hand would have to re-derive `jobLane` and would
+ * drift from it the first time a new cloud mode is added. Capacity questions
+ * are answered here for the same reason `isRemoteMediaJob` has one definition.
+ *
+ * `limit` is the lane's configured concurrency, NOT a queue bound: work over
+ * the limit waits rather than being rejected. The federated-provider admission
+ * bound is a separate setting (see federatedMediaProvider.js).
+ *
+ * @returns {{lanes: Record<'gpu'|'cloud'|'remote', {running: number, queued: number, limit: number}>,
+ *   byKind: Record<string, {running: number, queued: number}>,
+ *   totals: {running: number, queued: number},
+ *   runningKind: string|null}}
+ */
+export function getQueueCapacity() {
+  const lanes = {
+    gpu: { running: running ? 1 : 0, queued: 0, limit: 1 },
+    cloud: { running: cloudRunning.length, queued: 0, limit: codexParallelLimit },
+    remote: { running: remoteRunning.length, queued: 0, limit: REMOTE_MEDIA_PARALLEL_LIMIT },
+  };
+  // Seed every known kind so a lane with no work reports 0 rather than being
+  // absent — an absent key and a zero read identically in a UI, and only one
+  // of them is true.
+  const byKind = Object.fromEntries(JOB_KINDS.map((kind) => [kind, { running: 0, queued: 0 }]));
+  // Lane `running` counts come straight off the lane arrays above; only the
+  // shared `queue` has to be classified, because it holds every lane's waiting
+  // work in one submission-ordered list.
+  for (const job of queue) {
+    lanes[jobLane(job)].queued += 1;
+    if (byKind[job.kind]) byKind[job.kind].queued += 1;
+  }
+  for (const job of [...(running ? [running] : []), ...cloudRunning, ...remoteRunning]) {
+    if (byKind[job.kind]) byKind[job.kind].running += 1;
+  }
+  return {
+    lanes,
+    byKind,
+    totals: {
+      running: lanes.gpu.running + lanes.cloud.running + lanes.remote.running,
+      queued: queue.length,
+    },
+    runningKind: running?.kind ?? null,
+  };
+}
+
 export function listJobs({ status, kind, owner } = {}) {
   const all = [
     ...(running ? [running] : []),

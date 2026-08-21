@@ -15,6 +15,7 @@ import { checkGhHealth } from '../services/github.js';
 import { isAuthEnabled } from '../services/auth.js';
 import { getHttpsEnabledAtBoot } from '../lib/httpsState.js';
 import { getActiveProcessing } from '../services/activeProcessing.js';
+import { getMediaCapacity } from '../services/mediaCapacity.js';
 
 // Defaults are tuned for a real dev machine: memory routinely sits in the
 // 75-85% band on a host with a couple of LLMs loaded, and big SSDs commonly
@@ -82,7 +83,7 @@ router.get('/health/details', asyncHandler(async (req, res) => {
   const startTime = Date.now();
 
   // Gather data in parallel
-  const [pm2Processes, appStatusSummary, cosStatus, self, dbHealth, version, diskStats, memStats, thresholds, forgeHealth] = await Promise.all([
+  const [pm2Processes, appStatusSummary, cosStatus, self, dbHealth, version, diskStats, memStats, thresholds, forgeHealth, mediaCapacity] = await Promise.all([
     listProcesses().catch(() => []),
     apps.getAppStatusSummary().catch(() => ({ total: 0, online: 0, stopped: 0, notStarted: 0, unknown: 0, degraded: false, unmanaged: 0 })),
     cos.getStatus().catch(() => null),
@@ -92,7 +93,10 @@ router.get('/health/details', asyncHandler(async (req, res) => {
     statfs('/').catch(() => null),
     getMemoryStats(),
     loadThresholds(),
-    checkGhHealth().catch(() => ({ status: 'error', ok: false, detail: 'Health check failed', remedy: null, checkedAt: null }))
+    checkGhHealth().catch(() => ({ status: 'error', ok: false, detail: 'Health check failed', remedy: null, checkedAt: null })),
+    // Media-lane capacity never fails the health report: an unreadable GPU probe
+    // degrades to `null`, which the UI renders as unknown rather than as idle.
+    getMediaCapacity().catch(() => null)
   ]);
 
   const memUsagePercent = Math.round((memStats.used / memStats.total) * 100);
@@ -286,6 +290,7 @@ router.get('/health/details', asyncHandler(async (req, res) => {
     processes: processStats,
     apps: appStats,
     cos: cosInfo,
+    media: mediaCapacity,
     database: dbHealth,
     forge: forgeHealth,
     thresholds,

@@ -10,6 +10,7 @@ import { useConfirmDelete } from '../hooks/useConfirmDelete.js';
 import StoragePanel from '../components/system-resources/StoragePanel.jsx';
 import ModelsPanel from '../components/system-resources/ModelsPanel.jsx';
 import QueuesPanel from '../components/system-resources/QueuesPanel.jsx';
+import MediaCapacityPanel from '../components/system-resources/MediaCapacityPanel.jsx';
 
 const HEALTH_STYLE = {
   healthy: { color: 'text-port-success', bg: 'bg-port-success/10', icon: CheckCircle, label: 'Healthy' },
@@ -347,6 +348,8 @@ function SystemHealthOverview() {
             />
           )}
         </section>
+
+        <MediaCapacityPanel media={health.media} />
 
         <section className="bg-port-card border border-port-border rounded-xl p-4">
           <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">

@@ -27,6 +27,10 @@ vi.mock('../services/api', () => ({
   deleteCachedModel: vi.fn(),
   deleteLora: vi.fn(),
   deleteLocalLlmModel: vi.fn(),
+  // The overview's media-capacity panel reads the peer list to report federated
+  // provider readiness (#4348). No peers keeps this page's assertions about
+  // local metrics unaffected.
+  getInstances: vi.fn(() => Promise.resolve({ peers: [] })),
 }));
 
 vi.mock('../hooks/useProviderModels', () => ({
