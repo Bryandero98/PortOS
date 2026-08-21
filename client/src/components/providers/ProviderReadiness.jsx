@@ -10,15 +10,14 @@
  * transcript.
  *
  * `readiness` is one entry of the map from `GET /api/providers/readiness`
- * (`{ kind, label, endpoint, ready, checks, manageUrl, docsUrl, setup }`).
+ * (`{ kind, label, endpoint, ready, checks, manageUrl, setup }`).
  * Renders nothing without one, so providers with no local dependency — and
  * cards drawn before the fetch resolves — show no checklist at all.
  *
- * `setup` is the one-click fix: when PortOS can install and/or start this
- * daemon itself (`services/localRuntimeSetup.js`), the banner leads with that
- * button instead of a setup-doc link. The docs link stays as a secondary
- * affordance — it is the right answer for the checks a button cannot fix (which
- * model to download) and for a host the setup does not support.
+ * Every unmet check is fixed from this banner: a one-click daemon setup
+ * (`setup.action`), a "use the served model as default" button when the
+ * running server answers under a different id, or an in-app Local LLM
+ * settings link. Vendor setup docs are never the way forward.
  */
 
 import { Link } from 'react-router';
@@ -35,7 +34,7 @@ const ICONS = {
   null: { Icon: HelpCircle, cls: 'text-gray-500' },
 };
 
-const LINK_CLASS = 'text-port-accent hover:text-port-accent/80 underline underline-offset-2';
+const ACTION_CLASS = 'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-port-accent/20 text-port-accent hover:bg-port-accent/30 transition-colors font-medium';
 
 /**
  * Render `text` with `backtick`-quoted spans as inline code. The server writes
@@ -55,9 +54,9 @@ function CodeText({ text }) {
   );
 }
 
-export default function ProviderReadiness({ readiness, onAutoSetup, className = '' }) {
+export default function ProviderReadiness({ readiness, onAutoSetup, onUseServedModel, className = '' }) {
   if (!readiness || !Array.isArray(readiness.checks) || readiness.checks.length === 0) return null;
-  const { label, endpoint, ready, checks, manageUrl, docsUrl, setup } = readiness;
+  const { label, endpoint, ready, checks, manageUrl, setup } = readiness;
 
   if (ready) {
     return (
@@ -89,6 +88,22 @@ export default function ProviderReadiness({ readiness, onAutoSetup, className = 
                 {check.fixHint && (
                   <span className="block text-port-warning/90"><CodeText text={check.fixHint} /></span>
                 )}
+                {check.id === 'model' && check.ok === false && onUseServedModel
+                  && Array.isArray(check.servedModels) && check.servedModels.length > 0 && (
+                  <span className="flex flex-wrap gap-1.5 mt-1.5">
+                    {check.servedModels.slice(0, 3).map((id) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => onUseServedModel(id)}
+                        className={ACTION_CLASS}
+                        title={`Set this provider's default model to ${id} so it matches what ${label} is serving.`}
+                      >
+                        Use {id} as default
+                      </button>
+                    ))}
+                  </span>
+                )}
               </span>
             </li>
           );
@@ -99,7 +114,7 @@ export default function ProviderReadiness({ readiness, onAutoSetup, className = 
           <button
             type="button"
             onClick={() => onAutoSetup(setup)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-port-accent/20 text-port-accent hover:bg-port-accent/30 transition-colors font-medium"
+            className={ACTION_CLASS}
             title={`PortOS runs this on ${endpoint} for you — no terminal needed.`}
           >
             <Wand2 size={12} />
@@ -107,10 +122,7 @@ export default function ProviderReadiness({ readiness, onAutoSetup, className = 
           </button>
         )}
         {manageUrl && (
-          <Link to={manageUrl} className={LINK_CLASS}>Open Local LLM settings</Link>
-        )}
-        {docsUrl && (
-          <a href={docsUrl} target="_blank" rel="noreferrer" className={LINK_CLASS}>{label} setup docs</a>
+          <Link to={manageUrl} className={ACTION_CLASS}>Open Local LLM settings</Link>
         )}
       </div>
     </Banner>

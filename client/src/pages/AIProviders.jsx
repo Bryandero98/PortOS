@@ -271,6 +271,25 @@ export default function AIProviders() {
     loadData();
   };
 
+  // llama.cpp (and similar local daemons) answer as a single model id — the
+  // server's `--alias`, not the preset name on this card. Matching the
+  // provider's default to what is actually served is the in-place fix for the
+  // "model X available — serving Y" checklist, so the user never has to open
+  // the editor or leave the page.
+  const handleUseServedModel = async (provider, modelId) => {
+    if (!provider?.id || typeof modelId !== 'string' || modelId.trim() === '') return;
+    const defaultModel = modelId.trim();
+    const models = Array.isArray(provider.models) ? [...provider.models] : [];
+    const updates = { defaultModel };
+    if (!models.includes(defaultModel)) updates.models = [defaultModel, ...models];
+    const updated = await api.updateProvider(provider.id, updates).catch(() => null);
+    if (!updated) return;
+    setProviders((prev) => prev.map((entry) => (
+      entry.id === provider.id ? { ...entry, ...updates } : entry
+    )));
+    toast.success(`Default model set to ${defaultModel}`);
+    loadReadiness();
+  };
 
   const handleRefreshModels = async (id) => {
     setRefreshing(prev => ({ ...prev, [id]: true }));
@@ -747,6 +766,7 @@ export default function AIProviders() {
                       onRecover={handleRecover}
                       onInstallRuntime={setInstallingRuntime}
                       onAutoSetupRuntime={setSettingUpRuntime}
+                      onUseServedModel={handleUseServedModel}
                     />
                   ))}
                 </CollapsibleSection>
