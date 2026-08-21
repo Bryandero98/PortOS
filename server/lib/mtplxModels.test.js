@@ -49,6 +49,10 @@ describe('listMtplxCachedModels', () => {
     spawned.bufferedSpawn.mockResolvedValue({ success: false, code: -1, stdout: '', stderr: '', timedOut: true });
     expect(await listMtplxCachedModels()).toMatchObject({ models: null, error: expect.stringMatching(/timed out/) });
 
+    // A spawn failure writes to neither stream — its reason is on `error`.
+    spawned.bufferedSpawn.mockResolvedValue({ success: false, code: -1, stdout: '', stderr: '', timedOut: false, error: new Error('spawn EACCES') });
+    expect(await listMtplxCachedModels()).toMatchObject({ models: null, error: 'spawn EACCES' });
+
     spawned.bufferedSpawn.mockResolvedValue(ok('not json at all'));
     expect(await listMtplxCachedModels()).toMatchObject({ models: null, error: expect.stringMatching(/did not return a model list/) });
   });

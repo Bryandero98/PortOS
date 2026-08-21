@@ -47,7 +47,10 @@ export async function listMtplxCachedModels({ command = 'mtplx' } = {}) {
   const result = await bufferedSpawn(binary, ['models', '--json'], { timeoutMs: CACHE_QUERY_TIMEOUT_MS, shell: false });
   if (result.timedOut) return { models: null, error: `\`${command} models\` timed out` };
   if (!result.success) {
-    const detail = String(result.stderr || result.stdout || '').trim().split(/\r?\n/).pop();
+    // A spawn failure (EACCES, ENOENT on a dangling symlink) reports nothing on
+    // either stream — its reason lives on `error`, and dropping it would leave
+    // the user with a bare exit code for a fixable permissions problem.
+    const detail = result.error?.message || String(result.stderr || result.stdout || '').trim().split(/\r?\n/).pop();
     return { models: null, error: detail || `\`${command} models\` exited with code ${result.code}` };
   }
 
