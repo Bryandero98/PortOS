@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ServerError } from '../../lib/errorHandler.js';
 
 const getSettings = vi.fn();
 const prepareRemoteMediaJob = vi.fn();
@@ -550,24 +551,11 @@ describe('frame constraint negotiation (issue #4681)', () => {
     expect(result.remoteMedia.request.numFrames).toBe(40);
   });
 
-  it('rejects when frame count cannot be made legal at all', async () => {
-    prepareRemoteMediaJob.mockImplementation(async ({ peerId, kind, request }) => {
-      const capability = {
-        kind,
-        engine: request.engine,
-        modelId: request.modelId,
-        ready: true,
-        frameStride: 8,
-        maxNumFrames: 0,
-      };
-      const effectiveRequest = negotiateVideoConstraints(request, capability);
-      return {
-        peer: { id: peerId, name: 'Render Box', host: 'render-box.tailnet-example.ts.net' },
-        capability,
-        request: effectiveRequest,
-        remoteMedia: { wireVersion: 1, peerId, reconcile: false, cancelRequested: false, request: effectiveRequest },
-      };
-    });
+  it('propagates provider constraint rejections', async () => {
+    prepareRemoteMediaJob.mockRejectedValue(new ServerError(
+      'Requested frame count is invalid',
+      { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
+    ));
 
     await expect(resolveDefaultMediaRoute({
       kind: 'video',

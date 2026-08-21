@@ -670,6 +670,7 @@ describe('federated media provider — prompt-free status and projection payload
       frameStride: null,
       maxNumFrames: null,
       frameOptions: null,
+      fpsOptions: null,
       resolutionOptions: null,
     });
     expect(videoCap).toMatchObject({

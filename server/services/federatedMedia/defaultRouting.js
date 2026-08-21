@@ -222,7 +222,7 @@ export async function resolveDefaultMediaRoute({ kind, params }) {
   // module is imported by agent-tool suites that mock the settings/DB layer,
   // and a static edge to the peer registry would drag that graph into them.
   const { prepareRemoteMediaJob } = await import('./remoteSubmission.js');
-  const { peer, capability, request: negotiatedRequest, remoteMedia } = await prepareRemoteMediaJob({
+  const { peer, request: negotiatedRequest, remoteMedia } = await prepareRemoteMediaJob({
     peerId: route.peerId,
     kind,
     request,
@@ -244,7 +244,12 @@ export async function resolveDefaultMediaRoute({ kind, params }) {
       { status: 403, code: 'MEDIA_ROUTING_PEER_NOT_TAILNET' },
     );
   }
-  const finalRequest = negotiatedRequest || remoteMedia?.request || request;
+  const finalRequest = negotiatedRequest || request;
+  // NOTE: Frame count and frame rate are negotiated in prepareRemoteMediaJob
+  // against the peer's advertised capability (frameStride, maxNumFrames,
+  // frameOptions, fpsOptions). Model-specific prompt constraints (e.g. MiniMax
+  // H3 rejecting negative prompts) remain provider-enforced.
+  //
   // Stamp the marker so the boundary survives the job, not just the enqueue.
   // The tailnet check above ran against the peer record as it looked NOW; a
   // queued or reconciling job re-resolves its peer from the registry on every

@@ -1060,15 +1060,25 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
       kind: 'video',
       request,
     });
+    const {
+      mediaProviderPeerId: _peerId, mediaProviderEngine: _engine,
+      mode: _mode, cloudModel: _cloudModel, ...jobParams
+    } = body;
+    const effectiveRequest = negotiatedRequest || request;
     // Prompt and dials ride only inside the versioned marker: enqueueJob
     // normalizes any job carrying one into the downgrade-safe shape, so a build
     // rolled back past `remoteMedia` cannot re-render this locally. Contract:
     // services/federatedMedia/routedJobParams.js.
     const { jobId, position, status } = enqueueJob({
       kind: 'video',
-      params: { remoteMedia },
+      params: {
+        ...jobParams,
+        ...(effectiveRequest?.numFrames !== undefined ? { numFrames: effectiveRequest.numFrames } : {}),
+        ...(effectiveRequest?.width !== undefined ? { width: effectiveRequest.width } : {}),
+        ...(effectiveRequest?.height !== undefined ? { height: effectiveRequest.height } : {}),
+        remoteMedia,
+      },
     });
-    const effectiveRequest = negotiatedRequest || request;
     return res.json({
       jobId,
       generationId: jobId,

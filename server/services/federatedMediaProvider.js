@@ -224,6 +224,7 @@ async function configuredAudioCapabilities(config) {
       frameStride: null,
       maxNumFrames: null,
       frameOptions: null,
+      fpsOptions: null,
       resolutionOptions: null,
       _engine: engine,
       _model: model,
@@ -273,6 +274,9 @@ async function localGeneratorCapabilities(kind, pythonPath, { models, configured
     const validFrameOptions = Array.isArray(model?.frameOptions)
       ? model.frameOptions.filter((f) => Number.isInteger(f) && f > 0).slice(0, 100)
       : [];
+    const validFpsOptions = Array.isArray(model?.fpsOptions)
+      ? model.fpsOptions.filter((f) => Number.isInteger(f) && f > 0).slice(0, 20)
+      : [];
     const maxNumFrames = Number.isInteger(Number(model?.maxNumFrames)) && Number(model.maxNumFrames) > 0
       ? Number(model.maxNumFrames)
       : (validFrameOptions.length > 0 ? Math.max(...validFrameOptions) : null);
@@ -308,6 +312,7 @@ async function localGeneratorCapabilities(kind, pythonPath, { models, configured
       frameStride,
       maxNumFrames: Number.isFinite(maxNumFrames) && maxNumFrames > 0 ? maxNumFrames : null,
       frameOptions: validFrameOptions.length > 0 ? validFrameOptions : null,
+      fpsOptions: validFpsOptions.length > 0 ? validFpsOptions : null,
       resolutionOptions: validResolutions.length > 0 ? validResolutions : null,
       _pythonPath: isLocal ? pythonPath : null,
       _model: model,
