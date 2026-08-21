@@ -316,12 +316,19 @@ export async function getProviderReadinessMap(providers, deps = {}) {
   return Object.fromEntries(entries.filter(Boolean));
 }
 
-/** Per-batch single-argument memo (the returned promise is shared, not awaited). */
+/**
+ * Per-batch memo (the returned promise is shared, not awaited). EVERY argument
+ * is forwarded and folded into the key — a memo that keyed on the first argument
+ * alone silently dropped the probe's API key, so the batch path (which is what
+ * `GET /api/providers/readiness` uses) probed a key-gated container
+ * unauthenticated while the single-provider path authenticated fine.
+ */
 function memoize(fn) {
   const seen = new Map();
-  return (arg) => {
-    if (!seen.has(arg)) seen.set(arg, fn(arg));
-    return seen.get(arg);
+  return (...args) => {
+    const key = args.join('\n');
+    if (!seen.has(key)) seen.set(key, fn(...args));
+    return seen.get(key);
   };
 }
 

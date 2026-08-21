@@ -291,3 +291,40 @@ describe('vLLM — a key-gated container', () => {
     expect(model.detail).toMatch(/paste the server's key/);
   });
 });
+
+describe('getProviderReadinessMap batching', () => {
+  it(`carries each provider's API key into the batched probe`, async () => {
+    // The batch memo used to key on the endpoint alone and forward only that
+    // argument, so a key-gated container was probed unauthenticated here while
+    // the single-provider path authenticated fine.
+    const calls = [];
+    const providers = [
+      { id: 'a', type: 'tui', command: 'opencode', vllmBacked: true, endpoint: 'http://127.0.0.1:18020/v1', apiKey: 'key-a' },
+      { id: 'b', type: 'tui', command: 'opencode', vllmBacked: true, endpoint: 'http://127.0.0.1:18020/v1', apiKey: 'key-b' },
+    ];
+
+    await getProviderReadinessMap(providers, {
+      findCommand: () => '/usr/bin/docker',
+      probe: async (endpoint, apiKey) => { calls.push([endpoint, apiKey]); return { reachable: true, models: ['qwen3.8-27b'], error: null }; },
+    });
+
+    expect(calls).toEqual([
+      ['http://127.0.0.1:18020/v1', 'key-a'],
+      ['http://127.0.0.1:18020/v1', 'key-b'],
+    ]);
+  });
+
+  it('still collapses two providers sharing one endpoint AND one key into a single probe', async () => {
+    let probes = 0;
+    const providers = ['a', 'b'].map((id) => ({
+      id, type: 'tui', command: 'opencode', llamaBacked: true, endpoint: 'http://127.0.0.1:5568/v1',
+    }));
+
+    await getProviderReadinessMap(providers, {
+      findCommand: () => '/usr/bin/llama-server',
+      probe: async () => { probes += 1; return { reachable: true, models: ['dflash'], error: null }; },
+    });
+
+    expect(probes).toBe(1);
+  });
+});
