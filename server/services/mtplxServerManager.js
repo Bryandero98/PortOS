@@ -130,9 +130,9 @@ function parseConfigFromArgs(args) {
  *
  * Walks the CATALOG rather than the argv, so a flag PortOS no longer declares
  * cannot come back as a knob, and every value goes through `normalizeTuning` —
- * argv holds strings, and the rest of the manager expects the coerced shape a
- * relaunch would merge onto. Empty when nothing was tuned, which reads the same
- * as a server started before tuning existed.
+ * argv holds strings, while the status payload and the restore path both expect
+ * the coerced shape. Empty when nothing was tuned, which reads the same as a
+ * server started before tuning existed.
  */
 function parseTuningFromArgs(list) {
   const raw = {};
@@ -313,9 +313,9 @@ async function resolveStartModel(requested, emit) {
  * `tuning` is a knob set from `lib/localModelTuning.js` (`TUNING_SPECS.mtplx`),
  * rendered to `mtplx serve` flags by the catalog rather than by a flag map here,
  * so a knob cannot reach the launch line without also being declared, described,
- * and offered in the form. It is kept on `currentConfig` so a later relaunch —
- * for a different port, or for one more knob — re-applies what is already set
- * instead of quietly dropping it.
+ * and offered in the form. It is kept on `currentConfig` because that is what a
+ * failed tuning relaunch puts back: without it the restore would bring the
+ * daemon up untuned and call that "the previous configuration".
  *
  * @param {{port?: number, model?: string, tuning?: object, waitMs?: number, onProgress?: (line: string) => void}} options
  */
