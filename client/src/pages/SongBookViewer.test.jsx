@@ -452,8 +452,15 @@ K:  o - - - - - o -`;
       api.getSong.mockResolvedValue(drumSong());
       renderPage();
       await screen.findByLabelText('Turn the metronome off');
-      fireEvent.keyDown(window, { key: 'm' });
-      expect(await screen.findByLabelText('Turn the metronome on')).toBeTruthy();
+      // The `m` binding lives on a window listener attached in an effect, while
+      // `findByLabelText` resolves on the transport bar's DOM mutation — which
+      // can commit first. Retry the keystroke until it lands, or a loaded runner
+      // drops it into a page that has no handler yet. (The click-based tests
+      // aren't exposed to this: those are React prop handlers.)
+      await waitFor(() => {
+        fireEvent.keyDown(window, { key: 'm' });
+        expect(screen.getByLabelText('Turn the metronome on')).toBeTruthy();
+      });
       fireEvent.keyDown(window, { key: 'm' });
       expect(await screen.findByLabelText('Turn the metronome off')).toBeTruthy();
     });

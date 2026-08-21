@@ -318,18 +318,16 @@ describe('llamaServerManager', () => {
     vi.spyOn(childProcess, 'spawn').mockImplementation((cmd, args) => {
       spawnCalls.push({ cmd, args });
       const child = args[0] === 'install' ? installChild : linkChild;
+      // The binary shows up on PATH because `brew link` ran — key the mock off
+      // that spawn, not a wall-clock timer. A timer races the install child's
+      // own exit handler, and on a loaded runner it can fire first, making the
+      // binary look already-linked so the link step never happens (#4642).
+      if (args[0] === 'link') findSpy.mockReturnValue('/opt/homebrew/bin/llama-server');
       setTimeout(() => endProcess(child, 0), 10);
       return child;
     });
 
-    const resultPromise = installLlamaServer();
-
-    // Once `brew link` resolves, the binary shows up on PATH.
-    setTimeout(() => {
-      findSpy.mockReturnValue('/opt/homebrew/bin/llama-server');
-    }, 15);
-
-    const result = await resultPromise;
+    const result = await installLlamaServer();
     expect(result.success).toBe(true);
     expect(spawnCalls).toEqual([
       { cmd: 'brew', args: ['install', 'llama.cpp'] },
