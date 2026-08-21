@@ -114,6 +114,45 @@ describe('getProviderReadiness', () => {
     expect(readiness.docsUrl).toBeUndefined();
   });
 
+  // The confusion this prose exists for: the provider lists three model names,
+  // the server accepts one, and the checklist read as "llama.cpp does not have
+  // the model you installed" — sending the user after a download they already
+  // had. llama.cpp serves ONE model per process, under the `--alias` its launch
+  // line set, so the other two names were never separate weights.
+  it('explains that a one-model-per-process runtime names its model with a launch flag', async () => {
+    const readiness = await getProviderReadiness(llamaProvider({ defaultModel: 'qwen3.8-27b-dflash2' }), {
+      findCommand: () => '/opt/homebrew/bin/llama-server',
+      probe: reachable(['dflash']),
+    });
+    const model = checkById(readiness, 'model');
+    expect(model.detail).toMatch(/serves one model per process/);
+    expect(model.detail).toMatch(/--alias/);
+    // Both directions are offered: move the provider, or move the server.
+    expect(model.renameTo).toBe('qwen3.8-27b-dflash2');
+    expect(model.fixHint).toMatch(/nothing needs downloading/);
+    expect(model.fixHint).toMatch(/Serve as/);
+  });
+
+  // A runtime whose served id comes from the weights it loaded has no label for
+  // PortOS to change — offering a rename button there would be a dead end.
+  it('offers no rename for a runtime that names its model after the weights', async () => {
+    const readiness = await getProviderReadiness(
+      {
+        id: 'ollama',
+        name: 'Ollama',
+        type: 'api',
+        endpoint: 'http://127.0.0.1:11434/v1',
+        defaultModel: 'qwen3:8b',
+      },
+      { findCommand: () => '/opt/homebrew/bin/ollama', probe: reachable(['llama3:8b']) },
+    );
+    const model = checkById(readiness, 'model');
+    expect(model.ok).toBe(false);
+    expect(model.renameTo).toBeNull();
+    expect(model.detail).not.toMatch(/serves one model per process/);
+    expect(model.fixHint).toMatch(/only accepts/);
+  });
+
   it('calls out a running server with nothing loaded', async () => {
     const readiness = await getProviderReadiness(llamaProvider(), {
       findCommand: () => '/opt/homebrew/bin/llama-server',

@@ -169,7 +169,7 @@ function findCommandCached(command) {
  * OpenCode provider entry and never reaches the daemon's own model list.
  * Returns null when the provider selects no specific model.
  */
-function servedModelId(provider, kind) {
+export function servedModelId(provider, kind) {
   const model = provider?.defaultModel;
   if (typeof model !== 'string' || model.trim() === '' || isConfiguredDefaultModel(model)) return null;
   const trimmed = model.trim();
@@ -275,14 +275,29 @@ function modelCheck(runtime, wanted, served, probeError = null, { weights = 'unk
     return { id: 'model', label, ok: true, detail: `${runtime.label} is serving \`${wanted}\`.`, fixHint: null };
   }
   const listed = served.slice(0, 3).map((id) => `\`${id}\``).join(', ');
+  // WHY only one id is listed, in the same line that lists it. A daemon that
+  // serves one model per process is not "missing" the others — nothing was ever
+  // started under those names — and without saying so the checklist reads as a
+  // missing multi-gigabyte download, which is the wrong fix and an expensive one
+  // to chase.
+  const oneModel = runtime.servesOneModel
+    ? ` ${runtime.label} serves one model per process${runtime.aliasFlag ? `, answering under the id its \`${runtime.aliasFlag}\` set rather than the weights' own name` : ''}.`
+    : '';
   const detail = served.length === 0
     ? `${runtime.label} is running but has no model loaded.`
-    : `${runtime.label} is serving ${listed}${served.length > 3 ? ` +${served.length - 3} more` : ''}.`;
+    : `${runtime.label} is serving ${listed}${served.length > 3 ? ` +${served.length - 3} more` : ''}.${oneModel}`;
+  // A runtime whose served id is a launch-line LABEL can be renamed onto the
+  // weights it is already running — no download, no model swap. That makes the
+  // mismatch fixable from EITHER end, so the hint names both rather than
+  // implying the provider is the only thing that may move.
+  const renameTo = served.length > 0 && runtime.aliasFlag ? wanted : null;
   const fixHint = served.length === 0
     ? (runtime.manageUrl
       ? 'No model is loaded. Start a preset from Models → LLMs.'
       : 'No model is loaded. Use the setup controls on this card to load one.')
-    : `This provider will send \`${wanted}\`, but the running server only accepts ${listed}. Use the button below to match them${runtime.manageUrl ? ', or change the loaded weights on the Models → LLMs page' : ''}.`;
+    : renameTo
+      ? `Same server, two names for it — nothing needs downloading. Use the button below to point this provider at ${listed}, or “Serve as \`${wanted}\`” to relaunch ${runtime.label} on the weights it already has under that id.`
+      : `This provider will send \`${wanted}\`, but the running server only accepts ${listed}. Use the button below to match them${runtime.manageUrl ? ', or change the loaded weights on the Models → LLMs page' : ''}.`;
   return {
     id: 'model',
     label,
@@ -290,6 +305,9 @@ function modelCheck(runtime, wanted, served, probeError = null, { weights = 'unk
     detail,
     fixHint,
     servedModels: served,
+    // The id a one-click relaunch would put on the launch line, or null when
+    // this runtime has no label of its own to change.
+    renameTo,
   };
 }
 

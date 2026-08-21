@@ -131,6 +131,90 @@ describe('ProviderReadiness', () => {
     expect(screen.queryByText(/setup docs/i)).toBeNull();
   });
 
+  // The mismatch is fixable from both ends. Moving the provider is one click;
+  // moving the SERVER — relaunching llama.cpp on the weights it already has,
+  // under the id the provider sends — is the other, and it is the one a user
+  // who picked that model id deliberately actually wants.
+  it('offers to relaunch the daemon under the id the provider sends', () => {
+    const onServeWantedModel = vi.fn();
+    const mismatch = readiness({
+      checks: [
+        {
+          id: 'model',
+          label: 'Model `qwen3.8-27b-dflash2` available',
+          ok: false,
+          detail: 'llama.cpp is serving `dflash`. llama.cpp serves one model per process.',
+          fixHint: 'Same server, two names for it — nothing needs downloading.',
+          servedModels: ['dflash'],
+          renameTo: 'qwen3.8-27b-dflash2',
+        },
+      ],
+    });
+    renderWithRouter(
+      <ProviderReadiness readiness={mismatch} onUseServedModel={vi.fn()} onServeWantedModel={onServeWantedModel} />,
+    );
+
+    const button = screen.getByRole('button', { name: /Serve as qwen3\.8-27b-dflash2/ });
+    // The reassurance that makes the click safe to make: the weights stay put.
+    expect(button.getAttribute('title')).toMatch(/No weights are downloaded/);
+    fireEvent.click(button);
+    expect(onServeWantedModel).toHaveBeenCalledWith('qwen3.8-27b-dflash2');
+  });
+
+  // A relaunch reloads a multi-gigabyte GGUF, so a second click while the first
+  // is still loading would stop the daemon mid-start.
+  it('disables the relaunch button while the daemon is coming back', () => {
+    const onServeWantedModel = vi.fn();
+    renderWithRouter(
+      <ProviderReadiness
+        readiness={readiness({
+          checks: [
+            {
+              id: 'model',
+              label: 'Model `dspark` available',
+              ok: false,
+              detail: 'llama.cpp is serving `dflash`.',
+              fixHint: 'Same server, two names for it.',
+              servedModels: ['dflash'],
+              renameTo: 'dspark',
+            },
+          ],
+        })}
+        onServeWantedModel={onServeWantedModel}
+        serving
+      />,
+    );
+    const button = screen.getByRole('button', { name: /Restarting/ });
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(onServeWantedModel).not.toHaveBeenCalled();
+  });
+
+  // A runtime that names its model after the weights it loaded has no label to
+  // change, so the server sends no `renameTo` and the banner must not guess one.
+  it('offers no relaunch button when the runtime has no model id to rename', () => {
+    renderWithRouter(
+      <ProviderReadiness
+        readiness={readiness({
+          checks: [
+            {
+              id: 'model',
+              label: 'Model `qwen3:8b` available',
+              ok: false,
+              detail: 'Ollama is serving `llama3:8b`.',
+              fixHint: 'Use the button below to match them.',
+              servedModels: ['llama3:8b'],
+              renameTo: null,
+            },
+          ],
+        })}
+        onUseServedModel={vi.fn()}
+        onServeWantedModel={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /Serve as/ })).toBeNull();
+  });
+
   it('does not invent a use-as-default button when nothing is loaded', () => {
     renderWithRouter(
       <ProviderReadiness

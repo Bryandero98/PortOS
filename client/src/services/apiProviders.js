@@ -32,6 +32,15 @@ export const getProviderRuntimes = (options) => request('/providers/runtimes', o
 // serving the model this provider asks for. Keyed by provider id; providers
 // with no local dependency are absent from the map.
 export const getProviderReadiness = (options) => request('/providers/readiness', options);
+// The model-mismatch fix that moves the SERVER rather than the provider:
+// llama.cpp serves one model per process under the `--alias` on its launch
+// line, so PortOS can relaunch the weights it already has under the id this
+// provider sends. The model id is re-derived server-side from the stored
+// record — this call names only the provider.
+export const serveProviderModel = (id, options) => request(
+  `/providers/readiness/serve-model?provider=${encodeURIComponent(id)}`,
+  { method: 'POST', ...options },
+);
 
 // Provider status (usage limits, availability)
 export const getProviderStatuses = () => request('/providers/status');

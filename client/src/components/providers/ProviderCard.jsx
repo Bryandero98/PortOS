@@ -91,6 +91,8 @@ export default function ProviderCard({
   onInstallRuntime,
   onAutoSetupRuntime,
   onUseServedModel,
+  onServeWantedModel,
+  servingModel = false,
 }) {
   const style = CARD_STATE_STYLES[cardState.state];
   return (
@@ -264,6 +266,8 @@ export default function ProviderCard({
           readiness={daemonReadiness}
           onAutoSetup={(setup) => onAutoSetupRuntime?.({ ...setup, providerId: provider.id })}
           onUseServedModel={(modelId) => onUseServedModel?.(provider, modelId)}
+          onServeWantedModel={onServeWantedModel ? () => onServeWantedModel(provider) : undefined}
+          serving={servingModel}
         />
 
         {provider.enabled && status?.available === false && (

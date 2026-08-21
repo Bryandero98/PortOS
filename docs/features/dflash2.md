@@ -214,6 +214,33 @@ Until all three pass, the card says what is missing and links to
 **Models → LLMs**. The same failure previously surfaced only as
 `Cannot connect to API: Unable to connect` inside the agent transcript.
 
+### "llama.cpp is serving `dflash`" — the model check is a NAME check
+
+`llama-server` serves **one model per process**, and the id it answers
+`GET /v1/models` with is whatever `--alias` was on its launch line — not the
+GGUF's filename. So the three aliases the provider ships with
+(`dflash`, `qwen3.8-27b-dflash2`, `Muse-Glimmer-30B-DFlash2`) are *names you may
+start the server under*, not three models sitting there ready to switch between.
+Pinning the provider to one the running server was not started under fails the
+model check even when the weights loaded are exactly the ones you wanted.
+
+Nothing is missing and nothing needs downloading. The checklist offers both
+fixes, and either is one click:
+
+- **Use `dflash` as default** — point the provider at the id the server answers
+  with.
+- **Serve as `qwen3.8-27b-dflash2`** — relaunch `llama-server` on the weights it
+  already has, under the id the provider sends
+  (`POST /api/providers/readiness/serve-model`). The whole launch line is
+  carried forward, tuning flags included; if the relaunch is rejected or never
+  answers, the previous line is put back so the provider is never left pointing
+  at a dead port.
+
+The second button only appears for `llama.cpp` — Ollama, LM Studio, and MTPLX
+name a model after the weights they loaded, so there is no label to change.
+It also refuses (naming the flag to add yourself) when `llama-server` was
+started outside PortOS: that process belongs to whoever ran it.
+
 The GGUF weights are a separate download from the binary: `llama-server` will
 not start without them, and PortOS refuses the start with the missing path named
 rather than reporting a PID for a process that already exited. The Speculative

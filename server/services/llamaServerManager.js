@@ -159,12 +159,9 @@ const endpointFor = (config) =>
  * default.
  */
 export async function getLlamaServerEndpoint() {
-  if (!currentConfig) {
-    const pm2Status = await getAppStatusStrict(LLAMA_APP);
-    if (pm2Status?.status === 'online' && pm2Status.args) {
-      currentConfig = parseConfigFromArgs(pm2Status.args);
-    }
-  }
+  // Reconstructs `currentConfig` from PM2's args as a side effect when PortOS
+  // restarted under a still-running daemon — see `readLlamaServerLaunch`.
+  if (!currentConfig) await readLlamaServerLaunch();
   return endpointFor(currentConfig);
 }
 
@@ -486,6 +483,152 @@ async function waitForEndpoint(endpoint) {
 }
 
 /**
+ * Stop whatever is running and bring `next` up in its place, putting `previous`
+ * back when the new launch line is rejected or never answers.
+ *
+ * Shared by the two relaunch paths below — both are "same weights, one field
+ * changed", and this restore ceremony is the entire reason either of them is
+ * safe to offer from a button: this daemon fronts the `llama` provider for the
+ * whole install, so a relaunch that leaves it down breaks every later request,
+ * not just the one that was being tuned or renamed.
+ *
+ * @returns {Promise<{ok: boolean, rejected: string|null, config: object|null}>}
+ *   `ok: false` with `rejected: null` means the process came up but never
+ *   answered on its port.
+ */
+async function relaunchWithConfig(next, previous) {
+  // Both failure paths below land here: the port is free (or about to be), and
+  // the known-good launch line goes back on it. Resolves to `null` rather than
+  // throwing — a restore that fails is already the worst case, and replacing the
+  // caller's own reason with a second error would hide why the relaunch failed.
+  const restorePrevious = async () => {
+    await waitForPortRelease(previous.port ?? PORTS.LLAMA_SERVER);
+    const restored = await startLlamaServer(previous).catch((err) => {
+      console.error(`❌ llama-server: could not restore the previous configuration: ${err.message}`);
+      return null;
+    });
+    return restored?.config || null;
+  };
+
+  await stopLlamaServer();
+  await waitForPortRelease(next.port ?? PORTS.LLAMA_SERVER);
+
+  // A tuning sweep EXPECTS launch lines that don't work — `--flash-attn` on a
+  // build without it, a `--cache-type-k` this build lacks, a `-ub` past what the
+  // GPU can hold. llama-server exits immediately and `startLlamaServer` throws.
+  const started = await startLlamaServer(next).catch(async (err) => {
+    console.error(`❌ llama-server: relaunch failed (${err.message}) — restoring the previous configuration`);
+    return { failure: err.message, config: await restorePrevious() };
+  });
+  if (started.failure) return { ok: false, rejected: started.failure, config: started.config };
+
+  // PM2 reporting `online` is not the same as the server answering. But
+  // `startLlamaServer` only polls for four seconds, and a large GGUF routinely
+  // takes longer than that to load — so `online: false` is "not ready YET",
+  // not "wedged". Give it a real readiness budget before judging.
+  if (started.online || await waitForEndpoint(started.endpoint)) {
+    return { ok: true, rejected: null, config: started.config };
+  }
+
+  // Still silent. Treat it exactly like a rejected launch line: put the previous
+  // configuration back, so the install's llama provider is not left pointing at
+  // a process that never serves.
+  console.error('❌ llama-server: relaunched process never answered — restoring the previous configuration');
+  await stopLlamaServer().catch(() => {});
+  return { ok: false, rejected: null, config: await restorePrevious() };
+}
+
+/**
+ * The launch line PM2 is currently running llama-server on, without the log
+ * fetch and endpoint probe `getLlamaServerStatus` spends on a full status.
+ *
+ * `managed: false` covers both "nothing is running" and "something is listening
+ * that PortOS did not start" — neither is a launch line PortOS may change.
+ *
+ * `readFailed: true` is a THIRD answer and must not collapse into either: it
+ * means PM2 itself could not be read (`getAppStatusStrict`'s null sentinel), so
+ * PortOS does not know what is running. Reporting that as "not PortOS's" would
+ * tell a user who owns the daemon to go add `--alias` to a launch line PortOS
+ * wrote — the fix is to retry. `getLlamaServerStatus` draws the same
+ * distinction (`isReadFailed`).
+ *
+ * @returns {Promise<{managed: boolean, config: object|null, readFailed: boolean}>}
+ */
+export async function readLlamaServerLaunch() {
+  const pm2Status = await getAppStatusStrict(LLAMA_APP);
+  if (pm2Status === null) return { managed: false, config: null, readFailed: true };
+  if (pm2Status.status !== 'online') return { managed: false, config: null, readFailed: false };
+  if (!currentConfig && pm2Status.args) currentConfig = parseConfigFromArgs(pm2Status.args);
+  return { managed: true, config: currentConfig, readFailed: false };
+}
+
+/**
+ * Relaunch llama-server serving the SAME weights under a different model id.
+ *
+ * llama.cpp answers `GET /v1/models` with exactly one entry, and that entry is
+ * whatever `--alias` was on its launch line. So a provider pinned to
+ * `qwen3.8-27b-dflash2` against a server started as `dflash` fails every request
+ * even when the GGUF loaded IS Qwen3.8-27B + DFlash 2 — the ids simply never
+ * matched. Nothing is missing and nothing needs downloading; the fix is a label.
+ *
+ * Refuses (never throws) when PortOS did not start the process: an
+ * externally-launched llama-server belongs to whoever ran it, and stopping it to
+ * change a name PortOS invented would kill a server the user owns.
+ *
+ * @param {string} alias the model id the provider will send
+ * @returns {Promise<{applied: boolean|null, reason: string|null, config: object|null}>}
+ *   `applied: null` means the daemon already answers under that id.
+ */
+export async function relaunchLlamaServerWithAlias(alias) {
+  const wanted = String(alias ?? '').trim();
+  if (!wanted) return { applied: false, reason: 'No model id was given to serve under.', config: null };
+
+  const { managed, config, readFailed } = await readLlamaServerLaunch();
+  if (readFailed) {
+    return {
+      applied: false,
+      retryable: true,
+      reason: 'PortOS could not read PM2 to find out what llama-server is running. Try again in a moment.',
+      config: null,
+    };
+  }
+  if (!managed || !config?.model) {
+    return {
+      applied: false,
+      reason: `llama-server is not running under PortOS, so its launch line is not PortOS's to change. Start it from Models → LLMs, or add \`--alias ${wanted}\` to your own launch line.`,
+      config: null,
+    };
+  }
+  if (config.alias === wanted) return { applied: null, reason: null, config };
+
+  // A rename carries the whole launch line forward, tuning flags included, so
+  // the baseline PortOS displaced when it tuned this daemon is still the line to
+  // put back later. `startLlamaServer` clears it on every fresh launch, so it is
+  // captured here and re-armed on success.
+  const baseline = preTuningConfig;
+  console.log(`🦙 llama-server: relaunching to answer as ${wanted} (was ${config.alias || 'unset'})`);
+  const outcome = await relaunchWithConfig({ ...config, alias: wanted }, config);
+  // The baseline is the line a later untuned assessment RELAUNCHES, so it has to
+  // carry the new id or that assessment silently renames the daemon back and
+  // re-breaks the provider this button just fixed. Only the alias moves: every
+  // other field of the baseline is the user's own launch line, which a rename
+  // does not touch. On either failure path the original alias is what is back on
+  // the port, so the baseline stays exactly as captured.
+  preTuningConfig = outcome.ok && baseline ? { ...baseline, alias: wanted } : baseline;
+  if (outcome.rejected) {
+    return { applied: false, reason: `llama-server rejected the relaunch: ${outcome.rejected}`, config: outcome.config };
+  }
+  if (!outcome.ok) {
+    return {
+      applied: false,
+      reason: 'llama-server relaunched but never answered on its port — the previous model id is back.',
+      config: outcome.config,
+    };
+  }
+  return { applied: true, reason: null, config: outcome.config };
+}
+
+/**
  * Relaunch llama-server with a different tuning, keeping the model/drafter it is
  * already serving.
  *
@@ -687,59 +830,27 @@ export async function relaunchLlamaServerWithTuning(tuning = {}, { reset = false
   console.log(clearing
     ? '🦙 llama-server: relaunching without the tuning PortOS applied'
     : `🦙 llama-server: relaunching to apply tuning (${knobs.length ? knobs.map(([k, v]) => `${k}=${v}`).join(', ') : 'backend defaults'})`);
-  await stopLlamaServer();
-  await waitForPortRelease(next.port ?? PORTS.LLAMA_SERVER);
-
-  // A tuning sweep EXPECTS launch lines that don't work — `--flash-attn` on a
-  // build without it, a `--cache-type-k` this build lacks, a `-ub` past what the
-  // GPU can hold. llama-server exits immediately and `startLlamaServer` throws.
-  // Leaving it down would be far worse than not applying the tuning: this daemon
-  // fronts the `llama` provider for the whole install, so every later request
-  // would fail too. Put the previous configuration back before reporting.
-  const started = await startLlamaServer(next).catch(async (err) => {
-    console.error(`❌ llama-server: tuning launch failed (${err.message}) — restoring the previous configuration`);
-    await waitForPortRelease(previous.port ?? PORTS.LLAMA_SERVER);
-    const restored = await startLlamaServer(previous).catch((restoreErr) => {
-      console.error(`❌ llama-server: could not restore the previous configuration: ${restoreErr.message}`);
-      return null;
-    });
-    return { failure: err.message, config: restored?.config || null };
-  });
-  if (started.failure) {
+  const outcome = await relaunchWithConfig(next, previous);
+  if (outcome.rejected) {
     // `previous` is back on the port, so whatever tuning it carried is still in
     // effect and still needs undoing later.
     preTuningConfig = baseline;
     return {
       applied: false,
       reason: clearing
-        ? `llama-server rejected its pre-tuning launch line: ${started.failure}`
-        : `llama-server rejected that tuning: ${started.failure}`,
-      config: started.config,
+        ? `llama-server rejected its pre-tuning launch line: ${outcome.rejected}`
+        : `llama-server rejected that tuning: ${outcome.rejected}`,
+      config: outcome.config,
     };
   }
-
-  // PM2 reporting `online` is not the same as the server answering. But
-  // `startLlamaServer` only polls for four seconds, and a large GGUF routinely
-  // takes longer than that to load — so `online: false` is "not ready YET",
-  // not "wedged". Give it a real readiness budget before judging.
-  const ready = started.online || await waitForEndpoint(started.endpoint);
-  if (!ready) {
-    // Still silent. Treat it exactly like a rejected launch line: put the
-    // previous configuration back, so the install's llama provider is not left
-    // pointing at a process that never serves. Without this the caller would go
-    // on to measure a dead endpoint and record the timeouts as evidence.
-    console.error('❌ llama-server: relaunched process never answered — restoring the previous configuration');
-    await stopLlamaServer().catch(() => {});
-    await waitForPortRelease(previous.port ?? PORTS.LLAMA_SERVER);
-    const restored = await startLlamaServer(previous).catch((err) => {
-      console.error(`❌ llama-server: could not restore the previous configuration: ${err.message}`);
-      return null;
-    });
+  if (!outcome.ok) {
+    // The relaunched process never answered. `previous` is back, so the caller
+    // measures a live endpoint rather than recording timeouts as evidence.
     preTuningConfig = baseline;
     return {
       applied: false,
       reason: 'llama-server relaunched but never answered on its port',
-      config: restored?.config || null,
+      config: outcome.config,
     };
   }
   // The daemon now serves `next`. Clearing leaves it untuned, so there is
@@ -748,7 +859,7 @@ export async function relaunchLlamaServerWithTuning(tuning = {}, { reset = false
   preTuningConfig = clearing ? null : (baseline || previous);
   // `null`, not `true`, for a clear: there was no tuning to apply, and the
   // reading that follows describes backend defaults truthfully.
-  return { applied: clearing ? null : true, reason: null, config: started.config };
+  return { applied: clearing ? null : true, reason: null, config: outcome.config };
 }
 
 /**

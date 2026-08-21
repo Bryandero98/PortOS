@@ -135,6 +135,18 @@ export const LOCAL_RUNTIMES = Object.freeze({
     // weights are a separate download from the binary — the single most common
     // reason a freshly-installed llama.cpp still cannot serve a request.
     modelsHint: 'Pick a GGUF preset on that tab — PortOS downloads the weights and starts the server there.',
+    // One process, one model. Without this the readiness checklist read as
+    // "llama.cpp does not have the model you asked for" — which sent users off
+    // to download weights they already had.
+    servesOneModel: true,
+    // ...and the id it answers under is a LABEL on the launch line, not the
+    // GGUF's filename. That is the whole reason a provider can list three model
+    // names while the server accepts exactly one: the other two were never
+    // separate downloads, they were names nothing was ever started under. It
+    // also makes the mismatch a rename rather than a fetch, which is what lets
+    // `providerReadiness.js` offer to relaunch the same weights under the id the
+    // provider asks for.
+    aliasFlag: '--alias',
   }),
   ollama: Object.freeze({
     id: 'ollama',
@@ -168,6 +180,9 @@ export const LOCAL_RUNTIMES = Object.freeze({
     manageUrl: null,
     docsUrl: 'https://github.com/atomantic/PortOS/blob/main/docs/features/qwen38-rtx3090.md',
     modelsHint: 'Clone syv-ai/qwen38-27b-rtx3090 and run its prepare step once — PortOS never pulls the image or the ~20 GB of weights.',
+    // One container, one checkpoint — but its served id is baked into the
+    // compose project, so PortOS has no launch line of its own to rename.
+    servesOneModel: true,
   }),
   mtplx: Object.freeze({
     id: 'mtplx',
@@ -181,6 +196,9 @@ export const LOCAL_RUNTIMES = Object.freeze({
     manageUrl: null,
     docsUrl: 'https://github.com/atomantic/PortOS/blob/main/docs/features/mtplx.md',
     modelsHint: 'Point the server at the Qwen MTP checkpoint you want, or let the checklist fetch MTPLX\'s default one when nothing is cached.',
+    // One process, one checkpoint — MTPLX names it after the checkpoint it
+    // loaded, so there is no label for PortOS to change.
+    servesOneModel: true,
   }),
 });
 

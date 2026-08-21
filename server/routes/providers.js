@@ -15,10 +15,12 @@ import {
   spawnRuntimeInstaller,
   stopRuntimeInstaller,
 } from '../services/providerRuntimeInstaller.js';
-import { getProviderReadinessMap, resetProviderReadinessCache } from '../services/providerReadiness.js';
+import { getProviderReadinessMap, resetProviderReadinessCache, servedModelId } from '../services/providerReadiness.js';
+import { getLlamaServerEndpoint, relaunchLlamaServerWithAlias } from '../services/llamaServerManager.js';
+import { claimHeavyLocalJob } from '../lib/heavyJobClaim.js';
 import { getProviderPrerequisiteMap } from '../services/providerPrerequisites.js';
 import { runLocalRuntimeSetup, SETUP_ACTIONS } from '../services/localRuntimeSetup.js';
-import { localRuntimeForProvider } from '../lib/localProviderRuntime.js';
+import { localEndpointPort, localRuntimeForProvider } from '../lib/localProviderRuntime.js';
 import { buildTuiShellLaunch } from '../lib/tuiShellLaunch.js';
 
 /**
@@ -443,6 +445,94 @@ export function createPortOSProviderRoutes(aiToolkit) {
     installLog.onEvent(terminal);
     send(terminal);
     safeEnd();
+  }));
+
+  /**
+   * Relaunch the local daemon so it answers under the model id THIS provider
+   * sends — the other half of the readiness checklist's model mismatch.
+   *
+   * "Use `dflash` as default" already moved the provider onto whatever the
+   * server happens to answer as. This moves the server instead, which is what a
+   * user wants when they picked the model id deliberately: llama.cpp serves one
+   * model per process under the `--alias` on its launch line, so the mismatch is
+   * a label, not a missing download, and renaming it keeps the weights that are
+   * already loaded.
+   *
+   * Only runtimes that HAVE such a label (`aliasFlag`) qualify; the model id is
+   * re-derived server-side from the stored provider record, so nothing from the
+   * query reaches a launch argument.
+   */
+  router.post('/readiness/serve-model', asyncHandler(async (req, res) => {
+    const providerId = String(req.query.provider || '');
+    const data = await providerService.getAllProviders();
+    // RAW record — a sanitized copy redacts the secret env values a custom base
+    // URL can live in, which would resolve the wrong runtime.
+    const provider = (data.providers || []).find((row) => row.id === providerId);
+    if (!provider) {
+      throw new ServerError('Unknown provider', { status: 404, code: 'UNKNOWN_PROVIDER', context: { provider: providerId } });
+    }
+    const runtime = localRuntimeForProvider(provider);
+    if (!runtime?.aliasFlag) {
+      throw new ServerError(
+        'This provider\'s runtime names its model after the weights it loaded, so PortOS cannot rename it — change the provider\'s default model instead.',
+        { status: 400, code: 'NO_MODEL_ALIAS' },
+      );
+    }
+    const wanted = servedModelId(provider, runtime.kind);
+    if (!wanted) {
+      throw new ServerError('This provider selects no specific model, so there is nothing to serve it as.', { status: 400, code: 'NO_DEFAULT_MODEL' });
+    }
+
+    // The provider's OWN endpoint, not the runtime's default: a second
+    // llama-server on another loopback port is a different daemon, and PortOS
+    // only manages one (`portos-llama-server`). Without this the button on a
+    // provider pointed at that second server would restart the managed one under
+    // the second one's model id — breaking the provider that WAS working and
+    // leaving the clicked one mismatched exactly as before.
+    const managedEndpoint = await getLlamaServerEndpoint();
+    // Compared by PORT, not by string: the manager renders its host as
+    // `127.0.0.1` while a provider may spell the same daemon `localhost`, and a
+    // string compare would refuse a setup that works. `localRuntimeForProvider`
+    // already guarantees `runtime.endpoint` is a local-instance host, so a
+    // matching port is the same daemon.
+    if (localEndpointPort(runtime.endpoint) !== localEndpointPort(managedEndpoint)) {
+      throw new ServerError(
+        `This provider points at ${runtime.endpoint}, but the llama-server PortOS manages serves ${managedEndpoint}. Add \`--alias ${wanted}\` to that server's own launch line instead.`,
+        { status: 409, code: 'LLAMA_ENDPOINT_MISMATCH' },
+      );
+    }
+
+    // A relaunch reloads multi-gigabyte weights onto the accelerator, and an
+    // assessment sweep relaunches the same daemon on its own schedule — so this
+    // takes the machine-wide claim those jobs take rather than a lock private to
+    // this route. Zero timeout: an interactive click refuses immediately with
+    // who holds it rather than queueing behind hours of sweep.
+    const claim = await claimHeavyLocalJob({ kind: 'llama-server model id', id: wanted, timeoutMs: 0 });
+    if (!claim.ok) {
+      throw new ServerError(claim.message, { status: 409, code: 'LOCAL_ACCELERATOR_BUSY' });
+    }
+    // `relaunchLlamaServerWithAlias` resolves for every expected refusal, so
+    // this covers the unexpected throw — the claim must not survive it, or every
+    // later heavy local job is refused until the process exits.
+    const result = await relaunchLlamaServerWithAlias(wanted).finally(() => claim.release());
+    // The daemon's launch line just changed under the readiness caches, and the
+    // page polls them within seconds.
+    resetProviderReadinessCache();
+    if (result.applied === false) {
+      throw new ServerError(result.reason, {
+        // A PM2 read that failed says nothing about the daemon — the fix is to
+        // retry, not to go edit a launch line.
+        status: result.retryable ? 503 : 409,
+        code: result.retryable ? 'SERVE_MODEL_UNAVAILABLE' : 'SERVE_MODEL_FAILED',
+        context: { model: wanted },
+      });
+    }
+    res.json({
+      success: true,
+      model: wanted,
+      // `null` = it already answered under that id, so nothing was restarted.
+      relaunched: result.applied === true,
+    });
   }));
 
   // `runtime` rides in the query string because the shared RuntimeInstallModal

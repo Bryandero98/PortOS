@@ -19,6 +19,13 @@
  * running server answers under a different id, or an in-app Local LLM
  * settings link. Vendor setup docs are never the way forward.
  *
+ * A model mismatch is fixable from BOTH ends, and the banner offers both.
+ * llama.cpp serves one model per process and answers under the `--alias` on its
+ * launch line, so a provider pinned to `qwen3.8-27b-dflash2` against a server
+ * started as `dflash` is a naming mismatch, not a missing download — the user
+ * can move the provider onto the served id, or press "Serve as …" to relaunch
+ * the daemon on the weights it already has under the id they picked.
+ *
  * That includes the case where the daemon is installed but has NO model weights
  * cached: the server can't start, so `setup.action` is `pull-start` and the
  * button downloads the runtime's own default checkpoint before starting it.
@@ -27,7 +34,7 @@
  */
 
 import { Link } from 'react-router';
-import { CheckCircle2, Download, HelpCircle, Wand2, Wrench, XCircle } from 'lucide-react';
+import { CheckCircle2, Download, HelpCircle, RefreshCw, Wand2, Wrench, XCircle } from 'lucide-react';
 import Banner from '../ui/Banner';
 import Pill from '../ui/Pill';
 
@@ -60,7 +67,7 @@ function CodeText({ text }) {
   );
 }
 
-export default function ProviderReadiness({ readiness, onAutoSetup, onUseServedModel, className = '' }) {
+export default function ProviderReadiness({ readiness, onAutoSetup, onUseServedModel, onServeWantedModel, serving = false, className = '' }) {
   if (!readiness || !Array.isArray(readiness.checks) || readiness.checks.length === 0) return null;
   const { label, endpoint, ready, checks, manageUrl, setup } = readiness;
 
@@ -94,10 +101,10 @@ export default function ProviderReadiness({ readiness, onAutoSetup, onUseServedM
                 {check.fixHint && (
                   <span className="block text-port-warning/90"><CodeText text={check.fixHint} /></span>
                 )}
-                {check.id === 'model' && check.ok === false && onUseServedModel
+                {check.id === 'model' && check.ok === false
                   && Array.isArray(check.servedModels) && check.servedModels.length > 0 && (
                   <span className="flex flex-wrap gap-1.5 mt-1.5">
-                    {check.servedModels.slice(0, 3).map((id) => (
+                    {onUseServedModel && check.servedModels.slice(0, 3).map((id) => (
                       <button
                         key={id}
                         type="button"
@@ -108,6 +115,23 @@ export default function ProviderReadiness({ readiness, onAutoSetup, onUseServedM
                         Use {id} as default
                       </button>
                     ))}
+                    {/* The other direction: move the SERVER onto the id this
+                        provider sends. Offered only when the runtime names its
+                        model with a launch-line label (`check.renameTo`), which
+                        makes the fix a rename of the loaded weights rather than
+                        a multi-gigabyte download. */}
+                    {check.renameTo && onServeWantedModel && (
+                      <button
+                        type="button"
+                        onClick={() => onServeWantedModel(check.renameTo)}
+                        disabled={serving}
+                        className={`${ACTION_CLASS} disabled:opacity-50 disabled:cursor-not-allowed`}
+                        title={`Restart ${label} serving the model it already has loaded under the id ${check.renameTo}. No weights are downloaded.`}
+                      >
+                        <RefreshCw size={12} className={serving ? 'animate-spin' : ''} />
+                        {serving ? 'Restarting…' : `Serve as ${check.renameTo}`}
+                      </button>
+                    )}
                   </span>
                 )}
               </span>
