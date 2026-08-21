@@ -82,6 +82,24 @@ describe('Models', () => {
     expect(await screen.findByText('assessments panel')).toBeInTheDocument();
   });
 
+  // The slug comes straight off the URL, so a plain `TAB_CONTENT[tab]` lookup
+  // resolves an Object.prototype member as a "valid" tab and hands it to React as
+  // a component. These must take the unknown-slug path like any other typo.
+  it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty'])(
+    'treats the inherited property %s as an unknown tab',
+    async (slug) => {
+      renderAt(`/models/${slug}`);
+      expect(await screen.findByText('assessments panel')).toBeInTheDocument();
+    },
+  );
+
+  it('ignores a record id for a tab whose detail map inherits the name', async () => {
+    // Same hazard one level down: `TAB_DETAIL['constructor']` is a function, so an
+    // unguarded lookup would render it instead of falling back to the tab index.
+    renderAt('/models/loras/anything');
+    expect(await screen.findByText('loras panel')).toBeInTheDocument();
+  });
+
   it('offers every Models destination in the sub-nav', () => {
     renderAt('/models/performance');
     for (const { label } of TABS) {

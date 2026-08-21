@@ -74,13 +74,18 @@ export default function Models() {
   // An unknown slug lands on Performance rather than rendering a blank page —
   // it is the tab that answers "which model should I use?", which is what most
   // people arrive here for.
-  const activeTab = tab && TAB_CONTENT[tab] ? tab : null;
+  //
+  // OWN-property lookup, not plain indexing: the slug comes straight off the URL,
+  // so `/models/constructor` (or `toString`, `__proto__`) would otherwise resolve
+  // to an Object.prototype member, read as a valid tab, and get rendered as a
+  // component. Same reason `unavailableReasonLabel` guards its map.
+  const activeTab = tab && Object.hasOwn(TAB_CONTENT, tab) ? tab : null;
   if (!activeTab) return <Navigate to="/models/performance" replace />;
 
   // A record id in the URL selects the tab's drill-down, when it has one. A tab
   // with no detail view ignores the extra segment and renders its index — better
   // than 404ing a link that merely carries one segment too many.
-  const DetailContent = recordId ? TAB_DETAIL[activeTab] : null;
+  const DetailContent = recordId && Object.hasOwn(TAB_DETAIL, activeTab) ? TAB_DETAIL[activeTab] : null;
   const TabContent = TAB_CONTENT[activeTab];
 
   return (

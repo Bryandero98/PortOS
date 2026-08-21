@@ -439,6 +439,13 @@ const NAV_COVERAGE_OPT_OUT = new Map([
 // real page and (loudly, not silently) demand a nav entry for its route.
 const REDIRECT_ELEMENT = /element=\{<\s*(Navigate|RedirectWithSearch|PrefixRedirect|CanonRedirect|UniverseRouteRedirect)\b/;
 
+// Of those, the ones that REBASE a prefix and carry the trailing path (ids, tabs)
+// onto the new one. The others forward to a fixed destination and discard
+// whatever followed — correct for a static route, silently lossy for a param'd
+// one, which is how a bookmark into a specific record turns into a landing on
+// the index.
+const SUFFIX_PRESERVING_ELEMENTS = new Set(['PrefixRedirect', 'UniverseRouteRedirect']);
+
 // Flatten a stack of (possibly multi-segment, possibly "/") route path pieces
 // into a single absolute path: ['/', 'media', 'image'] → '/media/image'.
 function joinRoutePath(segments) {
@@ -494,9 +501,10 @@ function scanRoutes(appSrc) {
     // where each forwarding route points. `to` is read off the same line, so a
     // `from`-only wrapper (CanonRedirect, UniverseRouteRedirect) records nothing
     // rather than a bogus target.
-    if (REDIRECT_ELEMENT.test(line)) {
+    const redirectElement = line.match(REDIRECT_ELEMENT);
+    if (redirectElement) {
       const to = line.match(/\bto="([^"]*)"/);
-      if (to) redirects.push({ from: absolute, to: to[1] });
+      if (to) redirects.push({ from: absolute, to: to[1], element: redirectElement[1] });
       continue;
     }
 
@@ -512,6 +520,7 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
   const navPaths = new Set(NAV_COMMANDS.map((c) => c.path.split(/[?#]/)[0]));
   const scan = scanRoutes(fs.readFileSync(APP_JSX, 'utf8'));
   const routePaths = new Set(scan.required);
+  const byFrom = new Map(scan.redirects.map((r) => [r.from, r]));
 
   it('the line scanner saw every <Route> (single-line assumption holds)', () => {
     // A non-empty malformed list or unbalanced stack means a multi-line route
@@ -536,12 +545,26 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
   // declaration then lives beside the path that moved, and the next move is one
   // edit in navManifest.js instead of two files that can disagree.
   it('keeps a redirect from every declared previous path to its current one', () => {
-    const byFrom = new Map(scan.redirects.map((r) => [r.from, r.to]));
     const broken = NAV_COMMANDS
       .flatMap((c) => (c.previousPaths || []).map((from) => ({ from, to: c.path.split(/[?#]/)[0], id: c.id })))
-      .filter(({ from, to }) => byFrom.get(from) !== to)
-      .map(({ from, to, id }) => `${id}: ${from} → ${byFrom.get(from) ?? 'NO REDIRECT'} (want ${to})`);
+      .filter(({ from, to }) => byFrom.get(from)?.to !== to)
+      .map(({ from, to, id }) => `${id}: ${from} → ${byFrom.get(from)?.to ?? 'NO REDIRECT'} (want ${to})`);
     expect(broken).toEqual([]);
+  });
+
+  // Landing on the right PAGE is only half of it. A previous path with a `:param`
+  // segment was a deep link into one record, so its redirect has to carry that
+  // segment across — swapping the PrefixRedirect for a bare <Navigate to="/models/training">
+  // still points at the right page and would pass the check above, while every
+  // bookmarked dataset quietly lands on the index instead.
+  it('preserves the record id when a parameterized previous path redirects', () => {
+    const lossy = NAV_COMMANDS
+      .flatMap((c) => (c.previousPaths || []).map((from) => ({ from, id: c.id })))
+      .filter(({ from }) => from.split('/').some((seg) => seg.startsWith(':')))
+      .map(({ from, id }) => ({ from, id, hit: byFrom.get(from) }))
+      .filter(({ hit }) => !hit || !SUFFIX_PRESERVING_ELEMENTS.has(hit.element))
+      .map(({ from, id, hit }) => `${id}: ${from} forwards via ${hit?.element ?? 'NO REDIRECT'}, which drops the trailing segment`);
+    expect(lossy).toEqual([]);
   });
 
   // The guard above is only as good as what it is pointed at, and it reads a
