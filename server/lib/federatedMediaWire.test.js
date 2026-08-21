@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   federatedMediaAudioProfileSchema,
+  federatedMediaCapabilitySchema,
   federatedMediaProviderStatusSchema,
   federatedMediaProviderJobSchema,
   effectiveJobPrompt,
@@ -110,6 +111,63 @@ describe('federated media status kind projection', () => {
         defaultDurationSec: null, lyrics: false, autoDuration: false,
       }],
     })).success).toBe(false);
+  });
+
+  it('validates capabilities with frameStride, maxNumFrames, and resolutionOptions', () => {
+    const capability = {
+      kind: 'video',
+      engine: 'local',
+      engineName: 'Local',
+      modelId: 'wan22_t2v_a14b',
+      modelName: 'Wan 2.2 T2V A14B',
+      ready: true,
+      unavailableReason: null,
+      runtimeReady: true,
+      platformSupported: true,
+      cudaRequired: false,
+      cudaState: 'available',
+      minDurationSec: null,
+      maxDurationSec: null,
+      defaultDurationSec: null,
+      lyrics: false,
+      autoDuration: false,
+      frameStride: 4,
+      maxNumFrames: 121,
+      resolutionOptions: [{ w: 1344, h: 768, label: '16:9 H3 default' }],
+    };
+
+    expect(federatedMediaCapabilitySchema.safeParse(capability).success).toBe(true);
+    expect(federatedMediaProviderStatusSchema.safeParse(status({
+      kinds: ['video'],
+      capabilities: [capability],
+    })).success).toBe(true);
+  });
+
+  it('validates an older provider payload omitting the frame and canvas constraint fields', () => {
+    const legacyCapability = {
+      kind: 'video',
+      engine: 'local',
+      engineName: 'Local',
+      modelId: 'ltx23_distilled_q4',
+      modelName: 'LTX-2.3 Distilled Q4',
+      ready: true,
+      unavailableReason: null,
+      runtimeReady: true,
+      platformSupported: true,
+      cudaRequired: false,
+      cudaState: 'available',
+      minDurationSec: null,
+      maxDurationSec: null,
+      defaultDurationSec: null,
+      lyrics: false,
+      autoDuration: false,
+    };
+
+    expect(federatedMediaCapabilitySchema.safeParse(legacyCapability).success).toBe(true);
+    const parsed = federatedMediaCapabilitySchema.parse(legacyCapability);
+    expect(parsed.frameStride).toBeUndefined();
+    expect(parsed.maxNumFrames).toBeUndefined();
+    expect(parsed.resolutionOptions).toBeUndefined();
   });
 });
 
