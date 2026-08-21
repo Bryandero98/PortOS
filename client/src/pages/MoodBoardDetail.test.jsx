@@ -1,6 +1,6 @@
 import { StrictMode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
 // ── Mocks must be declared before any imports that use them ──────────────────
@@ -113,6 +113,9 @@ describe('MoodBoardDetail stale-response guards', () => {
     // Newer request resolves first — its data should show.
     second.resolve({ id: 'b', name: 'Board B', items: [] });
     await waitFor(() => expect(boardNameValue()).toBe('Board B'));
+    // GalleryImagePicker mounts with the loaded board and resets its filter
+    // state in a mount effect. Settle it before the unwrapped stale response.
+    await act(async () => {});
 
     // Older (stale) request resolves last — it must NOT overwrite current state.
     first.resolve({ id: 'a', name: 'Board A', items: [] });
