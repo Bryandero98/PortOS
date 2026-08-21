@@ -52,7 +52,10 @@ let runtimeSetupInFlight = false;
 
 /**
  * Sanitize a provider object for client responses.
- * Strips apiKey (replaces with hasApiKey boolean) and redacts secretEnvVars values.
+ * Strips apiKey (replaces with hasApiKey boolean) and redacts secretEnvVars
+ * values. An explicitly empty secret value stays empty so the client can
+ * distinguish "configured but blank" from an unknown redacted value when it
+ * paints provider readiness.
  */
 const sanitizeProvider = (provider) => {
   if (!provider) return provider;
@@ -67,7 +70,7 @@ const sanitizeProvider = (provider) => {
   if (Array.isArray(secretEnvVars)) {
     for (const key of secretEnvVars) {
       if (key in sanitized.envVars) {
-        sanitized.envVars[key] = '***';
+        sanitized.envVars[key] = sanitized.envVars[key] === '' ? '' : '***';
       }
     }
   }

@@ -980,6 +980,149 @@ export const isOllamaBackedProvider = (provider) => {
 */
 export const isOrcaRouterBackedProvider = (provider) => provider?.orcarouterBacked === true;
 
+// Environment variables whose names are conventionally credentials. The
+// explicit secretEnvVars list remains the primary source, but it is a masking
+// list rather than a credential schema — providers may mark optional values
+// such as AWS_PROFILE secret too. Filter both sources so only actual credential
+// names participate in readiness. The explicit list can still name a custom
+// credential that does not follow this convention (for example MY_LLM_KEY).
+const CREDENTIAL_ENV_VAR_RE = /(?:^|_)(?:API_KEY|APIKEY|AUTH|ACCESS_KEY|ACCESS_TOKEN|BEARER|CLIENT_SECRET|CREDENTIALS?|KEY|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)(?:_|$)/i;
+const NON_CREDENTIAL_ENV_VAR_RE = /(?:^|_)(?:BASE_URL|CONFIG|CONFIG_CONTENT|ENDPOINT|HOST|MODEL|MODE|PATH|PORT|PROFILE|REGION)(?:_|$)/i;
+const NON_CREDENTIAL_ENV_VAR_NAMES = new Set(['CLAUDE_CODE_USE_BEDROCK']);
+
+const providerHasStoredKey = (provider) =>
+  provider?.hasApiKey === true || Boolean(provider?.apiKey);
+
+const credentialEnvVars = (provider) => {
+  if (!isProcessProvider(provider)) return [];
+  const envVars = provider?.envVars && typeof provider.envVars === 'object' ? provider.envVars : {};
+  const secretEnvVars = Array.isArray(provider?.secretEnvVars) ? provider.secretEnvVars : [];
+  const explicit = new Set(secretEnvVars.filter((name) => typeof name === 'string' && name !== ''));
+  const names = [...secretEnvVars, ...Object.keys(envVars)];
+  return [...new Set(names.filter((name) => typeof name === 'string'
+    && !NON_CREDENTIAL_ENV_VAR_NAMES.has(name)
+    && !NON_CREDENTIAL_ENV_VAR_RE.test(name)
+    && (explicit.has(name) || CREDENTIAL_ENV_VAR_RE.test(name))))];
+};
+
+/**
+ * Identify how a provider authenticates, without deciding whether that
+ * credential is present. `null` is a deliberate ref for `none`, while a
+ * credential ref names the provider id, inherited sibling, or env var to look
+ * up. An own key wins over the OrcaRouter marker because the server leaves a
+ * provider carrying `provider.apiKey` untouched at spawn time.
+ *
+ * @param {{id?:string,type?:string,endpoint?:string,apiKey?:string,hasApiKey?:boolean,orcarouterBacked?:boolean,envVars?:Record<string,string>,secretEnvVars?:string[]}|null|undefined} provider
+ * @returns {{kind:'stored'|'inherited'|'env'|'none',ref:string|null}}
+ */
+export const credentialSource = (provider) => {
+  // Local API endpoints need no credential, even if an old record happens to
+  // retain one from before the endpoint was changed.
+  if (isApiProvider(provider) && isPrivateNetworkEndpoint(provider?.endpoint)) {
+    return { kind: 'none', ref: null };
+  }
+  // API providers are the only ordinary providers whose stored key is read by
+  // PortOS itself. A legacy apiKey on a CLI/TUI record is not passed to the
+  // process and must not hide an empty process credential.
+  if (isApiProvider(provider)) {
+    return { kind: 'stored', ref: provider?.id || null };
+  }
+  // An OrcaRouter wrapper with its own key is the one process-backed exception:
+  // withOrcaRouterApiKey leaves it untouched, so that key really is used.
+  if (isOrcaRouterBackedProvider(provider) && providerHasStoredKey(provider)) {
+    return { kind: 'stored', ref: provider?.id || null };
+  }
+  const [envVar] = credentialEnvVars(provider);
+  if (envVar) return { kind: 'env', ref: envVar };
+  if (isOrcaRouterBackedProvider(provider)) return { kind: 'inherited', ref: 'orcarouter' };
+  return { kind: 'none', ref: null };
+};
+
+const normalizeCredentialState = (state) =>
+  state === true || state === false ? state : null;
+
+const defaultKeySetFor = (provider, id) =>
+  id && id === provider?.id ? providerHasStoredKey(provider) : null;
+
+const defaultEnvVarSet = (provider, name) => {
+  if (!name || !Object.hasOwn(provider?.envVars || {}, name)) return null;
+  const value = provider.envVars[name];
+  const isExplicitCredential = Array.isArray(provider?.secretEnvVars)
+    && provider.secretEnvVars.includes(name);
+  // `***` is the sanitized secret sentinel, not evidence that the value is
+  // present. A redacted value is unknown; an explicitly empty SECRET value is
+  // known missing. An unmarked empty value may deliberately clear an ambient
+  // host credential so the process can use another auth path, so it is unknown.
+  if (value === '***' || typeof value !== 'string') return null;
+  if (value === '' && !isExplicitCredential) return null;
+  return value !== '';
+};
+
+const credentialEnvGroups = (provider) => {
+  const names = credentialEnvVars(provider);
+  const groups = [];
+  const grouped = new Set();
+  const hasAwsAccessPair = names.includes('AWS_ACCESS_KEY_ID') && names.includes('AWS_SECRET_ACCESS_KEY');
+
+  for (const name of names) {
+    if (name === 'AWS_ACCESS_KEY_ID' && hasAwsAccessPair) {
+      groups.push(['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY']);
+      grouped.add('AWS_ACCESS_KEY_ID');
+      grouped.add('AWS_SECRET_ACCESS_KEY');
+    } else if (!grouped.has(name) && !(hasAwsAccessPair && name === 'AWS_SESSION_TOKEN')) {
+      groups.push([name]);
+      grouped.add(name);
+    }
+  }
+  return groups;
+};
+
+const inheritedCredentialMissing = (provider, keySetFor) => {
+  if (!isOrcaRouterBackedProvider(provider) || providerHasStoredKey(provider)) return null;
+  const rawState = typeof keySetFor === 'function'
+    ? keySetFor('orcarouter')
+    : defaultKeySetFor(provider, 'orcarouter');
+  return normalizeCredentialState(rawState) === false
+    ? { code: 'inheritedApiKey', label: 'OrcaRouter API provider has no API key' }
+    : null;
+};
+
+const credentialMissing = (provider, { keySetFor = null, envVarSet = null } = {}) => {
+  const source = credentialSource(provider);
+  if (source.kind === 'none' || !source.ref) return null;
+
+  if (source.kind === 'env') {
+    const groups = credentialEnvGroups(provider).map((group) => group.map((name) => {
+      const rawState = typeof envVarSet === 'function' ? envVarSet(name) : defaultEnvVarSet(provider, name);
+      return { name, state: normalizeCredentialState(rawState) };
+    }));
+    const inherited = inheritedCredentialMissing(provider, keySetFor);
+    // Providers can expose alternative credential schemes in one env map (for
+    // example Bedrock bearer auth or the AWS access-key pair). A complete known
+    // group satisfies the provider; a partial/unknown group keeps the result
+    // non-blocking rather than accusing a credential whose state is uncertain.
+    const satisfied = groups.some((group) => group.every(({ state }) => state === true));
+    const unknown = groups.some((group) => group.some(({ state }) => state === null));
+    if (satisfied || unknown) return inherited;
+    const missing = groups.flatMap((group) => group.filter(({ state }) => state === false).map(({ name }) => ({
+      code: 'envVar',
+      label: `${name} environment variable is not set`,
+    })));
+    if (inherited) missing.push(inherited);
+    return missing.length > 0 ? missing : null;
+  }
+
+  if (source.kind === 'inherited') {
+    return inheritedCredentialMissing(provider, keySetFor);
+  }
+  const rawState = typeof keySetFor === 'function'
+    ? keySetFor(source.ref)
+    : defaultKeySetFor(provider, source.ref);
+  return normalizeCredentialState(rawState) === false
+    ? { code: 'apiKey', label: 'API key is not set' }
+    : null;
+};
+
 /**
  * Check if a provider is the Grok Build CLI/TUI (the `grok` command harness).
  * Mirrors the Grok detection in `knownProviderContextWindow`: matches the shipped
@@ -1023,14 +1166,14 @@ export const PROVIDER_CARD_STATE = Object.freeze({
  * server/lib/providerPrerequisites.js, and `getFallbackProvider` skips a
  * provider whose CLI that same computation found missing — so a card blocked on
  * an uninstalled binary is no longer a routing candidate that dies at spawn
- * time on a raw ENOENT. (Routing acts only on that finding; a missing stored
- * key still shows here but stays presentation-only, because a provider can
- * authenticate through a secret env var — issue #4612, which also covers
- * DETECTING those env-var credentials so this stops over-reporting them.)
+ * time on a raw ENOENT. (Routing acts only on that finding; stored, inherited,
+ * and env-var credential findings stay presentation-only, and the browser now
+ * derives known env-var gaps without over-reporting redacted values.)
  *
- * This function consumes the published list and adds only what the browser
- * alone can see (the local-app runtime shape below). With an older server
- * publishing nothing, it falls back to deriving the credential checks itself.
+ * This function consumes the published list and adds what the browser alone
+ * can see (the local-app runtime shape and sanitized env-credential state
+ * below). With an older server publishing nothing, it falls back to deriving
+ * the credential checks itself.
  *
  * Inputs are passed in rather than read from globals so this stays pure:
  *   runtime          — the provider's entry of the `runtimes` map (CLI binary)
@@ -1042,14 +1185,12 @@ export const PROVIDER_CARD_STATE = Object.freeze({
  *   status           — the runtime-availability entry from
  *                      `GET /api/providers/status`; `available === false`
  *                      means the provider is benched after a failure.
- *   orcaRouterKeySet — whether the sibling `orcarouter` API provider holds the
- *                      key an OpenCode OrcaRouter wrapper inherits at spawn
- *                      time. `false` covers BOTH "sibling has no key" and
- *                      "sibling was deleted" — the server injects the key only
- *                      when that provider exists and holds one, so either way
- *                      the wrapper cannot authenticate. `null` is for a caller
- *                      that genuinely cannot tell (no provider list yet) and,
- *                      like `runtime`, is never reported as missing.
+ *   keySetFor        — tri-state lookup for a stored or inherited key. It must
+ *                      return `true`/`false` when known and `null` or another
+ *                      non-boolean when unknown.
+ *   envVarSet        — tri-state lookup for an environment credential. An
+ *                      explicitly empty configured value is `false`; a missing
+ *                      or redacted value is unknown and must not be reported.
  *
  * `blocked` outranks `disabled`: a provider whose CLI isn't installed can't be
  * enabled at all, so it belongs in the "needs setup" bucket whichever way its
@@ -1058,7 +1199,12 @@ export const PROVIDER_CARD_STATE = Object.freeze({
  *
  * @returns {{state: string, missing: {code: string, label: string}[]}}
  */
-export const providerCardState = (provider, { runtime = null, status = null, orcaRouterKeySet = null } = {}) => {
+export const providerCardState = (provider, {
+  runtime = null,
+  status = null,
+  keySetFor = null,
+  envVarSet = null,
+} = {}) => {
   // The server publishes its own verdict on `GET /api/providers`
   // (`missingPrerequisites`, from server/lib/providerPrerequisites.js) and
   // routes the fallback chain on exactly that computation. Where it has an
@@ -1071,7 +1217,9 @@ export const providerCardState = (provider, { runtime = null, status = null, orc
   const published = Array.isArray(provider?.missingPrerequisites) ? provider.missingPrerequisites : null;
   const missing = published ? [...published] : [];
   const addMissing = (code, label) => {
-    if (!missing.some((entry) => entry?.code === code)) missing.push({ code, label });
+    if (!missing.some((entry) => entry?.code === code && (code !== 'envVar' || entry?.label === label))) {
+      missing.push({ code, label });
+    }
   };
 
   // Kept client-side even when the server has published: `runtime` here may be
@@ -1091,18 +1239,16 @@ export const providerCardState = (provider, { runtime = null, status = null, orc
   if (runtime && runtime.installed === false && !resolvesOutsidePortosPath(provider)) {
     addMissing('runtime', `${runtime.label || 'Runtime'} is not installed`);
   }
-  if (!published) {
-    // API providers auth solely via the stored key — but only an endpoint outside
-    // the private network actually needs one. The server attaches `Authorization`
-    // only when a key is stored, so a keyless call to loopback, a LAN box, or a
-    // tailnet peer running LM Studio / Ollama works exactly as configured.
-    if (isApiProvider(provider) && provider?.hasApiKey !== true && !isPrivateNetworkEndpoint(provider?.endpoint)) {
-      addMissing('apiKey', 'API key is not set');
-    }
-    // The OpenCode OrcaRouter wrappers carry no key of their own — theirs lives
-    // on the sibling API provider, so that's the prerequisite to report.
-    if (isOrcaRouterBackedProvider(provider) && orcaRouterKeySet === false) {
-      addMissing('inheritedApiKey', 'OrcaRouter API provider has no API key');
+  // The server's published findings remain authoritative for stored/inherited
+  // credentials. Env credentials are also derived here because their values
+  // are intentionally redacted in the payload; the tri-state lookup lets an
+  // explicitly empty value be reported without treating a redacted/absent
+  // value as missing.
+  const source = credentialSource(provider);
+  if (!published || source.kind === 'env') {
+    const missingCredential = credentialMissing(provider, { keySetFor, envVarSet });
+    for (const entry of Array.isArray(missingCredential) ? missingCredential : [missingCredential]) {
+      if (entry) addMissing(entry.code, entry.label);
     }
   }
 

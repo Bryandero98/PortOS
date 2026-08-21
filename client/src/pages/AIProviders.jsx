@@ -376,13 +376,17 @@ export default function AIProviders() {
   const { providersById, runtimeByProviderId, cardStateByProviderId, providersBySection } = useMemo(() => {
     const byId = Object.fromEntries(providers.map(p => [p.id, p]));
     const runtimeById = Object.fromEntries(providers.map(p => [p.id, runtimeForProvider(p)]));
-    const readinessById = Object.fromEntries(providers.map(p => [p.id, providerCardState(p, {
-      runtime: runtimeById[p.id],
-      status: statuses[p.id],
-      // `providers` is the authoritative list, so a sibling that is absent from
-      // it was deleted — the wrapper has no key to inherit, which is `false`,
-      // not "unknown". (Nothing here runs before the list loads.)
-      orcaRouterKeySet: Boolean(byId.orcarouter?.hasApiKey),
+    const readinessById = Object.fromEntries(providers.map((provider) => [provider.id, providerCardState(provider, {
+      runtime: runtimeById[provider.id],
+      status: statuses[provider.id],
+      keySetFor: (id) => {
+        const referenced = byId[id];
+        // The list is authoritative once this memo runs. A missing sibling was
+        // deleted, so the wrapper has no inherited key; an unknown lookup is
+        // reserved for callers that genuinely cannot determine the state.
+        if (!referenced) return false;
+        return typeof referenced.hasApiKey === 'boolean' ? referenced.hasApiKey : null;
+      },
     })]));
     // The default provider floats to the top of whichever section it sits in, so
     // "which one runs by default" stays a one-glance answer after grouping.
@@ -528,7 +532,7 @@ export default function AIProviders() {
                           {Object.entries(provider.envVars).map(([k, v]) => (
                             <div key={k}>
                               <code className="ml-1 text-orange-400">
-                                {k}={provider.secretEnvVars?.includes(k) ? '***' : v}
+                                {k}={provider.secretEnvVars?.includes(k) ? (v === '' ? '(not set)' : '***') : v}
                               </code>
                             </div>
                           ))}

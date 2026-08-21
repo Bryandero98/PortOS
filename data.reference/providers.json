@@ -53,7 +53,7 @@
         "ANTHROPIC_AUTH_TOKEN": "ollama",
         "ANTHROPIC_SMALL_FAST_MODEL": "qwen2.5:7b"
       },
-      "secretEnvVars": [],
+      "secretEnvVars": ["ANTHROPIC_AUTH_TOKEN"],
       "headlessArgs": ["--no-session-persistence", "--disable-slash-commands", "--tools", ""]
     },
     "codex": {
@@ -153,7 +153,7 @@
         "ANTHROPIC_AUTH_TOKEN": "ollama",
         "ANTHROPIC_SMALL_FAST_MODEL": "qwen2.5:7b"
       },
-      "secretEnvVars": [],
+      "secretEnvVars": ["ANTHROPIC_AUTH_TOKEN"],
       "tuiPromptDelayMs": 2500
     },
     "opencode-ollama": {

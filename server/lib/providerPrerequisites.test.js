@@ -126,6 +126,16 @@ describe('providerPrerequisites', () => {
     expect(providerPrerequisites(wrapper, { orcaRouterKeySet: null }).met).toBe(true);
   });
 
+  it('does not demand the sibling key when the wrapper carries its own key', () => {
+    const wrapper = cli({
+      id: 'opencode-orcarouter',
+      command: 'opencode',
+      orcarouterBacked: true,
+      apiKey: 'sk-example',
+    });
+    expect(providerPrerequisites(wrapper, { orcaRouterKeySet: false }).met).toBe(true);
+  });
+
   it('collects every finding rather than stopping at the first', () => {
     const wrapper = { id: 'x', type: 'api', endpoint: 'https://api.example.com', orcarouterBacked: true };
     const result = providerPrerequisites(wrapper, {
