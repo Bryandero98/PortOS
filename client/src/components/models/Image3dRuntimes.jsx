@@ -110,9 +110,17 @@ function TargetCard({ target, onInstall }) {
           )}
         </div>
       </div>
-      {degraded?.help && (
+      {/* `help` names the remedy, `detail` names what is actually missing — without the
+          second, a Repair that keeps failing just reprints the same sentence with nothing
+          to act on (#4636). The panel opens for EITHER, since the adapter contract makes
+          both optional; the server omits `detail` rather than sending an empty label, so
+          a probe that could not run renders no orphan "Missing:" line. */}
+      {(degraded?.help || degraded?.detail) && (
         <p className="mt-3 rounded border border-port-warning/40 bg-port-warning/10 p-2 text-[11px] leading-relaxed text-port-warning">
           {degraded.help}
+          {degraded.detail && (
+            <span className="mt-1 block text-port-warning/70">{degraded.detail}</span>
+          )}
         </p>
       )}
     </div>
@@ -207,9 +215,21 @@ export default function Image3dRuntimes() {
         // `undefined` rather than '' when a target has nothing to say, so
         // RuntimeInstallModal's own default description applies instead of a blank panel.
         description={installTarget?.degraded
-          // The degraded help text owns the whole message (both targets' already end by
-          // saying downloaded models are kept) — appending to it would repeat that.
-          ? installTarget.degraded.help
+          // The degraded help text owns the REMEDY half of the message (both targets'
+          // already end by saying downloaded models are kept), so the generic install
+          // prose is not appended to it — that would repeat what it just said. `detail`
+          // is the one thing it does not cover: WHAT is missing. This modal is where a
+          // user who has already run Repair once lands, so without it the retry offers
+          // the identical sentence that did not work the first time (#4636).
+          //
+          // `|| undefined` has to be repeated here: `||` binds TIGHTER than `?:`, so the
+          // one on the else-branch below groups as `(… : Y || undefined)` and never
+          // covered this branch. It matters because the modal's default description is a
+          // default PARAMETER, which only fires on `undefined` — an empty join would
+          // render a blank panel instead of falling back to it. Reachable via a
+          // `degraded` carrying neither key, which the contract permits.
+          ? [installTarget.degraded.help, installTarget.degraded.detail && `${installTarget.degraded.detail}.`]
+            .filter(Boolean).join(' ') || undefined
           : [
             installTarget?.installNotes,
             gatedRepoCount
