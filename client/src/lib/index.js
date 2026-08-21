@@ -68,6 +68,7 @@ export * from './goalFeatureMap.js';
 export * from './a11yKeyboard.js';
 export * from './appIdentity.js';
 export * from './applyManuscriptEdits.js';
+export * from './assessmentTuningNotice.js';
 export * from './audioRecorder.js';
 export * from './bareUrl.js';
 export * from './boundedMap.js';

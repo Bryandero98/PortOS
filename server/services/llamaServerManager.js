@@ -35,6 +35,23 @@ const PORT_RELEASE_TIMEOUT_MS = 5000;
 let relaunchReadyTimeoutMs = 120000;
 
 let currentConfig = null;
+// The launch line the daemon was serving BEFORE PortOS put an assessment tuning
+// on it. `null` means no PortOS-applied tuning is in effect — either none was
+// ever applied, or it has since been cleared — and is what makes an UNTUNED
+// assessment honest: without it a baseline run would sample whatever the
+// previous measurement left running and file the numbers as "Backend defaults".
+//
+// Deliberately NOT the same thing as `CLEARED_TUNING`. That renders the launch
+// line with every sweepable knob off, which also wipes flags the USER set on the
+// LLMs page — correct for a sweep, which captured them and will put them back,
+// and wrong for an ordinary measurement, which did not. Restoring the captured
+// line undoes only what PortOS itself applied.
+//
+// Module state, so it does not survive a PortOS restart that re-adopts a still
+// -tuned PM2 process. That case degrades to today's behaviour (the untuned run
+// no-ops) rather than to a wrong relaunch, and the reconstructed launch line
+// cannot tell a PortOS tuning apart from the same flags typed by the user.
+let preTuningConfig = null;
 let lastExitError = null;
 const logs = createDaemonLogBuffer();
 const appendLog = logs.append;
@@ -318,6 +335,11 @@ export async function startLlamaServer(options = {}) {
   }
   appendLog(`Starting: llama-server ${args.join(' ')}`);
 
+  // A fresh launch line supersedes any baseline: whatever PortOS tuned is gone
+  // with the process it tuned, and restoring the old daemon's configuration over
+  // this one would undo a start the user just asked for. A relaunch re-arms this
+  // AFTER the start returns, from the baseline it captured itself.
+  preTuningConfig = null;
   currentConfig = {
     model,
     // The drafter actually on the launch line, so the status card reports what
@@ -429,6 +451,10 @@ export async function stopLlamaServer() {
     throw new ServerError(`Failed to stop llama-server: ${err.message}`, { status: 500 });
   }
   currentConfig = null;
+  // The tuning died with the process, so there is no longer anything to clear.
+  // A relaunch that stops the daemon itself re-establishes this from its own
+  // captured baseline — see `relaunchLlamaServerWithTuning`.
+  preTuningConfig = null;
 
   return { success: true, message: 'llama-server stopped' };
 }
@@ -505,10 +531,20 @@ async function waitForEndpoint(endpoint) {
  * silently resize the window (or the slot count) out from under a running
  * server.
  *
+ * An EMPTY tuning WITHOUT `reset` is the third request: an untuned measurement
+ * asking to be taken at backend defaults. It restores the launch line PortOS
+ * displaced when it first tuned this daemon — which undoes what PortOS applied
+ * and leaves the user's own flags exactly where they were, so it needs none of
+ * the capture/restore ceremony a `reset` does. When PortOS has tuned nothing,
+ * nothing is relaunched.
+ *
  * @param {object} tuning launch knobs from `lib/localModelTuning.js`
  * @param {{reset?: boolean}} [options] `reset` clears every sweepable knob the
  *   tuning does not name. Never pass it from an ordinary measurement.
- * @returns {Promise<{applied: boolean, reason: string|null, config: object|null}>}
+ * @returns {Promise<{applied: boolean|null, reason: string|null, config: object|null}>}
+ *   `applied: null` means nothing needed to change — the daemon already serves
+ *   the requested configuration, which is not a refusal and must not be recorded
+ *   as one.
  */
 const LAUNCHER_OWNED_KNOBS = new Set(['ctxSize', 'nGpuLayers', 'parallel']);
 
@@ -582,27 +618,48 @@ export async function restoreLlamaServerConfig(config) {
 }
 
 export async function relaunchLlamaServerWithTuning(tuning = {}, { reset = false } = {}) {
-  // Without a reset an empty tuning asks for nothing, so there is nothing to do
-  // — and answering before touching PM2 keeps an ordinary untuned measurement
-  // free of a status round trip.
-  if (!reset && Object.values(tuning).every((v) => v === null || v === undefined)) {
-    return { applied: false, reason: 'no launch knobs were requested', config: currentConfig };
+  const empty = Object.values(tuning).every((v) => v === null || v === undefined);
+  // An empty tuning with no `reset` is an UNTUNED measurement asking to be taken
+  // at backend defaults. If PortOS put a tuning on this daemon, it has to come
+  // back off — the reading is stored as "Backend defaults" either way, and
+  // `compareTunings` ranks every real tuning against it. Restoring the captured
+  // pre-tuning line, NOT `CLEARED_TUNING`: the reset clears sweepable knobs the
+  // user may have set themselves, which only a sweep is entitled to do.
+  const clearing = empty && !reset && Boolean(preTuningConfig);
+  // Nothing PortOS applied is outstanding, so an empty tuning asks for nothing —
+  // and answering before touching PM2 keeps an ordinary untuned measurement free
+  // of a status round trip.
+  if (!reset && empty && !clearing) {
+    return { applied: null, reason: null, config: currentConfig };
   }
 
   const status = await getLlamaServerStatus();
   if (!status.running) {
+    // Whatever carried the tuning is gone; the next start is untuned by
+    // construction, so there is nothing left to undo.
+    preTuningConfig = null;
+    if (clearing) return { applied: null, reason: null, config: null };
     return { applied: false, reason: 'llama-server is not running, so PortOS has no model path to relaunch with', config: null };
   }
   if (!status.managed || !status.config?.model) {
     return {
       applied: false,
-      reason: 'llama-server was started outside PortOS — start it from the LLMs page to let PortOS apply tuning',
+      // Worded for the direction it was asked in. A clearing run requested NO
+      // tuning, and its row already reads "backend defaults" — telling that user
+      // their tuning could not be applied contradicts what they are looking at.
+      reason: clearing
+        ? 'llama-server was started outside PortOS, so PortOS cannot relaunch it without the tuning it is carrying'
+        : 'llama-server was started outside PortOS — start it from the LLMs page to let PortOS apply tuning',
       config: status.config || null,
     };
   }
 
   const previous = status.config;
-  const next = { ...previous, ...(reset ? CLEARED_TUNING : {}), ...tuning };
+  // Captured before `stopLlamaServer` clears it, and put back explicitly on
+  // every exit below — the stop is part of this relaunch, not the user ending
+  // the tuning session.
+  const baseline = preTuningConfig;
+  const next = clearing ? baseline : { ...previous, ...(reset ? CLEARED_TUNING : {}), ...tuning };
   // Nothing to do when the daemon is ALREADY running this exact tuning — the
   // common case for an untuned measurement on an untuned server, and the reason
   // making an empty tuning meaningful costs a plain assessment nothing.
@@ -612,12 +669,24 @@ export async function relaunchLlamaServerWithTuning(tuning = {}, { reset = false
   // `nGpuLayers`) changes nothing in the cleared set, and judging on that would
   // report a context-size change as applied while the server kept serving the
   // old window.
-  const compared = new Set([...Object.keys(CLEARED_TUNING), ...Object.keys(tuning || {})]);
+  //
+  // A CLEARING run compares the whole captured line, not just the knob set: the
+  // baseline is a complete configuration, and any field of it that drifted is a
+  // difference this relaunch exists to undo.
+  const compared = clearing
+    ? new Set([...Object.keys(baseline), ...Object.keys(previous)])
+    : new Set([...Object.keys(CLEARED_TUNING), ...Object.keys(tuning || {})]);
   const changed = [...compared].some((id) => asLaunched(next[id]) !== asLaunched(previous[id]));
-  if (!changed) return { applied: true, reason: null, config: previous };
+  if (!changed) {
+    // The daemon already serves the pre-tuning line, so the tuning is gone.
+    if (clearing) preTuningConfig = null;
+    return { applied: clearing ? null : true, reason: null, config: previous };
+  }
 
   const knobs = Object.entries(tuning).filter(([, v]) => v !== null && v !== undefined);
-  console.log(`🦙 llama-server: relaunching to apply tuning (${knobs.length ? knobs.map(([k, v]) => `${k}=${v}`).join(', ') : 'backend defaults'})`);
+  console.log(clearing
+    ? '🦙 llama-server: relaunching without the tuning PortOS applied'
+    : `🦙 llama-server: relaunching to apply tuning (${knobs.length ? knobs.map(([k, v]) => `${k}=${v}`).join(', ') : 'backend defaults'})`);
   await stopLlamaServer();
   await waitForPortRelease(next.port ?? PORTS.LLAMA_SERVER);
 
@@ -637,7 +706,16 @@ export async function relaunchLlamaServerWithTuning(tuning = {}, { reset = false
     return { failure: err.message, config: restored?.config || null };
   });
   if (started.failure) {
-    return { applied: false, reason: `llama-server rejected that tuning: ${started.failure}`, config: started.config };
+    // `previous` is back on the port, so whatever tuning it carried is still in
+    // effect and still needs undoing later.
+    preTuningConfig = baseline;
+    return {
+      applied: false,
+      reason: clearing
+        ? `llama-server rejected its pre-tuning launch line: ${started.failure}`
+        : `llama-server rejected that tuning: ${started.failure}`,
+      config: started.config,
+    };
   }
 
   // PM2 reporting `online` is not the same as the server answering. But
@@ -657,13 +735,20 @@ export async function relaunchLlamaServerWithTuning(tuning = {}, { reset = false
       console.error(`❌ llama-server: could not restore the previous configuration: ${err.message}`);
       return null;
     });
+    preTuningConfig = baseline;
     return {
       applied: false,
       reason: 'llama-server relaunched but never answered on its port',
       config: restored?.config || null,
     };
   }
-  return { applied: true, reason: null, config: started.config };
+  // The daemon now serves `next`. Clearing leaves it untuned, so there is
+  // nothing left to undo; a first tuning records the line it displaced, and a
+  // second must NOT overwrite that with the line the first one left.
+  preTuningConfig = clearing ? null : (baseline || previous);
+  // `null`, not `true`, for a clear: there was no tuning to apply, and the
+  // reading that follows describes backend defaults truthfully.
+  return { applied: clearing ? null : true, reason: null, config: started.config };
 }
 
 /**
@@ -783,6 +868,7 @@ export async function installLlamaServer({ onProgress = () => {} } = {}) {
  */
 export function _resetLlamaServerStateForTests({ relaunchReadyTimeout } = {}) {
   currentConfig = null;
+  preTuningConfig = null;
   logs.reset();
   lastExitError = null;
   // Restored to the production budget unless a suite asks for a shorter one.

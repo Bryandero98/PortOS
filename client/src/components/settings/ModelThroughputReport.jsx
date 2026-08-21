@@ -20,6 +20,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Timer, Copy, Check } from 'lucide-react';
 import { copyToClipboard } from '../../lib/clipboard';
+import { tuningNoticeChip } from '../../lib/assessmentTuningNotice';
 import { formatContextTokens, formatDurationMs } from '../../utils/formatters';
 
 // One rate, as text. `null` is not measured and renders as an em dash — never a
@@ -138,7 +139,7 @@ export default function ModelThroughputReport({ report, runtimeLabelFor }) {
                       {row.staleness?.stale && <span className="ml-1 text-port-warning">stale</span>}
                       {/* The numbers are real but describe a configuration nobody
                           asked for — say so here too, not only in the ranked list. */}
-                      {row.tuningApplied === false && <span className="ml-1 text-port-warning">tuning not applied</span>}
+                      {tuningNoticeChip(row) && <span className="ml-1 text-port-warning">{tuningNoticeChip(row)}</span>}
                     </div>
                   </td>
                   <td className="px-2 py-1.5 text-right"><Rate value={row.meanTokensPerSecond} estimated={row.tokensEstimated} /></td>

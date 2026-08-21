@@ -508,7 +508,7 @@ describe('LocalModelAssessments — tuning', () => {
 
   it('warns instead of celebrating when the tuning never reached the daemon', async () => {
     runLocalLlmAssessment.mockResolvedValue({
-      verdict: 'fits', tuningApplied: false, tuningNotApplied: 'llama-server is not running',
+      verdict: 'fits', tuningKey: 'ubatchSize=512', tuningApplied: false, tuningNotApplied: 'llama-server is not running',
     });
     const user = userEvent.setup();
     render(<LocalModelAssessments />);
@@ -609,17 +609,40 @@ describe('LocalModelAssessments — one row per tuning', () => {
     ));
   });
 
-  it('warns on a ranked row whose tuning never reached the daemon', async () => {
+  // A reading whose configuration never reached the daemon is never RANKED —
+  // the server pulls it into `excluded` (`getAssessmentReport`), which is where
+  // the sentence has to land. Asserting it on a ranked row would pass against a
+  // hand-built fixture the server can never produce.
+  it('explains an excluded row whose tuning never reached the daemon', async () => {
     getLocalLlmAssessments.mockResolvedValue(report({
-      ranked: [rankedEntry({
+      excluded: [{
+        backend: 'llama',
+        modelId: 'dflash',
         tuningKey: 'ubatchSize=512',
         tuningLabel: 'Micro-batch size 512',
-        tuningApplied: false,
-        tuningNotApplied: 'llama-server is not running',
-      })],
+        verdict: 'fits',
+        reason: 'measured, but the requested tuning was not applied — llama-server is not running',
+      }],
     }));
     render(<LocalModelAssessments />);
-    expect(await screen.findByText(/Tuning was not applied/)).toBeInTheDocument();
+    expect(await screen.findByText(/requested tuning was not applied/)).toBeInTheDocument();
+  });
+
+  // The untuned counterpart: its chip reads "backend defaults", so the sentence
+  // beside it has to name what actually failed rather than contradict the chip.
+  it('explains an excluded row the daemon could not be returned to defaults for', async () => {
+    getLocalLlmAssessments.mockResolvedValue(report({
+      excluded: [{
+        backend: 'ollama',
+        modelId: 'example-model:7b',
+        tuningKey: '',
+        tuningLabel: null,
+        verdict: 'fits',
+        reason: 'measured, but the daemon still carried an earlier tuning — Ollama would not stop',
+      }],
+    }));
+    render(<LocalModelAssessments />);
+    expect(await screen.findByText(/daemon still carried an earlier tuning/)).toBeInTheDocument();
   });
 });
 

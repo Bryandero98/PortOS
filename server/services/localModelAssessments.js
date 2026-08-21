@@ -378,9 +378,14 @@ export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_
 // and what the daemon is running now — out of a manager result that spells
 // success differently (`applied` vs `success`). Normalizing here keeps each
 // entry below to the one line that is actually runtime-specific.
+//
+// `null` is the third state and means "nothing needed to change": the daemon
+// already serves the requested configuration. That is NOT a refusal, so it
+// carries no reason — recording one would put a "tuning not applied" warning on
+// a reading that is perfectly accurate.
 const toApplication = (ok, error, fallbackReason) => ({
-  applied: ok === true,
-  reason: ok === true ? null : (error || fallbackReason),
+  applied: ok === null ? null : ok === true,
+  reason: ok === true || ok === null ? null : (error || fallbackReason),
   config: null,
 });
 
@@ -431,6 +436,7 @@ const LAUNCH_APPLIERS = {
   llama: {
     transport: 'config',
     sweepable: true,
+    resetsOnEmpty: true,
     apply: ({ launch, reset }) => relaunchLlamaServerWithTuning(launchConfig('llama', launch), { reset }),
     capture: captureLlamaServerConfig,
     restore: restoreLlamaServerConfig,
@@ -438,18 +444,24 @@ const LAUNCH_APPLIERS = {
   ollama: {
     transport: 'env',
     sweepable: false,
+    resetsOnEmpty: true,
     apply: ({ launch }) => restartOllamaWithEnv(launchEnv('ollama', launch))
       .then((r) => toApplication(r.applied, r.error, `Ollama could not be restarted with that tuning (${r.reason})`)),
   },
   lmstudio: {
     transport: 'cli',
     sweepable: false,
+    resetsOnEmpty: true,
     apply: ({ modelId, launch }) => loadLmStudioModelWithArgs(modelId, launchArgs('lmstudio', launch))
-      .then((r) => toApplication(r.success, r.error, 'LM Studio could not reload the model with that tuning')),
+      .then((r) => toApplication(r.unchanged ? null : r.success, r.error, 'LM Studio could not reload the model with that tuning')),
   },
   mtplx: {
     transport: 'cli',
     sweepable: false,
+    // `relaunchMtplxServerWithTuning` refuses an empty knob set rather than
+    // relaunching without flags, so PortOS cannot put this daemon back on its
+    // defaults and an untuned run must not claim it did.
+    resetsOnEmpty: false,
     // Takes the knob set as-is rather than rendered flags: `mtplxServerManager`
     // renders it with the same catalog on the way to the launch line, and keeps
     // the ids so it can report back which tuning the daemon came up under.
@@ -470,6 +482,24 @@ export const LAUNCH_TRANSPORTS = Object.freeze(Object.fromEntries(
 export const isTuningSweepable = (backend) => LAUNCH_APPLIERS[backend]?.sweepable === true;
 
 /**
+ * Whether an EMPTY knob set is a real "run at backend defaults" instruction this
+ * manager honours, rather than a request for nothing.
+ *
+ * This is what makes an UNTUNED assessment honest. Such a run records
+ * `tuningKey: ''` and renders as **Backend defaults**, so the daemon has to
+ * actually BE at them — but if the previous run tuned it, it is still serving
+ * under that tuning and the reading is filed under a configuration that never
+ * ran. `compareTunings` then ranks every real tuning against it, making the one
+ * row a user reads as the baseline the least trustworthy row in the table
+ * (#4759, and the same failure #4763 describes for a sweep's baseline variant).
+ *
+ * Distinct from `sweepable`: this is only the RESET half. A sweep additionally
+ * needs `capture`/`restore` so it can put the user's own launch flags back after
+ * driving the daemon through a grid — which llama.cpp alone has today.
+ */
+const resetsOnEmpty = (backend) => LAUNCH_APPLIERS[backend]?.resetsOnEmpty === true;
+
+/**
  * Remember a runtime's launch configuration so a sweep can put it back.
  * `null` for a runtime with nothing to capture — restoring it is then a no-op.
  */
@@ -482,7 +512,12 @@ export const restoreLaunchState = (backend, state) =>
 async function applyLaunchTuning({ backend, modelId, launch, reset }) {
   const applier = LAUNCH_APPLIERS[backend];
   if (!applier) {
-    return { applied: false, reason: `PortOS does not start the ${backend} runtime, so it cannot apply launch tuning`, config: null };
+    // No launch path at all. A requested tuning is genuinely not applied; an
+    // empty set has nothing to undo, because PortOS never put a tuning on this
+    // daemon in the first place.
+    return Object.keys(launch).length > 0
+      ? { applied: false, reason: `PortOS does not start the ${backend} runtime, so it cannot apply launch tuning`, config: null }
+      : { applied: null, reason: null, config: null };
   }
   return applier.apply({ backend, modelId, launch, reset })
     .catch((err) => ({ applied: false, reason: err?.message || 'relaunch failed', config: null }));
@@ -502,14 +537,23 @@ async function measureModel({ backend, modelId, contexts, tuning, resetTuning, s
   // tuning PortOS could not apply must not be filed as evidence for that tuning.
   const launch = launchTuning(backend, normalizedTuning);
   const request = requestBody(backend, normalizedTuning);
-  // `resetTuning` (a SWEEP, never an ordinary Measure) makes an empty launch
-  // tuning meaningful: "no knobs" is the baseline every variant is compared
-  // against, so it has to be applied rather than assumed. Without it an empty
-  // tuning stays what it has always been — nothing was asked for, nothing is
-  // touched — which is what keeps a plain measurement from relaunching, and from
-  // recording `tuningApplied: false` for a run that requested no tuning at all.
+  // An empty launch tuning is a real instruction — "run at backend defaults" —
+  // wherever the runtime can honour it (`resetsOnEmpty`). A sweep needs that for
+  // its baseline variant, and so does an ORDINARY untuned Measure: it records
+  // `tuningKey: ''` and renders as "Backend defaults", so a daemon the previous
+  // run tuned has to be put back or the reading describes a configuration that
+  // never ran (#4759 / #4763).
+  //
+  // This costs a plain measurement nothing when the daemon is already at
+  // defaults — every applier compares against what is running and relaunches
+  // only on a real difference. A runtime that CANNOT reset keeps the old
+  // behaviour: nothing was asked for, nothing is touched, and `tuningApplied`
+  // stays `null` rather than becoming a `false` that would drop every untuned
+  // reading out of the recommendations.
+  const clearing = Object.keys(launch).length === 0;
+  const resetting = clearing && (resetTuning || resetsOnEmpty(backend));
   let tuningApplication;
-  if (Object.keys(launch).length > 0 || resetTuning) {
+  if (!clearing || resetting) {
     // Announced BEFORE the await, because applying a launch tuning stops and
     // restarts a daemon — and a cold MLX or GGUF checkpoint can take minutes to
     // load again. Without this the progress stream is silent for that whole
@@ -522,7 +566,17 @@ async function measureModel({ backend, modelId, contexts, tuning, resetTuning, s
       // not a sentence. It is a real configuration — say which one.
       message: `Restarting ${backend} with ${tuningLabel || 'backend defaults'} before measuring…`,
     });
-    tuningApplication = await applyLaunchTuning({ backend, modelId, launch, reset: resetTuning });
+    // `reset` stays SWEEP-only. It renders the cleared launch line, which wipes
+    // sweepable knobs the USER may have set on the LLMs page — safe only for a
+    // caller that captured them and will put them back. An ordinary untuned run
+    // asks its manager to undo what PORTOS applied and nothing else.
+    const application = await applyLaunchTuning({ backend, modelId, launch, reset: resetTuning });
+    // A tuning made only of request-body knobs rides on each sample and needs no
+    // daemon restart, so the applier's "nothing to apply" is `true` there — it
+    // did take effect, just not through the launch line.
+    tuningApplication = application.applied === null && Object.keys(request).length > 0
+      ? { ...application, applied: true }
+      : application;
   } else {
     // `null`, NOT `true`, when nothing was tuned. `true` when the only knobs set
     // ride on the request body, which needs no daemon restart to take effect.
@@ -740,7 +794,14 @@ export async function getAssessmentReport({ intent = 'balanced' } = {}) {
       tuningKey: a?.tuningKey || '',
       tuningLabel: a?.tuningLabel || null,
       verdict: a?.verdict || 'unknown',
-      reason: `measured, but the requested tuning was not applied — ${a?.tuningNotApplied || 'reason not recorded'}`,
+      // `tuningApplied: false` covers two opposite failures, and the row shows a
+      // configuration chip beside this sentence. An UNTUNED run's chip already
+      // reads "backend defaults", so "the requested tuning was not applied"
+      // contradicts it — that run's failure is that the daemon could not be put
+      // BACK on defaults. Mirrors `tuningNoticeChip` on the client.
+      reason: a?.tuningKey
+        ? `measured, but the requested tuning was not applied — ${a?.tuningNotApplied || 'reason not recorded'}`
+        : `measured, but the daemon still carried an earlier tuning — ${a?.tuningNotApplied || 'reason not recorded'}`,
     });
   }
 

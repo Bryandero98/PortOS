@@ -54,6 +54,19 @@ let availableModels = null
 // list, so this lets callers tell "0 models" from "couldn't list models".
 let lastListError = null
 let lastCheckAt = null
+// Model id → the `lms load` flags PortOS loaded it with. An entry means that
+// model is resident under a PortOS tuning; its absence means it is not, which is
+// what lets an UNTUNED assessment tell "already at defaults, relaunch nothing"
+// from "still carrying the last sweep's flags, reload without them". Without it
+// a baseline reading is filed as "Backend defaults" while the model is loaded at
+// the previous run's context length.
+//
+// Deliberately NOT cleared by `resetCache` (`runLms` resets the model caches
+// after every command, including the load that just set this) and not by a
+// failed availability probe either. A stale entry costs one reload nobody needed
+// and still leaves the model untuned; a wrongly-dropped one silently restores
+// the mislabeling this record exists to prevent. Only an unload clears it.
+const tunedLoads = new Map()
 
 // Status tracking
 const status = {
@@ -291,17 +304,65 @@ async function loadModel(modelId) {
  * the existing instance rather than re-loading it at the new settings, which
  * would report success for a tuning that never applied.
  *
+ * An EMPTY `args` is the opposite request: reload the model with no tuning flags
+ * at all, so an untuned assessment measures a model that is actually untuned
+ * rather than whatever the previous sweep loaded. It is a no-op when PortOS did
+ * not load this model with flags — reloading anyway would cold-load the weights
+ * and the first sample would time the page-in.
+ *
  * Resolves rather than throws (mirrors `controlServer`) so a caller can record
  * the refusal alongside the reading it describes.
  *
  * @param {string} modelId
  * @param {string[]} args - rendered flags, e.g. `['--context-length', '8192']`
- * @returns {Promise<{ success: boolean, error?: string }>}
+ * @returns {Promise<{ success: boolean, unchanged?: boolean, error?: string }>}
+ *   `unchanged: true` means nothing needed reloading — not a refusal.
  */
 async function loadModelWithArgs(modelId, args = []) {
   if (!modelId) return { success: false, error: 'No model was named to load.' }
 
-  if (await checkLMStudioAvailable()) await unloadModel(modelId).catch(() => {})
+  const signature = args.join(' ')
+  const carried = tunedLoads.get(modelId) || null
+  if (!signature && !carried) return { success: true, unchanged: true }
+
+  // `lms load` on an already-RESIDENT model returns the existing instance rather
+  // than re-loading it at the new settings, so the model has to be out of memory
+  // before the load or the call reports success for a configuration that never
+  // applied. That makes a refused unload fatal in both directions: a tuned load
+  // would file the previous configuration's throughput under the requested
+  // tuning, and a clear would file it as backend defaults.
+  //
+  // Gated on residency, not merely on availability. `unloadModel` also resolves
+  // `{ success: false }` for a model that simply is not loaded — the ordinary
+  // state before a first assessment — and reading that as a refusal would fail
+  // every first run and never record its tuning. Both probes are FORCED: a
+  // cached `false` availability, or a stale loaded-models list, would skip the
+  // unload and hand back exactly the stale instance this guards against.
+  if (await checkLMStudioAvailable(true)) {
+    const resident = await getLoadedModels(true).catch(() => [])
+    // `[]` from `getLoadedModels` means "nothing is loaded" OR "both list
+    // endpoints failed" — the null-vs-empty sentinel trap in root CLAUDE.md, and
+    // `getLastLoadedModelsError` is the module's own way out of it. An
+    // untrustworthy list must not read as "not resident": that skips the unload,
+    // `lms load` hands back the existing instance, and the previous
+    // configuration's throughput is filed under this call's. Assume resident and
+    // try — a wasted unload attempt is recoverable, a stale instance is not.
+    const listTrusted = getLastLoadedModelsError() === null
+    const loaded = !listTrusted
+      || resident.some((m) => m?.id === modelId || modelIdsReferToSameRepo(m?.id, modelId))
+    const unloaded = loaded
+      ? await unloadModel(modelId).catch((err) => ({ success: false, error: err?.message }))
+      : { success: true }
+    // Checked BEFORE the load: once `lms load` has run, a refusal is no longer
+    // the whole story — the flags may genuinely be in effect.
+    if (!unloaded.success) {
+      return {
+        success: false,
+        error: unloaded.error
+          || `LM Studio would not unload ${modelId}, so it is still loaded with ${carried || 'its previous settings'}`,
+      }
+    }
+  }
 
   // `-y` because there is no one at a terminal to answer the model-picker prompt
   // `lms load` opens when a key matches more than one download.
@@ -312,7 +373,9 @@ async function loadModelWithArgs(modelId, args = []) {
   const result = await runLms(['load', modelId, '-y', ...args], { timeoutMs: LMS_LOAD_TIMEOUT_MS })
   if (!result.success) return result
 
-  console.log(`📦 LM Studio loaded ${modelId}${args.length ? ` (${args.join(' ')})` : ''}`)
+  if (signature) tunedLoads.set(modelId, signature)
+  else tunedLoads.delete(modelId)
+  console.log(`📦 LM Studio loaded ${modelId}${signature ? ` (${signature})` : ` without ${carried}`}`)
   cosEvents.emit('lmstudio:modelLoaded', { modelId })
   return { success: true }
 }
@@ -342,6 +405,8 @@ async function unloadModel(modelId) {
   // Refresh loaded models
   await getLoadedModels(true)
 
+  // Whatever flags it was loaded with left with it.
+  tunedLoads.delete(modelId)
   console.log(`📤 Model unloaded: ${modelId}`)
   cosEvents.emit('lmstudio:modelUnloaded', { modelId })
 

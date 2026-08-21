@@ -89,6 +89,23 @@
  * why `normalizeTuning` drops empty input instead of filling it in, and why the
  * signature of an untuned run is `''` (so its store key is byte-identical to the
  * pre-tuning key, and existing records keep resolving).
+ *
+ * `''` is a CLAIM, not merely an absence: the record says the reading was taken
+ * at backend defaults. So an EMPTY launch set is a request in its own right —
+ * `localModelAssessments` hands it to the runtime's applier wherever that
+ * applier can honour it (`resetsOnEmpty`), and the daemon is relaunched WITHOUT
+ * the tuning it is currently carrying. Skipping that for an untuned run is what
+ * filed a still-tuned daemon as "Backend defaults" and let `compareTunings` rank
+ * every real tuning against a configuration that never ran (#4759, #4763).
+ *
+ * **Adding the first `wire` knob breaks an assumption two call sites make.**
+ * While that tier is empty, a non-empty `tuningKey` implies a non-empty LAUNCH
+ * set, so `getAssessmentReport` and the client's `tuningNoticeChip` both read
+ * `tuningKey` as "did this run request launch tuning?" when wording a
+ * `tuningApplied: false` row. A request-only tuning would have a non-empty key
+ * and an empty launch set, so a failed reset on that run would be described as
+ * "the requested tuning was not applied". Split those two on
+ * `launchTuning(backend, tuning)` rather than on the key when that day comes.
  */
 
 /**

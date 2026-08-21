@@ -284,7 +284,7 @@ describe('lmStudioManager.loadModelWithArgs', () => {
   it('reports the timeout instead of hanging the measurement', async () => {
     lmsSpawn.mockResolvedValue({ timedOut: true });
     const { loadModelWithArgs } = await import('./lmStudioManager.js');
-    const result = await loadModelWithArgs('publisher/model', []);
+    const result = await loadModelWithArgs('publisher/model', ['--context-length', '8192']);
     expect(result.success).toBe(false);
     expect(result.error).toContain('timed out');
   });
@@ -292,9 +292,133 @@ describe('lmStudioManager.loadModelWithArgs', () => {
   it('refuses when the lms CLI is not installed, naming the command that fixes it', async () => {
     lmsBinary.path = null;
     const { loadModelWithArgs } = await import('./lmStudioManager.js');
-    const result = await loadModelWithArgs('publisher/model', []);
+    const result = await loadModelWithArgs('publisher/model', ['--context-length', '8192']);
     expect(result.success).toBe(false);
     expect(result.error).toContain('lms bootstrap');
+    expect(lmsSpawn).not.toHaveBeenCalled();
+  });
+
+  // The bug: an untuned assessment following a tuned one left the model resident
+  // at the previous run's context length, then stored the reading as
+  // `tuningKey: ''` — "Backend defaults" describing a load that never happened.
+  it('reloads without flags when PortOS loaded the model with some', async () => {
+    const { loadModelWithArgs } = await import('./lmStudioManager.js');
+    await loadModelWithArgs('publisher/model', ['--context-length', '8192']);
+    lmsSpawn.mockClear();
+
+    expect(await loadModelWithArgs('publisher/model', [])).toEqual({ success: true });
+    const [, args] = lmsSpawn.mock.calls[0];
+    expect(args).toEqual(['load', 'publisher/model', '-y']);
+  });
+
+  // Reloading a model that is already untuned would cold-load the weights, and
+  // the first sample would time the page-in as the model's throughput.
+  it('reloads nothing when PortOS never loaded the model with flags', async () => {
+    const { loadModelWithArgs } = await import('./lmStudioManager.js');
+    expect(await loadModelWithArgs('publisher/model', [])).toEqual({ success: true, unchanged: true });
+    expect(lmsSpawn).not.toHaveBeenCalled();
+  });
+
+  it('reloads nothing for a second clear once the model is back at defaults', async () => {
+    const { loadModelWithArgs } = await import('./lmStudioManager.js');
+    await loadModelWithArgs('publisher/model', ['--context-length', '8192']);
+    await loadModelWithArgs('publisher/model', []);
+    lmsSpawn.mockClear();
+
+    expect(await loadModelWithArgs('publisher/model', [])).toEqual({ success: true, unchanged: true });
+    expect(lmsSpawn).not.toHaveBeenCalled();
+  });
+
+  // `lms load` on a resident model returns the EXISTING instance and reports
+  // success, so an unload that failed means the model serving before the call is
+  // still what is serving — in EITHER direction. Reporting success would file
+  // the previous configuration's throughput under the one that was asked for.
+  // A reachable LM Studio whose `/api/v0/models` reports `resident` loaded, and
+  // whose unload succeeds unless `state.fails`.
+  const stubLmStudio = (state) => vi.stubGlobal('fetch', vi.fn(async (url) => {
+    const href = String(url);
+    if (href.includes('/models/unload')) {
+      return state.fails
+        ? { ok: false, status: 500, text: async () => 'busy', json: async () => ({}) }
+        : { ok: true, status: 200, json: async () => ({}), text: async () => '{}' };
+    }
+    const data = (state.resident || []).map((id) => ({ id, state: 'loaded', type: 'llm' }));
+    return { ok: true, status: 200, json: async () => ({ data }), text: async () => JSON.stringify({ data }) };
+  }));
+
+  // The ordinary state before a FIRST assessment: LM Studio up, model not
+  // resident. `unloadModel` reports failure for a model that was never loaded,
+  // and reading that as a refusal would fail every first run — and then leave
+  // the tuning unrecorded, so the follow-up untuned run no-ops and files a
+  // still-tuned model as backend defaults.
+  it('loads a model that is not resident without treating the unload as a refusal', async () => {
+    stubLmStudio({ resident: [], fails: true });
+    const { loadModelWithArgs } = await import('./lmStudioManager.js');
+
+    expect(await loadModelWithArgs('publisher/model', ['--context-length', '8192'])).toEqual({ success: true });
+    // The tuning was recorded, so the clear that follows knows to reload.
+    lmsSpawn.mockClear();
+    expect(await loadModelWithArgs('publisher/model', [])).toEqual({ success: true });
+    expect(lmsSpawn).toHaveBeenCalled();
+  });
+
+  // `getLoadedModels` returns `[]` for "nothing loaded" AND for "both list
+  // endpoints failed". Reading the second as "not resident" skips the unload,
+  // and `lms load` then hands back the resident instance while reporting
+  // success — the previous configuration's throughput filed under this tuning.
+  it('attempts the unload when the loaded-model list could not be trusted', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      const href = String(url);
+      if (href.includes('/models/unload')) {
+        return { ok: false, status: 500, text: async () => 'busy', json: async () => ({}) };
+      }
+      // Reachable enough for the availability probe, but neither list endpoint
+      // returns a `data` array — so the list is an error, not an empty result.
+      return { ok: true, status: 200, json: async () => ({}), text: async () => '{}' };
+    }));
+    const { loadModelWithArgs } = await import('./lmStudioManager.js');
+
+    expect(await loadModelWithArgs('publisher/model', ['--context-length', '8192'])).toMatchObject({ success: false });
+    expect(lmsSpawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses a tuned load when a RESIDENT model would not unload', async () => {
+    stubLmStudio({ resident: ['publisher/model'], fails: true });
+    const { loadModelWithArgs } = await import('./lmStudioManager.js');
+
+    expect(await loadModelWithArgs('publisher/model', ['--context-length', '8192'])).toMatchObject({ success: false });
+    // Refused BEFORE the load — once `lms load` has run the flags may really be
+    // in effect, and the refusal would no longer be the whole story.
+    expect(lmsSpawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses a clear whose unload failed, keeping the record for a retry', async () => {
+    const state = { resident: [], fails: false };
+    stubLmStudio(state);
+    const { loadModelWithArgs } = await import('./lmStudioManager.js');
+    await loadModelWithArgs('publisher/model', ['--context-length', '8192']);
+
+    state.resident = ['publisher/model'];
+    state.fails = true;
+    expect(await loadModelWithArgs('publisher/model', [])).toMatchObject({ success: false });
+
+    // The entry survived, so the next attempt still knows the model is tuned
+    // rather than no-opping and recording it as backend defaults.
+    state.fails = false;
+    lmsSpawn.mockClear();
+    expect(await loadModelWithArgs('publisher/model', [])).toEqual({ success: true });
+    expect(lmsSpawn).toHaveBeenCalled();
+  });
+
+  // A failed tuned load leaves the model at whatever it was, so the flags were
+  // never applied and there is nothing for a later untuned run to clear.
+  it('does not record flags from a load the CLI refused', async () => {
+    lmsSpawn.mockResolvedValue({ success: false, code: 1, stdout: '', stderr: 'Model does not fit\n' });
+    const { loadModelWithArgs } = await import('./lmStudioManager.js');
+    await loadModelWithArgs('publisher/model', ['--context-length', '1048576']);
+    lmsSpawn.mockClear();
+
+    expect(await loadModelWithArgs('publisher/model', [])).toEqual({ success: true, unchanged: true });
     expect(lmsSpawn).not.toHaveBeenCalled();
   });
 

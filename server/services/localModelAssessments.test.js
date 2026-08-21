@@ -115,9 +115,20 @@ beforeEach(() => {
   probeOpenAiModels.mockReset().mockResolvedValue({ reachable: true, models: [], error: null });
   getLlamaServerEndpoint.mockReset().mockResolvedValue('http://127.0.0.1:5568/v1');
   getAllProviders.mockReset().mockResolvedValue([]);
-  relaunchLlamaServerWithTuning.mockReset().mockResolvedValue({ applied: true, reason: null, config: null });
-  restartOllamaWithEnv.mockReset().mockResolvedValue({ applied: true, reason: 'restarted' });
-  loadLmStudioModelWithArgs.mockReset().mockResolvedValue({ success: true });
+  // Mirrors each manager's real contract: an EMPTY request asks the daemon to
+  // drop a tuning PortOS applied, and reports "nothing needed to change" when it
+  // is already untuned. A flat `applied: true` here would let an untuned run
+  // record the very claim `lib/localModelTuning.js` forbids.
+  const empty = (v) => !v || (Array.isArray(v) ? v.length === 0 : Object.keys(v).length === 0);
+  relaunchLlamaServerWithTuning.mockReset().mockImplementation(async (tuning) => (empty(tuning)
+    ? { applied: null, reason: null, config: null }
+    : { applied: true, reason: null, config: null }));
+  restartOllamaWithEnv.mockReset().mockImplementation(async (env) => (empty(env)
+    ? { applied: null, reason: 'already-untuned' }
+    : { applied: true, reason: 'restarted' }));
+  loadLmStudioModelWithArgs.mockReset().mockImplementation(async (_modelId, args) => (empty(args)
+    ? { success: true, unchanged: true }
+    : { success: true }));
   getMtplxServerEndpoint.mockReset().mockResolvedValue('http://127.0.0.1:8000/v1');
   relaunchMtplxServerWithTuning.mockReset().mockResolvedValue({ applied: true, reason: null, config: null });
 });
@@ -823,7 +834,39 @@ describe('tuning', () => {
     runLocalLlmTest.mockResolvedValue(okRun());
     const untuned = await svc.runAssessment({ backend: 'ollama', modelId: 'example-model:7b', contextTokens: [512] });
     expect(untuned.tuningApplied).toBeNull();
-    expect(restartOllamaWithEnv).not.toHaveBeenCalled();
+    expect(untuned.tuningNotApplied).toBeNull();
+  });
+
+  // The bug this covers: an untuned run took the no-applier branch, so a daemon
+  // the PREVIOUS run tuned kept serving under that tuning while the reading was
+  // stored with `tuningKey: ''` and rendered as "Backend defaults". Every applier
+  // that CAN reset has to be asked to.
+  it.each([
+    ['ollama', () => restartOllamaWithEnv, (m) => expect(m).toHaveBeenCalledWith({})],
+    ['llama', () => relaunchLlamaServerWithTuning, (m) => expect(m).toHaveBeenCalledWith({}, { reset: false })],
+    ['lmstudio', () => loadLmStudioModelWithArgs, (m) => expect(m).toHaveBeenCalledWith('a-model', [])],
+  ])('asks the %s applier to drop any tuning still on the daemon for an untuned run', async (backend, getMock, assertCall) => {
+    probeOpenAiModels.mockResolvedValue({ reachable: true, models: ['a-model'], error: null });
+    runEndpointLlmTest.mockResolvedValue(okRun());
+    runLocalLlmTest.mockResolvedValue(okRun());
+
+    const result = await svc.runAssessment({ backend, modelId: 'a-model', contextTokens: [512] });
+
+    assertCall(getMock());
+    expect(result.tuningKey).toBe('');
+  });
+
+  // A daemon that could NOT be put back on its defaults is measuring some other
+  // configuration, and the record has to say so rather than call it a baseline.
+  it('records that an untuned run could not clear the tuning still on the daemon', async () => {
+    runLocalLlmTest.mockResolvedValue(okRun());
+    restartOllamaWithEnv.mockResolvedValue({ applied: false, reason: 'stop-failed', error: 'Ollama would not stop' });
+
+    const result = await svc.runAssessment({ backend: 'ollama', modelId: 'example-model:7b', contextTokens: [512] });
+
+    expect(result.tuningKey).toBe('');
+    expect(result.tuningApplied).toBe(false);
+    expect(result.tuningNotApplied).toBe('Ollama would not stop');
   });
 
   // A runtime with no launch path must not silently swallow a knob: the catalog
@@ -870,11 +913,12 @@ describe('tuning', () => {
   // The user's launch flags live only in the running llama-server process, so an
   // ordinary measurement must never touch them. A reset is something a SWEEP
   // asks for, and only a sweep, because only a sweep puts the configuration back.
-  it('never relaunches llama-server for an untuned run', async () => {
+  it('never RESETS llama-server for an untuned run', async () => {
     probeOpenAiModels.mockResolvedValue({ reachable: true, models: ['dflash'], error: null });
     runEndpointLlmTest.mockResolvedValue(okRun());
     await svc.runAssessment({ backend: 'llama', modelId: 'dflash', contextTokens: [512] });
-    expect(relaunchLlamaServerWithTuning).not.toHaveBeenCalled();
+    // Asked to undo what PortOS applied, never to clear the user's own flags.
+    expect(relaunchLlamaServerWithTuning).toHaveBeenCalledWith({}, { reset: false });
   });
 
   // The baseline variant of a tuning sweep: no knobs, which only means something
