@@ -643,6 +643,7 @@ export default function ReviewerPicker({
             type="button"
             disabled={disabled || !usernameInput.trim() || atMaxUsernames}
             onClick={addUsername}
+            aria-label="Add reviewer username"
             className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-transparent border border-port-border rounded text-xs text-gray-400 hover:text-white hover:border-port-accent disabled:opacity-50"
           >
             <Plus size={11} />
