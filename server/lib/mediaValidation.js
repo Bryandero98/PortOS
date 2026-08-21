@@ -180,6 +180,25 @@ export const localLlmMtplxStartSchema = z.object({
     'model must be a Hugging Face repo id',
   ).optional().nullable(),
 });
+// MTPLX model catalog. `mtplx forge discover` is upstream's own index of
+// MTPLX-branded MTP checkpoints; an empty query means its default listing.
+export const localLlmMtplxSearchSchema = z.object({
+  query: z.string().trim().max(200).optional().default(''),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(24),
+  offset: z.coerce.number().int().min(0).max(10000).optional().default(0),
+});
+// A checkpoint download. `model` omitted means MTPLX's own verified default —
+// the same one the provider-readiness checklist pulls — so the two surfaces
+// cannot fetch different weights. A named model must be a Hugging Face repo id.
+const mtplxRepoIdSchema = z.string().trim().min(1).max(200).regex(
+  /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/,
+  'model must be a Hugging Face repo id (owner/name)',
+);
+export const localLlmMtplxPullSchema = z.object({
+  model: mtplxRepoIdSchema.optional().nullable(),
+});
+// Removal always names a checkpoint — there is no "remove whatever is cached".
+export const localLlmMtplxRemoveSchema = z.object({ model: mtplxRepoIdSchema });
 export const localLlmLlamaServerStartSchema = z.object({
   model: z.string().trim().min(1).max(500),
   draftModel: z.string().trim().max(500).optional().nullable(),

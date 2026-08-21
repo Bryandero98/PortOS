@@ -21,7 +21,7 @@
  * action), exactly as `docs/features/mtplx.md` promises.
  */
 
-import { bufferedSpawn } from './bufferedSpawn.js';
+import { bufferedSpawn, spawnFailureDetail } from './bufferedSpawn.js';
 import { safeJSONParse } from './fileUtils.js';
 import { findCommandOnPath } from './processEnv.js';
 
@@ -51,8 +51,7 @@ export async function listMtplxCachedModels({ command = 'mtplx' } = {}) {
     // A spawn failure (EACCES, ENOENT on a dangling symlink) reports nothing on
     // either stream — its reason lives on `error`, and dropping it would leave
     // the user with a bare exit code for a fixable permissions problem.
-    const detail = result.error?.message || String(result.stderr || result.stdout || '').trim().split(/\r?\n/).pop();
-    return { models: null, error: detail || `\`${command} models\` exited with code ${result.code}` };
+    return { models: null, error: spawnFailureDetail(result, `\`${command} models\` exited with code ${result.code}`) };
   }
 
   // Parse from the first brace: MTPLX writes the JSON alone today, but a banner

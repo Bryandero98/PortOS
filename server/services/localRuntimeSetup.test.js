@@ -304,16 +304,16 @@ describe('runLocalRuntimeSetup', () => {
   });
 
   it('surfaces the manager\'s refusal instead of a bare failure', async () => {
-    // e.g. an empty MTPLX cache, which names the `mtplx pull` that fixes it.
+    // e.g. an empty MTPLX cache, which names the download button that fixes it.
     pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
     probe.probeOpenAiModels.mockResolvedValue(unreachable);
-    mtplx.startMtplxServer.mockRejectedValue(new Error('MTPLX has no model weights cached — run `mtplx pull`'));
+    mtplx.startMtplxServer.mockRejectedValue(new Error('MTPLX has no model weights cached — use "Download default checkpoint"'));
     const restore = pinPlatform('darwin');
 
     const result = await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1' });
     restore();
 
-    expect(result).toMatchObject({ success: false, error: expect.stringContaining('mtplx pull') });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('Download default checkpoint') });
   });
 
   it('downloads the default checkpoint and then starts, but ONLY for `pull-start`', async () => {
@@ -344,7 +344,7 @@ describe('runLocalRuntimeSetup', () => {
 
   it('never downloads weights behind an explicit plain start', async () => {
     // A multi-gigabyte download is a decision; only the action that says so may
-    // spend it. A `start` reaches `mtplx pull` in PROSE and nowhere else.
+    // spend it. A `start` names the download BUTTON in prose and spends nothing.
     mtplxCache.listMtplxCachedModels.mockResolvedValue(cachedModels([]));
     pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
     probe.probeOpenAiModels.mockResolvedValue(unreachable);
@@ -355,7 +355,9 @@ describe('runLocalRuntimeSetup', () => {
 
     expect(streaming.runStreamingCommand).not.toHaveBeenCalled();
     expect(mtplx.startMtplxServer).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ success: false, error: expect.stringContaining('mtplx pull') });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('Download the default model') });
+    // Never a terminal command as the remedy (PRD NR-9).
+    expect(result.error).not.toMatch(/terminal/);
   });
 
   it('resolves an ABSENT action to whatever the checklist is currently offering', async () => {

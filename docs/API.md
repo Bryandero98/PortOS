@@ -529,7 +529,7 @@ Every mounted API prefix (see `server/index.js` for the authoritative list). Dom
 | `/api/messages` | Messages (email) integration |
 | `/api/digital-twin/social-accounts`, `/identity`, `/autobiography` | Digital-twin sub-domains |
 | `/api/meatspace` | MeatSpace (health, POST, genome) |
-| `/api/lmstudio`, `/api/local-llm` | Local LLM backends and the local runtime servers PortOS can start/stop (Ollama, LM Studio, `llama-server`, MTPLX — the last two as PM2 processes; `POST /api/local-llm/save-startup` is `pm2 save`) |
+| `/api/lmstudio`, `/api/local-llm` | Local LLM backends and the local runtime servers PortOS can start/stop (Ollama, LM Studio, `llama-server`, MTPLX — the last two as PM2 processes; `POST /api/local-llm/save-startup` is `pm2 save`), plus MTPLX's checkpoint catalog — `GET /api/local-llm/mtplx/models/search`, `POST .../models/pull` (byte progress on the `mtplx:download` socket event), `POST .../models/remove` |
 | `/api/code-review` | Code review runs |
 | `/api/voice`, `/api/voice/public` | Voice assistant |
 | `/api/api-docs` | OpenAPI 3.1 spec |

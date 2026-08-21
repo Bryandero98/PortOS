@@ -18,6 +18,10 @@ vi.mock('../../services/api', () => ({
   startMtplxServer: vi.fn(),
   stopMtplxServer: vi.fn(),
   installMtplx: vi.fn(),
+  // The MTPLX card's checkpoint panel loads upstream's default listing on mount.
+  searchMtplxModels: vi.fn().mockResolvedValue({ models: [], error: null }),
+  pullMtplxModel: vi.fn(),
+  removeMtplxModel: vi.fn(),
   saveRuntimeStartupList: vi.fn(),
   installAudioModel: vi.fn(),
   patchSettingsSlice: vi.fn(),
@@ -49,6 +53,11 @@ const renderTab = async () => {
     </MemoryRouter>,
   );
   await waitFor(() => expect(screen.getByText(/Installed on Ollama/)).toBeTruthy());
+  // The MTPLX checkpoint panel only mounts once the MTPLX status resolves, and
+  // it then fetches its default listing — two chained awaits, so flush twice so
+  // both state updates land inside act().
+  await act(async () => {});
+  await act(async () => {});
 };
 
 beforeEach(() => {

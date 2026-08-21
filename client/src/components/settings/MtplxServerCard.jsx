@@ -2,16 +2,18 @@ import { useState } from 'react';
 import { Link } from 'react-router';
 import { Gauge, RefreshCw, ExternalLink, Play, Square, Download, Terminal } from 'lucide-react';
 import BrailleSpinner from '../BrailleSpinner';
+import MtplxCheckpoints from './MtplxCheckpoints.jsx';
 
 /**
  * MTPLX launcher — the same shape as the llama.cpp launcher below it, because
  * MTPLX is managed the same way: a PM2 process (`portos-mtplx`) PortOS starts,
  * stops, logs, and can persist across a reboot.
  *
- * What it deliberately does NOT do is fetch weights. `mtplx pull` is a
- * multi-gigabyte download and stays the user's decision, so this card serves a
- * checkpoint already in MTPLX's cache and names the command that fills an empty
- * one. See `docs/features/mtplx.md`.
+ * Weights are managed here too, in `MtplxCheckpoints` below: search, download,
+ * remove. A download is never implicit — it moves tens of gigabytes and only
+ * runs from a button that says so — but it IS in the app, because sending the
+ * user to a terminal for the one step in the middle of a managed lifecycle is a
+ * dead end (PRD NR-9). See `docs/features/mtplx.md`.
  */
 
 const btnClass = 'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-50';
@@ -25,6 +27,10 @@ export default function MtplxServerCard({
   onStart,
   onStop,
   onInstall,
+  onSearchModels,
+  onPullModel,
+  onRemoveModel,
+  download,
 }) {
   // '' = let PortOS pick from the cache (which is also what the readiness
   // checklist's one-click setup does).
@@ -33,6 +39,9 @@ export default function MtplxServerCard({
   const [showLogs, setShowLogs] = useState(false);
 
   const cached = status?.cachedModels || [];
+  // Rows carry size/verification for the manage-checkpoints list; older status
+  // payloads (a peer or a tab open across an upgrade) carry only the ids.
+  const cachedRows = status?.cachedModelRows || cached.map((repo) => ({ repo }));
   const emptyCache = Boolean(status?.installed) && cached.length === 0 && !status?.cacheError;
   const external = status?.running && status?.managed === false;
 
@@ -60,7 +69,7 @@ export default function MtplxServerCard({
       </div>
 
       <p className="text-xs text-gray-400 leading-relaxed">
-        MTPLX runs Qwen checkpoints with native multi-token-prediction decoding on Apple Silicon and serves them over an OpenAI-compatible loopback API. PortOS manages it as a PM2 process, exactly like <code className="text-gray-300">llama-server</code> — start it here, then pick an <strong className="text-white">MTPLX</strong> preset in AI Providers. PortOS never downloads MTPLX weights: <code className="text-gray-300">mtplx pull &lt;hf-repo-id&gt;</code> in a terminal fills its cache, and this card serves what is already in it.
+        MTPLX runs Qwen checkpoints with native multi-token-prediction decoding on Apple Silicon and serves them over an OpenAI-compatible loopback API. PortOS manages it as a PM2 process, exactly like <code className="text-gray-300">llama-server</code> — start it here, then pick an <strong className="text-white">MTPLX</strong> preset in AI Providers. Search for and download MTP checkpoints below — PortOS never fetches weights on its own, but every download, removal, and launch happens here.
       </p>
 
       {!status ? (
@@ -102,7 +111,7 @@ export default function MtplxServerCard({
         <div className="bg-port-bg border border-port-border rounded-lg p-3 space-y-3">
           {emptyCache ? (
             <p className="text-xs text-port-warning">
-              MTPLX's model cache is empty, so its server exits before it binds a port. Run <code className="text-gray-300">mtplx pull</code> in a terminal for its default checkpoint (or <code className="text-gray-300">mtplx pull &lt;hf-repo-id&gt;</code> for another MTP model), then refresh.
+              MTPLX's model cache is empty, so its server exits before it binds a port. Download a checkpoint below, then start it.
             </p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -139,12 +148,25 @@ export default function MtplxServerCard({
             onClick={() => onStart({ ...(model ? { model } : {}), ...(port ? { port: Number(port) } : {}) })}
             disabled={busy || emptyCache}
             className={`${btnClass} bg-port-accent/20 hover:bg-port-accent/30 text-port-accent`}
-            title={emptyCache ? 'Pull an MTP checkpoint first — PortOS never downloads MTPLX weights' : 'Start `mtplx serve` under PM2'}
+            title={emptyCache ? 'Download an MTP checkpoint below first — a start never fetches weights' : 'Start `mtplx serve` under PM2'}
           >
             {actionInProgress === 'runtime-start-mtplx' ? <BrailleSpinner /> : <Play size={13} />}
             Start MTPLX
           </button>
         </div>
+      )}
+
+      {status?.installed && status?.supported !== false && (
+        <MtplxCheckpoints
+          cached={cachedRows}
+          cacheError={status?.cacheError || null}
+          download={download}
+          busy={busy}
+          actionInProgress={actionInProgress}
+          onSearch={onSearchModels}
+          onPull={onPullModel}
+          onRemove={onRemoveModel}
+        />
       )}
 
       {status?.recentLogs?.length > 0 && (

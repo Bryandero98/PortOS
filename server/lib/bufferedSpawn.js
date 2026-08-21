@@ -355,3 +355,26 @@ export async function bufferedSpawnOrThrow(cmd, args, options = {}) {
   }
   return { stdout: result.stdout, stderr: result.stderr };
 }
+
+/**
+ * The most useful sentence from a FAILED `bufferedSpawn` result.
+ *
+ * Callers of a `--json` CLI need this rather than a bare exit code, and the
+ * naive "last line of stderr, else stdout" walk gets it wrong for exactly those
+ * tools: they print their payload to stdout even when they exit non-zero, so the
+ * last stdout line is a closing `}` or `]`. Prefers the spawn error, then a
+ * stderr line, then a stdout line that isn't just JSON punctuation.
+ *
+ * @param {{error?: Error, stderr?: string, stdout?: string}} result - a `bufferedSpawn` result
+ * @param {string} fallback - used when the command failed without saying anything
+ * @returns {string}
+ */
+export function spawnFailureDetail(result, fallback) {
+  if (result?.error?.message) return result.error.message;
+  const lastLine = (text) => String(text || '').trim().split(/\r?\n/).filter(Boolean).pop();
+  const stderrTail = lastLine(result?.stderr);
+  if (stderrTail) return stderrTail;
+  const stdoutTail = lastLine(result?.stdout);
+  if (stdoutTail && !/^[}\]]+,?$/.test(stdoutTail)) return stdoutTail;
+  return fallback;
+}

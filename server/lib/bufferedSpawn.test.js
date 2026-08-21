@@ -28,6 +28,7 @@ const {
   IS_WIN32,
   WIN_CMD_SHIMS,
   MAX_OUTPUT_BYTES,
+  spawnFailureDetail,
 } = await import('./bufferedSpawn.js');
 
 /**
@@ -490,5 +491,33 @@ describe('bufferedSpawnOrThrow — throwing adapter', () => {
     const assertion = expect(p).rejects.toThrow('Setup timed out after 3s');
     vi.advanceTimersByTime(3000);
     await assertion;
+  });
+});
+
+describe('spawnFailureDetail', () => {
+  const fallback = 'mtplx exited with code 1';
+
+  it('prefers the spawn error, which is the only stream a failed spawn writes to', () => {
+    expect(spawnFailureDetail({ error: new Error('EACCES'), stderr: 'noise' }, fallback)).toBe('EACCES');
+  });
+
+  it('falls back to the last stderr line', () => {
+    expect(spawnFailureDetail({ stderr: 'warning: slow\nerror: not cached\n' }, fallback)).toBe('error: not cached');
+  });
+
+  it('ignores a stdout tail that is only JSON punctuation', () => {
+    // A `--json` CLI prints its payload to stdout even when it exits non-zero,
+    // so the naive last-stdout-line walk surfaces a bare closing brace.
+    expect(spawnFailureDetail({ stdout: '{\n  "removed": false\n}' }, fallback)).toBe(fallback);
+    expect(spawnFailureDetail({ stdout: '{\n  "removed": false\n},' }, fallback)).toBe(fallback);
+  });
+
+  it('still uses a meaningful stdout line when stderr is empty', () => {
+    expect(spawnFailureDetail({ stderr: '', stdout: 'error: pull failed' }, fallback)).toBe('error: pull failed');
+  });
+
+  it('returns the fallback when the command failed without saying anything', () => {
+    expect(spawnFailureDetail({}, fallback)).toBe(fallback);
+    expect(spawnFailureDetail(null, fallback)).toBe(fallback);
   });
 });

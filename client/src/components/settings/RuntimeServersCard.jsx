@@ -236,11 +236,12 @@ export default function RuntimeServersCard({
       onInstall: onInstallMtplx,
       onStart: onStartMtplx,
       onStop: onStopMtplx,
-      // MTPLX weights are a multi-gigabyte pull PortOS never runs. An installed
-      // MTPLX with an empty cache exits before it binds, so say so here rather
-      // than offering a Start that cannot work.
+      // MTPLX weights are a multi-gigabyte download no Start button runs on its
+      // own. An installed MTPLX with an empty cache exits before it binds, so
+      // point at the card that downloads one rather than offering a Start that
+      // cannot work.
       startBlockedReason: mtplxStatus?.installed && mtplxStatus?.cachedModels?.length === 0 && !mtplxStatus?.cacheError
-        ? 'Run `mtplx pull` in a terminal first — PortOS never downloads MTPLX weights'
+        ? 'No checkpoint yet — use Configure to download one'
         : null,
       detail: mtplxStatus?.cachedModels?.length
         ? `${mtplxStatus.cachedModels.length} checkpoint${mtplxStatus.cachedModels.length === 1 ? '' : 's'} cached`
