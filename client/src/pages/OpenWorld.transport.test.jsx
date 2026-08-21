@@ -19,14 +19,10 @@ vi.mock('../components/openworld/OpenWorldPhotoOverlay', () => ({
 vi.mock('../components/openworld/OpenWorldPlaybackOverlay', () => ({ default: () => null }));
 vi.mock('../components/openworld/OpenWorldSettingsDrawer', () => ({ default: () => null }));
 
-vi.mock('../hooks/useOpenWorldData', () => ({
-  useOpenWorldData: () => ({
-    apps: [], cosAgents: [], cosStatus: {}, eventLogs: [], agentMap: new Map(),
-    reviewCounts: {}, instances: {}, systemHealth: null, notificationCounts: {},
-    backupStatus: null, cosTasks: [], healthMetrics: null, voiceState: null,
-    character: null, aiActivity: null, loading: false, connected: true,
-  }),
-}));
+vi.mock('../hooks/useOpenWorldData', async () => {
+  const { OPEN_WORLD_DATA } = await import('../test/openWorldPageMocks.js');
+  return { useOpenWorldData: () => OPEN_WORLD_DATA };
+});
 
 // The playback hook is the surface under test: the page binds its transport keys only
 // while `active`, and the spies below record what each key reached.
@@ -40,16 +36,9 @@ const playback = vi.hoisted(() => ({
 vi.mock('../hooks/useOpenWorldPlayback', () => ({ useOpenWorldPlayback: () => playback }));
 vi.mock('../hooks/useOpenWorldAudio', () => ({ default: () => ({ playSfx: vi.fn(), isAudioReady: false }) }));
 vi.mock('../hooks/useAutoRefetch', () => ({ useAutoRefetch: () => ({ data: null }) }));
-vi.mock('../services/api', () => ({
-  getCosQuickSummary: vi.fn(async () => null),
-  getCosActivityCalendar: vi.fn(async () => null),
-  getGoals: vi.fn(async () => null),
-  getChronotype: vi.fn(async () => null),
-  getMemoryGraph: vi.fn(async () => null),
-  getBrainInbox: vi.fn(async () => null),
-  getOpenWorldIntrospection: vi.fn(async () => null),
-  getMySprintTickets: vi.fn(async () => []),
-}));
+// Only the endpoints this page polls, from the shared page fixture. The vi.mock
+// CALL has to stay here (vitest hoists it), so the factory dynamic-imports it.
+vi.mock('../services/api', async () => (await import('../test/openWorldPageMocks.js')).openWorldApiMock(vi));
 
 const OpenWorld = (await import('./OpenWorld')).default;
 

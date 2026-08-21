@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback } from 'react';
-import { isEditableTarget } from './useKeyboardShortcuts.js';
+import { isEditableTarget } from '../lib/a11yKeyboard.js';
 
 // Movement input is only ever meant for the world behind the UI, so a keystroke aimed at
 // a form field or at an open dialog must not reach the rig: typing "w" in the fast-travel

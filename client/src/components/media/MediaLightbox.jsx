@@ -11,7 +11,7 @@ import PinToMoodBoardMenu from './PinToMoodBoardMenu';
 import MediaImage from '../MediaImage';
 import { useScrollLock } from '../../hooks/useScrollLock';
 import { useSwipeNav } from '../../hooks/useSwipeNav';
-import { isEditableTarget } from '../../hooks/useKeyboardShortcuts';
+import { isEditableTarget } from '../../lib/a11yKeyboard';
 import useFocusTrap from '../../hooks/useFocusTrap.js';
 import { copyToClipboard } from '../../lib/clipboard';
 import { IMAGE_GEN_MODE } from '../../lib/imageGenBackends';

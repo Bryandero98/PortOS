@@ -1,5 +1,14 @@
 import { useEffect, useRef } from 'react';
-import { isEditableTarget } from './useKeyboardShortcuts.js';
+import { shouldIgnoreGlobalKey } from '../lib/a11yKeyboard.js';
+
+// A claiming surface reads a raw physical key and tracks press/release itself,
+// so two of the shared guards are deliberately relaxed for it: auto-repeat
+// keydowns must still arrive (the Morse keyer `preventDefault`s every tick of a
+// held Space, or the page scrolls under it), and so must ⌘/Ctrl/Alt chords
+// (dropping a chorded keydown strands it with no matching keyup). The dialog
+// guard stays a caller option; the editable-target and button-activation guards
+// have no opt-out at all.
+const CLAIM_GUARDS = { ignoreRepeat: false, allowChords: true };
 
 /**
  * Capture-phase keyboard listener whose handlers *claim* an event by returning
@@ -10,13 +19,23 @@ import { isEditableTarget } from './useKeyboardShortcuts.js';
  * Un-claimed events pass through untouched, so this never becomes a blanket
  * keyboard trap.
  *
- * Events originating in an editable field are never offered to the handlers, so
- * a Space-driven surface that also has a text input keeps normal typing. Nor are
- * events fired while an `aria-modal` dialog is open: the surface is behind that
- * dialog, and claiming Escape there would dismiss the surface instead of the
- * layer the user is actually looking at. A surface that itself lives INSIDE a
- * dialog passes `enabledInDialog: true` to opt back in. Both the option name and
- * its default mirror `useKeyboardShortcuts`.
+ * Which events are offered to the handlers is decided by the shared
+ * `shouldIgnoreGlobalKey` predicate (lib/a11yKeyboard.js), also used by
+ * `useKeyboardShortcuts` so the two hooks can't drift apart:
+ *
+ * - Events originating in an editable field are never offered, so a Space-driven
+ *   surface that also has a text input keeps normal typing.
+ * - **Space on a focused button is never offered**, so the browser's native
+ *   activation still happens. A claiming surface almost always renders its own
+ *   buttons (a drill's Start/Match, RapidReader's transport, the keyer's mode
+ *   switches); without this, tabbing to one and pressing Space ran the claimed
+ *   action instead of pressing the button — the exact stand-down the voice
+ *   widget and `useKeyboardShortcuts` already performed (#4748).
+ * - Nor are events fired while an `aria-modal` dialog is open: the surface is
+ *   behind that dialog, and claiming Escape there would dismiss the surface
+ *   instead of the layer the user is actually looking at. A surface that itself
+ *   lives INSIDE a dialog passes `enabledInDialog: true` to opt back in. Both the
+ *   option name and its default mirror `useKeyboardShortcuts`.
  *
  * Handlers are read through refs, so inline arrows recreated every render (the
  * common call-site shape) don't tear down and re-add the listeners; only
@@ -42,9 +61,9 @@ export default function useKeyCapture({ enabled = true, enabledInDialog = false,
 
   useEffect(() => {
     if (!enabled) return undefined;
+    const guards = { ...CLAIM_GUARDS, enabledInDialog };
     const claim = (ref) => (e) => {
-      if (isEditableTarget(e.target)) return;
-      if (!enabledInDialog && document.querySelector('[aria-modal="true"]')) return;
+      if (shouldIgnoreGlobalKey(e, guards)) return;
       if (ref.current?.(e) !== true) return;
       e.preventDefault();
       // Subsumes stopPropagation: also skips the remaining listeners on window.

@@ -115,3 +115,64 @@ export function isPressKey(event) {
     || event?.key === 'Spacebar'
     || event?.code === 'Space';
 }
+
+/**
+ * True when an event came from a field the user is typing into, so a single-key
+ * shortcut (a/d/g/j/k), a bare arrow, or a Space-claiming surface never steals a
+ * keystroke or caret move. The standard form fields plus any contentEditable
+ * surface count.
+ *
+ * @param {EventTarget | null} el
+ * @returns {boolean}
+ */
+export function isEditableTarget(el) {
+  if (!el || typeof el.tagName !== 'string') return false;
+  if (el.isContentEditable) return true;
+  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT';
+}
+
+/**
+ * The one predicate every app-global key handler consults before acting on a
+ * window keystroke: "is this event off-limits to me?". `useKeyboardShortcuts`
+ * (bubble-phase shortcut maps) and `useKeyCapture` (capture-phase key claiming)
+ * both route through it, so a guard added here lands for both instead of having
+ * to be re-remembered at each hook — the drift that let `useKeyCapture` swallow
+ * native button activation while the other two Space paths stood down (#4748).
+ *
+ * Always ignored, with no opt-out:
+ * - **Editable targets** — typing into an input/textarea/select/contentEditable.
+ * - **Native button activation** (`isButtonActivation`) — Space on a focused
+ *   button-like element, where the browser is about to click it. Claiming that
+ *   press swallows every keyboard button activation on the surface and runs the
+ *   global action instead.
+ *
+ * Ignored by default, opt out per handler:
+ * - **⌘/Ctrl/Alt chords** (`allowChords`) — so app/browser shortcuts still win.
+ *   A handler that reads a raw physical key (a keyer, a game control) passes
+ *   `allowChords: true`, because dropping a chorded keydown strands it with no
+ *   matching keyup.
+ * - **OS auto-repeat** (`ignoreRepeat`) — a held key fires once, not once per
+ *   repeat tick. A handler that tracks press/release itself passes
+ *   `ignoreRepeat: false` and filters `e.repeat` on its own terms.
+ * - **An open `aria-modal` dialog** (`enabledInDialog`) — the dialog owns the top
+ *   surface, so a key aimed at it must not reach a handler still mounted behind
+ *   it. A surface that itself lives INSIDE the dialog opts back in.
+ *
+ * @param {KeyboardEvent} event
+ * @param {object}  [options]
+ * @param {boolean} [options.enabledInDialog=false] act even while a dialog is open
+ * @param {boolean} [options.ignoreRepeat=true]     drop OS auto-repeat keydowns
+ * @param {boolean} [options.allowChords=false]     act on ⌘/Ctrl/Alt chords too
+ * @returns {boolean} true when the handler must stand down
+ */
+export function shouldIgnoreGlobalKey(event, { enabledInDialog = false, ignoreRepeat = true, allowChords = false } = {}) {
+  // Cheapest guards first: plain flags, then a property read, then an ancestor
+  // walk, and only then the full-document query — this runs on every keystroke
+  // of every mounted consumer.
+  if (!allowChords && (event.metaKey || event.ctrlKey || event.altKey)) return true;
+  if (ignoreRepeat && event.repeat) return true;
+  if (isEditableTarget(event.target)) return true;
+  if (isButtonActivation(event)) return true;
+  if (!enabledInDialog && document.querySelector('[aria-modal="true"]')) return true;
+  return false;
+}
