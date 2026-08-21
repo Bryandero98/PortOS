@@ -28,15 +28,30 @@ describe('pixal3dCuda degraded-state projection', () => {
     // that reads plain "Ready" until the first render dies in the GLB exporter.
     probePixal3dModules.mockResolvedValueOnce({ naf: 'available', missing: ['o_voxel'] });
     const state = await describeState();
-    expect(state.fields.degraded).toMatchObject({ label: 'incomplete install', repairable: true });
-    expect(state.fields.degraded.help).toContain('o_voxel');
+    expect(state.fields.degraded).toEqual({
+      label: 'incomplete install',
+      help: expect.stringContaining('Repair install rebuilds the CUDA extensions'),
+      repairable: true,
+      detail: 'Missing: o_voxel',
+    });
+    // The culprit belongs to `detail` alone — repeating it in the remedy prose is the
+    // split this projection exists to keep (#4741).
+    expect(state.fields.degraded.help).not.toContain('o_voxel');
     expect(state.warnings).toHaveLength(1);
   });
 
   it('names every missing extension, not just the first', async () => {
     probePixal3dModules.mockResolvedValueOnce({ naf: 'available', missing: ['o_voxel', 'flex_gemm'] });
     const state = await describeState();
-    expect(state.fields.degraded.help).toContain('o_voxel and flex_gemm');
+    expect(state.fields.degraded.detail).toBe('Missing: o_voxel, flex_gemm');
+  });
+
+  it('keeps the module names in the prose warning the install verify frame replays', async () => {
+    // The card has a second line for `detail`; that stage has one string, so dropping the
+    // names from `help` must not drop them from the frame the user actually reads there.
+    probePixal3dModules.mockResolvedValueOnce({ naf: 'available', missing: ['o_voxel'] });
+    const state = await describeState();
+    expect(state.warnings).toEqual([expect.stringContaining('Missing: o_voxel.')]);
   });
 
   it('lets an incomplete install outrank a NAF fallback', async () => {

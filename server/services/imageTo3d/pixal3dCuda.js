@@ -382,6 +382,16 @@ export const PIXAL3D_REQUIRED_MODULES = ['o_voxel', 'flex_gemm'];
 /** NATTEN backs the NAF upsampler. Absent ⇒ renders take upstream's fallback path. */
 export const PIXAL3D_NAF_MODULES = ['natten'];
 
+/**
+ * The remedy for a REQUIRED extension that did not build — and only the remedy: which
+ * extensions failed rides the `degraded.detail` line the adapter builds (#4741). Lives
+ * next to its NAF sibling rather than inlined at the registry so both readings of a
+ * half-built install come from one place.
+ */
+export const PIXAL3D_INCOMPLETE_INSTALL_HELP = 'Pixal3D is installed but not every required '
+  + 'CUDA extension built, so renders will fail in the mesh exporter. Repair install '
+  + 'rebuilds the CUDA extensions; your downloaded models are kept.';
+
 export const PIXAL3D_NAF_FALLBACK_HELP = 'Pixal3D is installed, but NATTEN is missing, '
   + 'so its NAF refinement step falls back to DINO projection features — slower, and '
   + 'geometry/texture detail is a notch lower than upstream. Repair install rebuilds '
