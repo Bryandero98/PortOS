@@ -29,6 +29,18 @@
   "cos-task-enhance": [
     "server/services/taskEnhancer.js"
   ],
+  "fableloom-branch-node": [
+    "server/services/fableLoom/weave.js"
+  ],
+  "fableloom-play-turn": [
+    "server/services/fableLoom/weave.js"
+  ],
+  "fableloom-review": [
+    "server/services/fableLoom/weave.js"
+  ],
+  "fableloom-weave-episode": [
+    "server/services/fableLoom/weave.js"
+  ],
   "importer-arc-extract": [
     "server/services/importer.js",
     "server/services/pipeline/arcPlanner/manuscriptDerive.js"

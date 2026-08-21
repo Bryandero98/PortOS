@@ -1156,6 +1156,25 @@ CREATE TABLE IF NOT EXISTS writers_room_exercises (
 );
 CREATE INDEX IF NOT EXISTS idx_wr_exercises_work ON writers_room_exercises (work_id, started_at DESC);
 
+-- FableLoom branching narratives. One row per loom (a branching-narrative
+-- story), the full sanitized record (episodes, scene-node graphs, intent
+-- transitions) in `data` JSONB. `universe_id`/`series_id` are soft refs
+-- mirrored for relationship queries only. Machine-local like Writers Room —
+-- no dataSync category, no sync cursor, no tombstones; deletes are hard
+-- deletes (games precedent). Mirrors the fableloom_stories block in
+-- db/schema/pipeline.js.
+CREATE TABLE IF NOT EXISTS fableloom_stories (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  universe_id TEXT,
+  series_id TEXT,
+  data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_fableloom_universe ON fableloom_stories (universe_id);
+CREATE INDEX IF NOT EXISTS idx_fableloom_updated ON fableloom_stories (updated_at);
+
 -- LoRA training runs (character LoRA training, /api/lora-training). One row
 -- per run: id/status/character_id mirrored as columns for filtering, the
 -- full record in `data` JSONB. Machine-local — no sync cursor/tombstones
@@ -1649,6 +1668,8 @@ DROP TRIGGER IF EXISTS trg_sprite_records_audit ON sprite_records;
 CREATE TRIGGER trg_sprite_records_audit AFTER UPDATE OR DELETE ON sprite_records FOR EACH ROW EXECUTE FUNCTION record_audit_log();
 DROP TRIGGER IF EXISTS trg_games_audit ON games;
 CREATE TRIGGER trg_games_audit AFTER UPDATE OR DELETE ON games FOR EACH ROW EXECUTE FUNCTION record_audit_log();
+DROP TRIGGER IF EXISTS trg_fableloom_stories_audit ON fableloom_stories;
+CREATE TRIGGER trg_fableloom_stories_audit AFTER UPDATE OR DELETE ON fableloom_stories FOR EACH ROW EXECUTE FUNCTION record_audit_log();
 DROP TRIGGER IF EXISTS trg_mood_boards_audit ON mood_boards;
 CREATE TRIGGER trg_mood_boards_audit AFTER UPDATE OR DELETE ON mood_boards FOR EACH ROW EXECUTE FUNCTION record_audit_log();
 DROP TRIGGER IF EXISTS trg_lora_training_runs_audit ON lora_training_runs;

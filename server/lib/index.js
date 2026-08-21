@@ -25,6 +25,7 @@ export * as cosValidation from './cosValidation.js';
 export * as creativeCommissionValidation from './creativeCommissionValidation.js';
 export * as creativeDirectorValidation from './creativeDirectorValidation.js';
 export * as digitalTwinValidation from './digitalTwinValidation.js';
+export * as fableLoomValidation from './fableLoomValidation.js';
 export * as genomeValidation from './genomeValidation.js';
 export * as identityValidation from './identityValidation.js';
 export * as meatspaceValidation from './meatspaceValidation.js';
@@ -74,6 +75,7 @@ export * from './creativeDirectorPrompts.js';
 // subdir with its own barrel — surface it under `editorial.*` so the root
 // discovery surface reaches EDITORIAL_CHECKS + the lookup helpers.
 export * as editorial from './editorial/index.js';
+export * from './fableLoomGraph.js';
 export * from './sceneExtractor.js';
 export * from './scenePrompt.js';
 export * from './proseExportSettings.js';

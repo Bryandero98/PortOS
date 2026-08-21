@@ -73,6 +73,7 @@ export * from './apiSyncReview.js';
 export * from './apiBatch.js';
 export * from './apiCreativeDirector.js';
 export * from './apiCreativeCommission.js';
+export * from './apiFableLoom.js';
 export * from './apiGames.js';
 export * from './apiMusicVideo.js';
 export * from './apiSprites.js';

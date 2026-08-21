@@ -45,6 +45,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `creativeCommissionValidation.js` | Creative Commission (Autonomous Creation Engine) create/update + brief/schedule/generation schemas. Brief field caps are mirrored by the commission form in `client/src/components/creative-commission/commissionForm.js` (parity: `creativeCommissionValidation.mirror.test.js`). |
 | `creativeDirectorValidation.js` | Creative Director project/treatment/scene + Create-Suite importer schemas. `CREATIVE_DIRECTOR_GOAL_MAX` is mirrored in `client/src/lib/creativeDirectorPlan.js` (parity: `creativeDirectorValidation.mirror.test.js`). |
 | `digitalTwinValidation.js` | Digital twin document/category schemas. |
+| `fableLoomValidation.js` | FableLoom branching-narrative route schemas (loom/episode/node CRUD, weave/branch/review, play turns). |
 | `genomeValidation.js` | Genome upload + search schemas. |
 | `identityValidation.js` | Identity section + chronotype + scheduling schemas. |
 | `meatspaceValidation.js` | Meatspace (location/health log) schemas. |
@@ -70,6 +71,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | Module | Purpose |
 |---|---|
 | `editorial/` | Extensible editorial-check registry (#1284) — `EDITORIAL_CHECKS` + fail-fast guards + lookup/state helpers. See `editorial/README.md`. The runner that executes checks lives at `server/services/pipeline/editorial/checkRunner.js`. |
+| `fableLoomGraph.js` | FableLoom branching-narrative graph analysis: `analyzeEpisodeGraph` (deterministic validation — reachability, dead ends, dangling paths, intent hygiene), `computeGraphLayers` (BFS layering), `describeGraphForPrompt` (compact text rendering for LLM stages), `GRAPH_ISSUE_CODES`. |
 | `storyBible.js` | Canonical Character / Place / Object shapes + `BIBLE_LIMITS`. Also the reveal-gated canon / spoiler-scoping helpers (#2178): `filterCanonForIssue` / `filterCanonListForIssue` / `isCanonEntryGatedForIssue` (hide or surface-substitute a gated entry in a drafting prompt), `canonHasRevealGated` + `revealGatedCanonRows` (for the `continuity.premature-reveal` check gate/summary). |
 | `storyArc.js` | Canonical Arc + Season + Reader-Map shapes for pipeline arc planning. |
 | `styleGuide.js` | Per-series house style (tense/POV/audience/rating/reading-level/tone/conventions): `sanitizeStyleGuide` + `renderStyleGuide` generation block + enums. |

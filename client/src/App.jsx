@@ -113,6 +113,8 @@ const WritersRoomGuide = lazyWithReload(() => import('./pages/WritersRoomGuide')
 const Pipeline = lazyWithReload(() => import('./pages/Pipeline'));
 const Sharing = lazyWithReload(() => import('./pages/Sharing'));
 const Importer = lazyWithReload(() => import('./pages/Importer'));
+const FableLoom = lazyWithReload(() => import('./pages/FableLoom'));
+const FableLoomStory = lazyWithReload(() => import('./pages/FableLoomStory'));
 const StartStory = lazyWithReload(() => import('./pages/StartStory'));
 const StoryBuilder = lazyWithReload(() => import('./pages/StoryBuilder'));
 const PipelineSeries = lazyWithReload(() => import('./pages/PipelineSeries'));
@@ -502,6 +504,10 @@ export default function App() {
           <Route path="sharing/:section" element={<Sharing />} />
           <Route path="sharing/:section/:bucketId" element={<Sharing />} />
           <Route path="importer" element={<Importer />} />
+          <Route path="fableloom" element={<FableLoom />} />
+          <Route path="fableloom/:loomId" element={<FableLoomStory />} />
+          <Route path="fableloom/:loomId/:episodeId" element={<FableLoomStory />} />
+          <Route path="fableloom/:loomId/:episodeId/:nodeId" element={<FableLoomStory />} />
           <Route path="start-story" element={<StartStory />} />
           <Route path="story-builder" element={<StoryBuilder />} />
           <Route path="story-builder/:storyId" element={<Navigate to="idea" replace />} />

@@ -1,0 +1,64 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+
+vi.mock('../../services/api', () => ({ playLoomTurn: vi.fn() }));
+vi.mock('../MediaImage', () => ({ default: () => null }));
+
+import { playLoomTurn } from '../../services/api';
+import LoomPlayPanel from './LoomPlayPanel';
+
+const loom = { id: 'loom-1', name: 'The Hollow Crown' };
+const episode = {
+  id: 'ep-1',
+  startNodeId: 'n1',
+  nodes: [
+    {
+      id: 'n1',
+      title: 'The Gate',
+      prose: 'You stand before it.',
+      transitions: [{ id: 't1', targetNodeId: 'n2', intent: 'enter the gate', triggers: [], description: '' }],
+    },
+    { id: 'n2', title: 'Inside', prose: 'Torchlight.', isEnding: false, transitions: [{ id: 't2', targetNodeId: 'n1', intent: 'retreat', triggers: [], description: '' }] },
+  ],
+};
+
+const sendMessage = async (user, text) => {
+  await user.type(screen.getByLabelText('Your action'), text);
+  await user.click(screen.getByRole('button', { name: 'Send' }));
+};
+
+beforeEach(() => vi.clearAllMocks());
+
+describe('LoomPlayPanel', () => {
+  it('renders the opening scene with intent hint chips', () => {
+    render(<LoomPlayPanel loom={loom} episode={episode} />);
+    expect(screen.getByText('You stand before it.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'enter the gate' })).toBeInTheDocument();
+  });
+
+  it('sends only reader/narrator turns in the transcript after a scene move', async () => {
+    const user = userEvent.setup();
+    playLoomTurn
+      .mockResolvedValueOnce({
+        action: 'move',
+        narration: 'You step through.',
+        ended: false,
+        node: { id: 'n2', title: 'Inside', prose: 'Torchlight.', isEnding: false, choices: [{ id: 't2', intent: 'retreat' }] },
+      })
+      .mockResolvedValueOnce({ action: 'stay', narration: 'You hesitate.', ended: false });
+
+    render(<LoomPlayPanel loom={loom} episode={episode} />);
+    await sendMessage(user, 'go in');
+    await waitFor(() => expect(screen.getByText('You step through.')).toBeInTheDocument());
+
+    // Second turn: the transcript state now holds a scene card — the payload
+    // must contain only reader/narrator text turns or the API rejects it.
+    await sendMessage(user, 'look around');
+    await waitFor(() => expect(playLoomTurn).toHaveBeenCalledTimes(2));
+    const [, , payload] = playLoomTurn.mock.calls[1];
+    expect(payload.nodeId).toBe('n2');
+    expect(payload.transcript.every((t) => t.role === 'reader' || t.role === 'narrator')).toBe(true);
+    expect(payload.transcript.every((t) => typeof t.text === 'string')).toBe(true);
+  });
+});

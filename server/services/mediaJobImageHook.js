@@ -56,6 +56,12 @@ import { mediaJobEvents } from './mediaJobQueue/index.js';
 import { createKeyCachedQueue } from '../lib/createKeyCachedQueue.js';
 import { createNewestWinsGuard } from '../lib/createNewestWinsGuard.js';
 
+// The render filename is `${jobId}.<ext>`; prefer the job id, fall back to
+// stripping the extension so an attach records a stable jobId either way.
+// Shared by the hook configs so each doesn't carry its own copy.
+export const deriveRenderJobId = (job, filename) =>
+  (typeof job?.id === 'string' && job.id ? job.id : String(filename).replace(/\.[a-z0-9]+$/i, ''));
+
 export function createMediaJobImageHook(config) {
   const {
     label,

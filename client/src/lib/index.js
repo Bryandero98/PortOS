@@ -91,6 +91,7 @@ export * from './healthProvenance.js';
 export * from './joinInfluenceList.js';
 export * from './kanbanColumns.js';
 export * from './localLlmTargetKey.js';
+export * from './loomLayout.js';
 export * from './loopbackHost.js';
 export * from './manuscriptAnchors.js';
 export * from './manuscriptFormat.js';
