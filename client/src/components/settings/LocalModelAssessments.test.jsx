@@ -472,3 +472,71 @@ describe('LocalModelAssessments — tuning comparison', () => {
     expect(await screen.findByText('backend defaults')).toBeInTheDocument();
   });
 });
+
+// A model can hold several measurements, one per launch tuning. Every action on
+// a row therefore has to target THAT measurement — keying on the model alone
+// gave two variants the same React key and pointed discard/re-measure at the
+// backend-defaults record.
+describe('LocalModelAssessments — one row per tuning', () => {
+  const tunedEntry = () => rankedEntry({
+    backend: 'llama',
+    modelId: 'dflash',
+    tuningKey: 'ubatchSize=512',
+    tuning: { ubatchSize: 512 },
+    tuningLabel: 'Micro-batch size 512',
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getLocalLlmAssessments.mockResolvedValue(report({
+      ranked: [rankedEntry({ backend: 'llama', modelId: 'dflash', tuningKey: '' }), tunedEntry()],
+      assessments: [{ backend: 'llama', modelId: 'dflash', tuningKey: '' }, { backend: 'llama', modelId: 'dflash', tuningKey: 'ubatchSize=512' }],
+    }));
+  });
+
+  it('labels each variant by its own tuning, not all as backend defaults', async () => {
+    render(<LocalModelAssessments />);
+    expect(await screen.findByText('Micro-batch size 512')).toBeInTheDocument();
+    expect(screen.getByText('backend defaults')).toBeInTheDocument();
+  });
+
+  it('discards the tuning the row names, not the backend-defaults record', async () => {
+    deleteLocalLlmAssessment.mockResolvedValue({ success: true });
+    const user = userEvent.setup();
+    render(<LocalModelAssessments />);
+    const buttons = await screen.findAllByRole('button', { name: /Discard the measurement for dflash/ });
+    // Ranked order puts the tuned row second (both score alike, tie broken on
+    // tuning signature: '' sorts before 'ubatchSize=512').
+    await user.click(buttons[1]);
+    await waitFor(() => expect(deleteLocalLlmAssessment)
+      .toHaveBeenCalledWith('llama', 'dflash', 'ubatchSize=512', { silent: true }));
+  });
+
+  // Re-measure should reproduce the configuration that produced the row, so
+  // adjusting one knob is a one-field edit rather than re-entering the set.
+  it('pre-fills a re-measure from the row\'s own tuning', async () => {
+    runLocalLlmAssessment.mockResolvedValue({ verdict: 'fits', tuningApplied: true });
+    const user = userEvent.setup();
+    render(<LocalModelAssessments />);
+    const remeasure = await screen.findAllByRole('button', { name: /Measure dflash again/ });
+    await user.click(remeasure[1]);
+    await user.click(await screen.findByRole('button', { name: 'Run assessment' }));
+    await waitFor(() => expect(runLocalLlmAssessment).toHaveBeenCalledWith(
+      expect.objectContaining({ tuning: { ubatchSize: 512 } }),
+      expect.anything(),
+    ));
+  });
+
+  it('warns on a ranked row whose tuning never reached the daemon', async () => {
+    getLocalLlmAssessments.mockResolvedValue(report({
+      ranked: [rankedEntry({
+        tuningKey: 'ubatchSize=512',
+        tuningLabel: 'Micro-batch size 512',
+        tuningApplied: false,
+        tuningNotApplied: 'llama-server is not running',
+      })],
+    }));
+    render(<LocalModelAssessments />);
+    expect(await screen.findByText(/Tuning was not applied/)).toBeInTheDocument();
+  });
+});

@@ -31,6 +31,11 @@ vi.mock('./localLlmPlayground.js', () => ({
 const probeOpenAiModels = vi.fn();
 vi.mock('../lib/openAiModelsProbe.js', () => ({ probeOpenAiModels: (...args) => probeOpenAiModels(...args) }));
 
+// `runtimeApiKey` reads the provider registry to authenticate a key-gated
+// runtime (a vLLM container started behind VLLM_API_KEY).
+const getAllProviders = vi.fn();
+vi.mock('./providers.js', () => ({ getAllProviders: (...args) => getAllProviders(...args) }));
+
 const getLlamaServerEndpoint = vi.fn();
 const relaunchLlamaServerWithTuning = vi.fn();
 vi.mock('./llamaServerManager.js', () => ({
@@ -82,6 +87,7 @@ beforeEach(() => {
   runEndpointLlmTest.mockReset();
   probeOpenAiModels.mockReset().mockResolvedValue({ reachable: true, models: [], error: null });
   getLlamaServerEndpoint.mockReset().mockResolvedValue('http://127.0.0.1:5568/v1');
+  getAllProviders.mockReset().mockResolvedValue([]);
   relaunchLlamaServerWithTuning.mockReset().mockResolvedValue({ applied: true, reason: null, config: null });
 });
 
@@ -714,5 +720,87 @@ describe('runtime roster', () => {
     const report = await svc.getAssessmentReport();
     expect(report.runtimes.find((r) => r.id === 'mtplx').modelCount).toBeNull();
     expect(report.runtimes.find((r) => r.id === 'ollama').modelCount).toBe(1);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Key-gated runtimes, and evidence hygiene for a tuning that never landed
+// ---------------------------------------------------------------------------
+
+describe('key-gated runtimes', () => {
+  // `vllmBacked` is the structural marker `localRuntimeKind` keys on — it
+  // deliberately does NOT derive the backend from an editable name or endpoint.
+  const vllmProvider = { id: 'vllm', name: 'vLLM', vllmBacked: true, endpoint: 'http://127.0.0.1:18020/v1', apiKey: 'secret-key' };
+
+  // A vLLM container from the shipped compose stack sets VLLM_API_KEY and 401s
+  // an unauthenticated request. Without the key the listing reads as
+  // "unreadable" and every sample fails auth — recorded as a fit verdict.
+  it('authenticates the model listing with the provider record\'s key', async () => {
+    getAllProviders.mockResolvedValue([vllmProvider]);
+    probeOpenAiModels.mockResolvedValue({ reachable: true, models: ['qwen'], error: null });
+    await svc.listRuntimeModels('vllm');
+    expect(probeOpenAiModels).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ apiKey: 'secret-key' }));
+  });
+
+  it('authenticates the measurement with the same key', async () => {
+    getAllProviders.mockResolvedValue([vllmProvider]);
+    probeOpenAiModels.mockResolvedValue({ reachable: true, models: ['qwen'], error: null });
+    runEndpointLlmTest.mockResolvedValue(okRun());
+    await svc.runAssessment({ backend: 'vllm', modelId: 'qwen', contextTokens: [512] });
+    expect(runEndpointLlmTest).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'secret-key' }));
+  });
+
+  // The usual loopback daemon is unauthenticated; attaching a key from an
+  // unrelated provider would be worse than sending none.
+  it('sends no key when no provider for that runtime carries one', async () => {
+    getAllProviders.mockResolvedValue([{ id: 'ollama', ollamaBacked: true, endpoint: 'http://localhost:11434/v1', apiKey: 'not-mine' }]);
+    probeOpenAiModels.mockResolvedValue({ reachable: true, models: [], error: null });
+    await svc.listRuntimeModels('mtplx');
+    expect(probeOpenAiModels).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ apiKey: '' }));
+  });
+});
+
+describe('unapplied tuning is not evidence', () => {
+  const measureWithUnappliedTuning = async () => {
+    probeOpenAiModels.mockResolvedValue({ reachable: true, models: ['dflash'], error: null });
+    runEndpointLlmTest.mockResolvedValue(okRun(40, 150));
+    relaunchLlamaServerWithTuning.mockResolvedValue({ applied: false, reason: 'llama-server is not running', config: null });
+    await svc.runAssessment({ backend: 'llama', modelId: 'dflash', contextTokens: [512], tuning: { ubatchSize: 512 } });
+  };
+
+  // The numbers describe the configuration that was ACTUALLY running. Ranking
+  // them would recommend a tuning nobody measured.
+  it('keeps the record but never ranks it', async () => {
+    await measureWithUnappliedTuning();
+    const report = await svc.getAssessmentReport();
+    expect(report.assessments).toHaveLength(1);
+    expect(report.ranked).toEqual([]);
+    expect(report.excluded[0].reason).toMatch(/tuning was not applied/);
+    expect(report.excluded[0].tuningKey).toBe('ubatchSize=512');
+  });
+
+  // Comparing it would credit the previous config's throughput to knobs that
+  // never reached the daemon.
+  it('never lets it win a tuning comparison', async () => {
+    // A real, applied backend-defaults reading first — llama is an endpoint
+    // runtime, so it measures through runEndpointLlmTest either way.
+    probeOpenAiModels.mockResolvedValue({ reachable: true, models: ['dflash'], error: null });
+    runEndpointLlmTest.mockResolvedValue(okRun(40, 90));
+    await svc.runAssessment({ backend: 'llama', modelId: 'dflash', contextTokens: [512] });
+    // …then a faster one whose tuning never reached the daemon. Two records
+    // exist, so the only thing stopping a comparison is the exclusion itself.
+    await measureWithUnappliedTuning();
+    expect(await svc.loadAssessments()).toHaveLength(2);
+    const report = await svc.getAssessmentReport();
+    expect(report.tuningComparison).toEqual([]);
+  });
+
+  it('still ranks a tuning that WAS applied', async () => {
+    probeOpenAiModels.mockResolvedValue({ reachable: true, models: ['dflash'], error: null });
+    runEndpointLlmTest.mockResolvedValue(okRun(40, 150));
+    await svc.runAssessment({ backend: 'llama', modelId: 'dflash', contextTokens: [512], tuning: { ubatchSize: 512 } });
+    const report = await svc.getAssessmentReport();
+    expect(report.ranked.map((r) => r.tuningKey)).toEqual(['ubatchSize=512']);
   });
 });

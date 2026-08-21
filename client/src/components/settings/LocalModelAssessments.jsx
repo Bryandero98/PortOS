@@ -76,6 +76,11 @@ const compactTuning = (draft) => Object.fromEntries(
   Object.entries(draft || {}).filter(([, v]) => v !== '' && v !== null && v !== undefined)
 );
 
+// A model can hold several measurements, one per launch tuning, so the tuning is
+// part of a row's identity — not decoration. Keying on model alone gave two
+// variants the same React key and made "discard" target the wrong record.
+const entryKey = (entry) => `${entry.backend}:${entry.modelId}@${entry.tuningKey || ''}`;
+
 // `null` is NOT MEASURED and must render as such — never as 0, and never as a
 // dash the reader could mistake for "measured, none".
 const Measured = ({ value, suffix = '', digits = 0 }) =>
@@ -405,7 +410,7 @@ function TuningComparison({ rows, runtimeLabelFor }) {
             <span className="text-[10px] text-gray-500">{runtimeLabelFor(row.backend)}</span>
           </div>
           {row.variants.map((variant, index) => (
-            <div key={variant.label} className="grid grid-cols-[1fr_auto] gap-2 items-center text-[11px]">
+            <div key={`${row.backend}:${row.modelId}@${variant.label}`} className="grid grid-cols-[1fr_auto] gap-2 items-center text-[11px]">
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
                   <span className={index === 0 ? 'text-emerald-400' : 'text-gray-300'}>{variant.label}</span>
@@ -675,7 +680,7 @@ export function LocalModelAssessments() {
             <div className="space-y-2">
               {report.ranked.map((entry) => (
                 <RankedRow
-                  key={`${entry.backend}:${entry.modelId}`}
+                  key={entryKey(entry)}
                   entry={entry}
                   runtimeLabel={backendLabel(report, entry.backend)}
                   busy={busy}
@@ -695,8 +700,13 @@ export function LocalModelAssessments() {
             <div className="space-y-1">
               <h3 className="text-xs font-medium text-gray-400">Measured, but not recommended</h3>
               {report.excluded.map((entry) => (
-                <div key={`${entry.backend}:${entry.modelId}`} className="flex items-center gap-2 text-xs flex-wrap">
+                <div key={entryKey(entry)} className="flex items-center gap-2 text-xs flex-wrap">
                   <span className="text-gray-300 font-mono break-all">{entry.modelId}</span>
+                  {/* Several rows can name the same model — one per tuning — so
+                      the configuration is what tells them apart. */}
+                  <span className="px-1.5 py-0.5 text-[10px] rounded border border-port-border text-gray-500">
+                    {entry.tuningLabel || 'backend defaults'}
+                  </span>
                   <VerdictPill verdict={entry.verdict} />
                   {entry.reason && <span className="text-gray-500">{entry.reason}</span>}
                 </div>

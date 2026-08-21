@@ -62,6 +62,7 @@ import {
   LOCAL_RUNTIMES,
   MANAGED_ASSESSMENT_BACKENDS,
   isEndpointRuntime,
+  localRuntimeKind,
 } from '../lib/localProviderRuntime.js';
 import {
   compareTunings,
@@ -73,6 +74,7 @@ import {
   tuningSpecsFor,
 } from '../lib/localModelTuning.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
+import { getAllProviders } from './providers.js';
 import { runEndpointLlmTest, runLocalLlmTest } from './localLlmPlayground.js';
 import { getLlamaServerEndpoint, relaunchLlamaServerWithTuning } from './llamaServerManager.js';
 import { listModels } from './localLlm.js';
@@ -157,6 +159,25 @@ export async function runtimeEndpoint(runtime) {
 }
 
 /**
+ * The API key a bare endpoint runtime is served behind, or `''` for the usual
+ * unauthenticated loopback daemon.
+ *
+ * A vLLM container started from the shipped compose stack sets `VLLM_API_KEY`
+ * and answers 401 to an unauthenticated request — which `probeOpenAiModels`
+ * correctly reports as "reachable, listing unreadable" and a measurement would
+ * hit on every sample. `providerReadiness.js` already solves this by reading the
+ * key off the matching provider record; this resolves it the same way, keyed on
+ * the same `localRuntimeKind` classifier so the two can't disagree about which
+ * provider backs which runtime.
+ */
+export async function runtimeApiKey(runtime) {
+  const providers = await getAllProviders().catch(() => []);
+  const match = (Array.isArray(providers) ? providers : [])
+    .find((p) => localRuntimeKind(p) === runtime && typeof p?.apiKey === 'string' && p.apiKey !== '');
+  return match?.apiKey || '';
+}
+
+/**
  * Models this runtime can be measured against, plus why the list failed when it
  * did.
  *
@@ -184,7 +205,7 @@ export async function listRuntimeModels(runtime) {
 
   const endpoint = await runtimeEndpoint(runtime);
   if (!endpoint) return { models: null, error: 'no endpoint is configured for this runtime' };
-  const probe = await probeOpenAiModels(endpoint, { timeoutMs: 2500 });
+  const probe = await probeOpenAiModels(endpoint, { timeoutMs: 2500, apiKey: await runtimeApiKey(runtime) });
   if (!probe.reachable) return { models: null, error: `not reachable at ${endpoint} (${probe.error})` };
   if (!probe.models) return { models: null, error: probe.error || 'model listing was not readable' };
   // An endpoint runtime reports ids only — no params, no quantization. `null`
@@ -302,6 +323,9 @@ export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_
   if (isEndpointRuntime(backend) && !endpoint) {
     throw new Error(`No endpoint is configured for the ${backend} runtime`);
   }
+  // Same key the listing probe used — a key-gated vLLM 401s every sample
+  // otherwise, and the run would record "does-not-fit" for an auth failure.
+  const apiKey = endpoint ? await runtimeApiKey(backend) : '';
 
   const environment = await captureEnvironment({ backend });
   const { models: installed } = await listRuntimeModels(backend);
@@ -343,7 +367,7 @@ export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_
       signal,
     };
     const result = await (endpoint
-      ? runEndpointLlmTest({ ...shared, runtime: backend, endpoint })
+      ? runEndpointLlmTest({ ...shared, runtime: backend, endpoint, apiKey })
       : runLocalLlmTest({ ...shared, backend })
     ).catch((err) => ({ backend, modelId, text: '', error: err?.message || 'assessment run failed' }));
 
@@ -479,7 +503,26 @@ export async function getAssessmentReport({ intent = 'balanced' } = {}) {
     .filter((a) => !isStillInstalled(a))
     .map((a) => ({ backend: a?.backend || null, modelId: a?.modelId || null, tuningLabel: a?.tuningLabel || null }));
 
-  const { ranked, excluded } = rankByIntent(stillInstalled, resolvedIntent);
+  // A reading taken under a tuning PortOS could NOT apply describes some other
+  // configuration entirely. It is kept on disk (the run cost real minutes, and
+  // the failed attempt plus its reason is what tells the user why) but it must
+  // never be scored AS that tuning: ranking it would recommend a configuration
+  // nobody measured, and comparing it would credit the previous config's
+  // throughput to the knobs that never reached the daemon.
+  const unappliedTuning = stillInstalled.filter((a) => a?.tuningApplied === false);
+  const scorable = stillInstalled.filter((a) => a?.tuningApplied !== false);
+
+  const { ranked, excluded } = rankByIntent(scorable, resolvedIntent);
+  for (const a of unappliedTuning) {
+    excluded.push({
+      backend: a?.backend || null,
+      modelId: a?.modelId || null,
+      tuningKey: a?.tuningKey || '',
+      tuningLabel: a?.tuningLabel || null,
+      verdict: a?.verdict || 'unknown',
+      reason: `measured, but the requested tuning was not applied — ${a?.tuningNotApplied || 'reason not recorded'}`,
+    });
+  }
 
   // "Not yet measured" is keyed on the model, NOT on the model+tuning: once one
   // tuning has been measured the model is no longer an unanswered question, and
@@ -504,7 +547,7 @@ export async function getAssessmentReport({ intent = 'balanced' } = {}) {
     // so the UI renders one source of truth instead of a hardcoded backend list.
     runtimes,
     // Which tuning won, per model, for models measured under two or more.
-    tuningComparison: compareTunings(stillInstalled),
+    tuningComparison: compareTunings(scorable),
     // Runtimes whose model list could not be trusted — distinct from "listed,
     // and legitimately empty".
     listErrors,

@@ -531,14 +531,44 @@ describe('llamaServerManager', () => {
     // PM2 reporting `online` is not the same as the server answering. A daemon
     // that never opened its port has not had the tuning applied in any sense a
     // measurement could rest on.
+    // `startLlamaServer` polls for only four seconds, and a large GGUF routinely
+    // takes longer than that to load. Treating "not ready yet" as "wedged" would
+    // tear down a launch that was about to succeed.
+    it('waits past the start probe for a slow load rather than calling it wedged', async () => {
+      await started();
+      let answerAfter = 3;
+      vi.spyOn(openAiModelsProbe, 'probeOpenAiModels').mockImplementation(async () => {
+        if (pm2State?.status !== 'online') return { reachable: false };
+        return { reachable: answerAfter-- <= 0 };
+      });
+      execPm2Calls = [];
+      const result = await relaunchLlamaServerWithTuning({ ubatchSize: 512 });
+      expect(result.applied).toBe(true);
+      // One start only — the slow load was waited out, not restarted.
+      expect(execPm2Calls.filter((c) => c[0] === 'start')).toHaveLength(1);
+    });
+
     it('reports not-applied when the relaunched server never answers', async () => {
       await started();
       // PM2 keeps reporting `online` while the endpoint stays silent — the exact
       // split the check exists for.
       vi.spyOn(openAiModelsProbe, 'probeOpenAiModels').mockResolvedValue({ reachable: false });
+      // Shrink the readiness budget: the give-up path is what's under test, and
+      // the production two minutes would just be two minutes of sleeping.
+      _resetLlamaServerStateForTests({ relaunchReadyTimeout: 1500 });
+      execPm2Calls = [];
       const result = await relaunchLlamaServerWithTuning({ ubatchSize: 512 });
       expect(result.applied).toBe(false);
       expect(result.reason).toMatch(/never answered/);
-    });
+      // A silent process must not be LEFT running: this daemon fronts the llama
+      // provider for the whole install, so the previous configuration goes back
+      // exactly as it does for a launch line llama.cpp rejects outright.
+      const restore = execPm2Calls.filter((c) => c[0] === 'start').at(-1);
+      expect(restore).not.toContain('-ub');
+      expect(restore[restore.indexOf('-m') + 1]).toBe(modelPath);
+      // Two full start cycles (each polling `STARTUP_WAIT_TIMEOUT_MS` against a
+      // deliberately-silent probe) plus the readiness budget — slow by design,
+      // not by accident, so this one test buys the room rather than the suite.
+    }, 30000);
   });
 });

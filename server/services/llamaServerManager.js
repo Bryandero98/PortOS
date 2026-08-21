@@ -26,6 +26,12 @@ const PROBE_TIMEOUT_MS = 1500;
 const STARTUP_WAIT_TIMEOUT_MS = 4000;
 // How long a relaunch waits for the kernel to release the old listener.
 const PORT_RELEASE_TIMEOUT_MS = 5000;
+// How long a relaunch waits for the new process to answer. `startLlamaServer`
+// polls for only STARTUP_WAIT_TIMEOUT_MS, which a large GGUF routinely exceeds
+// while loading — so a relaunch must not read "not ready yet" as "wedged".
+// Mutable only through the test seam below: a suite asserting the give-up path
+// cannot sit through two real minutes of polling.
+let relaunchReadyTimeoutMs = 120000;
 
 let currentConfig = null;
 let recentLogs = [];
@@ -461,6 +467,19 @@ async function waitForPortRelease(port) {
 }
 
 /**
+ * Block until the endpoint answers, or the readiness budget elapses.
+ * `false` means it never answered — which is a wedged process, not a slow one.
+ */
+async function waitForEndpoint(endpoint) {
+  const deadline = Date.now() + relaunchReadyTimeoutMs;
+  while (Date.now() < deadline) {
+    if (await probeEndpoint(endpoint)) return true;
+    await sleep(1000);
+  }
+  return false;
+}
+
+/**
  * Relaunch llama-server with a different tuning, keeping the model/drafter it is
  * already serving.
  *
@@ -529,12 +548,28 @@ export async function relaunchLlamaServerWithTuning(tuning = {}) {
     return { applied: false, reason: `llama-server rejected that tuning: ${started.failure}`, config: started.config };
   }
 
-  // PM2 reporting `online` is not the same as the server answering. A daemon
-  // that never opened its port has not had the tuning applied in any sense a
-  // measurement could rest on, so say so rather than filing the samples that
-  // follow under a configuration nothing could reach.
-  if (!started.online) {
-    return { applied: false, reason: 'llama-server relaunched but never answered on its port', config: started.config };
+  // PM2 reporting `online` is not the same as the server answering. But
+  // `startLlamaServer` only polls for four seconds, and a large GGUF routinely
+  // takes longer than that to load — so `online: false` is "not ready YET",
+  // not "wedged". Give it a real readiness budget before judging.
+  const ready = started.online || await waitForEndpoint(started.endpoint);
+  if (!ready) {
+    // Still silent. Treat it exactly like a rejected launch line: put the
+    // previous configuration back, so the install's llama provider is not left
+    // pointing at a process that never serves. Without this the caller would go
+    // on to measure a dead endpoint and record the timeouts as evidence.
+    console.error('❌ llama-server: relaunched process never answered — restoring the previous configuration');
+    await stopLlamaServer().catch(() => {});
+    await waitForPortRelease(previous.port ?? PORTS.LLAMA_SERVER);
+    const restored = await startLlamaServer(previous).catch((err) => {
+      console.error(`❌ llama-server: could not restore the previous configuration: ${err.message}`);
+      return null;
+    });
+    return {
+      applied: false,
+      reason: 'llama-server relaunched but never answered on its port',
+      config: restored?.config || null,
+    };
   }
   return { applied: true, reason: null, config: started.config };
 }
@@ -654,9 +689,11 @@ export async function installLlamaServer({ onProgress = () => {} } = {}) {
 /**
  * Clears in-memory test state (used by test suites).
  */
-export function _resetLlamaServerStateForTests() {
+export function _resetLlamaServerStateForTests({ relaunchReadyTimeout } = {}) {
   currentConfig = null;
   recentLogs = [];
   lastExitError = null;
+  // Restored to the production budget unless a suite asks for a shorter one.
+  relaunchReadyTimeoutMs = Number.isFinite(relaunchReadyTimeout) ? relaunchReadyTimeout : 120000;
 }
 

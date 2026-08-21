@@ -218,6 +218,9 @@ export async function runLocalLlmTest({
 export async function runEndpointLlmTest({
   runtime,
   endpoint,
+  // Empty for the usual unauthenticated loopback daemon; set for a vLLM
+  // container started behind `VLLM_API_KEY`, which 401s without it.
+  apiKey = '',
   modelId,
   prompt,
   systemPrompt = '',
@@ -237,6 +240,7 @@ export async function runEndpointLlmTest({
   try {
     const text = await streamOpenAiChat({
       endpoint,
+      apiKey,
       model: modelId,
       messages: buildMessages({ systemPrompt, prompt }),
       temperature,
