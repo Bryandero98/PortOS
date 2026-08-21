@@ -19,6 +19,9 @@ const apiSystem = vi.hoisted(() => ({ getAssignableInstances: vi.fn() }));
 vi.mock('../../services/apiSystem', () => apiSystem);
 vi.mock('../../services/api', () => api);
 
+const worktreeToggle = () => screen.getByTitle(/isolated git worktree/i).closest('label').querySelector('input');
+const openPrToggle = () => screen.getByTitle(/Open a pull request/i).closest('label').querySelector('input');
+
 describe('TaskAddForm responsive layout', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -80,7 +83,6 @@ describe('TaskAddForm responsive layout', () => {
 // means "turn it off" — collapsing the two would make a plain user template
 // silently clear toggles it never meant to touch.
 describe('TaskAddForm quick templates', () => {
-  const worktreeToggle = () => screen.getByTitle(/isolated git worktree/i).closest('label').querySelector('input');
   const openTemplates = async (user) => {
     await waitFor(() => expect(screen.getByText('Quick Templates')).toBeInTheDocument());
     await user.click(screen.getByText('Quick Templates'));
@@ -261,5 +263,63 @@ describe('TaskAddForm federated instance picker (#4520)', () => {
     await user.click(screen.getByRole('button', { name: /^Add$/ }));
     await waitFor(() => expect(api.addCosTask).toHaveBeenCalledTimes(2));
     expect(api.addCosTask.mock.calls[1][0].targetInstanceId).toBe(PEER);
+  });
+});
+
+// Worktree + Open PR ride ON by default so a queued task lands on a
+// branch behind a PR unless the user (or the app record) opts out.
+describe('TaskAddForm worktree/PR defaults', () => {
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getCosPopularTemplates.mockResolvedValue({ templates: [] });
+    api.getCodeReviewDefaults.mockResolvedValue(null);
+    api.getLocalLlmStatus.mockResolvedValue({ ollama: { models: [] }, lmstudio: { models: [] } });
+    api.getProviders.mockResolvedValue({ providers: [] });
+    api.applyCosTaskTemplate.mockResolvedValue({ success: true });
+    apiSystem.getAssignableInstances.mockResolvedValue({ instances: [] });
+    api.addCosTask.mockResolvedValue({ success: true });
+  });
+
+  it('checks both toggles when no app pins a default, and submits them', async () => {
+    const user = userEvent.setup();
+    render(<TaskAddForm providers={[]} apps={[]} onTaskAdded={vi.fn()} />);
+
+    await waitFor(() => expect(worktreeToggle()).toBeChecked());
+    expect(openPrToggle()).toBeChecked();
+
+    await user.type(screen.getByPlaceholderText('Task description *'), 'Ship the change');
+    await user.click(screen.getByRole('button', { name: /^Add$/ }));
+    await waitFor(() => expect(api.addCosTask).toHaveBeenCalled());
+    expect(api.addCosTask.mock.calls[0][0]).toMatchObject({ useWorktree: true, openPR: true });
+  });
+
+  it('honors an app that explicitly opts out of both', async () => {
+    render(
+      <TaskAddForm
+        providers={[]}
+        apps={[{ id: 'example-app', name: 'Example App', repoPath: 'example.com/repo', defaultUseWorktree: false, defaultOpenPR: false }]}
+        defaultApp="example-app"
+        onTaskAdded={vi.fn()}
+      />
+    );
+
+    await waitFor(() => expect(worktreeToggle()).not.toBeChecked());
+    expect(openPrToggle()).not.toBeChecked();
+  });
+
+  it('leaves the PR off for an app that pins only defaultUseWorktree:false', async () => {
+    render(
+      <TaskAddForm
+        providers={[]}
+        apps={[{ id: 'example-app', name: 'Example App', repoPath: 'example.com/repo', defaultUseWorktree: false }]}
+        defaultApp="example-app"
+        onTaskAdded={vi.fn()}
+      />
+    );
+
+    await waitFor(() => expect(screen.getByPlaceholderText('Task description *')).toBeInTheDocument());
+    expect(worktreeToggle()).not.toBeChecked();
+    expect(openPrToggle()).not.toBeChecked();
   });
 });
