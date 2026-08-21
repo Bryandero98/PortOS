@@ -361,6 +361,29 @@ describe('runLocalRuntimeSetup', () => {
     expect(result.success).toBe(true);
   });
 
+  it('does not spawn a daemon when the modal closed while the cache was being read', async () => {
+    // The cache lookup is an awaited subprocess, and the caller's cancellation
+    // check ran BEFORE it — without a re-check, a closed modal still leaves a
+    // detached MTPLX server running.
+    let cancelled = false;
+    mtplxCache.listMtplxCachedModels.mockImplementation(async () => {
+      cancelled = true; // the user closes the modal while `mtplx models` runs
+      return cachedModels([{ repo_id: 'Example/MTP-Model', validation: { ok: true } }]);
+    });
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    probe.probeOpenAiModels.mockResolvedValue(unreachable);
+    const restore = pinPlatform('darwin');
+
+    const result = await runLocalRuntimeSetup('mtplx', {
+      endpoint: 'http://127.0.0.1:8000/v1',
+      isCancelled: () => cancelled,
+    });
+    restore();
+
+    expect(child.spawn).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ success: false, error: expect.stringMatching(/Cancelled/) });
+  });
+
   it('reports what a dying daemon printed, skipping its ASCII-art banner', async () => {
     const daemon = fakeChild();
     child.spawn.mockReturnValue(daemon);

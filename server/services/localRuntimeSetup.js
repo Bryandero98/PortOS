@@ -235,6 +235,11 @@ const SETUP_ROWS = Object.freeze({
         return { success: false, error: `its cache holds ${count} model${count === 1 ? '' : 's'}, but none passed its own file check — an interrupted \`mtplx pull\` leaves a partial download behind. Re-run \`mtplx pull <hf-repo-id>\` in a terminal, then try again.` };
       }
       if (model) emit(`Serving the cached MTPLX model ${model}.`);
+      // The cache lookup is an awaited subprocess — the modal can close while it
+      // runs, and the caller's cancellation check happened BEFORE it. Without
+      // this, a cancelled setup still spawns a detached daemon nobody asked to
+      // keep.
+      if (isCancelled()) return { success: false, error: 'Cancelled before the server was started.' };
       // `mtplx start` is interactive (it prompts for a model); `serve` is the
       // API-only server, which is the half PortOS actually talks to. The daemon
       // must bind where the PROVIDER points — a user who moved MTPLX to 8010

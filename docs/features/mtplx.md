@@ -29,15 +29,17 @@ valid CoS coding-agent runner.
 
 1. On **AI Providers**, enable the matching preset. Its card shows an MTPLX
    requirements checklist (installed / server responding / model available).
-2. Pull a checkpoint yourself — `mtplx pull` fetches MTPLX's default verified
-   model, `mtplx pull <hf-repo-id>` any other MTP model. PortOS never downloads
-   weights, and `mtplx serve` exits immediately when its cache is empty.
-3. Click **Install & start MTPLX** on that checklist. PortOS installs the
+2. Click **Install & start MTPLX** on that checklist. PortOS installs the
    package from upstream's Homebrew tap (`brew install youssofal/mtplx/mtplx`),
    falling back to `python3 -m pip install mtplx` on a host without Homebrew,
    then runs `mtplx serve --port <the port your provider points at> --model <a
    model already in your MTPLX cache>` and waits for `/v1/models` to answer.
    Progress streams into the install modal.
+3. **If it reports that no weights are cached**, pull a checkpoint yourself —
+   `mtplx pull` fetches MTPLX's default verified model, `mtplx pull
+   <hf-repo-id>` any other MTP model — then click **Start MTPLX** again. PortOS
+   never downloads weights, and `mtplx serve` exits before it binds a port when
+   its cache is empty.
 4. Use **Refresh Models** once the server is up; PortOS then reads `/v1/models`
    on demand. The seed model alias is `mtplx` — refresh it if your running
    server publishes a different one.
