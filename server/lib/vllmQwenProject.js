@@ -14,17 +14,20 @@
  * directory entries — it never runs docker, contacts a registry, or reads a
  * weight file.
  *
- * **Sentinels matter here.** `hasWeights` is a tri-state: `true` (an HF hub cache
- * entry for a Qwen repo was found), `false` (every candidate root was readable
- * and none held one), `null` (no candidate root could be read at all). The start
+ * **Sentinels matter here.** `hasWeights` is a tri-state: `true` (a Qwen model
+ * directory was found), `false` (every candidate root was readable and none held
+ * one), `null` (no candidate root could be read at all). The start
  * path treats anything other than `true` as "not verified" and refuses — but the
  * three cases get different copy, because "your cache is empty" and "I cannot see
  * your cache" send the operator to different fixes. The common `null` case is a
- * real deployment shape, not a bug: the compose stack can keep its HuggingFace
- * cache in a docker named volume, which on Windows/WSL lives inside the VM and is
- * invisible to a native-Win32 PortOS. `VLLM_QWEN_WEIGHTS_DIR` is the escape hatch
- * for that setup; otherwise the operator simply runs compose themselves, which is
- * the documented path anyway.
+ * real deployment shape, not a bug: on Windows the compose project is cloned
+ * inside a WSL2 distro, so a native-Win32 PortOS reaches neither it nor its
+ * `models/` at the Windows `~/qwen-serving` this module defaults to. Pointing
+ * `VLLM_QWEN_PROJECT_DIR` at the UNC path (`\\wsl.localhost\<distro>\home\…`)
+ * resolves it — Node reads that path, and `docker compose` accepts it as a
+ * working directory. `VLLM_QWEN_WEIGHTS_DIR` covers the rarer case of a cache
+ * kept somewhere else entirely; otherwise the operator simply runs compose
+ * themselves, which is the documented path anyway.
  */
 
 import { readdir, stat } from 'fs/promises';
@@ -62,6 +65,25 @@ const COMPOSE_FILENAMES = ['docker-compose.yml', 'docker-compose.yaml', 'compose
  */
 const QWEN_CACHE_ENTRY = /^models--.*qwen/i;
 
+/**
+ * The hub layout is not what upstream's `prepare` service actually produces.
+ * `docker/prepare.sh` runs `hf download <repo> --local-dir /app/models/<model>`,
+ * and compose bind-mounts `${MODELS_DIR:-./models}` there — so a prepared 3090
+ * holds a plainly-named `models/Qwen3.8-27B-W4A16-AutoRound/` (plus `-fast` and
+ * the DFlash2 drafter), never a `models--…` directory. Matching only the hub
+ * shape reported every correctly-prepared machine as "no weights cached yet"
+ * and refused to start a container that was ready to run.
+ */
+const QWEN_LOCAL_ENTRY = /qwen/i;
+
+/**
+ * What makes a `qwen`-named directory *weights* rather than a notes folder that
+ * happens to share the name. These are the same files upstream's own readiness
+ * check keys on: a sharded download writes the index, a single-file one (the
+ * DFlash2 drafter) writes the tensor file itself.
+ */
+const LOCAL_WEIGHT_MARKERS = ['model.safetensors.index.json', 'model.safetensors'];
+
 const isDirectory = (path) => stat(path).then((s) => s.isDirectory(), () => false);
 const isFile = (path) => stat(path).then((s) => s.isFile(), () => false);
 
@@ -91,6 +113,25 @@ function weightsCandidateRoots(projectDir, env = process.env) {
 }
 
 /**
+ * Whether one cache root holds Qwen weights, in either layout: a HuggingFace hub
+ * entry, or the `--local-dir` model directory upstream's prepare step writes.
+ *
+ * @param {string} root
+ * @param {string[]} entries
+ * @returns {Promise<boolean>}
+ */
+async function rootHoldsQwenWeights(root, entries) {
+  if (entries.some((name) => QWEN_CACHE_ENTRY.test(name))) return true;
+  for (const name of entries.filter((entry) => QWEN_LOCAL_ENTRY.test(entry))) {
+    for (const marker of LOCAL_WEIGHT_MARKERS) {
+      // eslint-disable-next-line no-await-in-loop -- two stats on a short, ordered candidate list
+      if (await isFile(join(root, name, marker))) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Inspect the operator's vLLM project without touching docker.
  *
  * @param {NodeJS.ProcessEnv} [env]
@@ -116,7 +157,8 @@ export async function inspectVllmQwenProject(env = process.env) {
     const entries = await readdir(root).catch(() => null);
     if (entries === null) continue; // absent or unreadable — says nothing either way
     readAnyRoot = true;
-    if (entries.some((name) => QWEN_CACHE_ENTRY.test(name))) { weightsRoot = root; break; }
+    // eslint-disable-next-line no-await-in-loop -- short, ordered, first-match-wins
+    if (await rootHoldsQwenWeights(root, entries)) { weightsRoot = root; break; }
   }
 
   return {
@@ -148,7 +190,7 @@ export function vllmStartBlockedReason(project) {
     return `the project is cloned but no Qwen weights are cached yet. Run its prepare step in a terminal — starting compose now would pull roughly 20 GB, which PortOS will not do for you.`;
   }
   if (project.hasWeights === null) {
-    return `PortOS cannot see a HuggingFace cache for this project, so it cannot confirm the weights are already downloaded (a cache kept in a docker volume is invisible from here). Start it yourself with \`docker compose --profile single up -d\` in ${project.dir}, or set ${VLLM_WEIGHTS_DIR_ENV} to the cache directory once the weights are on disk.`;
+    return `PortOS cannot read a models directory for this project, so it cannot confirm the weights are already downloaded. On Windows the project usually lives inside WSL2 — point ${VLLM_PROJECT_DIR_ENV} at its UNC path (\\\\wsl.localhost\\<distro>\\home\\<user>\\qwen-serving). Otherwise set ${VLLM_WEIGHTS_DIR_ENV} to the directory holding the weights, or start it yourself with \`docker compose --profile single up -d\` in ${project.dir}.`;
   }
   return null;
 }
