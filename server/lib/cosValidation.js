@@ -36,6 +36,13 @@ export const DEFAULT_REVIEWERS = ['copilot'];
 // bot). Used by the code-review endpoint, settings panel, and prompt builder
 // to gate model-id resolution.
 export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama'];
+// Reviewers PortOS serves ITSELF, with no counterpart in slashdo's reviewer
+// vocabulary: `lmstudio` runs through `POST /api/code-review/local`, which takes
+// its model in the request body. slashdo has no such slug, so it can neither
+// carry a `[<model>]` bracket nor appear in a `--review-with` list (an unknown
+// value aborts the command). One constant so a future addition can't be fixed
+// in one of those two places and missed in the other.
+export const PORTOS_ONLY_REVIEWERS = ['lmstudio'];
 // CLI reviewers whose binary accepts a `--model <id>` tier the user can pin on
 // the Code Review Defaults panel (stored as a `<reviewer>Model` settings scalar,
 // e.g. `codexModel` / `claudeModel` / `antigravityModel`). The review-loop
@@ -389,12 +396,11 @@ function normalizeReviewerModel(raw, reviewer = null) {
 }
 
 // Reviewers whose slashdo `--review-with` entry accepts a `[<model>]` bracket
-// (`lib/multi-reviewer-loop.md`: codex/claude/agy/grok/cursor/ollama). PortOS's
-// `lmstudio` reviewer has NO slashdo counterpart — it's served by
-// `POST /api/code-review/local`, which takes the model in its request body — so a
-// pinned lmstudio model never becomes a bracket, and `copilot`/`@login` entries
-// reject one outright.
-export const BRACKET_MODEL_REVIEWERS = MODEL_SELECTABLE_REVIEWERS.filter(r => r !== 'lmstudio');
+// (`lib/multi-reviewer-loop.md`: codex/claude/agy/grok/cursor/ollama). A
+// PORTOS_ONLY_REVIEWERS entry has no slashdo counterpart at all, so a pinned
+// model for it never becomes a bracket, and `copilot`/`@login` entries reject
+// one outright.
+export const BRACKET_MODEL_REVIEWERS = MODEL_SELECTABLE_REVIEWERS.filter(r => !PORTOS_ONLY_REVIEWERS.includes(r));
 
 /**
  * Per-reviewer model pins — the model id ONE reviewer runs with, keyed by the
@@ -810,6 +816,76 @@ export function buildReviewerEffortNote(reviewers, reviewerEfforts = {}, { revie
     .filter(Boolean);
   if (!entries.length) return '';
   return `Invoke each reviewer CLI at its pinned reasoning effort: ${entries.join(', ')}. Pass the flag yourself when you spawn the reviewer — nothing else in this prompt applies it (a \`~effort=<level>\` suffix in a reviewer list is slashdo's own grammar, which only its \`--review-with\` parses).`;
+}
+
+// Examples of slashdo commands that run a review loop and therefore resolve
+// `--review-with` from a saved default when the invocation doesn't pin one.
+// EXAMPLES, deliberately — the rule is stated over "any `/do:*` that reviews"
+// because the real roster is larger and moves with the submodule (`/do:review`,
+// `/do:better`, `/do:better-swift`, `/do:depfree`, `/do:release` all read it
+// too). A hand-maintained enumeration is the part that rots, and a command
+// missing from it would read as exempt.
+const REVIEW_LOOP_SLASHDO_EXAMPLES_MD = ['/do:pr', '/do:next', '/do:review', '/do:rpr']
+  .map(command => `\`${command}\``).join(', ');
+
+/**
+ * The reviewer slug inside an emitted `--review-with` token, without its
+ * `[<model>]` / `~<suffix>` decoration — the inverse of `markSuffixes`, which is
+ * the only thing that ever builds one. Kept beside its emitter, and pinned to it
+ * by a round-trip test, so a grammar change can't silently mis-slug here.
+ */
+export const reviewerTokenSlug = (token) => String(token).split('[')[0].split('~')[0].trim().toLowerCase();
+
+/**
+ * Prose block pinning a claim prompt's reviewer list against slashdo's SAVED
+ * defaults.
+ *
+ * The claim flows hand-run their reviewers, so the prompt names the list and
+ * emits no flag. But the claim agent is usually a Claude Code session with
+ * slashdo installed, and reaching for `/do:pr` mid-flow is a short step from
+ * the phase text — at which point slashdo resolves `--review-with` from the
+ * host's saved defaults (`.slashdo.json` at the repo root, or the host CLI's
+ * `.slashdo-config.json`), i.e. some OTHER user-level reviewer set, plus
+ * whatever `merge` default rides with it. That silently replaces the reviewers
+ * PortOS resolved for this run. So state the pin once, in the prompt, with the
+ * exact token list to pass.
+ *
+ * `reviewersCsv` must be the text `buildReviewersCsv` emits — the same
+ * `<agent>[<model>]~opt~max=<n>~effort=<level>` grammar `--review-with` parses —
+ * so the agent can paste it verbatim.
+ *
+ * Unlike `buildReviewWithArgs` this does NOT suppress a lone bare `copilot`
+ * (the #2507 stall): every claim path resolves its list through
+ * `normalizeClaimReviewers`, which strips `copilot` and falls back to `codex`,
+ * so the suppressed case cannot reach here. A future caller that skips that
+ * normalizer has to add the guard rather than assume it.
+ *
+ * @param {string} reviewersCsv - the emitted reviewer token list
+ * @returns {string} a Markdown block, or '' when there is no list to pin
+ */
+export function buildReviewerPinNote(reviewersCsv) {
+  const csv = typeof reviewersCsv === 'string' ? reviewersCsv.trim() : '';
+  if (!csv) return '';
+  // A `@login` entry is always a valid slashdo reviewer; a keyed one is valid
+  // unless PortOS serves it itself. Emitting a PORTOS_ONLY_REVIEWERS slug in a
+  // `--review-with` list would abort the command outright, so it is dropped from
+  // the flag text and named separately with the procedure that DOES run it.
+  const tokens = csv.split(',').map(t => t.trim()).filter(Boolean);
+  const flagTokens = tokens.filter(t => t.startsWith('@') || !PORTOS_ONLY_REVIEWERS.includes(reviewerTokenSlug(t)));
+  // Named by bare slug: the `[<model>]`/`~<suffix>` decoration is slashdo
+  // grammar, and these reviewers never reach a slashdo parser.
+  const portosOnly = [...new Set(tokens.filter(t => !flagTokens.includes(t)).map(reviewerTokenSlug))];
+
+  return [
+    '## Reviewer pin — use the reviewers PortOS configured',
+    `PortOS resolved this run's reviewers from its own configuration: \`${csv}\`. That list is authoritative for every review in this run — it is the same list the phases above name. Never substitute a different reviewer set for it.`,
+    flagTokens.length
+      && `**A saved slashdo default must never stand in for it.** If you invoke ANY slashdo \`/do:*\` command that runs a review loop (${REVIEW_LOOP_SLASHDO_EXAMPLES_MD}, and others), pass \`--review-with ${flagTokens.join(',')}\` explicitly. A bare invocation resolves \`--review-with\` from the host's saved defaults instead — \`.slashdo.json\` at the repo root, or the host CLI's \`.slashdo-config.json\` — which name a different reviewer set and can carry an auto-merge default this run never asked for.`,
+    flagTokens.length
+      && 'Pass those tokens exactly as written: their `[<model>]`, `~opt`, `~max=<n>`, and `~effort=<level>` suffixes are slashdo grammar and already carry each reviewer\'s pinned model, optional/blocking status, round cap, and reasoning effort — so do not also apply those by hand on that path.',
+    portosOnly.length
+      && `PortOS runs \`${portosOnly.join('`, `')}\` itself — no slashdo slug, so never a \`--review-with\` value. That review happens through the Local Reviewer Procedure below, and leaving it out of a slashdo invocation is not permission to skip it.`,
+  ].filter(Boolean).join('\n\n');
 }
 
 /**

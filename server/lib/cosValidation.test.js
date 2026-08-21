@@ -26,6 +26,9 @@ import {
   reviewerEffortArgs,
   reviewerModelArg,
   buildReviewerEffortNote,
+  buildReviewerPinNote,
+  buildReviewersCsv,
+  reviewerTokenSlug,
   sanitizeTaskMetadata,
   codeReviewSettingsSchema,
   taskTemplateSettingsSchema,
@@ -550,5 +553,69 @@ describe('per-reviewer model pins', () => {
     expect(pairReviewerModelsAndEfforts({ grok: 'grok-code-fast-1' }, {}))
       .toEqual({ reviewerModels: { grok: 'grok-code-fast-1' }, reviewerEfforts: {} });
     expect(reviewerEffortLevels('grok')).toBeNull();
+  });
+});
+
+describe('reviewer pin note (saved slashdo defaults must not win)', () => {
+  it('names the resolved list AND the exact --review-with text to pass', () => {
+    const note = buildReviewerPinNote('codex,claude');
+    // Both halves matter: the list the phases run by hand, and the flag text for
+    // the moment the agent reaches for a slashdo command instead.
+    expect(note).toContain('`codex,claude`');
+    expect(note).toContain('--review-with codex,claude');
+    expect(note).toContain('/do:pr');
+    // The failure mode this block exists to prevent, named so the agent can
+    // recognize it: a bare invocation silently adopting the host's saved config.
+    expect(note).toMatch(/\.slashdo-config\.json/);
+  });
+
+  it('carries the per-entry suffixes verbatim so the pinned model/effort survive the paste', () => {
+    // A reviewer pin is only honored if the agent pastes the whole token — the
+    // bracket and the ~suffixes ARE the model/optional/cap/effort pins.
+    const csv = 'antigravity[gemini-3.7-flash]~opt~max=1~effort=medium';
+    expect(buildReviewerPinNote(csv)).toContain(`--review-with ${csv}`);
+  });
+
+  it('keeps a PortOS-served reviewer OUT of the pinned flag — slashdo aborts on a slug it does not know', () => {
+    const note = buildReviewerPinNote('lmstudio~effort=high,ollama,@alice');
+    // The flag text carries only tokens slashdo can parse...
+    expect(note).toContain('--review-with ollama,@alice');
+    expect(note).not.toContain('--review-with lmstudio');
+    // ...and the dropped reviewer is named by bare slug, pointed at the
+    // procedure that actually runs it, so dropping it from a slashdo call can't
+    // read as permission to skip the review.
+    expect(note).toContain('PortOS runs `lmstudio` itself');
+    expect(note).toContain('Local Reviewer Procedure');
+  });
+
+  it('states the pin with no flag text at all when every reviewer is PortOS-only', () => {
+    const note = buildReviewerPinNote('lmstudio');
+    expect(note).toContain('authoritative');
+    // No flag to hand out — the only `--review-with` mention left is the
+    // prohibition, never an instruction to pass one.
+    expect(note).not.toMatch(/pass `--review-with/);
+  });
+
+  it('reads back every slug an emitted token can carry (inverse of markSuffixes)', () => {
+    // reviewerTokenSlug is the only place the emitted grammar is parsed rather
+    // than built. Round-trip a fully decorated token through the real emitter so
+    // a new bracket or ~suffix in markSuffixes fails HERE instead of silently
+    // mis-slugging a reviewer out of (or into) the pinned flag.
+    const csv = buildReviewersCsv(
+      ['antigravity', 'lmstudio'],
+      ['alice'],
+      ['antigravity'],
+      { antigravity: 1 },
+      { antigravity: 'gemini-3.7-flash', lmstudio: 'qwen' },
+      { antigravity: 'medium', lmstudio: 'high' }
+    );
+    expect(csv.split(',').map(reviewerTokenSlug)).toEqual(['antigravity', 'lmstudio', '@alice']);
+  });
+
+  it('emits nothing when there is no list to pin', () => {
+    expect(buildReviewerPinNote('')).toBe('');
+    expect(buildReviewerPinNote('   ')).toBe('');
+    expect(buildReviewerPinNote(null)).toBe('');
+    expect(buildReviewerPinNote(undefined)).toBe('');
   });
 });

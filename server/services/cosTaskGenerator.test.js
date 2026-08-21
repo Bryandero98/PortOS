@@ -27,6 +27,27 @@ vi.mock('./codeReview.js', async (importActual) => ({
   ...(await importActual()),
   getCodeReviewDefaults: vi.fn(async () => ({ reviewers: ['ollama'], usernames: ['alice'], optionalReviewers: [] })),
 }));
+// buildClaimWorkTask (the Issues-tab / `/do:next` claim button) resolves the app's
+// work tracker with a git shell-out and its claim-work metadata from the schedule
+// + per-app overrides. Mock those three leaves — spreading the actual modules so
+// every other consumer in this file keeps the real implementation.
+vi.mock('../lib/workTracker.js', async (importActual) => ({
+  ...(await importActual()),
+  resolveAppWorkTracker: vi.fn(async () => ({ resolved: 'github', source: 'test' })),
+}));
+vi.mock('./apps.js', async (importActual) => ({
+  ...(await importActual()),
+  getAppTaskTypeOverrides: vi.fn(async () => ({})),
+}));
+vi.mock('./taskSchedule.js', async (importActual) => {
+  const actual = await importActual();
+  return {
+    ...actual,
+    getTaskInterval: vi.fn(async (key) => (key === 'claim-work'
+      ? { prompt: null, taskMetadata: { reviewers: ['codex', 'claude'] } }
+      : actual.getTaskInterval(key))),
+  };
+});
 // emitOnDemandEmpty's gh-health read spawns `gh api rate_limit` for real. Stub it
 // so the transient-verdict tests assert OUR branching, not the machine's gh.
 const ghHealth = vi.fn(async () => ({ status: 'ok', ok: true, detail: null, remedy: null }));
@@ -47,6 +68,7 @@ import {
   isConfiguredApprovalRequired,
   recordPerpetualTransient,
   buildJiraTicketTask,
+  buildClaimWorkTask,
   buildImprovementDedupSets,
   normalizeWorkItemRef,
   buildTargetWorkItemBlock,
@@ -377,6 +399,15 @@ describe('{reviewers} interpolation honors Code Review Defaults', () => {
     expect(GEN_SRC).not.toMatch(/buildReviewerEffortNote\([^)]*reviewWith/);
   });
 
+  it('appends the reviewer pin on the SCHEDULED claim path too', () => {
+    // The manual/Issues-tab claim and the JIRA play button are covered
+    // behaviorally below; `buildImprovementTaskDescription` is not exported, so
+    // its site is pinned by source. A scheduled claim that renders the CSV but
+    // skips the pin leaves that agent free to fall back to the host's saved
+    // slashdo --review-with default.
+    expect(GEN_SRC).toContain('rendersReviewers\n        ? appendReviewerPinBlock(reviewersCsv)');
+  });
+
   it('threads per-reviewer ~max round caps into the prompt CSV on both claim paths', () => {
     // The `{reviewers}` token is the whole reviewer contract the claim agent
     // gets — it runs each reviewer by hand, so a configured cap only reaches the
@@ -633,6 +664,9 @@ describe('buildJiraTicketTask', () => {
     expect(prompt).not.toContain('{reviewers}');
     expect(prompt).toContain('ollama');
     expect(prompt).toContain('Local Reviewer Procedure');
+    // The pin travels with the CSV on this path too — the play button's claim
+    // agent is the same kind of slashdo-capable session as the /do:next one.
+    expect(prompt).toContain('--review-with ollama,@alice');
     expect(prompt).not.toContain('copilot');
     expect(prompt).toContain('@alice');
     // Target-ticket constraint pins the uppercased key.
@@ -1600,4 +1634,30 @@ describe('automated drain refills do not clear their own convergence brakes', ()
       expect(src()).toMatch(/\}\s*else if \(!task && userInitiated\) \{/);
     });
   }
+});
+
+// The claim button on the managed-app Issues tab, the Agent Operations `/do:next`
+// drawer, and the scheduled claim-work router all land here. The claim prompt
+// names its reviewer list as prose and emits no flag, so a claim agent that
+// reaches for `/do:pr` mid-flow would have slashdo resolve `--review-with` from
+// the HOST's saved defaults — a different reviewer set (and often an auto-merge
+// default) silently replacing the one PortOS resolved.
+describe('buildClaimWorkTask reviewer pin', () => {
+  const app = { id: 'acme', name: 'Acme App', repoPath: '/repos/acme' };
+
+  it('pins the configured reviewers against slashdo saved defaults', async () => {
+    const { prompt } = await buildClaimWorkTask(app);
+    // The configured claim-work reviewers reach the prompt body...
+    expect(prompt).toContain('Reviewers: codex,claude');
+    // ...and the appended pin names the same tokens as an explicit flag, so the
+    // agent has the exact text to pass rather than a list to re-derive.
+    expect(prompt).toContain('--review-with codex,claude');
+    expect(prompt).toContain('Reviewer pin');
+  });
+
+  it('carries an explicitly requested reviewer list into the pin, not the configured one', async () => {
+    const { prompt } = await buildClaimWorkTask(app, { reviewers: ['claude'] });
+    expect(prompt).toContain('--review-with claude');
+    expect(prompt).not.toContain('--review-with codex,claude');
+  });
 });
