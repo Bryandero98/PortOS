@@ -21,7 +21,6 @@ jobs:
       checks: read
     outputs:
       verified: ${{ steps.check.outputs.verified }}
-      sha: ${{ steps.check.outputs.sha }}
       reason: ${{ steps.check.outputs.reason }}
     steps:
       # Depth 2 so both parents of the release merge commit — and their trees —
@@ -30,7 +29,7 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Look for a passing CI Gate on this tree
+      - name: Look for a passing Full CI Gate on this tree
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -58,8 +57,10 @@ jobs:
   release:
     needs: [verify-ci, full-ci]
     runs-on: ubuntu-latest
-    # Skip version bump commits
-    if: always() && !contains(github.event.head_commit.message, '[skip ci]') && needs.verify-ci.result == 'success'
+    # Skip version bump commits. Every other reason a release must not ship is
+    # reported loudly by the step below rather than silently skipping the job —
+    # a silent skip is what leaves a tag with no GitHub Release behind it.
+    if: always() && !contains(github.event.head_commit.message, '[skip ci]')
 
     steps:
       - uses: actions/checkout@v7
@@ -81,13 +82,22 @@ jobs:
         id: package-version
         run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
-      # full-ci is skipped when verify-ci already found a green gate for this
-      # tree, so only an actually-executed-and-failed run blocks the release.
+      # full-ci is skipped exactly when verify-ci found a green gate for this
+      # tree, so 'skipped' is a pass here and only a run that actually executed
+      # and failed blocks the release.
       - name: Report release failure on CI failure
-        if: needs.verify-ci.outputs.verified != 'true' && needs.full-ci.result != 'success'
+        if: needs.verify-ci.result != 'success' || needs.full-ci.result == 'failure' || needs.full-ci.result == 'cancelled'
+        env:
+          VERIFY_RESULT: ${{ needs.verify-ci.result }}
+          FULL_CI_RESULT: ${{ needs.full-ci.result }}
+          VERSION: ${{ steps.package-version.outputs.version }}
         run: |
-          VERSION="${{ steps.package-version.outputs.version }}"
-          echo "::error::release v${VERSION} did NOT publish because full-ci status was '${{ needs.full-ci.result }}'"
+          if [ "$VERIFY_RESULT" != "success" ]; then
+            BECAUSE="the CI verification job status was '$VERIFY_RESULT'"
+          else
+            BECAUSE="full-ci status was '$FULL_CI_RESULT'"
+          fi
+          echo "::error::release v${VERSION} did NOT publish because ${BECAUSE}"
           echo "release v${VERSION} did NOT publish"
           exit 1
 

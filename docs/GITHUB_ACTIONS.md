@@ -83,6 +83,9 @@ The selected work is split across parallel jobs:
   client job; this job only mirrors that result.
 - **CI Gate** — always reports one stable required-check result and fails if any
   selected job failed or was cancelled.
+- **Full CI Gate** — published only when the plan chose the complete suite, and
+  mirrors `CI Gate`'s result. This is the check the release workflow looks for;
+  see "Reusing the release PR's CI run" below.
 
 Targeted `files` / `related` plans run **one** Vitest process for the union of
 planner-selected files and Vitest's `--changed` import graph. The two sets are
@@ -145,10 +148,16 @@ Triggers on push to `release` branch. Steps:
 ### Reusing the release PR's CI run
 
 `scripts/verify-ci-status.js` decides whether the push already has a green
-gate. The rule is **content-based, not SHA-based**: a commit vouches for this
-push only when its git tree is byte-identical to the tree being released *and*
-it carries a completed, successful `CI Gate` check run. It considers the pushed
-commit itself and its direct parents.
+gate. Two independent conditions must hold, because each alone is forgeable:
+
+1. **Content, not SHA.** A commit vouches for this push only when its git tree
+   is byte-identical to the tree being released. It considers the pushed commit
+   itself and its direct parents.
+2. **Fullness.** The gate must be `Full CI Gate`, a check run `ci.yml`
+   publishes *only* when the impact plan chose the complete suite. The
+   aggregate `CI Gate` cannot serve here — an impact-scoped PR run turns it
+   green too, so it cannot distinguish "the full suite passed on this tree"
+   from "some subset of it did".
 
 The ordinary release merge satisfies this — `release` is strictly behind
 `main`, so the merge commit's tree equals the `main` tip it merged, and that
@@ -156,7 +165,7 @@ tip is exactly the SHA the release PR ran full CI on.
 
 Everything else fails closed and runs the complete suite again: a direct push to
 `release`, a hotfix committed on `release` that changes the merge tree, a
-missing or failed gate, or an unreachable checks API.
+missing, failed, or merely impact-scoped gate, or an unreachable checks API.
 
 ## Working with CI
 

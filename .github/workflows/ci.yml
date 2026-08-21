@@ -30,6 +30,8 @@ jobs:
   impact:
     name: Plan test impact
     runs-on: ubuntu-latest
+    # Still live despite the removed push trigger: a called workflow inherits
+    # the caller's event, and release.yml calls this one from a push.
     if: github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip ci]')
     outputs:
       full: ${{ steps.plan.outputs.full }}
@@ -55,10 +57,10 @@ jobs:
       - name: Select affected test surfaces
         id: plan
         env:
-          # Full suite for anything that is not an ordinary PR, and for the
-          # main -> release PR: that PR is the single gate a release ships
-          # behind, so it never runs a scoped plan.
-          CI_FORCE_FULL: ${{ github.event_name != 'pull_request' || github.base_ref == 'release' || inputs.full == true }}
+          CI_FORCE_FULL: ${{ github.event_name != 'pull_request' }}
+          # The planner turns a PR into `release` into a full plan: that PR is
+          # the single gate a release ships behind, so it never runs scoped.
+          CI_BASE_REF: ${{ github.base_ref }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node scripts/ci-test-plan.js
@@ -369,3 +371,25 @@ jobs:
             }
             console.log("CI gate passed:", results);
           '
+
+  full-gate:
+    # A second check run published ONLY when the impact plan chose the complete
+    # suite. release.yml keys on this name to skip re-running CI on the push to
+    # `release`; the aggregate "CI Gate" above cannot serve that purpose,
+    # because an impact-scoped PR run publishes a green "CI Gate" too.
+    # Mirrors the gate result the same way the "lint" job mirrors the client
+    # job, so it costs one echo rather than a second aggregation.
+    name: Full CI Gate
+    if: always() && needs.impact.outputs.full == 'true'
+    needs: [impact, gate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the aggregate gate to have passed
+        env:
+          GATE_RESULT: ${{ needs.gate.result }}
+        run: |
+          if [ "$GATE_RESULT" != "success" ]; then
+            echo "The complete suite ran but CI Gate did not pass ($GATE_RESULT)."
+            exit 1
+          fi
+          echo "Complete suite passed — this tree does not need re-testing on release."
