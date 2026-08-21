@@ -110,12 +110,18 @@ export default function useFocusTrap(active, containerRef, { initialFocusRef } =
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
       const activeEl = document.activeElement;
+      // Anything not IN the tab order needs steering, not just the edges and
+      // the outside: an `initialFocusRef` aimed at a `tabIndex={-1}` element
+      // (or the container's own fallback tabindex) sits inside the dialog but
+      // outside `focusable`, and without this Shift+Tab from there fell through
+      // to the browser and walked straight out of the modal.
+      const inTabOrder = focusable.includes(activeEl);
       if (e.shiftKey) {
-        if (activeEl === first || !container.contains(activeEl)) {
+        if (activeEl === first || !inTabOrder) {
           e.preventDefault();
           last.focus();
         }
-      } else if (activeEl === last || !container.contains(activeEl)) {
+      } else if (activeEl === last || !inTabOrder) {
         e.preventDefault();
         first.focus();
       }

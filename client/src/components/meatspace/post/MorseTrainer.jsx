@@ -10,7 +10,7 @@ import { streakGlyph } from '../../../lib/streakGlyph.js';
 import { safeReadJsonStorage, safeWriteStorage } from '../../../lib/safeStorage';
 import { resumeAudioContext } from '../../../lib/audioContext.js';
 import { MORSE_MATERIAL_MODES, canAdvanceMorseLevel, selectMorsePrompt } from '../../../lib/morsePractice.js';
-import { isPressKey, noPointerFocusProps } from '../../../lib/a11yKeyboard.js';
+import { isPressKey, noPointerFocusSurfaceProps } from '../../../lib/a11yKeyboard.js';
 import PostCompletionActions from './PostCompletionActions';
 import { startRetryableSaves } from './completionSave';
 
@@ -858,7 +858,7 @@ export function KeyPad({ keying }) {
       <div className="flex items-center justify-between">
         <div className="text-xs font-medium text-gray-400 uppercase tracking-wide">Practice Key</div>
         <button
-          onClick={keying.clear} {...noPointerFocusProps}
+          onClick={keying.clear}
           className="flex items-center gap-1 text-[11px] text-gray-500 hover:text-port-error transition-colors"
         >
           <Eraser size={11} /> Clear
@@ -1324,7 +1324,9 @@ function SendDrill({ keying, prefs, progress, onExit, onContinue, onSessionCompl
   }
 
   return (
-    <div className="bg-port-card border border-port-border rounded-lg p-6 space-y-5">
+    // The keyer owns the spacebar throughout send mode, so no control in here
+    // may keep focus from a click and turn the next press into a button press.
+    <div className="bg-port-card border border-port-border rounded-lg p-6 space-y-5" {...noPointerFocusSurfaceProps}>
       <div className="text-center">
         <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Send this</div>
         <div className="text-3xl font-mono font-bold text-white tracking-widest">{prompt}</div>
@@ -1371,7 +1373,7 @@ function SendDrill({ keying, prefs, progress, onExit, onContinue, onSessionCompl
           <button onClick={decodeNow} className="flex-1 px-4 py-2.5 bg-port-accent hover:bg-port-accent/80 text-white font-medium rounded-lg transition-colors">
             Check
           </button>
-          <button onClick={keying.clear} {...noPointerFocusProps} className="px-4 py-2.5 bg-port-card border border-port-border hover:border-port-accent text-gray-300 rounded-lg transition-colors">
+          <button onClick={keying.clear} className="px-4 py-2.5 bg-port-card border border-port-border hover:border-port-accent text-gray-300 rounded-lg transition-colors">
             Clear
           </button>
         </div>

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { onActivateKeyDown, clickableProps, isButtonActivation, isPressKey, isEditableTarget, shouldIgnoreGlobalKey, noPointerFocusProps } from './a11yKeyboard.js';
+import { onActivateKeyDown, clickableProps, isButtonActivation, isPressKey, isEditableTarget, shouldIgnoreGlobalKey, noPointerFocusSurfaceProps } from './a11yKeyboard.js';
 
 describe('onActivateKeyDown', () => {
   it('returns undefined when handler is not a function', () => {
@@ -206,22 +206,49 @@ describe('shouldIgnoreGlobalKey', () => {
   });
 });
 
-describe('noPointerFocusProps', () => {
-  it('cancels the mousedown default, which is what would focus the button', () => {
-    const button = document.createElement('button');
-    document.body.appendChild(button);
-    button.addEventListener('mousedown', noPointerFocusProps.onMouseDown);
-
+describe('noPointerFocusSurfaceProps', () => {
+  const press = (el) => {
     const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
-    button.dispatchEvent(event);
+    el.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+  // React would call the handler during capture; dispatching from the target and
+  // invoking it with the event is the same contract without a React tree.
+  const surface = (html) => {
+    const root = document.createElement('div');
+    root.innerHTML = html;
+    document.body.appendChild(root);
+    root.addEventListener(
+      'mousedown',
+      (e) => noPointerFocusSurfaceProps.onMouseDownCapture(e),
+      true,
+    );
+    return root;
+  };
 
-    expect(event.defaultPrevented).toBe(true);
+  it('cancels the mousedown default on a button, which is what would focus it', () => {
+    const root = surface('<div><span><button id="b">go</button></span></div>');
+    expect(press(root.querySelector('#b'))).toBe(true);
+
     // Only focus is suppressed — the click still reaches the handler.
     const clicked = vi.fn();
-    button.addEventListener('click', clicked);
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    root.querySelector('#b').addEventListener('click', clicked);
+    root.querySelector('#b').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(clicked).toHaveBeenCalledTimes(1);
+    root.remove();
+  });
 
-    button.remove();
+  it('covers a nested target inside the button, and role=button too', () => {
+    const root = surface('<button id="b"><span id="icon">i</span></button><div id="r" role="button">r</div>');
+    expect(press(root.querySelector('#icon'))).toBe(true);
+    expect(press(root.querySelector('#r'))).toBe(true);
+    root.remove();
+  });
+
+  it('leaves non-button targets alone, so text inputs still focus and select', () => {
+    const root = surface('<input id="i" /><p id="p">text</p>');
+    expect(press(root.querySelector('#i'))).toBe(false);
+    expect(press(root.querySelector('#p'))).toBe(false);
+    root.remove();
   });
 });

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Play, Pause, RotateCcw, Rewind, FastForward, X, Zap } from 'lucide-react';
 import Modal from './ui/Modal';
 import useKeyCapture from '../hooks/useKeyCapture';
-import { noPointerFocusProps } from '../lib/a11yKeyboard';
+import { noPointerFocusSurfaceProps } from '../lib/a11yKeyboard';
 
 // Optimal Recognition Point — the focal letter the eye lands on. Spritz-style:
 // shorter words use a left-shifted ORP, longer words shift right. Returns the
@@ -141,7 +141,9 @@ export default function RapidReader({
   }
 
   return (
-    <div className="bg-port-card border border-port-border rounded-lg overflow-hidden">
+    // The reader owns Space, the arrows and +/- while it is mounted, so no click
+    // inside it may park focus on a button and take those keys over.
+    <div className="bg-port-card border border-port-border rounded-lg overflow-hidden" {...noPointerFocusSurfaceProps}>
       {/* Reader display */}
       <div className={`relative bg-port-bg flex items-center justify-center ${compact ? 'py-10' : 'py-16 sm:py-24'}`}>
         {/* Center alignment guide — vertical line at the focal point */}
@@ -171,7 +173,7 @@ export default function RapidReader({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={back} {...noPointerFocusProps}
+            onClick={back}
             className="min-h-10 min-w-10 flex items-center justify-center rounded-lg border border-port-border text-gray-400 hover:text-white hover:bg-port-bg/60"
             title="Back 5 (←)"
             aria-label="Back 5 words"
@@ -180,7 +182,7 @@ export default function RapidReader({
           </button>
           <button
             type="button"
-            onClick={togglePlay} {...noPointerFocusProps}
+            onClick={togglePlay}
             className="min-h-10 min-w-10 flex items-center justify-center rounded-lg bg-port-accent/15 border border-port-accent/40 text-port-accent hover:bg-port-accent/25"
             title={playing ? 'Pause (space)' : 'Play (space)'}
             aria-label={playing ? 'Pause' : 'Play'}
@@ -189,7 +191,7 @@ export default function RapidReader({
           </button>
           <button
             type="button"
-            onClick={fwd} {...noPointerFocusProps}
+            onClick={fwd}
             className="min-h-10 min-w-10 flex items-center justify-center rounded-lg border border-port-border text-gray-400 hover:text-white hover:bg-port-bg/60"
             title="Forward 5 (→)"
             aria-label="Forward 5 words"
@@ -198,7 +200,7 @@ export default function RapidReader({
           </button>
           <button
             type="button"
-            onClick={restart} {...noPointerFocusProps}
+            onClick={restart}
             className="min-h-10 min-w-10 flex items-center justify-center rounded-lg border border-port-border text-gray-400 hover:text-white hover:bg-port-bg/60"
             title="Restart (R)"
             aria-label="Restart"
@@ -208,7 +210,7 @@ export default function RapidReader({
           {onClose && (
             <button
               type="button"
-              onClick={onClose} {...noPointerFocusProps}
+              onClick={onClose}
               className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg border border-port-border text-gray-400 hover:text-white hover:bg-port-bg/60 ml-1"
               title="Close (Esc)"
               aria-label="Close"
@@ -235,7 +237,7 @@ export default function RapidReader({
           <div className="flex items-center gap-1 border border-port-border rounded-md overflow-hidden">
             <button
               type="button"
-              onClick={() => setChunkSize(1)} {...noPointerFocusProps}
+              onClick={() => setChunkSize(1)}
               className={`px-2 py-1 text-xs ${chunkSize === 1 ? 'bg-port-accent/20 text-port-accent' : 'text-gray-400 hover:text-white'}`}
               aria-pressed={chunkSize === 1}
               aria-label="Show one word at a time"
@@ -244,7 +246,7 @@ export default function RapidReader({
             </button>
             <button
               type="button"
-              onClick={() => setChunkSize(2)} {...noPointerFocusProps}
+              onClick={() => setChunkSize(2)}
               className={`px-2 py-1 text-xs ${chunkSize === 2 ? 'bg-port-accent/20 text-port-accent' : 'text-gray-400 hover:text-white'}`}
               aria-pressed={chunkSize === 2}
               aria-label="Show two words at a time"
@@ -323,7 +325,7 @@ export function RapidReaderModal({ open, text, title, onClose, ...readerProps })
         <button
           type="button"
           onClick={onClose}
-          {...noPointerFocusProps}
+         
           className="min-h-[44px] min-w-[44px] flex items-center justify-center text-gray-400 hover:text-white"
           aria-label="Close rapid reader"
         >

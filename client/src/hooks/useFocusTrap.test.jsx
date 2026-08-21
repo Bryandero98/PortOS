@@ -18,6 +18,23 @@ function Dialog({ active }) {
   );
 }
 
+// A dialog whose keyboard belongs to its CONTENT, not to its first button — so
+// it aims initial focus at a non-tabbable header (RapidReaderModal's shape).
+function HeaderFocusDialog() {
+  const ref = useRef(null);
+  const headerRef = useRef(null);
+  useFocusTrap(true, ref, { initialFocusRef: headerRef });
+  return (
+    <div ref={ref} data-testid="dialog">
+      <div ref={headerRef} tabIndex={-1} data-testid="header">
+        <button>first</button>
+      </div>
+      <button>middle</button>
+      <button>last</button>
+    </div>
+  );
+}
+
 function Harness({ active }) {
   return (
     <>
@@ -31,6 +48,28 @@ describe('useFocusTrap', () => {
   it('moves focus to the first focusable element on activation', () => {
     render(<Dialog active />);
     expect(document.activeElement).toBe(screen.getByText('first'));
+  });
+
+  describe('with an initialFocusRef aimed outside the tab order', () => {
+    it('honours the requested target instead of the first focusable', () => {
+      render(<HeaderFocusDialog />);
+      expect(document.activeElement).toBe(screen.getByTestId('header'));
+    });
+
+    // The target is tabIndex=-1, so it is not IN the focusable list — without
+    // steering, Shift+Tab from it fell through to the browser and walked
+    // straight out of the modal (WCAG 2.1.2).
+    it('keeps Shift+Tab inside the dialog, wrapping to the last control', () => {
+      render(<HeaderFocusDialog />);
+      fireEvent.keyDown(screen.getByTestId('dialog'), { key: 'Tab', shiftKey: true });
+      expect(document.activeElement).toBe(screen.getByText('last'));
+    });
+
+    it('sends a forward Tab to the first control', () => {
+      render(<HeaderFocusDialog />);
+      fireEvent.keyDown(screen.getByTestId('dialog'), { key: 'Tab' });
+      expect(document.activeElement).toBe(screen.getByText('first'));
+    });
   });
 
   it('wraps focus from the last element to the first on Tab', () => {

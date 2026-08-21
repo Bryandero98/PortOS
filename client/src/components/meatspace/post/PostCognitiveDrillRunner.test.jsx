@@ -1004,9 +1004,10 @@ describe('Space-driven drills do not leak the key to the global voice hotkey', (
   // Space on a focused button belongs to the browser (#4748), so a mouse click
   // that parked focus on the on-screen response button would take the drill's
   // key over — and native activation fires on keyUP, inflating a scored
-  // reaction time. The buttons therefore refuse focus from a pointer press.
-  // jsdom doesn't implement click-to-focus, so the cancelled mousedown (which
-  // is what suppresses the focus in a real browser) is the observable here.
+  // reaction time. The runner therefore refuses pointer focus for every button
+  // on the surface. jsdom doesn't implement click-to-focus, so the cancelled
+  // mousedown (which is what suppresses the focus in a real browser) is the
+  // observable here.
   it('refuses pointer focus on the on-screen Match button, so Space stays the scored path', () => {
     const drill = { type: 'n-back', config: { n: 1, stimulusMs: 1000 }, sequence: ['A', 'A'] };
     render(

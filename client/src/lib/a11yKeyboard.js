@@ -178,19 +178,25 @@ export function shouldIgnoreGlobalKey(event, { enabledInDialog = false, ignoreRe
 }
 
 /**
- * Props that stop a POINTER press from parking keyboard focus on a button.
+ * Props for the ROOT of a surface that owns a key globally — a drill scored on
+ * Space, the Morse keyer, RapidReader, the OpenWorld rig.
  *
- * On a surface that owns a key globally — a drill scored on Space, the Morse
- * keyer, the OpenWorld rig — a button that keeps focus after a mouse click
- * silently takes that key over: `shouldIgnoreGlobalKey` correctly stands the
- * global handler down for native button activation, so the next Space presses
- * the lingering button instead of driving the surface. Spread this on the
- * buttons of such a surface.
+ * On such a surface a button that keeps focus after a mouse click silently takes
+ * the key over: `shouldIgnoreGlobalKey` correctly stands the global handler down
+ * for native button activation, so the next Space presses the lingering button
+ * instead of driving the surface. `preventDefault` on `mousedown` is what
+ * suppresses that focus — it leaves the click itself, and every keyboard path,
+ * untouched, so a user who TABS to the button still focuses and activates it.
  *
- * `preventDefault` on `mousedown` suppresses only the focus, not the click — and
- * only for pointer input, so a keyboard user who tabs to the button still
- * focuses and activates it normally.
+ * This sits on the surface root rather than on each button deliberately. The
+ * per-button form has to be remembered for every control on the surface and for
+ * every control added later — the same "re-remember it at each site" drift that
+ * made #4748 a bug in the first place — and these surfaces render their buttons
+ * across several child components. One capture-phase handler at the root covers
+ * all of them, including ones that don't exist yet.
  */
-export const noPointerFocusProps = {
-  onMouseDown: (event) => event.preventDefault(),
+export const noPointerFocusSurfaceProps = {
+  onMouseDownCapture: (event) => {
+    if (event.target?.closest?.('button, [role="button"]')) event.preventDefault();
+  },
 };
