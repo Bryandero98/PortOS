@@ -1055,7 +1055,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     // schema's overlap with it: this object is persisted and replayed on every
     // reconcile, so it must already be a body the provider accepts.
     const request = buildFederatedMediaRequest({ kind: 'video', params: body });
-    const { peer, remoteMedia } = await prepareRemoteMediaJob({
+    const { peer, request: negotiatedRequest, remoteMedia } = await prepareRemoteMediaJob({
       peerId: body.mediaProviderPeerId,
       kind: 'video',
       request,
@@ -1068,11 +1068,15 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
       kind: 'video',
       params: { remoteMedia },
     });
+    const effectiveRequest = negotiatedRequest || request;
     return res.json({
       jobId,
       generationId: jobId,
       filename: `${jobId}.mp4`,
-      model: request.modelId,
+      model: effectiveRequest.modelId,
+      ...(effectiveRequest?.numFrames !== undefined ? { numFrames: effectiveRequest.numFrames } : {}),
+      ...(effectiveRequest?.width !== undefined ? { width: effectiveRequest.width } : {}),
+      ...(effectiveRequest?.height !== undefined ? { height: effectiveRequest.height } : {}),
       // No local backend is running this, so `mode` is null rather than a
       // backend name the render never used.
       mode: null,

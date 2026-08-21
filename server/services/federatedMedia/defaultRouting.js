@@ -250,7 +250,7 @@ export async function resolveDefaultMediaRoute({ kind, params }) {
   // queued or reconciling job re-resolves its peer from the registry on every
   // request, and that record can change (a host edited from a .ts.net name to a
   // LAN address) between enqueue and submit. The executor re-checks on this bit.
-  return { peer, capability, request: finalRequest, remoteMedia: { ...remoteMedia, standingRoute: true } };
+  return { peer, request: finalRequest, remoteMedia: { ...remoteMedia, standingRoute: true } };
 }
 
 /**
@@ -283,7 +283,7 @@ const DROPPED_POST_PROCESSING = Object.freeze(['cleanC2PA', 'denoise']);
  * enqueue. The prompt is blanked because it rides ONLY inside the versioned
  * marker (see the generate routes for the same reasoning).
  */
-export function routedJobParams(params, { request, remoteMedia } = {}) {
+export function routedJobParams(params, { request, remoteMedia }) {
   const effectiveRequest = request || remoteMedia?.request;
   const jobParams = { ...(params || {}) };
   for (const key of LOCAL_ONLY_ROUTED_PARAMS) delete jobParams[key];
@@ -295,7 +295,7 @@ export function routedJobParams(params, { request, remoteMedia } = {}) {
   return {
     ...jobParams,
     prompt: '',
-    modelId: effectiveRequest?.modelId || params?.modelId,
+    modelId: effectiveRequest.modelId,
     ...(effectiveRequest?.numFrames !== undefined ? { numFrames: effectiveRequest.numFrames } : {}),
     ...(effectiveRequest?.width !== undefined ? { width: effectiveRequest.width } : {}),
     ...(effectiveRequest?.height !== undefined ? { height: effectiveRequest.height } : {}),

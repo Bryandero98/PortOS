@@ -267,6 +267,27 @@ async function localGeneratorCapabilities(kind, pythonPath, { models, configured
           : !runtimeReady ? 'runtime-unavailable'
             : !modelReady ? 'model-unavailable'
               : null;
+    const frameStride = Number.isInteger(Number(model?.frameStride)) && Number(model.frameStride) > 0
+      ? Number(model.frameStride)
+      : null;
+    const validFrameOptions = Array.isArray(model?.frameOptions)
+      ? model.frameOptions.filter((f) => Number.isInteger(f) && f > 0).slice(0, 100)
+      : [];
+    const maxNumFrames = Number.isInteger(Number(model?.maxNumFrames)) && Number(model.maxNumFrames) > 0
+      ? Number(model.maxNumFrames)
+      : (validFrameOptions.length > 0 ? Math.max(...validFrameOptions) : null);
+    const validResolutions = Array.isArray(model?.resolutionOptions)
+      ? model.resolutionOptions
+        .filter((opt) => Number.isInteger(Number(opt?.w)) && Number.isInteger(Number(opt?.h))
+          && Number(opt.w) >= 64 && Number(opt.w) <= 2048
+          && Number(opt.h) >= 64 && Number(opt.h) <= 2048)
+        .slice(0, 100)
+        .map(({ label, w, h }) => ({
+          w: Number(w),
+          h: Number(h),
+          ...(label ? { label: String(label).slice(0, 120) } : {}),
+        }))
+      : [];
     return {
       kind,
       engine: selected.engine,
@@ -284,22 +305,10 @@ async function localGeneratorCapabilities(kind, pythonPath, { models, configured
       defaultDurationSec: null,
       lyrics: false,
       autoDuration: false,
-      frameStride: Number.isFinite(model?.frameStride) && Number(model.frameStride) > 0
-        ? Number(model.frameStride)
-        : null,
-      maxNumFrames: Number.isFinite(model?.maxNumFrames) && Number(model.maxNumFrames) > 0
-        ? Number(model.maxNumFrames)
-        : (Array.isArray(model?.frameOptions) && model.frameOptions.length ? Math.max(...model.frameOptions) : null),
-      frameOptions: Array.isArray(model?.frameOptions) && model.frameOptions.length > 0
-        ? model.frameOptions.filter(Number.isFinite)
-        : null,
-      resolutionOptions: Array.isArray(model?.resolutionOptions) && model.resolutionOptions.length > 0
-        ? model.resolutionOptions.map(({ label, w, h }) => ({
-            w: Number(w),
-            h: Number(h),
-            ...(label ? { label: String(label) } : {}),
-          }))
-        : null,
+      frameStride,
+      maxNumFrames: Number.isFinite(maxNumFrames) && maxNumFrames > 0 ? maxNumFrames : null,
+      frameOptions: validFrameOptions.length > 0 ? validFrameOptions : null,
+      resolutionOptions: validResolutions.length > 0 ? validResolutions : null,
       _pythonPath: isLocal ? pythonPath : null,
       _model: model,
     };

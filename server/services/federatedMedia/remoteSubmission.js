@@ -83,14 +83,21 @@ export function negotiateVideoConstraints(request, capability) {
   if (Array.isArray(capability.resolutionOptions) && capability.resolutionOptions.length > 0
       && negotiated.width !== undefined && negotiated.height !== undefined) {
     const validOptions = capability.resolutionOptions.filter(
-      (opt) => Number.isFinite(opt?.w) && Number.isFinite(opt?.h)
+      (opt) => Number.isInteger(Number(opt?.w)) && Number.isInteger(Number(opt?.h))
         && opt.w >= 64 && opt.w <= 2048 && opt.h >= 64 && opt.h <= 2048,
     );
     if (validOptions.length > 0) {
-      const aspectValue = Number(negotiated.width) / Number(negotiated.height);
+      const requestedAspect = Number(negotiated.width) / Number(negotiated.height);
+      const requestedArea = Number(negotiated.width) * Number(negotiated.height);
       const bestOption = validOptions.reduce((best, option) => {
-        const distance = Math.abs((Number(option.w) / Number(option.h)) - aspectValue);
-        return !best || distance < best.distance ? { option, distance } : best;
+        const aspectDiff = Math.abs((Number(option.w) / Number(option.h)) - requestedAspect);
+        const areaDiff = Math.abs((Number(option.w) * Number(option.h)) - requestedArea);
+        if (!best) return { option, aspectDiff, areaDiff };
+        if (aspectDiff < best.aspectDiff - 0.001) return { option, aspectDiff, areaDiff };
+        if (Math.abs(aspectDiff - best.aspectDiff) <= 0.001 && areaDiff < best.areaDiff) {
+          return { option, aspectDiff, areaDiff };
+        }
+        return best;
       }, null)?.option;
       if (bestOption && (negotiated.width !== bestOption.w || negotiated.height !== bestOption.h)) {
         console.log(`🌐 Federated render: adjusted resolution from ${negotiated.width}x${negotiated.height} to ${bestOption.w}x${bestOption.h} for ${capability.modelName || capability.modelId}`);

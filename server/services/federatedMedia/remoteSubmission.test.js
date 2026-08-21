@@ -81,6 +81,25 @@ describe('negotiateVideoConstraints', () => {
     expect(snapped.height).toBe(768);
   });
 
+  it('tie-breaks equal aspect ratios by closest area and ignores out-of-bounds options', () => {
+    const capability = {
+      modelId: 'custom',
+      resolutionOptions: [
+        { label: '4k-out-of-bounds', w: 3840, h: 2160 },
+        { label: '1080p', w: 1920, h: 1080 },
+        { label: '720p', w: 1280, h: 720 },
+      ],
+    };
+
+    const snapped720 = negotiateVideoConstraints({ width: 1024, height: 576 }, capability);
+    expect(snapped720.width).toBe(1280);
+    expect(snapped720.height).toBe(720);
+
+    const snapped1080 = negotiateVideoConstraints({ width: 1800, height: 1012 }, capability);
+    expect(snapped1080.width).toBe(1920);
+    expect(snapped1080.height).toBe(1080);
+  });
+
   it('rejects when frame count cannot be made legal', () => {
     const capability = {
       modelId: 'wan22',
