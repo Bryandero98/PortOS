@@ -872,6 +872,26 @@ describe('Space-driven drills do not leak the key to the global voice hotkey', (
     expect(onComplete.mock.calls[0][0].questions).toHaveLength(1);
   });
 
+  it('reaction-time keeps claiming Space through the between-trials result phase', () => {
+    const onComplete = vi.fn();
+    const drill = makeSimpleDrill({ count: 2, delayMs: 100 });
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={2} onComplete={onComplete} isTraining={false} />,
+    );
+    act(() => { vi.advanceTimersByTime(100); });
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); }); // records trial 1
+    // Now in the 500ms result phase: a second press must NOT record anything,
+    // and must NOT reach the voice hotkey either.
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
+    expect(voiceHotkey).not.toHaveBeenCalled();
+
+    act(() => { vi.advanceTimersByTime(600); });
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(voiceHotkey).not.toHaveBeenCalled();
+    expect(onComplete.mock.calls[0][0].questions).toHaveLength(2);
+  });
+
   it('lets an unrelated key through — this is not a blanket keyboard trap', () => {
     const drill = { type: 'n-back', config: { n: 1, stimulusMs: 1000 }, sequence: ['A', 'A'] };
     render(

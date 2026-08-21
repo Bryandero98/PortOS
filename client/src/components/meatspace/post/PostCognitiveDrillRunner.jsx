@@ -1434,15 +1434,12 @@ function ReactionTimeRunner({ drill, drillIndex, drillCount, onComplete, isTrain
   // hotkey (Space by default) can't open the mic on every reaction press.
   useKeyCapture({
     onKeyDown: (e) => {
-      if (phase === 'result') return false;
-      if (mode === 'simple') {
-        if (!isPressKey(e)) return false;
-        respond(0);
-        return true;
-      }
-      const idx = parseInt(e.key, 10) - 1;
-      if (!Number.isInteger(idx) || idx < 0 || idx >= choices) return false;
-      respond(idx);
+      const idx = mode === 'simple' ? (isPressKey(e) ? 0 : -1) : parseInt(e.key, 10) - 1;
+      if (!Number.isInteger(idx) || idx < 0 || idx >= (mode === 'simple' ? 1 : choices)) return false;
+      // Claim the key through the between-trials result phase too, so a user
+      // still tapping after the trial ended doesn't leak the press to the voice
+      // hotkey — just don't record it against the trial that already resolved.
+      if (phase !== 'result') respond(idx);
       return true;
     },
   });
