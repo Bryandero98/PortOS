@@ -48,15 +48,15 @@ import AIProviders, { PROVIDER_SECTIONS } from './AIProviders';
 import { CARD_STATE_STYLES } from '../components/providers/ProviderCard';
 import { PROVIDER_CARD_STATE } from '../utils/providers';
 
-// The editor is route-driven (/ai/new · /ai/:providerId over the same page), so
-// the tests mount the real route table rather than a bare page — clicking Edit
-// navigates, and a deep link can be rendered directly.
+// The editor is route-driven (/ai/new · /ai/edit/:providerId over the same
+// page), so the tests mount the real route table rather than a bare page —
+// clicking Edit navigates, and a deep link can be rendered directly.
 const renderPage = (initialPath = '/ai') => render(
   <MemoryRouter initialEntries={[initialPath]}>
     <Routes>
       <Route path="/ai" element={<AIProviders />} />
       <Route path="/ai/new" element={<AIProviders />} />
-      <Route path="/ai/:providerId" element={<AIProviders />} />
+      <Route path="/ai/edit/:providerId" element={<AIProviders />} />
     </Routes>
   </MemoryRouter>
 );
@@ -646,7 +646,7 @@ describe('provider editor deep links', () => {
   });
 
   it('opens the editor for the provider named in the URL', async () => {
-    renderPage('/ai/codex');
+    renderPage('/ai/edit/codex');
 
     expect(await screen.findByRole('heading', { name: 'Edit Provider' })).toBeInTheDocument();
     expect(screen.getByDisplayValue('Codex')).toBeInTheDocument();
@@ -662,7 +662,7 @@ describe('provider editor deep links', () => {
   // A deleted/hand-edited id must bounce back to the list rather than leaving a
   // blank editor open over it.
   it('sends an unknown provider id back to the list', async () => {
-    renderPage('/ai/does-not-exist');
+    renderPage('/ai/edit/does-not-exist');
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('No provider with id "does-not-exist"'));
     expect(screen.queryByRole('heading', { name: 'Edit Provider' })).toBeNull();
@@ -671,14 +671,14 @@ describe('provider editor deep links', () => {
   // The id comes off the URL, so a prototype key must not resolve to
   // Object.prototype and open the editor on it.
   it('does not open the editor for a prototype-chain id', async () => {
-    renderPage('/ai/__proto__');
+    renderPage('/ai/edit/__proto__');
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('No provider with id "__proto__"'));
     expect(screen.queryByRole('heading', { name: 'Edit Provider' })).toBeNull();
   });
 
   it('honors the ?providerTab deep link', async () => {
-    renderPage('/ai/codex?providerTab=models');
+    renderPage('/ai/edit/codex?providerTab=models');
 
     expect(await screen.findByLabelText('Default Model')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Models' })).toHaveAttribute('aria-selected', 'true');
@@ -687,7 +687,7 @@ describe('provider editor deep links', () => {
   // Only the active tab renders, so the browser can't run its own required-field
   // check for a Save triggered from another tab.
   it('sends the user back to the field a cross-tab Save left empty', async () => {
-    renderPage('/ai/codex');
+    renderPage('/ai/edit/codex');
 
     fireEvent.change(await screen.findByDisplayValue('Codex'), { target: { value: '  ' } });
     await openEditorTab('Models');
@@ -699,8 +699,43 @@ describe('provider editor deep links', () => {
     expect(screen.getByRole('tab', { name: 'Connection' })).toHaveAttribute('aria-selected', 'true');
   });
 
+  // A provider whose display name slugifies to `new` must still be editable —
+  // the create route would shadow it if the edit id sat directly under /ai.
+  it('edits a provider whose id collides with the create route', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{ ...provider, id: 'new', name: 'New' }],
+      activeProvider: 'new',
+    });
+
+    renderPage('/ai/edit/new');
+
+    expect(await screen.findByRole('heading', { name: 'Edit Provider' })).toBeInTheDocument();
+    expect(screen.getByDisplayValue('New')).toBeInTheDocument();
+  });
+
+  // The inputs' own `min`/`max`/`type="url"` only run for the mounted tab, so
+  // the submit path restates them and points at the tab that owns the field.
+  it.each([
+    ['an unparseable endpoint', { type: 'api', endpoint: 'not-a-url', command: '' }, 'Endpoint must be a full URL, e.g. http://localhost:1234/v1', 'Connection'],
+    ['an out-of-range planning window', { contextWindow: 1 }, 'Planning Window must be between 512 and 2,097,152 tokens', 'Generation'],
+  ])('blocks a cross-tab Save with %s', async (_label, patch, message, tab) => {
+    api.getProviders.mockResolvedValue({
+      providers: [{ ...provider, ...patch }],
+      activeProvider: 'codex',
+    });
+
+    renderPage('/ai/edit/codex?providerTab=models');
+
+    await screen.findByLabelText('Default Model');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(message));
+    expect(api.updateProvider).not.toHaveBeenCalled();
+    expect(screen.getByRole('tab', { name: tab })).toHaveAttribute('aria-selected', 'true');
+  });
+
   it('closes back to the list', async () => {
-    renderPage('/ai/codex');
+    renderPage('/ai/edit/codex');
 
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
 

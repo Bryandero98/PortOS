@@ -61,8 +61,8 @@ export const PROVIDER_SECTIONS = [
 ];
 
 // The provider editor's Drawer tabs. `connection` is the default, so a bare
-// /ai/:providerId deep link opens on the identity/transport fields; the others
-// are reachable as /ai/:providerId?providerTab=<id>.
+// /ai/edit/:providerId deep link opens on the identity/transport fields; the
+// others are reachable as /ai/edit/:providerId?providerTab=<id>.
 const PROVIDER_FORM_TABS = [
   { id: 'connection', label: 'Connection' },
   { id: 'models', label: 'Models' },
@@ -70,6 +70,22 @@ const PROVIDER_FORM_TABS = [
   { id: 'environment', label: 'Environment' },
 ];
 const PROVIDER_FORM_TAB_IDS = PROVIDER_FORM_TABS.map(t => t.id);
+
+// Numeric bounds for the editor's number inputs. Declared once so an input's own
+// `min`/`max` and the submit-time check that stands in for it (the drawer
+// unmounts inactive tabs, so the browser can't validate a field the user isn't
+// looking at) can never drift apart. Mirrors the provider schema in
+// `server/lib/aiToolkit/validation.js`; `timeout` is absent because it has a
+// shared parser (`parseTimeoutMs`) that already owns its bounds.
+const PROVIDER_FIELD_RANGES = {
+  tuiPromptDelayMs: { min: 250, max: 60000 },
+  contextWindow: { min: 512, max: 2097152 },
+  numCtx: { min: 512, max: 1048576 },
+  temperature: { min: 0, max: 2 },
+};
+
+const rangeMessage = (label, { min, max }, unit = '') =>
+  `${label} must be between ${min.toLocaleString()} and ${max.toLocaleString()}${unit ? ` ${unit}` : ''}`;
 
 export default function AIProviders() {
   const [providers, setProviders] = useState([]);
@@ -117,17 +133,18 @@ export default function AIProviders() {
   const localModels = useLocalModels();
 
   // The editor is a deep-linkable slide-in over this page, so which provider is
-  // open lives in the URL (/ai/new · /ai/:providerId) rather than local state —
-  // the same "URL is the source of truth for what's open" rule the rest of the
-  // app follows. `/ai/new` is its own static route, so `providerId` is undefined
-  // there; the pathname test keeps the two apart without reserving `new` as an
-  // un-editable provider id.
+  // open lives in the URL (/ai/new · /ai/edit/:providerId) rather than local
+  // state — the same "URL is the source of truth for what's open" rule the rest
+  // of the app follows. The edit id sits under its own `edit` segment because
+  // provider ids are slugified from the display name: a provider named "New"
+  // gets the id `new`, and a bare /ai/:providerId route would let the static
+  // create route shadow its editor.
   const navigate = useNavigate();
   const location = useLocation();
   const { providerId: editingProviderId } = useParams();
   const creatingProvider = location.pathname.replace(/\/+$/, '').endsWith('/ai/new');
   const closeForm = useCallback(() => navigate('/ai'), [navigate]);
-  const openForm = useCallback((target) => navigate(target ? `/ai/${target.id}` : '/ai/new'), [navigate]);
+  const openForm = useCallback((target) => navigate(target ? `/ai/edit/${target.id}` : '/ai/new'), [navigate]);
 
   useEffect(() => {
     loadData();
@@ -428,12 +445,12 @@ export default function AIProviders() {
     };
   }, [providers, statuses, activeProviderId, runtimeForProvider]);
 
-  // Resolved only once the list has loaded, so an /ai/:providerId reload can't
+  // Resolved only once the list has loaded, so an /ai/edit/:providerId reload can't
   // flash the editor in "Add Provider" mode before the record arrives. An id
   // that never resolves (deleted provider, hand-edited link) bounces back to the
   // list rather than leaving a blank editor open. `hasOwn` rather than a plain
-  // lookup because the id comes straight off the URL: `/ai/__proto__` would
-  // otherwise resolve to `Object.prototype` and open the editor on it.
+  // lookup because the id comes straight off the URL: `/ai/edit/__proto__`
+  // would otherwise resolve to `Object.prototype` and open the editor on it.
   const editingProvider = editingProviderId && Object.hasOwn(providersById, editingProviderId)
     ? providersById[editingProviderId]
     : null;
@@ -909,22 +926,66 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
     return input === '' ? undefined : Number(input);
   };
 
+  // Every constraint the inputs themselves declare (`required`, `type="url"`,
+  // `min`/`max`), restated as a check the SUBMIT path runs. The drawer mounts
+  // only the active tab, so the browser's own constraint validation sees just
+  // that panel: a Save pressed from Models would otherwise ship an unparseable
+  // endpoint or an out-of-range num_ctx straight to the server and surface it as
+  // a generic API error with no pointer to the offending field. Returns the tab
+  // that owns the first problem plus its message, or null when the form is
+  // valid. Order matches the tab order so the user is sent to the earliest
+  // offending panel.
+  const findValidationError = () => {
+    const text = (value) => String(value ?? '').trim();
+    const outOfRange = (value, { min, max }) => {
+      const input = text(value);
+      if (input === '') return false;
+      const parsed = Number(input);
+      return !Number.isFinite(parsed) || parsed < min || parsed > max;
+    };
+
+    if (!text(formData.name)) return { tab: 'connection', message: 'Name is required' };
+    if (isProcessProvider(formData) && !text(formData.command)) {
+      return { tab: 'connection', message: 'Command is required' };
+    }
+    if (formData.type === 'api') {
+      if (!text(formData.endpoint)) return { tab: 'connection', message: 'Endpoint is required' };
+      // Mirrors the field's `type="url"` and the server's `z.string().url()`:
+      // an absolute URL with a scheme.
+      if (!URL.canParse(text(formData.endpoint))) {
+        return { tab: 'connection', message: 'Endpoint must be a full URL, e.g. http://localhost:1234/v1' };
+      }
+    }
+    if (formData.type === 'tui' && outOfRange(formData.tuiPromptDelayMs, PROVIDER_FIELD_RANGES.tuiPromptDelayMs)) {
+      return { tab: 'connection', message: rangeMessage('Prompt Paste Delay', PROVIDER_FIELD_RANGES.tuiPromptDelayMs, 'ms') };
+    }
+    if (text(formData.timeout) !== '' && parseTimeoutMs(formData.timeout) == null) {
+      return {
+        tab: 'generation',
+        message: `Timeout must be a whole number of ms between ${TIMEOUT_INPUT_MIN_MS.toLocaleString()} and ${TIMEOUT_INPUT_MAX_MS.toLocaleString()}`,
+      };
+    }
+    if (outOfRange(formData.contextWindow, PROVIDER_FIELD_RANGES.contextWindow)) {
+      return { tab: 'generation', message: rangeMessage('Planning Window', PROVIDER_FIELD_RANGES.contextWindow, 'tokens') };
+    }
+    if (showsNumCtx) {
+      if (outOfRange(formData.numCtx, PROVIDER_FIELD_RANGES.numCtx)) {
+        return { tab: 'generation', message: rangeMessage('Local num_ctx', PROVIDER_FIELD_RANGES.numCtx, 'tokens') };
+      }
+      if (outOfRange(formData.temperature, PROVIDER_FIELD_RANGES.temperature)) {
+        return { tab: 'generation', message: rangeMessage('Temperature', PROVIDER_FIELD_RANGES.temperature) };
+      }
+    }
+    return null;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    // The drawer renders only the active tab, so the browser's own constraint
-    // validation can't block a Save triggered from another tab. Re-check the
-    // Connection tab's required fields here and send the user back to them.
-    const missingField = !formData.name.trim()
-      ? 'Name'
-      : (isProcessProvider(formData) && !formData.command.trim())
-        ? 'Command'
-        : (formData.type === 'api' && !formData.endpoint.trim())
-          ? 'Endpoint'
-          : null;
-    if (missingField) {
-      setActiveTab('connection');
-      toast.error(`${missingField} is required`);
+    const invalid = findValidationError();
+    if (invalid) {
+      setActiveTab(invalid.tab);
+      toast.error(invalid.message);
       return;
     }
 
@@ -1090,8 +1151,8 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                       <FormField label="Prompt Paste Delay (ms)">
                         <input
                           type="number"
-                          min="250"
-                          max="60000"
+                          min={PROVIDER_FIELD_RANGES.tuiPromptDelayMs.min}
+                          max={PROVIDER_FIELD_RANGES.tuiPromptDelayMs.max}
                           value={formData.tuiPromptDelayMs}
                           onChange={(e) => setFormData(prev => ({ ...prev, tuiPromptDelayMs: e.target.value }))}
                           className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
@@ -1406,8 +1467,8 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                     <input
                       type="number"
                       inputMode="numeric"
-                      min="512"
-                      max="2097152"
+                      min={PROVIDER_FIELD_RANGES.contextWindow.min}
+                      max={PROVIDER_FIELD_RANGES.contextWindow.max}
                       value={formData.contextWindow}
                       onChange={(e) => setFormData(prev => ({ ...prev, contextWindow: e.target.value }))}
                       placeholder="Auto from model"
@@ -1423,8 +1484,8 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                       <input
                         type="number"
                         inputMode="numeric"
-                        min="512"
-                        max="1048576"
+                        min={PROVIDER_FIELD_RANGES.numCtx.min}
+                        max={PROVIDER_FIELD_RANGES.numCtx.max}
                         value={formData.numCtx}
                         onChange={(e) => setFormData(prev => ({ ...prev, numCtx: e.target.value }))}
                         placeholder="Ollama request size"
@@ -1447,8 +1508,8 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                     <FormField label="Temperature">
                       <input
                         type="number"
-                        min="0"
-                        max="2"
+                        min={PROVIDER_FIELD_RANGES.temperature.min}
+                        max={PROVIDER_FIELD_RANGES.temperature.max}
                         step="0.1"
                         value={formData.temperature}
                         onChange={(e) => setFormData(prev => ({ ...prev, temperature: e.target.value }))}
