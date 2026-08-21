@@ -100,6 +100,26 @@ describe('negotiateVideoConstraints', () => {
     expect(snapped1080.height).toBe(1080);
   });
 
+  it('snaps fps to the nearest option when fpsOptions is present', () => {
+    const capability = {
+      modelId: 'minimax_h3',
+      fpsOptions: [24, 25],
+    };
+
+    expect(negotiateVideoConstraints({ fps: 16 }, capability).fps).toBe(24);
+    expect(negotiateVideoConstraints({ fps: 30 }, capability).fps).toBe(25);
+  });
+
+  it('rejects when requested numFrames is below minimum stride frames', () => {
+    const capability = {
+      modelId: 'wan22_t2v_a14b',
+      frameStride: 4,
+    };
+
+    expect(() => negotiateVideoConstraints({ numFrames: 3 }, capability))
+      .toThrow(/cannot be satisfied.*minimum 5/);
+  });
+
   it('rejects when requested numFrames is invalid (< 1)', () => {
     const capability = {
       modelId: 'wan22',

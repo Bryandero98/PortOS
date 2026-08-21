@@ -61,7 +61,14 @@ export function negotiateVideoConstraints(request, capability) {
       if (hasStride || hasMax) {
         let legalFrames = requestedFrames;
         if (hasStride) {
+          const minLegal = frameStride + 1;
           legalFrames = Math.floor((legalFrames - 1) / frameStride) * frameStride + 1;
+          if (legalFrames < minLegal) {
+            throw new ServerError(
+              `Requested frame count (${requestedFrames}) cannot be satisfied by ${capability.modelName || capability.modelId} (minimum ${minLegal})`,
+              { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' },
+            );
+          }
         }
         if (hasMax && legalFrames > maxNumFrames) {
           legalFrames = hasStride
@@ -78,6 +85,21 @@ export function negotiateVideoConstraints(request, capability) {
           console.log(`🌐 Federated render: adjusted numFrames from ${requestedFrames} to ${legalFrames} for ${capability.modelName || capability.modelId}`);
           negotiated = { ...negotiated, numFrames: legalFrames };
         }
+      }
+    }
+  }
+
+  // FPS constraint negotiation
+  if (Array.isArray(capability.fpsOptions) && capability.fpsOptions.length > 0 && negotiated.fps !== undefined) {
+    const requestedFps = Number(negotiated.fps);
+    const validFps = capability.fpsOptions.map(Number).filter((f) => Number.isInteger(f) && f > 0);
+    if (validFps.length > 0 && Number.isFinite(requestedFps)) {
+      const bestFps = validFps.reduce((closest, opt) =>
+        Math.abs(opt - requestedFps) < Math.abs(closest - requestedFps) ? opt : closest,
+      validFps[0]);
+      if (bestFps !== requestedFps) {
+        console.log(`🌐 Federated render: adjusted fps from ${requestedFps} to ${bestFps} for ${capability.modelName || capability.modelId}`);
+        negotiated = { ...negotiated, fps: bestFps };
       }
     }
   }

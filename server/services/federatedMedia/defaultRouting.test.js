@@ -590,4 +590,24 @@ describe('frame constraint negotiation (issue #4681)', () => {
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('adjusted numFrames from 40 to 33'));
     logSpy.mockRestore();
   });
+
+  it('propagates negotiated numFrames, width, and height in routedJobParams', () => {
+    const jobParams = routedJobParams(
+      { prompt: 'a balloon', width: 1280, height: 720, numFrames: 40, mode: 'local' },
+      {
+        request: { modelId: 'wan22', numFrames: 33, width: 1344, height: 768 },
+        remoteMedia: { wireVersion: 1, peerId: 'peer-1' },
+      },
+    );
+
+    expect(jobParams).toMatchObject({
+      prompt: '',
+      modelId: 'wan22',
+      numFrames: 33,
+      width: 1344,
+      height: 768,
+      remoteMedia: { wireVersion: 1, peerId: 'peer-1' },
+    });
+    expect(jobParams.mode).toBeUndefined();
+  });
 });
