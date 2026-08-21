@@ -4,7 +4,8 @@ import { useOpenWorldData } from '../hooks/useOpenWorldData';
 import { useOpenWorldPlayback } from '../hooks/useOpenWorldPlayback';
 import useOpenWorldAudio from '../hooks/useOpenWorldAudio';
 import useKeyboardControls from '../hooks/useKeyboardControls';
-import useKeyboardShortcuts from '../hooks/useKeyboardShortcuts';
+import useKeyboardShortcuts, { isEditableTarget } from '../hooks/useKeyboardShortcuts';
+import useKeyCapture from '../hooks/useKeyCapture';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { mergeFrameIntoOpenWorldProps } from '../lib/openWorldPlaybackFrame';
 import * as api from '../services/api';
@@ -311,8 +312,7 @@ function OpenWorldInner() {
   useEffect(() => {
     if (!photoMode) return;
     const onKey = (e) => {
-      const tag = e.target?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (isEditableTarget(e.target)) return;
       if (e.key === 'Escape') setPhotoMode(false);
       else if (e.key === 'ArrowLeft') setPhotoPresetId(id => cyclePreset(id, -1));
       else if (e.key === 'ArrowRight') setPhotoPresetId(id => cyclePreset(id, 1));
@@ -323,20 +323,24 @@ function OpenWorldInner() {
   }, [photoMode]);
 
   // Playback keyboard transport: Esc exits, Space play/pause, ←/→ step a frame.
-  // Bound only while playback is active. Ignores key events while typing.
-  useEffect(() => {
-    if (!playback.active) return;
-    const onKey = (e) => {
-      const tag = e.target?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  // Bound only while playback is active. Claimed in the capture phase so Space
+  // toggles playback WITHOUT also tripping the voice widget's app-global
+  // push-to-talk hotkey; keys we do not handle pass through untouched.
+  useKeyCapture({
+    enabled: playback.active,
+    onKeyDown: (e) => {
+      // An open dialog layer (the settings drawer, a lightbox) owns the keyboard while
+      // it is up — most importantly Escape, which has to dismiss that layer rather than
+      // drop the user out of playback behind it.
+      if (document.querySelector('[aria-modal="true"]')) return false;
       if (e.key === 'Escape') playback.exit();
-      else if (e.key === ' ') { e.preventDefault(); playback.togglePlay(); }
+      else if (e.key === ' ') playback.togglePlay();
       else if (e.key === 'ArrowLeft') playback.step(-1);
       else if (e.key === 'ArrowRight') playback.step(1);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [playback.active, playback]);
+      else return false;
+      return true;
+    },
+  });
 
   // Task-complete chime (roadmap 3.4): when a CoS task transitions to completed, play a reward
   // chime. Track the set of completed ids across socket updates and chime on each newly-seen one.
