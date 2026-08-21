@@ -14,6 +14,7 @@ describe('threejsModelPhysicalAudit', () => {
       noteCount: 0,
       evaluatedPartCount: 0,
       evaluatedPoseCount: 0,
+      unmeasuredAttachments: [],
     });
   });
 
@@ -680,5 +681,222 @@ describe('threejsModelPhysicalAudit', () => {
     expect(finding.clipId).toBe('deploy');
     expect(finding.sequenceId).toBe('appear');
     expect(finding.timeSeconds).toBe(1);
+  });
+});
+
+// Attachment anchors. The upstream defects these mirror — a conical hat rendered
+// at hip height, a charm detached from the staff it hangs off — pass every other
+// check in this file: the hat touches the torso so it does not float, and nothing
+// contains it so it is not buried. Only its declared anchor makes it wrong.
+describe('threejsModelPhysicalAudit attachment anchors', () => {
+  const box = (id, name, position, size = 0.4) => ({
+    id,
+    name,
+    geometry: { type: 'box', width: size, height: size, depth: size },
+    material: 'skin',
+    position,
+    rotationDegrees: [0, 0, 0],
+    scale: [1, 1, 1],
+    children: [],
+  });
+
+  const wornSpec = (attachments, hatPosition = [0, 1.9, 0]) => ({
+    name: 'Figure',
+    materials: { skin: { type: 'standard', color: '#ffffff' } },
+    parts: [
+      box('torso', 'Torso', [0, 1, 0], 1.2),
+      box('head', 'Head', [0, 1.8, 0], 0.5),
+      { ...box('hat', 'Hat', hatPosition, 0.55) },
+    ],
+    sockets: [{ name: 'crown', parentPartId: 'head', position: [0, 0.25, 0], rotationDegrees: [0, 0, 0] }],
+    articulation: {
+      joints: [
+        { id: 'rootJoint', partId: 'torso', parentJointId: null, pivotSocket: null },
+        { id: 'headJoint', partId: 'head', parentJointId: 'rootJoint', pivotSocket: 'crown' },
+      ],
+      attachmentPartIds: [],
+      attachments,
+    },
+  });
+
+  const findingsOf = (spec, code) => evaluateThreejsPhysicalAudit(spec).findings.filter((f) => f.code === code);
+
+  it('passes an attachment sitting on the part it is anchored to', () => {
+    const spec = wornSpec([{ partId: 'hat', anchorPartId: 'head', anchorSocket: null, maxOffset: 0.25 }]);
+    expect(findingsOf(spec, 'attachment-far-from-anchor')).toEqual([]);
+    expect(findingsOf(spec, 'unanchored-attachment')).toEqual([]);
+    expect(evaluateThreejsPhysicalAudit(spec).unmeasuredAttachments).toEqual([]);
+  });
+
+  it('reports an attachment measured away from its declared anchor as an error', () => {
+    const spec = wornSpec([{ partId: 'hat', anchorPartId: 'head', anchorSocket: null, maxOffset: 0.25 }], [0, 0.6, 0]);
+    const [finding] = findingsOf(spec, 'attachment-far-from-anchor');
+    expect(finding).toBeDefined();
+    expect(finding.severity).toBe('error');
+    expect(finding.partIds).toEqual(['hat', 'head']);
+    expect(finding.anchorPartId).toBe('head');
+    expect(finding.distance).toBeGreaterThan(0.25);
+    expect(finding.message).toContain('"Head"');
+    // The same spec is clean for every pre-existing check: the hat touches the
+    // torso, so nothing else in this gate has anything to say about it.
+    expect(findingsOf(spec, 'floating-part')).toEqual([]);
+    expect(findingsOf(spec, 'buried-geometry')).toEqual([]);
+  });
+
+  it('measures a socket anchor as the point it is, not as its parent part', () => {
+    const anchored = [{ partId: 'hat', anchorPartId: null, anchorSocket: 'crown', maxOffset: 0.05 }];
+    expect(findingsOf(wornSpec(anchored), 'attachment-far-from-anchor')).toEqual([]);
+    const [finding] = findingsOf(wornSpec(anchored, [0, 0.6, 0]), 'attachment-far-from-anchor');
+    expect(finding).toBeDefined();
+    expect(finding.anchorSocket).toBe('crown');
+    expect(finding.partIds).toEqual(['hat']);
+    expect(finding.message).toContain('socket "crown"');
+  });
+
+  it('warns on a legacy attachment that names nothing to hang from', () => {
+    const spec = wornSpec([]);
+    spec.articulation.attachmentPartIds = ['hat'];
+    const [finding] = findingsOf(spec, 'unanchored-attachment');
+    expect(finding).toBeDefined();
+    expect(finding.severity).toBe('warning');
+    expect(finding.partIds).toEqual(['hat']);
+    expect(finding.message).toContain('"Hat"');
+  });
+
+  // An anchor whose surface cannot be measured was not checked, and a gate that
+  // reports "not checked" as "clean" is the failure mode this list prevents.
+  it('reports an attachment whose anchor has no measurable geometry as unmeasured, never as passing', () => {
+    const spec = wornSpec([{ partId: 'hat', anchorPartId: 'group', anchorSocket: null, maxOffset: 0.25 }]);
+    spec.parts.push({
+      id: 'group',
+      name: 'Group',
+      position: [0, 0, 0],
+      rotationDegrees: [0, 0, 0],
+      scale: [1, 1, 1],
+      children: [],
+    });
+    const res = evaluateThreejsPhysicalAudit(spec);
+    expect(res.findings.filter((f) => f.code === 'attachment-far-from-anchor')).toEqual([]);
+    expect(res.unmeasuredAttachments).toEqual([
+      { partId: 'hat', anchorPartId: 'group', anchorSocket: null, reason: 'the anchor part has no visible geometry to measure' },
+    ]);
+  });
+
+  // An anchor that is a bare group is still measurable through its children —
+  // "head" holding a skull and a jaw is the normal way to author one.
+  it('measures an anchor group through the geometry of its descendants', () => {
+    const spec = wornSpec([{ partId: 'hat', anchorPartId: 'headGroup', anchorSocket: null, maxOffset: 0.25 }]);
+    spec.parts[1] = {
+      id: 'headGroup',
+      name: 'Head group',
+      position: [0, 1.8, 0],
+      rotationDegrees: [0, 0, 0],
+      scale: [1, 1, 1],
+      children: [box('skull', 'Skull', [0, 0, 0], 0.5)],
+    };
+    spec.sockets = [];
+    spec.articulation.joints = [{ id: 'rootJoint', partId: 'torso', parentJointId: null, pivotSocket: null }];
+    const res = evaluateThreejsPhysicalAudit(spec);
+    expect(res.unmeasuredAttachments).toEqual([]);
+    expect(res.findings.filter((f) => f.code === 'attachment-far-from-anchor')).toEqual([]);
+  });
+
+  // The natural authoring shape, and the one that defeats a naive subtree
+  // measurement: the hat is a CHILD of the head, so folding its own geometry into
+  // the head's bounds would measure it zero units from itself no matter where it
+  // sits. The anchor's bounds exclude the attachment's own subtree.
+  it('measures a nested attachment against its anchor rather than against itself', () => {
+    const nested = {
+      name: 'Figure',
+      materials: { skin: { type: 'standard', color: '#ffffff' } },
+      parts: [{
+        ...box('torso', 'Torso', [0, 1, 0], 1.2),
+        children: [{
+          ...box('head', 'Head', [0, 0.9, 0], 0.5),
+          // Authored on the head but positioned at hip height — the upstream defect.
+          children: [box('hat', 'Hat', [0, -1.5, 0], 0.55)],
+        }],
+      }],
+      sockets: [],
+      articulation: {
+        joints: [{ id: 'rootJoint', partId: 'torso', parentJointId: null, pivotSocket: null }],
+        attachmentPartIds: [],
+        attachments: [{ partId: 'hat', anchorPartId: 'head', anchorSocket: null, maxOffset: 0.25 }],
+      },
+    };
+    const [finding] = evaluateThreejsPhysicalAudit(nested).findings.filter((f) => f.code === 'attachment-far-from-anchor');
+    expect(finding).toBeDefined();
+    expect(finding.distance).toBeGreaterThan(0.25);
+
+    // …and the same hierarchy with the hat actually on the head stays clean.
+    nested.parts[0].children[0].children = [box('hat', 'Hat', [0, 0.4, 0], 0.55)];
+    expect(evaluateThreejsPhysicalAudit(nested).findings.filter((f) => f.code === 'attachment-far-from-anchor')).toEqual([]);
+  });
+
+  // A clip pose that hides the anchor did not disprove the resting-pose
+  // measurement, so it must not turn a checked attachment into an unchecked one.
+  it('keeps an attachment measured in the resting pose out of the unmeasured list', () => {
+    const spec = wornSpec([{ partId: 'hat', anchorPartId: 'head', anchorSocket: null, maxOffset: 0.25 }]);
+    spec.animation = {
+      clips: [{
+        id: 'vanish',
+        name: 'Vanish',
+        durationSeconds: 1,
+        sequences: [{
+          id: 'hideHead',
+          name: 'Hide head',
+          partId: 'head',
+          startSeconds: 0,
+          endSeconds: 1,
+          channels: { visible: { from: true, to: false } },
+        }],
+      }],
+    };
+    expect(evaluateThreejsPhysicalAudit(spec).unmeasuredAttachments).toEqual([]);
+  });
+
+  it('catches a clip that carries an attachment away from its anchor mid-clip', () => {
+    const spec = wornSpec([{ partId: 'hat', anchorPartId: 'head', anchorSocket: null, maxOffset: 0.25 }]);
+    spec.animation = {
+      clips: [{
+        id: 'toss',
+        name: 'Toss',
+        durationSeconds: 2,
+        sequences: [{
+          id: 'lift',
+          name: 'Lift',
+          partId: 'hat',
+          startSeconds: 0,
+          endSeconds: 2,
+          channels: { position: { from: [0, 1.9, 0], to: [0, 5, 0] } },
+        }],
+      }],
+    };
+    const [finding] = findingsOf(spec, 'attachment-far-from-anchor');
+    expect(finding).toBeDefined();
+    expect(finding.clipId).toBe('toss');
+    expect(finding.timeSeconds).toBe(2);
+    expect(finding.message).toContain('In clip "Toss"');
+  });
+
+  it('names the anchor in the refinement feedback, so the next pass has somewhere to move the part', () => {
+    const spec = wornSpec([{ partId: 'hat', anchorPartId: 'head', anchorSocket: null, maxOffset: 0.25 }], [0, 0.6, 0]);
+    const feedback = buildThreejsPhysicalAuditFeedback(evaluateThreejsPhysicalAudit(spec));
+    expect(feedback).toContain('"head"');
+    expect(feedback).toContain('Anchoring to the model root is not acceptable');
+  });
+
+  // Unmeasured is actionable on its own: nothing else in the report would tell
+  // the next pass that the relationship was never verified.
+  it('feeds an unmeasured attachment back even when no finding fired', () => {
+    const spec = wornSpec([{ partId: 'hat', anchorPartId: 'group', anchorSocket: null, maxOffset: 0.25 }]);
+    spec.parts.push({
+      id: 'group', name: 'Group', position: [0, 0, 0], rotationDegrees: [0, 0, 0], scale: [1, 1, 1], children: [],
+    });
+    const res = evaluateThreejsPhysicalAudit(spec);
+    expect(res.errorCount).toBe(0);
+    expect(res.warningCount).toBe(0);
+    const feedback = buildThreejsPhysicalAuditFeedback(res);
+    expect(feedback).toContain('could not be checked against "group"');
   });
 });
