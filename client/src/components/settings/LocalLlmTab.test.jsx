@@ -133,6 +133,38 @@ describe('LocalLlmTab runtime servers', () => {
     await waitFor(() => expect(startMtplxServer).toHaveBeenCalled());
   });
 
+  it('reports a failed checkpoint download as one error, not an empty success', async () => {
+    // `pullMtplxModel` RESOLVES `{success: false}` for a failed download (its
+    // progress already streamed), so a formatter-only success message would fire
+    // an empty success toast alongside the real reason.
+    const { getMtplxServerStatus, pullMtplxModel } = await import('../../services/api');
+    const toast = (await import('../ui/Toast')).default;
+    getMtplxServerStatus.mockResolvedValue({
+      installed: true, running: false, supported: true, cachedModels: [], cacheError: null,
+    });
+    pullMtplxModel.mockResolvedValue({ success: false, model: null, error: 'no space left on device' });
+
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: /Download default checkpoint/ }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/no space left on device/)));
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('downloads MTPLX\'s own default checkpoint when the cache is empty', async () => {
+    const { getMtplxServerStatus, pullMtplxModel } = await import('../../services/api');
+    getMtplxServerStatus.mockResolvedValue({
+      installed: true, running: false, supported: true, cachedModels: [], cacheError: null,
+    });
+    pullMtplxModel.mockResolvedValue({ success: true, model: null, cachedModels: ['Example/Qwen-MTP'] });
+
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: /Download default checkpoint/ }));
+
+    // `null` (not a repo id the card invented) = MTPLX's own verified default.
+    await waitFor(() => expect(pullMtplxModel).toHaveBeenCalledWith(null));
+  });
+
   it('saves the PM2 process list so the managed daemons survive a reboot', async () => {
     const { saveRuntimeStartupList } = await import('../../services/api');
     saveRuntimeStartupList.mockResolvedValue({ success: true });

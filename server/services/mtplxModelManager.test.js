@@ -33,6 +33,10 @@ describe('mtplxModelManager', () => {
       expect(isMtplxRepoId('Qwen-MTP')).toBe(false);
       expect(isMtplxRepoId('https://huggingface.co/Example/Qwen-MTP')).toBe(false);
       expect(isMtplxRepoId('../../etc/passwd')).toBe(false);
+      // Each segment must START alphanumeric — the same rule the route schema
+      // enforces, so the two guards cannot drift apart.
+      expect(isMtplxRepoId('Example/..')).toBe(false);
+      expect(isMtplxRepoId('Example/-flag')).toBe(false);
     });
   });
 

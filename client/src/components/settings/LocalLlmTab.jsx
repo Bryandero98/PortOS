@@ -680,22 +680,31 @@ export function LocalLlmTab() {
     () => stopMtplxServer(),
     (r) => r?.message || 'MTPLX stopped'
   ).then(loadMtplxStatus);
-  // Checkpoint management. The pull resolves only when the weights are on disk;
-  // byte progress arrives on `mtplx:download` (subscribed below), so the button
-  // spinner is not the only sign of life during a multi-gigabyte transfer.
-  // Stable identity: the checkpoint panel keys its initial load on this, and the
-  // status poll re-renders this component every few seconds.
+  // Checkpoint management (search / download / remove), owned by the MTPLX card.
+  //
+  // `mtplxSearch` keeps a stable identity because the checkpoint panel keys its
+  // one-time initial load on it, and the status poll re-renders this component
+  // every few seconds. It resolves its own failures into the `{models, error}`
+  // shape the panel renders inline, so it is `silent` — no toast.
   const mtplxSearch = useCallback((params) => searchMtplxModels(params, { silent: true })
     .catch((err) => ({ models: [], error: err?.message || 'Search failed' })), []);
+  // The pull resolves only when the weights are on disk; byte progress arrives
+  // on `mtplx:download` (subscribed above), so the button spinner is not the
+  // only sign of life during a multi-gigabyte transfer.
   const mtplxPull = (model) => runAction(
     model ? `mtplx-pull-${model}` : 'mtplx-pull',
-    () => pullMtplxModel(model),
-    (r) => (r?.success ? `${r.model || 'Default checkpoint'} downloaded` : null),
-  ).then((r) => {
+    // A failed download RESOLVES `{success: false, error}` rather than throwing
+    // (its progress already streamed), so convert it to the rejection
+    // `runAction` routes to `onError` — otherwise the success formatter runs on
+    // a failure and toasts an empty success next to the error.
+    () => pullMtplxModel(model).then((r) => {
+      if (r?.success === false) throw new Error(r.error || 'Download failed');
+      return r;
+    }),
+    (r) => `${r?.model || 'Default checkpoint'} downloaded`,
+    { onError: (err) => toast.error(`MTPLX download failed: ${err.message}`) },
+  ).then(() => {
     setMtplxDownload(null);
-    // A pull that exits non-zero resolves rather than throwing, so its reason
-    // has to be surfaced here — `runAction`'s success toast can't tell.
-    if (r && r.success === false) toast.error(`Download failed: ${r.error}`);
     return loadMtplxStatus();
   });
   const mtplxRemove = (model) => runAction(

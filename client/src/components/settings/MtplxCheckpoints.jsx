@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, HardDrive, RefreshCw, Search, Trash2, CheckCircle2, AlertTriangle } from 'lucide-react';
 import BrailleSpinner from '../BrailleSpinner';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
+import ProgressBar from '../ui/ProgressBar';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import { formatBytes } from '../../utils/formatters';
 
@@ -27,22 +28,21 @@ const accentBtn = `${btn} bg-port-accent/20 hover:bg-port-accent/30 text-port-ac
 const neutralBtn = `${btn} bg-port-border hover:bg-port-border/70 text-white`;
 const dangerBtn = `${btn} bg-port-error/10 hover:bg-port-error/20 text-port-error`;
 
-/** A pull frame carries bytes only once the transfer starts — show what we have. */
-function ProgressBar({ download }) {
+/**
+ * A pull frame carries byte counters only once the transfer starts — until then
+ * (`resolving`, `verifying`) there is no total, which is exactly the shared
+ * bar's `percent={null}` indeterminate case rather than a misleading 0%.
+ */
+function DownloadProgress({ download }) {
   const { received = 0, total = 0, message } = download;
-  const pct = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : null;
+  const pct = total > 0 ? (received / total) * 100 : null;
   return (
     <div className="space-y-1">
-      <div className="h-1.5 bg-port-border rounded overflow-hidden">
-        <div
-          className={`h-full bg-port-accent transition-all ${pct === null ? 'animate-pulse w-1/3' : ''}`}
-          style={pct === null ? undefined : { width: `${pct}%` }}
-        />
-      </div>
+      <ProgressBar percent={pct} track="border" label={`Downloading ${download.model || 'MTPLX default checkpoint'}`} />
       <p className="text-[11px] text-gray-500">
         {pct === null
           ? (message || 'Downloading…')
-          : `${formatBytes(received)} of ${formatBytes(total)} (${pct}%)`}
+          : `${formatBytes(received)} of ${formatBytes(total)} (${Math.round(pct)}%)`}
       </p>
     </div>
   );
@@ -176,7 +176,7 @@ export default function MtplxCheckpoints({
           <p className="text-xs text-gray-300 truncate">
             Downloading <code className="text-port-accent">{download.model || 'MTPLX default checkpoint'}</code>
           </p>
-          <ProgressBar download={download} />
+          <DownloadProgress download={download} />
           <p className="text-[11px] text-gray-500">This runs in the background — leaving this page won't cancel it.</p>
         </div>
       )}

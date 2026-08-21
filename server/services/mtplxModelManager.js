@@ -45,9 +45,14 @@ const PULL_TIMEOUT_MS = 6 * 60 * 60 * 1000;
  * Both accept a bare URL too, but PortOS deliberately does not: the search
  * results it renders carry repo ids, and refusing everything else keeps a
  * hand-typed value from becoming a path or a flag (a leading `-` would be read
- * as an option by argparse).
+ * as an option by argparse). Each segment must START alphanumeric, so `owner/..`
+ * cannot reach the cache walk either.
+ *
+ * Deliberately identical to `localLlmMtplxPullSchema`'s regex in
+ * `lib/mediaValidation.js`: the route validates and this re-validates, and a
+ * looser guard here would be a hole for any caller that isn't that route.
  */
-const REPO_ID_RE = /^[A-Za-z0-9][\w.-]*\/[\w.-]+$/;
+const REPO_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export const isMtplxRepoId = (value) => typeof value === 'string' && REPO_ID_RE.test(value);
 
@@ -156,9 +161,13 @@ export function parseMtplxPullFrame(line, model) {
  * already streamed progress, so the outcome is a value (`{ success, error }`)
  * the route reports rather than a rejection mid-stream.
  *
- * @param {{model?: string|null, onProgress?: (frame: object) => void, isCancelled?: () => boolean}} [options]
+ * There is deliberately no cancellation hook: a pull is a server-side download
+ * the user is told keeps running when they navigate away, so nothing here is
+ * tied to the lifetime of the request that started it.
+ *
+ * @param {{model?: string|null, onProgress?: (frame: object) => void}} [options]
  */
-export async function pullMtplxModel({ model = null, onProgress = () => {}, isCancelled } = {}) {
+export async function pullMtplxModel({ model = null, onProgress = () => {} } = {}) {
   const binary = requireBinary();
   const repo = model ? requireRepoId(model) : null;
   const label = repo || 'MTPLX\'s default verified checkpoint';
@@ -177,7 +186,7 @@ export async function pullMtplxModel({ model = null, onProgress = () => {}, isCa
       // an early one tear the progress bar down before the process exits.
       if (frame && frame.event !== 'complete' && frame.event !== 'result') onProgress(frame);
     },
-    { timeoutMs: PULL_TIMEOUT_MS, isCancelled }
+    { timeoutMs: PULL_TIMEOUT_MS }
   );
 
   if (!result.success) {
