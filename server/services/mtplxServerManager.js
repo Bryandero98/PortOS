@@ -456,11 +456,16 @@ export async function stopMtplxServer() {
  * two refusals, same restore-on-failure — because the assessment runner treats
  * every runtime's applier identically.
  *
- * It refuses rather than guesses in the two cases where it cannot know what to
+ * It refuses rather than guesses in the three cases where it cannot know what to
  * relaunch:
  *   - nothing is running, so there is no checkpoint to reuse;
  *   - something IS listening but PortOS did not start it, so stopping it would
- *     kill a process the user owns.
+ *     kill a process the user owns;
+ *   - the launch line names no `--model`, so the running server is on MTPLX's
+ *     own hard-coded default. Restarting with `model: null` sends the request
+ *     back through `resolveStartModel`, which now picks from the cache — a
+ *     DIFFERENT checkpoint from the one being measured, filed under the model
+ *     id of the one that was.
  *
  * Every one of those returns `{ applied: false, reason }` instead of throwing:
  * the caller can still measure whatever is actually serving and record that the
@@ -493,8 +498,15 @@ export async function relaunchMtplxServerWithTuning(tuning = {}) {
       config: status.config || null,
     };
   }
+  if (!status.config?.model) {
+    return {
+      applied: false,
+      reason: 'MTPLX is serving its own default checkpoint, which PortOS cannot name — restart it on a chosen checkpoint from the LLMs page to let PortOS apply tuning',
+      config: status.config || null,
+    };
+  }
 
-  const previous = status.config || { port: status.port, model: null, tuning: {} };
+  const previous = status.config;
   // Merged onto what is already on the launch line, not replacing it: a sweep
   // that varies one knob must not silently drop the ones already set.
   const next = { ...previous, tuning: { ...(previous.tuning || {}), ...Object.fromEntries(knobs) } };

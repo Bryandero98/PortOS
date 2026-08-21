@@ -309,6 +309,25 @@ describe('mtplxServerManager', () => {
       expect(execPm2Calls.some((a) => a[0] === 'start')).toBe(false);
     });
 
+    // `model: null` means the running server is on MTPLX's OWN hard-coded
+    // default. Restarting with null re-runs the cache resolution, which picks a
+    // checkpoint — so the relaunch would serve a different model than the one
+    // being measured, and file the reading under the wrong one.
+    it('refuses when the launch line names no checkpoint it could reproduce', async () => {
+      vi.spyOn(mtplxModels, 'listMtplxCachedModels').mockResolvedValue({ models: null, error: 'mtplx models timed out' });
+      await startMtplxServer();
+      answerOnceRunning();
+      execPm2Calls.length = 0;
+
+      const result = await relaunchMtplxServerWithTuning({ depth: 3 });
+      expect(result.applied).toBe(false);
+      expect(result.reason).toMatch(/own default checkpoint/);
+      // Refused BEFORE stopping it — the server the user has is left alone.
+      expect(execPm2Calls.map(([verb]) => verb)).not.toContain('delete');
+      expect(execPm2Calls.map(([verb]) => verb)).not.toContain('start');
+      expect(pm2State?.status).toBe('online');
+    });
+
     it('will not stop a server PortOS did not start', async () => {
       vi.spyOn(openAiModelsProbe, 'probeOpenAiModels').mockResolvedValue({ reachable: true });
       const result = await relaunchMtplxServerWithTuning({ depth: 3 });
