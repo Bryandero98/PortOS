@@ -163,12 +163,12 @@ function CanonRedirect() {
 // when the list/table index landed). Both keep old bookmarks + in-app
 // deep-links alive. The canon variant forces `#canon` to scroll the embedded
 // canon section; non-canon preserves whatever hash the user had.
-function UniverseRouteRedirect({ fromPrefix, canon = false }) {
+function UniverseRouteRedirect({ fromPrefix, to, canon = false }) {
   const { pathname, search, hash } = useLocation();
   const rest = pathname.replace(fromPrefix, '');
   const target = canon
-    ? `/universes${rest.replace(/\/canon\/?$/, '')}${search}#canon`
-    : `/universes${rest}${search}${hash}`;
+    ? `${to}${rest.replace(/\/canon\/?$/, '')}${search}#canon`
+    : `${to}${rest}${search}${hash}`;
   return <Navigate to={target} replace />;
 }
 
@@ -428,8 +428,8 @@ export default function App() {
                 redirects keep legacy /media/universe-builder bookmarks working
                 after the MediaGen tab was removed. */}
             <Route path="universe-builder" element={<RedirectWithSearch to="/universes" />} />
-            <Route path="universe-builder/:universeId" element={<UniverseRouteRedirect fromPrefix={/^\/media\/universe-builder/} />} />
-            <Route path="universe-builder/:universeId/canon" element={<UniverseRouteRedirect fromPrefix={/^\/media\/universe-builder/} canon />} />
+            <Route path="universe-builder/:universeId" element={<UniverseRouteRedirect fromPrefix={/^\/media\/universe-builder/} to="/universes" />} />
+            <Route path="universe-builder/:universeId/canon" element={<UniverseRouteRedirect fromPrefix={/^\/media\/universe-builder/} to="/universes" canon />} />
           </Route>
           {/* Sprite Manager — a top-level Create page (moved out of the Media
               Gen tabs). The record id is the URL, per the ID-based deep-linking
@@ -495,8 +495,8 @@ export default function App() {
           {/* Legacy /universe-builder* → /universes* (route renamed when the
               index landed). Keeps old bookmarks + in-app deep-links working. */}
           <Route path="universe-builder" element={<RedirectWithSearch to="/universes" />} />
-          <Route path="universe-builder/:universeId/canon" element={<UniverseRouteRedirect fromPrefix={/^\/universe-builder/} canon />} />
-          <Route path="universe-builder/:universeId" element={<UniverseRouteRedirect fromPrefix={/^\/universe-builder/} />} />
+          <Route path="universe-builder/:universeId/canon" element={<UniverseRouteRedirect fromPrefix={/^\/universe-builder/} to="/universes" canon />} />
+          <Route path="universe-builder/:universeId" element={<UniverseRouteRedirect fromPrefix={/^\/universe-builder/} to="/universes" />} />
           <Route path="universe-builder/new" element={<RedirectWithSearch to="/universes/new" />} />
           <Route path="writers-room" element={<WritersRoom />} />
           <Route path="writers-room/guide" element={<WritersRoomGuide />} />

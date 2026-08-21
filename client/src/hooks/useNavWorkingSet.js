@@ -16,29 +16,26 @@ const readList = (key) => {
 // in-memory React state still updates and the app never crashes on a write.
 const writeList = (key, list) => safeWriteStorage(key, JSON.stringify(list));
 
-const LEGACY_NAV_PATHS = {
-  '/system-health': '/system-resources',
-};
-
-// Whole-subtree renames: a stored path AT or UNDER the key moves to the value, keeping
-// whatever followed. `/city` → `/openworld` (the 3D world's rename) covers `/city`,
-// `/city/settings`, and `/city/apps/:id` in one rule, mirroring App.jsx's PrefixRedirect.
-// Without it the browser URL redirects but the *stored* path doesn't, so a pinned `/city`
-// row no longer resolves against the manifest and silently disappears on upgrade.
-const LEGACY_NAV_PREFIXES = [
-  ['/city', '/openworld'],
-];
-
-const migratePath = (path) => {
-  const exact = LEGACY_NAV_PATHS[path];
-  if (exact) return exact;
-  for (const [from, to] of LEGACY_NAV_PREFIXES) {
-    // Segment-anchored so a sibling route like `/cityscape` is never rewritten.
-    if (path === from || path.startsWith(`${from}/`)) return `${to}${path.slice(from.length)}`;
+// Replace each stored path with the CURRENT path it resolves to, so a page that
+// has MOVED is stored under where it lives now — pin state and unpin() then
+// compare against the same path the sidebar rendered. Returns the original list
+// when nothing moved, so the effect below settles after one pass.
+//
+// Only paths that actually resolve are rewritten. A path resolving to nothing is
+// left exactly as stored: during boot the dynamic app/series/universe rows have
+// not loaded yet, and dropping or rewriting a pin on that transient miss would
+// lose it for good.
+const normalizeToCurrentPaths = (paths, resolveNavEntry) => {
+  let changed = false;
+  const next = [];
+  for (const stored of paths) {
+    const current = resolveNavEntry(stored)?.path || stored;
+    if (current !== stored) changed = true;
+    if (next.includes(current)) changed = true;
+    else next.push(current);
   }
-  return path;
+  return changed ? next : paths;
 };
-const migratePaths = (paths) => [...new Set(paths.map(migratePath))];
 
 /**
  * Sidebar working-set state (Pinned + Recent), persisted to localStorage.
@@ -53,11 +50,11 @@ export function useNavWorkingSet(resolveNavEntry) {
   // Record the initial visit synchronously so it's present on first render.
   // The useEffect below handles subsequent navigations only.
   const [recentPaths, setRecentPaths] = useState(() => {
-    const initial = recordVisit(location.pathname, migratePaths(readList(RECENT_KEY)));
+    const initial = recordVisit(location.pathname, readList(RECENT_KEY));
     writeList(RECENT_KEY, initial);
     return initial;
   });
-  const [pinnedPaths, setPinnedPaths] = useState(() => migratePaths(readList(PINNED_KEY)));
+  const [pinnedPaths, setPinnedPaths] = useState(() => readList(PINNED_KEY));
 
   // Track the last recorded path to skip the initial effect (already handled above).
   const lastRecordedRef = useRef(location.pathname);
@@ -92,6 +89,22 @@ export function useNavWorkingSet(resolveNavEntry) {
   }, []);
 
   const isPinned = useCallback((path) => isPinnedPure(path, pinnedPaths), [pinnedPaths]);
+
+  // Fold moved pages back into storage once the nav manifest can resolve them.
+  // Settles after one pass: normalizeToCurrentPaths returns the SAME list when
+  // nothing moved, so the state updates (and the effect's own deps) stop there.
+  useEffect(() => {
+    const nextPinned = normalizeToCurrentPaths(pinnedPaths, resolveNavEntry);
+    if (nextPinned !== pinnedPaths) {
+      setPinnedPaths(nextPinned);
+      writeList(PINNED_KEY, nextPinned);
+    }
+    const nextRecent = normalizeToCurrentPaths(recentPaths, resolveNavEntry);
+    if (nextRecent !== recentPaths) {
+      setRecentPaths(nextRecent);
+      writeList(RECENT_KEY, nextRecent);
+    }
+  }, [resolveNavEntry, pinnedPaths, recentPaths]);
 
   const resolveAll = useCallback(
     (paths) => paths.map((p) => resolveNavEntry(p)).filter(Boolean),

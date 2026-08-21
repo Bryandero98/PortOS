@@ -120,6 +120,7 @@ import { useSharingNotifications } from '../hooks/useSharingNotifications';
 import UpdateBanners from './UpdateBanners';
 import { useAIStatusNotifications } from '../hooks/useAIStatusNotifications';
 import { useNavWorkingSet } from '../hooks/useNavWorkingSet.js';
+import { migrateLegacyNavPath } from '../utils/navWorkingSet.js';
 import { useSidebarApps } from '../hooks/useSidebarApps.js';
 import { useSidebarSeries } from '../hooks/useSidebarSeries.js';
 import { useSidebarUniverses } from '../hooks/useSidebarUniverses.js';
@@ -803,9 +804,23 @@ export default function Layout() {
     return map;
   }, [resolvedNavItems]);
 
+  // Stored Pinned/Recent paths outlive the routes they were saved from. When a
+  // page MOVES, its old path stops matching anything here and the row silently
+  // renders nothing — so a miss falls back through the manifest's `previousPaths`
+  // to where the page lives now, and the entry carries that CURRENT path so the
+  // row navigates (and unpins) by it. Resolution is where this belongs rather
+  // than a rewrite-on-read: a path that resolves to nothing is left untouched,
+  // which matters because the dynamic app/series/universe rows load async and
+  // "unresolvable" is a normal transient state during boot.
   const resolveNavEntry = useCallback(
-    (path) => navEntryByPath.get(path) || manifestEntryByPath.get(path) || null,
-    [navEntryByPath, manifestEntryByPath],
+    (path) => {
+      const direct = navEntryByPath.get(path) || manifestEntryByPath.get(path);
+      if (direct) return direct;
+      const current = migrateLegacyNavPath(path, manifestNav);
+      if (current === path) return null;
+      return navEntryByPath.get(current) || manifestEntryByPath.get(current) || null;
+    },
+    [navEntryByPath, manifestEntryByPath, manifestNav],
   );
 
   const { pinned, recent, pin, unpin, isPinned } = useNavWorkingSet(resolveNavEntry);

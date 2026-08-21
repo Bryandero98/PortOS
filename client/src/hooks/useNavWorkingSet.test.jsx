@@ -42,38 +42,56 @@ describe('useNavWorkingSet', () => {
     expect(result.current.pinned.map((r) => r.path)).toEqual(['/b']);
   });
 
-  it('migrates the legacy System Health pin to System Resources', () => {
-    localStorage.setItem(PINNED_KEY, JSON.stringify(['/system-health']));
-    const { result } = renderHook(() => useNavWorkingSet(resolveNavEntry), { wrapper });
+  // A page that MOVED is the reason a pin used to vanish on an app update: the
+  // stored path stopped matching anything and the row silently rendered nothing.
+  // Layout's resolver now falls back through the manifest's `previousPaths`, so
+  // the hook sees the CURRENT entry for a legacy stored path.
+  const movedResolver = (path) => {
+    const current = path === '/city' ? '/openworld'
+      : path.startsWith('/city/') ? `/openworld${path.slice('/city'.length)}`
+        : path;
+    return { path: current, label: current.replace('/', ''), icon: ICON };
+  };
 
-    expect(result.current.pinned.map((row) => row.path)).toEqual(['/system-resources']);
-    expect(result.current.isPinned('/system-resources')).toBe(true);
-  });
+  it('renders a pin whose page has moved under its current path', () => {
+    localStorage.setItem(PINNED_KEY, JSON.stringify(['/city', '/city/settings']));
+    const { result } = renderHook(() => useNavWorkingSet(movedResolver), { wrapper });
 
-  it('migrates the whole legacy /city subtree to /openworld', () => {
-    // The 3D world moved from /city to /openworld. App.jsx redirects the browser URL, but
-    // the STORED path is what pinned/recent resolve against — without a migration a pinned
-    // "OpenWorld" row stops matching the manifest and silently vanishes on upgrade.
-    localStorage.setItem(PINNED_KEY, JSON.stringify(['/city', '/city/settings', '/city/apps/portos']));
-    const { result } = renderHook(() => useNavWorkingSet(resolveNavEntry), { wrapper });
-
-    expect(result.current.pinned.map((row) => row.path)).toEqual([
-      '/openworld', '/openworld/settings', '/openworld/apps/portos',
-    ]);
+    expect(result.current.pinned.map((row) => row.path)).toEqual(['/openworld', '/openworld/settings']);
     expect(result.current.isPinned('/openworld')).toBe(true);
   });
 
-  it('leaves a sibling route that merely starts with the legacy prefix alone', () => {
-    // The rewrite is segment-anchored: /cityscape is a different page, not /city.
-    localStorage.setItem(PINNED_KEY, JSON.stringify(['/cityscape']));
-    const { result } = renderHook(() => useNavWorkingSet(resolveNavEntry), { wrapper });
-    expect(result.current.pinned.map((row) => row.path)).toEqual(['/cityscape']);
+  it('folds the moved path back into storage so unpin() matches the rendered row', () => {
+    localStorage.setItem(PINNED_KEY, JSON.stringify(['/city']));
+    const { result } = renderHook(() => useNavWorkingSet(movedResolver), { wrapper });
+    expect(JSON.parse(localStorage.getItem(PINNED_KEY))).toEqual(['/openworld']);
+
+    act(() => result.current.unpin('/openworld'));
+    expect(result.current.pinned).toEqual([]);
+    expect(JSON.parse(localStorage.getItem(PINNED_KEY))).toEqual([]);
   });
 
-  it('collapses a legacy path onto its already-migrated twin instead of duplicating', () => {
+  it('collapses a moved path onto its already-current twin instead of duplicating', () => {
     localStorage.setItem(PINNED_KEY, JSON.stringify(['/city', '/openworld']));
-    const { result } = renderHook(() => useNavWorkingSet(resolveNavEntry), { wrapper });
+    const { result } = renderHook(() => useNavWorkingSet(movedResolver), { wrapper });
     expect(result.current.pinned.map((row) => row.path)).toEqual(['/openworld']);
+  });
+
+  it('leaves a pin the resolver cannot place alone rather than dropping it', () => {
+    // The dynamic app/series/universe rows load async, so "unresolvable" is a
+    // normal transient state during boot — rewriting or pruning storage on that
+    // miss would lose the pin for good.
+    localStorage.setItem(PINNED_KEY, JSON.stringify(['/apps/not-loaded-yet']));
+    const { result } = renderHook(() => useNavWorkingSet(() => null), { wrapper });
+
+    expect(result.current.pinned).toEqual([]);
+    expect(JSON.parse(localStorage.getItem(PINNED_KEY))).toEqual(['/apps/not-loaded-yet']);
+  });
+
+  it('migrates recent destinations too', () => {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(['/start', '/city/settings']));
+    const { result } = renderHook(() => useNavWorkingSet(movedResolver), { wrapper });
+    expect(result.current.recent.map((row) => row.path)).toEqual(['/openworld/settings']);
   });
 
   it('excludes pinned and the current path from recent', () => {
