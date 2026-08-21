@@ -128,6 +128,18 @@ describe('MediaCapacityPanel', () => {
     expect(screen.queryByText(/No peer is enabled as a media provider/)).not.toBeInTheDocument();
   });
 
+  // A body we could not parse is "we do not know", not "there are none" —
+  // coercing it to [] would state the opposite off a response we never read.
+  it.each([{}, { peers: null }, { peers: 'nope' }])(
+    'treats the malformed body %p as a failed read, not an empty one',
+    async (body) => {
+      api.getInstances.mockResolvedValue(body);
+      renderPanel();
+      expect(await screen.findByText(/provider readiness is unknown/i)).toBeInTheDocument();
+      expect(screen.queryByText(/No peer is enabled as a media provider/)).not.toBeInTheDocument();
+    },
+  );
+
   it('shows a disabled peer connection as disabled, not as ready', async () => {
     api.getInstances.mockResolvedValue({ peers: [providerPeer({ enabled: false })] });
     renderPanel();

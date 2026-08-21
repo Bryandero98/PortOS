@@ -88,14 +88,16 @@ export default function MediaCapacityPanel({ media }) {
 
   const loadPeers = useCallback(async () => {
     const data = await api.getInstances({ silent: true }).catch(() => null);
-    // `null` = the read failed, distinct from `[]` = read fine, no peers. A
-    // failed read must not render as "you have no providers configured".
-    if (!data) {
+    // A read that failed, and a read that came back without a peer array, are
+    // both "we do not know" — distinct from `[]`, which is "read fine, no
+    // peers". Coercing a malformed body to `[]` would render the confident
+    // claim "no providers configured" off a response we could not parse.
+    if (!Array.isArray(data?.peers)) {
       setPeersFailed(true);
       return;
     }
     setPeersFailed(false);
-    setPeers(Array.isArray(data.peers) ? data.peers : []);
+    setPeers(data.peers);
   }, []);
 
   // Poll on the same cadence as the health report this panel sits in. Loading

@@ -90,8 +90,14 @@ export function peerMediaProviderConfig(peer) {
   return { raw, enabled: raw.enabled === true, models };
 }
 
+// The states that assert currently-available capacity. Only these need a
+// verifiable freshness window; `unreachable`, `disabled`, `unsupported`,
+// `unauthorized`, `unavailable` and `invalid` legitimately carry none, because
+// the probe never got a snapshot to date.
+const CAPACITY_CLAIMING_STATES = new Set(['ready', 'busy']);
+
 /**
- * Has the stored snapshot outlived the freshness window it was probed under?
+ * Can this stored snapshot still be trusted to describe current capacity?
  *
  * The probe records `freshUntil` from the provider's own `generatedAt +
  * staleAfterMs`, then the record sits on disk until the next peer poll. A
@@ -99,10 +105,16 @@ export function peerMediaProviderConfig(peer) {
  * server would refuse to submit against it, which is precisely the
  * "stale must not look available" rule the capacity contract is built on.
  * Re-deriving expiry at render time closes that gap without a second probe.
+ *
+ * A missing or unparseable `freshUntil` fails CLOSED for the capacity-claiming
+ * states: `Date.parse` returns NaN there, and treating NaN as "not expired"
+ * would let a corrupt record advertise a provider with no verifiable window at
+ * all — the fail-open version of the same bug.
  */
-function snapshotExpired(status, now) {
+function freshnessFailed(status, now) {
   const freshUntil = Date.parse(status?.freshUntil);
-  return Number.isFinite(freshUntil) && freshUntil < now;
+  if (Number.isFinite(freshUntil)) return freshUntil < now;
+  return CAPACITY_CLAIMING_STATES.has(status?.state);
 }
 
 /**
@@ -118,11 +130,11 @@ export function resolvePeerMediaReadiness(peer, { now = Date.now() } = {}) {
   const config = peerMediaProviderConfig(peer);
   const status = isRecord(peer?.mediaProviderStatus) ? peer.mediaProviderStatus : null;
   const snapshot = isRecord(status?.snapshot) ? status.snapshot : null;
-  // An expired snapshot is stale whatever the probe concluded — including the
-  // `ready` it concluded at probe time.
+  // An unverifiable snapshot is stale whatever the probe concluded — including
+  // the `ready` it concluded at probe time.
   const state = !status
     ? null
-    : (snapshotExpired(status, now) ? 'stale' : status.state);
+    : (freshnessFailed(status, now) ? 'stale' : status.state);
   const meta = peer?.enabled === false
     ? PEER_DISABLED
     : !config.enabled

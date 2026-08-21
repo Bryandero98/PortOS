@@ -53,6 +53,26 @@ describe('resolvePeerMediaReadiness', () => {
     expect(resolvePeerMediaReadiness(peer(), { now: NOW + 60_000 }).state).toBe('ready');
   });
 
+  // Date.parse returns NaN for a missing or malformed value. Reading that as
+  // "not expired" is the fail-OPEN version of the same bug: a ready snapshot
+  // with no verifiable window is not a ready snapshot.
+  it.each([undefined, null, '', 'not-a-date'])(
+    'treats a ready snapshot whose freshUntil is %p as stale',
+    (freshUntil) => {
+      const broken = peer({
+        mediaProviderStatus: { ...peer().mediaProviderStatus, freshUntil },
+      });
+      expect(resolvePeerMediaReadiness(broken, { now: NOW }).state).toBe('stale');
+    },
+  );
+
+  it('treats a busy snapshot with no verifiable window as stale', () => {
+    const broken = peer({
+      mediaProviderStatus: { ...peer().mediaProviderStatus, state: 'busy', freshUntil: null },
+    });
+    expect(resolvePeerMediaReadiness(broken, { now: NOW }).state).toBe('stale');
+  });
+
   it('leaves a state with no freshness window alone', () => {
     const unreachable = peer({
       mediaProviderStatus: { checkedAt: iso(-1000), state: 'unreachable', reason: 'timeout', freshUntil: null, snapshot: null },
