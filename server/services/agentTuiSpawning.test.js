@@ -365,7 +365,6 @@ describe('agent TUI spawning', () => {
       args: ['--append-system-prompt-file', "I:\\input folder\\it's.md"],
     };
 
-    expect(buildTuiSpawnConfig(provider, null, { shell: '/bin/zsh' }).shell).toBe('/bin/zsh');
     expect(buildTuiSpawnConfig(provider, null, { shell: '/bin/zsh' }).commandLine)
       .toBe("'C:\\Program Files\\Claude\\claude.cmd' --append-system-prompt-file 'I:\\input folder\\it'\\''s.md'");
     expect(buildTuiSpawnConfig(provider, null, { shell: 'pwsh.exe' }).commandLine)

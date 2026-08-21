@@ -209,7 +209,6 @@ export function buildTuiSpawnConfig(provider, model, {
     command,
     args,
     commandLine,
-    shell,
     promptDelayMs: provider?.tuiPromptDelayMs || DEFAULT_TUI_PROMPT_DELAY_MS
   };
 }
