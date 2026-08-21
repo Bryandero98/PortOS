@@ -546,6 +546,12 @@ const FULL_WIDTH_PATH_PREFIXES = [
   // stepper that owns its own scroll; the bare /story-builder index
   // (list + create form) takes the normal padded+scrolling main.
   '/story-builder/',
+  // The AI Providers editor is a drawer over the same page (/ai/new,
+  // /ai/:providerId), so its sub-routes need the bare full-width main the
+  // bare /ai index gets from EXACT_FULL_WIDTH_PATHS above — without it the
+  // page's own `flex-1 overflow-auto` body sits inside a padded, scrolling
+  // main and double-pads.
+  '/ai/',
   '/writers-room',
   '/agents',
   '/shell/',
