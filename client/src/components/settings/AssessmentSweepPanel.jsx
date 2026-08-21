@@ -182,6 +182,12 @@ export default function AssessmentSweepPanel({ counts, contextTokens = [], onSwe
   // parent so its per-model buttons go quiet for the duration.
   useEffect(() => { onRunningChange?.(running); }, [running, onRunningChange]);
 
+  // Re-arm the latch for every queue that starts, not only one started from this
+  // tab: a sweep launched in another tab (or before a reload) would otherwise
+  // finish with the latch still set from a previous run, and this page would
+  // never re-read the ranking it just earned.
+  useEffect(() => { if (running) finishNotifiedRef.current = false; }, [running]);
+
   // Poll only while something is running, and only while the tab is visible —
   // `useAutoRefetch` gives both, which matters for a queue deliberately left
   // running in a background tab all night.
@@ -311,7 +317,7 @@ export default function AssessmentSweepPanel({ counts, contextTokens = [], onSwe
           </summary>
           <div className="px-3 pb-3 space-y-1">
             {status.results.map((result) => (
-              <SweepResultRow key={`${result.backend}:${result.modelId}:${result.finishedAt}`} result={result} />
+              <SweepResultRow key={`${result.backend}:${result.modelId}@${result.tuningLabel || ''}`} result={result} />
             ))}
           </div>
         </details>

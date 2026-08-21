@@ -162,6 +162,22 @@ describe('AssessmentSweepPanel', () => {
     expect(await screen.findByText(/sample 2\/3/)).toBeInTheDocument();
   });
 
+  // A sweep started in another tab has to re-arm this tab's finish latch, or its
+  // completion lands with the latch still set from an earlier run and the ranking
+  // it just earned is never re-read.
+  it('re-reads the report when a sweep it did not start finishes', async () => {
+    const onSweepFinished = vi.fn();
+    getLocalLlmAssessmentSweep.mockResolvedValue({ ...idle, status: 'running', total: 2, completed: 1 });
+    renderPanel({ onSweepFinished });
+    await screen.findByText(/1\/2 measured/);
+
+    getLocalLlmAssessmentSweep.mockResolvedValue({ ...idle, status: 'complete', total: 2, completed: 2 });
+    const handler = socket.on.mock.calls.find(([event]) => event === 'localLlm:progress')[1];
+    await act(async () => handler({ scope: 'assessment-sweep', event: 'complete', status: 'complete' }));
+
+    await waitFor(() => expect(onSweepFinished).toHaveBeenCalledTimes(1));
+  });
+
   it('offers nothing to press when no runtime lists a model to measure', async () => {
     renderPanel({ counts: { unmeasured: 0, stale: 0, all: 0 } });
     expect(await screen.findByRole('button', { name: 'Measure all models' })).toBeDisabled();
