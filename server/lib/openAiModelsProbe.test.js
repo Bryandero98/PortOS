@@ -84,4 +84,35 @@ describe('probeOpenAiModels', () => {
     // on a poll loop.
     expect(cancel).toHaveBeenCalled();
   });
+it('attaches a Bearer header only when a key is supplied', async () => {
+    const fetchMock = mockFetch(async () => jsonResponse({ data: [] }));
+
+    await probeOpenAiModels('http://127.0.0.1:18020/v1', { timeoutMs: 500, apiKey: 'vllm-key' });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:18020/v1/models',
+      { method: 'GET', headers: { Authorization: 'Bearer vllm-key' } },
+      500,
+    );
+
+    fetchMock.mockClear();
+    await probeOpenAiModels('http://127.0.0.1:18020/v1', { timeoutMs: 500 });
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:18020/v1/models', { method: 'GET' }, 500);
+  });
+
+  it('treats 401/403 as REACHABLE-but-unlistable, not as nothing answering', async () => {
+    // A key-gated daemon (vLLM's compose stack sets VLLM_API_KEY) refuses an
+    // unauthenticated probe. Reporting that as unreachable would tell the user
+    // to start a container that is already up.
+    for (const status of [401, 403]) {
+      const cancel = vi.fn().mockResolvedValue(undefined);
+      mockFetch(async () => ({ ok: false, status, body: { cancel } }));
+      await expect(probeOpenAiModels('http://x/v1')).resolves.toEqual({
+        reachable: true,
+        models: null,
+        error: 'authentication required',
+      });
+      expect(cancel).toHaveBeenCalled();
+      vi.restoreAllMocks();
+    }
+  });
 });

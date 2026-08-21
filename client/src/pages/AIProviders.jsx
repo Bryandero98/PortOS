@@ -559,6 +559,11 @@ export default function AIProviders() {
                           LLAMA.CPP / DFLASH
                         </span>
                       )}
+                      {provider.vllmBacked && (
+                        <span className="text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          vLLM / DFLASH2
+                        </span>
+                      )}
                       {provider.mtplxBacked && (
                         <span className="text-xs px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
                           MTPLX
@@ -1130,6 +1135,27 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                       className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                     />
                   </FormField>
+
+                  {/* The one CLI/TUI backend that authenticates: the vLLM compose
+                      stack is started with VLLM_API_KEY, so without this field
+                      there is nowhere to put it and the container 401s every
+                      model refresh and every run. Reads `capabilityProvider`
+                      because `vllmBacked` is a stored marker, not a form field. */}
+                  {capabilityProvider?.vllmBacked && (
+                    <FormField label="API Key">
+                      <input
+                        type="password"
+                        value={formData.apiKey}
+                        onChange={(e) => setFormData(prev => ({ ...prev, apiKey: e.target.value }))}
+                        placeholder={provider?.hasApiKey ? 'Key set — leave blank to keep' : 'Paste VLLM_API_KEY from the stack’s .env'}
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        The <code>VLLM_API_KEY</code> your compose stack was started with. PortOS puts it on the
+                        spawned OpenCode provider and on the model-refresh probe; the container rejects both without it.
+                      </p>
+                    </FormField>
+                  )}
 
                   {formData.type === 'cli' && (
                     <FormField label="Headless Args (for simple prompt tasks)">

@@ -153,6 +153,7 @@ export * from './quotaWindows.js';
 export * from './opencodeConfig.js';
 export * from './localProviderRuntime.js';
 export * from './mtplxModels.js';
+export * from './vllmQwenProject.js';
 export * from './openAiModelsProbe.js';
 // `runners.js` re-defines `isFlux2`/`isZImage`/`isErnie` that also live in
 // mediaModels.js — namespace it so the barrel surface is unambiguous.

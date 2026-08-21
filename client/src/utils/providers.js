@@ -561,7 +561,7 @@ export const isToolUseModel = (id) =>
  * @returns {{toolCapable:boolean}|null}
  */
 export const localToolUseHint = (id, provider, toolUseIdsByProvider = null) =>
-  (localBackendForProvider(provider) || isOllamaBackedProvider(provider) || provider?.mtplxBacked === true || provider?.llamaBacked === true)
+  (localBackendForProvider(provider) || isOllamaBackedProvider(provider) || provider?.mtplxBacked === true || provider?.llamaBacked === true || provider?.vllmBacked === true)
     && typeof id === 'string' && id.length > 0
     ? { toolCapable: toolUseIdsByProvider?.[provider?.id]?.has(id) === true || isToolUseModel(id) }
     : null;
@@ -1157,7 +1157,7 @@ export const PROVIDER_CARD_STATE = Object.freeze({
  *
  * NOT the same thing as `ProviderReadiness` /
  * `GET /api/providers/readiness`, which probes whether the local DAEMON a
- * provider points at (llama.cpp, Ollama, LM Studio, MTPLX) is up and serving
+ * provider points at (llama.cpp, Ollama, LM Studio, MTPLX, vLLM) is up and serving
  * the right model. This decides the card's bucket from its toggle, its
  * credentials and the server's bench status; the two render side by side.
  *

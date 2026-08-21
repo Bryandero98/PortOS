@@ -65,9 +65,12 @@ const PROBE_TTL_MS = 15_000;
  */
 const BINARY_TTL_MS = 60_000;
 
-// endpoint → { at, promise } — the PROMISE, not the settled value, so N
+// endpoint + key → { at, promise } — the PROMISE, not the settled value, so N
 // providers sharing one endpoint in the same batch share one socket instead of
-// all missing a not-yet-written cache entry at once.
+// all missing a not-yet-written cache entry at once. The key is part of the
+// cache key because two providers can point at one authenticated endpoint with
+// different credentials, and one of them getting the other's 401 would be a
+// false "not running".
 const probeCache = new Map();
 // command → { at, path }
 const binaryCache = new Map();
@@ -79,12 +82,15 @@ const binaryCache = new Map();
  *   `models: null` means reachable but the listing could not be read — distinct
  *   from `[]`, a server that is up with nothing loaded.
  */
-const probeEndpoint = (endpoint) => probeOpenAiModels(endpoint, { timeoutMs: PROBE_TIMEOUT_MS });
+const probeEndpoint = (endpoint, apiKey = '') =>
+  probeOpenAiModels(endpoint, { timeoutMs: PROBE_TIMEOUT_MS, apiKey });
 
 /** TTL-cached endpoint probe, shared across requests — see PROBE_TTL_MS. */
-function probeEndpointCached(endpoint) {
+function probeEndpointCached(endpoint, apiKey = '') {
   const now = Date.now();
-  const cached = probeCache.get(endpoint);
+  const cacheKey = `${endpoint}
+${apiKey}`;
+  const cached = probeCache.get(cacheKey);
   if (cached && now - cached.at < PROBE_TTL_MS) return cached.promise;
   // Sweep while we are here: entries are keyed by endpoint, and an edited or
   // deleted provider would otherwise leave its old endpoint behind forever.
@@ -95,11 +101,11 @@ function probeEndpointCached(endpoint) {
   // probe would poison the entry for its TTL, so drop it on failure —
   // `probeEndpoint` resolves for every expected failure, making this the
   // unexpected-throw path only.
-  const promise = probeEndpoint(endpoint).catch((err) => {
-    probeCache.delete(endpoint);
+  const promise = probeEndpoint(endpoint, apiKey).catch((err) => {
+    probeCache.delete(cacheKey);
     throw err;
   });
-  probeCache.set(endpoint, { at: now, promise });
+  probeCache.set(cacheKey, { at: now, promise });
   return promise;
 }
 
@@ -189,10 +195,16 @@ function serverCheck(runtime, { installed, result, setup }) {
  * which says nothing about the model — reported as unknown, never as missing,
  * so the user chases the check that IS actionable.
  */
-function modelCheck(runtime, wanted, served) {
+function modelCheck(runtime, wanted, served, probeError = null) {
   const label = `Model \`${wanted}\` available`;
   if (!Array.isArray(served)) {
-    return { id: 'model', label, ok: null, detail: 'Cannot be checked until the server responds.', fixHint: null };
+    // A server that answered 401 IS responding — "until the server responds"
+    // would send the user to start a container that is already up, when the
+    // actual fix is to paste its key onto this provider.
+    const detail = probeError === 'authentication required'
+      ? `${runtime.label} refused the model listing without an API key — paste the server's key on this provider.`
+      : 'Cannot be checked until the server responds.';
+    return { id: 'model', label, ok: null, detail, fixHint: null };
   }
   if (served.includes(wanted)) {
     return { id: 'model', label, ok: true, detail: `${runtime.label} is serving \`${wanted}\`.`, fixHint: null };
@@ -228,7 +240,10 @@ export async function getProviderReadiness(provider, deps = {}) {
   const findCommand = deps.findCommand || findCommandCached;
   const probe = deps.probe || probeEndpointCached;
 
-  const result = await probe(runtime.endpoint);
+  // The wrapper's own key: a vLLM container is started behind `VLLM_API_KEY`
+  // and 401s an unauthenticated `/v1/models`, which would leave the model check
+  // permanently unknown on an otherwise-healthy stack.
+  const result = await probe(runtime.endpoint, provider?.apiKey || '');
   // A daemon that answers is installed, whatever PATH says — Ollama's macOS app
   // and LM Studio both serve without putting a CLI on PortOS's PATH.
   const onPath = Boolean(runtime.command && findCommand(runtime.command));
@@ -252,7 +267,7 @@ export async function getProviderReadiness(provider, deps = {}) {
   const wanted = servedModelId(provider, runtime.kind);
   // `probeEndpoint` returns `models: null` on every unreachable path, so this
   // needs no second reachability test.
-  if (wanted) checks.push(modelCheck(runtime, wanted, result.models));
+  if (wanted) checks.push(modelCheck(runtime, wanted, result.models, result.error));
 
   return {
     kind: runtime.kind,
@@ -301,12 +316,19 @@ export async function getProviderReadinessMap(providers, deps = {}) {
   return Object.fromEntries(entries.filter(Boolean));
 }
 
-/** Per-batch single-argument memo (the returned promise is shared, not awaited). */
+/**
+ * Per-batch memo (the returned promise is shared, not awaited). EVERY argument
+ * is forwarded and folded into the key — a memo that keyed on the first argument
+ * alone silently dropped the probe's API key, so the batch path (which is what
+ * `GET /api/providers/readiness` uses) probed a key-gated container
+ * unauthenticated while the single-provider path authenticated fine.
+ */
 function memoize(fn) {
   const seen = new Map();
-  return (arg) => {
-    if (!seen.has(arg)) seen.set(arg, fn(arg));
-    return seen.get(arg);
+  return (...args) => {
+    const key = args.join('\n');
+    if (!seen.has(key)) seen.set(key, fn(...args));
+    return seen.get(key);
   };
 }
 

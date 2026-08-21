@@ -56,6 +56,7 @@ describe('localRuntimeKind', () => {
   it('reads the explicit backing markers first', () => {
     expect(localRuntimeKind({ command: 'opencode', llamaBacked: true })).toBe('llama');
     expect(localRuntimeKind({ command: 'opencode', mtplxBacked: true })).toBe('mtplx');
+    expect(localRuntimeKind({ command: 'opencode', vllmBacked: true })).toBe('vllm');
     expect(localRuntimeKind({ command: 'opencode', ollamaBacked: true })).toBe('ollama');
     // claude-ollama is not an OpenCode provider but is still Ollama-backed.
     expect(localRuntimeKind({ command: 'claude', ollamaBacked: true })).toBe('ollama');
@@ -181,6 +182,7 @@ describe('localRuntimeForProvider', () => {
     expect(LOCAL_RUNTIMES.llama.defaultBaseUrl).toBe(opencodeLocalBaseUrl('llama'));
     expect(LOCAL_RUNTIMES.ollama.defaultBaseUrl).toBe(opencodeLocalBaseUrl('ollama'));
     expect(LOCAL_RUNTIMES.mtplx.defaultBaseUrl).toBe(opencodeLocalBaseUrl('mtplx'));
+    expect(LOCAL_RUNTIMES.vllm.defaultBaseUrl).toBe(opencodeLocalBaseUrl('vllm'));
   });
 
   it('honors the env override the backend managers themselves read', () => {
