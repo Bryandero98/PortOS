@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
+import { deflateSync } from 'zlib';
+import { crc32 } from './zipWriter.js';
 import {
   describeFrameStats,
   isDegenerateFrame,
@@ -26,6 +28,46 @@ const fromPixels = (fill, { channels = 3, width = SIDE, height = SIDE } = {}) =>
     }
   }
   return sharp(raw, { raw: { width, height, channels } }).png().toBuffer();
+};
+
+const pngChunk = (typeName, data) => {
+  const type = Buffer.from(typeName);
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  type.copy(chunk, 4);
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(Buffer.concat([type, data])), 8 + data.length);
+  return chunk;
+};
+
+// Sharp's test fixtures are 8-bit by default; this keeps the depth-aware
+// sentinel covered without committing a binary asset.
+const rgba16Png = (alphaAt) => {
+  const width = SIDE;
+  const height = SIDE;
+  const rowBytes = 1 + width * 4 * 2;
+  const raw = Buffer.alloc(height * rowBytes);
+  for (let y = 0; y < height; y++) {
+    const row = y * rowBytes;
+    for (let x = 0; x < width; x++) {
+      const pixel = row + 1 + x * 8;
+      raw.writeUInt16BE(0, pixel);
+      raw.writeUInt16BE(0, pixel + 2);
+      raw.writeUInt16BE(0, pixel + 4);
+      raw.writeUInt16BE(alphaAt(x, y), pixel + 6);
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 16;
+  ihdr[9] = 6;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
 };
 
 describe('describeFrameStats', () => {
@@ -93,6 +135,55 @@ describe('describeFrameStats', () => {
     const buf = await fromPixels((x, y) => [(x * 4) % 256, (y * 4) % 256, 128, 255], { channels: 4 });
     const stats = await describeFrameStats(buf);
     expect(stats.ok).toBe(true);
+  });
+
+  it('ACCEPTS a silhouette whose visual content is carried by alpha', async () => {
+    const buf = await fromPixels((x, y) => {
+      const inSubject = x >= 20 && x < 44 && y >= 20 && y < 44;
+      return [0, 0, 0, inSubject ? 255 : 0];
+    }, { channels: 4 });
+    const stats = await describeFrameStats(buf);
+    expect(stats.ok).toBe(true);
+    expect(isDegenerateFrame(stats)).toBe(false);
+  });
+
+  it('rejects a solid RGBA fill with only a few transparent pixels', async () => {
+    const buf = await fromPixels((x, y) => (
+      x < 41 && y === 0 ? [40, 40, 40, 0] : [40, 40, 40, 255]
+    ), { channels: 4 });
+    const stats = await describeFrameStats(buf);
+    expect(stats.ok).toBe(false);
+    expect(stats.reason).toBe(FRAME_REASON.SOLID_FILL);
+  });
+
+  it('rejects an RGBA frame with only a few visible pixels', async () => {
+    const buf = await fromPixels((x, y) => (
+      x === 0 && y === 0 ? [255, 255, 255, 255] : [0, 0, 0, 0]
+    ), { channels: 4 });
+    const stats = await describeFrameStats(buf);
+    expect(stats.ok).toBe(false);
+    expect(stats.reason).toBe(FRAME_REASON.NEAR_EMPTY);
+  });
+
+  it('rejects a fully opaque RGBA solid fill', async () => {
+    const stats = await describeFrameStats(await solid({ r: 0, g: 0, b: 0, alpha: 1 }, 4));
+    expect(stats.ok).toBe(false);
+    expect(stats.reason).toBe(FRAME_REASON.SOLID_FILL);
+  });
+
+  it('ACCEPTS a 16-bit alpha silhouette', async () => {
+    const stats = await describeFrameStats(await rgba16Png((x, y) => (
+      x >= 20 && x < 44 && y >= 20 && y < 44 ? 65535 : 0
+    )));
+    expect(stats.ok).toBe(true);
+  });
+
+  it('rejects a sparse 16-bit alpha frame', async () => {
+    const stats = await describeFrameStats(await rgba16Png((x, y) => (
+      x === 0 && y < 12 ? 65535 : 0
+    )));
+    expect(stats.ok).toBe(false);
+    expect(stats.reason).toBe(FRAME_REASON.SOLID_FILL);
   });
 
   it('rejects a near-empty frame whose single stray pixel leaves entropy at the floor', async () => {

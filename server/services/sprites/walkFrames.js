@@ -10,7 +10,7 @@
  * later" the approve-time check exists to prevent, just narrowed rather than
  * closed. This helper makes the cheap approve check a strict PREFIX of the
  * expensive compile check — identical path resolution, with compile layering
- * byte-level checks on top.
+ * byte-level and content checks on top.
  *
  * Every declared frame is re-anchored to record-relative (an imported manifest
  * names its frames against the SOURCE repo root) and resolved drift-tolerantly —
@@ -22,11 +22,12 @@
  *   { bytes: false } (approve) — existence only. Returns `{ total, missing }`,
  *     never throwing; the caller turns a non-zero `missing` into its own
  *     RUN_FRAMES_MISSING error, reporting the true declared `total`.
- *   { bytes: true }  (compile) — existence PLUS per-frame sha256 and
+ *   { bytes: true }  (compile) — existence PLUS per-frame sha256, content, and
  *     gait-phase/outputIndex ordering, reading each frame's bytes exactly once
  *     and returning them (read-once-verify-in-memory) as `{ total, missing: 0,
  *     frameBytes }` so the compiler composites the pixels it verified. Any
- *     missing / mis-ordered / tampered frame throws a 422 ATLAS_COMPILE_INVALID.
+ *     missing / mis-ordered / tampered / degenerate frame throws a 422
+ *     ATLAS_COMPILE_INVALID.
  */
 
 import { readFile } from 'fs/promises';
@@ -38,6 +39,7 @@ import { sha256Buffer } from './walkPostprocess.js';
 import { WALK_TRACK, getAnimationTrack } from './animationTracks.js';
 import { getEffectiveAnimationTracks } from './animationTrackStore.js';
 import { trackColumnLabels } from './atlasGrid.js';
+import { describeFrameStats, isDegenerateFrame } from '../../lib/imageFrameStats.js';
 
 const compileFrameError = (message) =>
   new ServerError(message, { status: 422, code: 'ATLAS_COMPILE_INVALID' });
@@ -86,6 +88,20 @@ export async function verifyPackagedFrames(recordId, manifest, {
       throw compileFrameError(`Direction ${manifest?.direction} frame ${frame.phase} no longer matches its recorded sha256`);
     }
     frameBytes.push(buf);
+  }
+
+  if (bytes) {
+    // Content probes are independent once every frame's hash and ordering have
+    // passed. Measure them together, then report the first failing frame in
+    // manifest order while preserving the read-once verification seam above.
+    const stats = await Promise.all(frameBytes.map((buf) => describeFrameStats(buf)));
+    const degenerateIndex = stats.findIndex(isDegenerateFrame);
+    if (degenerateIndex >= 0) {
+      const frame = frames[degenerateIndex];
+      throw compileFrameError(
+        `Direction ${manifest?.direction} frame ${degenerateIndex} (${frame.phase}) has no content — regenerate that frame and recompile`,
+      );
+    }
   }
 
   return { total, missing, frameBytes };

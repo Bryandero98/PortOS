@@ -52,6 +52,18 @@ export const NEAR_EMPTY_ENTROPY_FLOOR = 0.05;
 // 16x16 is reported as unjudgeable (`ok: null`) rather than degenerate.
 export const MIN_JUDGEABLE_PIXELS = 256;
 
+// Match NEAR_EMPTY_ENTROPY_FLOOR's roughly 0.5% signal floor for alpha-only
+// silhouettes. Both visible and transparent coverage must clear this floor;
+// a couple of transparent holes in an otherwise flat opaque sheet are not a
+// meaningful silhouette. Keep this unitless because Sharp reports 16-bit PNG
+// channel stats on a 0-65535 scale.
+export const ALPHA_COVERAGE_FRACTION_FLOOR = 0.005;
+
+// A silhouette needs a substantial minority of the alpha distribution to be
+// present, not merely one-pixel speckle. This is the binary-mask stdev for a
+// 5% minority and keeps alpha noise from rescuing a flat colour fill.
+export const ALPHA_SILHOUETTE_STDEV_FRACTION_FLOOR = Math.sqrt(0.05 * 0.95);
+
 export const FRAME_REASON = {
   SOLID_FILL: 'solid-fill',
   FULLY_TRANSPARENT: 'fully-transparent',
@@ -114,16 +126,34 @@ export async function describeFrameStats(input) {
     if (alpha.max === 0) return result(false, FRAME_REASON.FULLY_TRANSPARENT, perChannel);
   }
 
+  // A transparent sprite can carry its entire silhouette in alpha while its
+  // RGB channels remain a single color (for example, a black figure). That
+  // alpha variance is content, unlike a fully opaque alpha channel, which is
+  // just the normal PNG case and must not rescue a flat fill.
+  const alpha = metadata.hasAlpha ? perChannel[perChannel.length - 1] : null;
+  const alphaMax = metadata.depth === 'ushort' ? 65535 : 255;
+  const alphaMeanFraction = alpha ? alpha.mean / alphaMax : 0;
+  const alphaStdevFraction = alpha ? alpha.stdev / alphaMax : 0;
+  const alphaCarriesContent = Boolean(
+    alpha
+      && !stats.isOpaque
+      && alpha.max > alpha.min
+      && alphaStdevFraction >= ALPHA_SILHOUETTE_STDEV_FRACTION_FLOOR
+      && alphaMeanFraction >= ALPHA_COVERAGE_FRACTION_FLOOR
+      && alphaMeanFraction <= 1 - ALPHA_COVERAGE_FRACTION_FLOOR,
+  );
+
   // Only the colour channels decide "flat" — a fully-OPAQUE alpha channel is
-  // itself flat by definition and would otherwise veto every normal PNG.
+  // itself flat by definition and would otherwise veto every normal PNG. A
+  // non-opaque alpha silhouette is the one deliberate exception.
   const colour = metadata.hasAlpha ? perChannel.slice(0, -1) : perChannel;
-  if (colour.length && colour.every((c) => c.stdev < SOLID_FILL_STDEV_EPSILON)) {
+  if (!alphaCarriesContent && colour.length && colour.every((c) => c.stdev < SOLID_FILL_STDEV_EPSILON)) {
     return result(false, FRAME_REASON.SOLID_FILL, perChannel);
   }
 
   // sharp reports entropy only when it could compute one; a missing value is
   // not evidence of emptiness, so it falls through to `ok: true`.
-  if (typeof stats.entropy === 'number' && stats.entropy < NEAR_EMPTY_ENTROPY_FLOOR) {
+  if (!alphaCarriesContent && typeof stats.entropy === 'number' && stats.entropy < NEAR_EMPTY_ENTROPY_FLOOR) {
     return result(false, FRAME_REASON.NEAR_EMPTY, perChannel);
   }
 
