@@ -32,6 +32,7 @@ import {
   probePythonModules,
 } from './laneRunner.js';
 import { renderOptionArgs } from './renderOptions.js';
+import { missingModulesLabel, appendMissingModules } from './missingModules.js';
 import {
   selectTrellis2DecimationTarget,
   trellis2MeshQualityArgs,
@@ -193,23 +194,20 @@ export async function probeTrellis2TextureBake({
  * (`Missing: o_voxel, mtlbvh`) — or `''` when there is nothing to name.
  *
  * The `degraded.detail` field is exactly this label, and the prose lanes get it through
- * `appendMissingBakeModules` below rather than re-assembling the sentence — the label is
- * punctuation-free because a standalone card line wants none, so the terminal period is
- * the appending helper's job.
+ * `appendMissingBakeModules` below rather than re-assembling the sentence. The wording
+ * itself lives in `missingModules.js`, shared with the Pixal3D CUDA lane, which reports
+ * the same "these compiled modules did not build" condition (#4741) — this wrapper only
+ * binds it to a bake probe's shape.
  *
- * Returning `''` rather than a bare "Missing:" is defensive depth, not the thing that
- * silences a `quality: 'unknown'` probe — both callers gate on `'fallback'` first, and a
- * real probe reports that exactly when `missing` is non-empty, so an empty list never
- * arrives here. `degradedQuality` is deliberately NOT included: `flex_gemm` lowers bake
- * quality without forcing the fallback baker, so naming it here would read as a cause of
- * the confetti surface when it isn't.
+ * `degradedQuality` is deliberately NOT passed through: `flex_gemm` lowers bake quality
+ * without forcing the fallback baker, so naming it here would read as a cause of the
+ * confetti surface when it isn't.
  *
  * @param {{missing?: string[]}} bake a result from `probeTrellis2TextureBake`
  * @returns {string}
  */
 export function missingBakeModulesLabel(bake) {
-  const missing = bake?.missing;
-  return missing?.length ? `Missing: ${missing.join(', ')}` : '';
+  return missingModulesLabel(bake?.missing);
 }
 
 /**
@@ -227,8 +225,7 @@ export function missingBakeModulesLabel(bake) {
  * @returns {string}
  */
 export function appendMissingBakeModules(help, bake) {
-  const label = missingBakeModulesLabel(bake);
-  return [help, label && `${label}.`].filter(Boolean).join(' ');
+  return appendMissingModules(help, bake?.missing);
 }
 
 /**

@@ -74,6 +74,7 @@ import {
   runPixal3dCudaGenerate,
   probePixal3dModules,
 } from './pixal3dCuda.js';
+import { missingModulesLabel, appendMissingModules } from './missingModules.js';
 import { detectCudaComputeCapability } from '../../lib/cudaCapability.js';
 
 export const TARGET_ADAPTERS = Object.freeze({
@@ -206,12 +207,22 @@ export const TARGET_ADAPTERS = Object.freeze({
       const degraded = incomplete
         ? {
           label: 'incomplete install',
-          help: `Pixal3D is installed but ${incomplete.join(' and ')} did not build, so renders `
+          // `help` is the remedy ONLY. Which extensions failed goes in `detail`, the same
+          // split `trellis2` uses (#4741) — the card renders that as its own line, so
+          // interpolating the names into this sentence too would bury the one actionable
+          // half in prose for one target and style it for the other.
+          help: 'Pixal3D is installed but a required CUDA extension did not build, so renders '
             + 'will fail in the mesh exporter. Repair install rebuilds the CUDA extensions; '
             + 'your downloaded models are kept.',
           repairable: true,
+          // Shares one formatter with the MPS lane so the two cannot word the same
+          // condition differently. No emptiness guard is needed: `incomplete` is the
+          // non-empty-or-null narrowing above, so this branch always has names.
+          detail: missingModulesLabel(incomplete),
         }
         : nafFallback
+          // No module list to name — NAF is absent as a whole, not half-built — so this
+          // branch stays `detail`-less rather than emitting an empty label.
           ? { label: 'NAF fallback', help: probe.help, repairable: true }
           : null;
       return {
@@ -222,7 +233,10 @@ export const TARGET_ADAPTERS = Object.freeze({
           // The normalized shape the client renders — see the adapter contract above.
           ...(degraded ? { degraded } : {}),
         },
-        warnings: degraded?.help ? [degraded.help] : [],
+        // Replayed into the install route's `verify` stage on the already-installed
+        // short-circuit, which has one prose string and no second line — so the module
+        // names are appended here instead of dropped with the `help` interpolation.
+        warnings: degraded?.help ? [appendMissingModules(degraded.help, incomplete)] : [],
       };
     },
   }),
