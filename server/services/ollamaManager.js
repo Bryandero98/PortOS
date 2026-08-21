@@ -33,7 +33,9 @@ import {
 import { buildHfAuthHeaders, buildHfResolveUrl, HF_API } from '../lib/huggingfaceLora.js'
 import { isEmbeddingModel } from '../lib/localModelHeuristics.js'
 import { commandExists } from '../lib/commandExists.js'
-import { OLLAMA_AGENT_MIN_CONTEXT, OLLAMA_CONTEXT_ENV_VAR, withOllamaContextEnv } from '../lib/ollamaContext.js'
+import {
+  OLLAMA_AGENT_MIN_CONTEXT, resolveOllamaContextLength, withOllamaContextEnv
+} from '../lib/ollamaContext.js'
 import { compareSemver } from '../lib/versionUtils.js'
 import { isSafeHfRepoRelativePath } from '../lib/hfCache.js'
 
@@ -117,6 +119,34 @@ let appliedContextLength = null
 // treated as "no evidence" so an unavailable process probe cannot create a
 // restart loop.
 let appliedDaemonIdentity = null
+// Signature of the FULL launch env the live daemon was started with, so a second
+// request for the same tuning is a no-op instead of another restart. A sweep
+// measures every model under one tuning; without this it would stop, start, and
+// cold-load the daemon once per model, and every first sample would be timing a
+// fresh page-in rather than the model.
+let appliedLaunchEnv = null
+
+const envSignature = (env) => Object.entries(env || {})
+  .sort(([a], [b]) => a.localeCompare(b))
+  .map(([k, v]) => `${k}=${v}`)
+  .join(',')
+
+/**
+ * Record the launch env the daemon that is up right now was started with.
+ *
+ * `identity` is the process identity to latch against — a spawned child's PID,
+ * or the probed identity of a service PortOS restarted. Both latches are set
+ * together and cleared together, so "which env" and "which process" can never
+ * describe two different daemons.
+ */
+function rememberAppliedEnv(env, identity) {
+  appliedLaunchEnv = envSignature(env)
+  // A restart that named no window leaves Ollama on its VRAM-based auto-pick,
+  // which is not a window PortOS can claim — so the context latch is cleared
+  // rather than crediting the new process with the old one's window.
+  appliedContextLength = resolveOllamaContextLength(null, env || {})
+  appliedDaemonIdentity = identity || null
+}
 
 const status = { lastError: null, lastSuccessAt: null, consecutiveErrors: 0 }
 
@@ -221,9 +251,10 @@ async function checkOllamaAvailable(forceRefresh = false) {
   } catch (err) {
     isAvailable = false
     // The daemon we handed a window to is gone; whatever comes up next has to
-    // be re-checked rather than credited with that window.
+    // be re-checked rather than credited with that window or that launch env.
     appliedContextLength = null
     appliedDaemonIdentity = null
+    appliedLaunchEnv = null
     status.lastError = err.message
     status.consecutiveErrors++
     lastCheckAt = now
@@ -272,24 +303,30 @@ async function terminateManagedProcess() {
 /**
  * Start the Ollama HTTP server via the local CLI.
  *
- * `contextLength` (when set) becomes the daemon-wide `OLLAMA_CONTEXT_LENGTH`.
- * This is the only lever that reaches Ollama-backed *agent harnesses* — Claude
- * Code and OpenCode talk to Ollama directly, so PortOS can't attach a
- * per-request `num_ctx` the way the toolkit runner does for `api` providers.
- * @param {{ contextLength?: number|null }} [options]
+ * `env` carries every launch-time knob PortOS can hand the daemon —
+ * `OLLAMA_CONTEXT_LENGTH`, `OLLAMA_FLASH_ATTENTION`, `OLLAMA_KV_CACHE_TYPE`, … —
+ * because the process environment is the ONLY lever that reaches them. Claude
+ * Code and OpenCode talk to Ollama directly, and its OpenAI-compatible endpoint
+ * drops unknown body fields, so PortOS cannot attach a per-request `num_ctx` the
+ * way the toolkit runner does for `api` providers. There is deliberately no
+ * second, context-only parameter: two spellings of one variable would need a
+ * precedence rule, and the latches below would have to read both.
+ *
+ * @param {{ env?: Record<string, string> }} [options]
  * @returns {Promise<{ success: boolean, running?: boolean, alreadyRunning?: boolean, pid?: number, error?: string }>}
  */
-async function startServer({ contextLength = null } = {}) {
+async function startServer({ env = null } = {}) {
   if (await checkOllamaAvailable(true)) {
     return { success: true, running: true, alreadyRunning: true }
   }
 
+  const contextLength = resolveOllamaContextLength(null, env || {})
   let spawnError = null
   const stderr = []
   const child = spawn('ollama', ['serve'], {
     detached: true,
     stdio: ['ignore', 'ignore', 'pipe'],
-    env: withOllamaContextEnv(process.env, contextLength)
+    env: { ...process.env, ...(env || {}) }
   })
   rememberManagedProcess(child)
   child.stderr?.on('data', (chunk) => {
@@ -301,8 +338,7 @@ async function startServer({ contextLength = null } = {}) {
 
   const running = await waitForAvailability(true, START_TIMEOUT_MS)
   if (running) {
-    appliedContextLength = contextLength || null
-    appliedDaemonIdentity = contextLength ? String(child.pid) : null
+    rememberAppliedEnv(env, String(child.pid))
     const window = contextLength ? ` (context ${contextLength})` : ''
     console.log(`▶️ Started Ollama server (pid ${child.pid})${window}`)
     return { success: true, running: true, pid: child.pid }
@@ -541,11 +577,9 @@ async function getRuntimeContextLength(selectedModel = null) {
 async function ensureContextWindow(contextLength, selectedModel = null) {
   const target = Number(contextLength) > 0 ? Math.floor(Number(contextLength)) : null
   if (!target) return { applied: false, reason: 'not-configured', contextLength: null }
+  const env = withOllamaContextEnv({}, target)
   if (!(await checkOllamaAvailable(true))) {
-    const started = await startServer({ contextLength: target })
-    return started.success
-      ? { applied: true, reason: 'started', contextLength: target }
-      : { applied: false, reason: 'start-failed', contextLength: target, error: started.error }
+    return { ...(await restartWithEnv(env)), contextLength: target }
   }
 
   if (Number(appliedContextLength) >= target) {
@@ -559,8 +593,7 @@ async function ensureContextWindow(contextLength, selectedModel = null) {
     if (!appliedDaemonIdentity || !currentIdentity || currentIdentity === appliedDaemonIdentity) {
       return { applied: false, reason: 'already-applied', contextLength: target, runtimeContextLength: appliedContextLength }
     }
-    appliedContextLength = null
-    appliedDaemonIdentity = null
+    rememberAppliedEnv(null, null)
   }
 
   // `runtime == null` means nothing is resident, which is the NORMAL idle state
@@ -576,53 +609,51 @@ async function ensureContextWindow(contextLength, selectedModel = null) {
 
   console.log(`🪟 Reloading Ollama at a ${target}-token context window (was ${runtime ?? 'unknown'})`)
 
-  // A daemon the user registered to launch at login must keep that registration:
-  // `stopServer` would route through `brew services stop` / `systemctl disable`,
-  // which un-registers it. Restart it in place instead (see restartServiceWithContext).
-  const service = await getServiceStatus().catch(() => null)
-  if (service?.runAtStartup) {
-    const viaService = await restartServiceWithContext(service, target)
-    return { ...viaService, contextLength: target, runtimeContextLength: runtime }
-  }
-
-  const stopped = await stopServer()
-  if (!stopped.success) {
-    return { applied: false, reason: 'stop-failed', contextLength: target, runtimeContextLength: runtime, error: stopped.error }
-  }
-  const started = await startServer({ contextLength: target })
-  return started.success
-    ? { applied: true, reason: 'restarted', contextLength: target, runtimeContextLength: runtime }
-    : { applied: false, reason: 'start-failed', contextLength: target, runtimeContextLength: runtime, error: started.error }
+  // The restart ladder itself — including the rule that a launch-at-login daemon
+  // is restarted in place rather than un-registered — lives in `restartWithEnv`.
+  // The checks ABOVE are what is specific to a context window: a resident model
+  // already big enough, and the >= latch that keeps an agent spawn from bouncing
+  // the daemon. Everything below was the same ladder written twice.
+  return { ...(await restartWithEnv(env)), contextLength: target, runtimeContextLength: runtime }
 }
 
 /**
- * Restart a launch-at-login-registered Ollama at `contextLength`, WITHOUT
+ * Restart a launch-at-login-registered Ollama carrying `env`, WITHOUT
  * un-registering it.
  *
  * macOS: `launchctl setenv` writes into the user's launchd domain, which every
- * job launched afterwards inherits — so setting it and then
- * `brew services restart ollama` carries the window into a plist PortOS cannot
- * edit (Homebrew regenerates it from the formula on every start). The variable
- * is scoped to Ollama's behavior, so exporting it session-wide is harmless.
+ * job launched afterwards inherits — so setting the variables and then
+ * `brew services restart ollama` carries them into a plist PortOS cannot edit
+ * (Homebrew regenerates it from the formula on every start). The variables are
+ * scoped to Ollama's behavior, so exporting them session-wide is harmless.
  *
  * Linux: the equivalent is a `systemctl edit ollama` drop-in, which needs root.
  * PortOS reports what to do rather than tearing the unit down to work around it.
+ *
+ * @param {{ manager: string }} service
+ * @param {Record<string, string>} env
  */
-async function restartServiceWithContext(service, contextLength) {
+async function restartServiceWithEnv(service, env) {
+  const entries = Object.entries(env || {})
+  if (entries.length === 0) return { applied: false, reason: 'nothing-to-apply' }
+
   if (service.manager !== 'homebrew') {
+    const lines = entries.map(([k, v]) => `Environment="${k}=${v}"`).join(' ')
     return {
       applied: false,
       reason: 'service-managed',
-      error: `Ollama runs as a ${service.manager} service, which PortOS can't hand a context window. ` +
-        `Add one with: sudo systemctl edit ollama → [Service] Environment="${OLLAMA_CONTEXT_ENV_VAR}=${contextLength}", then restart it.`
+      error: `Ollama runs as a ${service.manager} service, which PortOS can't hand launch settings. ` +
+        `Add them with: sudo systemctl edit ollama → [Service] ${lines}, then restart it.`
     }
   }
 
   const controller = await getServiceController()
-  const setenv = await execFileAsync('launchctl', ['setenv', OLLAMA_CONTEXT_ENV_VAR, String(contextLength)], { timeout: SERVICE_COMMAND_TIMEOUT_MS })
-    .then(() => ({ success: true }))
-    .catch((err) => ({ success: false, error: err.stderr?.trim() || err.message }))
-  if (!setenv.success) return { applied: false, reason: 'setenv-failed', error: setenv.error }
+  for (const [key, value] of entries) {
+    const setenv = await execFileAsync('launchctl', ['setenv', key, String(value)], { timeout: SERVICE_COMMAND_TIMEOUT_MS })
+      .then(() => ({ success: true }))
+      .catch((err) => ({ success: false, error: err.stderr?.trim() || err.message }))
+    if (!setenv.success) return { applied: false, reason: 'setenv-failed', error: setenv.error }
+  }
 
   resetAvailabilityCache()
   const [cmd, args] = controller.restart
@@ -634,10 +665,64 @@ async function restartServiceWithContext(service, contextLength) {
   if (!(await waitForAvailability(true, START_TIMEOUT_MS))) {
     return { applied: false, reason: 'restart-unreachable', error: 'Ollama restarted, but the API did not become reachable.' }
   }
-  appliedContextLength = contextLength
-  appliedDaemonIdentity = await getOllamaProcessIdentity()
-  console.log(`▶️ Restarted the Ollama ${service.manager} service at a ${contextLength}-token context window`)
+  rememberAppliedEnv(env, await getOllamaProcessIdentity())
+  console.log(`▶️ Restarted the Ollama ${service.manager} service with ${entries.map(([k, v]) => `${k}=${v}`).join(', ')}`)
   return { applied: true, reason: 'service-restarted' }
+}
+
+/**
+ * Restart the local Ollama daemon so it picks up `env` — the launch-time knobs
+ * (`OLLAMA_FLASH_ATTENTION`, `OLLAMA_KV_CACHE_TYPE`, `OLLAMA_CONTEXT_LENGTH`, …)
+ * that reach Ollama ONLY through its process environment.
+ *
+ * Ollama's OpenAI-compatible endpoint silently drops unknown body fields, so
+ * there is no per-request spelling of any of these: a tuned measurement either
+ * restarts the daemon or is measuring the previous configuration. This resolves
+ * rather than throws, and reports `applied: false` with a reason when it could
+ * not — the caller records that instead of filing the reading under a tuning
+ * that never took effect.
+ *
+ * @param {Record<string, string>} env
+ * @returns {Promise<{ applied: boolean, reason: string, error?: string }>}
+ */
+async function restartWithEnv(env) {
+  const entries = Object.entries(env || {})
+  if (entries.length === 0) return { applied: false, reason: 'nothing-to-apply' }
+
+  // The daemon that is up may already BE this tuning — a sweep measures every
+  // model under one knob set, and restarting per model would cold-load each one
+  // and time the page-in as if it were the model's throughput. Same evidence
+  // rule as the context latch: only a CHANGED process identity invalidates it,
+  // because an unreadable identity is not evidence of replacement.
+  if (appliedLaunchEnv !== null && appliedLaunchEnv === envSignature(env) && await checkOllamaAvailable(true)) {
+    const currentIdentity = await getOllamaProcessIdentity()
+    if (!appliedDaemonIdentity || !currentIdentity || currentIdentity === appliedDaemonIdentity) {
+      return { applied: true, reason: 'already-applied' }
+    }
+    rememberAppliedEnv(null, null)
+  }
+
+  console.log(`🔧 Restarting Ollama with ${entries.map(([k, v]) => `${k}=${v}`).join(', ')}`)
+
+  if (!(await checkOllamaAvailable(true))) {
+    const started = await startServer({ env })
+    return started.success
+      ? { applied: true, reason: 'started' }
+      : { applied: false, reason: 'start-failed', error: started.error }
+  }
+
+  // A daemon the user registered to launch at login must keep that registration:
+  // `stopServer` would route through `brew services stop` / `systemctl disable`,
+  // which un-registers it. Restart it in place instead.
+  const service = await getServiceStatus().catch(() => null)
+  if (service?.runAtStartup) return restartServiceWithEnv(service, env)
+
+  const stopped = await stopServer()
+  if (!stopped.success) return { applied: false, reason: 'stop-failed', error: stopped.error }
+  const started = await startServer({ env })
+  return started.success
+    ? { applied: true, reason: 'restarted' }
+    : { applied: false, reason: 'start-failed', error: started.error }
 }
 
 function isOllamaProvider(provider) {
@@ -1574,6 +1659,7 @@ export {
   startServer,
   stopServer,
   ensureContextWindow,
+  restartWithEnv,
   getRuntimeContextLength,
   startPersistentService,
   stopPersistentService,

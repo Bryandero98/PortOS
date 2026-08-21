@@ -51,14 +51,6 @@ const BACKEND_LABEL = {
   ollama: 'Ollama', lmstudio: 'LM Studio', llama: 'llama.cpp', mtplx: 'MTPLX', vllm: 'vLLM',
 };
 
-// What PortOS can actually DO with a knob, spelled out next to it. A knob it
-// cannot set must never look like one it did.
-const APPLIES_NOTE = {
-  launch: 'PortOS puts this on the launch line and relaunches the server.',
-  request: 'Sent with each measurement request.',
-  record: 'PortOS cannot set this — recorded so two readings stay comparable.',
-};
-
 const VERDICT_META = {
   fits: { label: 'Fits', cls: 'text-emerald-400 border-emerald-400/50' },
   'does-not-fit': { label: 'Does not fit', cls: 'text-port-warning border-port-warning/50' },
@@ -133,7 +125,12 @@ function TuningFields({ specs, draft, onChange, disabled }) {
             <div className="min-w-0">
               <label htmlFor={fieldId} className="text-xs text-gray-300">{spec.label}</label>
               <p className="text-[10px] text-gray-500 leading-snug">{spec.hint}</p>
-              <p className="text-[10px] text-gray-600 leading-snug">{APPLIES_NOTE[spec.applies]}</p>
+              {/* What PortOS will DO with the knob, naming the flag or variable
+                  it becomes. Derived server-side from the knob's transport
+                  (server/lib/localModelTuning.js) and shipped on the spec, so
+                  the UI cannot describe a transport differently from the code
+                  that applies it. */}
+              <p className="text-[10px] text-gray-600 leading-snug">{spec.note}</p>
             </div>
             {spec.type === 'boolean' ? (
               <input
@@ -229,6 +226,8 @@ function AssessmentConsentModal({
                 <p className="text-[10px] text-gray-500">
                   Leave a field empty to use the runtime&apos;s own default. A tuned run is recorded
                   separately, so you can compare it against the untuned one instead of replacing it.
+                  Setting a launch knob restarts that runtime&apos;s server before measuring, which
+                  interrupts anything else using it.
                 </p>
                 <TuningFields specs={tuningSpecs} draft={tuning} onChange={onTuningChange} disabled={running} />
               </div>

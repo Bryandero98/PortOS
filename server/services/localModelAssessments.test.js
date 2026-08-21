@@ -49,16 +49,25 @@ vi.mock('./localLlm.js', () => ({ listModels: (...args) => listModels(...args) }
 const getLoadedModels = vi.fn();
 const getOllamaListError = vi.fn();
 const ollamaVersion = vi.fn(async () => '0.0.0-test');
+// Ollama's tuning knobs are daemon environment, so applying one restarts the
+// daemon. Default to "it worked" and let a test override to assert the refusal path.
+const restartOllamaWithEnv = vi.fn(async () => ({ applied: true, reason: 'restarted' }));
 vi.mock('./ollamaManager.js', () => ({
   getLoadedModels: (...args) => getLoadedModels(...args),
   getLastInstalledModelsError: () => getOllamaListError(),
   // Recorded with each assessment so a backend UPDATE can later be detected as
   // staleness — see localModelAssessmentStore.captureEnvironment.
   getVersion: (...args) => ollamaVersion(...args),
+  restartWithEnv: (...args) => restartOllamaWithEnv(...args),
 }));
 
 const getLmStudioListError = vi.fn();
-vi.mock('./lmStudioManager.js', () => ({ getLastListError: () => getLmStudioListError() }));
+// LM Studio's knobs are load-time, so applying one reloads the model via `lms load`.
+const loadLmStudioModelWithArgs = vi.fn(async () => ({ success: true }));
+vi.mock('./lmStudioManager.js', () => ({
+  getLastListError: () => getLmStudioListError(),
+  loadModelWithArgs: (...args) => loadLmStudioModelWithArgs(...args),
+}));
 
 // A fixed, generous memory budget so the memory axis is deterministic.
 vi.mock('../lib/localMemory.js', () => ({ getAvailableMemoryGb: async () => 64 }));
@@ -92,6 +101,8 @@ beforeEach(() => {
   getLlamaServerEndpoint.mockReset().mockResolvedValue('http://127.0.0.1:5568/v1');
   getAllProviders.mockReset().mockResolvedValue([]);
   relaunchLlamaServerWithTuning.mockReset().mockResolvedValue({ applied: true, reason: null, config: null });
+  restartOllamaWithEnv.mockReset().mockResolvedValue({ applied: true, reason: 'restarted' });
+  loadLmStudioModelWithArgs.mockReset().mockResolvedValue({ success: true });
 });
 
 describe('buildSamplePrompt', () => {
@@ -691,10 +702,49 @@ describe('tuning', () => {
     expect(await svc.loadAssessments()).toHaveLength(2);
   });
 
-  it('sends a request-applied knob with the measurement', async () => {
+  // Ollama's OpenAI-compatible endpoint drops unknown body fields, so the only
+  // spelling of a context window is the daemon's environment. Sending one in the
+  // body would look applied and change nothing.
+  it('restarts Ollama with the tuning env instead of putting it in the request body', async () => {
     runLocalLlmTest.mockResolvedValue(okRun());
-    await svc.runAssessment({ backend: 'ollama', modelId: 'example-model:7b', contextTokens: [512], tuning: { numCtx: 8192 } });
-    expect(runLocalLlmTest).toHaveBeenCalledWith(expect.objectContaining({ extraBody: { num_ctx: 8192 } }));
+    const result = await svc.runAssessment({
+      backend: 'ollama', modelId: 'example-model:7b', contextTokens: [512], tuning: { numCtx: 8192, flashAttention: true },
+    });
+    expect(restartOllamaWithEnv).toHaveBeenCalledWith({ OLLAMA_CONTEXT_LENGTH: '8192', OLLAMA_FLASH_ATTENTION: '1' });
+    expect(runLocalLlmTest).toHaveBeenCalledWith(expect.objectContaining({ extraBody: {} }));
+    expect(result.tuningApplied).toBe(true);
+  });
+
+  it('records the reason when Ollama could not be restarted with the tuning', async () => {
+    runLocalLlmTest.mockResolvedValue(okRun());
+    restartOllamaWithEnv.mockResolvedValueOnce({ applied: false, reason: 'stop-failed', error: 'Ollama would not stop' });
+    const result = await svc.runAssessment({
+      backend: 'ollama', modelId: 'example-model:7b', contextTokens: [512], tuning: { numCtx: 8192 },
+    });
+    expect(result.tuningApplied).toBe(false);
+    expect(result.tuningNotApplied).toBe('Ollama would not stop');
+  });
+
+  // LM Studio picks context/offload/parallelism when the model LOADS, so a tuned
+  // reading has to reload it through `lms load` first.
+  it('reloads the LM Studio model with the tuning flags', async () => {
+    runLocalLlmTest.mockResolvedValue(okRun());
+    const result = await svc.runAssessment({
+      backend: 'lmstudio', modelId: 'example-model:7b', contextTokens: [512], tuning: { contextLength: 8192, gpuOffload: 0.5 },
+    });
+    expect(loadLmStudioModelWithArgs).toHaveBeenCalledWith('example-model:7b', ['--context-length', '8192', '--gpu', '0.5']);
+    expect(result.tuningApplied).toBe(true);
+    expect(result.tuningLabel).toBe('Context length 8k · GPU offload 0.5');
+  });
+
+  it('records the reason when LM Studio refused the tuned load', async () => {
+    runLocalLlmTest.mockResolvedValue(okRun());
+    loadLmStudioModelWithArgs.mockResolvedValueOnce({ success: false, error: 'Model does not fit at that context length' });
+    const result = await svc.runAssessment({
+      backend: 'lmstudio', modelId: 'example-model:7b', contextTokens: [512], tuning: { contextLength: 1048576 },
+    });
+    expect(result.tuningApplied).toBe(false);
+    expect(result.tuningNotApplied).toBe('Model does not fit at that context length');
   });
 
   it('puts llama.cpp launch knobs on the command line before the first sample', async () => {
@@ -722,18 +772,28 @@ describe('tuning', () => {
     expect(result.tuningNotApplied).toBe('llama-server is not running');
   });
 
-  // A tuning made entirely of `record` knobs was never applied by PortOS in any
-  // sense — `true` there is the exact claim lib/localModelTuning.js forbids, and
-  // `false` would imply something went wrong. `null` is the honest answer.
-  it('records tuningApplied as null when there is nothing for PortOS to apply', async () => {
+  // An untuned run applied nothing — `true` there is the exact claim
+  // lib/localModelTuning.js forbids, and `false` would imply something went
+  // wrong. `null` is the honest answer.
+  it('records tuningApplied as null when there was nothing to apply', async () => {
     runLocalLlmTest.mockResolvedValue(okRun());
     const untuned = await svc.runAssessment({ backend: 'ollama', modelId: 'example-model:7b', contextTokens: [512] });
     expect(untuned.tuningApplied).toBeNull();
-    const recordOnly = await svc.runAssessment({
-      backend: 'lmstudio', modelId: 'example-model:7b', contextTokens: [512], tuning: { contextLength: 8192 },
+    expect(restartOllamaWithEnv).not.toHaveBeenCalled();
+  });
+
+  // A runtime with no launch path must not silently swallow a knob: the catalog
+  // offers none for MTPLX/vLLM today, and if one is ever added without a
+  // transport the reading has to say it was not applied.
+  it('refuses launch tuning for a runtime PortOS does not start', async () => {
+    probeOpenAiModels.mockResolvedValue({ reachable: true, models: ['a-model'], error: null });
+    runEndpointLlmTest.mockResolvedValue(okRun());
+    const result = await svc.runAssessment({
+      backend: 'mtplx', modelId: 'a-model', contextTokens: [512], tuning: { maxKvSize: 8192 },
     });
-    expect(recordOnly.tuningApplied).toBeNull();
-    expect(recordOnly.tuningLabel).toBe('Context length 8k');
+    // Retired from the catalog, so it normalizes away entirely — no claim made.
+    expect(result.tuningApplied).toBeNull();
+    expect(result.tuningKey).toBe('');
   });
 
   it('never relaunches llama-server for an untuned run', async () => {

@@ -26,6 +26,9 @@ const AVAILABILITY_PROBE_TIMEOUT_MS = 5_000
 // `lms server start|stop` only asks the already-installed app to flip its
 // listener — it never downloads anything, so a minute is generous.
 const LMS_CONTROL_TIMEOUT_MS = 60_000
+// `lms load` reads a multi-gigabyte GGUF off disk and allocates its KV cache;
+// on a cold page cache that is minutes, not seconds.
+const LMS_LOAD_TIMEOUT_MS = 300_000
 
 // Default LM Studio configuration
 const DEFAULT_CONFIG = {
@@ -276,6 +279,45 @@ async function loadModel(modelId) {
 }
 
 /**
+ * Reload a model through the `lms` CLI with explicit load-time settings.
+ *
+ * LM Studio's context length, GPU offload, and parallelism are chosen when a
+ * model is LOADED — no request field changes them, and the REST load endpoint
+ * takes only a model id. `lms load` is the one path that carries them, so a
+ * tuned measurement of an LM Studio model goes through here or it is measuring
+ * whatever the app happened to be holding.
+ *
+ * The model is unloaded first: `lms load` on an already-resident model returns
+ * the existing instance rather than re-loading it at the new settings, which
+ * would report success for a tuning that never applied.
+ *
+ * Resolves rather than throws (mirrors `controlServer`) so a caller can record
+ * the refusal alongside the reading it describes.
+ *
+ * @param {string} modelId
+ * @param {string[]} args - rendered flags, e.g. `['--context-length', '8192']`
+ * @returns {Promise<{ success: boolean, error?: string }>}
+ */
+async function loadModelWithArgs(modelId, args = []) {
+  if (!modelId) return { success: false, error: 'No model was named to load.' }
+
+  if (await checkLMStudioAvailable()) await unloadModel(modelId).catch(() => {})
+
+  // `-y` because there is no one at a terminal to answer the model-picker prompt
+  // `lms load` opens when a key matches more than one download.
+  //
+  // `runLms` resets the model caches, so the next reader refetches lazily —
+  // forcing a refresh here would pay two loopback round trips for a value
+  // nothing reads between the load and the first sample.
+  const result = await runLms(['load', modelId, '-y', ...args], { timeoutMs: LMS_LOAD_TIMEOUT_MS })
+  if (!result.success) return result
+
+  console.log(`📦 LM Studio loaded ${modelId}${args.length ? ` (${args.join(' ')})` : ''}`)
+  cosEvents.emit('lmstudio:modelLoaded', { modelId })
+  return { success: true }
+}
+
+/**
  * Unload a model from LM Studio memory
  * @param {string} modelId - Model identifier to unload
  * @returns {Promise<Object>} - Unload result
@@ -507,6 +549,41 @@ function isAppInstalled() {
 }
 
 /**
+ * Run one `lms` subcommand, resolving to `{ success }` or `{ success: false, error }`.
+ *
+ * Every `lms` call shares the same three failure shapes — the CLI is not on
+ * PATH, the process timed out, or it exited non-zero — and the same rule for
+ * pulling a human line out of the result (last line of stderr, else stdout).
+ * They live here once so the "run \`lms bootstrap\`" instruction and the
+ * error-line rule cannot be fixed for one caller and not the other.
+ *
+ * Resolves rather than throws (mirrors `controlOllamaServer`) so a route can
+ * turn a refusal into a 502, and a measurement can record it, with the reason
+ * intact.
+ *
+ * @param {string[]} args
+ * @param {{ timeoutMs: number }} options
+ */
+async function runLms(args, { timeoutMs }) {
+  const binary = findCommandOnPath('lms')
+  if (!binary) {
+    return {
+      success: false,
+      error: "LM Studio's \`lms\` CLI is not on PortOS's PATH. Open LM Studio once and run \`lms bootstrap\`, or use the app's Developer tab."
+    }
+  }
+  const label = `\`lms ${args.filter((a) => !a.startsWith('-')).join(' ')}\``
+  const result = await bufferedSpawn(binary, args, { timeoutMs, shell: false })
+  resetCache()
+  if (result.timedOut) return { success: false, error: `${label} timed out after ${Math.round(timeoutMs / 1000)}s` }
+  if (!result.success) {
+    const detail = result.error?.message || String(result.stderr || result.stdout || '').trim().split(/\r?\n/).pop()
+    return { success: false, error: detail || `${label} exited with code ${result.code}` }
+  }
+  return { success: true }
+}
+
+/**
  * Start or stop LM Studio's local OpenAI-compatible server via its own `lms` CLI.
  *
  * `lms` is LM Studio's CLI shim, installed by `lms bootstrap` from the app.
@@ -523,20 +600,8 @@ async function controlServer(action) {
   if (action !== 'start' && action !== 'stop') {
     return { success: false, error: `Unknown LM Studio action: ${action}` }
   }
-  const binary = findCommandOnPath('lms')
-  if (!binary) {
-    return {
-      success: false,
-      error: "LM Studio's `lms` CLI is not on PortOS's PATH. Open LM Studio once and run `lms bootstrap`, or use the app's Developer tab."
-    }
-  }
-  const result = await bufferedSpawn(binary, ['server', action], { timeoutMs: LMS_CONTROL_TIMEOUT_MS, shell: false })
-  resetCache()
-  if (result.timedOut) return { success: false, error: `\`lms server ${action}\` timed out` }
-  if (!result.success) {
-    const detail = result.error?.message || String(result.stderr || result.stdout || '').trim().split(/\r?\n/).pop()
-    return { success: false, error: detail || `\`lms server ${action}\` exited with code ${result.code}` }
-  }
+  const result = await runLms(['server', action], { timeoutMs: LMS_CONTROL_TIMEOUT_MS })
+  if (!result.success) return result
   console.log(`📦 LM Studio server ${action === 'start' ? 'started' : 'stopped'}`)
   return { success: true }
 }
@@ -862,6 +927,7 @@ export {
   getAvailableModels,
   downloadModel,
   loadModel,
+  loadModelWithArgs,
   unloadModel,
   getRecommendedThinkingModel,
   quickCompletion,
