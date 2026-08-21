@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Link } from 'react-router';
+import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { AlertTriangle } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
@@ -20,7 +20,8 @@ import {
 } from '../utils/formatters';
 import SettingsTabsHeader from '../components/settings/SettingsTabsHeader';
 import EffortSelect from '../components/cos/EffortSelect';
-import Modal from '../components/ui/Modal';
+import Drawer from '../components/Drawer';
+import useDrawerTab from '../hooks/useDrawerTab';
 import { FormField } from '../components/ui/FormField';
 import RuntimeInstallModal from '../components/install/RuntimeInstallModal';
 import ProviderCard from '../components/providers/ProviderCard';
@@ -59,6 +60,17 @@ export const PROVIDER_SECTIONS = [
   },
 ];
 
+// The provider editor's Drawer tabs. `connection` is the default, so a bare
+// /ai/:providerId deep link opens on the identity/transport fields; the others
+// are reachable as /ai/:providerId?providerTab=<id>.
+const PROVIDER_FORM_TABS = [
+  { id: 'connection', label: 'Connection' },
+  { id: 'models', label: 'Models' },
+  { id: 'generation', label: 'Generation' },
+  { id: 'environment', label: 'Environment' },
+];
+const PROVIDER_FORM_TAB_IDS = PROVIDER_FORM_TABS.map(t => t.id);
+
 export default function AIProviders() {
   const [providers, setProviders] = useState([]);
   // The CoS Agent Runner's exec allowlist, published by GET /api/providers.
@@ -69,8 +81,6 @@ export default function AIProviders() {
   const [activeProviderId, setActiveProviderId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
-  const [showForm, setShowForm] = useState(false);
-  const [editingProvider, setEditingProvider] = useState(null);
   const [testResults, setTestResults] = useState({});
   const [refreshing, setRefreshing] = useState({});
   const [showRunPanel, setShowRunPanel] = useState(false);
@@ -105,6 +115,19 @@ export default function AIProviders() {
   // fold in) — fetched once here rather than inside ProviderForm so opening the
   // editor doesn't re-request it.
   const localModels = useLocalModels();
+
+  // The editor is a deep-linkable slide-in over this page, so which provider is
+  // open lives in the URL (/ai/new · /ai/:providerId) rather than local state —
+  // the same "URL is the source of truth for what's open" rule the rest of the
+  // app follows. `/ai/new` is its own static route, so `providerId` is undefined
+  // there; the pathname test keeps the two apart without reserving `new` as an
+  // un-editable provider id.
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { providerId: editingProviderId } = useParams();
+  const creatingProvider = location.pathname.replace(/\/+$/, '').endsWith('/ai/new');
+  const closeForm = useCallback(() => navigate('/ai'), [navigate]);
+  const openForm = useCallback((target) => navigate(target ? `/ai/${target.id}` : '/ai/new'), [navigate]);
 
   useEffect(() => {
     loadData();
@@ -405,6 +428,23 @@ export default function AIProviders() {
     };
   }, [providers, statuses, activeProviderId, runtimeForProvider]);
 
+  // Resolved only once the list has loaded, so an /ai/:providerId reload can't
+  // flash the editor in "Add Provider" mode before the record arrives. An id
+  // that never resolves (deleted provider, hand-edited link) bounces back to the
+  // list rather than leaving a blank editor open. `hasOwn` rather than a plain
+  // lookup because the id comes straight off the URL: `/ai/__proto__` would
+  // otherwise resolve to `Object.prototype` and open the editor on it.
+  const editingProvider = editingProviderId && Object.hasOwn(providersById, editingProviderId)
+    ? providersById[editingProviderId]
+    : null;
+  const editorOpen = creatingProvider || Boolean(editingProvider);
+
+  useEffect(() => {
+    if (loading || loadError || !editingProviderId || editingProvider) return;
+    toast.error(`No provider with id "${editingProviderId}"`);
+    navigate('/ai', { replace: true });
+  }, [loading, loadError, editingProviderId, editingProvider, navigate]);
+
   const selectedRunProvider = providers.find(p => p.id === activeProviderId);
   const runProviderIsTui = isTuiProvider(selectedRunProvider);
 
@@ -447,7 +487,7 @@ export default function AIProviders() {
             {loadingSamples ? <BrailleSpinner text="Loading" /> : 'Load Samples'}
           </button>
           <button
-            onClick={() => { setEditingProvider(null); setShowForm(true); }}
+            onClick={() => openForm(null)}
             className="px-4 py-2 bg-port-border hover:bg-port-border/80 text-white rounded-lg transition-colors text-sm sm:text-base"
           >
             Add Provider
@@ -680,7 +720,7 @@ export default function AIProviders() {
                       onRefreshModels={handleRefreshModels}
                       onToggleEnabled={handleToggleEnabled}
                       onSetActive={handleSetActive}
-                      onEdit={(target) => { setEditingProvider(target); setShowForm(true); }}
+                      onEdit={openForm}
                       onDelete={handleDelete}
                       onRecover={handleRecover}
                       onInstallRuntime={setInstallingRuntime}
@@ -696,7 +736,7 @@ export default function AIProviders() {
                 title="No providers configured"
                 message="Configure at least one API provider to enable autonomous CoS, voice, and AI-assisted features across PortOS."
                 actionLabel="Add Provider"
-                onAction={() => { setEditingProvider(null); setShowForm(true); }}
+                onAction={() => openForm(null)}
               />
             )}
           </>
@@ -711,20 +751,18 @@ export default function AIProviders() {
         </Link>
       </div>
 
-      {/* Provider Form Modal */}
-      {showForm && (
+      {/* Provider editor — a deep-linkable slide-in over this page. `key` resets
+          the form state when the route swaps one provider for another. */}
+      {editorOpen && (
         <ProviderForm
           key={editingProvider?.id || 'new'}
           provider={editingProvider}
           allProviders={providers}
           localModels={localModels}
           runnerAllowedCommands={runnerAllowedCommands}
-          onEditProvider={(providerToEdit) => {
-            setEditingProvider(providerToEdit);
-            setShowForm(true);
-          }}
-          onClose={() => { setShowForm(false); setEditingProvider(null); }}
-          onSave={() => { setShowForm(false); setEditingProvider(null); loadData(); }}
+          onEditProvider={openForm}
+          onClose={closeForm}
+          onSave={() => { closeForm(); loadData(); }}
         />
       )}
       <RuntimeInstallModal
@@ -789,6 +827,8 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
     tuiPromptDelayMs: provider?.tuiPromptDelayMs || 2500
   });
 
+  const [activeTab, setActiveTab] = useDrawerTab('providerTab', 'connection', PROVIDER_FORM_TAB_IDS);
+
   const [newEnvKey, setNewEnvKey] = useState('');
   const [newEnvValue, setNewEnvValue] = useState('');
   const [newEnvSecret, setNewEnvSecret] = useState(false);
@@ -814,7 +854,13 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
   // option for it the four selects below would hold a value matching no option
   // and render blank — reading as "no model configured" when one is.
   const configuredDefault = configuredDefaultIn(mergedModels);
-  const effortProvider = { ...formData, id: provider?.id, models: mergedModels };
+  // The markers that identify a backed provider (`ollamaBacked`, `llamaBacked`,
+  // `orcarouterBacked`) are NOT form fields, so a shape built from `formData`
+  // alone loses them — which hid the effort ladder on the OpenCode-Ollama
+  // providers, whose ladder is keyed on `ollamaBacked`. Merge the live edits
+  // over the stored record instead, so edits to command/endpoint/envVars count
+  // immediately while the markers survive.
+  const capabilityProvider = { ...provider, ...formData, id: provider?.id, models: mergedModels };
   // Shared option list for the Default Model + Light/Medium/Heavy tier selects,
   // so the sentinel option can't be added to some and missed on others.
   const modelSelectOptions = (
@@ -849,11 +895,10 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
   // itself, so PortOS applies it by reloading Ollama at that window before the
   // run (server/services/ollamaAgentContext.js). Gating the field to `api` left
   // those providers stuck on Ollama's VRAM-based 32K auto-pick, which an agent
-  // harness overruns mid-task. Merged over the stored record rather than reading
-  // formData alone — the `ollamaBacked` marker (what identifies opencode-ollama,
-  // whose envVars carry no ANTHROPIC_BASE_URL) is not a form field, while
-  // endpoint/envVars edits must still count immediately.
-  const showsNumCtx = formData.type === 'api' || isOllamaBackedProvider({ ...provider, ...formData });
+  // harness overruns mid-task. Reads `capabilityProvider` because the
+  // `ollamaBacked` marker that identifies opencode-ollama (whose envVars carry
+  // no ANTHROPIC_BASE_URL) is not a form field.
+  const showsNumCtx = formData.type === 'api' || isOllamaBackedProvider(capabilityProvider);
   const parseOptionalIntField = (value) => {
     const input = String(value ?? '').trim();
     if (!input) return null;
@@ -866,6 +911,22 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    // The drawer renders only the active tab, so the browser's own constraint
+    // validation can't block a Save triggered from another tab. Re-check the
+    // Connection tab's required fields here and send the user back to them.
+    const missingField = !formData.name.trim()
+      ? 'Name'
+      : (isProcessProvider(formData) && !formData.command.trim())
+        ? 'Command'
+        : (formData.type === 'api' && !formData.endpoint.trim())
+          ? 'Endpoint'
+          : null;
+    if (missingField) {
+      setActiveTab('connection');
+      toast.error(`${missingField} is required`);
+      return;
+    }
 
     const tuiPromptDelay = parseInt(formData.tuiPromptDelayMs, 10);
     // Blank input is omitted so the server keeps the current value. Non-empty
@@ -895,7 +956,7 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
     // ladder. Clear a stale value when an edit switches to an effort-less
     // provider or Antigravity model; narrowed ladders are clamped by the
     // server and remain visible in the selector.
-    if (!isProcessProvider(data) || !effortLevelsForProvider({ ...data, id: provider?.id }, data.defaultModel)) {
+    if (!isProcessProvider(data) || !effortLevelsForProvider({ ...provider, ...data, id: provider?.id }, data.defaultModel)) {
       data.effort = '';
     }
     if (parsedTimeout != null) {
@@ -927,589 +988,623 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
   };
 
   return (
-    <Modal
+    <Drawer
       open
       onClose={onClose}
-      size="md"
-      backdropClassName="bg-black/50"
-      panelClassName="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
-      ariaLabelledBy="provider-form-title"
+      title={provider ? 'Edit Provider' : 'Add Provider'}
+      subtitle={provider ? provider.name : undefined}
+      size="lg"
+      tabs={PROVIDER_FORM_TABS}
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+      // A long multi-tab config form: an accidental Esc or backdrop click
+      // mid-edit would discard work across every tab.
+      closeOnEsc={false}
+      closeOnBackdrop={false}
     >
-      <h2 id="provider-form-title" className="text-xl font-bold text-white mb-4">
-        {provider ? 'Edit Provider' : 'Add Provider'}
-      </h2>
-
+        {/* The Drawer body remounts per active tab (key={currentTab}), so this
+            whole form subtree is torn down and rebuilt on every tab switch. All
+            mutable state (formData and the new-env-var row) therefore lives in
+            this component, above the Drawer — never inside the panels below. */}
         <form onSubmit={handleSubmit} className="space-y-4">
-          <FormField label="Name *">
-            <input
-              type="text"
-              value={formData.name}
-              onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-              required
-              className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-            />
-          </FormField>
-
-          <FormField label="Type *">
-            <select
-              value={formData.type}
-              onChange={(e) => setFormData(prev => ({ ...prev, type: e.target.value }))}
-              className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-            >
-              <option value="cli">CLI</option>
-              <option value="tui">TUI</option>
-              <option value="api">API</option>
-            </select>
-          </FormField>
-
-          {(formData.type === 'cli' || formData.type === 'tui') && (
-            <>
-              <FormField label="Command *">
+          {activeTab === 'connection' && (
+            <div className="space-y-4">
+              <FormField label="Name *">
                 <input
                   type="text"
-                  value={formData.command}
-                  onChange={(e) => setFormData(prev => ({ ...prev, command: e.target.value }))}
-                  placeholder={formData.type === 'tui' ? 'codex' : 'claude'}
-                  required={formData.type === 'cli' || formData.type === 'tui'}
-                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-                />
-                {/* Informational only — an off-allowlist command saves fine and runs
-                    fine in direct-spawn mode; it just can't be launched by the CoS
-                    Agent Runner. Rejecting the save would break that valid config. */}
-                {isRunnerAllowedCommand(formData.command, runnerAllowedCommands) === false && (
-                  <Banner tone="warning" icon={AlertTriangle} className="mt-2">
-                    <p>
-                      <code className="font-mono break-all">{formData.command}</code> is not on the CoS Agent Runner’s
-                      command allowlist, so <code className="font-mono">/spawn</code> and{' '}
-                      <code className="font-mono">/spawn-tui</code> will refuse it. Saving is fine — the provider still
-                      runs in direct-spawn mode and everywhere else.
-                    </p>
-                    <p className="mt-1 text-port-warning/80 break-words">
-                      Allowlisted: {runnerAllowedCommands.join(', ')}
-                    </p>
-                  </Banner>
-                )}
-              </FormField>
-
-              <FormField label="Arguments (space-separated)">
-                <input
-                  type="text"
-                  value={formData.args}
-                  onChange={(e) => setFormData(prev => ({ ...prev, args: e.target.value }))}
-                  placeholder={formData.type === 'tui' ? '--dangerously-skip-permissions' : '--print -p'}
+                  value={formData.name}
+                  onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
+                  required
                   className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                 />
               </FormField>
 
-              {formData.type === 'cli' && (
-                <FormField label="Headless Args (for simple prompt tasks)">
-                  <input
-                    type="text"
-                    value={formData.headlessArgs}
-                    onChange={(e) => setFormData(prev => ({ ...prev, headlessArgs: e.target.value }))}
-                    placeholder='--no-session-persistence --disable-slash-commands --tools ""'
-                    className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Extra CLI flags for lightweight prompt-in/text-out mode (brain classifier, etc.)
-                  </p>
-                </FormField>
-              )}
+              <FormField label="Type *">
+                <select
+                  value={formData.type}
+                  onChange={(e) => setFormData(prev => ({ ...prev, type: e.target.value }))}
+                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                >
+                  <option value="cli">CLI</option>
+                  <option value="tui">TUI</option>
+                  <option value="api">API</option>
+                </select>
+              </FormField>
 
-              {formData.type === 'tui' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <FormField label="Prompt Paste Delay (ms)">
+              {(formData.type === 'cli' || formData.type === 'tui') && (
+                <>
+                  <FormField label="Command *">
                     <input
-                      type="number"
-                      min="250"
-                      max="60000"
-                      value={formData.tuiPromptDelayMs}
-                      onChange={(e) => setFormData(prev => ({ ...prev, tuiPromptDelayMs: e.target.value }))}
+                      type="text"
+                      value={formData.command}
+                      onChange={(e) => setFormData(prev => ({ ...prev, command: e.target.value }))}
+                      placeholder={formData.type === 'tui' ? 'codex' : 'claude'}
+                      required={formData.type === 'cli' || formData.type === 'tui'}
+                      className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                    />
+                    {/* Informational only — an off-allowlist command saves fine and runs
+                        fine in direct-spawn mode; it just can't be launched by the CoS
+                        Agent Runner. Rejecting the save would break that valid config. */}
+                    {isRunnerAllowedCommand(formData.command, runnerAllowedCommands) === false && (
+                      <Banner tone="warning" icon={AlertTriangle} className="mt-2">
+                        <p>
+                          <code className="font-mono break-all">{formData.command}</code> is not on the CoS Agent Runner’s
+                          command allowlist, so <code className="font-mono">/spawn</code> and{' '}
+                          <code className="font-mono">/spawn-tui</code> will refuse it. Saving is fine — the provider still
+                          runs in direct-spawn mode and everywhere else.
+                        </p>
+                        <p className="mt-1 text-port-warning/80 break-words">
+                          Allowlisted: {runnerAllowedCommands.join(', ')}
+                        </p>
+                      </Banner>
+                    )}
+                  </FormField>
+
+                  <FormField label="Arguments (space-separated)">
+                    <input
+                      type="text"
+                      value={formData.args}
+                      onChange={(e) => setFormData(prev => ({ ...prev, args: e.target.value }))}
+                      placeholder={formData.type === 'tui' ? '--dangerously-skip-permissions' : '--print -p'}
                       className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                     />
                   </FormField>
-                  <p className="sm:col-span-2 text-xs text-gray-500">
-                    TUI providers stay attached while the provider is silent; they finish on the completion sentinel, process exit, or explicit failure.
-                  </p>
-                </div>
+
+                  {formData.type === 'cli' && (
+                    <FormField label="Headless Args (for simple prompt tasks)">
+                      <input
+                        type="text"
+                        value={formData.headlessArgs}
+                        onChange={(e) => setFormData(prev => ({ ...prev, headlessArgs: e.target.value }))}
+                        placeholder='--no-session-persistence --disable-slash-commands --tools ""'
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Extra CLI flags for lightweight prompt-in/text-out mode (brain classifier, etc.)
+                      </p>
+                    </FormField>
+                  )}
+
+                  {formData.type === 'tui' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <FormField label="Prompt Paste Delay (ms)">
+                        <input
+                          type="number"
+                          min="250"
+                          max="60000"
+                          value={formData.tuiPromptDelayMs}
+                          onChange={(e) => setFormData(prev => ({ ...prev, tuiPromptDelayMs: e.target.value }))}
+                          className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                        />
+                      </FormField>
+                      <p className="sm:col-span-2 text-xs text-gray-500">
+                        TUI providers stay attached while the provider is silent; they finish on the completion sentinel, process exit, or explicit failure.
+                      </p>
+                    </div>
+                  )}
+                </>
               )}
-            </>
+
+              {formData.type === 'api' && (
+                <>
+                  <FormField label="Endpoint *">
+                    <input
+                      type="url"
+                      value={formData.endpoint}
+                      onChange={(e) => setFormData(prev => ({ ...prev, endpoint: e.target.value }))}
+                      placeholder="http://localhost:1234/v1"
+                      required={formData.type === 'api'}
+                      className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                    />
+                  </FormField>
+
+                  <FormField label="API Key">
+                    <input
+                      type="password"
+                      value={formData.apiKey}
+                      onChange={(e) => setFormData(prev => ({ ...prev, apiKey: e.target.value }))}
+                      placeholder={provider?.hasApiKey
+                        ? 'Key set — leave blank to keep'
+                        : isLocalEndpoint(formData.endpoint)
+                          ? 'Not needed for local endpoints'
+                          : 'Paste the key from your provider dashboard'}
+                      className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      This field is the only place API providers read a key from — it's stored on this
+                      provider and sent as an <code>Authorization: Bearer</code> header on every request.
+                      No environment variable is involved. Hosted APIs (Cerebras, Grok, NVIDIA, OrcaRouter, …) require
+                      one; local backends (Ollama, LM Studio) don't.
+                    </p>
+                  </FormField>
+
+                  <FormField label="Custom endpoint">
+                    <label htmlFor="allowCustomEndpoint" className="flex items-start gap-2 cursor-pointer">
+                      <input
+                        id="allowCustomEndpoint"
+                        type="checkbox"
+                        checked={formData.allowCustomEndpoint}
+                        onChange={(e) => setFormData(prev => ({ ...prev, allowCustomEndpoint: e.target.checked }))}
+                        className="mt-1"
+                      />
+                      <span className="text-sm text-gray-300">
+                        Allow sending the API key to this custom (non-local, non-allowlisted) endpoint.
+                        Loopback/LAN and known providers (OpenAI, Anthropic, OpenRouter, …) are always allowed;
+                        cloud-metadata hosts are always blocked. Leave off unless you trust this host.
+                      </span>
+                    </label>
+                  </FormField>
+                </>
+              )}
+
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={formData.enabled}
+                  onChange={(e) => setFormData(prev => ({ ...prev, enabled: e.target.checked }))}
+                  className="w-4 h-4 rounded border-port-border bg-port-bg"
+                />
+                <span className="text-sm text-gray-400">Enabled</span>
+              </label>
+
+              {isGrokBuildCli({ type: formData.type, command: formData.command }) && <GrokUploadWarning />}
+
+              {isOrcaRouterBackedProvider(provider) && (
+                <OrcaRouterKeyHint
+                  sibling={allProviders.find(p => p.id === 'orcarouter')}
+                  onEdit={onEditProvider}
+                />
+              )}
+            </div>
           )}
 
-          {formData.type === 'api' && (
-            <>
-              <FormField label="Endpoint *">
-                <input
-                  type="url"
-                  value={formData.endpoint}
-                  onChange={(e) => setFormData(prev => ({ ...prev, endpoint: e.target.value }))}
-                  placeholder="http://localhost:1234/v1"
-                  required={formData.type === 'api'}
-                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-                />
-              </FormField>
-
-              <FormField label="API Key">
-                <input
-                  type="password"
-                  value={formData.apiKey}
-                  onChange={(e) => setFormData(prev => ({ ...prev, apiKey: e.target.value }))}
-                  placeholder={provider?.hasApiKey
-                    ? 'Key set — leave blank to keep'
-                    : isLocalEndpoint(formData.endpoint)
-                      ? 'Not needed for local endpoints'
-                      : 'Paste the key from your provider dashboard'}
-                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+          {activeTab === 'models' && (
+            <div className="space-y-4">
+              <FormField label={<>
+                  Available Models
+                  {formData.type === 'api' && <span className="text-xs text-gray-500 ml-2">(Use Refresh button after saving)</span>}
+                </>}>
+                <textarea
+                  value={(formData.models || []).join(', ')}
+                  onChange={(e) => {
+                    const models = e.target.value
+                      .split(',')
+                      .map(m => m.trim())
+                      .filter(Boolean);
+                    setFormData(prev => ({ ...prev, models }));
+                  }}
+                  placeholder="model-1, model-2, model-3"
+                  rows={2}
+                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white resize-none focus:border-port-accent focus:outline-hidden"
                 />
                 <p className="text-xs text-gray-500 mt-1">
-                  This field is the only place API providers read a key from — it's stored on this
-                  provider and sent as an <code>Authorization: Bearer</code> header on every request.
-                  No environment variable is involved. Hosted APIs (Cerebras, Grok, NVIDIA, OrcaRouter, …) require
-                  one; local backends (Ollama, LM Studio) don't.
+                  Comma-separated list of available models. For API providers, use Refresh to auto-populate.
                 </p>
               </FormField>
 
-              <FormField label="Custom endpoint">
-                <label htmlFor="allowCustomEndpoint" className="flex items-start gap-2 cursor-pointer">
+              <FormField label="Default Model">
+                {availableModels.length > 0 ? (
+                  <select
+                    value={formData.defaultModel}
+                    onChange={(e) => setFormData(prev => ({ ...prev, defaultModel: e.target.value }))}
+                    className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                  >
+                    {modelSelectOptions}
+                  </select>
+                ) : (
                   <input
-                    id="allowCustomEndpoint"
-                    type="checkbox"
-                    checked={formData.allowCustomEndpoint}
-                    onChange={(e) => setFormData(prev => ({ ...prev, allowCustomEndpoint: e.target.checked }))}
-                    className="mt-1"
+                    type="text"
+                    value={formData.defaultModel}
+                    onChange={(e) => setFormData(prev => ({ ...prev, defaultModel: e.target.value }))}
+                    placeholder="claude-sonnet-4-20250514"
+                    className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                   />
-                  <span className="text-sm text-gray-300">
-                    Allow sending the API key to this custom (non-local, non-allowlisted) endpoint.
-                    Loopback/LAN and known providers (OpenAI, Anthropic, OpenRouter, …) are always allowed;
-                    cloud-metadata hosts are always blocked. Leave off unless you trust this host.
-                  </span>
-                </label>
+                )}
+                <p className="text-xs text-gray-500 mt-1">
+                  {availableModels.length > 0
+                    ? 'Model to use when no tier is specified'
+                    : 'Save and test provider to fetch available models'}
+                </p>
               </FormField>
-            </>
+
+              {/* Model Tiers */}
+              <div className="border-t border-port-border pt-4 mt-4">
+                <h4 className="text-sm font-medium text-gray-300 mb-3">Model Tiers</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <FormField labelClassName="block text-xs text-gray-400 mb-1" label={<>
+                      <span className="inline-block w-2 h-2 rounded-full bg-port-success mr-1"></span>
+                      Light (fast)
+                    </>}>
+                    {availableModels.length > 0 ? (
+                      <select
+                        value={formData.lightModel}
+                        onChange={(e) => setFormData(prev => ({ ...prev, lightModel: e.target.value }))}
+                        className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
+                      >
+                        {modelSelectOptions}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={formData.lightModel}
+                        onChange={(e) => setFormData(prev => ({ ...prev, lightModel: e.target.value }))}
+                        placeholder="haiku"
+                        className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
+                      />
+                    )}
+                  </FormField>
+                  <FormField labelClassName="block text-xs text-gray-400 mb-1" label={<>
+                      <span className="inline-block w-2 h-2 rounded-full bg-port-warning mr-1"></span>
+                      Medium (balanced)
+                    </>}>
+                    {availableModels.length > 0 ? (
+                      <select
+                        value={formData.mediumModel}
+                        onChange={(e) => setFormData(prev => ({ ...prev, mediumModel: e.target.value }))}
+                        className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
+                      >
+                        {modelSelectOptions}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={formData.mediumModel}
+                        onChange={(e) => setFormData(prev => ({ ...prev, mediumModel: e.target.value }))}
+                        placeholder="sonnet"
+                        className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
+                      />
+                    )}
+                  </FormField>
+                  <FormField labelClassName="block text-xs text-gray-400 mb-1" label={<>
+                      <span className="inline-block w-2 h-2 rounded-full bg-port-error mr-1"></span>
+                      Heavy (powerful)
+                    </>}>
+                    {availableModels.length > 0 ? (
+                      <select
+                        value={formData.heavyModel}
+                        onChange={(e) => setFormData(prev => ({ ...prev, heavyModel: e.target.value }))}
+                        className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
+                      >
+                        {modelSelectOptions}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={formData.heavyModel}
+                        onChange={(e) => setFormData(prev => ({ ...prev, heavyModel: e.target.value }))}
+                        placeholder="opus"
+                        className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
+                      />
+                    )}
+                  </FormField>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  {availableModels.length > 0
+                    ? 'Used for intelligent model selection based on task requirements'
+                    : 'Save provider, then use Test or Refresh to fetch available models'}
+                </p>
+              </div>
+
+              {/* Fallback Provider */}
+              <div className="border-t border-port-border pt-4 mt-4">
+                <FormField label="Fallback Provider">
+                <select
+                  value={formData.fallbackProvider}
+                  onChange={(e) => setFormData(prev => ({
+                    ...prev,
+                    fallbackProvider: e.target.value,
+                    // The model belongs to the fallback provider; clear it when the
+                    // provider changes so a stale model from the previous pick
+                    // doesn't carry over.
+                    fallbackModel: ''
+                  }))}
+                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                >
+                  <option value="">None (use system default)</option>
+                  {fallbackOptions.map(p => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  If this provider hits a usage limit or becomes unavailable, tasks will automatically use the fallback provider.
+                </p>
+                </FormField>
+
+                {formData.fallbackProvider && (
+                  <FormField label="Fallback Model" className="mt-3">
+                    {fallbackModelOptions.length > 0 ? (
+                      <select
+                        value={formData.fallbackModel}
+                        onChange={(e) => setFormData(prev => ({ ...prev, fallbackModel: e.target.value }))}
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                      >
+                        <option value="">Use fallback provider's default</option>
+                        {fallbackModelOptions.map(model => (
+                          <option key={model} value={model}>{modelOptionLabel(model, localModels.ctxById)}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={formData.fallbackModel}
+                        onChange={(e) => setFormData(prev => ({ ...prev, fallbackModel: e.target.value }))}
+                        placeholder="Use fallback provider's default"
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                      />
+                    )}
+                    <p className="text-xs text-gray-500 mt-1">
+                      Model to run on the fallback provider. Leave blank to use that provider's default model.
+                    </p>
+                  </FormField>
+                )}
+              </div>
+            </div>
           )}
 
-          <FormField label={<>
-              Available Models
-              {formData.type === 'api' && <span className="text-xs text-gray-500 ml-2">(Use Refresh button after saving)</span>}
-            </>}>
-            <textarea
-              value={(formData.models || []).join(', ')}
-              onChange={(e) => {
-                const models = e.target.value
-                  .split(',')
-                  .map(m => m.trim())
-                  .filter(Boolean);
-                setFormData(prev => ({ ...prev, models }));
-              }}
-              placeholder="model-1, model-2, model-3"
-              rows={2}
-              className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white resize-none focus:border-port-accent focus:outline-hidden"
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              Comma-separated list of available models. For API providers, use Refresh to auto-populate.
-            </p>
-          </FormField>
-
-          <FormField label="Default Model">
-            {availableModels.length > 0 ? (
-              <select
-                value={formData.defaultModel}
-                onChange={(e) => setFormData(prev => ({ ...prev, defaultModel: e.target.value }))}
-                className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-              >
-                {modelSelectOptions}
-              </select>
-            ) : (
-              <input
-                type="text"
-                value={formData.defaultModel}
-                onChange={(e) => setFormData(prev => ({ ...prev, defaultModel: e.target.value }))}
-                placeholder="claude-sonnet-4-20250514"
-                className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+          {activeTab === 'generation' && (
+            <div className="space-y-4">
+              <EffortSelect
+                provider={isProcessProvider(capabilityProvider) ? capabilityProvider : null}
+                model={formData.defaultModel}
+                value={formData.effort}
+                onChange={(effort) => setFormData(prev => ({ ...prev, effort }))}
+                label="Default Effort"
+                hint={showsNumCtx
+                  ? 'Reasoning effort used when a run does not specify one — passed to the local model as reasoningEffort.'
+                  : 'Reasoning effort used when a run does not specify one.'}
               />
-            )}
-            <p className="text-xs text-gray-500 mt-1">
-              {availableModels.length > 0
-                ? 'Model to use when no tier is specified'
-                : 'Save and test provider to fetch available models'}
-            </p>
-          </FormField>
 
-          <EffortSelect
-            provider={isProcessProvider(formData) ? effortProvider : null}
-            model={formData.defaultModel}
-            value={formData.effort}
-            onChange={(effort) => setFormData(prev => ({ ...prev, effort }))}
-            label="Default Effort"
-            hint="Reasoning effort used when a run does not specify one."
-          />
-
-          {/* Model Tiers */}
-          <div className="border-t border-port-border pt-4 mt-4">
-            <h4 className="text-sm font-medium text-gray-300 mb-3">Model Tiers</h4>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <FormField labelClassName="block text-xs text-gray-400 mb-1" label={<>
-                  <span className="inline-block w-2 h-2 rounded-full bg-port-success mr-1"></span>
-                  Light (fast)
-                </>}>
-                {availableModels.length > 0 ? (
-                  <select
-                    value={formData.lightModel}
-                    onChange={(e) => setFormData(prev => ({ ...prev, lightModel: e.target.value }))}
-                    className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
-                  >
-                    {modelSelectOptions}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    value={formData.lightModel}
-                    onChange={(e) => setFormData(prev => ({ ...prev, lightModel: e.target.value }))}
-                    placeholder="haiku"
-                    className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
-                  />
-                )}
-              </FormField>
-              <FormField labelClassName="block text-xs text-gray-400 mb-1" label={<>
-                  <span className="inline-block w-2 h-2 rounded-full bg-port-warning mr-1"></span>
-                  Medium (balanced)
-                </>}>
-                {availableModels.length > 0 ? (
-                  <select
-                    value={formData.mediumModel}
-                    onChange={(e) => setFormData(prev => ({ ...prev, mediumModel: e.target.value }))}
-                    className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
-                  >
-                    {modelSelectOptions}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    value={formData.mediumModel}
-                    onChange={(e) => setFormData(prev => ({ ...prev, mediumModel: e.target.value }))}
-                    placeholder="sonnet"
-                    className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
-                  />
-                )}
-              </FormField>
-              <FormField labelClassName="block text-xs text-gray-400 mb-1" label={<>
-                  <span className="inline-block w-2 h-2 rounded-full bg-port-error mr-1"></span>
-                  Heavy (powerful)
-                </>}>
-                {availableModels.length > 0 ? (
-                  <select
-                    value={formData.heavyModel}
-                    onChange={(e) => setFormData(prev => ({ ...prev, heavyModel: e.target.value }))}
-                    className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
-                  >
-                    {modelSelectOptions}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    value={formData.heavyModel}
-                    onChange={(e) => setFormData(prev => ({ ...prev, heavyModel: e.target.value }))}
-                    placeholder="opus"
-                    className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded-lg text-white text-sm focus:border-port-accent focus:outline-hidden"
-                  />
-                )}
-              </FormField>
-            </div>
-            <p className="text-xs text-gray-500 mt-2">
-              {availableModels.length > 0
-                ? 'Used for intelligent model selection based on task requirements'
-                : 'Save provider, then use Test or Refresh to fetch available models'}
-            </p>
-          </div>
-
-          <FormField label="Timeout (ms)">
-            <input
-              type="number"
-              inputMode="numeric"
-              min={TIMEOUT_INPUT_MIN_MS}
-              max={TIMEOUT_INPUT_MAX_MS}
-              step={TIMEOUT_INPUT_STEP_MS}
-              value={formData.timeout}
-              onChange={(e) => setFormData(prev => ({ ...prev, timeout: e.target.value }))}
-              className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              {(() => {
-                // Same parser the submit path uses, so the displayed
-                // duration always matches what would be saved. parseTimeoutMs
-                // returns null for out-of-range/invalid → fall back to the
-                // generic cap message.
-                const ms = parseTimeoutMs(formData.timeout);
-                return ms != null
-                  ? `≈ ${formatDurationMs(ms)} per run`
-                  : `Per-call cap. Server max: ${TIMEOUT_INPUT_MAX_MS.toLocaleString()} ms (${formatDurationMs(TIMEOUT_INPUT_MAX_MS)}).`;
-              })()}
-            </p>
-          </FormField>
-
-          <div className="border-t border-port-border pt-4 mt-4">
-            <h4 className="text-sm font-medium text-gray-300 mb-3">Context Window</h4>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <FormField label="Planning Window">
+              <FormField label="Timeout (ms)">
                 <input
                   type="number"
                   inputMode="numeric"
-                  min="512"
-                  max="2097152"
-                  value={formData.contextWindow}
-                  onChange={(e) => setFormData(prev => ({ ...prev, contextWindow: e.target.value }))}
-                  placeholder="Auto from model"
+                  min={TIMEOUT_INPUT_MIN_MS}
+                  max={TIMEOUT_INPUT_MAX_MS}
+                  step={TIMEOUT_INPUT_STEP_MS}
+                  value={formData.timeout}
+                  onChange={(e) => setFormData(prev => ({ ...prev, timeout: e.target.value }))}
                   className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                 />
                 <p className="text-xs text-gray-500 mt-1">
-                  {plannedContextLabel ? `Budgeter uses ${plannedContextLabel}` : 'Leave blank to use model/provider defaults'}
+                  {(() => {
+                    // Same parser the submit path uses, so the displayed
+                    // duration always matches what would be saved. parseTimeoutMs
+                    // returns null for out-of-range/invalid → fall back to the
+                    // generic cap message.
+                    const ms = parseTimeoutMs(formData.timeout);
+                    return ms != null
+                      ? `≈ ${formatDurationMs(ms)} per run`
+                      : `Per-call cap. Server max: ${TIMEOUT_INPUT_MAX_MS.toLocaleString()} ms (${formatDurationMs(TIMEOUT_INPUT_MAX_MS)}).`;
+                  })()}
                 </p>
               </FormField>
 
-              {showsNumCtx && (
-                <FormField label="Local num_ctx">
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    min="512"
-                    max="1048576"
-                    value={formData.numCtx}
-                    onChange={(e) => setFormData(prev => ({ ...prev, numCtx: e.target.value }))}
-                    placeholder="Ollama request size"
-                    className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    {formData.type === 'api'
-                      ? 'Sent to compatible local backends; used for planning when no model window is known.'
-                      : 'PortOS reloads the Ollama daemon at this window before the run — the CLI/TUI talks to Ollama directly, so nothing else can raise it. Leave blank to keep Ollama\'s VRAM-based auto-pick; make sure the model still fits at the larger size.'}
-                  </p>
-                </FormField>
-              )}
-            </div>
-          </div>
+              <div className="border-t border-port-border pt-4 mt-4">
+                <h4 className="text-sm font-medium text-gray-300 mb-3">Context Window</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <FormField label="Planning Window">
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min="512"
+                      max="2097152"
+                      value={formData.contextWindow}
+                      onChange={(e) => setFormData(prev => ({ ...prev, contextWindow: e.target.value }))}
+                      placeholder="Auto from model"
+                      className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      {plannedContextLabel ? `Budgeter uses ${plannedContextLabel}` : 'Leave blank to use model/provider defaults'}
+                    </p>
+                  </FormField>
 
-          {showsNumCtx && (
-            <div className="border-t border-port-border pt-4 mt-4">
-              <h4 className="text-sm font-medium text-gray-300 mb-3">Ollama Generation</h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <FormField label="Temperature">
-                  <input
-                    type="number"
-                    min="0"
-                    max="2"
-                    step="0.1"
-                    value={formData.temperature}
-                    onChange={(e) => setFormData(prev => ({ ...prev, temperature: e.target.value }))}
-                    className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Defaults to 0.6 for local Ollama agent runs.</p>
-                </FormField>
-                <FormField label="Thinking mode">
-                  <label className="flex items-center gap-2 min-h-10 text-sm text-gray-300">
-                    <input type="checkbox" checked={formData.thinking} onChange={(e) => setFormData(prev => ({ ...prev, thinking: e.target.checked }))} />
-                    Enable model reasoning
-                  </label>
-                  <p className="text-xs text-gray-500 mt-1">Sent to thinking-capable Ollama models; unsupported models ignore it.</p>
-                </FormField>
+                  {showsNumCtx && (
+                    <FormField label="Local num_ctx">
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        min="512"
+                        max="1048576"
+                        value={formData.numCtx}
+                        onChange={(e) => setFormData(prev => ({ ...prev, numCtx: e.target.value }))}
+                        placeholder="Ollama request size"
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        {formData.type === 'api'
+                          ? 'Sent to compatible local backends; used for planning when no model window is known.'
+                          : 'PortOS reloads the Ollama daemon at this window before the run — the CLI/TUI talks to Ollama directly, so nothing else can raise it. Leave blank to keep Ollama\'s VRAM-based auto-pick; make sure the model still fits at the larger size.'}
+                      </p>
+                    </FormField>
+                  )}
+                </div>
               </div>
+
+              {showsNumCtx && (
+                <div className="border-t border-port-border pt-4 mt-4">
+                  <h4 className="text-sm font-medium text-gray-300 mb-3">Ollama Generation</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <FormField label="Temperature">
+                      <input
+                        type="number"
+                        min="0"
+                        max="2"
+                        step="0.1"
+                        value={formData.temperature}
+                        onChange={(e) => setFormData(prev => ({ ...prev, temperature: e.target.value }))}
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Defaults to 0.6 for local Ollama agent runs.</p>
+                    </FormField>
+                    {/* Hand-rolled rather than FormField: the control is a
+                        checkbox inside its own <label>, so FormField's
+                        "bind the label to the first child" rule would point
+                        htmlFor at that <label> instead of the input. */}
+                    <div>
+                      <span className="block text-sm text-gray-400 mb-1">Thinking mode</span>
+                      <label htmlFor="provider-thinking" className="flex items-center gap-2 min-h-10 text-sm text-gray-300">
+                        <input
+                          id="provider-thinking"
+                          type="checkbox"
+                          checked={formData.thinking}
+                          onChange={(e) => setFormData(prev => ({ ...prev, thinking: e.target.checked }))}
+                          className="w-4 h-4 rounded border-port-border bg-port-bg"
+                        />
+                        Enable model reasoning
+                      </label>
+                      <p className="text-xs text-gray-500 mt-1">Sent to thinking-capable Ollama models; unsupported models ignore it.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
-          {/* Fallback Provider */}
-          <div className="border-t border-port-border pt-4 mt-4">
-            <FormField label="Fallback Provider">
-            <select
-              value={formData.fallbackProvider}
-              onChange={(e) => setFormData(prev => ({
-                ...prev,
-                fallbackProvider: e.target.value,
-                // The model belongs to the fallback provider; clear it when the
-                // provider changes so a stale model from the previous pick
-                // doesn't carry over.
-                fallbackModel: ''
-              }))}
-              className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-            >
-              <option value="">None (use system default)</option>
-              {fallbackOptions.map(p => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-            <p className="text-xs text-gray-500 mt-1">
-              If this provider hits a usage limit or becomes unavailable, tasks will automatically use the fallback provider.
-            </p>
-            </FormField>
-
-            {formData.fallbackProvider && (
-              <FormField label="Fallback Model" className="mt-3">
-                {fallbackModelOptions.length > 0 ? (
-                  <select
-                    value={formData.fallbackModel}
-                    onChange={(e) => setFormData(prev => ({ ...prev, fallbackModel: e.target.value }))}
-                    className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-                  >
-                    <option value="">Use fallback provider's default</option>
-                    {fallbackModelOptions.map(model => (
-                      <option key={model} value={model}>{modelOptionLabel(model, localModels.ctxById)}</option>
-                    ))}
-                  </select>
-                ) : (
+          {activeTab === 'environment' && (
+            <div className="space-y-4">
+              {/* Consumed only when spawning CLI/TUI child processes; API runs
+                  never read them (auth is the API Key field on the Connection
+                  tab). For API type the add-row is hidden so a key can't be
+                  "set" here by mistake, but existing entries stay
+                  editable/removable. */}
+              <div>
+                {formData.type === 'api' && Object.entries(formData.envVars).length > 0 && (
+                  <p className="text-xs text-port-warning mb-2">
+                    API providers ignore environment variables — these entries have no effect.
+                    Put the key in the API Key field on the Connection tab.
+                  </p>
+                )}
+                {Object.entries(formData.envVars).length > 0 && (
+                  <div className="space-y-2 mb-3">
+                    {Object.entries(formData.envVars).map(([key, value]) => {
+                      const isSecret = formData.secretEnvVars.includes(key);
+                      return (
+                        <div key={key} className="flex items-center gap-2">
+                          <code className="text-xs text-gray-300 bg-port-bg px-2 py-1.5 rounded border border-port-border shrink-0">{key}</code>
+                          <input
+                            type={isSecret ? 'password' : 'text'}
+                            aria-label={`${key} value`}
+                            value={value}
+                            onChange={(e) => setFormData(prev => ({
+                              ...prev,
+                              envVars: { ...prev.envVars, [key]: e.target.value }
+                            }))}
+                            className="flex-1 min-w-0 px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm focus:border-port-accent focus:outline-hidden"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setFormData(prev => ({
+                              ...prev,
+                              secretEnvVars: isSecret
+                                ? prev.secretEnvVars.filter(k => k !== key)
+                                : [...prev.secretEnvVars, key]
+                            }))}
+                            className={`px-2 py-1.5 text-xs rounded transition-colors shrink-0 ${
+                              isSecret
+                                ? 'text-port-warning bg-port-warning/20 hover:bg-port-warning/30'
+                                : 'text-gray-400 hover:bg-port-border/50'
+                            }`}
+                            title={isSecret ? 'Secret (click to unmask)' : 'Not secret (click to mask)'}
+                          >
+                            {isSecret ? '🔒' : '🔓'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setFormData(prev => {
+                              const { [key]: _, ...rest } = prev.envVars;
+                              return {
+                                ...prev,
+                                envVars: rest,
+                                secretEnvVars: prev.secretEnvVars.filter(k => k !== key)
+                              };
+                            })}
+                            className="px-2 py-1.5 text-xs text-port-error hover:bg-port-error/20 rounded transition-colors shrink-0"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {formData.type !== 'api' && (
+                <div className="flex gap-2">
                   <input
                     type="text"
-                    value={formData.fallbackModel}
-                    onChange={(e) => setFormData(prev => ({ ...prev, fallbackModel: e.target.value }))}
-                    placeholder="Use fallback provider's default"
-                    className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                    value={newEnvKey}
+                    onChange={(e) => setNewEnvKey(e.target.value.toUpperCase())}
+                    placeholder="KEY"
+                    aria-label="New environment variable name"
+                    className="w-1/3 px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm focus:border-port-accent focus:outline-hidden font-mono"
                   />
+                  <input
+                    type={newEnvSecret ? 'password' : 'text'}
+                    value={newEnvValue}
+                    onChange={(e) => setNewEnvValue(e.target.value)}
+                    placeholder="value"
+                    aria-label="New environment variable value"
+                    className="flex-1 px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm focus:border-port-accent focus:outline-hidden"
+                  />
+                  <label className="flex items-center gap-1 text-xs text-gray-400 shrink-0 cursor-pointer" title="Mark as secret (value will be masked on provider list)">
+                    <input
+                      type="checkbox"
+                      checked={newEnvSecret}
+                      onChange={(e) => setNewEnvSecret(e.target.checked)}
+                      className="w-3.5 h-3.5 rounded border-port-border bg-port-bg"
+                    />
+                    Secret
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (newEnvKey.trim()) {
+                        setFormData(prev => ({
+                          ...prev,
+                          envVars: { ...prev.envVars, [newEnvKey.trim()]: newEnvValue },
+                          secretEnvVars: newEnvSecret
+                            ? [...prev.secretEnvVars, newEnvKey.trim()]
+                            : prev.secretEnvVars
+                        }));
+                        setNewEnvKey('');
+                        setNewEnvValue('');
+                        setNewEnvSecret(false);
+                      }
+                    }}
+                    disabled={!newEnvKey.trim()}
+                    className="px-3 py-1.5 text-sm bg-port-border hover:bg-port-border/80 text-white rounded transition-colors disabled:opacity-50 shrink-0"
+                  >
+                    Add
+                  </button>
+                </div>
                 )}
-                <p className="text-xs text-gray-500 mt-1">
-                  Model to run on the fallback provider. Leave blank to use that provider's default model.
+                <p className="text-xs text-gray-500 mt-2">
+                  {formData.type === 'api'
+                    ? 'Not used by API providers — auth goes in the API Key field on the Connection tab. Env vars only apply to CLI/TUI process providers.'
+                    : 'Environment variables passed to the CLI process (e.g., CLAUDE_CODE_USE_BEDROCK=1, AWS_PROFILE).'}
                 </p>
-              </FormField>
-            )}
-          </div>
-
-          {/* Environment Variables — consumed only when spawning CLI/TUI child
-              processes; API runs never read them (auth is the API Key field).
-              For API type the add-row is hidden so a key can't be "set" here by
-              mistake, but existing entries stay editable/removable. */}
-          <div className="border-t border-port-border pt-4 mt-4">
-            <h4 className="text-sm font-medium text-gray-300 mb-3">Environment Variables</h4>
-            {formData.type === 'api' && Object.entries(formData.envVars).length > 0 && (
-              <p className="text-xs text-port-warning mb-2">
-                API providers ignore environment variables — these entries have no effect.
-                Put the key in the API Key field above.
-              </p>
-            )}
-            {Object.entries(formData.envVars).length > 0 && (
-              <div className="space-y-2 mb-3">
-                {Object.entries(formData.envVars).map(([key, value]) => {
-                  const isSecret = formData.secretEnvVars.includes(key);
-                  return (
-                    <div key={key} className="flex items-center gap-2">
-                      <code className="text-xs text-gray-300 bg-port-bg px-2 py-1.5 rounded border border-port-border shrink-0">{key}</code>
-                      <input
-                        type={isSecret ? 'password' : 'text'}
-                        aria-label={`${key} value`}
-                        value={value}
-                        onChange={(e) => setFormData(prev => ({
-                          ...prev,
-                          envVars: { ...prev.envVars, [key]: e.target.value }
-                        }))}
-                        className="flex-1 min-w-0 px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm focus:border-port-accent focus:outline-hidden"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setFormData(prev => ({
-                          ...prev,
-                          secretEnvVars: isSecret
-                            ? prev.secretEnvVars.filter(k => k !== key)
-                            : [...prev.secretEnvVars, key]
-                        }))}
-                        className={`px-2 py-1.5 text-xs rounded transition-colors shrink-0 ${
-                          isSecret
-                            ? 'text-port-warning bg-port-warning/20 hover:bg-port-warning/30'
-                            : 'text-gray-400 hover:bg-port-border/50'
-                        }`}
-                        title={isSecret ? 'Secret (click to unmask)' : 'Not secret (click to mask)'}
-                      >
-                        {isSecret ? '🔒' : '🔓'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setFormData(prev => {
-                          const { [key]: _, ...rest } = prev.envVars;
-                          return {
-                            ...prev,
-                            envVars: rest,
-                            secretEnvVars: prev.secretEnvVars.filter(k => k !== key)
-                          };
-                        })}
-                        className="px-2 py-1.5 text-xs text-port-error hover:bg-port-error/20 rounded transition-colors shrink-0"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  );
-                })}
               </div>
-            )}
-            {formData.type !== 'api' && (
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={newEnvKey}
-                onChange={(e) => setNewEnvKey(e.target.value.toUpperCase())}
-                placeholder="KEY"
-                aria-label="New environment variable name"
-                className="w-1/3 px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm focus:border-port-accent focus:outline-hidden font-mono"
-              />
-              <input
-                type={newEnvSecret ? 'password' : 'text'}
-                value={newEnvValue}
-                onChange={(e) => setNewEnvValue(e.target.value)}
-                placeholder="value"
-                aria-label="New environment variable value"
-                className="flex-1 px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm focus:border-port-accent focus:outline-hidden"
-              />
-              <label className="flex items-center gap-1 text-xs text-gray-400 shrink-0 cursor-pointer" title="Mark as secret (value will be masked on provider list)">
-                <input
-                  type="checkbox"
-                  checked={newEnvSecret}
-                  onChange={(e) => setNewEnvSecret(e.target.checked)}
-                  className="w-3.5 h-3.5 rounded border-port-border bg-port-bg"
-                />
-                Secret
-              </label>
-              <button
-                type="button"
-                onClick={() => {
-                  if (newEnvKey.trim()) {
-                    setFormData(prev => ({
-                      ...prev,
-                      envVars: { ...prev.envVars, [newEnvKey.trim()]: newEnvValue },
-                      secretEnvVars: newEnvSecret
-                        ? [...prev.secretEnvVars, newEnvKey.trim()]
-                        : prev.secretEnvVars
-                    }));
-                    setNewEnvKey('');
-                    setNewEnvValue('');
-                    setNewEnvSecret(false);
-                  }
-                }}
-                disabled={!newEnvKey.trim()}
-                className="px-3 py-1.5 text-sm bg-port-border hover:bg-port-border/80 text-white rounded transition-colors disabled:opacity-50 shrink-0"
-              >
-                Add
-              </button>
             </div>
-            )}
-            <p className="text-xs text-gray-500 mt-2">
-              {formData.type === 'api'
-                ? 'Not used by API providers — auth goes in the API Key field above. Env vars only apply to CLI/TUI process providers.'
-                : 'Environment variables passed to the CLI process (e.g., CLAUDE_CODE_USE_BEDROCK=1, AWS_PROFILE).'}
-            </p>
-          </div>
-
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={formData.enabled}
-              onChange={(e) => setFormData(prev => ({ ...prev, enabled: e.target.checked }))}
-              className="w-4 h-4 rounded border-port-border bg-port-bg"
-            />
-            <span className="text-sm text-gray-400">Enabled</span>
-          </label>
-
-           {isGrokBuildCli({ type: formData.type, command: formData.command }) && <GrokUploadWarning />}
-
-           {isOrcaRouterBackedProvider(provider) && (
-             <OrcaRouterKeyHint
-              sibling={allProviders.find(p => p.id === 'orcarouter')}
-              onEdit={onEditProvider}
-             />
-           )}
-
+          )}
 
           <div className="flex justify-end gap-3 pt-4">
             <button
@@ -1527,6 +1622,6 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
             </button>
           </div>
         </form>
-    </Modal>
+    </Drawer>
   );
 }

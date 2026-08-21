@@ -274,6 +274,10 @@ export default function App() {
           <Route path="devtools/processes" element={<ProcessesPage />} />
           <Route path="devtools/agents" element={<AgentsPage />} />
           <Route path="ai" element={<AIProviders />} />
+          {/* The provider editor is a deep-linkable slide-in over the same page:
+              /ai/new creates, /ai/:providerId edits. */}
+          <Route path="ai/new" element={<AIProviders />} />
+          <Route path="ai/:providerId" element={<AIProviders />} />
           <Route path="prompts" element={<PromptManager />} />
           <Route path="cos" element={<Navigate to="/cos/tasks" replace />} />
           <Route path="cos/:tab" element={<ChiefOfStaff />} />

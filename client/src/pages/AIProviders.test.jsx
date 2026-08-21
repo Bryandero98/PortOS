@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, Route, Routes } from 'react-router';
 
 const api = vi.hoisted(() => ({
   getProviders: vi.fn(),
@@ -48,11 +48,24 @@ import AIProviders, { PROVIDER_SECTIONS } from './AIProviders';
 import { CARD_STATE_STYLES } from '../components/providers/ProviderCard';
 import { PROVIDER_CARD_STATE } from '../utils/providers';
 
-const renderPage = () => render(
-  <MemoryRouter>
-    <AIProviders />
+// The editor is route-driven (/ai/new · /ai/:providerId over the same page), so
+// the tests mount the real route table rather than a bare page — clicking Edit
+// navigates, and a deep link can be rendered directly.
+const renderPage = (initialPath = '/ai') => render(
+  <MemoryRouter initialEntries={[initialPath]}>
+    <Routes>
+      <Route path="/ai" element={<AIProviders />} />
+      <Route path="/ai/new" element={<AIProviders />} />
+      <Route path="/ai/:providerId" element={<AIProviders />} />
+    </Routes>
   </MemoryRouter>
 );
+
+// The editor opens on the Connection tab; every other field lives behind a tab
+// switch (the drawer renders only the active panel).
+const openEditorTab = async (label) => {
+  fireEvent.click(await screen.findByRole('tab', { name: label }));
+};
 
 // One entry of the `runtimes` map from GET /api/providers/runtimes.
 const missingRuntime = {
@@ -527,6 +540,16 @@ describe('CoS Agent Runner allowlist warning', () => {
     expect(await screen.findByText(/command allowlist/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled();
   });
+});
+
+describe('provider reasoning defaults', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+  });
 
   it('shows the provider default-effort selector for an effort-capable provider', async () => {
     api.getProviders.mockResolvedValue({
@@ -546,6 +569,7 @@ describe('CoS Agent Runner allowlist warning', () => {
     renderPage();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await openEditorTab('Generation');
 
     const effort = await screen.findByLabelText('Default Effort');
     expect(effort).toHaveValue('');
@@ -557,6 +581,130 @@ describe('CoS Agent Runner allowlist warning', () => {
       'codex',
       expect.objectContaining({ effort: 'xhigh' }),
     ));
+  });
+
+  // `ollamaBacked` identifies the OpenCode-Ollama ladder but is NOT a form
+  // field, so a capability shape built from formData alone dropped it — the
+  // effort select never rendered, and any stored level was wiped on save.
+  it('offers effort and thinking defaults on an Ollama-backed OpenCode provider', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'opencode-ollama',
+        name: 'OpenCode Ollama',
+        type: 'cli',
+        command: 'opencode',
+        args: ['run'],
+        enabled: true,
+        ollamaBacked: true,
+        models: ['qwen3:32b'],
+        defaultModel: 'qwen3:32b',
+        effort: '',
+        thinking: true,
+        envVars: {},
+      }],
+      activeProvider: 'opencode-ollama',
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await openEditorTab('Generation');
+
+    const effort = await screen.findByLabelText('Default Effort');
+    fireEvent.change(effort, { target: { value: 'high' } });
+
+    const thinking = screen.getByLabelText('Enable model reasoning');
+    expect(thinking).toBeChecked();
+    fireEvent.click(thinking);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.updateProvider).toHaveBeenCalledWith(
+      'opencode-ollama',
+      expect.objectContaining({ effort: 'high', thinking: false }),
+    ));
+  });
+});
+
+describe('provider editor deep links', () => {
+  const provider = {
+    id: 'codex',
+    name: 'Codex',
+    type: 'cli',
+    command: 'codex',
+    enabled: true,
+    models: ['gpt-5'],
+    defaultModel: 'gpt-5',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+    api.getProviders.mockResolvedValue({ providers: [provider], activeProvider: 'codex' });
+  });
+
+  it('opens the editor for the provider named in the URL', async () => {
+    renderPage('/ai/codex');
+
+    expect(await screen.findByRole('heading', { name: 'Edit Provider' })).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Codex')).toBeInTheDocument();
+  });
+
+  it('opens the create form on /ai/new', async () => {
+    renderPage('/ai/new');
+
+    expect(await screen.findByRole('heading', { name: 'Add Provider' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create' })).toBeInTheDocument();
+  });
+
+  // A deleted/hand-edited id must bounce back to the list rather than leaving a
+  // blank editor open over it.
+  it('sends an unknown provider id back to the list', async () => {
+    renderPage('/ai/does-not-exist');
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('No provider with id "does-not-exist"'));
+    expect(screen.queryByRole('heading', { name: 'Edit Provider' })).toBeNull();
+  });
+
+  // The id comes off the URL, so a prototype key must not resolve to
+  // Object.prototype and open the editor on it.
+  it('does not open the editor for a prototype-chain id', async () => {
+    renderPage('/ai/__proto__');
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('No provider with id "__proto__"'));
+    expect(screen.queryByRole('heading', { name: 'Edit Provider' })).toBeNull();
+  });
+
+  it('honors the ?providerTab deep link', async () => {
+    renderPage('/ai/codex?providerTab=models');
+
+    expect(await screen.findByLabelText('Default Model')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Models' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  // Only the active tab renders, so the browser can't run its own required-field
+  // check for a Save triggered from another tab.
+  it('sends the user back to the field a cross-tab Save left empty', async () => {
+    renderPage('/ai/codex');
+
+    fireEvent.change(await screen.findByDisplayValue('Codex'), { target: { value: '  ' } });
+    await openEditorTab('Models');
+    await screen.findByLabelText('Default Model');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Name is required'));
+    expect(api.updateProvider).not.toHaveBeenCalled();
+    expect(screen.getByRole('tab', { name: 'Connection' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('closes back to the list', async () => {
+    renderPage('/ai/codex');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Edit Provider' })).toBeNull());
   });
 });
 
@@ -589,6 +737,8 @@ describe('Local num_ctx field', () => {
       envVars: {},
     });
 
+    await openEditorTab('Generation');
+
     const numCtx = await screen.findByLabelText('Local num_ctx');
     fireEvent.change(numCtx, { target: { value: '131072' } });
 
@@ -609,6 +759,8 @@ describe('Local num_ctx field', () => {
       models: ['gpt-5'],
       defaultModel: 'gpt-5',
     });
+
+    await openEditorTab('Generation');
 
     await screen.findByLabelText('Planning Window');
     expect(screen.queryByLabelText('Local num_ctx')).toBeNull();
