@@ -73,6 +73,9 @@ import {
 import {
   compareTunings,
   describeTuning,
+  launchArgs,
+  launchConfig,
+  launchEnv,
   launchTuning,
   normalizeTuning,
   requestBody,
@@ -90,8 +93,12 @@ import { listModels } from './localLlm.js';
 import {
   getLoadedModels as getLoadedOllamaModels,
   getLastInstalledModelsError as getOllamaListError,
+  restartWithEnv as restartOllamaWithEnv,
 } from './ollamaManager.js';
-import { getLastListError as getLmStudioListError } from './lmStudioManager.js';
+import {
+  getLastListError as getLmStudioListError,
+  loadModelWithArgs as loadLmStudioModelWithArgs,
+} from './lmStudioManager.js';
 
 // Re-exported so the store split stays an implementation detail for callers that
 // only ever wanted "the assessments feature".
@@ -361,6 +368,46 @@ export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_
   }
 }
 
+// Every applier reports the same three things — did it take effect, why not,
+// and what the daemon is running now — out of a manager result that spells
+// success differently (`applied` vs `success`). Normalizing here keeps each
+// entry below to the one line that is actually runtime-specific.
+const toApplication = (ok, error, fallbackReason) => ({
+  applied: ok === true,
+  reason: ok === true ? null : (error || fallbackReason),
+  config: null,
+});
+
+/**
+ * Put a runtime's launch knobs into effect, each by the only transport that
+ * reaches it: llama.cpp relaunches with a new command line, Ollama restarts
+ * carrying new environment, LM Studio reloads the model through `lms load`.
+ *
+ * Keyed by BACKEND rather than by transport because the applier is "who owns
+ * this daemon" — the manager that knows how to stop it, what to put back if the
+ * new configuration will not start, and whether the user registered it to launch
+ * at login. A runtime with no entry has no launch path, which is why
+ * `lib/localModelTuning.js` declares no launch knob for one; this refusal is the
+ * backstop for a knob added without one, so the reading is filed as "not
+ * applied" instead of silently attributed to a tuning that never ran.
+ */
+const LAUNCH_APPLIERS = {
+  llama: ({ launch }) => relaunchLlamaServerWithTuning(launchConfig('llama', launch)),
+  ollama: ({ launch }) => restartOllamaWithEnv(launchEnv('ollama', launch))
+    .then((r) => toApplication(r.applied, r.error, `Ollama could not be restarted with that tuning (${r.reason})`)),
+  lmstudio: ({ modelId, launch }) => loadLmStudioModelWithArgs(modelId, launchArgs('lmstudio', launch))
+    .then((r) => toApplication(r.success, r.error, 'LM Studio could not reload the model with that tuning')),
+};
+
+async function applyLaunchTuning({ backend, modelId, launch }) {
+  const applier = LAUNCH_APPLIERS[backend];
+  if (!applier) {
+    return { applied: false, reason: `PortOS does not start the ${backend} runtime, so it cannot apply launch tuning`, config: null };
+  }
+  return applier({ backend, modelId, launch })
+    .catch((err) => ({ applied: false, reason: err?.message || 'relaunch failed', config: null }));
+}
+
 // The measurement itself, with the accelerator already claimed by the caller
 // above. Split out so the claim's release is one `finally` around one call
 // rather than wrapped around a 100-line body.
@@ -369,20 +416,17 @@ async function measureModel({ backend, modelId, contexts, tuning, signal, emit }
   const tuningKey = tuningSignature(normalizedTuning);
   const tuningLabel = describeTuning(backend, normalizedTuning);
 
-  // Launch knobs go on the daemon's command line BEFORE the first sample, or
-  // the measurement would describe the previous configuration while claiming
-  // the new one. `applied: false` is recorded rather than swallowed — a reading
-  // taken under a tuning PortOS could not apply must not be filed as evidence
-  // for that tuning.
+  // Launch knobs reach the daemon BEFORE the first sample, or the measurement
+  // would describe the previous configuration while claiming the new one.
+  // `applied: false` is recorded rather than swallowed — a reading taken under a
+  // tuning PortOS could not apply must not be filed as evidence for that tuning.
   const launch = launchTuning(backend, normalizedTuning);
-  const applicable = { ...launch, ...requestBody(backend, normalizedTuning) };
+  const request = requestBody(backend, normalizedTuning);
   const tuningApplication = Object.keys(launch).length > 0
-    ? await relaunchLlamaServerWithTuning(launch).catch((err) => ({ applied: false, reason: err?.message || 'relaunch failed', config: null }))
-    // `null`, NOT `true`, when nothing here is settable: an all-`record` tuning
-    // (LM Studio, MTPLX, vLLM) was never applied by PortOS in any sense, and
-    // reporting it as applied is the exact claim `lib/localModelTuning.js`
-    // forbids. `true` is reserved for knobs that actually reached the daemon.
-    : { applied: Object.keys(applicable).length > 0 ? true : null, reason: null, config: null };
+    ? await applyLaunchTuning({ backend, modelId, launch })
+    // `null`, NOT `true`, when nothing was tuned. `true` when the only knobs set
+    // ride on the request body, which needs no daemon restart to take effect.
+    : { applied: Object.keys(request).length > 0 ? true : null, reason: null, config: null };
 
   const endpoint = isEndpointRuntime(backend) ? await runtimeEndpoint(backend) : null;
   if (isEndpointRuntime(backend) && !endpoint) {
@@ -428,7 +472,7 @@ async function measureModel({ backend, modelId, contexts, tuning, signal, emit }
       temperature: 0,
       maxTokens: SAMPLE_MAX_TOKENS,
       timeoutMs: SAMPLE_TIMEOUT_MS,
-      extraBody: requestBody(backend, normalizedTuning),
+      extraBody: request,
       signal,
     };
     const result = await (endpoint

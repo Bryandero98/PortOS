@@ -122,8 +122,11 @@ async function streamChatCompletion({ provider, backend, modelId, prompt, system
     messages: buildMessages({ systemPrompt, prompt }),
     temperature,
     maxTokens,
-    // The caller's knobs win over the provider default: an assessment measuring
-    // a specific `num_ctx` must not silently be run at the provider's.
+    // The caller's knobs win over the provider default, so a caller measuring a
+    // specific value is never silently run at the provider's. (Ollama is not one
+    // of those callers: its OpenAI-compatible endpoint drops unknown body fields,
+    // so its context window is a daemon-restart knob — see the transport rule in
+    // `lib/localModelTuning.js` and `ollamaManager.ensureContextWindow`.)
     extraBody: { ...(Number(provider.numCtx) > 0 ? { num_ctx: Number(provider.numCtx) } : {}), ...extraBody },
     signal,
     onChunk,

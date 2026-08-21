@@ -3,6 +3,9 @@ import {
   TUNING_SPECS,
   compareTunings,
   describeTuning,
+  launchArgs,
+  launchConfig,
+  launchEnv,
   launchTuning,
   normalizeTuning,
   requestBody,
@@ -11,29 +14,56 @@ import {
 } from './localModelTuning.js';
 
 describe('TUNING_SPECS', () => {
-  it('declares an applies mode for every knob', () => {
+  // The whole point of the catalog is learning which flags to pass a model, so a
+  // knob PortOS cannot send teaches nothing. Every knob must name EXACTLY ONE
+  // transport — none means it renders in the form, changes nothing, and the
+  // reading is filed under a configuration that never existed; two means the
+  // derived `applies` picks a winner nobody declared.
+  it('gives every knob exactly one transport that reaches the daemon', () => {
     for (const [runtime, specs] of Object.entries(TUNING_SPECS)) {
       for (const spec of specs) {
-        expect(['launch', 'request', 'record'], `${runtime}/${spec.id}`).toContain(spec.applies);
+        const transports = [spec.wire, spec.env, spec.cli, spec.config].filter(Boolean);
+        expect(transports, `${runtime}/${spec.id}`).toHaveLength(1);
       }
     }
   });
 
-  // A `request` knob with no wire name would be reported to the user as applied
-  // while `requestBody` silently dropped it.
-  it('gives every request-applied knob the field name the daemon reads', () => {
+  // Derived, not declared — so a spec literal cannot disagree with itself.
+  it('derives applies and the user-facing note from that transport', () => {
     for (const [runtime, specs] of Object.entries(TUNING_SPECS)) {
-      for (const spec of specs.filter((s) => s.applies === 'request')) {
-        expect(spec.wire, `${runtime}/${spec.id}`).toBeTruthy();
+      for (const spec of specs) {
+        expect(spec.applies, `${runtime}/${spec.id}`).toBe(spec.wire ? 'request' : 'launch');
+        expect(spec.note, `${runtime}/${spec.id}`).toBeTruthy();
       }
     }
   });
 
-  it('only puts launch knobs on runtimes PortOS actually starts', () => {
+  it('names the flag or variable the knob becomes, not just that it is applied', () => {
+    const byId = (runtime, id) => tuningSpecsFor(runtime).find((s) => s.id === id);
+    expect(byId('ollama', 'flashAttention').note).toContain('OLLAMA_FLASH_ATTENTION');
+    expect(byId('lmstudio', 'contextLength').note).toContain('lms load --context-length');
+    expect(byId('llama', 'ubatchSize').note).toContain('launch line');
+  });
+
+  // Guard against a transport that is declared but renders nothing — the failure
+  // a hand-maintained renderer switch would reintroduce.
+  it('renders every knob through the renderer its transport names', () => {
     for (const [runtime, specs] of Object.entries(TUNING_SPECS)) {
-      if (runtime === 'llama') continue;
-      expect(specs.some((s) => s.applies === 'launch'), runtime).toBe(false);
+      for (const spec of specs) {
+        const sample = { [spec.id]: spec.type === 'boolean' ? true : spec.type === 'enum' ? spec.options[0] : 1 };
+        const rendered = Object.keys(launchEnv(runtime, sample)).length
+          + launchArgs(runtime, sample).length
+          + Object.keys(launchConfig(runtime, sample)).length
+          + Object.keys(requestBody(runtime, sample)).length;
+        expect(rendered, `${runtime}/${spec.id}`).toBeGreaterThan(0);
+      }
     }
+  });
+
+  // PortOS passes MTPLX only --port/--model and does not start vLLM at all.
+  it('offers no knob for a runtime PortOS has no launch path into', () => {
+    expect(tuningSpecsFor('mtplx')).toEqual([]);
+    expect(tuningSpecsFor('vllm')).toEqual([]);
   });
 
   it('returns an empty list for an unknown runtime rather than throwing', () => {
@@ -56,7 +86,7 @@ describe('normalizeTuning', () => {
   });
 
   it('keeps a fractional knob fractional when the spec declares a step', () => {
-    expect(normalizeTuning('vllm', { gpuMemoryUtilization: 0.85 })).toEqual({ gpuMemoryUtilization: 0.85 });
+    expect(normalizeTuning('lmstudio', { gpuOffload: 0.85 })).toEqual({ gpuOffload: 0.85 });
   });
 
   it('coerces the string booleans a form posts', () => {
@@ -109,23 +139,62 @@ describe('describeTuning', () => {
   it('renders a false boolean as off, not as absent', () => {
     expect(describeTuning('llama', { flashAttn: false })).toBe('Flash attention off');
   });
+
+  it('ignores a key the runtime does not declare rather than inventing a label', () => {
+    expect(describeTuning('llama', { somethingElse: 4 })).toBeNull();
+  });
 });
 
-describe('launchTuning / requestBody', () => {
+describe('launchTuning / launchConfig / launchEnv / launchArgs / requestBody', () => {
   it('keeps only the knobs that reach the llama.cpp command line', () => {
     expect(launchTuning('llama', { ubatchSize: 512, cacheTypeK: 'q8_0' }))
       .toEqual({ ubatchSize: 512, cacheTypeK: 'q8_0' });
   });
 
-  it('finds no launch knobs on a runtime PortOS does not start', () => {
-    expect(launchTuning('ollama', { numCtx: 8192, numGpu: 40 })).toEqual({});
+  it('renders llama.cpp knobs as the config object its manager relaunches with', () => {
+    expect(launchConfig('llama', { ubatchSize: 512, cacheTypeK: 'q8_0' }))
+      .toEqual({ ubatchSize: 512, cacheTypeK: 'q8_0' });
   });
 
-  it('renders request knobs under the wire name the daemon reads', () => {
-    expect(requestBody('ollama', { numCtx: 8192, numGpu: 40 })).toEqual({ num_ctx: 8192 });
+  // A key no spec declares must never reach a launch line, whichever renderer
+  // it is handed to.
+  it('drops an undeclared key from every launch renderer', () => {
+    expect(launchConfig('llama', { rmRf: '/' })).toEqual({});
+    expect(launchEnv('ollama', { rmRf: '/' })).toEqual({});
+    expect(launchArgs('lmstudio', { rmRf: '/' })).toEqual([]);
   });
 
-  it('sends nothing for a record-only runtime', () => {
+  it('renders Ollama knobs as the daemon environment they only reach it through', () => {
+    expect(launchEnv('ollama', { numCtx: 8192, flashAttention: true, kvCacheType: 'q8_0' })).toEqual({
+      OLLAMA_CONTEXT_LENGTH: '8192',
+      OLLAMA_FLASH_ATTENTION: '1',
+      OLLAMA_KV_CACHE_TYPE: 'q8_0',
+    });
+  });
+
+  // Ollama parses 0/1, not JS `false` — and an explicitly-off toggle has to
+  // survive as an override of a daemon default that may be on.
+  it('renders a false toggle as 0 rather than dropping it', () => {
+    expect(launchEnv('ollama', { flashAttention: false })).toEqual({ OLLAMA_FLASH_ATTENTION: '0' });
+  });
+
+  it('renders LM Studio knobs as the lms load flags that carry them', () => {
+    expect(launchArgs('lmstudio', { contextLength: 8192, gpuOffload: 0.5 }))
+      .toEqual(['--context-length', '8192', '--gpu', '0.5']);
+  });
+
+  it('renders lms flags in catalog order, whatever order the knobs were set in', () => {
+    expect(launchArgs('lmstudio', { parallel: 2, contextLength: 8192 }))
+      .toEqual(['--context-length', '8192', '--parallel', '2']);
+  });
+
+  it('renders nothing for a runtime whose knobs travel by another transport', () => {
+    expect(launchArgs('ollama', { numCtx: 8192 })).toEqual([]);
+    expect(launchEnv('lmstudio', { contextLength: 8192 })).toEqual({});
+  });
+
+  it('sends no request body for a runtime whose knobs are all launch-time', () => {
+    expect(requestBody('ollama', { numCtx: 8192 })).toEqual({});
     expect(requestBody('lmstudio', { contextLength: 8192 })).toEqual({});
   });
 });
@@ -154,6 +223,17 @@ describe('compareTunings', () => {
   it('labels the untuned variant as backend defaults rather than an empty string', () => {
     const [row] = compareTunings([measured({}, 120), measured({ ubatchSize: 512 }, 90)]);
     expect(row.best.label).toBe('Backend defaults');
+  });
+
+  // The record is the authority on the configuration it was measured under. A
+  // knob that has since left the catalog would otherwise re-derive to "Backend
+  // defaults", silently changing what a stored reading claims to be.
+  it('shows the label the reading was measured under, not one re-derived today', () => {
+    const [row] = compareTunings([
+      measured({ someRetiredKnob: 8192 }, 120, { tuningLabel: 'Max KV size 8k' }),
+      measured({ ubatchSize: 512 }, 90),
+    ]);
+    expect(row.best.label).toBe('Max KV size 8k');
   });
 
   // One reading is not a comparison. Presenting it as "the best tuning" would

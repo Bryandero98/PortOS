@@ -52,11 +52,11 @@ const report = (overrides = {}) => ({
 // drift from.
 const RUNTIMES = [
   { id: 'ollama', label: 'Ollama', managed: true, modelCount: 1, error: null, tuningSpecs: [
-    { id: 'numCtx', label: 'Context size', type: 'number', applies: 'request', min: 512, max: 1048576, unit: 'tokens', hint: 'Sent with the request.' },
+    { id: 'numCtx', label: 'Context size', type: 'number', applies: 'launch', env: 'OLLAMA_CONTEXT_LENGTH', min: 512, max: 1048576, unit: 'tokens', hint: 'The window every model loads with.', note: 'PortOS restarts the server with OLLAMA_CONTEXT_LENGTH set.' },
   ] },
   { id: 'llama', label: 'llama.cpp', managed: false, modelCount: 3, error: null, tuningSpecs: [
-    { id: 'ubatchSize', label: 'Micro-batch size', type: 'number', applies: 'launch', min: 1, max: 8192, hint: 'Physical micro-batch.' },
-    { id: 'flashAttn', label: 'Flash attention', type: 'boolean', applies: 'launch', hint: 'Fused attention kernel.' },
+    { id: 'ubatchSize', label: 'Micro-batch size', type: 'number', applies: 'launch', config: true, min: 1, max: 8192, hint: 'Physical micro-batch.', note: "PortOS puts this on the server's launch line and relaunches it." },
+    { id: 'flashAttn', label: 'Flash attention', type: 'boolean', applies: 'launch', config: true, hint: 'Fused attention kernel.', note: "PortOS puts this on the server's launch line and relaunches it." },
   ] },
   { id: 'mtplx', label: 'MTPLX', managed: false, modelCount: null, error: 'not reachable at http://127.0.0.1:8000/v1 (ECONNREFUSED)', tuningSpecs: [] },
 ];
@@ -473,12 +473,26 @@ describe('LocalModelAssessments — tuning', () => {
     ));
   });
 
-  it('says what PortOS can and cannot set for each knob', async () => {
+  // Naming the transport, not just "applied": the user is choosing flags to
+  // pass a model, so the form has to say which flag each knob becomes. The
+  // sentence is derived server-side and rides on the spec.
+  it('names the transport that carries each knob to the daemon', async () => {
     const user = userEvent.setup();
     render(<LocalModelAssessments />);
     await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(await screen.findByRole('button', { name: /Tuning/ }));
-    expect(screen.getAllByText(/puts this on the launch line/).length).toBe(2);
+    expect(screen.getAllByText(/puts this on the server's launch line/).length).toBe(2);
+  });
+
+  it('names the environment variable an Ollama knob is applied through', async () => {
+    getLocalLlmAssessments.mockResolvedValue(report({
+      unassessed: [{ backend: 'ollama', modelId: 'example-model:7b', params: null }],
+    }));
+    const user = userEvent.setup();
+    render(<LocalModelAssessments />);
+    await user.click(await screen.findByRole('button', { name: 'Measure' }));
+    await user.click(await screen.findByRole('button', { name: /Tuning/ }));
+    expect(screen.getByText(/restarts the server with OLLAMA_CONTEXT_LENGTH set/)).toBeInTheDocument();
   });
 
   it('warns instead of celebrating when the tuning never reached the daemon', async () => {

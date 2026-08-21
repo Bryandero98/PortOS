@@ -810,6 +810,166 @@ describe('ollamaManager context window', () => {
 
 })
 
+describe('ollamaManager.restartWithEnv', () => {
+  let restorePlatform = null
+  afterEach(() => { vi.unstubAllGlobals(); restorePlatform?.(); restorePlatform = null })
+
+  // Reachability is a mutable flag so a test can model the daemon going down and
+  // coming back — `restartWithEnv` reads it before and after every step.
+  function stubReachable(state) {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (!state.reachable) throw new Error('ECONNREFUSED')
+      const body = String(url).endsWith('/api/ps') ? { models: [] } : { version: '0.32.13' }
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
+    }))
+  }
+
+  it('does nothing when the tuning names no environment', async () => {
+    stubReachable({ reachable: true })
+    const { restartWithEnv } = await loadManager()
+    expect(await restartWithEnv({})).toEqual({ applied: false, reason: 'nothing-to-apply' })
+  })
+
+  // The knobs only reach Ollama through the process environment, so the whole
+  // point is that they land on the child `ollama serve` — not merely that the
+  // daemon came back up.
+  it('hands the knobs to the daemon it starts when Ollama is down', async () => {
+    const state = { reachable: false }
+    stubReachable(state)
+    const { spawn } = await import('../lib/childProcess.js')
+    spawn.mockReset().mockImplementation(() => {
+      state.reachable = true
+      return { pid: 4242, stderr: { on: () => {} }, on: () => {}, unref: () => {} }
+    })
+
+    const { restartWithEnv } = await loadManager()
+    const result = await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1', OLLAMA_KV_CACHE_TYPE: 'q8_0' })
+
+    expect(result).toEqual({ applied: true, reason: 'started' })
+    const [, args, options] = spawn.mock.calls[0]
+    expect(args).toEqual(['serve'])
+    expect(options.env).toMatchObject({ OLLAMA_FLASH_ATTENTION: '1', OLLAMA_KV_CACHE_TYPE: 'q8_0' })
+  })
+
+  // Same rule as the context-window path: raising a knob must never cost the
+  // user their launch-at-login registration.
+  it('restarts a homebrew service in place rather than un-registering it', async () => {
+    restorePlatform = pinPlatform('darwin')
+    stubReachable({ reachable: true })
+    const calls = []
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      calls.push(`${cmd} ${a}`)
+      if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
+      if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
+      if (cmd === 'brew' && a === 'services restart ollama') return cb(null, { stdout: '', stderr: '' })
+      return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+    }
+
+    const { restartWithEnv } = await loadManager()
+    const result = await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1', OLLAMA_KV_CACHE_TYPE: 'q4_0' })
+
+    expect(result).toMatchObject({ applied: true, reason: 'service-restarted' })
+    expect(calls).toContain('launchctl setenv OLLAMA_FLASH_ATTENTION 1')
+    expect(calls).toContain('launchctl setenv OLLAMA_KV_CACHE_TYPE q4_0')
+    expect(calls).toContain('brew services restart ollama')
+    expect(calls.some((c) => c.includes('services stop'))).toBe(false)
+  })
+
+  // A restart that named no window leaves the daemon on its VRAM auto-pick. The
+  // latch has to forget the old process's window, or the next agent spawn is
+  // credited with a window nothing is holding.
+  it('clears the context latch when the restart did not name a window', async () => {
+    restorePlatform = pinPlatform('darwin')
+    stubReachable({ reachable: true })
+    let restarts = 0
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
+      if (cmd === 'ps') return cb(null, { stdout: '101 /usr/local/bin/ollama serve\n', stderr: '' })
+      if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
+      if (cmd === 'brew' && a === 'services restart ollama') { restarts++; return cb(null, { stdout: '', stderr: '' }) }
+      return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+    }
+
+    const { ensureContextWindow, restartWithEnv } = await loadManager()
+    await ensureContextWindow(131072)
+    await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1' })
+    // Without the latch clear this returns 'already-applied' and never restarts.
+    expect(await ensureContextWindow(131072)).toMatchObject({ applied: true, reason: 'service-restarted' })
+    expect(restarts).toBe(3)
+  })
+
+  // A sweep measures every model under ONE tuning. Restarting per model would
+  // cold-load each one and time the page-in as the model's throughput.
+  it('does not restart again for a tuning the live daemon already holds', async () => {
+    restorePlatform = pinPlatform('darwin')
+    stubReachable({ reachable: true })
+    let restarts = 0
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
+      if (cmd === 'ps') return cb(null, { stdout: '101 /usr/local/bin/ollama serve\n', stderr: '' })
+      if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
+      if (cmd === 'brew' && a === 'services restart ollama') { restarts++; return cb(null, { stdout: '', stderr: '' }) }
+      return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+    }
+
+    const { restartWithEnv } = await loadManager()
+    const env = { OLLAMA_FLASH_ATTENTION: '1', OLLAMA_KV_CACHE_TYPE: 'q8_0' }
+    await restartWithEnv(env)
+    const second = await restartWithEnv({ OLLAMA_KV_CACHE_TYPE: 'q8_0', OLLAMA_FLASH_ATTENTION: '1' })
+
+    // `applied: true` — the tuning IS in effect, which is what the caller records.
+    expect(second).toEqual({ applied: true, reason: 'already-applied' })
+    expect(restarts).toBe(1)
+  })
+
+  it('restarts again when the tuning differs by a single knob', async () => {
+    restorePlatform = pinPlatform('darwin')
+    stubReachable({ reachable: true })
+    let restarts = 0
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
+      if (cmd === 'ps') return cb(null, { stdout: '101 /usr/local/bin/ollama serve\n', stderr: '' })
+      if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
+      if (cmd === 'brew' && a === 'services restart ollama') { restarts++; return cb(null, { stdout: '', stderr: '' }) }
+      return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+    }
+
+    const { restartWithEnv } = await loadManager()
+    await restartWithEnv({ OLLAMA_KV_CACHE_TYPE: 'q8_0' })
+    await restartWithEnv({ OLLAMA_KV_CACHE_TYPE: 'q4_0' })
+    expect(restarts).toBe(2)
+  })
+
+  // systemd needs root for the equivalent drop-in. Reporting the exact edit beats
+  // tearing the unit down to work around it.
+  it('refuses a service manager it cannot hand environment to, naming the fix', async () => {
+    restorePlatform = pinPlatform('linux')
+    stubReachable({ reachable: true })
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      if (cmd === 'systemctl' && a === '--version') return cb(null, { stdout: 'systemd 250', stderr: '' })
+      if (cmd === 'systemctl' && a.startsWith('is-enabled')) return cb(null, { stdout: 'enabled\n', stderr: '' })
+      if (cmd === 'systemctl' && a.startsWith('is-active')) return cb(null, { stdout: 'active\n', stderr: '' })
+      return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+    }
+
+    const { restartWithEnv } = await loadManager()
+    const result = await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1' })
+
+    expect(result.applied).toBe(false)
+    expect(result.reason).toBe('service-managed')
+    expect(result.error).toContain('Environment="OLLAMA_FLASH_ATTENTION=1"')
+  })
+})
+
 describe('ollamaManager context window — launch-at-login daemons', () => {
   let restorePlatform = null
   afterEach(() => { vi.unstubAllGlobals(); restorePlatform?.(); restorePlatform = null })

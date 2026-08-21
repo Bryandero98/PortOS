@@ -3,6 +3,17 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 
+// `lms` drives the tuned load. Stubbed rather than shelled out to: the tests must
+// stay hermetic, and a real `lms load` would page a multi-gigabyte GGUF into the
+// developer's LM Studio.
+const lmsSpawn = vi.fn();
+vi.mock('../lib/bufferedSpawn.js', () => ({ bufferedSpawn: (...args) => lmsSpawn(...args) }));
+const lmsBinary = { path: '/usr/local/bin/lms' };
+vi.mock('../lib/processEnv.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  findCommandOnPath: (cmd) => (cmd === 'lms' ? lmsBinary.path : null),
+}));
+
 let tempDir;
 let originalModelsDir;
 let originalUrl;
@@ -16,6 +27,8 @@ beforeEach(() => {
   // network-free and deterministic regardless of whether LM Studio is running.
   originalUrl = process.env.LM_STUDIO_URL;
   process.env.LM_STUDIO_URL = 'http://127.0.0.1:1';
+  lmsSpawn.mockReset().mockResolvedValue({ success: true, code: 0, stdout: '', stderr: '' });
+  lmsBinary.path = '/usr/local/bin/lms';
   vi.resetModules();
 });
 
@@ -242,5 +255,52 @@ describe('lmStudioManager evictDownloadedQuant', () => {
     const { evictDownloadedQuant } = await import('./lmStudioManager.js');
     expect(await evictDownloadedQuant('unsloth/Qwen3.8-27B-GGUF@UD-Q4_K_M'))
       .toMatchObject({ success: true, missing: true });
+  });
+});
+
+// LM Studio picks context length, GPU offload, and parallelism when a model is
+// LOADED. No request field moves them and the REST load endpoint takes only a
+// model id, so `lms load` is the only transport a tuned measurement has.
+describe('lmStudioManager.loadModelWithArgs', () => {
+  it('passes the tuning flags to lms load, auto-approving the model picker', async () => {
+    const { loadModelWithArgs } = await import('./lmStudioManager.js');
+    const result = await loadModelWithArgs('publisher/model', ['--context-length', '8192']);
+
+    expect(result).toEqual({ success: true });
+    const [binary, args] = lmsSpawn.mock.calls[0];
+    expect(binary).toBe('/usr/local/bin/lms');
+    expect(args).toEqual(['load', 'publisher/model', '-y', '--context-length', '8192']);
+  });
+
+  // Reporting success for a load that never happened would file the reading
+  // under a tuning the model was not running.
+  it('surfaces the CLI failure line rather than a generic error', async () => {
+    lmsSpawn.mockResolvedValue({ success: false, code: 1, stdout: '', stderr: 'Model does not fit at that context length\n' });
+    const { loadModelWithArgs } = await import('./lmStudioManager.js');
+    expect(await loadModelWithArgs('publisher/model', ['--context-length', '1048576']))
+      .toEqual({ success: false, error: 'Model does not fit at that context length' });
+  });
+
+  it('reports the timeout instead of hanging the measurement', async () => {
+    lmsSpawn.mockResolvedValue({ timedOut: true });
+    const { loadModelWithArgs } = await import('./lmStudioManager.js');
+    const result = await loadModelWithArgs('publisher/model', []);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('timed out');
+  });
+
+  it('refuses when the lms CLI is not installed, naming the command that fixes it', async () => {
+    lmsBinary.path = null;
+    const { loadModelWithArgs } = await import('./lmStudioManager.js');
+    const result = await loadModelWithArgs('publisher/model', []);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('lms bootstrap');
+    expect(lmsSpawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses without shelling out when no model was named', async () => {
+    const { loadModelWithArgs } = await import('./lmStudioManager.js');
+    expect(await loadModelWithArgs('', [])).toEqual({ success: false, error: 'No model was named to load.' });
+    expect(lmsSpawn).not.toHaveBeenCalled();
   });
 });
