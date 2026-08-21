@@ -39,13 +39,16 @@ export function missingModulesLabel(missing) {
  * (`… models are kept. Missing: o_voxel.`), for the lanes that can only emit one string
  * and have no second line to put a label on.
  *
+ * A caller whose probe produced no prose still gets the label alone rather than a frame
+ * reading `undefined Missing: o_voxel.` — the names are the half worth printing.
+ *
  * @param {string} help the remedy prose (already ends in its own punctuation)
  * @param {string[]|undefined} missing module names the probe found absent
  * @returns {string}
  */
 export function appendMissingModules(help, missing) {
   const label = missingModulesLabel(missing);
-  return label ? `${help} ${label}.` : help;
+  return [help, label && `${label}.`].filter(Boolean).join(' ');
 }
 
 /**

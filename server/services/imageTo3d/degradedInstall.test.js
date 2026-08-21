@@ -32,6 +32,12 @@ describe('appendMissingModules', () => {
     expect(appendMissingModules('NATTEN is missing.', [])).toBe('NATTEN is missing.');
     expect(appendMissingModules('NATTEN is missing.', undefined)).toBe('NATTEN is missing.');
   });
+
+  it('prints the culprits alone rather than an "undefined" frame when the remedy is absent', () => {
+    // A probe can resolve no remedy prose; the module names are still worth printing, and
+    // an interpolated `undefined` would render verbatim in the install log.
+    expect(appendMissingModules(undefined, ['o_voxel'])).toBe('Missing: o_voxel.');
+  });
 });
 
 describe('describeDegradedInstall', () => {

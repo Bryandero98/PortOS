@@ -39,8 +39,9 @@ vi.mock('../services/imageTo3d/targets.js', async (importOriginal) => ({
 }));
 
 vi.mock('../services/imageTo3d/trellis2.js', async (importOriginal) => ({
-  // Pure formatters (`degradedInstall.js`) come through REAL — the adapter's
-  // `degraded.detail` is asserted below, so stubbing them would test the stub.
+  // The pure half (`resolveDegradedBakeRemedy`, the `TRELLIS2_*` constants) comes through
+  // REAL — the adapter's `degraded` projection is asserted below, so stubbing it would
+  // test the stub.
   ...(await importOriginal()),
   isTrellis2Installed: vi.fn(() => false),
   trellis2Root: vi.fn(() => '/tmp/trellis2'),

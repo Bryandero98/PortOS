@@ -388,8 +388,8 @@ export const PIXAL3D_NAF_MODULES = ['natten'];
  * next to its NAF sibling rather than inlined at the registry so both readings of a
  * half-built install come from one place.
  */
-export const PIXAL3D_INCOMPLETE_INSTALL_HELP = 'Pixal3D is installed but a required CUDA '
-  + 'extension did not build, so renders will fail in the mesh exporter. Repair install '
+export const PIXAL3D_INCOMPLETE_INSTALL_HELP = 'Pixal3D is installed but not every required '
+  + 'CUDA extension built, so renders will fail in the mesh exporter. Repair install '
   + 'rebuilds the CUDA extensions; your downloaded models are kept.';
 
 export const PIXAL3D_NAF_FALLBACK_HELP = 'Pixal3D is installed, but NATTEN is missing, '
