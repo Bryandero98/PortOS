@@ -77,6 +77,37 @@ describe('ProviderReadiness', () => {
     expect(screen.queryByText(/setup docs/i)).toBeNull();
   });
 
+  it('names the download in the button that fetches weights, before it is clicked', () => {
+    // The catch-22 the `pull-start` action ends: an installed MTPLX with an
+    // empty cache used to be offered a bare "Start MTPLX" that could only fail.
+    // The replacement spends gigabytes, so the label and the tooltip both say
+    // so up front rather than after the click.
+    const onAutoSetup = vi.fn();
+    const setup = { runtime: 'mtplx', label: 'MTPLX', action: 'pull-start', actionLabel: 'Download the default model & start MTPLX', blockedReason: null };
+    renderWithRouter(
+      <ProviderReadiness
+        readiness={readiness({
+          label: 'MTPLX',
+          manageUrl: null,
+          setup,
+          checks: [
+            { id: 'runtime', label: 'MTPLX installed', ok: true, detail: '`mtplx` is on PortOS\'s PATH.', fixHint: null },
+            { id: 'server', label: 'MTPLX server responding', ok: false, detail: 'Nothing answered at http://127.0.0.1:8000/v1 (ECONNREFUSED). MTPLX has no model weights cached, so its server exits before it binds a port.', fixHint: 'Use “Download the default model & start MTPLX” below — PortOS does this for you.' },
+          ],
+        })}
+        onAutoSetup={onAutoSetup}
+      />,
+    );
+
+    const button = screen.getByRole('button', { name: /Download the default model & start MTPLX/ });
+    expect(button.getAttribute('title')).toMatch(/multi-gigabyte download/);
+    // The blocking fact is on the checklist itself, not only inside the error
+    // the old Start button produced.
+    expect(screen.getByText(/no model weights cached/)).toBeTruthy();
+    fireEvent.click(button);
+    expect(onAutoSetup).toHaveBeenCalledWith(setup);
+  });
+
   it('offers a one-click default-model match when the daemon is serving a different id', () => {
     const onUseServedModel = vi.fn();
     const mismatch = readiness({

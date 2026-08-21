@@ -18,10 +18,16 @@
  * (`setup.action`), a "use the served model as default" button when the
  * running server answers under a different id, or an in-app Local LLM
  * settings link. Vendor setup docs are never the way forward.
+ *
+ * That includes the case where the daemon is installed but has NO model weights
+ * cached: the server can't start, so `setup.action` is `pull-start` and the
+ * button downloads the runtime's own default checkpoint before starting it.
+ * Offering a bare "Start" there was a catch-22 — the start could only ever fail,
+ * and its error message was the only place the missing weights were named.
  */
 
 import { Link } from 'react-router';
-import { CheckCircle2, HelpCircle, Wand2, Wrench, XCircle } from 'lucide-react';
+import { CheckCircle2, Download, HelpCircle, Wand2, Wrench, XCircle } from 'lucide-react';
 import Banner from '../ui/Banner';
 import Pill from '../ui/Pill';
 
@@ -115,9 +121,13 @@ export default function ProviderReadiness({ readiness, onAutoSetup, onUseServedM
             type="button"
             onClick={() => onAutoSetup(setup)}
             className={ACTION_CLASS}
-            title={`PortOS runs this on ${endpoint} for you — no terminal needed.`}
+            // A weights download is the one action here that spends gigabytes,
+            // so the button says so before it is clicked rather than after.
+            title={setup.action === 'pull-start'
+              ? `Fetches ${label}'s own default checkpoint — a multi-gigabyte download — then starts the server on ${endpoint}.`
+              : `PortOS runs this on ${endpoint} for you — no terminal needed.`}
           >
-            <Wand2 size={12} />
+            {setup.action === 'pull-start' ? <Download size={12} /> : <Wand2 size={12} />}
             {setup.actionLabel}
           </button>
         )}

@@ -207,6 +207,74 @@ describe('getProviderReadiness', () => {
     expect(checkById(readiness, 'server').fixHint).toMatch(/Install & start MTPLX/);
   });
 
+  it('names the empty model cache on the checklist, and offers the download instead of a start', async () => {
+    // The catch-22 as reported: "MTPLX installed ✓ / server not responding —
+    // use Start MTPLX, PortOS does this for you", and Start answered "no model
+    // weights are cached, so its server exits before it binds a port". The one
+    // blocking fact was reachable ONLY by clicking the button it made
+    // impossible. It now rides on the checklist itself.
+    const restore = pinPlatform('darwin');
+    const readiness = await getProviderReadiness(
+      { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true, defaultModel: 'mtplx' },
+      { findCommand: () => '/opt/homebrew/bin/mtplx', probe: unreachable(), readWeights: async () => 'empty' },
+    );
+    restore();
+
+    expect(readiness.setup).toMatchObject({ action: 'pull-start' });
+    expect(checkById(readiness, 'server').detail).toMatch(/no model weights cached/);
+    expect(checkById(readiness, 'server').fixHint).toMatch(/Download the default model & start MTPLX/);
+    // The model check is still unknowable, but no longer says only "cannot be
+    // checked until the server responds" — it says what to do about it.
+    expect(checkById(readiness, 'model')).toMatchObject({ ok: null, detail: expect.stringMatching(/no model weights cached/) });
+    expect(checkById(readiness, 'model').fixHint).toMatch(/Download the default model & start MTPLX/);
+  });
+
+  it('distinguishes a half-finished pull from a cache nobody ever pulled into', async () => {
+    const restore = pinPlatform('darwin');
+    const readiness = await getProviderReadiness(
+      { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true, defaultModel: 'mtplx' },
+      { findCommand: () => '/opt/homebrew/bin/mtplx', probe: unreachable(), readWeights: async () => 'partial' },
+    );
+    restore();
+    expect(readiness.setup.action).toBe('pull-start');
+    expect(checkById(readiness, 'server').detail).toMatch(/unfinished download/);
+  });
+
+  it('keeps a plain start — and says the weights are there — when the cache is ready', async () => {
+    const restore = pinPlatform('darwin');
+    const readiness = await getProviderReadiness(
+      { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true, defaultModel: 'mtplx' },
+      { findCommand: () => '/opt/homebrew/bin/mtplx', probe: unreachable(), readWeights: async () => 'ready' },
+    );
+    restore();
+    expect(readiness.setup.action).toBe('start');
+    // The server check must not claim a blocker that isn't one...
+    expect(checkById(readiness, 'server').detail).not.toMatch(/weights/);
+    // ...while the model check reassures that the download is already done.
+    expect(checkById(readiness, 'model').detail).toMatch(/Weights are cached locally/);
+  });
+
+  it('never reads a model cache it has no reason to', async () => {
+    // A running daemon answers `/v1/models`, which is a better source than its
+    // cache; an uninstalled one has no cache to read at all. Spawning `mtplx
+    // models` (a directory walk) on either would burn a subprocess per 20s poll
+    // for nothing. (A runtime with no readable cache is filtered one level
+    // down, by `readRuntimeWeights` — see its test in localRuntimeSetup.)
+    const restore = pinPlatform('darwin');
+    const reads = [];
+    const readWeights = async (kind) => { reads.push(kind); return 'empty'; };
+    await getProviderReadiness(
+      { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true, defaultModel: 'mtplx' },
+      { findCommand: () => '/opt/homebrew/bin/mtplx', probe: reachable(['mtplx']), readWeights },
+    );
+    await getProviderReadiness(
+      { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true, defaultModel: 'mtplx' },
+      { findCommand: () => null, probe: unreachable(), readWeights },
+    );
+    restore();
+    expect(reads).toEqual([]);
+  });
+
   it('explains why the host cannot run the runtime instead of pointing at a doc', async () => {
     const restore = pinPlatform('linux');
     const readiness = await getProviderReadiness(

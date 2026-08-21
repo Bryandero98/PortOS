@@ -24,14 +24,25 @@ import { safeChildProcessEnv, safeChildProcessOptions } from './processEnv.js';
 import { createLineReader, createOutputTail } from './streamLines.js';
 
 /**
+ * How often `isCancelled` is asked. A second is well under human perception for
+ * "I closed it and it stopped", and a check this cheap costs nothing against a
+ * command whose whole point is that it runs for minutes or hours.
+ */
+const CANCEL_POLL_MS = 1_000;
+
+/**
  * @param {string} cmd
  * @param {string[]} args
  * @param {(line: string) => void} [onLine] - called once per non-empty line
- * @param {{timeoutMs?: number, cwd?: string, env?: object, spawnImpl?: Function}} [options]
- *   `timeoutMs: 0` (default) means no timeout.
+ * @param {{timeoutMs?: number, cwd?: string, env?: object, spawnImpl?: Function, splitRe?: RegExp, isCancelled?: () => boolean}} [options]
+ *   `timeoutMs: 0` (default) means no timeout. `splitRe` is forwarded to the
+ *   line readers — pass `/[\r\n]+/` for a tool whose progress bar redraws the
+ *   same line with a bare `\r`, so each redraw surfaces instead of the stream
+ *   going silent for the length of a multi-gigabyte download. `isCancelled` is
+ *   polled while the command runs; see CANCEL_POLL_MS.
  * @returns {Promise<{success: boolean, error?: string}>}
  */
-export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env, spawnImpl = spawn } = {}) {
+export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env, spawnImpl = spawn, splitRe, isCancelled } = {}) {
   return new Promise((resolve) => {
     const child = spawnImpl(cmd, args, safeChildProcessOptions({
       env: env ? safeChildProcessEnv(env) : process.env,
@@ -55,6 +66,7 @@ export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (cancelTimer) clearInterval(cancelTimer);
       resolve(result);
     };
 
@@ -65,14 +77,34 @@ export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env
       }, timeoutMs)
       : null;
 
+    // A command that runs for hours (a model-weights download) outlives the
+    // request that asked for it, and a caller holding a lock until this settles
+    // holds it for the whole run. Polling is what lets a closed stream actually
+    // STOP the child — `timeoutMs` alone only bounds the worst case.
+    //
+    // The callback runs outside the Express request lifecycle, so a throwing
+    // `isCancelled` would take the process down with no `next(err)` to bubble to
+    // (see the try/catch exception in CLAUDE.md). A predicate that cannot be
+    // asked is treated as "not cancelled" — the timeout still bounds the run.
+    const cancelTimer = typeof isCancelled === 'function'
+      ? setInterval(() => {
+        let cancelled = false;
+        try { cancelled = isCancelled(); } catch (err) { console.error(`⚠️ cancellation check failed for ${cmd}: ${err.message}`); }
+        if (!cancelled) return;
+        child.kill('SIGKILL');
+        finish({ success: false, error: 'cancelled' });
+      }, CANCEL_POLL_MS)
+      : null;
+
     // ONE reader per stream — never a shared buffer. Chunks arrive on arbitrary
     // byte boundaries, so a single carry shared by stdout and stderr splices a
     // half-written stdout line onto the next stderr chunk: `npm install` writing
     // `added 42 ` and a warning arriving mid-line yields one corrupt line and
     // loses both real ones. (Inherited from the hand-rolled splitter this was
     // extracted from; `streamLines.js` carries the rule.)
-    const stdoutReader = createLineReader((line) => safeLine(line.trim()));
-    const stderrReader = createLineReader((line) => safeLine(line.trim()));
+    const readerOptions = splitRe ? { splitRe } : undefined;
+    const stdoutReader = createLineReader((line) => safeLine(line.trim()), readerOptions);
+    const stderrReader = createLineReader((line) => safeLine(line.trim()), readerOptions);
 
     child.stdout?.on('data', stdoutReader.push);
     child.stderr?.on('data', stderrReader.push);

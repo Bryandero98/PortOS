@@ -35,11 +35,14 @@ valid CoS coding-agent runner.
    then runs `mtplx serve --port <the port your provider points at> --model <a
    model already in your MTPLX cache>` and waits for `/v1/models` to answer.
    Progress streams into the install modal.
-3. **If it reports that no weights are cached**, pull a checkpoint yourself —
-   `mtplx pull` fetches MTPLX's default verified model, `mtplx pull
-   <hf-repo-id>` any other MTP model — then click **Start MTPLX** again. PortOS
-   never downloads weights, and `mtplx serve` exits before it binds a port when
-   its cache is empty.
+3. **If no weights are cached**, the checklist says so on the "server
+   responding" and "model available" rows — MTPLX's server exits before it
+   binds a port with an empty cache — and the button becomes **Download the
+   default model & start MTPLX**. That runs `mtplx pull` (MTPLX's own default
+   verified checkpoint, a multi-gigabyte download) and then starts the server,
+   with the download's progress streaming into the same modal. To use a
+   different MTP checkpoint instead, run `mtplx pull <hf-repo-id>` in a
+   terminal and click **Start MTPLX**.
 4. Use **Refresh Models** once the server is up; PortOS then reads `/v1/models`
    on demand. The seed model alias is `mtplx` — refresh it if your running
    server publishes a different one.
@@ -56,15 +59,27 @@ start a server on the loopback OpenAI-compatible endpoint the preset points at,
   optional `mtplx max --install` fan-control helper — the one privileged path
   in that project — is never invoked; it stays an explicit operator action
   outside PortOS.
-- It does **not** download model weights. It does read `mtplx models --json` —
-  a local directory listing, no network — and starts the server on a checkpoint
-  already in that cache, because `mtplx serve` otherwise defaults to one
-  hard-coded repo id and exits 1 before binding when that particular repo was
-  never pulled, even on a machine holding a different MTP model. An empty cache
-  (or one holding only a half-finished `mtplx pull`) is reported with the
-  `mtplx pull` command that fixes it, never fetched. A running server serving a
-  different alias than the provider names is reported by the checklist's model
-  check and left for you to resolve.
+- **Install & start** and **Start** never download model weights. They read
+  `mtplx models --json` — a local directory listing, no network — and start the
+  server on a checkpoint already in that cache, because `mtplx serve` otherwise
+  defaults to one hard-coded repo id and exits 1 before binding when that
+  particular repo was never pulled, even on a machine holding a different MTP
+  model. A running server serving a different alias than the provider names is
+  reported by the checklist's model check and left for you to resolve.
+- The **Download the default model & start MTPLX** button is the one action
+  here that fetches weights, and it appears only when that same cache listing
+  proves there is nothing servable — an empty cache, or one holding only a
+  half-finished `mtplx pull`. It runs `mtplx pull` with no repo id, so it can
+  only ever fetch MTPLX's own default verified checkpoint; nothing from the
+  page picks what is downloaded. It exists because the checklist otherwise
+  offered a **Start MTPLX** that could only fail, and named the missing weights
+  solely inside that failure — the one blocking fact was reachable only by
+  clicking the button it made impossible.
+- Closing the modal **cancels the download**. PortOS allows one local-runtime
+  setup at a time, and a weights pull can run for hours, so leaving it running
+  after you dismissed it would also refuse every other runtime's setup button
+  for the rest of it. A cancelled pull leaves a partial download in the cache,
+  which the checklist reports as such and offers to re-fetch.
 - It only ever runs for an endpoint on **this** machine. A preset pointed at
   another host gets no checklist and no button — that install is whoever runs
   it.

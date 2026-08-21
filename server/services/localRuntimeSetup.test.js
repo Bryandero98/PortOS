@@ -31,11 +31,11 @@ const child = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock('../lib/childProcess.js', () => child);
 // MTPLX's model cache — the setup asks it what is actually cached before it
 // starts a server that would otherwise exit 1 looking for a checkpoint.
-const mtplxCache = vi.hoisted(() => ({
-  listMtplxCachedModels: vi.fn(),
-  pickMtplxCachedModel: vi.fn((models) => (Array.isArray(models) && models[0]?.repo_id) || null),
-}));
-vi.mock('../lib/mtplxModels.js', () => mtplxCache);
+const mtplxCache = vi.hoisted(() => ({ listMtplxCachedModels: vi.fn() }));
+// PARTIAL mock: only the subprocess call is faked. `describeMtplxCache` and
+// `pickMtplxCachedModel` are pure classifiers of that output, and stubbing them
+// would let a wrong reading of a real cache listing pass here.
+vi.mock('../lib/mtplxModels.js', async (importOriginal) => ({ ...(await importOriginal()), ...mtplxCache }));
 vi.mock('../lib/fileUtils.js', () => ({ sleep: async () => {} }));
 // The vLLM compose project on disk. Mocked so the suite never stats a real
 // checkout, and so each start case can pick its own refusal.
@@ -45,7 +45,7 @@ const vllmProject = vi.hoisted(() => ({
 }));
 vi.mock('../lib/vllmQwenProject.js', () => vllmProject);
 
-import { describeRuntimeSetup, runLocalRuntimeSetup, SETUP_RUNTIME_KINDS } from './localRuntimeSetup.js';
+import { describeRuntimeSetup, readRuntimeWeights, runLocalRuntimeSetup, SETUP_ACTIONS, SETUP_RUNTIME_KINDS } from './localRuntimeSetup.js';
 
 const unreachable = { reachable: false, models: null, error: 'ECONNREFUSED' };
 /** A spawned daemon whose stdio never emits, driven entirely by the poll loop. */
@@ -77,7 +77,6 @@ beforeEach(() => {
   probe.probeOpenAiModels.mockReset();
   child.spawn.mockReset();
   mtplxCache.listMtplxCachedModels.mockResolvedValue(cachedModels([{ repo_id: 'Example/MTP-Model', validation: { ok: true } }]));
-  mtplxCache.pickMtplxCachedModel.mockImplementation((models) => (Array.isArray(models) && models[0]?.repo_id) || null);
 });
 
 afterEach(() => {
@@ -111,6 +110,36 @@ describe('describeRuntimeSetup', () => {
       actionLabel: 'Start MTPLX',
     });
     restore();
+  });
+
+  it('offers the DOWNLOAD, not a start, when the installed runtime has no weights', () => {
+    // The catch-22 this exists to end: "installed ✓ / not responding — press
+    // Start", where Start could only ever answer "no model weights are cached".
+    const restore = pinPlatform('darwin');
+    for (const weights of ['empty', 'partial']) {
+      expect(describeRuntimeSetup('mtplx', { installed: true, running: false, weights })).toMatchObject({
+        action: 'pull-start',
+        actionLabel: 'Download the default model & start MTPLX',
+      });
+    }
+    restore();
+  });
+
+  it('keeps a plain start when the cache is READY or unreadable', () => {
+    const restore = pinPlatform('darwin');
+    // Weights are already there — nothing to download.
+    expect(describeRuntimeSetup('mtplx', { installed: true, running: false, weights: 'ready' })).toMatchObject({ action: 'start' });
+    // Unreadable is not empty: a start that would have worked must not be
+    // turned into a multi-gigabyte download.
+    expect(describeRuntimeSetup('mtplx', { installed: true, running: false, weights: 'unknown' })).toMatchObject({ action: 'start' });
+    restore();
+  });
+
+  it('never offers a download for a runtime with no pull step', () => {
+    // Ollama's weights come from the Models → LLMs page, so an empty cache
+    // there must not conjure a button this module cannot honour.
+    expect(describeRuntimeSetup('ollama', { installed: true, running: false, weights: 'empty' }))
+      .toMatchObject({ action: 'start' });
   });
 
   it('offers nothing once the daemon is installed and up — the model is the user\'s choice', () => {
@@ -338,9 +367,157 @@ describe('runLocalRuntimeSetup', () => {
     expect(result).toMatchObject({ success: false, error: expect.stringContaining('mtplx pull') });
   });
 
+  it('downloads the default checkpoint and then starts, but ONLY for `pull-start`', async () => {
+    // The other half of the fix: the button the checklist now offers actually
+    // fetches the weights, so the user is not sent to a terminal.
+    const daemon = fakeChild();
+    child.spawn.mockReturnValue(daemon);
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    // The cache is read by the START step, which runs AFTER the pull — so what
+    // it reports here is what the download just landed.
+    mtplxCache.listMtplxCachedModels
+      .mockResolvedValueOnce(cachedModels([{ repo_id: 'Example/Fresh', validation: { ok: true } }]));
+    probe.probeOpenAiModels
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(reachable(['mtplx']))
+      .mockResolvedValueOnce(reachable(['mtplx']));
+    const restore = pinPlatform('darwin');
+
+    const result = await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1', action: 'pull-start' });
+    restore();
+
+    expect(streaming.runStreamingCommand).toHaveBeenCalledWith(
+      '/opt/homebrew/bin/mtplx', ['pull'], expect.any(Function), expect.objectContaining({ splitRe: expect.any(RegExp) }),
+    );
+    expect(child.spawn.mock.calls[0][1]).toEqual(['serve', '--port', '8000', '--model', 'Example/Fresh']);
+    expect(result.success).toBe(true);
+  });
+
+  it('never downloads weights behind an explicit plain start', async () => {
+    // A multi-gigabyte download is a decision; only the action that says so may
+    // spend it. A `start` reaches `mtplx pull` in PROSE and nowhere else.
+    mtplxCache.listMtplxCachedModels.mockResolvedValue(cachedModels([]));
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    probe.probeOpenAiModels.mockResolvedValue(unreachable);
+    const restore = pinPlatform('darwin');
+
+    const result = await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1', action: 'start' });
+    restore();
+
+    expect(streaming.runStreamingCommand).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('mtplx pull') });
+  });
+
+  it('resolves an ABSENT action to whatever the checklist is currently offering', async () => {
+    // A client built before `pull-start` existed sends no action — but it still
+    // renders THIS server's button label, so on an empty cache the user clicked
+    // “Download the default model & start MTPLX”. Defaulting to a start would
+    // answer that click with the exact no-weights dead end the action removes.
+    const daemon = fakeChild();
+    child.spawn.mockReturnValue(daemon);
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    mtplxCache.listMtplxCachedModels
+      .mockResolvedValueOnce(cachedModels([]))
+      .mockResolvedValueOnce(cachedModels([{ repo_id: 'Example/Fresh', validation: { ok: true } }]));
+    probe.probeOpenAiModels
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(reachable(['mtplx']))
+      .mockResolvedValueOnce(reachable(['mtplx']));
+    const restore = pinPlatform('darwin');
+
+    const result = await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1' });
+    restore();
+
+    expect(streaming.runStreamingCommand.mock.calls[0][1]).toEqual(['pull']);
+    expect(result.success).toBe(true);
+  });
+
+  it('resolves an ABSENT action to a plain start when the cache can serve', async () => {
+    const daemon = fakeChild();
+    child.spawn.mockReturnValue(daemon);
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    probe.probeOpenAiModels
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(reachable(['mtplx']))
+      .mockResolvedValueOnce(reachable(['mtplx']));
+    const restore = pinPlatform('darwin');
+
+    await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1' });
+    restore();
+
+    expect(streaming.runStreamingCommand).not.toHaveBeenCalled();
+    expect(child.spawn.mock.calls[0][1]).toContain('serve');
+  });
+
+  it('refuses `pull-start` for a runtime with no pull step BEFORE installing anything', async () => {
+    // Reached after the route validated only membership in the global action
+    // list. Refusing late would run Ollama's install on the way to the refusal,
+    // and llama.cpp (`start: null`) would return its install-succeeded message
+    // without ever refusing at all.
+    pathLookup.findCommandOnPath.mockReturnValue(null);
+    probe.probeOpenAiModels.mockResolvedValue(unreachable);
+
+    for (const kind of ['ollama', 'llama']) {
+      const result = await runLocalRuntimeSetup(kind, { endpoint: 'http://127.0.0.1:11434/v1', action: 'pull-start' });
+      expect(result).toMatchObject({ success: false, error: expect.stringMatching(/cannot download model weights/) });
+    }
+    expect(localLlm.installBackend).not.toHaveBeenCalled();
+    expect(llama.installLlamaServer).not.toHaveBeenCalled();
+  });
+
+  it('hands the download a cancellation hook — the setup lock is held until it settles', async () => {
+    // The route holds its single-setup lock until this promise resolves, and a
+    // weights pull can run for hours. Without a hook the child ignores a closed
+    // modal, so the download keeps going AND every other runtime's setup button
+    // is refused for the rest of it.
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    child.spawn.mockReturnValue(fakeChild());
+    // Let the daemon come up, so this case ends at a settled setup rather than
+    // spinning the start poll until its three-minute deadline.
+    probe.probeOpenAiModels
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(reachable(['mtplx']))
+      .mockResolvedValueOnce(reachable(['mtplx']));
+    const isCancelled = () => false;
+    const restore = pinPlatform('darwin');
+
+    await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1', action: 'pull-start', isCancelled });
+    restore();
+
+    expect(streaming.runStreamingCommand.mock.calls[0][3]).toMatchObject({ isCancelled });
+  });
+
+  it('reads no model cache for a runtime that has none', async () => {
+    // `readRuntimeWeights` is what keeps the readiness poll from spending a
+    // subprocess per non-MTPLX runtime.
+    await expect(readRuntimeWeights('ollama')).resolves.toBe('unknown');
+    await expect(readRuntimeWeights('nonsense')).resolves.toBe('unknown');
+    expect(mtplxCache.listMtplxCachedModels).not.toHaveBeenCalled();
+  });
+
+  it('stops at a failed download rather than starting a server that cannot serve', async () => {
+    streaming.runStreamingCommand.mockResolvedValue({ success: false, error: 'exit 1: connection reset' });
+    pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
+    probe.probeOpenAiModels.mockResolvedValue(unreachable);
+    const restore = pinPlatform('darwin');
+
+    const result = await runLocalRuntimeSetup('mtplx', { endpoint: 'http://127.0.0.1:8000/v1', action: 'pull-start' });
+    restore();
+
+    expect(child.spawn).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('connection reset') });
+  });
+
+  it('exposes every action the route may accept', () => {
+    expect([...SETUP_ACTIONS].sort()).toEqual(['install', 'install-start', 'pull-start', 'start']);
+  });
+
   it('refuses when every cached MTPLX model is an incomplete download', async () => {
     mtplxCache.listMtplxCachedModels.mockResolvedValue(cachedModels([{ repo_id: 'Example/Partial', validation: { ok: false } }]));
-    mtplxCache.pickMtplxCachedModel.mockReturnValue(null);
     pathLookup.findCommandOnPath.mockReturnValue('/opt/homebrew/bin/mtplx');
     probe.probeOpenAiModels.mockResolvedValue(unreachable);
     const restore = pinPlatform('darwin');

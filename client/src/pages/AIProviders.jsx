@@ -828,13 +828,15 @@ export default function AIProviders() {
         runtime={settingUpRuntime?.runtime}
         label={settingUpRuntime?.label}
         title={settingUpRuntime?.actionLabel}
-        params={settingUpRuntime ? { provider: settingUpRuntime.providerId } : undefined}
+        params={settingUpRuntime ? { provider: settingUpRuntime.providerId, action: settingUpRuntime.action } : undefined}
         onClose={() => setSettingUpRuntime(null)}
         onComplete={handleRuntimeSetupComplete}
         installUrlBase="/api/providers/readiness/setup"
         streamMethod="POST"
         flushMs={250}
-        description={`${settingUpRuntime?.actionLabel || 'Setting up'} — this can take several minutes on a first install.`}
+        description={settingUpRuntime?.action === 'pull-start'
+          ? `${settingUpRuntime.actionLabel} — model weights are a multi-gigabyte download, so this can run for a long time.`
+          : `${settingUpRuntime?.actionLabel || 'Setting up'} — this can take several minutes on a first install.`}
       />
       </div>
     </div>

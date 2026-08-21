@@ -176,10 +176,11 @@ export const LOCAL_RUNTIMES = Object.freeze({
     defaultBaseUrl: opencodeLocalBaseUrl('mtplx'),
     // No Models → LLMs entry — MTPLX has no model catalog inside PortOS. The
     // one-click setup on the readiness checklist
-    // (`services/localRuntimeSetup.js`) is what installs and starts it.
+    // (`services/localRuntimeSetup.js`) is what installs it, downloads its
+    // default checkpoint when the cache is empty, and starts it.
     manageUrl: null,
     docsUrl: 'https://github.com/atomantic/PortOS/blob/main/docs/features/mtplx.md',
-    modelsHint: 'Point the server at the Qwen MTP checkpoint you want; PortOS does not download weights.',
+    modelsHint: 'Point the server at the Qwen MTP checkpoint you want, or let the checklist fetch MTPLX\'s default one when nothing is cached.',
   }),
 });
 

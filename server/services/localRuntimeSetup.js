@@ -16,14 +16,19 @@
  * word, which keeps this as narrow as `providerRuntimeInstaller.js`'s CLI
  * install surface while removing the docs dead end.
  *
- * Two deliberate limits, because guessing here would be worse than a link:
+ * Three deliberate limits, because guessing here would be worse than a link:
  *
- *   - **Weights are never downloaded.** llama.cpp cannot be started without a
- *     GGUF path the user chooses, and no runtime's *model* check is auto-fixed
- *     — a multi-gigabyte download is a decision, and the Models → LLMs page already
- *     owns that flow with a picker. MTPLX is started on a checkpoint ALREADY in
- *     its cache (`lib/mtplxModels.js`); an empty cache is reported with the
- *     `mtplx pull` command that fixes it, never fetched.
+ *   - **Weights are never downloaded behind a start.** llama.cpp cannot be
+ *     started without a GGUF path the user chooses, and no runtime's *model*
+ *     check is auto-fixed by a start — a multi-gigabyte download is a decision,
+ *     and the Models → LLMs page already owns that flow with a picker. `start`
+ *     runs MTPLX on a checkpoint ALREADY in its cache (`lib/mtplxModels.js`).
+ *     A cache that is empty (or holds only a half-finished pull) is a SEPARATE
+ *     action the user clicks by name — `pull-start`, "Download the default
+ *     model & start MTPLX" — never something a Start button does silently.
+ *     Before that action existed the checklist offered only Start, which then
+ *     failed with "no model weights are cached": the one fact that mattered was
+ *     reachable only by clicking the button it made impossible.
  *   - **MTPLX's privileged paths are never touched.** Upstream ships an
  *     optional `mtplx max --install` fan-control helper behind a sudo prompt.
  *     PortOS installs the package and starts the loopback API server; that
@@ -40,7 +45,7 @@ import { spawn } from '../lib/childProcess.js';
 import { commandExists } from '../lib/commandExists.js';
 import { sleep } from '../lib/fileUtils.js';
 import { LOCAL_RUNTIMES, localEndpointPort } from '../lib/localProviderRuntime.js';
-import { listMtplxCachedModels, pickMtplxCachedModel } from '../lib/mtplxModels.js';
+import { describeMtplxCache, listMtplxCachedModels } from '../lib/mtplxModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { inspectVllmQwenProject, vllmStartBlockedReason } from '../lib/vllmQwenProject.js';
 import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
@@ -55,6 +60,20 @@ const INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
 
 /** A short command that only asks a running daemon to do something. */
 const CONTROL_TIMEOUT_MS = 60 * 1000;
+
+/**
+ * A model pull moves tens of gigabytes. Sized for a slow domestic line rather
+ * than for a fast one — a bound that kills a download at 90% is worse than no
+ * bound at all, and the user can close the modal to stop watching at any point.
+ */
+const WEIGHTS_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Split a downloader's output on bare `\r` too, so a tqdm-style progress bar
+ * that redraws one line surfaces each redraw instead of buffering silently for
+ * the length of the download (`lib/streamLines.js`).
+ */
+const PROGRESS_SPLIT_RE = /[\r\n]+/;
 
 /**
  * How long to wait for a just-started daemon to answer `/v1/models`. MTPLX
@@ -82,18 +101,29 @@ const PROBE_TIMEOUT_MS = 2_000;
 const CONFIRM_TIMEOUT_MS = 5_000;
 
 /**
- * Why an installed MTPLX still cannot be started. Weights are a multi-gigabyte
- * download and stay the user's decision (`docs/features/mtplx.md`), so the
- * button names the one command that fixes this instead of running it.
+ * Why an installed MTPLX still cannot be started. Weights stay the user's
+ * decision (`docs/features/mtplx.md`), so a plain Start never fetches them —
+ * it names the button that does, plus the terminal command for a checkpoint
+ * other than MTPLX's own default.
  */
-const MTPLX_NO_MODEL_ERROR = 'no model weights are cached, so its server exits before it binds a port. Run `mtplx pull` in a terminal to fetch its default checkpoint (or `mtplx pull <hf-repo-id>` for another MTP model) — a multi-gigabyte download PortOS will not start for you — then click Start MTPLX again.';
+const MTPLX_NO_MODEL_ERROR = 'no model weights are cached, so its server exits before it binds a port. Close this window — the checklist now offers “Download the default model & start MTPLX”, which fetches MTPLX\'s own verified checkpoint (a multi-gigabyte download) and then starts the server. To use a different MTP checkpoint instead, run `mtplx pull <hf-repo-id>` in a terminal, then click Start MTPLX again.';
+
+/** The same dead end, reached from a cache holding only interrupted pulls. */
+const mtplxPartialCacheError = (count) =>
+  `its cache holds ${count} model${count === 1 ? '' : 's'}, but none passed its own file check — an interrupted \`mtplx pull\` leaves a partial download behind. Use “Download the default model & start MTPLX” on the checklist to re-fetch it, or run \`mtplx pull <hf-repo-id>\` in a terminal for another checkpoint.`;
 
 /** What each `action` is called on the button and in the log. */
 const ACTION_LABELS = {
   install: (label) => `Install ${label}`,
   start: (label) => `Start ${label}`,
   'install-start': (label) => `Install & start ${label}`,
+  // Names the download so the click IS the consent — the one action here that
+  // spends bandwidth measured in gigabytes.
+  'pull-start': (label) => `Download the default model & start ${label}`,
 };
+
+/** Every action `runLocalRuntimeSetup` accepts — route validation reads this. */
+export const SETUP_ACTIONS = Object.freeze(Object.keys(ACTION_LABELS));
 
 /**
  * Spawn a long-lived local daemon and wait until its OpenAI-compatible endpoint
@@ -220,26 +250,48 @@ const SETUP_ROWS = Object.freeze({
       }
       return { success: false, error: 'Neither Homebrew nor python3 is available. Install Homebrew from https://brew.sh, then try again.' };
     },
+    /**
+     * What MTPLX's own cache holds, WITHOUT starting it — `mtplx models --json`
+     * is a local directory listing. Sits next to the `pull` step it gates so
+     * the two cannot drift, and `providerReadiness.js` reads it through
+     * `readRuntimeWeights` to put the same fact on the checklist.
+     */
+    async weights() {
+      return describeMtplxCache(await listMtplxCachedModels()).state;
+    },
+    /**
+     * Fetch MTPLX's OWN default verified checkpoint — no repo id from the
+     * request, so this cannot be pointed at an arbitrary download. Runs only
+     * for the `pull-start` action, which the user clicks by its full name.
+     */
+    async pull({ emit, isCancelled }) {
+      const binary = findCommandOnPath('mtplx');
+      if (!binary) return { success: false, error: '`mtplx` was not found on PortOS\'s PATH. Restart PortOS so it picks up the new bin directory, then try again.' };
+      emit('Downloading MTPLX\'s default verified checkpoint. This is a multi-gigabyte download and can take a long while — leave this window open to watch it.');
+      // `mtplx pull` redraws one progress line with a bare `\r`; splitting on
+      // newlines alone would leave the stream silent for the whole download.
+      // `isCancelled` is load-bearing here, not decoration: this is the one
+      // step that can run for HOURS, and the route holds its single-setup lock
+      // until this promise settles. Without it, closing the modal leaves the
+      // download running and every other runtime's setup button refused for the
+      // rest of it.
+      return runStreamingCommand(binary, ['pull'], emit, { timeoutMs: WEIGHTS_TIMEOUT_MS, splitRe: PROGRESS_SPLIT_RE, isCancelled });
+    },
     async start({ emit, endpoint, isCancelled }) {
       // `mtplx serve` defaults `--model` to ONE hard-coded checkpoint and exits
       // 1 before binding when that repo is not in its cache — even on a machine
       // holding a different MTP model that would have served fine. Ask the
       // cache first and name what is actually there.
-      const cache = await listMtplxCachedModels();
-      if (cache.models === null) {
+      const cache = describeMtplxCache(await listMtplxCachedModels());
+      if (cache.state === 'unknown') {
         // The cache could not be READ — which is not "read, and empty". Fall
         // through to MTPLX's own default rather than blocking a start that may
         // well work.
         emit(`Could not read MTPLX's model cache (${cache.error}) — starting with its default model.`);
-      } else if (cache.models.length === 0) {
-        return { success: false, error: MTPLX_NO_MODEL_ERROR };
       }
-      const model = pickMtplxCachedModel(cache.models);
-      if (cache.models && !model) {
-        const count = cache.models.length;
-        return { success: false, error: `its cache holds ${count} model${count === 1 ? '' : 's'}, but none passed its own file check — an interrupted \`mtplx pull\` leaves a partial download behind. Re-run \`mtplx pull <hf-repo-id>\` in a terminal, then try again.` };
-      }
-      if (model) emit(`Serving the cached MTPLX model ${model}.`);
+      if (cache.state === 'empty') return { success: false, error: MTPLX_NO_MODEL_ERROR };
+      if (cache.state === 'partial') return { success: false, error: mtplxPartialCacheError(cache.count) };
+      if (cache.model) emit(`Serving the cached MTPLX model ${cache.model}.`);
       // The cache lookup is an awaited subprocess — the modal can close while it
       // runs, and the caller's cancellation check happened BEFORE it. Without
       // this, a cancelled setup still spawns a detached daemon nobody asked to
@@ -249,7 +301,7 @@ const SETUP_ROWS = Object.freeze({
       // API-only server, which is the half PortOS actually talks to. The daemon
       // must bind where the PROVIDER points — a user who moved MTPLX to 8010
       // would otherwise get a second server on 8000 that nothing talks to.
-      const args = ['serve', '--port', localEndpointPort(endpoint) || '8000', ...(model ? ['--model', model] : [])];
+      const args = ['serve', '--port', localEndpointPort(endpoint) || '8000', ...(cache.model ? ['--model', cache.model] : [])];
       return startDaemon({ command: 'mtplx', args, endpoint, emit, isCancelled });
     },
   }),
@@ -334,6 +386,25 @@ const SETUP_ROWS = Object.freeze({
   }),
 });
 
+/**
+ * What a runtime's own model cache holds, without starting it. `'unknown'` for
+ * every runtime with no cache PortOS can read offline — never `'empty'`, which
+ * would claim a fact PortOS does not have.
+ *
+ * Exported so `providerReadiness.js` reports the checklist from the SAME fact
+ * `describeRuntimeSetup` picks a button from; a second copy of the reader table
+ * over there is how the two would drift into disagreeing about one cache.
+ *
+ * @returns {Promise<'unknown'|'empty'|'partial'|'ready'>}
+ */
+export async function readRuntimeWeights(kind) {
+  const read = SETUP_ROWS[kind]?.weights;
+  return read ? read() : 'unknown';
+}
+
+/** The cache states that make a start impossible. */
+export const weightsBlockStart = (weights) => weights === 'empty' || weights === 'partial';
+
 /** True when this host can run the runtime's setup at all. */
 function platformSupported(row) {
   return !row.platforms || row.platforms.includes(process.platform);
@@ -349,10 +420,18 @@ function platformSupported(row) {
  * unmet check is the model, which PortOS will not choose), or a runtime PortOS
  * can install but not start when the install is already done.
  *
+ * `weights` is what the caller already learned about the runtime's local model
+ * cache (`lib/mtplxModels.js`'s `describeMtplxCache`), and only `'empty'` /
+ * `'partial'` change the answer: those are the states where a Start CANNOT
+ * work, so the button becomes the download that makes it possible instead of
+ * the start that is guaranteed to fail. `'unknown'` — the default, and what
+ * every runtime with no cache to read reports — deliberately keeps the old
+ * behavior; a cache PortOS could not read must not be treated as an empty one.
+ *
  * @param {string} kind - `mtplx` | `llama` | `ollama` | `lmstudio` | `vllm`
- * @param {{installed: boolean, running: boolean}} state
+ * @param {{installed: boolean, running: boolean, weights?: 'unknown'|'empty'|'partial'|'ready'}} state
  */
-export function describeRuntimeSetup(kind, { installed, running }) {
+export function describeRuntimeSetup(kind, { installed, running, weights = 'unknown' }) {
   const row = SETUP_ROWS[kind];
   const runtime = LOCAL_RUNTIMES[kind];
   if (!row || !runtime) return null;
@@ -365,7 +444,13 @@ export function describeRuntimeSetup(kind, { installed, running }) {
     return { runtime: kind, label: runtime.label, action: null, actionLabel: null, blockedReason: row.unsupportedReason };
   }
 
-  const action = needsInstall && needsStart ? 'install-start' : needsInstall ? 'install' : 'start';
+  // Only offered once the binary is here: the cache cannot be read without it,
+  // so an uninstalled runtime's `weights` says nothing and `install-start`
+  // stays the honest first step.
+  const needsWeights = Boolean(row.pull) && !needsInstall && needsStart && weightsBlockStart(weights);
+  const action = needsWeights ? 'pull-start'
+    : needsInstall && needsStart ? 'install-start'
+      : needsInstall ? 'install' : 'start';
   return {
     runtime: kind,
     label: runtime.label,
@@ -386,12 +471,16 @@ export function describeRuntimeSetup(kind, { installed, running }) {
  * so a failure has to come back as a value it can turn into a terminal frame.
  *
  * @param {string} kind
- * @param {{endpoint: string, emit: (line: string) => void, isCancelled?: () => boolean}} ctx
+ * @param {{endpoint: string, emit: (line: string) => void, isCancelled?: () => boolean, action?: string}} ctx
  *   `isCancelled` is checked between steps so a closed modal does not go on to
- *   start a daemon nobody is watching for.
+ *   start a daemon nobody is watching for. `action` is the one the checklist's
+ *   button named; only `pull-start` adds a step (the model download), and it is
+ *   opt-in precisely so no other action can spend gigabytes of bandwidth. Omit
+ *   it (`null`) and this resolves the action the checklist would offer right
+ *   now — see the resolution comment below.
  * @returns {Promise<{success: boolean, error?: string, message?: string}>}
  */
-export async function runLocalRuntimeSetup(kind, { endpoint, emit = () => {}, isCancelled = () => false }) {
+export async function runLocalRuntimeSetup(kind, { endpoint, emit = () => {}, isCancelled = () => false, action = null }) {
   const row = SETUP_ROWS[kind];
   const runtime = LOCAL_RUNTIMES[kind];
   if (!row || !runtime) return { success: false, error: `PortOS has no automatic setup for \`${String(kind)}\`.` };
@@ -408,10 +497,31 @@ export async function runLocalRuntimeSetup(kind, { endpoint, emit = () => {}, is
   }
   if (!platformSupported(row)) return { success: false, error: row.unsupportedReason };
 
+  // Refuse a step this runtime does not have BEFORE anything is installed. A
+  // `pull-start` aimed at Ollama would otherwise run Ollama's install on its way
+  // to being refused, and llama.cpp (`start: null`) would return the
+  // install-succeeded message without ever refusing at all.
+  if (action === 'pull-start' && !row.pull) {
+    return { success: false, error: `PortOS cannot download model weights for ${runtime.label}.` };
+  }
+
   // Same two signals `providerReadiness.js` uses: the binary on PATH, plus LM
   // Studio's macOS app bundle, which serves without ever putting `lms` there.
   const installed = Boolean(runtime.command && findCommandOnPath(runtime.command)) ||
     (kind === 'lmstudio' && isLmStudioAppInstalled());
+
+  // A request that names NO action came from a client built before `pull-start`
+  // existed — a stale `client/dist` (`pm2 restart` does not rebuild it) or a tab
+  // open across an upgrade. That client still renders THIS server's
+  // `setup.actionLabel`, so the user clicked a button reading “Download the
+  // default model & start MTPLX”; defaulting to a plain start would answer that
+  // click with the very "no model weights are cached" dead end this action
+  // exists to remove. Resolve what the checklist is offering instead, which is
+  // by construction the label they clicked.
+  // `installed &&` mirrors `describeRuntimeSetup`'s own gate: the cache cannot
+  // be read without the binary, so an uninstalled runtime never resolves to a
+  // download — and never spends a cache read to learn that.
+  const resolved = action || (row.pull && installed && weightsBlockStart(await row.weights()) ? 'pull-start' : 'install-start');
 
   if (!installed) {
     const result = await row.install({ emit, endpoint: target, isCancelled });
@@ -426,6 +536,17 @@ export async function runLocalRuntimeSetup(kind, { endpoint, emit = () => {}, is
     return { success: true, message: `${runtime.label} is installed. Pick a model on Models → LLMs to start it.` };
   }
   if (isCancelled()) return { success: false, error: 'Cancelled after the install — nothing was started.' };
+
+  // The ONLY path that downloads weights, and it runs only because the user
+  // clicked a button that says so. `describeRuntimeSetup` offers it exactly
+  // when the cache is provably unusable, which is the state where a plain
+  // Start would exit before binding a port.
+  if (resolved === 'pull-start') {
+    const pulled = await row.pull({ emit, isCancelled });
+    if (!pulled.success) return { success: false, error: `${runtime.label} model download failed: ${pulled.error}` };
+    emit(`${runtime.label}'s default checkpoint is cached.`);
+    if (isCancelled()) return { success: false, error: 'Cancelled after the download — the weights are cached, but nothing was started.' };
+  }
 
   // The install step may have started it (Ollama's Homebrew service does), so
   // re-probe rather than launching a second copy onto the same port.

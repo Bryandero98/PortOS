@@ -39,8 +39,10 @@ vi.mock('../components/settings/SettingsTabsHeader', () => ({
   default: () => <div data-testid="settings-tabs-header" />,
 }));
 vi.mock('../components/install/RuntimeInstallModal', () => ({
-  default: ({ open, runtime, streamMethod, flushMs }) => open
-    ? <div data-testid="runtime-install-modal" data-runtime={runtime} data-stream-method={streamMethod} data-flush-ms={flushMs} />
+  // `params` becomes the setup request's query string, so the test can assert
+  // WHICH setup step the clicked button asked for.
+  default: ({ open, runtime, streamMethod, flushMs, params }) => open
+    ? <div data-testid="runtime-install-modal" data-runtime={runtime} data-stream-method={streamMethod} data-flush-ms={flushMs} data-params={JSON.stringify(params || {})} />
     : null,
 }));
 
@@ -320,6 +322,35 @@ describe('local-daemon readiness on the provider card', () => {
     expect(await screen.findByText(/llama\.cpp setup incomplete/)).toBeInTheDocument();
     expect(screen.getByText(/Install llama\.cpp from Models/)).toBeInTheDocument();
     expect(screen.queryByText(/setup docs/i)).not.toBeInTheDocument();
+  });
+
+  it('sends the weights-download action when the checklist offers it', async () => {
+    // MTPLX installed, nothing cached: the button is the download, and the
+    // action has to reach the setup request — sending the default would run a
+    // plain start, which is the failure this whole path exists to avoid.
+    api.getProviderReadiness.mockResolvedValue({
+      readiness: {
+        'opencode-llama-tui': {
+          kind: 'mtplx',
+          label: 'MTPLX',
+          endpoint: 'http://127.0.0.1:8000/v1',
+          manageUrl: null,
+          ready: false,
+          setup: { runtime: 'mtplx', label: 'MTPLX', action: 'pull-start', actionLabel: 'Download the default model & start MTPLX', blockedReason: null },
+          checks: [
+            { id: 'runtime', label: 'MTPLX installed', ok: true, detail: 'on PATH', fixHint: null },
+            { id: 'server', label: 'MTPLX server responding', ok: false, detail: 'MTPLX has no model weights cached, so its server exits before it binds a port.', fixHint: 'Use “Download the default model & start MTPLX” below — PortOS does this for you.' },
+          ],
+        },
+      },
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Download the default model & start MTPLX/ }));
+    const modal = await screen.findByTestId('runtime-install-modal');
+    expect(JSON.parse(modal.getAttribute('data-params'))).toEqual({ provider: 'opencode-llama-tui', action: 'pull-start' });
+    expect(modal.getAttribute('data-runtime')).toBe('mtplx');
   });
 
   it('lets the user match this provider to the model llama.cpp is actually serving', async () => {
