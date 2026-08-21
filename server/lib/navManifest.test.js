@@ -33,6 +33,7 @@ const TABBED_PAGES = [
   { prefix: '/messages', file: 'client/src/pages/Messages.jsx', kind: 'ids', constName: 'TABS' },
   { prefix: '/wiki', file: 'client/src/pages/Wiki.jsx', kind: 'ids', constName: 'TABS' },
   { prefix: '/settings', file: 'client/src/components/settings/SettingsTabsHeader.jsx', kind: 'links', constName: 'TABS' },
+  { prefix: '/models', file: 'client/src/components/models/ModelsTabsHeader.jsx', kind: 'links', constName: 'TABS' },
   { prefix: '/sharing', file: 'client/src/pages/Sharing.jsx', kind: 'links', constName: 'SECTIONS' },
   // OpenWorld's fast-travel destinations aren't page tabs, but they follow the same
   // contract: one `/openworld/region/<id>` nav command per region in the client's
@@ -150,8 +151,26 @@ describe('resolveNavCommand — fuzzy matching', () => {
 
   it('resolves every canonical System Resources section name', () => {
     expect(resolveNavCommand('system resources')?.path).toBe('/system-resources/overview');
-    expect(resolveNavCommand('model resources')?.path).toBe('/system-resources/models');
     expect(resolveNavCommand('active queues')?.path).toBe('/system-resources/queues');
+  });
+
+  it('resolves the folded Model Resources aliases to Models → Status', () => {
+    // The Dev Tools model-inventory page folded into /models/status (#4728),
+    // which already answered "what is resident right now". Its aliases moved with
+    // it rather than being dropped — a user who says "model resources" or
+    // "downloaded models" must still land on the inventory, not nowhere.
+    expect(resolveNavCommand('model resources')?.path).toBe('/models/status');
+    expect(resolveNavCommand('downloaded models')?.path).toBe('/models/status');
+  });
+
+  it('resolves the moved model-management pages to their Models paths', () => {
+    // Media models, LoRAs, LoRA training and embeddings moved out of Create and
+    // Settings (#4728). Their command ids are unchanged (they are opaque and
+    // persisted), so only these paths prove the move actually landed.
+    expect(resolveNavCommand('media models')?.path).toBe('/models/media');
+    expect(resolveNavCommand('loras')?.path).toBe('/models/loras');
+    expect(resolveNavCommand('lora training')?.path).toBe('/models/training');
+    expect(resolveNavCommand('embeddings')?.path).toBe('/models/embeddings');
   });
 
   it('resolves Universe Builder to the /universes index path', () => {
@@ -423,6 +442,13 @@ const NAV_COVERAGE_OPT_OUT = new Map([
 // real page and (loudly, not silently) demand a nav entry for its route.
 const REDIRECT_ELEMENT = /element=\{<\s*(Navigate|RedirectWithSearch|PrefixRedirect|CanonRedirect|UniverseRouteRedirect)\b/;
 
+// Of those, the ones that REBASE a prefix and carry the trailing path (ids, tabs)
+// onto the new one. The others forward to a fixed destination and discard
+// whatever followed — correct for a static route, silently lossy for a param'd
+// one, which is how a bookmark into a specific record turns into a landing on
+// the index.
+const SUFFIX_PRESERVING_ELEMENTS = new Set(['PrefixRedirect', 'UniverseRouteRedirect']);
+
 // Flatten a stack of (possibly multi-segment, possibly "/") route path pieces
 // into a single absolute path: ['/', 'media', 'image'] → '/media/image'.
 function joinRoutePath(segments) {
@@ -445,6 +471,7 @@ function joinRoutePath(segments) {
 function scanRoutes(appSrc) {
   const stack = []; // parent path segments of currently-open <Route> containers
   const required = [];
+  const redirects = []; // { from, to } for every forwarding leaf route
   const malformed = [];
   for (const rawLine of appSrc.split('\n')) {
     const line = rawLine.trim();
@@ -467,17 +494,27 @@ function scanRoutes(appSrc) {
       stack.push(routePath ?? '');
       continue;
     }
-    if (REDIRECT_ELEMENT.test(line)) continue;
-
     // An index route resolves to its parent's path (e.g. the `/` index = Dashboard).
     const absolute = routePath === null
       ? joinRoutePath(stack)
       : joinRoutePath([...stack, routePath]);
 
+    // Redirects are recorded rather than dropped: a moved page's old path has to
+    // keep landing somewhere, and that is only assertable if the scanner reports
+    // where each forwarding route points. `to` is read off the same line, so a
+    // `from`-only wrapper (CanonRedirect, UniverseRouteRedirect) records nothing
+    // rather than a bogus target.
+    const redirectElement = line.match(REDIRECT_ELEMENT);
+    if (redirectElement) {
+      const to = line.match(/\bto="([^"]*)"/);
+      if (to) redirects.push({ from: absolute, to: to[1], element: redirectElement[1] });
+      continue;
+    }
+
     if (absolute.split('/').some((s) => s.startsWith(':'))) continue; // param route
     required.push(absolute);
   }
-  return { required: [...new Set(required)], malformed, stackDepth: stack.length };
+  return { required: [...new Set(required)], redirects, malformed, stackDepth: stack.length };
 }
 
 describe('nav coverage — every navigable App.jsx route has a manifest entry', () => {
@@ -486,6 +523,7 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
   const navPaths = new Set(NAV_COMMANDS.map((c) => c.path.split(/[?#]/)[0]));
   const scan = scanRoutes(fs.readFileSync(APP_JSX, 'utf8'));
   const routePaths = new Set(scan.required);
+  const byFrom = new Map(scan.redirects.map((r) => [r.from, r]));
 
   it('the line scanner saw every <Route> (single-line assumption holds)', () => {
     // A non-empty malformed list or unbalanced stack means a multi-line route
@@ -499,6 +537,74 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
     const uncovered = [...routePaths]
       .filter((p) => !navPaths.has(p) && !NAV_COVERAGE_OPT_OUT.has(p));
     expect(uncovered).toEqual([]);
+  });
+
+  // Every page that has ever moved leaves its old path behind in bookmarks, in
+  // stale ⌘K history, and in links other installs' peers may hold. A move that
+  // forgets the redirect 404s all of them, and nothing else in this file would
+  // notice — the coverage guard above only looks at where routes point NOW.
+  //
+  // Driven by each command's own `previousPaths`, NOT a list maintained here: the
+  // declaration then lives beside the path that moved, and the next move is one
+  // edit in navManifest.js instead of two files that can disagree.
+  it('keeps a redirect from every declared previous path to its current one', () => {
+    const broken = NAV_COMMANDS
+      .flatMap((c) => (c.previousPaths || []).map((from) => ({ from, to: c.path.split(/[?#]/)[0], id: c.id })))
+      .filter(({ from, to }) => byFrom.get(from)?.to !== to)
+      .map(({ from, to, id }) => `${id}: ${from} → ${byFrom.get(from)?.to ?? 'NO REDIRECT'} (want ${to})`);
+    expect(broken).toEqual([]);
+  });
+
+  // Landing on the right PAGE is only half of it. A previous path with a `:param`
+  // segment was a deep link into one record, so its redirect has to carry that
+  // segment across — swapping the PrefixRedirect for a bare <Navigate to="/models/training">
+  // still points at the right page and would pass the check above, while every
+  // bookmarked dataset quietly lands on the index instead.
+  it('preserves the record id when a parameterized previous path redirects', () => {
+    const lossy = NAV_COMMANDS
+      .flatMap((c) => (c.previousPaths || []).map((from) => ({ from, id: c.id })))
+      .filter(({ from }) => from.split('/').some((seg) => seg.startsWith(':')))
+      .map(({ from, id }) => ({ from, id, hit: byFrom.get(from) }))
+      .filter(({ hit }) => !hit || !SUFFIX_PRESERVING_ELEMENTS.has(hit.element))
+      .map(({ from, id, hit }) => `${id}: ${from} forwards via ${hit?.element ?? 'NO REDIRECT'}, which drops the trailing segment`);
+    expect(lossy).toEqual([]);
+  });
+
+  // The guard above is only as good as what it is pointed at, and it reads a
+  // field that is easy to simply not add. Pin the moves already made so deleting
+  // a `previousPaths` entry fails here rather than silently shrinking coverage.
+  it('still declares the previous paths of the pages already moved', () => {
+    const declared = new Set(NAV_COMMANDS.flatMap((c) => c.previousPaths || []));
+    const missing = [
+      '/settings/local-llm',   // #4736 — Local LLM management left Settings
+      '/media/models',         // #4728 — the rest of model management left Create/Settings/Dev Tools
+      '/media/loras',
+      '/media/training',
+      '/settings/embeddings',
+      '/system-resources/models',
+      // The dataset workbench was its own deep-linkable path, and a bookmark into
+      // one dataset breaks just as silently as the index.
+      '/media/training/:datasetId',
+    ].filter((p) => !declared.has(p));
+    expect(missing).toEqual([]);
+  });
+
+  // A redirect that forwards to a path nothing serves is a 404 with extra steps.
+  it('every redirect lands on a real route or nav destination', () => {
+    const known = new Set([...routePaths, ...navPaths]);
+    const dangling = scan.redirects
+      // A RELATIVE target (`to="overview"`) resolves against its own route, so it
+      // has no absolute path to look up — /feature-agents/:id → overview and the
+      // two pipeline/story tab defaults are all this shape.
+      .filter((r) => r.to.startsWith('/'))
+      .map((r) => ({ ...r, bare: r.to.split(/[?#]/)[0] }))
+      // A param route can't be enumerated by path, so accept any target whose
+      // parent segment is served (e.g. /models/training covers the :datasetId
+      // drill-down the PrefixRedirect rebases onto).
+      .filter(({ bare }) => !known.has(bare)
+        && !known.has(bare.split('/').slice(0, -1).join('/')))
+      .map((r) => `${r.from} → ${r.to}`);
+    expect(dangling).toEqual([]);
   });
 
   it('opt-out list has no stale entries', () => {

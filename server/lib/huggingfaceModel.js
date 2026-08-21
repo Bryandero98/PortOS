@@ -190,7 +190,7 @@ const looksLikeLora = ({ repo, model }) => {
 const assertNotLora = ({ repo, model }) => {
   if (looksLikeLora({ repo, model })) {
     throw new ServerError(
-      `HuggingFace repo "${repo}" looks like a LoRA adapter, not a base model — install LoRAs from the LoRA manager (/media/loras), not here.`,
+      `HuggingFace repo "${repo}" looks like a LoRA adapter, not a base model — install LoRAs from the LoRA manager (/models/loras), not here.`,
       { status: 422, code: 'HF_IS_LORA' },
     );
   }

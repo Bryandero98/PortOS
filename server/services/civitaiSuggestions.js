@@ -1,6 +1,6 @@
 /**
  * Civitai LoRA suggestions — pre-scans top LoRAs per runner family
- * (mflux / flux2 / z-image) so users land on /media/loras with a curated
+ * (mflux / flux2 / z-image) so users land on /models/loras with a curated
  * "quick-install" list instead of a blank install form.
  *
  * Cached in-memory with a 1-hour TTL. The cache survives the lifetime of
@@ -40,7 +40,7 @@ const CURATED_SUGGESTIONS = [
 const cache = new Map();
 
 // Shape one Civitai model into the lightweight suggestion-card payload the
-// /media/loras UI consumes. Defensive: any field can be missing on Civitai.
+// /models/loras UI consumes. Defensive: any field can be missing on Civitai.
 // Returns null on any malformed input (no published versions, no installable
 // file, etc.) — the suggestion panel is best-effort, so a single bad entry
 // must not poison the whole list.
@@ -203,7 +203,7 @@ const fetchSuggestionsFor = async (runnerFamily, { fetchImpl, force = false } = 
 };
 
 // Live (uncached) search/pagination within one runner family. Backs the
-// per-category search box and "Load more" button on /media/loras:
+// per-category search box and "Load more" button on /models/loras:
 //   - `query` filters by keyword (model name/description) — blank = top ranking
 //   - `cursor` pages forward; pass the previous response's `nextCursor`
 // Uncached because results are query-/cursor-specific and short-lived; the

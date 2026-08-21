@@ -16,7 +16,6 @@ export const TABS = [
   { id: 'catalog', label: 'Catalog', to: '/settings/catalog' },
   { id: 'code-reviewers', label: 'Code Reviewers', to: '/settings/code-reviewers' },
   { id: 'database', label: 'Database', to: '/settings/database' },
-  { id: 'embeddings', label: 'Embeddings', to: '/settings/embeddings' },
   { id: 'general', label: 'General', to: '/settings/general' },
   { id: 'mortalloom', label: 'MortalLoom', to: '/settings/mortalloom' },
   { id: 'openclaw', label: 'OpenClaw', to: '/openclaw' },

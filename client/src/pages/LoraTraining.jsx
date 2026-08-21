@@ -1,5 +1,5 @@
 /**
- * LoRA Training — dataset list (/media/training).
+ * LoRA Training — dataset list (/models/training).
  *
  * One dataset per universe bible subject. Cards show the subject, a thumb
  * strip, image/caption counts, and training status; "New dataset" walks
@@ -135,7 +135,7 @@ export default function LoraTraining() {
         {(datasets || []).map((d) => (
           <div key={d.id} className="bg-port-card border border-port-border rounded-lg p-4 flex flex-col gap-3">
             <div className="flex items-start justify-between gap-2">
-              <Link to={`/media/training/${d.id}`} className="min-w-0">
+              <Link to={`/models/training/${d.id}`} className="min-w-0">
                 <div className="text-white font-medium truncate">{d.character?.name || 'Unnamed'}</div>
                 <div className="text-xs text-gray-500 truncate">
                   <span className="font-mono">{d.triggerWord}</span>
@@ -148,7 +148,7 @@ export default function LoraTraining() {
               </span>
             </div>
             {d.thumbnails?.length > 0 && (
-              <Link to={`/media/training/${d.id}`} className="flex gap-1 overflow-hidden">
+              <Link to={`/models/training/${d.id}`} className="flex gap-1 overflow-hidden">
                 {d.thumbnails.map((file) => (
                   <img
                     key={file}
@@ -194,7 +194,7 @@ export default function LoraTraining() {
       {showNew && (
         <NewDatasetDialog
           onClose={() => setShowNew(false)}
-          onCreated={(dataset) => navigate(`/media/training/${dataset.id}`)}
+          onCreated={(dataset) => navigate(`/models/training/${dataset.id}`)}
         />
       )}
     </div>

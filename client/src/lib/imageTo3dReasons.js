@@ -31,6 +31,23 @@ export const UNAVAILABLE_REASONS = Object.freeze({
   'cuda-probe-failed': 'Could not detect this host’s GPU',
 });
 
+/**
+ * Is this target ready to render on this host?
+ *
+ * `installed` is TRI-STATE and the third state is the one that gets missed:
+ * `true` = local weights present, `false` = installable but not installed, and
+ * `null` = the target has no install concept at all (a hosted API lane), which is
+ * ready the moment it is available. Gating on plain `target.installed` truthiness
+ * silently reports a hosted target as not-ready.
+ *
+ * Shared so the `/3d` readiness summary and the Models → 3D status badge can't
+ * give different answers about the same target.
+ *
+ * @param {{available?: boolean, installed?: boolean|null}|null} [target]
+ * @returns {boolean}
+ */
+export const isTargetReady = (target) => !!target && !!target.available && target.installed !== false;
+
 /** Label for a reason code the map doesn't know (or a null/absent code). */
 export const UNAVAILABLE_REASON_FALLBACK = 'Unsupported on this host';
 

@@ -844,7 +844,7 @@ export function ImageGenTab() {
           <p className="text-xs text-gray-500">
             Pick a Python 3.10+ interpreter — PortOS auto-detects venvs and conda installs and can install
             missing packages directly. HF model weights stream into the standard <code>~/.cache/huggingface</code>
-            and are surfaced in <a href="/media/models" className="text-port-accent hover:underline">Media → Models</a>.
+            and are surfaced in <a href="/models/media" className="text-port-accent hover:underline">Models → Media</a>.
           </p>
           <LocalSetupPanel pythonPath={pythonPath} onPythonPathChange={setPythonPath} />
           <CleanersToggles

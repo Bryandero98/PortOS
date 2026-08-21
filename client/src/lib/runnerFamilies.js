@@ -21,7 +21,7 @@ export const VIDEO_LORA_FAMILIES = Object.freeze({
 });
 
 // Predicate: is this LoRA family a video family (vs. an image RUNNER_FAMILIES
-// one)? Backs the Image/Video filter on /media/loras. Anything not in
+// one)? Backs the Image/Video filter on /models/loras. Anything not in
 // VIDEO_LORA_FAMILIES (including null/legacy) is treated as image. Mirror of
 // server/lib/runners.js.
 const VIDEO_LORA_FAMILY_SET = new Set(Object.values(VIDEO_LORA_FAMILIES));

@@ -1,6 +1,6 @@
 /**
  * Video-LoRA suggestions — a hand-curated quick-install list of HuggingFace
- * video LoRAs (LTX-2 / LTX-Video) so /media/loras surfaces them next to the
+ * video LoRAs (LTX-2 / LTX-Video) so /models/loras surfaces them next to the
  * Civitai image suggestions instead of forcing the user to know the repo id.
  *
  * Why this is separate from civitaiSuggestions.js: video LoRAs live on

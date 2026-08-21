@@ -38,7 +38,7 @@ export default function CharacterLoraChip({ entryId, ingredientId, universeId, s
     setOpening(true);
     try {
       const dataset = await createLoraDataset({ universeId, entryId });
-      navigate(`/media/training/${dataset.id}`);
+      navigate(`/models/training/${dataset.id}`);
     } finally {
       setOpening(false);
     }
@@ -50,7 +50,7 @@ export default function CharacterLoraChip({ entryId, ingredientId, universeId, s
     <div className="flex items-center gap-2 flex-wrap text-xs">
       {lora && (
         <Link
-          to="/media/loras"
+          to="/models/loras"
           className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-port-success/15 text-port-success border border-port-success/30 hover:bg-port-success/25"
           title={`Trained LoRA: ${lora.filename}${lora.triggerWords?.[0] ? ` · trigger: ${lora.triggerWords[0]}` : ''}`}
         >
@@ -72,7 +72,7 @@ export default function CharacterLoraChip({ entryId, ingredientId, universeId, s
       )}
       {showDatasetButton && !canCreate && existingDataset && (
         <Link
-          to={`/media/training/${existingDataset.id}`}
+          to={`/models/training/${existingDataset.id}`}
           className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-port-card border border-port-border text-gray-400 hover:text-white"
           title="Open the character's LoRA training dataset"
         >
