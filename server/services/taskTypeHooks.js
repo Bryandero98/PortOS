@@ -50,16 +50,27 @@ import { isFalsyMeta, isTruthyMeta } from './agentState.js';
 import { TRACKER_FILING_TASK_TYPES, CONCRETE_WORK_TRACKERS } from '../lib/workTracker.js';
 import { isAuditTaskType } from '../lib/auditCatalog.js';
 
-// taskType → () => import('./path/to/hookModule.js'). A module may export either
-// or both hooks; a missing export means "no hook of that kind for this type".
+// taskType → { load, honorsPerAppProviderOverride? }. `load` is the module import
+// thunk; a module may export either or both hooks, and a missing export means "no
+// hook of that kind for this type". Capabilities that callers must know WITHOUT
+// paying for the import are declared here on the entry, so this stays the single
+// registration point (a parallel per-capability list would be free to drift).
 const HOOK_MODULES = {
-  'layered-intelligence': () => import('./autonomousJobs/layeredIntelligenceHooks.js'),
+  'layered-intelligence': {
+    load: () => import('./autonomousJobs/layeredIntelligenceHooks.js'),
+    // Its buildTaskInput hook resolves the app's per-app provider/model override,
+    // and cosTaskGenerator applies the hook's return LAST (applyProviderModelPins)
+    // — so for this type the per-app pin OUTRANKS the global Schedule pin. A type
+    // without this flag reads only `taskMetadata` off the override and takes its
+    // provider from the pin, making a stored per-app provider inert there.
+    honorsPerAppProviderOverride: true
+  },
 };
 const PAYLOAD_OPTIONAL_OUTPUT_HOOKS = new Set();
 
 async function loadHookModule(taskType) {
   if (!isProgrammaticIoTaskType(taskType)) return null;
-  return HOOK_MODULES[taskType]();
+  return HOOK_MODULES[taskType].load();
 }
 
 /**
@@ -256,27 +267,15 @@ function isTrackerFilingDispatch(task) {
   return CONCRETE_WORK_TRACKERS.includes(task?.metadata?.workTracker);
 }
 
-// Task types whose `buildTaskInput` hook resolves the app's per-app
-// provider/model override into the spawn. cosTaskGenerator applies the hook's
-// returned `{ providerId, model }` LAST (applyProviderModelPins), so for these
-// types the per-app override OUTRANKS the global Schedule pin. Every other task
-// type reads only `taskMetadata` off the override and takes its provider from
-// the pin — a per-app provider/model stored on one of those is inert, so the UI
-// must not offer it there. Kept in sync with HOOK_MODULES by the suite.
-const PROVIDER_OVERRIDE_TASK_TYPES = new Set(['layered-intelligence']);
-
 /**
  * Whether a per-app provider/model override actually reaches the spawn for this
- * task type (and therefore supersedes the global Schedule pin). Synchronous so
- * the schedule-status builder can stamp the capability on every task row.
+ * task type (and therefore supersedes the global Schedule pin) — read off the
+ * type's own registry entry. Synchronous so the schedule-status builder can stamp
+ * the capability on every task row.
  */
 export function honorsPerAppProviderOverride(taskType) {
-  return typeof taskType === 'string' && PROVIDER_OVERRIDE_TASK_TYPES.has(taskType);
-}
-
-/** The provider-override-honoring task types, for the drift guard in the suite. */
-export function listProviderOverrideTaskTypes() {
-  return [...PROVIDER_OVERRIDE_TASK_TYPES];
+  return isProgrammaticIoTaskType(taskType)
+    && HOOK_MODULES[taskType].honorsPerAppProviderOverride === true;
 }
 
 /**

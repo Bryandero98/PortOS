@@ -13,8 +13,7 @@ function renderRow({
   fileIssuesCapable,
   defaultFileIssues,
   providerOverrideCapable,
-  globalProviderId,
-  globalModel,
+  inheritedProviderText,
   providers,
 } = {}) {
   render(
@@ -27,8 +26,7 @@ function renderRow({
       fileIssuesCapable={fileIssuesCapable}
       defaultFileIssues={defaultFileIssues}
       providerOverrideCapable={providerOverrideCapable}
-      globalProviderId={globalProviderId}
-      globalModel={globalModel}
+      inheritedProviderText={inheritedProviderText}
       providers={providers}
       override={override}
       onUpdate={onUpdate}
@@ -216,25 +214,25 @@ describe('AppOverrideRow — per-app provider override', () => {
     { id: 'opencode-llama-tui', name: 'OpenCode (llama)' },
     { id: 'claude-ollama-tui', name: 'Claude (ollama)' },
   ];
+  const INHERITED = 'OpenCode (llama) / qwen-a';
 
   it('names the app override and the task pin it supersedes', () => {
     renderRow({
       taskType: 'layered-intelligence',
       providerOverrideCapable: true,
-      globalProviderId: 'opencode-llama-tui',
-      globalModel: 'qwen-a',
+      inheritedProviderText: INHERITED,
       providers: PROVIDERS,
       override: { enabled: true, providerId: 'claude-ollama-tui', model: 'qwen-b' },
     });
-    expect(screen.getByText('Claude (ollama) · qwen-b')).toBeInTheDocument();
-    expect(screen.getByTitle(/wins over the task provider \(OpenCode \(llama\) · qwen-a\)/)).toBeInTheDocument();
+    expect(screen.getByText('Claude (ollama) / qwen-b')).toBeInTheDocument();
+    expect(screen.getByTitle(`Claude (ollama) / qwen-b (app override) — wins over the task provider (${INHERITED})`)).toBeInTheDocument();
   });
 
   it('clearing sends explicit nulls so the app falls back to the task pin', async () => {
     const onUpdate = renderRow({
       taskType: 'layered-intelligence',
       providerOverrideCapable: true,
-      globalProviderId: 'opencode-llama-tui',
+      inheritedProviderText: INHERITED,
       providers: PROVIDERS,
       override: { enabled: true, providerId: 'claude-ollama-tui' },
     });
@@ -248,17 +246,17 @@ describe('AppOverrideRow — per-app provider override', () => {
     renderRow({
       taskType: 'layered-intelligence',
       providerOverrideCapable: true,
-      globalProviderId: 'opencode-llama-tui',
+      inheritedProviderText: INHERITED,
       providers: PROVIDERS,
       override: { enabled: true },
     });
-    expect(screen.getByText('inherits OpenCode (llama)')).toBeInTheDocument();
+    expect(screen.getByText(`Inherit (${INHERITED})`)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Clear provider override for Acme' })).toBeNull();
   });
 
   it('says nothing about providers on a task type that ignores the override', () => {
-    renderRow({ taskType: 'feature-ideas', globalProviderId: 'opencode-llama-tui', providers: PROVIDERS, override: { enabled: true } });
-    expect(screen.queryByText(/inherits/)).toBeNull();
+    renderRow({ taskType: 'feature-ideas', inheritedProviderText: INHERITED, providers: PROVIDERS, override: { enabled: true } });
+    expect(screen.queryByText(/Inherit \(OpenCode/)).toBeNull();
   });
 
   // A stale pin stored on a non-honoring type (the app Automation tab used to
@@ -266,11 +264,11 @@ describe('AppOverrideRow — per-app provider override', () => {
   it('surfaces a stored-but-ignored override so it can be cleared', () => {
     renderRow({
       taskType: 'feature-ideas',
-      globalProviderId: 'opencode-llama-tui',
+      inheritedProviderText: INHERITED,
       providers: PROVIDERS,
       override: { enabled: true, providerId: 'claude-ollama-tui' },
     });
-    expect(screen.getByTitle(/this stored app override is ignored/)).toBeInTheDocument();
+    expect(screen.getByTitle(/is ignored: feature-ideas always uses the task provider/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Clear provider override for Acme' })).toBeInTheDocument();
   });
 });

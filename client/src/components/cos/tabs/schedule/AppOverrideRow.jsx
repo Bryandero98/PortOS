@@ -5,17 +5,10 @@ import { AGENT_OPTIONS, BRANCHES_PER_AGENT_DEFAULT, BRANCHES_PER_AGENT_OPTIONS, 
 import { isCronExpression, describeCron } from '../../../../utils/cronHelpers';
 import ToggleSwitch from '../../../ToggleSwitch';
 import useFieldDraft from '../../../../hooks/useFieldDraft';
-import { INTERVAL_LABELS, setMetadataOverride } from './scheduleConstants';
+import { providerModelLabel } from '../../../../utils/providers';
+import { badge, INTERVAL_LABELS, setMetadataOverride } from './scheduleConstants';
 
-// Resolve a provider id to its display name, falling back to the raw id when the
-// provider list isn't loaded here (the Timeline tab renders these rows without
-// one) or the id names a provider that has since been removed.
-function providerLabel(providerId, providers) {
-  if (!providerId) return null;
-  return providers?.find(p => p.id === providerId)?.name || providerId;
-}
-
-const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalIntervalType, globalTaskMetadata, managedAgentOptions, fileIssuesCapable, defaultFileIssues, providerOverrideCapable, globalProviderId, globalModel, providers, override, onUpdate }) {
+const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalIntervalType, globalTaskMetadata, managedAgentOptions, fileIssuesCapable, defaultFileIssues, providerOverrideCapable, inheritedProviderText, providers, override, onUpdate }) {
   const [updating, setUpdating] = useState(false);
   const [cronEditing, setCronEditing] = useState(false);
   const isEnabled = override?.enabled === true;
@@ -31,10 +24,9 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
   // it here — where the task provider is chosen — rather than only inside Edit
   // App → Automation, and let it be cleared back to inherit in one click.
   const hasProviderOverride = !!(override?.providerId || override?.model);
-  const overrideProviderName = providerLabel(override?.providerId, providers);
-  const inheritedProviderName = providerLabel(globalProviderId, providers) || 'active provider';
-  const overrideProviderText = [overrideProviderName, override?.model].filter(Boolean).join(' · ');
-  const inheritedProviderText = [inheritedProviderName, globalModel].filter(Boolean).join(' · ');
+  // `providers` is absent on the Timeline tab, which renders these rows without
+  // fetching the list — providerDisplayName falls back to the raw id there.
+  const overrideProviderText = providerModelLabel(providers || [], override?.providerId, override?.model);
 
   const handleClearProviderOverride = async () => {
     setUpdating(true);
@@ -210,31 +202,27 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
           })}
         </div>
 
-        {(providerOverrideCapable || hasProviderOverride) && (
-          hasProviderOverride ? (
-            <span
-              className={`flex items-center gap-1 text-xs px-2 py-1.5 rounded border ${providerOverrideCapable
-                ? 'border-port-warning/50 bg-port-warning/10 text-port-warning'
-                : 'border-port-border bg-port-bg text-gray-500'}`}
-              title={providerOverrideCapable
-                ? `${app.name} runs ${taskType} on ${overrideProviderText} — this app override wins over the task provider (${inheritedProviderText})`
-                : `${taskType} takes its provider from the task pin (${inheritedProviderText}); this stored app override is ignored`}
+        {hasProviderOverride ? (
+          <span
+            className={`${badge(providerOverrideCapable ? 'warning' : 'gray')} flex items-center gap-1`}
+            title={providerOverrideCapable
+              ? `${overrideProviderText} (app override) — wins over the task provider (${inheritedProviderText})`
+              : `${overrideProviderText} (app override) is ignored: ${taskType} always uses the task provider (${inheritedProviderText})`}
+          >
+            <span className="truncate max-w-[200px]">{overrideProviderText}</span>
+            <button
+              onClick={handleClearProviderOverride}
+              disabled={updating}
+              aria-label={`Clear provider override for ${app.name}`}
+              className="underline decoration-dotted hover:no-underline disabled:opacity-50"
             >
-              <span className="truncate max-w-[200px]">{overrideProviderText}</span>
-              <button
-                onClick={handleClearProviderOverride}
-                disabled={updating}
-                aria-label={`Clear provider override for ${app.name}`}
-                className="underline decoration-dotted hover:no-underline disabled:opacity-50"
-              >
-                clear
-              </button>
-            </span>
-          ) : (
-            <span className="text-xs px-2 py-1.5 text-gray-500 truncate max-w-[200px]" title={`No app provider override — inherits the task provider (${inheritedProviderText})`}>
-              inherits {inheritedProviderText}
-            </span>
-          )
+              clear
+            </button>
+          </span>
+        ) : providerOverrideCapable && (
+          <span className="text-xs px-2 py-1.5 text-gray-500 truncate max-w-[200px]" title={`Inherit (${inheritedProviderText})`}>
+            Inherit ({inheritedProviderText})
+          </span>
         )}
 
         {opensPR && (

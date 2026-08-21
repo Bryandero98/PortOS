@@ -1,10 +1,16 @@
 import { useState } from 'react';
+import { providerModelLabel } from '../../../../utils/providers';
 import AppOverrideRow from './AppOverrideRow';
 
 export default function PerAppOverrideList({ taskType, config, apps, providers, onUpdateOverride, onBulkToggleOverride }) {
   const [bulkUpdating, setBulkUpdating] = useState(false);
   const activeApps = apps?.filter(app => !app.archived) || [];
   const appOverrides = config.appOverrides || {};
+  // List-invariant, so it's resolved once here rather than per row: what an app
+  // that pins nothing of its own actually runs on.
+  const inheritedProviderText = config.providerId
+    ? providerModelLabel(providers || [], config.providerId, config.model)
+    : 'the active provider';
 
   if (activeApps.length === 0) return null;
 
@@ -50,8 +56,7 @@ export default function PerAppOverrideList({ taskType, config, apps, providers, 
             fileIssuesCapable={config.fileIssuesCapable}
             defaultFileIssues={config.defaultFileIssues}
             providerOverrideCapable={config.providerOverrideCapable}
-            globalProviderId={config.providerId}
-            globalModel={config.model}
+            inheritedProviderText={inheritedProviderText}
             providers={providers}
             override={appOverrides[app.id]}
             onUpdate={onUpdateOverride}

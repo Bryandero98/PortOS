@@ -9,7 +9,7 @@ import ProviderModelSelector from '../../ProviderModelSelector';
 import * as api from '../../../services/api';
 import { AGENT_OPTIONS, toggleAppMetadataOverride, agentOptionButtonClass } from '../../cos/constants';
 import { isCronExpression, describeCron } from '../../../utils/cronHelpers';
-import { PROVIDER_TYPES, filterSelectableModels } from '../../../utils/providers';
+import { PROVIDER_TYPES, filterSelectableModels, providerDisplayName, providerModelLabel } from '../../../utils/providers';
 import CustomTasksSection from './CustomTasksSection';
 
 const RUNNABLE_PROVIDER_TYPES = Object.values(PROVIDER_TYPES);
@@ -259,10 +259,6 @@ export default function AutomationTab({ appId, appName }) {
             const modelOptions = overrideModel && !availableModels.includes(overrideModel)
               ? [overrideModel, ...availableModels]
               : availableModels;
-            const effectiveProviderId = override.providerId || globalConfig.providerId || null;
-            const effectiveProviderName = effectiveProviderId
-              ? (providers.find(p => p.id === effectiveProviderId)?.name || effectiveProviderId)
-              : 'default (active provider)';
             const isLayeredIntelligence = taskType === 'layered-intelligence';
             // A per-app provider/model pin only reaches the spawn for task types
             // whose buildTaskInput hook resolves it (server stamps the flag). For
@@ -271,6 +267,13 @@ export default function AutomationTab({ appId, appName }) {
             // clear-it affordance when a stale one is already stored.
             const providerOverrideCapable = globalConfig.providerOverrideCapable === true;
             const hasProviderOverride = !!(override.providerId || override.model);
+            // The app pin only counts toward "effective" where it is honored —
+            // naming an ignored pin as the effective provider is exactly the lie
+            // this row exists to correct.
+            const effectiveProviderId = (providerOverrideCapable && override.providerId) || globalConfig.providerId || null;
+            const effectiveProviderName = effectiveProviderId
+              ? providerDisplayName(providers, effectiveProviderId)
+              : 'default (active provider)';
 
             return (
               <div key={taskType} className="bg-port-card border border-port-border rounded-lg p-3 space-y-2">
@@ -281,7 +284,7 @@ export default function AutomationTab({ appId, appName }) {
                     <span className="text-white font-mono text-xs">{taskType}</span>
                     <div className="text-xs text-gray-500">{effectiveLabel}{intervalSuffix}</div>
                   </div>
-                  {(providerOverrideCapable || hasProviderOverride || isLayeredIntelligence) && (
+                  {(providerOverrideCapable || hasProviderOverride) && (
                     <button
                       onClick={() => setExpandedTaskType(prev => prev === taskType ? null : taskType)}
                       aria-expanded={isExpanded}
@@ -402,7 +405,7 @@ export default function AutomationTab({ appId, appName }) {
                         {hasProviderOverride && (
                           <>
                             {' '}This app stores an unused override
-                            (<span className="text-gray-300">{[override.providerId, override.model].filter(Boolean).join(' · ')}</span>).{' '}
+                            (<span className="text-gray-300">{providerModelLabel(providers, override.providerId, override.model)}</span>).{' '}
                             <button onClick={() => handleProviderChange(taskType, '')} className="text-port-accent hover:underline">Clear it</button>
                           </>
                         )}
