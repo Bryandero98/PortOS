@@ -202,7 +202,7 @@ export async function getWorkflowGraph({ horizonHours = 24, from = new Date() } 
       taskMetadata: info.taskMetadata || null,
       managedAgentOptions: info.managedAgentOptions || null,
       // The task's provider/model pin plus whether a per-app override of it is
-      // honored — the per-app rows render "inherits X" against these.
+      // honored — the per-app rows render their "Inherit (…)" label from these.
       providerId: info.providerId || null,
       model: info.model || null,
       providerOverrideCapable: info.providerOverrideCapable === true
