@@ -74,7 +74,7 @@ import {
 } from '../lib/localModelTuning.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { runEndpointLlmTest, runLocalLlmTest } from './localLlmPlayground.js';
-import { getLlamaServerStatus, relaunchLlamaServerWithTuning } from './llamaServerManager.js';
+import { getLlamaServerEndpoint, relaunchLlamaServerWithTuning } from './llamaServerManager.js';
 import { listModels } from './localLlm.js';
 import {
   getLoadedModels as getLoadedOllamaModels,
@@ -147,8 +147,11 @@ export function buildSamplePrompt(contextTokens) {
  */
 export async function runtimeEndpoint(runtime) {
   if (runtime === 'llama') {
-    const status = await getLlamaServerStatus().catch(() => null);
-    if (status?.endpoint) return status.endpoint;
+    // The endpoint-only accessor, NOT `getLlamaServerStatus` — that one pays for
+    // a network probe and an `execPm2 logs` subprocess, and this path runs on
+    // every Performance page load only to learn a port number.
+    const endpoint = await getLlamaServerEndpoint().catch(() => null);
+    if (endpoint) return endpoint;
   }
   return LOCAL_RUNTIMES[runtime]?.defaultBaseUrl || null;
 }

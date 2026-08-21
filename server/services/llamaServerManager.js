@@ -121,6 +121,35 @@ function parseConfigFromArgs(args) {
   };
 }
 
+// The endpoint the current (or last-known) configuration serves on. Split out so
+// the two callers below can't drift on how host/port are defaulted.
+const endpointFor = (config) =>
+  `http://${config?.host || '127.0.0.1'}:${config?.port ?? PORTS.LLAMA_SERVER}/v1`;
+
+/**
+ * Just the base URL llama-server is serving on — no endpoint probe, no PM2 log
+ * fetch.
+ *
+ * `getLlamaServerStatus` answers a much bigger question and pays for it with a
+ * network probe AND an `execPm2 logs` subprocess. A caller that only needs
+ * "which port is it on?" (the assessments read path, which runs on every
+ * Performance page load) must not spawn a process to find out and then discard
+ * the logs it paid for.
+ *
+ * Reads the same recovered-config path as the status call, so a PortOS restart
+ * that left the PM2 process online still resolves the real port rather than the
+ * default.
+ */
+export async function getLlamaServerEndpoint() {
+  if (!currentConfig) {
+    const pm2Status = await getAppStatusStrict(LLAMA_APP);
+    if (pm2Status?.status === 'online' && pm2Status.args) {
+      currentConfig = parseConfigFromArgs(pm2Status.args);
+    }
+  }
+  return endpointFor(currentConfig);
+}
+
 /**
  * Returns current status of llama-server (binary availability, running state, config, logs).
  */
@@ -138,7 +167,7 @@ export async function getLlamaServerStatus() {
 
   const host = currentConfig?.host || '127.0.0.1';
   const port = currentConfig?.port ?? PORTS.LLAMA_SERVER;
-  const endpoint = `http://${host}:${port}/v1`;
+  const endpoint = endpointFor(currentConfig);
 
   const reachable = await probeEndpoint(endpoint);
 

@@ -31,10 +31,10 @@ vi.mock('./localLlmPlayground.js', () => ({
 const probeOpenAiModels = vi.fn();
 vi.mock('../lib/openAiModelsProbe.js', () => ({ probeOpenAiModels: (...args) => probeOpenAiModels(...args) }));
 
-const getLlamaServerStatus = vi.fn();
+const getLlamaServerEndpoint = vi.fn();
 const relaunchLlamaServerWithTuning = vi.fn();
 vi.mock('./llamaServerManager.js', () => ({
-  getLlamaServerStatus: (...args) => getLlamaServerStatus(...args),
+  getLlamaServerEndpoint: (...args) => getLlamaServerEndpoint(...args),
   relaunchLlamaServerWithTuning: (...args) => relaunchLlamaServerWithTuning(...args),
 }));
 
@@ -81,7 +81,7 @@ beforeEach(() => {
   getLmStudioListError.mockReset().mockReturnValue(null);
   runEndpointLlmTest.mockReset();
   probeOpenAiModels.mockReset().mockResolvedValue({ reachable: true, models: [], error: null });
-  getLlamaServerStatus.mockReset().mockResolvedValue({ running: true, managed: true, endpoint: 'http://127.0.0.1:5568/v1', config: { model: '/models/base.gguf' } });
+  getLlamaServerEndpoint.mockReset().mockResolvedValue('http://127.0.0.1:5568/v1');
   relaunchLlamaServerWithTuning.mockReset().mockResolvedValue({ applied: true, reason: null, config: null });
 });
 
@@ -565,13 +565,21 @@ describe('endpoint runtimes', () => {
   });
 
   it('reads llama.cpp\'s endpoint from the running server, not from the default port', async () => {
-    getLlamaServerStatus.mockResolvedValue({ endpoint: 'http://127.0.0.1:9999/v1' });
+    getLlamaServerEndpoint.mockResolvedValue('http://127.0.0.1:9999/v1');
     expect(await svc.runtimeEndpoint('llama')).toBe('http://127.0.0.1:9999/v1');
   });
 
-  it('falls back to the canonical base URL when llama-server status is unavailable', async () => {
-    getLlamaServerStatus.mockRejectedValue(new Error('pm2 is not installed'));
+  it('falls back to the canonical base URL when llama-server cannot be reached', async () => {
+    getLlamaServerEndpoint.mockRejectedValue(new Error('pm2 is not installed'));
     expect(await svc.runtimeEndpoint('llama')).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/);
+  });
+
+  // The read path runs on every Performance page load. `getLlamaServerStatus`
+  // costs a network probe plus an `execPm2 logs` subprocess whose output this
+  // caller would throw away.
+  it('resolves the endpoint without paying for a status probe', async () => {
+    await svc.getAssessmentReport();
+    expect(getLlamaServerEndpoint).toHaveBeenCalled();
   });
 
   it('measures an endpoint runtime directly instead of through the provider path', async () => {
