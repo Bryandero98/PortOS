@@ -222,7 +222,7 @@ export async function resolveDefaultMediaRoute({ kind, params }) {
   // module is imported by agent-tool suites that mock the settings/DB layer,
   // and a static edge to the peer registry would drag that graph into them.
   const { prepareRemoteMediaJob } = await import('./remoteSubmission.js');
-  const { peer, capability, request: finalRequest, remoteMedia } = await prepareRemoteMediaJob({
+  const { peer, capability, request: negotiatedRequest, remoteMedia } = await prepareRemoteMediaJob({
     peerId: route.peerId,
     kind,
     request,
@@ -244,6 +244,7 @@ export async function resolveDefaultMediaRoute({ kind, params }) {
       { status: 403, code: 'MEDIA_ROUTING_PEER_NOT_TAILNET' },
     );
   }
+  const finalRequest = negotiatedRequest || remoteMedia?.request || request;
   // Stamp the marker so the boundary survives the job, not just the enqueue.
   // The tailnet check above ran against the peer record as it looked NOW; a
   // queued or reconciling job re-resolves its peer from the registry on every
@@ -282,7 +283,8 @@ const DROPPED_POST_PROCESSING = Object.freeze(['cleanC2PA', 'denoise']);
  * enqueue. The prompt is blanked because it rides ONLY inside the versioned
  * marker (see the generate routes for the same reasoning).
  */
-export function routedJobParams(params, { request, remoteMedia }) {
+export function routedJobParams(params, { request, remoteMedia } = {}) {
+  const effectiveRequest = request || remoteMedia?.request;
   const jobParams = { ...(params || {}) };
   for (const key of LOCAL_ONLY_ROUTED_PARAMS) delete jobParams[key];
   const dropped = DROPPED_POST_PROCESSING.filter((key) => jobParams[key] === true);
@@ -293,10 +295,10 @@ export function routedJobParams(params, { request, remoteMedia }) {
   return {
     ...jobParams,
     prompt: '',
-    modelId: request.modelId,
-    ...(request.numFrames !== undefined ? { numFrames: request.numFrames } : {}),
-    ...(request.width !== undefined ? { width: request.width } : {}),
-    ...(request.height !== undefined ? { height: request.height } : {}),
+    modelId: effectiveRequest?.modelId || params?.modelId,
+    ...(effectiveRequest?.numFrames !== undefined ? { numFrames: effectiveRequest.numFrames } : {}),
+    ...(effectiveRequest?.width !== undefined ? { width: effectiveRequest.width } : {}),
+    ...(effectiveRequest?.height !== undefined ? { height: effectiveRequest.height } : {}),
     remoteMedia,
   };
 }
