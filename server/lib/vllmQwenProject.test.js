@@ -69,7 +69,7 @@ describe('inspectVllmQwenProject', () => {
     // `null`, not `false` — nothing was READ, which is a different fix than an
     // empty cache. The distinction is the point of the sentinel.
     expect(project.hasWeights).toBeNull();
-    expect(vllmStartBlockedReason(project)).toContain('cannot see a HuggingFace cache');
+    expect(vllmStartBlockedReason(project)).toContain('cannot read a models directory');
   });
 
   it('distinguishes a readable-but-empty cache from an unreadable one', async () => {
@@ -91,6 +91,42 @@ describe('inspectVllmQwenProject', () => {
     expect(project.hasWeights).toBe(true);
     expect(project.weightsRoot).toBe(join(projectDir(), 'models'));
     expect(vllmStartBlockedReason(project)).toBeNull();
+  });
+
+  it('clears the block for the local-dir layout upstream prepare actually writes', async () => {
+    // `docker/prepare.sh` runs `hf download … --local-dir models/<model>`, so a
+    // prepared machine has no `models--…` hub entry at all.
+    mkdirSync(projectDir(), { recursive: true });
+    writeFileSync(join(projectDir(), 'docker-compose.yml'), 'services: {}\n');
+    const model = join(projectDir(), 'models', 'Qwen3.8-27B-W4A16-AutoRound');
+    mkdirSync(model, { recursive: true });
+    writeFileSync(join(model, 'model.safetensors.index.json'), '{"weight_map":{}}\n');
+
+    const project = await inspectVllmQwenProject(env());
+    expect(project.hasWeights).toBe(true);
+    expect(project.weightsRoot).toBe(join(projectDir(), 'models'));
+    expect(vllmStartBlockedReason(project)).toBeNull();
+  });
+
+  it('accepts a single-file model directory (the DFlash2 drafter shape)', async () => {
+    mkdirSync(projectDir(), { recursive: true });
+    writeFileSync(join(projectDir(), 'docker-compose.yml'), 'services: {}\n');
+    const model = join(projectDir(), 'models', 'Qwen3.8-27B-DFlash2-W4A16');
+    mkdirSync(model, { recursive: true });
+    writeFileSync(join(model, 'model.safetensors'), 'tensors\n');
+
+    expect((await inspectVllmQwenProject(env())).hasWeights).toBe(true);
+  });
+
+  it('does not count a qwen-named directory that holds no weight file', async () => {
+    // Name matching alone would report a notes folder as a prepared model.
+    mkdirSync(projectDir(), { recursive: true });
+    writeFileSync(join(projectDir(), 'docker-compose.yml'), 'services: {}\n');
+    const notes = join(projectDir(), 'models', 'qwen-notes');
+    mkdirSync(notes, { recursive: true });
+    writeFileSync(join(notes, 'README.md'), 'not weights\n');
+
+    expect((await inspectVllmQwenProject(env())).hasWeights).toBe(false);
   });
 
   it('ignores a cache holding only unrelated models', async () => {

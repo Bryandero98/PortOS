@@ -53,23 +53,36 @@ would.
 
 ### 1. Prepare the stack (operator, on the 3090 host)
 
-This step is yours, in a terminal. PortOS does not clone the project, pull the
+This step is yours, in a terminal. PortOS does not clone the project, build the
 ~9.5 GB image, or download the ~20 GB of weights — those are decisions with a
 bandwidth and disk cost, and a button that started them by surprise would be the
 wrong default.
 
 On Windows you need WSL2 with Docker and the NVIDIA Container Toolkit (driver
-≥ 580 / CUDA 13); on Linux, the same toolkit natively.
+≥ 580 / CUDA 13); on Linux, the same toolkit natively. Run the commands below
+*inside the WSL2 distro*, not in PowerShell — the compose project and its
+20 GB of weights belong on the Linux filesystem.
 
 ```bash
 git clone https://github.com/syv-ai/qwen38-27b-rtx3090 ~/qwen-serving
 cd ~/qwen-serving
 echo "VLLM_API_KEY=$(openssl rand -hex 24)" > .env
 printf 'SPEC=dflash2\nPREFIX_CACHE=1\n' >> .env
+docker compose build              # ~9.5 GB image, built here — there is no registry to pull from
+docker compose run --rm prepare   # ~20 GB download + CPU requantization, idempotent, resumable
 docker compose --profile single up -d
 ```
 
-If startup dies on memory, upstream's escape hatches are `GPU_UTIL=0.93` and
+`docker compose --profile single up -d` on its own does all three — `prepare` is
+a `depends_on` of the server. Running them separately is worth it anyway: it is
+the long, unattended part, and PortOS's Start button deliberately refuses until
+`prepare` has actually landed weights on disk (see below).
+
+**The card must be otherwise empty.** vLLM's startup gate compares free VRAM
+against `GPU_UTIL`, so another model server holding a few GB — LM Studio, Ollama,
+a local image/video job — makes the container exit rather than start small. Stop
+those first. If startup still dies on memory, upstream's escape hatches are
+`GPU_UTIL=0.93` (the documented WSL2 fallback) and
 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False` in `.env`. Capping board
 power with `nvidia-smi -pl 250` is worth doing on a 3090.
 
@@ -82,6 +95,20 @@ curl -H "Authorization: Bearer $VLLM_API_KEY" http://127.0.0.1:18020/v1/models
 On Windows, confirm the same URL answers from the PortOS side too — Docker
 Desktop / WSL2 localhost forwarding is what makes a container in the VM
 reachable at `127.0.0.1` on the host.
+
+### 1b. Point PortOS at the project (Windows only)
+
+A native-Win32 PortOS resolves the default `~/qwen-serving` to a *Windows* home
+directory, where the project is not. Set `VLLM_QWEN_PROJECT_DIR` to the distro's
+UNC path so the readiness checklist can see the project and its `models/`:
+
+```
+VLLM_QWEN_PROJECT_DIR=\\wsl.localhost\<distro>\home\<user>\qwen-serving
+```
+
+Node reads that path, and `docker compose` accepts it as a working directory, so
+both the checklist and the Start button work from it. On Linux the default is
+already correct.
 
 **`DFLASH_TOKENS=15` is deliberately not a default.** It is the setting behind
 the headline throughput number, but it costs KV cache: 56k context across 4
@@ -103,10 +130,14 @@ workload that fits.
 The provider card's requirements checklist probes `:18020` directly. Its
 **Start** button runs `docker compose --profile single up -d` — but only when it
 can see a prepared project (a compose file in `~/qwen-serving`, or wherever
-`VLLM_QWEN_PROJECT_DIR` points) **and** confirm the weights are already cached.
-It never pulls. If your HuggingFace cache lives in a docker named volume PortOS
-cannot see — the normal case on Windows — the button says so and asks you to
-start compose yourself, or to point `VLLM_QWEN_WEIGHTS_DIR` at the cache.
+`VLLM_QWEN_PROJECT_DIR` points) **and** confirm the weights are already on disk.
+It never builds and never downloads. `prepare` writes them into the project's own
+`models/` directory (compose bind-mounts `${MODELS_DIR:-./models}`), which is
+what PortOS looks at; the `qwen-cache` docker volume alongside it holds only the
+torch.compile / Triton / FlashInfer JIT caches. If PortOS cannot read that
+directory at all — the normal case on Windows before `VLLM_QWEN_PROJECT_DIR` is
+set to the UNC path above — the button says so, and `VLLM_QWEN_WEIGHTS_DIR` is
+the escape hatch for weights kept somewhere else entirely.
 
 ## What the numbers mean
 
@@ -123,8 +154,8 @@ one-shot completion.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VLLM_QWEN_PROJECT_DIR` | `~/qwen-serving` | Where the compose project was cloned. |
-| `VLLM_QWEN_WEIGHTS_DIR` | *(unset)* | HuggingFace hub cache holding the weights, when PortOS cannot find it — e.g. a docker named volume bind-mounted elsewhere. |
+| `VLLM_QWEN_PROJECT_DIR` | `~/qwen-serving` | Where the compose project was cloned. Required on Windows, as the `\\wsl.localhost\…` UNC path. |
+| `VLLM_QWEN_WEIGHTS_DIR` | *(unset)* | The directory holding the model weights, when it is not the project's own `models/` — e.g. a `MODELS_DIR` pointed elsewhere, or a HuggingFace hub cache shared with another stack. |
 
 ## Related
 
