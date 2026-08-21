@@ -141,9 +141,13 @@ describe('mtplxServerManager', () => {
       expect(launch[launch.indexOf('--port') + 1]).toBe('8010');
     });
 
-    it('refuses with the `mtplx pull` fix when the cache was read and is empty', async () => {
+    it('refuses with the in-app download as the fix when the cache was read and is empty', async () => {
       vi.spyOn(mtplxModels, 'listMtplxCachedModels').mockResolvedValue({ models: [], error: null });
-      await expect(startMtplxServer()).rejects.toThrow(/mtplx pull/);
+      // The fix a user is pointed at is a button in PortOS, never a terminal
+      // command they have to leave the app to run (PRD NR-9).
+      const err = await startMtplxServer().catch((e) => e);
+      expect(err.message).toMatch(/Download default checkpoint/);
+      expect(err.message).not.toMatch(/terminal/);
       expect(execPm2Calls.some((args) => args[0] === 'start')).toBe(false);
     });
 

@@ -12,6 +12,7 @@ import {
   deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService,
   installAudioModel, patchSettingsSlice, getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer,
   downloadSpecDecodeModel, controlLmStudioService, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx,
+  searchMtplxModels, pullMtplxModel, removeMtplxModel,
   saveRuntimeStartupList
 } from '../../services/api';
 import socket from '../../services/socket';
@@ -357,6 +358,10 @@ export function LocalLlmTab() {
 
   const [llamaStatus, setLlamaStatus] = useState(null);
   const [mtplxStatus, setMtplxStatus] = useState(null);
+  // Live byte progress for an in-flight `mtplx pull`, driven by the socket. One
+  // at a time on purpose: a checkpoint is tens of gigabytes, so two concurrent
+  // pulls just make both slower.
+  const [mtplxDownload, setMtplxDownload] = useState(null);
   const [llamaLoading, setLlamaLoading] = useState(false);
   // Anchor for the unified server card's "Configure" action — llama-server needs
   // a model path, so its Start lives in the launcher rather than in that row.
@@ -515,6 +520,31 @@ export function LocalLlmTab() {
     socket.on('llamaServer:download', handleDownloadProgress);
     return () => socket.off('llamaServer:download', handleDownloadProgress);
   }, [loadLlamaStatus]);
+
+  // MTPLX checkpoint download progress. A pull can run for hours, so the socket
+  // — not the still-open HTTP request — is what the UI trusts: a terminal frame
+  // clears the bar AND re-reads the cache, so the list is right even if the
+  // request itself never comes back.
+  useEffect(() => {
+    const handleMtplxDownload = (frame) => {
+      if (!frame) return;
+      if (frame.event === 'complete' || frame.event === 'error' || frame.event === 'cancelled') {
+        setMtplxDownload(null);
+        loadMtplxStatus();
+        return;
+      }
+      setMtplxDownload((prev) => ({
+        model: frame.model || prev?.model || null,
+        // A frame without byte counters (`resolving`, `verifying`) must not
+        // reset a bar that already has them — keep the last known numbers.
+        received: Number.isFinite(frame.received) ? frame.received : (prev?.received ?? 0),
+        total: Number.isFinite(frame.total) ? frame.total : (prev?.total ?? 0),
+        message: frame.message || prev?.message || null,
+      }));
+    };
+    socket.on('mtplx:download', handleMtplxDownload);
+    return () => socket.off('mtplx:download', handleMtplxDownload);
+  }, [loadMtplxStatus]);
   // Debounce so typing in the search box doesn't fire a request per keystroke.
   //
   // `activeCategory` is a trigger for the Hugging Face source ONLY — the live
@@ -649,6 +679,38 @@ export function LocalLlmTab() {
     'runtime-stop-mtplx',
     () => stopMtplxServer(),
     (r) => r?.message || 'MTPLX stopped'
+  ).then(loadMtplxStatus);
+  // Checkpoint management (search / download / remove), owned by the MTPLX card.
+  //
+  // `mtplxSearch` keeps a stable identity because the checkpoint panel keys its
+  // one-time initial load on it, and the status poll re-renders this component
+  // every few seconds. It resolves its own failures into the `{models, error}`
+  // shape the panel renders inline, so it is `silent` — no toast.
+  const mtplxSearch = useCallback((params) => searchMtplxModels(params, { silent: true })
+    .catch((err) => ({ models: [], error: err?.message || 'Search failed' })), []);
+  // The pull resolves only when the weights are on disk; byte progress arrives
+  // on `mtplx:download` (subscribed above), so the button spinner is not the
+  // only sign of life during a multi-gigabyte transfer.
+  const mtplxPull = (model) => runAction(
+    model ? `mtplx-pull-${model}` : 'mtplx-pull',
+    // A failed download RESOLVES `{success: false, error}` rather than throwing
+    // (its progress already streamed), so convert it to the rejection
+    // `runAction` routes to `onError` — otherwise the success formatter runs on
+    // a failure and toasts an empty success next to the error.
+    () => pullMtplxModel(model).then((r) => {
+      if (r?.success === false) throw new Error(r.error || 'Download failed');
+      return r;
+    }),
+    (r) => `${r?.model || 'Default checkpoint'} downloaded`,
+    { onError: (err) => toast.error(`MTPLX download failed: ${err.message}`) },
+  ).then(() => {
+    setMtplxDownload(null);
+    return loadMtplxStatus();
+  });
+  const mtplxRemove = (model) => runAction(
+    `mtplx-remove-${model}`,
+    () => removeMtplxModel(model),
+    (r) => `${r?.model || model} removed${r?.bytesFreed ? ` — ${formatBytes(r.bytesFreed)} freed` : ''}`,
   ).then(loadMtplxStatus);
   const saveRuntimeStartup = () => runAction(
     'runtime-save-startup',
@@ -1135,6 +1197,10 @@ export function LocalLlmTab() {
           onStart={runtimeStartMtplx}
           onStop={runtimeStopMtplx}
           onInstall={runtimeInstallMtplx}
+          onSearchModels={mtplxSearch}
+          onPullModel={mtplxPull}
+          onRemoveModel={mtplxRemove}
+          download={mtplxDownload}
         />
       </div>
 

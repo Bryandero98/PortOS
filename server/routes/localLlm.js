@@ -30,10 +30,14 @@ import {
   localLlmLlamaServerStartSchema,
   localLlmLmStudioServiceSchema,
   localLlmMtplxStartSchema,
+  localLlmMtplxSearchSchema,
+  localLlmMtplxPullSchema,
+  localLlmMtplxRemoveSchema,
   localLlmSpecModelDownloadSchema
 } from '../lib/validation.js'
 import { getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer } from '../services/llamaServerManager.js'
 import { getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx } from '../services/mtplxServerManager.js'
+import { searchMtplxCatalog, pullMtplxModel, removeMtplxModel } from '../services/mtplxModelManager.js'
 import { saveProcessList } from '../services/pm2.js'
 import { getSpecDecodePresetStatus, downloadSpecDecodeModel } from '../services/specDecodeModels.js'
 import { SPEC_TYPE_SUGGESTIONS } from '../lib/specDecodePresets.js'
@@ -626,6 +630,40 @@ router.post('/mtplx/install', asyncHandler(async (req, res) => {
     })
   resetProviderReadinessCache()
   emit('complete', 'MTPLX installed')
+  res.json(result)
+}))
+
+// --- MTPLX model catalog ----------------------------------------------------
+// Search / download / remove MTP checkpoints without leaving PortOS. Before
+// these existed the card told the user to run `mtplx pull` in a terminal, which
+// is a dead end inside an app that manages the runtime everywhere else.
+
+// GET /api/local-llm/mtplx/models/search — MTPLX-branded checkpoints on
+// Hugging Face (`mtplx forge discover`). Network call; no download.
+router.get('/mtplx/models/search', asyncHandler(async (req, res) => {
+  const params = validateRequest(localLlmMtplxSearchSchema, req.query)
+  res.json(await searchMtplxCatalog(params))
+}))
+
+// POST /api/local-llm/mtplx/models/pull — download one checkpoint into MTPLX's
+// cache. Byte progress streams over `mtplx:download`; the card renders it as a
+// bar on the row that started it. Omitting `model` fetches MTPLX's own verified
+// default, the same checkpoint the provider-readiness checklist pulls.
+router.post('/mtplx/models/pull', asyncHandler(async (req, res) => {
+  const { model } = validateRequest(localLlmMtplxPullSchema, req.body)
+  const io = req.app.get('io')
+  const result = await pullMtplxModel({ model, onProgress: (frame) => io?.emit('mtplx:download', frame) })
+  // A cache that just went from empty to servable is exactly what the readiness
+  // probes remember as "MTPLX setup incomplete".
+  if (result.success) resetProviderReadinessCache()
+  res.json(result)
+}))
+
+// POST /api/local-llm/mtplx/models/remove — delete one checkpoint from the cache
+router.post('/mtplx/models/remove', asyncHandler(async (req, res) => {
+  const { model } = validateRequest(localLlmMtplxRemoveSchema, req.body)
+  const result = await removeMtplxModel(model)
+  resetProviderReadinessCache()
   res.json(result)
 }))
 

@@ -12,10 +12,11 @@
  * re-adopt a server it started earlier instead of losing track of a detached
  * pid. A detached child gets none of that.
  *
- * Two limits carried over from `docs/features/mtplx.md`, unchanged:
- *   - **Weights are never downloaded.** `mtplx serve` is started on a checkpoint
- *     ALREADY in MTPLX's cache; an empty cache is reported with the `mtplx pull`
- *     command that fixes it.
+ * Two limits carried over from `docs/features/mtplx.md`:
+ *   - **A start never downloads weights.** `mtplx serve` is started on a
+ *     checkpoint ALREADY in MTPLX's cache; an empty cache is reported rather
+ *     than silently filled. Fetching one is its own explicit, user-pressed
+ *     action in `mtplxModelManager.js` — in the UI, never in a terminal.
  *   - **MTPLX's privileged paths are never touched.** Upstream's optional
  *     `mtplx max --install` fan-control helper stays an explicit operator action
  *     outside PortOS.
@@ -62,15 +63,16 @@ const INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = Number(localEndpointPort(LOCAL_RUNTIMES.mtplx.defaultBaseUrl)) || 8000;
 
-/**
- * Why an installed MTPLX still cannot be started. Weights are a multi-gigabyte
- * download and stay the user's decision, so this names the one command that
- * fixes it instead of running it.
- */
 /** MTPLX is an Apple-Silicon MLX runtime — nothing to install anywhere else. */
 export const MTPLX_UNSUPPORTED_REASON = 'MTPLX runs only on macOS with Apple Silicon.';
 
-const MTPLX_NO_MODEL_ERROR = 'MTPLX has no model weights cached, so its server exits before it binds a port. Run `mtplx pull` in a terminal to fetch its default checkpoint (or `mtplx pull <hf-repo-id>` for another MTP model) — a multi-gigabyte download PortOS will not start for you — then start MTPLX again.';
+/**
+ * Why an installed MTPLX still cannot be started. Weights are a multi-gigabyte
+ * download and stay the user's decision — so a start never fetches them
+ * silently, and this names the in-app control that does instead of a terminal
+ * command (`services/mtplxModelManager.js`).
+ */
+const MTPLX_NO_MODEL_ERROR = 'MTPLX has no model weights cached, so its server exits before it binds a port. Use "Download default checkpoint" on the MTPLX card (or search for another MTP model there) to fetch one — a multi-gigabyte download PortOS will not start without you asking — then start MTPLX again.';
 
 let currentConfig = null;
 let lastExitError = null;
@@ -163,6 +165,19 @@ export async function getMtplxServerStatus() {
     // `null` = the dump could not be read, which is not the same as "no".
     runAtStartup: savedApps === null ? null : savedApps.includes(MTPLX_APP),
     cachedModels: (cache.models || []).map((m) => m?.repo_id).filter(Boolean),
+    // The same cache, with what the manage-checkpoints UI needs to let a user
+    // free the disk: how big each pack is, and whether it is actually servable
+    // (an interrupted pull leaves a directory that lists but cannot load).
+    cachedModelRows: (cache.models || [])
+      .filter((m) => m?.repo_id)
+      .map((m) => ({
+        repo: m.repo_id,
+        sizeBytes: Number.isFinite(Number(m.size_bytes)) ? Number(m.size_bytes) : null,
+        hasRuntimeContract: m.has_runtime_contract === true,
+        // `validation.ok` absent means an older `mtplx models` that did not
+        // report one — treat that as usable rather than flagging every row.
+        valid: m.validation?.ok !== false,
+      })),
     cacheError: cache.error,
     recentLogs: logs.withPm2Logs(`${pm2Logs?.stdout || ''}\n${pm2Logs?.stderr || ''}`),
     lastExitError: isReadFailed ? 'Failed to read PM2 status' : lastExitError,
@@ -216,7 +231,7 @@ async function resolveStartModel(requested, emit) {
   const model = pickMtplxCachedModel(cache.models);
   if (!model) {
     const count = cache.models.length;
-    return { error: `MTPLX's cache holds ${count} model${count === 1 ? '' : 's'}, but none passed its own file check — an interrupted \`mtplx pull\` leaves a partial download behind. Re-run \`mtplx pull <hf-repo-id>\` in a terminal, then try again.` };
+    return { error: `MTPLX's cache holds ${count} model${count === 1 ? '' : 's'}, but none passed its own file check — an interrupted download leaves a partial pack behind. Remove it on the MTPLX card and download the checkpoint again, then try again.` };
   }
   return { model };
 }

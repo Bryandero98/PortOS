@@ -90,14 +90,14 @@ const CONFIRM_TIMEOUT_MS = 5_000;
 /**
  * Why an installed MTPLX still cannot be started. Weights stay the user's
  * decision (`docs/features/mtplx.md`), so a plain Start never fetches them —
- * it names the button that does, plus the terminal command for a checkpoint
- * other than MTPLX's own default.
+ * it names the button that does, plus the in-app card that searches for and
+ * downloads a checkpoint other than MTPLX's own default.
  */
-const MTPLX_NO_MODEL_ERROR = 'no model weights are cached, so its server exits before it binds a port. Close this window — the checklist now offers “Download the default model & start MTPLX”, which fetches MTPLX\'s own verified checkpoint (a multi-gigabyte download) and then starts the server. To use a different MTP checkpoint instead, run `mtplx pull <hf-repo-id>` in a terminal, then click Start MTPLX again.';
+const MTPLX_NO_MODEL_ERROR = 'no model weights are cached, so its server exits before it binds a port. Close this window — the checklist now offers “Download the default model & start MTPLX”, which fetches MTPLX\'s own verified checkpoint (a multi-gigabyte download) and then starts the server. To use a different MTP checkpoint instead, search for one on the MTPLX card in Models → LLMs, download it there, then click Start MTPLX again.';
 
 /** The same dead end, reached from a cache holding only interrupted pulls. */
 const mtplxPartialCacheError = (count) =>
-  `its cache holds ${count} model${count === 1 ? '' : 's'}, but none passed its own file check — an interrupted \`mtplx pull\` leaves a partial download behind. Use “Download the default model & start MTPLX” on the checklist to re-fetch it, or run \`mtplx pull <hf-repo-id>\` in a terminal for another checkpoint.`;
+  `its cache holds ${count} model${count === 1 ? '' : 's'}, but none passed its own file check — an interrupted download leaves a partial pack behind. Use “Download the default model & start MTPLX” on the checklist to re-fetch it, or pick another checkpoint on the MTPLX card in Models → LLMs.`;
 
 /** What each `action` is called on the button and in the log. */
 const ACTION_LABELS = {

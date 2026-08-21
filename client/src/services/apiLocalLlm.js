@@ -72,6 +72,25 @@ export const stopMtplxServer = () =>
 export const installMtplx = () =>
   request('/local-llm/mtplx/install', { method: 'POST' });
 
+// MTPLX model catalog — search, download, and remove MTP checkpoints in-app.
+// `mtplx forge discover` is upstream's index of MTPLX-branded models, which is
+// exactly the set `mtplx serve` can run; an empty query returns its default list.
+export const searchMtplxModels = (params = {}, options) => {
+  const query = new URLSearchParams(
+    Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')
+  ).toString();
+  return request(`/local-llm/mtplx/models/search${query ? `?${query}` : ''}`, options);
+};
+
+// Omitting `model` fetches MTPLX's own verified default checkpoint. Byte
+// progress arrives on the `mtplx:download` socket event, not in this response —
+// a multi-GB transfer resolves only when the weights are on disk.
+export const pullMtplxModel = (model = null) =>
+  request('/local-llm/mtplx/models/pull', { method: 'POST', body: JSON.stringify(model ? { model } : {}) });
+
+export const removeMtplxModel = (model) =>
+  request('/local-llm/mtplx/models/remove', { method: 'POST', body: JSON.stringify({ model }) });
+
 // `pm2 save` — snapshot the running PM2 process list into the dump a boot-time
 // `pm2 resurrect` replays, so the local runtime servers come back after a
 // reboot. The privileged `pm2 startup` half stays a one-time operator command.

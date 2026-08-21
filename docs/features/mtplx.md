@@ -55,11 +55,16 @@ you are already on.
 1. Install MTPLX from **Local Runtime Servers**. PortOS installs the package
    from upstream's Homebrew tap (`brew install youssofal/mtplx/mtplx`), falling
    back to `python3 -m pip install mtplx` on a host without Homebrew.
-2. **Pull a checkpoint** — `mtplx pull` fetches MTPLX's default verified model,
-   `mtplx pull <hf-repo-id>` any other MTP model. This page never downloads
-   weights, and `mtplx serve` exits before it binds a port on an empty cache, so
-   the card refuses to start until something is cached. (The AI Providers
-   checklist below *can* run that download for you — see step 3 there.)
+2. **Download a checkpoint** from the MTPLX card's **Cached checkpoints** /
+   **Find a checkpoint** panel. Search runs `mtplx forge discover` — upstream's
+   index of MTPLX-branded MTP models, which is exactly the set `mtplx serve` can
+   run — and **Download** on a result runs `mtplx pull <repo>` with live byte
+   progress. With an empty cache the panel leads with **Download default
+   checkpoint**, MTPLX's own verified model. **Remove** on a cached row runs
+   `mtplx remove` and reports the disk freed. Nothing here downloads on its own:
+   `mtplx serve` exits before it binds a port on an empty cache, and the card
+   refuses to start until something is cached — but the fix is a button, not a
+   terminal.
 3. **Start MTPLX** from the MTPLX card, choosing a cached checkpoint and the port
    your provider points at. PortOS runs `mtplx serve` under PM2. A cold MLX
    checkpoint takes a while to load: the request comes back as soon as the
@@ -80,8 +85,8 @@ you are already on.
    default model & start MTPLX**. That runs `mtplx pull` (MTPLX's own default
    verified checkpoint, a multi-gigabyte download) and then starts the server,
    with the download's progress streaming into the same modal. To use a
-   different MTP checkpoint instead, run `mtplx pull <hf-repo-id>` in a
-   terminal and click **Start MTPLX**.
+   different MTP checkpoint instead, search for and download it on the MTPLX
+   card in Models → LLMs, then click **Start MTPLX**.
 
 Then, either way:
 
@@ -109,17 +114,25 @@ not offer to stop a process it did not start.
   particular repo was never pulled, even on a machine holding a different MTP
   model. A running server serving a different alias than the provider names is
   reported by the checklist's model check and left for you to resolve.
-- The **Download the default model & start MTPLX** button on the AI Providers
-  checklist is the one action anywhere in PortOS that fetches MTPLX weights (the
-  Models → LLMs card never does), and it appears only when that same cache listing
-  proves there is nothing servable — an empty cache, or one holding only a
-  half-finished `mtplx pull`. It runs `mtplx pull` with no repo id, so it can
-  only ever fetch MTPLX's own default verified checkpoint; nothing from the
-  page picks what is downloaded. It exists because the checklist otherwise
-  offered a **Start MTPLX** that could only fail, and named the missing weights
-  solely inside that failure — the one blocking fact was reachable only by
-  clicking the button it made impossible.
-- Closing the modal **cancels the download**. PortOS allows one local-runtime
+- **Two surfaces fetch weights, and both are buttons the user presses by name.**
+  The AI Providers checklist's **Download the default model & start MTPLX**
+  appears only when the cache listing proves there is nothing servable — an
+  empty cache, or one holding only a half-finished pull — and runs `mtplx pull`
+  with no repo id, so it can only ever fetch MTPLX's own default verified
+  checkpoint; nothing on that page picks what is downloaded. The Models → LLMs
+  card's checkpoint panel is the full-control counterpart: search, download a
+  named repo id, remove one. Neither is ever reached implicitly by an Install or
+  a Start.
+- **The card never tells you to open a terminal.** It used to: an empty cache
+  printed `mtplx pull` and left the user to go run it. PortOS installs the
+  runtime, starts it, stops it, logs it, and persists it across a reboot — the
+  one step in the middle being a shell command was the odd one out, and the PRD
+  now forbids it outright (NR-9).
+- A download started from the **LLMs card** keeps running if you navigate away —
+  it is a server-side `mtplx pull` with progress on a socket, not work owned by
+  the page. Only the AI Providers checklist's modal cancels on close, for the
+  reason below.
+- Closing the checklist modal **cancels the download**. PortOS allows one local-runtime
   setup at a time, and a weights pull can run for hours, so leaving it running
   after you dismissed it would also refuse every other runtime's setup button
   for the rest of it. A cancelled pull leaves a partial download in the cache,

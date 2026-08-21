@@ -106,15 +106,17 @@ describe('RuntimeServersCard', () => {
     expect(handlers.onInstallBackend).toHaveBeenCalledWith('ollama');
   });
 
-  it('blocks the MTPLX Start with the pull command when its cache is empty', () => {
-    // PortOS never downloads MTPLX weights, and `mtplx serve` exits before it
-    // binds on an empty cache — so offering Start would only produce a failure.
+  it('blocks the MTPLX Start and points at the in-app download when its cache is empty', () => {
+    // No Start button downloads weights, and `mtplx serve` exits before it binds
+    // on an empty cache — so offering Start would only produce a failure. The
+    // fix is the Configure card below, never a terminal command (PRD NR-9).
     renderCard({
       mtplxStatus: { installed: true, running: false, supported: true, cachedModels: [], cacheError: null },
     });
     const mtplx = row('MTPLX');
     expect(within(mtplx).queryByRole('button', { name: /^Start/ })).toBeNull();
-    expect(within(mtplx).getByText(/mtplx pull/)).toBeInTheDocument();
+    expect(within(mtplx).getByText(/use Configure to download one/)).toBeInTheDocument();
+    expect(within(mtplx).queryByText(/terminal/i)).toBeNull();
   });
 
   it('reports a runtime this host cannot run without offering to install it', () => {

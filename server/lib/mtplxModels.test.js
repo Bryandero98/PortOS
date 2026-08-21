@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const spawned = vi.hoisted(() => ({ bufferedSpawn: vi.fn() }));
-vi.mock('./bufferedSpawn.js', () => spawned);
+// Partial mock: only the spawn is faked — `spawnFailureDetail` is the real pure
+// helper, so the failure sentence this asserts on is the shipped one.
+vi.mock('./bufferedSpawn.js', async (importOriginal) => ({ ...(await importOriginal()), ...spawned }));
 
 const pathLookup = vi.hoisted(() => ({ findCommandOnPath: vi.fn(() => '/opt/homebrew/bin/mtplx') }));
 vi.mock('./processEnv.js', () => pathLookup);
