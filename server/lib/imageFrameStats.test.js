@@ -95,6 +95,16 @@ describe('describeFrameStats', () => {
     expect(stats.ok).toBe(true);
   });
 
+  it('ACCEPTS a silhouette whose visual content is carried by alpha', async () => {
+    const buf = await fromPixels((x, y) => {
+      const inSubject = x >= 20 && x < 44 && y >= 20 && y < 44;
+      return [0, 0, 0, inSubject ? 255 : 0];
+    }, { channels: 4 });
+    const stats = await describeFrameStats(buf);
+    expect(stats.ok).toBe(true);
+    expect(isDegenerateFrame(stats)).toBe(false);
+  });
+
   it('rejects a near-empty frame whose single stray pixel leaves entropy at the floor', async () => {
     const buf = await fromPixels((x, y) => (x === 0 && y === 0 ? [255, 255, 255] : [0, 0, 0]));
     const stats = await describeFrameStats(buf);

@@ -114,16 +114,26 @@ export async function describeFrameStats(input) {
     if (alpha.max === 0) return result(false, FRAME_REASON.FULLY_TRANSPARENT, perChannel);
   }
 
+  // A transparent sprite can carry its entire silhouette in alpha while its
+  // RGB channels remain a single color (for example, a black figure). That
+  // alpha variance is content, unlike a fully opaque alpha channel, which is
+  // just the normal PNG case and must not rescue a flat fill.
+  const alpha = metadata.hasAlpha ? perChannel[perChannel.length - 1] : null;
+  const alphaCarriesContent = Boolean(
+    alpha && !stats.isOpaque && alpha.max > alpha.min && alpha.stdev >= SOLID_FILL_STDEV_EPSILON,
+  );
+
   // Only the colour channels decide "flat" — a fully-OPAQUE alpha channel is
-  // itself flat by definition and would otherwise veto every normal PNG.
+  // itself flat by definition and would otherwise veto every normal PNG. A
+  // non-opaque alpha silhouette is the one deliberate exception.
   const colour = metadata.hasAlpha ? perChannel.slice(0, -1) : perChannel;
-  if (colour.length && colour.every((c) => c.stdev < SOLID_FILL_STDEV_EPSILON)) {
+  if (!alphaCarriesContent && colour.length && colour.every((c) => c.stdev < SOLID_FILL_STDEV_EPSILON)) {
     return result(false, FRAME_REASON.SOLID_FILL, perChannel);
   }
 
   // sharp reports entropy only when it could compute one; a missing value is
   // not evidence of emptiness, so it falls through to `ok: true`.
-  if (typeof stats.entropy === 'number' && stats.entropy < NEAR_EMPTY_ENTROPY_FLOOR) {
+  if (!alphaCarriesContent && typeof stats.entropy === 'number' && stats.entropy < NEAR_EMPTY_ENTROPY_FLOOR) {
     return result(false, FRAME_REASON.NEAR_EMPTY, perChannel);
   }
 
