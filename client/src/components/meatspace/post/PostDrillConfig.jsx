@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, Save, Brain, Bell, Target, Layers, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { ArrowLeft, Save, Brain, Bell, Target, Layers, TrendingUp, TrendingDown, Minus, BookOpen } from 'lucide-react';
 import { updatePostConfig, getProviders, getPostAdaptivePreview, getPostMultiplicationProgress, getPostPowersProgress, getPostCognitiveProgress, getMemoryItems } from '../../../services/api';
 import toast from '../../ui/Toast';
 import { FormField } from '../../ui/FormField';
 import { filterSelectableModels, enabledApiProviderFilter } from '../../../utils/providers';
 import { GOAL_DEFS, POST_TOPICS, MODULE_LABELS, DRILL_LABELS, DRILL_DESCRIPTIONS, composedSessionDrillTypes } from './constants';
+import { CognitiveDrillTutorialPreview } from './PostCognitiveDrillRunner';
 
 // Modules a Full/Quick composed session can draw from (issue #2100), DERIVED
 // from the shared topic registry so the list has one owner (issue #3252): a
@@ -463,7 +464,7 @@ function GroupBulkToggle({ groupLabel, onEnableAll, onDisableAll }) {
   );
 }
 
-function DrillCard({ type, meta, drillConfig, enabled, accent, onToggle, onUpdateField, adaptiveInfo, progressive, onToggleProgressive, progressInfo, managedFieldKeys = [], speedGated = false, managedLabel = 'Manual knobs' }) {
+function DrillCard({ type, meta, drillConfig, enabled, accent, onToggle, onUpdateField, adaptiveInfo, progressive, onToggleProgressive, progressInfo, managedFieldKeys = [], speedGated = false, managedLabel = 'Manual knobs', onPreviewHowItWorks }) {
   // Label and description both come from the shared registries in constants.js —
   // the per-module META objects carry only the knobs, so a drill rename is one edit.
   const label = DRILL_LABELS[type];
@@ -483,6 +484,18 @@ function DrillCard({ type, meta, drillConfig, enabled, accent, onToggle, onUpdat
         <div>
           <h3 className="text-white font-medium">{label}</h3>
           <p className="text-gray-500 text-xs">{DRILL_DESCRIPTIONS[type]}</p>
+          {/* Outside the `enabled &&` blocks on purpose: previewing the rules is
+              how you decide whether to switch a drill ON (issue #4732). */}
+          {onPreviewHowItWorks && (
+            <button
+              type="button"
+              onClick={onPreviewHowItWorks}
+              aria-label={`How ${label} works`}
+              className="mt-1 inline-flex items-center gap-1 text-xs text-gray-500 hover:text-port-accent transition-colors"
+            >
+              <BookOpen size={12} /> How it works
+            </button>
+          )}
         </div>
         <button
           type="button"
@@ -587,6 +600,10 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
   const [multiplicationProgress, setMultiplicationProgress] = useState(null);
   const [powersProgress, setPowersProgress] = useState(null);
   const [cognitiveProgress, setCognitiveProgress] = useState(null);
+  // Drill type whose how-to card is open in the preview modal (issue #4732), or
+  // null. Held as the type alone — the drill payload is rebuilt from the CURRENT
+  // draft config on render, so editing `n` and reopening shows the new lag.
+  const [howItWorksType, setHowItWorksType] = useState(null);
   // Opt-in daily reminder — off by default; see server/services/meatspacePostReminder.js.
   const [reminderEnabled, setReminderEnabled] = useState(
     () => config?.reminder?.enabled === true
@@ -1102,11 +1119,17 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
                 managedFieldKeys={supportsProgressive ? (meta.ladderFields || []) : []}
                 speedGated={false}
                 managedLabel="The difficulty knobs"
+                onPreviewHowItWorks={() => setHowItWorksType(type)}
               />
             );
           })}
         </div>
       )}
+
+      <CognitiveDrillTutorialPreview
+        drill={howItWorksType ? { type: howItWorksType, config: cognitiveDrillTypes[howItWorksType] || {} } : null}
+        onClose={() => setHowItWorksType(null)}
+      />
 
       {/* LLM Drills Section */}
       <div className="flex items-center justify-between pt-2">

@@ -422,6 +422,30 @@ describe('PostSessionLauncher render (issue #2100)', () => {
     });
     expect(await screen.findByText('system default')).toBeInTheDocument();
   });
+
+  // Issue #4732 — the drill's first-run how-to card is one-shot per type, so the
+  // sidebar row is the way back to it from the screen you launch a session from.
+  it('re-opens a cognitive drill\'s how-to card from the sidebar without starting a run', async () => {
+    const onStart = vi.fn();
+    renderLauncher({
+      onStart,
+      config: {
+        ...baseConfig,
+        cognitive: { enabled: true, drillTypes: { 'n-back': { enabled: true, n: 3 } } },
+      },
+    });
+    await waitFor(() => expect(getPostRecommendations).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'How N-Back works' }));
+    // The card reads against the CONFIGURED lag, not a hardcoded default.
+    expect(screen.getByText(/catch when one repeats from 3 steps earlier/i)).toBeTruthy();
+    expect(screen.getByRole('list', { name: /example letter stream/i })).toBeTruthy();
+    // Reading the rules must never start (or count toward) a scored session.
+    expect(onStart).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /got it/i }));
+    expect(screen.queryByText(/catch when one repeats from 3 steps earlier/i)).toBeNull();
+  });
 });
 
 // The launcher is the entry point to a DAILY habit, so the actions that start a

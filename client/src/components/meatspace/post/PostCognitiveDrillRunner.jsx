@@ -5,6 +5,7 @@ import { safeReadJsonStorage, safeWriteStorage } from '../../../lib/safeStorage.
 import useMounted from '../../../hooks/useMounted';
 import useKeyCapture from '../../../hooks/useKeyCapture';
 import { isPressKey } from '../../../lib/a11yKeyboard.js';
+import Modal from '../../ui/Modal';
 
 /**
  * Interactive runner for deterministic cognitive drills (n-back, digit-span,
@@ -242,19 +243,25 @@ function DrillTutorialGate({ drill, isTraining, drillIndex, drillCount, children
   return (
     <CognitiveDrillTutorial
       drill={drill}
-      isTraining={isTraining}
-      drillIndex={drillIndex}
-      drillCount={drillCount}
-      onStart={() => { markDrillTutorialSeen(drill.type); setShowTutorial(false); }}
+      header={<DrillHeader type={drill.type} isTraining={isTraining} drillIndex={drillIndex} drillCount={drillCount} />}
+      onAction={() => { markDrillTutorialSeen(drill.type); setShowTutorial(false); }}
+      footNote="You’ll only see this the first time for each drill type. Reopen it any time from the launcher or Config."
     />
   );
 }
 
-function CognitiveDrillTutorial({ drill, isTraining, drillIndex, drillCount, onStart }) {
+/**
+ * The how-to card for one cognitive drill type. Everything around the card body
+ * is caller-supplied so one component serves both entry points: the first-run
+ * gate (drill header, "Start drill", the one-shot footnote) and the standalone
+ * preview below (no header, "Got it", no run behind it). Keeping the body in one
+ * place is the point — the n-back worked example must not drift between them.
+ */
+function CognitiveDrillTutorial({ drill, header = null, onAction, actionLabel = 'Start drill', ActionIcon = Play, footNote = null }) {
   const tut = getDrillTutorial(drill);
   return (
     <div className="max-w-lg mx-auto space-y-6">
-      <DrillHeader type={drill.type} isTraining={isTraining} drillIndex={drillIndex} drillCount={drillCount} />
+      {header}
 
       <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-5 space-y-4">
         <div className="flex items-center gap-2 text-rose-300">
@@ -285,15 +292,47 @@ function CognitiveDrillTutorial({ drill, isTraining, drillIndex, drillCount, onS
 
       <button
         type="button"
-        onClick={onStart}
+        onClick={onAction}
         autoFocus
         className="w-full px-6 py-4 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-500/40 font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
       >
-        <Play size={18} /> Start drill
+        <ActionIcon size={18} /> {actionLabel}
       </button>
 
-      <p className="text-center text-xs text-gray-600">You&rsquo;ll only see this the first time for each drill type.</p>
+      {footNote && <p className="text-center text-xs text-gray-600">{footNote}</p>}
     </div>
+  );
+}
+
+/**
+ * Standalone how-to card for a drill type, with no runner behind it — the way
+ * back to a tutorial once its one-shot first-run gate has been spent (issue
+ * #4732). Rendered from the POST launcher and the drill config so a rule you
+ * last read weeks ago is re-readable without starting a scored run.
+ *
+ * Deliberately NOT reachable from inside a live drill: every cognitive runner
+ * stamps `startedAtRef` at mount, so re-showing the tutorial mid-run would
+ * either drop the run or bill the reading time to its `totalMs`. The preview
+ * takes a plain `{ type, config }` and mounts no runner at all.
+ *
+ * `drill` may be null (nothing selected) or a type with no tutorial — both
+ * render nothing, so callers can pass state straight through.
+ */
+export function CognitiveDrillTutorialPreview({ drill, onClose }) {
+  if (!drill || !getDrillTutorial(drill)) return null;
+  const label = DRILL_LABELS[drill.type] || drill.type;
+  return (
+    <Modal open onClose={onClose} size="lg" ariaLabel={`How ${label} works`}>
+      <div className="bg-port-card border border-port-border rounded-xl p-5 max-h-[85vh] overflow-y-auto">
+        <CognitiveDrillTutorial
+          drill={drill}
+          onAction={onClose}
+          actionLabel="Got it"
+          ActionIcon={Check}
+          footNote="Preview only — nothing is timed or scored here."
+        />
+      </div>
+    </Modal>
   );
 }
 

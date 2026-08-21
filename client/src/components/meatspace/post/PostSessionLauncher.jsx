@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router';
-import { Zap, Play, Brain, Dumbbell, Timer, Target, TrendingUp, TrendingDown, Minus, Compass, ArrowRight, ChevronRight, Layers } from 'lucide-react';
+import { Zap, Play, Brain, Dumbbell, Timer, Target, TrendingUp, TrendingDown, Minus, Compass, ArrowRight, ChevronRight, Layers, BookOpen } from 'lucide-react';
 import { getPostReviewReps, getPostRecommendations, getMorseProgress, getPostProgress, getPostBenchmarkProtocol, getMemoryItems, updatePostConfig } from '../../../services/api';
 import { FormField } from '../../ui/FormField';
 import Pill from '../../ui/Pill';
@@ -10,6 +10,7 @@ import { DOMAINS, DRILL_TO_DOMAIN, DRILL_LABELS, computeDomainAverages, computeG
 import { otherPostSections, TOPIC_SURFACE_SECTIONS } from './practiceCatalog';
 import { postIcon } from './postIcons';
 import BrowseCatalogLink from './BrowseCatalogLink';
+import { CognitiveDrillTutorialPreview } from './PostCognitiveDrillRunner';
 import { streakGlyph } from '../../../lib/streakGlyph.js';
 import useUserTimezone from '../../../hooks/useUserTimezone.js';
 import { todayKeyInTimezone } from '../../../utils/timezone.js';
@@ -154,6 +155,9 @@ export default function PostSessionLauncher({
   const [quickDurationSaveState, setQuickDurationSaveState] = useState('idle');
   const [benchmarkState, setBenchmarkState] = useState('idle');
   const [benchmarkError, setBenchmarkError] = useState(null);
+  // `{ type, config }` of the cognitive drill whose how-to card is open, or null
+  // (issue #4732). Nothing mounts a runner, so no drill timer is affected.
+  const [howItWorksDrill, setHowItWorksDrill] = useState(null);
 
   useEffect(() => {
     setQuickDurationMin(normalizeQuickDurationMinutes(config?.quickDurationMin));
@@ -1161,9 +1165,23 @@ export default function PostSessionLauncher({
               </div>
               <div className="space-y-2">
                 {enabledCognitiveDrills.map(([type, cfg]) => (
-                  <div key={type} className="flex items-center justify-between text-sm">
-                    <span className="text-white">{DRILL_LABELS[type] || type}</span>
-                    <span className="text-gray-500">
+                  <div key={type} className="flex items-center justify-between gap-2 text-sm">
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-white truncate">{DRILL_LABELS[type] || type}</span>
+                      {/* Re-entry to the how-to card the first-run gate showed once
+                          and never again (issue #4732). Opens a preview with no
+                          runner behind it, so no timer starts and nothing is scored. */}
+                      <button
+                        type="button"
+                        onClick={() => setHowItWorksDrill({ type, config: cfg })}
+                        aria-label={`How ${DRILL_LABELS[type] || type} works`}
+                        title="How it works"
+                        className="shrink-0 text-gray-600 hover:text-rose-300 transition-colors"
+                      >
+                        <BookOpen size={13} />
+                      </button>
+                    </span>
+                    <span className="text-gray-500 text-right">
                       {cognitiveSummary(type, cfg)}
                     </span>
                   </div>
@@ -1210,6 +1228,8 @@ export default function PostSessionLauncher({
           )}
         </div>
       </div>
+
+      <CognitiveDrillTutorialPreview drill={howItWorksDrill} onClose={() => setHowItWorksDrill(null)} />
     </div>
   );
 }

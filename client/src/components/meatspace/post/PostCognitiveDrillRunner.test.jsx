@@ -19,6 +19,7 @@ import PostCognitiveDrillRunner, {
   hasSeenDrillTutorial,
   markDrillTutorialSeen,
   buildNBackExample,
+  CognitiveDrillTutorialPreview,
 } from './PostCognitiveDrillRunner';
 
 // Result-assembly tests for PostCognitiveDrillRunner's `finish()` builders.
@@ -664,6 +665,59 @@ describe('first-run tutorial gate', () => {
     );
     expect(screen.queryByRole('button', { name: /start drill/i })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /wait for the signal/i })).toBeInTheDocument();
+  });
+});
+
+// Standalone how-to preview (issue #4732) — the way back to a tutorial card the
+// one-shot first-run gate has already been spent on. The load-bearing property
+// is that it renders the SAME body with NO runner behind it, so nothing is
+// timed or scored while the user reads.
+describe('CognitiveDrillTutorialPreview', () => {
+  beforeEach(() => window.localStorage.clear());
+  afterEach(() => window.localStorage.clear());
+
+  it('renders the how-to card, including the n-back worked example, with no runner mounted', () => {
+    render(<CognitiveDrillTutorialPreview drill={{ type: 'n-back', config: { n: 3 } }} onClose={vi.fn()} />);
+    expect(screen.getByText(/catch when one repeats from 3 steps earlier/i)).toBeInTheDocument();
+    // The worked example strip — the whole reason the card needs to stay reachable.
+    const example = screen.getByRole('list', { name: /example letter stream/i });
+    expect(within(example).getByText('Match!')).toBeInTheDocument();
+    expect(within(example).getByText('3 steps back')).toBeInTheDocument();
+    // No runner: the n-back stimulus button and the gate's Start button are both absent.
+    expect(screen.queryByRole('button', { name: /^match$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /start drill/i })).not.toBeInTheDocument();
+  });
+
+  it('does not consume the first-run gate for the type it previewed', () => {
+    render(<CognitiveDrillTutorialPreview drill={{ type: 'stroop', config: {} }} onClose={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /got it/i })).toBeInTheDocument();
+    expect(hasSeenDrillTutorial('stroop')).toBe(false);
+  });
+
+  it('closes on "Got it"', () => {
+    const onClose = vi.fn();
+    render(<CognitiveDrillTutorialPreview drill={{ type: 'flanker', config: {} }} onClose={onClose} />);
+    fireEvent.click(screen.getByRole('button', { name: /got it/i }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders nothing for no selection or a type with no tutorial', () => {
+    const { container, rerender } = render(<CognitiveDrillTutorialPreview drill={null} onClose={vi.fn()} />);
+    expect(container).toBeEmptyDOMElement();
+    rerender(<CognitiveDrillTutorialPreview drill={{ type: 'not-a-drill' }} onClose={vi.fn()} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('reflects the drill config it is handed, so a re-read matches the configured difficulty', () => {
+    const { rerender } = render(
+      <CognitiveDrillTutorialPreview drill={{ type: 'digit-span', config: { direction: 'backward' } }} onClose={vi.fn()} />,
+    );
+    expect(screen.getByText(/then type them in reverse/i)).toBeInTheDocument();
+    rerender(
+      <CognitiveDrillTutorialPreview drill={{ type: 'digit-span', config: { direction: 'forward' } }} onClose={vi.fn()} />,
+    );
+    expect(screen.queryByText(/then type them in reverse/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/then type them back in order/i)).toBeInTheDocument();
   });
 });
 
