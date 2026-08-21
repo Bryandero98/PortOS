@@ -39,7 +39,7 @@ const WINDOWS_RISK_RULES = [
   /^scripts\/fix-windows-console(?:\.test)?\.js$/,
   /^scripts\/ps1-bom\.test\.js$/,
   /^server\/lib\/(?:bufferedSpawn|detachedSpawn|childProcess|bashResolver|processEnv|platform|spawnCwd|cliProviderRun|grok)\b/,
-  /^server\/lib\/shellCd(?:\.test)?\.js$/,
+  /^server\/lib\/shell(?:Cd|Exit|LivenessProbe|ReadinessProbe)(?:\.test)?\.js$/,
   /^server\/lib\/agentGuard\//,
   /^server\/cos-runner\//,
   /^server\/services\/(?:shell|pm2|appBuilder)\b/,

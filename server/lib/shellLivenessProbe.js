@@ -11,46 +11,40 @@
  * already died. In that case, the spawner skips pasting the prompt into the bare
  * shell prompt and finalizes failure early.
  *
- * The probe is dialect- and platform-aware:
- *   • POSIX (macOS/Linux / bash): `ps -Ao ppid=` (lists parent PIDs)
- *   • Windows (cmd.exe / PowerShell): `powershell -NoProfile -NonInteractive -Command ...`
+ * The probe is executed host-side via `execFile` from Node.js (not inside the PTY):
+ *   • POSIX host (macOS / Linux): `ps -Ao ppid=` (lists parent PIDs)
+ *   • Windows host: `powershell -NoProfile -NonInteractive -Command ...`
  *     using `Get-CimInstance Win32_Process` filtered by ParentProcessId.
  *
  * Resolves true (assume alive) if the probe fails or cannot run, so an environment
  * glitch never blocks an otherwise-healthy run.
  */
 
-import { detectShellFlavor } from './shellCd.js';
 import { execFile } from './childProcess.js';
 
 /**
  * Build the file + argv for probing children of `shellPid`.
  *
  * @param {number} shellPid - PID of the hosting shell process
- * @param {string} [shell] - the session's shell binary; see detectShellFlavor
  * @param {string} [platform=process.platform] - OS platform
  * @returns {{ file: string, args: string[] }}
  */
-export function buildLivenessProbeCommand(shellPid, shell, platform = process.platform) {
-  const flavor = detectShellFlavor(shell, platform);
-  switch (flavor) {
-    case 'cmd':
-    case 'powershell':
-      return {
-        file: 'powershell',
-        args: [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          `Get-CimInstance Win32_Process -Filter "ParentProcessId = ${shellPid}" | Select-Object -ExpandProperty ProcessId`,
-        ],
-      };
-    default:
-      return {
-        file: 'ps',
-        args: ['-Ao', 'ppid='],
-      };
+export function buildLivenessProbeCommand(shellPid, platform = process.platform) {
+  if (platform === 'win32') {
+    return {
+      file: 'powershell',
+      args: [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Get-CimInstance Win32_Process -Filter "ParentProcessId = ${shellPid}" | Select-Object -ExpandProperty ProcessId`,
+      ],
+    };
   }
+  return {
+    file: 'ps',
+    args: ['-Ao', 'ppid='],
+  };
 }
 
 /**
@@ -58,30 +52,25 @@ export function buildLivenessProbeCommand(shellPid, shell, platform = process.pl
  *
  * @param {string} stdout - raw stdout from the probe command
  * @param {number} shellPid - PID of the hosting shell process
- * @param {string} [shell] - the session's shell binary
  * @param {string} [platform=process.platform] - OS platform
  * @returns {boolean} true if child process(es) were found
  */
-export function parseLivenessProbeOutput(stdout, shellPid, shell, platform = process.platform) {
+export function parseLivenessProbeOutput(stdout, shellPid, platform = process.platform) {
   if (!stdout) return false;
-  const flavor = detectShellFlavor(shell, platform);
-  switch (flavor) {
-    case 'cmd':
-    case 'powershell':
-      return String(stdout)
-        .split('\n')
-        .some((line) => {
-          const num = parseInt(line.trim(), 10);
-          return Number.isFinite(num) && num > 0;
-        });
-    default:
-      return String(stdout)
-        .split('\n')
-        .some((line) => {
-          const num = parseInt(line.trim(), 10);
-          return Number.isFinite(num) && num === shellPid;
-        });
+  if (platform === 'win32') {
+    return String(stdout)
+      .split('\n')
+      .some((line) => {
+        const num = parseInt(line.trim(), 10);
+        return Number.isFinite(num) && num > 0;
+      });
   }
+  return String(stdout)
+    .split('\n')
+    .some((line) => {
+      const num = parseInt(line.trim(), 10);
+      return Number.isFinite(num) && num === shellPid;
+    });
 }
 
 /**
@@ -89,19 +78,19 @@ export function parseLivenessProbeOutput(stdout, shellPid, shell, platform = pro
  * Resolves `true` (assume alive) on error or missing PID.
  *
  * @param {number} shellPid
- * @param {{ shell?: string, platform?: string, execFileFn?: typeof execFile }} [options]
+ * @param {{ platform?: string, execFileFn?: typeof execFile }} [options]
  * @returns {Promise<boolean>}
  */
-export function shellHasLiveChild(shellPid, { shell, platform = process.platform, execFileFn = execFile } = {}) {
+export function shellHasLiveChild(shellPid, { platform = process.platform, execFileFn = execFile } = {}) {
   if (!shellPid) return Promise.resolve(true);
-  const { file, args } = buildLivenessProbeCommand(shellPid, shell, platform);
+  const { file, args } = buildLivenessProbeCommand(shellPid, platform);
   return new Promise((resolve) => {
     execFileFn(file, args, { timeout: 2000 }, (err, stdout) => {
       if (err) {
         resolve(true);
         return;
       }
-      resolve(parseLivenessProbeOutput(stdout, shellPid, shell, platform));
+      resolve(parseLivenessProbeOutput(stdout, shellPid, platform));
     });
   });
 }

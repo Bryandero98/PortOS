@@ -323,7 +323,7 @@ function createPasteRetryController({
     // this pid have a live child?" is the wrong question (claude may have zero
     // children at paste time) and a TUI exit kills the PTY, firing onExit. Skip
     // the probe there.
-    if (!useDurableRunner && !(await shellHasLiveChild(pid, { shell: tuiConfig?.shell }))) {
+    if (!useDurableRunner && !(await shellHasLiveChild(pid))) {
       if (isFinalized()) return; // a real onExit may have finalized during the probe await
       await finishStartupFailure(
         'tui-exited-early',
