@@ -246,4 +246,8 @@ one-shot completion.
   building it.
 - [The 3090 bring-up record](../research/2026-08-21-qwen38-rtx3090-vllm.md) — the
   measurements behind the numbers above, and how each required setting was found.
+- [SGLang Qwen3.8-27B on Hopper / Blackwell](../research/2026-08-21-sglang-qwen38-27b.md) —
+  why this 3090 container is **not** replaced by the official SGLang recipes
+  (no 3090 cell; different tool-parser spelling; Claude Code is available there
+  via native Anthropic `/v1/messages`). Follow-up issues: #4776, #4777, #4778.
 - [docs/PORTS.md](../PORTS.md) — why `:18020` sits outside the 5553–5569 range.
