@@ -36,9 +36,23 @@ describe('useAppOverrideActions', () => {
       await result.current.handleUpdateOverride('app-1', 'do-replan', { enabled: true, interval: 'daily' });
     });
 
-    expect(updateAppTaskTypeOverride).toHaveBeenCalledWith('app-1', 'do-replan', { enabled: true, interval: 'daily', taskMetadata: undefined }, { silent: true });
+    expect(updateAppTaskTypeOverride).toHaveBeenCalledWith('app-1', 'do-replan', { enabled: true, interval: 'daily' }, { silent: true });
     expect(toastSuccess).toHaveBeenCalledWith('Updated do-replan override for Acme');
     expect(refetch).toHaveBeenCalledOnce();
+  });
+
+  // The patch used to be re-listed field by field here, which silently dropped
+  // every field the hook hadn't been taught about — the route then 400s on the
+  // resulting empty body, so clearing a per-app provider pin could never work.
+  it('forwards fields it was never taught about, like a provider pin clear', async () => {
+    updateAppTaskTypeOverride.mockResolvedValue({ success: true });
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.handleUpdateOverride('app-1', 'layered-intelligence', { providerId: null, model: null });
+    });
+
+    expect(updateAppTaskTypeOverride).toHaveBeenCalledWith('app-1', 'layered-intelligence', { providerId: null, model: null }, { silent: true });
   });
 
   it('falls back to the app id when the app is unknown', async () => {

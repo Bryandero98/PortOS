@@ -104,6 +104,7 @@ export default function TaskConfigDrawer({
               taskType={taskType}
               config={config}
               apps={apps}
+              providers={providers}
               onUpdateOverride={onUpdateOverride}
               onBulkToggleOverride={onBulkToggleOverride}
             />

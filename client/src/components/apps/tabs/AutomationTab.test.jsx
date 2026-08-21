@@ -35,7 +35,10 @@ const AutomationTab = (await import('./AutomationTab')).default;
 
 const SCHEDULE = {
   tasks: {
-    'layered-intelligence': { type: 'daily', taskMetadata: {}, providerId: 'global-claude' },
+    // Only layered-intelligence honors a per-app provider/model override (the
+    // server stamps providerOverrideCapable from taskTypeHooks) — the other rows
+    // take their provider from this global pin.
+    'layered-intelligence': { type: 'daily', taskMetadata: {}, providerId: 'global-claude', providerOverrideCapable: true },
     'app-improvement': { type: 'rotation', taskMetadata: {} },
     security: { type: 'weekly', taskMetadata: { fileIssues: false }, fileIssuesCapable: true, defaultFileIssues: false },
   },
@@ -87,7 +90,7 @@ describe('AutomationTab per-app overrides', () => {
 
   it('changing the provider PATCHes updateAppTaskTypeOverride with providerId + cleared model', async () => {
     await renderTab();
-    const row = rowFor('app-improvement');
+    const row = rowFor('layered-intelligence');
     fireEvent.click(within(row).getByRole('button', { name: /show provider and model overrides/i }));
 
     const providerSelect = within(row).getByLabelText('Provider override');
@@ -96,22 +99,22 @@ describe('AutomationTab per-app overrides', () => {
     await waitFor(() => expect(api.updateAppTaskTypeOverride).toHaveBeenCalled());
     expect(api.updateAppTaskTypeOverride).toHaveBeenCalledWith(
       'app-1',
-      'app-improvement',
+      'layered-intelligence',
       { providerId: 'claude-cli', model: '' },
       { silent: true }
     );
   });
 
   it('changing the model PATCHes updateAppTaskTypeOverride with the model', async () => {
-    await renderTab({ 'app-improvement': { providerId: 'claude-cli' } });
-    const row = rowFor('app-improvement');
+    await renderTab({ 'layered-intelligence': { providerId: 'claude-cli' } });
+    const row = rowFor('layered-intelligence');
     fireEvent.click(within(row).getByRole('button', { name: /show provider and model overrides/i }));
 
     fireEvent.change(within(row).getByLabelText('Model'), { target: { value: 'sonnet' } });
 
     await waitFor(() => expect(api.updateAppTaskTypeOverride).toHaveBeenCalledWith(
       'app-1',
-      'app-improvement',
+      'layered-intelligence',
       { model: 'sonnet' },
       { silent: true }
     ));
@@ -119,7 +122,7 @@ describe('AutomationTab per-app overrides', () => {
 
   it('excludes disabled providers from the picker', async () => {
     await renderTab();
-    const row = rowFor('app-improvement');
+    const row = rowFor('layered-intelligence');
     fireEvent.click(within(row).getByRole('button', { name: /show provider and model overrides/i }));
     const providerSelect = within(row).getByLabelText('Provider override');
     expect(within(providerSelect).queryByText('Disabled')).toBeNull();
@@ -136,11 +139,29 @@ describe('AutomationTab per-app overrides', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/apps/app-1?edit=1&appTab=intelligence');
   });
 
-  it('non-LI row does not show the behavior link', async () => {
+  // A per-app provider/model pin is inert for a task type with no buildTaskInput
+  // hook — the picker must not be offered there, or the user sets a provider that
+  // silently never runs.
+  it('offers no provider override on a task type that does not honor one', async () => {
     await renderTab();
     const row = rowFor('app-improvement');
+    expect(within(row).queryByRole('button', { name: /show provider and model overrides/i })).toBeNull();
+  });
+
+  it('shows a stored-but-inert override with a way to clear it', async () => {
+    await renderTab({ 'app-improvement': { providerId: 'claude-cli', model: 'opus' } });
+    const row = rowFor('app-improvement');
     fireEvent.click(within(row).getByRole('button', { name: /show provider and model overrides/i }));
-    expect(within(row).queryByRole('button', { name: /configure behavior/i })).toBeNull();
+    expect(within(row).getByText(/unused override/i)).toBeInTheDocument();
+    expect(within(row).queryByLabelText('Provider override')).toBeNull();
+
+    fireEvent.click(within(row).getByRole('button', { name: /clear it/i }));
+    await waitFor(() => expect(api.updateAppTaskTypeOverride).toHaveBeenCalledWith(
+      'app-1',
+      'app-improvement',
+      { providerId: null, model: '' },
+      { silent: true }
+    ));
   });
 
   it('Iss toggle PATCHes fileIssues on and forces the no-code posture', async () => {

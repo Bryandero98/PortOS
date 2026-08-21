@@ -111,7 +111,10 @@ function AppOverridePanel({ node, apps, onUpdateOverride, onBulkToggleOverride }
         appOverrides: node.appOverrides,
         type: node.schedule?.type,
         taskMetadata: node.taskMetadata,
-        managedAgentOptions: node.managedAgentOptions
+        managedAgentOptions: node.managedAgentOptions,
+        providerOverrideCapable: node.providerOverrideCapable,
+        providerId: node.providerId,
+        model: node.model
       }}
       apps={apps}
       onUpdateOverride={onUpdateOverride}
