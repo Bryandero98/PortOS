@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { onActivateKeyDown, clickableProps } from './a11yKeyboard.js';
+import { onActivateKeyDown, clickableProps, isButtonActivation, isPressKey } from './a11yKeyboard.js';
 
 describe('onActivateKeyDown', () => {
   it('returns undefined when handler is not a function', () => {
@@ -92,4 +92,51 @@ describe('clickableProps', () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('isButtonActivation', () => {
+  // No DOM here (node env) — a stub target with .closest is exactly the
+  // surface the helper uses.
+  const target = (match) => ({ closest: (sel) => (sel.includes('button') ? match : null) });
+  const button = {};
+
+  it('is true for Space on a button-like target', () => {
+    expect(isButtonActivation({ key: ' ', target: target(button) })).toBe(true);
+    expect(isButtonActivation({ code: 'Space', target: target(button) })).toBe(true);
+    expect(isButtonActivation({ key: 'Spacebar', target: target(button) })).toBe(true);
+  });
+
+  it('is false for Space away from a button — a global Space hotkey still fires', () => {
+    expect(isButtonActivation({ key: ' ', target: target(null) })).toBe(false);
+  });
+
+  it('is false for keys that do not activate a button', () => {
+    // Enter DOES activate a button natively, but it also activates links and
+    // submits forms, and no global hotkey defaults to it — only Space needs
+    // the carve-out, so widening this would silently disable Enter shortcuts.
+    expect(isButtonActivation({ key: 'Enter', target: target(button) })).toBe(false);
+    expect(isButtonActivation({ key: 'a', target: target(button) })).toBe(false);
+  });
+
+  it('is false when the target cannot be inspected', () => {
+    expect(isButtonActivation({ key: ' ', target: null })).toBe(false);
+    expect(isButtonActivation({ key: ' ' })).toBe(false);
+    expect(isButtonActivation(null)).toBe(false);
+  });
+});
+
+describe('isPressKey', () => {
+  it('accepts Enter and every spelling of Space', () => {
+    expect(isPressKey({ key: 'Enter' })).toBe(true);
+    expect(isPressKey({ key: ' ' })).toBe(true);
+    expect(isPressKey({ key: 'Spacebar' })).toBe(true);
+    expect(isPressKey({ code: 'Space' })).toBe(true);
+  });
+
+  it('rejects other keys and a missing event', () => {
+    expect(isPressKey({ code: 'KeyA', key: 'a' })).toBe(false);
+    expect(isPressKey({ key: 'Escape' })).toBe(false);
+    expect(isPressKey(null)).toBe(false);
+  });
+});
+
 // @vitest-environment node

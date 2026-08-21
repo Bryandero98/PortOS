@@ -25,6 +25,7 @@ import {
   isVoiceHiddenStorageEvent,
 } from '../../services/voiceVisibility';
 import { MicroGlyph } from '../micrographics';
+import { isButtonActivation } from '../../lib/a11yKeyboard';
 import { safeReadStorage, safeWriteStorage } from '../../lib/safeStorage';
 
 // Peak below this (0..1) is usually whisper's [BLANK_AUDIO] territory.
@@ -589,6 +590,12 @@ export default function VoiceWidget() {
     const onKey = (e) => {
       if (e.code !== hotkey || e.repeat) return;
       if (isTypingTarget(document.activeElement)) return;
+      // Space on a focused button must ACTIVATE it (standard browser behavior).
+      // With the default Space hotkey, preventDefault-ing here would swallow
+      // every keyboard button press in the app and open the mic instead — e.g.
+      // the POST cognitive drills' Start / Match buttons. A non-Space hotkey
+      // never collides with activation, so this only stands down for Space.
+      if (isButtonActivation(e)) return;
       e.preventDefault();
       // writeVoiceHidden dispatches VISIBILITY_EVENT, which the listener
       // below syncs into local `hidden` — no explicit setHidden needed.
