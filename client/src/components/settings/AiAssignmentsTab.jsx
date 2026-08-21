@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { ArrowRight, Bot, RefreshCw, Save, Search } from 'lucide-react';
 import toast from '../ui/Toast';
 import ToolUseWarning from '../ui/ToolUseWarning.jsx';
+import TabPills from '../ui/TabPills.jsx';
 import { getAiAssignments, updateAiAssignment } from '../../services/api';
 import useVisionModelIds from '../../hooks/useVisionModelIds.js';
 import useToolUseModelIds from '../../hooks/useToolUseModelIds.js';
@@ -39,6 +40,11 @@ const reconcileDrafts = (prev, assignments, savedIds) => {
 // Provider label with the settings-table's "Default" fallback for an unset id.
 const providerName = (providers, id) => providerDisplayName(providers, id, 'Default');
 
+// Chip key for rows with no provider pinned. An empty string already means
+// "no provider chip selected", so unset rows need their own sentinel to be
+// selectable rather than collapsing into "show everything".
+const UNSET_PROVIDER = '__unset__';
+
 export default function AiAssignmentsTab() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState({});
@@ -47,6 +53,7 @@ export default function AiAssignmentsTab() {
   const [query, setQuery] = useState('');
   const [area, setArea] = useState('all');
   const [scope, setScope] = useState('all');
+  const [providerFilter, setProviderFilter] = useState('');
   const [fromProvider, setFromProvider] = useState('');
   const [toProvider, setToProvider] = useState('');
   const [bulkSaving, setBulkSaving] = useState(false);
@@ -81,7 +88,10 @@ export default function AiAssignmentsTab() {
     [data.assignments]
   );
 
-  const filtered = useMemo(() => {
+  // Everything except the provider chips, so the chip counts describe what the
+  // OTHER filters left behind (faceted-filter behaviour) instead of a global
+  // total that stops matching the table the moment you type in the search box.
+  const preProviderFiltered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return (data.assignments || []).filter((entry) => {
       if (area !== 'all' && entry.area !== area) return false;
@@ -98,15 +108,35 @@ export default function AiAssignmentsTab() {
     });
   }, [area, data.assignments, query, scope]);
 
+  const filtered = useMemo(() => {
+    if (!providerFilter) return preProviderFiltered;
+    return preProviderFiltered.filter((entry) => (
+      providerFilter === UNSET_PROVIDER ? !entry.providerId : entry.providerId === providerFilter
+    ));
+  }, [preProviderFiltered, providerFilter]);
+
   const providerCounts = useMemo(() => {
     const counts = {};
-    for (const entry of data.assignments || []) {
-      if (!entry.providerId) continue;
-      const id = entry.providerId;
+    for (const entry of preProviderFiltered) {
+      const id = entry.providerId || UNSET_PROVIDER;
       counts[id] = (counts[id] || 0) + 1;
     }
+    // Keep the active chip on screen even when the other filters zero it out —
+    // otherwise clicking Search strands the selection with no way to clear it.
+    if (providerFilter) counts[providerFilter] ??= 0;
     return counts;
-  }, [data.assignments]);
+  }, [preProviderFiltered, providerFilter]);
+
+  const providerTabs = useMemo(() => ([
+    { id: '', label: 'All', count: preProviderFiltered.length },
+    ...Object.entries(providerCounts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([id, count]) => ({
+        id,
+        label: id === UNSET_PROVIDER ? 'Default / unset' : providerName(data.providers, id),
+        count,
+      })),
+  ]), [data.providers, preProviderFiltered.length, providerCounts]);
 
   const setDraft = (id, patch) => {
     setDrafts((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
@@ -178,13 +208,17 @@ export default function AiAssignmentsTab() {
             <Bot size={18} className="text-port-accent" />
             <h2 className="text-lg font-semibold">AI Assignments</h2>
           </div>
-          <div className="mt-2 flex flex-wrap gap-2 text-xs">
-            {Object.entries(providerCounts).sort((a, b) => b[1] - a[1]).map(([id, count]) => (
-              <span key={id} className="max-w-full truncate px-2 py-1 rounded bg-port-card border border-port-border text-gray-300">
-                {providerName(data.providers, id)}: {count}
-              </span>
-            ))}
-          </div>
+          <TabPills
+            tabs={providerTabs}
+            activeTab={providerFilter}
+            // Re-clicking the active chip clears the filter, so the row needs no
+            // separate "clear" affordance beyond the All chip.
+            onChange={(id) => setProviderFilter(id === providerFilter ? '' : id)}
+            variant="filter"
+            size="sm"
+            ariaLabel="Filter by provider"
+            className="mt-2 max-w-full"
+          />
         </div>
 
         <div className="w-full min-w-0 max-w-full shrink-0 bg-port-card border border-port-border rounded-lg p-3 space-y-2 xl:w-[520px]">

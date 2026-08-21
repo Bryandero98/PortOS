@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 
 vi.mock('../../services/api', () => ({ getAiAssignments: vi.fn(), updateAiAssignment: vi.fn() }));
@@ -147,5 +148,66 @@ describe('AiAssignmentsTab tool-use warning', () => {
     });
     renderTab();
     expect(await screen.findByText(WARNING)).toBeInTheDocument();
+  });
+});
+
+describe('AiAssignmentsTab provider chips', () => {
+  // TabPills renders the count in its own span right after the label, so the
+  // accessible name of a chip is 'Ollama1' — and a zero count renders no span
+  // at all, leaving a bare 'Ollama'.
+  const chip = (label, count = '') => screen.getByRole('button', { name: `${label}${count}` });
+
+  // Rendered per test rather than in a beforeEach: the mount's async load has to
+  // settle inside the test body, or the suite's act(...) guard fails it.
+  const renderRows = () => {
+    getAiAssignments.mockResolvedValue(payload([
+      entry({ id: 'a', label: 'Alpha row', providerId: 'ollama', model: 'gemma2:9b' }),
+      entry({ id: 'b', label: 'Bravo row', providerId: 'openai', model: 'gpt-4o' }),
+      entry({ id: 'c', label: 'Charlie row', providerId: '', model: '' }),
+    ]));
+    renderTab();
+  };
+
+  it('filters the table to one provider when its chip is clicked, and clears on a second click', async () => {
+    renderRows();
+    const ollama = await screen.findByRole('button', { name: 'Ollama1' });
+
+    await userEvent.click(ollama);
+    expect(ollama).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('Alpha row')).toBeInTheDocument();
+    expect(screen.queryByText('Bravo row')).not.toBeInTheDocument();
+    expect(screen.queryByText('Charlie row')).not.toBeInTheDocument();
+
+    await userEvent.click(ollama);
+    expect(ollama).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByText('Bravo row')).toBeInTheDocument();
+  });
+
+  it('gives rows with no provider their own chip', async () => {
+    renderRows();
+    await userEvent.click(await screen.findByRole('button', { name: 'Default / unset1' }));
+    expect(screen.getByText('Charlie row')).toBeInTheDocument();
+    expect(screen.queryByText('Alpha row')).not.toBeInTheDocument();
+  });
+
+  it('clears the filter from the All chip', async () => {
+    renderRows();
+    await userEvent.click(await screen.findByRole('button', { name: 'Ollama1' }));
+    await userEvent.click(chip('All', 3));
+    expect(screen.getByText('Bravo row')).toBeInTheDocument();
+    expect(screen.getByText('Charlie row')).toBeInTheDocument();
+  });
+
+  it('recounts chips against the other filters and keeps the selected chip clickable at zero', async () => {
+    // The chip counts have to describe the rows the search left behind, or the
+    // numbers stop matching the table; and a selection the search zeroes out
+    // must stay on screen or there is no way to undo it.
+    renderRows();
+    await userEvent.click(await screen.findByRole('button', { name: 'Ollama1' }));
+    await userEvent.type(screen.getByLabelText('Search assignments'), 'Bravo');
+
+    expect(chip('OpenAI', 1)).toBeInTheDocument();
+    await userEvent.click(chip('Ollama'));
+    expect(screen.getByText('Bravo row')).toBeInTheDocument();
   });
 });
