@@ -38,6 +38,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
 import { isMiniMaxH3Runtime, isLtx2FamilyRuntime } from '../lib/runnerFamilies';
+import { appendTriggerWords } from '../lib/loraTriggers';
 import Drawer from '../components/Drawer';
 import { ImageGenTab } from '../components/settings/ImageGenTab';
 import LocalSetupPanel from '../components/settings/LocalSetupPanel';
@@ -1189,14 +1190,15 @@ export default function VideoGen() {
                   onChange={setSelectedLoras}
                   currentRunnerFamily={loraFamily}
                   currentCompatKey={loraFamily}
-                  onAppendTrigger={(triggers) => setPrompt((p) => {
-                    const add = triggers.join(', ');
-                    return p && p.trim() ? `${p}, ${add}` : add;
-                  })}
-                  // The ENVELOPED prompt (style preset + no-music suffix), not the
-                  // raw textarea — that is the exact text the server weaves against,
-                  // so the hint can never claim an append that will not happen.
-                  prompt={envelopedPrompt}
+                  // Shared with ImageGen: skips a word already present rather than
+                  // re-appending it, and judges presence against the ENVELOPED prompt
+                  // (style preset + no-music suffix) — the exact text the server
+                  // weaves against, so the button and the hint agree with the render.
+                  onAppendTrigger={(triggers) => setPrompt((p) => appendTriggerWords(p, triggers, envelopedPrompt))}
+                  // Grok payloads carry no LoRAs and never reach the local weave, so
+                  // the hint would promise an append that cannot happen. `null`
+                  // (not `''`) is the picker's "host didn't opt in" signal.
+                  prompt={isGrok ? null : envelopedPrompt}
                   disabled={generating}
                 />
               </div>

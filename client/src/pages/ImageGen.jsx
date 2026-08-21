@@ -21,7 +21,7 @@ import PromptFromMedia from '../components/media/PromptFromMedia';
 import BackendChipStrip from '../components/media/BackendChipStrip';
 import { normalizeImage } from '../components/media/normalize';
 import { RUNNER_FAMILIES, loraCompatKey } from '../lib/runnerFamilies';
-import { promptHasTriggerWord } from '../lib/loraTriggers';
+import { appendTriggerWords } from '../lib/loraTriggers';
 import Flux2InstallModal from '../components/imageGen/Flux2InstallModal';
 import HfTokenBanner from '../components/imageGen/HfTokenBanner';
 import ImageGenControls from '../components/imageGen/ImageGenControls';
@@ -70,30 +70,6 @@ const EMPTY_REF_SLOT = { file: null, previewUrl: null, strength: 1.0 };
 // previews must never be revoked.
 const revokeIfBlob = (url) => {
   if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
-};
-
-// Append LoRA trigger words to a prompt comma-separated, skipping any already
-// present. Presence uses the SHARED `promptHasTriggerWord` predicate (#4665) so
-// the button, the picker's "will be added" hint, and the server-side weave all
-// agree on what counts as present: a whole-token, case-insensitive match
-// anywhere in the prompt. That matters because a trigger is commonly woven
-// mid-sentence ("a portrait of aria_tok on a rooftop"), which the old
-// comma-segment comparison read as absent and re-appended — while still not
-// false-matching a short trigger like "cat" inside "concatenate".
-//
-// Unlike the server weave, this appends ALL of the LoRA's trigger words: the
-// user clicked "+ trigger" with the full list in the tooltip, so honoring it is
-// the point. The server only ever adds the first, and never duplicates.
-const appendTriggerWords = (prompt, words) => {
-  const list = (Array.isArray(words) ? words : [])
-    .filter((w) => typeof w === 'string' && w.trim())
-    .map((w) => w.trim());
-  if (!list.length) return prompt;
-  const fresh = list.filter((w) => !promptHasTriggerWord(prompt, w));
-  if (!fresh.length) return prompt;
-  const trimmed = String(prompt || '').trim();
-  const sep = !trimmed ? '' : trimmed.endsWith(',') ? ' ' : ', ';
-  return `${trimmed}${sep}${fresh.join(', ')}`;
 };
 
 // User-facing labels for STAGE markers emitted by FLUX.2 (and any future
@@ -666,6 +642,15 @@ export default function ImageGen() {
     maxSlots: REFERENCE_SLOT_COUNT,
     localSupportsReferences: isFlux2Model,
   });
+  // The exact prompt a render would be submitted with right now — the same
+  // composition submitGenerationPayload performs. The LoRA picker's #4665
+  // trigger-word hint and its "+ trigger" append both judge presence against
+  // THIS, not the raw textarea, so neither can disagree with the server-side
+  // weave when the style preset already supplies a trigger token.
+  const styledPrompt = useMemo(
+    () => composeStyledPrompt(prompt, negativePrompt, stylePreset).prompt,
+    [prompt, negativePrompt, stylePreset],
+  );
   const activeReferenceImages = useMemo(
     () => referenceImages.slice(0, referenceSlotCount),
     [referenceImages, referenceSlotCount],
@@ -1310,11 +1295,12 @@ export default function ImageGen() {
               onChange={setSelectedLoras}
               currentRunnerFamily={currentRunnerFamily}
               currentCompatKey={currentCompatKey}
-              onAppendTrigger={(words) => setPrompt((p) => appendTriggerWords(p, words))}
-              // The STYLED prompt, not the raw one — that's what submit sends and
-              // therefore what the server weaves against, so a trigger already
-              // present in the style preset must not raise a 'will be added' hint.
-              prompt={composeStyledPrompt(prompt, negativePrompt, stylePreset).prompt}
+              // Both the append and the hint judge presence against the STYLED
+              // prompt — that's what submit sends, so it's what the server weaves
+              // against. A trigger the style preset already supplies must neither
+              // raise a hint nor be appended a second time.
+              onAppendTrigger={(words) => setPrompt((p) => appendTriggerWords(p, words, styledPrompt))}
+              prompt={styledPrompt}
               disabled={statusLoading}
             />
           )}

@@ -56,6 +56,27 @@ export const promptHasTriggerWord = (prompt, word) => {
 };
 
 /**
+ * How the trigger clause attaches to the end of an existing prompt.
+ *
+ * A single-paragraph prompt gets a plain comma join — the trigger reads as one
+ * more subject term, which is what a diffusion prompt wants.
+ *
+ * A MULTI-paragraph prompt gets its own paragraph instead, because the last
+ * line of a structured prompt is frequently a directive the trigger must not be
+ * swallowed into. The case that forces this: VideoGen's prompt envelope ends a
+ * muted render with a `\n\nno music, no soundtrack` paragraph, so a comma join
+ * would produce `no music, no soundtrack, aria_tok` — the activation token
+ * lands as the third item of a NEGATION list, and the encoder is as likely to
+ * read it as suppressed as activated. That is the exact inverse of the point.
+ * The pipeline's `\n\nFeaturing <Name> (<trigger>).` clause has the same shape.
+ */
+const separatorFor = (trimmed) => {
+  if (!trimmed) return '';
+  if (/\n/.test(trimmed)) return '\n\n';
+  return trimmed.endsWith(',') ? ' ' : ', ';
+};
+
+/**
  * Weave the missing activation tokens of the selected LoRAs into `prompt`.
  *
  * @param {string} prompt - the user's own text; never reordered or rewritten.
@@ -90,6 +111,5 @@ export const weaveLoraTriggers = (prompt, triggerWordLists) => {
   }
   if (!added.length) return { prompt: original, added: [] };
   const trimmed = original.trim();
-  const sep = !trimmed ? '' : trimmed.endsWith(',') ? ' ' : ', ';
-  return { prompt: `${trimmed}${sep}${added.join(', ')}`, added };
+  return { prompt: `${trimmed}${separatorFor(trimmed)}${added.join(', ')}`, added };
 };

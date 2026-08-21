@@ -124,6 +124,23 @@ describe('weaveLoraTriggers', () => {
     expect(weaveLoraTriggers('  ', [])).toEqual({ prompt: '  ', added: [] });
   });
 
+  it('appends as its own paragraph when the prompt is multi-paragraph', () => {
+    // VideoGen's envelope ends a muted render with a no-music PARAGRAPH. A
+    // comma join would make the activation token the third item of a negation
+    // list ('no music, no soundtrack, aria_tok') — read as suppressed, not
+    // activated, which is the exact inverse of what the weave is for.
+    const { prompt } = weaveLoraTriggers(
+      'a rooftop at dusk\n\nno music, no soundtrack',
+      [['aria_tok']],
+    );
+    expect(prompt).toBe('a rooftop at dusk\n\nno music, no soundtrack\n\naria_tok');
+  });
+
+  it('still comma-joins a single-paragraph prompt', () => {
+    expect(weaveLoraTriggers('a rooftop at dusk', [['aria_tok']]).prompt)
+      .toBe('a rooftop at dusk, aria_tok');
+  });
+
   it('does not double the separator after a trailing comma', () => {
     expect(weaveLoraTriggers('a rooftop,', [['aria_tok']]).prompt).toBe('a rooftop, aria_tok');
   });
