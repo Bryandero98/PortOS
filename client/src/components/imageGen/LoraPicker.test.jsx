@@ -81,8 +81,9 @@ describe('LoraPicker trigger-word hint (#4665)', () => {
   });
 
   it('stays silent when the host did not opt in by passing a prompt', () => {
-    // e.g. the pipeline drawers, whose renders weave their own trigger clause
-    // and opt out server-side — a hint there would be a lie.
+    // e.g. the pipeline/queue drawers, which have no single prompt textarea to
+    // judge against. Defaulting the hint ON there would flag every selected LoRA
+    // unconditionally, since an empty prompt contains no trigger word.
     renderPicker({ ...base, selected: SELECTED });
     expect(hint()).toBeNull();
   });

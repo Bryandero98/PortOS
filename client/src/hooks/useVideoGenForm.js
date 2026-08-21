@@ -1220,25 +1220,31 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // inline Generate button and by enqueue, so the two paths stay in lockstep.
   const isGrok = grokEnabled && backend === 'grok';
 
+  // A hidden mute checkbox from a prior model must not suppress H3's visible
+  // prompt-audio steering. Treat mute as effective only on a model that can
+  // actually disable its generated audio track.
+  const effectiveDisableAudio = supportsVideoAudioControls(currentModel) && disableAudio;
+  // The style preset and the no-music constraint are ENVELOPE, not content —
+  // they have to wrap a per-chunk beat exactly as they wrap the main prompt.
+  // Shipping a beat raw would render the chunks the user steered in a
+  // different style (and with the soundtrack they disabled) than the chunks
+  // that fall back to the main prompt — a visible change at every seam, which
+  // is the artifact chaining exists to avoid.
+  // Idempotent on "no music": if the text already says it, don't double-append.
+  //
+  // Hoisted out of buildGeneratePayload so the LoRA picker's trigger-word hint
+  // (#4665) can be judged against the EXACT text the render will receive. The
+  // server weaves against the enveloped prompt; a hint reading the raw textarea
+  // would contradict it whenever the envelope already supplies the token.
+  const withEnvelope = (text) => {
+    const c = composeStyledPrompt(text, negativePrompt, stylePreset);
+    return (supportsVideoAudioPromptControls(currentModel) && noMusic && !effectiveDisableAudio && !/no music/i.test(c.prompt))
+      ? `${c.prompt}\n\nno music, no soundtrack`
+      : c.prompt;
+  };
+
   const buildGeneratePayload = () => {
     const composed = composeStyledPrompt(prompt, negativePrompt, stylePreset);
-    // A hidden mute checkbox from a prior model must not suppress H3's visible
-    // prompt-audio steering. Treat mute as effective only on a model that can
-    // actually disable its generated audio track.
-    const effectiveDisableAudio = supportsVideoAudioControls(currentModel) && disableAudio;
-    // The style preset and the no-music constraint are ENVELOPE, not content —
-    // they have to wrap a per-chunk beat exactly as they wrap the main prompt.
-    // Shipping a beat raw would render the chunks the user steered in a
-    // different style (and with the soundtrack they disabled) than the chunks
-    // that fall back to the main prompt — a visible change at every seam, which
-    // is the artifact chaining exists to avoid.
-    // Idempotent on "no music": if the text already says it, don't double-append.
-    const withEnvelope = (text) => {
-      const c = composeStyledPrompt(text, negativePrompt, stylePreset);
-      return (supportsVideoAudioPromptControls(currentModel) && noMusic && !effectiveDisableAudio && !/no music/i.test(c.prompt))
-        ? `${c.prompt}\n\nno music, no soundtrack`
-        : c.prompt;
-    };
     // Beats for the LIVE chunks only — the backing array is never truncated on
     // a chunk-count change, so slicing here is what keeps a stale tail off the
     // wire. A short list is fine: the server falls back to the main prompt for
@@ -1363,6 +1369,10 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     mode, handleModeChange,
     // Prompt + style
     prompt, setPrompt,
+    // The exact prompt a render would be submitted with right now (style preset
+    // + no-music envelope). The LoRA picker's #4665 trigger hint reads THIS, not
+    // the raw textarea, so it can never disagree with the server-side weave.
+    envelopedPrompt: withEnvelope(prompt),
     negativePrompt, setNegativePrompt,
     stylePreset, setStylePreset,
     remixModelFallback,

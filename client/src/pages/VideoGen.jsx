@@ -38,7 +38,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
 import { isMiniMaxH3Runtime, isLtx2FamilyRuntime } from '../lib/runnerFamilies';
-import { composeStyledPrompt } from '../lib/composeStyledPrompt';
 import Drawer from '../components/Drawer';
 import { ImageGenTab } from '../components/settings/ImageGenTab';
 import LocalSetupPanel from '../components/settings/LocalSetupPanel';
@@ -145,7 +144,7 @@ export default function VideoGen() {
   const {
     backend, isGrok, handleBackendChange, grokDuration, setGrokDuration,
     mode, handleModeChange,
-    prompt, setPrompt, negativePrompt, setNegativePrompt, stylePreset, setStylePreset, remixModelFallback,
+    prompt, setPrompt, envelopedPrompt, negativePrompt, setNegativePrompt, stylePreset, setStylePreset, remixModelFallback,
     modelId, handleModelChange, currentModel, visibleModels,
     loraFamily, videoLoras, loraUnavailableHint,
     selectedLoras, setSelectedLoras,
@@ -1194,10 +1193,10 @@ export default function VideoGen() {
                     const add = triggers.join(', ');
                     return p && p.trim() ? `${p}, ${add}` : add;
                   })}
-                  // The STYLED prompt, not the raw one — buildGeneratePayload's
-                  // envelope prefixes the style preset, so that is what the server
-                  // weaves against and what the hint must be judged on.
-                  prompt={composeStyledPrompt(prompt, negativePrompt, stylePreset).prompt}
+                  // The ENVELOPED prompt (style preset + no-music suffix), not the
+                  // raw textarea — that is the exact text the server weaves against,
+                  // so the hint can never claim an append that will not happen.
+                  prompt={envelopedPrompt}
                   disabled={generating}
                 />
               </div>
