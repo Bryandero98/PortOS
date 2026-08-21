@@ -106,3 +106,128 @@ describe('ci.yml required checks', () => {
     expect(jobs.gate).not.toMatch(/needs\.lint\b/);
   });
 });
+
+describe('ci.yml server node_modules cache', () => {
+  const jobs = workflowJobs(WORKFLOW);
+
+  /** Every job that installs the server workspace — the three this cache serves. */
+  const installers = Object.entries(jobs)
+    .filter(([, body]) => body.includes('npm ci --prefix server'));
+
+  /** The `Cache server node_modules` step of one job, up to the next step. */
+  function cacheEntry(body) {
+    const rest = body.slice(body.indexOf('- name: Cache server node_modules'));
+    const end = rest.indexOf('      - name:', 1);
+    return end > 0 ? rest.slice(0, end) : rest;
+  }
+
+  it('caches the installed tree on every job that installs it', () => {
+    expect(installers.map(([id]) => id).sort())
+      .toEqual(['database', 'server', 'windows-server']);
+
+    for (const [, body] of installers) expect(cacheEntry(body)).toMatch(/id: server-modules\b/);
+  });
+
+  it('installs and rebuilds together, on any tree this job will cache', () => {
+    // server/.npmrc pins ignore-scripts=true, so a tree saved before the
+    // trusted rebuild is un-built — and the job that saved it still reports
+    // success. Whenever a job builds the tree it will cache, it must build a
+    // rebuilt one, so a condition on the rebuild NARROWER than the one on the
+    // install (the `server` job used to gate on the planner's server_native
+    // flag) reintroduces the hole.
+    for (const [id, body] of installers) {
+      const install = body.match(
+        /- name: Install server dependencies\n {8}if: (?<cond>.*)\n {8}run: npm ci --prefix server/,
+      );
+      const rebuild = body.match(
+        /- name: Rebuild trusted native dependencies\n {8}if: (?<cond>.*)\n/,
+      );
+      expect(install, id).not.toBeNull();
+      expect(rebuild, id).not.toBeNull();
+      expect(rebuild.groups.cond, id).toBe(install.groups.cond);
+      expect(install.groups.cond, id).toBe("steps.server-modules-usable.outcome != 'success'");
+    }
+  });
+
+  it('marks the tree in the same step that rebuilds it, under a fail-fast shell', () => {
+    // Two steps could drift, and a failed rebuild in step one would still let
+    // step two mark the tree as good. One `run:` block cannot — but only if
+    // the shell stops on the first non-zero exit, and windows-server defaults
+    // to pwsh, where a native command's failure neither throws nor stops the
+    // block and only the LAST command's code becomes the step result. Without
+    // the pin, a failed Windows rebuild would mark the tree anyway, exit 0, and
+    // publish a green, marked, un-rebuilt cache entry.
+    for (const [id, body] of installers) {
+      const rebuild = body.slice(body.indexOf('- name: Rebuild trusted native dependencies'));
+      expect(rebuild, id).toMatch(
+        /run: \|\n {10}node scripts\/trusted-rebuilds\.js server\n {10}node scripts\/trusted-rebuild-stamp\.js write server/,
+      );
+      expect(rebuild.slice(0, rebuild.indexOf('run: |')), id).toMatch(/\n {8}shell: bash\n/);
+    }
+  });
+
+  it('checks a restored tree without letting a bad entry wedge the repo', () => {
+    for (const [id, body] of installers) {
+      const check = body.match(
+        /- name: Check the restored node_modules was rebuilt\n {8}id: server-modules-usable\n {8}if: (?<cond>.*)\n {8}continue-on-error: true\n {8}run: node scripts\/trusted-rebuild-stamp\.js check server/,
+      );
+      // Without continue-on-error the same broken entry fails every run
+      // forever: nothing a pull request touches feeds the key, so the next run
+      // restores it and dies identically until a human clears the cache.
+      expect(check, id).not.toBeNull();
+      expect(check.groups.cond, id).toBe("steps.server-modules.outputs.cache-hit == 'true'");
+      // And it must come before the steps whose condition reads its outcome.
+      expect(body.indexOf('id: server-modules-usable'), id)
+        .toBeLessThan(body.indexOf('run: npm ci --prefix server'));
+    }
+  });
+
+  it('never restores a near-miss dependency tree', () => {
+    // `npm ci` is skipped on a hit, so a restore-keys fallback would hand the
+    // job a node_modules built from a DIFFERENT lockfile and run the suite
+    // against it. Exact key or nothing — unlike the transform cache below,
+    // where a near miss is revalidated rather than trusted.
+    for (const [id, body] of installers) {
+      expect(cacheEntry(body), id).not.toMatch(/restore-keys/);
+      expect(body, id).toMatch(/key: vitest-server-[^\n]*\n {10}restore-keys:/);
+    }
+  });
+
+  it('keys on everything that changes what a correct tree contains', () => {
+    const inputs = [
+      // Dependency identity. package.json rides along so that skipping `npm ci`
+      // does not also skip its manifest-vs-lockfile agreement check.
+      'server/package-lock.json', 'server/package.json',
+      // Whether install scripts ran at all, and which packages get rebuilt.
+      'server/.npmrc', 'scripts/trusted-rebuilds.js',
+    ];
+    for (const [id, body] of installers) {
+      const entry = cacheEntry(body);
+      for (const input of inputs) expect(entry, `${id}: ${input}`).toContain(`'${input}'`);
+      // Compiled addons do not load across a different OS, arch, or ABI.
+      expect(entry, id).toMatch(/runner\.os \}\}-\$\{\{ runner\.arch \}\}-node/);
+    }
+  });
+
+  it('pins the key to the Node major the jobs actually install', () => {
+    // The major, not the resolved patch: NODE_MODULE_VERSION is stable across
+    // patch releases, so keying on the patch would discard a ~570 MB entry on
+    // every Node 24.x release for no ABI benefit. The tradeoff is that the
+    // literal has to be kept honest, which is what this asserts.
+    for (const [id, body] of installers) {
+      const pinned = body.match(/node-version: (?<major>\d+)\.x/);
+      expect(pinned, id).not.toBeNull();
+      expect(cacheEntry(body), id).toContain(`-node${pinned.groups.major}-`);
+    }
+  });
+
+  it('does not pay for a CUDA execution provider no runner can use', () => {
+    // onnxruntime-node's postinstall downloads the CUDA EP on linux-x64
+    // whenever the .so is absent — several hundred MB, on two jobs, every run.
+    // No hosted runner has an NVIDIA GPU, and the CPU binaries ship in the
+    // tarball. This is the single largest cost the caching work removes.
+    for (const [id, body] of installers) {
+      expect(body, id).toMatch(/ONNXRUNTIME_NODE_INSTALL_CUDA: skip/);
+    }
+  });
+});

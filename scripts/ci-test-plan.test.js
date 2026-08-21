@@ -45,7 +45,6 @@ describe('CI test impact planner', () => {
       build: false,
       smoke: false,
       windows: false,
-      serverNative: false,
     });
   });
 
@@ -327,7 +326,6 @@ describe('CI test impact planner', () => {
       build: true,
       smoke: true,
       windows: true,
-      serverNative: true,
     });
   });
 
@@ -336,7 +334,6 @@ describe('CI test impact planner', () => {
       'server/services/sprites/atlas.js',
     ], { trackedFiles: TRACKED });
     expect(sprites.windows).toBe(false);
-    expect(sprites.serverNative).toBe(true);
 
     const spawn = buildCiTestPlan([
       'server/lib/bufferedSpawn.js',

@@ -56,11 +56,115 @@ workers stay busy; the DB suite already serializes files because those tests
 share one Postgres.
 
 Each test job restores Vite/Vitest transform artifacts
-(`node_modules/.vite`, `node_modules/.vitest`) **after** `npm ci` — install
-wipes `node_modules`, so a pre-install restore is lost. `scripts/run-ci-tests.js`
+(`node_modules/.vite`, `node_modules/.vitest`) **after** the install — `npm ci`
+wipes `node_modules`, so a restore ordered ahead of it is lost.
+`scripts/run-ci-tests.js`
 writes Vitest wall time to the job summary so later runs can be compared
 against the pre-change full-suite job wall on `main` (2026-08-16, run
 `31951919659`): server ~300s, client+build ~467s, Windows ~463s.
+
+### Reusing the server install
+
+Three jobs install the server workspace — `server`, `database`, and
+`windows-server`. `setup-node`'s `cache: npm` only preserves `~/.npm`, the
+tarball cache, so `npm ci` still wipes and repopulates a ~570 MB
+`node_modules` on each of them. Two changes cut that.
+
+**Skip the CUDA execution provider.** onnxruntime-node bundles its CPU binaries
+in the npm tarball, but its postinstall *downloads* the CUDA EP — several
+hundred MB — on linux-x64 whenever `libonnxruntime_providers_cuda.so` is
+absent. `server/.npmrc` pins `ignore-scripts=true`, so that runs inside
+`scripts/trusted-rebuilds.js`, on the `server` and `database` jobs, every run.
+No hosted runner has an NVIDIA GPU to use it with. Setting
+`ONNXRUNTIME_NODE_INSTALL_CUDA=skip` on the rebuild step removes the download
+outright, and inference is unaffected. This is the largest single saving here,
+and it costs no cache budget.
+
+**Cache the installed tree**, keyed on `runner.os`, `runner.arch`, the Node
+major, and a hash of `server/package-lock.json`, `server/package.json`,
+`server/.npmrc`, and `scripts/trusted-rebuilds.js`. On a hit the install and
+the rebuild are both skipped. `scripts/ci-base-sha.test.js` guards the
+contract; the parts that are not obvious:
+
+- **Install and rebuild share one condition.** `ignore-scripts=true` means npm
+  alone leaves the allowlisted packages un-built, so whenever a job builds the
+  tree it will cache, it must build a rebuilt one. (The `server` job used to
+  skip the rebuild for always-run-only plans; that condition is narrower, so it
+  is gone — along with the planner's `server_native` output, which had no other
+  consumer.)
+- **A restored tree is checked by a mark, not by importing things.**
+  `scripts/trusted-rebuild-stamp.js` writes
+  `node_modules/.portos-trusted-rebuild.json` in the same `run:` block as the
+  rebuild, recording the allowlist hash, platform, arch, and
+  `NODE_MODULE_VERSION`. A cache hit reads it back and reinstalls on any
+  mismatch.
+
+  That step is pinned to `shell: bash`, which is load-bearing rather than
+  stylistic. `windows-server` would otherwise default to pwsh, where a
+  *native* command's non-zero exit neither throws nor stops the block
+  (`$PSNativeCommandUseErrorActionPreference` is false) and only the last
+  command's code becomes the step result — so a failed rebuild would write the
+  mark anyway, exit 0, and publish a green, marked, un-rebuilt entry. Under
+  `bash -e` the block stops at the rebuild and the job fails, and
+  `actions/cache` declares `post-if: success()`, so nothing is saved.
+
+  It has to be an extrinsic mark because "was this rebuilt?" is not answerable
+  by inspecting the tree. With today's versions the rebuild is close to a
+  no-op: node-pty and sharp ship prebuilt bindings inside their tarballs (there
+  is no `build/` directory even in a fully rebuilt tree), onnxruntime-node
+  bundles its CPU binaries, and protobufjs only regenerates a bundle nothing
+  requires. `require()`-ing those packages therefore succeeds on a
+  never-rebuilt tree and proves nothing. That is a property of the current
+  versions, not a guarantee — a release that drops a prebuild for the runner's
+  platform, or an install under `npm_config_build_from_source` (which makes
+  node-pty's install script *delete* the prebuilds), puts the rebuild back on
+  the critical path, and the mark still discriminates.
+- **A bad entry is survived, not repaired.** The check is
+  `continue-on-error`, and the install and rebuild key off
+  `steps.server-modules-usable.outcome != 'success'` — one expression covering
+  all three cases, since the step is `skipped` on a miss. The entry itself is
+  not replaced: cache keys are immutable and `actions/cache` skips its save on
+  an exact hit, so it keeps costing each run a reinstall until the key moves.
+  It will not age out on its own either — GitHub's 7-day eviction is keyed on
+  *access*, and an entry every run restores is accessed every run. Purging it
+  would mean granting the workflow `actions: write`, which is not worth it when
+  the worst case is already just the pre-cache cost.
+
+  Two residual cases are accepted rather than defended. A rebuild in which only
+  a `fatal: false` group failed exits 0, so a partially-rebuilt tree is marked
+  and shared — where before, each job rebuilt from scratch and a transient
+  failure degraded exactly one run. Today that is inert: with the CUDA download
+  skipped onnxruntime-node's script early-exits, and protobufjs only
+  regenerates a bundle nothing requires. And the dependency entry physically
+  contains `node_modules/.vite`, so those artifacts are stored in both entries;
+  `!` exclusions do not fix it, because `@actions/cache` resolves `path` with
+  `implicitDescendants: false` — a bare directory pattern is archived whole and
+  a sibling negation has nothing to subtract.
+- **No `restore-keys` on this entry**, because the install is skipped on a hit
+  and a near-miss restore would run the suite against a different lockfile's
+  `node_modules`. The transform-artifact cache is the opposite case — its
+  contents are revalidated rather than trusted — so it keeps its own key and its
+  own restore-keys, and stays warm across a lockfile bump that misses here.
+- **The key pins the Node major, not the resolved patch.**
+  `NODE_MODULE_VERSION` is stable across patch releases, so keying on
+  `steps.node.outputs.node-version` would discard the entry on every Node 24.x
+  release for no ABI benefit; the mark carries the exact ABI as a backstop. A
+  test compares the literal against the job's own `node-version:` pin.
+  `server/package.json` is in the hash alongside the lockfile so that skipping
+  `npm ci` does not also skip its manifest-vs-lockfile agreement check.
+
+Hit rate comes from the nightly full run. There is no push trigger on `main`, and
+a cache written by a pull request is visible only to that branch — so the 09:17
+UTC schedule is what seeds the entries on the default branch, the one scope every
+PR branch can read. A PR that changes the lockfile misses by design.
+
+Two entries exist per key state (Linux, shared by `server` and `database`, plus
+Windows) at roughly 570 MB each, against GitHub's 10 GB per-repo cache budget.
+Eviction is LRU, so the constantly-read `main` entries outlive the PR-scoped ones
+— but a burst of lockfile-churning PRs can still push out the transform caches
+and `~/.npm`. If that starts showing up as unexplained cold runs, the dependency
+cache is the part to drop: the CUDA skip above carries most of the saving on its
+own.
 
 ### Shallow checkouts
 
@@ -93,8 +197,9 @@ The selected work is split across parallel jobs:
 
 - **Server tests** — full, related, or explicit feature test files. Smoke-boots
   the server on the same job when server source changed (the smoke path uses the
-  file backend under `NODE_ENV=test` and does not need Postgres). Always-run-only
-  plans skip the native-addon rebuild.
+  file backend under `NODE_ENV=test` and does not need Postgres). The install
+  and the native-addon rebuild are skipped when a `server/node_modules` cache is
+  restored and its trusted-rebuild mark checks out.
 - **Client tests and build** — affected client tests; production build whenever
   client source changed; client lint on the same install so Biome does not pay a
   second `npm ci`.

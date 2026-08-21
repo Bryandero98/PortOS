@@ -272,7 +272,6 @@ export function buildCiTestPlan(changedFiles, {
       windows: true,
       windowsMode: 'full',
       windowsFiles: [],
-      serverNative: true,
     };
   }
 
@@ -303,7 +302,6 @@ export function buildCiTestPlan(changedFiles, {
       windows: false,
       windowsMode: 'skip',
       windowsFiles: [],
-      serverNative: false,
     };
   }
 
@@ -387,14 +385,7 @@ export function buildCiTestPlan(changedFiles, {
     windows,
     windowsMode: windows ? 'related' : 'skip',
     windowsFiles: windows ? windowsContractTests(trackedSet) : [],
-    serverNative: needsServerNative(server),
   };
-}
-
-function needsServerNative(server) {
-  if (server.mode === 'skip') return false;
-  if (server.mode !== 'files') return true;
-  return server.files.some((path) => !ALWAYS_RUN_TESTS.includes(path));
 }
 
 function fullPlan(changedFiles, reason) {
@@ -411,7 +402,6 @@ function fullPlan(changedFiles, reason) {
     windows: true,
     windowsMode: 'full',
     windowsFiles: [],
-    serverNative: true,
   };
 }
 
@@ -436,7 +426,6 @@ export function emitGitHubPlan(plan) {
     windows: plan.windows,
     windows_mode: plan.windowsMode,
     windows_files: JSON.stringify(plan.windowsFiles),
-    server_native: plan.serverNative,
   };
 
   Object.entries(outputs).forEach(([name, value]) => writeStepOutput(name, value));
