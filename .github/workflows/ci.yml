@@ -52,7 +52,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          # Depth 2, not full history: a pull_request checkout is the merge ref,
+          # so depth 2 carries both of its parents — which is everything the
+          # planner (a three-dot diff against the base parent) and `git
+          # ls-files` need. Cloning every commit in the repo buys nothing more.
+          fetch-depth: 2
+
+      # Reads the base commit off HEAD^1 rather than the event payload, so a
+      # depth-2 clone is enough for every three-dot diff downstream. Exports
+      # CI_BASE_SHA to the rest of the job.
+      - name: Resolve the pull-request diff base
+        run: node scripts/ci-base-sha.js
 
       - name: Select affected test surfaces
         id: plan
@@ -65,8 +75,6 @@ jobs:
           # The planner turns a PR into `release` into a full plan: that PR is
           # the single gate a release ships behind, so it never runs scoped.
           CI_BASE_REF: ${{ github.base_ref }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node scripts/ci-test-plan.js
 
       - name: Publish plan summary
@@ -97,16 +105,19 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   server:
-    # Preserve the historical required-check context while branch protection
-    # transitions to the stable aggregate "CI Gate" check.
-    name: test (24.x)
+    name: Server tests
     needs: impact
     if: needs.impact.outputs.server_mode != 'skip'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          # See the impact job: depth 2 is the whole PR merge ref, which is all
+          # Vitest's `--changed <sha>` three-dot diff reads.
+          fetch-depth: 2
+
+      - name: Resolve the pull-request diff base
+        run: node scripts/ci-base-sha.js
 
       - name: Use Node.js 24.x
         uses: actions/setup-node@v7
@@ -148,7 +159,6 @@ jobs:
         env:
           CI_TEST_MODE: ${{ needs.impact.outputs.server_mode }}
           CI_TEST_FILES: ${{ needs.impact.outputs.server_files }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node scripts/run-ci-tests.js server
 
       # Smoke-boot does not need Postgres: NODE_ENV=test selects the file
@@ -166,7 +176,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          # See the impact job: depth 2 is the whole PR merge ref, which is all
+          # Vitest's `--changed <sha>` three-dot diff reads.
+          fetch-depth: 2
+
+      - name: Resolve the pull-request diff base
+        run: node scripts/ci-base-sha.js
 
       - name: Use Node.js 24.x
         uses: actions/setup-node@v7
@@ -201,7 +216,6 @@ jobs:
         env:
           CI_TEST_MODE: ${{ needs.impact.outputs.client_mode }}
           CI_TEST_FILES: ${{ needs.impact.outputs.client_files }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node scripts/run-ci-tests.js client
 
       - name: Build client
@@ -276,29 +290,6 @@ jobs:
         env:
           PGDATABASE: portos_test
 
-  lint:
-    # Historical required-check name. Lint itself now runs inside the client
-    # job so we do not pay a second `npm ci --prefix client`. This job only
-    # mirrors that result so branch protection can keep requiring "lint".
-    name: lint
-    needs: [impact, client]
-    if: always() && needs.impact.result == 'success'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require client-job lint when it was selected
-        if: needs.impact.outputs.lint_mode != 'skip'
-        env:
-          CLIENT_RESULT: ${{ needs.client.result }}
-        run: |
-          if [ "$CLIENT_RESULT" != "success" ]; then
-            echo "Lint ran inside the client job, which did not succeed ($CLIENT_RESULT)."
-            exit 1
-          fi
-
-      - name: Lint not selected
-        if: needs.impact.outputs.lint_mode == 'skip'
-        run: echo "Lint skipped by impact plan"
-
   windows-server:
     name: Windows server unit tests
     needs: impact
@@ -307,7 +298,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          # See the impact job: depth 2 is the whole PR merge ref, which is all
+          # Vitest's `--changed <sha>` three-dot diff reads.
+          fetch-depth: 2
+
+      - name: Resolve the pull-request diff base
+        run: node scripts/ci-base-sha.js
 
       - name: Use Node.js 24.x
         uses: actions/setup-node@v7
@@ -340,13 +336,12 @@ jobs:
         env:
           CI_TEST_MODE: ${{ needs.impact.outputs.windows_mode }}
           CI_TEST_FILES: ${{ needs.impact.outputs.windows_files }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node scripts/run-ci-tests.js server
 
   gate:
     name: CI Gate
     if: always()
-    needs: [impact, server, client, database, lint, windows-server]
+    needs: [impact, server, client, database, windows-server]
     runs-on: ubuntu-latest
     steps:
       - name: Require every selected job to pass
@@ -355,7 +350,6 @@ jobs:
           SERVER_RESULT: ${{ needs.server.result }}
           CLIENT_RESULT: ${{ needs.client.result }}
           DATABASE_RESULT: ${{ needs.database.result }}
-          LINT_RESULT: ${{ needs.lint.result }}
           WINDOWS_SERVER_RESULT: ${{ needs.windows-server.result }}
         run: |
           node -e '
@@ -364,7 +358,6 @@ jobs:
               server: process.env.SERVER_RESULT,
               client: process.env.CLIENT_RESULT,
               database: process.env.DATABASE_RESULT,
-              lint: process.env.LINT_RESULT,
               windows_server: process.env.WINDOWS_SERVER_RESULT,
             };
             const failed = Object.entries(results)
@@ -381,8 +374,8 @@ jobs:
     # suite. release.yml keys on this name to skip re-running CI on the push to
     # `release`; the aggregate "CI Gate" above cannot serve that purpose,
     # because an impact-scoped PR run publishes a green "CI Gate" too.
-    # Mirrors the gate result the same way the "lint" job mirrors the client
-    # job, so it costs one echo rather than a second aggregation.
+    # It mirrors the aggregate gate rather than re-aggregating every job, so it
+    # costs one comparison instead of a second fan-in.
     name: Full CI Gate
     if: always() && needs.impact.outputs.full == 'true'
     needs: [impact, gate]

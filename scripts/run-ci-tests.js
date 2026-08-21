@@ -52,6 +52,21 @@ export function shouldSkipRelatedList(mode, repoFiles) {
     && repoFiles.every((path) => ALWAYS_RUN_TESTS.includes(path));
 }
 
+/**
+ * Does this plan need the diff base to select the right tests?
+ *
+ * Both scoped modes union the planner's explicit files with Vitest's
+ * import-graph `--changed` set, and that half needs a base commit. Without one
+ * a `files` plan used to quietly run the explicit half alone — a narrower
+ * suite that still reports green, which is exactly the failure a shallow
+ * checkout would introduce if scripts/ci-base-sha.js ever stopped exporting
+ * CI_BASE_SHA. Only an always-run-only plan genuinely needs no base.
+ */
+export function requiresBaseSha(mode, repoFiles) {
+  if (mode === 'full') return false;
+  return !shouldSkipRelatedList(mode, repoFiles);
+}
+
 export function toRunnerPath(scope, path) {
   // Prefix in-root selectors so a contributor-controlled filename beginning
   // with "-" cannot be interpreted as another Vitest CLI option.
@@ -134,8 +149,8 @@ function main() {
     process.exit(2);
   }
 
-  if (mode === 'related' && !baseSha) {
-    console.error('CI_BASE_SHA is required for related-test mode.');
+  if (!baseSha && requiresBaseSha(mode, repoFiles)) {
+    console.error(`CI_BASE_SHA is required for ${mode}-test mode.`);
     process.exit(2);
   }
 
@@ -151,8 +166,10 @@ function main() {
   // One Vitest process for the union of planner files + import-graph related
   // tests. `--changed` ANDs with path selectors, so they cannot share argv —
   // list the related set, then run the union once.
+  // Skipping the list entirely only happens on an always-run-only plan, which
+  // requiresBaseSha() already established names every file it needs.
   let relatedFiles = [];
-  if (baseSha && !shouldSkipRelatedList(mode, repoFiles)) {
+  if (!shouldSkipRelatedList(mode, repoFiles)) {
     const listed = listRelatedFiles(scope, baseSha);
     if (listed) {
       relatedFiles = listed;
@@ -161,8 +178,6 @@ function main() {
       if (relatedStatus !== 0) process.exit(relatedStatus);
       process.exit(selectedFiles.length ? spawnNpm(scope, selectedFiles, 'explicit structural tests') : 0);
     }
-  } else if (mode === 'related') {
-    process.exit(spawnNpm(scope, ['--changed', baseSha], 'related tests'));
   }
 
   const union = unionSelectors(selectedFiles, relatedFiles);

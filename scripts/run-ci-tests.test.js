@@ -3,10 +3,12 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { ALWAYS_RUN_TESTS } from './ci-test-plan.js';
 import {
   listRelatedCwd,
   parseVitestListOutput,
   recordVitestDuration,
+  requiresBaseSha,
   shouldSkipRelatedList,
   toRunnerPath,
   unionSelectors,
@@ -111,5 +113,22 @@ describe('recordVitestDuration', () => {
     process.env.GITHUB_STEP_SUMMARY = summaryPath;
     recordVitestDuration('server', 'full suite', Date.now() - 1500);
     expect(readFileSync(summaryPath, 'utf8')).toMatch(/^⏱ server full suite: 1\.\ds\n$/);
+  });
+});
+
+describe('requiresBaseSha', () => {
+  it('needs no base for the complete suite', () => {
+    expect(requiresBaseSha('full', [])).toBe(false);
+  });
+
+  it('needs a base for both scoped modes', () => {
+    // A 'files' plan unions the planner's list with Vitest's import graph, so
+    // running it without a base silently drops the second half.
+    expect(requiresBaseSha('files', ['server/services/shell.test.js'])).toBe(true);
+    expect(requiresBaseSha('related', [])).toBe(true);
+  });
+
+  it('needs no base for an always-run-only plan', () => {
+    expect(requiresBaseSha('files', ALWAYS_RUN_TESTS)).toBe(false);
   });
 });
