@@ -556,6 +556,9 @@ describe('nav coverage — every navigable App.jsx route has a manifest entry', 
       '/media/training',
       '/settings/embeddings',
       '/system-resources/models',
+      // The dataset workbench was its own deep-linkable path, and a bookmark into
+      // one dataset breaks just as silently as the index.
+      '/media/training/:datasetId',
     ].filter((p) => !declared.has(p));
     expect(missing).toEqual([]);
   });

@@ -28,7 +28,7 @@ export default function Media3D() {
   const targetFromRoute = searchParams.get('target') || '';
   const glbFromRoute = searchParams.get('glb') || '';
 
-  const { targets, loading, error } = useImageTo3dTargets();
+  const { targets, loading, error, reload: reloadTargets } = useImageTo3dTargets();
   const [pickerOpen, setPickerOpen] = useState(false);
   // Render lifecycle: a create kicks off an on-device render, then we poll the
   // record (via useAutoRefetch below) until it lands (ready → preview) or fails
@@ -343,14 +343,28 @@ export default function Media3D() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-sm font-semibold text-white">Runtimes</h2>
-            <p className="mt-1 text-xs text-gray-400">{runtimeSummary}</p>
+            <p className={`mt-1 text-xs ${error ? 'text-port-error' : 'text-gray-400'}`}>{runtimeSummary}</p>
           </div>
-          <Link
-            to="/models/3d"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-port-border px-3 py-1.5 text-xs text-gray-300 hover:border-port-accent hover:text-white"
-          >
-            <Settings2 className="h-3.5 w-3.5" /> Manage runtimes
-          </Link>
+          <div className="flex shrink-0 items-center gap-2">
+            {/* A failed registry read also gates Generate (no target resolves), so
+                the recovery has to be reachable from here — not only by reloading
+                the page. */}
+            {error && !loading && (
+              <button
+                type="button"
+                onClick={reloadTargets}
+                className="rounded-md border border-port-error/50 px-3 py-1.5 text-xs text-port-error hover:bg-port-error/20"
+              >
+                Retry
+              </button>
+            )}
+            <Link
+              to="/models/3d"
+              className="inline-flex items-center gap-1.5 rounded-md border border-port-border px-3 py-1.5 text-xs text-gray-300 hover:border-port-accent hover:text-white"
+            >
+              <Settings2 className="h-3.5 w-3.5" /> Manage runtimes
+            </Link>
+          </div>
         </div>
       </section>
 

@@ -69,10 +69,16 @@ describe('Media3D — runtime state', () => {
     expect(screen.getByRole('link', { name: /manage runtimes/i }).getAttribute('href')).toBe('/models/3d');
   });
 
-  it('surfaces a target-load failure in the runtime summary', async () => {
+  it('surfaces a target-load failure and recovers from it without a page reload', async () => {
+    // The same failed list also gates Generate (no target resolves), so leaving the
+    // error with no Retry strands the user on a page whose primary action is dead.
     getImageTo3dTargets.mockRejectedValueOnce(new Error('boom'));
     renderAt();
     expect(await screen.findByText('boom')).toBeInTheDocument();
+
+    getImageTo3dTargets.mockResolvedValueOnce({ targets: [target({ installed: true })] });
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+    expect(await screen.findByText(/1 of 1 ready on this host/i)).toBeInTheDocument();
   });
 
   it('does not host the install controls any more', async () => {
