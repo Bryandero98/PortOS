@@ -8,17 +8,58 @@ permissions:
   contents: write
 
 jobs:
-  full-ci:
+  # The main -> release pull request already ran the complete suite on the very
+  # tree this push carries. Look for that green gate instead of paying for it
+  # twice; anything unverified (a direct push to release, a merge that changed
+  # the tree, an API failure) still falls through to the full run below.
+  verify-ci:
+    name: Check for an existing full CI run
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      verified: ${{ steps.check.outputs.verified }}
+      sha: ${{ steps.check.outputs.sha }}
+      reason: ${{ steps.check.outputs.reason }}
+    steps:
+      # Depth 2 so both parents of the release merge commit — and their trees —
+      # are available to compare against the tree being released.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Look for a passing CI Gate on this tree
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/verify-ci-status.js
+
+      - name: Publish verification summary
+        env:
+          VERIFIED: ${{ steps.check.outputs.verified }}
+          REASON: ${{ steps.check.outputs.reason }}
+        run: |
+          {
+            echo "### Release CI verification"
+            echo
+            echo "- Already verified: \`${VERIFIED}\`"
+            echo "- Reason: \`${REASON}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  full-ci:
+    needs: verify-ci
+    if: needs.verify-ci.outputs.verified != 'true'
     uses: ./.github/workflows/ci.yml
     with:
       full: true
 
   release:
-    needs: full-ci
+    needs: [verify-ci, full-ci]
     runs-on: ubuntu-latest
     # Skip version bump commits
-    if: always() && !contains(github.event.head_commit.message, '[skip ci]')
+    if: always() && !contains(github.event.head_commit.message, '[skip ci]') && needs.verify-ci.result == 'success'
 
     steps:
       - uses: actions/checkout@v7
@@ -40,8 +81,10 @@ jobs:
         id: package-version
         run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
+      # full-ci is skipped when verify-ci already found a green gate for this
+      # tree, so only an actually-executed-and-failed run blocks the release.
       - name: Report release failure on CI failure
-        if: needs.full-ci.result != 'success'
+        if: needs.verify-ci.outputs.verified != 'true' && needs.full-ci.result != 'success'
         run: |
           VERSION="${{ steps.package-version.outputs.version }}"
           echo "::error::release v${VERSION} did NOT publish because full-ci status was '${{ needs.full-ci.result }}'"

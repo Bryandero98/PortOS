@@ -1,10 +1,13 @@
 name: CI
 
 on:
+  # No push trigger. Every change reaches `main` through a pull request whose
+  # own CI gate must be green, so re-running the suite on the merge commit only
+  # repeats work. The nightly schedule below is the main-branch health signal,
+  # and the main -> release pull request runs the complete suite before a
+  # release ships.
   pull_request:
     branches: [main, release]
-  push:
-    branches: [main]
   schedule:
     - cron: '17 9 * * *'
   workflow_dispatch:
@@ -52,7 +55,10 @@ jobs:
       - name: Select affected test surfaces
         id: plan
         env:
-          CI_FORCE_FULL: ${{ github.event_name != 'pull_request' || inputs.full }}
+          # Full suite for anything that is not an ordinary PR, and for the
+          # main -> release PR: that PR is the single gate a release ships
+          # behind, so it never runs a scoped plan.
+          CI_FORCE_FULL: ${{ github.event_name != 'pull_request' || github.base_ref == 'release' || inputs.full == true }}
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node scripts/ci-test-plan.js

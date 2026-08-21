@@ -33,7 +33,7 @@ const FULL_TRIGGER_RULES = [
 // Files whose Windows behavior is not faithfully exercised by pinPlatform()
 // stubs on Linux: real .cmd spawn, PowerShell BOM, PTY wrap, path.basename
 // on backslashes. A PR that does not touch these still gets a full Windows
-// run on main / nightly / release.
+// run nightly, on the main -> release PR, and on release.
 const WINDOWS_RISK_RULES = [
   /\.(?:ps1|cmd|bat)$/i,
   /^scripts\/fix-windows-console(?:\.test)?\.js$/,

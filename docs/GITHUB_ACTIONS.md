@@ -1,23 +1,43 @@
 # GitHub Actions Workflows
 
 PortOS uses a test-impact-aware CI workflow plus a release workflow that cannot
-publish until the complete CI suite passes.
+publish until the complete CI suite has passed on the exact tree being released.
+
+## Where the suite actually runs
+
+Every change reaches `main` through a pull request, and `main` reaches
+`release` through a pull request, so the suite runs once per gate rather than
+once per event:
+
+| Event | What runs |
+|-------|-----------|
+| PR into `main` | Impact-scoped plan (only the surfaces the diff touches) |
+| Push/merge to `main` | **Nothing** — no push trigger; the PR gate already passed |
+| PR `main` → `release` | **Full suite**, forced regardless of the diff |
+| Push/merge to `release` | Reuses the release PR's green gate; full suite only if it cannot be verified |
+| Nightly 09:17 UTC | Full suite — the `main`-branch health signal |
+| `workflow_dispatch` | Full suite |
+
+A release therefore pays for one full run (on its PR), not three.
 
 ## Branch Strategy
 
 | Branch | Purpose |
 |--------|---------|
 | `main` | Active development |
-| `release` | Push `main` to `release` to trigger releases |
+| `release` | Merge `main` into `release` to trigger releases |
 
 ## CI Workflow (`ci.yml`)
 
-PRs to `main`/`release` use `scripts/ci-test-plan.js` to classify the changed
-files before installing dependencies. Directory-scoped features run their
-server and client feature tests; flat modules fall back to Vitest's
-import-graph-aware `--changed` mode. The planner deliberately chooses full CI
-for shared composition roots, test configuration, dependency manifests,
-workflow changes, unknown artifacts, or wide diffs.
+PRs into `main` use `scripts/ci-test-plan.js` to classify the changed files
+before installing dependencies. Directory-scoped features run their server and
+client feature tests; flat modules fall back to Vitest's import-graph-aware
+`--changed` mode. The planner deliberately chooses full CI for shared
+composition roots, test configuration, dependency manifests, workflow changes,
+unknown artifacts, or wide diffs.
+
+PRs into `release` skip the planner entirely and force the full suite: that PR
+is the single gate a release ships behind.
 
 A short always-run list (`ALWAYS_RUN_TESTS` in the planner) is added to every
 plan, so no impact scope can drop it — currently
@@ -54,7 +74,7 @@ The selected work is split across parallel jobs:
 - **DB tests** — provisions only the isolated `portos_test` database and runs
   the serial DB suite when database-sensitive files changed.
 - **Windows server tests** — the same server selection, but only on full CI
-  (push to `main`, nightly, release, workflow dispatch) or when a
+  (the `main` → `release` PR, nightly, release, workflow dispatch) or when a
   Windows-sensitive surface changed (`.ps1` / `.cmd` spawn, PowerShell BOM,
   `bufferedSpawn`, `cos-runner`, shell/PM2, etc.). Docs-only and ordinary
   Linux-faithful PRs skip this job. `pinPlatform('win32')` tests still run on
@@ -76,10 +96,15 @@ JSON argument array to `spawnSync`, never through shell interpolation.
 
 The complete server, client, DB, lint, build, and smoke suite runs:
 
-- after every push to `main`;
+- on every pull request whose base branch is `release` (the release gate);
 - nightly at 09:17 UTC;
 - from manual workflow dispatch;
-- as a reusable workflow called by every release.
+- as a reusable workflow called by a release whose tree has no verifiable gate.
+
+There is **no push trigger on `main`**. A merge commit on `main` re-tests a
+tree whose PR gate is already green, so the run was pure duplication; the
+nightly full run is what catches a semantic conflict between two independently
+green PRs, and the `main` → `release` PR catches it before a release ships.
 
 Changes to CI/test configuration also force the full suite on their own PR.
 `[skip ci]` remains honored for push events only; PR CI always runs.
@@ -103,17 +128,35 @@ Changes to CI/test configuration also force the full suite on their own PR.
 
 Triggers on push to `release` branch. Steps:
 
-1. Calls `ci.yml` with `full: true` and waits for the complete CI gate.
-2. Reads version from `package.json`.
-3. Checks if the git tag already exists (skips release creation if so).
-4. Looks for a changelog file:
+1. Runs `scripts/verify-ci-status.js` to look for a full CI run that already
+   covered this exact tree (see below).
+2. Calls `ci.yml` with `full: true` **only if** step 1 found nothing.
+3. Reads version from `package.json`.
+4. Checks if the git tag already exists (skips release creation if so).
+5. Looks for a changelog file:
    - First: `.changelog/v{version}.md` (exact match)
    - Then: `.changelog/v{major}.{minor}.x.md` (pattern match, replaces placeholders)
    - Fallback: generates changelog from commit messages
-5. Creates the GitHub release with tag `v{version}`.
-6. If a pattern changelog file (`.changelog/v{major}.{minor}.x.md`) was used,
+6. Creates the GitHub release with tag `v{version}`.
+7. If a pattern changelog file (`.changelog/v{major}.{minor}.x.md`) was used,
    archives it on `main` (renames `.x.md` to the exact version).
-7. If the archive step ran, fast-forwards `release` to match `main`.
+8. If the archive step ran, fast-forwards `release` to match `main`.
+
+### Reusing the release PR's CI run
+
+`scripts/verify-ci-status.js` decides whether the push already has a green
+gate. The rule is **content-based, not SHA-based**: a commit vouches for this
+push only when its git tree is byte-identical to the tree being released *and*
+it carries a completed, successful `CI Gate` check run. It considers the pushed
+commit itself and its direct parents.
+
+The ordinary release merge satisfies this — `release` is strictly behind
+`main`, so the merge commit's tree equals the `main` tip it merged, and that
+tip is exactly the SHA the release PR ran full CI on.
+
+Everything else fails closed and runs the complete suite again: a direct push to
+`release`, a hotfix committed on `release` that changes the merge tree, a
+missing or failed gate, or an unreachable checks API.
 
 ## Working with CI
 
