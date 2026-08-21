@@ -88,7 +88,7 @@ import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { getAllProviders } from './providers.js';
 import { runEndpointLlmTest, runLocalLlmTest } from './localLlmPlayground.js';
 import { getLlamaServerEndpoint, relaunchLlamaServerWithTuning } from './llamaServerManager.js';
-import { getMtplxServerEndpoint } from './mtplxServerManager.js';
+import { getMtplxServerEndpoint, relaunchMtplxServerWithTuning } from './mtplxServerManager.js';
 import { listModels } from './localLlm.js';
 import {
   getLoadedModels as getLoadedOllamaModels,
@@ -381,7 +381,8 @@ const toApplication = (ok, error, fallbackReason) => ({
 /**
  * Put a runtime's launch knobs into effect, each by the only transport that
  * reaches it: llama.cpp relaunches with a new command line, Ollama restarts
- * carrying new environment, LM Studio reloads the model through `lms load`.
+ * carrying new environment, LM Studio reloads the model through `lms load`,
+ * MTPLX relaunches `mtplx serve` with the flags on its command line.
  *
  * Keyed by BACKEND rather than by transport because the applier is "who owns
  * this daemon" — the manager that knows how to stop it, what to put back if the
@@ -390,21 +391,53 @@ const toApplication = (ok, error, fallbackReason) => ({
  * `lib/localModelTuning.js` declares no launch knob for one; this refusal is the
  * backstop for a knob added without one, so the reading is filed as "not
  * applied" instead of silently attributed to a tuning that never ran.
+ *
+ * Each entry also names the ONE knob transport its path can carry. That is the
+ * sharper trap than a missing applier: add an `env:` knob to MTPLX and the
+ * applier still runs, the assessment still records `tuningApplied: true`, and
+ * the flag is silently dropped on the way to a launch line that renders only
+ * `cli`. Nothing fails at runtime, so `LAUNCH_TRANSPORTS` below is exported and
+ * `localModelAssessments.test.js` asserts the catalog against it.
  */
 const LAUNCH_APPLIERS = {
-  llama: ({ launch }) => relaunchLlamaServerWithTuning(launchConfig('llama', launch)),
-  ollama: ({ launch }) => restartOllamaWithEnv(launchEnv('ollama', launch))
-    .then((r) => toApplication(r.applied, r.error, `Ollama could not be restarted with that tuning (${r.reason})`)),
-  lmstudio: ({ modelId, launch }) => loadLmStudioModelWithArgs(modelId, launchArgs('lmstudio', launch))
-    .then((r) => toApplication(r.success, r.error, 'LM Studio could not reload the model with that tuning')),
+  llama: {
+    transport: 'config',
+    apply: ({ launch }) => relaunchLlamaServerWithTuning(launchConfig('llama', launch)),
+  },
+  ollama: {
+    transport: 'env',
+    apply: ({ launch }) => restartOllamaWithEnv(launchEnv('ollama', launch))
+      .then((r) => toApplication(r.applied, r.error, `Ollama could not be restarted with that tuning (${r.reason})`)),
+  },
+  lmstudio: {
+    transport: 'cli',
+    apply: ({ modelId, launch }) => loadLmStudioModelWithArgs(modelId, launchArgs('lmstudio', launch))
+      .then((r) => toApplication(r.success, r.error, 'LM Studio could not reload the model with that tuning')),
+  },
+  mtplx: {
+    transport: 'cli',
+    // Takes the knob set as-is rather than rendered flags: `mtplxServerManager`
+    // renders it with the same catalog on the way to the launch line, and needs
+    // the ids to merge this tuning onto what the daemon is already running with.
+    apply: ({ launch }) => relaunchMtplxServerWithTuning(launch),
+  },
 };
+
+/**
+ * Runtime id → the knob transport its applier carries. Derived rather than
+ * written twice, so an applier added without declaring one lands here as
+ * `undefined` and fails the guard instead of quietly opting out of it.
+ */
+export const LAUNCH_TRANSPORTS = Object.freeze(Object.fromEntries(
+  Object.entries(LAUNCH_APPLIERS).map(([runtime, { transport }]) => [runtime, transport])
+));
 
 async function applyLaunchTuning({ backend, modelId, launch }) {
   const applier = LAUNCH_APPLIERS[backend];
   if (!applier) {
     return { applied: false, reason: `PortOS does not start the ${backend} runtime, so it cannot apply launch tuning`, config: null };
   }
-  return applier({ backend, modelId, launch })
+  return applier.apply({ backend, modelId, launch })
     .catch((err) => ({ applied: false, reason: err?.message || 'relaunch failed', config: null }));
 }
 

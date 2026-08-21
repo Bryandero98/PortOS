@@ -3,6 +3,7 @@ import {
   getMtplxServerStatus,
   startMtplxServer,
   stopMtplxServer,
+  relaunchMtplxServerWithTuning,
   installMtplx,
   _resetMtplxServerStateForTests,
   MTPLX_APP,
@@ -24,9 +25,9 @@ describe('mtplxServerManager', () => {
 
   beforeEach(() => {
     // A start that never answers on its port is the NORMAL path here (the probe
-    // is pinned unreachable) — shorten the beat so the suite doesn't sit
-    // through the production budget on every lifecycle test.
-    _resetMtplxServerStateForTests({ startupWait: 50 });
+    // is pinned unreachable), so every lifecycle test pays the startup budget AND
+    // its poll beat in full — shorten both rather than sitting through them.
+    _resetMtplxServerStateForTests({ startupWait: 50, startupPoll: 5 });
     vi.restoreAllMocks();
     pm2State = null;
     execPm2Calls = [];
@@ -197,6 +198,147 @@ describe('mtplxServerManager', () => {
     it('refuses rather than launching a second copy onto a bound port', async () => {
       vi.spyOn(platform, 'isPortInUse').mockResolvedValue(true);
       await expect(startMtplxServer()).rejects.toThrow(/already in use/);
+    });
+
+    it('puts the tuning knobs on the launch line as mtplx serve flags', async () => {
+      const result = await startMtplxServer({ tuning: { depth: 5, kvQuant: 'q4' } });
+      const launch = execPm2Calls.find((a) => a[0] === 'start');
+      expect(launch[launch.indexOf('--depth') + 1]).toBe('5');
+      expect(launch[launch.indexOf('--kv-quant') + 1]).toBe('q4');
+      // Carried on the config so a later relaunch re-applies it rather than
+      // silently dropping back to MTPLX's defaults.
+      expect(result.config.tuning).toEqual({ depth: 5, kvQuant: 'q4' });
+    });
+
+    it('drops a knob the catalog does not declare instead of inventing a flag', async () => {
+      // The retired `maxKvSize` knob was never an `mtplx serve` flag; passing
+      // one through unchecked is exactly the exit-before-bind failure.
+      await startMtplxServer({ tuning: { maxKvSize: 8192, depth: 2 } });
+      const launch = execPm2Calls.find((a) => a[0] === 'start');
+      expect(launch).not.toContain('--max-kv-size');
+      expect(launch).toContain('--depth');
+    });
+
+    it('leaves the launch line untuned when nothing was asked for', async () => {
+      const result = await startMtplxServer();
+      const start = execPm2Calls.find((a) => a[0] === 'start');
+      const launch = start.slice(start.indexOf('--') + 1);
+      expect(launch).toEqual(['serve', '--port', expect.any(String), '--model', 'Example/Qwen-MTP']);
+      expect(result.config.tuning).toEqual({});
+    });
+  });
+
+  describe('relaunchMtplxServerWithTuning', () => {
+    beforeEach(() => {
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(BINARY);
+      // A relaunch judges readiness by the endpoint answering; the suite pins
+      // the probe unreachable, so shorten the budget rather than waiting it out.
+      _resetMtplxServerStateForTests({ startupWait: 20, startupPoll: 5, relaunchReadyTimeout: 30 });
+    });
+
+    // Readiness is what the caller's `applied: true` means, so most cases need
+    // the endpoint to answer once the relaunched process is up.
+    const answerOnceRunning = () => vi.spyOn(openAiModelsProbe, 'probeOpenAiModels')
+      .mockImplementation(async () => ({ reachable: pm2State?.status === 'online' }));
+
+    it('relaunches on the same checkpoint with the tuning flags added', async () => {
+      await startMtplxServer({ port: 8010 });
+      answerOnceRunning();
+      const result = await relaunchMtplxServerWithTuning({ contextWindow: 32768 });
+
+      expect(result.applied).toBe(true);
+      expect(result.reason).toBeNull();
+      const launch = execPm2Calls.filter((a) => a[0] === 'start').pop();
+      expect(launch[launch.indexOf('--model') + 1]).toBe('Example/Qwen-MTP');
+      expect(launch[launch.indexOf('--port') + 1]).toBe('8010');
+      expect(launch[launch.indexOf('--context-window') + 1]).toBe('32768');
+    });
+
+    it('merges onto the tuning already on the launch line rather than replacing it', async () => {
+      await startMtplxServer({ tuning: { depth: 4 } });
+      answerOnceRunning();
+      const result = await relaunchMtplxServerWithTuning({ kvQuant: 'q8' });
+      expect(result.config.tuning).toEqual({ depth: 4, kvQuant: 'q8' });
+    });
+
+    // A sweep EXPECTS launch lines that do not work. Leaving the daemon down
+    // would break the whole install's mtplx provider, not just the measurement.
+    it('restores the previous configuration when MTPLX rejects the tuning', async () => {
+      await startMtplxServer({ tuning: { depth: 2 } });
+      answerOnceRunning();
+
+      let rejectNext = true;
+      const realExec = pm2Module.execPm2.getMockImplementation();
+      vi.spyOn(pm2Module, 'execPm2').mockImplementation(async (args) => {
+        const out = await realExec(args);
+        if (args[0] === 'start' && args.includes('--context-window') && rejectNext) {
+          rejectNext = false;
+          pm2State = { name: MTPLX_APP, status: 'errored', pid: null, args: [] };
+        }
+        if (args[0] === 'logs') return { stdout: '', stderr: 'error: unrecognized arguments' };
+        return out;
+      });
+
+      const result = await relaunchMtplxServerWithTuning({ contextWindow: 1048576 });
+      expect(result.applied).toBe(false);
+      expect(result.reason).toMatch(/MTPLX rejected that tuning/);
+      // Back up on what it was serving before, not left down.
+      expect(pm2State?.status).toBe('online');
+      expect(result.config.tuning).toEqual({ depth: 2 });
+      const restored = execPm2Calls.filter((a) => a[0] === 'start').pop();
+      expect(restored).not.toContain('--context-window');
+      expect(restored[restored.indexOf('--depth') + 1]).toBe('2');
+    });
+
+    // PM2 says `online` long before an MLX checkpoint is loaded, so a process
+    // that never answers is a wedge — and measuring its timeouts would file
+    // them as evidence for this tuning.
+    it('restores the previous configuration when the relaunch never answers', async () => {
+      await startMtplxServer({ tuning: { depth: 2 } });
+      const result = await relaunchMtplxServerWithTuning({ depth: 6 });
+      expect(result.applied).toBe(false);
+      expect(result.reason).toMatch(/never answered/);
+      expect(result.config.tuning).toEqual({ depth: 2 });
+      expect(pm2State?.status).toBe('online');
+    });
+
+    it('refuses when nothing is running, since there is no checkpoint to reuse', async () => {
+      const result = await relaunchMtplxServerWithTuning({ depth: 3 });
+      expect(result.applied).toBe(false);
+      expect(result.reason).toMatch(/not running/);
+      expect(execPm2Calls.some((a) => a[0] === 'start')).toBe(false);
+    });
+
+    it('will not stop a server PortOS did not start', async () => {
+      vi.spyOn(openAiModelsProbe, 'probeOpenAiModels').mockResolvedValue({ reachable: true });
+      const result = await relaunchMtplxServerWithTuning({ depth: 3 });
+      expect(result.applied).toBe(false);
+      expect(result.reason).toMatch(/started outside PortOS/);
+      expect(execPm2Calls.some((a) => a[0] === 'delete')).toBe(false);
+    });
+
+    // `applied: true` on an empty request would claim a configuration nobody
+    // asked for — and a knob that normalized away leaves nothing to apply.
+    it('makes no claim when there is no knob to apply', async () => {
+      await startMtplxServer();
+      execPm2Calls.length = 0;
+      expect((await relaunchMtplxServerWithTuning({})).applied).toBe(false);
+      expect((await relaunchMtplxServerWithTuning({ maxKvSize: 8192 })).applied).toBe(false);
+      expect(execPm2Calls.some((a) => a[0] === 'start')).toBe(false);
+    });
+
+    // A PortOS restart re-adopts a live PM2 process by reading its argv back.
+    // Losing the tuning there would make the next relaunch drop flags the
+    // server is demonstrably running with.
+    it('recovers the tuning from the launch line of a re-adopted process', async () => {
+      pm2State = {
+        name: MTPLX_APP,
+        status: 'online',
+        pid: 4242,
+        args: ['serve', '--port', '8010', '--model', 'Example/Qwen-MTP', '--depth', '5', '--kv-quant', 'q8'],
+      };
+      const status = await getMtplxServerStatus();
+      expect(status.config.tuning).toEqual({ depth: 5, kvQuant: 'q8' });
     });
   });
 

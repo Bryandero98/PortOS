@@ -43,6 +43,17 @@ describe('TUNING_SPECS', () => {
     expect(byId('ollama', 'flashAttention').note).toContain('OLLAMA_FLASH_ATTENTION');
     expect(byId('lmstudio', 'contextLength').note).toContain('lms load --context-length');
     expect(byId('llama', 'ubatchSize').note).toContain('launch line');
+    expect(byId('mtplx', 'depth').note).toContain('mtplx serve');
+  });
+
+  // LM Studio and MTPLX both ride the `cli` transport but re-run different
+  // binaries. A note derived from the transport alone would tell an MTPLX user
+  // PortOS runs `lms load`, which is a command that never executes here.
+  it('names the right binary when two runtimes share the cli transport', () => {
+    const noteFor = (runtime, id) => tuningSpecsFor(runtime).find((s) => s.id === id).note;
+    expect(noteFor('mtplx', 'kvQuant')).toContain('mtplx serve');
+    expect(noteFor('mtplx', 'kvQuant')).not.toContain('lms load');
+    expect(noteFor('lmstudio', 'gpuOffload')).not.toContain('mtplx');
   });
 
   // Guard against a transport that is declared but renders nothing — the failure
@@ -60,10 +71,44 @@ describe('TUNING_SPECS', () => {
     }
   });
 
-  // PortOS passes MTPLX only --port/--model and does not start vLLM at all.
+  // PortOS does not start vLLM at all — it is a container from the shipped
+  // compose stack, so there is no launch line to put a flag on.
   it('offers no knob for a runtime PortOS has no launch path into', () => {
-    expect(tuningSpecsFor('mtplx')).toEqual([]);
     expect(tuningSpecsFor('vllm')).toEqual([]);
+  });
+
+  // `mtplx serve` exits before it binds on an unrecognized flag, which the LLMs
+  // page reports as "the server would not start". These spellings were read off
+  // upstream's own argument parser and are checked here so a future edit cannot
+  // quietly reword one into a flag MTPLX has never accepted.
+  it('renders MTPLX knobs as the flags mtplx serve actually accepts', () => {
+    expect(launchArgs('mtplx', {
+      contextWindow: 32768,
+      depth: 4,
+      generationMode: 'mtp',
+      kvQuant: 'q8',
+      batchingPreset: 'solo',
+      profile: 'turbo',
+    })).toEqual([
+      '--context-window', '32768',
+      '--depth', '4',
+      '--generation-mode', 'mtp',
+      '--kv-quant', 'q8',
+      '--batching-preset', 'solo',
+      '--profile', 'turbo',
+    ]);
+  });
+
+  // argparse rejects an unlisted choice exactly as it rejects an unknown flag,
+  // so an enum option is as load-bearing as the flag name itself.
+  it('offers MTPLX only enum values its parser lists', () => {
+    const options = (id) => tuningSpecsFor('mtplx').find((s) => s.id === id).options;
+    expect(options('kvQuant')).toEqual(['off', 'q8', 'q4']);
+    expect(options('generationMode')).toEqual(['mtp', 'ar']);
+    expect(options('batchingPreset')).toEqual(['solo', 'latency', 'agent', 'throughput']);
+    // A subset of MTPLX's PROFILE_CHOICES: the diagnostic profiles ('exact',
+    // 'max-diagnostic') are valid but are not what a throughput sweep is asking.
+    expect(options('profile')).toEqual(['sustained', 'turbo', 'performance-cold', 'stable']);
   });
 
   it('returns an empty list for an unknown runtime rather than throwing', () => {

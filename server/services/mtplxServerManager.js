@@ -25,6 +25,7 @@
 import { commandExists } from '../lib/commandExists.js';
 import { sleep } from '../lib/fileUtils.js';
 import { ServerError } from '../lib/errorHandler.js';
+import { launchArgs, normalizeTuning, tuningSpecsFor } from '../lib/localModelTuning.js';
 import { LOCAL_RUNTIMES, localEndpointPort } from '../lib/localProviderRuntime.js';
 import { listMtplxCachedModels, pickMtplxCachedModel } from '../lib/mtplxModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
@@ -51,7 +52,27 @@ const PROBE_TIMEOUT_MS = 1500;
  * still-loading path doesn't have to sit through the real budget.
  */
 let startupWaitMs = 8_000;
-const STARTUP_POLL_MS = 1500;
+/**
+ * Beat between startup polls. Mutable through the same test seam as the budget
+ * above: a suite that pins the endpoint probe unreachable pays this delay in
+ * FULL on every lifecycle test, which is what made this file the slowest server
+ * suite — a 1.5s floor per start, several starts per relaunch case, close enough
+ * to the 10s per-test timeout to flake under CI load.
+ */
+let startupPollMs = 1500;
+const PORT_RELEASE_TIMEOUT_MS = 5000;
+/**
+ * How long a TUNING relaunch waits for the new launch line to answer before
+ * calling it wedged and putting the previous configuration back.
+ *
+ * Far longer than `startupWaitMs`, and deliberately longer than llama.cpp's
+ * equivalent: `startMtplxServer` only proves the process survived its first
+ * seconds, and a cold multi-gigabyte MLX checkpoint routinely takes minutes to
+ * load. Judging it at eight seconds would restore the previous configuration
+ * over a server that was merely still loading. Mutable through the test seam so
+ * a suite asserting the never-answered path doesn't sit through the real budget.
+ */
+let relaunchReadyTimeoutMs = 300_000;
 /** Package-manager installs routinely run for minutes. */
 const INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
 
@@ -100,7 +121,46 @@ function parseConfigFromArgs(args) {
     // Absent means MTPLX was started on its OWN default checkpoint — don't
     // invent a repo id the launch line never carried.
     model: pm2ArgValue(list, '--model'),
+    tuning: parseTuningFromArgs(list),
   };
+}
+
+/**
+ * Recover the tuning knobs from a launch line PortOS is re-adopting.
+ *
+ * Walks the CATALOG rather than the argv, so a flag PortOS no longer declares
+ * cannot come back as a knob, and every value goes through `normalizeTuning` —
+ * argv holds strings, and the rest of the manager expects the coerced shape a
+ * relaunch would merge onto. Empty when nothing was tuned, which reads the same
+ * as a server started before tuning existed.
+ */
+function parseTuningFromArgs(list) {
+  const raw = {};
+  for (const spec of tuningSpecsFor('mtplx')) {
+    if (!spec.cli) continue;
+    const value = pm2ArgValue(list, spec.cli);
+    if (value !== null) raw[spec.id] = value;
+  }
+  return normalizeTuning('mtplx', raw);
+}
+
+/** Block until the port is free, or the release budget elapses. */
+async function waitForPortRelease(port) {
+  const deadline = Date.now() + PORT_RELEASE_TIMEOUT_MS;
+  while (Date.now() < deadline && await isPortInUse(port)) await sleep(200);
+}
+
+/**
+ * Block until the endpoint answers, or the readiness budget elapses.
+ * `false` means it never answered — a wedged process, not a slow-loading one.
+ */
+async function waitForEndpoint(endpoint) {
+  const deadline = Date.now() + relaunchReadyTimeoutMs;
+  while (Date.now() < deadline) {
+    if (await probeEndpoint(endpoint)) return true;
+    await sleep(1000);
+  }
+  return false;
 }
 
 /** Resolve the `mtplx` executable on the child-process PATH. */
@@ -250,10 +310,18 @@ async function resolveStartModel(requested, emit) {
  * 127.0.0.1, and accepting a host PortOS never puts on the launch line would
  * report an endpoint the server is not bound to.
  *
- * @param {{port?: number, model?: string, waitMs?: number, onProgress?: (line: string) => void}} options
+ * `tuning` is a knob set from `lib/localModelTuning.js` (`TUNING_SPECS.mtplx`),
+ * rendered to `mtplx serve` flags by the catalog rather than by a flag map here,
+ * so a knob cannot reach the launch line without also being declared, described,
+ * and offered in the form. It is kept on `currentConfig` so a later relaunch —
+ * for a different port, or for one more knob — re-applies what is already set
+ * instead of quietly dropping it.
+ *
+ * @param {{port?: number, model?: string, tuning?: object, waitMs?: number, onProgress?: (line: string) => void}} options
  */
 export async function startMtplxServer(options = {}) {
-  const { port = DEFAULT_PORT, model: requestedModel = null, waitMs, onProgress = () => {} } = options;
+  const { port = DEFAULT_PORT, model: requestedModel = null, tuning = null, waitMs, onProgress = () => {} } = options;
+  const normalizedTuning = normalizeTuning('mtplx', tuning);
   const emit = (line) => { appendLog(line); onProgress(line); };
 
   const binaryPath = resolveMtplxBinary();
@@ -292,15 +360,16 @@ export async function startMtplxServer(options = {}) {
   // API-only server, which is the half PortOS talks to. The daemon must bind
   // where the PROVIDER points — a user who moved MTPLX to 8010 would otherwise
   // get a second server on 8000 that nothing talks to.
-  const args = ['serve', '--port', String(port), ...(model ? ['--model', model] : [])];
-  currentConfig = { port, model };
+  const tuningArgs = launchArgs('mtplx', normalizedTuning);
+  const args = ['serve', '--port', String(port), ...(model ? ['--model', model] : []), ...tuningArgs];
+  currentConfig = { port, model, tuning: normalizedTuning };
   appendLog(`Starting: mtplx ${args.join(' ')}`);
 
   // Delete any stale PM2 entry so our own previous instance doesn't count as a collision.
   await execPm2(['delete', MTPLX_APP]).catch(() => {});
   clearJlistCache();
 
-  console.log(`🚄 MTPLX starting on ${DEFAULT_HOST}:${port}${model ? ` (model ${model})` : ' (MTPLX default model)'}`);
+  console.log(`🚄 MTPLX starting on ${DEFAULT_HOST}:${port}${model ? ` (model ${model})` : ' (MTPLX default model)'}${tuningArgs.length ? ` with ${tuningArgs.join(' ')}` : ''}`);
   await execPm2([
     'start', binaryPath,
     '--name', MTPLX_APP,
@@ -315,7 +384,7 @@ export async function startMtplxServer(options = {}) {
   let online = false;
   let currentProc = null;
   while (Date.now() < deadline) {
-    await sleep(STARTUP_POLL_MS);
+    await sleep(startupPollMs);
     clearJlistCache();
     currentProc = await getAppStatusStrict(MTPLX_APP);
     if (currentProc && ['errored', 'stopped', 'not_found'].includes(currentProc.status)) break;
@@ -376,11 +445,110 @@ export async function stopMtplxServer() {
   return { success: true, message: 'MTPLX stopped' };
 }
 
+/**
+ * Relaunch `mtplx serve` with a different tuning, keeping the checkpoint and
+ * port it is already serving.
+ *
+ * This is MTPLX's half of the measured-assessment feature: a sweep across MTP
+ * depths or KV-quantization modes is only possible if something can put those
+ * flags on the launch line between runs. It mirrors
+ * `llamaServerManager.relaunchLlamaServerWithTuning` — same result shape, same
+ * two refusals, same restore-on-failure — because the assessment runner treats
+ * every runtime's applier identically.
+ *
+ * It refuses rather than guesses in the two cases where it cannot know what to
+ * relaunch:
+ *   - nothing is running, so there is no checkpoint to reuse;
+ *   - something IS listening but PortOS did not start it, so stopping it would
+ *     kill a process the user owns.
+ *
+ * Every one of those returns `{ applied: false, reason }` instead of throwing:
+ * the caller can still measure whatever is actually serving and record that the
+ * tuning was NOT applied, which is far more useful than failing the whole run.
+ *
+ * The restore path is not optional. A tuning sweep EXPECTS launch lines that do
+ * not work — a `--context-window` past what unified memory holds, a `--depth`
+ * the checkpoint's MTP sidecar will not draft. `mtplx serve` exits before it
+ * binds and `startMtplxServer` throws; leaving the daemon down would break the
+ * whole install's `mtplx` provider, not just the measurement. So the previous
+ * configuration goes back up before the failure is reported.
+ *
+ * @param {object} tuning launch knobs from `lib/localModelTuning.js`
+ * @returns {Promise<{applied: boolean, reason: string|null, config: object|null}>}
+ */
+export async function relaunchMtplxServerWithTuning(tuning = {}) {
+  const knobs = Object.entries(normalizeTuning('mtplx', tuning)).filter(([, v]) => v !== null && v !== undefined);
+  if (knobs.length === 0) {
+    return { applied: false, reason: 'no launch knobs were requested', config: currentConfig };
+  }
+
+  const status = await getMtplxServerStatus();
+  if (!status.running) {
+    return { applied: false, reason: 'MTPLX is not running, so PortOS has no checkpoint to relaunch with', config: null };
+  }
+  if (!status.managed) {
+    return {
+      applied: false,
+      reason: 'MTPLX was started outside PortOS — start it from the LLMs page to let PortOS apply tuning',
+      config: status.config || null,
+    };
+  }
+
+  const previous = status.config || { port: status.port, model: null, tuning: {} };
+  // Merged onto what is already on the launch line, not replacing it: a sweep
+  // that varies one knob must not silently drop the ones already set.
+  const next = { ...previous, tuning: { ...(previous.tuning || {}), ...Object.fromEntries(knobs) } };
+  const port = next.port ?? DEFAULT_PORT;
+  console.log(`🚄 MTPLX: relaunching to apply tuning (${knobs.map(([k, v]) => `${k}=${v}`).join(', ')})`);
+
+  await stopMtplxServer();
+  await waitForPortRelease(port);
+
+  const started = await startMtplxServer(next).catch(async (err) => {
+    console.error(`❌ MTPLX: tuning launch failed (${err.message}) — restoring the previous configuration`);
+    await waitForPortRelease(previous.port ?? DEFAULT_PORT);
+    const restored = await startMtplxServer(previous).catch((restoreErr) => {
+      console.error(`❌ MTPLX: could not restore the previous configuration: ${restoreErr.message}`);
+      return null;
+    });
+    return { failure: err.message, config: restored?.config || null };
+  });
+  if (started.failure) {
+    return { applied: false, reason: `MTPLX rejected that tuning: ${started.failure}`, config: started.config };
+  }
+
+  // `startMtplxServer` returning is not the same as the endpoint answering — it
+  // waits only long enough to catch a server that dies immediately, and a cold
+  // MLX checkpoint takes far longer than that to load. So `online: false` here
+  // is "not ready YET", not "wedged"; give it the real readiness budget first.
+  const ready = started.online || await waitForEndpoint(started.endpoint);
+  if (ready) return { applied: true, reason: null, config: started.config };
+
+  // Still silent. Treat it exactly like a rejected launch line: put the previous
+  // configuration back, so the install's mtplx provider is not left pointing at
+  // a process that never serves. Without this the caller would go on to measure
+  // a dead endpoint and record the timeouts as evidence for this tuning.
+  console.error('❌ MTPLX: relaunched process never answered — restoring the previous configuration');
+  await stopMtplxServer().catch(() => {});
+  await waitForPortRelease(previous.port ?? DEFAULT_PORT);
+  const restored = await startMtplxServer(previous).catch((err) => {
+    console.error(`❌ MTPLX: could not restore the previous configuration: ${err.message}`);
+    return null;
+  });
+  return {
+    applied: false,
+    reason: 'MTPLX relaunched but never answered on its port',
+    config: restored?.config || null,
+  };
+}
+
 /** Clears in-memory state (used by test suites). */
-export function _resetMtplxServerStateForTests({ startupWait } = {}) {
+export function _resetMtplxServerStateForTests({ startupWait, startupPoll, relaunchReadyTimeout } = {}) {
   currentConfig = null;
   logs.reset();
   lastExitError = null;
   // Restored to the production budget unless a suite asks for a shorter one.
   startupWaitMs = Number.isFinite(startupWait) ? startupWait : 8_000;
+  startupPollMs = Number.isFinite(startupPoll) ? startupPoll : 1500;
+  relaunchReadyTimeoutMs = Number.isFinite(relaunchReadyTimeout) ? relaunchReadyTimeout : 300_000;
 }
