@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useId } from 'react';
 import { ArrowLeft, Radio, Headphones, Hand, EyeOff, CheckCircle, XCircle, Play, RefreshCw, Volume2, GitBranch, List as ListIcon, Ruler, Eraser } from 'lucide-react';
 import useDrawerTab from '../../../hooks/useDrawerTab';
 import useAudioSessionClaim from '../../../hooks/useAudioSessionClaim.js';
+import useKeyCapture from '../../../hooks/useKeyCapture';
 import { submitTrainingEntry, getTrainingStats, submitMorseRound, getMorseProgress, updateMorseLevel } from '../../../services/api';
 import MorseProgressPanel from './MorseProgressPanel';
 import { streakGlyph } from '../../../lib/streakGlyph.js';
@@ -253,9 +254,7 @@ function useKeyingDecoder({ unitMs, hz, ensureCtx, claimSession, releaseSession,
   // per-character response time (inter-letter delta) for the round it submits.
   const letterLogRef = useRef([]);
   // Mirror of `pressing` state read by beginPress/endPress so those callbacks
-  // stay referentially stable — the global keydown/keyup listener effect
-  // depends on them, and re-running per keystroke would tear down the
-  // just-scheduled flush timers and cut off the active tone mid-press.
+  // don't have to re-derive it from state that lags a keystroke behind.
   const pressingRef = useRef(false);
   // Bumped once per beginPress so a startTone whose resume await settles after a
   // newer press started can tell it's been superseded and bail.
@@ -394,35 +393,28 @@ function useKeyingDecoder({ unitMs, hz, ensureCtx, claimSession, releaseSession,
     setDecoded('');
   }, [stopTone]);
 
-  // Capture-phase listener with stopImmediatePropagation prevents other global
-  // spacebar handlers (notably the voice widget's push-to-talk hotkey) from
-  // firing while the user is keying morse. This only suppresses spacebar; the
-  // voice widget's hotkey works normally everywhere else in the app.
+  // The keyer OWNS the spacebar while Send mode is up: useKeyCapture claims it
+  // in the capture phase, so other global spacebar handlers (notably the voice
+  // widget's push-to-talk hotkey) never fire mid-transmission. Only spacebar is
+  // claimed; the voice hotkey works normally everywhere else in the app.
+  useKeyCapture({
+    enabled,
+    onKeyDown: (e) => {
+      if (e.code !== 'Space') return false;
+      if (!e.repeat) beginPress();
+      return true;
+    },
+    onKeyUp: (e) => {
+      if (e.code !== 'Space') return false;
+      endPress();
+      return true;
+    },
+  });
+
+  // Tear down the tone and the pending flush timers when Send mode goes away.
   useEffect(() => {
     if (!enabled) return undefined;
-    function consume(e) {
-      if (e.code !== 'Space') return false;
-      const tag = (e.target && e.target.tagName) || '';
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return false;
-      if (e.target && e.target.isContentEditable) return false;
-      e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation();
-      return true;
-    }
-    function onKeyDown(e) {
-      if (!consume(e) || e.repeat) return;
-      beginPress();
-    }
-    function onKeyUp(e) {
-      if (!consume(e)) return;
-      endPress();
-    }
-    window.addEventListener('keydown', onKeyDown, true);
-    window.addEventListener('keyup', onKeyUp, true);
     return () => {
-      window.removeEventListener('keydown', onKeyDown, true);
-      window.removeEventListener('keyup', onKeyUp, true);
       if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
       if (wordTimerRef.current) clearTimeout(wordTimerRef.current);
       stopTone();
@@ -432,7 +424,7 @@ function useKeyingDecoder({ unitMs, hz, ensureCtx, claimSession, releaseSession,
       pressingRef.current = false;
       setPressing(false);
     };
-  }, [beginPress, endPress, stopTone, enabled]);
+  }, [enabled, stopTone]);
 
   // getLetterLog exposes the ref's current array without making it reactive —
   // SendDrill reads it once at check time, so a ref (no re-render) is correct.

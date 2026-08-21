@@ -45,6 +45,7 @@ export { default as useRoundViewParams } from './useRoundViewParams.js';
 export { default as useSongTraining } from './useSongTraining.js';
 export { default as useMediaPreviewActions } from './useMediaPreviewActions.js';
 export { default as useKeyboardControls } from './useKeyboardControls.js';
+export { default as useKeyCapture } from './useKeyCapture.js';
 export { default as useKeyboardShortcuts } from './useKeyboardShortcuts.js';
 export * from './useKeyboardShortcuts.js';
 export { default as useMediaJobProgress } from './useMediaJobProgress.js';

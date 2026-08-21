@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { isButtonActivation } from '../lib/a11yKeyboard.js';
 
 // True when an event came from a field the user is typing into, so a single-key
 // shortcut (a/d/g/j/k) or a bare arrow never steals a keystroke or caret move.
@@ -43,12 +44,9 @@ export default function useKeyboardShortcuts(active, bindings, { ignoreRepeat = 
       // Space on a focused button must ACTIVATE it (standard browser
       // behavior) — a page-level ' ' binding would preventDefault the
       // activation and fire the shortcut instead (e.g. toggling autoscroll
-      // when the user meant to open a chord popover). Scoped to ' ' and to
-      // button-like targets only: anchors do NOT activate on Space (Enter
-      // only), so exempting them would just make Space dead on a focused
-      // link; letter/arrow shortcuts don't collide with activation at all.
-      if (e.key === ' ' && typeof e.target?.closest === 'function'
-        && e.target.closest('button, [role="button"]')) return;
+      // when the user meant to open a chord popover). Letter/arrow shortcuts
+      // don't collide with activation at all, so this only fires for Space.
+      if (isButtonActivation(e)) return;
       if (!enabledInDialog && document.querySelector('[aria-modal="true"]')) return;
       const handler = bindingsRef.current[e.key];
       if (typeof handler !== 'function') return;

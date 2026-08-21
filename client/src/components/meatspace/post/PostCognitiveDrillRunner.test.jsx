@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, within } from '@testing-library/react';
 import PostCognitiveDrillRunner, {
   localAccuracyScore,
   localSchulteMetrics,
@@ -18,6 +18,7 @@ import PostCognitiveDrillRunner, {
   getDrillTutorial,
   hasSeenDrillTutorial,
   markDrillTutorialSeen,
+  buildNBackExample,
 } from './PostCognitiveDrillRunner';
 
 // Result-assembly tests for PostCognitiveDrillRunner's `finish()` builders.
@@ -754,5 +755,149 @@ describe('executive-control runners', () => {
     act(() => vi.advanceTimersByTime(250));
     expect(resumed).toHaveBeenCalledTimes(1);
     expect(resumed.mock.calls[0][0].questions).toHaveLength(1);
+  });
+});
+
+// The n-back tutorial's worked example. "Matches the letter N back" is the
+// sentence first-timers misread, so the card shows a concrete stream with the
+// one match called out — this asserts the example is actually a valid n-back
+// hit, not just decorative letters.
+describe('buildNBackExample', () => {
+  it('has exactly ONE match, at the example lag, on the final letter', () => {
+    for (const n of [1, 2, 3, 4]) {
+      const { sequence } = buildNBackExample(n);
+      const hitIndexes = sequence.reduce((acc, letter, i) => (i >= n && letter === sequence[i - n] ? [...acc, i] : acc), []);
+      expect(hitIndexes).toEqual([sequence.length - 1]);
+    }
+  });
+
+  it('clamps a nonsense lag instead of producing a broken strip', () => {
+    const { sequence, n } = buildNBackExample(0);
+    expect(n).toBe(1);
+    expect(sequence.at(-1)).toBe(sequence.at(-2));
+  });
+
+  it('is attached to the n-back tutorial only', () => {
+    expect(getDrillTutorial({ type: 'n-back', config: { n: 2 } }).nBackExample).toBeTruthy();
+    expect(getDrillTutorial({ type: 'stroop' }).nBackExample).toBeUndefined();
+  });
+});
+
+describe('n-back tutorial card', () => {
+  beforeEach(() => window.localStorage.clear());
+  afterEach(() => window.localStorage.clear());
+
+  it('renders the worked example stream with the match called out', () => {
+    const drill = { type: 'n-back', config: { n: 2, stimulusMs: 1000 }, sequence: ['A', 'B', 'A'] };
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={vi.fn()} isTraining={false} />,
+    );
+    const { sequence } = buildNBackExample(2);
+    expect(screen.getByText(/example — 2-back/i)).toBeInTheDocument();
+    expect(screen.getByText('Match!')).toBeInTheDocument();
+    expect(screen.getByText('2 steps back')).toBeInTheDocument();
+    // Every example letter is on screen, in order.
+    const strip = within(screen.getByRole('list', { name: /example letter stream/i }));
+    const chips = strip.getAllByRole('listitem').map(li => li.textContent);
+    expect(chips.map(text => text[0])).toEqual(sequence);
+  });
+});
+
+// The voice widget binds a GLOBAL push-to-talk hotkey that defaults to Space —
+// the same key these drills use to respond. Each Space-driven runner claims the
+// key in the capture phase so the mic never opens mid-drill. Stand in for the
+// widget with a bubble-phase window listener and assert it stays silent.
+describe('Space-driven drills do not leak the key to the global voice hotkey', () => {
+  let voiceHotkey;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    voiceHotkey = vi.fn();
+    window.addEventListener('keydown', voiceHotkey);
+    markDrillTutorialSeen('n-back');
+    markDrillTutorialSeen('go-no-go');
+    markDrillTutorialSeen('reaction-time');
+  });
+
+  afterEach(() => {
+    window.removeEventListener('keydown', voiceHotkey);
+    vi.useRealTimers();
+    window.localStorage.clear();
+  });
+
+  it('n-back swallows Space and still records the match', () => {
+    const onComplete = vi.fn();
+    const drill = { type: 'n-back', config: { n: 1, stimulusMs: 1000 }, sequence: ['A', 'A'] };
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={onComplete} isTraining={false} />,
+    );
+    act(() => { vi.advanceTimersByTime(1900); }); // 800ms pre-roll + into the 2nd stimulus
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
+    act(() => { vi.advanceTimersByTime(1000); });
+
+    expect(voiceHotkey).not.toHaveBeenCalled();
+    expect(onComplete.mock.calls[0][0].questions).toEqual([
+      expect.objectContaining({ index: 1, answered: 'match', correct: true }),
+    ]);
+  });
+
+  it('go-no-go swallows Space and still records the go press', () => {
+    const onComplete = vi.fn();
+    const drill = {
+      type: 'go-no-go',
+      config: { stimulusMs: 200, responseDeadlineMs: 800 },
+      trials: [{ kind: 'go', symbol: '●', tone: 'green' }],
+    };
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={onComplete} isTraining={false} />,
+    );
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
+    act(() => { vi.advanceTimersByTime(250); });
+
+    expect(voiceHotkey).not.toHaveBeenCalled();
+    expect(onComplete.mock.calls[0][0].questions).toHaveLength(1);
+  });
+
+  it('simple reaction-time swallows Space and still records the response', () => {
+    const onComplete = vi.fn();
+    const drill = makeSimpleDrill({ count: 1, delayMs: 100 });
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={onComplete} isTraining={false} />,
+    );
+    act(() => { vi.advanceTimersByTime(100); });
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
+    act(() => { vi.advanceTimersByTime(500); });
+
+    expect(voiceHotkey).not.toHaveBeenCalled();
+    expect(onComplete.mock.calls[0][0].questions).toHaveLength(1);
+  });
+
+  it('reaction-time keeps claiming Space through the between-trials result phase', () => {
+    const onComplete = vi.fn();
+    const drill = makeSimpleDrill({ count: 2, delayMs: 100 });
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={2} onComplete={onComplete} isTraining={false} />,
+    );
+    act(() => { vi.advanceTimersByTime(100); });
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); }); // records trial 1
+    // Now in the 500ms result phase: a second press must NOT record anything,
+    // and must NOT reach the voice hotkey either.
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
+    expect(voiceHotkey).not.toHaveBeenCalled();
+
+    act(() => { vi.advanceTimersByTime(600); });
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(voiceHotkey).not.toHaveBeenCalled();
+    expect(onComplete.mock.calls[0][0].questions).toHaveLength(2);
+  });
+
+  it('lets an unrelated key through — this is not a blanket keyboard trap', () => {
+    const drill = { type: 'n-back', config: { n: 1, stimulusMs: 1000 }, sequence: ['A', 'A'] };
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={vi.fn()} isTraining={false} />,
+    );
+    act(() => { fireEvent.keyDown(document.body, { code: 'KeyJ', key: 'j' }); });
+    expect(voiceHotkey).toHaveBeenCalledTimes(1);
   });
 });

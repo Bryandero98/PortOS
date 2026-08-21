@@ -1,6 +1,7 @@
 /**
- * Keyboard-activation helpers for non-`<button>` elements that carry an
- * `onClick`.
+ * Keyboard-activation helpers: making a non-`<button>` element that carries an
+ * `onClick` keyboard-operable, plus the shared predicates for "is this keystroke
+ * an activation?" that global key handlers consult before claiming a key.
  *
  * A `<div onClick>` / `<span onClick>` is invisible to keyboard and
  * screen-reader users: it isn't focusable and Enter/Space do nothing. Native
@@ -76,4 +77,41 @@ export function clickableProps(handler, { role = 'button', disabled = false } = 
     tabIndex: 0,
     onKeyDown: onActivateKeyDown(handler),
   };
+}
+
+/**
+ * True when a keystroke is a Space press on a focused button-like element,
+ * where the browser will natively activate that button.
+ *
+ * App-global single-key handlers bound to Space (the voice widget's
+ * push-to-talk hotkey, page-level shortcut maps) must stand down for these:
+ * `preventDefault`ing here would swallow every keyboard button press in the app
+ * and run the global action instead. Scoped to Space and to button-like targets
+ * only — anchors do NOT activate on Space (Enter only), so exempting them would
+ * just make Space dead on a focused link.
+ *
+ * @param {KeyboardEvent} event
+ * @returns {boolean}
+ */
+export function isButtonActivation(event) {
+  const isSpace = event?.key === ' ' || event?.key === 'Spacebar' || event?.code === 'Space';
+  if (!isSpace) return false;
+  const target = event.target;
+  if (typeof target?.closest !== 'function') return false;
+  return target.closest('button, [role="button"]') != null;
+}
+
+/**
+ * True for the keys that count as "press this control": Enter or Space. Matches
+ * on `code` as well as `key`, so a surface reading raw `KeyboardEvent.code`
+ * (game/drill input) and one reading `key` agree on what a press is.
+ *
+ * @param {KeyboardEvent} event
+ * @returns {boolean}
+ */
+export function isPressKey(event) {
+  return event?.key === 'Enter'
+    || event?.key === ' '
+    || event?.key === 'Spacebar'
+    || event?.code === 'Space';
 }

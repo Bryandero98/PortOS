@@ -3,6 +3,8 @@ import { Brain, Check, X, BookOpen, Play } from 'lucide-react';
 import { DRILL_LABELS, nBackBalancedAccuracy } from './constants';
 import { safeReadJsonStorage, safeWriteStorage } from '../../../lib/safeStorage.js';
 import useMounted from '../../../hooks/useMounted';
+import useKeyCapture from '../../../hooks/useKeyCapture';
+import { isPressKey } from '../../../lib/a11yKeyboard.js';
 
 /**
  * Interactive runner for deterministic cognitive drills (n-back, digit-span,
@@ -97,6 +99,25 @@ export function markDrillTutorialSeen(type) {
   safeWriteStorage(DRILL_TUTORIAL_SEEN_KEY, JSON.stringify(seen));
 }
 
+// Distinct letters for the n-back worked example — an example runs n+3 long, so
+// this covers every lag a drill will ever ask for and no letter repeats by
+// accident (which would read as a second, unlabeled match).
+const NBACK_EXAMPLE_LETTERS = 'KRTMPQBHLSDFGJNVWXYZ';
+
+/**
+ * A tiny worked n-back stream for the tutorial: distinct letters, with the LAST
+ * one repeating the letter `n` steps back so there is exactly one match to point
+ * at. Returns the data the example strip renders, not markup, so it stays
+ * testable alongside the rest of `getDrillTutorial`. The match is always the
+ * final letter, so the strip derives the two highlighted positions from `n`.
+ */
+export function buildNBackExample(n) {
+  const lag = Math.max(1, Math.min(n, NBACK_EXAMPLE_LETTERS.length - 3));
+  const sequence = NBACK_EXAMPLE_LETTERS.slice(0, lag + 3).split('');
+  sequence[sequence.length - 1] = sequence[sequence.length - 1 - lag];
+  return { sequence, n: lag };
+}
+
 // Per-type how-to content. A pure function of the drill so config-dependent
 // copy (n-back lag, digit-span direction, reaction-time mode) reads correctly.
 // Returns null for types with no tutorial (which skip the gate entirely).
@@ -114,6 +135,7 @@ export function getDrillTutorial(drill) {
           'When they match, hit Match right away. If it doesn’t match, do nothing.',
         ],
         controls: 'Tap Match, or press Space / Enter.',
+        nBackExample: buildNBackExample(n),
       };
     }
     case 'digit-span': {
@@ -254,6 +276,8 @@ function CognitiveDrillTutorial({ drill, isTraining, drillIndex, drillCount, onS
           ))}
         </ol>
 
+        {tut.nBackExample && <NBackExampleStrip example={tut.nBackExample} />}
+
         <p className="text-xs text-gray-500">
           <span className="text-gray-400 font-medium">Controls:</span> {tut.controls}
         </p>
@@ -269,6 +293,49 @@ function CognitiveDrillTutorial({ drill, isTraining, drillIndex, drillCount, onS
       </button>
 
       <p className="text-center text-xs text-gray-600">You&rsquo;ll only see this the first time for each drill type.</p>
+    </div>
+  );
+}
+
+// Worked example for the n-back tutorial: the letters as they'd arrive, with
+// the one match highlighted and called out. Text alone ("matches the one N back")
+// is the part first-timers misread, so the card shows it rather than asserting it.
+function NBackExampleStrip({ example: { sequence, n } }) {
+  const matchIndex = sequence.length - 1;
+  const sourceIndex = matchIndex - n;
+  const step = `${n} step${n !== 1 ? 's' : ''}`;
+  return (
+    <div className="rounded-lg border border-port-border bg-port-bg/40 p-4 space-y-3">
+      <div className="text-[0.65rem] uppercase tracking-wide text-gray-500">Example — {n}-back</div>
+
+      <ol aria-label="Example letter stream" className="flex flex-wrap items-end gap-2 list-none">
+        {sequence.map((letter, i) => {
+          const isMatch = i === matchIndex;
+          const isSource = i === sourceIndex;
+          return (
+            <li key={i} className="flex flex-col items-center gap-1">
+              <span
+                className={`w-10 h-10 rounded-md border font-mono text-xl font-bold flex items-center justify-center ${
+                  isMatch || isSource ? 'border-rose-500/60 bg-rose-500/15 text-rose-300' : 'border-port-border text-gray-400'
+                }`}
+              >
+                {letter}
+              </span>
+              {/* Non-breaking space, not an em dash: an unlabeled chip must hold
+                  the baseline without reading as a third label. */}
+              <span className={`text-[0.6rem] ${isMatch ? 'text-rose-300' : 'text-gray-600'}`}>
+                {isMatch ? 'Match!' : isSource ? `${step} back` : '\u00a0'}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+
+      <p className="text-xs text-gray-400">
+        The last <span className="font-mono text-rose-300">{sequence[matchIndex]}</span> repeats the letter {step}{' '}
+        earlier — press <span className="text-white font-medium">Match</span> on it. Every other letter is a
+        non-match: do nothing.
+      </p>
     </div>
   );
 }
@@ -688,17 +755,16 @@ function NBackRunner({ drill, drillIndex, drillCount, onComplete, isTraining }) 
     });
   }, [n]);
 
-  // Spacebar / Enter registers a match for the current stimulus.
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.code === 'Space' || e.key === ' ' || e.key === 'Enter') {
-        e.preventDefault();
-        registerMatch();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [registerMatch]);
+  // Spacebar / Enter registers a match for the current stimulus. Claimed in the
+  // capture phase so the voice widget's global push-to-talk hotkey (Space by
+  // default) can't open the mic on every match press.
+  useKeyCapture({
+    onKeyDown: (e) => {
+      if (!isPressKey(e)) return false;
+      registerMatch();
+      return true;
+    },
+  });
 
   const decisionTotal = Math.max(0, seq.length - n);
   const decisionDone = pos >= n ? pos - n : 0;
@@ -1364,19 +1430,19 @@ function ReactionTimeRunner({ drill, drillIndex, drillCount, onComplete, isTrain
   }, [mode, trialIdx, trials, recordAndAdvance]);
 
   // Space (simple mode) or number keys 1..N (choice mode) register a response.
-  useEffect(() => {
-    const onKey = (e) => {
-      if (phase === 'result') return;
-      if (mode === 'simple') {
-        if (e.code === 'Space' || e.key === ' ' || e.key === 'Enter') { e.preventDefault(); respond(0); }
-      } else {
-        const idx = parseInt(e.key, 10) - 1;
-        if (Number.isInteger(idx) && idx >= 0 && idx < choices) { e.preventDefault(); respond(idx); }
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [phase, mode, choices, respond]);
+  // Claimed in the capture phase so the voice widget's global push-to-talk
+  // hotkey (Space by default) can't open the mic on every reaction press.
+  useKeyCapture({
+    onKeyDown: (e) => {
+      const idx = mode === 'simple' ? (isPressKey(e) ? 0 : -1) : parseInt(e.key, 10) - 1;
+      if (!Number.isInteger(idx) || idx < 0 || idx >= (mode === 'simple' ? 1 : choices)) return false;
+      // Claim the key through the between-trials result phase too, so a user
+      // still tapping after the trial ended doesn't leak the press to the voice
+      // hotkey — just don't record it against the trial that already resolved.
+      if (phase !== 'result') respond(idx);
+      return true;
+    },
+  });
 
   const progressPct = trials.length > 0 ? (trialIdx / trials.length) * 100 : 0;
 
@@ -1692,16 +1758,15 @@ function GoNoGoRunner({ drill, drillIndex, drillCount, onComplete, isTraining })
     };
   }, [deadlineMs, stimulusMs, trialIdx, trials]);
 
-  useEffect(() => {
-    const onKey = (event) => {
-      if (event.code === 'Space' || event.key === ' ' || event.key === 'Enter') {
-        event.preventDefault();
-        recordRef.current(true);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  // Claimed in the capture phase so the voice widget's global push-to-talk
+  // hotkey (Space by default) can't open the mic on every go press.
+  useKeyCapture({
+    onKeyDown: (event) => {
+      if (!isPressKey(event)) return false;
+      recordRef.current(true);
+      return true;
+    },
+  });
 
   const trial = trials[trialIdx];
   const symbolLabel = { '●': 'filled circle', '◉': 'ringed circle', '■': 'filled square' }[trial?.symbol] || 'signal';
