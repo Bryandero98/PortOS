@@ -290,7 +290,15 @@ export function routedJobParams(params, { request, remoteMedia }) {
   if (dropped.length) {
     console.log(`🌐 Federated render: ${dropped.join(' and ')} will not run on a routed job`);
   }
-  return { ...jobParams, prompt: '', modelId: request.modelId, remoteMedia };
+  return {
+    ...jobParams,
+    prompt: '',
+    modelId: request.modelId,
+    ...(request.numFrames !== undefined ? { numFrames: request.numFrames } : {}),
+    ...(request.width !== undefined ? { width: request.width } : {}),
+    ...(request.height !== undefined ? { height: request.height } : {}),
+    remoteMedia,
+  };
 }
 
 /**
