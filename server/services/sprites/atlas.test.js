@@ -278,6 +278,28 @@ async function finalizedCharacter() {
   return id;
 }
 
+async function replaceFinalizedFrame(recordId, direction, index, bytes) {
+  const dir = join(TEST_ROOT, 'sprites', recordId);
+  const walkSetRel = `walk/${recordId}-walk-set-v1.json`;
+  const walkSet = JSON.parse(await readFile(join(dir, walkSetRel), 'utf8'));
+  const selection = JSON.parse(await readFile(join(dir, walkSet.selectionPath), 'utf8'));
+  const entry = selection.directions[direction];
+  const manifest = JSON.parse(await readFile(join(dir, entry.runManifest), 'utf8'));
+  const frame = manifest.frames[index];
+  await writeFile(join(dir, frame.path), bytes);
+  frame.sha256 = sha256(bytes);
+  const manifestBytes = Buffer.from(JSON.stringify(manifest));
+  await writeFile(join(dir, entry.runManifest), manifestBytes);
+  entry.runManifestSha256 = sha256(manifestBytes);
+  selection.directions[direction] = entry;
+  const selectionBytes = Buffer.from(JSON.stringify(selection));
+  await writeFile(join(dir, walkSet.selectionPath), selectionBytes);
+  walkSet.directions[direction] = entry;
+  walkSet.selectionSha256 = sha256(selectionBytes);
+  await writeFile(join(dir, walkSetRel), JSON.stringify(walkSet));
+  return frame.phase;
+}
+
 beforeEach(() => {
   rmSync(join(TEST_ROOT, 'sprite-records.json'), { force: true });
 });
@@ -462,7 +484,7 @@ describe('compileAtlas', () => {
     const changed = await compileAtlas(id, { tracks: customTracks });
     expect(changed.created).toBe(true);
     expect(changed.version).toBe(backfilled.version + 1);
-  });
+  }, 20_000);
 
   it('compiles the 9×8 player atlas with full provenance and a current pointer', async () => {
     const id = await finalizedCharacter();
@@ -788,6 +810,23 @@ describe('compileAtlas', () => {
     await walkFramePng(join(TEST_ROOT, 'sprites', id, frameRel), 250);
     await expect(compileAtlas(id)).rejects.toMatchObject({ status: 422 });
   });
+
+  it('surfaces a degenerate packaged frame through atlas validation', async () => {
+    const id = await finalizedCharacter();
+    const direction = SPRITE_DIRECTIONS[0];
+    const empty = await sharp({
+      create: { width: 40, height: 40, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    }).png().toBuffer();
+    const phase = await replaceFinalizedFrame(id, direction, 3, empty);
+
+    await expect(compileAtlas(id)).rejects.toMatchObject({
+      status: 422,
+      code: 'ATLAS_COMPILE_INVALID',
+      message: expect.stringContaining(
+        `Direction ${direction} frame 3 (${phase}) has no content`,
+      ),
+    });
+  }, 20_000);
 
   it('refuses without a finalized walk set', async () => {
     const id = newId();
