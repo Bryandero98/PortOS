@@ -65,6 +65,14 @@ const backendLabel = (report, id) =>
 
 const specsFor = (report, id) => report?.runtimes?.find((r) => r.id === id)?.tuningSpecs || [];
 
+// The tuning grid a sweep of this runtime would run, straight from the server —
+// so the consent gate's count is the count that executes. Fewer than two entries
+// means a sweep is not on offer: either the runtime declares no sweepable knob,
+// or PortOS cannot reset it and put it back afterwards, and the server says so
+// by shipping an empty grid. Either way the button stays off rather than
+// advertising a comparison that would not be valid.
+const gridFor = (report, id) => report?.runtimes?.find((r) => r.id === id)?.tuningGrid || [];
+
 // An empty field means "leave the daemon on its own default", so it is dropped
 // rather than sent as 0/false — the server applies the same rule.
 const compactTuning = (draft) => Object.fromEntries(
@@ -273,7 +281,7 @@ function AssessmentConsentModal({
   );
 }
 
-function RankedRow({ entry, runtimeLabel, onRemeasure, onDelete, busy }) {
+function RankedRow({ entry, runtimeLabel, onRemeasure, onDelete, onSweepTunings, sweepVariants, busy }) {
   const perf = entry.performance || {};
   return (
     <div className="border border-port-border rounded-lg p-3 space-y-2">
@@ -324,6 +332,20 @@ function RankedRow({ entry, runtimeLabel, onRemeasure, onDelete, busy }) {
           >
             <RefreshCw size={13} />
           </button>
+          {/* Only offered where the runtime declares a knob worth varying —
+              a one-entry grid is the baseline alone, which `compareTunings`
+              cannot rank against anything. */}
+          {sweepVariants > 1 && (
+            <button
+              onClick={() => onSweepTunings(entry)}
+              disabled={busy}
+              title={`Measure this model under ${sweepVariants} launch configurations and rank them`}
+              aria-label={`Sweep tunings for ${entry.modelId}`}
+              className="p-1.5 text-gray-400 hover:text-white transition-colors disabled:opacity-50"
+            >
+              <SlidersHorizontal size={13} />
+            </button>
+          )}
           <button
             onClick={() => onDelete(entry)}
             disabled={busy}
@@ -492,6 +514,10 @@ export function LocalModelAssessments() {
   // Whether the server-side sweep is working. Owned here rather than in the
   // sweep panel because it gates this panel's per-model buttons too.
   const [sweepRunning, setSweepRunning] = useState(false);
+  // A "sweep tunings" request handed to the sweep panel, which owns the consent
+  // gate and the progress for BOTH sweeps — there is only one server-side queue,
+  // so there is only one place that renders it.
+  const [tuningSweepRequest, setTuningSweepRequest] = useState(null);
 
   const load = useCallback(async (nextIntent) => {
     setLoading(true);
@@ -628,6 +654,16 @@ export function LocalModelAssessments() {
     setPendingTarget(entry);
   };
 
+  // Hands the model to the sweep panel's consent gate. The grid rides along so
+  // the modal can list what it is about to run — it is the server's own grid,
+  // shipped on the report, not a count derived here.
+  const requestTuningSweep = (entry) => setTuningSweepRequest({
+    backend: entry.backend,
+    modelId: entry.modelId,
+    runtimeLabel: backendLabel(report, entry.backend),
+    variants: gridFor(report, entry.backend),
+  });
+
   // A sweep holds the provider for hours. A single-model run started on top of
   // it would measure the contention between the two, so every per-model action
   // goes quiet while the queue is working.
@@ -685,6 +721,8 @@ export function LocalModelAssessments() {
         disabled={localBusy}
         onRunningChange={setSweepRunning}
         onSweepFinished={() => load(intent)}
+        tuningRequest={tuningSweepRequest}
+        onTuningRequestClose={() => setTuningSweepRequest(null)}
       />
 
       <div className="flex items-center gap-2 flex-wrap">
@@ -727,8 +765,10 @@ export function LocalModelAssessments() {
                   entry={entry}
                   runtimeLabel={backendLabel(report, entry.backend)}
                   busy={busy}
+                  sweepVariants={gridFor(report, entry.backend).length}
                   onRemeasure={openTarget}
                   onDelete={removeAssessment}
+                  onSweepTunings={requestTuningSweep}
                 />
               ))}
             </div>

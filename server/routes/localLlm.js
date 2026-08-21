@@ -487,7 +487,9 @@ router.post('/assessments/run', asyncHandler(async (req, res) => {
   res.json(await runAssessment({ backend, modelId, contextTokens, tuning, signal: abortSignalFromResponse(res), onProgress }))
 }))
 
-// POST /api/local-llm/assessments/sweep — measure EVERY model the scope covers.
+// POST /api/local-llm/assessments/sweep — measure EVERY model the scope covers,
+// or (with `tunings: true` plus a backend/modelId) ONE model across the tuning
+// grid its runtime declares.
 // User-triggered only, same as the single-model run: the UI names the model and
 // generation count before this fires.
 //
@@ -497,9 +499,16 @@ router.post('/assessments/run', asyncHandler(async (req, res) => {
 // `localLlm:progress` socket event under `scope: 'assessment-sweep'`, and the
 // GET below is the reload-safe source of truth.
 router.post('/assessments/sweep', asyncHandler(async (req, res) => {
-  const { scope, contextTokens } = validateRequest(localLlmAssessmentSweepSchema, req.body)
+  const { scope, contextTokens, backend, modelId, tunings } = validateRequest(localLlmAssessmentSweepSchema, req.body)
   const io = req.app.get('io')
-  const status = await startSweep({ scope, contextTokens, onProgress: (frame) => io?.emit('localLlm:progress', frame) })
+  // `tunings` is the ASK, not the grid: the client says "sweep this model's
+  // tunings" and the service decides which knob sets that means. A client that
+  // could post the grid could post an arbitrary batch of provider calls, and the
+  // count the consent gate named would stop being the count that runs.
+  const status = await startSweep({
+    scope, contextTokens, backend, modelId, tunings,
+    onProgress: (frame) => io?.emit('localLlm:progress', frame),
+  })
   // A refused start (one already running, or nothing to measure) is a 409, not a
   // silent no-op that would leave the page waiting for progress that never comes.
   if (status.rejected) throw new ServerError(status.rejected, { status: 409, context: { scope } })

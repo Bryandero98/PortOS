@@ -23,7 +23,7 @@ vi.mock('../../services/socket', () => ({
 
 import {
   getLocalLlmAssessments, runLocalLlmAssessment, deleteLocalLlmAssessment,
-  getLocalLlmAssessmentSweep, cancelLocalLlmAssessmentSweep,
+  getLocalLlmAssessmentSweep, startLocalLlmAssessmentSweep, cancelLocalLlmAssessmentSweep,
 } from '../../services/api';
 import toast from '../ui/Toast';
 import socket from '../../services/socket';
@@ -51,14 +51,22 @@ const report = (overrides = {}) => ({
 // catalog all ride on the report, so the panel has no hardcoded backend list to
 // drift from.
 const RUNTIMES = [
-  { id: 'ollama', label: 'Ollama', managed: true, modelCount: 1, error: null, tuningSpecs: [
+  // `tuningGrid` is the server's own sweep grid, shipped so the consent gate
+  // names the count that will actually run. It is EMPTY for a runtime a sweep
+  // may not drive — Ollama cannot be reset and put back yet (#4763) — which is
+  // what turns its "Sweep tunings" button off.
+  { id: 'ollama', label: 'Ollama', managed: true, modelCount: 1, error: null, tuningGrid: [], tuningSpecs: [
     { id: 'numCtx', label: 'Context size', type: 'number', applies: 'launch', env: 'OLLAMA_CONTEXT_LENGTH', min: 512, max: 1048576, unit: 'tokens', hint: 'The window every model loads with.', note: 'PortOS restarts the server with OLLAMA_CONTEXT_LENGTH set.' },
   ] },
-  { id: 'llama', label: 'llama.cpp', managed: false, modelCount: 3, error: null, tuningSpecs: [
+  { id: 'llama', label: 'llama.cpp', managed: false, modelCount: 3, error: null, tuningGrid: [
+    { key: '', label: null, tuning: {} },
+    { key: 'ubatchSize=1024', label: 'Micro-batch size 1024', tuning: { ubatchSize: 1024 } },
+    { key: 'flashAttn=true', label: 'Flash attention on', tuning: { flashAttn: true } },
+  ], tuningSpecs: [
     { id: 'ubatchSize', label: 'Micro-batch size', type: 'number', applies: 'launch', config: true, min: 1, max: 8192, hint: 'Physical micro-batch.', note: "PortOS puts this on the server's launch line and relaunches it." },
     { id: 'flashAttn', label: 'Flash attention', type: 'boolean', applies: 'launch', config: true, hint: 'Fused attention kernel.', note: "PortOS puts this on the server's launch line and relaunches it." },
   ] },
-  { id: 'mtplx', label: 'MTPLX', managed: false, modelCount: null, error: 'not reachable at http://127.0.0.1:8000/v1 (ECONNREFUSED)', tuningSpecs: [
+  { id: 'mtplx', label: 'MTPLX', managed: false, modelCount: null, error: 'not reachable at http://127.0.0.1:8000/v1 (ECONNREFUSED)', tuningGrid: [], tuningSpecs: [
     { id: 'depth', label: 'MTP depth', type: 'number', applies: 'launch', cli: '--depth', min: 1, max: 8, hint: 'Draft lookahead.', note: 'PortOS relaunches `mtplx serve` with `--depth` on its command line.' },
     { id: 'kvQuant', label: 'KV cache quantization', type: 'enum', applies: 'launch', cli: '--kv-quant', options: ['off', 'q8', 'q4'], hint: 'Context length for a little quality.', note: 'PortOS relaunches `mtplx serve` with `--kv-quant` on its command line.' },
   ] },
@@ -612,5 +620,65 @@ describe('LocalModelAssessments — one row per tuning', () => {
     }));
     render(<LocalModelAssessments />);
     expect(await screen.findByText(/Tuning was not applied/)).toBeInTheDocument();
+  });
+});
+
+describe('LocalModelAssessments — sweep tunings', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    idleSweep();
+    getLocalLlmAssessments.mockResolvedValue(report());
+  });
+
+  const llamaEntry = (overrides = {}) => rankedEntry({ backend: 'llama', modelId: 'example-model.gguf', ...overrides });
+
+  it('opens the tuning consent gate for the model whose button was pressed', async () => {
+    const user = userEvent.setup();
+    getLocalLlmAssessments.mockResolvedValue(report({ ranked: [llamaEntry()] }));
+    render(<LocalModelAssessments />);
+
+    await user.click(await screen.findByRole('button', { name: 'Sweep tunings for example-model.gguf' }));
+
+    expect(await screen.findByText(/Sweep tunings\?/)).toBeInTheDocument();
+    // The grid the server shipped, not a count derived here.
+    expect(screen.getByText('Micro-batch size 1024')).toBeInTheDocument();
+    expect(screen.getByText('Flash attention on')).toBeInTheDocument();
+    expect(startLocalLlmAssessmentSweep).not.toHaveBeenCalled();
+  });
+
+  // The server ships an empty grid for a runtime a sweep may not drive, so the
+  // page offers the action exactly where the server would accept it.
+  it('offers no sweep for a runtime the server will not sweep', async () => {
+    getLocalLlmAssessments.mockResolvedValue(report({ ranked: [rankedEntry()] }));
+    render(<LocalModelAssessments />);
+
+    await screen.findByText('example-model:7b');
+    expect(screen.queryByRole('button', { name: /Sweep tunings for/ })).not.toBeInTheDocument();
+  });
+
+  it('starts the sweep the gate described', async () => {
+    const user = userEvent.setup();
+    getLocalLlmAssessments.mockResolvedValue(report({ ranked: [llamaEntry()] }));
+    startLocalLlmAssessmentSweep.mockResolvedValue({ status: 'running', total: 3, completed: 0, results: [] });
+    render(<LocalModelAssessments />);
+
+    await user.click(await screen.findByRole('button', { name: 'Sweep tunings for example-model.gguf' }));
+    await user.click(screen.getByRole('button', { name: /start sweep/i }));
+
+    await waitFor(() => expect(startLocalLlmAssessmentSweep).toHaveBeenCalledWith({
+      backend: 'llama', modelId: 'example-model.gguf', tunings: true,
+    }));
+  });
+
+  // Every per-model action goes quiet while the server-side queue holds the
+  // provider — a run started on top of it would measure the contention.
+  it('goes quiet while a sweep is already running', async () => {
+    getLocalLlmAssessments.mockResolvedValue(report({ ranked: [llamaEntry()] }));
+    getLocalLlmAssessmentSweep.mockResolvedValue({
+      status: 'running', total: 3, completed: 1, current: { backend: 'llama', modelId: 'example-model.gguf' }, results: [],
+    });
+    render(<LocalModelAssessments />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Sweep tunings for example-model.gguf' })).toBeDisabled());
   });
 });

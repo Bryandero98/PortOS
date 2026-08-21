@@ -521,6 +521,16 @@ const targetKey = (t) => `${t.backend}:${t.modelId}@${t.tuningKey || ''}`;
  * reproduce the same configuration, or the sweep would quietly replace every
  * tuned reading with a backend-defaults one.
  *
+ * ## The second dimension
+ *
+ * `tunings` swaps that rule out: instead of each model keeping the tuning it
+ * carries, every model is crossed with the supplied grid — one measurement per
+ * (model, tuning) pair. That is what makes a TUNING sweep a case of this
+ * function rather than a queue of its own, and it is why the dedupe below is
+ * keyed on model AND tuning: two variants sharing a key are one measurement, and
+ * running it twice would put the same configuration on both sides of the
+ * comparison table.
+ *
  * @param {object} options
  * @param {Array<object>} options.assessments stored records, already filtered to
  *   models that are STILL INSTALLED — a sweep must not queue a model the runtime
@@ -528,10 +538,19 @@ const targetKey = (t) => `${t.backend}:${t.modelId}@${t.tuningKey || ''}`;
  * @param {Array<{backend:string, modelId:string}>} options.unassessed models with
  *   no evidence at all
  * @param {'unmeasured'|'stale'|'all'} options.scope
+ * @param {{backend:string, modelId:string}|null} [options.only] restrict to one
+ *   model. Naming a model leaves the scope nothing to decide, so it implies
+ *   `all` — otherwise "sweep THIS model" would silently do nothing whenever the
+ *   model happened to fall outside the scope.
+ * @param {Array<{tuning:object, key:string, label:string|null}>|null} [options.tunings]
+ *   knob sets to measure every selected model under. Entries are taken as
+ *   already-normalized (they come from `localModelTuning.js#tuningGridFor`), so
+ *   this module stays dependency-free.
  * @returns {Array<{backend:string, modelId:string, tuning:object, tuningKey:string, tuningLabel:string|null, reason:string}>}
  */
-export function selectSweepTargets({ assessments = [], unassessed = [], scope = 'unmeasured' } = {}) {
-  const resolved = SWEEP_SCOPES.includes(scope) ? scope : 'unmeasured';
+export function selectSweepTargets({ assessments = [], unassessed = [], scope = 'unmeasured', only = null, tunings = null } = {}) {
+  const resolved = only ? 'all' : (SWEEP_SCOPES.includes(scope) ? scope : 'unmeasured');
+  const wanted = (m) => !only || (m?.backend === only.backend && m?.modelId === only.modelId);
   const stored = Array.isArray(assessments) ? assessments : [];
   const fresh = Array.isArray(unassessed) ? unassessed : [];
   const targets = [];
@@ -549,6 +568,7 @@ export function selectSweepTargets({ assessments = [], unassessed = [], scope = 
   // the measurements worth having got.
   if (resolved === 'unmeasured' || resolved === 'all') {
     for (const model of fresh) {
+      if (!wanted(model)) continue;
       add({ backend: model?.backend, modelId: model?.modelId, tuning: {}, tuningKey: '', tuningLabel: null, reason: 'never measured' });
     }
   }
@@ -556,6 +576,7 @@ export function selectSweepTargets({ assessments = [], unassessed = [], scope = 
   if (resolved === 'stale' || resolved === 'all') {
     for (const assessment of stored) {
       if (resolved === 'stale' && !assessment?.staleness?.stale) continue;
+      if (!wanted(assessment)) continue;
       add({
         backend: assessment?.backend,
         modelId: assessment?.modelId,
@@ -563,6 +584,29 @@ export function selectSweepTargets({ assessments = [], unassessed = [], scope = 
         tuningKey: assessment?.tuningKey || '',
         tuningLabel: assessment?.tuningLabel || null,
         reason: assessment?.staleness?.stale ? 'measured on a different machine state' : 're-measure',
+      });
+    }
+  }
+
+  if (!Array.isArray(tunings) || tunings.length === 0) return targets;
+
+  // Cross the selected models with the grid. Re-running `add` rather than
+  // pushing directly keeps ONE dedupe rule for both dimensions — a model that
+  // reached this point under two stored tunings collapses back to one entry per
+  // grid variant instead of measuring each variant twice.
+  const models = targets.splice(0, targets.length);
+  seen.clear();
+  for (const model of models) {
+    for (const variant of tunings) {
+      add({
+        backend: model.backend,
+        modelId: model.modelId,
+        tuning: variant?.tuning && typeof variant.tuning === 'object' ? variant.tuning : {},
+        tuningKey: variant?.key || '',
+        tuningLabel: variant?.label ?? null,
+        // `''` is the baseline — the reading every other variant's throughput is
+        // reported relative to, so it is named rather than left blank.
+        reason: variant?.key ? 'tuning variant' : 'backend defaults',
       });
     }
   }

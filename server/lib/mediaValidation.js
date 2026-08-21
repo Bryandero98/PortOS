@@ -283,9 +283,24 @@ export const localLlmAssessmentRunSchema = z.object({
 // work. The scope decides WHICH models (see `selectSweepTargets`); the target
 // list itself is derived server-side rather than sent, so a client can't ask for
 // an arbitrary batch of models.
+// A TUNING sweep names one model and sets `tunings: true`; the grid itself is
+// derived server-side (`tuningGridFor`) rather than sent, for the same reason
+// the model list is — a client must not be able to ask for an arbitrary batch of
+// provider calls. There is deliberately no wire knob for the grid SIZE either:
+// the consent gate names its count from the report's grid, so a request that
+// could shrink the grid would run a different number than the one the user
+// agreed to.
 export const localLlmAssessmentSweepSchema = z.object({
   scope: z.enum(SWEEP_SCOPES).optional().default('unmeasured'),
   contextTokens: z.array(z.coerce.number().int().min(64).max(131072)).min(1).max(5).optional(),
+  backend: localLlmRuntimeSchema.optional(),
+  modelId: localLlmModelIdSchema.optional(),
+  tunings: z.boolean().optional().default(false),
+}).refine((v) => Boolean(v.backend) === Boolean(v.modelId), {
+  // Half a model reference would silently fall back to the scope and measure
+  // every installed model — hours of work nobody asked for.
+  message: 'backend and modelId must be given together',
+  path: ['modelId'],
 });
 export const localLlmAssessmentIntentSchema = z.object({
   intent: z.enum(['balanced', 'smartest', 'fastest', 'lightweight']).optional().default('balanced'),

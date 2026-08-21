@@ -1,5 +1,5 @@
 /**
- * "Measure every model" — the overnight sweep control.
+ * "Measure every model" / "Sweep tunings" — the sweep controls.
  *
  * Measuring one model takes minutes, so measuring all of them is something you
  * start at the end of the day. Two consequences shape this component:
@@ -11,12 +11,18 @@
  *   2. **Consent names real numbers.** The AI Provider Usage Policy (root
  *      CLAUDE.md) requires that a batch of provider calls be preceded by a gate
  *      that says exactly what will run. The counts come from the server's own
- *      target selector, not from a client-side estimate, so the number shown is
- *      the number that executes.
+ *      target selector and its own tuning grid, not from a client-side estimate,
+ *      so the number shown is the number that executes.
+ *
+ * Both sweeps live here rather than one each next to its trigger: the server
+ * runs ONE queue, so two panels would each render a Stop button for a run the
+ * other one started. The tuning sweep is therefore requested through a prop
+ * (`tuningRequest`) from wherever its button sits, and this component owns the
+ * consent gate, the progress, and the results for both.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { PlayCircle, Square, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { PlayCircle, Square, AlertTriangle, CheckCircle2, SlidersHorizontal } from 'lucide-react';
 import Modal from '../ui/Modal';
 import ProgressBar from '../ui/ProgressBar';
 import BrailleSpinner from '../BrailleSpinner';
@@ -43,17 +49,72 @@ const POLL_MS = 5000;
 
 const isRunning = (status) => status?.status === 'running';
 
-function SweepConsentModal({ scope, onScopeChange, counts, contextTokens, onCancel, onConfirm, starting }) {
-  const count = counts?.[scope] ?? 0;
-  const generations = count * Math.max(1, contextTokens.length);
+// A tuning sweep measures ONE model many ways, so "3/5 models measured" is wrong
+// in exactly the place the user is reading for reassurance. The server says
+// which dimension it is varying; this is not inferable from the counts.
+const measuredUnit = (status) => (status?.mode === 'tunings' ? 'tuning' : 'model');
+
+/**
+ * The consent gate both sweeps share: the card, the heading, and the
+ * Cancel/Start footer.
+ *
+ * The AI Provider Usage Policy (root CLAUDE.md) demands the same three things of
+ * either sweep — say what will run, say how many generations that is, and let
+ * the user decline — so the parts that differ are only which middle the caller
+ * fills in and which numbers it names. Two copies of this shell would drift, and
+ * the half that drifted would be the half stating the cost.
+ */
+function SweepConsentShell({ icon, title, ariaLabel, children, onCancel, onConfirm, starting, confirmDisabled }) {
   return (
-    <Modal open onClose={onCancel} size="sm" ariaLabel="Measure every local model">
+    <Modal open onClose={onCancel} size="sm" ariaLabel={ariaLabel}>
       <div className="bg-port-card border border-port-border rounded-lg p-5 space-y-4">
         <div className="flex items-center gap-2">
-          <PlayCircle size={18} className="text-port-accent" />
-          <h3 className="text-white font-medium">Measure every model?</h3>
+          {icon}
+          <h3 className="text-white font-medium">{title}</h3>
         </div>
 
+        {children}
+
+        <div className="flex gap-3 pt-1">
+          <button
+            onClick={onCancel}
+            disabled={starting}
+            className="flex-1 px-4 py-2 bg-port-card border border-port-border hover:border-port-accent text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={starting || confirmDisabled}
+            className="flex-1 px-4 py-2 bg-port-accent hover:bg-port-accent/80 text-port-on-accent text-sm font-medium rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {starting ? <><BrailleSpinner /> Starting…</> : <>Start sweep</>}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// How many generations a sweep of N measurements runs: one per context length,
+// per measurement. The consent copy leads with this number, so both gates
+// compute it the same way.
+const generationsFor = (count, contextTokens) => count * Math.max(1, contextTokens.length);
+
+function SweepConsentModal({ scope, onScopeChange, counts, contextTokens, onCancel, onConfirm, starting }) {
+  const count = counts?.[scope] ?? 0;
+  const generations = generationsFor(count, contextTokens);
+  return (
+    <SweepConsentShell
+      icon={<PlayCircle size={18} className="text-port-accent" />}
+      title="Measure every model?"
+      ariaLabel="Measure every local model"
+      starting={starting}
+      confirmDisabled={count === 0}
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    >
+      <>
         <fieldset className="space-y-2">
           <legend className="text-xs text-gray-400 mb-1">What to measure</legend>
           {SCOPES.map((option) => {
@@ -92,25 +153,61 @@ function SweepConsentModal({ scope, onScopeChange, counts, contextTokens, onCanc
           this a job for overnight — expect several minutes per model. It keeps running with this tab closed,
           and you can stop it at any point; everything measured up to then is kept.
         </p>
+      </>
+    </SweepConsentShell>
+  );
+}
 
-        <div className="flex gap-3 pt-1">
-          <button
-            onClick={onCancel}
-            disabled={starting}
-            className="flex-1 px-4 py-2 bg-port-card border border-port-border hover:border-port-accent text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            disabled={starting || count === 0}
-            className="flex-1 px-4 py-2 bg-port-accent hover:bg-port-accent/80 text-port-on-accent text-sm font-medium rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-          >
-            {starting ? <><BrailleSpinner /> Starting…</> : <>Start sweep</>}
-          </button>
+/**
+ * Consent for a TUNING sweep: one model, many launch configurations.
+ *
+ * The copy has to carry three numbers the user cannot see anywhere else — how
+ * many variants, how many generations in total, and that the runtime is
+ * restarted between each one, which is what makes a tuning sweep slower per
+ * measurement than a model sweep.
+ */
+function TuningSweepConsentModal({ target, contextTokens, onCancel, onConfirm, starting }) {
+  const variants = target.variants;
+  const count = variants.length;
+  const generations = generationsFor(count, contextTokens);
+  return (
+    <SweepConsentShell
+      icon={<SlidersHorizontal size={18} className="text-port-accent" />}
+      title="Sweep tunings?"
+      ariaLabel={`Sweep tunings for ${target.modelId}`}
+      starting={starting}
+      // The baseline alone is one measurement with nothing to compare it to —
+      // the server refuses that, and the gate must not offer it either.
+      confirmDisabled={count < 2}
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    >
+      <>
+        <p className="text-sm text-gray-400">
+          PortOS will measure <span className="text-gray-200 font-mono break-all">{target.modelId}</span> under{' '}
+          <span className="text-gray-200">{count}</span> configuration{count === 1 ? '' : 's'} —{' '}
+          <span className="text-gray-200">{generations}</span> short generation{generations === 1 ? '' : 's'} in
+          total, one at each of {contextTokens.map(formatContextTokens).join(', ')} tokens of context per
+          configuration.
+        </p>
+
+        <div className="border border-port-border rounded-lg divide-y divide-port-border">
+          {variants.map((variant) => (
+            <p key={variant.key} className="px-2.5 py-1.5 text-[11px] text-gray-300">
+              {/* An unlabelled variant is the baseline, and saying so matters:
+                  it is the reading every other one is compared against. */}
+              {variant.label || 'Backend defaults'}
+            </p>
+          ))}
         </div>
-      </div>
-    </Modal>
+
+        <p className="text-xs text-gray-500">
+          One configuration at a time, and {target.runtimeLabel} is restarted between each one so the new flags
+          actually take effect — expect several minutes per configuration. It keeps running with this tab closed,
+          and you can stop it at any point; everything measured up to then is kept and ranked.
+        </p>
+      </>
+    </SweepConsentShell>
   );
 }
 
@@ -118,16 +215,33 @@ function SweepConsentModal({ scope, onScopeChange, counts, contextTokens, onCanc
 function SweepResultRow({ result }) {
   const failed = Boolean(result.error) || result.verdict === 'does-not-fit' || result.verdict === 'incompatible';
   return (
-    <div className="flex items-center gap-2 text-[11px] flex-wrap">
-      {failed
-        ? <AlertTriangle size={11} className="text-port-warning shrink-0" />
-        : <CheckCircle2 size={11} className="text-emerald-400 shrink-0" />}
-      <span className="text-gray-300 font-mono break-all min-w-0">{result.modelId}</span>
-      {/* The tokens/s figure is the headline of a sweep, so it leads where the
-          runtime reported one; chars/s is the fallback, never both. */}
-      <span className="text-gray-500">
-        {result.error || [result.verdict, throughputLabel(result)].filter(Boolean).join(' — ')}
-      </span>
+    <div className="text-[11px]">
+      <div className="flex items-center gap-2 flex-wrap">
+        {failed
+          ? <AlertTriangle size={11} className="text-port-warning shrink-0" />
+          : <CheckCircle2 size={11} className="text-emerald-400 shrink-0" />}
+        <span className="text-gray-300 font-mono break-all min-w-0">{result.modelId}</span>
+        {/* Every row of a TUNING sweep names the same model, so the
+            configuration is what tells two measurements apart. Shown for a model
+            sweep too: "backend defaults" is a real answer, and leaving it out
+            would read as an unknown configuration. */}
+        <span className="px-1.5 py-0.5 rounded border border-port-border text-gray-500 shrink-0">
+          {result.tuningLabel || 'backend defaults'}
+        </span>
+        {/* The tokens/s figure is the headline of a sweep, so it leads where the
+            runtime reported one; chars/s is the fallback, never both. */}
+        <span className="text-gray-500">
+          {result.error || [result.verdict, throughputLabel(result)].filter(Boolean).join(' — ')}
+        </span>
+      </div>
+      {/* The numbers above describe SOME OTHER configuration when the knobs
+          never reached the daemon — say so rather than filing them under the
+          tuning the row is labelled with. */}
+      {result.tuningApplied === false && result.tuningNotApplied && (
+        <p className="text-port-warning mt-0.5">
+          Tuning not applied — {result.tuningNotApplied}. These numbers describe the configuration that was running.
+        </p>
+      )}
     </div>
   );
 }
@@ -140,8 +254,15 @@ function SweepResultRow({ result }) {
  * @param {(running: boolean) => void} [props.onRunningChange] lets the parent
  *   disable its own per-model Measure buttons while the queue holds the provider
  * @param {boolean} props.disabled a single-model run is already occupying the provider
+ * @param {{backend:string, modelId:string, runtimeLabel:string, variants:Array<{key:string,label:string|null}>}|null} [props.tuningRequest]
+ *   a "sweep tunings" request raised elsewhere on the page — opens this panel's
+ *   tuning consent gate. `null` closes it.
+ * @param {() => void} [props.onTuningRequestClose] clears that request, whether
+ *   it was confirmed or cancelled
  */
-export default function AssessmentSweepPanel({ counts, contextTokens = [], onSweepFinished, onRunningChange, disabled }) {
+export default function AssessmentSweepPanel({
+  counts, contextTokens = [], onSweepFinished, onRunningChange, disabled, tuningRequest, onTuningRequestClose,
+}) {
   const [status, setStatus] = useState(null);
   const [showConsent, setShowConsent] = useState(false);
   const [scope, setScope] = useState('unmeasured');
@@ -180,7 +301,13 @@ export default function AssessmentSweepPanel({ counts, contextTokens = [], onSwe
   // A single-model run started mid-sweep would contend with the model the queue
   // is measuring, and BOTH readings would describe that contention. Tell the
   // parent so its per-model buttons go quiet for the duration.
-  useEffect(() => { onRunningChange?.(running); }, [running, onRunningChange]);
+  //
+  // `settled: false` outlasts `running`: a STOPPED sweep is still aborting its
+  // last measurement and, for a tuning sweep, still has a launch configuration
+  // to put back — which bounces the daemon. Re-enabling Measure the moment Stop
+  // is pressed would let a reading start into that relaunch and record it.
+  const holdsMachine = running || status?.settled === false;
+  useEffect(() => { onRunningChange?.(holdsMachine); }, [holdsMachine, onRunningChange]);
 
   // Re-arm the latch for every queue that starts, not only one started from this
   // tab: a sweep launched in another tab (or before a reload) would otherwise
@@ -194,9 +321,18 @@ export default function AssessmentSweepPanel({ counts, contextTokens = [], onSwe
   useAutoRefetch(async () => {
     const next = await refresh();
     // The report is only worth re-reading once the queue is done — mid-sweep it
-    // would re-rank on partial evidence every five seconds.
-    if (next && !isRunning(next)) notifyFinished();
-  }, POLL_MS, { enabled: running, immediate: false, pollOnly: true });
+    // would re-rank on partial evidence every five seconds. "Done" means the
+    // sweep has LET GO, not merely that it stopped queuing: a cancelled tuning
+    // sweep is still restoring the launch line, and a report read then describes
+    // a daemon mid-relaunch.
+    if (next && !isRunning(next) && next.settled !== false) notifyFinished();
+    // Keeps polling through the WIND-DOWN, past the point the status stops
+    // saying `running`: a stopped sweep is still aborting and still restoring,
+    // and the only other thing that clears that state in a live tab is the
+    // terminal socket frame. Lose that frame to a reconnect and `holdsMachine`
+    // would stay true forever, leaving every per-model button disabled with no
+    // way back but a reload.
+  }, POLL_MS, { enabled: holdsMachine, immediate: false, pollOnly: true });
 
   // Per-sample frames from the model in flight, on the same channel the
   // single-model run and model pulls use — hence the scope filter, or a
@@ -221,7 +357,7 @@ export default function AssessmentSweepPanel({ counts, contextTokens = [], onSwe
           ...prev,
           completed: frame.completed ?? prev.completed,
           total: frame.total ?? prev.total,
-          current: { backend: frame.backend, modelId: frame.modelId },
+          current: { backend: frame.backend, modelId: frame.modelId, tuningLabel: frame.tuningLabel ?? null },
         } : prev));
       }
     };
@@ -238,11 +374,31 @@ export default function AssessmentSweepPanel({ counts, contextTokens = [], onSwe
     return next;
   }, { errorMessage: 'Could not start the sweep' });
 
+  // Same queue, same latch, same toast — the only difference from `start` is
+  // which dimension the server is told to vary.
+  const [startTuning, startingTuning] = useAsyncAction(async () => {
+    finishNotifiedRef.current = false;
+    const next = await startLocalLlmAssessmentSweep({
+      backend: tuningRequest.backend,
+      modelId: tuningRequest.modelId,
+      tunings: true,
+    });
+    setStatus(next);
+    onTuningRequestClose?.();
+    toast.success(`Tuning sweep started — ${next.total} configuration${next.total === 1 ? '' : 's'} queued`);
+    return next;
+  }, { errorMessage: 'Could not start the tuning sweep' });
+
   const [stop, stopping] = useAsyncAction(async () => {
     setStatus(await cancelLocalLlmAssessmentSweep());
     // Whatever it measured before stopping is real evidence, so the report has
     // to catch up rather than waiting for the next mount.
-    notifyFinished();
+    //
+    // Deliberately NOT through `notifyFinished`: latching here would swallow the
+    // refresh that matters more — the one after the wind-down, once the launch
+    // configuration is back and the runtime state on the page is the real one.
+    // A cancel is worth two reads.
+    finishedRef.current?.();
     return true;
   }, { errorMessage: 'Could not stop the sweep' });
 
@@ -271,8 +427,16 @@ export default function AssessmentSweepPanel({ counts, contextTokens = [], onSwe
         ) : (
           <button
             onClick={openConsent}
-            disabled={disabled || totalTargets === 0}
-            title={totalTargets === 0 ? 'No models are listable to measure right now' : 'Measure every installed model, one after another'}
+            // The server refuses a sweep while the last one is winding down, so
+            // an enabled button here would just collect a 409. Stop replaces
+            // itself with this button several minutes before the machine is
+            // actually free.
+            disabled={disabled || holdsMachine || totalTargets === 0}
+            title={
+              holdsMachine ? 'The last sweep is still winding down — putting the runtime back the way it was'
+                : totalTargets === 0 ? 'No models are listable to measure right now'
+                  : 'Measure every installed model, one after another'
+            }
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-port-accent hover:bg-port-accent/80 text-port-on-accent font-medium transition-colors disabled:opacity-50"
           >
             <PlayCircle size={13} /> Measure all models
@@ -281,13 +445,20 @@ export default function AssessmentSweepPanel({ counts, contextTokens = [], onSwe
         {running && (
           <span className="text-[11px] text-gray-400 flex items-center gap-1.5" aria-live="polite">
             <BrailleSpinner />
-            {status.completed}/{status.total} measured
-            {status.current && <span className="text-gray-500 font-mono break-all">· {status.current.modelId}</span>}
+            {status.completed}/{status.total} {measuredUnit(status)}s measured
+            {status.current && (
+              <span className="text-gray-500 font-mono break-all">
+                {/* Every step of a tuning sweep names the same model, so the
+                    configuration is the only thing that moves. */}
+                · {status.mode === 'tunings' ? (status.current.tuningLabel || 'backend defaults') : status.current.modelId}
+              </span>
+            )}
           </span>
         )}
         {finished && (
           <span className="text-[11px] text-gray-500">
-            Last sweep {status.status} — {status.completed}/{status.total} measured {timeAgo(status.finishedAt, '')}
+            Last sweep {status.status} — {status.completed}/{status.total} {measuredUnit(status)}s measured{' '}
+            {status.target ? `of ${status.target.modelId} ` : ''}{timeAgo(status.finishedAt, '')}
           </span>
         )}
       </div>
@@ -298,7 +469,7 @@ export default function AssessmentSweepPanel({ counts, contextTokens = [], onSwe
             <ProgressBar
               percent={(status.completed / status.total) * 100}
               track="border"
-              label={`Sweep progress: ${status.completed} of ${status.total} models measured`}
+              label={`Sweep progress: ${status.completed} of ${status.total} ${measuredUnit(status)}s measured`}
             />
           )}
           {message && <p className="text-[11px] text-gray-400 break-words" aria-live="polite">{message}</p>}
@@ -327,6 +498,30 @@ export default function AssessmentSweepPanel({ counts, contextTokens = [], onSwe
         <p className="text-xs text-port-warning flex items-center gap-1.5" role="alert">
           <AlertTriangle size={12} /> The sweep stopped early: {status.error}
         </p>
+      )}
+
+      {/* The measurements landed, so the sweep did not fail — but the launch
+          configuration it started from is gone, and nothing else on this page
+          would say so. Deliberately does NOT assert what the runtime is doing
+          now: the daemon may be on the last variant, or stopped (a launch line a
+          sweep tried can fail, and so can putting the old one back). Naming the
+          reason and pointing at the page that shows the truth beats guessing. */}
+      {status?.restoreError && (
+        <p className="text-xs text-port-warning flex items-center gap-1.5" role="alert">
+          <AlertTriangle size={12} />
+          The sweep finished, but the launch configuration it started from was not restored:{' '}
+          {status.restoreError}. Check the runtime on the LLMs page.
+        </p>
+      )}
+
+      {tuningRequest && (
+        <TuningSweepConsentModal
+          target={tuningRequest}
+          contextTokens={contextTokens}
+          starting={startingTuning}
+          onCancel={() => onTuningRequestClose?.()}
+          onConfirm={startTuning}
+        />
       )}
 
       {showConsent && (
