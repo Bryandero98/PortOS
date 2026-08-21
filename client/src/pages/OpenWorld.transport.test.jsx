@@ -1,13 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router';
 import { installVoiceHotkeySpy } from '../test/voiceHotkeySpy';
 
 // Same stubbing strategy as OpenWorld.fastTravel.test.jsx: the 3D scene and the HUD are
 // replaced with inert divs so the page's keyboard WIRING can be exercised in jsdom.
 vi.mock('../components/openworld/OpenWorldScene', () => ({ default: () => <div data-testid="scene" /> }));
-vi.mock('../components/openworld/OpenWorldHud', () => ({ default: () => null }));
-vi.mock('../components/openworld/OpenWorldPhotoOverlay', () => ({ default: () => null }));
+vi.mock('../components/openworld/OpenWorldHud', () => ({
+  default: ({ onEnterPhotoMode }) => (
+    <button type="button" onClick={onEnterPhotoMode}>hud-photo</button>
+  ),
+}));
+// Photo mode has no other observable surface once the overlay is stubbed, so the stub
+// records the props the page drives from its keyboard shortcuts.
+vi.mock('../components/openworld/OpenWorldPhotoOverlay', () => ({
+  default: (props) => { photoProps.current = props; return null; },
+}));
 vi.mock('../components/openworld/OpenWorldPlaybackOverlay', () => ({ default: () => null }));
 vi.mock('../components/openworld/OpenWorldSettingsDrawer', () => ({ default: () => null }));
 
@@ -22,6 +30,7 @@ vi.mock('../hooks/useOpenWorldData', () => ({
 
 // The playback hook is the surface under test: the page binds its transport keys only
 // while `active`, and the spies below record what each key reached.
+const photoProps = vi.hoisted(() => ({ current: null }));
 const playback = vi.hoisted(() => ({
   active: true, currentFrame: null, snapshots: [], frameIndex: 0, stats: null,
   playing: false, speed: 1, loading: false, error: null,
@@ -126,6 +135,59 @@ describe('OpenWorld playback transport keys', () => {
     act(() => { fireEvent.keyDown(document.body, { key: ' ', code: 'Space' }); });
 
     expect(playback.togglePlay).not.toHaveBeenCalled();
+    expect(voiceHotkey()).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('OpenWorld photo mode shortcuts', () => {
+  const voiceHotkey = installVoiceHotkeySpy();
+
+  beforeEach(() => {
+    playback.active = false;
+    photoProps.current = null;
+    localStorage.clear();
+  });
+
+  const enterPhotoMode = () => {
+    const rendered = renderPage();
+    fireEvent.click(screen.getByText('hud-photo'));
+    return rendered;
+  };
+
+  it('cycles the framing preset and toggles depth of field', () => {
+    enterPhotoMode();
+    expect(photoProps.current.active).toBe(true);
+    const first = photoProps.current.presetId;
+    expect(photoProps.current.dofEnabled).toBe(true);
+
+    act(() => { fireEvent.keyDown(document.body, { key: 'ArrowRight' }); });
+    expect(photoProps.current.presetId).not.toBe(first);
+
+    act(() => { fireEvent.keyDown(document.body, { key: 'ArrowLeft' }); });
+    expect(photoProps.current.presetId).toBe(first);
+
+    act(() => { fireEvent.keyDown(document.body, { key: 'd' }); });
+    expect(photoProps.current.dofEnabled).toBe(false);
+  });
+
+  it('exits on Escape', () => {
+    enterPhotoMode();
+
+    act(() => { fireEvent.keyDown(document.body, { key: 'Escape' }); });
+
+    expect(photoProps.current.active).toBe(false);
+  });
+
+  it('leaves its keys for an open dialog, and does not claim them from the app', () => {
+    const { container } = enterPhotoMode();
+    const dialog = document.createElement('div');
+    dialog.setAttribute('aria-modal', 'true');
+    container.appendChild(dialog);
+
+    act(() => { fireEvent.keyDown(document.body, { key: 'Escape' }); });
+
+    expect(photoProps.current.active).toBe(true);
+    // Bubble-phase shortcuts, not a capture-phase claim: the app still sees the key.
     expect(voiceHotkey()).toHaveBeenCalledTimes(1);
   });
 });
