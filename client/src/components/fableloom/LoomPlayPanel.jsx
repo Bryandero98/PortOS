@@ -55,14 +55,20 @@ export default function LoomPlayPanel({ loom, episode }) {
   useEffect(() => { restart(); }, [start]);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [transcript, scene]);
 
   const [runTurn, sending] = useAsyncAction(async (text, history) => {
     const result = await playLoomTurn(loom.id, episode.id, {
       nodeId: scene.id,
       message: text,
-      transcript: history.slice(-12).map(({ role, text: t }) => ({ role, text: t })),
+      // The transcript state also holds scene cards ({ role: 'scene', node })
+      // — the API accepts only reader/narrator text turns, so filter first or
+      // every turn after the first move fails validation.
+      transcript: history
+        .filter((t) => t.role === 'reader' || t.role === 'narrator')
+        .slice(-12)
+        .map(({ role, text: t }) => ({ role, text: t })),
     }, { silent: true });
     const additions = [];
     if (result.narration) additions.push({ role: 'narrator', text: result.narration });
