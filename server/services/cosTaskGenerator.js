@@ -22,7 +22,7 @@
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, normalizeReviewers, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerPins, buildReviewerEffortNote, buildReviewersCsv, LOCAL_LLM_REVIEWERS, SWARM_COUNT_MIN, ISSUE_AUTHOR_FILTERS, CLAIM_OVERRIDE_CONTEXT_MAX_CHARS } from '../lib/validation.js';
+import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, normalizeReviewers, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerPins, buildReviewerEffortNote, buildReviewerPinNote, buildReviewersCsv, LOCAL_LLM_REVIEWERS, SWARM_COUNT_MIN, ISSUE_AUTHOR_FILTERS, CLAIM_OVERRIDE_CONTEXT_MAX_CHARS } from '../lib/validation.js';
 import { isPlainObject } from '../lib/objects.js';
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, diagnoseUnpickablePlan } from '../lib/planIds.js';
 import { loadState, saveState, withStateLock, isImprovementEnabled, isDaemonRunning } from './cosState.js';
@@ -535,6 +535,7 @@ export async function buildClaimWorkTask(app, {
     + appendTargetWorkItemBlock(promptTaskType, targetRef, issueExcludeLabelsBlock)
     + appendPrefetchedIssueContext(promptTaskType, targetRef, issueContext)
     + appendClaimOverrideContext(overrideContext)
+    + appendReviewerPinBlock(reviewersCsv)
     + appendReviewerEffortBlock(reviewersList, promptReviewerEfforts, promptReviewerModels)
     + buildLocalReviewerInstructions(reviewersList, promptReviewerModels, promptReviewerEfforts);
 
@@ -570,8 +571,10 @@ async function resolveClaimReviewerPrompt() {
   // suffix), so the bracket and the appended instruction can't describe different
   // invocations.
   const { reviewerModels, reviewerEfforts } = resolveReviewerPins(null, codeReviewDefaults);
+  const csv = buildReviewersCsv(list, codeReviewDefaults?.usernames, codeReviewDefaults?.optionalReviewers, codeReviewDefaults?.reviewerMaxRounds, reviewerModels, reviewerEfforts);
   return {
-    csv: buildReviewersCsv(list, codeReviewDefaults?.usernames, codeReviewDefaults?.optionalReviewers, codeReviewDefaults?.reviewerMaxRounds, reviewerModels, reviewerEfforts),
+    csv,
+    pinBlock: appendReviewerPinBlock(csv),
     effortBlock: appendReviewerEffortBlock(list, reviewerEfforts, reviewerModels),
     localReviewerBlock: buildLocalReviewerInstructions(list, reviewerModels, reviewerEfforts),
   };
@@ -696,11 +699,12 @@ ${body || '(empty)'}
 </portos-prefetched-issue>`;
 }
 
-/** The same block with the leading blank-line separator used by prompt appends. */
-const appendPrefetchedIssueContext = (promptTaskType, target, issueContext) => {
-  const block = buildPrefetchedIssueContextBlock(promptTaskType, target, issueContext);
-  return block ? `\n\n${block}` : '';
-};
+// Every prompt-append helper below joins its block onto the prompt with the same
+// blank-line separator, and renders nothing when the block is empty.
+const appendBlock = (block) => (block ? `\n\n${block}` : '');
+
+const appendPrefetchedIssueContext = (promptTaskType, target, issueContext) =>
+  appendBlock(buildPrefetchedIssueContextBlock(promptTaskType, target, issueContext));
 
 /**
  * Render optional guidance entered by the user on the managed-app Issues tab.
@@ -723,16 +727,10 @@ ${context}
 </portos-claim-override>`;
 }
 
-const appendClaimOverrideContext = (overrideContext) => {
-  const block = buildClaimOverrideContextBlock(overrideContext);
-  return block ? `\n\n${block}` : '';
-};
+const appendClaimOverrideContext = (overrideContext) => appendBlock(buildClaimOverrideContextBlock(overrideContext));
 
-/** The same block with the leading blank-line separator a prompt append needs. */
-const appendTargetWorkItemBlock = (promptTaskType, ref, excludeLabelsBlock = '') => {
-  const block = buildTargetWorkItemBlock(promptTaskType, ref, excludeLabelsBlock);
-  return block ? `\n\n${block}` : '';
-};
+const appendTargetWorkItemBlock = (promptTaskType, ref, excludeLabelsBlock = '') =>
+  appendBlock(buildTargetWorkItemBlock(promptTaskType, ref, excludeLabelsBlock));
 
 /**
  * The per-reviewer reasoning-effort instruction, appended to a claim prompt with
@@ -747,10 +745,21 @@ const appendTargetWorkItemBlock = (promptTaskType, ref, excludeLabelsBlock = '')
  * rather than a flag — without them a pinned `cursor[<id>]~effort=<level>` would
  * have no invocation to name here at all.
  */
-const appendReviewerEffortBlock = (reviewers, reviewerEfforts, reviewerModels) => {
-  const note = buildReviewerEffortNote(reviewers, reviewerEfforts, { reviewerModels });
-  return note ? `\n\n${note}` : '';
-};
+const appendReviewerEffortBlock = (reviewers, reviewerEfforts, reviewerModels) =>
+  appendBlock(buildReviewerEffortNote(reviewers, reviewerEfforts, { reviewerModels }));
+
+/**
+ * Append the reviewer pin: the claim agent must review with the list PortOS
+ * resolved, never with the host's saved slashdo defaults. Prose (not a
+ * `{...}` placeholder) for the same reason as the effort block — a customized
+ * legacy claim template would silently drop a new placeholder, and that is
+ * exactly the install whose agent then adopts the host's saved slashdo
+ * `--review-with` the moment it reaches for `/do:pr`.
+ *
+ * Takes the already-rendered CSV rather than the reviewer list so the block can
+ * only ever name the same tokens the prompt's `{reviewers}` does.
+ */
+const appendReviewerPinBlock = (reviewersCsv) => appendBlock(buildReviewerPinNote(reviewersCsv));
 
 /**
  * Append the invocation contract for claim reviewers that have no CLI binary.
@@ -827,7 +836,7 @@ export async function buildJiraTicketTask(app, ticketKey) {
   const key = normalizeWorkItemRef(ticketKey);
 
   // Independent reads (prompt body + Code Review Defaults) — fetch concurrently.
-  const [template, { csv: reviewersCsv, effortBlock, localReviewerBlock }] = await Promise.all([
+  const [template, { csv: reviewersCsv, pinBlock, effortBlock, localReviewerBlock }] = await Promise.all([
     getTaskPrompt('claim-issue-jira'),
     resolveClaimReviewerPrompt(),
   ]);
@@ -839,6 +848,7 @@ export async function buildJiraTicketTask(app, ticketKey) {
     // a backreference.
     .replace(/\{reviewers\}/g, () => reviewersCsv)
     + appendTargetWorkItemBlock('claim-issue-jira', key)
+    + pinBlock
     + effortBlock
     + localReviewerBlock;
 
@@ -2908,6 +2918,9 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
   // sanitizeTaskMetadata, so read it from `metadata`. Empty for non-issue
   // trackers and when swarm is off.
   const swarmBlock = resolveSwarmBlock(promptTaskType, metadata.swarmCount);
+  // Does this template drive its own reviewers? Gates the three reviewer blocks
+  // appended after the substitutions below.
+  const rendersReviewers = /\{reviewers\}/.test(promptTemplate);
 
   return `${swarmBlock}${promptTemplate}`
     // {modeInstructions} before {trackerInstructions}: the file-issues mode
@@ -2938,17 +2951,17 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
     .replace(/\{repoFullName\}/g, () => blocks.repoFullName)
     .replace(/\{defaultBranch\}/g, () => blocks.defaultBranch)
     .replace(/\{planConstraint\}/g, () => blocks.planConstraint)
-    // The effort note accompanies the reviewer CSV, so it's only appended when this
-    // template actually carries one. A task type whose prompt does NOT drive its own
+    // The reviewer pin, the effort note, and the local-reviewer procedure all
+    // accompany the reviewer CSV, so they are appended only when this template
+    // actually carries one. A task type whose prompt does NOT drive its own
     // reviewers gets its PR reviewed by the completion workflow instead, and
-    // `buildCliCompletionSection` already states the effort next to that `/do:pr`
-    // step — appending here too would print the same sentence twice and give one
-    // instruction two owners to drift apart.
-    + (/\{reviewers\}/.test(promptTemplate)
-        ? appendReviewerEffortBlock(promptReviewers, promptReviewerEfforts, promptReviewerModels)
-        : '')
-    + (/\{reviewers\}/.test(promptTemplate)
-        ? buildLocalReviewerInstructions(promptReviewers, promptReviewerModels, promptReviewerEfforts)
+    // `buildCliCompletionSection` already emits `--review-with` (and states the
+    // effort) next to that `/do:pr` step — appending here too would print the
+    // same instruction twice and give it two owners to drift apart.
+    + (rendersReviewers
+        ? appendReviewerPinBlock(reviewersCsv)
+          + appendReviewerEffortBlock(promptReviewers, promptReviewerEfforts, promptReviewerModels)
+          + buildLocalReviewerInstructions(promptReviewers, promptReviewerModels, promptReviewerEfforts)
         : '');
 }
 
