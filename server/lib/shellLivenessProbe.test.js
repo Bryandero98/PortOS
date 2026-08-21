@@ -13,7 +13,7 @@ describe('buildLivenessProbeCommand', () => {
       '-NoProfile',
       '-NonInteractive',
       '-Command',
-      'Get-CimInstance Win32_Process -Filter "ParentProcessId = 1234" | Select-Object -ExpandProperty ProcessId',
+      'Get-CimInstance Win32_Process | Select-Object -ExpandProperty ParentProcessId',
     ]);
   });
 
@@ -39,23 +39,16 @@ describe('buildLivenessProbeCommand', () => {
 });
 
 describe('parseLivenessProbeOutput', () => {
-  it('parses POSIX ps output matching the shell pid', () => {
-    expect(parseLivenessProbeOutput('1\n1\n1234\n999', 1234, 'darwin')).toBe(true);
-    expect(parseLivenessProbeOutput('1\n1\n999', 1234, 'darwin')).toBe(false);
+  it('parses output matching the shell pid', () => {
+    expect(parseLivenessProbeOutput('1\n1\n1234\n999', 1234)).toBe(true);
+    expect(parseLivenessProbeOutput('1\n1\n999', 1234)).toBe(false);
   });
 
-  it('parses Windows powershell output returning child pids', () => {
-    expect(parseLivenessProbeOutput('5678\n', 1234, 'win32')).toBe(true);
-    expect(parseLivenessProbeOutput('5678\n9012\n', 1234, 'win32')).toBe(true);
-    expect(parseLivenessProbeOutput('', 1234, 'win32')).toBe(false);
-    expect(parseLivenessProbeOutput('   \n', 1234, 'win32')).toBe(false);
-    expect(parseLivenessProbeOutput('ProcessId\n---------\n', 1234, 'win32')).toBe(false);
-  });
-
-  it('returns false for empty stdout on all platforms', () => {
-    expect(parseLivenessProbeOutput('', 1234, 'darwin')).toBe(false);
-    expect(parseLivenessProbeOutput(null, 1234, 'darwin')).toBe(false);
-    expect(parseLivenessProbeOutput('', 1234, 'win32')).toBe(false);
+  it('returns false for empty or garbage output', () => {
+    expect(parseLivenessProbeOutput('', 1234)).toBe(false);
+    expect(parseLivenessProbeOutput(null, 1234)).toBe(false);
+    expect(parseLivenessProbeOutput('   \n', 1234)).toBe(false);
+    expect(parseLivenessProbeOutput('ProcessId\n---------\n', 1234)).toBe(false);
   });
 });
 
@@ -75,7 +68,7 @@ describe('shellHasLiveChild', () => {
     expect(result).toBe(true);
   });
 
-  it('resolves true when POSIX ps detects a live child process', async () => {
+  it('resolves true when probe detects a live child process on POSIX', async () => {
     const mockExec = vi.fn((_file, _args, _opts, cb) => cb(null, '1\n1234\n999\n'));
     const result = await shellHasLiveChild(1234, {
       platform: 'darwin',
@@ -84,7 +77,7 @@ describe('shellHasLiveChild', () => {
     expect(result).toBe(true);
   });
 
-  it('resolves false when POSIX ps detects no child process', async () => {
+  it('resolves false when probe detects no child process on POSIX', async () => {
     const mockExec = vi.fn((_file, _args, _opts, cb) => cb(null, '1\n999\n'));
     const result = await shellHasLiveChild(1234, {
       platform: 'darwin',
@@ -93,10 +86,10 @@ describe('shellHasLiveChild', () => {
     expect(result).toBe(false);
   });
 
-  it('resolves true when Windows probe returns child processes', async () => {
+  it('resolves true when probe detects a live child process on Windows', async () => {
     const mockExec = vi.fn((file, args, _opts, cb) => {
       expect(file).toBe('powershell');
-      cb(null, '4567\n');
+      cb(null, '1\n1234\n999\n');
     });
     const result = await shellHasLiveChild(1234, {
       platform: 'win32',
@@ -105,10 +98,10 @@ describe('shellHasLiveChild', () => {
     expect(result).toBe(true);
   });
 
-  it('resolves false when Windows probe returns empty stdout', async () => {
+  it('resolves false when probe detects no child process on Windows', async () => {
     const mockExec = vi.fn((file, args, _opts, cb) => {
       expect(file).toBe('powershell');
-      cb(null, '\n');
+      cb(null, '1\n999\n');
     });
     const result = await shellHasLiveChild(1234, {
       platform: 'win32',

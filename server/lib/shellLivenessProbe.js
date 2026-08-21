@@ -14,7 +14,7 @@
  * The probe is executed host-side via `execFile` from Node.js (not inside the PTY):
  *   • POSIX host (macOS / Linux): `ps -Ao ppid=` (lists parent PIDs)
  *   • Windows host: `powershell -NoProfile -NonInteractive -Command ...`
- *     using `Get-CimInstance Win32_Process` filtered by ParentProcessId.
+ *     using `Get-CimInstance Win32_Process | Select-Object -ExpandProperty ParentProcessId`.
  *
  * Resolves true (assume alive) if the probe fails or cannot run, so an environment
  * glitch never blocks an otherwise-healthy run.
@@ -25,11 +25,11 @@ import { execFile } from './childProcess.js';
 /**
  * Build the file + argv for probing children of `shellPid`.
  *
- * @param {number} shellPid - PID of the hosting shell process
+ * @param {number} _shellPid - PID of the hosting shell process
  * @param {string} [platform=process.platform] - OS platform
  * @returns {{ file: string, args: string[] }}
  */
-export function buildLivenessProbeCommand(shellPid, platform = process.platform) {
+export function buildLivenessProbeCommand(_shellPid, platform = process.platform) {
   if (platform === 'win32') {
     return {
       file: 'powershell',
@@ -37,7 +37,7 @@ export function buildLivenessProbeCommand(shellPid, platform = process.platform)
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        `Get-CimInstance Win32_Process -Filter "ParentProcessId = ${shellPid}" | Select-Object -ExpandProperty ProcessId`,
+        'Get-CimInstance Win32_Process | Select-Object -ExpandProperty ParentProcessId',
       ],
     };
   }
@@ -50,21 +50,12 @@ export function buildLivenessProbeCommand(shellPid, platform = process.platform)
 /**
  * Parse the output of the liveness probe.
  *
- * @param {string} stdout - raw stdout from the probe command
+ * @param {string} stdout - raw stdout from the probe command (lines of PPIDs)
  * @param {number} shellPid - PID of the hosting shell process
- * @param {string} [platform=process.platform] - OS platform
  * @returns {boolean} true if child process(es) were found
  */
-export function parseLivenessProbeOutput(stdout, shellPid, platform = process.platform) {
-  if (!stdout) return false;
-  if (platform === 'win32') {
-    return String(stdout)
-      .split('\n')
-      .some((line) => {
-        const num = parseInt(line.trim(), 10);
-        return Number.isFinite(num) && num > 0;
-      });
-  }
+export function parseLivenessProbeOutput(stdout, shellPid) {
+  if (!stdout || !shellPid) return false;
   return String(stdout)
     .split('\n')
     .some((line) => {
@@ -90,7 +81,7 @@ export function shellHasLiveChild(shellPid, { platform = process.platform, execF
         resolve(true);
         return;
       }
-      resolve(parseLivenessProbeOutput(stdout, shellPid, platform));
+      resolve(parseLivenessProbeOutput(stdout, shellPid));
     });
   });
 }
