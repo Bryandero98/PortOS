@@ -232,6 +232,31 @@ export function appendMissingBakeModules(help, bake) {
 }
 
 /**
+ * Which remedy a degraded texture bake actually has, given the host's toolchain state.
+ *
+ * A `quality: 'fallback'` bake has two very different fixes and only one of them applies
+ * on a given host: when the Xcode Metal Toolchain is merely missing, Repair install
+ * fetches it and rebuilds (#3041); when only the Command Line Tools are active there is
+ * nothing PortOS can run, so the remedy is to install Xcode and no Repair button is
+ * offered at all. Both server lanes that report a degraded bake resolve it HERE — the
+ * card/short-circuit projection in `adapters.js`, and the install's own `verify` frame —
+ * so the two cannot promise different fixes for the same host state (#4742). Same
+ * one-place-only reasoning as `appendMissingBakeModules` above, which fixed the
+ * module-name half of that parity.
+ *
+ * @param {{quality?: string, help?: string}} bake a result from `probeTrellis2TextureBake`
+ * @param {{blocker?: string, hint?: string}|null} [toolchain] a result from `probeMetalToolchain`
+ * @returns {{help?: string, repairable: boolean, blocker?: string}|null} `null` when the
+ *          bake is not degraded, i.e. there is no remedy to name
+ */
+export function resolveDegradedBakeRemedy(bake, toolchain) {
+  if (bake?.quality !== 'fallback') return null;
+  return toolchain?.blocker
+    ? { help: toolchain.hint, repairable: false, blocker: toolchain.blocker }
+    : { help: bake.help, repairable: true };
+}
+
+/**
  * Whether the Xcode Metal Toolchain is present — the prerequisite `setup.sh`
  * documents for building `mtldiffrast`/`mtlbvh`/`mtlgemm`. Checked BEFORE a ~15 GB
  * install so the user can fix it first, instead of discovering an hour later that
@@ -741,7 +766,8 @@ export const isTransientInstallError = textMatcher([
  *
  * @param {{base?: string, onEvent?: (ev: object) => void, spawnImpl?: Function,
  *          maxRetries?: number, sleep?: (ms: number) => Promise<void>,
- *          env?: NodeJS.ProcessEnv, probeBake?: Function, installMetalToolchain?: boolean}} [opts]
+ *          env?: NodeJS.ProcessEnv, probeBake?: Function, probeToolchain?: Function,
+ *          installMetalToolchain?: boolean}} [opts]
  * @returns {{promise: Promise<{ok: true}>, kill: () => void}}
  */
 export function installTrellis2({
@@ -753,6 +779,7 @@ export function installTrellis2({
   exists = existsSync,
   env,
   probeBake = probeTrellis2TextureBake,
+  probeToolchain = probeMetalToolchain,
   installMetalToolchain = false,
 } = {}) {
   // `exists` lets the clone step self-skip when the repo is already on disk (resume
@@ -775,6 +802,14 @@ export function installTrellis2({
     verify: async (emit) => {
       const bake = await probeBake({ base });
       if (bake.quality === 'fallback') {
+        // WHICH remedy applies depends on the host, and the card already resolves that
+        // the same way: a toolchain `blocker` host gets no Repair button, so promising
+        // "Repair install fetches the missing build dependencies" here would name a fix
+        // the UI has deliberately withheld (#4742). One shared resolver, probed only on
+        // the degraded path so a healthy install still spawns nothing extra. Probing now
+        // rather than reusing the caller's preflight result matters: the Metal Toolchain
+        // step may have installed it in between.
+        const remedy = resolveDegradedBakeRemedy(bake, await probeToolchain());
         // Name the culprits. The help text says which remedy to run, but not what is
         // actually missing — and `apple-deps` (the install's only gitlab.com fetch, and
         // an `optional` step) fails with one line that scrolls past inside a ~15 GB log.
@@ -783,7 +818,7 @@ export function installTrellis2({
         emit({
           type: 'log',
           stage: 'verify',
-          message: `⚠️ ${appendMissingBakeModules(bake.help, bake)}`,
+          message: `⚠️ ${appendMissingBakeModules(remedy.help, bake)}`,
         });
       } else if (bake.quality === 'metal') {
         emit({ type: 'log', stage: 'verify', message: '✅ Metal texture baking is available.' });

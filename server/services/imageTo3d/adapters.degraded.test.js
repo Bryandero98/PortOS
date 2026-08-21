@@ -117,6 +117,12 @@ describe('trellis2 degraded-state projection', () => {
     expect(state.fields.degraded).toEqual({
       label: 'degraded textures', help: 'install Xcode', repairable: false, detail: 'Missing: o_voxel',
     });
+    // The route replays `warnings` into the SAME `verify` stage the install writes,
+    // and that hook now resolves the remedy through the same helper — so a blocker
+    // host is told to install Xcode on BOTH paths, never to run the Repair the card
+    // has already hidden (#4742). The literal is asserted verbatim in trellis2.test.js
+    // against the install's own frame.
+    expect(state.warnings).toEqual(['install Xcode Missing: o_voxel.']);
   });
 
   it('reports nothing degraded — and no detail — for a healthy Metal bake', async () => {
