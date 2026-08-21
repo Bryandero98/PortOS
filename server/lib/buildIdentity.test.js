@@ -7,32 +7,84 @@ vi.mock('./execGit.js', () => ({ execGit: mocks.execGit }));
 const ok = (stdout) => ({ stdout, stderr: '', exitCode: 0 });
 const fail = (stderr = 'not a git repository') => ({ stdout: '', stderr, exitCode: 128 });
 
-// Route each probe by its git subcommand so a test can fail one call without
-// caring what order the module fires them in.
-function routeGit({ head, branch, status }) {
-  mocks.execGit.mockImplementation(async (args) => {
-    if (args[0] === 'status') return status;
-    if (args.includes('--abbrev-ref')) return branch;
-    return head;
-  });
-}
+// Real `git status --porcelain=v2 --branch` output, captured from git itself —
+// the parse is pinned against the actual format rather than an invented one.
+const CLEAN = [
+  '# branch.oid 1234567890abcdef1234567890abcdef12345678',
+  '# branch.head main',
+  '# branch.upstream origin/main',
+  '# branch.ab +0 -0',
+  ''
+].join('\n');
+
+const DIRTY = [
+  '# branch.oid 1234567890abcdef1234567890abcdef12345678',
+  '# branch.head main',
+  '1 .M N... 100644 100644 100644 0289925 0289925 server/index.js',
+  '? scratch.txt',
+  ''
+].join('\n');
 
 async function loadModule() {
   vi.resetModules();
   return import('./buildIdentity.js');
 }
 
-describe('buildIdentity', () => {
+describe('parsePorcelainV2', () => {
+  it('reads commit, short commit, and branch from the header', async () => {
+    const { parsePorcelainV2 } = await loadModule();
+
+    expect(parsePorcelainV2(CLEAN)).toEqual({
+      commit: '1234567890abcdef1234567890abcdef12345678',
+      shortCommit: '1234567',
+      branch: 'main',
+      dirty: false
+    });
+  });
+
+  it('treats any non-header line as a dirty tree', async () => {
+    const { parsePorcelainV2 } = await loadModule();
+
+    expect(parsePorcelainV2(DIRTY).dirty).toBe(true);
+  });
+
+  it('maps git\'s own absent spellings to null, not to a branch or commit', async () => {
+    const { parsePorcelainV2 } = await loadModule();
+
+    // `(initial)` is a repo with no commits; `(detached)` is not a branch name.
+    const initial = parsePorcelainV2('# branch.oid (initial)\n# branch.head main\n');
+    expect(initial.commit).toBeNull();
+    expect(initial.shortCommit).toBeNull();
+
+    const detached = parsePorcelainV2('# branch.oid abc1234\n# branch.head (detached)\n');
+    expect(detached.branch).toBeNull();
+    expect(detached.commit).toBe('abc1234');
+  });
+
+  it('reports null rather than an empty string for a blank header value', async () => {
+    const { parsePorcelainV2 } = await loadModule();
+
+    // An empty-string commit would compare unequal to every real commit and
+    // make the client's stale-bundle check report a permanent false mismatch.
+    const parsed = parsePorcelainV2('# branch.oid \n# branch.head \n');
+    expect(parsed.commit).toBeNull();
+    expect(parsed.branch).toBeNull();
+  });
+
+  it('does not mistake a header-only clean tree for dirty', async () => {
+    const { parsePorcelainV2 } = await loadModule();
+
+    expect(parsePorcelainV2('# branch.oid abc1234\n# branch.head main\n\n').dirty).toBe(false);
+  });
+});
+
+describe('getBuildIdentity', () => {
   beforeEach(() => {
     mocks.execGit.mockReset();
   });
 
-  it('reports commit, short commit, branch, and a clean tree', async () => {
-    routeGit({
-      head: ok('1234567890abcdef1234567890abcdef12345678\n'),
-      branch: ok('main\n'),
-      status: ok('')
-    });
+  it('resolves the identity from a single git spawn', async () => {
+    mocks.execGit.mockResolvedValue(ok(CLEAN));
     const { getBuildIdentity } = await loadModule();
 
     const identity = await getBuildIdentity();
@@ -41,22 +93,11 @@ describe('buildIdentity', () => {
     expect(identity.shortCommit).toBe('1234567');
     expect(identity.branch).toBe('main');
     expect(identity.dirty).toBe(false);
-    expect(Number.isNaN(Date.parse(identity.builtAt))).toBe(false);
+    expect(mocks.execGit).toHaveBeenCalledTimes(1);
   });
 
-  it('detects a dirty working tree', async () => {
-    routeGit({
-      head: ok('abc1234\n'),
-      branch: ok('feature\n'),
-      status: ok(' M server/index.js\n?? scratch.txt\n')
-    });
-    const { getBuildIdentity } = await loadModule();
-
-    expect((await getBuildIdentity()).dirty).toBe(true);
-  });
-
-  it('reports every git field null outside a repo, and never throws', async () => {
-    routeGit({ head: fail(), branch: fail(), status: fail() });
+  it('reports every field null outside a repo, and never throws', async () => {
+    mocks.execGit.mockResolvedValue(fail());
     const { getBuildIdentity } = await loadModule();
 
     const identity = await getBuildIdentity();
@@ -67,20 +108,6 @@ describe('buildIdentity', () => {
     // `null`, not `false` — "we could not tell" must stay distinguishable from
     // "we checked and the tree is clean".
     expect(identity.dirty).toBeNull();
-    expect(typeof identity.builtAt).toBe('string');
-  });
-
-  it('reports null (never an empty string) when git resolves but prints nothing', async () => {
-    routeGit({ head: ok('   \n'), branch: ok(''), status: ok('') });
-    const { getBuildIdentity } = await loadModule();
-
-    const identity = await getBuildIdentity();
-
-    // An empty-string commit would compare unequal to every real commit and
-    // make the client's stale-bundle check report a permanent false mismatch.
-    expect(identity.commit).toBeNull();
-    expect(identity.shortCommit).toBeNull();
-    expect(identity.branch).toBeNull();
   });
 
   it('survives a rejecting execGit (timeout / spawn failure) without throwing', async () => {
@@ -93,56 +120,50 @@ describe('buildIdentity', () => {
     expect(identity.dirty).toBeNull();
   });
 
-  it('maps a detached HEAD to a null branch rather than a branch named HEAD', async () => {
-    routeGit({ head: ok('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n'), branch: ok('HEAD\n'), status: ok('') });
+  it('shares one spawn across concurrent first callers', async () => {
+    // The boot log and an early health request can both land before the first
+    // probe resolves; caching the PROMISE (not the value) keeps that to one spawn.
+    mocks.execGit.mockResolvedValue(ok(CLEAN));
     const { getBuildIdentity } = await loadModule();
 
-    const identity = await getBuildIdentity();
+    const [a, b] = await Promise.all([getBuildIdentity(), getBuildIdentity()]);
 
-    expect(identity.branch).toBeNull();
-    expect(identity.commit).toBe('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+    expect(mocks.execGit).toHaveBeenCalledTimes(1);
+    expect(a).toBe(b);
   });
 
-  it('caches for the life of the process instead of re-probing git per call', async () => {
-    routeGit({ head: ok('abc1234\n'), branch: ok('main\n'), status: ok('') });
-    const { getBuildIdentity, resetBuildIdentityCache } = await loadModule();
+  it('does not re-probe git on later calls', async () => {
+    mocks.execGit.mockResolvedValue(ok(CLEAN));
+    const { getBuildIdentity } = await loadModule();
 
-    const first = await getBuildIdentity();
-    const callsAfterFirst = mocks.execGit.mock.calls.length;
-    const second = await getBuildIdentity();
-
-    expect(second).toBe(first);
-    expect(mocks.execGit.mock.calls.length).toBe(callsAfterFirst);
-
-    // And the cache is droppable, or no suite could exercise a second shape.
-    resetBuildIdentityCache();
     await getBuildIdentity();
-    expect(mocks.execGit.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+    await getBuildIdentity();
+
+    expect(mocks.execGit).toHaveBeenCalledTimes(1);
   });
 
-  it('probes git with ignoreExitCode and a bounded timeout, never the 30s default', async () => {
-    routeGit({ head: ok('abc1234\n'), branch: ok('main\n'), status: ok('') });
+  it('probes with ignoreExitCode and a bounded timeout, never the 30s default', async () => {
+    mocks.execGit.mockResolvedValue(ok(CLEAN));
     const { getBuildIdentity } = await loadModule();
 
     await getBuildIdentity();
 
-    expect(mocks.execGit.mock.calls.length).toBeGreaterThan(0);
-    for (const [, cwd, options] of mocks.execGit.mock.calls) {
-      expect(typeof cwd).toBe('string');
-      expect(cwd.trim()).not.toBe('');
-      expect(options.ignoreExitCode).toBe(true);
-      expect(options.timeout).toBeLessThanOrEqual(10_000);
-    }
+    const [args, cwd, options] = mocks.execGit.mock.calls[0];
+    expect(args).toEqual(['status', '--porcelain=v2', '--branch']);
+    expect(typeof cwd).toBe('string');
+    expect(cwd.trim()).not.toBe('');
+    expect(options.ignoreExitCode).toBe(true);
+    expect(options.timeout).toBeLessThanOrEqual(10_000);
   });
 
-  it('never reports a path, hostname, or username field', async () => {
-    routeGit({ head: ok('abc1234\n'), branch: ok('main\n'), status: ok('') });
+  it('never reports a path, hostname, username, or timestamp field', async () => {
+    mocks.execGit.mockResolvedValue(ok(CLEAN));
     const { getBuildIdentity } = await loadModule();
 
-    // Privacy contract: the payload rides an API response, so its shape is
-    // pinned exactly rather than merely spot-checked for known-bad keys.
+    // Privacy contract: the payload rides an API response and a socket frame,
+    // so its shape is pinned exactly rather than spot-checked for known-bad keys.
     expect(Object.keys(await getBuildIdentity()).sort()).toEqual(
-      ['branch', 'builtAt', 'commit', 'dirty', 'shortCommit']
+      ['branch', 'commit', 'dirty', 'shortCommit']
     );
   });
 });
@@ -167,5 +188,37 @@ describe('formatBuildIdentity', () => {
     expect(formatBuildIdentity(null)).toBe('unknown (no git metadata)');
     expect(formatBuildIdentity({ shortCommit: null, branch: null, dirty: null }))
       .toBe('unknown (no git metadata)');
+  });
+});
+
+describe('getCachedBuildIdentity', () => {
+  beforeEach(() => {
+    mocks.execGit.mockReset();
+  });
+
+  it('is null until the probe resolves, then returns the identity', async () => {
+    // The boot banner reads this synchronously — it must never block, and must
+    // degrade to null rather than to a half-built tuple.
+    mocks.execGit.mockResolvedValue(ok(CLEAN));
+    const { getBuildIdentity, getCachedBuildIdentity } = await loadModule();
+
+    expect(getCachedBuildIdentity()).toBeNull();
+
+    const identity = await getBuildIdentity();
+
+    expect(getCachedBuildIdentity()).toBe(identity);
+  });
+
+  it('caches the all-null identity too, so a non-repo does not re-probe forever', async () => {
+    mocks.execGit.mockResolvedValue(fail());
+    const { getBuildIdentity, getCachedBuildIdentity } = await loadModule();
+
+    await getBuildIdentity();
+
+    expect(getCachedBuildIdentity()).toEqual({
+      commit: null, shortCommit: null, branch: null, dirty: null
+    });
+    await getBuildIdentity();
+    expect(mocks.execGit).toHaveBeenCalledTimes(1);
   });
 });

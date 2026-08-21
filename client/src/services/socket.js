@@ -1,5 +1,6 @@
 import { io } from 'socket.io-client';
-import { showStaleBuildToast } from './staleBuildToast';
+import { showStaleBuildToast, showBuildDriftToast } from './staleBuildToast';
+import { resolveBuildFrame } from '../lib/buildStamp.js';
 
 // Connect to Socket.IO using relative path (works with Tailscale)
 // The connection will use the same host the page was loaded from
@@ -42,12 +43,16 @@ const EMBEDDED_BUILD_ID = (() => {
   return el ? el.getAttribute('content') : null;
 })();
 
-let staleToastShown = false;
-socket.on('build:id', ({ buildId } = {}) => {
-  if (!buildId || !EMBEDDED_BUILD_ID || buildId === EMBEDDED_BUILD_ID) return;
-  if (staleToastShown) return;
-  staleToastShown = true;
-  showStaleBuildToast();
+// One frame, two different staleness problems with two different remedies —
+// `resolveBuildFrame` owns that decision (it is pure and tested); this just
+// dispatches, once per kind per tab.
+const shown = { reload: false, drift: false };
+socket.on('build:id', (frame) => {
+  const action = resolveBuildFrame(frame, { embeddedBuildId: EMBEDDED_BUILD_ID });
+  if (!action || shown[action]) return;
+  shown[action] = true;
+  if (action === 'reload') showStaleBuildToast();
+  else showBuildDriftToast();
 });
 
 export default socket;

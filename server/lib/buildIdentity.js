@@ -16,11 +16,15 @@
  * hash says nothing about which commit either side was built from: a `dist/`
  * built three days ago and one built this minute are both "current" to buildId
  * as long as the browser matches the file. This module answers the other half —
- * WHICH CODE is up — and the two are complementary, not redundant.
+ * WHICH CODE is up. The two ride the same `build:id` socket frame precisely
+ * because they are complementary halves of one question.
  *
- * Privacy: commit / branch / dirty / timestamp only. No absolute paths (they
- * embed the OS username), no hostname, no checkout directory — see the
- * Sensitive Data section of the root CLAUDE.md.
+ * Privacy: commit / branch / dirty only. No absolute paths (they embed the OS
+ * username), no hostname, no checkout directory — see the Sensitive Data
+ * section of the root CLAUDE.md. Deliberately no timestamp either: "how long
+ * has this process been up" is already `system.uptime` on the health payload,
+ * and a second spelling of it here would drift (uptime is recomputed per
+ * request; this tuple is frozen at first read).
  */
 
 import { execGit } from './execGit.js';
@@ -32,78 +36,112 @@ import { PATHS } from './fileUtils.js';
 // and the code tree diverge, and the commit that matters is the code's.
 const CODE_ROOT = PATHS.root;
 
-// Probe-shaped git calls, per the house convention (`gitCommitProbe.js`):
-// `ignoreExitCode` so a non-repo resolves to a readable non-zero exit rather
-// than rejecting, and a short `timeout` so a git wedged on a locked index or a
-// slow network mount can't hold boot (or a health request) open for execGit's
-// 30s default.
+// A short bound, not execGit's 30s default: this runs at boot and behind a
+// health route, and a git wedged on a locked index or a slow network mount must
+// not hold either open.
 const GIT_TIMEOUT_MS = 5000;
 
+// git's own "there is no value here" spellings in the porcelain-v2 header:
+// `(initial)` for a repo with no commits yet, `(detached)` for a detached HEAD.
+// Both must read as absent — a branch literally named "detached" is not what
+// git means here, and `(initial)` is not a commit.
+const NO_COMMIT = '(initial)';
+const NO_BRANCH = '(detached)';
+
 /**
- * Run one probe-shaped git command and return its trimmed stdout, or null.
- * Every failure mode — missing `.git`, broken checkout, timeout, non-zero exit,
- * empty output — collapses to `null`, never `''`. An empty-string commit reads
- * downstream as "a commit whose value is blank" and would compare unequal to
- * every real commit, silently reporting a false mismatch; `null` says "not
- * known" (root CLAUDE.md's absent-vs-empty rule).
+ * Parse `git status --porcelain=v2 --branch` into the identity tuple.
+ *
+ * One command answers all three questions: `# branch.oid` is HEAD,
+ * `# branch.head` is the branch, and any non-`#` line is a change in the tree.
+ * That is also why `dirty` can be read honestly here — a clean tree emits the
+ * header and nothing else, which a bare `--porcelain` (no header) could not
+ * distinguish from a command that failed and printed nothing.
+ *
+ * Exported for the test suite, which pins the parse against real git output
+ * rather than re-implementing this logic in the assertions.
  */
-async function gitProbe(args) {
-  const result = await execGit(args, CODE_ROOT, {
+export function parsePorcelainV2(stdout) {
+  const lines = String(stdout).split('\n');
+  let commit = null;
+  let branch = null;
+  let dirty = false;
+
+  for (const line of lines) {
+    if (line.startsWith('# branch.oid ')) {
+      const value = line.slice('# branch.oid '.length).trim();
+      // Empty stays null rather than becoming '': an empty-string commit
+      // compares unequal to every real commit and would report a permanent
+      // false mismatch downstream (root CLAUDE.md's absent-vs-empty rule).
+      if (value && value !== NO_COMMIT) commit = value;
+    } else if (line.startsWith('# branch.head ')) {
+      const value = line.slice('# branch.head '.length).trim();
+      if (value && value !== NO_BRANCH) branch = value;
+    } else if (line.trim() !== '' && !line.startsWith('#')) {
+      dirty = true;
+    }
+  }
+
+  return { commit, shortCommit: commit ? commit.slice(0, 7) : null, branch, dirty };
+}
+
+// Every field null, and `dirty` null rather than false — "we could not check"
+// must stay distinguishable from "we checked and the tree is clean".
+const UNKNOWN_IDENTITY = { commit: null, shortCommit: null, branch: null, dirty: null };
+
+async function probe() {
+  // `ignoreExitCode` so a non-repo resolves to a readable non-zero exit rather
+  // than rejecting — the house convention for probe-shaped git calls, see
+  // `gitCommitProbe.js`.
+  const result = await execGit(['status', '--porcelain=v2', '--branch'], CODE_ROOT, {
     ignoreExitCode: true,
     timeout: GIT_TIMEOUT_MS
   }).catch(() => null);
-  if (!result || result.exitCode !== 0) return null;
-  const value = result.stdout.trim();
-  return value === '' ? null : value;
+
+  // No `.git`, a broken checkout, or a timeout — report not-known, never a
+  // fabricated value.
+  if (!result || result.exitCode !== 0) return UNKNOWN_IDENTITY;
+  return parsePorcelainV2(result.stdout);
 }
 
 let cached = null;
+let resolved = null;
 
 /**
  * Resolve the running build's git identity. Cached for the life of the process:
  * the code a running process loaded cannot change under it, so re-probing git
- * on every health request would spend three subprocesses to re-learn a constant.
- * (`dirty` CAN change on disk — but it describes the tree the process booted
- * from, and a mid-run edit is not code this process is executing.)
+ * per health request would spend a subprocess to re-learn a constant. The cache
+ * holds the PROMISE, so concurrent first callers (the boot log and an early
+ * request) share one spawn instead of racing to fire their own.
+ *
+ * `dirty` describes the tree this process booted FROM — a later edit on disk is
+ * not code this process is executing, so freezing it is the honest reading, and
+ * the UI labels it as an at-start fact.
  *
  * Non-throwing. Every field is independently nullable: a tarball install with
- * no `.git`, a detached checkout, or a git timeout reports `commit: null`
- * rather than a fabricated or empty value.
+ * no `.git`, a detached checkout, or a git timeout reports `commit: null`.
  *
- * @returns {Promise<{commit: string|null, shortCommit: string|null, branch: string|null, dirty: boolean|null, builtAt: string}>}
+ * @returns {Promise<{commit: string|null, shortCommit: string|null, branch: string|null, dirty: boolean|null}>}
  */
-export async function getBuildIdentity() {
-  if (cached) return cached;
-
-  const [commit, branch, status] = await Promise.all([
-    gitProbe(['rev-parse', 'HEAD']),
-    // `--abbrev-ref HEAD` prints the literal string `HEAD` on a detached
-    // checkout, which is not a branch name. Report that as null rather than
-    // handing the UI a branch called "HEAD".
-    gitProbe(['rev-parse', '--abbrev-ref', 'HEAD']),
-    // `--porcelain` prints one line per changed path and NOTHING when clean —
-    // so a clean tree trims to '' and `gitProbe` returns null, which is
-    // indistinguishable from a failed probe. That ambiguity is why dirty is
-    // resolved from the raw result below instead of through `gitProbe`.
-    execGit(['status', '--porcelain'], CODE_ROOT, {
-      ignoreExitCode: true,
-      timeout: GIT_TIMEOUT_MS
-    }).catch(() => null)
-  ]);
-
-  const dirty = status && status.exitCode === 0 ? status.stdout.trim() !== '' : null;
-
-  cached = {
-    commit,
-    shortCommit: commit ? commit.slice(0, 7) : null,
-    branch: branch === 'HEAD' ? null : branch,
-    dirty,
-    // When this process started — the honest reading of "how old is the code
-    // that is answering me". Distinct from the client's `__BUILD_STAMP__`,
-    // which is stamped when the bundle was built.
-    builtAt: new Date(Date.now() - process.uptime() * 1000).toISOString()
-  };
+export function getBuildIdentity() {
+  cached ??= probe().then((identity) => {
+    resolved = identity;
+    return identity;
+  });
   return cached;
+}
+
+/**
+ * The identity if it has already resolved, else null — for callers that must
+ * log synchronously and cannot introduce an await.
+ *
+ * `announceListening` in `services/bootstrap.js` is the case: its caller does
+ * not await it, so an await inside would let the rest of the boot banner print
+ * around the yield. Boot primes the cache long before `listen()` fires, so this
+ * is populated by then; if it somehow is not, `formatBuildIdentity(null)`
+ * degrades to "unknown" rather than blocking or printing a placeholder.
+ */
+export function getCachedBuildIdentity() {
+  return resolved;
 }
 
 /**
@@ -117,9 +155,4 @@ export function formatBuildIdentity(identity) {
   if (identity.dirty === true) parts.push('dirty');
   if (identity.dirty === null) parts.push('cleanliness unknown');
   return `${identity.shortCommit} (${parts.join(', ')})`;
-}
-
-/** Test-only: drop the process-lifetime cache. */
-export function resetBuildIdentityCache() {
-  cached = null;
 }

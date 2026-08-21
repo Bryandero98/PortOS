@@ -1,41 +1,37 @@
 import { AlertTriangle, GitCommitHorizontal } from 'lucide-react';
 import Pill from '../ui/Pill';
 import Banner from '../ui/Banner';
-import { compareBuildStamps, describeBuild } from '../../lib/buildStamp.js';
+import { BUNDLE_STAMP, compareBuildStamps, describeBuild } from '../../lib/buildStamp.js';
 import { timeAgo } from '../../utils/formatters';
-
-// `__BUILD_STAMP__` is a Vite build-time define (see client/vite.config.js).
-// It is genuinely absent under vitest and under any non-bundled consumer, so it
-// is read through `typeof` rather than referenced bare — a bare reference throws
-// a ReferenceError instead of degrading to the 'unknown' state.
-function readBundleStamp() {
-  return typeof __BUILD_STAMP__ === 'undefined' ? null : __BUILD_STAMP__;
-}
 
 /**
  * Which code is actually running — the git commit of the server process, and of
- * the bundle this browser loaded (#4694).
+ * the bundle this browser loaded (#4694). Why `version` cannot answer this: see
+ * the module header of `server/lib/buildIdentity.js`.
  *
- * `version` cannot answer this: by project rule package.json's version reflects
- * the last release and is identical across every development commit and every
- * worktree, so a server restarted from a stale checkout looks exactly like a
- * current one. The mismatch banner is the point of the panel — it turns "my
- * change isn't showing up" from a debugging session into a visible fact.
+ * The mismatch banner is the point of the panel: it turns "my change isn't
+ * showing up" from a debugging session into a visible fact. The same comparison
+ * also runs unprompted on every page via the `build:id` socket frame — this is
+ * the read-out, not the only detector.
  */
-export default function BuildStampPanel({ build }) {
-  const bundle = readBundleStamp();
-  const { state, bundleCommit, serverCommit } = compareBuildStamps(bundle, build);
+export default function BuildStampPanel({ build, uptimeFormatted }) {
+  const { state, bundleCommit, serverCommit } = compareBuildStamps(BUNDLE_STAMP, build);
 
   const serverLabel = describeBuild({
-    commit: build?.shortCommit || build?.commit,
+    commit: serverCommit,
     branch: build?.branch,
     dirty: build?.dirty
   });
-  const bundleLabel = describeBuild({ commit: bundle?.commit, branch: bundle?.branch });
+  const bundleLabel = describeBuild({ commit: BUNDLE_STAMP?.commit, branch: BUNDLE_STAMP?.branch });
 
-  // Nothing to say at all — a tarball install with no git on either side. Render
-  // the panel anyway rather than hiding it, so "we could not tell" is visible
-  // instead of looking like the feature is missing.
+  // Rendered even when both sides are unknown (a tarball install with no git),
+  // so "we could not tell" is visible rather than looking like a missing feature.
+  const footnote = state === 'match'
+    ? 'Bundle and server agree — what you are looking at is the code that is running.'
+    : state === 'unknown'
+      ? 'Commit unknown on at least one side (no git metadata), so bundle/server drift cannot be checked here.'
+      : null;
+
   return (
     <section className="rounded-xl border border-port-border bg-port-card p-4">
       <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
@@ -58,26 +54,19 @@ export default function BuildStampPanel({ build }) {
         <StampRow
           label="Server"
           value={serverLabel}
-          hint={build?.builtAt ? `started ${timeAgo(build.builtAt)}` : null}
+          // The server's `dirty` is read once at boot, so the whole row
+          // describes the tree the process STARTED from — labelled as such
+          // rather than implying a live read of the working tree.
+          hint={uptimeFormatted ? `at start · up ${uptimeFormatted}` : 'at start'}
         />
         <StampRow
           label="This page"
           value={bundleLabel}
-          hint={bundle?.builtAt ? `built ${timeAgo(bundle.builtAt)}` : null}
+          hint={BUNDLE_STAMP?.builtAt ? `built ${timeAgo(BUNDLE_STAMP.builtAt)}` : null}
         />
       </dl>
 
-      {state === 'match' && (
-        <p className="mt-3 text-xs text-gray-500">
-          Bundle and server agree — what you are looking at is the code that is running.
-        </p>
-      )}
-      {state === 'unknown' && (
-        <p className="mt-3 text-xs text-gray-500">
-          Commit unknown on at least one side (no git metadata), so bundle/server drift cannot be
-          checked here.
-        </p>
-      )}
+      {footnote && <p className="mt-3 text-xs text-gray-500">{footnote}</p>}
     </section>
   );
 }

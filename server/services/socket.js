@@ -52,6 +52,7 @@ import * as appUpdater from './appUpdater.js';
 import * as appDeployer from './appDeployer.js';
 import { registerVoiceHandlers } from '../sockets/voice.js';
 import { getBuildId } from '../lib/buildId.js';
+import { getBuildIdentity } from '../lib/buildIdentity.js';
 import { authEvents, extractToken, isAuthEnabled, verifySession } from './auth.js';
 
 // Store active log streams per socket/process pair.
@@ -204,11 +205,22 @@ export function initSocket(io) {
     }
     registerVoiceHandlers(socket);
 
-    // Tell the client what build the server is on. The client compares this
-    // to its own embedded <meta name="portos-build-id"> value; a mismatch
-    // means the tab is running stale code against a freshly-rebuilt server
-    // and the user is offered a reload.
-    socket.emit('build:id', { buildId: getBuildId() });
+    // Tell the client what build the server is on — both halves of the
+    // question, in one frame:
+    //   buildId — hash of the served bundle. A mismatch means this tab is
+    //     running stale code against a freshly-rebuilt server; a reload fixes it.
+    //   commit  — the git commit the SERVER process is running (#4694). A
+    //     mismatch against the bundle's own `__BUILD_STAMP__` means the dist was
+    //     built from different code than the API is running, which a reload
+    //     canNOT fix — it needs a rebuild or a restart.
+    // Deferred on the cached identity promise rather than awaited in the
+    // connection handler, so a slow first git probe can't hold up the rest of
+    // the handshake. It resolves from cache after boot. Carries its own catch:
+    // this runs outside the request lifecycle.
+    getBuildIdentity()
+      .then(({ commit, branch, dirty }) =>
+        socket.emit('build:id', { buildId: getBuildId(), commit, branch, dirty }))
+      .catch(() => socket.emit('build:id', { buildId: getBuildId() }));
 
     // Replay the in-flight importer analyze snapshot ON DEMAND so a tab that
     // (re)connects mid-analyze rebuilds its stage checklist instead of staying

@@ -22,6 +22,17 @@ vi.mock('./notifications.js', () => ({ notificationEvents: { on: vi.fn() } }));
 vi.mock('./agentPersonalities.js', () => ({ agentPersonalityEvents: { on: vi.fn() } }));
 vi.mock('./platformAccounts.js', () => ({ platformAccountEvents: { on: vi.fn() } }));
 vi.mock('./updateChecker.js', () => ({ updateEvents: { on: vi.fn() } }));
+// The build stamp would otherwise spawn git against whatever checkout the
+// suite runs from, making the assertion depend on the clone.
+vi.mock('../lib/buildId.js', () => ({ getBuildId: vi.fn(() => 'test-build-id') }));
+vi.mock('../lib/buildIdentity.js', () => ({
+  getBuildIdentity: vi.fn().mockResolvedValue({
+    commit: 'abc1234567890abcdef1234567890abcdef12345',
+    shortCommit: 'abc1234',
+    branch: 'main',
+    dirty: false
+  })
+}));
 vi.mock('./automationScheduler.js', () => ({ scheduleEvents: { on: vi.fn() } }));
 vi.mock('./agentActivity.js', () => ({ activityEvents: { on: vi.fn() } }));
 vi.mock('./brainStorage.js', () => ({ brainEvents: { on: vi.fn() } }));
@@ -132,6 +143,24 @@ describe('socket.js — initSocket', () => {
   // ===========================================================================
   // cos:subscribe — socket joins cosSubscribers, receives cos:subscribed ack
   // ===========================================================================
+  it('tells a connecting client both the bundle id AND the running commit (#4694)', async () => {
+    // One frame carries both staleness signals: `buildId` (this tab's bundle vs
+    // the dist on disk — a reload fixes it) and `commit` (that dist vs the code
+    // the server runs — a reload does NOT). The emit is deferred on the cached
+    // identity promise, so it lands a microtask after connect.
+    const socket = makeSocket('build-stamp');
+    createdSockets.push(socket);
+    io.connect(socket);
+    await vi.waitFor(() =>
+      expect(socket.emitted.some(([ev]) => ev === 'build:id')).toBe(true));
+
+    const [, frame] = socket.emitted.find(([ev]) => ev === 'build:id');
+    expect(frame.buildId).toBe('test-build-id');
+    expect(frame.commit).toBe('abc1234567890abcdef1234567890abcdef12345');
+    expect(frame.branch).toBe('main');
+    expect(frame.dirty).toBe(false);
+  });
+
   it('socket receives cos:subscribed ack after emitting cos:subscribe', () => {
     const socket = makeSocket('sub-1');
     io.connect(socket);

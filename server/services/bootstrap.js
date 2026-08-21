@@ -26,6 +26,7 @@ import { join } from 'path';
 import { resolveInstallRoot } from '../lib/dataRoot.js';
 import { PORTS } from '../lib/ports.js';
 import { getSelfHost } from '../lib/peerSelfHost.js';
+import { getCachedBuildIdentity, formatBuildIdentity } from '../lib/buildIdentity.js';
 import { setupProcessErrorHandlers, asyncHandler, ServerError, errorEvents } from '../lib/errorHandler.js';
 import { ERROR_CATEGORIES } from '../lib/aiToolkit/errorDetection.js';
 import { createAIToolkit } from '../lib/aiToolkit/index.js';
@@ -624,6 +625,15 @@ const announceListening = ({ io, httpServer, localHttpServer, httpsEnabled, port
   // (HTTP or HTTPS), :PORTOS_HTTP_PORT (default 5553) is the loopback HTTP
   // mirror that only spawns when HTTPS is active. See docs/PORTS.md.
   console.log(`🚀 PortOS listening on :${port} (${httpsEnabled ? 'https' : 'http'})`);
+  // Which code is up. One PM2-managed portos-server serves :5555 for the whole
+  // machine while any number of worktrees hold different code, so `pm2 logs
+  // portos-server` should answer "which commit is this?" without a request
+  // (#4694). Logged here rather than fire-and-forget at module scope so it
+  // lands at a DETERMINISTIC position in the banner instead of racing it.
+  // Read synchronously from the cache primed at boot: this function's caller
+  // does not await it, so an await here would let the lines below print around
+  // the yield and scramble the banner.
+  console.log(`   🧬 build ${formatBuildIdentity(getCachedBuildIdentity())}`);
   if (!httpsEnabled) {
     console.log(`   🌐 http://localhost:${port}`);
     console.log(`⚠️  HTTP only — getUserMedia (mic) won't work over Tailscale IP. Run "npm run setup:cert" to enable HTTPS.`);

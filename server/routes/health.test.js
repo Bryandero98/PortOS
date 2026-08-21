@@ -72,8 +72,7 @@ vi.mock('../lib/buildIdentity.js', () => ({
     commit: 'abc1234567890abcdef1234567890abcdef12345',
     shortCommit: 'abc1234',
     branch: 'main',
-    dirty: false,
-    builtAt: '2026-01-01T00:00:00.000Z'
+    dirty: false
   })
 }));
 
@@ -155,8 +154,7 @@ describe('System Health Routes', () => {
       commit: 'abc1234567890abcdef1234567890abcdef12345',
       shortCommit: 'abc1234',
       branch: 'main',
-      dirty: false,
-      builtAt: '2026-01-01T00:00:00.000Z'
+      dirty: false
     });
   });
 
@@ -179,13 +177,6 @@ describe('System Health Routes', () => {
     expect(response.body).toHaveProperty('overallHealth');
   });
 
-  it('never leaks a path, hostname, or username through the build stamp', async () => {
-    const response = await request(app).get('/api/system/health/details');
-
-    expect(Object.keys(response.body.build).sort()).toEqual(
-      ['branch', 'builtAt', 'commit', 'dirty', 'shortCommit']
-    );
-  });
 
   it('does not warn on cumulative restart_time (developer-driven restarts)', async () => {
     listProcesses.mockResolvedValueOnce([

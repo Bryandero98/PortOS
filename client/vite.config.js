@@ -13,39 +13,39 @@ const rootPkg = JSON.parse(readFileSync(resolve(CONFIG_DIR, '../package.json'), 
 // Which commit this BUNDLE was built from (#4694). package.json's version cannot
 // answer that — by project rule it reflects the last RELEASE and is identical
 // across every development commit — so a dist/ built three days ago looks exactly
-// like one built this minute. The client compares this against the server's
-// /api/system/health/details `build.commit` and flags a mismatch, which is the
-// "I spent an hour debugging a UI that was not talking to the code I edited"
-// failure mode.
+// like one built this minute. Full rationale: server/lib/buildIdentity.js.
 //
 // Fail-soft: a source-tarball build has no .git and must still build, so every
-// probe degrades to 'unknown' rather than throwing.
+// probe degrades to `null` — the SAME absent sentinel the server sends, so the
+// client comparison has one vocabulary to understand rather than two. Never `''`
+// and never a placeholder string: a blank commit compares unequal to every real
+// commit, and a branch literally named "unknown" would be swallowed as absent.
 function gitStamp(args) {
-  const out = execFileSync('git', args, {
-    cwd: CONFIG_DIR,
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-    timeout: 5000
-  });
-  return out.trim() || 'unknown';
+  try {
+    const out = execFileSync('git', args, {
+      cwd: CONFIG_DIR,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000
+    });
+    return out.trim() || null;
+  } catch {
+    // No git, no repo, or a timeout.
+    return null;
+  }
 }
 
 function buildStamp() {
-  // 'unknown' rather than '' or null: this value is inlined into the bundle as a
-  // literal, and an empty string would compare unequal to every real commit and
-  // report a permanent false "stale bundle" (root CLAUDE.md's absent-vs-empty rule).
-  let commit = 'unknown';
-  let branch = 'unknown';
-  try {
-    commit = gitStamp(['rev-parse', '--short=7', 'HEAD']);
-    const head = gitStamp(['rev-parse', '--abbrev-ref', 'HEAD']);
-    branch = head === 'HEAD' ? 'unknown' : head;
-  } catch {
-    // No git, no repo, or a timeout — keep the 'unknown' defaults.
-  }
-  // Commit / branch / timestamp only. No paths (they embed the OS username), no
-  // hostname — this string ships to every browser that loads the app.
-  return { commit, branch, builtAt: new Date().toISOString() };
+  const head = gitStamp(['rev-parse', '--abbrev-ref', 'HEAD']);
+  return {
+    commit: gitStamp(['rev-parse', '--short=7', 'HEAD']),
+    // `rev-parse --abbrev-ref` prints the literal string `HEAD` on a detached
+    // checkout, which is not a branch name.
+    branch: head === 'HEAD' ? null : head,
+    // Commit / branch / timestamp only. No paths (they embed the OS username),
+    // no hostname — this string ships to every browser that loads the app.
+    builtAt: new Date().toISOString()
+  };
 }
 
 // Dev proxy target: probe for the self-signed/LE cert under data/certs/. If the
