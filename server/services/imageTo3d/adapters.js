@@ -37,10 +37,14 @@
  *    quality). Omit when a target has nothing extra to report.
  *
  *    **A degraded-but-working install reports `fields.degraded`**:
- *    `{ label, help, repairable }`. This is the ONE shape the client renders, so the
- *    badge / help panel / Repair button work for any target without a per-target
+ *    `{ label, help, repairable, detail? }`. This is the ONE shape the client renders,
+ *    so the badge / help panel / Repair button work for any target without a per-target
  *    branch. `repairable: false` means re-running install cannot fix it and no Repair
- *    button is offered.
+ *    button is offered. `detail` is an optional short line naming the *specific* thing
+ *    that is missing (`Missing: o_voxel`) — `help` says which remedy to run, `detail`
+ *    says what is actually broken, so a user whose Repair keeps failing has something
+ *    to act on instead of the same generic sentence. Omit it entirely rather than
+ *    emitting an empty label when the probe could not determine anything.
  *
  *    A target may also return its own narrow diagnostic field, but keep it small and
  *    keep the UI off it. `trellis2` still returns `textureBake` with **no in-repo
@@ -55,6 +59,8 @@ import {
   runTrellis2Generate,
   probeTrellis2TextureBake,
   probeMetalToolchain,
+  missingBakeModulesLabel,
+  appendMissingBakeModules,
 } from './trellis2.js';
 import {
   isTrellis2CudaInstalled,
@@ -92,6 +98,7 @@ export const TARGET_ADAPTERS = Object.freeze({
     async describeInstallState() {
       const bake = await probeTrellis2TextureBake();
       const degradedBake = bake.quality === 'fallback';
+      const missingModules = missingBakeModulesLabel(bake);
       const toolchain = degradedBake ? await probeMetalToolchain() : null;
       // A degraded bake has two very different remedies, and the card must not
       // offer the wrong one: when the Metal Toolchain is merely missing, Repair
@@ -112,10 +119,24 @@ export const TARGET_ADAPTERS = Object.freeze({
               label: 'degraded textures',
               help: textureBake.help,
               repairable: textureBake.repairable !== false,
+              // Which module actually failed to build. `help` names the remedy; without
+              // this the card can only repeat that remedy, so a Repair that keeps
+              // failing looks like an unbounded loop (#4636). Shares one formatter with
+              // the install's `verify` frame so the two lanes cannot drift. Kept on the
+              // toolchain-`blocker` path too, where `help` becomes the Xcode hint but
+              // WHICH modules failed is still the useful half. The emptiness guard is
+              // defensive only: a real probe reports `fallback` exactly when `missing`
+              // is non-empty, and the `quality: 'unknown'` case never reaches here — the
+              // outer `degradedBake` gate drops the whole `degraded` key first.
+              ...(missingModules ? { detail: missingModules } : {}),
             },
           } : {}),
         },
-        warnings: degradedBake ? [textureBake.help] : [],
+        // Replayed verbatim into the install route's `verify` stage on the
+        // already-installed short-circuit — the SAME stage the install's own verify
+        // hook writes. Carry the module names here too, or one condition emits two
+        // different frames depending on which path the caller took (#4636).
+        warnings: degradedBake ? [appendMissingBakeModules(textureBake.help, bake)] : [],
       };
     },
   }),

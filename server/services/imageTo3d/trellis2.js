@@ -189,6 +189,49 @@ export async function probeTrellis2TextureBake({
 }
 
 /**
+ * The culprit modules from a bake probe, as one short human-readable label
+ * (`Missing: o_voxel, mtlbvh`) — or `''` when there is nothing to name.
+ *
+ * The `degraded.detail` field is exactly this label, and the prose lanes get it through
+ * `appendMissingBakeModules` below rather than re-assembling the sentence — the label is
+ * punctuation-free because a standalone card line wants none, so the terminal period is
+ * the appending helper's job.
+ *
+ * Returning `''` rather than a bare "Missing:" is defensive depth, not the thing that
+ * silences a `quality: 'unknown'` probe — both callers gate on `'fallback'` first, and a
+ * real probe reports that exactly when `missing` is non-empty, so an empty list never
+ * arrives here. `degradedQuality` is deliberately NOT included: `flex_gemm` lowers bake
+ * quality without forcing the fallback baker, so naming it here would read as a cause of
+ * the confetti surface when it isn't.
+ *
+ * @param {{missing?: string[]}} bake a result from `probeTrellis2TextureBake`
+ * @returns {string}
+ */
+export function missingBakeModulesLabel(bake) {
+  const missing = bake?.missing;
+  return missing?.length ? `Missing: ${missing.join(', ')}` : '';
+}
+
+/**
+ * A prose help string with the culprit modules appended as a closing sentence
+ * (`… models are kept. Missing: o_voxel.`).
+ *
+ * Both server lanes that report a degraded bake in prose go through this: the install's
+ * own `verify` hook, and the adapter `warnings` the install route replays into that
+ * SAME `verify` stage on the already-installed short-circuit. Assembling the sentence
+ * at each call site instead would let one condition emit two differently-worded frames
+ * depending on which path the caller took.
+ *
+ * @param {string} help the remedy prose (already ends in its own punctuation)
+ * @param {{missing?: string[]}} bake a result from `probeTrellis2TextureBake`
+ * @returns {string}
+ */
+export function appendMissingBakeModules(help, bake) {
+  const label = missingBakeModulesLabel(bake);
+  return [help, label && `${label}.`].filter(Boolean).join(' ');
+}
+
+/**
  * Whether the Xcode Metal Toolchain is present — the prerequisite `setup.sh`
  * documents for building `mtldiffrast`/`mtlbvh`/`mtlgemm`. Checked BEFORE a ~15 GB
  * install so the user can fix it first, instead of discovering an hour later that
@@ -732,7 +775,16 @@ export function installTrellis2({
     verify: async (emit) => {
       const bake = await probeBake({ base });
       if (bake.quality === 'fallback') {
-        emit({ type: 'log', stage: 'verify', message: `⚠️ ${bake.help}` });
+        // Name the culprits. The help text says which remedy to run, but not what is
+        // actually missing — and `apple-deps` (the install's only gitlab.com fetch, and
+        // an `optional` step) fails with one line that scrolls past inside a ~15 GB log.
+        // Without the module names a user whose Repair keeps failing has nothing to go
+        // on and reruns the same generic remedy forever (#4636).
+        emit({
+          type: 'log',
+          stage: 'verify',
+          message: `⚠️ ${appendMissingBakeModules(bake.help, bake)}`,
+        });
       } else if (bake.quality === 'metal') {
         emit({ type: 'log', stage: 'verify', message: '✅ Metal texture baking is available.' });
       }

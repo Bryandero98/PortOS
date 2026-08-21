@@ -28,6 +28,7 @@ import {
   TRELLIS2_METAL_BAKE_MODULES,
   TRELLIS2_BAKE_QUALITY_MODULES,
   TRELLIS2_FALLBACK_BAKE_HELP,
+  missingBakeModulesLabel,
   TRELLIS2_METAL_TOOLCHAIN_HINT,
   TRELLIS2_REQUIRES_XCODE_HINT,
   TRELLIS2_DEFAULT_TEXTURE_SIZE,
@@ -391,6 +392,29 @@ describe('probeTrellis2TextureBake', () => {
       base: BASE, exists: () => true, execFileImpl: fakeExec({ ...allPresent, flex_gemm: false }),
     }),
   ).resolves.toMatchObject({ quality: 'metal', degradedQuality: ['flex_gemm'] }));
+
+  // #4636: one formatter feeds both the install's verify frame and the card's
+  // `degraded.detail`, so the two lanes cannot drift on the wording.
+  describe('missingBakeModulesLabel', () => {
+    it('names every missing Metal bake module', () => expect(
+      missingBakeModulesLabel({ missing: ['o_voxel', 'mtlbvh'] }),
+    ).toBe('Missing: o_voxel, mtlbvh'));
+
+    it('is empty when nothing is missing, so no bare "Missing:" can render', () => {
+      expect(missingBakeModulesLabel({ missing: [] })).toBe('');
+      expect(missingBakeModulesLabel({})).toBe('');
+      expect(missingBakeModulesLabel(undefined)).toBe('');
+    });
+
+    // `flex_gemm` lowers bake quality without forcing the fallback baker, so naming it
+    // here would blame it for the confetti surface it does not cause.
+    it('does not conflate degradedQuality with missing', async () => {
+      const result = await probeTrellis2TextureBake({
+        base: BASE, exists: () => true, execFileImpl: fakeExec({ ...allPresent, flex_gemm: false }),
+      });
+      expect(missingBakeModulesLabel(result)).toBe('');
+    });
+  });
 
   it('reports unknown — NOT fallback — when the probe itself fails', async () => {
     // A broken probe must never render a scary "degraded" warning about an install
@@ -1181,6 +1205,30 @@ describe('installTrellis2', () => {
     expect(verifyIdx).toBeLessThan(completeIdx);
     expect(events[verifyIdx].message).toContain(TRELLIS2_FALLBACK_BAKE_HELP);
   });
+
+  // #4636: the help text says which remedy to run but not what is broken, so a Repair
+  // that keeps failing reprints the same sentence forever. The frame must name the
+  // module — and must leave the help constant itself byte-identical, since it is a
+  // shared constant other assertions key on.
+  it('names the missing bake modules in the degraded verify frame', async () => {
+    const events = await runToCompletion(async () => ({
+      quality: 'fallback', missing: ['o_voxel', 'mtlbvh'], help: TRELLIS2_FALLBACK_BAKE_HELP,
+    }));
+    const message = events.find((e) => e.stage === 'verify').message;
+    expect(message).toContain(TRELLIS2_FALLBACK_BAKE_HELP);
+    expect(message).toContain('Missing: o_voxel, mtlbvh.');
+  });
+
+  // A `fallback` verdict with an empty culprit list is not a shape the probe produces,
+  // but a defensive one: an empty label must never render as a bare "Missing:" with
+  // nothing after it.
+  it('omits the missing-module label when a degraded probe named nothing', async () => {
+    const events = await runToCompletion(async () => ({
+      quality: 'fallback', missing: [], help: TRELLIS2_FALLBACK_BAKE_HELP,
+    }));
+    expect(events.find((e) => e.stage === 'verify').message).not.toContain('Missing');
+  });
+
 
   it('confirms a healthy Metal bake on a good install', async () => {
     const events = await runToCompletion(async () => ({ quality: 'metal', missing: [] }));

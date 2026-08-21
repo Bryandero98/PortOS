@@ -22,7 +22,13 @@ vi.mock('../../services/api', () => ({
 // assert only that it's opened with the chosen target.
 vi.mock('../install/RuntimeInstallModal', () => ({
   default: ({ open, runtime, description }) => (open ? <div data-testid="install-modal">
-    installing {runtime}<span data-testid="install-description">{description}</span>
+    installing {runtime}
+    <span data-testid="install-description">
+      {/* The real modal defaults this via a default PARAMETER, so only `undefined`
+          reaches the fallback — rendering the raw value would make '' (a blank panel)
+          indistinguishable from "use your default". Mark the absent case explicitly. */}
+      {description === undefined ? '(default)' : description}
+    </span>
   </div> : null),
 }));
 
@@ -89,6 +95,102 @@ describe('Image3dRuntimes', () => {
     expect(await screen.findByText(/degraded textures/i)).toBeInTheDocument();
     expect(screen.getByText('Install Xcode from the App Store.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /install/i })).toBeNull();
+  });
+
+  // #4636: the help text names the REMEDY; on its own, a Repair that keeps failing
+  // just reprints it, with no way to tell why. `detail` names what is actually broken.
+  it('names the missing modules under the degraded help text', async () => {
+    getImageTo3dTargets.mockResolvedValue({
+      targets: [target({
+        installed: true,
+        degraded: {
+          label: 'degraded textures',
+          help: 'Install the Metal Toolchain.',
+          repairable: true,
+          detail: 'Missing: o_voxel, mtlbvh',
+        },
+      })],
+    });
+    renderPanel();
+    expect(await screen.findByText('Missing: o_voxel, mtlbvh')).toBeInTheDocument();
+  });
+
+  // The server OMITS `detail` rather than sending an empty label (a probe that could
+  // not run names nothing), so the card must render no orphan "Missing:" line.
+  it('renders no missing-module line when the server named nothing', async () => {
+    getImageTo3dTargets.mockResolvedValue({
+      targets: [target({
+        installed: true,
+        degraded: { label: 'degraded textures', help: 'Install the Metal Toolchain.', repairable: true },
+      })],
+    });
+    renderPanel();
+    expect(await screen.findByText('Install the Metal Toolchain.')).toBeInTheDocument();
+    expect(screen.queryByText(/missing:/i)).toBeNull();
+  });
+
+  // The adapter contract makes BOTH `help` and `detail` optional, so the panel must
+  // not hang off `help` alone — a target that names the culprit without prose would
+  // otherwise have it swallowed silently.
+  it('renders a detail-only degraded panel when the server sent no help text', async () => {
+    getImageTo3dTargets.mockResolvedValue({
+      targets: [target({
+        installed: true,
+        degraded: { label: 'degraded textures', repairable: true, detail: 'Missing: o_voxel' },
+      })],
+    });
+    renderPanel();
+    expect(await screen.findByText('Missing: o_voxel')).toBeInTheDocument();
+  });
+
+  // A `degraded` carrying neither key must leave the modal on its OWN default copy —
+  // an empty string would render a blank description panel instead.
+  it('falls back to the modal default when a degraded target says nothing', async () => {
+    getImageTo3dTargets.mockResolvedValue({
+      targets: [target({
+        installed: true,
+        degraded: { label: 'degraded textures', repairable: true },
+      })],
+    });
+    renderPanel();
+    fireEvent.click(await screen.findByRole('button', { name: /repair install/i }));
+    expect(await screen.findByTestId('install-description')).toHaveTextContent('(default)');
+  });
+
+  // The Repair modal is where a user who already ran Repair once lands, so it must
+  // carry the culprit too — otherwise the retry offers the identical sentence that
+  // did not work the first time.
+  it('carries the missing modules into the Repair install modal', async () => {
+    getImageTo3dTargets.mockResolvedValue({
+      targets: [target({
+        installed: true,
+        degraded: {
+          label: 'degraded textures',
+          help: 'Install the Metal Toolchain.',
+          repairable: true,
+          detail: 'Missing: o_voxel',
+        },
+      })],
+    });
+    renderPanel();
+    fireEvent.click(await screen.findByRole('button', { name: /repair install/i }));
+    expect(await screen.findByTestId('install-description'))
+      .toHaveTextContent('Install the Metal Toolchain. Missing: o_voxel.');
+  });
+
+  // With nothing named, the description must stay exactly the help text — no dangling
+  // separator, no empty label.
+  it('leaves the Repair modal description untouched when nothing was named', async () => {
+    getImageTo3dTargets.mockResolvedValue({
+      targets: [target({
+        installed: true,
+        degraded: { label: 'degraded textures', help: 'Install the Metal Toolchain.', repairable: true },
+      })],
+    });
+    renderPanel();
+    fireEvent.click(await screen.findByRole('button', { name: /repair install/i }));
+    expect(await screen.findByTestId('install-description'))
+      .toHaveTextContent(/^Install the Metal Toolchain\.$/);
   });
 
   // The degraded projection is normalized server-side, so a target degraded for an
