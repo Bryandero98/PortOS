@@ -256,6 +256,29 @@ function isTrackerFilingDispatch(task) {
   return CONCRETE_WORK_TRACKERS.includes(task?.metadata?.workTracker);
 }
 
+// Task types whose `buildTaskInput` hook resolves the app's per-app
+// provider/model override into the spawn. cosTaskGenerator applies the hook's
+// returned `{ providerId, model }` LAST (applyProviderModelPins), so for these
+// types the per-app override OUTRANKS the global Schedule pin. Every other task
+// type reads only `taskMetadata` off the override and takes its provider from
+// the pin — a per-app provider/model stored on one of those is inert, so the UI
+// must not offer it there. Kept in sync with HOOK_MODULES by the suite.
+const PROVIDER_OVERRIDE_TASK_TYPES = new Set(['layered-intelligence']);
+
+/**
+ * Whether a per-app provider/model override actually reaches the spawn for this
+ * task type (and therefore supersedes the global Schedule pin). Synchronous so
+ * the schedule-status builder can stamp the capability on every task row.
+ */
+export function honorsPerAppProviderOverride(taskType) {
+  return typeof taskType === 'string' && PROVIDER_OVERRIDE_TASK_TYPES.has(taskType);
+}
+
+/** The provider-override-honoring task types, for the drift guard in the suite. */
+export function listProviderOverrideTaskTypes() {
+  return [...PROVIDER_OVERRIDE_TASK_TYPES];
+}
+
 /**
  * Resolve the pre-agent input hook for a task type, or null if it has none.
  * `buildTaskInput({ app, taskType })` → `{ prompt?, providerId?, model?, hookMetadata?, skip? }`

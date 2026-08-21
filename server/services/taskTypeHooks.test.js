@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { canRunTaskOutputHookWithoutPayload, getTaskInputHook, getTaskOutputHook, isProgrammaticIoTaskType } from './taskTypeHooks.js';
+import { canRunTaskOutputHookWithoutPayload, getTaskInputHook, getTaskOutputHook, honorsPerAppProviderOverride, isProgrammaticIoTaskType, listProviderOverrideTaskTypes } from './taskTypeHooks.js';
 
 describe('taskTypeHooks registry', () => {
   it('resolves both hooks for layered-intelligence to callables', async () => {
@@ -38,5 +38,25 @@ describe('isProgrammaticIoTaskType (#2700)', () => {
     // A truthiness check on the registry object would let these through.
     expect(isProgrammaticIoTaskType('constructor')).toBe(false);
     expect(isProgrammaticIoTaskType('toString')).toBe(false);
+  });
+});
+
+describe('honorsPerAppProviderOverride', () => {
+  it('is true only for the type whose hook resolves the app pin', () => {
+    expect(honorsPerAppProviderOverride('layered-intelligence')).toBe(true);
+    expect(honorsPerAppProviderOverride('security')).toBe(false);
+    expect(honorsPerAppProviderOverride('')).toBe(false);
+    expect(honorsPerAppProviderOverride(undefined)).toBe(false);
+    expect(honorsPerAppProviderOverride('constructor')).toBe(false);
+  });
+
+  // A type can only consume a per-app provider/model through its buildTaskInput
+  // hook, so claiming one without a hook would make the UI offer a picker that
+  // silently does nothing — exactly the bug this list exists to prevent.
+  it('never claims a type that has no buildTaskInput hook', async () => {
+    for (const taskType of listProviderOverrideTaskTypes()) {
+      expect(isProgrammaticIoTaskType(taskType)).toBe(true);
+      expect(typeof await getTaskInputHook(taskType)).toBe('function');
+    }
   });
 });

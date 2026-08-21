@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import AppOverrideRow from './AppOverrideRow';
 
-export default function PerAppOverrideList({ taskType, config, apps, onUpdateOverride, onBulkToggleOverride }) {
+export default function PerAppOverrideList({ taskType, config, apps, providers, onUpdateOverride, onBulkToggleOverride }) {
   const [bulkUpdating, setBulkUpdating] = useState(false);
   const activeApps = apps?.filter(app => !app.archived) || [];
   const appOverrides = config.appOverrides || {};
@@ -49,6 +49,10 @@ export default function PerAppOverrideList({ taskType, config, apps, onUpdateOve
             managedAgentOptions={config.managedAgentOptions}
             fileIssuesCapable={config.fileIssuesCapable}
             defaultFileIssues={config.defaultFileIssues}
+            providerOverrideCapable={config.providerOverrideCapable}
+            globalProviderId={config.providerId}
+            globalModel={config.model}
+            providers={providers}
             override={appOverrides[app.id]}
             onUpdate={onUpdateOverride}
           />

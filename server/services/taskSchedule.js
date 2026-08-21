@@ -49,6 +49,7 @@ import {
   PREVIOUS_DEFAULT_PROMPTS
 } from './taskPromptDefaults.js';
 import { isAuditTaskType, defaultFileIssuesFor } from '../lib/auditCatalog.js';
+import { honorsPerAppProviderOverride } from './taskTypeHooks.js';
 
 // Re-export the prompt-version constants so existing importers of taskSchedule.js
 // are unaffected. The prompt GETTERS (getDefaultPrompt / getTaskPrompt /
@@ -2057,6 +2058,13 @@ export async function getScheduleStatus() {
         appOverrides[activeApps[i].id] = {
           enabled: isEnabledForApp(override),
           interval: override.interval || null,
+          // Surface the per-app provider/model pin: for a provider-override
+          // honoring type it OUTRANKS the global pin at spawn, so omitting it
+          // here made the Schedule page's provider read as authoritative when
+          // it wasn't (an app pinned to another provider ran on that one with
+          // no hint why).
+          ...(override.providerId && { providerId: override.providerId }),
+          ...(override.model && { model: override.model }),
           ...(override.taskMetadata && { taskMetadata: override.taskMetadata })
         };
       }
@@ -2099,6 +2107,13 @@ export async function getScheduleStatus() {
     if (isAuditTaskType(taskType)) {
       taskStatus.fileIssuesCapable = true;
       taskStatus.defaultFileIssues = defaultFileIssuesFor(taskType);
+    }
+
+    // Whether a per-app provider/model override reaches the spawn for this type
+    // (and therefore beats the pin above). Lets the UI offer the per-app picker
+    // exactly where it takes effect, and flag a stored-but-inert one elsewhere.
+    if (honorsPerAppProviderOverride(taskType)) {
+      taskStatus.providerOverrideCapable = true;
     }
 
     // Perpetual tasks park PER-APP (parkPerpetual is called with the appId), so
