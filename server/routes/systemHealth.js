@@ -16,6 +16,7 @@ import { isAuthEnabled } from '../services/auth.js';
 import { getHttpsEnabledAtBoot } from '../lib/httpsState.js';
 import { getActiveProcessing } from '../services/activeProcessing.js';
 import { getMediaCapacity } from '../services/mediaCapacity.js';
+import { getBuildIdentity } from '../lib/buildIdentity.js';
 
 // Defaults are tuned for a real dev machine: memory routinely sits in the
 // 75-85% band on a host with a couple of LLMs loaded, and big SSDs commonly
@@ -83,7 +84,7 @@ router.get('/health/details', asyncHandler(async (req, res) => {
   const startTime = Date.now();
 
   // Gather data in parallel
-  const [pm2Processes, appStatusSummary, cosStatus, self, dbHealth, version, diskStats, memStats, thresholds, forgeHealth, mediaCapacity] = await Promise.all([
+  const [pm2Processes, appStatusSummary, cosStatus, self, dbHealth, version, diskStats, memStats, thresholds, forgeHealth, mediaCapacity, build] = await Promise.all([
     listProcesses().catch(() => []),
     apps.getAppStatusSummary().catch(() => ({ total: 0, online: 0, stopped: 0, notStarted: 0, unknown: 0, degraded: false, unmanaged: 0 })),
     cos.getStatus().catch(() => null),
@@ -96,7 +97,13 @@ router.get('/health/details', asyncHandler(async (req, res) => {
     checkGhHealth().catch(() => ({ status: 'error', ok: false, detail: 'Health check failed', remedy: null, checkedAt: null })),
     // Media-lane capacity never fails the health report: an unreadable GPU probe
     // degrades to `null`, which the UI renders as unknown rather than as idle.
-    getMediaCapacity().catch(() => null)
+    getMediaCapacity().catch(() => null),
+    // Which git commit THIS server process is running (#4694). Details-only:
+    // /api/system/health is in the always-public set (lib/authGate.js), and a
+    // branch name can carry an issue title, so the stamp stays behind the auth
+    // gate. `getBuildIdentity` is non-throwing by contract; the catch keeps a
+    // future change to it from being able to fail the whole health report.
+    getBuildIdentity().catch(() => null)
   ]);
 
   const memUsagePercent = Math.round((memStats.used / memStats.total) * 100);
@@ -291,6 +298,7 @@ router.get('/health/details', asyncHandler(async (req, res) => {
     apps: appStats,
     cos: cosInfo,
     media: mediaCapacity,
+    build,
     database: dbHealth,
     forge: forgeHealth,
     thresholds,

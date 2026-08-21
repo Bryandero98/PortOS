@@ -7,6 +7,7 @@ import { listProcesses } from '../services/pm2.js';
 import { getSelf } from '../services/instances.js';
 import { isAuthEnabled } from '../services/auth.js';
 import { checkGhHealth } from '../services/github.js';
+import { getBuildIdentity } from '../lib/buildIdentity.js';
 
 vi.mock('../services/pm2.js', () => ({
   listProcesses: vi.fn().mockResolvedValue([])
@@ -61,6 +62,19 @@ vi.mock('../services/cos.js', () => ({
 
 vi.mock('../lib/db.js', () => ({
   checkHealth: vi.fn().mockResolvedValue({ connected: false, hasSchema: false })
+}));
+
+// The build stamp is read from the checkout the suite happens to run in, so
+// mock it — otherwise every assertion below would depend on which worktree
+// (and which commit) CI cloned.
+vi.mock('../lib/buildIdentity.js', () => ({
+  getBuildIdentity: vi.fn().mockResolvedValue({
+    commit: 'abc1234567890abcdef1234567890abcdef12345',
+    shortCommit: 'abc1234',
+    branch: 'main',
+    dirty: false,
+    builtAt: '2026-01-01T00:00:00.000Z'
+  })
 }));
 
 // The real probe spawns `gh` and hits the network — mock it, and default to a
@@ -131,6 +145,46 @@ describe('System Health Routes', () => {
     expect(response.body).toHaveProperty('system');
     expect(response.body).toHaveProperty('apps');
     expect(response.body).toHaveProperty('overallHealth');
+  });
+
+  it('stamps the running build on health details (#4694)', async () => {
+    const response = await request(app).get('/api/system/health/details');
+
+    expect(response.status).toBe(200);
+    expect(response.body.build).toEqual({
+      commit: 'abc1234567890abcdef1234567890abcdef12345',
+      shortCommit: 'abc1234',
+      branch: 'main',
+      dirty: false,
+      builtAt: '2026-01-01T00:00:00.000Z'
+    });
+  });
+
+  it('keeps the build stamp OFF the always-public /health payload', async () => {
+    // /api/system/health is in PUBLIC_API_PATHS (lib/authGate.js) — a branch
+    // name can carry an issue title, so the stamp stays behind the auth gate.
+    const response = await request(app).get('/api/system/health');
+
+    expect(response.status).toBe(200);
+    expect(response.body).not.toHaveProperty('build');
+  });
+
+  it('degrades the build stamp to null instead of failing the whole health report', async () => {
+    getBuildIdentity.mockRejectedValueOnce(new Error('git exploded'));
+
+    const response = await request(app).get('/api/system/health/details');
+
+    expect(response.status).toBe(200);
+    expect(response.body.build).toBeNull();
+    expect(response.body).toHaveProperty('overallHealth');
+  });
+
+  it('never leaks a path, hostname, or username through the build stamp', async () => {
+    const response = await request(app).get('/api/system/health/details');
+
+    expect(Object.keys(response.body.build).sort()).toEqual(
+      ['branch', 'builtAt', 'commit', 'dirty', 'shortCommit']
+    );
   });
 
   it('does not warn on cumulative restart_time (developer-driven restarts)', async () => {

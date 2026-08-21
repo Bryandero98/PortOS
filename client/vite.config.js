@@ -2,12 +2,51 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { visualizer } from 'rollup-plugin-visualizer';
 import { readFileSync, existsSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { resolve } from 'path';
 
 const ANALYZE_BUNDLE = process.env.ANALYZE === 'true';
 const CONFIG_DIR = import.meta.dirname;
 
 const rootPkg = JSON.parse(readFileSync(resolve(CONFIG_DIR, '../package.json'), 'utf-8'));
+
+// Which commit this BUNDLE was built from (#4694). package.json's version cannot
+// answer that — by project rule it reflects the last RELEASE and is identical
+// across every development commit — so a dist/ built three days ago looks exactly
+// like one built this minute. The client compares this against the server's
+// /api/system/health/details `build.commit` and flags a mismatch, which is the
+// "I spent an hour debugging a UI that was not talking to the code I edited"
+// failure mode.
+//
+// Fail-soft: a source-tarball build has no .git and must still build, so every
+// probe degrades to 'unknown' rather than throwing.
+function gitStamp(args) {
+  const out = execFileSync('git', args, {
+    cwd: CONFIG_DIR,
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 5000
+  });
+  return out.trim() || 'unknown';
+}
+
+function buildStamp() {
+  // 'unknown' rather than '' or null: this value is inlined into the bundle as a
+  // literal, and an empty string would compare unequal to every real commit and
+  // report a permanent false "stale bundle" (root CLAUDE.md's absent-vs-empty rule).
+  let commit = 'unknown';
+  let branch = 'unknown';
+  try {
+    commit = gitStamp(['rev-parse', '--short=7', 'HEAD']);
+    const head = gitStamp(['rev-parse', '--abbrev-ref', 'HEAD']);
+    branch = head === 'HEAD' ? 'unknown' : head;
+  } catch {
+    // No git, no repo, or a timeout — keep the 'unknown' defaults.
+  }
+  // Commit / branch / timestamp only. No paths (they embed the OS username), no
+  // hostname — this string ships to every browser that loads the app.
+  return { commit, branch, builtAt: new Date().toISOString() };
+}
 
 // Dev proxy target: probe for the self-signed/LE cert under data/certs/. If the
 // server is running HTTPS, the dev proxy must target HTTPS too (or requests
@@ -23,7 +62,8 @@ export default defineConfig(({ mode }) => {
 
   return {
     define: {
-      __APP_VERSION__: JSON.stringify(rootPkg.version)
+      __APP_VERSION__: JSON.stringify(rootPkg.version),
+      __BUILD_STAMP__: JSON.stringify(buildStamp())
     },
     plugins: [
       react(),

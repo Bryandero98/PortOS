@@ -330,6 +330,7 @@ export * from './vaultCrypto.js';
 // === Model & config ===
 export * from './browserConfig.js';
 export * from './buildId.js';
+export * from './buildIdentity.js';
 export * from './condaEnv.js';
 export * from './cudaCapability.js';
 export * from './db.js';
