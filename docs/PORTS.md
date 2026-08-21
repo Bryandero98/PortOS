@@ -34,7 +34,8 @@ Common port labels:
 | 5559 | portos-autofixer | api | Autofixer daemon API |
 | 5560 | portos-autofixer-ui | ui | Autofixer web UI |
 | 5561 | portos-db (Docker container) | - | Infrastructure dependency: PostgreSQL Docker container provisioned by `scripts/setup-db.js` / Docker Compose (not a PM2 process in `server/services/apps.js`; native mode uses system pg on 5432). |
-| 5568 | llama-server | - | Loopback speculative-decoding server managed from Models → LLMs |
+| 5568 | portos-llama-server | - | Loopback llama.cpp speculative-decoding server. Optional PM2 process, started/stopped from Models → LLMs. |
+| 8000 | portos-mtplx | - | Loopback MTPLX OpenAI-compatible API (upstream's own default, kept so the shipped provider presets match). Optional PM2 process, started/stopped from Models → LLMs. See [features/mtplx.md](./features/mtplx.md). |
 | 18020 | vLLM (Docker) | - | Loopback vLLM Qwen3.8-27B / DFlash 2 container on an RTX 3090 host. Operator-started (`docker compose --profile single up -d`) — PortOS never brings it up on boot. See [features/qwen38-rtx3090.md](./features/qwen38-rtx3090.md). |
 
 ## How `:5555`, `:5553`, and `:5554` Relate
@@ -127,9 +128,10 @@ PortOS automatically detects ports from env vars:
 | 5562-5569 | Reserved for PortOS extensions (5568 is the managed llama-server default) |
 | 5570-5599 | User applications |
 
-PostgreSQL in native mode listens on the system default `:5432`, outside these ranges. The vLLM
-Qwen3.8-27B container listens on `:18020` — upstream's own default, kept as-is so an operator's
-unmodified `syv-ai/qwen38-27b-rtx3090` checkout works against PortOS without editing its compose file.
+PostgreSQL in native mode listens on the system default `:5432`, outside these ranges. Two third-party
+local runtimes also sit outside them, each on its own upstream default so an unmodified install works
+against PortOS without editing anything: MTPLX on `:8000` and the vLLM Qwen3.8-27B container on
+`:18020` (`syv-ai/qwen38-27b-rtx3090`'s own compose file).
 
 ## Viewing Port Usage
 

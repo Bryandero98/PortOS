@@ -1,0 +1,367 @@
+/**
+ * MTPLX process manager
+ *
+ * Lifecycle management (status probe, install, start, stop, recent logs) for the
+ * local `mtplx serve` OpenAI-compatible API server, managed as an optional PM2
+ * process (`portos-mtplx`) — deliberately the same shape as
+ * `llamaServerManager.js`.
+ *
+ * PM2 rather than a bare detached spawn, because that is what makes the daemon
+ * *manageable*: `pm2 list` shows it next to the rest of the install, `pm2 logs`
+ * has its output, restart-on-boot is a `pm2 save` away, and a PortOS restart can
+ * re-adopt a server it started earlier instead of losing track of a detached
+ * pid. A detached child gets none of that.
+ *
+ * Two limits carried over from `docs/features/mtplx.md`, unchanged:
+ *   - **Weights are never downloaded.** `mtplx serve` is started on a checkpoint
+ *     ALREADY in MTPLX's cache; an empty cache is reported with the `mtplx pull`
+ *     command that fixes it.
+ *   - **MTPLX's privileged paths are never touched.** Upstream's optional
+ *     `mtplx max --install` fan-control helper stays an explicit operator action
+ *     outside PortOS.
+ */
+
+import { commandExists } from '../lib/commandExists.js';
+import { sleep } from '../lib/fileUtils.js';
+import { ServerError } from '../lib/errorHandler.js';
+import { LOCAL_RUNTIMES, localEndpointPort } from '../lib/localProviderRuntime.js';
+import { listMtplxCachedModels, pickMtplxCachedModel } from '../lib/mtplxModels.js';
+import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
+import { createDaemonLogBuffer, pm2ArgValue } from '../lib/managedDaemon.js';
+import { isAppleSilicon, isPortInUse } from '../lib/platform.js';
+import { findCommandOnPath } from '../lib/processEnv.js';
+import { runStreamingCommand } from '../lib/streamingSpawn.js';
+import { execPm2, getAppStatusStrict, clearJlistCache, getSavedProcessNames } from './pm2.js';
+
+export const MTPLX_APP = 'portos-mtplx';
+
+const PROBE_TIMEOUT_MS = 1500;
+/**
+ * How long `startMtplxServer` waits before returning.
+ *
+ * This is NOT how long MTPLX gets to come up — it is how long the HTTP request
+ * blocks. MTPLX loads a multi-gigabyte MLX checkpoint before it binds, which
+ * routinely outlasts any sane request timeout, so the wait exists only to catch
+ * a server that dies immediately (an empty cache, a bad checkpoint). Still
+ * loading after this returns `online: false` and the status poll takes over —
+ * exactly what `llamaServerManager` does with its own four-second beat.
+ *
+ * Mutable only through the test seam below, so a suite asserting the
+ * still-loading path doesn't have to sit through the real budget.
+ */
+let startupWaitMs = 8_000;
+const STARTUP_POLL_MS = 1500;
+/** Package-manager installs routinely run for minutes. */
+const INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
+
+/**
+ * The default loopback endpoint the shipped MTPLX provider presets point at.
+ * Read from the runtime table rather than re-declared, so the launcher and the
+ * readiness probe cannot drift onto different ports.
+ */
+const DEFAULT_HOST = '127.0.0.1';
+const DEFAULT_PORT = Number(localEndpointPort(LOCAL_RUNTIMES.mtplx.defaultBaseUrl)) || 8000;
+
+/**
+ * Why an installed MTPLX still cannot be started. Weights are a multi-gigabyte
+ * download and stay the user's decision, so this names the one command that
+ * fixes it instead of running it.
+ */
+/** MTPLX is an Apple-Silicon MLX runtime — nothing to install anywhere else. */
+export const MTPLX_UNSUPPORTED_REASON = 'MTPLX runs only on macOS with Apple Silicon.';
+
+const MTPLX_NO_MODEL_ERROR = 'MTPLX has no model weights cached, so its server exits before it binds a port. Run `mtplx pull` in a terminal to fetch its default checkpoint (or `mtplx pull <hf-repo-id>` for another MTP model) — a multi-gigabyte download PortOS will not start for you — then start MTPLX again.';
+
+let currentConfig = null;
+let lastExitError = null;
+const logs = createDaemonLogBuffer();
+const appendLog = logs.append;
+
+const probeEndpoint = async (endpoint) =>
+  (await probeOpenAiModels(endpoint, { timeoutMs: PROBE_TIMEOUT_MS })).reachable;
+
+const endpointFor = (config) =>
+  `http://${config?.host || DEFAULT_HOST}:${config?.port ?? DEFAULT_PORT}/v1`;
+
+/**
+ * Reconstructs the launch config from PM2 process args when PortOS restarted
+ * while the PM2 process stayed online — same recovery `llamaServerManager` does,
+ * so a restart doesn't report a server it started as "external".
+ */
+function parseConfigFromArgs(args) {
+  if (!args) return null;
+  const list = Array.isArray(args) ? args : String(args).split(' ');
+  if (!list.includes('serve')) return null;
+  const port = pm2ArgValue(list, '--port');
+  return {
+    host: pm2ArgValue(list, '--host') || DEFAULT_HOST,
+    port: port ? Number(port) : DEFAULT_PORT,
+    // Absent means MTPLX was started on its OWN default checkpoint — don't
+    // invent a repo id the launch line never carried.
+    model: pm2ArgValue(list, '--model'),
+  };
+}
+
+/** Resolve the `mtplx` executable on the child-process PATH. */
+const resolveMtplxBinary = () => findCommandOnPath('mtplx');
+
+/** Just the base URL MTPLX is serving on — no endpoint probe, no PM2 log fetch. */
+export async function getMtplxServerEndpoint() {
+  if (!currentConfig) {
+    const pm2Status = await getAppStatusStrict(MTPLX_APP);
+    if (pm2Status?.status === 'online' && pm2Status.args) currentConfig = parseConfigFromArgs(pm2Status.args);
+  }
+  return endpointFor(currentConfig);
+}
+
+/**
+ * Current MTPLX state: binary availability, process state, endpoint, config,
+ * logs, and what is in its model cache.
+ *
+ * The cache listing is a local directory walk (`mtplx models --json`) — no
+ * network, no model load — so it is safe on a status poll, and it is what lets
+ * the UI say "installed, but nothing to serve" instead of making the user press
+ * Start to find out.
+ */
+export async function getMtplxServerStatus() {
+  const binaryPath = resolveMtplxBinary();
+  const installed = Boolean(binaryPath);
+  // The platform gate is about what PortOS may INSTALL, never about what is
+  // already there: a binary on PATH (or a server answering) is proof enough that
+  // this host runs it, and reporting "macOS only" over a working install would
+  // be a false negative.
+  const supported = installed || isAppleSilicon();
+
+  const [pm2Status, savedApps] = await Promise.all([getAppStatusStrict(MTPLX_APP), getSavedProcessNames()]);
+  const isReadFailed = pm2Status === null;
+  const isManagedActive = Boolean(pm2Status && pm2Status.status === 'online');
+
+  if (!currentConfig && isManagedActive && pm2Status?.args) currentConfig = parseConfigFromArgs(pm2Status.args);
+
+  const endpoint = endpointFor(currentConfig);
+  const reachable = await probeEndpoint(endpoint);
+
+  // `models: null` means the cache could NOT be read — deliberately not the same
+  // as `[]` (read, and empty). Only the latter blocks a start.
+  const cache = installed ? await listMtplxCachedModels() : { models: null, error: null };
+
+  const pm2Logs = pm2Status && pm2Status.status !== 'not_found'
+    ? await execPm2(['logs', MTPLX_APP, '--nostream', '--lines', String(logs.maxLines)]).catch(() => null)
+    : null;
+
+  return {
+    installed,
+    supported,
+    unsupportedReason: supported ? null : MTPLX_UNSUPPORTED_REASON,
+    running: isManagedActive || reachable,
+    managed: isReadFailed ? null : isManagedActive,
+    pid: isManagedActive ? (pm2Status?.pid || null) : null,
+    host: currentConfig?.host || DEFAULT_HOST,
+    port: currentConfig?.port ?? DEFAULT_PORT,
+    endpoint,
+    config: isManagedActive ? currentConfig : null,
+    // Is this PM2 app in the saved dump `pm2 resurrect` replays at boot?
+    // `null` = the dump could not be read, which is not the same as "no".
+    runAtStartup: savedApps === null ? null : savedApps.includes(MTPLX_APP),
+    cachedModels: (cache.models || []).map((m) => m?.repo_id).filter(Boolean),
+    cacheError: cache.error,
+    recentLogs: logs.withPm2Logs(`${pm2Logs?.stdout || ''}\n${pm2Logs?.stderr || ''}`),
+    lastExitError: isReadFailed ? 'Failed to read PM2 status' : lastExitError,
+  };
+}
+
+/**
+ * Install MTPLX from upstream's Homebrew tap, falling back to pip on a host
+ * without Homebrew. Both install the same `mtplx` binary, and neither runs the
+ * optional privileged fan-control helper.
+ */
+export async function installMtplx({ onProgress = () => {} } = {}) {
+  const emit = (message) => onProgress({ event: 'progress', message });
+  if (!isAppleSilicon()) {
+    throw new ServerError(MTPLX_UNSUPPORTED_REASON, { status: 400, code: 'MTPLX_UNSUPPORTED_PLATFORM' });
+  }
+  if (await commandExists('brew', ['--version'])) {
+    emit('Installing MTPLX via Homebrew (youssofal/mtplx/mtplx)…');
+    const result = await runStreamingCommand('brew', ['install', 'youssofal/mtplx/mtplx'], emit, { timeoutMs: INSTALL_TIMEOUT_MS });
+    if (!result.success) throw new ServerError(`MTPLX install failed: ${result.error}`, { status: 500 });
+    return { success: true, message: 'MTPLX installed' };
+  }
+  if (await commandExists('python3', ['--version'])) {
+    emit('Homebrew was not found — installing MTPLX with pip instead…');
+    const result = await runStreamingCommand('python3', ['-m', 'pip', 'install', '--upgrade', 'mtplx'], emit, { timeoutMs: INSTALL_TIMEOUT_MS });
+    if (!result.success) throw new ServerError(`MTPLX install failed: ${result.error}`, { status: 500 });
+    return { success: true, message: 'MTPLX installed' };
+  }
+  throw new ServerError('Neither Homebrew nor python3 is available. Install Homebrew from https://brew.sh, then try again.', { status: 400 });
+}
+
+/**
+ * Resolve which cached checkpoint `mtplx serve` should be started on.
+ *
+ * `mtplx serve` defaults `--model` to ONE hard-coded repo id and exits 1 before
+ * binding when that repo is not cached — even on a machine holding a different
+ * MTP model that would have served fine. So ask the cache first and name what is
+ * actually there.
+ *
+ * Returns `{ model }` (possibly `null` = fall through to MTPLX's own default
+ * because the cache could not be READ) or `{ error }`.
+ */
+async function resolveStartModel(requested, emit) {
+  if (requested) return { model: requested };
+  const cache = await listMtplxCachedModels();
+  if (cache.models === null) {
+    emit(`Could not read MTPLX's model cache (${cache.error}) — starting with its default model.`);
+    return { model: null };
+  }
+  if (cache.models.length === 0) return { error: MTPLX_NO_MODEL_ERROR };
+  const model = pickMtplxCachedModel(cache.models);
+  if (!model) {
+    const count = cache.models.length;
+    return { error: `MTPLX's cache holds ${count} model${count === 1 ? '' : 's'}, but none passed its own file check — an interrupted \`mtplx pull\` leaves a partial download behind. Re-run \`mtplx pull <hf-repo-id>\` in a terminal, then try again.` };
+  }
+  return { model };
+}
+
+/**
+ * Start `mtplx serve` under PM2.
+ *
+ * `waitMs` overrides how long this blocks before handing back `online: false`
+ * for a server that is still loading. The LLMs-page launcher takes the short
+ * default and lets its status poll finish the story; the provider-readiness
+ * checklist passes its own longer budget, because that flow's contract is "the
+ * endpoint answers when this returns".
+ *
+ * @param {{port?: number, host?: string, model?: string, waitMs?: number, onProgress?: (line: string) => void}} options
+ */
+export async function startMtplxServer(options = {}) {
+  const { port = DEFAULT_PORT, host = DEFAULT_HOST, model: requestedModel = null, waitMs, onProgress = () => {} } = options;
+  const emit = (line) => { appendLog(line); onProgress(line); };
+
+  const binaryPath = resolveMtplxBinary();
+  if (!binaryPath) {
+    throw new ServerError(
+      'The `mtplx` binary was not found on PATH. Install it from this card (Homebrew tap, or pip as a fallback), then try again.',
+      { status: 400, code: 'MTPLX_NOT_INSTALLED' }
+    );
+  }
+
+  const pm2Status = await getAppStatusStrict(MTPLX_APP);
+  if (pm2Status && pm2Status.status === 'online') {
+    throw new ServerError(`MTPLX is already running with PID ${pm2Status.pid}`, { status: 409 });
+  }
+
+  const endpoint = `http://${host}:${port}/v1`;
+  if (await probeEndpoint(endpoint)) {
+    throw new ServerError(`Port ${port} is already in use by an active server at ${endpoint}`, { status: 409 });
+  }
+  if (await isPortInUse(port)) {
+    throw new ServerError(
+      `Port ${port} is already in use on ${host}. Point MTPLX at a different port before starting it.`,
+      { status: 409, code: 'MTPLX_PORT_IN_USE' }
+    );
+  }
+
+  logs.reset();
+  lastExitError = null;
+
+  const resolved = await resolveStartModel(requestedModel, emit);
+  if (resolved.error) throw new ServerError(resolved.error, { status: 400, code: 'MTPLX_NO_CACHED_MODEL' });
+  const model = resolved.model;
+  if (model) emit(`Serving the cached MTPLX model ${model}.`);
+
+  // `mtplx start` is interactive (it prompts for a model); `serve` is the
+  // API-only server, which is the half PortOS talks to. The daemon must bind
+  // where the PROVIDER points — a user who moved MTPLX to 8010 would otherwise
+  // get a second server on 8000 that nothing talks to.
+  const args = ['serve', '--port', String(port), ...(model ? ['--model', model] : [])];
+  currentConfig = { host, port, model };
+  appendLog(`Starting: mtplx ${args.join(' ')}`);
+
+  // Delete any stale PM2 entry so our own previous instance doesn't count as a collision.
+  await execPm2(['delete', MTPLX_APP]).catch(() => {});
+  clearJlistCache();
+
+  console.log(`🚄 MTPLX starting on ${host}:${port}${model ? ` (model ${model})` : ' (MTPLX default model)'}`);
+  await execPm2([
+    'start', binaryPath,
+    '--name', MTPLX_APP,
+    '--interpreter', 'none',
+    '--no-autorestart',
+    '--',
+    ...args,
+  ]);
+  clearJlistCache();
+
+  const deadline = Date.now() + (Number.isFinite(waitMs) ? waitMs : startupWaitMs);
+  let online = false;
+  let currentProc = null;
+  while (Date.now() < deadline) {
+    await sleep(STARTUP_POLL_MS);
+    clearJlistCache();
+    currentProc = await getAppStatusStrict(MTPLX_APP);
+    if (currentProc && ['errored', 'stopped', 'not_found'].includes(currentProc.status)) break;
+    online = await probeEndpoint(endpoint);
+    if (online) break;
+  }
+
+  if (currentProc && ['errored', 'stopped', 'not_found'].includes(currentProc.status)) {
+    const pm2Logs = await execPm2(['logs', MTPLX_APP, '--nostream', '--lines', '15']).catch(() => null);
+    const lines = `${pm2Logs?.stderr || pm2Logs?.stdout || ''}`.split('\n').map((l) => l.trimEnd()).filter(Boolean);
+    for (const line of lines) appendLog(line);
+    const tail = (lines.length ? lines : logs.snapshot()).slice(-4).join(' | ');
+
+    lastExitError = `PM2 status: ${currentProc.status}`;
+    await execPm2(['delete', MTPLX_APP]).catch(() => {});
+    clearJlistCache();
+    currentConfig = null;
+    throw new ServerError(
+      `MTPLX exited immediately (${lastExitError}).${tail ? ` Last output: ${tail}` : ''}`,
+      { status: 500, code: 'MTPLX_EXITED' }
+    );
+  }
+
+  const finalProc = await getAppStatusStrict(MTPLX_APP);
+  return {
+    success: true,
+    running: true,
+    managed: true,
+    pid: finalProc?.pid || null,
+    endpoint,
+    online,
+    config: currentConfig,
+  };
+}
+
+/** Stop the managed MTPLX process. */
+export async function stopMtplxServer() {
+  const pm2Status = await getAppStatusStrict(MTPLX_APP);
+  const isManaged = Boolean(pm2Status && pm2Status.status === 'online');
+
+  if (!isManaged) {
+    const endpoint = endpointFor(currentConfig);
+    if (await probeEndpoint(endpoint)) {
+      return {
+        success: false,
+        message: `An external process is listening on ${endpoint}. It was not started by PortOS and cannot be stopped here.`,
+      };
+    }
+    return { success: true, message: 'MTPLX is not running' };
+  }
+
+  appendLog(`Stopping ${MTPLX_APP}`);
+  await execPm2(['delete', MTPLX_APP]).catch((err) => {
+    throw new ServerError(`Failed to stop MTPLX: ${err.message}`, { status: 500 });
+  });
+  clearJlistCache();
+  currentConfig = null;
+  return { success: true, message: 'MTPLX stopped' };
+}
+
+/** Clears in-memory state (used by test suites). */
+export function _resetMtplxServerStateForTests({ startupWait } = {}) {
+  currentConfig = null;
+  logs.reset();
+  lastExitError = null;
+  // Restored to the production budget unless a suite asks for a shorter one.
+  startupWaitMs = Number.isFinite(startupWait) ? startupWait : 8_000;
+}

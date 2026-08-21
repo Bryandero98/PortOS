@@ -85,6 +85,7 @@ import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { getAllProviders } from './providers.js';
 import { runEndpointLlmTest, runLocalLlmTest } from './localLlmPlayground.js';
 import { getLlamaServerEndpoint, relaunchLlamaServerWithTuning } from './llamaServerManager.js';
+import { getMtplxServerEndpoint } from './mtplxServerManager.js';
 import { listModels } from './localLlm.js';
 import {
   getLoadedModels as getLoadedOllamaModels,
@@ -150,17 +151,19 @@ export function buildSamplePrompt(contextTokens) {
 /**
  * Where this runtime's OpenAI-compatible API actually is right now.
  *
- * llama.cpp is the one that moves: PortOS starts it, and a user who picked a
- * different port under Advanced options is serving somewhere the default no
- * longer names. Ask the manager rather than re-deriving the port here — probing
- * the stale default would report a working server as unreachable.
+ * The two PM2-managed daemons are the ones that move: PortOS starts llama.cpp
+ * and MTPLX, and a user who picked a different port on the LLMs page is serving
+ * somewhere the shipped default no longer names. Ask the manager rather than
+ * re-deriving the port here — probing the stale default would report a working
+ * server as unreachable.
  */
 export async function runtimeEndpoint(runtime) {
-  if (runtime === 'llama') {
-    // The endpoint-only accessor, NOT `getLlamaServerStatus` — that one pays for
-    // a network probe and an `execPm2 logs` subprocess, and this path runs on
-    // every Performance page load only to learn a port number.
-    const endpoint = await getLlamaServerEndpoint().catch(() => null);
+  // The endpoint-only accessors, NOT the `get*Status` calls — those pay for a
+  // network probe and an `execPm2 logs` subprocess, and this path runs on every
+  // Performance page load only to learn a port number.
+  const resolver = { llama: getLlamaServerEndpoint, mtplx: getMtplxServerEndpoint }[runtime];
+  if (resolver) {
+    const endpoint = await resolver().catch(() => null);
     if (endpoint) return endpoint;
   }
   return LOCAL_RUNTIMES[runtime]?.defaultBaseUrl || null;

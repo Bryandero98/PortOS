@@ -28,9 +28,13 @@ import {
   localLlmAssessmentDeleteSchema,
   localLlmAssessmentSweepSchema,
   localLlmLlamaServerStartSchema,
+  localLlmLmStudioServiceSchema,
+  localLlmMtplxStartSchema,
   localLlmSpecModelDownloadSchema
 } from '../lib/validation.js'
 import { getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer } from '../services/llamaServerManager.js'
+import { getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx } from '../services/mtplxServerManager.js'
+import { saveProcessList } from '../services/pm2.js'
 import { getSpecDecodePresetStatus, downloadSpecDecodeModel } from '../services/specDecodeModels.js'
 import { SPEC_TYPE_SUGGESTIONS } from '../lib/specDecodePresets.js'
 import { resetProviderReadinessCache } from '../services/providerReadiness.js'
@@ -56,6 +60,7 @@ import {
   unloadModel as unloadOllamaModel,
 } from '../services/ollamaManager.js'
 import {
+  controlLmStudioServer,
   getLastLoadedModelsError as getLmStudioResidencyError,
   getLoadedModels as getLoadedLmStudioModels,
 } from '../services/lmStudioManager.js'
@@ -211,6 +216,26 @@ router.post('/ollama-service', asyncHandler(async (req, res) => {
     disable: 'Ollama background service disabled'
   }[action]
   emit('complete', completeLabel)
+  res.json(result)
+}))
+
+// POST /api/local-llm/lmstudio-service — start/stop LM Studio's local server
+// via its own `lms` CLI. No enable/disable counterpart: launch-at-login belongs
+// to the LM Studio app, not to `lms`.
+router.post('/lmstudio-service', asyncHandler(async (req, res) => {
+  const { action } = validateRequest(localLlmLmStudioServiceSchema, req.body)
+  const emit = emitter(req)
+  emit('start', action === 'start' ? 'Starting the LM Studio server…' : 'Stopping the LM Studio server…')
+  const result = await controlLmStudioServer(action).catch((err) => {
+    emit('error', `LM Studio ${action} failed: ${err.message}`)
+    throw err
+  })
+  if (!result.success) {
+    emit('error', result.error || `LM Studio ${action} failed`)
+    throw new ServerError(result.error || `LM Studio ${action} failed`, { status: 502 })
+  }
+  resetProviderReadinessCache()
+  emit('complete', action === 'start' ? 'LM Studio server is running' : 'LM Studio server stopped')
   res.json(result)
 }))
 
@@ -554,6 +579,63 @@ router.post('/llama-server/install', asyncHandler(async (req, res) => {
   const result = await installLlamaServer({ onProgress })
   resetProviderReadinessCache()
   res.json(result)
+}))
+
+// === MTPLX (native-MTP Qwen on Apple Silicon) ================================
+// Managed exactly like llama-server: a PM2 process (`portos-mtplx`) PortOS can
+// start, stop, log, and — via /save-startup below — persist across a reboot.
+// PortOS never downloads MTPLX weights; `serve` runs on a checkpoint already in
+// MTPLX's own cache. See docs/features/mtplx.md.
+
+// GET /api/local-llm/mtplx/status — binary availability, process state, the
+// endpoint it serves on, its cached checkpoints, and recent logs. Disk + a
+// loopback probe only.
+router.get('/mtplx/status', asyncHandler(async (_req, res) => {
+  res.json(await getMtplxServerStatus())
+}))
+
+// POST /api/local-llm/mtplx/start — launch `mtplx serve` under PM2
+router.post('/mtplx/start', asyncHandler(async (req, res) => {
+  const options = validateRequest(localLlmMtplxStartSchema, req.body)
+  const emit = emitter(req)
+  emit('start', 'Starting MTPLX…')
+  const result = await startMtplxServer({ ...options, onProgress: (line) => emit('start', line) })
+    .catch((err) => {
+      emit('error', err.message)
+      throw err
+    })
+  resetProviderReadinessCache()
+  emit('complete', `MTPLX is running at ${result.endpoint}`)
+  res.json(result)
+}))
+
+// POST /api/local-llm/mtplx/stop — stop the managed MTPLX process
+router.post('/mtplx/stop', asyncHandler(async (_req, res) => {
+  const result = await stopMtplxServer()
+  resetProviderReadinessCache()
+  res.json(result)
+}))
+
+// POST /api/local-llm/mtplx/install — install MTPLX (Homebrew tap, pip fallback)
+router.post('/mtplx/install', asyncHandler(async (req, res) => {
+  const emit = emitter(req)
+  const result = await installMtplx({ onProgress: ({ event, message }) => emit(event, message) })
+    .catch((err) => {
+      emit('error', `Install failed: ${err.message}`)
+      throw err
+    })
+  resetProviderReadinessCache()
+  emit('complete', 'MTPLX installed')
+  res.json(result)
+}))
+
+// POST /api/local-llm/save-startup — `pm2 save`, so the PM2-managed local
+// runtime servers currently running (llama-server, MTPLX, PortOS itself) are in
+// the dump a boot-time `pm2 resurrect` replays. The privileged half — `pm2
+// startup`, which writes the launchd/systemd unit — is deliberately blocked and
+// stays a one-time operator command.
+router.post('/save-startup', asyncHandler(async (_req, res) => {
+  res.json(await saveProcessList())
 }))
 
 export default router

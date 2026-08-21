@@ -51,6 +51,33 @@ export const upgradeLocalLlmBackend = (backend) =>
 export const controlOllamaService = (action) =>
   request('/local-llm/ollama-service', { method: 'POST', body: JSON.stringify({ action }) });
 
+// Start/stop LM Studio's local server through its own `lms` CLI. No
+// enable/disable counterpart — launch-at-login belongs to the LM Studio app.
+export const controlLmStudioService = (action) =>
+  request('/local-llm/lmstudio-service', { method: 'POST', body: JSON.stringify({ action }) });
+
+// MTPLX (native-MTP Qwen on Apple Silicon) — a PM2-managed process, same
+// lifecycle shape as llama-server below.
+export const getMtplxServerStatus = (options) =>
+  request('/local-llm/mtplx/status', options);
+
+// `config` is optional: with none of it PortOS serves the checkpoint already in
+// MTPLX's cache on the port the shipped provider presets point at.
+export const startMtplxServer = (config = {}) =>
+  request('/local-llm/mtplx/start', { method: 'POST', body: JSON.stringify(config) });
+
+export const stopMtplxServer = () =>
+  request('/local-llm/mtplx/stop', { method: 'POST' });
+
+export const installMtplx = () =>
+  request('/local-llm/mtplx/install', { method: 'POST' });
+
+// `pm2 save` — snapshot the running PM2 process list into the dump a boot-time
+// `pm2 resurrect` replays, so the local runtime servers come back after a
+// reboot. The privileged `pm2 startup` half stays a one-time operator command.
+export const saveRuntimeStartupList = () =>
+  request('/local-llm/save-startup', { method: 'POST' });
+
 // llama-server (DFlash 2 / Speculative Decoding) process controls
 export const getLlamaServerStatus = (options) =>
   request('/local-llm/llama-server/status', options);

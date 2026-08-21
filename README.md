@@ -430,7 +430,7 @@ Full catalog (including design plans, ADRs, and research notes): [docs/README.md
 - [Claude on Ollama](./docs/features/claude-ollama.md) — Run agent tasks on a local model
 - [CoS Agent Runner](./docs/features/cos-agent-runner.md) — Isolated agent process architecture
 - [CoS Enhancement](./docs/features/cos-enhancement.md) — Hybrid search, proactive execution, error recovery
-- [MTPLX](./docs/features/mtplx.md) — Multiplexed agent execution and terminal streaming
+- [MTPLX](./docs/features/mtplx.md) — Native multi-token-prediction Qwen runtime on Apple Silicon, managed as a PM2 process from Models → LLMs
 - [Memory System](./docs/features/memory-system.md) — Semantic memory with vector search and importance decay
 - [Digital Twin](./docs/features/digital-twin.md) — Genome, chronotype, taste, and mortality-aware goals
 - [Identity System](./docs/features/identity-system.md) — Extended identity modeling (P1-P3)

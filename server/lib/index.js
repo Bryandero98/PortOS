@@ -153,6 +153,7 @@ export * from './quotaWindows.js';
 export * from './opencodeConfig.js';
 export * from './localProviderRuntime.js';
 export * from './mtplxModels.js';
+export * from './managedDaemon.js';
 export * from './vllmQwenProject.js';
 export * from './openAiModelsProbe.js';
 export * from './openAiChatStream.js';

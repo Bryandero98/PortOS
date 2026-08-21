@@ -164,6 +164,21 @@ export const localLlmMigrateSchema = z.object({
 });
 export const localLlmInstallBackendSchema = z.object({ backend: localLlmBackendSchema });
 export const localLlmOllamaServiceSchema = z.object({ action: z.enum(['start', 'stop', 'enable', 'disable']) });
+// LM Studio's own server has no enable/disable equivalent (the app owns its
+// launch-at-login), so this is start/stop only — deliberately NOT reusing the
+// Ollama schema, which would accept two actions `lms` cannot perform.
+export const localLlmLmStudioServiceSchema = z.object({ action: z.enum(['start', 'stop']) });
+// MTPLX launch. Every field is optional: with none of them PortOS serves the
+// checkpoint already in MTPLX's cache on the port the shipped provider presets
+// point at. `model` is a Hugging Face repo id, which lands in the launch argv.
+export const localLlmMtplxStartSchema = z.object({
+  port: z.coerce.number().int().min(1).max(65535).optional(),
+  host: z.string().trim().max(100).optional(),
+  model: z.string().trim().max(200).regex(
+    /^$|^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/,
+    'model must be a Hugging Face repo id',
+  ).optional().nullable(),
+});
 export const localLlmLlamaServerStartSchema = z.object({
   model: z.string().trim().min(1).max(500),
   draftModel: z.string().trim().max(500).optional().nullable(),
