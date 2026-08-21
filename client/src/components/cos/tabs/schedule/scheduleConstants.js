@@ -1,5 +1,6 @@
 // Shared constants and pure helpers for the CoS Schedule tab subcomponents.
 import { timeUntil } from '../../../../utils/formatters';
+import { describeCron } from '../../../../utils/cronHelpers';
 
 export const INTERVAL_LABELS = {
   rotation: 'Rotation',
@@ -146,9 +147,16 @@ export function describeNextRun(config) {
     return { text: 'draining — runs back-to-back until done', tone: 'text-port-success' };
   }
   const next = config.status?.nextRunAt;
+  const cronDesc = config.type === 'cron' && config.cronExpression ? describeCron(config.cronExpression) : null;
+  const cronTitle = config.type === 'cron' && config.cronExpression
+    ? (cronDesc ? `${cronDesc} (${config.cronExpression})` : config.cronExpression)
+    : undefined;
   return {
-    text: next ? timeUntil(next, 'soon') : `${INTERVAL_LABELS[config.type] || config.type} — pending`,
+    text: next
+      ? (cronDesc ? `${timeUntil(next, 'soon')} · ${cronDesc}` : timeUntil(next, 'soon'))
+      : `${cronDesc || INTERVAL_LABELS[config.type] || config.type} — pending`,
     tone: 'text-gray-300',
+    title: cronTitle,
   };
 }
 
