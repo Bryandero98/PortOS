@@ -191,6 +191,11 @@ describe('<TracksManager> generative workflow hand-off', () => {
     renderAt('track-1');
 
     const prompt = await screen.findByLabelText(/^Prompt/);
+    // The form hydrates from the loaded track in an effect that can commit after
+    // the fields mount — `findByLabelText` resolves on the DOM node appearing,
+    // not on hydration landing. Type only once it has, or hydration overwrites
+    // the typed prompt and the save sends the original.
+    await waitFor(() => expect(screen.getByLabelText('Title').value).toBe('Example Song'));
     fireEvent.change(prompt, { target: { value: 'A patient analog pulse.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Design with AI' }));
 
