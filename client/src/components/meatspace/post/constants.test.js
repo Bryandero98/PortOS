@@ -3,6 +3,7 @@ import {
   computeDomainAverages, domainLabel, computeGoalProgress, hasGoals,
   POST_TOPICS, DOMAINS, DRILL_TO_DOMAIN, composedSessionDrillTypes,
   isTopicEnabled, isMemoryItemEnabled, resolveTopicForDrillType, appliedNumeracyAnswerCorrect,
+  effectiveCognitiveDrillConfig,
 } from './constants';
 
 describe('domainLabel', () => {
@@ -261,4 +262,38 @@ describe('resolveTopicForDrillType client mirror', () => {
     expect(resolveTopicForDrillType('nope')).toBeNull();
   });
 });
+
+
+// Mirrors the server's progressive override in `resolveDrillConfig`
+// (server/services/meatspacePost.js). Anything that DESCRIBES a cognitive drill
+// to the user has to resolve through this, or it explains the stored knobs while
+// a different rung actually runs.
+describe('effectiveCognitiveDrillConfig', () => {
+  it('lets the ladder rung win over the stored knobs while progressive (the default)', () => {
+    expect(effectiveCognitiveDrillConfig({ n: 1, length: 20 }, { config: { n: 3, stimulusMs: 2000 } }))
+      .toEqual({ n: 3, length: 20, stimulusMs: 2000 });
+  });
+
+  it('keeps the stored knobs when progressive is explicitly off', () => {
+    expect(effectiveCognitiveDrillConfig({ n: 1, progressive: false }, { config: { n: 3 } }))
+      .toEqual({ n: 1, progressive: false });
+  });
+
+  it('flips digit-span recall direction with the rung, not the stored value', () => {
+    expect(effectiveCognitiveDrillConfig(
+      { direction: 'forward' },
+      { config: { direction: 'backward', startLength: 4, maxLength: 6 } },
+    ).direction).toBe('backward');
+  });
+
+  it('falls back to the stored config when the rung has not loaded or the type has no ladder', () => {
+    expect(effectiveCognitiveDrillConfig({ mode: 'choice' }, null)).toEqual({ mode: 'choice' });
+    expect(effectiveCognitiveDrillConfig({ mode: 'choice' }, {})).toEqual({ mode: 'choice' });
+  });
+
+  it('tolerates a missing stored config', () => {
+    expect(effectiveCognitiveDrillConfig(undefined, null)).toEqual({});
+  });
+});
+
 // @vitest-environment node

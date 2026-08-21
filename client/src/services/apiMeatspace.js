@@ -215,7 +215,9 @@ export const getPostRecommendations = (limit, options = {}) => request(
 );
 export const getPostMultiplicationProgress = () => request('/meatspace/post/multiplication-progress');
 export const getPostPowersProgress = () => request('/meatspace/post/powers-progress');
-export const getPostCognitiveProgress = () => request('/meatspace/post/cognitive-progress');
+// `options` so a caller with its own catch can pass `{ silent: true }` and not
+// double-report — both current callers fetch this in the background.
+export const getPostCognitiveProgress = (options) => request('/meatspace/post/cognitive-progress', options);
 export const generatePostDrill = (type, config = {}, providerId, model, options = {}) => request('/meatspace/post/drill', {
   method: 'POST',
   body: JSON.stringify({ type, config, ...(providerId && { providerId }), ...(model && { model }) }),

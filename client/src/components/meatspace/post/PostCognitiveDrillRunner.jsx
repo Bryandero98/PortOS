@@ -119,6 +119,15 @@ export function buildNBackExample(n) {
   return { sequence, n: lag };
 }
 
+/**
+ * Whether a drill type has a how-to card at all. The one predicate that owns
+ * this rule: a "How it works" affordance must not render for a type
+ * `getDrillTutorial` has no case for, or it opens nothing.
+ */
+export function hasDrillTutorial(type) {
+  return getDrillTutorial({ type }) != null;
+}
+
 // Per-type how-to content. A pure function of the drill so config-dependent
 // copy (n-back lag, digit-span direction, reaction-time mode) reads correctly.
 // Returns null for types with no tutorial (which skip the gate entirely).
@@ -237,14 +246,17 @@ export function getDrillTutorial(drill) {
 // Holds the runner until the first-run tutorial (if any) is dismissed.
 function DrillTutorialGate({ drill, isTraining, drillIndex, drillCount, children }) {
   const [showTutorial, setShowTutorial] = useState(
-    () => getDrillTutorial(drill) != null && !hasSeenDrillTutorial(drill.type),
+    () => hasDrillTutorial(drill.type) && !hasSeenDrillTutorial(drill.type),
   );
   if (!showTutorial) return children;
   return (
     <CognitiveDrillTutorial
       drill={drill}
+      tut={getDrillTutorial(drill)}
       header={<DrillHeader type={drill.type} isTraining={isTraining} drillIndex={drillIndex} drillCount={drillCount} />}
       onAction={() => { markDrillTutorialSeen(drill.type); setShowTutorial(false); }}
+      actionLabel="Start drill"
+      ActionIcon={Play}
       footNote="You’ll only see this the first time for each drill type. Reopen it any time from the launcher or Config."
     />
   );
@@ -257,8 +269,7 @@ function DrillTutorialGate({ drill, isTraining, drillIndex, drillCount, children
  * preview below (no header, "Got it", no run behind it). Keeping the body in one
  * place is the point — the n-back worked example must not drift between them.
  */
-function CognitiveDrillTutorial({ drill, header = null, onAction, actionLabel = 'Start drill', ActionIcon = Play, footNote = null }) {
-  const tut = getDrillTutorial(drill);
+function CognitiveDrillTutorial({ drill, tut, header = null, onAction, actionLabel, ActionIcon, footNote = null }) {
   return (
     <div className="max-w-lg mx-auto space-y-6">
       {header}
@@ -319,13 +330,21 @@ function CognitiveDrillTutorial({ drill, header = null, onAction, actionLabel = 
  * render nothing, so callers can pass state straight through.
  */
 export function CognitiveDrillTutorialPreview({ drill, onClose }) {
-  if (!drill || !getDrillTutorial(drill)) return null;
+  const tut = drill ? getDrillTutorial(drill) : null;
+  if (!tut) return null;
   const label = DRILL_LABELS[drill.type] || drill.type;
   return (
-    <Modal open onClose={onClose} size="lg" ariaLabel={`How ${label} works`}>
+    // `usePortal` per the overlay convention in client/src/CLAUDE.md: this is
+    // rendered mid-tree inside two long settings/launcher pages, and a
+    // `backdrop-filter` ancestor (every bordered `.bg-port-card` on the glass
+    // themes) would otherwise become the fixed overlay's containing block.
+    // Sized `md` to match the card body's own `max-w-lg`, so there is no dead
+    // gutter inside the panel.
+    <Modal open onClose={onClose} size="md" usePortal ariaLabel={`How ${label} works`}>
       <div className="bg-port-card border border-port-border rounded-xl p-5 max-h-[85vh] overflow-y-auto">
         <CognitiveDrillTutorial
           drill={drill}
+          tut={tut}
           onAction={onClose}
           actionLabel="Got it"
           ActionIcon={Check}
@@ -333,6 +352,35 @@ export function CognitiveDrillTutorialPreview({ drill, onClose }) {
         />
       </div>
     </Modal>
+  );
+}
+
+/**
+ * The affordance that opens the preview. Shared by the POST launcher sidebar and
+ * the Drill Config cards so the accessible name (`How <label> works`, which both
+ * suites assert) and the mobile hit area live in ONE place rather than drifting
+ * per surface. Renders nothing for a type with no how-to card, so the button can
+ * never open an empty modal.
+ *
+ * `compact` is the launcher's dense sidebar row: icon only, with the 44px touch
+ * target collapsing to a tight icon on `sm+`.
+ */
+export function CognitiveDrillHowItWorksButton({ type, onClick, compact = false }) {
+  if (!hasDrillTutorial(type)) return null;
+  const label = DRILL_LABELS[type] || type;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`How ${label} works`}
+      title="How it works"
+      className={compact
+        ? 'shrink-0 inline-flex items-center justify-center min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:p-1 -m-1 sm:m-0 rounded-lg text-gray-500 hover:text-rose-300 transition-colors focus:outline-hidden focus:ring-2 focus:ring-port-accent'
+        : 'mt-1 inline-flex items-center justify-center gap-1 min-h-[44px] sm:min-h-0 sm:py-0.5 text-xs text-gray-500 hover:text-port-accent transition-colors rounded focus:outline-hidden focus:ring-2 focus:ring-port-accent'}
+    >
+      <BookOpen size={compact ? 14 : 12} />
+      {!compact && 'How it works'}
+    </button>
   );
 }
 

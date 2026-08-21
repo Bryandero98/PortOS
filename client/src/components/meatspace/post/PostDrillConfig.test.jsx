@@ -391,9 +391,26 @@ describe('PostDrillConfig', () => {
       }
     });
 
-    it('opens the how-to card with the drill\'s CURRENT draft config, and closes again', async () => {
+    // The DEFAULT configuration: progressive is on, so the server runs the
+    // ladder rung's config and IGNORES the stored knobs. The card has to teach
+    // the rung, or it explains a different drill than the one about to run.
+    it('teaches the progressive ladder rung, not the stored knobs', async () => {
+      getPostCognitiveProgress.mockResolvedValue({
+        'n-back': { type: 'n-back', level: 2, label: '3-back @ 2500ms', levels: [], config: { n: 3, stimulusMs: 2500 } },
+      });
+      // Stored `n` is 1; the rung says 3. The card must say 3.
+      const laggedConfig = { ...config, cognitive: { enabled: true, drillTypes: { 'n-back': { enabled: true, n: 1 } } } };
+      await renderConfig(<PostDrillConfig config={laggedConfig} onSaved={vi.fn()} onBack={vi.fn()} />);
+      await waitFor(() => expect(getPostCognitiveProgress).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByRole('button', { name: 'How N-Back works' }));
+      expect(screen.getByText(/catch when one repeats from 3 steps earlier/i)).toBeTruthy();
+      expect(screen.queryByText(/repeats from 1 step earlier/i)).toBeNull();
+    });
+
+    it('opens the how-to card with the drill\'s CURRENT draft config once progressive is off, and closes again', async () => {
       await renderConfig(<PostDrillConfig config={config} onSaved={vi.fn()} onBack={vi.fn()} />);
-      // Take n-back off progressive so the manual lag knob is editable, then change it.
+      // Progressive off → the ladder no longer applies and the manual lag knob wins.
       fireEvent.click(screen.getByRole('switch', { name: 'Progressive difficulty — N-Back' }));
       fireEvent.change(screen.getByLabelText('N (steps back)'), { target: { value: '4' } });
 

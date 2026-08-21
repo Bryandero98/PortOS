@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, Save, Brain, Bell, Target, Layers, TrendingUp, TrendingDown, Minus, BookOpen } from 'lucide-react';
+import { ArrowLeft, Save, Brain, Bell, Target, Layers, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { updatePostConfig, getProviders, getPostAdaptivePreview, getPostMultiplicationProgress, getPostPowersProgress, getPostCognitiveProgress, getMemoryItems } from '../../../services/api';
 import toast from '../../ui/Toast';
 import { FormField } from '../../ui/FormField';
 import { filterSelectableModels, enabledApiProviderFilter } from '../../../utils/providers';
-import { GOAL_DEFS, POST_TOPICS, MODULE_LABELS, DRILL_LABELS, DRILL_DESCRIPTIONS, composedSessionDrillTypes } from './constants';
-import { CognitiveDrillTutorialPreview } from './PostCognitiveDrillRunner';
+import { GOAL_DEFS, POST_TOPICS, MODULE_LABELS, DRILL_LABELS, DRILL_DESCRIPTIONS, composedSessionDrillTypes, effectiveCognitiveDrillConfig } from './constants';
+import { CognitiveDrillTutorialPreview, CognitiveDrillHowItWorksButton } from './PostCognitiveDrillRunner';
 
 // Modules a Full/Quick composed session can draw from (issue #2100), DERIVED
 // from the shared topic registry so the list has one owner (issue #3252): a
@@ -486,16 +486,7 @@ function DrillCard({ type, meta, drillConfig, enabled, accent, onToggle, onUpdat
           <p className="text-gray-500 text-xs">{DRILL_DESCRIPTIONS[type]}</p>
           {/* Outside the `enabled &&` blocks on purpose: previewing the rules is
               how you decide whether to switch a drill ON (issue #4732). */}
-          {onPreviewHowItWorks && (
-            <button
-              type="button"
-              onClick={onPreviewHowItWorks}
-              aria-label={`How ${label} works`}
-              className="mt-1 inline-flex items-center gap-1 text-xs text-gray-500 hover:text-port-accent transition-colors"
-            >
-              <BookOpen size={12} /> How it works
-            </button>
-          )}
+          {onPreviewHowItWorks && <CognitiveDrillHowItWorksButton type={type} onClick={onPreviewHowItWorks} />}
         </div>
         <button
           type="button"
@@ -701,7 +692,7 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
   useEffect(() => {
     if (!anyCognitiveProgressive) { setCognitiveProgress(null); return; }
     let cancelled = false;
-    getPostCognitiveProgress()
+    getPostCognitiveProgress({ silent: true })
       .then(p => { if (!cancelled) setCognitiveProgress(p); })
       .catch(err => console.warn('⚠️ Failed to load cognitive progress: ' + err.message));
     return () => { cancelled = true; };
@@ -1126,8 +1117,17 @@ export default function PostDrillConfig({ config, onSaved, onBack }) {
         </div>
       )}
 
+      {/* The card must teach the rules of the drill that will ACTUALLY run: while
+          a laddered drill is progressive (the default), the server overrides the
+          manual knobs with the rung's config, so a stored `n: 2` would otherwise
+          describe a 3-back run — and digit-span would say "in order" for a rung
+          that is backward recall. Built at render, not at click, so editing a
+          knob and reopening shows the new value. */}
       <CognitiveDrillTutorialPreview
-        drill={howItWorksType ? { type: howItWorksType, config: cognitiveDrillTypes[howItWorksType] || {} } : null}
+        drill={howItWorksType ? {
+          type: howItWorksType,
+          config: effectiveCognitiveDrillConfig(cognitiveDrillTypes[howItWorksType], cognitiveProgress?.[howItWorksType]),
+        } : null}
         onClose={() => setHowItWorksType(null)}
       />
 
