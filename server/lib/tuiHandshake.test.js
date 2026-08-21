@@ -1024,7 +1024,7 @@ describe('createInputReadyTracker', () => {
     expect(tracker.ready).toBe(true);
   });
 
-  it('latches needsTrust on either trust-gate wording', () => {
+  it('latches needsTrust on every vendor trust-gate wording', () => {
     const claude = createInputReadyTracker();
     claude.observe('', 'Is this a project you trust?');
     expect(claude.needsTrust).toBe(true);
@@ -1032,6 +1032,15 @@ describe('createInputReadyTracker', () => {
     const agy = createInputReadyTracker();
     agy.observe('', 'Do you trust the contents of this project?\n> Yes, I trust this folder\n');
     expect(agy.needsTrust).toBe(true);
+
+    // Codex says "directory", and its options are "Yes, continue / No, quit" —
+    // neither of the two older alternatives appears anywhere in the dialog, so it
+    // went unmatched and the run pasted its task into the menu (agent-671af38f).
+    const codex = createInputReadyTracker();
+    codex.observe('', 'You are in /tmp/portos-cd-cwd/agent-abc\nDo you trust the contents of this directory?'
+      + ' Working with untrusted contents comes with higher risk of prompt injection.\n'
+      + '› 1. Yes, continue\n2. No, quit\nPress enter to continue\n');
+    expect(codex.needsTrust).toBe(true);
   });
 
   // Claude Code v2.1.233's auto-mode offer. Unlike the trust gate it paints with

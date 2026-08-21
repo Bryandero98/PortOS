@@ -568,6 +568,38 @@ describe('executeTuiRun', () => {
       await promise;
     });
 
+    it('confirms the Codex directory-trust gate before its idle path can paste', async () => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+      const provider = { id: 'codex', type: 'tui', command: 'codex', tuiPromptDelayMs: 50 };
+      const promise = executeTuiRun({
+        runId: 'run-codex-trust-gate', provider, prompt: 'return one structured response',
+        workspacePath: TEST_WORKSPACE, timeout: 60000,
+      });
+      await flushAsync();
+
+      const pty = ptyInstances[0];
+      pty.emitData(
+        'You are in /tmp/portos-cd-cwd/agent-abc\n'
+        + 'Do you trust the contents of this directory? Working with untrusted contents comes with'
+        + ' higher risk of prompt injection.\n'
+        + '› 1. Yes, continue\n2. No, quit\nPress enter to continue\n',
+      );
+      // Past the idle threshold — the window the prompt used to be pasted in.
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(pty.write).toHaveBeenCalledWith('\r');
+      expect(pty.write).not.toHaveBeenCalledWith(expect.stringContaining('\x1b[200~'));
+
+      pty.emitData('OpenAI Codex ready\n');
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(pty.write).toHaveBeenCalledWith(expect.stringContaining('\x1b[200~'));
+
+      pty.emitExit({ exitCode: 0 });
+      await promise;
+    });
+
     it('declines Codex hook trust and pastes only after its selector clears', async () => {
       vi.useFakeTimers({
         toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
@@ -600,7 +632,10 @@ describe('executeTuiRun', () => {
       await promise;
     });
 
-    it('keeps non-Claude TUIs on the existing idle fallback when startup output resembles Claude trust text', async () => {
+    // A non-Claude TUI keeps the idle fallback for DELIVERY, but a trust gate is
+    // still answered first — every vendor's gate swallows the paste the same way,
+    // and leaving it up only guarantees the prompt is lost (agent-671af38f).
+    it('answers a trust gate for a non-Claude TUI, then delivers on the existing idle fallback', async () => {
       vi.useFakeTimers({
         toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
       });
@@ -615,7 +650,13 @@ describe('executeTuiRun', () => {
       pty.emitData('Is this a project you trust?\n1. Yes, I trust this folder\n2. No, exit\n');
       await vi.advanceTimersByTimeAsync(2000);
 
-      expect(pty.write).not.toHaveBeenCalledWith('\r');
+      expect(pty.write).toHaveBeenCalledWith('\r');
+      // No composer repaint followed the keystroke, so the idle clock restarted
+      // from it — delivery still happens, via the blind PASTE_DEADLINE_MS
+      // fallback that governs non-input-ready providers.
+      expect(pty.write).not.toHaveBeenCalledWith(expect.stringContaining('\x1b[200~'));
+      pty.emitData('opencode ready\n');
+      await vi.advanceTimersByTimeAsync(2000);
       expect(pty.write).toHaveBeenCalledWith(expect.stringContaining('\x1b[200~'));
 
       pty.emitExit({ exitCode: 0 });

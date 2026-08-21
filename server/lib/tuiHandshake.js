@@ -269,13 +269,24 @@ export function isPasteConfirmed(strippedBuffer, { verifiablePrefix = null, prom
 // text is not reliably matchable. Terminal-mode toggles survive intact.)
 export const BRACKETED_PASTE_MODE_PATTERN = /\x1b\[\?2004([hl])/g;
 
-// Claude Code's first-run folder-trust gate ("Is this a project you trust? →
-// 1. Yes, I trust this folder / 2. No, exit"). `--dangerously-skip-permissions`
-// does NOT bypass it, and CoS agents can start in folders claude hasn't seen.
+// First-run folder-trust gates. Claude Code's ("Is this a project you trust? →
+// 1. Yes, I trust this folder / 2. No, exit"), agy's ("Do you trust the contents
+// of this project?"), and Codex's ("You are in <dir> / Do you trust the contents
+// of this directory? → 1. Yes, continue / 2. No, quit"). NONE of them is bypassed
+// by the vendor's own danger flag (`--dangerously-skip-permissions`,
+// `--dangerously-bypass-approvals-and-sandbox`), and CoS agents routinely start
+// in folders the CLI has never seen — a fresh worktree, or the per-agent temp cwd
+// creative-director tasks run in, which is a NEW directory on every single run.
 // Matched against the WHITESPACE-STRIPPED text (same inter-glyph-spacing caveat
-// as the footer). The spawner auto-confirms the default ("Yes, I trust").
+// as the footer). The spawner auto-confirms the default (claude/agy "Yes, I
+// trust"; codex "Yes, continue").
+//
+// Codex's wording carries neither "trust this folder" nor "is this a project
+// you…", so before the third alternative it matched nothing: the dialog sat
+// unanswered, the idle heuristic pasted the task into it, and the run died
+// `paste-not-rendered` (agent-671af38f, 2026-08-21).
 export const TUI_TRUST_PROMPT_PATTERN =
-  /trustthisfolder|isthisaprojectyou(?:created|trust)/i;
+  /trustthisfolder|isthisaprojectyou(?:created|trust)|doyoutrustthecontentsofthis(?:directory|project|folder)/i;
 
 // Claude Code's auto-mode opt-in offer ("Make auto mode your default permission
 // mode? → 1. Yes, set auto mode as my default permission mode / 2. No, keep

@@ -1123,6 +1123,41 @@ describe('spawnTuiAgent runtime', () => {
     expect(pasteCount()).toBe(1);
   });
 
+  // Regression (agent-671af38f, 2026-08-21): codex takes the idle/deadline path,
+  // and its first-run directory-trust dialog paints and then goes SILENT — which
+  // that path read as "ready". The task went into the menu, all three paste
+  // retries with it, and the run died `paste-not-rendered`. Creative-director
+  // tasks run in a fresh per-agent temp cwd, so codex asked on every single run.
+  it('codex folder-trust gate: confirms it before the idle heuristic can paste', async () => {
+    runSpawn();
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from(
+      'You are in /tmp/portos-cd-cwd/agent-1\n'
+      + 'Do you trust the contents of this directory? Working with untrusted contents comes with'
+      + ' higher risk of prompt injection.\n'
+      + '› 1. Yes, continue\n'
+      + '2. No, quit\n'
+      + 'Press enter to continue\n',
+    ));
+    await flushMicrotasks();
+    // Past the 1200ms idle threshold — the window in which the prompt used to go
+    // into the dialog.
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+
+    // A bare Enter takes the highlighted "1. Yes, continue" — sent ONCE, not on
+    // every poll tick — and nothing pasted.
+    expect(vi.mocked(shellService.writeToSession).mock.calls.filter(([, d]) => d === '\r').length).toBe(1);
+    expect(pasteCount()).toBe(0);
+
+    // Trust accepted → codex paints its composer → the ordinary idle path pastes.
+    await capturedOnData(Buffer.from('OpenAI Codex ready\n'));
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    expect(pasteCount()).toBe(1);
+  });
+
   it('tui-not-ready: claude that never shows an input prompt finalizes failure without pasting', async () => {
     let resolveComplete;
     const completeDone = new Promise((r) => { resolveComplete = r; });

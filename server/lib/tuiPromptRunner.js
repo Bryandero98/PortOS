@@ -773,9 +773,10 @@ ${prompt}`;
       }
     };
 
-    // Ready watch — Claude dismisses known startup dialogs before sending
-    // anything, then waits for its positive input-ready signal. Other providers
-    // retain the existing idle/deadline fallback unchanged.
+    // Ready watch — known startup dialogs (folder trust, Codex's hook review)
+    // are dismissed for EVERY provider before anything is sent, since each of
+    // them swallows a paste. Claude then waits for its positive input-ready
+    // signal; other providers retain the idle/deadline fallback for delivery.
     readyTimer = setInterval(() => {
       if (finalized || promptSentAt) {
         clearInterval(readyTimer);
@@ -784,6 +785,14 @@ ${prompt}`;
       }
       const now = Date.now();
       const elapsed = now - startTime;
+      // Both dismissals below rewind the idle clock and clear `firstOutputAt`:
+      // the idle path further down reads silence as readiness, and a dialog is
+      // quietest right after it paints, so otherwise the keystroke and an idle
+      // paste go out inside the same window and the prompt lands in a menu that
+      // has not repainted. Requiring fresh output-then-silence after the
+      // keystroke makes delivery wait for what the dismissal reveals;
+      // PASTE_DEADLINE_MS still backstops a dismissal the TUI ignores entirely.
+
       // Codex's hook-review selector precedes its composer. An unattended run
       // must not grant hooks permission to execute outside the sandbox, so take
       // the explicit "Continue without trusting" option before ordinary
@@ -793,14 +802,25 @@ ${prompt}`;
         if (dismissStartupDialog('\x1b[B\x1b[B\r', 'hook-review prompt')) {
           inputReady.ackHookReview();
         }
+        lastOutputAt = now;
+        firstOutputAt = null;
+        return;
+      }
+      // The first-run folder-trust gate, like the hook-review selector above,
+      // must be answered for EVERY provider rather than only the input-ready
+      // ones: codex takes the idle/deadline path below, and its trust dialog
+      // paints and then goes silent — which that path reads as "ready" and
+      // pastes into, losing the prompt and every retry with it (agent-671af38f).
+      // Enter takes the highlighted default (claude/agy "Yes, I trust", codex
+      // "Yes, continue"); `trustAccepted` keeps it to one keystroke.
+      if (inputReady.needsTrust && !trustAccepted) {
+        trustAccepted = true;
+        dismissStartupDialog('\r', 'folder-trust prompt');
+        lastOutputAt = now;
+        firstOutputAt = null;
         return;
       }
       if (requiresInputReady) {
-        if (inputReady.needsTrust && !trustAccepted) {
-          trustAccepted = true;
-          dismissStartupDialog('\r', 'folder-trust prompt');
-          return;
-        }
         if (inputReady.needsAutoModeChoice) {
           // Select "No, keep don't ask" so a one-shot run never rewrites the
           // user's global Claude permission default as a startup side effect.

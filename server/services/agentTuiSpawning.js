@@ -1396,6 +1396,16 @@ export async function spawnTuiAgent({
     const now = Date.now();
     const elapsed = now - startedAt;
 
+    // Every dismissal below rewinds the idle clock (`lastOutputAt`) AND clears
+    // `firstOutputAt`, which re-arms the idle path's "has it printed anything?"
+    // gate. The idle heuristic that governs codex reads silence as readiness,
+    // and a dialog is at its quietest right after it paints — so the dismissal
+    // keystroke and an idle paste can otherwise go out inside the same window,
+    // landing the prompt in a menu that has not repainted. Demanding fresh
+    // output-then-silence AFTER the keystroke makes the paste wait for whatever
+    // the dismissal reveals; if the TUI ignores the keystroke entirely,
+    // PASTE_DEADLINE_MS still backstops delivery.
+
     // Codex can present a hook-review selector before its composer exists.
     // Do not trust hooks from an unattended run: option 3 keeps them disabled
     // for this session and lets the agent continue without executing code
@@ -1405,20 +1415,33 @@ export async function spawnTuiAgent({
       hookReviewDeclined = true;
       shellService.writeToSession(sessionId, '\x1b[B\x1b[B\r');
       inputReady.ackHookReview();
+      lastOutputAt = now;
+      firstOutputAt = null;
       appendLine(`📟 Continued ${tuiConfig.command} without trusting startup hooks for session ${sessionId.slice(0, 8)}`);
       return;
     }
 
+    // Auto-confirm the first-run "trust this folder?" gate (claude's, agy's and
+    // codex's all default to yes) so agents can run in fresh worktrees. Send
+    // Enter once.
+    //
+    // Like the hook-review selector this runs for EVERY TUI, not only the
+    // positive input-ready providers below: codex takes the idle/deadline path,
+    // and its trust dialog goes quiet the instant it paints, so the idle
+    // heuristic reads that silence as "ready" and pastes the task straight into
+    // the menu — which swallows it and all three paste retries
+    // (agent-671af38f, 2026-08-21, `paste-not-rendered`). Answering the dialog
+    // first is what lets the composer appear at all.
+    if (inputReady.needsTrust && !trustAccepted) {
+      trustAccepted = true;
+      shellService.writeToSession(sessionId, SUBMIT_KEY);
+      lastOutputAt = now;
+      firstOutputAt = null;
+      appendLine(`📟 Auto-confirmed ${tuiConfig.command} folder-trust prompt for session ${sessionId.slice(0, 8)}`);
+      return;
+    }
+
     if (requireInputReady) {
-      // Auto-confirm the first-run "trust this folder?" gate (claude's and agy's
-      // both default to "Yes, I trust") so claims can run in fresh worktrees.
-      // Send Enter once.
-      if (inputReady.needsTrust && !trustAccepted) {
-        trustAccepted = true;
-        shellService.writeToSession(sessionId, SUBMIT_KEY);
-        appendLine(`📟 Auto-confirmed ${tuiConfig.command} folder-trust prompt for session ${sessionId.slice(0, 8)}`);
-        return;
-      }
       // Decline claude's "make auto mode your default permission mode?" offer
       // (v2.1.233+). Unlike the trust gate this one paints AFTER the composer is
       // live, so it swallows the paste and every retry unless it is cleared
