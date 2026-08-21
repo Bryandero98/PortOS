@@ -27,7 +27,7 @@ describe('mtplxServerManager', () => {
     // A start that never answers on its port is the NORMAL path here (the probe
     // is pinned unreachable), so every lifecycle test pays the startup budget AND
     // its poll beat in full — shorten both rather than sitting through them.
-    _resetMtplxServerStateForTests({ startupWait: 50, startupPoll: 5 });
+    _resetMtplxServerStateForTests({ startupWait: 50, startupPoll: 5, portRelease: 20 });
     vi.restoreAllMocks();
     pm2State = null;
     execPm2Calls = [];
@@ -99,6 +99,26 @@ describe('mtplxServerManager', () => {
       const installed = await getMtplxServerStatus();
       expect(installed.supported).toBe(true);
       expect(installed.unsupportedReason).toBeNull();
+    });
+
+    // The card renders these rather than re-deriving flags from the knob ids,
+    // so the catalog that owns the transport stays the only thing that renders
+    // a flag. A tuned daemon that reported no flags would look plain "running"
+    // while every request through the mtplx provider ran under them.
+    it('reports the tuning flags the running daemon was launched with', async () => {
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(BINARY);
+      await startMtplxServer({ tuning: { depth: 5 } });
+      expect((await getMtplxServerStatus()).tuningFlags).toEqual(['--depth', '5']);
+    });
+
+    it('reports no tuning flags for a server PortOS does not manage', async () => {
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(BINARY);
+      vi.spyOn(openAiModelsProbe, 'probeOpenAiModels').mockResolvedValue({ reachable: true });
+      const status = await getMtplxServerStatus();
+      expect(status.running).toBe(true);
+      // PortOS cannot read another process's launch line, so claiming it is
+      // untuned would be a guess dressed as a fact.
+      expect(status.tuningFlags).toEqual([]);
     });
 
     it('flags the process as boot-persisted only when the PM2 dump names it', async () => {
@@ -233,13 +253,22 @@ describe('mtplxServerManager', () => {
       vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(BINARY);
       // A relaunch judges readiness by the endpoint answering; the suite pins
       // the probe unreachable, so shorten the budget rather than waiting it out.
-      _resetMtplxServerStateForTests({ startupWait: 20, startupPoll: 5, relaunchReadyTimeout: 30 });
+      _resetMtplxServerStateForTests({ startupWait: 20, startupPoll: 5, portRelease: 20, relaunchReadyTimeout: 30 });
     });
 
     // Readiness is what the caller's `applied: true` means, so most cases need
     // the endpoint to answer once the relaunched process is up.
     const answerOnceRunning = () => vi.spyOn(openAiModelsProbe, 'probeOpenAiModels')
       .mockImplementation(async () => ({ reachable: pm2State?.status === 'online' }));
+
+    // Reachable UNLESS the running launch line carries `flag` — a tuning MTPLX
+    // starts under but never serves under, with the previous configuration
+    // coming back healthy. The restore now waits for readiness too, so a probe
+    // pinned unreachable for everything would model both halves failing.
+    const answerUnless = (flag) => vi.spyOn(openAiModelsProbe, 'probeOpenAiModels')
+      .mockImplementation(async () => ({
+        reachable: pm2State?.status === 'online' && !(pm2State.args || []).includes(flag),
+      }));
 
     it('relaunches on the same checkpoint with the tuning flags added', async () => {
       await startMtplxServer({ port: 8010 });
@@ -303,11 +332,25 @@ describe('mtplxServerManager', () => {
     // them as evidence for this tuning.
     it('restores the previous configuration when the relaunch never answers', async () => {
       await startMtplxServer({ tuning: { depth: 2 } });
-      const result = await relaunchMtplxServerWithTuning({ depth: 6 });
+      answerUnless('--context-window');
+      const result = await relaunchMtplxServerWithTuning({ contextWindow: 65536 });
       expect(result.applied).toBe(false);
       expect(result.reason).toMatch(/never answered/);
       expect(result.config.tuning).toEqual({ depth: 2 });
       expect(pm2State?.status).toBe('online');
+    });
+
+    // The restore is only worth anything if the daemon is SERVING again when it
+    // returns. `startMtplxServer` proves only that the process survived its
+    // first seconds, and the caller measures immediately after — so returning
+    // early would have it sample a checkpoint still loading, time every sample
+    // out, and store a junk does-not-fit record that counts as "assessed".
+    it('reports no config when the previous configuration could not be brought back', async () => {
+      await startMtplxServer({ tuning: { depth: 2 } });
+      // Nothing answers again — the tuned line, and the restore behind it.
+      const result = await relaunchMtplxServerWithTuning({ contextWindow: 65536 });
+      expect(result.applied).toBe(false);
+      expect(result.config).toBeNull();
     });
 
     // A launch line MTPLX ACCEPTS but the machine cannot hold dies partway
@@ -317,9 +360,10 @@ describe('mtplxServerManager', () => {
     // per bad launch line, and a sweep is expected to produce several.
     it('restores immediately when PM2 shows the relaunch died, not after the full budget', async () => {
       await startMtplxServer({ tuning: { depth: 2 } });
+      answerUnless('--context-window');
       // Long enough that sitting it out would blow the per-test timeout, so the
       // assertion is about noticing the death rather than about the clock.
-      _resetMtplxServerStateForTests({ startupWait: 20, startupPoll: 5, relaunchReadyTimeout: 60_000 });
+      _resetMtplxServerStateForTests({ startupWait: 20, startupPoll: 5, portRelease: 20, relaunchReadyTimeout: 60_000 });
 
       const realExec = pm2Module.execPm2.getMockImplementation();
       vi.spyOn(pm2Module, 'execPm2').mockImplementation(async (args) => {
@@ -328,13 +372,35 @@ describe('mtplxServerManager', () => {
         if (args[0] === 'start' && args.includes('--context-window')) {
           setTimeout(() => { if (pm2State) pm2State.status = 'errored'; }, 30);
         }
+        if (args[0] === 'logs') return { stdout: '', stderr: 'metal buffer allocation failed' };
         return out;
       });
 
       const result = await relaunchMtplxServerWithTuning({ contextWindow: 1048576 });
       expect(result.applied).toBe(false);
-      expect(result.reason).toMatch(/never answered/);
+      // The two not-ready states are distinct: PM2 has a status and a log tail
+      // for a process that DIED, and reporting that as "never answered on its
+      // port" would discard the one fact that explains the failure.
+      expect(result.reason).toMatch(/exited while loading/);
+      expect(result.reason).toMatch(/metal buffer allocation failed/);
       expect(result.config.tuning).toEqual({ depth: 2 });
+    });
+
+    // "MTPLX rejected that tuning" is only true when `mtplx serve` actually ran.
+    // `startMtplxServer` also throws from guards that fire BEFORE it launches
+    // anything — most realistically the port still held by the daemon just
+    // stopped — and blaming the tuning sends the user hunting a flag that was
+    // never passed.
+    it('does not blame the tuning for a failure that happened before MTPLX ran', async () => {
+      await startMtplxServer({ tuning: { depth: 2 } });
+      answerOnceRunning();
+      // The stopped daemon is still holding the port when the next start tries.
+      vi.spyOn(platform, 'isPortInUse').mockResolvedValue(true);
+
+      const result = await relaunchMtplxServerWithTuning({ depth: 6 });
+      expect(result.applied).toBe(false);
+      expect(result.reason).toMatch(/could not start MTPLX/);
+      expect(result.reason).not.toMatch(/rejected that tuning/);
     });
 
     it('refuses when PM2 cannot be read, without calling the daemon external', async () => {

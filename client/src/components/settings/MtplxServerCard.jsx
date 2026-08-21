@@ -44,6 +44,7 @@ export default function MtplxServerCard({
   const cachedRows = status?.cachedModelRows || cached.map((repo) => ({ repo }));
   const emptyCache = Boolean(status?.installed) && cached.length === 0 && !status?.cacheError;
   const external = status?.running && status?.managed === false;
+  const tuningFlags = status?.tuningFlags || [];
 
   return (
     <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-4">
@@ -94,6 +95,16 @@ export default function MtplxServerCard({
               <p><span className="text-gray-500">Endpoint:</span> <code className="text-port-success">{status.endpoint}</code></p>
               {status.config?.model && (
                 <p><span className="text-gray-500">Model:</span> <code className="text-gray-300">{status.config.model}</code></p>
+              )}
+              {/*
+                A measured assessment relaunches this daemon with tuning flags
+                and leaves them on. Every later request through the `mtplx`
+                provider runs under them, so a card that showed only the model
+                would report a server as plain "running" while it is serving
+                with, say, MTP decoding switched off.
+              */}
+              {tuningFlags.length > 0 && (
+                <p><span className="text-gray-500">Tuning:</span> <code className="text-port-warning">{tuningFlags.join(' ')}</code></p>
               )}
               {external && (
                 <p className="text-blue-300">Started outside PortOS — stop it where you started it.</p>
