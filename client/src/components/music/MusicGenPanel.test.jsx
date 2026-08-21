@@ -264,6 +264,11 @@ describe('MusicGenPanel', () => {
         mediaProvider: { enabled: true, audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }] },
         mediaProviderStatus: {
           state: 'ready',
+          // A capacity claim needs a verifiable freshness window: the panel
+          // re-derives `stale` at render time rather than trusting the state
+          // the probe recorded, so a snapshot with no window reads as stale.
+          checkedAt: new Date().toISOString(),
+          freshUntil: new Date(Date.now() + 60_000).toISOString(),
           snapshot: {
             queue: { accepting: true, running: 0, queued: 0 },
             capabilities: [{
@@ -293,6 +298,40 @@ describe('MusicGenPanel', () => {
     }), { silent: true }));
     const requestBody = api.generateMusic.mock.calls[0][0];
     expect(requestBody).not.toHaveProperty('lyrics');
+  });
+
+  // The stored probe keeps saying `ready` long after the server would refuse
+  // the submission. Leaving Generate enabled beside a caption reading "stale"
+  // just moves the rejection to the server, after the user committed to it.
+  it('blocks generation on a peer whose capacity window has expired', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    api.getInstances.mockResolvedValue({
+      peers: [{
+        id: 'peer-example',
+        name: 'Example GPU',
+        status: 'online',
+        mediaProvider: { enabled: true, audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }] },
+        mediaProviderStatus: {
+          state: 'ready',
+          checkedAt: new Date(Date.now() - 120_000).toISOString(),
+          freshUntil: new Date(Date.now() - 60_000).toISOString(),
+          snapshot: {
+            queue: { accepting: true, running: 0, queued: 0 },
+            capabilities: [{
+              kind: 'audio', engine: 'minimax-music3', engineName: 'MiniMax Music 3', modelId: 'minimax-music3',
+              modelName: 'MiniMax Music 3', ready: true, autoDuration: false, lyrics: true,
+              minDurationSec: 10, maxDurationSec: 300, defaultDurationSec: 60,
+            }],
+          },
+        },
+      }],
+    });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" />);
+
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    expect(screen.getByRole('button', { name: /^generate$/i })).toBeDisabled();
+    expect(screen.getByText(/capacity snapshot expired/i)).toBeInTheDocument();
   });
 
   it('can render instrumentally without conditioning on or clearing the track lyrics', async () => {

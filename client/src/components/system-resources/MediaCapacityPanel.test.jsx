@@ -91,7 +91,7 @@ describe('MediaCapacityPanel', () => {
     renderPanel();
     expect(await screen.findByText('render-box')).toBeInTheDocument();
     expect(screen.getByText('ready')).toBeInTheDocument();
-    expect(screen.getByText('1 running · 0 queued · 1/4 slots active')).toBeInTheDocument();
+    expect(screen.getByText('1/4 shared slots active · federated 1 running')).toBeInTheDocument();
   });
 
   // The local lanes above already show running/limit; a peer row that could only
@@ -113,7 +113,7 @@ describe('MediaCapacityPanel', () => {
       },
     })] });
     renderPanel();
-    expect(await screen.findByText(/runs 4 at a time · audio 1 running/)).toBeInTheDocument();
+    expect(await screen.findByText(/runs 4 at a time · audio 1 running · federated 1 running/)).toBeInTheDocument();
   });
 
   // An older provider sends neither field. The row drops the segments rather

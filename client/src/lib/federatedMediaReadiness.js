@@ -135,6 +135,15 @@ function verifiedState(status, now) {
 
 const isCount = (value) => Number.isInteger(value) && value >= 0;
 
+// "<label> 1 running, 2 queued", or null when nothing is there to report.
+const occupancySegment = (label, entry) => {
+  if (!isRecord(entry) || !isCount(entry.running) || !isCount(entry.queued)) return null;
+  const parts = [];
+  if (entry.running > 0) parts.push(`${entry.running} running`);
+  if (entry.queued > 0) parts.push(`${entry.queued} queued`);
+  return parts.length > 0 ? `${label} ${parts.join(', ')}` : null;
+};
+
 /**
  * The peer's queue block as finished display segments.
  *
@@ -153,24 +162,26 @@ const isCount = (value) => Number.isInteger(value) && value >= 0;
 export function summarizePeerMediaQueue(queue) {
   if (!isRecord(queue)) return NO_QUEUE_SEGMENTS;
   const segments = [];
-  if (isCount(queue.running) && isCount(queue.queued)
-    && isCount(queue.totalActive) && isCount(queue.maxQueuedJobs)) {
-    segments.push(`${queue.running} running · ${queue.queued} queued · ${queue.totalActive}/${queue.maxQueuedJobs} slots active`);
+  // Machine-wide: every local render on that peer competes for these slots,
+  // which is why this is the number that predicts a wait.
+  if (isCount(queue.totalActive) && isCount(queue.maxQueuedJobs)) {
+    segments.push(`${queue.totalActive}/${queue.maxQueuedJobs} shared slots active`);
   }
   if (isCount(queue.concurrency) && queue.concurrency > 0) {
     segments.push(`runs ${queue.concurrency} at a time`);
   }
-  // The provider reports only the kinds holding a lane, so every entry here has
-  // work in it; a kind that is idle is simply absent.
+  // Also machine-wide — this is what breaks the slot count down. The provider
+  // reports only the kinds holding a lane, so an idle kind is simply absent.
   const byKind = isRecord(queue.byKind) ? queue.byKind : {};
   for (const { kind, label } of FEDERATED_MEDIA_KINDS) {
-    const entry = byKind[kind];
-    if (!isRecord(entry) || !isCount(entry.running) || !isCount(entry.queued)) continue;
-    const parts = [];
-    if (entry.running > 0) parts.push(`${entry.running} running`);
-    if (entry.queued > 0) parts.push(`${entry.queued} queued`);
-    if (parts.length > 0) segments.push(`${label} ${parts.join(', ')}`);
+    const segment = occupancySegment(label, byKind[kind]);
+    if (segment) segments.push(segment);
   }
+  // The federated share of the same slots, labelled so it cannot be read as the
+  // whole picture: an unlabelled "0 running" beside "audio 1 running" says the
+  // peer is both busy and idle.
+  const federated = occupancySegment('federated', queue);
+  if (federated) segments.push(federated);
   return segments;
 }
 

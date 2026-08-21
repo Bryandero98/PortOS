@@ -323,7 +323,7 @@ cannot say:
 | Field | Meaning |
 |-------|---------|
 | `totalActive` | every queued/running local media job, including kinds this contract does not federate |
-| `providerActive` / `queued` / `running` | the subset owned by federated callers |
+| `providerActive` / `queued` / `running` | the subset owned by federated callers — a *share* of the above, never the whole picture |
 | `maxQueuedJobs` | the admission bound `accepting` is computed against |
 | `concurrency` | how many jobs run at once on the lane a federated submission lands on |
 | `byKind` | `{running, queued}` for each negotiated kind currently holding a lane |
@@ -339,6 +339,11 @@ carries is a local-engine render, so today that is the serialized GPU lane.
 block present, an absent kind is idle. It need not sum to `totalActive`, which
 also counts local work of kinds this contract does not federate (LoRA training)
 occupying the same lanes.
+
+`byKind` and `totalActive` describe the whole machine, while `running`/`queued`
+describe only the federated share of it — so the UI labels the federated
+numbers rather than rendering them bare. An unlabelled `0 running` beside
+`audio 1 running` would say the peer is simultaneously busy and idle.
 
 Both fields were added after wire v1 shipped, so both are optional: a provider
 on an older build omits them and a consumer must read that absence as

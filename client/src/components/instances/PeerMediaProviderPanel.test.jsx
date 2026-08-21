@@ -81,7 +81,7 @@ describe('PeerMediaProviderPanel', () => {
     render(<PeerMediaProviderPanel peer={peer} onRefresh={vi.fn()} />);
 
     fireEvent.click(screen.getByRole('button', { name: /Remote media provider/i }));
-    expect(screen.getByText(/runs 2 at a time · audio 1 running, 2 queued/i)).toBeInTheDocument();
+    expect(screen.getByText(/runs 2 at a time · audio 1 running, 2 queued · federated 1 running, 2 queued/i)).toBeInTheDocument();
     // An idle kind is omitted, not rendered as a zero.
     expect(screen.queryByText(/(image|video) \d/i)).not.toBeInTheDocument();
   });
@@ -96,7 +96,7 @@ describe('PeerMediaProviderPanel', () => {
     render(<PeerMediaProviderPanel peer={peer} onRefresh={onRefresh} />);
 
     fireEvent.click(screen.getByRole('button', { name: /Remote media provider/i }));
-    expect(screen.getByText(/1 running · 2 queued · 3\/4 slots active/i)).toBeInTheDocument();
+    expect(screen.getByText(/3\/4 shared slots active · federated 1 running, 2 queued/i)).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText('Allow audio model MiniMax Music 3'));
 
     await waitFor(() => expect(updatePeer).toHaveBeenCalledWith('peer-example', {

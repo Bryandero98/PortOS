@@ -322,10 +322,17 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
     setDurationSec((d) => (d == null ? engine.defaultDurationSec : d));
   }, [engine?.id, engine?.models]);
 
+  // The same resolver the Instances card and System Health use, rather than the
+  // `state` recorded on the stored probe: a snapshot written as `ready` keeps
+  // saying so after its freshness window closes, and this is the surface where
+  // the user actually commits a render to that peer. It gates the button as
+  // well as the caption — a caption reading "stale" beside an enabled Generate
+  // just moves the rejection to the server.
+  const remoteReadiness = selectedRemotePeer ? resolvePeerMediaReadiness(selectedRemotePeer) : null;
+  const remoteQueueSegments = remoteReadiness ? summarizePeerMediaQueue(remoteReadiness.queue) : [];
   const remoteReady = isRemote
-    && selectedRemotePeer?.status === 'online'
-    && selectedRemotePeer?.mediaProviderStatus?.state === 'ready'
-    && selectedRemotePeer?.mediaProviderStatus?.snapshot?.queue?.accepting === true
+    && remoteReadiness?.state === 'ready'
+    && remoteReadiness.queue?.accepting === true
     && selectedRemoteModel?.ready === true;
   const canGenerate = (isRemote ? remoteReady : !!engine?.ready && selectedModelReady)
     && !!prompt?.trim() && !isGenerating;
@@ -483,12 +490,6 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
 
   const selectedUserModel = engine?.models?.find((m) => m.id === modelId && m.userAdded);
   const showRuntimeInstallHint = !isRemote && !!engine && (!engine.ready || !selectedModelReady) && (!!prompt?.trim() || userSelectedEngine);
-  // The same resolver the Instances card and System Health use, rather than
-  // reading `state` off the stored probe: a snapshot recorded as `ready` keeps
-  // saying so after its freshness window closes, and this is the surface where
-  // the user actually commits a render to that peer.
-  const remoteReadiness = selectedRemotePeer ? resolvePeerMediaReadiness(selectedRemotePeer) : null;
-  const remoteQueueSegments = remoteReadiness ? summarizePeerMediaQueue(remoteReadiness.queue) : [];
 
   return (
     <div className="space-y-2 border border-port-border rounded-lg p-3 bg-port-bg/40">

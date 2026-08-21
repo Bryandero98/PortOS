@@ -193,26 +193,41 @@ describe('summarizePeerMediaQueue', () => {
     totalActive: 2, providerActive: 1, queued: 1, running: 1, maxQueuedJobs: 4, accepting: true, ...overrides,
   });
 
-  it('renders slots, drain rate, and every kind holding a lane', () => {
+  it('renders shared slots, drain rate, per-kind load, and the federated share', () => {
     expect(summarizePeerMediaQueue(queue({
       concurrency: 2,
       byKind: { audio: { running: 1, queued: 1 }, image: { running: 0, queued: 1 } },
     }))).toEqual([
-      '1 running · 1 queued · 2/4 slots active',
+      '2/4 shared slots active',
       'runs 2 at a time',
       'audio 1 running, 1 queued',
       'image 1 queued',
+      'federated 1 running, 1 queued',
     ]);
   });
 
-  // An older provider sends neither field. Rendering the absence as a zero
+  // byKind is machine-wide while running/queued are the federated share, so an
+  // unlabelled "0 running" beside "audio 1 running" would claim the peer is
+  // both busy and idle.
+  it('labels the federated share so it cannot be read as the whole machine', () => {
+    expect(summarizePeerMediaQueue({
+      totalActive: 1, providerActive: 0, queued: 0, running: 0, maxQueuedJobs: 2, accepting: true,
+      byKind: { audio: { running: 1, queued: 0 } },
+    })).toEqual(['1/2 shared slots active', 'audio 1 running']);
+  });
+
+  // An older provider sends neither new field. Rendering the absence as a zero
   // would claim idle lanes the peer never reported on.
   it('drops the segments an older provider never sent instead of showing zeroes', () => {
-    expect(summarizePeerMediaQueue(queue())).toEqual(['1 running · 1 queued · 2/4 slots active']);
+    expect(summarizePeerMediaQueue(queue())).toEqual([
+      '2/4 shared slots active',
+      'federated 1 running, 1 queued',
+    ]);
   });
 
   it('drops a concurrency that claims no capacity', () => {
-    expect(summarizePeerMediaQueue(queue({ concurrency: 0 }))).toHaveLength(1);
+    expect(summarizePeerMediaQueue(queue({ concurrency: 0 })))
+      .not.toContain('runs 0 at a time');
   });
 
   // The provider omits an idle kind, but a build that sent one must not add a
@@ -220,7 +235,10 @@ describe('summarizePeerMediaQueue', () => {
   it('omits a kind reporting no work', () => {
     expect(summarizePeerMediaQueue(queue({
       byKind: { audio: { running: 0, queued: 0 }, image: { running: 2, queued: 0 } },
-    }))).toEqual(['1 running · 1 queued · 2/4 slots active', 'image 2 running']);
+    }))).toContain('image 2 running');
+    expect(summarizePeerMediaQueue(queue({
+      byKind: { audio: { running: 0, queued: 0 } },
+    }))).not.toContain('audio');
   });
 
   it('reports nothing at all when the queue block is missing', () => {
