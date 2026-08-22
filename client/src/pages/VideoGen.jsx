@@ -80,6 +80,8 @@ import usePreviewRoute from '../hooks/usePreviewRoute';
 import useMediaPreviewActions from '../hooks/useMediaPreviewActions';
 import { useVideoGenQueue } from '../hooks/useVideoGenQueue.js';
 import { useVideoGenForm } from '../hooks/useVideoGenForm.js';
+import { useFederatedMediaTarget } from '../hooks/useFederatedMediaTarget';
+import RemoteMediaTargetPicker from '../components/federatedMedia/RemoteMediaTargetPicker';
 import {
   getVideoGenStatus, generateVideo, cancelVideoGen,
   listVideoHistory, deleteVideoHistoryItem, setVideoHidden,
@@ -140,6 +142,10 @@ export default function VideoGen() {
   const [availableLoras, setAvailableLoras] = useState([]);
   useEffect(() => { listLorasFull().then((l) => setAvailableLoras(Array.isArray(l) ? l : [])).catch(() => {}); }, []);
 
+  // Federated render target (#4348). Picking a peer replaces the local runtime
+  // outright — the clip is rendered there and imported back — so it feeds the
+  // payload builder rather than sitting beside it.
+  const remoteTarget = useFederatedMediaTarget('video');
   // Every field the form submits, plus the payload builder both submit paths
   // share. See client/src/hooks/useVideoGenForm.js.
   const {
@@ -171,7 +177,39 @@ export default function VideoGen() {
     addIcReferenceImage, updateIcReferenceImage, removeIcReferenceImage,
     icStrength, setIcStrength, icSkipStage2, setIcSkipStage2,
     applyRemix, applyFinish, applyResumedParams, buildGeneratePayload,
-  } = useVideoGenForm({ models, status, availableLoras, grokEnabled });
+  } = useVideoGenForm({
+    models, status, availableLoras, grokEnabled,
+    remoteSubmissionFields: remoteTarget.isRemote ? remoteTarget.submissionFields : null,
+  });
+  // Conditioning the federated wire cannot carry. The server refuses a job
+  // holding any of it (MEDIA_PROVIDER_INPUT_UNSUPPORTED) rather than silently
+  // rendering something else, so the form says so before the user commits.
+  // Nothing is cleared on picking a peer: the inputs stay filled and intact
+  // for a switch back to This instance.
+  const remoteUnsupportedInputs = useMemo(() => {
+    if (!remoteTarget.isRemote) return null;
+    const present = [
+      ['the Grok backend', isGrok],
+      [`${mode} mode`, mode !== 'text'],
+      ['a source image', !!sourceImageFile || !!sourceImageUpload],
+      ['an end frame', !!lastImageFile || !!lastImageUpload],
+      ['keyframes', keyframesActive],
+      ['a source clip to extend', !!extendFromVideoId],
+      ['an audio track', !!audioFile],
+      ['IC-LoRA references', !!icReferenceFile || !!icReferenceVideoId || icReferenceImageFiles.length > 0],
+      ['LoRA weights', selectedLoras.length > 0],
+      ['chained chunks', chunks > 1],
+    ].filter(([, set]) => set).map(([label]) => label);
+    return present.length
+      ? `A federated provider renders text-to-video only — clear ${present.join(', ')} to render on this peer.`
+      : null;
+  }, [remoteTarget.isRemote, isGrok, mode, sourceImageFile, sourceImageUpload, lastImageFile,
+    lastImageUpload, keyframesActive, extendFromVideoId, audioFile, icReferenceFile,
+    icReferenceVideoId, icReferenceImageFiles, selectedLoras, chunks]);
+  // One reading for the Generate button, the enqueue guard and the caption.
+  const remoteBlocked = remoteTarget.isRemote
+    ? (remoteTarget.blockedReason || remoteUnsupportedInputs)
+    : null;
   const localResolutionOptions = resolutionOptionsForModel(currentModel);
   const localResolutionBounds = videoEdgeBoundsForModel(currentModel);
 
@@ -664,7 +702,14 @@ export default function VideoGen() {
       if (canEnqueue) handleEnqueue();
       return;
     }
-    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))) return;
+    if (!canEnqueue) return;
+    // A capacity window expires on the clock, so an enabled button can already
+    // be pointing at a lapsed peer — re-derive at the moment of commit and say
+    // so, rather than letting the peer reject a render already paid for.
+    if (remoteTarget.isRemote) {
+      const fresh = remoteTarget.verify();
+      if (!fresh.ok) { toast.error(fresh.message); return; }
+    }
     await runGeneration(buildGeneratePayload()).catch(() => {});
   };
 
@@ -673,7 +718,7 @@ export default function VideoGen() {
     // would silently queue a doomed job that fails late in the worker with
     // VENV_MISSING, hiding the installer banner from the user. Block at
     // enqueue time so the only path forward is the install banner above.
-    if (!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))) return;
+    if (!canEnqueue) return;
     // useVideoGenQueue strips the File blobs into `_blobs` and snapshots the
     // rest as a stable summary for the queue UI.
     enqueue(buildGeneratePayload());
@@ -716,9 +761,14 @@ export default function VideoGen() {
   // configured" error from the unrelated legacy probe.
   const notConnected = !!status && status.connected === false && !needsByovProbe;
 
-  const canEnqueue = prompt.trim() && (isGrok || (!notConnected && !extendModeBlocked
-    && !a2vModeBlocked && !icLoraModeBlocked && !byovGateBlocked
-    && !weightsGateBlocked && !keyframesBlocked));
+  // A federated render answers to the PEER’s readiness, not to this machine’s
+  // runtime gates — none of the local probes below describe the hardware it
+  // will actually run on.
+  const canEnqueue = prompt.trim() && (remoteTarget.isRemote
+    ? remoteBlocked === null
+    : (isGrok || (!notConnected && !extendModeBlocked
+      && !a2vModeBlocked && !icLoraModeBlocked && !byovGateBlocked
+      && !weightsGateBlocked && !keyframesBlocked)));
 
   return (
     <div className="space-y-3">
@@ -1072,6 +1122,12 @@ export default function VideoGen() {
             />
           )}
 
+          <RemoteMediaTargetPicker
+            target={remoteTarget}
+            kind="video"
+            localBlockedReason={remoteUnsupportedInputs}
+          />
+
           {isGrok ? (
             <div className="grid grid-cols-2 gap-3">
               <FormField label="Clip length" labelClassName="block text-xs font-medium text-gray-400 mb-1">
@@ -1099,7 +1155,10 @@ export default function VideoGen() {
             </div>
           ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {models.length > 0 && (
+            {/* The peer advertises its own models; the local list would name
+                none of them, and a stale selection here must not read as the
+                model that rendered the clip. */}
+            {models.length > 0 && !remoteTarget.isRemote && (
               <FormField className="col-span-2 sm:col-span-3" label="Model" labelClassName="block text-xs font-medium text-gray-400 mb-1">
                 <ModelSelect
                   models={visibleModels}
@@ -1276,10 +1335,13 @@ export default function VideoGen() {
             ) : (
               <button
                 type="submit"
-                disabled={!prompt.trim() || (!isGrok && (notConnected || extendModeBlocked || a2vModeBlocked || icLoraModeBlocked || byovGateBlocked || weightsGateBlocked || keyframesBlocked))}
+                disabled={!canEnqueue}
                 className="flex items-center gap-2 px-4 py-2 bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg min-h-[40px]"
                 title={
-                  byovRuntimeMissing ? `${byovStatus?.label || byovRuntime} runtime is not installed — use the install banner above`
+                  // A federated render is gated on the peer, so none of the
+                  // local runtime remedies below apply to it.
+                  remoteBlocked ? remoteBlocked
+                    : byovRuntimeMissing ? `${byovStatus?.label || byovRuntime} runtime is not installed — use the install banner above`
                     : byovGateBlocked ? `Checking ${byovRuntime} runtime status…`
                     : modelWeightsBlocked ? 'Download the selected model weights before generating'
                     : textEncoderWeightsBlocked ? 'Download the shared text encoder before generating'

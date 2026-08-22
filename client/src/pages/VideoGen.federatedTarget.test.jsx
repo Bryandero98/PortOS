@@ -1,13 +1,3 @@
-/**
- * Picking a substitute prompt conditioner starts its download right there.
- *
- * The conditioner is unusable until it is resident and Generate is gated on it
- * either way, so the separate Download click sat between the choice and the only
- * thing that could follow it. What this file pins down is the boundary: an
- * EXPLICIT selection pulls, and a state restore (a resumed render, a Remix, the
- * snap-to-stock on a model change) never does — those all reach the same
- * setTextEncoderId, and a ~57 GB pull must follow a click, not a restore.
- */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
@@ -29,10 +19,6 @@ const MODEL = {
   supportsNegativePrompt: false,
   supportsTiling: false,
   supportsDisableAudio: false,
-  textEncoderOptions: [
-    { id: 'stock', label: 'Stock', description: 'Ships with the model.', builtIn: true },
-    { id: 'huihui-abliterated', label: 'Huihui abliterated', description: 'Abliterated.', builtIn: false, repo: 'example-org/abliterated', sizeBytes: 56962931632 },
-  ],
   termsGate: {
     id: TERMS_ID,
     title: 'Terms for h3-one',
@@ -42,13 +28,30 @@ const MODEL = {
   },
 };
 
+// A peer opted in as a video provider, advertising one allowlisted model with a
+// verifiable freshness window — the shape `GET /api/instances` returns.
+const PEER = {
+  id: 'peer-example',
+  name: 'Example GPU',
+  status: 'online',
+  enabled: true,
+  mediaProvider: { enabled: true, videoModels: [{ engine: 'local', modelId: 'peer-wan' }] },
+  mediaProviderStatus: {
+    state: 'ready',
+    checkedAt: new Date().toISOString(),
+    freshUntil: new Date(Date.now() + 60_000).toISOString(),
+    snapshot: {
+      queue: { accepting: true, running: 0, queued: 0, totalActive: 0, maxQueuedJobs: 4 },
+      capabilities: [{
+        kind: 'video', engine: 'local', engineName: 'Local video', modelId: 'peer-wan',
+        modelName: 'Wan 2.2 T2V', ready: true, unavailableReason: null,
+        runtimeReady: true, platformSupported: true, cudaRequired: false, cudaState: 'available',
+      }],
+    },
+  },
+};
+
 const state = vi.hoisted(() => ({
-  start: vi.fn(),
-  startWhenIdle: vi.fn(),
-  downloadStatus: { downloading: false, loading: false, cached: false },
-  queued: null,
-  history: [],
-  activeJob: null,
   generateVideo: vi.fn(),
   attach: vi.fn(),
   enqueue: vi.fn(),
@@ -61,10 +64,7 @@ vi.mock('../services/apiImageVideo.js', () => ({
 }));
 
 vi.mock('../services/api', () => ({
-  // The page offers a federated render target (#4348); with no peer opted in
-  // as a media provider the picker renders nothing and every local path below
-  // is unchanged.
-  getInstances: vi.fn(async () => ({ peers: [] })),
+  getInstances: vi.fn(async () => ({ peers: [PEER] })),
   getVideoGenStatus: vi.fn(async () => ({
     connected: true,
     pythonPath: '/opt/example/python3',
@@ -76,14 +76,14 @@ vi.mock('../services/api', () => ({
   })),
   generateVideo: (...args) => state.generateVideo(...args),
   cancelVideoGen: vi.fn(async () => ({})),
-  listVideoHistory: vi.fn(async () => state.history),
+  listVideoHistory: vi.fn(async () => []),
   deleteVideoHistoryItem: vi.fn(async () => ({})),
   setVideoHidden: vi.fn(async () => ({})),
   extractLastFrame: vi.fn(async () => ({})),
   upscaleVideo: vi.fn(async () => ({})),
   listImageGallery: vi.fn(async () => []),
   patchSettingsSlice: vi.fn(async () => ({})),
-  getActiveVideoJob: vi.fn(async () => ({ activeJob: state.activeJob })),
+  getActiveVideoJob: vi.fn(async () => ({ activeJob: null })),
   getSettings: vi.fn(async () => ({ imageGen: { grok: { enabled: false } } })),
   getVideoGenRuntimeStatus: vi.fn(async () => ({ installed: true, ready: true, current: true })),
   listLorasFull: vi.fn(async () => []),
@@ -93,22 +93,17 @@ vi.mock('../services/api', () => ({
 
 vi.mock('../hooks/useModelDownloadStatus', () => ({
   TEXT_ENCODER_DOWNLOAD_ID: '__text_encoder__',
-  textEncoderDownloadId: (id) => `__text_encoder_option__:${id}`,
   useModelDownloadStatus: () => ({
     extra: {},
-    loading: state.downloadStatus.loading,
+    loading: false,
     statusError: null,
     activeModelId: null,
     progress: null,
     lastError: null,
-    downloading: state.downloadStatus.downloading,
+    downloading: false,
     repairing: false,
-    getStatus: (id) => (String(id).startsWith('__text_encoder_option__:')
-      ? { id: 'huihui-abliterated', repo: 'example-org/abliterated', cached: state.downloadStatus.cached, sizeBytes: 0 }
-      : { id: MODEL.id, repo: MODEL.repo, cached: true, sizeBytes: 100 }),
-    start: state.start,
-    startWhenIdle: state.startWhenIdle,
-    queuedModelId: state.queued,
+    getStatus: () => ({ id: MODEL.id, repo: MODEL.repo, cached: true, sizeBytes: 100 }),
+    start: vi.fn(),
     cancel: vi.fn(),
     repair: vi.fn(),
     refresh: vi.fn(),
@@ -166,79 +161,77 @@ vi.mock('../components/media/MediaJobsQueue', () => ({ default: () => null }));
 vi.mock('../components/imageGen/LoraPicker', () => ({ default: () => null }));
 vi.mock('../components/media/ResolutionField', () => ({ default: () => null }));
 
+
 const { default: VideoGen } = await import('./VideoGen.jsx');
 
-const SUBSTITUTE_ID = 'huihui-abliterated';
-const DOWNLOAD_ID = `__text_encoder_option__:${SUBSTITUTE_ID}`;
-
-const mountPage = async () => {
+const startRender = async (promptText = 'a fox watches the rain') => {
   await act(async () => {
-    render(<MemoryRouter initialEntries={['/media/video']}><VideoGen /></MemoryRouter>);
+    render(
+      <MemoryRouter initialEntries={['/media/video']}>
+        <VideoGen />
+      </MemoryRouter>,
+    );
   });
-  return screen.findByLabelText('Text encoder');
+  fireEvent.change(await screen.findByLabelText('Prompt'), { target: { value: promptText } });
 };
 
-describe('VideoGen substitute text-encoder auto-download', () => {
+describe('VideoGen federated render target', () => {
   beforeEach(() => {
-    state.start.mockReset();
-    state.startWhenIdle.mockReset();
-    state.queued = null;
-    state.downloadStatus = { downloading: false, loading: false, cached: false };
-    state.history = [];
-    state.activeJob = null;
+    state.generateVideo.mockReset().mockReturnValue(new Promise(() => {}));
+    state.attach.mockReset().mockReturnValue(new Promise(() => {}));
+    state.enqueue.mockReset();
+    state.eventSourceRef.current = null;
   });
 
-  it('requests the pull when a substitute is selected', async () => {
-    const select = await mountPage();
-    // Arriving on the page with stock selected requests nothing.
-    expect(state.startWhenIdle).not.toHaveBeenCalled();
+  // The whole point of the picker: a peer's model reaches the generate route as
+  // an explicit (peer, engine, model) selection, and nothing that only describes
+  // a LOCAL dispatch rides along with it.
+  it('submits the peer, its engine and its model — and no local-only fields', async () => {
+    await startRender();
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Generate$/ })).toBeEnabled());
 
-    await act(async () => {
-      fireEvent.change(select, { target: { value: SUBSTITUTE_ID } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Generate$/ })); });
+
+    await waitFor(() => expect(state.generateVideo).toHaveBeenCalled());
+    const payload = state.generateVideo.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      backend: 'local',
+      mode: 'text',
+      prompt: 'a fox watches the rain',
+      mediaProviderPeerId: 'peer-example',
+      mediaProviderEngine: 'local',
+      modelId: 'peer-wan',
     });
-    await waitFor(() => expect(state.startWhenIdle).toHaveBeenCalledWith(DOWNLOAD_ID));
-    // The commanding `start` is NOT used here — it would hijack the lane and
-    // skip the cache check that makes selecting a resident encoder free.
-    expect(state.start).not.toHaveBeenCalled();
+    // Every one of these means "run this on my hardware" and the provider route
+    // refuses a body carrying them.
+    for (const field of ['sourceImageFile', 'lastImageFile', 'keyframes', 'extendFromVideoId', 'audioFile', 'loraFilenames', 'textEncoderId', 'tiling', 'chunks']) {
+      expect(payload).not.toHaveProperty(field);
+    }
   });
 
-  // The built-in conditioner ships inside the model's weights, so there is
-  // nothing to fetch — and switching to it must retract a pull queued a moment
-  // earlier for the substitute the user just moved off.
-  it('clears the request when the selection goes back to stock', async () => {
-    const select = await mountPage();
-    await act(async () => {
-      fireEvent.change(select, { target: { value: SUBSTITUTE_ID } });
-    });
-    await act(async () => {
-      fireEvent.change(select, { target: { value: 'stock' } });
-    });
-    expect(state.startWhenIdle).toHaveBeenLastCalledWith(null);
-  });
+  // The local model dropdown lists models the peer does not have. Leaving it
+  // visible would let a stale selection read as the model that rendered the clip.
+  it('replaces the local model dropdown with the peer’s advertised models', async () => {
+    await startRender();
+    expect(screen.getByRole('option', { name: /MiniMax h3-one/ })).toBeInTheDocument();
 
-  it('surfaces the queued state on the selected substitute', async () => {
-    state.queued = DOWNLOAD_ID;
-    const select = await mountPage();
-    await act(async () => {
-      fireEvent.change(select, { target: { value: SUBSTITUTE_ID } });
-    });
-    await waitFor(() => expect(screen.getByText(/starts when the current download finishes/i)).toBeInTheDocument());
-  });
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
 
-  // Reloading onto an in-flight render replays its conditioner into the form.
-  // That is a state restore, not a choice — and the weights are demonstrably
-  // already resident, since the render is running on them. Remix (applyRemix)
-  // and the model-change snap reach setTextEncoderId the same way, which is why
-  // only the picker's own onChange requests a pull.
-  it('requests nothing when a resumed render restores its conditioner', async () => {
-    state.activeJob = {
-      jobId: 'job-1',
-      status: 'running',
-      params: { modelId: MODEL.id, prompt: 'a fox watches the rain', mode: 'text', textEncoderId: SUBSTITUTE_ID },
-    };
-    await mountPage();
-    await waitFor(() => expect(screen.getByLabelText('Text encoder')).toHaveValue(SUBSTITUTE_ID));
-    expect(state.startWhenIdle).not.toHaveBeenCalled();
-    expect(state.start).not.toHaveBeenCalled();
+    expect(screen.queryByRole('option', { name: /MiniMax h3-one/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /Wan 2\.2 T2V/ })).toBeInTheDocument();
+  });
+  // The federated wire is text-to-video only, and the server refuses a body
+  // carrying conditioning rather than rendering something else — so the form
+  // has to say so before the user commits, not after.
+  it('blocks a non-text mode instead of dropping its conditioning', async () => {
+    await startRender();
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Generate$/ })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole('button', { name: /^Image$/ }));
+
+    expect(screen.getByText(/renders text-to-video only/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Generate$/ })).toBeDisabled();
   });
 });

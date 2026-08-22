@@ -127,6 +127,37 @@ federation" rule, what stays absolutely prompt-free, and what a future standing
 (unattended) route may not do are all decided in ADR
 [federated visual prompts](./decisions/2026-08-20-federated-visual-prompts.md).
 
+### Picking a target in the UI
+
+Image Gen, Video Gen and the Music Studio panel all carry the same
+**Generation target** dropdown — `This instance` plus every peer switched on
+as a media provider. Picking a peer swaps the local model dropdown for the
+peer's advertised models and replaces the local runtime gates with the peer's
+own readiness.
+
+One resolver answers "is this peer usable right now?" for all three surfaces
+(`client/src/hooks/useFederatedMediaTarget.js` over
+`client/src/lib/federatedMediaReadiness.js`), applying the same gates, in the
+same order, that `assertFederatedMediaProviderSelection` applies server-side.
+Two consequences worth knowing:
+
+- **Only the intersection is offered.** A model has to be on this machine’s
+  per-kind allowlist *and* advertised by the peer. An allowlisted model the
+  peer stops advertising, and a model the peer offers that was never
+  allowlisted here, are both un-pickable — with different remedies said out
+  loud, since the fixes are on different machines.
+- **The verdict is re-derived at submit time.** A capacity window expires on
+  the clock, not on a state change, so the reading behind an enabled Generate
+  can already be stale by the time it is clicked. The click re-runs the gates
+  and refuses locally rather than letting the peer reject work the user
+  already committed to.
+
+Because wire v1 is text-to-image / text-to-video only, a form holding an init
+image, reference images, keyframes, a clip to extend, IC-LoRA references, LoRA
+weights, chained chunks, or a non-`text` mode blocks Generate and names what
+has to be cleared. Nothing is cleared for you: the inputs stay filled, so
+switching the target back to `This instance` renders exactly what was set up.
+
 ### Video frame and canvas constraint negotiation
 
 Providers advertise their model geometry and frame constraints in their capability status:
@@ -400,4 +431,4 @@ A remote job's conditioning prompt is persisted **only inside its versioned `rem
 
 ## Current boundary
 
-Wire v1 carries instrumental audio, text-to-image, and text-to-video. Interactive remote selection is exposed through the Music Studio panel and the generation APIs rather than a peer picker on the Image Gen / Video Gen pages; unattended work routes through **Instances → Unattended render routing**. Still remaining from #4348: those Image Gen / Video Gen pickers, a privacy-preserving design for remote lyrical conditioning (which is also what keeps unattended audio local), input-asset transfer (init/reference images, LoRAs, chained renders), and multi-provider fairness/failover.
+Wire v1 carries instrumental audio, text-to-image, and text-to-video. Interactive remote selection is exposed on the Image Gen, Video Gen and Music Studio surfaces; unattended work routes through **Instances → Unattended render routing**. Still remaining from #4348: a privacy-preserving design for remote lyrical conditioning (which is also what keeps unattended audio local), input-asset transfer (init/reference images, LoRAs, chained renders), and multi-provider fairness/failover.

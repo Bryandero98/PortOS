@@ -191,6 +191,7 @@ export * from './useOpenWorldPlayback.js';
 export { default as useOpenWorldViewport } from './useOpenWorldViewport.js';
 export * from './useOpenWorldViewport.js';
 export * from './useDeathClock.js';
+export * from './useFederatedMediaTarget.js';
 export * from './useGoalDetail.js';
 export * from './usePostSession.js';
 export * from './useRecordMerge.js';

@@ -327,7 +327,18 @@ describe('MusicGenPanel', () => {
         state: 'ready',
         checkedAt: new Date().toISOString(),
         freshUntil: new Date(Date.now() + 60_000).toISOString(),
-        snapshot: { queue, capabilities: [] },
+        // The peer has to be advertising the allowlisted model for this to be
+        // the USABLE branch at all: an allowlist the peer answers with nothing
+        // is its own blocked state, and it now says so here instead of printing
+        // a queue reading beside a disabled button.
+        snapshot: {
+          queue,
+          capabilities: [{
+            kind: 'audio', engine: 'minimax-music3', engineName: 'MiniMax Music 3', modelId: 'minimax-music3',
+            modelName: 'MiniMax Music 3', ready: true, autoDuration: false, lyrics: true,
+            minDurationSec: 10, maxDurationSec: 300, defaultDurationSec: 60,
+          }],
+        },
       },
     });
 
