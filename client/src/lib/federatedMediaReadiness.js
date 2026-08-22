@@ -236,3 +236,37 @@ export function resolvePeerMediaReadiness(peer, { now = Date.now() } = {}) {
     kinds: FEDERATED_MEDIA_KINDS.filter(({ kind }) => config.models[kind].length > 0).map(({ kind }) => kind),
   };
 }
+
+/**
+ * The models of one kind a peer will actually accept work for right now.
+ *
+ * Two independent lists have to agree before a model is offerable, and each one
+ * alone is misleading: the LOCAL allowlist (`mediaProvider.<kind>Models`) is
+ * what this instance opted into and is exactly what
+ * `assertFederatedMediaProviderSelection` checks on submit, while the peer's
+ * advertised `capabilities` is the only thing carrying live readiness. Offering
+ * the union would list a model the server refuses; offering the allowlist alone
+ * would hide why a listed model can't run.
+ *
+ * Returns the advertised capability objects (not the config rows) so callers get
+ * `ready` / `unavailableReason` with each option, and the shared empty array
+ * when nothing qualifies — callers memoize on this result, and a fresh `[]` per
+ * render would defeat that memo for every peer with nothing to offer.
+ *
+ * @param {object} peer - a sanitized peer record from `GET /api/instances`
+ * @param {'audio'|'image'|'video'} kind
+ * @returns {object[]} capability entries, possibly empty
+ */
+export function federatedMediaModelsForPeer(peer, kind) {
+  if (!FEDERATED_MEDIA_KINDS.some((entry) => entry.kind === kind)) return NO_CAPABILITIES;
+  const { models } = peerMediaProviderConfig(peer);
+  const allowed = new Set(models[kind]
+    .filter((model) => model?.engine && model?.modelId)
+    .map(federatedMediaModelKey));
+  if (allowed.size === 0) return NO_CAPABILITIES;
+  const advertised = peer?.mediaProviderStatus?.snapshot?.capabilities;
+  if (!Array.isArray(advertised)) return NO_CAPABILITIES;
+  const matched = advertised.filter((capability) => capability?.kind === kind
+    && allowed.has(federatedMediaModelKey(capability)));
+  return matched.length > 0 ? matched : NO_CAPABILITIES;
+}

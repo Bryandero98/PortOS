@@ -56,8 +56,14 @@ const editableRemixModel = (models, defaultModelId) => {
  *   - `availableLoras` — the installed LoRA library, for name resolution.
  *   - `grokEnabled` — the Settings → Image Gen toggle that reveals the
  *     Local/Grok backend switch.
+ *   - `remoteSubmissionFields` — `{ mediaProviderPeerId, mediaProviderEngine,
+ *     modelId }` from `useFederatedMediaTarget` when the user picked a peer as
+ *     the render target (#4348), else null. Present, it makes
+ *     `buildGeneratePayload()` emit the text-to-video-only shape the federated
+ *     wire accepts — kept here rather than in the page so there stays exactly
+ *     one builder for what `server/routes/videoGen.js` validates.
  */
-export function useVideoGenForm({ models, status, availableLoras, grokEnabled }) {
+export function useVideoGenForm({ models, status, availableLoras, grokEnabled, remoteSubmissionFields = null }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const incomingSourceImage = searchParams.get('sourceImageFile');
   const incomingAudioFilename = searchParams.get('audioFilename');
@@ -1266,6 +1272,30 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
         mode: mode === 'image' ? 'image' : 'text',
         sourceImageFile: mode === 'image' ? (sourceImageFile || '') : '',
         sourceImage: mode === 'image' ? (sourceImageUpload || '') : '',
+      };
+    }
+    if (remoteSubmissionFields) {
+      // Text-to-video only: the wire carries no source/end frame, keyframes,
+      // source clip, audio track, IC references or LoRA weights, and the page
+      // blocks submission while any of those are set rather than dropping them
+      // here. `mode` and `backend` are pinned to the only combination the
+      // provider route accepts, so a stale mode cannot ride along and 400.
+      // The peer negotiates frames/fps/canvas against its own capability
+      // (negotiateVideoConstraints), so these go as requested, not pre-snapped
+      // to a LOCAL model this render never touches.
+      return {
+        backend: 'local',
+        mode: 'text',
+        prompt: composed.prompt,
+        negativePrompt: composed.negativePrompt,
+        width: clampImageEdge(width, VIDEO_EDGE_BOUNDS),
+        height: clampImageEdge(height, VIDEO_EDGE_BOUNDS),
+        numFrames,
+        fps,
+        steps: steps || '',
+        guidanceScale: guidanceScale || '',
+        seed: seed || '',
+        ...remoteSubmissionFields,
       };
     }
     // Append "no music, no soundtrack" only when the toggle is on AND audio

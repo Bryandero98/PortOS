@@ -3,6 +3,7 @@ import {
   FEDERATED_MEDIA_KINDS,
   FEDERATED_MEDIA_STATE_HELP,
   federatedMediaModelKey,
+  federatedMediaModelsForPeer,
   peerMediaProviderConfig,
   resolvePeerMediaReadiness,
   summarizePeerMediaQueue,
@@ -288,5 +289,52 @@ describe('summarizePeerMediaQueue', () => {
 
   it('reports nothing at all when the queue block is missing', () => {
     for (const bad of [null, undefined, 'busy']) expect(summarizePeerMediaQueue(bad)).toEqual([]);
+  });
+});
+
+describe('federatedMediaModelsForPeer', () => {
+  const withCapabilities = (capabilities, allowlist) => peer({
+    mediaProvider: { enabled: true, audioModels: allowlist },
+    mediaProviderStatus: { checkedAt: iso(-1000), freshUntil: iso(60_000), state: 'ready', snapshot: { capabilities } },
+  });
+  const capability = (overrides) => ({
+    kind: 'audio', engine: 'minimax', engineName: 'MiniMax', modelId: 'music-3',
+    modelName: 'MiniMax Music 3', ready: true, unavailableReason: null, ...overrides,
+  });
+
+  // The allowlist is what the SERVER checks on submit; the capabilities are the
+  // only thing carrying readiness. Either list alone would offer a model that
+  // gets refused, or hide why a listed one cannot run.
+  it('returns only the models present in both the allowlist and the capabilities', () => {
+    const result = federatedMediaModelsForPeer(withCapabilities(
+      [capability(), capability({ modelId: 'other', modelName: 'Other' })],
+      [{ engine: 'minimax', modelId: 'music-3' }],
+    ), 'audio');
+    expect(result.map((entry) => entry.modelId)).toEqual(['music-3']);
+  });
+
+  // Same model id under a different engine is a different entry on the server's
+  // allowlist, so matching on the id alone would offer work the peer refuses.
+  it('keys the match on the engine/model PAIR, not the model id', () => {
+    const result = federatedMediaModelsForPeer(withCapabilities(
+      [capability({ engine: 'other-engine' })],
+      [{ engine: 'minimax', modelId: 'music-3' }],
+    ), 'audio');
+    expect(result).toEqual([]);
+  });
+
+  it('keeps an unadvertised kind, an unknown kind and a missing snapshot all empty', () => {
+    const allowed = [{ engine: 'minimax', modelId: 'music-3' }];
+    expect(federatedMediaModelsForPeer(withCapabilities([capability()], allowed), 'image')).toEqual([]);
+    expect(federatedMediaModelsForPeer(withCapabilities([capability()], allowed), 'hologram')).toEqual([]);
+    expect(federatedMediaModelsForPeer(withCapabilities(undefined, allowed), 'audio')).toEqual([]);
+    expect(federatedMediaModelsForPeer(null, 'audio')).toEqual([]);
+  });
+
+  // Callers memoize on this result; a fresh [] per call would defeat that memo
+  // for exactly the peers with nothing to recompute.
+  it('returns one shared array identity when there is nothing to offer', () => {
+    const empty = federatedMediaModelsForPeer(null, 'audio');
+    expect(federatedMediaModelsForPeer(withCapabilities([], []), 'audio')).toBe(empty);
   });
 });

@@ -29,6 +29,7 @@ import InitImagePicker from '../components/imageGen/InitImagePicker';
 import GalleryImagePicker from '../components/imageGen/GalleryImagePicker';
 import LoraPicker from '../components/imageGen/LoraPicker';
 import ReferenceImagePicker from '../components/imageGen/ReferenceImagePicker';
+import RemoteMediaTargetPicker from '../components/federatedMedia/RemoteMediaTargetPicker';
 import MediaJobsQueue from '../components/media/MediaJobsQueue';
 import { FormField } from '../components/ui/FormField';
 import { useMediaCompletionRefresh } from '../hooks/useMediaCompletionRefresh';
@@ -51,6 +52,7 @@ import { useMediaJobSse } from '../hooks/useMediaJobSse';
 import { useModelDownloadStatus } from '../hooks/useModelDownloadStatus';
 import { useHfTokenStatus } from '../hooks/useHfTokenStatus';
 import { useAgyModels } from '../hooks/useAgyModels';
+import { useFederatedMediaTarget } from '../hooks/useFederatedMediaTarget';
 import {
   getImageGenStatus, generateImage, generateImageMultipart, listImageModels, listLorasFull, listImageGallery,
   cancelImageGen, deleteImage, setImageHidden, cleanGalleryImage, getActiveImageJob, getSettings,
@@ -232,7 +234,12 @@ export default function ImageGen() {
   const isCloudMode = isCloudCliMode(effectiveMode);
   const cloudModeLabel = modeLabel(effectiveMode);
   const isAgyMode = effectiveMode === IMAGE_GEN_MODE.AGY;
-  const isAsyncMode = isLocalMode || isCloudMode;
+  // Federated render target (#4348). Selecting a peer supersedes the local
+  // backend entirely: the render never touches this machine’s mflux/cloud
+  // CLI, so every local readiness gate below is answered by the peer’s own
+  // capacity instead. Its job is queued locally as a proxy, hence the async lane.
+  const remoteTarget = useFederatedMediaTarget('image');
+  const isAsyncMode = isLocalMode || isCloudMode || remoteTarget.isRemote;
   // Only probe `agy models` while Agy is the active backend — it spawns a
   // child process server-side, so an unselected backend must not pay for it.
   const agy = useAgyModels(isAgyMode);
@@ -670,6 +677,27 @@ export default function ImageGen() {
     () => referenceImages.slice(referenceSlotCount).filter((s) => s.file != null).length,
     [referenceImages, referenceSlotCount],
   );
+  // What this form is holding that the federated wire cannot carry. The server
+  // refuses these outright (MEDIA_PROVIDER_INPUT_UNSUPPORTED) rather than
+  // dropping them, so the button says so up front instead of letting the user
+  // commit to a render that silently loses its source image. Nothing is cleared
+  // on selecting a peer — the pickers stay live so the user can empty them, and
+  // still has them intact after switching back to This instance.
+  const remoteUnsupportedInputs = useMemo(() => {
+    if (!remoteTarget.isRemote) return null;
+    const present = [
+      ['an init image', initImage.source != null],
+      ['reference images', populatedRefs.length > 0],
+      ['LoRA weights', selectedLoras.length > 0],
+    ].filter(([, set]) => set).map(([label]) => label);
+    return present.length
+      ? `A federated provider renders text-to-image only — clear ${present.join(' and ')} to render on this peer.`
+      : null;
+  }, [remoteTarget.isRemote, initImage.source, populatedRefs.length, selectedLoras.length]);
+  // One reading for the submit button and the picker caption alike.
+  const remoteBlocked = remoteTarget.isRemote
+    ? (remoteTarget.blockedReason || remoteUnsupportedInputs)
+    : null;
   // Cloud text-to-image still needs a prompt — mirror the server rule
   // (cloudPromptRequired: codex/grok can run image-only, agy always needs a
   // Prompt) so the user sees a disabled button + hint instead of a failed job
@@ -782,7 +810,19 @@ export default function ImageGen() {
     // payload hits imageEdgeSchema.
     const w = clampImageEdge(width);
     const h = clampImageEdge(height);
-    const payload = isCloudMode ? {
+    // A federated render carries only what the wire schema accepts. Backend
+    // selectors (`mode`, `cloudModel`, `quantize`) and the cleaner toggles all
+    // describe work on THIS machine, so sending them would either be dropped
+    // server-side or, worse, read as a local dispatch.
+    const payload = remoteTarget.isRemote ? {
+      prompt: composed.prompt,
+      negativePrompt: composed.negativePrompt || undefined,
+      width: w, height: h,
+      steps: steps ? Number(steps) : undefined,
+      guidance: guidance ? Number(guidance) : undefined,
+      seed: seed && Number(seed) >= 0 ? Number(seed) : undefined,
+      ...remoteTarget.submissionFields,
+    } : isCloudMode ? {
       prompt: composed.prompt,
       negativePrompt: composed.negativePrompt || undefined,
       width: w, height: h,
@@ -902,6 +942,15 @@ export default function ImageGen() {
     // fires onSubmit — gate here too so an edit-only model without a source image
     // (or codex text-to-image with no prompt) hits the inline hint, not a 400 toast.
     if (editImageMissing || cloudNeedsPrompt) return;
+    // The button reading is as old as the last render and a capacity window
+    // expires on the clock, so an enabled button can already be pointing at a
+    // lapsed peer. Re-derive here and say so, rather than letting the server
+    // reject a render the user just committed to.
+    if (remoteTarget.isRemote) {
+      if (remoteUnsupportedInputs) { toast.error(remoteUnsupportedInputs); return; }
+      const fresh = remoteTarget.verify();
+      if (!fresh.ok) { toast.error(fresh.message); return; }
+    }
     const batchN = isAsyncMode ? Math.max(1, batchCount) : 1;
     if (generating) return queueAdditional(batchN);
     // Snap the custom-dimension state to the server's per-edge bounds up front
@@ -1256,6 +1305,13 @@ export default function ImageGen() {
             />
           )}
 
+          <RemoteMediaTargetPicker
+            target={remoteTarget}
+            kind="image"
+            disabled={statusLoading}
+            localBlockedReason={remoteUnsupportedInputs}
+          />
+
           <ImageGenControls
             mode={effectiveMode}
             models={models}
@@ -1273,6 +1329,11 @@ export default function ImageGen() {
             seed={seed} onSeedChange={setSeed}
             showSeed
             disabled={statusLoading}
+            // The peer advertises its own models and runs its own quantization;
+            // the local dropdowns would name neither. Resolution/steps/guidance/
+            // seed do cross the wire, so those stay.
+            showModel={!remoteTarget.isRemote}
+            showQuantize={!remoteTarget.isRemote}
             modelStatus={isLocalMode ? modelDownload.getStatus(modelId) : null}
             onModelDownload={isLocalMode ? modelDownload.start : undefined}
             onModelDownloadCancel={modelDownload.cancel}
@@ -1347,8 +1408,10 @@ export default function ImageGen() {
           <div className="flex items-center gap-2 pt-1 flex-wrap">
             <button
               type="submit"
-              disabled={notConnected || editImageMissing || cloudNeedsPrompt}
-              title={editImageMissing ? 'This image-edit model needs a source image — upload one below first' : cloudNeedsPrompt ? cloudPromptHint : undefined}
+              disabled={remoteTarget.isRemote
+                ? remoteBlocked !== null
+                : (notConnected || editImageMissing || cloudNeedsPrompt)}
+              title={remoteBlocked || (editImageMissing ? 'This image-edit model needs a source image — upload one below first' : cloudNeedsPrompt ? cloudPromptHint : undefined)}
               className="flex items-center gap-2 px-4 py-2 bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg min-h-[40px]"
             >
               <Sparkles className="w-4 h-4" /> {generating ? 'Queue' : 'Generate'}

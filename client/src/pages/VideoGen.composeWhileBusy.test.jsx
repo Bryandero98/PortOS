@@ -41,6 +41,10 @@ vi.mock('../services/apiImageVideo.js', () => ({
 }));
 
 vi.mock('../services/api', () => ({
+  // The page offers a federated render target (#4348); with no peer opted in
+  // as a media provider the picker renders nothing and every local path below
+  // is unchanged.
+  getInstances: vi.fn(async () => ({ peers: [] })),
   getVideoGenStatus: vi.fn(async () => ({
     connected: true,
     pythonPath: '/opt/example/python3',
