@@ -4,8 +4,9 @@ import * as api from '../../services/api';
 import socket from '../../services/socket';
 import EventDetail from './EventDetail';
 import ChronotypeOverlay from './ChronotypeOverlay';
-import { buildSubcalendarColorMap } from './calendarUtils';
+import { buildSubcalendarColorMap, eventChipStyle } from './calendarUtils';
 import BrailleSpinner from '../BrailleSpinner';
+import { useThemeContext } from '../ThemeContext';
 import { formatMonthDay, formatWeekdayShort, formatDateShort } from '../../utils/formatters';
 import useUrlParams from '../../hooks/useUrlParams';
 
@@ -114,6 +115,7 @@ export default function WeekView({ accounts }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchParams, updateParams] = useUrlParams();
+  const { theme } = useThemeContext();
 
   const weekDays = getWeekDays(weekStart);
   const weekEnd = new Date(weekStart);
@@ -235,10 +237,7 @@ export default function WeekView({ accounts }) {
                         key={eventKey(event)}
                         onClick={() => updateParams({ event: `${event.accountId}:${event.id}` })}
                         className="w-full text-left px-1 py-0.5 rounded text-[10px] truncate transition-colors hover:brightness-125"
-                        style={{
-                          backgroundColor: adColor ? `${adColor}20` : 'rgb(59 130 246 / 0.15)',
-                          color: adColor || 'var(--port-accent, #3b82f6)'
-                        }}
+                        style={eventChipStyle(adColor, theme?.mode)}
                       >
                         {event.title}
                       </button>
@@ -300,11 +299,13 @@ export default function WeekView({ accounts }) {
                             minHeight: PX_PER_15MIN,
                             left: `calc(${leftPercent}% + 1px)`,
                             width: `calc(${widthPercent}% - 2px)`,
-                            borderLeftColor: evColor || 'var(--port-accent, #3b82f6)',
-                            backgroundColor: evColor ? `${evColor}25` : 'rgb(59 130 246 / 0.2)'
+                            ...eventChipStyle(evColor, theme?.mode)
                           }}
                         >
-                          <div className="text-[10px] leading-tight font-medium text-white truncate">{event.title}</div>
+                          {/* Title inherits the graded color from the block. It must NOT
+                              carry `text-white`: day mode remaps that utility with
+                              `!important`, which beats the inline color. */}
+                          <div className="text-[10px] leading-tight font-medium truncate">{event.title}</div>
                         </button>
                       );
                     })}

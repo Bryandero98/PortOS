@@ -15,6 +15,14 @@ vi.mock('@react-three/fiber', () => ({
 }));
 vi.mock('@react-three/drei', () => ({ OrbitControls: () => null }));
 
+// Brain-type badges grade their category hex against the ACTIVE theme mode, so
+// the mode has to be steerable per test. The real provider runs a settings
+// fetch on mount, which this suite has no business exercising.
+const { themeMode } = vi.hoisted(() => ({ themeMode: { current: 'night' } }));
+vi.mock('../../ThemeContext', () => ({
+  useThemeContext: () => ({ theme: { mode: themeMode.current } }),
+}));
+
 vi.mock('../../../services/api', () => ({
   getBrainGraph: vi.fn(),
   getBrainGraphSearchIndex: vi.fn(),
@@ -31,6 +39,8 @@ vi.mock('../../../services/api', () => ({
 }));
 
 import * as api from '../../../services/api';
+import { chipColors, parseColor } from '../../../lib/chipContrast';
+import { BRAIN_TYPE_HEX } from '../constants';
 import BrainGraph, { recordBody } from './BrainGraph';
 
 const GRAPH = {
@@ -140,6 +150,34 @@ describe('detail panel', () => {
     const body = screen.getByText(/long body/);
     // DOCUMENT_POSITION_FOLLOWING === the body comes after the button.
     expect(explore.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  // `BRAIN_TYPE_HEX` is tuned for the near-black graph canvas, but this panel
+  // follows the theme — `goals` #f97316 as verbatim text lands well under AA on
+  // a day card. The AA math itself is `lib/chipContrast.test.js`'s job; what
+  // this owns is that the badge is graded for the ACTIVE mode, not a fixed one.
+  it.each(['day', 'night'])('grades the brain-type badge for the %s theme mode', async (mode) => {
+    themeMode.current = mode;
+    const user = userEvent.setup();
+    api.getBrainGraphSearchIndex.mockResolvedValue({
+      nodes: [{ id: 'n1', label: 'Alpha', brainType: 'ideas' }],
+    });
+    await renderGraph();
+    await selectConnectedNode(user);
+
+    // "Goals" also names a type-filter toggle in the header; only the detail
+    // badge carries an inline ink.
+    const badge = screen.getAllByText('Goals').find((el) => el.style.color);
+    expect(badge, 'no brain-type badge carries a graded inline color').toBeDefined();
+    const other = mode === 'day' ? 'night' : 'day';
+    // parseColor on both sides: jsdom normalizes an inline `#rrggbb` to `rgb(…)`.
+    expect(parseColor(badge.style.color))
+      .toEqual(parseColor(chipColors(BRAIN_TYPE_HEX.goals, mode).color));
+    expect(parseColor(badge.style.color))
+      .not.toEqual(parseColor(chipColors(BRAIN_TYPE_HEX.goals, other).color));
+    // The graded style is inline, so the badge must not also carry a theme
+    // utility that `index.css` remaps with `!important`.
+    expect(badge.className).not.toMatch(/(^|\s)(text-white|text-gray-\d00|border-port-border)(\s|$)/);
   });
 });
 

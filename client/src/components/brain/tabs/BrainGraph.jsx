@@ -6,6 +6,8 @@ import {AlertTriangle, Zap, RefreshCw, X, ChevronRight, ArrowLeft, Compass, Info
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
 import { BRAIN_TYPE_HEX, DESTINATIONS } from '../constants';
+import { chipColors } from '../../../lib/chipContrast';
+import { useThemeContext } from '../../ThemeContext';
 import { buildGraph } from '../../../lib/graphSimulation';
 import { pickNearestNodeByScreenDistance, isTapGesture } from '../../../lib/graphPicking';
 import { pushFocus, popFocus, currentFocusId } from '../../../lib/brainGraphFocus';
@@ -23,6 +25,21 @@ const EDGE_COLORS = {
 };
 
 const BRAIN_TYPES = ['people', 'projects', 'ideas', 'admin', 'memories', 'songs', 'goals', 'journals'];
+
+/**
+ * Inline chip style for a brain-type badge. `BRAIN_TYPE_HEX` is a fixed
+ * category palette picked against the dark graph canvas, so painting it
+ * verbatim as TEXT on the theme-following tooltip/detail panels fails WCAG AA
+ * on the day themes (`ideas` #eab308 lands near 1.7:1 on a light card).
+ * `chipColors` keeps each type's hue and moves only the lightness.
+ *
+ * Returns undefined for an unknown type so the badge falls back to its plain
+ * bordered look instead of an inline `color: undefined`.
+ *
+ * The badge must not also carry an `!important` theme utility (`text-gray-*`,
+ * `border-port-border`) — those beat the inline declaration.
+ */
+const brainTypeChipStyle = (brainType, mode) => chipColors(BRAIN_TYPE_HEX[brainType], mode) || undefined;
 
 // Only a gesture on the WebGL canvas itself picks a node. The overlay chrome —
 // "Clear selection", the legend toggle, the loading veil — sits INSIDE the same
@@ -203,6 +220,7 @@ export default function BrainGraph() {
   // mouse move from re-rendering this component when nothing can paint.
   const { hoveredNode, tooltipPos, handleHover, handlePointerMove } = useHoverTooltip();
   const { visible: touchHintVisible, showOnFirstTouch } = useFirstTouchHint();
+  const { theme } = useThemeContext();
   const [layoutKey, setLayoutKey] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const [confirmingRefresh, setConfirmingRefresh] = useState(false);
@@ -738,7 +756,7 @@ export default function BrainGraph() {
             <div className="flex items-center gap-2 mb-1">
               <span
                 className="px-1.5 py-0.5 text-[10px] rounded-full border"
-                style={{ borderColor: BRAIN_TYPE_HEX[hoveredNode.brainType], color: BRAIN_TYPE_HEX[hoveredNode.brainType] }}
+                style={brainTypeChipStyle(hoveredNode.brainType, theme?.mode)}
               >
                 {DESTINATIONS[hoveredNode.brainType]?.label || hoveredNode.brainType}
               </span>
@@ -762,7 +780,7 @@ export default function BrainGraph() {
               <div className="flex items-center gap-2 mb-2">
                 <span
                   className="px-2 py-1 text-xs rounded-full border"
-                  style={{ borderColor: BRAIN_TYPE_HEX[selectedNode.brainType], color: BRAIN_TYPE_HEX[selectedNode.brainType] }}
+                  style={brainTypeChipStyle(selectedNode.brainType, theme?.mode)}
                 >
                   {DESTINATIONS[selectedNode.brainType]?.label || selectedNode.brainType}
                 </span>
