@@ -164,6 +164,16 @@ export async function recordImageGenOutcome({ mode, ok, error = '', at = Date.no
 
 let subscribed = false;
 
+// Single tail over every outcome the bus handlers have dispatched. An emitter
+// cannot await its listeners, so the handlers below are fire-and-forget and
+// nothing else can answer "has the render just announced on the bus actually
+// been written yet?". The recorder's write is real disk I/O — and on Windows
+// `atomicWrite` additionally sleeps between rename retries when the
+// destination is momentarily locked — so its latency is unbounded and a test
+// that sleeps a fixed number of milliseconds instead is a flake by
+// construction (#4788). Tests await this tail instead.
+let dispatched = Promise.resolve();
+
 /**
  * Subscribe the quota recorder to the image-generation bus. Called once at
  * boot from `initMediaJobDependentHooks`. Idempotent.
@@ -175,8 +185,10 @@ let subscribed = false;
 export function initImageGenQuotaHook() {
   if (subscribed) return;
   const note = (ok) => (payload) => {
-    recordImageGenOutcome({ mode: payload?.mode, ok, error: payload?.error })
+    // Already caught, so the tail below can never reject or go unhandled.
+    const recorded = recordImageGenOutcome({ mode: payload?.mode, ok, error: payload?.error })
       .catch((err) => console.error(`❌ Image-gen quota hook: ${err.message}`));
+    dispatched = dispatched.then(() => recorded);
   };
   imageGenEvents.on('completed', note(true));
   imageGenEvents.on('failed', note(false));
@@ -186,6 +198,21 @@ export function initImageGenQuotaHook() {
 /** Test-only: allow a suite to re-subscribe against fresh listeners. */
 export function __resetImageGenQuotaHookForTests() {
   subscribed = false;
+  dispatched = Promise.resolve();
+}
+
+/**
+ * Test-only: settle every render outcome the bus handlers have dispatched, so
+ * a suite can assert on the ledger the instant the recorder is done rather
+ * than guessing at a sleep. Loops until quiescent, so work a settling handler
+ * chains on is drained too.
+ */
+export async function __drainImageGenQuotaHookForTests() {
+  let seen;
+  do {
+    seen = dispatched;
+    await seen;
+  } while (dispatched !== seen);
 }
 
 /**
