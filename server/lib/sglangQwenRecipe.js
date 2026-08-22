@@ -329,7 +329,12 @@ const yamlList = (items, indent) => items.map((item) => `${indent}- ${item}`).jo
  * @returns {string}
  */
 export function sglangComposeYaml(recipe) {
-  const port = recipe.flags[recipe.flags.indexOf('--port') + 1];
+  const portIndex = recipe.flags?.indexOf('--port') ?? -1;
+  const port = portIndex === -1 ? null : recipe.flags[portIndex + 1];
+  // Loud rather than silent: without this a hand-built recipe missing `--port`
+  // would render `127.0.0.1:undefined:undefined` into a compose file that fails
+  // much later, with nothing pointing back at the recipe that produced it.
+  if (!port) throw new Error('Recipe has no --port flag, so its published port cannot be derived');
   const flags = recipe.flags.map((flag) => JSON.stringify(flag));
   return [
     'services:',

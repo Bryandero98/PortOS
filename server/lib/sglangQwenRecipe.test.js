@@ -203,6 +203,11 @@ describe('sglangComposeYaml', () => {
     expect(yaml).toContain('restart: "no"');
   });
 
+  it('refuses to render a recipe with no --port rather than emitting "undefined"', () => {
+    expect(() => sglangComposeYaml({ ...buildSglangQwenRecipe(), flags: ['--trust-remote-code'] }))
+      .toThrow(/no --port flag/);
+  });
+
   it('matches the cookbook docker stanza for shm and IPC', () => {
     expect(yaml).toContain('ipc: host');
     expect(yaml).toContain('shm_size: "32g"');
