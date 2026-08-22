@@ -82,6 +82,13 @@ import {
   probePixal3dModules,
   PIXAL3D_INCOMPLETE_INSTALL_HELP,
 } from './pixal3dCuda.js';
+import {
+  isPixal3dMpsInstalled,
+  installPixal3dMps,
+  runPixal3dMpsGenerate,
+  describePixal3dMpsInstallState,
+  probeMetalToolchain as probePixal3dMpsToolchain,
+} from './pixal3dMps.js';
 import { describeDegradedInstall } from './degradedInstall.js';
 import { detectCudaComputeCapability } from '../../lib/cudaCapability.js';
 
@@ -141,6 +148,25 @@ export const TARGET_ADAPTERS = Object.freeze({
         warnings: projection?.warnings ?? [],
       };
     },
+  }),
+  pixal3dMps: Object.freeze({
+    isInstalled: isPixal3dMpsInstalled,
+    // The Apple port downloads public Hugging Face artifacts, but a configured token
+    // avoids anonymous rate limits during its first explicit render.
+    resolveEnv: hfChildEnv,
+    async install({ onEvent = () => {}, env } = {}) {
+      // The fork's setup script refuses to start unless `xcrun metal` is available.
+      // Reuse the existing toolchain preflight so a full-Xcode host can fetch the
+      // optional component before the native packages compile, while a Command-Line-
+      // Tools-only host receives the same actionable Xcode guidance as TRELLIS.2.
+      const toolchain = await probePixal3dMpsToolchain();
+      if (toolchain.blocker) onEvent({ type: 'log', stage: 'preflight', message: `⚠️ ${toolchain.hint}` });
+      const installMetalToolchain = toolchain.available === false && toolchain.installable === true;
+      if (installMetalToolchain) onEvent({ type: 'log', stage: 'preflight', message: `ℹ️ ${toolchain.hint}` });
+      return installPixal3dMps({ onEvent, env, installMetalToolchain });
+    },
+    run: runPixal3dMpsGenerate,
+    describeInstallState: describePixal3dMpsInstallState,
   }),
   trellis2Cuda: Object.freeze({
     isInstalled: isTrellis2CudaInstalled,
