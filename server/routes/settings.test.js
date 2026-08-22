@@ -20,6 +20,13 @@ vi.mock('../services/settings.js', () => ({
     return { ...store };
   }),
 }));
+// The settings route now refuses a standing render route naming a peer that
+// could never run it (see services/federatedMedia/routingPolicy.js), so this
+// suite owns a peer registry. Mocked rather than real: the routing policy loads
+// the registry lazily, and letting it fall through would read this developer's
+// own data/instances.json.
+let peers = [];
+vi.mock('../services/instances.js', () => ({ getPeers: vi.fn(async () => peers) }));
 vi.mock('../services/aiAssignments.js', () => ({
   getAiAssignments: vi.fn(async () => ({})),
   updateAiAssignment: vi.fn(async () => ({})),
@@ -84,9 +91,21 @@ describe('Settings routes — apiAccess slice', () => {
   });
 });
 
+// A peer that satisfies every durable gate the routing policy checks: enabled,
+// enabled as a provider, allowlisted for the routed pair, and on the tailnet.
+const routablePeer = (overrides = {}) => ({
+  id: 'peer-1',
+  name: 'Render Box',
+  host: 'render-box.tailnet-example.ts.net',
+  enabled: true,
+  mediaProvider: { enabled: true, imageModels: [{ engine: 'ltx', modelId: 'ltx-1' }], videoModels: [] },
+  ...overrides,
+});
+
 describe('Settings routes — agent context and federated media provider slices', () => {
   beforeEach(() => {
     store = {};
+    peers = [];
     vi.clearAllMocks();
   });
 
@@ -145,6 +164,7 @@ describe('Settings routes — agent context and federated media provider slices'
     const app = buildApp();
     store = { federation: { strictPullAuthorization: false } };
     const route = { peerId: 'peer-1', engine: 'ltx', modelId: 'ltx-1' };
+    peers = [routablePeer()];
 
     const sharing = await request(app)
       .put('/api/settings')
@@ -185,6 +205,49 @@ describe('Settings routes — agent context and federated media provider slices'
       .send({ federation: { mediaRouting: {} } });
     expect(res.status).toBe(200);
     expect(res.body.federation).toEqual({ mediaRouting: {}, strictPullAuthorization: true });
+  });
+
+  // #4348 — a standing route is validated where it is SAVED, not only where it
+  // is used. An unattended render has no human at the moment it fails, so a
+  // route that can never run must not reach disk in the first place.
+  it('saves a standing route to an allowlisted model on an enabled tailnet provider', async () => {
+    peers = [routablePeer()];
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ federation: { mediaRouting: { image: { peerId: 'peer-1', engine: 'ltx', modelId: 'ltx-1' } } } });
+    expect(res.status).toBe(200);
+    expect(res.body.federation.mediaRouting.image).toEqual({ peerId: 'peer-1', engine: 'ltx', modelId: 'ltx-1' });
+  });
+
+  it('refuses a standing route whose model was never allowlisted for that peer', async () => {
+    peers = [routablePeer()];
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ federation: { mediaRouting: { image: { peerId: 'peer-1', engine: 'ltx', modelId: 'not-allowlisted' } } } });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('MEDIA_PROVIDER_MODEL_NOT_ALLOWED');
+    expect(store.federation).toBeUndefined();
+  });
+
+  it('refuses a standing route to a peer reachable outside the tailnet (ADR rule 5)', async () => {
+    peers = [routablePeer({ host: undefined, address: '192.0.2.10' })];
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ federation: { mediaRouting: { image: { peerId: 'peer-1', engine: 'ltx', modelId: 'ltx-1' } } } });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('MEDIA_ROUTING_PEER_NOT_TAILNET');
+  });
+
+  // Clearing must survive whatever happened to the peer, or a bad route becomes
+  // permanent — the exact failure a save-time gate would otherwise create.
+  it('still clears a route whose peer has since been unregistered', async () => {
+    store = { federation: { mediaRouting: { image: { peerId: 'peer-1', engine: 'ltx', modelId: 'ltx-1' } } } };
+    peers = [];
+    const res = await request(buildApp())
+      .put('/api/settings')
+      .send({ federation: { mediaRouting: { image: null } } });
+    expect(res.status).toBe(200);
+    expect(res.body.federation.mediaRouting).toEqual({ image: null });
   });
 
   it('rejects invalid limits and duplicate engine/model pairs', async () => {

@@ -198,7 +198,31 @@ prevent. Their routing lives in this instance's own settings instead:
 
 Set it under **Instances → Unattended render routing**, which offers only
 (peer, model) pairs that are both locally allowlisted and currently advertised
-by that peer. A kind set to `null` (the default) renders locally.
+by that peer. A kind set to `null` (the default) renders locally. The card also
+reports what the routed peer is saying right now — readiness plus the shared
+queue occupancy — through the same `resolvePeerMediaReadiness` /
+`summarizePeerMediaQueue` helpers the Instances peer card, System Health and the
+interactive pickers read, so no surface can disagree with another.
+
+**The route is validated where it is SAVED, not only where it is used.**
+`PUT /api/settings` refuses a `federation.mediaRouting.<kind>` naming a peer that
+is unknown (`404 MEDIA_PROVIDER_PEER_NOT_FOUND`), switched off
+(`409 MEDIA_PROVIDER_PEER_DISABLED`), not enabled as a media provider
+(`409 MEDIA_PROVIDER_NOT_CONFIGURED`), not allowlisted for that exact
+engine/model pair (`403 MEDIA_PROVIDER_MODEL_NOT_ALLOWED`), or reachable outside
+the tailnet (`403 MEDIA_ROUTING_PEER_NOT_TAILNET`). None of those is a transient
+capacity problem — a route in any of those states can never run — and unattended
+work has no human at the moment it fails, so the refusal belongs at the save,
+where there is one (`server/services/federatedMedia/routingPolicy.js`).
+
+Only *durable configuration* is checked at save time. Live capacity is not: a
+provider is routinely asleep, busy, or mid-probe when its route is configured,
+and gating the save on a fresh snapshot would make the card unusable at exactly
+the moment someone sits down to set it up. Freshness, queue admission, and
+per-model readiness stay on the enqueue path, which re-checks all of them — and
+re-checks the tailnet gate per request, since a peer's host can be edited after
+the route is saved. **Clearing a route is always allowed**, whatever became of
+its peer, so a bad configuration can never become permanent.
 
 An unattended route inherits the same text-to-image/text-to-video boundary the
 interactive routes enforce. A job carrying an init image, reference images,
@@ -225,8 +249,9 @@ settles the scene through its normal failure path instead of leaving it stuck in
 `rendering`.
 
 **A standing route requires a Tailscale peer.** A non-tailnet peer is refused
-with `403 MEDIA_ROUTING_PEER_NOT_TAILNET`, and the Instances picker does not
-offer one. Interactive routing is unchanged — the difference is review cadence:
+with `403 MEDIA_ROUTING_PEER_NOT_TAILNET` — on save and again on every enqueue —
+and the Instances picker does not offer one. Interactive routing is unchanged
+— the difference is review cadence:
 a standing route exports every future prompt of its kind with nobody looking, so
 a misconfigured counterparty is a permanent leak rather than a one-time mistake,
 and `peerFetch`'s `rejectUnauthorized: false` leaves a plain-LAN or non-`.ts.net`
@@ -236,7 +261,8 @@ reads it before failing to answer. Required by ADR
 [federated visual prompts](./decisions/2026-08-20-federated-visual-prompts.md)
 (rule 5); the gate is its own fail-closed predicate (`server/lib/tailnetPeer.js`)
 rather than a re-export of the probe-deferral heuristic, so tuning that heuristic
-can never widen this boundary.
+can never widen this boundary. The browser ports it as `client/src/lib/tailnetPeer.js`
+only so the picker can explain an absent option; the server never trusts that copy.
 
 Three properties are worth stating explicitly:
 

@@ -9,6 +9,7 @@ import {
   CODEX_PARALLEL_MAX,
   CODEX_PARALLEL_DEFAULT,
 } from '../services/mediaJobQueue/index.js';
+import { assertMediaRoutingConfig } from '../services/federatedMedia/routingPolicy.js';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { isPlainObject } from '../lib/objects.js';
 import { agentContextSettingsSchema } from '../lib/agentContextValidation.js';
@@ -196,6 +197,13 @@ router.put('/', asyncHandler(async (req, res) => {
   }
   if (req.body?.federation !== undefined) {
     validateRequest(federationSettingsSchema, req.body.federation);
+    // The schema only proves a route is well-SHAPED. A route naming a peer that
+    // is unknown, switched off, not a media provider, not allowlisted for that
+    // model, or outside the tailnet is well-shaped and permanently unusable —
+    // and unattended work has no human at the moment it fails, so it would just
+    // break every future Creative Director / Commission render in silence.
+    // Refuse it here, where there IS a human. See routingPolicy.js.
+    await assertMediaRoutingConfig(req.body.federation.mediaRouting);
   }
   // Home location ({ lat, lon }) read by the weather_now voice tool. The schema
   // already makes both fields optional + nullable (clearing falls back to the
