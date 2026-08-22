@@ -4,8 +4,10 @@ import {
   analyzeHttpError,
   createImmediateFallbackSignalDetector,
   createTerminalModelErrorDetector,
+  createLocalRuntimeOomDetector,
   createTerminalRequestTimeoutDetector,
   detectImmediateFallbackSignal,
+  detectLocalRuntimeOom,
   detectTerminalModelError,
   detectTerminalRequestTimeout,
   extractWaitTime,
@@ -526,6 +528,68 @@ describe('Error Detection', () => {
       const detect = createTerminalRequestTimeoutDetector({ maxBuffer: 32 });
       detect('a long banner line of TUI chrome that overflows the window\n');
       expect(detect('  ⎿ Request timed out\n')).toMatchObject({ exitCode: 124 });
+    });
+  });
+
+  describe('detectLocalRuntimeOom', () => {
+    // The MLX/MTPLX error envelope exactly as OpenCode's error box renders it —
+    // hard-wrapped mid-JSON, with the box-drawing gutter between rows. Captured
+    // from agent-011d0c27 (2026-08-22).
+    const WRAPPED_OOM_BOX = [
+      '│  {"message":"[METAL] Command buffer execution failed:    │',
+      '│  Insufficient Memory (00000008:                          │',
+      '│  kIOGPUCommandBufferCallbackErrorOutOfMemory).","type":   │',
+      '│  "server_error","code":"RuntimeError","param":null}       │',
+    ].join('\n');
+
+    it('detects the Metal OOM through the TUI box that wraps it mid-JSON', () => {
+      expect(detectLocalRuntimeOom(WRAPPED_OOM_BOX)).toMatchObject({
+        category: ERROR_CATEGORIES.RESOURCE_EXHAUSTED,
+        requiresFallback: true,
+        // Nobody has to fix anything — marking it actionable would block the task.
+        actionable: false,
+        // Nudge-then-fail-over is the caller's policy, not a grace window here.
+        graceMs: 0,
+        origin: 'provider',
+      });
+    });
+
+    it('detects the CUDA phrasings a non-Apple local runtime raises', () => {
+      expect(detectLocalRuntimeOom('RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB'))
+        .toMatchObject({ category: ERROR_CATEGORIES.RESOURCE_EXHAUSTED });
+      expect(detectLocalRuntimeOom('torch.cuda.OutOfMemoryError: CUDA out of memory'))
+        .toMatchObject({ category: ERROR_CATEGORIES.RESOURCE_EXHAUSTED });
+    });
+
+    it('leaves ordinary output alone', () => {
+      expect(detectLocalRuntimeOom('the build ran out of disk space')).toBeNull();
+      expect(detectLocalRuntimeOom('Insufficient Memory')).toBeNull();
+      expect(detectLocalRuntimeOom('')).toBeNull();
+    });
+
+    it('buffers the constant across stream chunks', () => {
+      const detect = createLocalRuntimeOomDetector();
+      expect(detect('...(00000008: kIOGPUCommandBuffer')).toBeNull();
+      expect(detect('CallbackErrorOutOfMemory).')).toMatchObject({
+        category: ERROR_CATEGORIES.RESOURCE_EXHAUSTED,
+      });
+    });
+
+    it('reports a message that cannot re-match the detector', () => {
+      // The message becomes the run's error string, which a CoS task
+      // description can quote back — straight into this detector via the TUI's
+      // prompt echo. If it re-matched, the agent dispatched to investigate an
+      // OOM would itself be nudged and failed over.
+      const { message } = detectLocalRuntimeOom(WRAPPED_OOM_BOX);
+      expect(detectLocalRuntimeOom(message)).toBeNull();
+    });
+
+    it('classifies the same text in a post-hoc output scan', () => {
+      expect(analyzeError(WRAPPED_OOM_BOX, 1)).toMatchObject({
+        category: ERROR_CATEGORIES.RESOURCE_EXHAUSTED,
+        requiresFallback: true,
+        actionable: false,
+      });
     });
   });
 

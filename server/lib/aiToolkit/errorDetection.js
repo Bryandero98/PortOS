@@ -20,6 +20,12 @@ export const ERROR_CATEGORIES = {
   // a fallback (a local model often doesn't refuse) and tell the UI what
   // happened. See server/index.js#onRunFailed + autoFixer.handleAIProviderError.
   CONTENT_REFUSAL: 'content-refusal',
+  // A LOCAL inference runtime ran out of accelerator memory mid-request (Metal
+  // on Apple silicon, CUDA elsewhere). Distinct from QUOTA_EXCEEDED (money) and
+  // from TIMEOUT (the request never finished): the request was ACCEPTED and then
+  // killed by the device allocator, so the same prompt can succeed once the GPU
+  // drains. See LOCAL_RUNTIME_OOM_PATTERN.
+  RESOURCE_EXHAUSTED: 'resource-exhausted',
   UNKNOWN: 'unknown'
 };
 
@@ -46,6 +52,35 @@ export const isRunCanceledError = (err) => (
   !!err && (err.code === 'RUN_CANCELED' || err.canceled === true)
 );
 
+// A LOCAL inference runtime that ran out of accelerator memory mid-request.
+//
+// Observed shape (MTPLX/MLX behind an OpenAI-compatible server, rendered inside
+// OpenCode's error box, hard-wrapped by the TUI):
+//
+//     {"message":"[METAL] Command buffer execution failed: Insufficient Memory
+//     (00000008: kIOGPUCommandBufferCallbackErrorOutOfMemory).","type":
+//     "server_error","code":"RuntimeError","param":null}
+//
+// Every alternative below is a single unbroken token or a short phrase that a
+// TUI wraps at a space, so the pattern survives the box-drawing glyphs and
+// newlines the renderer injects INSIDE the JSON. That is also why this pattern
+// is deliberately NOT line-anchored the way the agy banners are: there is no
+// line start to anchor to once the envelope is wrapped across four rows.
+//
+// The precision comes from the strings themselves — these are vendor error
+// constants, not English an agent writes by accident. The residual
+// false-positive surface is an agent QUOTING one (working on this file, or
+// investigating this very failure), and the consumer bounds that cost: the
+// agent-TUI path only nudges a session that has ALREADY gone silent, and only
+// fails the run after three such nudges (see createOomNudgeGate).
+const LOCAL_RUNTIME_OOM_PATTERN = new RegExp([
+  'kIOGPUCommandBufferCallbackErrorOutOfMemory',
+  '\\[METAL\\]\\s*Command buffer execution failed',
+  'CUDA (?:error: )?out of memory',
+  'torch\\.(?:cuda\\.)?OutOfMemoryError',
+  'CUDA_ERROR_OUT_OF_MEMORY',
+].join('|'), 'i');
+
 // Order matters — more specific patterns first.
 const ERROR_PATTERNS = [
   {
@@ -60,6 +95,19 @@ const ERROR_PATTERNS = [
     requiresFallback: true,
     actionable: false,
     suggestedFix: 'Model declined the prompt on content/safety grounds — retrying with a fallback model.'
+  },
+  {
+    // A local inference server (MTPLX/MLX, vLLM, llama.cpp, Ollama) whose device
+    // allocator failed mid-request. Matched BEFORE the generic network/timeout
+    // clauses so a post-hoc scan of a failed run's output labels it for what it
+    // is instead of landing in UNKNOWN. Shares its source with
+    // LOCAL_RUNTIME_OOM_PATTERN so the streaming detector and the post-hoc scan
+    // can never drift apart.
+    pattern: LOCAL_RUNTIME_OOM_PATTERN,
+    category: ERROR_CATEGORIES.RESOURCE_EXHAUSTED,
+    requiresFallback: true,
+    actionable: false,
+    suggestedFix: 'The local inference runtime ran out of GPU memory. Retry once the device drains, shrink the context/KV cache, or run a smaller model.'
   },
   {
     pattern: /billing|payment|credit|insufficient funds/i,
@@ -436,6 +484,74 @@ export function createTerminalRequestTimeoutDetector({ maxBuffer = 512 } = {}) {
       endOfStream ? `${buffer}\n` : buffer,
       { lineStartTrusted: !truncated },
     );
+  };
+}
+
+/**
+ * Detect a LOCAL inference runtime that ran out of accelerator memory
+ * mid-request (see LOCAL_RUNTIME_OOM_PATTERN for the observed shape).
+ *
+ * Deliberately NOT an entry in IMMEDIATE_FALLBACK_SIGNALS, for the same reason
+ * detectTerminalModelError is kept out of it: that list is consulted by every
+ * TUI/CLI spawn path, and a `graceMs` entry there would arm the self-clearing
+ * gate in the ONE-SHOT runner too — where a false "recovered" latch finalizes a
+ * run as a success that scraped the error screen. This failure needs a
+ * different remedy anyway. The provider did not REJECT the submission the way
+ * agy's eligibility banner does; it accepted the turn and the device allocator
+ * killed it, so the TUI session still holds the whole conversation and only
+ * needs to be told to carry on — which is exactly what a human typing
+ * `continue` did on 2026-08-22 (agent-011d0c27, OpenCode on
+ * `mtplx/mtplx-qwen38-27b-optimized-speed`). Re-sending the whole prompt, the
+ * one thing the self-clearing gate knows how to do, would instead restart the
+ * task on top of the work already done.
+ *
+ * Only `agentTuiSpawning` consults this, through `createOomNudgeGate`.
+ *
+ * @returns {object|null} an analysis in the same shape
+ *   `detectImmediateFallbackSignal` returns, so the caller can hand it straight
+ *   to its fail-over path once the nudges are spent.
+ */
+export function detectLocalRuntimeOom(text) {
+  if (!text) return null;
+  // `.test` rather than `.match`: only the yes/no matters, and the pattern
+  // carries no `g` flag, so there is no `lastIndex` to leak between calls.
+  if (!LOCAL_RUNTIME_OOM_PATTERN.test(String(text))) return null;
+  return {
+    hasError: true,
+    // A FIXED sentence, deliberately not the vendor text that was matched.
+    // This message becomes the run's error string, which becomes a failure
+    // reason a CoS task description can go on to quote — and a TUI echoes a
+    // pasted prompt back into this very detector. Quoting the vendor constant
+    // here would let the signal re-match its own propagated message and nudge
+    // (then fail) the agent dispatched to investigate it. agy's quota banner
+    // solves the same problem with a lookahead; a fixed message is the simpler
+    // answer when the analysis doesn't need the original text.
+    category: ERROR_CATEGORIES.RESOURCE_EXHAUSTED,
+    message: 'Local inference runtime ran out of GPU memory',
+    waitTime: null,
+    requiresFallback: true,
+    // Nothing in PortOS config is wrong and nobody has to fix anything: the
+    // device was momentarily short of memory. Marking it actionable would BLOCK
+    // the task (see agentErrorAnalysis#resolveFailedTaskDecision) over a
+    // condition a fallback provider can serve right now.
+    actionable: false,
+    graceMs: 0,
+    suggestedFix: 'The local inference runtime ran out of GPU memory. Retry once the device drains, shrink the context/KV cache, or run a smaller model.',
+    // Genuine evidence about the provider host: this endpoint's GPU is short of
+    // memory, so benching it briefly (RESOURCE_EXHAUSTED in
+    // providerCooldown.js) routes the retry somewhere that can serve it.
+    origin: 'provider',
+  };
+}
+
+export function createLocalRuntimeOomDetector({ maxBuffer = 512 } = {}) {
+  let buffer = '';
+  const cap = Number.isFinite(maxBuffer) && maxBuffer > 0 ? maxBuffer : 512;
+
+  return (chunk) => {
+    if (!chunk) return null;
+    buffer = `${buffer}${String(chunk)}`.slice(-cap);
+    return detectLocalRuntimeOom(buffer);
   };
 }
 

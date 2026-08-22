@@ -907,3 +907,98 @@ export function detectMissingTuiBinary(strippedText, commandName) {
   const lower = strippedText.toLowerCase();
   return lower.includes('command not found') && lower.includes(commandName.toLowerCase());
 }
+
+// ── Local-runtime OOM nudge ────────────────────────────────────────────────
+// Recovery policy for a LOCAL inference runtime that ran out of accelerator
+// memory mid-turn (detectLocalRuntimeOom in aiToolkit/errorDetection.js).
+//
+// This is NOT the self-clearing gate above, and the difference is what the
+// provider did with the turn. agy's eligibility banner REJECTS the submission:
+// the composer empties, nothing is in flight, and the remedy is to re-send the
+// whole prompt. A Metal/CUDA OOM kills a turn the server had already ACCEPTED:
+// the TUI session still holds the entire conversation, so the remedy is a
+// one-word nudge to carry on. Re-pasting the task prompt there would restart
+// the task on top of the work already done.
+//
+// Provenance: agent-011d0c27 (2026-08-22, OpenCode on
+// `mtplx/mtplx-qwen38-27b-optimized-speed`) died on
+// `kIOGPUCommandBufferCallbackErrorOutOfMemory` and sat at its idle footer
+// until a human typed `continue`, at which point it resumed and finished the
+// turn. Nothing in the unattended path would ever have typed it — the
+// long-running agent path has no idle watchdog by design ("a CoS TUI may remain
+// silent for as long as the provider needs").
+
+// How long the session must have been SILENT before a nudge goes out. This is
+// the whole false-positive defense, and it is deliberately a silence test
+// rather than a chrome test: the generation-activity tracker above is spelled in
+// agy/claude/codex footer text that OpenCode does not paint at all (its
+// in-flight chrome is an animated block wave plus an `esc interrupt` footer that
+// repaints only ~8 times across a 74MB transcript), so a chrome-based recovery
+// check would read a perfectly healthy OpenCode session as stuck. Silence is
+// provider-agnostic and needs no per-TUI vocabulary.
+export const OOM_NUDGE_SETTLE_MS = 25000;
+// How long an armed nudge waits for that silence before giving up. Bounds the
+// blast radius of the one case the cooldown can't dedupe — the error box being
+// repainted long after the session recovered — so a stale arm can't sit around
+// and fire into the next quiet stretch of a healthy run.
+export const OOM_NUDGE_ARM_WINDOW_MS = 120000;
+// Two matches this close together are one OOM: the detector re-tests a 512-char
+// rolling window, and a TUI repaint re-delivers the same error box for many
+// chunks after the event.
+export const OOM_NUDGE_COOLDOWN_MS = 120000;
+// After this many nudges the OOM is not transient — the conversation no longer
+// fits the device, and it only grows — so the caller fails the run over to a
+// fallback provider rather than nudging forever.
+export const OOM_NUDGE_MAX_ATTEMPTS = 3;
+// What gets pasted. The literal word a human used, for the literal reason it
+// worked: the TUI still holds the conversation and the model just needs a turn.
+export const OOM_NUDGE_TEXT = 'continue';
+
+/**
+ * State machine for "nudge a TUI session that a local-GPU OOM left parked".
+ *
+ * Feed it every OOM detection via `arm(analysis, nowMs)`, then poll
+ * `takeNudge(nowMs, lastOutputAtMs)` on whatever timer the consumer already
+ * runs. Owns the dedupe cooldown, the silence test, the arm window and the
+ * attempt budget so a consumer can't get any of them subtly wrong.
+ *
+ * `arm` returns:
+ *   - `'armed'`     — a fresh OOM; wait for silence, then nudge
+ *   - `'exhausted'` — a fresh OOM with the budget already spent; the caller
+ *                     should fail the run over to a fallback provider
+ *   - `null`        — a repaint of an OOM already accounted for, or a window
+ *                     that is still open
+ *
+ * @returns {{ arm: (analysis: object, nowMs: number) => 'armed'|'exhausted'|null,
+ *             takeNudge: (nowMs: number, lastOutputAtMs: number) => number }}
+ */
+export function createOomNudgeGate() {
+  let armed = null; // { analysis, armedAt }
+  let lastArmedAt = null;
+  let attempts = 0;
+  return {
+    arm(analysis, nowMs) {
+      if (!analysis || armed) return null;
+      if (lastArmedAt !== null && nowMs - lastArmedAt < OOM_NUDGE_COOLDOWN_MS) return null;
+      lastArmedAt = nowMs;
+      // Budget spent: this is a genuinely NEW OOM (it cleared the cooldown)
+      // after the nudges already bought the run more than one recovery. Hand the
+      // verdict back rather than arming a window nobody will act on.
+      if (attempts >= OOM_NUDGE_MAX_ATTEMPTS) return 'exhausted';
+      armed = { analysis, armedAt: nowMs };
+      return 'armed';
+    },
+    // Returns the 1-based attempt number when the session has been quiet long
+    // enough to nudge, or 0. Disarms either way — on a nudge because it fired,
+    // and on an expired window because the session never went quiet, which is
+    // itself evidence it recovered without help.
+    takeNudge(nowMs, lastOutputAtMs) {
+      if (!armed) return 0;
+      if (nowMs - armed.armedAt > OOM_NUDGE_ARM_WINDOW_MS) { armed = null; return 0; }
+      if (nowMs - lastOutputAtMs < OOM_NUDGE_SETTLE_MS) return 0;
+      armed = null;
+      attempts += 1;
+      return attempts;
+    },
+  };
+}
