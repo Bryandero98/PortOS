@@ -1263,7 +1263,12 @@ export function LocalLlmTab() {
                     : <span className="text-gray-500">none — speculative decoding off</span>}
                 </p>
               </div>
-              {llamaStatus.managed ? (
+              {/* `managed` is a THREE-state field: `true` ours, `false`
+                  somebody else's, `null` PM2 could not be read. A plain
+                  truthiness test told a user whose own daemon PortOS had merely
+                  failed to read that they had started it in a terminal — and
+                  hid the Stop button for a server PortOS does own. */}
+              {llamaStatus.managed === true ? (
                 <button
                   onClick={handleStopLlama}
                   disabled={llamaLoading}
@@ -1272,9 +1277,13 @@ export function LocalLlmTab() {
                   {llamaLoading ? <BrailleSpinner /> : <PowerOff size={13} />}
                   Stop Server
                 </button>
-              ) : (
+              ) : llamaStatus.managed === false ? (
                 <span className="text-xs text-gray-500 italic">
                   Running as external process
+                </span>
+              ) : (
+                <span className="text-xs text-gray-500 italic">
+                  PM2 status could not be read — this may not be an external server
                 </span>
               )}
             </div>

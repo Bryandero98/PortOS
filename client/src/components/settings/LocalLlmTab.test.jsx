@@ -834,6 +834,28 @@ describe('LocalLlmTab llama-server management', () => {
     });
   });
 
+  // `managed` has three states: `true` ours, `false` somebody else's, `null`
+  // PM2 could not be read. A truthiness test told a user whose own daemon
+  // PortOS had merely failed to read that they had started it in a terminal.
+  it('does not call a server external when PM2 could not be read', async () => {
+    const { getLlamaServerStatus } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue({
+      installed: true,
+      running: true,
+      managed: null,
+      presets: specPresets(),
+      pid: null,
+      endpoint: 'http://127.0.0.1:5568/v1',
+      config: { model: 'models/base.gguf', specType: 'draft-dflash', alias: 'dflash' },
+    });
+
+    await renderTab();
+
+    expect(await screen.findByText(/PM2 status could not be read/)).toBeInTheDocument();
+    expect(screen.queryByText(/Running as external process/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Stop Server/ })).not.toBeInTheDocument();
+  });
+
   // `localLlm:progress` is shared with the measurement paths, and an overnight
   // sweep emits a `complete` frame PER MODEL. Answering those here would reload
   // the status and re-query the Hugging Face catalog once per measured model,
