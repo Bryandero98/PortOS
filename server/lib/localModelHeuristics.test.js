@@ -83,6 +83,12 @@ describe('localModelHeuristics', () => {
         // marker alone misses it — it must never be offered for generation.
         'embeddinggemma:300m',
         'lmstudio-community/embeddinggemma-300m-qat-GGUF',
+        // No `embed` marker anywhere in the id — matched by FAMILY, or the
+        // assessment sweep benchmarks it and Ollama answers every sample with
+        // `400 "all-minilm:latest" does not support chat`.
+        'all-minilm:latest',
+        'all-minilm:33m',
+        'paraphrase-multilingual:latest',
       ]) {
         expect(isEmbeddingModel(id), id).toBe(true);
       }
@@ -105,12 +111,37 @@ describe('localModelHeuristics', () => {
       expect(isEmbeddingModel(null)).toBe(false);
       expect(isEmbeddingModel(undefined)).toBe(false);
       expect(isEmbeddingModel('')).toBe(false);
+      expect(isEmbeddingModel(42)).toBe(false);
+    });
+
+    it('prefers backend capability metadata over the id, in both directions', () => {
+      // Ollama's /api/show reports `capabilities: ['embedding']`.
+      expect(isEmbeddingModel({ id: 'mystery-model:latest', capabilities: ['embedding'] })).toBe(true);
+      // A normalized PortOS model card carries the BADGE label instead
+      // (`localLlm.js#OLLAMA_CAPABILITY_BADGES` maps `embedding` → `embeddings`,
+      // and LM Studio cards always carry a non-empty badge array), so matching
+      // only the raw spelling would turn every such card into a false negative.
+      expect(isEmbeddingModel({ id: 'mystery-model:latest', capabilities: ['embeddings'] })).toBe(true);
+      expect(isEmbeddingModel({ id: 'all-minilm:latest', capabilities: ['chat'] })).toBe(false);
+      // A non-empty capabilities array WITHOUT `embedding` is an explicit
+      // negative — a chat model whose name happens to match must not be hidden.
+      expect(isEmbeddingModel({ id: 'all-minilm:latest', capabilities: ['completion'] })).toBe(false);
+      // LM Studio types every model instead of listing capabilities.
+      expect(isEmbeddingModel({ id: 'mystery', type: 'embeddings' })).toBe(true);
+      expect(isEmbeddingModel({ id: 'all-minilm', type: 'llm' })).toBe(false);
+      // No metadata at all → fall back to the id.
+      expect(isEmbeddingModel({ id: 'all-minilm:latest' })).toBe(true);
+      expect(isEmbeddingModel({ name: 'qwen3.6:35b' })).toBe(false);
     });
 
     it('isGenerationModel is the inverse for real ids', () => {
       expect(isGenerationModel('qwen3.6:35b')).toBe(true);
       expect(isGenerationModel('nomic-embed-text:latest')).toBe(false);
+      expect(isGenerationModel('all-minilm:latest')).toBe(false);
       expect(isGenerationModel('')).toBe(false);
+      expect(isGenerationModel({ id: 'qwen3.6:35b' })).toBe(true);
+      expect(isGenerationModel({ id: 'all-minilm:latest', capabilities: ['embedding'] })).toBe(false);
+      expect(isGenerationModel(null)).toBe(false);
     });
   });
 
@@ -208,6 +239,18 @@ describe('localModelHeuristics', () => {
         { id: 'llama3.2:latest', params: '3.2B' },
       ]);
       expect(rec?.id).toBe('llama3.2:latest');
+    });
+
+    it('never recommends an embedding model whose id carries no embed marker', () => {
+      // `all-minilm` / `paraphrase-multilingual` name no `embed` token at all;
+      // without the family markers they land in the candidate pool and win
+      // whenever nothing better is installed.
+      expect(recommendEditorialModel([{ id: 'all-minilm:latest' }])).toBeNull();
+      expect(recommendEditorialModel([{ id: 'paraphrase-multilingual:latest' }])).toBeNull();
+      expect(recommendEditorialModel([
+        { id: 'all-minilm:latest' },
+        { id: 'llama3.2:latest', params: '3.2B' },
+      ])?.id).toBe('llama3.2:latest');
     });
 
     it('skips code-specialized and vision models', () => {

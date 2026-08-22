@@ -97,6 +97,7 @@ import {
 } from './llamaServerManager.js';
 import { getMtplxServerEndpoint, relaunchMtplxServerWithTuning } from './mtplxServerManager.js';
 import { listModels } from './localLlm.js';
+import { isEmbeddingModel } from '../lib/localModelHeuristics.js';
 import {
   getLoadedModels as getLoadedOllamaModels,
   getLastInstalledModelsError as getOllamaListError,
@@ -334,6 +335,18 @@ function describeVerdict(verdict, samples) {
  * @returns {Promise<object>} the persisted assessment record
  */
 export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_CONTEXT_TOKENS, tuning, resetTuning = false, signal, onProgress, claimTimeoutMs = 0 } = {}) {
+  // Refused BEFORE the heavy-job claim and before any provider call: every
+  // sample of an embedding-only model comes back `400 "<model>" does not
+  // support chat`, and each one raises an AI-provider investigation task for a
+  // failure that is fully determined by the model id. `selectSweepTargets`
+  // already keeps these out of a sweep; this covers the direct
+  // `POST /api/local-llm/assessments/run` route, which never goes through it.
+  if (isEmbeddingModel(modelId)) {
+    throw new ServerError(
+      `${modelId} is an embedding model — it has no chat/generation to measure`,
+      { status: 400, code: 'MODEL_NOT_ASSESSABLE', context: { backend, modelId } },
+    );
+  }
   const contexts = [...new Set(contextTokens)].filter((n) => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
   // The listener runs outside the request lifecycle's error path in some callers
   // (a socket emit can throw on a closed io), and a broken progress consumer must
@@ -840,7 +853,13 @@ export async function getAssessmentReport({ intent = 'balanced' } = {}) {
       // sweep scope — where the failed run also fires the provider-failure hook
       // and files a CoS investigation about a model that was never going to
       // generate text (run b361be1a, nomic-embed-text:latest).
-      if (isEmbeddingModel(model?.id || '')) continue;
+      //
+      // The model CARD is passed, not the bare id, so a backend that reports
+      // what a model can do (Ollama capabilities, LM Studio types) decides it
+      // rather than the name heuristic — which is how `all-minilm:latest`, an
+      // embedding model naming no `embed` marker at all, got through the
+      // id-only form and burned a second measurement.
+      if (isEmbeddingModel(model)) continue;
       if (model?.id && !assessedModels.has(assessmentKey(runtime, model.id))) {
         unassessed.push({ backend: runtime, modelId: model.id, params: model.params ?? null });
       }

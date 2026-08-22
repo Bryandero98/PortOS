@@ -664,10 +664,20 @@ describe('isEmbeddingModel / filterGenerationModels', () => {
     expect(isEmbeddingModel('')).toBe(false);
   });
 
+  // These name no `embed` marker at all, so the anchored markers miss them and
+  // they read as chat models — the picker would offer `all-minilm`, and the
+  // daemon answers `400 "all-minilm:latest" does not support chat`.
+  it('flags embedding models whose id carries no embed marker', () => {
+    expect(isEmbeddingModel('all-minilm:latest')).toBe(true);
+    expect(isEmbeddingModel('all-minilm:33m')).toBe(true);
+    expect(isEmbeddingModel('paraphrase-multilingual:latest')).toBe(true);
+  });
+
   it('drops sentinels and embedding models from generation lists', () => {
     expect(filterGenerationModels([
       CODEX_CONFIGURED_DEFAULT,
       'nomic-embed-text:latest',
+      'all-minilm:latest',
       'qwen3.6:35b',
       'llama3.2:latest',
     ])).toEqual(['qwen3.6:35b', 'llama3.2:latest']);
