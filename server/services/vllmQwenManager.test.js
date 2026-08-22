@@ -56,6 +56,12 @@ const emitted = (lines) => lines.join('\n');
 
 let restorePlatform = () => {};
 
+/** Swap the pinned platform mid-test, releasing the one `beforeEach` set. */
+function repin(platform) {
+  restorePlatform();
+  restorePlatform = pinPlatform(platform);
+}
+
 beforeEach(() => {
   restorePlatform = pinPlatform('linux');
   pathLookup.findCommandOnPath.mockImplementation((cmd) => (cmd === 'docker' || cmd === 'git' ? `/usr/bin/${cmd}` : null));
@@ -133,8 +139,7 @@ describe('provisionVllmQwenProject', () => {
   });
 
   it('adds the two mandatory WSL2 variables when Docker Desktop backs it', async () => {
-    restorePlatform();
-    restorePlatform = pinPlatform('win32');
+    repin('win32');
     process.env.VLLM_QWEN_PROJECT_DIR = '\\\\wsl.localhost\\example\\home\\example\\qwen-serving';
     stageFreshProject();
     const lines = [];
@@ -213,6 +218,8 @@ describe('provisionVllmQwenProject', () => {
     // A convenience failing must not undo a successful 30 GB provision.
     expect(result.success).toBe(true);
     expect(emitted(lines)).toMatch(/paste it from \.env/);
+    // And the instruction is followable: the key really is in the file.
+    expect(files.atomicWrite.mock.calls[0][1]).toMatch(/^VLLM_API_KEY=[0-9a-f]{48}$/m);
   });
 
   it('skips the build and the prepare when the project is already prepared', async () => {
@@ -227,8 +234,7 @@ describe('provisionVllmQwenProject', () => {
   });
 
   it('refuses to clone onto the Windows filesystem when no project dir was configured', async () => {
-    restorePlatform();
-    restorePlatform = pinPlatform('win32');
+    repin('win32');
     project.inspectVllmQwenProject.mockResolvedValue(emptyProject);
 
     const result = await provision();
@@ -244,7 +250,11 @@ describe('provisionVllmQwenProject', () => {
 
     const result = await provision();
 
-    expect(result).toMatchObject({ success: false, error: expect.stringMatching(/Docker daemon is not answering/) });
+    expect(result.success).toBe(false);
+    // The daemon's OWN words ride along — "not answering" alone would send the
+    // operator looking in the wrong place.
+    expect(result.error).toMatch(/Docker daemon is not answering/);
+    expect(result.error).toMatch(/cannot connect to the Docker daemon/);
     expect(streaming.runStreamingCommand).toHaveBeenCalledTimes(1);
   });
 

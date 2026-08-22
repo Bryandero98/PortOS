@@ -205,6 +205,9 @@ function setupHint(setup, capability) {
  * What a runtime's own model cache says while its server is down — the half of
  * the model check `GET /v1/models` cannot answer because nothing is listening.
  *
+ * `capability` is one of `installs` / `starts` / `provisions` — the axes
+ * `localRuntimeSetup.js` declares for every action.
+ *
  * `null` when there is nothing to add, so the caller keeps its own prose.
  */
 function weightsDetail(runtime, weights) {
