@@ -4,6 +4,8 @@ import {
   llmRoutePinSchema,
   resolveLlmRoutePin,
   sanitizeLlmRoutePin,
+  llmRoutePinNamesProvider,
+  pickLlmRoutePinLayer,
 } from './llmRoutePin.js';
 
 describe('sanitizeLlmRoutePin', () => {
@@ -104,5 +106,40 @@ describe('resolveLlmRoutePin', () => {
       effort: null,
       providerMatchesPin: true,
     });
+  });
+});
+
+describe('llmRoutePinNamesProvider', () => {
+  it('is true only for a layer carrying a non-empty providerId', () => {
+    expect(llmRoutePinNamesProvider({ providerId: 'claude' })).toBe(true);
+    expect(llmRoutePinNamesProvider({ providerId: '' })).toBe(false);
+    expect(llmRoutePinNamesProvider({ model: 'opus' })).toBe(false);
+    expect(llmRoutePinNamesProvider(null)).toBe(false);
+    expect(llmRoutePinNamesProvider(undefined)).toBe(false);
+  });
+});
+
+describe('pickLlmRoutePinLayer', () => {
+  it('takes the most specific layer that names a provider, whole', () => {
+    const specific = { providerId: 'claude' };
+    const base = { providerId: 'codex', model: 'gpt-x' };
+    // The base model is NOT merged in — it belongs to `codex`, not `claude`.
+    expect(pickLlmRoutePinLayer(specific, base)).toBe(specific);
+  });
+
+  it('skips layers that name no provider', () => {
+    const base = { providerId: 'codex', model: 'gpt-x' };
+    expect(pickLlmRoutePinLayer(null, { model: 'orphan' }, base)).toBe(base);
+  });
+
+  it('returns the base layer even when it names no provider', () => {
+    const base = { model: 'gpt-x' };
+    expect(pickLlmRoutePinLayer(null, base)).toBe(base);
+  });
+
+  it('returns null when no layer was supplied', () => {
+    expect(pickLlmRoutePinLayer()).toBeNull();
+    expect(pickLlmRoutePinLayer(null)).toBeNull();
+    expect(pickLlmRoutePinLayer(undefined, null)).toBeNull();
   });
 });

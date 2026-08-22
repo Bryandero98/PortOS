@@ -21,6 +21,16 @@
  *
  *   per-app pin → (api-typed? adopt the Schedule pin instead) → Schedule pin →
  *   the install's default coding agent
+ *
+ * Deliberately NOT expressed on `lib/llmRoutePin.js` (#4793). Both of that
+ * module's rules are synchronous and decide on the pin VALUES alone; this walk is
+ * async and decides on a provider's resolved TYPE, healing an api-typed pin onto
+ * the next layer — a branch neither rule has a place for. It also carries two
+ * semantics the shared rules deliberately do not: the Schedule pin is a lazy
+ * thunk read at most once (so a resolving per-app pin never pays for it), and the
+ * model falls through with `??` rather than `||`, so an explicitly-blank per-app
+ * model stays blank instead of inheriting the Schedule pin's. Migrating would
+ * change both.
  */
 
 const NOT_AGENT_CAPABLE = 'provider-not-agent-capable';

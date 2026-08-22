@@ -17,6 +17,15 @@
  *
  * `null` (never `''`) marks an unset dimension, so "fall through to the next
  * layer" stays distinguishable from a deliberate empty choice.
+ *
+ * That rule has TWO shapes, and picking the wrong one silently crosses
+ * providers:
+ *
+ * - `resolveLlmRoutePin(pin, perCall)` — a saved record pin plus an independent
+ *   one-off pick. The two merge per FIELD, guarded by a provider-id comparison.
+ * - `pickLlmRoutePinLayer(...layers)` — configuration layers whose provider and
+ *   model were chosen together in one control. The winning layer is taken
+ *   WHOLE, which enforces the same rule without a comparison.
  */
 
 import { z } from 'zod';
@@ -83,4 +92,39 @@ export function resolveLlmRoutePin(pin, perCall = {}) {
     effort: perCall.effort || (providerMatchesPin ? pinned.effort : null) || null,
     providerMatchesPin,
   };
+}
+
+/** Does this layer pin a route at all? A layer that names no `providerId` pins
+ *  nothing the runtime can key on — the model alone is unresolvable, since the
+ *  runtime looks the provider up first. */
+export function llmRoutePinNamesProvider(layer) {
+  return Boolean(layer?.providerId);
+}
+
+/**
+ * The OTHER precedence rule, for pins arranged in configuration LAYERS rather
+ * than pin-plus-per-call: the most specific layer that names a provider wins as
+ * a WHOLE, and the least specific layer is the base everything falls through to.
+ *
+ * Use this — not `resolveLlmRoutePin` — when each layer's provider and model
+ * were picked TOGETHER in one control (a drawer's provider + model selects, a
+ * settings assignment row). There, a layer that names a provider but no model
+ * means "that provider's default model", so merging the next layer's model in
+ * per-field would hand one provider a model chosen for another: the same
+ * never-cross-providers rule as `resolveLlmRoutePin`, enforced by taking the
+ * winning layer whole instead of by comparing provider ids.
+ *
+ * `resolveLlmRoutePin` stays right where the layers are a saved record pin and a
+ * one-off per-call pick, which are independent choices and DO merge per field.
+ *
+ * The final layer is returned even when it names no provider, so a base layer
+ * that carries only a model still reaches the caller. Returns `null` when no
+ * layer was supplied at all.
+ *
+ * @param {...({ providerId?: string|null, model?: string|null, effort?: string|null }|null|undefined)} layers
+ *   most specific first, base last
+ * @returns {object|null}
+ */
+export function pickLlmRoutePinLayer(...layers) {
+  return layers.find(llmRoutePinNamesProvider) ?? layers[layers.length - 1] ?? null;
 }

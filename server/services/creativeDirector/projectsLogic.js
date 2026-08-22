@@ -15,6 +15,7 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { creativeDirectorTreatmentSchema, creativeDirectorPlanSchema } from '../../lib/validation.js';
 import { PROJECT_STATUSES, PLAN_STEP_TERMINAL_SUCCESS } from '../../lib/creativeDirectorPresets.js';
 import { compareNewerWins } from '../../lib/lwwTimestamp.js';
+import { pickLlmRoutePinLayer } from '../../lib/llmRoutePin.js';
 import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
 import { localImageFilename } from '../../lib/localImageFilename.js';
 
@@ -72,14 +73,25 @@ export function normalizeRenderBackend(raw) {
  * per-project override wins when it names a providerId; otherwise the global
  * `settings.creativeDirector.<stage>` assignment applies (which itself may be
  * empty → the caller falls back to the system default / auto-resolution).
- * Returns `{ providerId, model }` with string values ('' when unset). Shared by
- * agentBridge (treatment/plan CoS-task pins) and sceneEvaluator (evaluation
- * vision-call pin) so the two resolution paths can never drift.
+ * Shared by agentBridge (treatment/plan CoS-task pins) and sceneEvaluator
+ * (evaluation vision-call pin) so the two resolution paths can never drift.
+ *
+ * The layer precedence is `pickLlmRoutePinLayer`'s — the winning layer is taken
+ * WHOLE, so a project that names a provider but no model gets that provider's
+ * default model rather than inheriting the global assignment's (which was picked
+ * for whatever provider the assignment names). See `lib/llmRoutePin.js` for why
+ * that differs from the per-field `resolveLlmRoutePin`.
+ *
+ * Returns `{ providerId, model }` with STRING values ('' when unset), not the
+ * shared lib's `null`s: `getStageAssignment` and `resolveVisionEvalTarget` both
+ * branch on plain falsiness and spread the result into task metadata, so keeping
+ * the two dimensions as strings is this resolver's own contract.
  */
 export function resolveStagePin(stage, project, settings) {
-  const override = project?.modelOverrides?.[stage];
-  const global = settings?.creativeDirector?.[stage];
-  const chosen = override?.providerId ? override : global;
+  const chosen = pickLlmRoutePinLayer(
+    project?.modelOverrides?.[stage],
+    settings?.creativeDirector?.[stage],
+  );
   return {
     providerId: isStr(chosen?.providerId) ? chosen.providerId : '',
     model: isStr(chosen?.model) ? chosen.model : '',

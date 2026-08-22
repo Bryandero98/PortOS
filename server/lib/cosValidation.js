@@ -664,6 +664,16 @@ export function reviewerConfigMetadata(config) {
  * `agy --model <suffixed-id> --effort <tier>` invocation agy rejects. This is the
  * one call every site makes instead.
  *
+ * Deliberately NOT expressed on `lib/llmRoutePin.js` (#4793). That module owns a
+ * single `{ providerId, model, effort }` triple; a reviewer pin is two maps keyed
+ * by reviewer slug, with no provider dimension at all — the slug IS the routing
+ * key — and its precedence is whole-MAP (an explicitly empty task map overrides
+ * the defaults), not per-field. Its effort is also validated against each
+ * reviewer's OWN ladder via `normalizeReviewerEffort`, which is strictly narrower
+ * than the union `EFFORT_LEVELS` enum the shared schema uses: `agy` really does
+ * reject `--effort max`. There is no shape the two can meet in without losing
+ * that narrowing, so this stays hand-rolled.
+ *
  * @param {Object} [pins] - task metadata (or explicit options) carrying
  *   `reviewerModels` / `reviewerEfforts` maps; an absent map falls back to the
  *   Code Review Defaults, an explicitly empty one overrides them.
