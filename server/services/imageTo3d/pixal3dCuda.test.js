@@ -11,6 +11,7 @@ import {
   PIXAL3D_STANDARD_MODE_MIN_VRAM_GB,
   PIXAL3D_HIGH_RES_MIN_VRAM_GB,
   PIXAL3D_NAF_FALLBACK_HELP,
+  PIXAL3D_INCOMPLETE_INSTALL_HELP,
   pixal3dRoot,
   pixal3dRepoDir,
   pixal3dTrellisDir,
@@ -19,6 +20,7 @@ import {
   isPixal3dCudaInstalled,
   nattenWorkerCount,
   buildPixal3dInstallSteps,
+  installPixal3dCuda,
   buildPixal3dGenerateArgs,
   selectPixal3dRenderBudget,
   parsePixal3dProgress,
@@ -446,5 +448,102 @@ describe('runPixal3dCudaGenerate', () => {
     await flush();
     kill();
     expect(child.kill).toHaveBeenCalled();
+  });
+});
+
+describe('installPixal3dCuda verify hook', () => {
+  // Derived rather than hard-coded: with `INSTALLED` the conda env python is already
+  // there, so `conda create` self-skips — and a step added later must not break every
+  // test in this block.
+  const STEPS = buildPixal3dInstallSteps(BASE, { exists: INSTALLED, env: CONDA_ENV });
+
+  /** Advance the install by closing each step's child 0, in order. */
+  const closeEachStep = async (children) => {
+    for (const child of children) {
+      await flush();
+      child.emit('close', 0);
+    }
+  };
+
+  // `setup.sh` is SOURCED and exits 0 with a failed extension build, so the presence
+  // of the env and the checkout is not evidence the extensions compiled (#4761).
+  // `probeModules` is injected on EVERY call so the suite never spawns a Python.
+  const runToCompletion = async (probeModules) => {
+    const children = STEPS.map(() => makeChild());
+    let i = 0;
+    const events = [];
+    const { promise } = installPixal3dCuda({
+      base: BASE,
+      exists: INSTALLED,
+      env: CONDA_ENV,
+      spawnImpl: () => children[i++],
+      onEvent: (e) => events.push(e),
+      probeModules,
+    });
+    await closeEachStep(children);
+    await expect(promise).resolves.toEqual({ ok: true });
+    return events;
+  };
+
+  const verifyMessage = (events) => events.find((e) => e.stage === 'verify')?.message;
+
+  it('warns and names the culprit when a required CUDA extension never built', async () => {
+    const events = await runToCompletion(async () => ({ naf: 'available', missing: ['o_voxel'] }));
+    const message = verifyMessage(events);
+    expect(message).toContain('⚠️');
+    expect(message).toContain(PIXAL3D_INCOMPLETE_INSTALL_HELP);
+    expect(message).toContain('Missing: o_voxel.');
+    // A half-built install is repairable, not fatal — the ~40 GB of downloaded models
+    // stay usable, so the run must still finish green rather than throw.
+    expect(events.at(-1)).toMatchObject({ type: 'complete' });
+    expect(message).not.toContain('✅');
+  });
+
+  it('reports the milder NAF fallback when only NATTEN is absent', async () => {
+    const events = await runToCompletion(async () => ({
+      naf: 'unavailable', missing: [], help: PIXAL3D_NAF_FALLBACK_HELP,
+    }));
+    const message = verifyMessage(events);
+    expect(message).toBe(`⚠️ ${PIXAL3D_NAF_FALLBACK_HELP}`);
+    // Nothing is half-built here, so there is no module list to append.
+    expect(message).not.toContain('Missing:');
+  });
+
+  it('prefers the incomplete-install warning over the NAF fallback', async () => {
+    // Same precedence the card applies: one Repair fixes both, so report the worse one.
+    const events = await runToCompletion(async () => ({
+      naf: 'unavailable', missing: ['flex_gemm'], help: PIXAL3D_NAF_FALLBACK_HELP,
+    }));
+    expect(verifyMessage(events)).toContain(PIXAL3D_INCOMPLETE_INSTALL_HELP);
+    expect(verifyMessage(events)).not.toContain(PIXAL3D_NAF_FALLBACK_HELP);
+  });
+
+  it('keeps the clean line for a complete install', async () => {
+    const events = await runToCompletion(async () => ({ naf: 'available', missing: [] }));
+    expect(verifyMessage(events)).toBe('✅ Pixal3D CUDA environment is present.');
+  });
+
+  it('keeps the clean line when the probe itself could not run', async () => {
+    // "Failed to determine" must never render as "determined to be bad".
+    const events = await runToCompletion(async () => ({ naf: 'unknown', missing: [] }));
+    expect(verifyMessage(events)).toBe('✅ Pixal3D CUDA environment is present.');
+  });
+
+  it('never probes when the env or the checkout is missing outright', async () => {
+    const children = STEPS.map(() => makeChild());
+    let i = 0;
+    const probeModules = vi.fn();
+    // Conda python present (so the steps and the spawn count match the happy path) but
+    // no `inference.py` — the install is broken, not degraded, and must throw.
+    const { promise } = installPixal3dCuda({
+      base: BASE,
+      exists: existsFor(CONDA_PY),
+      env: CONDA_ENV,
+      spawnImpl: () => children[i++],
+      probeModules,
+    });
+    await closeEachStep(children);
+    await expect(promise).rejects.toMatchObject({ code: 'PIXAL3D_CUDA_INSTALL_INCOMPLETE' });
+    expect(probeModules).not.toHaveBeenCalled();
   });
 });

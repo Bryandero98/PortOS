@@ -53,6 +53,7 @@ import { cpus, homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from '../../lib/childProcess.js';
 import { resolveCondaEnvPython } from '../../lib/condaEnv.js';
+import { appendMissingModules } from './degradedInstall.js';
 import { rewriteGlbMaterialsOpaque } from './glbMaterials.js';
 import {
   hfGatedRepoHelp,
@@ -474,10 +475,18 @@ const CUDA_OOM_HELP = 'The GPU ran out of memory during this render. Close other
  * `detectCudaComputeCapability`) rather than probed here, keeping this function's
  * inputs explicit and its steps deterministic in tests.
  *
+ * **Post-install verification.** `setup.sh` is SOURCED and exits 0 even when a CUDA
+ * extension failed to compile, so the env and the checkout can both be on disk while
+ * `o_voxel` never built. After the presence check the install therefore runs the same
+ * module probe the card uses (`probeModules`, injectable so the suite never spawns a
+ * Python against the developer machine) and reports a half-built install BEFORE the
+ * terminal `complete` frame — otherwise a user watching the install finish sees a clean
+ * success and only learns it is incomplete on a later visit to the card (#4741).
+ *
  * @param {{base?: string, onEvent?: (ev: object) => void, spawnImpl?: Function,
  *          maxRetries?: number, sleep?: (ms: number) => Promise<void>,
  *          exists?: (p: string) => boolean, env?: NodeJS.ProcessEnv,
- *          computeCap?: string|null}} [opts]
+ *          computeCap?: string|null, probeModules?: Function}} [opts]
  * @returns {{promise: Promise<{ok: true}>, kill: () => void}}
  */
 export function installPixal3dCuda({
@@ -489,6 +498,7 @@ export function installPixal3dCuda({
   exists = existsSync,
   env,
   computeCap = null,
+  probeModules = probePixal3dModules,
 } = {}) {
   return runInstallSteps({
     steps: buildPixal3dInstallSteps(base, { exists, env, computeCap }),
@@ -502,7 +512,7 @@ export function installPixal3dCuda({
     env,
     // Steps can leave a usable env behind while a build failed, so confirm what
     // actually landed rather than trusting exit 0 (#2952's lesson).
-    verify: (emit) => {
+    verify: async (emit) => {
       if (!isPixal3dCudaInstalled({ base, exists, env })) {
         const err = new Error(
           `${LABEL} setup finished but its conda environment or the Pixal3D checkout is `
@@ -512,7 +522,26 @@ export function installPixal3dCuda({
         err.stage = 'verify';
         throw err;
       }
-      emit({ type: 'log', stage: 'verify', message: '✅ Pixal3D CUDA environment is present.' });
+      // Present ≠ complete. A missing REQUIRED extension is a `⚠️`, not a throw: the
+      // install genuinely produced a usable env for everything but the mesh exporter,
+      // and the card's Repair action is the remedy — failing the whole ~40 GB run would
+      // discard work the user can keep. Same reading, and the same precedence
+      // (incomplete outranks the NAF fallback), as the card's `describeInstallState`.
+      // A probe that could not RUN (`naf: 'unknown'`, nothing missing) still reports the
+      // clean line: "failed to determine" must never render as "determined to be bad".
+      const probe = await probeModules({ exists, env });
+      if (probe.missing?.length) {
+        emit({
+          type: 'log',
+          stage: 'verify',
+          message: `⚠️ ${appendMissingModules(PIXAL3D_INCOMPLETE_INSTALL_HELP, probe.missing)}`,
+        });
+      } else if (probe.naf === 'unavailable') {
+        // Nothing to name — NATTEN is absent as a whole, not half-built.
+        emit({ type: 'log', stage: 'verify', message: `⚠️ ${PIXAL3D_NAF_FALLBACK_HELP}` });
+      } else {
+        emit({ type: 'log', stage: 'verify', message: '✅ Pixal3D CUDA environment is present.' });
+      }
     },
   });
 }
