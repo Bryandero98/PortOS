@@ -84,6 +84,7 @@ export * from './shotGrammar.js';
 export * from './storyboardScenes.js';
 export * from './seasonStructure.js';
 export * from './seriesCharacterArc.js';
+export * from './llmRoutePin.js';
 export * from './seriesLlmOverride.js';
 export * from './storyArc.js';
 export * from './styleGuide.js';

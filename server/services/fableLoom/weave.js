@@ -16,6 +16,7 @@ import { randomUUID } from 'crypto';
 import { ServerError } from '../../lib/errorHandler.js';
 import { runStagedLLM } from '../../lib/stageRunner.js';
 import { isStr, trimTo } from '../../lib/storyBible.js';
+import { resolveLlmRoutePin } from '../../lib/llmRoutePin.js';
 import { renderCanonForPrompt } from '../../lib/universePromptRenderers.js';
 import { analyzeEpisodeGraph, describeGraphForPrompt } from '../../lib/fableLoomGraph.js';
 import { getUniverse } from '../universeBuilder.js';
@@ -50,22 +51,11 @@ const llmOptions = ({ providerId, model, effort } = {}, source) => ({
  * overrides deliberately — the author chose this narrator for this story, so
  * it outranks a global stage pin the same way a per-call pick does.
  *
- * A model id and an effort level are both provider-specific, so the loom's are
- * inherited only while the EFFECTIVE provider is still the one they were
- * picked for. A per-call override that switches providers without naming its
- * own falls through to the new provider's defaults rather than forwarding a
- * foreign model id that would fail — the same rule as
- * `resolveSeriesLlmOverride` (server/lib/seriesLlmOverride.js).
+ * The never-cross-providers rule (a pinned model/effort is inherited only
+ * while the effective provider still matches) comes from the shared resolver
+ * in `server/lib/llmRoutePin.js`.
  */
-const playRouting = (loom, { providerId, model, effort } = {}) => {
-  const pinned = loom.playSettings || {};
-  const inherits = !providerId || providerId === pinned.providerId;
-  return {
-    providerId: providerId || pinned.providerId || null,
-    model: model || (inherits ? pinned.model : null) || null,
-    effort: effort || (inherits ? pinned.effort : null) || null,
-  };
-};
+const playRouting = (loom, perCall) => resolveLlmRoutePin(loom.playSettings, perCall);
 
 /**
  * Render the linked universe's canon as a prompt digest via the shared

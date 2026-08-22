@@ -4,14 +4,14 @@
 // extract-scenes, season-episodes-generate) honors the provider/model picked
 // in the series header instead of the global active provider.
 //
-// A model id is provider-specific, so the series model is only inherited when
-// the EFFECTIVE provider is still the series provider. An override that
-// switches providers without naming a model leaves the model blank, so the new
-// provider's default resolves rather than forwarding a foreign model id that
-// would fail.
-//
-// Returns `undefined` (not `''`) for an unresolved provider/model so callers
-// can pass the result straight through to the extractor without re-mapping.
+// The never-cross-providers rule this rests on lives in `llmRoutePin.js`: a
+// model id belongs to the provider it was picked for, so the series model is
+// only inherited while the EFFECTIVE provider is still the series provider.
+// This module is the series-shaped adapter over it — `series.llm` spells the
+// pin `{ provider, model }` and callers want `undefined` (not `null`) for an
+// unresolved field so the result passes straight through to the extractor.
+
+import { resolveLlmRoutePin } from './llmRoutePin.js';
 
 /**
  * Resolve the effective LLM provider/model for a Pipeline action against a series.
@@ -21,12 +21,13 @@
  * @returns {{ provider: string|undefined, model: string|undefined, providerMatchesSeries: boolean }}
  */
 export function resolveSeriesLlmOverride(series, { overrideProvider, overrideModel } = {}) {
-  const seriesProvider = series?.llm?.provider || '';
-  const provider = overrideProvider || seriesProvider || undefined;
-  // No override means we're using the series provider, so the series model is
-  // always safe to inherit; an override matches only when it names the same
-  // provider the series model belongs to.
-  const providerMatchesSeries = !overrideProvider || overrideProvider === seriesProvider;
-  const model = overrideModel || (providerMatchesSeries ? series?.llm?.model : undefined) || undefined;
-  return { provider, model, providerMatchesSeries };
+  const { providerId, model, providerMatchesPin } = resolveLlmRoutePin(
+    { providerId: series?.llm?.provider, model: series?.llm?.model },
+    { providerId: overrideProvider, model: overrideModel },
+  );
+  return {
+    provider: providerId ?? undefined,
+    model: model ?? undefined,
+    providerMatchesSeries: providerMatchesPin,
+  };
 }

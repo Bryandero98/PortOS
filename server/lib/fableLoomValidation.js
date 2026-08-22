@@ -8,7 +8,7 @@
 import { z } from 'zod';
 import { LOOM_LIMITS } from '../services/fableLoom/limits.js';
 import { LOOM_FORMATS } from '../services/fableLoom/formats.js';
-import { EFFORT_LEVELS } from './providerModels.js';
+import { llmRoutePinSchema } from './llmRoutePin.js';
 
 const name = z.string().trim().min(1).max(LOOM_LIMITS.NAME_MAX);
 const logline = z.string().max(LOOM_LIMITS.LOGLINE_MAX);
@@ -19,17 +19,12 @@ const title = z.string().max(LOOM_LIMITS.EPISODE_TITLE_MAX);
 const synopsis = z.string().max(LOOM_LIMITS.SYNOPSIS_MAX);
 const nodeIdStr = z.string().min(1).max(80);
 const format = z.enum(LOOM_FORMATS);
-// The loom's pinned play routing. Nullable per field ('' from a cleared select
-// is normalized to null by the sanitizer) and nullable as a whole, so the UI
-// can clear the pin outright. `effort` is the shared ladder enum, not a free
-// string — the runner would clamp an unknown level silently, and the door
-// check is where a typo should surface.
-const effort = z.enum(EFFORT_LEVELS);
-const playSettings = z.object({
-  providerId: z.string().max(LOOM_LIMITS.PROVIDER_ID_MAX).nullable().optional(),
-  model: z.string().max(LOOM_LIMITS.MODEL_ID_MAX).nullable().optional(),
-  effort: effort.nullable().optional(),
-}).nullable();
+// The loom's pinned play routing is the shared per-record LLM route pin
+// (`server/lib/llmRoutePin.js`), nullable as a whole so the UI can clear it
+// outright. Its `effort` is the shared ladder enum rather than a free string —
+// the runner would clamp an unknown level silently, and the door check is
+// where a typo should surface.
+const playSettings = llmRoutePinSchema.nullable();
 
 // Index filter. `?seriesId=` scopes the list to the looms soft-linked to one
 // pipeline series (the series detail page's "Branching narratives" card). An
@@ -120,11 +115,8 @@ export const nodeCreateSchema = z.object({
 
 export const nodePatchSchema = z.object(nodeFields);
 
-const llmPickFields = {
-  providerId: z.string().max(LOOM_LIMITS.PROVIDER_ID_MAX).optional(),
-  model: z.string().max(LOOM_LIMITS.MODEL_ID_MAX).optional(),
-  effort: effort.optional(),
-};
+// A per-call pick carries the same three dimensions as the saved pin.
+const llmPickFields = llmRoutePinSchema.shape;
 
 export const weaveSchema = z.object({
   guidance: z.string().max(4000).optional(),
