@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { StrictMode } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import MusicGenPanel from './MusicGenPanel';
 import * as api from '../../services/api';
 import toast from '../ui/Toast';
@@ -805,6 +805,48 @@ describe('MusicGenPanel', () => {
       { engine: 'minimax-music3-mlx', repo: 'mlx-community/MiniMax-Music3-bf16' },
       expect.any(Function),
     ));
+  });
+
+  // Switching engine and immediately picking one of the NEW engine's snapshots
+  // is the closest this harness gets to the interleaving that failed on CI
+  // (#4819): the engine-defaults effect is queued holding the OLD engine's
+  // model id, which is absent from the new list, so a drain that ran after the
+  // pick would reset it. `act()` drains between the two discrete events, so
+  // this passes either way — it is here for the end-to-end behaviour (the pick
+  // survives an engine switch and every selected-snapshot gate follows it), NOT
+  // as the guard for the stale-closure reset. That guard has to read the source,
+  // and lives in musicGenModelSelection.guard.test.js.
+  it('follows a model picked right after an engine switch', async () => {
+    const alpha = engine({
+      id: 'alpha', name: 'Alpha', ready: true, customModels: false,
+      models: [{ id: 'alpha-1', name: 'Alpha One' }],
+      defaultModelId: 'alpha-1',
+    });
+    const beta = engine({
+      id: 'beta', name: 'Beta', ready: true, runtimeReady: true, customModels: false,
+      fixedModelInstall: true, modelReady: true,
+      modelReadyById: { 'beta-1': true, 'beta-2': false },
+      modelSizeGbById: { 'beta-1': 14, 'beta-2': 29 },
+      models: [{ id: 'beta-1', name: 'Beta One' }, { id: 'beta-2', name: 'Beta Two' }],
+      defaultModelId: 'beta-1',
+    });
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'alpha', engines: [alpha, beta] });
+
+    render(<MusicGenPanel prompt="cinematic score" lyrics="" />);
+    const engineSelect = await screen.findByRole('combobox', { name: /engine/i });
+
+    await act(async () => {
+      // Commit 1: engine becomes Beta while modelId is still 'alpha-1', queuing
+      // the defaults effect with that stale id.
+      fireEvent.change(engineSelect, { target: { value: 'beta' } });
+      // Commit 2: the user picks Beta's un-installed snapshot before the drain.
+      fireEvent.change(screen.getByRole('combobox', { name: /model/i }), { target: { value: 'beta-2' } });
+    });
+
+    expect(screen.getByRole('combobox', { name: /model/i })).toHaveValue('beta-2');
+    expect(screen.getByText(/selected model weights are not installed yet/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /download model weights \(~29 GB\)/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /generate track/i })).toBeDisabled();
   });
 
   it('shows honest elapsed GPU feedback while MiniMax generation is running', async () => {

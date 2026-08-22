@@ -79,20 +79,26 @@ export function useFederatedMediaTarget(kind) {
   const [peerId, setPeerId] = useState('');
   const [modelKey, setModelKey] = useState('');
 
+  // Only the opted-in peers are stored, and only when there is at least one:
+  // on an install with no media provider (the common case) the mount fetch then
+  // produces NO state update at all, so adding this hook to a form costs it no
+  // extra commit. Filtering here rather than in a `useMemo` below is what makes
+  // that possible — the raw list is never state, so its identity cannot churn.
   useEffect(() => {
     getInstances({ silent: true })
-      .then((data) => { if (Array.isArray(data?.peers)) setAllPeers(data.peers); })
+      .then((data) => {
+        if (!Array.isArray(data?.peers)) return;
+        const providers = data.peers.filter((candidate) => candidate?.mediaProvider?.enabled === true);
+        setAllPeers((current) => (providers.length === 0 && current.length === 0 ? current : providers));
+      })
       .catch(() => {});
   }, []);
 
-  // Opting a peer in is a local config fact that survives a failed probe, so
-  // the list is filtered on that alone. A peer whose capacity has gone stale
-  // stays listed (carrying its own suffix) rather than vanishing from the
-  // dropdown with no explanation of where it went.
-  const peers = useMemo(
-    () => allPeers.filter((candidate) => candidate?.mediaProvider?.enabled === true),
-    [allPeers],
-  );
+  // Opting a peer in is a local config fact that survives a failed probe, which
+  // is why the stored list is filtered on that alone (above). A peer whose
+  // capacity has gone stale stays listed — carrying its own suffix — rather
+  // than vanishing from the dropdown with no explanation of where it went.
+  const peers = allPeers;
   const peer = useMemo(() => peers.find((candidate) => candidate.id === peerId) || null, [peers, peerId]);
   const models = useMemo(() => federatedMediaModelsForPeer(peer, kind), [peer, kind]);
   // Fall back to the first option for the same reason a native <select> does:

@@ -289,10 +289,17 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   // NOT clobber a freshly-selected model — it stays selected because it's now in
   // the list. Switching to a different engine still resets (the old model isn't
   // in the new engine's list). Duration seeds once.
+  // Functional updater, not a read of `modelId`: this effect is keyed on the
+  // ENGINE, so the `modelId` its closure captured is whatever the render that
+  // queued it saw. React drains passive effects on its own scheduler task, so a
+  // pick made after that commit but before the drain would be read as absent
+  // and silently reset to the engine default — reverting a selection the user
+  // had already made and quietly re-enabling every gate hanging off it. Reading
+  // the value at flush time cannot go stale. (#4348 / PR #4819 CI failure.)
   useEffect(() => {
     if (!engine) return;
     const ids = (engine.models || []).map((m) => m.id);
-    if (!ids.includes(modelId)) setModelId(engine.defaultModelId || ids[0] || '');
+    setModelId((current) => (ids.includes(current) ? current : (engine.defaultModelId || ids[0] || '')));
     setDurationSec((d) => (d == null ? engine.defaultDurationSec : d));
   }, [engine?.id, engine?.models]);
 
@@ -511,8 +518,13 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
           </label>
           <label className="block">
             <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Model</span>
+            {/* The EFFECTIVE id, not the raw state. `modelId` is '' until the
+                engine-defaults effect drains, and React leaves a select alone
+                when no option matches its value — so the raw state would let
+                the control display one snapshot while every readiness gate
+                below reads another, for as long as that gap lasts. */}
             <select
-              value={modelId}
+              value={selectedModelId}
               onChange={(e) => setModelId(e.target.value)}
               className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
             >
