@@ -22,14 +22,15 @@
  * per-context table. PortOS never derives one unit from the other.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Gauge, RefreshCw, Trash2, Play, AlertTriangle, History, SlidersHorizontal, ChevronDown, ChevronUp } from 'lucide-react';
 import socket from '../../services/socket';
-import Modal from '../ui/Modal';
+import Drawer from '../Drawer';
 import BrailleSpinner from '../BrailleSpinner';
 import toast from '../ui/Toast';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import useMounted from '../../hooks/useMounted';
+import useUrlParams from '../../hooks/useUrlParams';
 import AssessmentSweepPanel from './AssessmentSweepPanel';
 import ModelThroughputReport from './ModelThroughputReport';
 import { formatContextTokens, formatDurationMs, throughputLabel } from '../../utils/formatters';
@@ -84,6 +85,15 @@ const compactTuning = (draft) => Object.fromEntries(
 // part of a row's identity — not decoration. Keying on model alone gave two
 // variants the same React key and made "discard" target the wrong record.
 const entryKey = (entry) => `${entry.backend}:${entry.modelId}@${entry.tuningKey || ''}`;
+
+// Which model the measure drawer has open lives in the URL, not in local state,
+// so the gate is shareable, bookmarkable and reload-safe — the same rule the
+// AI-provider editor follows at /ai/edit/:providerId. Search params rather than
+// a path segment because a model id is not one: it carries `/` and `:`
+// (`hf.co/org/repo:Q4_K_M`), and the drawer is an overlay on an already-routed
+// tab. `measureTuning` is the tuning key of the record being re-measured, so a
+// deep link reopens the configuration it describes rather than the defaults.
+const CLOSED_MEASURE_PARAMS = { measureBackend: null, measureModel: null, measureTuning: null };
 
 // `null` is NOT MEASURED and must render as such — never as 0, and never as a
 // dash the reader could mistake for "measured, none".
@@ -186,20 +196,38 @@ function TuningFields({ specs, draft, onChange, disabled }) {
 // Consent gate. PortOS never calls a provider the user didn't knowingly ask for,
 // so this names the exact backend, model, and generation count before the first
 // request goes out — the same contract as the POST drill cache's fill modal.
-function AssessmentConsentModal({
-  target, runtimeLabel, contextTokens, tuningSpecs, tuning, onTuningChange,
-  onCancel, onConfirm, running, progress,
+//
+// Routable rather than modal — see CLOSED_MEASURE_PARAMS above for why the open
+// target lives in the URL.
+function AssessmentDrawer({
+  target, unknownTarget, runtimeLabel, contextTokens, tuningSpecs, tuning, onTuningChange,
+  onClose, onConfirm, running, progress,
 }) {
   const [showTuning, setShowTuning] = useState(false);
   if (!target) return null;
   const tunedCount = Object.keys(compactTuning(tuning)).length;
   return (
-    <Modal open onClose={onCancel} size="sm" ariaLabel="Run local model assessment" closeOnBackdrop={!running}>
-      <div className="bg-port-card border border-port-border rounded-lg p-5 space-y-4">
-        <div className="flex items-center gap-2">
-          <Gauge size={18} className="text-port-accent" />
-          <h3 className="text-white font-medium">Measure this model?</h3>
-        </div>
+    <Drawer
+      open
+      onClose={onClose}
+      title="Measure this model"
+      subtitle={target.modelId}
+      size="md"
+      // Closing IS stopping — the close button aborts the run in flight — so
+      // both accidental-dismissal paths are shut off while one is working, and
+      // the icon-only close button says what it will actually do.
+      closeLabel={running ? 'Stop the assessment' : 'Close'}
+      closeOnEsc={!running}
+      closeOnBackdrop={!running}
+    >
+      <div className="space-y-4">
+        {unknownTarget && (
+          <p className="text-xs text-port-warning flex items-start gap-1.5" role="alert">
+            <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+            This model is not in the current list — it may have been removed since the link was made.
+            Running it will still ask {runtimeLabel} for it.
+          </p>
+        )}
         <p className="text-sm text-gray-400">
           PortOS will run <span className="text-gray-200 font-mono break-all">{target.modelId}</span> on{' '}
           <span className="text-gray-200">{runtimeLabel}</span>{' '}
@@ -261,10 +289,10 @@ function AssessmentConsentModal({
         )}
         <div className="flex gap-3 pt-1">
           {/* Stays enabled while the run is in flight — it aborts the request
-              rather than merely closing the modal, so the user is never stuck
+              rather than merely closing the drawer, so the user is never stuck
               watching a multi-minute job they no longer want. */}
           <button
-            onClick={onCancel}
+            onClick={onClose}
             className="flex-1 px-4 py-2 bg-port-card border border-port-border hover:border-port-accent text-white text-sm font-medium rounded-lg transition-colors"
           >
             {running ? 'Stop' : 'Cancel'}
@@ -278,7 +306,7 @@ function AssessmentConsentModal({
           </button>
         </div>
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 
@@ -500,11 +528,13 @@ export function LocalModelAssessments() {
   const [intent, setIntent] = useState('balanced');
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [pendingTarget, setPendingTarget] = useState(null);
-  // Tuning for the run being set up. Kept beside `pendingTarget` rather than
-  // inside the modal so re-measuring can pre-fill it from the existing record,
-  // and so it survives the collapse/expand of the tuning section.
-  const [tuningDraft, setTuningDraft] = useState({});
+  // The knobs the user has typed, or `null` while they have typed nothing — in
+  // which case the form shows the tuning of the record the URL names, so
+  // re-measuring reproduces that configuration and adjusting one knob is a
+  // one-field edit. Deriving it (rather than seeding a state copy) is what lets
+  // a cold deep link pick the record up the moment the report lands, while a
+  // background refresh can never overwrite a half-typed value.
+  const [tuningEdits, setTuningEdits] = useState(null);
   // Per-sample progress for the run in flight. `null` = no frame yet, which is
   // rendered as "no progress bar" rather than as 0 of N.
   const [progress, setProgress] = useState(null);
@@ -516,6 +546,24 @@ export function LocalModelAssessments() {
   // so there is only one place that renders it.
   const [tuningSweepRequest, setTuningSweepRequest] = useState(null);
 
+  const [searchParams, updateParams] = useUrlParams();
+  const measureBackend = searchParams.get('measureBackend') || '';
+  const measureModel = searchParams.get('measureModel') || '';
+  const measureTuning = searchParams.get('measureTuning') || '';
+
+  const openTarget = useCallback((entry) => updateParams({
+    measureBackend: entry.backend,
+    measureModel: entry.modelId,
+    measureTuning: entry.tuningKey || null,
+  }), [updateParams]);
+
+  // `replace` so closing the drawer doesn't leave a Back button that reopens it
+  // on a run the user just cancelled.
+  const closeTarget = useCallback(() => {
+    updateParams(CLOSED_MEASURE_PARAMS, { replace: true });
+    setTuningEdits(null);
+  }, [updateParams]);
+
   const load = useCallback(async (nextIntent) => {
     setLoading(true);
     // The panel owns its own empty/error rendering, so silence the default toast
@@ -526,6 +574,27 @@ export function LocalModelAssessments() {
   }, []);
 
   useEffect(() => { load(intent); }, [load, intent]);
+
+  // The row the URL names, once the report can say which one it is — that record
+  // is what carries the tuning a re-measure starts from. Matched through
+  // `entryKey` so "the same measurement" has one definition, not two.
+  const measureMatch = useMemo(() => {
+    if (!measureBackend || !measureModel) return null;
+    const wanted = entryKey({ backend: measureBackend, modelId: measureModel, tuningKey: measureTuning });
+    const hit = (rows) => rows?.find((entry) => entryKey(entry) === wanted);
+    return hit(report?.ranked) || hit(report?.excluded) || hit(report?.unassessed) || null;
+  }, [report, measureBackend, measureModel, measureTuning]);
+
+  // An id the report doesn't list still opens the drawer — the URL is the source
+  // of truth for what's open — and says so, rather than bouncing: the same id is
+  // legitimately absent for the moment between a first run landing and the
+  // refreshed report arriving, which is why the notice also stands down mid-run.
+  const pendingTarget = measureBackend && measureModel
+    ? measureMatch || { backend: measureBackend, modelId: measureModel, tuningKey: measureTuning }
+    : null;
+  const recordTuning = measureMatch?.tuning;
+  const tuningDraft = tuningEdits
+    ?? (recordTuning && typeof recordTuning === 'object' ? recordTuning : {});
 
   // Which model this panel is currently measuring. A ref, not state: the socket
   // handler subscribes once and must read the CURRENT target, not the one
@@ -587,14 +656,17 @@ export function LocalModelAssessments() {
   }, { errorMessage: 'Assessment failed' });
 
   const confirmRun = async () => {
-    const target = { ...pendingTarget, tuning: compactTuning(tuningDraft) };
+    const target = {
+      backend: pendingTarget.backend,
+      modelId: pendingTarget.modelId,
+      tuning: compactTuning(tuningDraft),
+    };
     activeTargetRef.current = target;
     setProgress(null);
     const result = await runAssessment(target);
     activeTargetRef.current = null;
     setProgress(null);
-    setPendingTarget(null);
-    setTuningDraft({});
+    closeTarget();
     // An aborted run recorded nothing on either side, so there is no verdict to
     // report — marked `cancelled` by the abort catch above, or by the server
     // when it saw the signal drop mid-run.
@@ -635,20 +707,11 @@ export function LocalModelAssessments() {
 
   const cancelRun = () => {
     runControllerRef.current?.abort();
-    // Stop accepting frames for the abandoned run BEFORE the modal closes, or a
+    // Stop accepting frames for the abandoned run BEFORE the drawer closes, or a
     // late frame would repopulate a progress bar with nothing behind it.
     activeTargetRef.current = null;
     setProgress(null);
-    setPendingTarget(null);
-    setTuningDraft({});
-  };
-
-  // Re-measuring starts from the tuning that produced the existing record, so
-  // "run it again" reproduces the same configuration by default and adjusting
-  // one knob is a one-field edit rather than re-entering the whole set.
-  const openTarget = (entry) => {
-    setTuningDraft(entry?.tuning && typeof entry.tuning === 'object' ? { ...entry.tuning } : {});
-    setPendingTarget(entry);
+    closeTarget();
   };
 
   // Hands the model to the sweep panel's consent gate. The grid rides along so
@@ -834,16 +897,17 @@ export function LocalModelAssessments() {
         </>
       )}
 
-      <AssessmentConsentModal
+      <AssessmentDrawer
         target={pendingTarget}
+        unknownTarget={Boolean(report) && !measureMatch && !running}
         runtimeLabel={backendLabel(report, pendingTarget?.backend)}
         contextTokens={report?.defaultContextTokens || []}
         tuningSpecs={specsFor(report, pendingTarget?.backend)}
         tuning={tuningDraft}
-        onTuningChange={setTuningDraft}
+        onTuningChange={setTuningEdits}
         running={running}
         progress={progress}
-        onCancel={cancelRun}
+        onClose={cancelRun}
         onConfirm={confirmRun}
       />
     </div>

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter, useLocation } from 'react-router';
 
 vi.mock('../../services/api', () => ({
   getLocalLlmAssessments: vi.fn(),
@@ -28,6 +29,23 @@ import {
 import toast from '../ui/Toast';
 import socket from '../../services/socket';
 import LocalModelAssessments from './LocalModelAssessments.jsx';
+
+// The measure drawer's target lives in the URL, so every render needs a router.
+// `currentUrl()` reads back what the panel wrote, which is what the deep-link
+// tests assert on — the drawer being open is a property of the URL now, not of
+// component state.
+let location = null;
+function LocationProbe() {
+  location = useLocation();
+  return null;
+}
+const currentUrl = () => `${location.pathname}${location.search}`;
+const renderPanel = (initialEntry = '/models/performance') => render(
+  <MemoryRouter initialEntries={[initialEntry]}>
+    <LocalModelAssessments />
+    <LocationProbe />
+  </MemoryRouter>,
+);
 
 const report = (overrides = {}) => ({
   intent: 'balanced',
@@ -108,7 +126,7 @@ describe('LocalModelAssessments', () => {
   });
 
   it('loads persisted results on mount without triggering any model run', async () => {
-    render(<LocalModelAssessments />);
+    renderPanel();
     await waitFor(() => expect(getLocalLlmAssessments).toHaveBeenCalled());
     // The AI Provider Usage Policy boundary: mounting the panel must never
     // reach a provider.
@@ -117,7 +135,7 @@ describe('LocalModelAssessments', () => {
 
   it('renders measured numbers for a ranked model', async () => {
     getLocalLlmAssessments.mockResolvedValue(report({ ranked: [rankedEntry()] }));
-    render(<LocalModelAssessments />);
+    renderPanel();
     expect(await screen.findByText('example-model:7b')).toBeInTheDocument();
     expect(screen.getByText('120 chars/s')).toBeInTheDocument();
     expect(screen.getByText('4K tokens')).toBeInTheDocument();
@@ -135,7 +153,7 @@ describe('LocalModelAssessments', () => {
         scores: { capability: 0.5, speed: null, fidelity: null, memory: null },
       })],
     }));
-    render(<LocalModelAssessments />);
+    renderPanel();
     await screen.findByText('example-model:7b');
     expect(screen.getAllByText('not measured').length).toBeGreaterThanOrEqual(3);
     // An unmeasured axis renders as n/a, never as an empty bar that reads as 0.
@@ -148,12 +166,12 @@ describe('LocalModelAssessments', () => {
       unassessed: [{ backend: 'ollama', modelId: 'example-model:7b', params: '7B' }],
     }));
     runLocalLlmAssessment.mockResolvedValue({ verdict: 'fits' });
-    render(<LocalModelAssessments />);
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Measure' }));
     // Nothing has been sent yet — the click opens the ask, it does not run.
     expect(runLocalLlmAssessment).not.toHaveBeenCalled();
-    expect(screen.getByText(/Measure this model\?/)).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Measure this model' })).toBeInTheDocument();
     expect(screen.getByText(/3 times/)).toBeInTheDocument();
     expect(screen.getByText(/512, 4K, 16K tokens of context/)).toBeInTheDocument();
 
@@ -164,24 +182,24 @@ describe('LocalModelAssessments', () => {
     ));
   });
 
-  it('does not run when the consent modal is cancelled', async () => {
+  it('does not run when the consent drawer is cancelled', async () => {
     const user = userEvent.setup();
     getLocalLlmAssessments.mockResolvedValue(report({
       unassessed: [{ backend: 'ollama', modelId: 'example-model:7b', params: '7B' }],
     }));
-    render(<LocalModelAssessments />);
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(screen.getByRole('button', { name: /cancel/i }));
     expect(runLocalLlmAssessment).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.queryByText(/Measure this model\?/)).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
   it('presents unmeasured models as an open question, not as a poor choice', async () => {
     getLocalLlmAssessments.mockResolvedValue(report({
       unassessed: [{ backend: 'lmstudio', modelId: 'example-model:14b', params: '14B' }],
     }));
-    render(<LocalModelAssessments />);
+    renderPanel();
     expect(await screen.findByText(/Not yet measured \(1\)/)).toBeInTheDocument();
     expect(screen.getByText(/not a mark against them/)).toBeInTheDocument();
   });
@@ -193,7 +211,7 @@ describe('LocalModelAssessments', () => {
       unassessed: [{ backend: 'ollama', modelId: 'example-model:7b', params: '7B' }],
     }));
     getLocalLlmAssessmentSweep.mockResolvedValue({ status: 'running', total: 4, completed: 1, current: null, results: [] });
-    render(<LocalModelAssessments />);
+    renderPanel();
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Measure' })).toBeDisabled());
   });
@@ -202,7 +220,7 @@ describe('LocalModelAssessments', () => {
     const user = userEvent.setup();
     getLocalLlmAssessmentSweep.mockResolvedValue({ status: 'running', total: 2, completed: 1, current: null, results: [] });
     cancelLocalLlmAssessmentSweep.mockResolvedValue({ status: 'cancelled', total: 2, completed: 1, current: null, results: [] });
-    render(<LocalModelAssessments />);
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: /stop sweep/i }));
     // Once for the mount, once because the queue's evidence just changed.
@@ -213,20 +231,20 @@ describe('LocalModelAssessments', () => {
     getLocalLlmAssessments.mockResolvedValue(report({
       ranked: [rankedEntry({ performance: { ...rankedEntry().performance, meanTokensPerSecond: 58.5, tokensEstimated: false } })],
     }));
-    render(<LocalModelAssessments />);
+    renderPanel();
     expect(await screen.findByText(/58.5 tok\/s/)).toBeInTheDocument();
   });
 
   it('shows chars/s alone for a runtime that reported no token counts', async () => {
     getLocalLlmAssessments.mockResolvedValue(report({ ranked: [rankedEntry()] }));
-    render(<LocalModelAssessments />);
+    renderPanel();
     expect(await screen.findByText('120 chars/s')).toBeInTheDocument();
     expect(screen.queryByText(/tok\/s/)).not.toBeInTheDocument();
   });
 
   it('refetches for the selected intent', async () => {
     const user = userEvent.setup();
-    render(<LocalModelAssessments />);
+    renderPanel();
     await waitFor(() => expect(getLocalLlmAssessments).toHaveBeenCalledWith('balanced', { silent: true }));
     await user.selectOptions(screen.getByLabelText('Rank for'), 'fastest');
     await waitFor(() => expect(getLocalLlmAssessments).toHaveBeenCalledWith('fastest', { silent: true }));
@@ -239,7 +257,7 @@ describe('LocalModelAssessments', () => {
       assessments: [{ backend: 'ollama', modelId: 'example-model:7b' }],
     }));
     deleteLocalLlmAssessment.mockResolvedValue({ success: true });
-    render(<LocalModelAssessments />);
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: /discard the measurement/i }));
     await waitFor(() => expect(screen.getByText(/Not yet measured \(1\)/)).toBeInTheDocument());
@@ -251,8 +269,10 @@ describe('LocalModelAssessments', () => {
     getLocalLlmAssessments.mockResolvedValue(report({
       unassessed: [{ backend: 'ollama', modelId: 'example-model:7b', params: '7B' }],
     }));
-    // A run occupies the local provider for minutes; the modal's only exit must
-    // stay live and actually abort, not merely close over a job still running.
+    // A run occupies the local provider for minutes; every exit the drawer
+    // offers must stay live and actually abort, not merely close over a job
+    // still running — including the header's icon-only close button, which has
+    // to announce that it stops the run rather than "Close".
     let capturedSignal;
     runLocalLlmAssessment.mockImplementation((_payload, options) => {
       capturedSignal = options.signal;
@@ -260,13 +280,14 @@ describe('LocalModelAssessments', () => {
         options.signal.addEventListener('abort', () => reject(new Error('Server unreachable')));
       });
     });
-    render(<LocalModelAssessments />);
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(screen.getByRole('button', { name: /run assessment/i }));
-    await waitFor(() => expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Stop the assessment' })).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: /stop/i }));
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
     await waitFor(() => expect(capturedSignal.aborted).toBe(true));
     // The abort is what the user asked for — it must not surface as an error.
     expect(toast.error).not.toHaveBeenCalled();
@@ -283,7 +304,7 @@ describe('LocalModelAssessments', () => {
       capturedSignal = options.signal;
       return new Promise(() => {});
     });
-    const { unmount } = render(<LocalModelAssessments />);
+    const { unmount } = renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(screen.getByRole('button', { name: /run assessment/i }));
@@ -297,7 +318,7 @@ describe('LocalModelAssessments', () => {
     getLocalLlmAssessments.mockResolvedValue(report({
       excluded: [{ backend: 'ollama', modelId: 'example-model:70b', verdict: 'does-not-fit', reason: 'out of memory' }],
     }));
-    render(<LocalModelAssessments />);
+    renderPanel();
     expect(await screen.findByText('example-model:70b')).toBeInTheDocument();
     expect(screen.getByText('Does not fit')).toBeInTheDocument();
     expect(screen.getByText('out of memory')).toBeInTheDocument();
@@ -305,7 +326,7 @@ describe('LocalModelAssessments', () => {
 
   it('warns when a backend model list could not be read instead of implying it is empty', async () => {
     getLocalLlmAssessments.mockResolvedValue(report({ listErrors: ['lmstudio'] }));
-    render(<LocalModelAssessments />);
+    renderPanel();
     expect(await screen.findByText(/Could not list installed models for LM Studio/)).toBeInTheDocument();
   });
 
@@ -321,7 +342,7 @@ describe('LocalModelAssessments', () => {
           },
         })],
       }));
-      render(<LocalModelAssessments />);
+      renderPanel();
 
       expect(await screen.findByText('stale')).toBeInTheDocument();
       expect(screen.getByText(/installed memory 32 → 64/)).toBeInTheDocument();
@@ -332,7 +353,7 @@ describe('LocalModelAssessments', () => {
       getLocalLlmAssessments.mockResolvedValue(report({
         ranked: [rankedEntry({ staleness: { comparable: true, stale: false, changes: [], description: null } })],
       }));
-      render(<LocalModelAssessments />);
+      renderPanel();
 
       await screen.findByText('example-model:7b');
       expect(screen.queryByText('stale')).not.toBeInTheDocument();
@@ -344,7 +365,7 @@ describe('LocalModelAssessments', () => {
       getLocalLlmAssessments.mockResolvedValue(report({
         ranked: [rankedEntry({ staleness: { comparable: false, stale: false, changes: [], description: null } })],
       }));
-      render(<LocalModelAssessments />);
+      renderPanel();
 
       await screen.findByText('example-model:7b');
       expect(screen.queryByText('stale')).not.toBeInTheDocument();
@@ -366,7 +387,7 @@ describe('LocalModelAssessments', () => {
       }));
       // Never resolves during the test — the run stays in flight so progress renders.
       runLocalLlmAssessment.mockImplementation(() => new Promise(() => {}));
-      render(<LocalModelAssessments />);
+      renderPanel();
       await user.click(await screen.findByRole('button', { name: 'Measure' }));
       await user.click(await screen.findByRole('button', { name: /run assessment/i }));
       return user;
@@ -400,7 +421,7 @@ describe('LocalModelAssessments', () => {
 
     it('unsubscribes on unmount so a late frame cannot update a dead panel', async () => {
       getLocalLlmAssessments.mockResolvedValue(report());
-      const { unmount } = render(<LocalModelAssessments />);
+      const { unmount } = renderPanel();
       await screen.findByText(/Nothing measured yet/);
       unmount();
       expect(socket.off).toHaveBeenCalledWith('localLlm:progress', expect.any(Function));
@@ -420,7 +441,7 @@ describe('LocalModelAssessments — runtimes', () => {
   });
 
   it('lists every assessable runtime from the report, not a hardcoded set', async () => {
-    render(<LocalModelAssessments />);
+    renderPanel();
     for (const label of ['Ollama', 'llama.cpp', 'MTPLX']) {
       expect(await screen.findByText(label)).toBeInTheDocument();
     }
@@ -429,7 +450,7 @@ describe('LocalModelAssessments — runtimes', () => {
   // A stopped daemon must not read as "0 models" — that says "nothing
   // installed" when the fix is to start it.
   it('shows an unreachable runtime as unreachable, never as zero models', async () => {
-    render(<LocalModelAssessments />);
+    renderPanel();
     expect(await screen.findByText('unreachable')).toBeInTheDocument();
     expect(screen.getByText('1 model')).toBeInTheDocument();
     expect(screen.getByText('3 models')).toBeInTheDocument();
@@ -439,7 +460,7 @@ describe('LocalModelAssessments — runtimes', () => {
     getLocalLlmAssessments.mockResolvedValue(report({
       ranked: [rankedEntry({ backend: 'llama', modelId: 'dflash' })],
     }));
-    render(<LocalModelAssessments />);
+    renderPanel();
     expect(await screen.findByText('dflash')).toBeInTheDocument();
     // Once in the roster, once on the row.
     expect(screen.getAllByText('llama.cpp').length).toBeGreaterThan(1);
@@ -458,7 +479,7 @@ describe('LocalModelAssessments — tuning', () => {
   it('sends the knobs the user set with the run', async () => {
     runLocalLlmAssessment.mockResolvedValue({ verdict: 'fits', tuningApplied: true });
     const user = userEvent.setup();
-    render(<LocalModelAssessments />);
+    renderPanel();
     await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(await screen.findByRole('button', { name: /Tuning/ }));
     await user.type(screen.getByLabelText('Micro-batch size'), '512');
@@ -474,7 +495,7 @@ describe('LocalModelAssessments — tuning', () => {
   it('omits an untouched knob rather than sending a zero', async () => {
     runLocalLlmAssessment.mockResolvedValue({ verdict: 'fits', tuningApplied: true });
     const user = userEvent.setup();
-    render(<LocalModelAssessments />);
+    renderPanel();
     await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(await screen.findByRole('button', { name: /Tuning/ }));
     await user.click(screen.getByRole('button', { name: 'Run assessment' }));
@@ -489,7 +510,7 @@ describe('LocalModelAssessments — tuning', () => {
   // sentence is derived server-side and rides on the spec.
   it('names the transport that carries each knob to the daemon', async () => {
     const user = userEvent.setup();
-    render(<LocalModelAssessments />);
+    renderPanel();
     await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(await screen.findByRole('button', { name: /Tuning/ }));
     expect(screen.getAllByText(/puts this on the server's launch line/).length).toBe(2);
@@ -500,7 +521,7 @@ describe('LocalModelAssessments — tuning', () => {
       unassessed: [{ backend: 'ollama', modelId: 'example-model:7b', params: null }],
     }));
     const user = userEvent.setup();
-    render(<LocalModelAssessments />);
+    renderPanel();
     await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(await screen.findByRole('button', { name: /Tuning/ }));
     expect(screen.getByText(/restarts the server with OLLAMA_CONTEXT_LENGTH set/)).toBeInTheDocument();
@@ -511,7 +532,7 @@ describe('LocalModelAssessments — tuning', () => {
       verdict: 'fits', tuningKey: 'ubatchSize=512', tuningApplied: false, tuningNotApplied: 'llama-server is not running',
     });
     const user = userEvent.setup();
-    render(<LocalModelAssessments />);
+    renderPanel();
     await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(screen.getByRole('button', { name: 'Run assessment' }));
     await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(expect.stringMatching(/tuning not applied/)));
@@ -534,7 +555,7 @@ describe('LocalModelAssessments — tuning comparison', () => {
         ],
       }],
     }));
-    render(<LocalModelAssessments />);
+    renderPanel();
     expect(await screen.findByText('Tuning comparison')).toBeInTheDocument();
     expect(screen.getByText('Micro-batch size 512')).toBeInTheDocument();
     expect(screen.getByText('75%')).toBeInTheDocument();
@@ -542,14 +563,14 @@ describe('LocalModelAssessments — tuning comparison', () => {
 
   it('renders nothing when no model has been measured under two tunings', async () => {
     getLocalLlmAssessments.mockResolvedValue(report());
-    render(<LocalModelAssessments />);
+    renderPanel();
     await screen.findByText('Ollama');
     expect(screen.queryByText('Tuning comparison')).toBeNull();
   });
 
   it('labels an untuned reading as backend defaults, not as a blank', async () => {
     getLocalLlmAssessments.mockResolvedValue(report({ ranked: [rankedEntry()] }));
-    render(<LocalModelAssessments />);
+    renderPanel();
     expect(await screen.findByText('backend defaults')).toBeInTheDocument();
   });
 });
@@ -577,7 +598,7 @@ describe('LocalModelAssessments — one row per tuning', () => {
   });
 
   it('labels each variant by its own tuning, not all as backend defaults', async () => {
-    render(<LocalModelAssessments />);
+    renderPanel();
     expect(await screen.findByText('Micro-batch size 512')).toBeInTheDocument();
     expect(screen.getByText('backend defaults')).toBeInTheDocument();
   });
@@ -585,7 +606,7 @@ describe('LocalModelAssessments — one row per tuning', () => {
   it('discards the tuning the row names, not the backend-defaults record', async () => {
     deleteLocalLlmAssessment.mockResolvedValue({ success: true });
     const user = userEvent.setup();
-    render(<LocalModelAssessments />);
+    renderPanel();
     const buttons = await screen.findAllByRole('button', { name: /Discard the measurement for dflash/ });
     // Ranked order puts the tuned row second (both score alike, tie broken on
     // tuning signature: '' sorts before 'ubatchSize=512').
@@ -599,7 +620,7 @@ describe('LocalModelAssessments — one row per tuning', () => {
   it('pre-fills a re-measure from the row\'s own tuning', async () => {
     runLocalLlmAssessment.mockResolvedValue({ verdict: 'fits', tuningApplied: true });
     const user = userEvent.setup();
-    render(<LocalModelAssessments />);
+    renderPanel();
     const remeasure = await screen.findAllByRole('button', { name: /Measure dflash again/ });
     await user.click(remeasure[1]);
     await user.click(await screen.findByRole('button', { name: 'Run assessment' }));
@@ -624,7 +645,7 @@ describe('LocalModelAssessments — one row per tuning', () => {
         reason: 'measured, but the requested tuning was not applied — llama-server is not running',
       }],
     }));
-    render(<LocalModelAssessments />);
+    renderPanel();
     expect(await screen.findByText(/requested tuning was not applied/)).toBeInTheDocument();
   });
 
@@ -641,7 +662,7 @@ describe('LocalModelAssessments — one row per tuning', () => {
         reason: 'measured, but the daemon still carried an earlier tuning — Ollama would not stop',
       }],
     }));
-    render(<LocalModelAssessments />);
+    renderPanel();
     expect(await screen.findByText(/daemon still carried an earlier tuning/)).toBeInTheDocument();
   });
 });
@@ -658,7 +679,7 @@ describe('LocalModelAssessments — sweep tunings', () => {
   it('opens the tuning consent gate for the model whose button was pressed', async () => {
     const user = userEvent.setup();
     getLocalLlmAssessments.mockResolvedValue(report({ ranked: [llamaEntry()] }));
-    render(<LocalModelAssessments />);
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Sweep tunings for example-model.gguf' }));
 
@@ -673,7 +694,7 @@ describe('LocalModelAssessments — sweep tunings', () => {
   // page offers the action exactly where the server would accept it.
   it('offers no sweep for a runtime the server will not sweep', async () => {
     getLocalLlmAssessments.mockResolvedValue(report({ ranked: [rankedEntry()] }));
-    render(<LocalModelAssessments />);
+    renderPanel();
 
     await screen.findByText('example-model:7b');
     expect(screen.queryByRole('button', { name: /Sweep tunings for/ })).not.toBeInTheDocument();
@@ -683,7 +704,7 @@ describe('LocalModelAssessments — sweep tunings', () => {
     const user = userEvent.setup();
     getLocalLlmAssessments.mockResolvedValue(report({ ranked: [llamaEntry()] }));
     startLocalLlmAssessmentSweep.mockResolvedValue({ status: 'running', total: 3, completed: 0, results: [] });
-    render(<LocalModelAssessments />);
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Sweep tunings for example-model.gguf' }));
     await user.click(screen.getByRole('button', { name: /start sweep/i }));
@@ -700,8 +721,89 @@ describe('LocalModelAssessments — sweep tunings', () => {
     getLocalLlmAssessmentSweep.mockResolvedValue({
       status: 'running', total: 3, completed: 1, current: { backend: 'llama', modelId: 'example-model.gguf' }, results: [],
     });
-    render(<LocalModelAssessments />);
+    renderPanel();
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Sweep tunings for example-model.gguf' })).toBeDisabled());
+  });
+});
+
+// The measure gate is a routable drawer, not a modal: which model is open lives
+// in the URL, so it is shareable, bookmarkable, and survives a reload — the same
+// rule the AI-provider editor follows at /ai/edit/:providerId.
+describe('LocalModelAssessments — routable measure drawer', () => {
+  const tunedEntry = () => rankedEntry({
+    backend: 'llama',
+    modelId: 'dflash',
+    tuningKey: 'ubatchSize=512',
+    tuning: { ubatchSize: 512 },
+    tuningLabel: 'Micro-batch size 512',
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    idleSweep();
+    getLocalLlmAssessments.mockResolvedValue(report({
+      unassessed: [{ backend: 'ollama', modelId: 'example-model:7b', params: '7B' }],
+    }));
+  });
+
+  it('puts the model it opens on in the URL rather than local state', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Measure' }));
+    await waitFor(() => expect(currentUrl()).toBe(
+      '/models/performance?measureBackend=ollama&measureModel=example-model%3A7b',
+    ));
+  });
+
+  it('opens straight from a deep link, with no click to get there', async () => {
+    renderPanel('/models/performance?measureBackend=ollama&measureModel=example-model%3A7b');
+
+    expect(await screen.findByRole('dialog', { name: 'Measure this model' })).toBeInTheDocument();
+    expect(screen.getByText(/512, 4K, 16K tokens of context/)).toBeInTheDocument();
+  });
+
+  // The tuning a re-measure starts from rides on the record the URL names, so a
+  // reloaded deep link has to resolve that record — not fall back to defaults.
+  it('seeds the tuning form from the record a deep link names', async () => {
+    getLocalLlmAssessments.mockResolvedValue(report({ ranked: [tunedEntry()] }));
+    runLocalLlmAssessment.mockResolvedValue({ verdict: 'fits', tuningApplied: true });
+    const user = userEvent.setup();
+    renderPanel('/models/performance?measureBackend=llama&measureModel=dflash&measureTuning=ubatchSize%3D512');
+
+    await user.click(await screen.findByRole('button', { name: 'Run assessment' }));
+    await waitFor(() => expect(runLocalLlmAssessment).toHaveBeenCalledWith(
+      expect.objectContaining({ tuning: { ubatchSize: 512 } }),
+      expect.anything(),
+    ));
+  });
+
+  // A link whose model the report no longer lists still opens — the URL is what
+  // is open — but it says the row is gone instead of presenting a run as normal.
+  it('says so when the model a link names is not in the current list', async () => {
+    renderPanel('/models/performance?measureBackend=ollama&measureModel=gone:7b');
+
+    expect(await screen.findByText(/not in the current list/)).toBeInTheDocument();
+  });
+
+  it('clears the URL when the drawer is dismissed', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Measure' }));
+    await user.click(screen.getByRole('button', { name: /cancel/i }));
+    await waitFor(() => expect(currentUrl()).toBe('/models/performance'));
+    expect(runLocalLlmAssessment).not.toHaveBeenCalled();
+  });
+
+  it('clears the URL once a run lands', async () => {
+    runLocalLlmAssessment.mockResolvedValue({ verdict: 'fits' });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Measure' }));
+    await user.click(screen.getByRole('button', { name: 'Run assessment' }));
+    await waitFor(() => expect(currentUrl()).toBe('/models/performance'));
   });
 });
