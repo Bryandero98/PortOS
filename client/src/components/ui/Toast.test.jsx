@@ -64,6 +64,33 @@ describe('Toaster accessibility', () => {
   });
 });
 
+describe('loading spinner', () => {
+  // Regression: the loading icon was the `⟳` glyph with `animate-spin` on it.
+  // The rotation origin is the center of the span's line box, but the glyph's
+  // ink sits off that point, so it wobbled instead of turning in place — very
+  // visible on "PortOS is restarting...", which spins for the whole restart.
+  // The spinning element must be an SVG whose arc is centered in its viewBox.
+  it('spins an SVG, never a text glyph', () => {
+    render(<Toaster />);
+    act(() => { toast.loading('PortOS is restarting...'); });
+
+    const status = screen.getByRole('status');
+    const spinner = status.querySelector('.animate-spin');
+    expect(spinner?.tagName.toLowerCase()).toBe('svg');
+    // A glyph carried along by the rotation would reintroduce the wobble.
+    expect(spinner).toHaveTextContent('');
+  });
+
+  it('lets a caller-supplied icon override the spinner', () => {
+    render(<Toaster />);
+    act(() => { toast.loading('Uploading', { icon: '⬆' }); });
+
+    const status = screen.getByRole('status');
+    expect(status.querySelector('[aria-hidden="true"]')).toHaveTextContent('⬆');
+    expect(status.querySelector('.animate-spin')).toBeNull();
+  });
+});
+
 /** Why a never-dismissing toast has to fold away: see COLLAPSE_AFTER_MS. */
 describe('long-lived toasts stop blocking the page', () => {
   const advance = (ms) => act(() => { vi.advanceTimersByTime(ms); });

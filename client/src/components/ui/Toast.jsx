@@ -10,6 +10,7 @@
  * own dismiss timer passes `collapseAfter` to fold on its schedule instead.
  */
 
+import { Loader2 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { uuidv4 } from '../../lib/uuid.js';
 
@@ -118,8 +119,8 @@ export const toast = Object.assign(
 
 export default toast;
 
-const TYPE_ICON = { success: '✓', error: '✕', loading: '⟳', warning: '⚠' };
-const TYPE_CLASS = { success: 'text-port-success', error: 'text-port-error', loading: 'text-gray-400 animate-spin', warning: 'text-port-warning' };
+const TYPE_ICON = { success: '✓', error: '✕', warning: '⚠' };
+const TYPE_CLASS = { success: 'text-port-success', error: 'text-port-error', loading: 'text-gray-400', warning: 'text-port-warning' };
 
 export function Toaster({ position = 'bottom-right', toastOptions = {} }) {
   const [items, setItems] = useState([]);
@@ -162,7 +163,23 @@ export function Toaster({ position = 'bottom-right', toastOptions = {} }) {
 function ToastItem({ t, toastOptions }) {
   const style = { padding: '12px 16px', borderRadius: '8px', ...toastOptions.style, ...t.style };
   const iconStr = t.icon ?? (t.type !== 'default' ? TYPE_ICON[t.type] : null);
+  // The loading icon is `Loader2` — the same spinner the rest of the UI spins
+  // (ConfirmButtonPair, TabPills) — and no longer the `⟳` glyph it used to be.
+  // `animate-spin` rotates about the center of the element's box, and a glyph's
+  // ink is not centered in its line box: the font's ascent/descent padding above
+  // and below it is asymmetric, so the character is drawn off the box's midpoint
+  // and spinning it traces a visible wobble instead of a clean circle ("PortOS is
+  // restarting..." made it obvious, since that toast spins for the whole
+  // restart). An icon whose arc is centered in a square viewBox puts the visual
+  // center on the rotation origin, so it turns in place.
+  // A caller-supplied `icon` still wins over the spinner — it's an explicit
+  // override, and the type only picks the default.
+  const showSpinner = t.type === 'loading' && !t.icon;
+  const iconNode = showSpinner ? <Loader2 size={14} className="animate-spin" /> : iconStr;
   const iconClass = t.type !== 'default' ? TYPE_CLASS[t.type] : '';
+  // The icon is 14px; centering it on the `text-sm` line box keeps it level
+  // with the first line of the message rather than riding above it.
+  const iconBoxClass = showSpinner ? 'inline-flex h-5 items-center' : '';
   // Only a toast that never dismisses itself can outstay its welcome and start
   // eating clicks — see COLLAPSE_AFTER_MS.
   const collapsible = t.duration === Infinity;
@@ -256,7 +273,7 @@ function ToastItem({ t, toastOptions }) {
           aria-label={collapsedLabel(t)}
           className="pointer-events-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-port-card border border-port-border shadow-lg text-sm"
         >
-          <span className={iconClass} aria-hidden="true">{iconStr ?? '•'}</span>
+          <span className={iconClass} aria-hidden="true">{iconNode ?? '•'}</span>
         </button>
       )}
       <div
@@ -275,7 +292,7 @@ function ToastItem({ t, toastOptions }) {
         onFocus={() => setFocusWithin(true)}
         onBlur={() => setFocusWithin(false)}
         className="pointer-events-auto flex items-start gap-2 shadow-lg text-sm max-w-[calc(100vw-2rem)] sm:max-w-[520px] bg-port-card border border-port-border">
-        {iconStr && <span className={`shrink-0 ${iconClass}`} aria-hidden="true">{iconStr}</span>}
+        {iconNode && <span className={`shrink-0 ${iconClass} ${iconBoxClass}`} aria-hidden="true">{iconNode}</span>}
         <div className="flex-1 min-w-0">
           {typeof t.content === 'function' ? t.content({ id: t.id }) : <span>{t.content}</span>}
         </div>
