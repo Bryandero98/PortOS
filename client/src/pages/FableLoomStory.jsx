@@ -3,8 +3,11 @@
  *
  * URL is the source of truth: /fableloom/:loomId/:episodeId/:nodeId? — the
  * selected episode and scene are route params, the play drawer rides ?play=1.
- * Left: the scene-graph canvas. Right rail: the selected scene's editor, or
- * the structure/review panel when nothing is selected.
+ * Left: the scene-graph canvas (stacks top-to-bottom under the `lg` rail
+ * breakpoint). Right rail: the selected scene's editor, or the
+ * structure/review panel when nothing is selected. On small screens the
+ * rail sits under the canvas and is height-capped so the graph stays the
+ * thing you scroll.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -18,12 +21,14 @@ import PageSkeleton from '../components/ui/PageSkeleton';
 import TabPills from '../components/ui/TabPills';
 import { useAsyncAction } from '../hooks/useAsyncAction';
 import { useConfirmDelete } from '../hooks/useConfirmDelete';
+import useContainerWidth from '../hooks/useContainerWidth';
 import LoomCanvas from '../components/fableloom/LoomCanvas';
 import LoomNodeEditor from '../components/fableloom/LoomNodeEditor';
 import LoomPlayPanel from '../components/fableloom/LoomPlayPanel';
 import LoomSettingsDrawer from '../components/fableloom/LoomSettingsDrawer';
 import LoomValidationPanel from '../components/fableloom/LoomValidationPanel';
 import { fieldClass, labelClass } from '../components/fableloom/fieldStyles';
+import { LOOM_ORIENTATION, LOOM_STACK_WIDTH } from '../lib/loomLayout';
 import {
   addLoomEpisode, addLoomNode, deleteLoomEpisode, getLoom, getPipelineSeries,
   updateLoomEpisode, updateLoomNode, weaveLoomEpisode,
@@ -42,6 +47,13 @@ export default function FableLoomStory() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const playOpen = searchParams.get('play') === '1';
+  // Orientation keys off the PAGE, not the canvas. The canvas is the leftover
+  // after the 380px rail on `lg+`, so measuring it would stack a laptop graph
+  // while the rail is still beside it.
+  const [pageRef, pageWidth] = useContainerWidth();
+  const graphOrientation = pageWidth > 0
+    ? (pageWidth < LOOM_STACK_WIDTH ? LOOM_ORIENTATION.TB : LOOM_ORIENTATION.LR)
+    : undefined;
 
   useEffect(() => {
     setNotFound(false);
@@ -152,7 +164,7 @@ export default function FableLoomStory() {
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div ref={pageRef} className="h-full flex flex-col">
       <header className="border-b border-port-border px-4 py-2.5 space-y-2">
         <div className="flex items-center gap-3 flex-wrap">
           <Link to="/fableloom" className="text-port-text-muted hover:text-port-text" aria-label="Back to FableLoom">
@@ -248,13 +260,14 @@ export default function FableLoomStory() {
         </div>
       ) : (
         <div className="flex-1 min-h-0 flex flex-col lg:flex-row">
-          <section className="flex-1 min-h-[45vh] lg:min-h-0 relative">
+          <section className="flex-1 min-h-[55vh] lg:min-h-0 min-w-0 relative">
             {episode.nodes.length ? (
               <LoomCanvas
                 episode={episode}
                 selectedNodeId={nodeId || null}
                 onSelectNode={selectNode}
                 onMoveNode={handleMoveNode}
+                orientation={graphOrientation}
               />
             ) : (
               <div className="h-full grid place-items-center p-8 text-center">
@@ -282,7 +295,7 @@ export default function FableLoomStory() {
               </div>
             )}
           </section>
-          <aside className="lg:w-[380px] lg:shrink-0 border-t lg:border-t-0 lg:border-l border-port-border overflow-y-auto">
+          <aside className="lg:w-[380px] lg:shrink-0 max-h-[45vh] lg:max-h-none border-t lg:border-t-0 lg:border-l border-port-border overflow-y-auto">
             {node ? (
               <LoomNodeEditor
                 key={node.id}
