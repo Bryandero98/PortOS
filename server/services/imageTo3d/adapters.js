@@ -196,11 +196,12 @@ export const TARGET_ADAPTERS = Object.freeze({
     async describeInstallState() {
       const probe = await probePixal3dModules();
       // A REQUIRED module missing means the install did not COMPLETE — `setup.sh` is
-      // sourced and can exit 0 with a failed extension build, and `installPixal3dCuda`'s
-      // `verify` hook only checks the interpreter and the entrypoint, never the compiled
-      // extensions. So this is the only place that can surface it: without this, a
-      // half-built install reads plain "Ready" and the first render dies deep in the GLB
-      // exporter as an unclassified failure.
+      // sourced and can exit 0 with a failed extension build. `installPixal3dCuda`'s
+      // `verify` hook now probes the same modules and warns as the install finishes, so
+      // this is the standing report of that state rather than the only one: a user who
+      // missed the install log must still not see a half-built install read plain
+      // "Ready" and then have the first render die deep in the GLB exporter as an
+      // unclassified failure.
       const incomplete = probe.missing?.length ? probe.missing : null;
       const nafFallback = probe.naf === 'unavailable';
       // An incomplete install outranks a NAF fallback — it is the more severe problem,
