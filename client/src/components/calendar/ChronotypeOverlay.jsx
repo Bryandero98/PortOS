@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import * as api from '../../services/api';
+import { chipColors } from '../../lib/chipContrast';
+import { useThemeContext } from '../ThemeContext';
 
 /**
  * ChronotypeOverlay renders colored energy zone bands and marker lines
@@ -9,15 +11,26 @@ import * as api from '../../services/api';
  *   - Dashed marker lines for cutoffs (caffeine, last meal)
  *   - Labels that appear on hover via CSS (pointer-events-none so
  *     calendar events remain clickable through the overlay)
+ *
+ * The band/marker-line fills stay the zone's raw color — they're large tinted
+ * areas, and the tint IS the signal. The LABELS are text, so they run through
+ * `chipContrast`: the amber zone (#f59e0b) is ~2.1:1 on a day theme's card,
+ * i.e. a live WCAG AA failure. Grading keeps the hue and moves only the
+ * lightness, so a label still reads as its own zone.
  */
 export default function ChronotypeOverlay({ startHour, pxPerHour }) {
   const [schedule, setSchedule] = useState(null);
+  const { theme } = useThemeContext();
 
   useEffect(() => {
     api.getChronotypeEnergySchedule().then(setSchedule).catch(() => null);
   }, []);
 
   if (!schedule?.zones?.length) return null;
+
+  // An unparseable zone color yields no graded style — keep the raw color
+  // rather than dropping the zone's identity entirely.
+  const labelColor = (color) => chipColors(color, theme?.mode)?.color || color;
 
   const startMinutes = startHour * 60;
 
@@ -42,7 +55,7 @@ export default function ChronotypeOverlay({ startHour, pxPerHour }) {
               />
               <span
                 className="absolute right-1 -top-4 text-[10px] font-medium px-1.5 py-0.5 rounded"
-                style={{ color: zone.color, backgroundColor: `${zone.color}20` }}
+                style={{ color: labelColor(zone.color), backgroundColor: `${zone.color}20` }}
               >
                 {zone.label}
               </span>
@@ -67,7 +80,7 @@ export default function ChronotypeOverlay({ startHour, pxPerHour }) {
           >
             <span
               className="absolute right-1 top-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded"
-              style={{ color: zone.color, backgroundColor: `${zone.color}30`, opacity: 1 }}
+              style={{ color: labelColor(zone.color), backgroundColor: `${zone.color}30`, opacity: 1 }}
             >
               {zone.label}
             </span>

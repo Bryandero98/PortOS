@@ -4,9 +4,10 @@ import * as api from '../../services/api';
 import socket from '../../services/socket';
 import EventDetail from './EventDetail';
 import ChronotypeOverlay from './ChronotypeOverlay';
-import { buildSubcalendarColorMap } from './calendarUtils';
+import { buildSubcalendarColorMap, eventChipStyle } from './calendarUtils';
 import { formatDateFull } from '../../utils/formatters';
 import BrailleSpinner from '../BrailleSpinner';
+import { useThemeContext } from '../ThemeContext';
 import useUrlParams from '../../hooks/useUrlParams';
 
 const START_HOUR = 6;
@@ -107,6 +108,7 @@ export default function DayView({ accounts }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchParams, updateParams] = useUrlParams();
+  const { theme } = useThemeContext();
 
   const fetchEvents = useCallback(async () => {
     const startDate = date.toISOString();
@@ -190,10 +192,7 @@ export default function DayView({ accounts }) {
                     key={`${event.accountId}-${event.id}`}
                     onClick={() => updateParams({ event: `${event.accountId}:${event.id}` })}
                     className="w-full text-left px-3 py-2 rounded text-sm transition-colors hover:brightness-125"
-                    style={{
-                      backgroundColor: adColor ? `${adColor}20` : 'rgb(59 130 246 / 0.1)',
-                      color: adColor || 'var(--port-accent, #3b82f6)'
-                    }}
+                    style={eventChipStyle(adColor, theme?.mode)}
                   >
                     {event.title}
                   </button>
@@ -246,11 +245,13 @@ export default function DayView({ accounts }) {
                       minHeight: PX_PER_15MIN,
                       left: `calc(${leftPercent}% + 2px)`,
                       width: `calc(${widthPercent}% - 4px)`,
-                      borderLeftColor: eventColor || 'var(--port-accent, #3b82f6)',
-                      backgroundColor: eventColor ? `${eventColor}25` : 'rgb(59 130 246 / 0.2)'
+                      ...eventChipStyle(eventColor, theme?.mode)
                     }}
                   >
-                    <div className="text-xs leading-tight font-medium text-white truncate">{event.title}</div>
+                    {/* Title inherits the graded color from the block. It must NOT
+                        carry `text-white`: day mode remaps that utility with
+                        `!important`, which beats the inline color. */}
+                    <div className="text-xs leading-tight font-medium truncate">{event.title}</div>
                     {height > 32 && event.location && (
                       <div className="flex items-center gap-1 text-[10px] text-gray-400 truncate">
                         <MapPin size={10} /> {event.location}
