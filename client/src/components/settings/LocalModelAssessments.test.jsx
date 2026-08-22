@@ -269,8 +269,10 @@ describe('LocalModelAssessments', () => {
     getLocalLlmAssessments.mockResolvedValue(report({
       unassessed: [{ backend: 'ollama', modelId: 'example-model:7b', params: '7B' }],
     }));
-    // A run occupies the local provider for minutes; the modal's only exit must
-    // stay live and actually abort, not merely close over a job still running.
+    // A run occupies the local provider for minutes; every exit the drawer
+    // offers must stay live and actually abort, not merely close over a job
+    // still running — including the header's icon-only close button, which has
+    // to announce that it stops the run rather than "Close".
     let capturedSignal;
     runLocalLlmAssessment.mockImplementation((_payload, options) => {
       capturedSignal = options.signal;
@@ -282,9 +284,10 @@ describe('LocalModelAssessments', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(screen.getByRole('button', { name: /run assessment/i }));
-    await waitFor(() => expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Stop the assessment' })).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: /stop/i }));
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
     await waitFor(() => expect(capturedSignal.aborted).toBe(true));
     // The abort is what the user asked for — it must not surface as an error.
     expect(toast.error).not.toHaveBeenCalled();

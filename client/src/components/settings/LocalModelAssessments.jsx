@@ -214,7 +214,9 @@ function AssessmentDrawer({
       subtitle={target.modelId}
       size="md"
       // Closing IS stopping — the close button aborts the run in flight — so
-      // both accidental-dismissal paths are shut off while one is working.
+      // both accidental-dismissal paths are shut off while one is working, and
+      // the icon-only close button says what it will actually do.
+      closeLabel={running ? 'Stop the assessment' : 'Close'}
       closeOnEsc={!running}
       closeOnBackdrop={!running}
     >
