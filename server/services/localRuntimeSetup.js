@@ -38,22 +38,29 @@
  *     here is the same PM2 process (`portos-mtplx`) the Models → LLMs page can
  *     stop, log, and persist across a reboot — the two surfaces cannot drift
  *     onto different install commands or a daemon only one of them can see.
- *   - **The vLLM container is never provisioned.** Its start row brings up an
- *     already-prepared compose project and nothing else: no image pull, no
- *     weight download, no docker/WSL2/NVIDIA-toolkit install. A project that is
- *     not demonstrably prepared is refused with the command that prepares it.
+ *   - **The vLLM container is never provisioned by a Start.** Its start row
+ *     brings up an already-prepared compose project and nothing else: no image
+ *     build, no weight download, no docker/WSL2/NVIDIA-toolkit install. A
+ *     project that is not demonstrably prepared is refused — and, since #4767,
+ *     the checklist then offers the separate action that DOES provision it,
+ *     "Clone, build & prepare … (~30 GB), then start", which is the same
+ *     name-the-payload consent shape as MTPLX's `pull-start`. `install()` still
+ *     refuses: Docker Desktop, the NVIDIA Container Toolkit and WSL2 are
+ *     host-level operator decisions with driver requirements PortOS cannot
+ *     judge, and this provisions the PROJECT on a host already capable of
+ *     running it.
  */
 
 import { LOCAL_RUNTIMES, localEndpointPort } from '../lib/localProviderRuntime.js';
 import { describeMtplxCache, listMtplxCachedModels } from '../lib/mtplxModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
-import { inspectVllmQwenProject, vllmStartBlockedReason } from '../lib/vllmQwenProject.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
 import { runStreamingCommand } from '../lib/streamingSpawn.js';
 import { installLlamaServer } from './llamaServerManager.js';
 import { installMtplx, startMtplxServer, MTPLX_UNSUPPORTED_REASON } from './mtplxServerManager.js';
 import { controlOllamaServer, installBackend } from './localLlm.js';
 import { isAppInstalled as isLmStudioAppInstalled } from './lmStudioManager.js';
+import { provisionVllmQwenProject, readVllmQwenSetupState, startVllmQwenProject } from './vllmQwenManager.js';
 
 /** A short command that only asks a running daemon to do something. */
 const CONTROL_TIMEOUT_MS = 60 * 1000;
@@ -99,18 +106,98 @@ const MTPLX_NO_MODEL_ERROR = 'no model weights are cached, so its server exits b
 const mtplxPartialCacheError = (count) =>
   `its cache holds ${count} model${count === 1 ? '' : 's'}, but none passed its own file check — an interrupted download leaves a partial pack behind. Use “Download the default model & start MTPLX” on the checklist to re-fetch it, or pick another checkpoint on the MTPLX card in Models → LLMs.`;
 
-/** What each `action` is called on the button and in the log. */
-const ACTION_LABELS = {
-  install: (label) => `Install ${label}`,
-  start: (label) => `Start ${label}`,
-  'install-start': (label) => `Install & start ${label}`,
-  // Names the download so the click IS the consent — the one action here that
-  // spends bandwidth measured in gigabytes.
-  'pull-start': (label) => `Download the default model & start ${label}`,
-};
+/**
+ * The provisioning actions: the ones whose click IS the consent, because each
+ * spends bandwidth measured in gigabytes.
+ *
+ * A row owns at most ONE of them, declared as `row.provision = { action, run }`
+ * — and `describeRuntimeSetup` offers it only when that runtime's own offline
+ * read proves a plain Start cannot work. Everything
+ * needed to report the step lives in one entry so the button label and the
+ * progress lines cannot drift into describing different amounts of bandwidth.
+ */
+const PROVISION_STEPS = Object.freeze({
+  'pull-start': Object.freeze({
+    // Names the download so the click IS the consent.
+    label: (label) => `Download the default model & start ${label}`,
+    refused: (label) => `PortOS cannot download model weights for ${label}.`,
+    failed: (label, error) => `${label} model download failed: ${error}`,
+    done: (label) => `${label}'s default checkpoint is cached.`,
+    cancelled: 'Cancelled after the download — the weights are cached, but nothing was started.',
+  }),
+  'provision-start': Object.freeze({
+    // The payload named before the click: a ~9.5 GB image built on this host
+    // plus ~20 GB of weights. `install()` still refuses — this provisions the
+    // PROJECT on a host whose docker / NVIDIA / WSL2 setup is already the
+    // operator's own decision.
+    label: (label) => `Clone, build & prepare ${label} (~30 GB), then start`,
+    refused: (label) => `PortOS cannot provision a compose project for ${label}.`,
+    failed: (label, error) => `${label} provisioning failed: ${error}`,
+    done: (label) => `${label}'s compose project is built and prepared.`,
+    cancelled: 'Cancelled after the prepare step — the project is ready, but nothing was started.',
+  }),
+});
+
+/**
+ * What each action actually DOES, and what it is called on the button.
+ *
+ * The capabilities are declared rather than spelled: `setupHint` used to ask
+ * whether an action name *contained* `install` or `start`, which worked only
+ * because every name happened to. `provision-start` broke the coincidence
+ * (it covers the download that `pull` used to stand for), and the next action
+ * named `bootstrap` or `prepare` would break it again — silently, since a
+ * missing hint fails no test. Declaring the three axes means a new action must
+ * answer them, and `describeRuntimeSetup` can hand the client `provisions`
+ * instead of the client re-deriving it from the name.
+ */
+const ACTION_CAPABILITIES = Object.freeze({
+  install: Object.freeze({ label: (label) => `Install ${label}`, installs: true, starts: false, provisions: false }),
+  start: Object.freeze({ label: (label) => `Start ${label}`, installs: false, starts: true, provisions: false }),
+  'install-start': Object.freeze({ label: (label) => `Install & start ${label}`, installs: true, starts: true, provisions: false }),
+  ...Object.fromEntries(Object.entries(PROVISION_STEPS).map(([action, step]) => [
+    action,
+    Object.freeze({ label: step.label, installs: false, starts: true, provisions: true }),
+  ])),
+});
 
 /** Every action `runLocalRuntimeSetup` accepts — route validation reads this. */
-export const SETUP_ACTIONS = Object.freeze(Object.keys(ACTION_LABELS));
+export const SETUP_ACTIONS = Object.freeze(Object.keys(ACTION_CAPABILITIES));
+
+/**
+ * Does this action cover `installs` / `starts` / `provisions`?
+ *
+ * Exported so `providerReadiness.js` points each unmet check at the button that
+ * fixes it by asking THIS table, rather than matching substrings of the name.
+ */
+export const actionCovers = (action, capability) => ACTION_CAPABILITIES[action]?.[capability] === true;
+
+/**
+ * The provisioning action a row owns, or `null` when it has no such step.
+ *
+ * A row declares BOTH halves or neither — there is no default. An implicit
+ * `pull-start` fallback would hand a new row "Download the default model &
+ * start X" and `X model download failed:` for a step that is not a download,
+ * which is the exact mislabeling PROVISION_STEPS exists to end.
+ */
+const rowProvisionAction = (row) => row?.provision?.action || null;
+
+/**
+ * Fetch MTPLX's OWN default verified checkpoint — no repo id from the request,
+ * so this cannot be pointed at an arbitrary download. Runs only for the
+ * `pull-start` action, which the user clicks by its full name.
+ */
+async function pullMtplxDefaultCheckpoint({ emit, isCancelled }) {
+  const binary = findCommandOnPath('mtplx');
+  if (!binary) return { success: false, error: '`mtplx` was not found on PortOS\'s PATH. Restart PortOS so it picks up the new bin directory, then try again.' };
+  emit('Downloading MTPLX\'s default verified checkpoint. This is a multi-gigabyte download and can take a long while — leave this window open to watch it.');
+  // `mtplx pull` redraws one progress line with a bare `\r`; splitting on
+  // newlines alone would leave the stream silent for the whole download.
+  // `isCancelled` is load-bearing here, not decoration: this is the one step
+  // that can run for HOURS, and the route holds its single-setup lock until this
+  // promise settles. Without it, closing the modal leaves the download running
+  // and every other runtime's setup button refused for the rest of it.
+  return runStreamingCommand(binary, ['pull'], emit, { timeoutMs: WEIGHTS_TIMEOUT_MS, splitRe: PROGRESS_SPLIT_RE, isCancelled });
+}
 
 /**
  * One row per local runtime PortOS can set up on its own.
@@ -119,6 +206,11 @@ export const SETUP_ACTIONS = Object.freeze(Object.keys(ACTION_LABELS));
  * `install` and `start` are async steps taking `({ emit, endpoint, isCancelled })`
  * and returning `{ success, error?, note? }`; `start: null` means PortOS cannot
  * start this runtime unattended and the checklist keeps its existing link.
+ *
+ * `provision: { action, run }` is the optional gigabyte-spending step: `action`
+ * names its PROVISION_STEPS entry (which supplies every string reported about
+ * it) and `run` takes `({ emit, isCancelled })`. Multi-step work belongs in a
+ * manager module — this table stays a table.
  */
 const SETUP_ROWS = Object.freeze({
   mtplx: Object.freeze({
@@ -141,24 +233,12 @@ const SETUP_ROWS = Object.freeze({
     async weights() {
       return describeMtplxCache(await listMtplxCachedModels()).state;
     },
-    /**
-     * Fetch MTPLX's OWN default verified checkpoint — no repo id from the
-     * request, so this cannot be pointed at an arbitrary download. Runs only
-     * for the `pull-start` action, which the user clicks by its full name.
-     */
-    async pull({ emit, isCancelled }) {
-      const binary = findCommandOnPath('mtplx');
-      if (!binary) return { success: false, error: '`mtplx` was not found on PortOS\'s PATH. Restart PortOS so it picks up the new bin directory, then try again.' };
-      emit('Downloading MTPLX\'s default verified checkpoint. This is a multi-gigabyte download and can take a long while — leave this window open to watch it.');
-      // `mtplx pull` redraws one progress line with a bare `\r`; splitting on
-      // newlines alone would leave the stream silent for the whole download.
-      // `isCancelled` is load-bearing here, not decoration: this is the one
-      // step that can run for HOURS, and the route holds its single-setup lock
-      // until this promise settles. Without it, closing the modal leaves the
-      // download running and every other runtime's setup button refused for the
-      // rest of it.
-      return runStreamingCommand(binary, ['pull'], emit, { timeoutMs: WEIGHTS_TIMEOUT_MS, splitRe: PROGRESS_SPLIT_RE, isCancelled });
-    },
+    provision: Object.freeze({
+      action: 'pull-start',
+      async run({ emit, isCancelled }) {
+        return pullMtplxDefaultCheckpoint({ emit, isCancelled });
+      },
+    }),
     async start({ emit, endpoint, isCancelled }) {
       // `mtplx serve` defaults `--model` to ONE hard-coded checkpoint and exits
       // 1 before binding when that repo is not in its cache — even on a machine
@@ -210,25 +290,18 @@ const SETUP_ROWS = Object.freeze({
       // requirements PortOS cannot judge, and the payload is a ~9.5 GB image.
       return {
         success: false,
-        error: 'PortOS does not install this stack. On the RTX 3090 host, set up WSL2 (or Linux) with Docker and the NVIDIA Container Toolkit, then follow docs/features/qwen38-rtx3090.md to clone and prepare syv-ai/qwen38-27b-rtx3090.',
+        error: 'PortOS does not install this stack. On the RTX 3090 host, set up WSL2 (or Linux) with Docker and the NVIDIA Container Toolkit — then the checklist can clone, build and prepare the compose project for you (see docs/features/qwen38-rtx3090.md).',
       };
     },
-    async start({ emit, isCancelled }) {
-      // Only ever brings up an ALREADY-prepared project — see
-      // `lib/vllmQwenProject.js` for why each refusal below exists.
-      const project = await inspectVllmQwenProject();
-      const blocked = vllmStartBlockedReason(project);
-      if (blocked) return { success: false, error: blocked };
-      if (isCancelled()) return { success: false, error: 'Cancelled before the container was started.' };
-      emit(`Starting the vLLM container from ${project.dir} (${project.composeFile}).`);
-      emit('The image and weights are already on disk — this only brings the service up.');
-      return runStreamingCommand(
-        'docker',
-        ['compose', '--profile', 'single', 'up', '-d'],
-        emit,
-        { timeoutMs: CONTROL_TIMEOUT_MS, cwd: project.dir },
-      );
-    },
+    // What is on disk, in the checklist's four-state vocabulary — a directory
+    // read, exactly like MTPLX's cache read above. `'empty'` is what makes the
+    // checklist offer `provision-start`, and `vllmProjectSetupState` is careful
+    // to report it only where cloning/building/preparing IS the fix.
+    weights: readVllmQwenSetupState,
+    // This row's gigabyte-spending step is a compose provisioning run, not a
+    // model download — hence its own PROVISION_STEPS entry.
+    provision: Object.freeze({ action: 'provision-start', run: provisionVllmQwenProject }),
+    start: startVllmQwenProject,
   }),
 
   ollama: Object.freeze({
@@ -290,8 +363,15 @@ const SETUP_ROWS = Object.freeze({
  * @returns {Promise<'unknown'|'empty'|'partial'|'ready'>}
  */
 export async function readRuntimeWeights(kind) {
-  const read = SETUP_ROWS[kind]?.weights;
-  return read ? read() : 'unknown';
+  const row = SETUP_ROWS[kind];
+  // A platform that cannot run the runtime discards this answer anyway
+  // (`describeRuntimeSetup` returns `blockedReason` and ignores `weights`), and
+  // the read is not free: vLLM's walks the compose project's candidate cache
+  // roots, which on the documented Windows shape is a dozen syscalls across a
+  // 9p share. Docker is on PATH almost everywhere, so without this gate a Mac
+  // would sweep for an RTX 3090 project once a minute, forever.
+  if (!row?.weights || !platformSupported(row)) return 'unknown';
+  return row.weights();
 }
 
 /** The cache states that make a start impossible. */
@@ -333,21 +413,26 @@ export function describeRuntimeSetup(kind, { installed, running, weights = 'unkn
   if (!needsInstall && !needsStart) return null;
 
   if (!platformSupported(row)) {
-    return { runtime: kind, label: runtime.label, action: null, actionLabel: null, blockedReason: row.unsupportedReason };
+    return { runtime: kind, label: runtime.label, action: null, actionLabel: null, provisions: false, blockedReason: row.unsupportedReason };
   }
 
   // Only offered once the binary is here: the cache cannot be read without it,
   // so an uninstalled runtime's `weights` says nothing and `install-start`
   // stays the honest first step.
-  const needsWeights = Boolean(row.pull) && !needsInstall && needsStart && weightsBlockStart(weights);
-  const action = needsWeights ? 'pull-start'
+  const provision = rowProvisionAction(row);
+  const needsWeights = Boolean(provision) && !needsInstall && needsStart && weightsBlockStart(weights);
+  const action = needsWeights ? provision
     : needsInstall && needsStart ? 'install-start'
       : needsInstall ? 'install' : 'start';
   return {
     runtime: kind,
     label: runtime.label,
     action,
-    actionLabel: ACTION_LABELS[action](runtime.label),
+    actionLabel: ACTION_CAPABILITIES[action].label(runtime.label),
+    // Whether this click spends gigabytes, answered HERE rather than re-derived
+    // from the action name in the client — a hand-kept mirror over there would
+    // silently downgrade the next provisioning button to an ordinary one.
+    provisions: actionCovers(action, 'provisions'),
     blockedReason: null,
   };
 }
@@ -366,8 +451,9 @@ export function describeRuntimeSetup(kind, { installed, running, weights = 'unkn
  * @param {{endpoint: string, emit: (line: string) => void, isCancelled?: () => boolean, action?: string}} ctx
  *   `isCancelled` is checked between steps so a closed modal does not go on to
  *   start a daemon nobody is watching for. `action` is the one the checklist's
- *   button named; only `pull-start` adds a step (the model download), and it is
- *   opt-in precisely so no other action can spend gigabytes of bandwidth. Omit
+ *   button named; only a PROVISION_STEPS action adds a step (MTPLX's model
+ *   download, vLLM's clone/build/prepare), and each is opt-in precisely so no
+ *   other action can spend gigabytes of bandwidth. Omit
  *   it (`null`) and this resolves the action the checklist would offer right
  *   now — see the resolution comment below.
  * @returns {Promise<{success: boolean, error?: string, message?: string}>}
@@ -389,12 +475,16 @@ export async function runLocalRuntimeSetup(kind, { endpoint, emit = () => {}, is
   }
   if (!platformSupported(row)) return { success: false, error: row.unsupportedReason };
 
+  const provision = rowProvisionAction(row);
+
   // Refuse a step this runtime does not have BEFORE anything is installed. A
   // `pull-start` aimed at Ollama would otherwise run Ollama's install on its way
   // to being refused, and llama.cpp (`start: null`) would return the
-  // install-succeeded message without ever refusing at all.
-  if (action === 'pull-start' && !row.pull) {
-    return { success: false, error: `PortOS cannot download model weights for ${runtime.label}.` };
+  // install-succeeded message without ever refusing at all. The mismatch check
+  // is by ACTION, not merely by "has a pull": vLLM owns `provision-start`, so a
+  // `pull-start` aimed at it is just as wrong as one aimed at Ollama.
+  if (actionCovers(action, 'provisions') && action !== provision) {
+    return { success: false, error: PROVISION_STEPS[action].refused(runtime.label) };
   }
 
   // Same two signals `providerReadiness.js` uses: the binary on PATH, plus LM
@@ -413,7 +503,7 @@ export async function runLocalRuntimeSetup(kind, { endpoint, emit = () => {}, is
   // `installed &&` mirrors `describeRuntimeSetup`'s own gate: the cache cannot
   // be read without the binary, so an uninstalled runtime never resolves to a
   // download — and never spends a cache read to learn that.
-  const resolved = action || (row.pull && installed && weightsBlockStart(await row.weights()) ? 'pull-start' : 'install-start');
+  const resolved = action || (provision && installed && weightsBlockStart(await row.weights()) ? provision : 'install-start');
 
   if (!installed) {
     const result = await row.install({ emit, endpoint: target, isCancelled });
@@ -429,15 +519,16 @@ export async function runLocalRuntimeSetup(kind, { endpoint, emit = () => {}, is
   }
   if (isCancelled()) return { success: false, error: 'Cancelled after the install — nothing was started.' };
 
-  // The ONLY path that downloads weights, and it runs only because the user
+  // The ONLY path that spends gigabytes, and it runs only because the user
   // clicked a button that says so. `describeRuntimeSetup` offers it exactly
-  // when the cache is provably unusable, which is the state where a plain
-  // Start would exit before binding a port.
-  if (resolved === 'pull-start') {
-    const pulled = await row.pull({ emit, isCancelled });
-    if (!pulled.success) return { success: false, error: `${runtime.label} model download failed: ${pulled.error}` };
-    emit(`${runtime.label}'s default checkpoint is cached.`);
-    if (isCancelled()) return { success: false, error: 'Cancelled after the download — the weights are cached, but nothing was started.' };
+  // when the runtime's own offline read is provably unusable, which is the
+  // state where a plain Start would exit before binding a port.
+  if (resolved === provision) {
+    const step = PROVISION_STEPS[provision];
+    const pulled = await row.provision.run({ emit, isCancelled });
+    if (!pulled.success) return { success: false, error: step.failed(runtime.label, pulled.error) };
+    emit(step.done(runtime.label));
+    if (isCancelled()) return { success: false, error: step.cancelled };
   }
 
   // The install step may have started it (Ollama's Homebrew service does), so

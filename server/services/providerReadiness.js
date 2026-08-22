@@ -37,7 +37,7 @@ import { localRuntimeForProvider } from '../lib/localProviderRuntime.js';
 import { isConfiguredDefaultModel } from '../lib/providerModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
-import { describeRuntimeSetup, readRuntimeWeights, weightsBlockStart } from './localRuntimeSetup.js';
+import { actionCovers, describeRuntimeSetup, readRuntimeWeights, weightsBlockStart } from './localRuntimeSetup.js';
 import { isAppInstalled as isLmStudioAppInstalled } from './lmStudioManager.js';
 
 /**
@@ -188,19 +188,36 @@ export function servedModelId(provider, kind) {
  * prose. `covers` is the action the check needs: an install-only button does
  * nothing for a `server` check.
  */
-function setupHint(setup, covers) {
+function setupHint(setup, capability) {
   if (!setup) return null;
   if (setup.blockedReason) return setup.blockedReason;
-  return setup.action?.includes(covers) ? `Use “${setup.actionLabel}” below — PortOS does this for you.` : null;
+  // `capability` is one of `installs` / `starts` / `provisions`, asked of the
+  // action table rather than matched against the action's spelling. The old
+  // substring test worked only because every action name happened to contain
+  // the word — `provision-start` does not contain `pull`, and a hint that
+  // vanishes when an action is renamed fails no test.
+  return actionCovers(setup.action, capability)
+    ? `Use “${setup.actionLabel}” below — PortOS does this for you.`
+    : null;
 }
 
 /**
  * What a runtime's own model cache says while its server is down — the half of
  * the model check `GET /v1/models` cannot answer because nothing is listening.
  *
+ * `capability` is one of `installs` / `starts` / `provisions` — the axes
+ * `localRuntimeSetup.js` declares for every action.
+ *
  * `null` when there is nothing to add, so the caller keeps its own prose.
  */
 function weightsDetail(runtime, weights) {
+  // A runtime whose local setup is not "a model cache" describes its own states
+  // — vLLM's is a compose project that was never cloned or prepared, and
+  // "no model weights cached" would send the operator after a download that was
+  // never the first step. Keyed by STATE rather than one override per divergence,
+  // so the next runtime supplies whichever states read wrong for it.
+  const override = runtime.setupStateDetail?.[weights];
+  if (override) return override;
   if (weights === 'empty') return `${runtime.label} has no model weights cached, so its server exits before it binds a port.`;
   if (weights === 'partial') return `${runtime.label}'s cache holds only an unfinished download — no complete checkpoint to serve.`;
   if (weights === 'ready') return 'Weights are cached locally; this can be confirmed once the server is running.';
@@ -214,7 +231,7 @@ function runtimeCheck(runtime, { onPath, appInstalled, installed, reachable, set
       : reachable ? `Something is already serving ${runtime.endpoint}.`
         : `\`${runtime.command}\` was not found on PortOS's PATH.`;
   const fixHint = installed ? null
-    : setupHint(setup, 'install')
+    : setupHint(setup, 'installs')
       || (runtime.manageUrl ? `Install ${runtime.label} from Models → LLMs.`
         : `Use the setup button below to install ${runtime.label}.`);
   return { id: 'runtime', label: `${runtime.label} installed`, ok: installed, detail, fixHint };
@@ -244,7 +261,7 @@ function serverCheck(runtime, { installed, result, setup, weights = 'unknown' })
     label: `${runtime.label} server responding`,
     ok: false,
     detail: `Nothing answered at ${runtime.endpoint}${result.error ? ` (${result.error})` : ''}.${blocked ? ` ${blocked}` : ''}`,
-    fixHint: setupHint(setup, 'start') || fallback,
+    fixHint: setupHint(setup, 'starts') || fallback,
   };
 }
 
@@ -268,7 +285,7 @@ function modelCheck(runtime, wanted, served, probeError = null, { weights = 'unk
       : weightsDetail(runtime, weights) || 'Cannot be checked until the server responds.';
     // An unservable cache is the ONE unknown here that has a fix: the download
     // that makes a start possible at all.
-    const fixHint = weightsBlockStart(weights) ? setupHint(setup, 'pull') : null;
+    const fixHint = weightsBlockStart(weights) ? setupHint(setup, 'provisions') : null;
     return { id: 'model', label, ok: null, detail, fixHint };
   }
   if (served.includes(wanted)) {

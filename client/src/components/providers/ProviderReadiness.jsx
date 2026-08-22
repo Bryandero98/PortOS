@@ -26,17 +26,20 @@
  * can move the provider onto the served id, or press "Serve as …" to relaunch
  * the daemon on the weights it already has under the id they picked.
  *
- * That includes the case where the daemon is installed but has NO model weights
- * cached: the server can't start, so `setup.action` is `pull-start` and the
- * button downloads the runtime's own default checkpoint before starting it.
- * Offering a bare "Start" there was a catch-22 — the start could only ever fail,
- * and its error message was the only place the missing weights were named.
+ * That includes the case where the daemon is installed but nothing usable is on
+ * disk: the server can't start, so `setup.action` is one of the PROVISIONING
+ * actions and the button fetches what is missing before starting it — MTPLX's
+ * default checkpoint (`pull-start`), or the whole vLLM compose project
+ * (`provision-start`: clone, build, prepare). Offering a bare "Start" there was
+ * a catch-22 — the start could only ever fail, and its error message was the
+ * only place the missing payload was named.
  */
 
 import { Link } from 'react-router';
 import { CheckCircle2, Download, HelpCircle, RefreshCw, Wand2, Wrench, XCircle } from 'lucide-react';
 import Banner from '../ui/Banner';
 import Pill from '../ui/Pill';
+
 
 const ICONS = {
   true: { Icon: CheckCircle2, cls: 'text-port-success' },
@@ -145,13 +148,14 @@ export default function ProviderReadiness({ readiness, onAutoSetup, onUseServedM
             type="button"
             onClick={() => onAutoSetup(setup)}
             className={ACTION_CLASS}
-            // A weights download is the one action here that spends gigabytes,
-            // so the button says so before it is clicked rather than after.
-            title={setup.action === 'pull-start'
-              ? `Fetches ${label}'s own default checkpoint — a multi-gigabyte download — then starts the server on ${endpoint}.`
+            // Provisioning is the one thing here that spends gigabytes, so the
+            // button says so before it is clicked rather than after. The label
+            // already names the payload; this says where it lands.
+            title={setup.provisions
+              ? `${setup.actionLabel} — a multi-gigabyte download onto this host, then ${label} starts on ${endpoint}.`
               : `PortOS runs this on ${endpoint} for you — no terminal needed.`}
           >
-            {setup.action === 'pull-start' ? <Download size={12} /> : <Wand2 size={12} />}
+            {setup.provisions ? <Download size={12} /> : <Wand2 size={12} />}
             {setup.actionLabel}
           </button>
         )}

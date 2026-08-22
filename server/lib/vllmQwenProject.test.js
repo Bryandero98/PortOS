@@ -9,6 +9,7 @@ import {
   inspectVllmQwenProject,
   resolveVllmProjectDir,
   vllmDefaultProjectDir,
+  vllmProjectSetupState,
   vllmStartBlockedReason,
 } from './vllmQwenProject.js';
 
@@ -155,5 +156,36 @@ describe('inspectVllmQwenProject', () => {
 
     const project = await inspectVllmQwenProject(env({ HF_HOME: hfHome }));
     expect(project.hasWeights).toBe(true);
+  });
+});
+
+describe('vllmProjectSetupState', () => {
+  const project = (over = {}) => ({ dir: '/home/example/qwen-serving', hasProject: true, composeFile: 'docker-compose.yml', hasWeights: true, weightsRoot: null, ...over });
+
+  it('reports a prepared project as ready', () => {
+    expect(vllmProjectSetupState(project())).toBe('ready');
+  });
+
+  it('reports the two states where cloning/building/preparing IS the fix', () => {
+    // Nothing cloned at all — the ordinary first-run shape.
+    expect(vllmProjectSetupState(project({ hasProject: false, composeFile: null, hasWeights: null }))).toBe('empty');
+    // Cloned, never prepared.
+    expect(vllmProjectSetupState(project({ hasWeights: false }))).toBe('empty');
+  });
+
+  it('never reports a cache it could not READ as empty', () => {
+    // The normal Windows shape before VLLM_QWEN_PROJECT_DIR points at the UNC
+    // path. Calling this `empty` would offer to re-download ~20 GB that is
+    // already on disk; `unknown` keeps the Start button and its real refusal.
+    expect(vllmProjectSetupState(project({ hasWeights: null }))).toBe('unknown');
+  });
+
+  it('never offers to clone into a directory it does not recognize', () => {
+    // A directory that exists but holds no compose file is not this project.
+    expect(vllmProjectSetupState(project({ composeFile: null, hasWeights: null }))).toBe('unknown');
+  });
+
+  it('treats a missing inspection as empty rather than throwing', () => {
+    expect(vllmProjectSetupState(null)).toBe('empty');
   });
 });
