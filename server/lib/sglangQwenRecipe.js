@@ -10,13 +10,18 @@
  *
  * **Three flags are load-bearing and silent when wrong.**
  *
- *   - `--tool-call-parser qwen3_coder` — SGLang's spelling. vLLM's is
- *     `qwen3_xml`. Get it wrong (or omit it) and the server starts, answers, and
+ *   - `--tool-call-parser` — SGLang spells it differently from vLLM for the very
+ *     same model. Get it wrong (or omit it) and the server starts, answers, and
  *     returns raw markup with no `tool_calls` block: the agent narrates edits it
  *     never makes. This is the exact failure the 3090 bring-up hit, and the
  *     reason both parsers are baked into every cell below rather than left to an
  *     `EXTRA_ARGS` line an operator can forget.
- *   - `--reasoning-parser qwen3` — same class of failure for the thinking block.
+ *   - `--reasoning-parser` — same class of failure for the thinking block.
+ *
+ *     Both come from `lib/qwenAgentParsers.js` via `parserFlagsFor('sglang')`,
+ *     and neither spelling is typed here: that table is the one place they live,
+ *     precisely so a third runtime cannot copy whichever doc it read first. A
+ *     guard test there fails any file that retypes one.
  *   - `--mamba-full-memory-ratio` — see `mambaFullMemoryRatio` below. The
  *     cookbook default (`0.9`) under-sizes the GDN state pool for CoS-length
  *     prompts and silently clamps `max_running_requests` below the concurrency
@@ -44,6 +49,7 @@
  */
 
 import { PORTS } from './ports.js';
+import { parserFlagsFor } from './qwenAgentParsers.js';
 
 /** The official image. PortOS never builds an engine — same bar as the vLLM path. */
 export const SGLANG_QWEN_IMAGE = 'lmsysorg/sglang:qwen38-27b';
@@ -294,9 +300,9 @@ export function buildSglangQwenRecipe({
       ...flagIf('--chunked-prefill-size', cell.chunkedPrefillSize),
       ...flagIf('--max-prefill-tokens', cell.maxPrefillTokens),
       ...flagIf('--max-running-requests', cell.maxRunningRequests),
-      // Both parsers, always. See the file header for the silent failure.
-      '--reasoning-parser', 'qwen3',
-      '--tool-call-parser', 'qwen3_coder',
+      // Both parsers, always — read from the shared table rather than typed
+      // here. See the file header for the silent failure this prevents.
+      ...parserFlagsFor('sglang'),
       '--mamba-radix-cache-strategy', radixStrategy,
       '--mamba-ssm-dtype', ssmDtype,
       '--mamba-full-memory-ratio', String(ratio),

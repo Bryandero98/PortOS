@@ -92,10 +92,10 @@ services:
       - "32768"
       - "--max-prefill-tokens"
       - "32768"
-      - "--reasoning-parser"
-      - "qwen3"
       - "--tool-call-parser"
       - "qwen3_coder"
+      - "--reasoning-parser"
+      - "qwen3"
       - "--mamba-radix-cache-strategy"
       - "extra_buffer"
       - "--mamba-ssm-dtype"
@@ -116,6 +116,10 @@ services:
   makes. This is the exact failure the 3090 bring-up hit.
 - **`--reasoning-parser qwen3`** — the same class of silent failure for the
   thinking block.
+
+  Both come from `parserFlagsFor('sglang')` in
+  [`server/lib/qwenAgentParsers.js`](../../server/lib/qwenAgentParsers.js), the one
+  table holding the per-runtime parser spellings. Change them there, not here.
 - **`--mamba-full-memory-ratio 1.201`** — derived, not defaulted. Qwen3.8-27B is a
   hybrid Gated DeltaNet model, so post-weight memory splits between a reserved GDN
   state pool (which sets the concurrency ceiling) and the paged KV pool. The

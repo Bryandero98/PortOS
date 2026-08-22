@@ -14,6 +14,7 @@ import {
   SGLANG_HARDWARE_IDS,
 } from './sglangQwenRecipe.js';
 import { PORTS } from './ports.js';
+import { parserFlagsFor, qwenAgentParsersFor } from './qwenAgentParsers.js';
 
 const repoRoot = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
 
@@ -81,8 +82,9 @@ describe('buildSglangQwenRecipe — the verified H200 cell', () => {
         '--attention-backend', 'flashinfer',
         '--chunked-prefill-size', '32768',
         '--max-prefill-tokens', '32768',
-        '--reasoning-parser', 'qwen3',
-        '--tool-call-parser', 'qwen3_coder',
+        // Read from the shared table rather than retyped — the spellings live
+        // in exactly one file, and its own guard test enforces that.
+        ...parserFlagsFor('sglang'),
         '--mamba-radix-cache-strategy', 'extra_buffer',
         '--mamba-ssm-dtype', 'float32',
         '--mamba-full-memory-ratio', '1.201',
@@ -104,14 +106,14 @@ describe('buildSglangQwenRecipe — the verified H200 cell', () => {
 });
 
 describe('buildSglangQwenRecipe — every cell', () => {
-  it.each(SGLANG_HARDWARE_IDS)('%s bakes in both Qwen parsers', (hw) => {
-    // The silent failure this whole table exists to prevent: the wrong (or a
-    // missing) tool-call parser makes the server answer with raw markup and the
-    // agent never edits a file. `qwen3_xml` is vLLM's spelling, not SGLang's.
-    const { flags } = buildSglangQwenRecipe({ hw });
-    expect(flags[flags.indexOf('--tool-call-parser') + 1]).toBe('qwen3_coder');
-    expect(flags[flags.indexOf('--reasoning-parser') + 1]).toBe('qwen3');
-    expect(flags).not.toContain('qwen3_xml');
+  it.each(SGLANG_HARDWARE_IDS)('%s carries SGLang\'s parsers, never vLLM\'s', (hw) => {
+    // The silent failure this table exists to prevent: the wrong (or a missing)
+    // tool-call parser makes the server answer with raw markup and the agent
+    // never edits a file. Both spellings are read from `qwenAgentParsers.js` —
+    // retyping either here is what its own guard test fails on.
+    const flags = buildSglangQwenRecipe({ hw }).flags;
+    expect(flags.join(' ')).toContain(parserFlagsFor('sglang').join(' '));
+    expect(flags).not.toContain(qwenAgentParsersFor('vllm').toolCallParser);
   });
 
   it.each(SGLANG_HARDWARE_IDS)('%s derives the mamba ratio rather than leaving 0.9', (hw) => {
