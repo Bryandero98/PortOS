@@ -11,10 +11,11 @@
  * its cause** (`docs/research/2026-08-21-qwen38-rtx3090-vllm.md` is the record
  * of finding each by hitting it):
  *
- *   - `EXTRA_ARGS=--enable-auto-tool-choice --tool-call-parser qwen3_xml` —
- *     without it vLLM rejects the agent's very first turn; with `hermes` instead
- *     of `qwen3_xml` the server starts, answers, and silently never emits a tool
- *     call, because Qwen3.8 writes XML where that parser expects Hermes JSON.
+ *   - `EXTRA_ARGS` — vLLM rejects the agent's very first turn without a tool-call
+ *     parser, and with the WRONG parser it starts, answers, and silently never
+ *     emits a tool call — Qwen3.8 writes XML where the plausible-looking choice
+ *     expects JSON. The spelling comes from `qwenAgentParsers.js`, which owns it
+ *     for every runtime and explains why; this module must not re-type it.
  *   - `VLLM_WSL2_ENABLE_PIN_MEMORY=1` — vLLM disables pinned host memory on WSL,
  *     its GPU model runner needs UVA buffers that require it, and compose's
  *     `unless-stopped` turns the resulting `RuntimeError: UVA is not available`
@@ -34,6 +35,8 @@
  */
 
 import { randomBytes } from 'crypto';
+
+import { vllmExtraArgs } from './qwenAgentParsers.js';
 
 /** Bytes of entropy in a generated key — matches the doc's `openssl rand -hex 24`. */
 const API_KEY_BYTES = 24;
@@ -79,7 +82,10 @@ export function vllmEnvDefaults({ apiKey, wsl2 = false }) {
     [VLLM_API_KEY_VAR, apiKey],
     ['SPEC', 'dflash2'],
     ['PREFIX_CACHE', '1'],
-    ['EXTRA_ARGS', '--enable-auto-tool-choice --tool-call-parser qwen3_xml'],
+    // The parser spelling is NOT re-typed here. `qwenAgentParsers.js` (#4778)
+    // owns it precisely because two runtimes need two different spellings for
+    // the same model family, and copying the wrong one fails silently.
+    ['EXTRA_ARGS', vllmExtraArgs()],
     ...(wsl2
       ? [
         ['VLLM_WSL2_ENABLE_PIN_MEMORY', '1'],

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pinPlatform } from '../lib/testHelper.js';
+import { vllmExtraArgs } from '../lib/qwenAgentParsers.js';
 
 const pathLookup = vi.hoisted(() => ({
   findCommandOnPath: vi.fn(() => null),
@@ -131,7 +132,7 @@ describe('provisionVllmQwenProject', () => {
     expect(String(envPath)).toMatch(/[\\/]\.env$/);
     // Without this the agent's first turn is rejected; with `hermes` instead it
     // silently never emits a tool call at all.
-    expect(contents).toContain('EXTRA_ARGS=--enable-auto-tool-choice --tool-call-parser qwen3_xml');
+    expect(contents).toContain(`EXTRA_ARGS=${vllmExtraArgs()}`);
     expect(contents).toContain('SPEC=dflash2');
     expect(contents).toContain('PREFIX_CACHE=1');
     // Native Linux does not need — and must not be given — the WSL2 pair.

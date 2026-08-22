@@ -8,6 +8,7 @@ import {
   vllmEnvDefaults,
   VLLM_API_KEY_VAR,
 } from './vllmQwenProvision.js';
+import { vllmExtraArgs } from './qwenAgentParsers.js';
 
 const defaults = (wsl2 = false) => vllmEnvDefaults({ apiKey: 'generated-key', wsl2 });
 
@@ -43,7 +44,10 @@ describe('isWsl2Engine', () => {
 describe('vllmEnvDefaults', () => {
   it('always carries the tool-parser line, which is the setting agents die without', () => {
     const keys = Object.fromEntries(defaults());
-    expect(keys.EXTRA_ARGS).toBe('--enable-auto-tool-choice --tool-call-parser qwen3_xml');
+    // Asserted against the owning table, so a corrected spelling there reaches
+    // the guided install without a second edit here.
+    expect(keys.EXTRA_ARGS).toBe(vllmExtraArgs());
+    expect(keys.EXTRA_ARGS).toContain('--tool-call-parser');
     expect(keys.SPEC).toBe('dflash2');
     expect(keys.PREFIX_CACHE).toBe('1');
     expect(keys[VLLM_API_KEY_VAR]).toBe('generated-key');
@@ -104,7 +108,7 @@ describe('mergeEnvFileContents', () => {
       'VLLM_API_KEY=generated-key',
       'SPEC=dflash2',
       'PREFIX_CACHE=1',
-      'EXTRA_ARGS=--enable-auto-tool-choice --tool-call-parser qwen3_xml',
+      `EXTRA_ARGS=${vllmExtraArgs()}`,
       'VLLM_WSL2_ENABLE_PIN_MEMORY=1',
       'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False',
       '',
