@@ -513,10 +513,19 @@ export function createTerminalRequestTimeoutDetector({ maxBuffer = 512 } = {}) {
  */
 export function detectLocalRuntimeOom(text) {
   if (!text) return null;
-  const match = String(text).match(LOCAL_RUNTIME_OOM_PATTERN);
-  if (!match) return null;
+  // `.test` rather than `.match`: only the yes/no matters, and the pattern
+  // carries no `g` flag, so there is no `lastIndex` to leak between calls.
+  if (!LOCAL_RUNTIME_OOM_PATTERN.test(String(text))) return null;
   return {
     hasError: true,
+    // A FIXED sentence, deliberately not the vendor text that was matched.
+    // This message becomes the run's error string, which becomes a failure
+    // reason a CoS task description can go on to quote — and a TUI echoes a
+    // pasted prompt back into this very detector. Quoting the vendor constant
+    // here would let the signal re-match its own propagated message and nudge
+    // (then fail) the agent dispatched to investigate it. agy's quota banner
+    // solves the same problem with a lookahead; a fixed message is the simpler
+    // answer when the analysis doesn't need the original text.
     category: ERROR_CATEGORIES.RESOURCE_EXHAUSTED,
     message: 'Local inference runtime ran out of GPU memory',
     waitTime: null,

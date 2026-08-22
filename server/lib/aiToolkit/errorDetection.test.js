@@ -575,6 +575,15 @@ describe('Error Detection', () => {
       });
     });
 
+    it('reports a message that cannot re-match the detector', () => {
+      // The message becomes the run's error string, which a CoS task
+      // description can quote back — straight into this detector via the TUI's
+      // prompt echo. If it re-matched, the agent dispatched to investigate an
+      // OOM would itself be nudged and failed over.
+      const { message } = detectLocalRuntimeOom(WRAPPED_OOM_BOX);
+      expect(detectLocalRuntimeOom(message)).toBeNull();
+    });
+
     it('classifies the same text in a post-hoc output scan', () => {
       expect(analyzeError(WRAPPED_OOM_BOX, 1)).toMatchObject({
         category: ERROR_CATEGORIES.RESOURCE_EXHAUSTED,
