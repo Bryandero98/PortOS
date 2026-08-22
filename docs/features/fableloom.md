@@ -32,6 +32,23 @@ answers in-world without leaving the scene when nothing matches.
 - **Story settings drawer** — scene format (plus the rewrite pass), and the
   narrator's provider/model/effort pin.
 
+## Editing paths
+
+A transition is its own sub-resource under its scene, so any writer — the
+editor rail, a voice action, a CoS agent — adds or edits ONE edge per call
+and never replays the array off a snapshot another writer has already moved:
+
+| Route | Answers with |
+|---|---|
+| `POST   /api/fableloom/:id/episodes/:episodeId/nodes/:nodeId/transitions` | `{ loom, transition }` — the server mints the `tr-*` id |
+| `PATCH  …/transitions/:transitionId` | the loom |
+| `DELETE …/transitions/:transitionId` | the loom |
+
+The node PATCH still accepts a whole `transitions` array for a bulk replace
+(unchanged, and what a client from before these routes uses). The editor rail
+creates a path server-side first, so every row it holds already carries its
+id and nothing has to be reconciled back after a save.
+
 ## Scene format
 
 A loom is written either as **narrated prose** (second-person interactive

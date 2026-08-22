@@ -4,9 +4,11 @@
  * queued render via the shared image-gen lane), and the AI branch action.
  *
  * Fields save on blur (silent PATCH, skipped when unchanged; the server
- * returns the full loom, which the parent folds into state). The AI actions
- * read server-side state, so they gate on in-flight saves per the client
- * save-gating convention.
+ * returns the full loom, which the parent folds into state). Paths save one
+ * row at a time against the transition sub-resources — a row exists on the
+ * server the moment it is added, so its id is known here and nothing has to be
+ * reconciled back after a save. The AI actions read server-side state, so they
+ * gate on in-flight saves per the client save-gating convention.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -18,25 +20,26 @@ import MediaImage from '../MediaImage';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import {
-  branchLoomNode, deleteLoomNode, generateImage, updateLoomNode,
+  addLoomTransition, branchLoomNode, deleteLoomNode, deleteLoomTransition,
+  generateImage, updateLoomNode, updateLoomTransition,
 } from '../../services/api';
 import { fieldClass, labelClass, sceneFieldClass } from './fieldStyles';
 import { isTeleplayFormat } from './loomFormats';
 
 const toRow = (t) => ({ ...t, triggersText: (t.triggers || []).join('; ') });
-const rowsToTransitions = (rows) => rows
-  .filter((t) => t.targetNodeId)
-  .map(({ id, targetNodeId, intent, triggersText, description }) => ({
-    id, targetNodeId, intent,
-    triggers: (triggersText || '').split(';').map((s) => s.trim()).filter(Boolean),
-    description: description || '',
-  }));
+const rowToPatch = ({ targetNodeId, intent, triggersText, description }) => ({
+  targetNodeId,
+  intent: intent || '',
+  triggers: (triggersText || '').split(';').map((s) => s.trim()).filter(Boolean),
+  description: description || '',
+});
 
 export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onClearSelection, onMakeStart }) {
   const [form, setForm] = useState(null);
   // In-flight blur-saves; the AI buttons (which read server-side state) stay
   // disabled until every pending save settles.
   const [pendingSaves, setPendingSaves] = useState(0);
+  const [addingPath, setAddingPath] = useState(false);
   const del = useConfirmDelete();
   // A teleplay carries its own line breaks, so the editor gives it a taller
   // monospaced field — the same surface prose gets, sized for the format.
@@ -63,11 +66,17 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
     [episode.nodes, node.id],
   );
 
-  const patchNode = async (patch) => {
+  // Every write from this panel goes through here so the AI gate sees it and a
+  // failure surfaces once, in one place.
+  const runSave = async (write) => {
     setPendingSaves((n) => n + 1);
-    const updated = await updateLoomNode(loom.id, episode.id, node.id, patch, { silent: true })
-      .catch((err) => { toast.error(`Save failed: ${err.message}`); return null; });
+    const result = await write().catch((err) => { toast.error(`Save failed: ${err.message}`); return null; });
     setPendingSaves((n) => n - 1);
+    return result;
+  };
+
+  const patchNode = async (patch) => {
+    const updated = await runSave(() => updateLoomNode(loom.id, episode.id, node.id, patch, { silent: true }));
     if (updated) onLoomUpdate(updated);
     return updated;
   };
@@ -79,23 +88,18 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
     return patchNode({ [key]: value });
   };
 
-  const syncTransitionsFrom = (updatedLoom) => {
-    const saved = updatedLoom?.episodes.find((e) => e.id === episode.id)
-      ?.nodes.find((n) => n.id === node.id)?.transitions;
-    if (!saved) return;
-    setForm((prev) => ({ ...prev, transitions: saved.map(toRow) }));
-  };
-
-  const saveTransitions = async (rows) => {
-    const payload = rowsToTransitions(rows);
-    const current = (node.transitions || []).map((t) => ({
-      id: t.id, targetNodeId: t.targetNodeId, intent: t.intent, triggers: t.triggers, description: t.description,
-    }));
-    if (JSON.stringify(payload) === JSON.stringify(current)) return;
-    const updated = await patchNode({ transitions: payload });
-    // Re-sync just the transition rows so server-minted ids replace the
-    // locally-added rows' missing ones (id churn otherwise re-mints per save).
-    syncTransitionsFrom(updated);
+  // Blur-save for one path. Skipped when the row already matches the record,
+  // so tabbing through a path doesn't rewrite the loom.
+  const saveTransition = async (row) => {
+    const saved = (node.transitions || []).find((t) => t.id === row.id);
+    const patch = rowToPatch(row);
+    // No record row to compare against means the panel is ahead of the loom in
+    // state, NOT that nothing changed — save rather than silently drop the edit.
+    if (saved && JSON.stringify(patch) === JSON.stringify(rowToPatch(toRow(saved)))) return;
+    const updated = await runSave(
+      () => updateLoomTransition(loom.id, episode.id, node.id, row.id, patch, { silent: true }),
+    );
+    if (updated) onLoomUpdate(updated);
   };
 
   // The save fires OUTSIDE the setState updater — StrictMode runs updaters
@@ -103,31 +107,46 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
   const applyTransition = (index, patch, { save = false } = {}) => {
     const transitions = form.transitions.map((t, i) => (i === index ? { ...t, ...patch } : t));
     setForm((prev) => ({ ...prev, transitions }));
-    if (save) saveTransitions(transitions);
+    if (save) saveTransition(transitions[index]);
   };
 
-  const removeTransition = (index) => {
-    const transitions = form.transitions.filter((_, i) => i !== index);
-    setForm((prev) => ({ ...prev, transitions }));
-    saveTransitions(transitions);
+  const removeTransition = async (row) => {
+    setForm((prev) => ({ ...prev, transitions: prev.transitions.filter((t) => t.id !== row.id) }));
+    const updated = await runSave(
+      () => deleteLoomTransition(loom.id, episode.id, node.id, row.id, { silent: true }),
+    );
+    // The row went out of the list before the round-trip; put the record back
+    // if the delete never landed, rather than leaving a path that only looks gone.
+    if (updated) onLoomUpdate(updated);
+    else setForm((prev) => ({ ...prev, transitions: (node.transitions || []).map(toRow) }));
   };
 
-  const addTransition = () => {
+  // The row is created server-side first, so it arrives with its id already
+  // set and every later edit is a plain PATCH against it.
+  const addTransition = async () => {
     const target = otherNodes[0];
     if (!target) {
       toast.error('Add another scene first — a path needs somewhere to go');
       return;
     }
-    setForm((prev) => ({
-      ...prev,
-      transitions: [...prev.transitions, { targetNodeId: target.id, intent: '', triggersText: '', description: '' }],
-    }));
+    setAddingPath(true);
+    const result = await runSave(
+      () => addLoomTransition(loom.id, episode.id, node.id, { targetNodeId: target.id, intent: '' }, { silent: true }),
+    );
+    setAddingPath(false);
+    if (!result?.transition) return;
+    setForm((prev) => ({ ...prev, transitions: [...prev.transitions, toRow(result.transition)] }));
+    onLoomUpdate(result.loom);
   };
 
   const [runBranch, branching] = useAsyncAction(async () => {
     const result = await branchLoomNode(loom.id, episode.id, node.id, { branchCount: 2 }, { silent: true });
     onLoomUpdate(result.loom);
-    syncTransitionsFrom(result.loom);
+    // The AI writes new paths straight onto the record; this panel is keyed by
+    // node.id so it never remounts to pick them up.
+    const woven = result.loom?.episodes.find((e) => e.id === episode.id)
+      ?.nodes.find((n) => n.id === node.id)?.transitions;
+    if (woven) setForm((prev) => ({ ...prev, transitions: woven.map(toRow) }));
     toast.success('New branches woven');
   }, { errorMessage: 'Branching failed' });
 
@@ -280,7 +299,12 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
               {branching ? <Loader2 size={12} className="animate-spin" /> : <GitBranch size={12} />}
               Branch with AI
             </button>
-            <button type="button" onClick={addTransition} className="text-xs text-port-accent hover:underline">
+            <button
+              type="button"
+              onClick={addTransition}
+              disabled={addingPath}
+              className="text-xs text-port-accent hover:underline disabled:opacity-50"
+            >
               + Add path
             </button>
           </div>
@@ -290,7 +314,7 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
         )}
         <div className="space-y-3">
           {form.transitions.map((tr, index) => (
-            <div key={tr.id || `new-${index}`} className="border border-port-border rounded p-2 space-y-2">
+            <div key={tr.id} className="border border-port-border rounded p-2 space-y-2">
               <div className="flex items-center gap-2">
                 <input
                   className={fieldClass}
@@ -298,11 +322,11 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
                   aria-label="Intent"
                   value={tr.intent}
                   onChange={(e) => applyTransition(index, { intent: e.target.value })}
-                  onBlur={() => saveTransitions(form.transitions)}
+                  onBlur={() => saveTransition(tr)}
                 />
                 <button
                   type="button"
-                  onClick={() => removeTransition(index)}
+                  onClick={() => removeTransition(tr)}
                   className="text-port-text-muted hover:text-port-error shrink-0"
                   aria-label="Remove path"
                 >
@@ -325,7 +349,7 @@ export default function LoomNodeEditor({ loom, episode, node, onLoomUpdate, onCl
                 aria-label="Trigger phrasings"
                 value={tr.triggersText}
                 onChange={(e) => applyTransition(index, { triggersText: e.target.value })}
-                onBlur={() => saveTransitions(form.transitions)}
+                onBlur={() => saveTransition(tr)}
               />
             </div>
           ))}
