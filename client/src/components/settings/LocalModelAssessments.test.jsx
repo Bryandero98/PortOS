@@ -171,7 +171,7 @@ describe('LocalModelAssessments', () => {
     await user.click(await screen.findByRole('button', { name: 'Measure' }));
     // Nothing has been sent yet — the click opens the ask, it does not run.
     expect(runLocalLlmAssessment).not.toHaveBeenCalled();
-    expect(screen.getByText(/Measure this model\?/)).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Measure this model' })).toBeInTheDocument();
     expect(screen.getByText(/3 times/)).toBeInTheDocument();
     expect(screen.getByText(/512, 4K, 16K tokens of context/)).toBeInTheDocument();
 
@@ -182,7 +182,7 @@ describe('LocalModelAssessments', () => {
     ));
   });
 
-  it('does not run when the consent modal is cancelled', async () => {
+  it('does not run when the consent drawer is cancelled', async () => {
     const user = userEvent.setup();
     getLocalLlmAssessments.mockResolvedValue(report({
       unassessed: [{ backend: 'ollama', modelId: 'example-model:7b', params: '7B' }],
@@ -192,7 +192,7 @@ describe('LocalModelAssessments', () => {
     await user.click(await screen.findByRole('button', { name: 'Measure' }));
     await user.click(screen.getByRole('button', { name: /cancel/i }));
     expect(runLocalLlmAssessment).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.queryByText(/Measure this model\?/)).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
   it('presents unmeasured models as an open question, not as a poor choice', async () => {

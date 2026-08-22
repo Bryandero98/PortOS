@@ -24,13 +24,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Gauge, RefreshCw, Trash2, Play, AlertTriangle, History, SlidersHorizontal, ChevronDown, ChevronUp } from 'lucide-react';
-import { useSearchParams } from 'react-router';
 import socket from '../../services/socket';
 import Drawer from '../Drawer';
 import BrailleSpinner from '../BrailleSpinner';
 import toast from '../ui/Toast';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import useMounted from '../../hooks/useMounted';
+import useUrlParams from '../../hooks/useUrlParams';
 import AssessmentSweepPanel from './AssessmentSweepPanel';
 import ModelThroughputReport from './ModelThroughputReport';
 import { formatContextTokens, formatDurationMs, throughputLabel } from '../../utils/formatters';
@@ -93,7 +93,7 @@ const entryKey = (entry) => `${entry.backend}:${entry.modelId}@${entry.tuningKey
 // (`hf.co/org/repo:Q4_K_M`), and the drawer is an overlay on an already-routed
 // tab. `measureTuning` is the tuning key of the record being re-measured, so a
 // deep link reopens the configuration it describes rather than the defaults.
-const MEASURE_PARAMS = ['measureBackend', 'measureModel', 'measureTuning'];
+const CLOSED_MEASURE_PARAMS = { measureBackend: null, measureModel: null, measureTuning: null };
 
 // `null` is NOT MEASURED and must render as such — never as 0, and never as a
 // dash the reader could mistake for "measured, none".
@@ -197,24 +197,15 @@ function TuningFields({ specs, draft, onChange, disabled }) {
 // so this names the exact backend, model, and generation count before the first
 // request goes out — the same contract as the POST drill cache's fill modal.
 //
-// It is a routable slide-in rather than a modal: which model is open lives in
-// the URL, so the gate is shareable, bookmarkable and survives a reload — the
-// same pattern the AI-provider editor uses for /ai/edit/:providerId. The extra
-// width also lets the tuning knobs lay out as a real form instead of a cramped
-// column inside a dialog.
+// Routable rather than modal — see CLOSED_MEASURE_PARAMS above for why the open
+// target lives in the URL.
 function AssessmentDrawer({
-  target, reportLoaded, runtimeLabel, contextTokens, tuningSpecs, tuning, onTuningChange,
+  target, unknownTarget, runtimeLabel, contextTokens, tuningSpecs, tuning, onTuningChange,
   onClose, onConfirm, running, progress,
 }) {
   const [showTuning, setShowTuning] = useState(false);
   if (!target) return null;
   const tunedCount = Object.keys(compactTuning(tuning)).length;
-  // A link naming a model this report doesn't list — deleted since, or a
-  // hand-edited URL. The drawer still opens (the URL is what's open), it just
-  // says the row is gone rather than silently presenting a run that would fail.
-  // Held back while a run is in flight: the target legitimately moves between
-  // "not yet measured" and "ranked" the moment its first result lands.
-  const unknownTarget = reportLoaded && !target.resolved && !running;
   return (
     <Drawer
       open
@@ -228,10 +219,6 @@ function AssessmentDrawer({
       closeOnBackdrop={!running}
     >
       <div className="space-y-4">
-        <div className="flex items-center gap-2">
-          <Gauge size={18} className="text-port-accent" />
-          <h3 className="text-white font-medium">Measure this model?</h3>
-        </div>
         {unknownTarget && (
           <p className="text-xs text-port-warning flex items-start gap-1.5" role="alert">
             <AlertTriangle size={12} className="mt-0.5 shrink-0" />
@@ -539,11 +526,13 @@ export function LocalModelAssessments() {
   const [intent, setIntent] = useState('balanced');
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
-  // Tuning for the run being set up. Form state, so it stays local rather than
-  // riding in the URL — but it lives HERE rather than inside the drawer so
-  // re-measuring can pre-fill it from the record the URL names, and so it
-  // survives the collapse/expand of the tuning section.
-  const [tuningDraft, setTuningDraft] = useState({});
+  // The knobs the user has typed, or `null` while they have typed nothing — in
+  // which case the form shows the tuning of the record the URL names, so
+  // re-measuring reproduces that configuration and adjusting one knob is a
+  // one-field edit. Deriving it (rather than seeding a state copy) is what lets
+  // a cold deep link pick the record up the moment the report lands, while a
+  // background refresh can never overwrite a half-typed value.
+  const [tuningEdits, setTuningEdits] = useState(null);
   // Per-sample progress for the run in flight. `null` = no frame yet, which is
   // rendered as "no progress bar" rather than as 0 of N.
   const [progress, setProgress] = useState(null);
@@ -555,33 +544,23 @@ export function LocalModelAssessments() {
   // so there is only one place that renders it.
   const [tuningSweepRequest, setTuningSweepRequest] = useState(null);
 
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams, updateParams] = useUrlParams();
   const measureBackend = searchParams.get('measureBackend') || '';
   const measureModel = searchParams.get('measureModel') || '';
   const measureTuning = searchParams.get('measureTuning') || '';
 
-  const openTarget = useCallback((entry) => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.set('measureBackend', entry.backend);
-      next.set('measureModel', entry.modelId);
-      // Absent, not empty: an untuned target and a target tuned to "" would
-      // otherwise resolve to the same row.
-      if (entry.tuningKey) next.set('measureTuning', entry.tuningKey);
-      else next.delete('measureTuning');
-      return next;
-    });
-  }, [setSearchParams]);
+  const openTarget = useCallback((entry) => updateParams({
+    measureBackend: entry.backend,
+    measureModel: entry.modelId,
+    measureTuning: entry.tuningKey || null,
+  }), [updateParams]);
 
   // `replace` so closing the drawer doesn't leave a Back button that reopens it
   // on a run the user just cancelled.
   const closeTarget = useCallback(() => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      for (const key of MEASURE_PARAMS) next.delete(key);
-      return next;
-    }, { replace: true });
-  }, [setSearchParams]);
+    updateParams(CLOSED_MEASURE_PARAMS, { replace: true });
+    setTuningEdits(null);
+  }, [updateParams]);
 
   const load = useCallback(async (nextIntent) => {
     setLoading(true);
@@ -595,41 +574,25 @@ export function LocalModelAssessments() {
   useEffect(() => { load(intent); }, [load, intent]);
 
   // The row the URL names, once the report can say which one it is — that record
-  // is what carries the tuning a re-measure should start from. An id the report
-  // doesn't list still opens the drawer (the URL is the source of truth for
-  // what's open); it renders a "not in the current list" notice rather than
-  // bouncing, because the same id is legitimately absent for the moment between
-  // a first run landing and the refreshed report arriving.
-  const pendingTarget = useMemo(() => {
+  // is what carries the tuning a re-measure starts from. Matched through
+  // `entryKey` so "the same measurement" has one definition, not two.
+  const measureMatch = useMemo(() => {
     if (!measureBackend || !measureModel) return null;
-    const rows = [...(report?.ranked || []), ...(report?.excluded || []), ...(report?.unassessed || [])];
-    const match = rows.find((entry) => entry.backend === measureBackend
-      && entry.modelId === measureModel
-      && (entry.tuningKey || '') === measureTuning);
-    return match
-      ? { ...match, resolved: true }
-      : { backend: measureBackend, modelId: measureModel, tuningKey: measureTuning || undefined, resolved: false };
+    const wanted = entryKey({ backend: measureBackend, modelId: measureModel, tuningKey: measureTuning });
+    const hit = (rows) => rows?.find((entry) => entryKey(entry) === wanted);
+    return hit(report?.ranked) || hit(report?.excluded) || hit(report?.unassessed) || null;
   }, [report, measureBackend, measureModel, measureTuning]);
 
-  const pendingKey = pendingTarget ? entryKey(pendingTarget) : '';
-  // Which target the tuning form has already been seeded for. Seeding ONCE per
-  // target — not on every report refresh — is what keeps a half-typed knob from
-  // being overwritten by a background reload.
-  const seededTuningRef = useRef(null);
-  useEffect(() => {
-    if (!pendingTarget) {
-      seededTuningRef.current = null;
-      setTuningDraft({});
-      return;
-    }
-    // Re-measuring starts from the tuning that produced the existing record, so
-    // "run it again" reproduces the same configuration by default and adjusting
-    // one knob is a one-field edit. On a cold deep link that record only exists
-    // once the report lands, hence the wait.
-    if (!pendingTarget.resolved || seededTuningRef.current === pendingKey) return;
-    seededTuningRef.current = pendingKey;
-    setTuningDraft(pendingTarget.tuning && typeof pendingTarget.tuning === 'object' ? { ...pendingTarget.tuning } : {});
-  }, [pendingKey, pendingTarget]);
+  // An id the report doesn't list still opens the drawer — the URL is the source
+  // of truth for what's open — and says so, rather than bouncing: the same id is
+  // legitimately absent for the moment between a first run landing and the
+  // refreshed report arriving, which is why the notice also stands down mid-run.
+  const pendingTarget = measureBackend && measureModel
+    ? measureMatch || { backend: measureBackend, modelId: measureModel, tuningKey: measureTuning }
+    : null;
+  const recordTuning = measureMatch?.tuning;
+  const tuningDraft = tuningEdits
+    ?? (recordTuning && typeof recordTuning === 'object' ? recordTuning : {});
 
   // Which model this panel is currently measuring. A ref, not state: the socket
   // handler subscribes once and must read the CURRENT target, not the one
@@ -934,12 +897,12 @@ export function LocalModelAssessments() {
 
       <AssessmentDrawer
         target={pendingTarget}
-        reportLoaded={Boolean(report)}
+        unknownTarget={Boolean(report) && !measureMatch && !running}
         runtimeLabel={backendLabel(report, pendingTarget?.backend)}
         contextTokens={report?.defaultContextTokens || []}
         tuningSpecs={specsFor(report, pendingTarget?.backend)}
         tuning={tuningDraft}
-        onTuningChange={setTuningDraft}
+        onTuningChange={setTuningEdits}
         running={running}
         progress={progress}
         onClose={cancelRun}
