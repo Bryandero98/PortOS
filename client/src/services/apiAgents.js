@@ -162,7 +162,7 @@ export const sendCosAgentBtw = (id, message, options = {}) => request(`/cos/agen
   body: JSON.stringify({ message }),
   ...options
 });
-export const getCosFeedbackStats = () => request('/cos/feedback/stats');
+export const getCosFeedbackStats = (options = {}) => request('/cos/feedback/stats', options);
 export const getCosReports = () => request('/cos/reports');
 export const getCosTodayReport = () => request('/cos/reports/today');
 export const getCosReport = (date) => request(`/cos/reports/${date}`);
