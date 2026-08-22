@@ -39,7 +39,14 @@ const CANCEL_POLL_MS = 1_000;
  *   line readers — pass `/[\r\n]+/` for a tool whose progress bar redraws the
  *   same line with a bare `\r`, so each redraw surfaces instead of the stream
  *   going silent for the length of a multi-gigabyte download. `isCancelled` is
- *   polled while the command runs; see CANCEL_POLL_MS.
+ *   polled while the command runs; see CANCEL_POLL_MS. An unset `env` inherits
+ *   this whole process's environment — fine for most callers, but `docker
+ *   compose` substitutes `${VAR}` refs in a compose file from ITS OWN caller's
+ *   env before falling back to the project's `.env`, so a compose-based target
+ *   whose file happens to reuse a name PortOS also sets (`PORT` is the
+ *   recurring offender — see `services/vllmQwenManager.js#startVllmQwenProject`)
+ *   gets silently remapped. Audit a new docker-compose target's variable names
+ *   against `lib/ports.js` before assuming the default inheritance is safe.
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env, spawnImpl = spawn, splitRe, isCancelled } = {}) {
