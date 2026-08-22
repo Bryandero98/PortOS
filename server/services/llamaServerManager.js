@@ -33,6 +33,13 @@ const PORT_RELEASE_TIMEOUT_MS = 5000;
 // Mutable only through the test seam below: a suite asserting the give-up path
 // cannot sit through two real minutes of polling.
 let relaunchReadyTimeoutMs = 120000;
+// How many times a path that would REFUSE on an unreadable PM2 re-reads it
+// first. See `readLlamaServerStatusRetrying`.
+const PM2_READ_RETRIES = 2;
+// Mutable only through the test seam below, for the same reason as the readiness
+// budget above.
+const PM2_READ_RETRY_DELAY_MS = 250;
+let pm2ReadRetryDelayMs = PM2_READ_RETRY_DELAY_MS;
 
 let currentConfig = null;
 // The launch line the daemon was serving BEFORE PortOS put an assessment tuning
@@ -198,13 +205,42 @@ export async function getLlamaServerStatus() {
     host,
     port,
     endpoint,
-    config: isManagedActive ? currentConfig : null,
+    // NOT nulled on a failed read. `currentConfig` is the launch line PortOS
+    // itself last started this daemon on, and a subprocess hiccup reading PM2 is
+    // no evidence it stopped serving it. Nulling it here collapsed `managed:
+    // null` ("could not tell") straight back into `managed: false` ("somebody
+    // else's daemon") for every caller guarding on `!managed || !config?.model`
+    // — defeating, one line later, the entire point of the null sentinel.
+    config: isManagedActive || isReadFailed ? currentConfig : null,
     // Is this PM2 app in the saved dump `pm2 resurrect` replays at boot?
     // `null` = the dump could not be read, which is not the same as "no".
     runAtStartup: savedApps === null ? null : savedApps.includes(LLAMA_APP),
     recentLogs: logs.withPm2Logs(`${pm2Logs?.stdout || ''}\n${pm2Logs?.stderr || ''}`),
     lastExitError: isReadFailed ? 'Failed to read PM2 status' : lastExitError,
   };
+}
+
+/**
+ * `getLlamaServerStatus`, re-read while PM2 answers nothing at all.
+ *
+ * `managed: null` is "the PM2 read FAILED", and a failed read is a transient
+ * subprocess/IPC hiccup far more often than a standing condition — `fetchJlist`
+ * caches successes only, so each attempt is a genuine second read rather than
+ * the same cached null handed back.
+ *
+ * Every caller below turns a `null` into a refusal, and a refusal costs a
+ * measured assessment its whole reading: an untuned run that cannot be applied
+ * is filed `applied: false`, which `getAssessmentReport` drops from `scorable`,
+ * which takes the BASELINE row `compareTunings` ranks everything else against
+ * off the table. One blip is not worth that, so ask again before answering.
+ */
+async function readLlamaServerStatusRetrying() {
+  let status = await getLlamaServerStatus();
+  for (let attempt = 0; status.managed === null && attempt < PM2_READ_RETRIES; attempt += 1) {
+    await sleep(pm2ReadRetryDelayMs);
+    status = await getLlamaServerStatus();
+  }
+  return status;
 }
 
 /**
@@ -637,8 +673,11 @@ export async function relaunchLlamaServerWithAlias(alias) {
  * types is only possible if something can put those flags on the launch line
  * between runs.
  *
- * It refuses rather than guesses in the two cases where it cannot know what to
- * relaunch:
+ * It refuses rather than guesses in the three cases where it cannot know what to
+ * relaunch, or must not:
+ *   - PM2 could not be read (even after `readLlamaServerStatusRetrying` asked
+ *     again), so PortOS cannot prove it owns the process. Reported as its own
+ *     `retryable` refusal, never as the external-ownership one below;
  *   - nothing is running, so there is no model path to reuse;
  *   - something IS listening but PortOS did not start it (an externally-launched
  *     llama-server), so stopping it would kill a process the user owns.
@@ -707,8 +746,9 @@ const CLEARED_TUNING = Object.freeze(Object.fromEntries(
 const asLaunched = (value) => (value === undefined || value === null || value === false ? null : value);
 
 /**
- * The launch configuration currently in effect, or `null` when PortOS is not the
- * one running llama-server (nothing to put back, and nothing it may touch).
+ * The launch configuration currently in effect, or `null` when llama-server is
+ * not running or is somebody else's (nothing to put back, and nothing PortOS may
+ * touch). An unreadable PM2 is NOT one of those: see below.
  *
  * Paired with `restoreLlamaServerConfig`: a tuning sweep relaunches the daemon
  * once per variant and would otherwise leave the last variant's flags in place
@@ -716,8 +756,13 @@ const asLaunched = (value) => (value === undefined || value === null || value ==
  * of what they chose.
  */
 export async function captureLlamaServerConfig() {
-  const status = await getLlamaServerStatus();
-  return status.running && status.managed && status.config?.model ? status.config : null;
+  const status = await readLlamaServerStatusRetrying();
+  // `managed !== false`, not `managed`: capturing is a READ, and the only thing
+  // a capture can cost is `restoreLlamaServerConfig` later refusing to act on
+  // it — which does its own ownership check against a fresh status. Capturing
+  // nothing because PM2 blipped is the expensive answer: the sweep then clears
+  // the user's own launch flags with no record of what they were.
+  return status.running && status.managed !== false && status.config?.model ? status.config : null;
 }
 
 /**
@@ -732,13 +777,26 @@ export async function captureLlamaServerConfig() {
  * llama-server is stopped and the install's `llama` provider is dead until
  * somebody notices. The captured configuration is a known-good launch line and
  * nothing holds the port (`startLlamaServer` refuses if anything does), so it is
- * started rather than refused. Only a server that is running and NOT
- * PortOS-managed is off limits — that one belongs to somebody else.
+ * started rather than refused. Only a RUNNING server PortOS does not own is off
+ * limits — either because it belongs to somebody else (`managed: false`) or
+ * because PM2 could not be read to find out (`managed: null`, reported as its
+ * own retryable refusal rather than as somebody else's process).
  */
 export async function restoreLlamaServerConfig(config) {
   if (!config?.model) return { restored: false, reason: 'nothing was captured' };
-  const status = await getLlamaServerStatus();
-  if (status.running && !status.managed) {
+  const status = await readLlamaServerStatusRetrying();
+  // Split from the refusal below, not folded into it: a server PortOS cannot
+  // READ is not a server somebody else started. Both still refuse — PortOS must
+  // not stop a process it cannot prove it owns — but only one of them is worth
+  // trying again, and only one of them is true.
+  if (status.running && status.managed === null) {
+    return {
+      restored: false,
+      retryable: true,
+      reason: 'PortOS could not read PM2, so it cannot tell whether this llama-server is its own to restart',
+    };
+  }
+  if (status.running && status.managed === false) {
     return { restored: false, reason: 'llama-server is now running outside PortOS, so its launch line is not PortOS\'s to change' };
   }
 
@@ -776,7 +834,26 @@ export async function relaunchLlamaServerWithTuning(tuning = {}, { reset = false
     return { applied: null, reason: null, config: currentConfig };
   }
 
-  const status = await getLlamaServerStatus();
+  const status = await readLlamaServerStatusRetrying();
+  // Checked BEFORE `running`, and before anything is discarded. `managed: null`
+  // means the PM2 read failed even on retry, so PortOS knows neither what is
+  // running nor whether it owns it — and the `!running` branch below would clear
+  // `preTuningConfig`, throwing away the only record of the launch line PortOS
+  // displaced, on the strength of a read that never happened.
+  //
+  // It still refuses: PortOS cannot confirm it may restart this daemon, and
+  // filing the reading as a trustworthy baseline would be worse. But it refuses
+  // as itself — "could not read PM2", retryable — rather than borrowing the
+  // wording of an external-ownership refusal, which sends a user who owns the
+  // daemon looking for a process that does not exist.
+  if (status.managed === null) {
+    return {
+      applied: false,
+      retryable: true,
+      reason: 'PortOS could not read PM2, so it cannot tell whether it owns this llama-server. Try again in a moment.',
+      config: status.config || null,
+    };
+  }
   if (!status.running) {
     // Whatever carried the tuning is gone; the next start is untuned by
     // construction, so there is nothing left to undo.
@@ -977,12 +1054,13 @@ export async function installLlamaServer({ onProgress = () => {} } = {}) {
 /**
  * Clears in-memory test state (used by test suites).
  */
-export function _resetLlamaServerStateForTests({ relaunchReadyTimeout } = {}) {
+export function _resetLlamaServerStateForTests({ relaunchReadyTimeout, pm2ReadRetryDelay } = {}) {
   currentConfig = null;
   preTuningConfig = null;
   logs.reset();
   lastExitError = null;
   // Restored to the production budget unless a suite asks for a shorter one.
   relaunchReadyTimeoutMs = Number.isFinite(relaunchReadyTimeout) ? relaunchReadyTimeout : 120000;
+  pm2ReadRetryDelayMs = Number.isFinite(pm2ReadRetryDelay) ? pm2ReadRetryDelay : PM2_READ_RETRY_DELAY_MS;
 }
 

@@ -46,6 +46,12 @@ describe('llamaServerManager', () => {
   let draftPath;
   let pm2State = null;
   let execPm2Calls = [];
+  // Failed PM2 reads, on demand. `getAppStatusStrict` answers `null` for a read
+  // that FAILED — distinct from a successful read that found no process — and
+  // several paths must not mistake that for "not PortOS's". Set `failures` to
+  // the number of reads to fail, or `Infinity` for a PM2 that never answers
+  // again; `count` is what a retry assertion reads.
+  let pm2Reads = { failures: 0, count: 0 };
 
   beforeAll(async () => {
     modelDir = await mkdtemp(join(tmpdir(), 'portos-llama-'));
@@ -60,10 +66,13 @@ describe('llamaServerManager', () => {
   });
 
   beforeEach(() => {
-    _resetLlamaServerStateForTests();
+    // Zero retry delay: the paths that re-read an unreadable PM2 are asserted
+    // here, and a suite must not sit through the production backoff to see them.
+    _resetLlamaServerStateForTests({ pm2ReadRetryDelay: 0 });
     vi.restoreAllMocks();
     pm2State = null;
     execPm2Calls = [];
+    pm2Reads = { failures: 0, count: 0 };
 
     // The host may have an unrelated listener on the requested port (8080 is
     // especially common), so lifecycle tests pin the port-discovery result.
@@ -109,6 +118,13 @@ describe('llamaServerManager', () => {
     });
 
     vi.spyOn(pm2Module, 'getAppStatusStrict').mockImplementation(async (name) => {
+      pm2Reads.count += 1;
+      if (pm2Reads.failures > 0) {
+        // `Infinity - 1` is still `Infinity`, so a permanent outage needs no
+        // special case here.
+        pm2Reads.failures -= 1;
+        return null;
+      }
       if (pm2State && pm2State.name === name) return pm2State;
       return { name, status: 'not_found', pm2_env: null };
     });
@@ -358,6 +374,33 @@ describe('llamaServerManager', () => {
     expect(status.lastExitError).toBe('Failed to read PM2 status');
   });
 
+  // `managed: null` exists to say "could not tell", but nulling `config` on the
+  // same failed read handed every caller guarding on `!managed ||
+  // !config?.model` the same answer as "somebody else started it".
+  it('keeps the last known launch line when the PM2 read fails', async () => {
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+    await startLlamaServer({ model: modelPath, port: PORTS.LLAMA_SERVER });
+
+    pm2Reads.failures = Infinity;
+    const status = await getLlamaServerStatus();
+
+    expect(status.managed).toBeNull();
+    expect(status.config?.model).toBe(modelPath);
+  });
+
+  // A read that SUCCEEDED and found nothing is real evidence: there is no
+  // launch line, and reporting a stale one would be a lie in the other
+  // direction.
+  it('reports no launch line when the PM2 read succeeds and finds nothing', async () => {
+    vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+    await startLlamaServer({ model: modelPath, port: PORTS.LLAMA_SERVER });
+    pm2State = null;
+
+    const status = await getLlamaServerStatus();
+    expect(status.managed).toBe(false);
+    expect(status.config).toBeNull();
+  });
+
   it('propagates error when stopping PM2 process fails', async () => {
     vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
     pm2State = { name: LLAMA_APP, status: 'online', pid: 12345 };
@@ -599,10 +642,12 @@ describe('llamaServerManager', () => {
     // is not a restart — only a stop/start pair is.
     const restarted = () => execPm2Calls.some((c) => c[0] === 'start' || c[0] === 'delete');
 
+    const probeTracksPm2 = () => vi.spyOn(openAiModelsProbe, 'probeOpenAiModels')
+      .mockImplementation(async () => ({ reachable: pm2State?.status === 'online' }));
+
     const started = async () => {
       vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
-      vi.spyOn(openAiModelsProbe, 'probeOpenAiModels')
-        .mockImplementation(async () => ({ reachable: pm2State?.status === 'online' }));
+      probeTracksPm2();
       await startLlamaServer({ model: modelPath, port: PORTS.LLAMA_SERVER });
     };
 
@@ -798,6 +843,97 @@ describe('llamaServerManager', () => {
     it('captures nothing when PortOS is not the one running llama-server', async () => {
       vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
       expect(await captureLlamaServerConfig()).toBeNull();
+    });
+
+    // ── An unreadable PM2 is a THIRD answer ──────────────────────────────────
+    // `getAppStatusStrict` returning null means the read failed, not that the
+    // daemon is somebody else's. Telling a user who owns this server that they
+    // started it in a terminal points them at a fix for a problem they do not
+    // have — and, worse, files their baseline reading as un-applied.
+
+    it('refuses an unreadable PM2 as itself, not as an external llama-server', async () => {
+      await started();
+      execPm2Calls = [];
+      pm2Reads.failures = Infinity;
+      const readsBefore = pm2Reads.count;
+
+      const result = await relaunchLlamaServerWithTuning({ ubatchSize: 512 });
+
+      expect(result.applied).toBe(false);
+      expect(result.retryable).toBe(true);
+      expect(result.reason).toMatch(/could not read PM2/i);
+      expect(result.reason).not.toMatch(/outside PortOS/i);
+      expect(restarted()).toBe(false);
+      // The bypass probe for the retry: it asked more than once before
+      // answering, so a single blip cannot decide this.
+      expect(pm2Reads.count - readsBefore).toBeGreaterThan(1);
+    });
+
+    it('applies the tuning anyway when only the first PM2 read fails', async () => {
+      await started();
+      execPm2Calls = [];
+      pm2Reads.failures = 1;
+
+      const result = await relaunchLlamaServerWithTuning({ ubatchSize: 512 });
+
+      expect(result.applied).toBe(true);
+      expect(launchArgs()).toContain('-ub');
+    });
+
+    // The regression #4759 turned expensive: an UNTUNED run now relaunches too,
+    // and on an unreadable PM2 the old code took the `!running` exit, which
+    // cleared the pre-tuning launch line. The baseline that run existed to
+    // restore was gone by the time PM2 answered again, so the model's "Backend
+    // defaults" row — the one `compareTunings` ranks every tuned reading
+    // against — never appeared at all.
+    it('does not discard the pre-tuning baseline on an unreadable PM2', async () => {
+      await started();
+      await relaunchLlamaServerWithTuning({ ubatchSize: 512, flashAttn: true });
+
+      // PM2 unreadable AND the endpoint slow to answer — the state that used to
+      // read as "nothing is running, so there is nothing left to undo".
+      pm2Reads.failures = Infinity;
+      vi.spyOn(openAiModelsProbe, 'probeOpenAiModels').mockResolvedValue({ reachable: false });
+      const refused = await relaunchLlamaServerWithTuning({});
+      expect(refused.applied).toBe(false);
+      expect(refused.retryable).toBe(true);
+
+      // PM2 answers again, and the launch line PortOS displaced is still there
+      // to put back.
+      pm2Reads.failures = 0;
+      probeTracksPm2();
+      execPm2Calls = [];
+      const cleared = await relaunchLlamaServerWithTuning({});
+
+      expect(cleared.applied).toBeNull();
+      expect(restarted()).toBe(true);
+      expect(launchArgs()).not.toContain('--flash-attn');
+      expect(launchArgs()).not.toContain('-ub');
+    });
+
+    // Capturing is a READ. Capturing nothing because PM2 blipped is what costs
+    // the user their launch flags: the sweep clears them either way, and the
+    // restore then has no record of what they were.
+    it('captures the last known launch line when the PM2 read fails', async () => {
+      await started();
+      pm2Reads.failures = Infinity;
+
+      expect((await captureLlamaServerConfig())?.model).toBe(modelPath);
+    });
+
+    it('refuses a restore on an unreadable PM2 without calling it somebody else\'s server', async () => {
+      await started();
+      const captured = await captureLlamaServerConfig();
+      pm2Reads.failures = Infinity;
+      execPm2Calls = [];
+
+      const result = await restoreLlamaServerConfig(captured);
+
+      expect(result.restored).toBe(false);
+      expect(result.retryable).toBe(true);
+      expect(result.reason).toMatch(/could not read PM2/i);
+      expect(result.reason).not.toMatch(/outside PortOS/i);
+      expect(restarted()).toBe(false);
     });
 
     it('restoring nothing is a no-op rather than a restart', async () => {
