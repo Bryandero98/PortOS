@@ -13,6 +13,7 @@
 import { randomUUID } from 'crypto';
 import { ServerError } from '../../lib/errorHandler.js';
 import { isStr, trimTo } from '../../lib/storyBible.js';
+import { sanitizeLlmRoutePin } from '../../lib/llmRoutePin.js';
 import { getUniverse } from '../universeBuilder.js';
 import { getSeries } from '../pipeline/series.js';
 import {
@@ -32,24 +33,6 @@ const isSafeImageFilename = (value) =>
   typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*\.(png|jpg|jpeg|webp)$/i.test(value);
 
 const nullableRef = (value) => (isStr(value) && value.trim() ? value.trim().slice(0, LOOM_LIMITS.REF_ID_MAX) : null);
-
-/**
- * The loom's pinned routing for the play stage — which provider/model/effort
- * turns a reader's free text into a path. Stored as a whole object so an
- * unset dimension stays unset (null = "fall through to the stage pin / active
- * provider"), rather than collapsing to an empty string that would read as a
- * deliberate choice downstream.
- */
-const sanitizePlaySettings = (raw) => {
-  if (!raw || typeof raw !== 'object') return null;
-  const pick = (value, max) => trimTo(value, max) || null;
-  const settings = {
-    providerId: pick(raw.providerId, LOOM_LIMITS.PROVIDER_ID_MAX),
-    model: pick(raw.model, LOOM_LIMITS.MODEL_ID_MAX),
-    effort: pick(raw.effort, LOOM_LIMITS.EFFORT_MAX),
-  };
-  return Object.values(settings).some(Boolean) ? settings : null;
-};
 
 const sanitizePos = (raw) => (raw && typeof raw === 'object'
   && Number.isFinite(raw.x) && Number.isFinite(raw.y)
@@ -135,7 +118,10 @@ export function sanitizeLoom(raw) {
     premise: trimTo(raw.premise, LOOM_LIMITS.PREMISE_MAX),
     styleNotes: trimTo(raw.styleNotes, LOOM_LIMITS.STYLE_NOTES_MAX),
     format: asLoomFormat(raw.format),
-    playSettings: sanitizePlaySettings(raw.playSettings),
+    // The loom's route pin for the play stage — which provider/model/effort
+    // turns a reader's free text into a path. An unset dimension stays null
+    // ('fall through to the stage pin / active provider').
+    playSettings: sanitizeLlmRoutePin(raw.playSettings),
     universeId: nullableRef(raw.universeId),
     seriesId: nullableRef(raw.seriesId),
     episodes: (Array.isArray(raw.episodes) ? raw.episodes : [])
