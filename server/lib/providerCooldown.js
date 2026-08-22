@@ -27,6 +27,9 @@ import { ERROR_CATEGORIES } from './aiToolkit/errorDetection.js';
 //   MODEL_NOT_FOUND — 30m: also config; longer because retry is unlikely
 //   QUOTA_EXCEEDED  — 60m: billing/credits; retry sooner is futile
 //   NETWORK_ERROR   — 2m: usually a transient hiccup
+//   RESOURCE_EXHAUSTED — 2m: a local GPU that just OOM'd needs the in-flight
+//                     work to drain before it can serve the same context again;
+//                     the endpoint itself is healthy, so this is a short bench
 //   TIMEOUT/UNKNOWN — 1m: short enough to retry, long enough to skip
 //                     while the immediate workload retries via fallback
 export const COOLDOWN_MS_BY_CATEGORY = {
@@ -35,6 +38,7 @@ export const COOLDOWN_MS_BY_CATEGORY = {
   [ERROR_CATEGORIES.MODEL_NOT_FOUND]: 30 * 60 * 1000,
   [ERROR_CATEGORIES.QUOTA_EXCEEDED]: 60 * 60 * 1000,
   [ERROR_CATEGORIES.NETWORK_ERROR]: 2 * 60 * 1000,
+  [ERROR_CATEGORIES.RESOURCE_EXHAUSTED]: 2 * 60 * 1000,
   [ERROR_CATEGORIES.TIMEOUT]: 60 * 1000,
   [ERROR_CATEGORIES.UNKNOWN]: 60 * 1000,
 };

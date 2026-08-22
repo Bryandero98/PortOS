@@ -32,7 +32,7 @@ import { resolveInteractiveShell } from '../lib/interactiveShellResolver.js';
 import { formatShellCommandLine } from '../lib/shellCd.js';
 import { isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
-import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
+import { createImmediateFallbackSignalDetector, createLocalRuntimeOomDetector } from '../lib/aiToolkit/errorDetection.js';
 import { isAntigravityCommand } from '../lib/antigravity.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
@@ -41,6 +41,9 @@ import {
   PASTE_MARKER_POLL_MS,
   countPasteMarkers,
   createSelfClearingSignalGate,
+  createOomNudgeGate,
+  OOM_NUDGE_MAX_ATTEMPTS,
+  OOM_NUDGE_TEXT,
   createMcpBootTracker,
   MCP_BOOT_PASTE_DEADLINE_MS,
   MCP_BOOT_PASTE_RETRY_DELAY_MS,
@@ -272,8 +275,10 @@ function createPasteRetryController({
   let sent = false;
 
   /**
-   * Re-deliver the prompt while a self-clearing provider signal's grace window
-   * is open (agy's account-eligibility banner).
+   * Re-deliver text into the live session: the whole prompt while a
+   * self-clearing provider signal's grace window is open (agy's
+   * account-eligibility banner), or the short `continue` nudge that recovers a
+   * turn a local-GPU OOM killed (see createOomNudgeGate).
    *
    * The banner is the REJECTION of the submission, not a spinner over an
    * in-flight one: agy discards the prompt, empties its composer and returns to
@@ -293,15 +298,15 @@ function createPasteRetryController({
    *   session is gone — the caller must not claim a re-submission that didn't
    *   happen).
    */
-  const resubmit = () => {
+  const resubmit = ({ text = prompt, label = 'provider-handshake resubmit' } = {}) => {
     if (isFinalized() || !sessionId) return false;
     // Overwriting a live handle would leak the previous attempt's Enter interval
     // past cancel(); pasteToSession returns a fresh one, or false once the
     // session is gone — which is also the "don't bother" answer, since the
     // grace window's deadline still owns the fail-over.
     if (submitEnterTimer) clearInterval(submitEnterTimer);
-    const handle = shellService.pasteToSession(sessionId, prompt, {
-      label: '[cosAgents] provider-handshake resubmit',
+    const handle = shellService.pasteToSession(sessionId, text, {
+      label: `[cosAgents] ${label}`,
     });
     submitEnterTimer = handle || null;
     return !!handle;
@@ -548,6 +553,11 @@ export async function spawnTuiAgent({
   // (agy's account-eligibility banner). The provider-signal timer below resolves
   // its deadline and drives the re-submission cadence.
   const selfClearingGate = createSelfClearingSignalGate();
+  // A local-GPU OOM kills the turn but leaves the TUI session holding the whole
+  // conversation, so it is nudged to carry on rather than re-prompted — see
+  // createOomNudgeGate for why this is a separate mechanism from the gate above.
+  const detectLocalRuntimeOom = createLocalRuntimeOomDetector();
+  const oomNudgeGate = createOomNudgeGate();
   // Guards ingestDoneSentinel to a single read. finish() is its only caller and
   // is itself guarded by `finalized`, so this is defensive — it pins the
   // read-at-most-once invariant at the helper.
@@ -1096,6 +1106,26 @@ export async function spawnTuiAgent({
         return;
       }
 
+      // A local inference runtime that ran out of GPU memory. The turn is dead
+      // but the session is intact, so this arms a nudge instead of killing the
+      // run — the provider-signal timer sends it once the session has actually
+      // gone quiet. Gated on promptSubmittedAt for the same reason
+      // resubmitAfterSignal is: before the prompt is in, there is no turn to
+      // resume and the ordinary paste path still owns first delivery.
+      const oomSignal = promptSubmittedAt ? detectLocalRuntimeOom(stripped) : null;
+      if (oomSignal) {
+        const armed = oomNudgeGate.arm(oomSignal, now);
+        if (armed === 'armed') {
+          appendLine('⏳ Local runtime out of GPU memory — will nudge the session to continue if it goes quiet');
+        } else if (armed === 'exhausted') {
+          // Nudged its way through OOM_NUDGE_MAX_ATTEMPTS and it came back
+          // again: the conversation no longer fits this device, and it only
+          // grows from here. Hand the task to a fallback provider.
+          await failOverToFallback(oomSignal);
+          return;
+        }
+      }
+
       if (!promptSentAt) {
         const lowerStripped = stripped.toLowerCase();
         if (lowerStripped.includes('command not found') && lowerStripped.includes(commandName.toLowerCase())) {
@@ -1498,7 +1528,18 @@ export async function spawnTuiAgent({
         emitLog('error', `TUI agent ${agentId} deferred fallback finish failed: ${err?.message || err}`, { agentId }));
       return;
     }
-    if (selfClearingGate.armed) resubmitAfterSignal();
+    if (selfClearingGate.armed) {
+      resubmitAfterSignal();
+      return;
+    }
+    // Nudge a session a local-GPU OOM parked. Rides this timer rather than one
+    // of its own so the nudge cadence and the fail-over verdict stay on the same
+    // clock — and so there is one fewer interval to leak past finish().
+    const nudge = oomNudgeGate.takeNudge(Date.now(), lastOutputAt);
+    if (!nudge) return;
+    if (pasteController?.resubmit({ text: OOM_NUDGE_TEXT, label: 'local-runtime OOM nudge' })) {
+      appendLine(`🔁 Local runtime OOM — nudged the session to continue (attempt ${nudge}/${OOM_NUDGE_MAX_ATTEMPTS})`);
+    }
   }, PROVIDER_SIGNAL_POLL_MS);
 
   // Sentinel-file watcher. The agent's prompt instructs it to write
