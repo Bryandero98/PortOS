@@ -111,6 +111,16 @@ describe('Error Detection', () => {
       expect(result.requiresFallback).toBe(true);
     });
 
+    it('classifies Ollama\'s "does not support chat" 400 as model-not-found', () => {
+      // The everyday trigger is an embedding-only model reached through
+      // /api/chat. It names no "model" token, so it used to fall through to
+      // UNKNOWN — which benches a healthy daemon for a minute and escalates to a
+      // tier-4 investigation instead of correcting the model (tier 1).
+      const result = analyzeError('Ollama returned 400: {"error":"\\"nomic-embed-text:latest\\" does not support chat"}', 1);
+      expect(result.hasError).toBe(true);
+      expect(result.category).toBe(ERROR_CATEGORIES.MODEL_NOT_FOUND);
+    });
+
     it('should detect network errors', () => {
       const result = analyzeError('Error: ECONNREFUSED 127.0.0.1:8080');
       expect(result.hasError).toBe(true);

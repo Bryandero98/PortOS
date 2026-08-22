@@ -84,6 +84,7 @@ import {
   tuningSpecsFor,
 } from '../lib/localModelTuning.js';
 import { claimHeavyLocalJob } from '../lib/heavyJobClaim.js';
+import { isEmbeddingModel } from '../lib/localModelHeuristics.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
 import { getAllProviders } from './providers.js';
@@ -342,6 +343,18 @@ export async function runAssessment({ backend, modelId, contextTokens = DEFAULT_
     try { onProgress({ scope: 'assessment', backend, modelId, ...frame }); }
     catch (err) { console.error(`❌ Local LLM: assessment progress listener failed: ${err.message}`); }
   };
+  // Refuse an embedding-only model before anything is claimed or spawned. The
+  // report already keeps them out of `unassessed`, so reaching here means a
+  // direct API call (or a stale page) — and every path below would spend the
+  // accelerator claim on a sample the backend answers with
+  // `400 "<model>" does not support chat`. Failing fast with a reason beats
+  // recording that as a verdict about the machine.
+  if (isEmbeddingModel(modelId)) {
+    throw new ServerError(
+      `${modelId} is an embedding-only model — it has no chat endpoint to benchmark. Measure a generation model instead.`,
+      { status: 400, code: 'MODEL_NOT_ASSESSABLE', context: { backend, modelId } },
+    );
+  }
   // A measurement is only valid if it had the machine to itself. This is the
   // SAME machine-wide claim local image/video/3D rendering and LoRA training
   // take (`lib/heavyJobClaim.js`), for a stronger reason than theirs: a
@@ -819,6 +832,15 @@ export async function getAssessmentReport({ intent = 'balanced' } = {}) {
   const unassessed = [];
   for (const runtime of ASSESSABLE_RUNTIMES) {
     for (const model of listed[runtime].models || []) {
+      // Embedding-only models are excluded from the MEASURABLE list, not from
+      // the runtime's catalog above: they serve `/api/embed`, never
+      // `/api/chat`, so the sample this module runs comes back
+      // `400 "<model>" does not support chat`. Listing one here would offer a
+      // Measure button that cannot produce a measurement, and put it in every
+      // sweep scope — where the failed run also fires the provider-failure hook
+      // and files a CoS investigation about a model that was never going to
+      // generate text (run b361be1a, nomic-embed-text:latest).
+      if (isEmbeddingModel(model?.id || '')) continue;
       if (model?.id && !assessedModels.has(assessmentKey(runtime, model.id))) {
         unassessed.push({ backend: runtime, modelId: model.id, params: model.params ?? null });
       }

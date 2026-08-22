@@ -233,6 +233,21 @@ describe('loadAssessments / getAssessmentReport (read path)', () => {
   it('falls back to the balanced intent for an unrecognized one', async () => {
     expect((await svc.getAssessmentReport({ intent: 'nonsense' })).intent).toBe('balanced');
   });
+
+  it('leaves embedding-only models out of the measurable list', async () => {
+    // They serve /api/embed, never /api/chat, so the benchmark sample comes back
+    // `400 "<model>" does not support chat` — a failed run that also fires the
+    // provider-failure hook and files a CoS investigation task. Offering a
+    // Measure button for one, or sweeping it, is work that cannot succeed.
+    listModels.mockImplementation(async (backend) => (backend === 'ollama'
+      ? [{ id: 'example-model:7b', params: '7B' }, { id: 'nomic-embed-text:latest', params: '137M' }]
+      : []));
+    const report = await svc.getAssessmentReport();
+    expect(report.unassessed.map((u) => u.modelId)).toEqual(['example-model:7b']);
+    // Still counted as installed — the runtime really does serve it, and the
+    // count is about the catalog, not about what a benchmark can measure.
+    expect(report.runtimes.find((r) => r.id === 'ollama').modelCount).toBe(2);
+  });
 });
 
 describe('runAssessment — machine-wide accelerator claim', () => {
@@ -298,6 +313,21 @@ describe('runAssessment — machine-wide accelerator claim', () => {
 });
 
 describe('runAssessment', () => {
+  it('refuses an embedding-only model before claiming the machine', async () => {
+    // Reaching here means a direct API call or a stale page — the report already
+    // keeps embedding models out of `unassessed`. Every sample would come back
+    // `400 "<model>" does not support chat`, which is not a verdict about this
+    // machine, so fail fast with a reason instead of recording one.
+    await expect(svc.runAssessment({ backend: 'ollama', modelId: 'nomic-embed-text:latest', contextTokens: [512] }))
+      .rejects.toMatchObject({ code: 'MODEL_NOT_ASSESSABLE', status: 400 });
+    expect(runLocalLlmTest).not.toHaveBeenCalled();
+    expect(await svc.loadAssessments()).toEqual([]);
+    // The claim was never taken, so the next measurement can start immediately.
+    const after = await claimHeavyLocalJob({ kind: 'probe', id: 'after-embed-refusal' });
+    expect(after.ok).toBe(true);
+    await after.release();
+  });
+
   it('samples every context in ascending order and persists the result', async () => {
     runLocalLlmTest.mockResolvedValue(okRun());
     const result = await svc.runAssessment({ backend: 'ollama', modelId: 'example-model:7b', contextTokens: [4096, 512] });

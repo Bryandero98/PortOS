@@ -104,7 +104,16 @@ const ERROR_PATTERNS = [
     // `global.anthropic.claude-opus-5`). Categorize it alongside the
     // not-found/invalid-model phrasings so the cooldown + fallback path treats
     // it as the config problem it is.
-    pattern: /model.*(not found|does not exist|unavailable)|invalid model|model identifier is invalid/i,
+    // `"<model>" does not support chat` is Ollama's 400 when a request routes a
+    // model at an endpoint it doesn't serve — the everyday case being an
+    // embedding-only model (nomic-embed-text, bge-*, mxbai-embed-*) reached
+    // through /api/chat. It names no "model" token, so the clauses above miss
+    // it and it used to land in UNKNOWN: a 1-minute bench of a perfectly
+    // healthy daemon plus a tier-4 investigation task. It is the same class of
+    // fault as an unknown model id — this request named the wrong model for
+    // this endpoint — so it belongs here, where the cooldown treats it as
+    // request-specific and tier 1 corrects the model instead.
+    pattern: /model.*(not found|does not exist|unavailable)|invalid model|model identifier is invalid|does not support (?:chat|generate|completions?|embeddings?)/i,
     category: ERROR_CATEGORIES.MODEL_NOT_FOUND,
     requiresFallback: true,
     actionable: true,
