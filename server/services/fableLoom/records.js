@@ -281,6 +281,12 @@ export const findNode = (episode, nodeId) => {
   return node;
 };
 
+export const findTransition = (node, transitionId) => {
+  const transition = (node.transitions || []).find((t) => t.id === transitionId);
+  if (!transition) throw notFound('Path');
+  return transition;
+};
+
 export function addEpisode(loomId, { title, synopsis } = {}) {
   return mutateLoom(loomId, (loom) => {
     if (loom.episodes.length >= LOOM_LIMITS.EPISODES_MAX) {
@@ -371,6 +377,68 @@ export function deleteNode(loomId, episodeId, nodeId) {
     if (episode.startNodeId === nodeId) episode.startNodeId = episode.nodes[0]?.id ?? null;
     episode.updatedAt = new Date().toISOString();
     return loom;
+  });
+}
+
+// --- Transitions as sub-resources -------------------------------------------
+//
+// The whole-array `transitions` key on the node PATCH still works (the
+// sanitizer owns it, and an older client or a peer on a previous version keeps
+// using it). These three add/edit/drop ONE edge, so a second writer — a voice
+// action, a CoS agent, the AI branch lane — no longer has to replay the whole
+// array off a snapshot that may already be stale.
+
+const TRANSITION_PATCH_FIELDS = ['targetNodeId', 'intent', 'triggers', 'description'];
+
+// The sanitizer re-runs on every write, so the row that comes back out is the
+// one that actually persisted (id, trimmed fields, capped triggers) — not the
+// input echoed back.
+const readTransition = (loom, episodeId, nodeId, transitionId) =>
+  loom.episodes.find((e) => e.id === episodeId)
+    ?.nodes.find((n) => n.id === nodeId)
+    ?.transitions.find((t) => t.id === transitionId) ?? null;
+
+/**
+ * Add one path out of a scene. The id is minted here rather than inside the
+ * sanitizer so the caller can read the stored row back out by it — that is the
+ * whole point of the sub-resource: the client knows the id at create time and
+ * never has to reconcile server-minted ids into locally-added rows.
+ */
+export async function addNodeTransition(loomId, episodeId, nodeId, fields = {}) {
+  const id = `tr-${randomUUID()}`;
+  const loom = await mutateLoom(loomId, (record) => {
+    const episode = findEpisode(record, episodeId);
+    const node = findNode(episode, nodeId);
+    if ((node.transitions || []).length >= LOOM_LIMITS.TRANSITIONS_MAX) {
+      throw new ServerError('Path limit reached', { status: 400, code: 'LIMIT_REACHED' });
+    }
+    node.transitions = [...(node.transitions || []), { ...fields, id }];
+    episode.updatedAt = new Date().toISOString();
+    return record;
+  });
+  return { loom, transition: readTransition(loom, episodeId, nodeId, id) };
+}
+
+export function updateNodeTransition(loomId, episodeId, nodeId, transitionId, patch = {}) {
+  return mutateLoom(loomId, (record) => {
+    const episode = findEpisode(record, episodeId);
+    const transition = findTransition(findNode(episode, nodeId), transitionId);
+    for (const key of TRANSITION_PATCH_FIELDS) {
+      if (key in patch) transition[key] = patch[key];
+    }
+    episode.updatedAt = new Date().toISOString();
+    return record;
+  });
+}
+
+export function deleteNodeTransition(loomId, episodeId, nodeId, transitionId) {
+  return mutateLoom(loomId, (record) => {
+    const episode = findEpisode(record, episodeId);
+    const node = findNode(episode, nodeId);
+    findTransition(node, transitionId);
+    node.transitions = node.transitions.filter((t) => t.id !== transitionId);
+    episode.updatedAt = new Date().toISOString();
+    return record;
   });
 }
 

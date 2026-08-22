@@ -24,9 +24,10 @@ const getSeriesMock = vi.hoisted(() => vi.fn(async (id) => ({ id })));
 vi.mock('../pipeline/series.js', () => ({ getSeries: getSeriesMock }));
 
 const {
-  addEpisode, addNode, attachNodeImage, createLoom, deleteEpisode, deleteLoom,
-  deleteNode, getLoom, listLooms, listLoomSummaries, sanitizeLoom, updateEpisode,
-  updateLoom, updateNode,
+  LOOM_LIMITS, addEpisode, addNode, addNodeTransition, attachNodeImage, createLoom,
+  deleteEpisode, deleteLoom, deleteNode, deleteNodeTransition, getLoom,
+  listLooms, listLoomSummaries, sanitizeLoom, updateEpisode, updateLoom,
+  updateNode, updateNodeTransition,
 } = await import('./records.js');
 const { _resetFableLoomBackend } = await import('./store.js');
 
@@ -253,6 +254,79 @@ describe('nodes and transitions', () => {
 
     updated = await deleteNode(loomId, episodeId, a.id);
     expect(updated.episodes[0].startNodeId).toBeNull();
+  });
+});
+
+describe('transition sub-resources', () => {
+  const setup = async () => {
+    const created = await makeLoom();
+    const withEp = await addEpisode(created.id, { title: 'Pilot' });
+    const episodeId = withEp.episodes[0].id;
+    let updated = await addNode(created.id, episodeId, { title: 'A' });
+    updated = await addNode(created.id, episodeId, { title: 'B' });
+    updated = await addNode(created.id, episodeId, { title: 'C' });
+    const [a, b, c] = updated.episodes[0].nodes;
+    return { loomId: created.id, episodeId, a, b, c };
+  };
+  const rowsOf = (record, episodeId, nodeId) => record.episodes.find((e) => e.id === episodeId)
+    .nodes.find((n) => n.id === nodeId).transitions;
+
+  it('adds one path and hands back the minted row', async () => {
+    const { loomId, episodeId, a, b } = await setup();
+    const { loom, transition } = await addNodeTransition(loomId, episodeId, a.id, {
+      targetNodeId: b.id, intent: 'press on', triggers: ['keep going', ''],
+    });
+    expect(transition.id).toMatch(/^tr-/);
+    expect(transition).toMatchObject({ targetNodeId: b.id, intent: 'press on', triggers: ['keep going'] });
+    expect(rowsOf(loom, episodeId, a.id)).toEqual([transition]);
+  });
+
+  it('adding a second path leaves the first one alone', async () => {
+    const { loomId, episodeId, a, b, c } = await setup();
+    const first = (await addNodeTransition(loomId, episodeId, a.id, { targetNodeId: b.id, intent: 'left' })).transition;
+    const second = (await addNodeTransition(loomId, episodeId, a.id, { targetNodeId: c.id, intent: 'right' })).transition;
+    const rows = rowsOf(await getLoom(loomId), episodeId, a.id);
+    expect(rows.map((t) => t.id)).toEqual([first.id, second.id]);
+    expect(rows[0].intent).toBe('left');
+  });
+
+  it('patches only the provided fields and keeps the id', async () => {
+    const { loomId, episodeId, a, b, c } = await setup();
+    const { transition } = await addNodeTransition(loomId, episodeId, a.id, {
+      targetNodeId: b.id, intent: 'press on', triggers: ['keep going'], description: 'the long way',
+    });
+    const updated = await updateNodeTransition(loomId, episodeId, a.id, transition.id, {
+      intent: '', targetNodeId: c.id,
+    });
+    expect(rowsOf(updated, episodeId, a.id)[0]).toMatchObject({
+      id: transition.id,
+      targetNodeId: c.id,
+      intent: '',
+      triggers: ['keep going'],
+      description: 'the long way',
+    });
+  });
+
+  it('deletes one path without touching its siblings', async () => {
+    const { loomId, episodeId, a, b, c } = await setup();
+    const doomed = (await addNodeTransition(loomId, episodeId, a.id, { targetNodeId: b.id, intent: 'left' })).transition;
+    const kept = (await addNodeTransition(loomId, episodeId, a.id, { targetNodeId: c.id, intent: 'right' })).transition;
+    const updated = await deleteNodeTransition(loomId, episodeId, a.id, doomed.id);
+    expect(rowsOf(updated, episodeId, a.id).map((t) => t.id)).toEqual([kept.id]);
+  });
+
+  it('404s on an unknown transition and refuses to exceed the cap', async () => {
+    const { loomId, episodeId, a, b } = await setup();
+    await expect(updateNodeTransition(loomId, episodeId, a.id, 'tr-nope', { intent: 'x' }))
+      .rejects.toMatchObject({ status: 404 });
+    await expect(deleteNodeTransition(loomId, episodeId, a.id, 'tr-nope'))
+      .rejects.toMatchObject({ status: 404 });
+
+    for (let i = 0; i < LOOM_LIMITS.TRANSITIONS_MAX; i += 1) {
+      await addNodeTransition(loomId, episodeId, a.id, { targetNodeId: b.id, intent: `path ${i}` });
+    }
+    await expect(addNodeTransition(loomId, episodeId, a.id, { targetNodeId: b.id, intent: 'one too many' }))
+      .rejects.toMatchObject({ status: 400, code: 'LIMIT_REACHED' });
   });
 });
 

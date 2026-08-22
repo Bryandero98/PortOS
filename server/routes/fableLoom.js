@@ -22,17 +22,21 @@ import {
   playTurnSchema,
   reformatSchema,
   reviewSchema,
+  transitionCreateSchema,
+  transitionPatchSchema,
   weaveSchema,
 } from '../lib/fableLoomValidation.js';
 import { analyzeEpisodeGraph } from '../lib/fableLoomGraph.js';
 import {
   addEpisode,
   addNode,
+  addNodeTransition,
   branchNode,
   createLoom,
   deleteEpisode,
   deleteLoom,
   deleteNode,
+  deleteNodeTransition,
   getLoom,
   listLoomSummaries,
   playTurn,
@@ -41,6 +45,7 @@ import {
   updateEpisode,
   updateLoom,
   updateNode,
+  updateNodeTransition,
   weaveEpisode,
 } from '../services/fableLoom/index.js';
 
@@ -113,6 +118,33 @@ router.patch('/:id/episodes/:episodeId/nodes/:nodeId', asyncHandler(async (req, 
 
 router.delete('/:id/episodes/:episodeId/nodes/:nodeId', asyncHandler(async (req, res) => {
   res.json(await deleteNode(req.params.id, req.params.episodeId, req.params.nodeId));
+}));
+
+// --- Transitions ------------------------------------------------------------
+//
+// One edge per request. The node PATCH still accepts a whole `transitions`
+// array (unchanged, for clients that predate these routes) — but replaying the
+// array to add one path means a second writer working off a stale snapshot
+// drops the rows it never saw. POST answers with `{ loom, transition }` so the
+// caller has the minted id without diffing the array; PATCH/DELETE answer with
+// the loom, same as the node routes one level up.
+
+router.post('/:id/episodes/:episodeId/nodes/:nodeId/transitions', asyncHandler(async (req, res) => {
+  const input = validateRequest(transitionCreateSchema, req.body);
+  res.status(201).json(await addNodeTransition(req.params.id, req.params.episodeId, req.params.nodeId, input));
+}));
+
+router.patch('/:id/episodes/:episodeId/nodes/:nodeId/transitions/:transitionId', asyncHandler(async (req, res) => {
+  const patch = validateRequest(transitionPatchSchema, req.body);
+  res.json(await updateNodeTransition(
+    req.params.id, req.params.episodeId, req.params.nodeId, req.params.transitionId, patch,
+  ));
+}));
+
+router.delete('/:id/episodes/:episodeId/nodes/:nodeId/transitions/:transitionId', asyncHandler(async (req, res) => {
+  res.json(await deleteNodeTransition(
+    req.params.id, req.params.episodeId, req.params.nodeId, req.params.transitionId,
+  ));
 }));
 
 // --- AI lanes ---------------------------------------------------------------

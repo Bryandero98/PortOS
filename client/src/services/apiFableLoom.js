@@ -5,6 +5,8 @@ const episodePath = (id, episodeId, rest = '') =>
   loomPath(id, `/episodes/${encodeURIComponent(episodeId)}${rest}`);
 const nodePath = (id, episodeId, nodeId, rest = '') =>
   episodePath(id, episodeId, `/nodes/${encodeURIComponent(nodeId)}${rest}`);
+const transitionPath = (id, episodeId, nodeId, transitionId) =>
+  nodePath(id, episodeId, nodeId, `/transitions/${encodeURIComponent(transitionId)}`);
 
 export const listLooms = (options = {}) => request('/fableloom', options);
 export const getLoom = (id, options = {}) => request(loomPath(id), options);
@@ -40,6 +42,23 @@ export const updateLoomNode = (id, episodeId, nodeId, patch, options = {}) => re
 export const deleteLoomNode = (id, episodeId, nodeId, options = {}) => request(nodePath(id, episodeId, nodeId), {
   method: 'DELETE', ...options,
 });
+
+// One path out of a scene per call. `addLoomTransition` resolves to
+// `{ loom, transition }` — the row carries its server-minted id, so the editor
+// never has to reconcile ids back into locally-added rows. The node PATCH's
+// whole-array `transitions` key still works for bulk replaces.
+export const addLoomTransition = (id, episodeId, nodeId, body, options = {}) =>
+  request(nodePath(id, episodeId, nodeId, '/transitions'), {
+    method: 'POST', body: JSON.stringify(body), ...options,
+  });
+export const updateLoomTransition = (id, episodeId, nodeId, transitionId, patch, options = {}) =>
+  request(transitionPath(id, episodeId, nodeId, transitionId), {
+    method: 'PATCH', body: JSON.stringify(patch), ...options,
+  });
+export const deleteLoomTransition = (id, episodeId, nodeId, transitionId, options = {}) =>
+  request(transitionPath(id, episodeId, nodeId, transitionId), {
+    method: 'DELETE', ...options,
+  });
 
 export const weaveLoomEpisode = (id, episodeId, body = {}, options = {}) => request(episodePath(id, episodeId, '/weave'), {
   method: 'POST', body: JSON.stringify(body), ...options,

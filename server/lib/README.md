@@ -45,7 +45,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `creativeCommissionValidation.js` | Creative Commission (Autonomous Creation Engine) create/update + brief/schedule/generation schemas. Brief field caps are mirrored by the commission form in `client/src/components/creative-commission/commissionForm.js` (parity: `creativeCommissionValidation.mirror.test.js`). |
 | `creativeDirectorValidation.js` | Creative Director project/treatment/scene + Create-Suite importer schemas. `CREATIVE_DIRECTOR_GOAL_MAX` is mirrored in `client/src/lib/creativeDirectorPlan.js` (parity: `creativeDirectorValidation.mirror.test.js`). |
 | `digitalTwinValidation.js` | Digital twin document/category schemas. |
-| `fableLoomValidation.js` | FableLoom branching-narrative route schemas (loom/episode/node CRUD, weave/branch/review, play turns). |
+| `fableLoomValidation.js` | FableLoom branching-narrative route schemas (loom/episode/node/transition CRUD, weave/branch/review, play turns). |
 | `genomeValidation.js` | Genome upload + search schemas. |
 | `identityValidation.js` | Identity section + chronotype + scheduling schemas. |
 | `meatspaceValidation.js` | Meatspace (location/health log) schemas. |

@@ -47,6 +47,28 @@ describe('apiFableLoom', () => {
     expect(request).toHaveBeenCalledWith('/fableloom/loom-1/episodes/ep-1/validate', { silent: true });
   });
 
+  it('posts a new path to the node transitions sub-resource', async () => {
+    await api.addLoomTransition('loom-1', 'ep-1', 'node-1', { targetNodeId: 'node-2', intent: '' }, { silent: true });
+    expect(request).toHaveBeenCalledWith('/fableloom/loom-1/episodes/ep-1/nodes/node-1/transitions', {
+      method: 'POST',
+      body: JSON.stringify({ targetNodeId: 'node-2', intent: '' }),
+      silent: true,
+    });
+  });
+
+  it('patches and deletes one path by id, encoding every segment', async () => {
+    await api.updateLoomTransition('loom-1', 'ep-1', 'node-1', 'tr/1', { intent: 'press on' });
+    expect(request).toHaveBeenCalledWith('/fableloom/loom-1/episodes/ep-1/nodes/node-1/transitions/tr%2F1', {
+      method: 'PATCH',
+      body: JSON.stringify({ intent: 'press on' }),
+    });
+
+    await api.deleteLoomTransition('loom-1', 'ep-1', 'node-1', 'tr-1');
+    expect(request).toHaveBeenCalledWith('/fableloom/loom-1/episodes/ep-1/nodes/node-1/transitions/tr-1', {
+      method: 'DELETE',
+    });
+  });
+
   it('deletes nodes with DELETE', async () => {
     await api.deleteLoomNode('loom-1', 'ep-1', 'node-1');
     expect(request).toHaveBeenCalledWith('/fableloom/loom-1/episodes/ep-1/nodes/node-1', { method: 'DELETE' });

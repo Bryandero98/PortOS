@@ -6,11 +6,13 @@ import { request } from '../lib/testHelper.js';
 vi.mock('../services/fableLoom/index.js', () => ({
   addEpisode: vi.fn(),
   addNode: vi.fn(),
+  addNodeTransition: vi.fn(),
   branchNode: vi.fn(),
   createLoom: vi.fn(),
   deleteEpisode: vi.fn(),
   deleteLoom: vi.fn(),
   deleteNode: vi.fn(),
+  deleteNodeTransition: vi.fn(),
   getLoom: vi.fn(),
   listLoomSummaries: vi.fn(async () => []),
   playTurn: vi.fn(),
@@ -19,6 +21,7 @@ vi.mock('../services/fableLoom/index.js', () => ({
   updateEpisode: vi.fn(),
   updateLoom: vi.fn(),
   updateNode: vi.fn(),
+  updateNodeTransition: vi.fn(),
   weaveEpisode: vi.fn(),
 }));
 
@@ -87,6 +90,61 @@ describe('FableLoom routes', () => {
     fableLoom.deleteNode.mockResolvedValueOnce({ id: 'loom-1' });
     await request(makeApp()).delete('/api/fableloom/loom-1/episodes/ep-1/nodes/node-1');
     expect(fableLoom.deleteNode).toHaveBeenCalledWith('loom-1', 'ep-1', 'node-1');
+  });
+
+  it('POST transitions mints one path and answers with the loom plus the row', async () => {
+    fableLoom.addNodeTransition.mockResolvedValueOnce({
+      loom: { id: 'loom-1' }, transition: { id: 'tr-1', targetNodeId: 'node-2', intent: 'press on' },
+    });
+    const created = await request(makeApp())
+      .post('/api/fableloom/loom-1/episodes/ep-1/nodes/node-1/transitions')
+      .send({ targetNodeId: 'node-2', intent: 'press on', triggers: ['keep going'] });
+    expect(created.status).toBe(201);
+    expect(created.body.transition.id).toBe('tr-1');
+    expect(fableLoom.addNodeTransition).toHaveBeenCalledWith('loom-1', 'ep-1', 'node-1', {
+      targetNodeId: 'node-2', intent: 'press on', triggers: ['keep going'],
+    });
+  });
+
+  it('POST transitions rejects a body with no target and never mints an id client-side', async () => {
+    const noTarget = await request(makeApp())
+      .post('/api/fableloom/loom-1/episodes/ep-1/nodes/node-1/transitions')
+      .send({ intent: 'press on' });
+    expect(noTarget.status).toBe(400);
+    expect(fableLoom.addNodeTransition).not.toHaveBeenCalled();
+
+    fableLoom.addNodeTransition.mockResolvedValueOnce({ loom: { id: 'loom-1' }, transition: { id: 'tr-2' } });
+    await request(makeApp())
+      .post('/api/fableloom/loom-1/episodes/ep-1/nodes/node-1/transitions')
+      .send({ targetNodeId: 'node-2', intent: 'press on', id: 'tr-mine' });
+    expect(fableLoom.addNodeTransition).toHaveBeenCalledWith('loom-1', 'ep-1', 'node-1', {
+      targetNodeId: 'node-2', intent: 'press on',
+    });
+  });
+
+  it('PATCH/DELETE transitions dispatch with the transition id', async () => {
+    fableLoom.updateNodeTransition.mockResolvedValueOnce({ id: 'loom-1' });
+    const patched = await request(makeApp())
+      .patch('/api/fableloom/loom-1/episodes/ep-1/nodes/node-1/transitions/tr-1')
+      .send({ intent: '' });
+    expect(patched.status).toBe(200);
+    expect(fableLoom.updateNodeTransition).toHaveBeenCalledWith('loom-1', 'ep-1', 'node-1', 'tr-1', { intent: '' });
+
+    fableLoom.deleteNodeTransition.mockResolvedValueOnce({ id: 'loom-1' });
+    const removed = await request(makeApp())
+      .delete('/api/fableloom/loom-1/episodes/ep-1/nodes/node-1/transitions/tr-1');
+    expect(removed.status).toBe(200);
+    expect(fableLoom.deleteNodeTransition).toHaveBeenCalledWith('loom-1', 'ep-1', 'node-1', 'tr-1');
+  });
+
+  it('PATCH nodes still accepts the whole transitions array (back-compat)', async () => {
+    fableLoom.updateNode.mockResolvedValueOnce({ id: 'loom-1' });
+    const rows = [{ id: 'tr-1', targetNodeId: 'node-2', intent: 'press on' }];
+    const response = await request(makeApp())
+      .patch('/api/fableloom/loom-1/episodes/ep-1/nodes/node-1')
+      .send({ transitions: rows });
+    expect(response.status).toBe(200);
+    expect(fableLoom.updateNode).toHaveBeenCalledWith('loom-1', 'ep-1', 'node-1', { transitions: rows });
   });
 
   it('GET validate runs the deterministic analysis on the episode', async () => {

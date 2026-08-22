@@ -65,12 +65,32 @@ export const episodePatchSchema = z.object({
   startNodeId: nodeIdStr.nullable().optional(),
 });
 
-const transitionSchema = z.object({
-  id: z.string().max(80).optional(),
+const transitionFields = {
   targetNodeId: nodeIdStr,
   intent: z.string().max(LOOM_LIMITS.INTENT_MAX),
   triggers: z.array(z.string().max(LOOM_LIMITS.TRIGGER_MAX)).max(LOOM_LIMITS.TRIGGERS_MAX).optional(),
   description: z.string().max(LOOM_LIMITS.TRANSITION_DESC_MAX).optional(),
+};
+
+// Whole-array replace on the node PATCH. Kept for back-compat with clients
+// that predate the transition sub-resources (`id` is echoed back so a replace
+// preserves the rows it did not change); new writers use the sub-resources.
+const transitionSchema = z.object({
+  id: z.string().max(80).optional(),
+  ...transitionFields,
+});
+
+// Sub-resource POST: no `id` — the server mints it.
+export const transitionCreateSchema = z.object(transitionFields);
+
+// Sub-resource PATCH: every field optional, but `intent` may be cleared to ''
+// (a path can legitimately carry only trigger phrasings), so `.optional()`
+// rather than a min length is what distinguishes absent from cleared.
+export const transitionPatchSchema = z.object({
+  targetNodeId: nodeIdStr.optional(),
+  intent: transitionFields.intent.optional(),
+  triggers: transitionFields.triggers,
+  description: transitionFields.description,
 });
 
 const nodeFields = {
