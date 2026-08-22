@@ -233,6 +233,29 @@ describe('loadAssessments / getAssessmentReport (read path)', () => {
     expect(report.unassessed).toContainEqual({ backend: 'ollama', modelId: 'example-model:7b', params: '7B' });
   });
 
+  // An embedding model has no chat/generation to measure, so it is not an
+  // unanswered question — listing it here offered a Measure button that could
+  // only ever spend a provider call to prove it fails.
+  it('leaves embedding models out of the not-yet-measured list', async () => {
+    listModels.mockImplementation(async (backend) => (backend === 'ollama'
+      ? [{ id: 'example-model:7b', params: '7B' }, { id: 'all-minilm:latest' }, { id: 'nomic-embed-text:latest' }]
+      : []));
+    const report = await svc.getAssessmentReport();
+    expect(report.unassessed.map((u) => u.modelId)).toEqual(['example-model:7b']);
+    // ...and the consent gate's counts follow, since they derive from the same list.
+    expect(report.sweepScopes.unmeasured).toBe(1);
+  });
+
+  // The backend's own capability metadata outranks the name heuristic in both
+  // directions, so a chat model that merely LOOKS like an embedding one stays.
+  it('keeps a model the backend reports as chat-capable', async () => {
+    listModels.mockImplementation(async (backend) => (backend === 'ollama'
+      ? [{ id: 'all-minilm:latest', capabilities: ['completion'] }]
+      : []));
+    const report = await svc.getAssessmentReport();
+    expect(report.unassessed.map((u) => u.modelId)).toEqual(['all-minilm:latest']);
+  });
+
   it('flags a backend whose model list could not be read, even though it returned []', async () => {
     // Both managers cache an EMPTY list on a failed read instead of throwing, so
     // the manager's own error getter is the only signal that separates "no
@@ -330,6 +353,34 @@ describe('runAssessment — machine-wide accelerator claim', () => {
     const after = await claimHeavyLocalJob({ kind: 'probe', id: 'after-throw' });
     expect(after.ok).toBe(true);
     await after.release();
+  });
+});
+
+describe('runAssessment — embedding models are not assessable', () => {
+  // An assessment measures a model by GENERATING with it. Ollama answers every
+  // sample aimed at an embedding-only model with
+  // `400 "<model>" does not support chat`, so the run is doomed by the model id
+  // alone — and each doomed sample raised an AI-provider investigation task.
+  // `selectSweepTargets` keeps these out of a sweep; this covers the direct
+  // `POST /api/local-llm/assessments/run` route, which never goes through it.
+  it('refuses before claiming the machine or calling a provider', async () => {
+    runLocalLlmTest.mockResolvedValue(okRun());
+    await expect(svc.runAssessment({ backend: 'ollama', modelId: 'all-minilm:latest', contextTokens: [512] }))
+      .rejects.toMatchObject({ code: 'MODEL_NOT_ASSESSABLE', status: 400 });
+    expect(runLocalLlmTest).not.toHaveBeenCalled();
+    // Nothing recorded — a stored `incompatible` reading would read as "this
+    // machine cannot run it", which is not what happened.
+    expect(await svc.loadAssessments()).toEqual([]);
+    // ...and the machine claim was never taken, so the next job can start.
+    const after = await claimHeavyLocalJob({ kind: 'probe', id: 'after-embed' });
+    expect(after.ok).toBe(true);
+    await after.release();
+  });
+
+  it('still measures a generation model whose id merely looks unusual', async () => {
+    runLocalLlmTest.mockResolvedValue(okRun());
+    const result = await svc.runAssessment({ backend: 'ollama', modelId: 'example-model:7b', contextTokens: [512] });
+    expect(result.verdict).toBe('fits');
   });
 });
 

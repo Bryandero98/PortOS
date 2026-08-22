@@ -483,7 +483,10 @@ export const isEmbeddingModel = (id) =>
   // Mirror of EMBEDDING_RE in server/lib/localModelHeuristics.js — keep in lockstep.
   // `embeddinggemma` needs its own alternative: the anchored `embedding` marker
   // requires a separator after it, and that id glues the family straight on.
-  /(?:^|[-_/:])(?:embed|embedding|bge|nomic|mxbai|gte|e5|snowflake-arctic-embed)(?:[-_/:]|$)|text-embedding|embeddinggemma/i.test(id);
+  // `minilm` / `paraphrase-multilingual` carry no `embed` marker at all —
+  // `all-minilm` and `paraphrase-multilingual` are Ollama embedding models that
+  // would otherwise be offered in a chat/generation picker.
+  /(?:^|[-_/:])(?:embed|embedding|bge|nomic|mxbai|gte|e5|snowflake-arctic-embed)(?:[-_/:]|$)|text-embedding|embeddinggemma|minilm|paraphrase-multilingual/i.test(id);
 
 /**
  * Vision-capable (multimodal) model detector — mirror of `isVisionModel` in

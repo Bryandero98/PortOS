@@ -64,6 +64,7 @@
  */
 
 import { selectSweepTargets, SWEEP_SCOPES } from '../lib/localModelAssessment.js';
+import { isEmbeddingModel } from '../lib/localModelHeuristics.js';
 import { tuningGridFor } from '../lib/localModelTuning.js';
 import {
   captureLaunchState,
@@ -372,6 +373,12 @@ async function beginSweep({ scope, backend, modelId, tunings, contextTokens, onP
   // leave its knobs set for good. See `LAUNCH_APPLIERS` and #4763.
   if (tunings && !isTuningSweepable(named.backend)) {
     return { ...snapshot(), rejected: `PortOS cannot sweep ${named.backend} tunings yet — it has no way to put the runtime back afterwards` };
+  }
+  // A named embedding model would also produce an empty list (the selector drops
+  // it), and "not installed" would be a lie — it is installed, it just has no
+  // generation to measure. Say which it is.
+  if (named && isEmbeddingModel(named.modelId)) {
+    return { ...snapshot(), rejected: `${named.modelId} is an embedding model — it has no chat/generation to measure` };
   }
   const grid = named && tunings ? tuningGridFor(named.backend) : null;
   // A runtime PortOS cannot pass flags to yields the baseline alone — one

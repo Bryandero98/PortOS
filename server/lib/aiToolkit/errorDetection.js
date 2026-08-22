@@ -160,8 +160,11 @@ const ERROR_PATTERNS = [
     // healthy daemon plus a tier-4 investigation task. It is the same class of
     // fault as an unknown model id — this request named the wrong model for
     // this endpoint — so it belongs here, where the cooldown treats it as
-    // request-specific and tier 1 corrects the model instead.
-    pattern: /model.*(not found|does not exist|unavailable)|invalid model|model identifier is invalid|does not support (?:chat|generate|completions?|embeddings?)/i,
+    // request-specific and tier 1 corrects the model instead. The other
+    // operations Ollama names the same way (`insert`, `tools`, `thinking`) are
+    // the same fault — a model asked for something it cannot do — and were
+    // still landing in UNKNOWN.
+    pattern: /model.*(not found|does not exist|unavailable)|invalid model|model identifier is invalid|does not support (?:chat|generate|completions?|embeddings?|insert|tools|thinking)/i,
     category: ERROR_CATEGORIES.MODEL_NOT_FOUND,
     requiresFallback: true,
     actionable: true,
@@ -708,20 +711,34 @@ export function createImmediateFallbackSignalDetector({ maxBuffer = 512 } = {}) 
   };
 }
 
+// Undo JSON string escaping in a value lifted out of a raw error BODY. One pass,
+// so an escaped backslash can't be re-read as the start of the next escape
+// (`C:\\ntemp` stays a path, not a newline). Only the `json: true` patterns
+// below use it — a plain `Error: …` line is literal text, and unescaping it
+// would rewrite a Windows path.
+const JSON_STRING_ESCAPES = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f' };
+const unescapeJsonString = (value) =>
+  value.replace(/\\(.)/g, (_, ch) => JSON_STRING_ESCAPES[ch] ?? ch);
+
 function extractErrorMessage(text) {
   if (!text) return '';
 
   const patterns = [
-    /Error:\s*(.+?)(?:\n|$)/i,
-    /error":\s*"([^"]+)"/i,
-    /message":\s*"([^"]+)"/i,
-    /failed:\s*(.+?)(?:\n|$)/i
+    { re: /Error:\s*(.+?)(?:\n|$)/i },
+    // A JSON error body routinely ESCAPES quotes inside the value — Ollama
+    // reports `{"error":"\"all-minilm:latest\" does not support chat"}`. A
+    // `[^"]+` value stops at that first escaped quote and returns a lone
+    // backslash as "the message", which is what a log line and an investigation
+    // task then carried instead of the actual sentence. Consume escape pairs.
+    { re: /error":\s*"((?:[^"\\]|\\.)+)"/i, json: true },
+    { re: /message":\s*"((?:[^"\\]|\\.)+)"/i, json: true },
+    { re: /failed:\s*(.+?)(?:\n|$)/i }
   ];
 
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
+  for (const { re, json } of patterns) {
+    const match = text.match(re);
     if (match) {
-      return match[1].trim();
+      return (json ? unescapeJsonString(match[1]) : match[1]).trim();
     }
   }
 

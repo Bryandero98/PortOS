@@ -755,6 +755,56 @@ describe('selectSweepTargets', () => {
     const targets = selectSweepTargets({ assessments: [], unassessed, scope: 'unmeasured', tunings: [] });
     expect(targets.map((t) => t.modelId)).toEqual(['new-model']);
   });
+
+  // ---- embedding models are not assessable ---------------------------------
+  // An assessment measures a model by GENERATING with it. Ollama answers every
+  // sample aimed at an embedding-only model with
+  // `400 "<model>" does not support chat`, so the whole measurement is doomed
+  // from the model id alone — and each doomed sample raised an AI-provider
+  // investigation task and briefly benched the provider.
+  it('never queues an embedding model for the unmeasured scope', () => {
+    const targets = selectSweepTargets({
+      assessments: [],
+      unassessed: [
+        { backend: 'ollama', modelId: 'all-minilm:latest' },
+        { backend: 'ollama', modelId: 'nomic-embed-text:latest' },
+        { backend: 'ollama', modelId: 'qwen3.6:35b' },
+      ],
+      scope: 'unmeasured',
+    });
+    expect(targets.map((t) => t.modelId)).toEqual(['qwen3.6:35b']);
+  });
+
+  // A bogus record written before the filter existed must not be re-queued
+  // forever by the scopes that re-measure stored readings.
+  it('never re-queues a stored embedding-model reading', () => {
+    const embedRecord = {
+      backend: 'ollama', modelId: 'all-minilm:latest', tuningKey: '', tuningLabel: null,
+      tuning: {}, staleness: { stale: true },
+    };
+    expect(selectSweepTargets({ assessments: [embedRecord], unassessed: [], scope: 'stale' })).toEqual([]);
+    expect(selectSweepTargets({ assessments: [embedRecord], unassessed: [], scope: 'all' })).toEqual([]);
+  });
+
+  it('refuses a named embedding model even though naming one implies the all scope', () => {
+    const targets = selectSweepTargets({
+      assessments: [], unassessed: [{ backend: 'ollama', modelId: 'all-minilm:latest' }],
+      scope: 'unmeasured', only: { backend: 'ollama', modelId: 'all-minilm:latest' },
+    });
+    expect(targets).toEqual([]);
+  });
+
+  it('keeps an embedding model out of the tuning cross too', () => {
+    const targets = selectSweepTargets({
+      assessments: [], unassessed: [
+        { backend: 'ollama', modelId: 'all-minilm:latest' },
+        { backend: 'ollama', modelId: 'qwen3.6:35b' },
+      ],
+      scope: 'unmeasured', tunings: grid,
+    });
+    expect(targets.map((t) => `${t.modelId}@${t.tuningKey}`))
+      .toEqual(['qwen3.6:35b@', 'qwen3.6:35b@flashAttn=true']);
+  });
 });
 
 describe('summarizeSweepScopes', () => {

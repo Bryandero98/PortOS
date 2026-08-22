@@ -24,7 +24,12 @@
  *
  * Anything that conflates those makes an unassessed model look worse than a
  * measured-bad one, which is the exact failure this feature exists to remove.
+ *
+ * (Dependency-free apart from `localModelHeuristics.js`, which is itself pure —
+ * a sweep has to know which installed models are even *assessable*.)
  */
+
+import { isEmbeddingModel } from './localModelHeuristics.js';
 
 /**
  * Fit verdicts. Deliberately four values, not a boolean:
@@ -570,6 +575,14 @@ export function selectSweepTargets({ assessments = [], unassessed = [], scope = 
   const add = (target) => {
     const key = targetKey(target);
     if (!target.backend || !target.modelId || seen.has(key)) return;
+    // An assessment measures a model by GENERATING with it, so an embedding-only
+    // model has no measurement to take: the daemon answers every sample with
+    // `400 "<model>" does not support chat`, the record lands as `incompatible`
+    // (which reads as "this machine can't run it" — it can, that is just not
+    // what it does), and each doomed sample raises an AI-provider investigation
+    // task. Excluded from BOTH branches, so a bogus record written before this
+    // existed is not re-queued forever by the `stale`/`all` scopes.
+    if (isEmbeddingModel(target.modelId)) return;
     seen.add(key);
     targets.push(target);
   };

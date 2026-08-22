@@ -43,6 +43,36 @@ describe('Error Detection', () => {
       expect(result.category).toBe(ERROR_CATEGORIES.UNKNOWN);
     });
 
+    // A local daemon rejecting an OPERATION the model cannot perform. Untriaged
+    // this landed in UNKNOWN, which is not request-specific: one bad model id
+    // benched the whole Ollama provider (taking every OTHER model on it offline)
+    // and raised a Tier-4 investigation task for a failure fully determined by
+    // the model id.
+    it('classifies an Ollama embedding model asked to chat, message intact', () => {
+      const result = analyzeError('Ollama returned 400: {"error":"\\"all-minilm:latest\\" does not support chat"}', 1);
+      expect(result.hasError).toBe(true);
+      expect(result.category).toBe(ERROR_CATEGORIES.MODEL_NOT_FOUND);
+      expect(result.requiresFallback).toBe(true);
+      expect(result.actionable).toBe(true);
+      // The escaped quotes in the JSON body must not eat the message.
+      expect(result.message).toBe('"all-minilm:latest" does not support chat');
+    });
+
+    it('detects the unquoted and other-operation forms too', () => {
+      for (const text of [
+        'Ollama returned 400: {"error":"nomic-embed-text:latest does not support chat"}',
+        '{"error":"smollm:135m does not support tools"}',
+        "'gemma4:e4b' does not support insert",
+      ]) {
+        expect(analyzeError(text, 1).category, text).toBe(ERROR_CATEGORIES.MODEL_NOT_FOUND);
+      }
+    });
+
+    it('leaves an unrelated unsupported-feature line in the unknown bucket', () => {
+      expect(analyzeError('Note: this API does not support streaming yet.', 1).category)
+        .toBe(ERROR_CATEGORIES.UNKNOWN);
+    });
+
     it('should detect rate limit errors', () => {
       const result = analyzeError('API Error: 429 Too Many Requests');
       expect(result.hasError).toBe(true);

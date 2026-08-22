@@ -163,6 +163,33 @@ describe('startSweep', () => {
     expect((await startSweep({ scope: 'unmeasured' })).status).toBe('running');
   });
 
+  // Every sample of an embedding-only model comes back
+  // `400 "<model>" does not support chat`, so the selector drops it — which
+  // would leave a NAMED one looking un-installed. Say what is actually wrong.
+  it('refuses a named embedding model without calling it not installed', async () => {
+    getAssessmentReport.mockResolvedValue(report({
+      unassessed: [{ backend: 'ollama', modelId: 'all-minilm:latest' }],
+    }));
+    const result = await startSweep({ backend: 'ollama', modelId: 'all-minilm:latest' });
+    expect(result.rejected).toMatch(/embedding model/i);
+    expect(result.rejected).not.toMatch(/not installed/i);
+    expect(runAssessment).not.toHaveBeenCalled();
+  });
+
+  it('skips embedding models in a scope sweep and measures the rest', async () => {
+    getAssessmentReport.mockResolvedValue(report({
+      unassessed: [
+        { backend: 'ollama', modelId: 'all-minilm:latest' },
+        { backend: 'ollama', modelId: 'nomic-embed-text:latest' },
+        { backend: 'ollama', modelId: 'qwen3.6:35b' },
+      ],
+    }));
+    runAssessment.mockResolvedValue(measured());
+    await startSweep({ scope: 'unmeasured' });
+    await settle();
+    expect(runAssessment.mock.calls.map((c) => c[0].modelId)).toEqual(['qwen3.6:35b']);
+  });
+
   it('refuses a scope that covers nothing', async () => {
     getAssessmentReport.mockResolvedValue(report());
     const result = await startSweep({ scope: 'all' });

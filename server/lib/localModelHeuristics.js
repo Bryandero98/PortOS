@@ -19,24 +19,67 @@
 // `embeddinggemma` glues the marker to the family with no separator, so the
 // anchored `embedding` alternative misses it — match that name explicitly or it
 // reads as a chat-capable Gemma and gets picked for generation.
+// `minilm` / `paraphrase-multilingual` carry no `embed` marker at all
+// (`all-minilm`, `paraphrase-multilingual` are two of Ollama's own embedding
+// models) — matched by family, or they read as chat models and get benchmarked
+// or picked for generation, which the daemon answers with
+// `400 "…" does not support chat`.
 const EMBEDDING_RE =
-  /(?:^|[-_/:])(?:embed|embedding|bge|nomic|mxbai|gte|e5|snowflake-arctic-embed)(?:[-_/:]|$)|text-embedding|embeddinggemma/i;
+  /(?:^|[-_/:])(?:embed|embedding|bge|nomic|mxbai|gte|e5|snowflake-arctic-embed)(?:[-_/:]|$)|text-embedding|embeddinggemma|minilm|paraphrase-multilingual/i;
+
+// `embedding` is Ollama's raw capability name; `embeddings` is the badge label a
+// normalized PortOS model card carries (and LM Studio's `type`).
+const isEmbeddingCapability = (value) => {
+  const normalized = value ? String(value).toLowerCase() : '';
+  return normalized === 'embedding' || normalized === 'embeddings';
+};
 
 /**
- * @param {string} id model id (e.g. "nomic-embed-text:latest")
- * @returns {boolean} true when the id names an embedding-only model
+ * Detect an embedding-only model from its id and/or backend capability
+ * metadata. Prefers explicit metadata, exactly like `isVisionModel` /
+ * `isToolUseModel`: Ollama's `/api/show` reports `capabilities: ['embedding']`
+ * for an embedding model and e.g. `['completion','tools','thinking']` for a
+ * chat model, so a non-empty array is authoritative in BOTH directions and the
+ * id regex is only the fallback for bare id strings (LM Studio, a stored
+ * provider `models` list, `/api/tags` with no enrichment).
+ *
+ * @param {string|{id?:string,name?:string,capabilities?:string[]}} model
+ *   model id (e.g. "nomic-embed-text:latest") or a model card
+ * @returns {boolean} true when the model is embedding-only
  */
-export function isEmbeddingModel(id) {
+export function isEmbeddingModel(model) {
+  if (!model) return false;
+  if (typeof model === 'string') return EMBEDDING_RE.test(model);
+  if (typeof model !== 'object') return false;
+  // LM Studio's native model list types every model (`embeddings` / `llm` /
+  // `vlm`); Ollama's /api/show reports a capabilities array. Either one is
+  // authoritative in BOTH directions, so a chat model whose NAME happens to
+  // match (a fine-tune with `e5` in it) is not hidden from a generation picker.
+  //
+  // BOTH spellings are accepted because two vocabularies reach here: Ollama's
+  // raw capability is `embedding`, while a normalized PortOS model card carries
+  // the BADGE label `embeddings` (`localLlm.js#OLLAMA_CAPABILITY_BADGES` /
+  // `lmStudioBadgeCapabilities`). Matching only one would make a non-empty
+  // badge array an authoritative FALSE for a model that is plainly an
+  // embedding model.
+  const type = model.type ? String(model.type).toLowerCase() : null;
+  if (isEmbeddingCapability(type)) return true;
+  if (Array.isArray(model.capabilities) && model.capabilities.length > 0) {
+    return model.capabilities.some((c) => isEmbeddingCapability(c));
+  }
+  if (type) return false; // explicit non-embedding type — don't regex-guess past it
+  const id = model.id || model.name || '';
   return typeof id === 'string' && id.length > 0 && EMBEDDING_RE.test(id);
 }
 
 /**
  * A model usable for chat/generation — anything that isn't an embedding model.
- * @param {string} id
+ * @param {string|{id?:string,name?:string,capabilities?:string[]}} model
  * @returns {boolean}
  */
-export function isGenerationModel(id) {
-  return typeof id === 'string' && id.length > 0 && !isEmbeddingModel(id);
+export function isGenerationModel(model) {
+  if (typeof model === 'string') return model.length > 0 && !isEmbeddingModel(model);
+  return Boolean(model && typeof model === 'object' && (model.id || model.name)) && !isEmbeddingModel(model);
 }
 
 // Vision / multimodal (VLM) model id markers. These are the families that
@@ -201,7 +244,7 @@ const EDITORIAL_FAMILY_RANK = [
 // read images (Gemma 4, Qwen3.5, Ministral 3) are excellent editors, so the
 // `-VL` / `…V` / OCR suffixes are matched rather than a whole family.
 const NON_EDITORIAL_RE =
-  /(?:^|[-_/:])(?:embed|embedding|bge|nomic|mxbai|gte|e5)(?:[-_/:]|$)|text-embedding|embeddinggemma|coder|code-|starcoder|codellama|codegemma|(?:^|[-_/:])vision(?:[-_/:]|$)|(?:^|[-_/:])vl(?:\d|[-_/:.]|$)|qwen[\d.]*-?vl|glm-?[\d.]+v(?:[-_/:.]|$)|(?:^|[-_/:])ocr(?:[-_/:.]|$)|llava|moondream|minicpm-v|whisper|(?:^|[-_/:])tts(?:[-_/:]|$)|stable-?diffusion|sdxl|flux/i;
+  /(?:^|[-_/:])(?:embed|embedding|bge|nomic|mxbai|gte|e5)(?:[-_/:]|$)|text-embedding|embeddinggemma|minilm|paraphrase-multilingual|coder|code-|starcoder|codellama|codegemma|(?:^|[-_/:])vision(?:[-_/:]|$)|(?:^|[-_/:])vl(?:\d|[-_/:.]|$)|qwen[\d.]*-?vl|glm-?[\d.]+v(?:[-_/:.]|$)|(?:^|[-_/:])ocr(?:[-_/:.]|$)|llava|moondream|minicpm-v|whisper|(?:^|[-_/:])tts(?:[-_/:]|$)|stable-?diffusion|sdxl|flux/i;
 
 /** Parse a parameter count in billions from a model's `params`/id (e.g. "35B"). */
 function parseParamsB(model) {
