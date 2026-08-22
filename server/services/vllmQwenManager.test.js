@@ -320,6 +320,34 @@ describe('startVllmQwenProject', () => {
     );
   });
 
+  // Regression for #4821: the compose file maps "${PORT:-18020}:${PORT:-18020}"
+  // and resolves that against docker's OWN caller environment, not the
+  // project's .env — an unset `env` here lets PortOS's own PORT (its API
+  // server's port, 5555 by default) leak into the child process and collide,
+  // remapping the container onto the wrong port. Confirmed on a real RTX 3090
+  // run: the resulting bind was literally invalid rather than just wrong.
+  it('pins PORT to the vLLM loopback port so PortOS\'s own PORT cannot leak into compose', async () => {
+    await startVllmQwenProject({ emit: () => {}, isCancelled: () => false });
+
+    expect(streaming.runStreamingCommand).toHaveBeenCalledWith(
+      'docker',
+      ['compose', '--profile', 'single', 'up', '-d'],
+      expect.any(Function),
+      expect.objectContaining({ env: { PORT: '18020' } }),
+    );
+  });
+
+  it('derives PORT from a non-default endpoint rather than assuming 18020', async () => {
+    await startVllmQwenProject({ emit: () => {}, endpoint: 'http://127.0.0.1:19999/v1', isCancelled: () => false });
+
+    expect(streaming.runStreamingCommand).toHaveBeenCalledWith(
+      'docker',
+      ['compose', '--profile', 'single', 'up', '-d'],
+      expect.any(Function),
+      expect.objectContaining({ env: { PORT: '19999' } }),
+    );
+  });
+
   it('refuses to run compose when the project is not demonstrably prepared', async () => {
     project.vllmStartBlockedReason.mockReturnValue('no Qwen weights are cached yet');
 

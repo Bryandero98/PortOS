@@ -30,6 +30,8 @@ import { join } from 'path';
 import { atomicWrite, formatBytes, tryReadFile } from '../lib/fileUtils.js';
 import { runStreamingCommand } from '../lib/streamingSpawn.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
+import { localEndpointPort } from '../lib/localProviderRuntime.js';
+import { PORTS } from '../lib/ports.js';
 import {
   inspectVllmQwenProject,
   vllmProjectSetupState,
@@ -264,20 +266,37 @@ export async function provisionVllmQwenProject({ emit, isCancelled }) {
  * `lib/vllmQwenProject.js` for why each refusal exists. No image build, no
  * weight download: those are `provisionVllmQwenProject`, behind their own button.
  *
- * @param {{emit: (line: string) => void, isCancelled: () => boolean}} ctx
+ * The compose file maps `"${PORT:-18020}:${PORT:-18020}"` and its healthcheck
+ * probes `http://127.0.0.1:${PORT:-18020}/health` — both resolved by `docker
+ * compose` from ITS OWN caller's environment, not from the project's `.env`
+ * (shell env wins over `.env` in compose's variable-substitution precedence).
+ * `runStreamingCommand` spawns `docker` inheriting the full PortOS server
+ * environment by default, and PortOS's own `PORT` (its API server's port,
+ * 5555) collides with the SAME variable name — so an unset `env` here silently
+ * remaps the container onto PortOS's own port instead of vLLM's 18020, and the
+ * readiness probe (hardcoded to 18020) then reports ECONNREFUSED forever, even
+ * though the container is up and healthy. Confirmed on a real RTX 3090 run
+ * (#4821) — `docker inspect` showed the resulting bind as literally invalid
+ * (`{invalid IP 5555}`) rather than a working mapping on the wrong port.
+ * Passing `PORT` explicitly, derived from the endpoint this checklist actually
+ * probes, is what keeps compose's substitution aligned with it regardless of
+ * whatever `PORT` PortOS's own process happens to be running under.
+ *
+ * @param {{emit: (line: string) => void, endpoint?: string, isCancelled: () => boolean}} ctx
  * @returns {Promise<{success: boolean, error?: string}>}
  */
-export async function startVllmQwenProject({ emit, isCancelled }) {
+export async function startVllmQwenProject({ emit, endpoint, isCancelled }) {
   const project = await inspectVllmQwenProject();
   const blocked = vllmStartBlockedReason(project);
   if (blocked) return { success: false, error: blocked };
   if (isCancelled()) return { success: false, error: 'Cancelled before the container was started.' };
+  const port = localEndpointPort(endpoint) || PORTS.VLLM_QWEN;
   emit(`Starting the vLLM container from ${project.dir} (${project.composeFile}).`);
   emit('The image and weights are already on disk — this only brings the service up.');
   return runStreamingCommand(
     'docker',
     ['compose', '--profile', 'single', 'up', '-d'],
     emit,
-    { timeoutMs: CONTROL_TIMEOUT_MS, cwd: project.dir },
+    { timeoutMs: CONTROL_TIMEOUT_MS, cwd: project.dir, env: { PORT: String(port) } },
   );
 }
