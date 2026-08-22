@@ -83,7 +83,7 @@ describe('ProviderReadiness', () => {
     // The replacement spends gigabytes, so the label and the tooltip both say
     // so up front rather than after the click.
     const onAutoSetup = vi.fn();
-    const setup = { runtime: 'mtplx', label: 'MTPLX', action: 'pull-start', actionLabel: 'Download the default model & start MTPLX', blockedReason: null };
+    const setup = { runtime: 'mtplx', label: 'MTPLX', action: 'pull-start', actionLabel: 'Download the default model & start MTPLX', provisions: true, blockedReason: null };
     renderWithRouter(
       <ProviderReadiness
         readiness={readiness({
@@ -106,6 +106,36 @@ describe('ProviderReadiness', () => {
     expect(screen.getByText(/no model weights cached/)).toBeTruthy();
     fireEvent.click(button);
     expect(onAutoSetup).toHaveBeenCalledWith(setup);
+  });
+
+  it('gives every provisioning action the download treatment, whatever it is called', () => {
+    // `provisions` comes from the server's own action table
+    // (`localRuntimeSetup.js`), so a new gigabyte-spending action cannot be
+    // added there and silently render here as an ordinary one-click fix.
+    const setup = {
+      runtime: 'vllm',
+      label: 'vLLM (Qwen3.8-27B)',
+      action: 'provision-start',
+      actionLabel: 'Clone, build & prepare vLLM (Qwen3.8-27B) (~30 GB), then start',
+      provisions: true,
+      blockedReason: null,
+    };
+    renderWithRouter(
+      <ProviderReadiness readiness={readiness({ label: 'vLLM (Qwen3.8-27B)', manageUrl: null, setup })} onAutoSetup={vi.fn()} />,
+    );
+
+    const button = screen.getByRole('button', { name: /Clone, build & prepare/ });
+    expect(button.getAttribute('title')).toMatch(/multi-gigabyte download/);
+    expect(button.getAttribute('title')).not.toMatch(/no terminal needed/);
+  });
+
+  it('leaves an ordinary install or start alone', () => {
+    const setup = { runtime: 'llama', label: 'llama.cpp', action: 'install-start', actionLabel: 'Install & start llama.cpp', provisions: false, blockedReason: null };
+    renderWithRouter(
+      <ProviderReadiness readiness={readiness({ label: 'llama.cpp', manageUrl: null, setup })} onAutoSetup={vi.fn()} />,
+    );
+
+    expect(screen.getByRole('button', { name: /Install & start llama.cpp/ }).getAttribute('title')).toMatch(/no terminal needed/);
   });
 
   it('offers a one-click default-model match when the daemon is serving a different id', () => {

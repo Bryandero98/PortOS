@@ -179,7 +179,15 @@ export const LOCAL_RUNTIMES = Object.freeze({
     // operator-owned ~20 GB prepare step, not something PortOS downloads.
     manageUrl: null,
     docsUrl: 'https://github.com/atomantic/PortOS/blob/main/docs/features/qwen38-rtx3090.md',
-    modelsHint: 'Clone syv-ai/qwen38-27b-rtx3090 and run its prepare step once — PortOS never pulls the image or the ~20 GB of weights.',
+    modelsHint: 'Clone syv-ai/qwen38-27b-rtx3090 and run its prepare step once — or let the checklist do it, which is the only path that spends the ~30 GB.',
+    // What each local-setup state MEANS for this runtime, overriding
+    // `providerReadiness`'s model-cache prose. The thing that is missing here is
+    // a whole compose project, not a checkpoint, and "no weights cached" would
+    // send the operator looking for a download that was never the first step.
+    setupStateDetail: Object.freeze({
+      empty: 'No prepared compose project was found — its image and the ~20 GB of weights are not on disk yet.',
+      ready: 'The compose project is built and its weights are on disk; this can be confirmed once the container is running.',
+    }),
     // One container, one checkpoint — but its served id is baked into the
     // compose project, so PortOS has no launch line of its own to rename.
     servesOneModel: true,

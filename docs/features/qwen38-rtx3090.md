@@ -63,17 +63,42 @@ would.
 
 ## Setup
 
-### 1. Prepare the stack (operator, on the 3090 host)
+### 1. Prepare the stack (on the 3090 host)
 
-This step is yours, in a terminal. PortOS does not clone the project, build the
-~9.5 GB image, or download the ~20 GB of weights — those are decisions with a
-bandwidth and disk cost, and a button that started them by surprise would be the
-wrong default.
+The host itself is yours: Docker, the NVIDIA Container Toolkit (driver ≥ 580 /
+CUDA 13), and — on Windows — WSL2. PortOS will not install any of those; they are
+operator decisions with driver requirements it cannot judge, and the readiness
+checklist's **Install** button keeps saying so.
 
-On Windows you need WSL2 with Docker and the NVIDIA Container Toolkit (driver
-≥ 580 / CUDA 13); on Linux, the same toolkit natively. Run the commands below
-*inside the WSL2 distro*, not in PowerShell — the compose project and its
-20 GB of weights belong on the Linux filesystem.
+The *project* on top of them can go either way.
+
+#### 1-click, from the checklist
+
+On a host that already has Docker and the NVIDIA runtime, the provider
+readiness checklist offers **"Clone, build & prepare vLLM (Qwen3.8-27B) (~30 GB),
+then start"**. The label names the payload because the click IS the consent — this
+is the one button in PortOS that spends tens of gigabytes. It clones this repo,
+writes the `.env` below (including the settings in §1a, which is the point), builds
+the image, runs `prepare`, and brings the container up, streaming every line.
+
+It is idempotent: re-running skips whatever already landed, and `prepare`'s
+download resumes, so a cancelled run costs minutes rather than the 20 GB. An
+existing `.env` is never overwritten — only keys it does not already mention are
+appended, so your `GPU_UTIL`, `DFLASH_TOKENS` or your own `VLLM_API_KEY` survive.
+The API key it generates is written straight onto the two seeded providers, so
+step 2 below is just "enable it".
+
+Two things it deliberately will not do. On Windows it refuses unless
+`VLLM_QWEN_PROJECT_DIR` is set (§1c): the default `~/qwen-serving` resolves to a
+*Windows* home, and 20 GB of weights reached from the WSL2 VM across a 9p share is
+a mistake that costs 20 GB to discover. And it never raises the WSL2 memory
+ceiling — see §1a for why that one stays manual.
+
+#### By hand
+
+Still fully supported, and the explanation of what the button does. Run the
+commands below *inside the WSL2 distro*, not in PowerShell — the compose project
+and its 20 GB of weights belong on the Linux filesystem.
 
 ```bash
 git clone https://github.com/syv-ai/qwen38-27b-rtx3090 ~/qwen-serving
@@ -155,7 +180,10 @@ op itself works correctly when called directly. Upstream lists this as an
 escape hatch for memory trouble; on WSL2 it is a precondition for starting at
 all.
 
-**Raise the VM's memory ceiling before running `prepare`.** The
+**Raise the VM's memory ceiling before running `prepare` — including before the
+1-click action.** This is the one step PortOS detects and warns about but never
+performs, because `wsl --shutdown` takes the whole VM down, including a
+PostgreSQL container a PortOS install may be using. The
 requantization step is CPU-side and memory-hungry — `quant_lm_head.py` holds a
 whole 2.5 GB shard plus several float32 copies of a 248k-row `lm_head` — and
 WSL2 defaults to a ceiling of half the host's RAM. On a 32 GB machine that 16 GB
@@ -216,9 +244,10 @@ workload that fits.
 ### 2. Enable the provider (PortOS)
 
 1. On **AI Providers**, enable **OpenCode vLLM TUI (Qwen3.8-27B)**.
-2. Paste the `VLLM_API_KEY` from your `.env` into the provider's API key field.
-   PortOS injects it into the spawned OpenCode's `provider.vllm.options.apiKey`;
-   without it the container answers 401 and the model list stays empty.
+2. Check the API key field. The 1-click path already filled it in; after a
+   by-hand setup, paste the `VLLM_API_KEY` from your `.env`. PortOS injects it
+   into the spawned OpenCode's `provider.vllm.options.apiKey`; without it the
+   container answers 401 and the model list stays empty.
 3. Click **Refresh Models**. The served model should appear; the seeded alias is
    `qwen3.8-27b`, so update the default model if your container publishes a
    different id.
@@ -243,7 +272,8 @@ The provider card's requirements checklist probes `:18020` directly. Its
 **Start** button runs `docker compose --profile single up -d` — but only when it
 can see a prepared project (a compose file in `~/qwen-serving`, or wherever
 `VLLM_QWEN_PROJECT_DIR` points) **and** confirm the weights are already on disk.
-It never builds and never downloads. `prepare` writes them into the project's own
+It never builds and never downloads — that is the separate,
+explicitly-named provisioning action above. `prepare` writes them into the project's own
 `models/` directory (compose bind-mounts `${MODELS_DIR:-./models}`), which is
 what PortOS looks at; the `qwen-cache` docker volume alongside it holds only the
 torch.compile / Triton / FlashInfer JIT caches. If PortOS cannot read that

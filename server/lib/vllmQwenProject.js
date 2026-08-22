@@ -194,3 +194,34 @@ export function vllmStartBlockedReason(project) {
   }
   return null;
 }
+
+/**
+ * The same inspection, reduced to the four-state vocabulary the readiness
+ * checklist speaks (`services/localRuntimeSetup.js`'s `readRuntimeWeights`).
+ *
+ * `'empty'` is what makes the checklist offer the provisioning action, so it
+ * must mean "provisioning is exactly the fix" and nothing looser:
+ *
+ *   - **no project directory at all** — the ordinary first-run shape. Nothing
+ *     to clone over, so the clone/build/prepare sequence is precisely right.
+ *   - **a project whose caches read empty** — cloned, never prepared.
+ *
+ * Everything else is `'unknown'`, never `'empty'`. A directory that exists but
+ * holds no compose file is one PortOS does not recognize, and cloning into it
+ * would either fail or scatter a checkout across the operator's files; a cache
+ * that could not be READ (the normal Windows shape before
+ * `VLLM_QWEN_PROJECT_DIR` points at the UNC path) is not a cache that is empty,
+ * and treating it as one would offer to re-download ~20 GB that is already
+ * there. Both keep today's behavior: the Start button appears and refuses with
+ * the reason, which is the message that actually helps.
+ *
+ * @param {{hasProject?:boolean, composeFile?:string|null, hasWeights?:boolean|null}} project
+ * @returns {'ready'|'empty'|'unknown'}
+ */
+export function vllmProjectSetupState(project) {
+  if (!project?.hasProject) return 'empty';
+  if (!project.composeFile) return 'unknown';
+  if (project.hasWeights === true) return 'ready';
+  if (project.hasWeights === false) return 'empty';
+  return 'unknown';
+}
