@@ -10,7 +10,7 @@ import { DOMAINS, DRILL_TO_DOMAIN, DRILL_LABELS, COGNITIVE_LADDER_TYPES, compute
 import { otherPostSections, TOPIC_SURFACE_SECTIONS } from './practiceCatalog';
 import { postIcon } from './postIcons';
 import BrowseCatalogLink from './BrowseCatalogLink';
-import { CognitiveDrillTutorialPreview, CognitiveDrillHowItWorksButton } from './PostCognitiveDrillRunner';
+import { CognitiveDrillTutorialPreview, CognitiveDrillHowItWorksButton } from './CognitiveDrillTutorial';
 import { streakGlyph } from '../../../lib/streakGlyph.js';
 import useUserTimezone from '../../../hooks/useUserTimezone.js';
 import { todayKeyInTimezone } from '../../../utils/timezone.js';

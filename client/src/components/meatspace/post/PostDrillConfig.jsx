@@ -5,7 +5,7 @@ import toast from '../../ui/Toast';
 import { FormField } from '../../ui/FormField';
 import { filterSelectableModels, enabledApiProviderFilter } from '../../../utils/providers';
 import { GOAL_DEFS, POST_TOPICS, MODULE_LABELS, DRILL_LABELS, DRILL_DESCRIPTIONS, composedSessionDrillTypes } from './constants';
-import { CognitiveDrillTutorialPreview, CognitiveDrillHowItWorksButton } from './PostCognitiveDrillRunner';
+import { CognitiveDrillTutorialPreview, CognitiveDrillHowItWorksButton } from './CognitiveDrillTutorial';
 
 // Modules a Full/Quick composed session can draw from (issue #2100), DERIVED
 // from the shared topic registry so the list has one owner (issue #3252): a
