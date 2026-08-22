@@ -39,6 +39,11 @@ const vllmProvider = (over = {}) => ({
   id: 'opencode-vllm-tui', name: 'OpenCode vLLM TUI', enabled: true, vllmBacked: true,
   endpoint: VLLM_ENDPOINT, ...over,
 });
+const SGLANG_ENDPOINT = 'http://127.0.0.1:18021/v1';
+const sglangProvider = (over = {}) => ({
+  id: 'opencode-sglang-tui', name: 'OpenCode SGLang TUI', enabled: true, sglangBacked: true,
+  endpoint: SGLANG_ENDPOINT, ...over,
+});
 const serving = { reachable: true, models: ['qwen3.8-27b'], error: null };
 const notServing = { reachable: false, models: null, error: 'ECONNREFUSED' };
 
@@ -50,9 +55,10 @@ beforeEach(() => {
   h.ollamaUnload = vi.fn(async () => ({ unloaded: true }));
   h.lmUnload = vi.fn(async () => ({ success: true }));
   getCudaCapability.mockClear();
-  // A deliberately fake home so no assertion can be answered by the developer's
-  // real `~/qwen-serving`.
+  // Deliberately fake homes so no assertion can be answered by the developer's
+  // real `~/qwen-serving` or `~/sglang-qwen38`.
   process.env.VLLM_QWEN_PROJECT_DIR = '/srv/example/qwen-serving';
+  process.env.SGLANG_QWEN_PROJECT_DIR = '/srv/example/sglang-qwen38';
 });
 
 describe('detectGpuBlockers', () => {
@@ -157,6 +163,47 @@ describe('detectGpuBlockers', () => {
     h.providersThrows = true;
     await expect(detectGpuBlockers()).resolves.toEqual([]);
     expect(h.probe).not.toHaveBeenCalled();
+  });
+
+  // The SGLang container holds the GPU exactly as the vLLM one does, so the
+  // guard is table-driven over both markers rather than forked per runtime.
+  describe('SGLang container', () => {
+    it('issues no probe when only a disabled sglangBacked provider exists', async () => {
+      h.providers = [sglangProvider({ enabled: false })];
+      await expect(detectGpuBlockers()).resolves.toEqual([]);
+      expect(h.probe).not.toHaveBeenCalled();
+      expect(getCudaCapability).not.toHaveBeenCalled();
+    });
+
+    it('names the container, its own project directory, and its own stop command', async () => {
+      h.providers = [sglangProvider()];
+      const [blocker] = await detectGpuBlockers({ env: { SGLANG_QWEN_PROJECT_DIR: '/opt/example/sglang' } });
+      expect(blocker).toMatchObject({ runtime: 'sglang', providerId: 'opencode-sglang-tui', endpoint: SGLANG_ENDPOINT });
+      expect(blocker.reason).toContain('SGLang (Qwen3.8-27B)');
+      expect(blocker.reason).toContain('/opt/example/sglang');
+      // NOT vLLM's `--profile single` — this compose file has no profiles.
+      expect(blocker.reason).toContain('docker compose stop');
+      expect(blocker.reason).not.toContain('--profile single');
+      expect(blocker.reason).toMatch(/will not stop it for you/i);
+    });
+
+    it('reports both containers when both answer', async () => {
+      h.providers = [vllmProvider(), sglangProvider()];
+      const blockers = await detectGpuBlockers();
+      expect(blockers.map((b) => b.runtime).sort()).toEqual(['sglang', 'vllm']);
+    });
+
+    it('does not block on an SGLang served from another machine', async () => {
+      h.providers = [sglangProvider({ endpoint: 'http://192.0.2.10:18021/v1' })];
+      await expect(detectGpuBlockers()).resolves.toEqual([]);
+      expect(h.probe).not.toHaveBeenCalled();
+    });
+
+    it('does not block when its probe fails', async () => {
+      h.providers = [sglangProvider()];
+      h.probe = vi.fn(async () => notServing);
+      await expect(detectGpuBlockers()).resolves.toEqual([]);
+    });
   });
 });
 

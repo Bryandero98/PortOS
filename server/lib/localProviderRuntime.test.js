@@ -57,6 +57,7 @@ describe('localRuntimeKind', () => {
     expect(localRuntimeKind({ command: 'opencode', llamaBacked: true })).toBe('llama');
     expect(localRuntimeKind({ command: 'opencode', mtplxBacked: true })).toBe('mtplx');
     expect(localRuntimeKind({ command: 'opencode', vllmBacked: true })).toBe('vllm');
+    expect(localRuntimeKind({ command: 'opencode', sglangBacked: true })).toBe('sglang');
     expect(localRuntimeKind({ command: 'opencode', ollamaBacked: true })).toBe('ollama');
     // claude-ollama is not an OpenCode provider but is still Ollama-backed.
     expect(localRuntimeKind({ command: 'claude', ollamaBacked: true })).toBe('ollama');

@@ -11,7 +11,8 @@
  * endpoint answers — from the button next to the failing check.
  *
  * Every command here comes from the fixed table below. A request names a
- * runtime *kind* (`mtplx` / `llama` / `ollama` / `lmstudio` / `vllm`) and nothing else —
+ * runtime *kind* (`mtplx` / `llama` / `ollama` / `lmstudio` / `vllm` / `sglang`)
+ * and nothing else —
  * no package, URL, port, or argument from the request ever reaches a shell
  * word, which keeps this as narrow as `providerRuntimeInstaller.js`'s CLI
  * install surface while removing the docs dead end.
@@ -38,22 +39,27 @@
  *     here is the same PM2 process (`portos-mtplx`) the Models → LLMs page can
  *     stop, log, and persist across a reboot — the two surfaces cannot drift
  *     onto different install commands or a daemon only one of them can see.
- *   - **The vLLM container is never provisioned by a Start.** Its start row
- *     brings up an already-prepared compose project and nothing else: no image
- *     build, no weight download, no docker/WSL2/NVIDIA-toolkit install. A
- *     project that is not demonstrably prepared is refused — and, since #4767,
- *     the checklist then offers the separate action that DOES provision it,
- *     "Clone, build & prepare … (~30 GB), then start", which is the same
- *     name-the-payload consent shape as MTPLX's `pull-start`. `install()` still
- *     refuses: Docker Desktop, the NVIDIA Container Toolkit and WSL2 are
- *     host-level operator decisions with driver requirements PortOS cannot
- *     judge, and this provisions the PROJECT on a host already capable of
- *     running it.
+ *   - **Neither CUDA container is ever provisioned by a Start.** Both start rows
+ *     bring up an already-prepared compose project and nothing else: no image
+ *     build or pull, no weight download, no docker/WSL2/NVIDIA-toolkit install.
+ *     A project that is not demonstrably prepared is refused — and, for vLLM
+ *     since #4767, the checklist then offers the separate action that DOES
+ *     provision it, "Clone, build & prepare … (~30 GB), then start", which is
+ *     the same name-the-payload consent shape as MTPLX's `pull-start`.
+ *     `install()` still refuses for both: Docker Desktop, the NVIDIA Container
+ *     Toolkit and WSL2 are host-level operator decisions with driver
+ *     requirements PortOS cannot judge, and that action provisions the PROJECT
+ *     on a host already capable of running it. SGLang has no such action — it
+ *     ships no provisioner of its own yet — and additionally refuses on a card
+ *     the cookbook publishes no recipe for, BEFORE it would reach docker.
  */
 
 import { LOCAL_RUNTIMES, localEndpointPort } from '../lib/localProviderRuntime.js';
 import { describeMtplxCache, listMtplxCachedModels } from '../lib/mtplxModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
+import { inspectSglangQwenProject, sglangStartBlockedReason } from '../lib/sglangQwenProject.js';
+import { sglangUnsupportedReason } from '../lib/sglangQwenRecipe.js';
+import { getCudaCapability } from '../lib/cudaCapability.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
 import { runStreamingCommand } from '../lib/streamingSpawn.js';
 import { installLlamaServer } from './llamaServerManager.js';
@@ -105,6 +111,14 @@ const MTPLX_NO_MODEL_ERROR = 'no model weights are cached, so its server exits b
 /** The same dead end, reached from a cache holding only interrupted pulls. */
 const mtplxPartialCacheError = (count) =>
   `its cache holds ${count} model${count === 1 ? '' : 's'}, but none passed its own file check — an interrupted download leaves a partial pack behind. Use “Download the default model & start MTPLX” on the checklist to re-fetch it, or pick another checkpoint on the MTPLX card in Models → LLMs.`;
+
+/**
+ * The `platforms` gate below is a static list, so its refusal has to be static
+ * too — read from the recipe module rather than re-typed, so the platform
+ * refusal and the runtime refusal cannot drift into telling an Apple Silicon
+ * operator two different things.
+ */
+const SGLANG_PLATFORM_UNSUPPORTED_REASON = sglangUnsupportedReason({ platform: 'darwin' });
 
 /**
  * The provisioning actions: the ones whose click IS the consent, because each
@@ -304,6 +318,47 @@ const SETUP_ROWS = Object.freeze({
     start: startVllmQwenProject,
   }),
 
+  sglang: Object.freeze({
+    // Same posture as vLLM: CUDA in a Linux container. The hardware gate is
+    // narrower, though — the cookbook publishes single-GPU cells for Hopper and
+    // Blackwell only, and an Ampere 24 GB card keeps the vLLM stack (the SGLang
+    // cookbook has no 3090 cell). `sglangUnsupportedReason` reads the probe and
+    // says which of those it is, never collapsing a wedged `nvidia-smi` into
+    // "no GPU".
+    platforms: ['linux', 'win32'],
+    unsupportedReason: SGLANG_PLATFORM_UNSUPPORTED_REASON,
+    async install() {
+      // Deliberately never installs anything, for the same reasons as vLLM:
+      // Docker / the NVIDIA Container Toolkit / WSL2 are host-level operator
+      // decisions with driver requirements PortOS cannot judge.
+      return {
+        success: false,
+        error: 'PortOS does not install this stack. On the Hopper or Blackwell host, set up Docker with the NVIDIA Container Toolkit, then follow docs/features/sglang-qwen38.md — it carries the compose file (with the verified launch line) and the one-time weight download.',
+      };
+    },
+    async start({ emit, isCancelled }) {
+      // Refuse before docker on a card with no recipe, so a wrong-hardware host
+      // never reaches a `docker compose up` that would pull the image.
+      const cuda = await getCudaCapability().catch(() => null);
+      const unsupported = sglangUnsupportedReason({ status: cuda?.status, gpus: cuda?.gpus });
+      if (unsupported) return { success: false, error: unsupported };
+      // Only ever brings up an ALREADY-prepared project — see
+      // `lib/sglangQwenProject.js` for why each refusal exists.
+      const project = await inspectSglangQwenProject();
+      const blocked = sglangStartBlockedReason(project);
+      if (blocked) return { success: false, error: blocked };
+      if (isCancelled()) return { success: false, error: 'Cancelled before the container was started.' };
+      emit(`Starting the SGLang container from ${project.dir} (${project.composeFile}).`);
+      emit('The image and weights are already on disk — this only brings the service up.');
+      return runStreamingCommand(
+        'docker',
+        ['compose', 'up', '-d'],
+        emit,
+        { timeoutMs: CONTROL_TIMEOUT_MS, cwd: project.dir },
+      );
+    },
+  }),
+
   ollama: Object.freeze({
     async install({ emit }) {
       // `installBackend` already registers the Homebrew service / runs the
@@ -400,7 +455,7 @@ function platformSupported(row) {
  * every runtime with no cache to read reports — deliberately keeps the old
  * behavior; a cache PortOS could not read must not be treated as an empty one.
  *
- * @param {string} kind - `mtplx` | `llama` | `ollama` | `lmstudio` | `vllm`
+ * @param {string} kind - `mtplx` | `llama` | `ollama` | `lmstudio` | `vllm` | `sglang`
  * @param {{installed: boolean, running: boolean, weights?: 'unknown'|'empty'|'partial'|'ready'}} state
  */
 export function describeRuntimeSetup(kind, { installed, running, weights = 'unknown' }) {

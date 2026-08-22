@@ -22,6 +22,9 @@ const SHIPPED_REFRESHABLE = [
   'opencode-mtplx', 'opencode-mtplx-tui', 'opencode-ollama', 'opencode-ollama-tui',
   'opencode-orcarouter', 'opencode-orcarouter-tui', 'orcarouter',
   'opencode-vllm', 'opencode-vllm-tui',
+  // SGLang publishes its served catalog through the same OpenAI-compatible
+  // `/v1/models` contract as the vLLM pair, so its wrappers refresh too.
+  'opencode-sglang', 'opencode-sglang-tui',
 ];
 const SHIPPED_NOT_REFRESHABLE = [
   'claude-code-tui', 'claude-code-tui-bedrock', 'codex', 'codex-tui',

@@ -53,6 +53,15 @@ const vllmManager = vi.hoisted(() => ({
   startVllmQwenProject: vi.fn(async () => ({ success: true })),
 }));
 vi.mock('./vllmQwenManager.js', () => vllmManager);
+// The SGLang project on disk, and the CUDA probe its start row consults BEFORE
+// docker — mocked so no assertion depends on the developer's actual GPU.
+const sglangProject = vi.hoisted(() => ({
+  inspectSglangQwenProject: vi.fn(),
+  sglangStartBlockedReason: vi.fn(() => null),
+}));
+vi.mock('../lib/sglangQwenProject.js', () => sglangProject);
+const cuda = vi.hoisted(() => ({ getCudaCapability: vi.fn() }));
+vi.mock('../lib/cudaCapability.js', () => cuda);
 
 import { describeRuntimeSetup, readRuntimeWeights, runLocalRuntimeSetup, SETUP_ACTIONS, SETUP_RUNTIME_KINDS } from './localRuntimeSetup.js';
 
@@ -61,8 +70,13 @@ const reachable = (models = ['mtplx']) => ({ reachable: true, models, error: nul
 
 const cachedModels = (models) => ({ models, error: null });
 
+const preparedSglangProject = { dir: '/home/example/sglang-qwen38', hasProject: true, composeFile: 'docker-compose.yml', hasWeights: true, weightsRoot: '/home/example/sglang-qwen38/hf-cache/hub' };
 
 beforeEach(() => {
+  sglangProject.inspectSglangQwenProject.mockResolvedValue(preparedSglangProject);
+  sglangProject.sglangStartBlockedReason.mockReturnValue(null);
+  // Default to the verified Hopper cell; the hardware cases override it.
+  cuda.getCudaCapability.mockResolvedValue({ status: 'available', gpus: [{ name: 'NVIDIA H200', computeCap: '9.0', vramGb: 141 }] });
   // Implementations AND return values (not just call records) survive
   // `clearAllMocks`, so a probe implementation left over from an earlier test
   // would drive this module's poll loop for its full timeout.
@@ -84,7 +98,7 @@ afterEach(() => {
 
 describe('describeRuntimeSetup', () => {
   it('covers every runtime the readiness checklist can report', () => {
-    expect([...SETUP_RUNTIME_KINDS].sort()).toEqual(['llama', 'lmstudio', 'mtplx', 'ollama', 'vllm']);
+    expect([...SETUP_RUNTIME_KINDS].sort()).toEqual(['llama', 'lmstudio', 'mtplx', 'ollama', 'sglang', 'vllm']);
   });
 
   it('offers install AND start when nothing is there yet', () => {
@@ -669,6 +683,108 @@ describe('vllm — the registry offers it, the manager does it', () => {
     expect(result).toMatchObject({ success: false, error: expect.stringMatching(/does not install this stack/) });
     expect(vllmManager.provisionVllmQwenProject).not.toHaveBeenCalled();
     expect(localLlm.installBackend).not.toHaveBeenCalled();
+    restore();
+  });
+});
+
+describe('sglang — a hardware gate in front of the same never-provision posture', () => {
+  const sglangEndpoint = 'http://127.0.0.1:18021/v1';
+  const hopper = { status: 'available', gpus: [{ name: 'NVIDIA H200', computeCap: '9.0', vramGb: 141 }] };
+  const ampere = { status: 'available', gpus: [{ name: 'NVIDIA GeForce RTX 3090', computeCap: '8.6', vramGb: 24 }] };
+
+  const startOnLinux = async () => {
+    pathLookup.findCommandOnPath.mockReturnValue('/usr/bin/docker');
+    probe.probeOpenAiModels
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValueOnce(unreachable)
+      .mockResolvedValue(reachable(['qwen3.8-27b']));
+    return runLocalRuntimeSetup('sglang', { endpoint: sglangEndpoint, emit: () => {} });
+  };
+
+  it('is unsupported on darwin, and says where Mac users should go instead', () => {
+    const restore = pinPlatform('darwin');
+    expect(describeRuntimeSetup('sglang', { installed: false, running: false })).toMatchObject({
+      runtime: 'sglang',
+      action: null,
+      blockedReason: expect.stringMatching(/MTPLX or llama\.cpp DSpark/),
+    });
+    restore();
+  });
+
+  it('offers a start button on a Linux/Windows host with docker present', () => {
+    const restore = pinPlatform('linux');
+    expect(describeRuntimeSetup('sglang', { installed: true, running: false })).toMatchObject({
+      runtime: 'sglang',
+      action: 'start',
+      blockedReason: null,
+    });
+    restore();
+  });
+
+  it('brings up an already-prepared compose project — no --profile, in its own directory', async () => {
+    const restore = pinPlatform('linux');
+    cuda.getCudaCapability.mockResolvedValue(hopper);
+
+    const result = await startOnLinux();
+
+    expect(result.success).toBe(true);
+    expect(streaming.runStreamingCommand).toHaveBeenCalledWith(
+      'docker',
+      ['compose', 'up', '-d'],
+      expect.any(Function),
+      expect.objectContaining({ cwd: preparedSglangProject.dir }),
+    );
+    restore();
+  });
+
+  it('refuses an Ampere card BEFORE docker, and names the vLLM path instead', async () => {
+    // The cookbook has no 3090 cell. Refusing here — not after a `docker compose
+    // up` — is what keeps a wrong-hardware host from pulling the image.
+    const restore = pinPlatform('linux');
+    cuda.getCudaCapability.mockResolvedValue(ampere);
+
+    const result = await startOnLinux();
+
+    expect(result).toMatchObject({ success: false, error: expect.stringMatching(/qwen38-rtx3090/) });
+    expect(streaming.runStreamingCommand).not.toHaveBeenCalled();
+    expect(sglangProject.inspectSglangQwenProject).not.toHaveBeenCalled();
+    restore();
+  });
+
+  it('says the probe failed rather than "no GPU" when nvidia-smi would not answer', async () => {
+    const restore = pinPlatform('linux');
+    cuda.getCudaCapability.mockResolvedValue({ status: 'unknown', gpus: [] });
+
+    const result = await startOnLinux();
+
+    expect(result.error).toMatch(/could not read/i);
+    expect(streaming.runStreamingCommand).not.toHaveBeenCalled();
+    restore();
+  });
+
+  it('refuses to run compose when the project is not demonstrably prepared', async () => {
+    const restore = pinPlatform('linux');
+    cuda.getCudaCapability.mockResolvedValue(hopper);
+    sglangProject.sglangStartBlockedReason.mockReturnValue('no Qwen weights are cached yet');
+
+    const result = await startOnLinux();
+
+    expect(result).toMatchObject({ success: false, error: expect.stringMatching(/no Qwen weights are cached/) });
+    // The whole point: a 20 GB pull is never started on the user's behalf.
+    expect(streaming.runStreamingCommand).not.toHaveBeenCalled();
+    restore();
+  });
+
+  it('never installs docker or the container toolkit', async () => {
+    const restore = pinPlatform('linux');
+    cuda.getCudaCapability.mockResolvedValue(hopper);
+    pathLookup.findCommandOnPath.mockReturnValue(null); // docker not on PATH
+    probe.probeOpenAiModels.mockResolvedValue(unreachable);
+
+    const result = await runLocalRuntimeSetup('sglang', { endpoint: sglangEndpoint, emit: () => {} });
+
+    expect(result).toMatchObject({ success: false, error: expect.stringMatching(/does not install this stack/) });
+    expect(streaming.runStreamingCommand).not.toHaveBeenCalled();
     restore();
   });
 });

@@ -129,6 +129,7 @@ describe('effortLevelsForProvider (server mirror)', () => {
     ['OpenCode llama TUI', { id: 'opencode-llama-tui', command: 'opencode', llamaBacked: true }, ['low', 'medium', 'high']],
     ['OpenCode MTPLX', { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true }, ['low', 'medium', 'high']],
     ['OpenCode vLLM TUI', { id: 'opencode-vllm-tui', command: 'opencode', vllmBacked: true }, ['low', 'medium', 'high']],
+    ['OpenCode SGLang TUI', { id: 'opencode-sglang-tui', command: 'opencode', sglangBacked: true }, ['low', 'medium', 'high']],
     ['OpenCode with no local backend', { id: 'opencode', command: 'opencode' }, null],
     ['grok (no effort control)', { id: 'grok-cli', command: 'grok' }, null],
     ['blank command is not claude', { id: 'ollama' }, null],
@@ -154,6 +155,9 @@ describe('generationControlsFor', () => {
     // hid the whole block while the server discarded every control anyway
     // (#4765).
     ['OpenCode vLLM TUI', { id: 'opencode-vllm-tui', command: 'opencode', vllmBacked: true }, { temperature: true, topP: true, thinking: true }],
+    // SGLang takes the same chat-template thinking toggle, and shipped with the
+    // controls wired from day one so it never repeated vLLM's hole.
+    ['OpenCode SGLang TUI', { id: 'opencode-sglang-tui', command: 'opencode', sglangBacked: true }, { temperature: true, topP: true, thinking: true }],
     // A Claude harness on Ollama is forwarded only MAX_THINKING_TOKENS
     // (server/lib/cliChildEnv.js) — it owns its own sampling.
     ['Claude Ollama TUI', { id: 'claude-ollama-tui', command: 'claude', ollamaBacked: true }, { temperature: false, topP: false, thinking: true }],
@@ -936,6 +940,7 @@ describe('supportsModelRefresh', () => {
       'opencode-llama-tui',
       'opencode-mtplx', 'opencode-mtplx-tui', 'opencode-ollama',
       'opencode-ollama-tui', 'opencode-orcarouter', 'opencode-orcarouter-tui',
+      'opencode-sglang', 'opencode-sglang-tui',
       'opencode-vllm', 'opencode-vllm-tui',
       'orcarouter',
     ]);

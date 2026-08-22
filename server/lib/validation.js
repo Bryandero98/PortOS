@@ -418,6 +418,9 @@ export const providerSchema = z.object({
   // Marks an OpenCode CLI/TUI wrapper for a separately started local vLLM
   // container (the Qwen3.8-27B DFlash 2 stack on an RTX 3090).
   vllmBacked: z.boolean().optional(),
+  // Marks an OpenCode CLI/TUI wrapper for a separately started local SGLang
+  // container (Qwen3.8-27B on a Hopper/Blackwell card).
+  sglangBacked: z.boolean().optional(),
   // Marks an OpenCode CLI/TUI wrapper for the OrcaRouter OpenAI-compatible
   // gateway; the sibling API record owns its key.
   orcarouterBacked: z.boolean().optional(),

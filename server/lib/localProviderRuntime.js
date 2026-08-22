@@ -11,7 +11,8 @@
  * exactly that failure.
  *
  * This module is the pure half of the answer: given a provider record, which
- * local runtime backs it (`llama` / `ollama` / `lmstudio` / `mtplx` / `vllm`) and what
+ * local runtime backs it (`llama` / `ollama` / `lmstudio` / `mtplx` / `vllm` /
+ * `sglang`) and what
  * base URL should be probed. `services/providerReadiness.js` does the probing.
  * Kept side-effect-free so both the readiness service and its tests can reason
  * about the mapping without a daemon on the host.
@@ -192,6 +193,24 @@ export const LOCAL_RUNTIMES = Object.freeze({
     // compose project, so PortOS has no launch line of its own to rename.
     servesOneModel: true,
   }),
+  sglang: Object.freeze({
+    id: 'sglang',
+    label: 'SGLang (Qwen3.8-27B)',
+    // Docker again, for the same reason as vLLM: the engine ships as an official
+    // image (`lmsysorg/sglang:qwen38-27b`) PortOS never builds. Unlike vLLM,
+    // though, the LAUNCH LINE is ours — `lib/sglangQwenRecipe.js` owns it,
+    // because SGLang publishes no compose project to inherit one from.
+    command: 'docker',
+    defaultBaseUrl: opencodeLocalBaseUrl('sglang'),
+    // No Models → LLMs entry — the weights are an operator-owned ~20 GB
+    // download, not something PortOS fetches.
+    manageUrl: null,
+    docsUrl: 'https://github.com/atomantic/PortOS/blob/main/docs/features/sglang-qwen38.md',
+    modelsHint: 'Save the compose file from docs/features/sglang-qwen38.md and download the weights once — PortOS never pulls the image or the ~20 GB of weights.',
+    // One container, one checkpoint; the recipe picks the quantized repo from
+    // the card class, so there is no per-model rename for PortOS to offer.
+    servesOneModel: true,
+  }),
   mtplx: Object.freeze({
     id: 'mtplx',
     label: 'MTPLX',
@@ -227,7 +246,7 @@ export const LOCAL_RUNTIMES = Object.freeze({
  *     launcher) started. Its "installed models" are whatever `GET /v1/models`
  *     reports right now, and a measurement talks to the endpoint directly.
  */
-export const ASSESSABLE_RUNTIMES = Object.freeze(['ollama', 'lmstudio', 'llama', 'mtplx', 'vllm']);
+export const ASSESSABLE_RUNTIMES = Object.freeze(['ollama', 'lmstudio', 'llama', 'mtplx', 'vllm', 'sglang']);
 
 /** Assessable runtimes PortOS holds a provider record and model catalog for. */
 export const MANAGED_ASSESSMENT_BACKENDS = Object.freeze(['ollama', 'lmstudio']);
@@ -287,7 +306,7 @@ function opencodeConfiguredBaseUrl(provider, namespace) {
  * *namespace* but a remote hosted API, so there is no local daemon to check.
  *
  * @param {object|null|undefined} provider
- * @returns {'llama'|'ollama'|'lmstudio'|'mtplx'|'vllm'|null}
+ * @returns {'llama'|'ollama'|'lmstudio'|'mtplx'|'vllm'|'sglang'|null}
  */
 export function localRuntimeKind(provider) {
   if (!provider || typeof provider !== 'object') return null;

@@ -611,6 +611,11 @@ export default function AIProviders() {
                           vLLM / DFLASH2
                         </span>
                       )}
+                      {provider.sglangBacked && (
+                        <span className="text-xs px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          SGLANG
+                        </span>
+                      )}
                       {provider.mtplxBacked && (
                         <span className="text-xs px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
                           MTPLX
@@ -1213,11 +1218,15 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                     />
                   </FormField>
 
-                  {/* The one CLI/TUI backend that authenticates: the vLLM compose
+                  {/* The CLI/TUI backends that can authenticate: the vLLM compose
                       stack is started with VLLM_API_KEY, so without this field
                       there is nowhere to put it and the container 401s every
                       model refresh and every run. Reads `capabilityProvider`
-                      because `vllmBacked` is a stored marker, not a form field. */}
+                      because `vllmBacked` is a stored marker, not a form field.
+                      SGLang has its own field below — its key is OPTIONAL (only
+                      set when the operator ran `--api-key`), so the two cannot
+                      share one placeholder without telling half the operators to
+                      paste a secret that does not exist. */}
                   {capabilityProvider?.vllmBacked && (
                     <FormField label="API Key">
                       <input
@@ -1230,6 +1239,23 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                       <p className="text-xs text-gray-500 mt-1">
                         The <code>VLLM_API_KEY</code> your compose stack was started with. PortOS puts it on the
                         spawned OpenCode provider and on the model-refresh probe; the container rejects both without it.
+                      </p>
+                    </FormField>
+                  )}
+
+                  {capabilityProvider?.sglangBacked && (
+                    <FormField label="API Key (optional)">
+                      <input
+                        type="password"
+                        value={formData.apiKey}
+                        onChange={(e) => setFormData(prev => ({ ...prev, apiKey: e.target.value }))}
+                        placeholder={provider?.hasApiKey ? 'Key set — leave blank to keep' : 'Only if you started SGLang with --api-key'}
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        SGLang serves unauthenticated unless you started it with <code>--api-key</code>. Leave this
+                        blank in that case — PortOS attaches a key only when one is set, on both the spawned OpenCode
+                        provider and the model-refresh probe.
                       </p>
                     </FormField>
                   )}

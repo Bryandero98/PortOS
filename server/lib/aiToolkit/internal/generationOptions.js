@@ -28,7 +28,7 @@ const finiteNumber = (value, min, max) => {
  * top_p with it, which is how the vLLM providers shipped with every generation
  * control silently discarded on the OpenCode side (#4765).
  *
- * @param {{temperature?:unknown, topP?:unknown, thinking?:unknown, llamaBacked?:boolean, mtplxBacked?:boolean, vllmBacked?:boolean}|null|undefined} provider
+ * @param {{temperature?:unknown, topP?:unknown, thinking?:unknown, llamaBacked?:boolean, mtplxBacked?:boolean, vllmBacked?:boolean, sglangBacked?:boolean}|null|undefined} provider
  * @returns {{temperature?:number, top_p?:number, think?:boolean, chat_template_kwargs?:{enable_thinking:boolean}}}
  */
 export function apiGenerationOptions(provider) {
@@ -36,7 +36,8 @@ export function apiGenerationOptions(provider) {
   if (!ollama
     && provider?.llamaBacked !== true
     && provider?.mtplxBacked !== true
-    && provider?.vllmBacked !== true) return {};
+    && provider?.vllmBacked !== true
+    && provider?.sglangBacked !== true) return {};
   // Ollama API runs have defaulted to 0.6 since this control shipped; the other
   // local backends keep their own default until the user pins one.
   const temperature = finiteNumber(provider.temperature, 0, 2) ?? (ollama ? 0.6 : undefined);
@@ -44,8 +45,8 @@ export function apiGenerationOptions(provider) {
   return {
     ...(temperature === undefined ? {} : { temperature }),
     ...(topP === undefined ? {} : { top_p: topP }),
-    // Ollama takes its own native `think` boolean; llama.cpp / MTPLX / vLLM
-    // route the toggle through the chat template instead.
+    // Ollama takes its own native `think` boolean; llama.cpp / MTPLX / vLLM /
+    // SGLang route the toggle through the chat template instead.
     ...(typeof provider.thinking !== 'boolean'
       ? {}
       : ollama

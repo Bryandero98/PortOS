@@ -611,6 +611,10 @@ export function createProviderService(config = {}) {
         // the marker so OpenCode receives the `vllm/` namespace and model
         // refresh probes the container rather than the OpenCode harness.
         ...(providerData.vllmBacked === true ? { vllmBacked: true } : {}),
+        // The SGLang container is a fourth distinct local backend (Hopper/Blackwell,
+        // PortOS-owned launch line): preserve the marker so OpenCode receives the
+        // `sglang/` namespace and model refresh probes the container.
+        ...(providerData.sglangBacked === true ? { sglangBacked: true } : {}),
         ...(providerData.orcarouterBacked === true ? { orcarouterBacked: true } : {}),
         // Explicit opt-in to send the API key to an arbitrary (non-local,
         // non-allowlisted) endpoint — see internal/endpointGuard.js. Only
@@ -1111,6 +1115,15 @@ export function createProviderService(config = {}) {
      * container, pulls the image, or issues a completion.
      */
     async _fetchVllmModels(provider) {
+      return this._refreshAPIProviderModels(provider);
+    },
+
+    /**
+     * Fetch the served catalog from a local SGLang container for its OpenCode
+     * CLI/TUI wrappers. Refresh-only, like every other local fetcher here: it
+     * never starts the container, pulls the image, or issues a completion.
+     */
+    async _fetchSglangModels(provider) {
       return this._refreshAPIProviderModels(provider);
     },
 

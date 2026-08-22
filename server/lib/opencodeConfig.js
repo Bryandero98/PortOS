@@ -23,6 +23,7 @@ import { PORTS } from './ports.js';
 
 const LLAMA_SERVER_BASE_URL = `http://127.0.0.1:${PORTS.LLAMA_SERVER}/v1`;
 const VLLM_QWEN_BASE_URL = `http://127.0.0.1:${PORTS.VLLM_QWEN}/v1`;
+const SGLANG_QWEN_BASE_URL = `http://127.0.0.1:${PORTS.SGLANG_QWEN}/v1`;
 
 /**
  * Base OpenCode provider entries for the local OpenAI-compatible daemons.
@@ -50,6 +51,11 @@ const OPENCODE_LOCAL_BASE_PROVIDERS = {
     name: 'vLLM Qwen3.8-27B (local)',
     options: { baseURL: VLLM_QWEN_BASE_URL },
   },
+  sglang: {
+    npm: '@ai-sdk/openai-compatible',
+    name: 'SGLang Qwen3.8-27B (local)',
+    options: { baseURL: SGLANG_QWEN_BASE_URL },
+  },
   orcarouter: {
     npm: '@ai-sdk/openai-compatible',
     name: 'OrcaRouter',
@@ -62,7 +68,7 @@ const OPENCODE_LOCAL_BASE_PROVIDERS = {
  * — what a spawned OpenCode talks to when the provider stores no config of its
  * own. Read by `lib/localProviderRuntime.js` so the readiness probe and the
  * spawn agree on the endpoint instead of keeping two copies of these ports.
- * @param {'ollama'|'mtplx'|'llama'|'vllm'|'orcarouter'} providerKey
+ * @param {'ollama'|'mtplx'|'llama'|'vllm'|'sglang'|'orcarouter'} providerKey
  * @returns {string|null}
  */
 export const opencodeLocalBaseUrl = (providerKey) =>
@@ -73,7 +79,7 @@ export const opencodeLocalBaseUrl = (providerKey) =>
  * else here is an unauthenticated loopback daemon, and attaching a key to those
  * would put a secret into a config file that never needed one.
  */
-const KEY_BEARING_NAMESPACES = new Set(['orcarouter', 'vllm']);
+const KEY_BEARING_NAMESPACES = new Set(['orcarouter', 'vllm', 'sglang']);
 
 const localProviderBase = (providerKey) => {
   if (!Object.hasOwn(OPENCODE_LOCAL_BASE_PROVIDERS, providerKey)) {
@@ -95,7 +101,7 @@ const stripProviderPrefix = (id, providerKey) =>
  * Normalize an id or list of ids to the unique, non-empty, prefix-stripped bare
  * model ids that key the OpenCode `models` map.
  * @param {string|string[]|null|undefined} models
- * @param {'ollama'|'mtplx'|'llama'|'vllm'|'orcarouter'} [providerKey='ollama']
+ * @param {'ollama'|'mtplx'|'llama'|'vllm'|'sglang'|'orcarouter'} [providerKey='ollama']
  * @returns {string[]}
  */
 export function toBareModelIds(models, providerKey = 'ollama') {
@@ -126,7 +132,7 @@ export function toBareModelIds(models, providerKey = 'ollama') {
  * how vLLM shipped with no generation controls at all (#4765). Every local
  * runtime OpenCode can be pointed at needs a row here; `opencodeConfig.test.js`
  * walks `LOCAL_RUNTIMES` to make a missing one fail.
- * @type {Record<'ollama'|'mtplx'|'llama'|'vllm'|'orcarouter', 'think'|'chatTemplate'|null>}
+ * @type {Record<'ollama'|'mtplx'|'llama'|'vllm'|'sglang'|'orcarouter', 'think'|'chatTemplate'|null>}
  */
 const THINKING_STYLE = {
   ollama: 'think',
@@ -135,6 +141,12 @@ const THINKING_STYLE = {
   // vLLM routes it through the chat template exactly as MTPLX and llama.cpp do
   // — see `server/services/voice/llm.js` for the same body shape on the HTTP side.
   vllm: 'chatTemplate',
+  // SGLang serves Qwen3.8-27B with thinking ON by default, disabled per request
+  // through the same `chat_template_kwargs.enable_thinking` the other local
+  // OpenAI endpoints take. CoS coding wants it OFF (that is what keeps the
+  // tool-call format reliable), so the control has to exist for the operator to
+  // set — but nothing here SEEDS `thinking: false`, per #4716.
+  sglang: 'chatTemplate',
   orcarouter: null,
 };
 
@@ -162,7 +174,7 @@ const readBoolean = (value) =>
  * the provider.
  *
  * @param {{temperature?:unknown, topP?:unknown, thinking?:unknown, effort?:unknown}|null|undefined} generation
- * @param {'ollama'|'mtplx'|'llama'|'vllm'|'orcarouter'} providerKey
+ * @param {'ollama'|'mtplx'|'llama'|'vllm'|'sglang'|'orcarouter'} providerKey
  * @returns {object|null}
  */
 export function buildAgentGeneration(generation, providerKey) {
@@ -206,7 +218,7 @@ export function buildAgentGeneration(generation, providerKey) {
  *
  * @param {string|string[]|null|undefined} models
  * @param {object|null} [base] - existing config to merge into (a fresh clone is made)
- * @param {'ollama'|'mtplx'|'llama'|'vllm'|'orcarouter'} [providerKey='ollama']
+ * @param {'ollama'|'mtplx'|'llama'|'vllm'|'sglang'|'orcarouter'} [providerKey='ollama']
  * @returns {object} OpenCode config object
  */
 export function buildOpencodeConfig(models, base = null, providerKey = 'ollama', generation = null) {
@@ -245,7 +257,7 @@ export function buildOpencodeConfig(models, base = null, providerKey = 'ollama',
  *
  * @param {string|string[]|null|undefined} models
  * @param {object|null} [base] - existing config to merge into
- * @param {'ollama'|'mtplx'|'llama'|'vllm'|'orcarouter'} [providerKey='ollama']
+ * @param {'ollama'|'mtplx'|'llama'|'vllm'|'sglang'|'orcarouter'} [providerKey='ollama']
  * @returns {string} JSON string for OPENCODE_CONFIG_CONTENT
  */
 export function buildOpencodeConfigContent(models, base = null, providerKey = 'ollama', generation = null) {
@@ -265,7 +277,7 @@ export function buildOpencodeConfigContent(models, base = null, providerKey = 'o
  * model, and the model being run this invocation — so whichever namespaced
  * `--model` the spawner passes is always accepted.
  *
- * @param {{command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean, llamaBacked?:boolean, vllmBacked?:boolean, orcarouterBacked?:boolean, models?:string[], defaultModel?:string|null, apiKey?:string, orcarouterApiKey?:string, envVars?:object}} provider
+ * @param {{command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean, llamaBacked?:boolean, vllmBacked?:boolean, sglangBacked?:boolean, orcarouterBacked?:boolean, models?:string[], defaultModel?:string|null, apiKey?:string, orcarouterApiKey?:string, envVars?:object}} provider
  * @param {string|null|undefined} model - the model being run (may differ from defaultModel)
  * @returns {{OPENCODE_CONFIG_CONTENT?: string}} env vars to merge
  */
