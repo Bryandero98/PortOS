@@ -89,6 +89,16 @@ export const MODEL_FETCHERS = [
     fetch: '_fetchVllmModels',
   },
   {
+    key: 'sglang',
+    // Same OpenAI-compatible `/v1/models` contract as the vLLM row. SGLang only
+    // authenticates when the operator started it with `--api-key`, so the
+    // wrapper's `apiKey` is usually blank — `_refreshAPIProviderModels` simply
+    // omits the Bearer header then.
+    cliMatch: (p) => p?.sglangBacked === true,
+    tuiMatch: (p) => p?.sglangBacked === true,
+    fetch: '_fetchSglangModels',
+  },
+  {
     key: 'orcarouter',
     // OrcaRouter-backed OpenCode wrappers probe the sibling API provider's
     // OpenAI-compatible `/models` endpoint, never `opencode models`.

@@ -10,6 +10,7 @@ import { probeOpenAiModels } from './openAiModelsProbe.js';
 import { getCudaCapability } from './cudaCapability.js';
 import { localRuntimeForProvider, LOCAL_RUNTIMES } from './localProviderRuntime.js';
 import { resolveVllmProjectDir } from './vllmQwenProject.js';
+import { resolveSglangProjectDir } from './sglangQwenProject.js';
 
 const execFileAsync = promisify(execFile);
 const GB = 2 ** 30;
@@ -57,20 +58,39 @@ export const GPU_BLOCKER_PROBE_TIMEOUT_MS = 1_500;
 const vllmBlockerReason = ({ endpoint, projectDir }) =>
   `${LOCAL_RUNTIMES.vllm.label} is serving at ${endpoint} and holds nearly all of this GPU's VRAM, so this job would run out of memory partway through its model load. Stop the container with \`docker compose --profile single stop\` in ${projectDir}, then start this job again. PortOS will not stop it for you: nothing would restart it, an agent session attached to it dies with it, and a cold start takes roughly 5–7 minutes.`;
 
+/** The same refusal for the SGLang container, with its own stop command. */
+const sglangBlockerReason = ({ endpoint, projectDir }) =>
+  `${LOCAL_RUNTIMES.sglang.label} is serving at ${endpoint} and holds nearly all of this GPU's VRAM, so this job would run out of memory partway through its model load. Stop the container with \`docker compose stop\` in ${projectDir}, then start this job again. PortOS will not stop it for you: nothing would restart it, an agent session attached to it dies with it, and a cold start is measured in minutes.`;
+
+/**
+ * One row per GPU-exclusive local container, keyed by its `*Backed` provider
+ * marker. Table-driven rather than a second copy of the probe: the two
+ * containers differ only in which marker selects them, which directory holds
+ * their compose file, and how the refusal is worded — everything else (the
+ * enabled-provider gate, the CUDA gate, the credential-preferring endpoint
+ * dedupe, the reachable-means-blocking rule) is identical, and a forked copy is
+ * how the second runtime would quietly miss a fix made to the first.
+ */
+const GPU_EXCLUSIVE_RUNTIMES = Object.freeze([
+  Object.freeze({ kind: 'vllm', marker: 'vllmBacked', resolveProjectDir: resolveVllmProjectDir, reason: vllmBlockerReason }),
+  Object.freeze({ kind: 'sglang', marker: 'sglangBacked', resolveProjectDir: resolveSglangProjectDir, reason: sglangBlockerReason }),
+]);
+
 /**
  * GPU tenants that make a local media job unwinnable *before* it spends minutes
  * loading a model into VRAM it cannot have.
  *
- * Today that is exactly one thing: the vLLM Qwen3.8-27B compose container, which
- * holds ~23 GB of a 24 GB RTX 3090. `unloadResidentModels()` above cannot help —
- * it evicts loopback Ollama / LM Studio, and a container is invisible to both.
- * The job therefore proceeded, allocated, and died inside the model load with an
- * OOM naming neither vLLM nor a remedy.
+ * Today that is two things: the vLLM Qwen3.8-27B compose container (~23 GB of a
+ * 24 GB RTX 3090) and the SGLang Qwen3.8-27B container on a Hopper/Blackwell
+ * card. `unloadResidentModels()` above cannot help — it evicts loopback Ollama /
+ * LM Studio, and a container is invisible to both. The job therefore proceeded,
+ * allocated, and died inside the model load with an OOM naming neither the
+ * container nor a remedy.
  *
  * **Detect and refuse — never auto-stop** (#4766). An Ollama unload is
- * transparent (the next request reloads); stopping this container is not.
- * Nothing restarts it, an attached CoS session dies with it, and a cold start is
- * ~5–7 minutes. PortOS deliberately never *starts* this container either — both
+ * transparent (the next request reloads); stopping one of these containers is
+ * not. Nothing restarts it, an attached CoS session dies with it, and a cold
+ * start is minutes. PortOS deliberately never *starts* them either — both
  * directions stay operator decisions, and the refusal prose is what makes that
  * actionable.
  *
@@ -78,10 +98,11 @@ const vllmBlockerReason = ({ endpoint, projectDir }) =>
  * container is not serving" → **no blocker, proceed**. *Couldn't check* must
  * never collapse into *is blocking*, or an unrelated network hiccup would refuse
  * every media job on the box. Only an endpoint that actually answers blocks —
- * including a 401/403, which is a container up behind `VLLM_API_KEY`.
+ * including a 401/403, which is a container up behind an API key.
  *
  * Two cheap gates keep the common path free of latency, in cost order:
- *   1. No **enabled** `vllmBacked` provider → nothing to probe, no network call.
+ *   1. No **enabled** `vllmBacked` / `sglangBacked` provider → nothing to probe,
+ *      no network call.
  *   2. `getCudaCapability()` says `'absent'` → this host has no NVIDIA GPU to
  *      contend over. `'unknown'` (nvidia-smi wedged or too old) is NOT a
  *      negative and still probes — same sentinel rule as above, in the other
@@ -94,8 +115,11 @@ const vllmBlockerReason = ({ endpoint, projectDir }) =>
  */
 export async function detectGpuBlockers({ env = process.env, providers = null, timeoutMs = GPU_BLOCKER_PROBE_TIMEOUT_MS } = {}) {
   const all = Array.isArray(providers) ? providers : await getAllProviders().catch(() => []);
-  const candidates = (Array.isArray(all) ? all : []).filter((p) => p?.enabled === true && p?.vllmBacked === true);
-  if (!candidates.length) return [];
+  const enabled = (Array.isArray(all) ? all : []).filter((p) => p?.enabled === true);
+  const rows = GPU_EXCLUSIVE_RUNTIMES
+    .map((row) => ({ row, candidates: enabled.filter((p) => p?.[row.marker] === true) }))
+    .filter(({ candidates }) => candidates.length > 0);
+  if (!rows.length) return [];
 
   // No custom timeout: this shares the memo the image-to-3D lane gating already
   // fills, and a shorter deadline here would write an 'unknown' into it that the
@@ -106,29 +130,31 @@ export async function detectGpuBlockers({ env = process.env, providers = null, t
   // Two providers can point at one container with different credentials, and a
   // remote endpoint is a different machine's GPU — `localRuntimeForProvider`
   // drops the latter and returns null for it.
-  const byEndpoint = new Map();
-  for (const provider of candidates) {
-    const runtime = localRuntimeForProvider(provider);
-    if (runtime?.kind !== 'vllm' || !runtime.endpoint) continue;
-    const existing = byEndpoint.get(runtime.endpoint);
-    // Prefer the credentialed record: an unauthenticated probe still detects the
-    // container (401 ⇒ reachable), but a readable listing is the cleaner signal.
-    if (!existing || (!existing.apiKey && typeof provider.apiKey === 'string' && provider.apiKey !== '')) {
-      byEndpoint.set(runtime.endpoint, { provider, apiKey: typeof provider.apiKey === 'string' ? provider.apiKey : '' });
+  const targets = new Map();
+  for (const { row, candidates } of rows) {
+    for (const provider of candidates) {
+      const runtime = localRuntimeForProvider(provider);
+      if (runtime?.kind !== row.kind || !runtime.endpoint) continue;
+      const existing = targets.get(runtime.endpoint);
+      // Prefer the credentialed record: an unauthenticated probe still detects
+      // the container (401 ⇒ reachable), but a readable listing is the cleaner
+      // signal.
+      if (!existing || (!existing.apiKey && typeof provider.apiKey === 'string' && provider.apiKey !== '')) {
+        targets.set(runtime.endpoint, { row, provider, apiKey: typeof provider.apiKey === 'string' ? provider.apiKey : '' });
+      }
     }
   }
-  if (!byEndpoint.size) return [];
+  if (!targets.size) return [];
 
-  const projectDir = resolveVllmProjectDir(env);
-  const probes = await Promise.all([...byEndpoint].map(async ([endpoint, { provider, apiKey }]) => {
+  const probes = await Promise.all([...targets].map(async ([endpoint, { row, provider, apiKey }]) => {
     const probe = await probeOpenAiModels(endpoint, { timeoutMs, apiKey }).catch(() => null);
     if (!probe?.reachable) return null;
     return {
-      runtime: 'vllm',
+      runtime: row.kind,
       providerId: provider?.id ?? null,
       providerName: provider?.name ?? null,
       endpoint,
-      reason: vllmBlockerReason({ endpoint, projectDir }),
+      reason: row.reason({ endpoint, projectDir: row.resolveProjectDir(env) }),
     };
   }));
   return probes.filter(Boolean);

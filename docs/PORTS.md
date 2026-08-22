@@ -37,6 +37,7 @@ Common port labels:
 | 5568 | portos-llama-server | - | Loopback llama.cpp speculative-decoding server. Optional PM2 process, started/stopped from Models → LLMs. |
 | 8000 | portos-mtplx | - | Loopback MTPLX OpenAI-compatible API (upstream's own default, kept so the shipped provider presets match). Optional PM2 process, started/stopped from Models → LLMs. See [features/mtplx.md](./features/mtplx.md). |
 | 18020 | vLLM (Docker) | - | Loopback vLLM Qwen3.8-27B / DFlash 2 container on an RTX 3090 host. Operator-started (`docker compose --profile single up -d`) — PortOS never brings it up on boot. See [features/qwen38-rtx3090.md](./features/qwen38-rtx3090.md). |
+| 18021 | SGLang (Docker) | - | Loopback SGLang Qwen3.8-27B container on a Hopper/Blackwell host. Operator-started (`docker compose up -d`) — PortOS never brings it up on boot. See [features/sglang-qwen38.md](./features/sglang-qwen38.md). |
 
 ## How `:5555`, `:5553`, and `:5554` Relate
 
@@ -131,7 +132,9 @@ PortOS automatically detects ports from env vars:
 PostgreSQL in native mode listens on the system default `:5432`, outside these ranges. Two third-party
 local runtimes also sit outside them, each on its own upstream default so an unmodified install works
 against PortOS without editing anything: MTPLX on `:8000` and the vLLM Qwen3.8-27B container on
-`:18020` (`syv-ai/qwen38-27b-rtx3090`'s own compose file).
+`:18020` (`syv-ai/qwen38-27b-rtx3090`'s own compose file). The SGLang Qwen3.8-27B container sits
+next to it on `:18021` — that port is PortOS's own choice rather than an upstream default, since
+SGLang publishes an image but no compose project (its own default is `:30000`).
 
 ## Viewing Port Usage
 

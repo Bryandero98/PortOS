@@ -130,6 +130,11 @@ export default function ProviderCard({
               vLLM / DFLASH2
             </span>
           )}
+          {provider.sglangBacked && (
+            <span className="text-xs px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+              SGLANG
+            </span>
+          )}
           {provider.mtplxBacked && (
             <span className="text-xs px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
               MTPLX
@@ -300,6 +305,11 @@ export default function ProviderCard({
           {provider.vllmBacked && (
             <p className="text-xs text-emerald-300/90">
               Local vLLM container (endpoint: <code className="text-emerald-200">{provider.endpoint}</code>) — Qwen3.8-27B with DFlash 2 drafting. It holds the whole GPU, so stop it before running local image/video generation.
+            </p>
+          )}
+          {provider.sglangBacked && (
+            <p className="text-xs text-amber-300/90">
+              Local SGLang container (endpoint: <code className="text-amber-200">{provider.endpoint}</code>) — Qwen3.8-27B on a Hopper or Blackwell card. It holds the whole GPU, so stop it before running local image/video generation.
             </p>
           )}
           {isProcessProvider(provider) && (

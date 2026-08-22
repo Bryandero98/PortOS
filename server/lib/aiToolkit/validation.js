@@ -119,6 +119,11 @@ export const providerSchema = z.object({
   // `llamaBacked`: a different engine, a different port, and a different auth
   // story (vLLM is started behind an API key; llama-server is not).
   vllmBacked: z.boolean().optional(),
+  // Marks an OpenCode CLI/TUI wrapper for a separately started local SGLang
+  // container serving Qwen3.8-27B on a Hopper/Blackwell card. Distinct from
+  // `vllmBacked`: a different engine, a different port, a different tool-call
+  // parser, and an API key that is optional rather than required.
+  sglangBacked: z.boolean().optional(),
   // Marks an OpenCode CLI/TUI wrapper for the OrcaRouter OpenAI-compatible
   // gateway. Its API key is read from the sibling `orcarouter` API record at
   // spawn/refresh time and is never stored in this wrapper's config.

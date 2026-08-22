@@ -346,19 +346,50 @@ describe('buildOpencodeEnvVars', () => {
 // the missing key and returns null, taking temperature, topP and
 // reasoningEffort with it. That is how the seeded vLLM providers shipped with
 // every generation control silently discarded (#4765). Walk LOCAL_RUNTIMES so a
-// sixth runtime cannot land with the same hole.
+// seventh runtime cannot land with the same hole.
 describe('every OpenCode-reachable local runtime forwards generation controls', () => {
   // LM Studio is skipped deliberately — nothing spawns OpenCode against it, so
   // it has no provider entry (and no base URL) in opencodeConfig's table.
   const opencodeRuntimes = Object.keys(LOCAL_RUNTIMES).filter((id) => opencodeLocalBaseUrl(id));
 
   it('actually walks the runtimes (a degenerate filter would pass vacuously)', () => {
-    expect(opencodeRuntimes).toContain('vllm');
-    expect(opencodeRuntimes.length).toBeGreaterThanOrEqual(4);
+    expect(opencodeRuntimes).toEqual(expect.arrayContaining(['vllm', 'sglang']));
+    expect(opencodeRuntimes.length).toBeGreaterThanOrEqual(5);
   });
 
   it.each(opencodeRuntimes)('%s', (id) => {
     expect(buildAgentGeneration({ temperature: 0.7, topP: 0.9, effort: 'high' }, id))
       .toMatchObject({ temperature: 0.7, topP: 0.9, reasoningEffort: 'high' });
+  });
+});
+
+describe('SGLang OpenCode config', () => {
+  it('declares the sglang namespace at the loopback container endpoint', () => {
+    const result = buildOpencodeEnvVars(
+      { command: 'opencode', sglangBacked: true, models: ['qwen3.8-27b'] },
+      'qwen3.8-27b',
+    );
+    const config = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
+    expect(config.provider.sglang.options.baseURL).toBe('http://127.0.0.1:18021/v1');
+    expect(config.provider.sglang.models['qwen3.8-27b']).toEqual({ name: 'qwen3.8-27b', tool_call: true });
+  });
+
+  it('routes the thinking toggle through the chat template, like every other local endpoint', () => {
+    expect(buildAgentGeneration({ thinking: false }, 'sglang'))
+      .toEqual({ chat_template_kwargs: { enable_thinking: false } });
+  });
+
+  it('attaches an API key only when the operator set one', () => {
+    // SGLang serves unauthenticated unless started with `--api-key`, so a blank
+    // key must NOT put an empty `apiKey` into the spawned OpenCode config.
+    const blank = JSON.parse(buildOpencodeEnvVars(
+      { command: 'opencode', sglangBacked: true, apiKey: '', models: [] }, 'qwen3.8-27b',
+    ).OPENCODE_CONFIG_CONTENT);
+    expect(blank.provider.sglang.options).not.toHaveProperty('apiKey');
+
+    const keyed = JSON.parse(buildOpencodeEnvVars(
+      { command: 'opencode', sglangBacked: true, apiKey: 'operator-key', models: [] }, 'qwen3.8-27b',
+    ).OPENCODE_CONFIG_CONTENT);
+    expect(keyed.provider.sglang.options.apiKey).toBe('operator-key');
   });
 });

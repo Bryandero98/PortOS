@@ -223,6 +223,7 @@ export const isOpencodeLocalProvider = (provider) =>
     || provider?.mtplxBacked === true
     || provider?.llamaBacked === true
     || provider?.vllmBacked === true
+    || provider?.sglangBacked === true
     || provider?.orcarouterBacked === true);
 
 /**
@@ -573,7 +574,7 @@ export const isToolUseModel = (id) =>
  * @returns {{toolCapable:boolean}|null}
  */
 export const localToolUseHint = (id, provider, toolUseIdsByProvider = null) =>
-  (localBackendForProvider(provider) || isOllamaBackedProvider(provider) || provider?.mtplxBacked === true || provider?.llamaBacked === true || provider?.vllmBacked === true)
+  (localBackendForProvider(provider) || isOllamaBackedProvider(provider) || provider?.mtplxBacked === true || provider?.llamaBacked === true || provider?.vllmBacked === true || provider?.sglangBacked === true)
     && typeof id === 'string' && id.length > 0
     ? { toolCapable: toolUseIdsByProvider?.[provider?.id]?.has(id) === true || isToolUseModel(id) }
     : null;
@@ -1020,7 +1021,10 @@ export const generationControlsFor = (provider) => {
   const local = isOllamaBackedProvider(provider)
     || provider?.llamaBacked === true
     || provider?.mtplxBacked === true
-    || provider?.vllmBacked === true;
+    || provider?.vllmBacked === true
+    // SGLang takes the same `chat_template_kwargs.enable_thinking` as the other
+    // local OpenAI endpoints — see THINKING_STYLE.sglang on the server.
+    || provider?.sglangBacked === true;
   if (!local && !orcarouter) return null;
   if (commandBasename(provider?.command) === 'claude') {
     return { temperature: false, topP: false, thinking: true };
