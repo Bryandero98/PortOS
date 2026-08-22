@@ -30,42 +30,14 @@ import { buildFederatedMediaRequest } from '../../lib/federatedMediaRequest.js';
 import { getSettingsWithStatus } from '../settings.js';
 import { isTailnetPeer } from '../../lib/tailnetPeer.js';
 import { CLOUD_VIDEO_GEN_MODES, VIDEO_GEN_MODES } from '../videoGen/modes.js';
+import { ROUTABLE_MEDIA_KINDS, normalizeMediaRoutingConfig } from './routingPolicy.js';
 
-// Only the visual kinds. See the audio note in the module docblock.
-export const ROUTABLE_MEDIA_KINDS = Object.freeze(['image', 'video']);
+// The route's shape and its save-time policy live in routingPolicy.js; this
+// module owns only what happens at ENQUEUE time. Re-exported so existing
+// callers keep one import site.
+export { ROUTABLE_MEDIA_KINDS, normalizeMediaRoutingConfig };
 
-const isRecord = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const trimmed = (value) => (typeof value === 'string' ? value.trim() : '');
-
-function sanitizeRoute(raw) {
-  if (!isRecord(raw)) return null;
-  const peerId = trimmed(raw.peerId);
-  const engine = trimmed(raw.engine);
-  const modelId = trimmed(raw.modelId);
-  // A half-written route is not a route. Requiring all three up front is what
-  // keeps a partially-saved settings blob from resolving to "peer X, whatever
-  // model" — the allowlist check downstream is keyed on the exact pair.
-  if (!peerId || !engine || !modelId) return null;
-  return { peerId, engine, modelId };
-}
-
-/**
- * Project `settings.federation.mediaRouting` down to the routes this build
- * understands. Unknown kinds are dropped rather than carried: a route is only
- * ever consumed by a matching enqueue path, so a kind this version cannot
- * execute must read as "no route" and stay local.
- *
- * @param {object} settings - Full settings record.
- * @returns {{image: object|null, video: object|null}}
- */
-export function normalizeMediaRoutingConfig(settings) {
-  const raw = settings?.federation?.mediaRouting;
-  const config = {};
-  for (const kind of ROUTABLE_MEDIA_KINDS) {
-    config[kind] = isRecord(raw) ? sanitizeRoute(raw[kind]) : null;
-  }
-  return config;
-}
 
 // Params that ask for conditioning wire v1 cannot carry. The interactive routes
 // reject these outright rather than dropping them, because "silently dropping

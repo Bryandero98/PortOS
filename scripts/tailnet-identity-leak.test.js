@@ -67,6 +67,11 @@ const ALLOWED_CGNAT_IPS = new Set([
   '100.100.50.1',
   '100.100.100.200', // documented Alibaba Cloud metadata endpoint, not a peer
   '100.127.255.254', // synthetic top-of-CGNAT boundary value in tailnetPeer.test.js
+  // Deliberately MALFORMED (an octet > 255), so provably not any real address:
+  // tailnetPeer.test.js pins that the CGNAT check range-checks every octet, not
+  // just the second one.
+  '100.64.999.1',
+  '100.127.0.999',
 ]);
 const CGNAT_IP_SOURCE = '\\b100\\.(6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\.\\d{1,3}\\.\\d{1,3}\\b';
 const CGNAT_IP_RE = /\b100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/g;
