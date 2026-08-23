@@ -1,8 +1,8 @@
 /**
- * The two dispatch HOLDS at the `task:ready` chokepoint, and what releases them.
+ * The three dispatch HOLDS at the `task:ready` chokepoint, and what releases them.
  *
- * Both leave the task queued for a condition that clears on its own, rather than
- * failing it:
+ * Each leaves the task queued for a condition that clears on its own, rather
+ * than failing it:
  *
  *  - Runner down. `portos-cos` is a separate PM2 app the user can stop from the
  *    Apps page, and in runner mode it owns every agent process. Dispatching into
@@ -14,6 +14,10 @@
  *    pull / submodule update / npm install before `pm2 delete`. An agent spawned
  *    in that window is severed by the restart.
  *
+ *  - Local inference endpoint at capacity (issue #4834). A CoS agent runs a
+ *    vendor CLI that talks to the local model server directly, so promptRunner's
+ *    in-flight gate never sees it; two agents at one GPU takes an accelerator
+ *    OOM. The slot is reserved across the spawn window and released after.
  * The holds live in that listener, not inside `runAgentSpawn`, because a hold
  * below the spawn body's entry returns past `releaseAppReviewMarker` and strands
  * the synthetic "in review" marker for the whole outage (issue #989). The side
@@ -51,6 +55,14 @@ vi.mock('./agentRunTracking.js', () => ({ completeAgentRun: vi.fn() }));
 vi.mock('./appActivity.js', () => ({ releaseAppReviewMarker: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./updateChecker.js', () => ({ isUpdateInProgress: vi.fn().mockReturnValue(false) }));
 vi.mock('./missions.js', () => ({ releaseMissionSubTask: vi.fn().mockResolvedValue(null) }));
+vi.mock('./cosState.js', () => ({ loadState: vi.fn().mockResolvedValue({ agents: {} }) }));
+// The real slot module is covered end-to-end in cos.test.js (resolvers, running
+// tally, reservations). Mocked here so this suite stays about the LISTENER's
+// wiring — hold vs spawn vs release — and doesn't drag promptRunner's provider
+// graph into a file that mocks providerStatus.
+vi.mock('./cosLocalEndpointSlots.js', () => ({
+  acquireLocalEndpointSpawnSlot: vi.fn().mockResolvedValue({ ok: true, release: vi.fn() }),
+}));
 vi.mock('./agentOrchestrator.js', () => ({
   completeAgent: vi.fn(),
   spawnAgentForTask: vi.fn().mockResolvedValue('agent-1'),
@@ -68,6 +80,7 @@ import { releaseAppReviewMarker } from './appActivity.js';
 import { isUpdateInProgress } from './updateChecker.js';
 import { releaseMissionSubTask } from './missions.js';
 import { setUseRunner } from './agentState.js';
+import { acquireLocalEndpointSpawnSlot } from './cosLocalEndpointSlots.js';
 
 const dispatch = (task) => taskHandlers.get('task:ready')(task);
 
@@ -278,6 +291,81 @@ describe('subAgentSpawner — mission sub-task release (#4858)', () => {
     expect(releaseAppReviewMarker).toHaveBeenCalledWith('some-app');
     const warnings = emitLog.mock.calls.filter(([level]) => level === 'warn');
     expect(warnings.some(([, message]) => /release mission sub-task sub-3/.test(message))).toBe(true);
+  });
+});
+
+describe('subAgentSpawner — local-endpoint capacity hold (#4834)', () => {
+  // A CoS agent runs a vendor CLI that opens its own connection to the local
+  // model server, so promptRunner's in-flight gate never sees it. The hold lives
+  // at this listener rather than in `dequeueNextTask` because six other emitters
+  // (evaluateTasks, forceSpawnTask, the job scheduler, the Creative Director
+  // bridge, …) reach the spawner without passing through the scheduler at all.
+  let release;
+
+  beforeEach(async () => {
+    await initSpawner();
+    vi.clearAllMocks();
+    vi.useRealTimers();
+    setUseRunner(true);
+    isRunnerReachable.mockResolvedValue(true);
+    isUpdateInProgress.mockReturnValue(false);
+    release = vi.fn();
+    acquireLocalEndpointSpawnSlot.mockResolvedValue({ ok: true, release });
+  });
+
+  it('spawns and releases the reserved slot when one is available', async () => {
+    await dispatch({ id: 'cos-l1', metadata: {} });
+
+    expect(spawnAgentForTask).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds the task instead of dispatching a second agent at a saturated GPU', async () => {
+    acquireLocalEndpointSpawnSlot.mockResolvedValue({ ok: false, reason: 'local endpoint http://localhost:1234/v1 is at capacity (1/1)' });
+
+    await dispatch({ id: 'cos-l2', metadata: {} });
+
+    // Held, not failed: the task record stays `pending`, so the next dequeue
+    // tick re-picks it once the running agent frees the endpoint.
+    expect(spawnAgentForTask).not.toHaveBeenCalled();
+  });
+
+  it('releases the app-review marker and the job reservation, same as the other holds', async () => {
+    acquireLocalEndpointSpawnSlot.mockResolvedValue({ ok: false, reason: 'at capacity' });
+
+    await dispatch({ id: 'cos-l3', metadata: { app: 'some-app', jobId: 'job-11' } });
+
+    expect(releaseAppReviewMarker).toHaveBeenCalledWith('some-app');
+    expect(cosEvents.emit).toHaveBeenCalledWith('job:spawn-failed', { jobId: 'job-11' });
+  });
+
+  it('releases the slot even when the spawn throws', async () => {
+    // Without the `finally`, a failed spawn would leak the reservation and wedge
+    // the endpoint until the process restarts.
+    spawnAgentForTask.mockRejectedValueOnce(new Error('boom'));
+
+    await dispatch({ id: 'cos-l4', metadata: {} });
+
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks capacity AFTER the update and runner holds, which are cheaper', async () => {
+    isUpdateInProgress.mockReturnValue(true);
+
+    await dispatch({ id: 'cos-l5', metadata: {} });
+
+    expect(acquireLocalEndpointSpawnSlot).not.toHaveBeenCalled();
+  });
+
+  it('resumes spawning once the endpoint frees up — the hold is not sticky', async () => {
+    acquireLocalEndpointSpawnSlot.mockResolvedValue({ ok: false, reason: 'at capacity' });
+    await dispatch({ id: 'cos-l6', metadata: {} });
+    expect(spawnAgentForTask).not.toHaveBeenCalled();
+
+    acquireLocalEndpointSpawnSlot.mockResolvedValue({ ok: true, release });
+    await dispatch({ id: 'cos-l6', metadata: {} });
+
+    expect(spawnAgentForTask).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -714,6 +714,63 @@ describe('localEndpointOfProvider (#4834)', () => {
 });
 
 
+describe('resolveLocalEndpoint — unavailable providers are not gated (#4834)', () => {
+  // A saturated LOCAL provider that is currently unavailable (rate-limited,
+  // cooling down, down) is not where the task lands: resolveAgentProviderAndModel
+  // swaps it for a fallback, often a cloud one. Gating on it anyway would hold
+  // the task behind a GPU it never touches — and nothing about that busy GPU
+  // would ever clear the hold, so the task starves.
+  const withAvailability = (available) => createLocalEndpointSlotContext({
+    providers: ALL_PROVIDERS,
+    activeProvider: CLOUD_PROVIDER,
+    isAvailable: (id) => available.includes(id),
+  });
+
+  it('resolves to null when the pinned local provider is unavailable', () => {
+    const slots = withAvailability(['anthropic']);
+    expect(slots.resolveLocalEndpoint(taskOnProvider('t', 'lmstudio-tui'))).toBeNull();
+  });
+
+  it('still gates the same provider once it is available again', () => {
+    const slots = withAvailability(['lmstudio-tui', 'anthropic']);
+    expect(slots.resolveLocalEndpoint(taskOnProvider('t', 'lmstudio-tui'))).toBe(LOCAL_ENDPOINT);
+  });
+
+  it('resolves to null when the ACTIVE local provider is unavailable', () => {
+    const slots = createLocalEndpointSlotContext({
+      providers: ALL_PROVIDERS,
+      activeProvider: LOCAL_TUI_PROVIDER,
+      isAvailable: () => false,
+    });
+    expect(slots.resolveLocalEndpoint(taskOnProvider('t'))).toBeNull();
+  });
+
+  it('does not starve a queued task behind an unavailable local endpoint', () => {
+    // End-to-end through the real tracker: one agent is running on the local
+    // endpoint, but the provider has since gone unavailable, so the queued task
+    // must dispatch (onto its fallback) instead of waiting forever.
+    const state = makeState({
+      maxConcurrentAgents: 5,
+      runningAgents: [makeRunningAgentOnProvider('lmstudio-tui')],
+    });
+    const slots = withAvailability(['anthropic']);
+    const capacity = createDequeueCapacity(state, {
+      localEndpointCounts: countRunningAgentsByLocalEndpoint(state.agents, slots.endpointForAgent),
+      localEndpointLimit: slots.limit,
+      resolveLocalEndpoint: slots.resolveLocalEndpoint,
+    });
+
+    const spawned = priorityDequeue(userBuckets([taskOnProvider('task-local-1', 'lmstudio-tui')]), capacity);
+    expect(spawned.map(t => t.id)).toEqual(['task-local-1']);
+  });
+
+  it('leaves a task with no resolvable provider ungated', () => {
+    const slots = createLocalEndpointSlotContext({ providers: [], activeProvider: null });
+    expect(slots.resolveLocalEndpoint(taskOnProvider('t'))).toBeNull();
+    expect(slots.resolveLocalEndpoint(taskOnProvider('t', 'ghost'))).toBeNull();
+  });
+});
+
 describe('local-endpoint spawn reservations (#4834)', () => {
   beforeEach(() => __resetLocalEndpointSpawnReservations());
 
@@ -1142,6 +1199,31 @@ describe('cos.js source — priority + capacity invariants', () => {
     // edited or deleted while the agent still holds the GPU.
     const LIFECYCLE_SRC = readFileSync(join(__dirname, 'agentLifecycle.js'), 'utf-8');
     expect(LIFECYCLE_SRC).toMatch(/providerEndpoint:\s*provider\.endpoint\s*\|\|\s*null/);
+  });
+
+  it('forceSpawnTask refuses synchronously when the local endpoint is full (#4834)', () => {
+    // "Run now" returns before the spawn happens, so without its own check it
+    // would answer { success: true } and toast "Spawning" for a task the
+    // chokepoint immediately holds — the same lie the provider-resolution
+    // pre-check directly above it exists to prevent. It must run AFTER
+    // resolution so it reads the post-fallback provider.
+    const forceFn = extractFnBody(COS_SRC, COS_SRC.indexOf('export async function forceSpawnTask'));
+    expect(forceFn).toMatch(/localEndpointCapacityError\(resolution\.provider/);
+    expect(forceFn.indexOf('resolveAgentProviderAndModel'))
+      .toBeLessThan(forceFn.indexOf('localEndpointCapacityError'));
+    expect(forceFn.indexOf('localEndpointCapacityError'))
+      .toBeLessThan(forceFn.indexOf("cosEvents.emit('task:ready'"));
+  });
+
+  it('the gate ignores an UNAVAILABLE provider so a held task cannot starve (#4834)', () => {
+    // A saturated local provider that is down is not where the task lands —
+    // spawn swaps it for a fallback. Holding on it would wait on a GPU the task
+    // never touches, with nothing to clear the hold.
+    const SLOTS_SRC = readFileSync(join(__dirname, 'cosLocalEndpointSlots.js'), 'utf-8');
+    const ctxFn = extractFnBody(SLOTS_SRC, SLOTS_SRC.indexOf('export function createLocalEndpointSlotContext'));
+    expect(ctxFn).toMatch(/if \(!isAvailable\(provider\.id\)\) return null;/);
+    expect(SLOTS_SRC, 'the live context must use the real provider-status predicate')
+      .toMatch(/isAvailable:\s*isProviderAvailable/);
   });
 
   it('idle generator is fenced by spawned===0 / tasksToSpawn.length===0', () => {

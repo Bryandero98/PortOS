@@ -24,6 +24,7 @@
 
 import { isLocalEndpoint, LOCAL_LLM_MAX_CONCURRENCY } from '../lib/promptRunner.js';
 import { listProviders, getActiveProvider } from './providers.js';
+import { isProviderAvailable } from './providerStatus.js';
 import { countRunningAgentsByLocalEndpoint } from './cosDequeue.js';
 
 // One knob governs both paths — no new config key. A local box beefy enough to
@@ -55,13 +56,23 @@ export function localEndpointOfProvider(provider) {
  *  - `endpointForAgent(agent)`  — the endpoint a RUNNING agent is occupying,
  *    from the `providerId` agentLifecycle stamps onto its metadata.
  *  - `resolveLocalEndpoint(task)` — the endpoint a QUEUED task would land on.
- *    Mirrors `resolveAgentProviderAndModel`: a `metadata.provider` pin wins,
- *    and an unknown pin falls back to the active provider exactly as spawn
- *    does. A runtime fallback swap can still move a run to another provider —
- *    this is avoidance, not a guarantee, and promptRunner's gate plus the OOM
- *    nudge/fail-over remain the recovery half.
+ *    Mirrors `resolveAgentProviderAndModel`: a `metadata.provider` pin wins, an
+ *    unknown pin falls back to the active provider, and an UNAVAILABLE provider
+ *    resolves to null because spawn will swap it for a fallback (often cloud) —
+ *    gating on it would hold the task behind a GPU it is never going to touch,
+ *    with nothing to clear the hold. A runtime fallback swap after that point
+ *    can still move a run: this is avoidance, not a guarantee, and
+ *    promptRunner's gate plus the OOM nudge/fail-over remain the recovery half.
+ *
+ * `isAvailable` is injected (rather than imported) so this stays pure and a
+ * test can drive the real resolver without provider-status module state.
  */
-export function createLocalEndpointSlotContext({ providers = [], activeProvider = null, limit = LOCAL_ENDPOINT_AGENT_LIMIT } = {}) {
+export function createLocalEndpointSlotContext({
+  providers = [],
+  activeProvider = null,
+  limit = LOCAL_ENDPOINT_AGENT_LIMIT,
+  isAvailable = () => true,
+} = {}) {
   const byId = new Map();
   for (const provider of providers) {
     if (provider?.id) byId.set(provider.id, provider);
@@ -69,7 +80,14 @@ export function createLocalEndpointSlotContext({ providers = [], activeProvider 
   if (activeProvider?.id && !byId.has(activeProvider.id)) byId.set(activeProvider.id, activeProvider);
 
   const endpointById = (id) => localEndpointOfProvider(byId.get(id));
-  const activeEndpoint = localEndpointOfProvider(activeProvider);
+
+  // The provider a queued task would be resolved onto, before the availability
+  // check below. An unknown pin falls through to the active provider, exactly
+  // as `resolveAgentProviderAndModel` does.
+  const providerForTask = (task) => {
+    const pinnedId = task?.metadata?.provider;
+    return (pinnedId && byId.get(pinnedId)) || activeProvider;
+  };
 
   return {
     limit,
@@ -84,9 +102,14 @@ export function createLocalEndpointSlotContext({ providers = [], activeProvider 
       return providerId ? endpointById(providerId) : null;
     },
     resolveLocalEndpoint: (task) => {
-      const pinnedId = task?.metadata?.provider;
-      if (pinnedId) return byId.has(pinnedId) ? endpointById(pinnedId) : activeEndpoint;
-      return activeEndpoint;
+      const provider = providerForTask(task);
+      if (!provider?.id) return null;
+      // An unavailable provider is NOT where this task lands — spawn swaps it
+      // for a fallback. Holding the task at this endpoint anyway would starve
+      // it: the fallback it actually wants may be cloud, and nothing about the
+      // busy GPU would ever clear the hold.
+      if (!isAvailable(provider.id)) return null;
+      return localEndpointOfProvider(provider);
     },
   };
 }
@@ -101,7 +124,7 @@ export function createLocalEndpointSlotContext({ providers = [], activeProvider 
 export async function buildLocalEndpointSlotContext() {
   const providers = await listProviders();
   const activeProvider = await getActiveProvider().catch(() => null);
-  return createLocalEndpointSlotContext({ providers, activeProvider });
+  return createLocalEndpointSlotContext({ providers, activeProvider, isAvailable: isProviderAvailable });
 }
 
 // ── In-flight spawn reservations ───────────────────────────────────────────
@@ -170,10 +193,36 @@ export async function acquireLocalEndpointSpawnSlot(task, agents) {
   const endpoint = slots.resolveLocalEndpoint(task);
   if (!endpoint) return { ok: true, release: NOOP_RELEASE };
 
-  const running = countRunningAgentsByLocalEndpoint(agents, slots.endpointForAgent)[endpoint] || 0;
-  const inFlight = running + pendingLocalEndpointSpawns(endpoint);
-  if (inFlight >= slots.limit) {
-    return { ok: false, reason: `local endpoint ${endpoint} is at capacity (${inFlight}/${slots.limit})` };
+  const { atCapacity, inFlight, limit } = readEndpointCapacity(endpoint, agents, slots);
+  if (atCapacity) {
+    return { ok: false, reason: `local endpoint ${endpoint} is at capacity (${inFlight}/${limit})` };
   }
   return { ok: true, release: reserveLocalEndpointSpawn(endpoint) };
+}
+
+/** Running agents plus in-flight reservations on `endpoint`, against the cap. */
+function readEndpointCapacity(endpoint, agents, slots) {
+  const running = countRunningAgentsByLocalEndpoint(agents, slots.endpointForAgent)[endpoint] || 0;
+  const inFlight = running + pendingLocalEndpointSpawns(endpoint);
+  return { inFlight, limit: slots.limit, atCapacity: inFlight >= slots.limit };
+}
+
+/**
+ * Why a spawn on the ALREADY-RESOLVED `provider` must wait, or null when it may
+ * proceed.
+ *
+ * `forceSpawnTask` (the user's explicit "Run now") returns synchronously while
+ * the spawn happens later in a `task:ready` listener, so without this it would
+ * answer `{ success: true }` and toast "Spawning" for a dispatch the chokepoint
+ * immediately holds — the same lie the provider-resolution pre-check upstream of
+ * it exists to prevent. Takes the post-fallback provider, so it is strictly more
+ * accurate than the queued-task prediction in `resolveLocalEndpoint`.
+ */
+export async function localEndpointCapacityError(provider, agents) {
+  const endpoint = localEndpointOfProvider(provider);
+  if (!endpoint) return null;
+  const slots = await buildLocalEndpointSlotContext();
+  const { atCapacity, inFlight, limit } = readEndpointCapacity(endpoint, agents, slots);
+  if (!atCapacity) return null;
+  return `Local inference endpoint ${endpoint} is at capacity (${inFlight}/${limit}) — wait for a running agent to finish`;
 }

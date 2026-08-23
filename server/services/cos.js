@@ -147,7 +147,7 @@ import {
 // guards instead of a local replica. The async tiers stay here as
 // `spawnDequeuePriorityN(ctx)` helpers.
 import { createDequeueCapacity, countRunningAgentsByLocalEndpoint, isMissionTierEligible, isIdleTierEligible } from './cosDequeue.js';
-import { buildLocalEndpointSlotContext } from './cosLocalEndpointSlots.js';
+import { buildLocalEndpointSlotContext, localEndpointCapacityError } from './cosLocalEndpointSlots.js';
 
 /**
  * Get current CoS status
@@ -589,6 +589,16 @@ export async function forceSpawnTask(taskId) {
   const resolution = await resolveAgentProviderAndModel(task);
   if (!resolution.ok) {
     return { error: resolution.error };
+  }
+
+  // Same reason as the resolution pre-check above: the local-endpoint cap
+  // (#4834) is enforced later, inside the `task:ready` listener, so without this
+  // "Run now" would toast "Spawning" for a task the chokepoint immediately holds
+  // as pending. Checked against the RESOLVED provider (post-fallback), so it
+  // never refuses a run that would have swapped to a cloud provider anyway.
+  const localCapacityError = await localEndpointCapacityError(resolution.provider, state.agents);
+  if (localCapacityError) {
+    return { error: localCapacityError };
   }
 
   cosEvents.emit('task:ready', { ...task, taskType: task.taskType || 'internal' });
