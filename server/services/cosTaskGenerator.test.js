@@ -266,7 +266,9 @@ describe('both on-demand engines apply consent before addTask', () => {
   it('dequeueNextTask engine consents before canSpawn / addTask', () => {
     const engine = engineBody(COS_SRC, 'async function spawnDequeuePriority0OnDemand');
     expect(engine.indexOf('applyOnDemandConsent(task)')).toBeGreaterThan(-1);
-    expect(engine.indexOf('applyOnDemandConsent(task)')).toBeLessThan(engine.indexOf('capacity.canSpawn(task)'));
+    // Match either admit method: Priority 0 is a COMMITTED tier, so it calls
+    // `canSpawnCommitted` rather than `canSpawn` (#4834).
+    expect(engine.indexOf('applyOnDemandConsent(task)')).toBeLessThan(engine.search(/capacity\.canSpawn(Committed)?\(task/));
   });
 
   it('idle-review steal path consents when it drains an on-demand request', () => {

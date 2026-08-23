@@ -146,7 +146,8 @@ import {
 // predicates are shared with the scheduler unit tests so they exercise the real
 // guards instead of a local replica. The async tiers stay here as
 // `spawnDequeuePriorityN(ctx)` helpers.
-import { createDequeueCapacity, isMissionTierEligible, isIdleTierEligible } from './cosDequeue.js';
+import { createDequeueCapacity, countRunningAgentsByLocalEndpoint, isMissionTierEligible, isIdleTierEligible } from './cosDequeue.js';
+import { buildLocalEndpointSlotContext, localEndpointCapacityError } from './cosLocalEndpointSlots.js';
 
 /**
  * Get current CoS status
@@ -590,6 +591,16 @@ export async function forceSpawnTask(taskId) {
     return { error: resolution.error };
   }
 
+  // Same reason as the resolution pre-check above: the local-endpoint cap
+  // (#4834) is enforced later, inside the `task:ready` listener, so without this
+  // "Run now" would toast "Spawning" for a task the chokepoint immediately holds
+  // as pending. Checked against the RESOLVED provider (post-fallback), so it
+  // never refuses a run that would have swapped to a cloud provider anyway.
+  const localCapacityError = await localEndpointCapacityError(resolution.provider, state.agents, taskId);
+  if (localCapacityError) {
+    return { error: localCapacityError };
+  }
+
   cosEvents.emit('task:ready', { ...task, taskType: task.taskType || 'internal' });
   return { success: true, taskId };
 }
@@ -842,6 +853,13 @@ async function tryImmediateSpawn(task) {
     return;
   }
 
+  // No local-endpoint check here (#4834). The task is already persisted by
+  // `addTask`, so emitting and letting the chokepoint hold it produces exactly
+  // the state an early return would — still `pending`, marker released, job
+  // reservation freed — and the chokepoint also counts in-flight reservations,
+  // which a snapshot here cannot. A copy would be a weaker duplicate that can
+  // pass a task the chokepoint then holds, for a fourth provider-list fetch.
+
   emitLog('info', `⚡ Immediate spawn: ${task.id} (${task.priority || 'MEDIUM'})`, {
     taskId: task.id,
     availableSlots
@@ -941,7 +959,10 @@ async function spawnDequeuePriority0OnDemand(ctx) {
     }
 
     applyOnDemandConsent(task);
-    if (task && capacity.canSpawn(task)) {
+    // Committed tier — the request is already cleared and the marker bound, and
+    // this branch is the only thing that persists the task, so a denial would
+    // discard the user's "Run". See canSpawnCommitted (#4834).
+    if (task && capacity.canSpawnCommitted(task)) {
       // Mark this as a MANUAL (on-demand) run so a completed perpetual drain
       // continues in the same user-initiated lane instead of the auto-run-gated
       // queue path (see perpetualRefillPlan). Stamped before addTask so the
@@ -1153,7 +1174,13 @@ async function spawnDequeuePriority3Missions(ctx) {
       taskType: 'internal',
       approvalRequired: !missionTask.autoApprove
     };
-    if (!capacity.canSpawn(cosTask, ctx.autonomousSpawnCeiling)) continue;
+    // Committed tier — `generateMissionTasks` has already flipped the sub-task to
+    // `in_progress` and saved the mission, and mission tasks are never written to
+    // COS-TASKS.md, so a denial drops the only copy of a sub-task that
+    // `generateMissionTask` will never re-pick (it selects `pending` only).
+    // Emitting hands it to the chokepoint, whose `holdTask` reverts the flip
+    // (#4858) — so the sub-task really is recovered. See canSpawnCommitted (#4834).
+    if (!capacity.canSpawnCommitted(cosTask, ctx.autonomousSpawnCeiling)) continue;
     cosEvents.emit('task:ready', cosTask);
     capacity.trackSpawn(cosTask);
     emitLog('info', `Generated mission task: ${missionTask.id}`, {
@@ -1181,7 +1208,11 @@ async function spawnDequeuePriority4IdleReview(ctx) {
   const pendingSystemTasks = freshCosTasks.autoApproved?.length || 0;
   if (pendingSystemTasks === 0) {
     const idleTask = await generateIdleReviewTask(state, { ignoreTaskId });
-    if (idleTask && capacity.canSpawn(idleTask, ctx.autonomousSpawnCeiling)) {
+    // Committed tier — `generateIdleReviewTask` has already bound the app-review
+    // marker and advanced the 30-minute cooldown, and only `holdTask` releases
+    // that marker, which requires the emit. A denial would leave the app reading
+    // "in review" indefinitely (#978's mode). See canSpawnCommitted (#4834).
+    if (idleTask && capacity.canSpawnCommitted(idleTask, ctx.autonomousSpawnCeiling)) {
       cosEvents.emit('task:ready', idleTask);
       capacity.trackSpawn(idleTask);
     }
@@ -1228,7 +1259,43 @@ async function dequeueNextTask({ ignoreTaskId = null } = {}) {
   const paused = await isPaused();
 
   const state = await loadState();
-  const capacity = createDequeueCapacity(state, { agentsByProject: countRunningAgentsByProject(state.agents) });
+
+  // Bail before the provider fetch below. This function fires from ~8 event
+  // sources plus a setImmediate on every completion, and a saturated pool — the
+  // state that makes those fire in bursts — would otherwise pay two awaits and
+  // a full agent scan per trigger for a tracker discarded immediately.
+  if (state.config.maxConcurrentAgents - Object.values(state.agents).filter(a => a.status === 'running').length <= 0) return;
+
+  // Per-local-endpoint agent slots (#4834). A CoS agent runs a vendor CLI that
+  // talks to the local model server directly, so promptRunner's in-flight gate
+  // never sees it; without this, two agents can be dispatched at one GPU and
+  // take an accelerator OOM. Resolved once per cycle and threaded into the
+  // capacity tracker, which enforces it alongside the global/per-project caps.
+  //
+  // Predictive only — it just avoids emitting a task the chokepoint would hold,
+  // so unlike `acquireLocalEndpointSpawnSlot` it does NOT count in-flight
+  // reservations. Erring toward admitting is correct here: the authoritative
+  // gate still refuses, and a hold is cheap.
+  const localSlots = await buildLocalEndpointSlotContext();
+  // One debug line per saturated endpoint per cycle, not one per queued task —
+  // the user/system tiers `continue` past a denial, so a 40-task queue behind
+  // one busy GPU would otherwise emit 40 identical log events, each broadcast
+  // to every CoS-subscribed socket client.
+  const loggedFullEndpoints = new Set();
+  const capacity = createDequeueCapacity(state, {
+    agentsByProject: countRunningAgentsByProject(state.agents),
+    localEndpointCounts: countRunningAgentsByLocalEndpoint(state.agents, localSlots.endpointForAgent),
+    localEndpointLimit: localSlots.limit,
+    resolveLocalEndpoint: localSlots.resolveLocalEndpoint,
+    onLocalEndpointHold: (task, endpoint, running) => {
+      if (loggedFullEndpoints.has(endpoint)) return;
+      loggedFullEndpoints.add(endpoint);
+      emitLog('debug', `⏳ Queued task ${task.id} - local endpoint ${endpoint} at capacity (${running}/${localSlots.limit})`, {
+        taskId: task.id,
+        endpoint
+      });
+    }
+  });
   const availableSlots = capacity.availableSlots;
 
   if (availableSlots <= 0) return;

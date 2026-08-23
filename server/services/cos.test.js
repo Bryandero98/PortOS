@@ -30,13 +30,22 @@
  * `availableSlots <= 0` short-circuit flips a clear red flag.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { firstLine, isPerpetualRefillCandidate, perpetualRefillPlan } from './cos.js';
 import { canQueueImprovementTasks } from './cosState.js';
-import { createDequeueCapacity, isMissionTierEligible, isIdleTierEligible } from './cosDequeue.js';
+import { createDequeueCapacity, countRunningAgentsByLocalEndpoint, isMissionTierEligible, isIdleTierEligible } from './cosDequeue.js';
+import {
+  createLocalEndpointSlotContext,
+  localEndpointOfProvider,
+  providerBaseUrl,
+  reserveLocalEndpointSpawn,
+  pendingLocalEndpointSpawns,
+  __resetLocalEndpointSpawnReservations,
+  readEndpointCapacity,
+} from './cosLocalEndpointSlots.js';
 import { PENDING_MERGE_SWEEP_INTERVAL_MS, MAX_PENDING_MERGE_TICKS } from './prWatcher.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -96,9 +105,15 @@ function priorityDequeue(buckets, capacity, { paused = false } = {}) {
   const ceiling = capacity.availableSlots;
 
   const drain = (bucketName) => {
+    // Priorities 0, 3 and 4 opt OUT of the local-endpoint cap, exactly as
+    // production does: a denial there DISCARDS an already-committed task (a
+    // cleared on-demand request, an `in_progress` mission sub-task, a bound
+    // app-review marker) instead of deferring it, so they emit and let the
+    // spawner chokepoint hold.
+    const committed = ['onDemand', 'mission', 'idle'].includes(bucketName);
     for (const task of buckets[bucketName] || []) {
       if (capacity.spawned >= capacity.availableSlots) return;
-      if (!capacity.canSpawn(task)) continue;
+      if (!(committed ? capacity.canSpawnCommitted(task) : capacity.canSpawn(task))) continue;
       capacity.trackSpawn(task);
       admitted.push({ ...task, _bucket: bucketName });
     }
@@ -458,6 +473,646 @@ describe('dequeueNextTask — capacity guards', () => {
   });
 });
 
+// ─── dequeueNextTask: per-local-endpoint agent cap (issue #4834) ───────────
+//
+// A CoS agent runs a vendor CLI that opens its own connection to the local
+// model server, so promptRunner's in-flight gate never sees it. These drive the
+// REAL `createLocalEndpointSlotContext` resolvers through the REAL capacity
+// tracker — the same pair `dequeueNextTask` wires together — so a regression in
+// either half fails here.
+
+// What the PROVIDER RECORD holds, vs the normalized SLOT KEY the cap is keyed
+// by. They differ on purpose: host+port identifies the model server, so
+// `localhost` and `127.0.0.1` on one port must share a single slot.
+const LOCAL_URL = 'http://localhost:1234/v1';
+const LOCAL_ENDPOINT = 'localhost:1234';
+const OTHER_LOCAL_URL = 'http://127.0.0.1:11434';
+const OTHER_LOCAL_ENDPOINT = 'localhost:11434';
+
+// A TUI provider pointed at a local server is exactly the case #4834 exists
+// for: PortOS launches the CLI, the CLI talks to the GPU directly.
+const LOCAL_TUI_PROVIDER = { id: 'lmstudio-tui', type: 'tui', enabled: true, endpoint: LOCAL_URL };
+const OTHER_LOCAL_PROVIDER = { id: 'ollama-local', type: 'api', enabled: true, endpoint: OTHER_LOCAL_URL };
+// No recorded endpoint — PortOS cannot know where it points, so it stays ungated.
+const BARE_CLI_PROVIDER = { id: 'claude-cli', type: 'cli', enabled: true, endpoint: null };
+const CLOUD_PROVIDER = { id: 'anthropic', type: 'api', enabled: true, endpoint: 'https://api.anthropic.com/v1' };
+
+const ALL_PROVIDERS = [LOCAL_TUI_PROVIDER, OTHER_LOCAL_PROVIDER, BARE_CLI_PROVIDER, CLOUD_PROVIDER];
+
+/** A running agent stamped with the providerId agentLifecycle persists. */
+function makeRunningAgentOnProvider(providerId, app = '_self') {
+  return { status: 'running', metadata: { taskApp: app, app, providerId } };
+}
+
+/** A pending task pinned to a provider via `metadata.provider`. */
+const taskOnProvider = (id, providerId) => ({
+  id,
+  priority: 'HIGH',
+  status: 'pending',
+  metadata: providerId === undefined ? {} : { provider: providerId },
+});
+
+/**
+ * Build the capacity tracker the way `dequeueNextTask` does: real slot context
+ * over the fixture provider list, real running-agent endpoint tally, real hold
+ * callback (captured so tests can assert the queued-no-slot log fired).
+ */
+function makeLocalSlotCapacity(state, { activeProvider = CLOUD_PROVIDER, limit = 1, agentsByProject = {} } = {}) {
+  const slots = createLocalEndpointSlotContext({ providers: ALL_PROVIDERS, activeProvider, limit });
+  const holds = [];
+  const capacity = createDequeueCapacity(state, {
+    agentsByProject,
+    localEndpointCounts: countRunningAgentsByLocalEndpoint(state.agents, slots.endpointForAgent),
+    localEndpointLimit: slots.limit,
+    resolveLocalEndpoint: slots.resolveLocalEndpoint,
+    onLocalEndpointHold: (task, endpoint, running) => holds.push({ taskId: task.id, endpoint, running }),
+  });
+  return { capacity, holds, slots };
+}
+
+const userBuckets = (tasks) => ({ onDemand: [], user: tasks, autoSystem: [], mission: [], idle: [] });
+
+describe('dequeueNextTask — per-local-endpoint agent cap (#4834)', () => {
+  it('serializes two queued tasks that resolve to the SAME local endpoint', () => {
+    // Global cap 5, nothing running: both tasks clear the global and
+    // per-project guards. Only the local-endpoint slot separates them.
+    const state = makeState({ maxConcurrentAgents: 5 });
+    const { capacity, holds } = makeLocalSlotCapacity(state);
+
+    const spawned = priorityDequeue(userBuckets([
+      taskOnProvider('task-local-1', 'lmstudio-tui'),
+      taskOnProvider('task-local-2', 'lmstudio-tui'),
+    ]), capacity);
+
+    expect(spawned.map(t => t.id)).toEqual(['task-local-1']);
+    expect(holds).toEqual([{ taskId: 'task-local-2', endpoint: LOCAL_ENDPOINT, running: 1 }]);
+    expect(capacity.spawnLocalEndpointCounts[LOCAL_ENDPOINT]).toBe(1);
+  });
+
+  it('does NOT suppress an explicit on-demand Run at a saturated endpoint', () => {
+    // Priority 0 clears the request and binds the app-review marker BEFORE
+    // canSpawn runs, and that branch is the only thing that persists the task —
+    // so a denial here destroys the user's "Run" and strands the marker rather
+    // than deferring it. The task must be admitted and held at the spawner
+    // chokepoint instead, which leaves it pending and releases both side effects.
+    const state = makeState({
+      maxConcurrentAgents: 5,
+      runningAgents: [makeRunningAgentOnProvider('lmstudio-tui')],
+    });
+    const { capacity, holds } = makeLocalSlotCapacity(state);
+
+    const spawned = priorityDequeue({
+      onDemand: [taskOnProvider('task-run-now', 'lmstudio-tui')],
+      user: [],
+      autoSystem: [],
+      mission: [],
+      idle: [],
+    }, capacity);
+
+    expect(spawned.map(t => t.id)).toEqual(['task-run-now']);
+    expect(holds).toEqual([]);
+  });
+
+  it('does NOT suppress a mission or idle task at a saturated endpoint', () => {
+    // Both tiers commit before canSpawn and never persist: Priority 3 has
+    // already flipped the mission sub-task to `in_progress` (and only `pending`
+    // sub-tasks are ever re-picked), Priority 4 has already bound the app-review
+    // marker and advanced its 30-minute cooldown. A denial strands both; the
+    // chokepoint's hold at least releases the marker.
+    const state = makeState({
+      maxConcurrentAgents: 5,
+      runningAgents: [makeRunningAgentOnProvider('lmstudio-tui')],
+    });
+    const { capacity } = makeLocalSlotCapacity(state);
+
+    const spawned = priorityDequeue({
+      onDemand: [],
+      user: [],
+      autoSystem: [],
+      mission: [taskOnProvider('mission-task', 'lmstudio-tui')],
+      idle: [],
+    }, capacity);
+
+    expect(spawned.map(t => t.id)).toEqual(['mission-task']);
+  });
+
+  it.each(['user', 'autoSystem'])('keeps gating the deferrable %s tier at the same endpoint', (bucket) => {
+    // The opt-out is scoped to the tiers whose denial is destructive. A task
+    // from a persisted queue stays queued, which is a real defer — the next
+    // cycle re-picks it once the endpoint frees up.
+    const state = makeState({
+      maxConcurrentAgents: 5,
+      runningAgents: [makeRunningAgentOnProvider('lmstudio-tui')],
+    });
+    const { capacity } = makeLocalSlotCapacity(state);
+
+    const spawned = priorityDequeue({
+      onDemand: [], user: [], autoSystem: [], mission: [], idle: [],
+      [bucket]: [taskOnProvider('deferrable-task', 'lmstudio-tui')],
+    }, capacity);
+
+    expect(spawned).toEqual([]);
+  });
+
+  it('counts an ALREADY-RUNNING agent against its local endpoint', () => {
+    // One agent is live on the local TUI provider. A queued task for the same
+    // endpoint must be held even though the global cap has room.
+    const state = makeState({
+      maxConcurrentAgents: 5,
+      runningAgents: [makeRunningAgentOnProvider('lmstudio-tui')],
+    });
+    const { capacity, holds } = makeLocalSlotCapacity(state);
+
+    const spawned = priorityDequeue(userBuckets([taskOnProvider('task-local-1', 'lmstudio-tui')]), capacity);
+
+    expect(spawned).toEqual([]);
+    expect(holds).toEqual([{ taskId: 'task-local-1', endpoint: LOCAL_ENDPOINT, running: 1 }]);
+  });
+
+  it('leaves cloud and endpoint-less providers unaffected', () => {
+    // A cloud API provider and a CLI provider with NO recorded endpoint both
+    // resolve to null. Neither is gated, so all three spawn concurrently even
+    // though a local agent is already saturating its endpoint.
+    const state = makeState({
+      maxConcurrentAgents: 5,
+      runningAgents: [makeRunningAgentOnProvider('lmstudio-tui')],
+    });
+    const { capacity, holds } = makeLocalSlotCapacity(state);
+
+    const spawned = priorityDequeue(userBuckets([
+      taskOnProvider('task-cloud', 'anthropic'),
+      taskOnProvider('task-bare-cli', 'claude-cli'),
+      taskOnProvider('task-cloud-2', 'anthropic'),
+    ]), capacity);
+
+    expect(spawned.map(t => t.id)).toEqual(['task-cloud', 'task-bare-cli', 'task-cloud-2']);
+    expect(holds).toEqual([]);
+  });
+
+  it('runs two DISTINCT local endpoints in parallel', () => {
+    // Keyed by endpoint, not by "is local" — two separate local servers each
+    // get their own slot.
+    const state = makeState({ maxConcurrentAgents: 5 });
+    const { capacity } = makeLocalSlotCapacity(state);
+
+    const spawned = priorityDequeue(userBuckets([
+      taskOnProvider('task-lmstudio', 'lmstudio-tui'),
+      taskOnProvider('task-ollama', 'ollama-local'),
+    ]), capacity);
+
+    expect(spawned.map(t => t.id)).toEqual(['task-lmstudio', 'task-ollama']);
+  });
+
+  it('honors a lifted limit (LOCAL_LLM_MAX_CONCURRENCY > 1)', () => {
+    const state = makeState({ maxConcurrentAgents: 5 });
+    const { capacity, holds } = makeLocalSlotCapacity(state, { limit: 2 });
+
+    const spawned = priorityDequeue(userBuckets([
+      taskOnProvider('task-local-1', 'lmstudio-tui'),
+      taskOnProvider('task-local-2', 'lmstudio-tui'),
+      taskOnProvider('task-local-3', 'lmstudio-tui'),
+    ]), capacity);
+
+    expect(spawned.map(t => t.id)).toEqual(['task-local-1', 'task-local-2']);
+    expect(holds.map(h => h.taskId)).toEqual(['task-local-3']);
+  });
+
+  it('gates UNPINNED tasks by the ACTIVE provider endpoint', () => {
+    // A task with no `metadata.provider` runs on the active provider — when
+    // that is local, the cap applies to it too.
+    const state = makeState({ maxConcurrentAgents: 5 });
+    const { capacity } = makeLocalSlotCapacity(state, { activeProvider: LOCAL_TUI_PROVIDER });
+
+    const spawned = priorityDequeue(userBuckets([
+      taskOnProvider('task-unpinned-1'),
+      taskOnProvider('task-unpinned-2'),
+    ]), capacity);
+
+    expect(spawned.map(t => t.id)).toEqual(['task-unpinned-1']);
+  });
+
+  it('falls back to the active provider for an UNKNOWN pinned id (mirrors spawn)', () => {
+    // resolveAgentProviderAndModel logs and uses the active provider when the
+    // pinned id is missing; the gate must predict the same landing spot.
+    const state = makeState({ maxConcurrentAgents: 5 });
+    const { capacity, holds } = makeLocalSlotCapacity(state, { activeProvider: LOCAL_TUI_PROVIDER });
+
+    const spawned = priorityDequeue(userBuckets([
+      taskOnProvider('task-local-1', 'lmstudio-tui'),
+      taskOnProvider('task-ghost', 'deleted-provider'),
+    ]), capacity);
+
+    expect(spawned.map(t => t.id)).toEqual(['task-local-1']);
+    expect(holds).toEqual([{ taskId: 'task-ghost', endpoint: LOCAL_ENDPOINT, running: 1 }]);
+  });
+
+  it('leaves the cap disabled when no limit is supplied', () => {
+    // createDequeueCapacity's defaults must not gate anything — every existing
+    // caller (and every test above this block) constructs it without the
+    // local-endpoint options.
+    const state = makeState({ maxConcurrentAgents: 5 });
+    const capacity = createDequeueCapacity(state, {});
+    expect(capacity.localEndpointLimit).toBe(Infinity);
+    expect(priorityDequeue(userBuckets([
+      taskOnProvider('task-a', 'lmstudio-tui'),
+      taskOnProvider('task-b', 'lmstudio-tui'),
+    ]), capacity)).toHaveLength(2);
+  });
+
+  it('floors a 0/NaN limit at 1 rather than wedging the queue forever', () => {
+    const state = makeState({ maxConcurrentAgents: 5 });
+    const slots = createLocalEndpointSlotContext({ providers: ALL_PROVIDERS, activeProvider: CLOUD_PROVIDER, limit: 0 });
+    const capacity = createDequeueCapacity(state, {
+      localEndpointLimit: slots.limit,
+      resolveLocalEndpoint: slots.resolveLocalEndpoint,
+    });
+    expect(capacity.localEndpointLimit).toBe(1);
+    expect(priorityDequeue(userBuckets([
+      taskOnProvider('task-a', 'lmstudio-tui'),
+      taskOnProvider('task-b', 'lmstudio-tui'),
+    ]), capacity).map(t => t.id)).toEqual(['task-a']);
+  });
+});
+
+describe('countRunningAgentsByLocalEndpoint (#4834)', () => {
+  const slots = createLocalEndpointSlotContext({ providers: ALL_PROVIDERS, activeProvider: CLOUD_PROVIDER });
+
+  it('tallies only RUNNING agents, only on local endpoints', () => {
+    const agents = {
+      a: makeRunningAgentOnProvider('lmstudio-tui'),
+      b: makeRunningAgentOnProvider('lmstudio-tui'),
+      c: makeRunningAgentOnProvider('ollama-local'),
+      d: makeRunningAgentOnProvider('anthropic'),      // cloud → not counted
+      e: makeRunningAgentOnProvider('claude-cli'),     // no endpoint → not counted
+      f: { status: 'completed', metadata: { providerId: 'lmstudio-tui' } },
+    };
+    expect(countRunningAgentsByLocalEndpoint(agents, slots.endpointForAgent)).toEqual({
+      [LOCAL_ENDPOINT]: 2,
+      [OTHER_LOCAL_ENDPOINT]: 1,
+    });
+  });
+
+  it('ignores agents with no provider stamp (pre-upgrade records)', () => {
+    const agents = { a: { status: 'running', metadata: {} }, b: { status: 'running' } };
+    expect(countRunningAgentsByLocalEndpoint(agents, slots.endpointForAgent)).toEqual({});
+  });
+});
+
+describe('localEndpointOfProvider (#4834)', () => {
+  it('resolves a local endpoint regardless of provider type', () => {
+    expect(localEndpointOfProvider({ type: 'tui', endpoint: 'http://localhost:1234/v1' })).toBe('localhost:1234');
+    expect(localEndpointOfProvider({ type: 'api', endpoint: 'http://127.0.0.1:11434' })).toBe('localhost:11434');
+  });
+
+  it('collapses every spelling of ONE local server onto a single slot key', () => {
+    // Host+port identifies the model server; scheme, path and host spelling do
+    // not. The shipped catalog already mixes spellings (`lmstudio` is seeded at
+    // localhost:1234, everything else at 127.0.0.1), so keying on the raw string
+    // would give one LM Studio process two independent caps — and let two agents
+    // onto the same GPU, the exact OOM this issue exists to prevent.
+    const spellings = [
+      'http://localhost:1234/v1',
+      'http://127.0.0.1:1234/v1',
+      'http://127.0.0.1:1234',
+      'https://localhost:1234/v1',
+      'localhost:1234',
+      '  http://0.0.0.0:1234/v1  ',
+    ];
+    for (const endpoint of spellings) {
+      expect(localEndpointOfProvider({ endpoint }), endpoint).toBe('localhost:1234');
+    }
+  });
+
+  it('keeps distinct local servers on distinct keys', () => {
+    expect(localEndpointOfProvider({ endpoint: 'http://127.0.0.1:1234/v1' }))
+      .not.toBe(localEndpointOfProvider({ endpoint: 'http://127.0.0.1:11434/v1' }));
+  });
+
+  it('returns null for a remote endpoint, a missing endpoint, or no provider', () => {
+    expect(localEndpointOfProvider({ type: 'api', endpoint: 'https://api.anthropic.com/v1' })).toBeNull();
+    expect(localEndpointOfProvider({ type: 'cli', endpoint: null })).toBeNull();
+    expect(localEndpointOfProvider({ type: 'tui' })).toBeNull();
+    expect(localEndpointOfProvider(null)).toBeNull();
+  });
+
+  it('never guesses from a model id — only the recorded endpoint counts', () => {
+    // The issue is explicit: a TUI provider whose endpoint isn't recorded stays
+    // ungated even when its model id names a local runtime.
+    expect(localEndpointOfProvider({ type: 'tui', defaultModel: 'mtplx/local-qwen-27b', endpoint: null })).toBeNull();
+  });
+});
+
+
+describe('resolveLocalEndpoint — unavailable providers are not gated (#4834)', () => {
+  // A saturated LOCAL provider that is currently unavailable (rate-limited,
+  // cooling down, down) is not where the task lands: resolveAgentProviderAndModel
+  // swaps it for a fallback, often a cloud one. Gating on it anyway would hold
+  // the task behind a GPU it never touches — and nothing about that busy GPU
+  // would ever clear the hold, so the task starves.
+  const withAvailability = (available) => createLocalEndpointSlotContext({
+    providers: ALL_PROVIDERS,
+    activeProvider: CLOUD_PROVIDER,
+    isAvailable: (id) => available.includes(id),
+  });
+
+  it('resolves to null when the pinned local provider is unavailable', () => {
+    const slots = withAvailability(['anthropic']);
+    expect(slots.resolveLocalEndpoint(taskOnProvider('t', 'lmstudio-tui'))).toBeNull();
+  });
+
+  it('still gates the same provider once it is available again', () => {
+    const slots = withAvailability(['lmstudio-tui', 'anthropic']);
+    expect(slots.resolveLocalEndpoint(taskOnProvider('t', 'lmstudio-tui'))).toBe(LOCAL_ENDPOINT);
+  });
+
+  it('resolves to null when the ACTIVE local provider is unavailable', () => {
+    const slots = createLocalEndpointSlotContext({
+      providers: ALL_PROVIDERS,
+      activeProvider: LOCAL_TUI_PROVIDER,
+      isAvailable: () => false,
+    });
+    expect(slots.resolveLocalEndpoint(taskOnProvider('t'))).toBeNull();
+  });
+
+  it('does not starve a queued task behind an unavailable local endpoint', () => {
+    // End-to-end through the real tracker: one agent is running on the local
+    // endpoint, but the provider has since gone unavailable, so the queued task
+    // must dispatch (onto its fallback) instead of waiting forever.
+    const state = makeState({
+      maxConcurrentAgents: 5,
+      runningAgents: [makeRunningAgentOnProvider('lmstudio-tui')],
+    });
+    const slots = withAvailability(['anthropic']);
+    const capacity = createDequeueCapacity(state, {
+      localEndpointCounts: countRunningAgentsByLocalEndpoint(state.agents, slots.endpointForAgent),
+      localEndpointLimit: slots.limit,
+      resolveLocalEndpoint: slots.resolveLocalEndpoint,
+    });
+
+    const spawned = priorityDequeue(userBuckets([taskOnProvider('task-local-1', 'lmstudio-tui')]), capacity);
+    expect(spawned.map(t => t.id)).toEqual(['task-local-1']);
+  });
+
+  it('leaves a task with no resolvable provider ungated', () => {
+    const slots = createLocalEndpointSlotContext({ providers: [], activeProvider: null });
+    expect(slots.resolveLocalEndpoint(taskOnProvider('t'))).toBeNull();
+    expect(slots.resolveLocalEndpoint(taskOnProvider('t', 'ghost'))).toBeNull();
+  });
+});
+
+describe('local-endpoint spawn reservations (#4834)', () => {
+  beforeEach(() => __resetLocalEndpointSpawnReservations());
+
+  it('counts a reserved-but-not-yet-running spawn against the endpoint', () => {
+    // The window between `task:ready` and the agent record reaching `running`
+    // is several awaits wide. Without the reservation, a second dispatch inside
+    // it reads a snapshot showing zero running agents and over-dispatches.
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(0);
+    const release = reserveLocalEndpointSpawn(LOCAL_ENDPOINT);
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(1);
+    release();
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(0);
+  });
+
+  it('is idempotent — a double release cannot free a slot twice', () => {
+    // The spawner releases in a `finally`, so a throw plus the finally can call
+    // it twice. A naive decrement would go negative and hand out a phantom slot.
+    const first = reserveLocalEndpointSpawn(LOCAL_ENDPOINT);
+    const second = reserveLocalEndpointSpawn(LOCAL_ENDPOINT);
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(2);
+    first();
+    first();
+    first();
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(1);
+    second();
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(0);
+  });
+
+  it('reserving a null endpoint is a no-op', () => {
+    const release = reserveLocalEndpointSpawn(null);
+    expect(pendingLocalEndpointSpawns(null)).toBe(0);
+    expect(() => release()).not.toThrow();
+  });
+
+  it('keeps reservations per endpoint', () => {
+    reserveLocalEndpointSpawn(LOCAL_ENDPOINT);
+    reserveLocalEndpointSpawn(OTHER_LOCAL_ENDPOINT);
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(1);
+    expect(pendingLocalEndpointSpawns(OTHER_LOCAL_ENDPOINT)).toBe(1);
+  });
+});
+
+describe('endpointForAgent — stamped endpoint wins over the id lookup (#4834)', () => {
+  const slots = createLocalEndpointSlotContext({ providers: ALL_PROVIDERS, activeProvider: CLOUD_PROVIDER });
+
+  it('counts an agent whose provider record was deleted mid-run', () => {
+    // Only `providerId` was persisted pre-#4834, so a deleted provider made a
+    // still-running agent invisible to the cap — freeing a slot the GPU was
+    // still holding. The stamped endpoint survives the deletion.
+    const orphaned = { status: 'running', metadata: { providerId: 'deleted-provider', providerEndpoint: LOCAL_URL } };
+    expect(slots.endpointForAgent(orphaned)).toBe(LOCAL_ENDPOINT);
+    expect(countRunningAgentsByLocalEndpoint({ a: orphaned }, slots.endpointForAgent)).toEqual({ [LOCAL_ENDPOINT]: 1 });
+  });
+
+  it('prefers the stamp when the provider record was re-pointed mid-run', () => {
+    // The agent is still talking to the endpoint it started on, not the one the
+    // provider now names.
+    const agent = { status: 'running', metadata: { providerId: 'ollama-local', providerEndpoint: LOCAL_URL } };
+    expect(slots.endpointForAgent(agent)).toBe(LOCAL_ENDPOINT);
+  });
+
+  it('falls back to the id lookup for a pre-#4834 record with no stamp', () => {
+    expect(slots.endpointForAgent({ status: 'running', metadata: { providerId: 'lmstudio-tui' } })).toBe(LOCAL_ENDPOINT);
+    expect(slots.endpointForAgent({ status: 'running', metadata: { providerId: 'lmstudio-tui', providerEndpoint: null } })).toBe(LOCAL_ENDPOINT);
+  });
+
+  it('does NOT re-resolve when the stamp is REMOTE', () => {
+    // The agent is talking to the cloud. If its provider record is re-pointed at
+    // a local server mid-run, falling through to the id lookup would count this
+    // cloud agent against that GPU — saturating an endpoint with zero agents on
+    // it and holding every task behind it at the default limit of 1.
+    const cloudAgent = {
+      status: 'running',
+      metadata: { providerId: 'lmstudio-tui', providerEndpoint: 'https://api.anthropic.com/v1' },
+    };
+    expect(slots.endpointForAgent(cloudAgent)).toBeNull();
+    expect(countRunningAgentsByLocalEndpoint({ a: cloudAgent }, slots.endpointForAgent)).toEqual({});
+  });
+});
+
+describe('resolveLocalEndpoint — follows the fallback swap (#4834)', () => {
+  // An unavailable provider is not where the task lands, so the gate follows the
+  // SAME getFallbackProvider spawn uses. Both directions matter: a cloud
+  // fallback must ungate (or the task starves behind a GPU it never touches),
+  // and a fallback on the same local server must stay gated (or the cap
+  // disappears exactly when the endpoint is unhealthy — the shipped catalog has
+  // four providers on 127.0.0.1:18021).
+  const SAME_SERVER_SIBLING = { id: 'lmstudio-api', type: 'api', enabled: true, endpoint: 'http://127.0.0.1:1234' };
+
+  const withFallback = (fallbackProvider) => createLocalEndpointSlotContext({
+    providers: [...ALL_PROVIDERS, SAME_SERVER_SIBLING],
+    activeProvider: CLOUD_PROVIDER,
+    isAvailable: (id) => id !== 'lmstudio-tui',
+    resolveFallback: () => fallbackProvider,
+  });
+
+  it('stays gated when the fallback lands on the SAME local server', () => {
+    // Different provider record, different host spelling, same GPU.
+    expect(withFallback(SAME_SERVER_SIBLING).resolveLocalEndpoint(taskOnProvider('t', 'lmstudio-tui')))
+      .toBe(LOCAL_ENDPOINT);
+  });
+
+  it('ungates when the fallback is a cloud provider', () => {
+    expect(withFallback(CLOUD_PROVIDER).resolveLocalEndpoint(taskOnProvider('t', 'lmstudio-tui'))).toBeNull();
+  });
+
+  it('gates on the FALLBACK endpoint when it is a different local server', () => {
+    expect(withFallback(OTHER_LOCAL_PROVIDER).resolveLocalEndpoint(taskOnProvider('t', 'lmstudio-tui')))
+      .toBe(OTHER_LOCAL_ENDPOINT);
+  });
+
+  it('ungates when no fallback resolves at all', () => {
+    expect(withFallback(null).resolveLocalEndpoint(taskOnProvider('t', 'lmstudio-tui'))).toBeNull();
+  });
+
+  it('passes the task through so a task-level fallback pin is honored', () => {
+    // getFallbackProvider's first tier reads metadata.fallbackProvider /
+    // metadata.fallbackModel off the task; the context must hand them over.
+    const seen = [];
+    const slots = createLocalEndpointSlotContext({
+      providers: ALL_PROVIDERS,
+      activeProvider: CLOUD_PROVIDER,
+      isAvailable: () => false,
+      resolveFallback: (primaryId, providersMap, task) => { seen.push({ primaryId, task }); return null; },
+    });
+    slots.resolveLocalEndpoint({ id: 't', metadata: { provider: 'lmstudio-tui', fallbackProvider: 'ollama-local' } });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].primaryId).toBe('lmstudio-tui');
+    expect(seen[0].task.metadata.fallbackProvider).toBe('ollama-local');
+  });
+});
+
+describe('readEndpointCapacity (#4834)', () => {
+  beforeEach(() => __resetLocalEndpointSpawnReservations());
+
+  const slots = createLocalEndpointSlotContext({ providers: ALL_PROVIDERS, activeProvider: CLOUD_PROVIDER, limit: 1 });
+  const runningOn = (providerId, taskId) => ({ status: 'running', taskId, metadata: { providerId } });
+
+  it('counts a running agent against its endpoint', () => {
+    const capacity = readEndpointCapacity(LOCAL_ENDPOINT, { a: runningOn('lmstudio-tui', 'task-a') }, slots);
+    expect(capacity).toMatchObject({ inFlight: 1, limit: 1, atCapacity: true });
+  });
+
+  it('excludes the dispatching task\'s OWN agent so Run-now can supersede a zombie', () => {
+    // forceSpawnTask deliberately supersedes a `running` holder older than the
+    // spawn grace — that is the documented recovery for an agent whose PTY died
+    // without a close handler. Counting the zombie would make the one recovery
+    // the route exists to provide unreachable at a limit of 1.
+    const agents = { a: runningOn('lmstudio-tui', 'task-stuck') };
+    expect(readEndpointCapacity(LOCAL_ENDPOINT, agents, slots, { ignoreTaskId: 'task-stuck' }).atCapacity).toBe(false);
+    expect(readEndpointCapacity(LOCAL_ENDPOINT, agents, slots, { ignoreTaskId: 'other-task' }).atCapacity).toBe(true);
+  });
+
+  it('does not double-count a reservation whose agent already registered', () => {
+    // registerAgent flips the record to `running` well before spawnAgentForTask
+    // returns, so for the whole PTY-launch window the same agent is both in the
+    // running tally and holding its reservation.
+    reserveLocalEndpointSpawn(LOCAL_ENDPOINT, 'task-a');
+    const agents = { a: runningOn('lmstudio-tui', 'task-a') };
+
+    expect(readEndpointCapacity(LOCAL_ENDPOINT, agents, slots).inFlight).toBe(1);
+  });
+
+  it('still counts a reservation that has NOT registered yet', () => {
+    reserveLocalEndpointSpawn(LOCAL_ENDPOINT, 'task-b');
+    const agents = { a: runningOn('lmstudio-tui', 'task-a') };
+
+    expect(readEndpointCapacity(LOCAL_ENDPOINT, agents, slots).inFlight).toBe(2);
+  });
+
+  it('counts an anonymous reservation (no task id) unconditionally', () => {
+    reserveLocalEndpointSpawn(LOCAL_ENDPOINT, null);
+    expect(readEndpointCapacity(LOCAL_ENDPOINT, {}, slots).inFlight).toBe(1);
+  });
+
+  it('ignores agents on other endpoints and non-running agents', () => {
+    const agents = {
+      a: runningOn('ollama-local', 'task-a'),
+      b: runningOn('anthropic', 'task-b'),
+      c: { status: 'completed', taskId: 'task-c', metadata: { providerId: 'lmstudio-tui' } },
+    };
+    expect(readEndpointCapacity(LOCAL_ENDPOINT, agents, slots).inFlight).toBe(0);
+  });
+});
+
+describe('localEndpointOfProvider — Ollama-backed CLI/TUI providers (#4834)', () => {
+  // Four SHIPPED providers run against the local Ollama daemon with no
+  // `endpoint` field at all. They are the archetype of this issue — PortOS
+  // launches a vendor CLI that opens its own connection — so leaving them
+  // ungated would make the cap inconsistent across providers of the same shape.
+  it('reads the daemon from ANTHROPIC_BASE_URL when endpoint is unset', () => {
+    expect(localEndpointOfProvider({
+      id: 'claude-ollama-tui', type: 'tui', ollamaBacked: true,
+      envVars: { ANTHROPIC_BASE_URL: 'http://localhost:11434' },
+    })).toBe('localhost:11434');
+  });
+
+  it('falls back to the default daemon for a bare ollamaBacked marker', () => {
+    // opencode-ollama* keep their base inside an OPENCODE_CONFIG_CONTENT blob;
+    // the marker alone means the default daemon (what the toolkit's own
+    // ollamaBaseFromProvider does).
+    expect(localEndpointOfProvider({
+      id: 'opencode-ollama-tui', type: 'tui', ollamaBacked: true,
+      envVars: { OPENCODE_CONFIG_CONTENT: '{}' },
+    })).toBe('localhost:11434');
+  });
+
+  it('shares ONE slot with the api-type `ollama` provider on the same daemon', () => {
+    const cli = localEndpointOfProvider({ id: 'claude-ollama', ollamaBacked: true, envVars: { ANTHROPIC_BASE_URL: 'http://localhost:11434' } });
+    const api = localEndpointOfProvider({ id: 'ollama', type: 'api', endpoint: 'http://localhost:11434/v1' });
+    expect(cli).toBe(api);
+  });
+
+  it('does NOT localize a REMOTE Ollama daemon', () => {
+    // The recorded base wins over the local default — an Ollama on another host
+    // is not this machine's GPU.
+    expect(localEndpointOfProvider({ id: 'remote-ollama', type: 'api', endpoint: 'http://192.0.2.10:11434' })).toBeNull();
+    expect(localEndpointOfProvider({
+      id: 'remote-claude-ollama', ollamaBacked: true,
+      envVars: { ANTHROPIC_BASE_URL: 'http://192.0.2.10:11434' },
+    })).toBeNull();
+  });
+});
+
+describe('providerBaseUrl — the stamp source (#4834)', () => {
+  it('returns the REMOTE base of an Ollama-backed CLI that has no endpoint', () => {
+    // `localRuntimeForProvider` answers null for it (correctly — it is not this
+    // box), and it records its daemon ONLY in envVars. Returning null here would
+    // stamp an absent endpoint, and `endpointForAgent` reads absent as
+    // "re-resolve by provider id" — so re-pointing that provider at a local URL
+    // mid-run would start counting a remote agent against the local GPU.
+    const remote = { id: 'remote-ollama-cli', ollamaBacked: true, envVars: { ANTHROPIC_BASE_URL: 'http://192.0.2.10:11434' } };
+    expect(providerBaseUrl(remote)).toBe('http://192.0.2.10:11434');
+    expect(localEndpointOfProvider(remote)).toBeNull();
+  });
+
+  it('prefers the resolved local runtime endpoint over the raw record', () => {
+    const local = { id: 'claude-ollama', ollamaBacked: true, envVars: { ANTHROPIC_BASE_URL: 'http://localhost:11434' } };
+    expect(localEndpointOfProvider(local)).toBe('localhost:11434');
+  });
+
+  it('is null only when the record names no base at all', () => {
+    expect(providerBaseUrl({ id: 'claude-cli', type: 'cli', endpoint: null })).toBeNull();
+    expect(providerBaseUrl(null)).toBeNull();
+  });
+
+  it('keeps a cloud base so its agent is never re-resolved', () => {
+    expect(providerBaseUrl(CLOUD_PROVIDER)).toBe('https://api.anthropic.com/v1');
+    expect(localEndpointOfProvider(CLOUD_PROVIDER)).toBeNull();
+  });
+});
+
 // ─── Source-level regression guards ────────────────────────────────────────
 //
 // These pin two structural invariants of the production code that the
@@ -771,6 +1426,109 @@ describe('cos.js source — priority + capacity invariants', () => {
     const pattern = /maxConcurrentAgentsPerProject\s*\|\|\s*state\.config\.maxConcurrentAgents/;
     expect(dequeueFn).toMatch(pattern);
     expect(evalFn).toMatch(pattern);
+  });
+
+  it('dequeueNextTask threads the local-endpoint cap into its capacity tracker (#4834)', () => {
+    // The gate only works if the scheduler actually supplies the resolver and
+    // the running-agent tally — a refactor that drops either option silently
+    // reverts to unlimited local dispatch, which is what caused the accelerator
+    // OOM in the first place. Read from the real function body so a stray
+    // reference elsewhere in cos.js can't satisfy this.
+    const dequeueFn = extractFnBody(COS_SRC, COS_SRC.indexOf('async function dequeueNextTask'));
+    expect(dequeueFn).toMatch(/countRunningAgentsByLocalEndpoint\(/);
+    expect(dequeueFn).toMatch(/resolveLocalEndpoint:/);
+    expect(dequeueFn).toMatch(/localEndpointLimit:/);
+  });
+
+  it('tryImmediateSpawn does NOT re-implement the local-endpoint cap (#4834)', () => {
+    // Its task is already persisted by `addTask`, so emitting and letting the
+    // chokepoint hold produces exactly what an early return would. A local copy
+    // would be a weaker duplicate — it can only see a running-agent snapshot,
+    // not the in-flight reservations the authoritative gate also counts — so it
+    // could pass a task the chokepoint then holds, for an extra provider fetch.
+    const immediateFn = extractFnBody(COS_SRC, COS_SRC.indexOf('async function tryImmediateSpawn'));
+    expect(immediateFn).not.toMatch(/resolveLocalEndpoint\(/);
+    expect(immediateFn).not.toMatch(/countRunningAgentsByLocalEndpoint\(/);
+  });
+
+  it('subAgentSpawner holds at the chokepoint every task:ready emitter funnels through (#4834)', () => {
+    // dequeueNextTask is only ONE of the emitters — evaluateTasks,
+    // forceSpawnTask, the job scheduler and the Creative Director bridge all
+    // reach the spawner directly. If the gate ever moves back to the scheduler
+    // alone, those paths silently over-dispatch at the local GPU again.
+    const SPAWNER_SRC = readFileSync(join(__dirname, 'subAgentSpawner.js'), 'utf-8');
+    expect(SPAWNER_SRC, 'spawner must acquire a local-endpoint slot before spawning')
+      .toMatch(/acquireLocalEndpointSpawnSlot\(/);
+    // The reservation is only correct if it is released once the spawn settles;
+    // a missing `finally` leaks the slot and wedges the endpoint forever.
+    const listener = SPAWNER_SRC.slice(SPAWNER_SRC.indexOf("cosEvents.on('task:ready'"));
+    expect(listener, 'the acquired slot must be released in a finally')
+      .toMatch(/finally\s*\{\s*\n\s*localSlot\.release\(\);/);
+    expect(listener, 'a task at capacity must be HELD (left pending), not failed')
+      .toMatch(/holdTask\(task,\s*localSlot\.reason\)/);
+  });
+
+  it('agentLifecycle stamps the resolved endpoint onto the agent record (#4834)', () => {
+    // Counting a running agent by provider id alone breaks when the provider is
+    // edited or deleted while the agent still holds the GPU.
+    const LIFECYCLE_SRC = readFileSync(join(__dirname, 'agentLifecycle.js'), 'utf-8');
+    // Stamped through the SAME resolver the counter reads with, so writer and
+    // reader cannot drift on where a CLI provider records its daemon.
+    expect(LIFECYCLE_SRC).toMatch(/providerEndpoint:\s*providerBaseUrl\(provider\)/);
+  });
+
+  it('forceSpawnTask refuses synchronously when the local endpoint is full (#4834)', () => {
+    // "Run now" returns before the spawn happens, so without its own check it
+    // would answer { success: true } and toast "Spawning" for a task the
+    // chokepoint immediately holds — the same lie the provider-resolution
+    // pre-check directly above it exists to prevent. It must run AFTER
+    // resolution so it reads the post-fallback provider.
+    const forceFn = extractFnBody(COS_SRC, COS_SRC.indexOf('export async function forceSpawnTask'));
+    expect(forceFn).toMatch(/localEndpointCapacityError\(resolution\.provider/);
+    expect(forceFn.indexOf('resolveAgentProviderAndModel'))
+      .toBeLessThan(forceFn.indexOf('localEndpointCapacityError'));
+    expect(forceFn.indexOf('localEndpointCapacityError'))
+      .toBeLessThan(forceFn.indexOf("cosEvents.emit('task:ready'"));
+  });
+
+  it('forceSpawnTask passes its task id so its own zombie agent is excluded (#4834)', () => {
+    // The route deliberately supersedes a stale `running` holder — counting that
+    // agent would make the recovery unreachable at a limit of 1. The exclusion
+    // itself is driven directly in the `readEndpointCapacity` block above; what
+    // that can't see is whether this caller opts into it.
+    const forceFn = extractFnBody(COS_SRC, COS_SRC.indexOf('export async function forceSpawnTask'));
+    expect(forceFn).toMatch(/localEndpointCapacityError\([^)]*taskId\)/);
+  });
+
+  it('the LIVE gate wires in the real availability + fallback resolvers (#4834)', () => {
+    // The branch logic itself is driven directly above (`resolveLocalEndpoint —
+    // follows the fallback swap`) through injected doubles. What no unit test
+    // can reach is whether the PRODUCTION context injects the real ones — if it
+    // ever passed its own approximation, the prediction would silently drift
+    // from where spawn actually sends the task.
+    const SLOTS_SRC = readFileSync(join(__dirname, 'cosLocalEndpointSlots.js'), 'utf-8');
+    expect(SLOTS_SRC, 'must use the real provider-status predicate')
+      .toMatch(/isAvailable:\s*isProviderAvailable/);
+    expect(SLOTS_SRC, 'and the real fallback resolver spawn uses')
+      .toMatch(/getFallbackProvider\(/);
+  });
+
+  it('the DESTRUCTIVE-denial tiers opt out of the local-endpoint cap (#4834)', () => {
+    // Priorities 0, 3 and 4 each commit side effects before `canSpawn` and never
+    // persist the task, so a denial DISCARDS it rather than deferring it: the
+    // on-demand request is already cleared, the mission sub-task is already
+    // flipped to `in_progress` (and only `pending` ones are ever re-picked), the
+    // app-review marker is already bound. They emit and let the chokepoint hold.
+    // Priorities 1 and 2 read from persisted queues, so skipping there is a
+    // genuine defer — they keep the cap.
+    for (const tier of ['spawnDequeuePriority0OnDemand', 'spawnDequeuePriority3Missions', 'spawnDequeuePriority4IdleReview']) {
+      const body = extractFnBody(COS_SRC, COS_SRC.indexOf(`async function ${tier}`));
+      expect(body, `${tier} must admit via canSpawnCommitted`).toMatch(/canSpawnCommitted\(/);
+    }
+    for (const tier of ['spawnDequeuePriority1UserTasks', 'spawnDequeuePriority2AutoApproved']) {
+      const body = extractFnBody(COS_SRC, COS_SRC.indexOf(`async function ${tier}`));
+      expect(body, `${tier} defers rather than discards — it must keep the cap`).not.toMatch(/canSpawnCommitted\(/);
+    }
   });
 
   it('idle generator is fenced by spawned===0 / tasksToSpawn.length===0', () => {
