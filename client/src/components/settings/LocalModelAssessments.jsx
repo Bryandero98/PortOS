@@ -371,7 +371,7 @@ function CapabilityStrip({ capability, backend, modelId, tests, onOpen }) {
 function RankedRow({ entry, runtimeLabel, onRemeasure, onDelete, onSweepTunings, sweepVariants, busy, capability, capabilityTests, onOpenCapabilityTest }) {
   const perf = entry.performance || {};
   return (
-    <div className="border border-port-border rounded-lg p-3 space-y-2">
+    <div className="bg-port-bg border border-port-border rounded-lg p-3 space-y-2">
       <div className="flex items-start justify-between gap-2 flex-wrap">
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -536,7 +536,7 @@ function TuningComparison({ rows, runtimeLabelFor }) {
         uses chars/s so estimates and missing usage do not decide the winner.
       </p>
       {rows.map((row) => (
-        <div key={`${row.backend}:${row.modelId}`} className="border border-port-border rounded-lg p-3 space-y-1.5">
+        <div key={`${row.backend}:${row.modelId}`} className="bg-port-bg border border-port-border rounded-lg p-3 space-y-1.5">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs text-white font-mono break-all">{row.modelId}</span>
             <span className="text-[10px] text-gray-500">{runtimeLabelFor(row.backend)}</span>
@@ -607,7 +607,7 @@ function OpenCodeAgentBenchmarkPanel({ results, running, onRun }) {
     .sort((a, b) => a.result.elapsedMs - b.result.elapsedMs)[0];
 
   return (
-    <div className="border border-port-border rounded-lg p-3 space-y-2">
+    <div className="bg-port-bg border border-port-border rounded-lg p-3 space-y-2">
       <div className="flex items-center gap-1.5 text-xs text-gray-300">
         <Terminal size={12} className="text-port-accent" />
         <h3 className="font-medium">Local TUI agent-task check</h3>
@@ -627,7 +627,7 @@ function OpenCodeAgentBenchmarkPanel({ results, running, onRun }) {
         {OPENCODE_AGENT_TARGETS.map((target) => {
           const result = results?.[target.backend];
           return (
-            <div key={target.backend} className="border border-port-border/70 rounded p-2 space-y-1.5">
+            <div key={target.backend} className="bg-port-card border border-port-border/70 rounded p-2 space-y-1.5">
               <div className="text-[11px] text-gray-300">{target.label}</div>
               <div className="text-[10px] text-gray-500 font-mono break-all">{target.modelId}</div>
               {result && (

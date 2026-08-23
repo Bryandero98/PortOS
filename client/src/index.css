@@ -1543,6 +1543,13 @@ html[data-port-theme] .openworld-themed [class~="hover:bg-cyan-500/5"]:hover { b
   .openworld-mobile-controls { display: none; }
 }
 
+/* === Classic Noon === */
+/* Classic Noon uses the classic card surface directly; keeping the selector
+   explicit makes the day variant's card fill part of the theme contract. */
+html[data-port-theme="classic-noon"] .bg-port-card {
+  background-color: rgb(var(--port-card) / var(--port-card-alpha)) !important;
+}
+
 /* === Lumen Glass Day === */
 /* Same card set as the base elevation rule above — every fill opacity, not just
    `/50` — so this theme's softened border lands on all of its cards. */
