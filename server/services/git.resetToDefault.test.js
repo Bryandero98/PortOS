@@ -98,6 +98,18 @@ describe('resetToDefaultBranch', () => {
     expect(result.discardedFiles).toBe(2);
   });
 
+  it('reports null, not an empty string, when a repo has no commits to name', async () => {
+    // `''.split('\n')` is `['']`, and a destructuring default only fires on
+    // undefined — so the empty case has to be normalized explicitly or the
+    // contract (and the client's `if (result.previousHead)` hint) gets `''`.
+    routeGit({ ...HAPPY_PATH, 'rev-parse HEAD --abbrev-ref HEAD': ok('') });
+
+    const result = await resetToDefaultBranch('/repo');
+
+    expect(result.previousHead).toBeNull();
+    expect(result.previousBranch).toBeNull();
+  });
+
   it('never runs git clean — untracked files are not recoverable from a reflog', async () => {
     routeGit(HAPPY_PATH);
 

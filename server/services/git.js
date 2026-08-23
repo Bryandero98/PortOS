@@ -1262,7 +1262,13 @@ export async function resetToDefaultBranch(dir) {
     execGitSafe(['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD'], dir),
     getStatusPorcelain(dir).catch(() => '')
   ]);
-  const [previousHead = null, previousBranch = null] = headBefore.stdout.trim().split('\n').map(line => line.trim());
+  // `|| null` rather than a destructuring default: on a repo with no commits
+  // rev-parse prints nothing, `''.split('\n')` is `['']`, and a default only
+  // fires on `undefined` — so the caller would get `''` where the contract (and
+  // the client's `if (result.previousHead)` recovery hint) says null.
+  const [head, branchName] = headBefore.stdout.trim().split('\n').map(line => line.trim());
+  const previousHead = head || null;
+  const previousBranch = branchName || null;
 
   // `checkout --force -B` is the whole operation: `-B` repoints the local branch
   // at the remote ref and `--force` resets index AND working tree to it, so a
