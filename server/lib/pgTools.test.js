@@ -6,7 +6,7 @@
  *   probes each binary's `--version`.
  * - resolvePgDump — discovery + pick + the `satisfies` verdict.
  * - resolvePgDumpBinary — the full override-or-auto decision both consumers
- *   (backup.js, routes/database.js) share: PORTOS_PGDUMP wins, else auto-select
+ *   (backup.js, services/dbAdmin.js) share: PORTOS_PGDUMP wins, else auto-select
  *   when the server version is known, else bare `pg_dump`.
  */
 

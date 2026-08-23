@@ -1483,6 +1483,7 @@ export default function VideoGen() {
         open={installModalOpen}
         runtime={byovRuntime}
         label={byovStatus?.label}
+        streamMethod="POST"
         onClose={() => setInstallModalOpen(false)}
         onComplete={() => refreshByovStatus()}
       />
