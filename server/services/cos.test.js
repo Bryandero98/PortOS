@@ -30,14 +30,20 @@
  * `availableSlots <= 0` short-circuit flips a clear red flag.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { firstLine, isPerpetualRefillCandidate, perpetualRefillPlan } from './cos.js';
 import { canQueueImprovementTasks } from './cosState.js';
 import { createDequeueCapacity, countRunningAgentsByLocalEndpoint, isMissionTierEligible, isIdleTierEligible } from './cosDequeue.js';
-import { createLocalEndpointSlotContext, localEndpointOfProvider } from './cosLocalEndpointSlots.js';
+import {
+  createLocalEndpointSlotContext,
+  localEndpointOfProvider,
+  reserveLocalEndpointSpawn,
+  pendingLocalEndpointSpawns,
+  __resetLocalEndpointSpawnReservations,
+} from './cosLocalEndpointSlots.js';
 import { PENDING_MERGE_SWEEP_INTERVAL_MS, MAX_PENDING_MERGE_TICKS } from './prWatcher.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -708,6 +714,77 @@ describe('localEndpointOfProvider (#4834)', () => {
 });
 
 
+describe('local-endpoint spawn reservations (#4834)', () => {
+  beforeEach(() => __resetLocalEndpointSpawnReservations());
+
+  it('counts a reserved-but-not-yet-running spawn against the endpoint', () => {
+    // The window between `task:ready` and the agent record reaching `running`
+    // is several awaits wide. Without the reservation, a second dispatch inside
+    // it reads a snapshot showing zero running agents and over-dispatches.
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(0);
+    const release = reserveLocalEndpointSpawn(LOCAL_ENDPOINT);
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(1);
+    release();
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(0);
+  });
+
+  it('is idempotent — a double release cannot free a slot twice', () => {
+    // The spawner releases in a `finally`, so a throw plus the finally can call
+    // it twice. A naive decrement would go negative and hand out a phantom slot.
+    const first = reserveLocalEndpointSpawn(LOCAL_ENDPOINT);
+    const second = reserveLocalEndpointSpawn(LOCAL_ENDPOINT);
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(2);
+    first();
+    first();
+    first();
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(1);
+    second();
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(0);
+  });
+
+  it('reserving a null endpoint is a no-op', () => {
+    const release = reserveLocalEndpointSpawn(null);
+    expect(pendingLocalEndpointSpawns(null)).toBe(0);
+    expect(() => release()).not.toThrow();
+  });
+
+  it('keeps reservations per endpoint', () => {
+    reserveLocalEndpointSpawn(LOCAL_ENDPOINT);
+    reserveLocalEndpointSpawn(OTHER_LOCAL_ENDPOINT);
+    expect(pendingLocalEndpointSpawns(LOCAL_ENDPOINT)).toBe(1);
+    expect(pendingLocalEndpointSpawns(OTHER_LOCAL_ENDPOINT)).toBe(1);
+  });
+});
+
+describe('endpointForAgent — stamped endpoint wins over the id lookup (#4834)', () => {
+  const slots = createLocalEndpointSlotContext({ providers: ALL_PROVIDERS, activeProvider: CLOUD_PROVIDER });
+
+  it('counts an agent whose provider record was deleted mid-run', () => {
+    // Only `providerId` was persisted pre-#4834, so a deleted provider made a
+    // still-running agent invisible to the cap — freeing a slot the GPU was
+    // still holding. The stamped endpoint survives the deletion.
+    const orphaned = { status: 'running', metadata: { providerId: 'deleted-provider', providerEndpoint: LOCAL_ENDPOINT } };
+    expect(slots.endpointForAgent(orphaned)).toBe(LOCAL_ENDPOINT);
+    expect(countRunningAgentsByLocalEndpoint({ a: orphaned }, slots.endpointForAgent)).toEqual({ [LOCAL_ENDPOINT]: 1 });
+  });
+
+  it('prefers the stamp when the provider record was re-pointed mid-run', () => {
+    // The agent is still talking to the endpoint it started on, not the one the
+    // provider now names.
+    const agent = { status: 'running', metadata: { providerId: 'ollama-local', providerEndpoint: LOCAL_ENDPOINT } };
+    expect(slots.endpointForAgent(agent)).toBe(LOCAL_ENDPOINT);
+  });
+
+  it('falls back to the id lookup for a pre-#4834 record with no stamp', () => {
+    expect(slots.endpointForAgent({ status: 'running', metadata: { providerId: 'lmstudio-tui' } })).toBe(LOCAL_ENDPOINT);
+  });
+
+  it('ignores a stamped REMOTE endpoint rather than gating on it', () => {
+    const agent = { status: 'running', metadata: { providerId: 'anthropic', providerEndpoint: 'https://api.anthropic.com/v1' } };
+    expect(slots.endpointForAgent(agent)).toBeNull();
+  });
+});
+
 // ─── Source-level regression guards ────────────────────────────────────────
 //
 // These pin two structural invariants of the production code that the
@@ -1041,6 +1118,30 @@ describe('cos.js source — priority + capacity invariants', () => {
     const immediateFn = extractFnBody(COS_SRC, COS_SRC.indexOf('async function tryImmediateSpawn'));
     expect(immediateFn).toMatch(/resolveLocalEndpoint\(task\)/);
     expect(immediateFn).toMatch(/countRunningAgentsByLocalEndpoint\(/);
+  });
+
+  it('subAgentSpawner holds at the chokepoint every task:ready emitter funnels through (#4834)', () => {
+    // dequeueNextTask is only ONE of the emitters — evaluateTasks,
+    // forceSpawnTask, the job scheduler and the Creative Director bridge all
+    // reach the spawner directly. If the gate ever moves back to the scheduler
+    // alone, those paths silently over-dispatch at the local GPU again.
+    const SPAWNER_SRC = readFileSync(join(__dirname, 'subAgentSpawner.js'), 'utf-8');
+    expect(SPAWNER_SRC, 'spawner must acquire a local-endpoint slot before spawning')
+      .toMatch(/acquireLocalEndpointSpawnSlot\(/);
+    // The reservation is only correct if it is released once the spawn settles;
+    // a missing `finally` leaks the slot and wedges the endpoint forever.
+    const listener = SPAWNER_SRC.slice(SPAWNER_SRC.indexOf("cosEvents.on('task:ready'"));
+    expect(listener, 'the acquired slot must be released in a finally')
+      .toMatch(/finally\s*\{\s*\n\s*localSlot\.release\(\);/);
+    expect(listener, 'a task at capacity must be HELD (left pending), not failed')
+      .toMatch(/holdTask\(task,\s*localSlot\.reason\)/);
+  });
+
+  it('agentLifecycle stamps the resolved endpoint onto the agent record (#4834)', () => {
+    // Counting a running agent by provider id alone breaks when the provider is
+    // edited or deleted while the agent still holds the GPU.
+    const LIFECYCLE_SRC = readFileSync(join(__dirname, 'agentLifecycle.js'), 'utf-8');
+    expect(LIFECYCLE_SRC).toMatch(/providerEndpoint:\s*provider\.endpoint\s*\|\|\s*null/);
   });
 
   it('idle generator is fenced by spawned===0 / tasksToSpawn.length===0', () => {
