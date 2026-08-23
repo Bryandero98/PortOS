@@ -427,13 +427,19 @@ absent as unknown: a provider that never shipped the handling rejects the field
 at submission, so inferring consent from silence turns every such render into a
 400 the user cannot act on.
 
-A consumer **filters** this list rather than validating it. A feature name it
-does not recognize is carried through and simply never matched; one that is not
-a short identifier token is dropped; a `features` value too malformed to filter
-at all degrades to absent. None of those invalidate the status. That matters
-more than it looks: a strict element schema would take a peer's ENTIRE status
-offline over one string, turning "ignores a feature we have not heard of" into
-"cannot read this peer" — the failure this list was introduced to prevent.
+A consumer **filters** this list rather than validating it, per member:
+
+- a feature name it does not recognize is carried through and simply never matched;
+- a member that is not a short identifier token — prose, a number, `null` — is dropped, and costs its neighbours nothing;
+- only a `features` value that is not a bounded array at all degrades to absent.
+
+None of those invalidate the status, and that matters more than it looks. A
+strict element schema fails before any filtering runs, so ONE bad string would
+take a peer's entire status offline — turning "ignores a feature we have not
+heard of" into "cannot read this peer", the failure this list was introduced to
+prevent. Degrading to absent rather than `[]` matters for the same reason: an
+empty list is a peer positively denying every feature, which is a stronger claim
+than a malformed field has earned.
 
 Consumers ask `federatedMediaSupports(status, feature, capability)` rather than
 testing the list inline, which is also where the overlap fallback to the legacy

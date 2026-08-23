@@ -419,6 +419,17 @@ describe('federatedMediaSupports / peerMediaProviderSnapshot', () => {
     expect(federatedMediaSupports({}, 'inputAssets', { inputAssets: [] })).toBe(false);
   });
 
+  // Mirrors the server guard: a feature name off the wire can collide with an
+  // Object.prototype key, and both ends must answer alike rather than one
+  // returning false while the other throws.
+  it.each(['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__'])(
+    'answers false for the inherited key %s instead of throwing',
+    (feature) => {
+      expect(federatedMediaSupports({}, feature, capability)).toBe(false);
+      expect(federatedMediaSupports(null, feature)).toBe(false);
+    },
+  );
+
   it('returns the peer snapshot only when one is actually stored', () => {
     expect(peerMediaProviderSnapshot(null)).toBeNull();
     expect(peerMediaProviderSnapshot({ mediaProviderStatus: {} })).toBeNull();

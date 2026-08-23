@@ -255,6 +255,10 @@ describe('federated media status kind projection', () => {
     expect(featuresOf(['lyrics', 'a private note about the user'])).toEqual(['lyrics']);
     expect(featuresOf(['lyrics', ''])).toEqual(['lyrics']);
     expect(featuresOf(['lyrics', 'x'.repeat(65)])).toEqual(['lyrics']);
+    // A non-string member costs its neighbours nothing. A strict element type
+    // would fail before the filter runs and collapse the whole list to absent,
+    // reading a peer as supporting NOTHING rather than losing one entry.
+    expect(featuresOf(['lyrics', 123, null, 'inputAssets'])).toEqual(['lyrics', 'inputAssets']);
   });
 
   // A field too malformed to filter reads as ABSENT — the undecidable wire-v1
@@ -264,7 +268,7 @@ describe('federated media status kind projection', () => {
   it('degrades an unusable features field to absent without failing the payload', () => {
     const parsed = (features) => federatedMediaProviderStatusSchema
       .safeParse(status({ features }));
-    for (const bad of ['lyrics', ['lyrics', 123], Array.from({ length: 300 }, (_, i) => `f${i}`)]) {
+    for (const bad of ['lyrics', 42, { lyrics: true }, Array.from({ length: 300 }, (_, i) => `f${i}`)]) {
       const result = parsed(bad);
       expect(result.success).toBe(true);
       expect(result.data.features).toBeUndefined();
@@ -417,11 +421,25 @@ describe('federatedMediaSupports', () => {
     expect(federatedMediaDeniesFeature({}, 'inputAssets', withBlock)).toBe(false);
   });
 
-  it('exposes every feature this build emits, and answers false for anything else', () => {
+  it('exposes every feature this build emits', () => {
     expect([...FEDERATED_MEDIA_FEATURES]).toEqual(['lyrics', 'inputAssets']);
     for (const feature of FEDERATED_MEDIA_FEATURES) {
       expect(federatedMediaSupports({ features: [...FEDERATED_MEDIA_FEATURES] }, feature)).toBe(true);
     }
-    expect(federatedMediaSupports({ features: ['lyrics'] }, 'constructor', capability())).toBe(false);
   });
+
+  // The feature name is a string off the wire, so it can collide with an
+  // Object.prototype key. These MUST take the legacy-tell path (no `features`
+  // list) — with a list present every case short-circuits before the lookup and
+  // the guard would be vacuous. On a normal object literal `'constructor'`
+  // resolves to an inherited value, truthy enough to defeat `?.` and then throw
+  // on the property access after it.
+  it.each(['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__'])(
+    'answers false for the inherited key %s instead of throwing',
+    (feature) => {
+      expect(federatedMediaSupports({}, feature, capability())).toBe(false);
+      expect(federatedMediaSupports(null, feature)).toBe(false);
+      expect(federatedMediaDeniesFeature({}, feature, capability())).toBe(false);
+    },
+  );
 });

@@ -137,10 +137,13 @@ function verifiedState(status, now) {
 // Overlap-release fallbacks, mirroring FEDERATED_MEDIA_LEGACY_FEATURE_TELL in
 // server/lib/federatedMediaWire.js. A provider on the previous build advertises
 // the same build-level fact per-capability instead of at the status root.
-const LEGACY_FEATURE_TELL = Object.freeze({
+// `Object.create(null)` for the same reason the server table uses it: the key
+// is a feature name off the wire, and on a normal object `'constructor'` and
+// friends resolve to inherited values rather than being absent.
+const LEGACY_FEATURE_TELL = Object.freeze(Object.assign(Object.create(null), {
   lyrics: (capability) => capability?.acceptsLyrics === true,
   inputAssets: (capability) => isRecord(capability?.inputAssets),
-});
+}));
 
 /**
  * Does the build that sent this status speak `feature`? Client mirror of

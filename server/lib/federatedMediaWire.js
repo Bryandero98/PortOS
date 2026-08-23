@@ -374,12 +374,20 @@ const FEDERATED_MEDIA_FEATURE_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 // Dropping an out-of-shape member is also what keeps the PII bound meaningful:
 // prose never reaches storage, instead of a prose-carrying payload being
 // rejected wholesale after we have already read it.
-const federatedMediaFeaturesSchema = z.array(z.string()).max(256)
-  .transform((features) => features.filter((feature) => FEDERATED_MEDIA_FEATURE_RE.test(feature)))
-  // A `features` value that is not even a bounded array of strings degrades to
-  // ABSENT — the undecidable wire-v1 baseline — rather than invalidating the
-  // status. Not `[]`: an empty list is a peer positively denying every feature,
-  // which is a stronger claim than a malformed field has earned.
+const federatedMediaFeaturesSchema = z.array(z.unknown()).max(256)
+  .transform((features) => features.filter((feature) => typeof feature === 'string'
+    && FEDERATED_MEDIA_FEATURE_RE.test(feature)))
+  // `z.array(z.unknown())`, not `z.array(z.string())`: a strict element type
+  // fails before the transform runs, so ONE non-string member would collapse the
+  // whole list to absent — a peer reading as supporting nothing rather than
+  // losing one entry, which is the same cliff a strict schema creates at the
+  // payload level. Filtering keeps every well-formed feature its neighbours
+  // published.
+  //
+  // A `features` value that is not even a bounded array degrades to ABSENT — the
+  // undecidable wire-v1 baseline — rather than invalidating the status. Not
+  // `[]`: an empty list is a peer positively denying every feature, a stronger
+  // claim than a malformed field has earned.
   .catch(() => undefined);
 
 // The ONE place the "absent reads as false" reasoning lives (#4826). Every
@@ -411,7 +419,12 @@ const federatedMediaFeaturesSchema = z.array(z.string()).max(256)
 //
 // Both gate identically; only a message that blames the BUILD may distinguish
 // them. See federatedMediaDeniesFeature.
-const FEDERATED_MEDIA_LEGACY_FEATURE_TELL = Object.freeze({
+// `Object.create(null)`, not a bare literal: the lookup is keyed by a feature
+// name off the wire, and on a normal object `'constructor'` / `'toString'`
+// resolve to inherited values — truthy enough to defeat `?.` and then blow up
+// on `.tell`. A null prototype makes an unknown name simply absent, which is
+// also what keeps this end and the client mirror answering alike.
+const FEDERATED_MEDIA_LEGACY_FEATURE_TELL = Object.freeze(Object.assign(Object.create(null), {
   lyrics: { tell: (capability) => capability?.acceptsLyrics === true, decisive: true },
   // A build that predates conditioning omits the block entirely; one that
   // speaks it advertises the block (possibly with no roles for this model).
@@ -420,7 +433,7 @@ const FEDERATED_MEDIA_LEGACY_FEATURE_TELL = Object.freeze({
   // reading true here and false there is exactly the provider/consumer
   // disagreement this helper exists to prevent.
   inputAssets: { tell: (capability) => isPlainObject(capability?.inputAssets), decisive: false },
-});
+}));
 
 /**
  * Does the build that sent this status speak `feature`?
