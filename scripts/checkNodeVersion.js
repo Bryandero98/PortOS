@@ -23,8 +23,7 @@
  * and is asserted to be >= this floor, not equal to it.
  */
 
-import { realpathSync } from 'fs';
-import { fileURLToPath } from 'url';
+import { isDirectlyInvoked } from './lib/directInvocation.js';
 
 /** The hard floor. Changing the version means changing exactly this string. */
 export const MIN_NODE = '22.12.0';
@@ -77,30 +76,8 @@ export function assertNodeVersion({
   return false;
 }
 
-// Runnable directly: `node scripts/checkNodeVersion.js`.
-//
-// Both sides are realpath'd before comparing. Node's ESM loader resolves
-// symlinks when it builds `import.meta.url`, but `process.argv[1]` is whatever
-// the caller typed — so a repo reached through a symlinked parent (a checkout
-// under a symlinked home, /tmp → /private/tmp on macOS, a symlinked worktree)
-// makes the two spellings differ and the gate would silently no-op, exiting 0
-// on an unsupported Node. fileURLToPath/realpathSync also handle paths with
-// spaces or non-ASCII characters, which a `file://` string template does not.
-const invokedPath = process.argv[1];
-if (invokedPath) {
-  const resolve = (p) => {
-    try {
-      return realpathSync(p);
-    } catch {
-      return p;
-    }
-  };
-  // Case-fold on the case-insensitive filesystems (APFS, NTFS): there the two
-  // spellings can differ only in case and still name the same file, and a
-  // strict comparison would silently skip the check.
-  const caseFold = process.platform === 'win32' || process.platform === 'darwin';
-  const normalize = (p) => (caseFold ? resolve(p).toLowerCase() : resolve(p));
-  if (normalize(fileURLToPath(import.meta.url)) === normalize(invokedPath)) {
-    assertNodeVersion();
-  }
+// Runnable directly: `node scripts/checkNodeVersion.js` — see lib/directInvocation.js
+// for why this comparison is not a plain string equality.
+if (isDirectlyInvoked(import.meta.url)) {
+  assertNodeVersion();
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { GitBranch, Plus, Minus, FileText, RefreshCw, Download, Rocket, Upload, ArrowUpDown, Check, Trash2, GitMerge, Globe } from 'lucide-react';
+import { GitBranch, Plus, Minus, FileText, RefreshCw, Download, Rocket, Upload, ArrowUpDown, Check, Trash2, GitMerge, Globe, RotateCcw } from 'lucide-react';
 import toast from '../../ui/Toast';
 import Modal from '../../ui/Modal';
 import BrailleSpinner from '../../BrailleSpinner';
@@ -81,6 +81,55 @@ ${mergeStep}. **Merge**: Once approved and CI passes, merge with \`gh pr merge -
 const iconBtnCls = 'p-1.5 min-h-[40px] min-w-[40px] flex items-center justify-center';
 const touchBtnCls = 'min-h-[40px]';
 
+/**
+ * The confirm-dialog chrome this tab uses for its consequential actions — the
+ * release PR and the reset-to-origin. Extracted at the third copy of the same
+ * `Modal` props + header/body/footer markup, because the parts that drift when
+ * it is pasted again are the accessibility ones (`aria-labelledby` wiring, the
+ * 44px close target) rather than anything visible.
+ *
+ * `tone` picks the confirm button's colour: 'accent' for a normal action,
+ * 'error' for one that destroys work.
+ */
+function ConfirmModal({ open, onClose, titleId, icon, title, tone = 'accent', confirmLabel, onConfirm, busy = false, children }) {
+  const confirmCls = tone === 'error'
+    ? 'bg-port-error hover:bg-port-error/80'
+    : 'bg-port-accent hover:bg-port-accent/80';
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      size="md"
+      align="none"
+      backdropClassName="bg-black/50"
+      panelClassName="bg-port-card border border-port-border rounded-xl overflow-hidden"
+      ariaLabelledBy={titleId}
+    >
+      <div className="flex items-center justify-between p-4 border-b border-port-border">
+        <h3 id={titleId} className="font-medium text-white flex items-center gap-2">
+          {icon}
+          {title}
+        </h3>
+        <button onClick={onClose} aria-label="Close" className="text-gray-400 hover:text-white min-h-[44px] min-w-[44px] flex items-center justify-center">×</button>
+      </div>
+      <div className="p-4 space-y-3">{children}</div>
+      <div className="flex justify-end gap-3 p-4 border-t border-port-border">
+        <button onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white">
+          Cancel
+        </button>
+        <button
+          onClick={onConfirm}
+          disabled={busy}
+          className={`flex items-center gap-2 px-4 py-2 ${confirmCls} text-white rounded-lg text-sm disabled:opacity-50`}
+        >
+          {icon}
+          {confirmLabel}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 export default function GitTab({ appId: _appId, appName, repoPath }) {
   const [gitInfo, setGitInfo] = useState(null);
   const [diff, setDiff] = useState('');
@@ -107,6 +156,8 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
   const [checkingOutRemote, setCheckingOutRemote] = useState(null);
   const [cleaningUp, setCleaningUp] = useState(false);
   const [cleanupConfirm, setCleanupConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [resetConfirm, setResetConfirm] = useState(false);
 
   const loadGitData = useCallback(async (opts = {}) => {
     if (!repoPath) return;
@@ -379,6 +430,41 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
     }
   };
 
+  // Destructive: throws away tracked edits and local commits on the default
+  // branch. The pre-reset sha comes back in the result and is surfaced in the
+  // toast, so a mistake is still recoverable with `git reset --hard <sha>`.
+  const handleResetToDefault = async () => {
+    if (!repoPath || resetting) return;
+    setResetting(true);
+    setResetConfirm(false);
+    const result = await api.resetToDefaultBranch(repoPath, { silent: true }).catch((err) => {
+      toast.error(`Reset failed: ${err.message}`);
+      return null;
+    });
+    setResetting(false);
+    if (result?.success) {
+      // The server's counts, not the pre-click snapshot the dialog previewed.
+      const from = result.previousBranch && result.previousBranch !== result.branch
+        ? ` from ${result.previousBranch}`
+        : '';
+      toast.success(`Reset to origin/${result.branch}${from} — discarded ${result.discardedFiles} file change${result.discardedFiles === 1 ? '' : 's'}`);
+      if (result.clearedOperations?.length) {
+        toast(`Also cleared an in-progress ${result.clearedOperations.join(' and ')}`, { icon: '🧹' });
+      }
+      if (result.previousHead) {
+        toast(`Previous state was ${result.previousHead.slice(0, 7)} — git reset --hard ${result.previousHead.slice(0, 7)} to undo`, { icon: '↩️' });
+      }
+      if (!result.fetched) {
+        toast('Could not reach origin — reset to the last fetched state', { icon: '⚠️' });
+      }
+      await loadGitData({ includeRemote: true });
+    }
+  };
+
+  // Untracked files are the ones a reset KEEPS, so they must not be counted in
+  // what it says it will discard — the dialog claims both things two rows apart.
+  const dirtyCount = gitInfo?.status?.files?.filter(f => f.status !== 'untracked').length || 0;
+
   const getStatusIcon = (file) => {
     if (file.added) return <Plus size={14} className="text-port-success" />;
     if (file.deleted) return <Minus size={14} className="text-port-error" />;
@@ -395,9 +481,10 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      {/* Wraps rather than overflows: three actions no longer fit one phone row. */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold text-white">Git Status</h2>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {branches.some(b => b.tracking && b.ahead > 0) && (
             <button
               onClick={handlePushAll}
@@ -415,6 +502,20 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
           >
             <Download size={16} className={updating ? 'animate-bounce' : ''} />
             {updating ? 'Updating...' : 'Update'}
+          </button>
+          <button
+            onClick={() => {
+              setResetConfirm(true);
+              // The dialog names how many files it is about to destroy, so it
+              // reads fresh state rather than whatever the last poll left.
+              loadGitInfo();
+            }}
+            disabled={resetting}
+            title="Discard local changes and match origin's default branch"
+            className="flex items-center gap-1.5 px-3 py-2 bg-port-card border border-port-border rounded-lg text-sm text-gray-300 hover:text-white hover:border-port-error disabled:opacity-50"
+          >
+            <RotateCcw size={16} className={resetting ? 'animate-spin' : ''} />
+            {resetting ? 'Resetting...' : 'Reset to origin'}
           </button>
         </div>
       </div>
@@ -900,54 +1001,55 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
         </pre>
       </Modal>
 
-      {/* Release Confirmation Dialog */}
-      <Modal
+      <ConfirmModal
         open={showReleaseConfirm}
         onClose={() => setShowReleaseConfirm(false)}
-        size="md"
-        align="none"
-        backdropClassName="bg-black/50"
-        panelClassName="bg-port-card border border-port-border rounded-xl overflow-hidden"
-        ariaLabelledBy="git-release-modal-title"
+        titleId="git-release-modal-title"
+        icon={<Rocket size={18} className="text-port-accent" />}
+        title={`Create Release PR for ${appName}`}
+        confirmLabel="Start Release"
+        onConfirm={handleReleasePR}
       >
-        <div className="flex items-center justify-between p-4 border-b border-port-border">
-          <h3 id="git-release-modal-title" className="font-medium text-white flex items-center gap-2">
-            <Rocket size={18} className="text-port-accent" />
-            Create Release PR for {appName}
-          </h3>
-          <button onClick={() => setShowReleaseConfirm(false)} aria-label="Close" className="text-gray-400 hover:text-white min-h-[44px] min-w-[44px] flex items-center justify-center">×</button>
-        </div>
-        <div className="p-4 space-y-3">
-          <p className="text-sm text-gray-300">
-            This will create a CoS agent task to automate the full release workflow:
-          </p>
-          <ul className="text-sm text-gray-400 space-y-1.5 ml-4 list-disc">
-            <li>Push local commits to origin/{gitInfo?.devBranch || 'dev'}</li>
-            {gitInfo?.hasChangelog && <li>Check and update the changelog</li>}
-            <li>Create PR from {gitInfo?.devBranch || 'dev'} to {gitInfo?.baseBranch || 'main'}</li>
-            <li>Wait for Copilot review and address feedback</li>
-            <li>Merge when approved and CI passes</li>
-          </ul>
-          <p className="text-xs text-gray-500">
-            {branchComparison?.ahead || 0} commits will be included in this release.
-          </p>
-        </div>
-        <div className="flex justify-end gap-3 p-4 border-t border-port-border">
-          <button
-            onClick={() => setShowReleaseConfirm(false)}
-            className="px-4 py-2 text-sm text-gray-400 hover:text-white"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleReleasePR}
-            className="flex items-center gap-2 px-4 py-2 bg-port-accent hover:bg-port-accent/80 text-white rounded-lg text-sm"
-          >
-            <Rocket size={16} />
-            Start Release
-          </button>
-        </div>
-      </Modal>
+        <p className="text-sm text-gray-300">
+          This will create a CoS agent task to automate the full release workflow:
+        </p>
+        <ul className="text-sm text-gray-400 space-y-1.5 ml-4 list-disc">
+          <li>Push local commits to origin/{gitInfo?.devBranch || 'dev'}</li>
+          {gitInfo?.hasChangelog && <li>Check and update the changelog</li>}
+          <li>Create PR from {gitInfo?.devBranch || 'dev'} to {gitInfo?.baseBranch || 'main'}</li>
+          <li>Wait for Copilot review and address feedback</li>
+          <li>Merge when approved and CI passes</li>
+        </ul>
+        <p className="text-xs text-gray-500">
+          {branchComparison?.ahead || 0} commits will be included in this release.
+        </p>
+      </ConfirmModal>
+
+      {/* Destructive, so it spells out what goes and what survives rather than
+          asking "are you sure?". */}
+      <ConfirmModal
+        open={resetConfirm}
+        onClose={() => setResetConfirm(false)}
+        titleId="git-reset-modal-title"
+        icon={<RotateCcw size={18} className="text-port-error" />}
+        title={`Reset ${appName} to origin/${gitInfo?.baseBranch || 'main'}`}
+        tone="error"
+        confirmLabel={resetting ? 'Resetting...' : 'Discard and reset'}
+        onConfirm={handleResetToDefault}
+        busy={resetting}
+      >
+        <p className="text-sm text-gray-300">
+          Fetches origin, switches to the default branch, and hard-resets it to the remote.
+        </p>
+        <ul className="text-sm text-gray-400 space-y-1.5 ml-4 list-disc">
+          <li>Discards {dirtyCount} uncommitted file change{dirtyCount === 1 ? '' : 's'}</li>
+          <li>Discards any local commits on {gitInfo?.baseBranch || 'main'} that origin does not have</li>
+          <li>Keeps untracked files and every other local branch</li>
+        </ul>
+        <p className="text-xs text-gray-500">
+          The commit you are on now is reported after the reset, so <code>git reset --hard &lt;sha&gt;</code> can undo this.
+        </p>
+      </ConfirmModal>
     </div>
   );
 }
