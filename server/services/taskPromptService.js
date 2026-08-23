@@ -11,8 +11,10 @@
  * Import graph (issue #1083 — no cycles):
  *   taskPromptDefaults.js  (data leaf, imports only PORTOS_API_URL)
  *     ↑ static            ↑ static
- *   taskPromptService.js   taskSchedule.js
- *     └──────── static ───────┘  (this module imports getTaskInterval from taskSchedule)
+ *   taskPromptService.js   taskScheduleStore.js
+ *     │                    ↑ static
+ *     └──── static ─── taskSchedule.js
+ *       (this module imports getTaskInterval from the compatibility facade)
  *
  * The prior split papered over a static circular import (taskSchedule ⇄
  * taskPromptService) with a lazy `await import('./taskSchedule.js')` inside
