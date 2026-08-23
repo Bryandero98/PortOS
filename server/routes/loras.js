@@ -20,6 +20,7 @@ import {
   listLoras,
   patchLoraSidecar,
 } from '../services/loras.js';
+import { probeLoraEffect } from '../services/loraEffectProbe.js';
 import { getSuggestions, searchLorasInFamily } from '../services/civitaiSuggestions.js';
 import { getVideoSuggestions } from '../services/videoLoraSuggestions.js';
 import { findLorasByCharacter } from '../services/characterLoraResolver.js';
@@ -29,6 +30,10 @@ import { HF_LORA_FAMILIES } from '../lib/huggingfaceLora.js';
 import { openSseStream } from '../lib/sseDownload.js';
 
 const router = Router();
+
+// `?force=1` / `?force=true` busts a server-side cache. Shared by the suggestions
+// refresh and the LoRA effect re-check so the two can't drift on what counts.
+const forceRequested = (req) => req.query.force === '1' || req.query.force === 'true';
 
 // Backward-compatible by default: returns the full LoRA array. When a client
 // passes `limit`/`offset`, the response becomes the bounded
@@ -47,7 +52,7 @@ router.get('/', asyncHandler(async (req, res) => {
 // Default 4 cards per family — enough to show breadth without overwhelming the
 // panel; users can paste a URL for anything specific.
 router.get('/suggestions', asyncHandler(async (req, res) => {
-  const force = req.query.force === '1' || req.query.force === 'true';
+  const force = forceRequested(req);
   const { limit } = parsePagination(req.query, { defaultLimit: 4, maxLimit: 24 });
   const [civitai, video] = await Promise.all([
     getSuggestions({ force, limit }),
@@ -218,6 +223,19 @@ router.get('/by-character', asyncHandler(async (req, res) => {
 router.get('/:filename', asyncHandler(async (req, res) => {
   const lora = await getLora(req.params.filename);
   res.json(lora);
+}));
+
+// Adapter-effect diagnostic (#4872) — the explicit, user-triggered inspection
+// path. Answers "does this LoRA actually change anything" by measuring the
+// rank matrices in the file, so a dead adapter is caught here rather than after
+// a multi-minute video render. Deliberately a POST: it spawns a Python child
+// and writes the measurement back to the sidecar, so it is not a cacheable GET.
+// `?force=1` re-measures instead of returning the stored report. Never 500s on
+// a probe failure — an unmeasurable verdict is a legitimate answer about this
+// machine, and the response carries its reason.
+router.post('/:filename/effect', asyncHandler(async (req, res) => {
+  const force = forceRequested(req);
+  res.json(await probeLoraEffect(req.params.filename, { force }));
 }));
 
 const patchSchema = z.object({

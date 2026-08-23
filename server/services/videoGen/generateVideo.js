@@ -269,7 +269,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // missing/typo'd LoRA fails with a clean 400 before any GPU work. buildArgs
   // rejects LoRAs on non-ltx2 runtimes (the route also guards), so this is a
   // no-op there.
-  const resolvedLoras = await resolveVideoLoras(loras);
+  const resolvedLoras = await resolveVideoLoras(loras, { probeEffect: true });
   // `model` was decorated from a SYNC cache read, which is false on a cold
   // cache. Resolve the probe and re-decorate from the settled verdict before
   // buildArgs reads it off the snapshot — otherwise the first LoRA render after

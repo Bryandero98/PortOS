@@ -18,6 +18,11 @@ vi.mock('../services/loras.js', () => ({
   patchLoraSidecar: vi.fn(),
   resolveCivitaiKey: vi.fn(async () => null),
 }));
+// The effect probe spawns a Python child and writes the LoRA sidecar; the route
+// layer only has to hand it the filename and the force flag.
+vi.mock('../services/loraEffectProbe.js', () => ({
+  probeLoraEffect: vi.fn(async () => ({ status: 'ok', measured: 4, medianRms: 0.01, maxRms: 0.02 })),
+}));
 vi.mock('../services/civitaiSuggestions.js', () => ({
   getSuggestions: vi.fn(async () => ({ curated: [], runners: {}, fetchedAt: 'now' })),
   searchLorasInFamily: vi.fn(async ({ runnerFamily, query, cursor, limit }) => ({
@@ -41,6 +46,7 @@ vi.mock('../services/settings.js', () => ({
 const { default: lorasRoutes } = await import('./loras.js');
 const { searchLorasInFamily } = await import('../services/civitaiSuggestions.js');
 const { installFromHuggingface, listLoras } = await import('../services/loras.js');
+const { probeLoraEffect } = await import('../services/loraEffectProbe.js');
 
 // Parse an SSE response body into an array of decoded frame objects.
 const parseSseFrames = (text) => text
@@ -200,5 +206,42 @@ describe('GET /api/loras/suggestions', () => {
     expect(Array.isArray(res.body.video)).toBe(true);
     expect(res.body.video[0].runnerFamily).toBe('ltx-video');
     expect(res.body.video[0].repo).toBe('fal/ltx2.3-audio-reactive-lora');
+  });
+});
+
+describe('POST /api/loras/:filename/effect', () => {
+  it('runs the probe for the named LoRA and returns its report', async () => {
+    vi.mocked(probeLoraEffect).mockClear();
+    const res = await request(makeApp()).post('/api/loras/style.safetensors/effect');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: 'ok', measured: 4 });
+    expect(probeLoraEffect).toHaveBeenCalledWith('style.safetensors', { force: false });
+  });
+
+  it('passes ?force=1 through so an explicit re-check bypasses the sidecar cache', async () => {
+    vi.mocked(probeLoraEffect).mockClear();
+    await request(makeApp()).post('/api/loras/style.safetensors/effect?force=1');
+    expect(probeLoraEffect).toHaveBeenCalledWith('style.safetensors', { force: true });
+    await request(makeApp()).post('/api/loras/style.safetensors/effect?force=true');
+    expect(probeLoraEffect).toHaveBeenLastCalledWith('style.safetensors', { force: true });
+  });
+
+  it('decodes an encoded filename rather than probing the escape sequence', async () => {
+    vi.mocked(probeLoraEffect).mockClear();
+    await request(makeApp()).post(`/api/loras/${encodeURIComponent('my style.safetensors')}/effect`);
+    expect(probeLoraEffect).toHaveBeenCalledWith('my style.safetensors', { force: false });
+  });
+
+  it('returns an unmeasurable verdict as a 200, not a 500 — it is an answer', async () => {
+    vi.mocked(probeLoraEffect).mockResolvedValueOnce({ status: 'unmeasurable', measured: 0, reason: 'numpy is not installed' });
+    const res = await request(makeApp()).post('/api/loras/style.safetensors/effect');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: 'unmeasurable', reason: 'numpy is not installed' });
+  });
+
+  it('surfaces an unsafe filename as a 400, not a probe run', async () => {
+    vi.mocked(probeLoraEffect).mockRejectedValueOnce(Object.assign(new Error('LoRA filename must end with .safetensors'), { status: 400, code: 'INVALID_INPUT' }));
+    const res = await request(makeApp()).post('/api/loras/evil.txt/effect');
+    expect(res.status).toBe(400);
   });
 });
