@@ -7,7 +7,6 @@
  */
 
 import { Router } from 'express';
-import { existsSync } from 'fs';
 import { basename } from 'path';
 import os from 'os';
 import { z } from 'zod';
@@ -26,18 +25,11 @@ import {
 import { IMAGE_GEN_MODE } from '../services/imageGen/modes.js';
 import { getSettings, updateSettingsWith } from '../services/settings.js';
 import { checkPackages, isAllowedPython } from '../lib/pythonSetup.js';
-import { createLineReader } from '../lib/streamLines.js';
-import { SETUP_IMAGE_VIDEO_SCRIPT, spawnSetupScript, stopSetupScript } from '../lib/setupScriptRunner.js';
 import {
   listVideoModels,
   defaultVideoModelId,
   BYOV_RUNTIME_INFO,
-  isByovRuntimeInstalled,
   isByovRuntimeReady,
-  isByovRuntimeCurrent,
-  invalidateByovReadyCache,
-  invalidateByovLoraCapabilityCache,
-  invalidateRuntimeFingerprintCache,
   resolveRuntimeFingerprint,
   loadHistory,
   getHistoryItem,
@@ -68,12 +60,15 @@ import {
 import { startHfDownloadStream, openSseStream } from '../lib/sseDownload.js';
 import { saveUploadedGalleryVideo } from '../services/videoUpload.js';
 import { JSON_BODY_LIMIT_BYTES } from '../lib/uploadLimits.js';
-import { createInstallLogger } from '../lib/installLogger.js';
 import { prepareRemoteMediaJob } from '../services/federatedMedia/remoteSubmission.js';
 import { collectRemoteInputAssets } from '../services/federatedMedia/inputAssets.js';
 import { effectiveJobPrompt } from '../lib/federatedMediaWire.js';
 import { isRemoteMediaJob } from '../services/mediaJobQueue/remoteMediaJob.js';
 import { buildFederatedMediaRequest } from '../lib/federatedMediaRequest.js';
+import {
+  getVideoRuntimeStatus,
+  streamVideoRuntimeInstall,
+} from '../services/videoGen/runtimeInstaller.js';
 
 const router = Router();
 
@@ -432,172 +427,26 @@ router.post('/model-terms', asyncHandler(async (req, res) => {
 // alone is too permissive: a partial install (clone done, `uv pip install`
 // aborted) leaves a venv directory present but no torch, which would
 // hide the banner and make every render fail with a deep ImportError.
-router.get('/setup/runtime-status', asyncHandler(async (req, res) => {
+const sendRuntimeStatus = async (req, res) => {
   const runtime = String(req.query?.runtime || '');
-  const info = BYOV_RUNTIME_INFO[runtime];
-  if (!info) {
-    // `failValidation` only accepts a Zod safeParse result — calling it with
-    // (res, string) would TypeError on `parsed.error.issues.map(...)` and
-    // bubble as a 500 instead of the intended 400.
-    throw new ServerError(
-      `Unknown runtime: ${runtime}. Expected one of: ${Object.keys(BYOV_RUNTIME_INFO).join(', ')}`,
-      { status: 400, code: 'UNKNOWN_BYOV_RUNTIME' },
-    );
-  }
-  const binaryPresent = isByovRuntimeInstalled(info.id);
-  // Check the immutable source pin before the import probe. Source-only
-  // runtimes execute checkout code while importing, so an outdated or dirty
-  // checkout must surface Upgrade / Repair without being loaded first.
-  const current = binaryPresent ? await isByovRuntimeCurrent(info.id) : false;
-  const packagesReady = current ? await isByovRuntimeReady(info.id) : false;
-  res.json({
-    runtime: info.id,
-    label: info.label,
-    installed: binaryPresent && packagesReady && current,
-    binaryPresent,
-    packagesReady,
-    current,
-    upgradeAvailable: binaryPresent && !current,
-    venvPath: info.venvPython,
-    repoDir: info.repoDir,
-    repoUrl: info.repoUrl,
-    installSourceLabel: info.installSourceLabel,
-    installEnvVar: info.installEnvVar,
-  });
-}));
+  res.json(await getVideoRuntimeStatus(runtime));
+};
 
-// In-flight singleton per runtime. A rapid double-click of the install
-// button would otherwise race two `bash setup-image-video.sh` processes
-// against the same target dir, both trying to git-clone or pip-install at
-// once. Existing existsSync gate doesn't help — the install hasn't created
-// the venv yet on the second click.
-const runtimeInstallInFlight = new Map();
+router.get('/setup/runtime-status', asyncHandler(sendRuntimeStatus));
 
-// Shells out to scripts/setup-image-video.sh with the runtime's INSTALL_X
-// env pre-set, so the in-app installer and the README's terminal recipe
-// invoke the exact same install path — no parallel Node-side implementation
-// per runtime to keep in sync.
-router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
-  const runtime = String(req.query?.runtime || '');
-  const info = BYOV_RUNTIME_INFO[runtime];
+// Backward-compatible read surface for stale clients or status pollers. GET
+// never installs; host mutation is restricted to the POST route below.
+router.get('/setup/runtime-install', asyncHandler(sendRuntimeStatus));
+
+router.post('/setup/runtime-install', asyncHandler(async (req, res) => {
   const { send, safeEnd } = openSseStream(res);
-  let child = null;
-  let aborted = false;
-
-  // Register disconnect handling before any readiness/revision await. Those
-  // probes can take tens of seconds on a damaged venv; closing the modal during
-  // that window must prevent the large installer from starting unattended.
-  res.on('close', () => {
-    if (res.writableEnded) return;
-    aborted = true;
-    if (info && runtimeInstallInFlight.get(info.id) === null) {
-      runtimeInstallInFlight.delete(info.id);
-    }
-    stopSetupScript(child);
+  await streamVideoRuntimeInstall({
+    runtime: String(req.query?.runtime || ''),
+    send,
+    safeEnd,
+    onDisconnect: (handler) => res.on('close', handler),
+    isResponseEnded: () => res.writableEnded,
   });
-
-  if (!info) {
-    send({ type: 'error', message: `Unknown runtime: ${runtime}` });
-    return safeEnd();
-  }
-  // Claim the in-flight slot SYNCHRONOUSLY, before any await. Two near-
-  // simultaneous SSE requests would otherwise both reach the readiness await
-  // on line below, both observe `!ready`, and both spawn `setup-image-video.sh`
-  // against the same target dir — racing two git clones / pip installs.
-  // Placeholder (`null`) gets replaced with the real child handle once spawned;
-  // every early-return path below releases the slot.
-  if (runtimeInstallInFlight.has(info.id)) {
-    send({ type: 'error', message: `Another ${info.label} install is already running. Wait for it to finish or restart PortOS.` });
-    return safeEnd();
-  }
-  runtimeInstallInFlight.set(info.id, null);
-  // Skip ONLY when the binary, import probe, AND immutable revision all pass.
-  // A partial install needs Repair, while a healthy checkout on an older pin
-  // needs Upgrade; treating either as "already installed" strands the user
-  // behind a button that can never perform the action it advertises.
-  const alreadyInstalled = isByovRuntimeInstalled(info.id);
-  const alreadyCurrent = alreadyInstalled && await isByovRuntimeCurrent(info.id);
-  if (aborted) return safeEnd();
-  const alreadyReady = alreadyCurrent && await isByovRuntimeReady(info.id);
-  if (aborted) return safeEnd();
-  if (alreadyInstalled && alreadyReady && alreadyCurrent) {
-    runtimeInstallInFlight.delete(info.id);
-    send({ type: 'log', message: `${info.label} already installed at ${info.venvPython}` });
-    send({ type: 'complete', message: 'Already installed — nothing to do.' });
-    return safeEnd();
-  }
-  // The install may add/remove packages; drop any cached "ready" so the
-  // post-install /runtime-status response reflects the new state instead of
-  // a stale "true" from before a deliberate cleanup. Same for the cached
-  // runtime fingerprint — a reinstall can bump ltx/mlx/torch versions.
-  invalidateByovReadyCache(info.id);
-  invalidateByovLoraCapabilityCache(info.id);
-  invalidateRuntimeFingerprintCache(info.id);
-
-  if (!existsSync(SETUP_IMAGE_VIDEO_SCRIPT)) {
-    runtimeInstallInFlight.delete(info.id);
-    send({ type: 'error', message: `Installer script not found at ${SETUP_IMAGE_VIDEO_SCRIPT}` });
-    return safeEnd();
-  }
-
-  send({ type: 'log', message: `▸ Starting ${info.label} install via ${info.installEnvVar}=1 bash scripts/setup-image-video.sh` });
-  // Server-console visibility for the multi-GB install (start / heartbeat /
-  // outcome) — the SSE stream otherwise surfaces progress only in the browser.
-  const installLog = createInstallLogger({ installer: info.label, target: info.venvPython });
-  const emit = (ev) => { installLog.onEvent(ev); send(ev); };
-  installLog.start();
-  const installEnv = {
-    [info.installEnvVar]: '1',
-    ...(info.pinEnvVar && info.expectedRevision ? { [info.pinEnvVar]: info.expectedRevision } : {}),
-  };
-  // spawnSetupScript owns the interpreter / path / process-group details that a
-  // cancel and a Windows box each depend on — see lib/setupScriptRunner.js.
-  child = spawnSetupScript(installEnv);
-  runtimeInstallInFlight.set(info.id, child);
-
-  // `splitRe: /[\r\n]+/` so a bash/pip/tqdm progress bar that redraws with a
-  // bare `\r` surfaces each redraw as its own log line; the carry buffer
-  // stitches a line split across chunk boundaries (flushed on close).
-  const onLine = (line) => {
-    const t = line.trimEnd();
-    if (t) emit({ type: 'log', message: t });
-  };
-  const stdoutReader = createLineReader(onLine, { splitRe: /[\r\n]+/ });
-  const stderrReader = createLineReader(onLine, { splitRe: /[\r\n]+/ });
-  child.stdout.on('data', stdoutReader.push);
-  child.stderr.on('data', stderrReader.push);
-  child.on('error', (err) => {
-    runtimeInstallInFlight.delete(info.id);
-    emit({ type: 'error', message: `Installer failed to spawn: ${err.message}` });
-    safeEnd();
-  });
-  child.on('close', async (code) => {
-    stdoutReader.flush();
-    stderrReader.flush();
-    runtimeInstallInFlight.delete(info.id);
-    // Re-probe rather than trusting exit code alone — partial installs
-    // (network drop mid-clone, missing requirements file, ctrl-c via
-    // SIGTERM) can exit 0 but leave the venv unable to import its core
-    // packages. Probe both the binary AND the import surface so the
-    // success message can't lie. The banner gate uses the same probe.
-    const binaryPresent = isByovRuntimeInstalled(info.id);
-    const current = binaryPresent && await isByovRuntimeCurrent(info.id);
-    const packagesReady = current && await isByovRuntimeReady(info.id);
-    if (code === 0 && binaryPresent && packagesReady && current) {
-      emit({ type: 'complete', message: `${info.label} ready: ${info.venvPython}` });
-    } else if (code === 0 && !binaryPresent) {
-      emit({ type: 'error', message: `Installer exited 0 but the runtime is still missing. Review the log above, then use Repair in this panel.` });
-    } else if (code === 0) {
-      emit({ type: 'error', message: packagesReady
-        ? 'Installer exited 0 but the runtime is still on an outdated revision. Review the source-update log above, then use Repair in this panel.'
-        : `Installer exited 0 but the runtime can't import its core packages. Review the package errors above, then use Repair in this panel.` });
-    } else {
-      emit({ type: 'error', message: `Installer exited with code ${code}.` });
-    }
-    safeEnd();
-  });
-
-  res.on('close', () => { if (!res.writableEnded) installLog.cancel(); });
 }));
 
 async function resolveLocalPythonHealth(py) {
