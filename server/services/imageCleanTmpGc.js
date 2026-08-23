@@ -18,6 +18,7 @@ import { readdir, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PATHS } from '../lib/fileUtils.js';
 import { listJobs } from './mediaJobQueue/index.js';
+import { createSweepScheduler } from './sweepScheduler.js';
 
 // Grace window before a temp clean file is eligible for deletion, measured
 // against mtime. An hour is generous next to the seconds-to-minutes a GPU clean
@@ -60,9 +61,6 @@ export function collectActiveCleanBasenames(jobs = []) {
 // the dir bounded without busywork.
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
-let sweepTimer = null;
-let initialSweepTimer = null;
-
 /**
  * Delete every file under `tmpDir` older than `maxAgeMs`. Returns
  * `{ deleted, keptYoung }`. A missing dir yields all-zero. Pure over its args so
@@ -101,34 +99,20 @@ export async function sweepImageCleanTmp({
 }
 
 /**
- * Start the periodic sweep. Fires once ~5 min after boot (off the startup hot
- * path) then hourly. Idempotent — a second call is a no-op.
+ * Log the domain summary for one scheduler-owned sweep.
  */
-export function startImageCleanTmpGc() {
-  if (sweepTimer) return;
+const runSweep = async () => {
+  const { deleted } = await sweepImageCleanTmp();
+  if (deleted > 0) console.log(`🧹 Image-clean temp GC: removed ${deleted} stale file(s)`);
+};
 
-  const runSweep = () => {
-    sweepImageCleanTmp()
-      .then(({ deleted }) => {
-        if (deleted > 0) console.log(`🧹 Image-clean temp GC: removed ${deleted} stale file(s)`);
-      })
-      .catch((err) => console.error(`❌ Image-clean temp GC sweep failed: ${err.message}`));
-  };
-
-  initialSweepTimer = setTimeout(() => { initialSweepTimer = null; runSweep(); }, 5 * 60 * 1000);
-  initialSweepTimer.unref?.();
-  sweepTimer = setInterval(runSweep, SWEEP_INTERVAL_MS);
-  sweepTimer.unref?.();
-}
-
-/** Stop the periodic sweep (used by tests / graceful shutdown). */
-export function stopImageCleanTmpGc() {
-  if (initialSweepTimer) {
-    clearTimeout(initialSweepTimer);
-    initialSweepTimer = null;
-  }
-  if (sweepTimer) {
-    clearInterval(sweepTimer);
-    sweepTimer = null;
-  }
-}
+export const {
+  start: startImageCleanTmpGc,
+  stop: stopImageCleanTmpGc,
+} = createSweepScheduler({
+  id: 'image-clean-tmp-gc',
+  intervalMs: SWEEP_INTERVAL_MS,
+  initialDelayMs: 5 * 60 * 1000,
+  handler: runSweep,
+  source: 'imageCleanTmpGc',
+});
