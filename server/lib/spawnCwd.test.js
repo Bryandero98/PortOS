@@ -285,7 +285,7 @@ describe('every cwd-passing spawn pins PWD', () => {
     ['routes/scaffold.js', 'npm/git scaffolding, not an AI CLI'],
     ['routes/scaffoldVite.js', 'npm scaffolding, not an AI CLI'],
     ['routes/scaffoldIOS.js', 'xcodegen, not an AI CLI'],
-    ['routes/scaffoldXcode.js', 'xcodegen, not an AI CLI'],
+    ['services/xcodeScaffold.js', 'xcodegen, not an AI CLI'],
     ['routes/apps/launch.js', "detached launch into the user's own terminal; the CLI reads process.cwd()"],
   ]);
 
