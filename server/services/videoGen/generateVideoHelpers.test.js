@@ -250,6 +250,26 @@ describe('makeVideoGenLineHandler', () => {
     expect(handle('RUNTIME:{not json')).toBe(false);
     expect(job.runtime).toBeUndefined();
   });
+
+  // #4875 — what the runner ACTUALLY applied of a requested speed profile.
+  it('SPEEDPROFILE:<json> → stamps job.speedProfile and suppresses raw logging', () => {
+    const applied = { id: 'fast', teacache: true, adapter: 'ltx-2.5-22b-distilled-lora-450.safetensors', degraded: [] };
+    expect(handle('SPEEDPROFILE:' + JSON.stringify(applied))).toBe(true);
+    expect(job.speedProfile).toEqual(applied);
+    // A one-shot metadata line, not progress/status — no SSE frame.
+    expect(sse).not.toHaveBeenCalled();
+  });
+
+  it('keeps the degraded lever list a render could not apply', () => {
+    handle('SPEEDPROFILE:{"id":"fast","teacache":false,"degraded":["teacache"]}');
+    expect(job.speedProfile.degraded).toEqual(['teacache']);
+    expect(job.speedProfile.teacache).toBe(false);
+  });
+
+  it('malformed SPEEDPROFILE: line falls through to raw-logging and leaves job.speedProfile unset', () => {
+    expect(handle('SPEEDPROFILE:{not json')).toBe(false);
+    expect(job.speedProfile).toBeUndefined();
+  });
 });
 
 describe('finalizeGeneratedVideo runtime persistence', () => {
@@ -317,6 +337,31 @@ describe('finalizeGeneratedVideo runtime persistence', () => {
     expect(saved[0].renderMs).toBeGreaterThanOrEqual(5000);
     expect(Date.parse(saved[0].renderStartedAt)).toBe(job.renderStartedAtMs);
     expect(Date.parse(saved[0].renderCompletedAt)).toBeGreaterThanOrEqual(job.renderStartedAtMs);
+  });
+
+  it('persists what the runner actually applied of a speed profile (#4875)', async () => {
+    const applied = { id: 'fast', teacache: false, adapter: 'ltx-2.3-22b-distilled-lora-384.safetensors', degraded: ['teacache', 'adapter'] };
+    const job = { id: 'job-abcdef12', clients: [], speedProfile: applied };
+    let saved = null;
+    await finalizeGeneratedVideo({
+      ...baseCtx(job),
+      meta: { ...baseCtx(job).meta, speedProfileId: 'fast' },
+      mutateHistory: async (fn) => { saved = await fn([]); return saved; },
+    });
+    // The REQUEST and the OUTCOME are separate fields on purpose: a degraded
+    // render must not read back as a full speed claim.
+    expect(saved[0].speedProfileId).toBe('fast');
+    expect(saved[0].speedProfileApplied).toEqual(applied);
+  });
+
+  it('omits speedProfileApplied when the runner reported none (absent sentinel)', async () => {
+    const job = { id: 'job-abcdef12', clients: [] };
+    let saved = null;
+    await finalizeGeneratedVideo({
+      ...baseCtx(job),
+      mutateHistory: async (fn) => { saved = await fn([]); return saved; },
+    });
+    expect('speedProfileApplied' in saved[0]).toBe(false);
   });
 
   it('omits render timing entirely when the spawn instant was never observed (#3801)', async () => {

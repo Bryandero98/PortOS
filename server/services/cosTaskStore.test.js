@@ -507,6 +507,25 @@ describe('cosTaskStore.addTask', () => {
     expect(tasks.find(t => t.id === created.id).metadata.claimTarget).toBe('42');
   });
 
+  it('persists a manual claim swarm count through the task markdown round-trip', async () => {
+    const created = await addTask({
+      description: 'Claim six independent GitHub issues for Example App',
+      app: 'example-app',
+      swarmCount: 6,
+    }, 'user');
+
+    expect(created.metadata.swarmCount).toBe(6);
+    const { tasks } = await getUserTasks();
+    // Scalar task metadata parses from markdown as text; the lifecycle resolver
+    // normalizes it with Number() before applying the bounded thread override.
+    expect(Number(tasks.find(t => t.id === created.id).metadata.swarmCount)).toBe(6);
+  });
+
+  it('drops an out-of-range manual claim swarm count', async () => {
+    const created = await addTask({ description: 'Invalid claim swarm', swarmCount: 7 }, 'user');
+    expect(created.metadata.swarmCount).toBeUndefined();
+  });
+
   it('persists malware scan report ownership through the task markdown round-trip', async () => {
     const malwareScan = { linkId: 'a3d2c4e8-810a-4d1a-8ab1-94d3e0a13f8d', reportId: 'b38bdf75-3fe2-498c-9c36-7d512dc078d1' };
     const created = await addTask({ description: 'Malware scan: example/repo', malwareScan }, 'user');

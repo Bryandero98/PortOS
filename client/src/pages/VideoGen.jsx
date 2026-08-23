@@ -162,6 +162,8 @@ export default function VideoGen() {
     contextFrames, setContextFrames,
     steps, setSteps, guidanceScale, setGuidanceScale, imageStrength, setImageStrength,
     i2vReferenceMode, setI2vReferenceMode, referenceModeSupported, effectiveImageStrength,
+
+    speedProfileId, setSpeedProfileId,
     seed, setSeed, handleRandomSeed, tiling, setTiling,
     textEncoderId, setTextEncoderId, textEncoderOptions,
     disableAudio, setDisableAudio, noMusic, setNoMusic,
@@ -1350,6 +1352,7 @@ export default function VideoGen() {
               seed={seed} onSeedChange={setSeed} onRandomSeed={handleRandomSeed}
               steps={steps} onStepsChange={setSteps}
               guidanceScale={guidanceScale} onGuidanceScaleChange={setGuidanceScale}
+              speedProfileId={speedProfileId} onSpeedProfileChange={setSpeedProfileId}
               imageStrength={imageStrength} onImageStrengthChange={setImageStrength}
               i2vReferenceMode={i2vReferenceMode} onI2vReferenceModeChange={setI2vReferenceMode}
               effectiveImageStrength={effectiveImageStrength}

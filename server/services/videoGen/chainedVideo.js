@@ -16,6 +16,10 @@ import { videoGenEvents } from './events.js';
 import { loadHistory, mutateVideoHistory } from './history.js';
 import { videoChainUnsupportedError } from './modeContract.js';
 import { estimateRenderMs } from './eta.js';
+import {
+  resolveVideoSpeedProfileForModes, speedProfileDeclineReasonForModes,
+  resolveVideoSampler, inferEffectiveVideoMode,
+} from '../../lib/videoSpeedProfiles.js';
 import { videoJobState } from './jobState.js';
 import { DEFAULT_NUM_FRAMES, resolveVideoDimensions } from './renderArgs.js';
 import { extractLastFrame } from './frameExtraction.js';
@@ -115,9 +119,37 @@ export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames
   // Deliberately placed AFTER the active chain and shared job are registered: it is the
   // first await in this function, and a cancel arriving during the history
   // read must still find the chain to stop.
-  const chainSteps = chainModel?.samplerLocked
-    ? chainModel.steps
-    : (rest.steps ? Number(rest.steps) : chainModel?.steps);
+  // A chain's chunks do NOT all run in the request's mode: chunk 0 keeps it,
+  // and chunks 1+ re-enter as `extend` on a window-continuity chain or `image`
+  // on a frame hop (see the dispatch below — these two must stay in step).
+  // `extend` routes through ExtendPipeline, which no two-stage speed profile is
+  // validated for, so a Fast chain would render chunk 0 fast and the rest at
+  // the model default: a visible seam mid-clip, plus a chain ETA claiming a
+  // speed-up most of the render never takes. resolveVideoSpeedProfileForModes
+  // therefore applies the profile to the whole chain or to none of it, and
+  // `speedProfileId` is stripped from `rest` below so the per-chunk renders
+  // agree with this decision instead of each re-deciding.
+  const chainChunkModes = [
+    inferEffectiveVideoMode(rest),
+    ...(totalChunks > 1 ? [continuity === 'window' ? 'extend' : 'image'] : []),
+  ];
+  const chainSpeedProfile = resolveVideoSpeedProfileForModes({
+    model: chainModel, profileId: rest.speedProfileId, modes: chainChunkModes,
+  });
+  const chainSpeedDeclined = chainSpeedProfile ? null : speedProfileDeclineReasonForModes({
+    model: chainModel, profileId: rest.speedProfileId, modes: chainChunkModes,
+  });
+  if (chainSpeedDeclined) {
+    console.log(`⚠️ Speed profile declined for chain [${outerJobId.slice(0, 8)}] ${chainSpeedDeclined.code}: ${chainSpeedDeclined.message}`);
+  }
+  // What every chunk will actually be handed. Absent (not 'quality') when the
+  // chain declined, so a chunk stamps no profile it didn't render with.
+  const chainSpeedProfileId = chainSpeedProfile ? rest.speedProfileId : undefined;
+  // `resolveVideoSampler` is the SAME precedence rule generateVideo applies, so
+  // the chain estimate can't drift from what the chunks actually render at.
+  const { steps: chainSteps } = resolveVideoSampler({
+    model: chainModel, steps: rest.steps, guidanceScale: rest.guidanceScale, speedProfile: chainSpeedProfile,
+  });
   const chainDimensions = resolveVideoDimensions(chainModel, rest.width, rest.height);
   const chainEta = estimateRenderMs({
     history: await loadHistory(),
@@ -126,6 +158,7 @@ export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames
     height: chainDimensions.height,
     numFrames: rest.numFrames ?? chainModel?.defaultFrames ?? DEFAULT_NUM_FRAMES,
     steps: chainSteps,
+    speedProfileId: chainSpeedProfile?.id ?? null,
     chunks: totalChunks,
   });
   const chainEtaField = chainEta ? { etaMs: chainEta.etaMs } : {};
@@ -242,6 +275,10 @@ export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames
 
     generateVideo({
       ...rest,
+      // Decided ONCE for the chain above, not re-decided per chunk: `undefined`
+      // when any chunk's mode declines the profile, so every chunk renders on
+      // the same sampler and the stitched clip has no mid-clip seam.
+      speedProfileId: chainSpeedProfileId,
       prompt: chunkPrompt,
       seed: chunkSeed,
       jobId: innerJobId,

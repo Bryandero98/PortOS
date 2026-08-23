@@ -1228,6 +1228,19 @@ export const clientErrorReportSchema = z.object({
 // =============================================================================
 
 /**
+ * Parse a zero-based array index from an Express route parameter.
+ * @param {unknown} raw - Route parameter value
+ * @returns {number}
+ */
+export function parseIndexParam(raw) {
+  const index = Number(raw);
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw) || !Number.isSafeInteger(index)) {
+    throw new ServerError('Invalid index', { status: 400, code: 'INVALID_INDEX' });
+  }
+  return index;
+}
+
+/**
  * Parse limit/offset pagination from query params with defaults and clamping.
  * @param {object} query - req.query object
  * @param {object} options - { defaultLimit, maxLimit }

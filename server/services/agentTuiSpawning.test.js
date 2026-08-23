@@ -450,6 +450,16 @@ describe('agent TUI spawning', () => {
     expect(codex.args).not.toContain('--effort');
   });
 
+  it('gives a cloud Codex swarm enough threads for its root plus every worker', () => {
+    const config = buildTuiSpawnConfig(
+      { id: 'codex-tui', command: 'codex', type: 'tui', args: [] },
+      null,
+      { maxConcurrentThreads: 7 },
+    );
+
+    expect(config.args).toContain('agents.max_concurrent_threads_per_session=7');
+  });
+
   it('omits effort args when unset or when the TUI has no effort control', () => {
     const noEffort = buildTuiSpawnConfig({ id: 'claude-code-tui', command: 'claude', type: 'tui', args: [] }, null);
     expect(noEffort.args).not.toContain('--effort');

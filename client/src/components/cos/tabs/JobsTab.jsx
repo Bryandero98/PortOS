@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Plus, RefreshCw, Play, Trash2, ChevronDown, ChevronUp, Clock, ToggleLeft, ToggleRight, Edit3, Save, X, Terminal } from 'lucide-react';
 import toast from '../../ui/Toast';
 import * as api from '../../../services/api';
-import { timeAgo, formatDateTime, formatDateNumeric } from '../../../utils/formatters';
+import { timeAgo, timeUntil, formatDateTime, formatDateNumeric } from '../../../utils/formatters';
 import { CRON_PRESETS, DEFAULT_CRON, describeCron, JOB_INTERVAL_OPTIONS as INTERVAL_OPTIONS } from '../../../utils/cronHelpers';
 import WeekdayTimePicker from '../../WeekdayTimePicker';
 import { effectiveModelFor, effortAwareModelOptions } from '../../../utils/providers';
@@ -275,14 +275,7 @@ function formatNextDue(job) {
     nextDate.setHours(hours, minutes, 0, 0);
     if (nextDate.getTime() > nextDue) nextDue = nextDate.getTime();
   }
-  const diff = nextDue - Date.now();
-  if (diff <= 0) return 'Now';
-  const hrs = Math.floor(diff / 3600000);
-  const days = Math.floor(hrs / 24);
-  if (days > 0) return `in ${days}d`;
-  if (hrs > 0) return `in ${hrs}h`;
-  const mins = Math.floor(diff / 60000);
-  return `in ${mins}m`;
+  return timeUntil(nextDue, 'Now');
 }
 
 function getJobTypeLabel(job) {

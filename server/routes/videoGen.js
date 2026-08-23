@@ -52,6 +52,7 @@ import {
   downloadableVideoTextEncoders, downloadableVideoTextEncoder, publicTextEncoderOption,
   isStockTextEncoder,
 } from '../lib/videoTextEncoders.js';
+import { isDefaultSpeedProfile } from '../lib/videoSpeedProfiles.js';
 import {
   inspectModelCache, verifyModelCache, repairModelCache, repairCachedFile,
   verifyCachedRepoFiles, repairCachedRepoFiles, summarizeVerify, aggregateVerifies,
@@ -182,6 +183,13 @@ export const LOCAL_ONLY_VIDEO_PARAMS = Object.freeze({
   // the service — the set is per-runtime, so a route-level enum would either
   // have to enumerate every runtime's options or reject a legitimate one.
   textEncoderId: z.string().min(1).max(64).optional(),
+  // Named sampler schedule to render with (lib/videoSpeedProfiles.js). Loosely
+  // validated here for the same reason as textEncoderId — the option list is
+  // per-MODEL. Deliberately never rejected downstream either: an id this model
+  // doesn't offer (or a mode the profile isn't validated for) falls back to the
+  // model's own sampler with the reason logged, because a knob that only makes
+  // a render faster must degrade rather than 400 a submitted job.
+  speedProfileId: z.string().min(1).max(64).optional(),
 });
 
 const generateBodySchema = z.object({
@@ -1044,6 +1052,11 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     // resumed/remixed render carry a knob that never applied — and would differ
     // from what the service records in history for the same render.
     ...(isStockTextEncoder(body.textEncoderId) ? {} : { textEncoderId: body.textEncoderId }),
+    // Same "absence IS the default" rule as textEncoderId: an explicit
+    // 'quality' is semantically identical to omitting the field, so persisting
+    // it would leave a resumed/remixed render carrying a knob that never
+    // applied and differing from what the service records in history.
+    ...(isDefaultSpeedProfile(body.speedProfileId) ? {} : { speedProfileId: body.speedProfileId }),
     disableAudio: body.disableAudio === true || body.disableAudio === 'true',
     sourceImagePath,
     audioFilePath,
@@ -1110,6 +1123,9 @@ const ACTIVE_JOB_PARAM_FIELDS = [
   // A registry id, not a path — safe to echo so a reloading page restores the
   // conditioner the in-flight render is actually using.
   'textEncoderId',
+  // Likewise a registry id — the sampler schedule the in-flight render picked,
+  // so a reloading page restores the picker instead of snapping back to Quality.
+  'speedProfileId',
   'audioStartSec',
   // Grok jobs (#2859 phase 2): the semantic t2v/i2v mode ('mode' holds the
   // 'grok' discriminator for them) and the clip duration — both plain

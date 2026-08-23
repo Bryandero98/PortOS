@@ -6,7 +6,7 @@
 
 import { Router } from 'express';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
-import { validateRequest } from '../lib/validation.js';
+import { parseIndexParam, validateRequest } from '../lib/validation.js';
 import {
   drinkLogSchema,
   drinkUpdateSchema,
@@ -56,10 +56,7 @@ router.post('/alcohol/log', asyncHandler(async (req, res) => {
 router.put('/alcohol/log/:date/:index', asyncHandler(async (req, res) => {
   const { date, index } = req.params;
   const data = validateRequest(drinkUpdateSchema, req.body);
-  const parsedIndex = parseInt(index, 10);
-  if (!Number.isInteger(parsedIndex) || parsedIndex < 0) {
-    throw new ServerError('Invalid index', { status: 400, code: 'INVALID_INDEX' });
-  }
+  const parsedIndex = parseIndexParam(index);
   const result = await alcoholService.updateDrink(date, parsedIndex, data);
   if (!result) {
     throw new ServerError('Drink entry not found', { status: 404, code: 'NOT_FOUND' });
@@ -73,10 +70,7 @@ router.put('/alcohol/log/:date/:index', asyncHandler(async (req, res) => {
  */
 router.delete('/alcohol/log/:date/:index', asyncHandler(async (req, res) => {
   const { date, index } = req.params;
-  const parsedIndex = parseInt(index, 10);
-  if (!Number.isInteger(parsedIndex) || parsedIndex < 0) {
-    throw new ServerError('Invalid index', { status: 400, code: 'INVALID_INDEX' });
-  }
+  const parsedIndex = parseIndexParam(index);
   const removed = await alcoholService.removeDrink(date, parsedIndex);
   if (!removed) {
     throw new ServerError('Drink entry not found', { status: 404, code: 'NOT_FOUND' });
@@ -112,10 +106,7 @@ router.post('/alcohol/custom-drinks', asyncHandler(async (req, res) => {
  * Update a custom drink button
  */
 router.put('/alcohol/custom-drinks/:index', asyncHandler(async (req, res) => {
-  const index = Number(req.params.index);
-  if (!Number.isInteger(index) || index < 0) {
-    throw new ServerError('Invalid index', { status: 400, code: 'INVALID_INDEX' });
-  }
+  const index = parseIndexParam(req.params.index);
   const data = validateRequest(customDrinkUpdateSchema, req.body);
   const drink = await alcoholService.updateCustomDrink(index, data);
   if (!drink) {
@@ -129,10 +120,7 @@ router.put('/alcohol/custom-drinks/:index', asyncHandler(async (req, res) => {
  * Remove a custom drink button
  */
 router.delete('/alcohol/custom-drinks/:index', asyncHandler(async (req, res) => {
-  const index = Number(req.params.index);
-  if (!Number.isInteger(index) || index < 0) {
-    throw new ServerError('Invalid index', { status: 400, code: 'INVALID_INDEX' });
-  }
+  const index = parseIndexParam(req.params.index);
   const removed = await alcoholService.removeCustomDrink(index);
   if (!removed) {
     throw new ServerError('Custom drink not found', { status: 404, code: 'NOT_FOUND' });

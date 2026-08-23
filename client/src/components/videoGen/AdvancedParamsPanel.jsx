@@ -12,6 +12,8 @@ import {
   frameOptionsForModel, fpsOptionsForModel, CHUNK_OPTIONS,
   isModelAllowedForMode, supportsVideoAudioControls, supportsVideoAudioPromptControls,
   CONTEXT_FRAME_OPTIONS, supportsContextWindow,
+  DEFAULT_SPEED_PROFILE_ID, speedProfilesForMode, selectedSpeedProfile,
+  videoChainChunkModes,
 } from '../../lib/videoGenParams.js';
 import { VIDEO_TILING_OPTIONS } from '../../lib/videoTilingOptions';
 import { isLtx2FamilyRuntime } from '../../lib/runnerFamilies';
@@ -33,6 +35,7 @@ export default function AdvancedParamsPanel({
   seed, onSeedChange, onRandomSeed,
   steps, onStepsChange,
   guidanceScale, onGuidanceScaleChange,
+  speedProfileId = DEFAULT_SPEED_PROFILE_ID, onSpeedProfileChange,
   imageStrength, onImageStrengthChange,
   i2vReferenceMode = DEFAULT_I2V_REFERENCE_MODE, onI2vReferenceModeChange,
   effectiveImageStrength = null,
@@ -88,6 +91,36 @@ export default function AdvancedParamsPanel({
   const frameOptions = frameOptionsForModel(currentModel, numFrames);
   const fpsOptions = fpsOptionsForModel(currentModel);
   const samplerLocked = currentModel?.samplerLocked === true;
+  // Speed profiles (#4875). Only the profiles VALIDATED for what this request
+  // will actually run are offered: a profile the server would decline is a dead
+  // affordance that promises a speed-up the render then doesn't take. With none
+  // applicable the picker is hidden entirely rather than shown holding only
+  // "Quality".
+  //
+  // A CHAINED render is one clip whose chunks run in DIFFERENT modes, and the
+  // server applies a profile to it only when every chunk accepts one — so the
+  // gate takes the whole chunk-mode list. Without that, picking Fast with
+  // Chunks = 4 would grey out Steps/CFG and then quietly run the entire chain
+  // at the model default.
+  const speedProfileModes = videoChainChunkModes({
+    model: currentModel, mode, chaining: chainingActive, contextFrames,
+  });
+  const speedProfiles = speedProfilesForMode(currentModel, speedProfileModes);
+  const showSpeedProfiles = !samplerLocked && speedProfiles.length > 0;
+  // Resolved against the SAME set the picker offers, so a model with two
+  // profiles can't lock Steps/CFG to one this request declines.
+  const activeSpeedProfile = showSpeedProfiles
+    ? selectedSpeedProfile(speedProfileId, currentModel, speedProfileModes)
+    : null;
+  // A profile drives steps AND CFG together, exactly as a samplerLocked model
+  // does — leaving either editable would let the user half-override a
+  // validated schedule and get neither its speed nor its quality.
+  const samplerDriven = samplerLocked || !!activeSpeedProfile;
+  const samplerDrivenTitle = samplerLocked
+    ? 'This validated Lightning profile locks its sampler settings.'
+    : activeSpeedProfile
+      ? `The ${activeSpeedProfile.name} speed profile sets its own validated schedule. Switch to Quality to edit these.`
+      : undefined;
 
   return (
     <div className="border-t border-port-border pt-3 space-y-3">
@@ -229,17 +262,34 @@ export default function AdvancedParamsPanel({
             </div>
           </div>
 
+          {showSpeedProfiles && (
+            <FormField label="Speed" labelClassName="block text-xs font-medium text-gray-400 mb-1">
+              <select
+                value={activeSpeedProfile ? speedProfileId : DEFAULT_SPEED_PROFILE_ID}
+                onChange={(e) => onSpeedProfileChange(e.target.value)}
+                className={inputCls}
+              >
+                <option value={DEFAULT_SPEED_PROFILE_ID}>Quality · default</option>
+                {speedProfiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}{p.speedupLabel ? ` · ${p.speedupLabel}` : ''}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+          )}
+
           <FormField
             label={<>Steps {currentModel?.steps && `(default: ${currentModel.steps})`}</>}
             labelClassName="block text-xs font-medium text-gray-400 mb-1"
           >
             <input
               type="number" min={1} max={150}
-              value={steps}
+              value={activeSpeedProfile ? '' : steps}
               onChange={(e) => onStepsChange(e.target.value)}
-              disabled={samplerLocked}
-              title={samplerLocked ? 'This validated Lightning profile locks its sampler settings.' : undefined}
-              placeholder={String(currentModel?.steps || 25)}
+              disabled={samplerDriven}
+              title={samplerDrivenTitle}
+              placeholder={String(activeSpeedProfile?.steps ?? currentModel?.steps ?? 25)}
               className={inputCls}
             />
           </FormField>
@@ -250,11 +300,11 @@ export default function AdvancedParamsPanel({
           >
             <input
               type="number" min={0} max={20} step={0.5}
-              value={guidanceScale}
+              value={activeSpeedProfile ? '' : guidanceScale}
               onChange={(e) => onGuidanceScaleChange(e.target.value)}
-              disabled={samplerLocked}
-              title={samplerLocked ? 'This validated Lightning profile locks its sampler settings.' : undefined}
-              placeholder={String(currentModel?.guidance ?? 3.0)}
+              disabled={samplerDriven}
+              title={samplerDrivenTitle}
+              placeholder={String(activeSpeedProfile?.guidance ?? currentModel?.guidance ?? 3.0)}
               className={inputCls}
             />
           </FormField>
@@ -285,6 +335,15 @@ export default function AdvancedParamsPanel({
                 </p>
               )}
             </div>
+          )}
+
+          {activeSpeedProfile && (
+            <p className="col-span-2 sm:col-span-3 text-[10px] text-port-accent leading-snug">
+              {activeSpeedProfile.description}
+              {' '}Steps and CFG follow the profile ({activeSpeedProfile.steps}
+              {activeSpeedProfile.stage2Steps != null ? `+${activeSpeedProfile.stage2Steps}` : ''} steps, CFG {activeSpeedProfile.guidance}).
+              {' '}If a lever it needs is missing on this machine, the render still runs and says so rather than claiming the speed-up.
+            </p>
           )}
 
           {showImageStrength && (

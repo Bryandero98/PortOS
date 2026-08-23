@@ -5,7 +5,7 @@ import { atomicWrite, ensureDir, readJSONFile, PATHS } from '../lib/fileUtils.js
 import { PORTOS_APP_ID } from '../lib/appIdentity.js';
 import { NON_PM2_TYPES, usesPm2, isDesktopType } from './streamingDetect.js';
 import { listProcessesStrict } from './pm2.js';
-import { SELF_IMPROVEMENT_TASK_TYPES } from './taskSchedule.js';
+import { SELF_IMPROVEMENT_TASK_TYPES } from './taskScheduleRegistry.js';
 import { sanitizeTaskMetadata } from '../lib/validation.js';
 import { resolveAppWorkTracker } from '../lib/workTracker.js';
 import { PORTS } from '../lib/ports.js';

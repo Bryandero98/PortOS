@@ -524,6 +524,32 @@ export const HF_HUB_PYTHON_RESOLVERS = Object.freeze([
   resolveMinimaxMusic3MlxPython,
 ]);
 
+// Every venv PortOS provisions that carries numpy, in preference order — the
+// interpreter pool for numpy-only sidecars like scripts/lora_effect_probe.py,
+// which needs to run wherever the user happens to have set up a runtime (a bare
+// system python3 usually has no numpy at all).
+//
+// Kept HERE rather than in the consuming service for exactly the reason spelled
+// out above HF_HUB_PYTHON_RESOLVERS: a list assembled inside a consumer is a
+// list every new engine forgets. ADDING A RUNTIME: if its setup-image-video.sh
+// block installs numpy (torch, mlx and diffusers all pull it in, so this is
+// nearly every runtime), add its resolver here.
+//
+// The LTX-2.x video venvs are deliberately NOT here — their paths are owned by
+// services/videoGen/runtimes.js, and lib/ must not import from services/. The
+// probe prepends them itself; this list is everything pythonSetup can see.
+// NOTE the mflux entries resolve venv PATHS directly rather than going through
+// `resolveMfluxPython`: that resolver answers "which interpreter can run
+// mflux-train", so it returns null on an mflux install without the trainer
+// package — an interpreter that has numpy and would have measured fine. Both
+// candidates are listed, not just the default, because an install provisioned
+// under data/python/ is exactly as capable as one under ~/.portos/.
+export const NUMPY_PYTHON_RESOLVERS = Object.freeze([
+  resolveFlux2Python,
+  ...MFLUX_VENV_CANDIDATES.map((path) => () => path),
+  ...HF_HUB_PYTHON_RESOLVERS,
+]);
+
 // MuScriptor (audio → MIDI transcription for the Rounds workbench + Music Video
 // parsing, #reference-audio-to-midi) runs in its own venv at
 // ~/.portos/venv-muscriptor — the `muscriptor` pip package pulls its own torch

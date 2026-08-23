@@ -52,6 +52,7 @@ const MUXING_DONE_RE = /\[Decoding video \+ audio \+ muxing\]\s+done in/i;
 
 export async function spawnAndWatchVideo({
   jobId,
+  speedProfileId = null,
   cleanupTempFiles,
   stepwiseDir,
   job,
@@ -649,6 +650,10 @@ export async function spawnAndWatchVideo({
       height: h,
       numFrames: parsedNumFrames,
       steps: actualSteps,
+      // Keeps this render's samples in its own cost bucket — a speed profile
+      // changes the slope, not just the step count, so pooling the two would
+      // over-estimate a fast render and under-estimate a quality one.
+      speedProfileId,
     });
     job.etaMs = etaEstimate ? etaEstimate.etaMs : null;
     const etaFields = etaEstimate

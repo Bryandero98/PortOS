@@ -54,22 +54,22 @@ function validateCronFieldRange(expr, min, max) {
 const MAX_CRON_ITERATIONS = 1051920
 
 /**
- * Parse cron expression to next execution time
- * Supports: minute hour dayOfMonth month dayOfWeek
- *
- * Special values:
- * - '*' = any value
- * - 'number' = specific value
- * - 'start/step' = every step starting at start
+ * Walk a cron expression in either direction until a matching minute is found.
  *
  * @param {string} cronExpr - Cron expression
  * @param {Date} from - Starting point (default: now)
  * @param {string} timezone - IANA timezone for matching (default: 'UTC')
- * @param {Date|null} until - Optional exclusive search bound; a sparse cron with
- *   no match before it returns null quickly instead of scanning up to 2 years
- * @returns {Date|null} - Next execution time (UTC), or null if invalid/no match
+ * @param {Object} options - Walk options
+ * @param {number} options.stepMs - Signed minute step; positive walks forward,
+ *   negative walks backward
+ * @param {Date|null} options.until - Optional exclusive forward search bound
+ * @returns {Date|null} - Matching execution time, or null if invalid/no match
  */
-function parseCronToNextRun(cronExpr, from = new Date(), timezone = 'UTC', until = null) {
+function walkCron(cronExpr, from = new Date(), timezone = 'UTC', { stepMs, until = null } = {}) {
+  if (!Number.isFinite(stepMs) || stepMs === 0) {
+    throw new Error(`Cron walk requires a non-zero step: ${stepMs}`)
+  }
+
   const parts = cronExpr.trim().split(/\s+/)
   if (parts.length !== 5) {
     throw new Error(`Invalid cron expression: ${cronExpr}`)
@@ -92,20 +92,19 @@ function parseCronToNextRun(cronExpr, from = new Date(), timezone = 'UTC', until
     }
   }
 
-  // Simple implementation - find next matching time
-  const next = new Date(from)
-  next.setSeconds(0, 0)
-  next.setMinutes(next.getMinutes() + 1) // Start from next minute
+  const direction = Math.sign(stepMs)
+  const cursor = new Date(from)
+  cursor.setSeconds(0, 0)
+  if (direction > 0) cursor.setMinutes(cursor.getMinutes() + 1)
 
-  // Maximum search: 2 years, or the caller's tighter bound
-  let maxDate = new Date(from)
-  maxDate.setFullYear(maxDate.getFullYear() + 2)
-  if (until instanceof Date && until < maxDate) maxDate = until
+  const boundary = new Date(from)
+  boundary.setFullYear(boundary.getFullYear() + (direction > 0 ? 2 : -2))
+  const maxDate = direction > 0 && until instanceof Date && until < boundary ? until : boundary
 
   const useLocal = timezone !== 'UTC'
 
   let iterations = 0
-  while (next < maxDate) {
+  while (direction > 0 ? cursor < maxDate : cursor > maxDate) {
     if (++iterations > MAX_CRON_ITERATIONS) {
       console.error(`❌ Cron search exceeded ${MAX_CRON_ITERATIONS} iterations for: ${cronExpr}`)
       return null
@@ -113,11 +112,11 @@ function parseCronToNextRun(cronExpr, from = new Date(), timezone = 'UTC', until
 
     let month, day, dow, hour, minute
     if (useLocal) {
-      const lp = getLocalParts(next, timezone)
+      const lp = getLocalParts(cursor, timezone)
       month = lp.month; day = lp.day; dow = lp.dayOfWeek; hour = lp.hour; minute = lp.minute
     } else {
-      month = next.getMonth() + 1; day = next.getDate(); dow = next.getDay()
-      hour = next.getHours(); minute = next.getMinutes()
+      month = cursor.getMonth() + 1; day = cursor.getDate(); dow = cursor.getDay()
+      hour = cursor.getHours(); minute = cursor.getMinutes()
     }
 
     // Normalize DOW: cron allows 7 for Sunday, but JS getDay() returns 0
@@ -130,12 +129,24 @@ function parseCronToNextRun(cronExpr, from = new Date(), timezone = 'UTC', until
         dowMatches &&
         matchesCronField(hour, hourExpr, 0) &&
         matchesCronField(minute, minuteExpr, 0)) {
-      return next
+      return cursor
     }
-    next.setMinutes(next.getMinutes() + 1)
+    cursor.setTime(cursor.getTime() + stepMs)
   }
 
-  return null // No match found within 2 years
+  return null
+}
+
+/**
+ * Parse cron expression to next execution time.
+ * @param {string} cronExpr - Cron expression
+ * @param {Date} from - Starting point (default: now)
+ * @param {string} timezone - IANA timezone for matching (default: 'UTC')
+ * @param {Date|null} until - Optional exclusive search bound
+ * @returns {Date|null} - Next execution time (UTC), or null if invalid/no match
+ */
+function parseCronToNextRun(cronExpr, from = new Date(), timezone = 'UTC', until = null) {
+  return walkCron(cronExpr, from, timezone, { stepMs: 60 * 1000, until })
 }
 
 /**
@@ -150,66 +161,7 @@ function parseCronToNextRun(cronExpr, from = new Date(), timezone = 'UTC', until
  * @returns {Date|null} - Previous execution time (UTC), or null if invalid/no match within 2 years
  */
 function parseCronToPrevRun(cronExpr, from = new Date(), timezone = 'UTC') {
-  const parts = cronExpr.trim().split(/\s+/)
-  if (parts.length !== 5) {
-    throw new Error(`Invalid cron expression: ${cronExpr}`)
-  }
-
-  const [minuteExpr, hourExpr, dayOfMonthExpr, monthExpr, dayOfWeekExpr] = parts
-
-  const fieldRanges = [
-    [minuteExpr, 0, 59, 'minute'],
-    [hourExpr, 0, 23, 'hour'],
-    [dayOfMonthExpr, 1, 31, 'dayOfMonth'],
-    [monthExpr, 1, 12, 'month'],
-    [dayOfWeekExpr, 0, 7, 'dayOfWeek']
-  ]
-  for (const [expr, min, max, name] of fieldRanges) {
-    if (!validateCronFieldRange(expr, min, max)) {
-      console.error(`❌ Invalid cron ${name} field "${expr}" in expression: ${cronExpr}`)
-      return null
-    }
-  }
-
-  // Start at the current minute (zero seconds) and walk backwards minute-by-minute
-  const prev = new Date(from)
-  prev.setSeconds(0, 0)
-
-  const minDate = new Date(from)
-  minDate.setFullYear(minDate.getFullYear() - 2)
-
-  const useLocal = timezone !== 'UTC'
-
-  let iterations = 0
-  while (prev > minDate) {
-    if (++iterations > MAX_CRON_ITERATIONS) {
-      console.error(`❌ Cron prev-run search exceeded ${MAX_CRON_ITERATIONS} iterations for: ${cronExpr}`)
-      return null
-    }
-
-    let month, day, dow, hour, minute
-    if (useLocal) {
-      const lp = getLocalParts(prev, timezone)
-      month = lp.month; day = lp.day; dow = lp.dayOfWeek; hour = lp.hour; minute = lp.minute
-    } else {
-      month = prev.getMonth() + 1; day = prev.getDate(); dow = prev.getDay()
-      hour = prev.getHours(); minute = prev.getMinutes()
-    }
-
-    const dowMatches = matchesCronField(dow, dayOfWeekExpr, 0) ||
-      (dow === 0 && matchesCronField(7, dayOfWeekExpr, 0))
-
-    if (matchesCronField(month, monthExpr, 1) &&
-        matchesCronField(day, dayOfMonthExpr, 1) &&
-        dowMatches &&
-        matchesCronField(hour, hourExpr, 0) &&
-        matchesCronField(minute, minuteExpr, 0)) {
-      return prev
-    }
-    prev.setMinutes(prev.getMinutes() - 1)
-  }
-
-  return null
+  return walkCron(cronExpr, from, timezone, { stepMs: -60 * 1000 })
 }
 
 /**
