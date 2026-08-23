@@ -1,444 +1,69 @@
-/**
- * ArtistsManager — manage reusable music-artist personas (the Music studio's
- * analogue of the Authors page). Master-detail: a selectable list on the left,
- * an editor on the right. An Artist carries a name, genre, bio, musical style,
- * plus a physical description + portrait style used to generate (or upload) an
- * artist portrait. Mirrors pages/Authors.jsx — same portrait
- * generate/upload/gallery affordances, reusing the image-gen pipeline.
- */
-
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router';
-import { Plus, Loader2, Trash2, Save, ImageIcon, Sparkles, X } from 'lucide-react';
-import BrailleSpinner from '../BrailleSpinner';
-import toast from '../ui/Toast';
-import GalleryImagePicker from '../imageGen/GalleryImagePicker';
-import ConfirmButtonPair from '../ui/ConfirmButtonPair';
-import Field from '../ui/FormField';
-import useMediaJobProgress from '../../hooks/useMediaJobProgress';
-import { useConfirmDelete } from '../../hooks/useConfirmDelete';
-import { DEFAULT_NEGATIVE_PROMPT } from '../../lib/imageGenDefaults';
+import { useParams } from 'react-router';
+import PersonaMasterDetail from '../persona/PersonaMasterDetail';
 import {
   listArtists, createArtist, updateArtist, deleteArtist, generateImage,
   ARTIST_NAME_MAX, ARTIST_GENRE_MAX, ARTIST_BIO_MAX, ARTIST_MUSICAL_STYLE_MAX,
   ARTIST_PHYSICAL_DESCRIPTION_MAX, ARTIST_PORTRAIT_STYLE_MAX, ARTIST_PORTRAIT_IMAGE_URL_MAX,
 } from '../../services/api';
 
-// Cap portrait uploads so the base64 round-trip stays small. Enforced by
-// GalleryImagePicker's `maxBytes`.
-const PORTRAIT_MAX_BYTES = 12 * 1024 * 1024;
+const FIELDS = [
+  { key: 'name', label: 'Name', placeholder: 'Nova Vale', maxLength: ARTIST_NAME_MAX },
+  {
+    key: 'genre', label: 'Genre', hint: "Primary genre(s) — e.g. 'indie folk, dream pop'.",
+    placeholder: 'indie folk, dream pop', maxLength: ARTIST_GENRE_MAX,
+  },
+  {
+    key: 'musicalStyle', label: 'Musical style', type: 'textarea', rows: 4,
+    hint: 'Voice / production / instrumentation notes — fed into music-gen prompts.',
+    placeholder: 'Warm fingerpicked guitar, breathy close-mic vocals, tape saturation, sparse reverb.', maxLength: ARTIST_MUSICAL_STYLE_MAX,
+  },
+  {
+    key: 'bio', label: 'Bio', type: 'textarea', rows: 4, hint: 'About-the-artist blurb.',
+    placeholder: 'Nova Vale is a songwriter working at the seam of folk and ambient…', maxLength: ARTIST_BIO_MAX,
+  },
+  {
+    key: 'physicalDescription', label: 'Physical description', type: 'textarea', rows: 3,
+    hint: 'Subject of the portrait — appearance, age, expression, wardrobe.',
+    placeholder: 'Androgynous figure, late 20s, cropped platinum hair, vintage band tee, calm gaze.', maxLength: ARTIST_PHYSICAL_DESCRIPTION_MAX,
+  },
+  {
+    key: 'portraitStyle', label: 'Portrait style', type: 'textarea', rows: 3,
+    hint: 'Art / photography direction for the portrait render.',
+    placeholder: 'Moody film photograph, neon backlight, grainy 35mm, shallow depth of field.', maxLength: ARTIST_PORTRAIT_STYLE_MAX,
+  },
+];
 
-const emptyForm = () => ({
-  name: '', genre: '', bio: '', musicalStyle: '', physicalDescription: '', portraitStyle: '', portraitImageUrl: '',
-});
-
-const formFromArtist = (a) => ({
-  name: a.name || '',
-  genre: a.genre || '',
-  bio: a.bio || '',
-  musicalStyle: a.musicalStyle || '',
-  physicalDescription: a.physicalDescription || '',
-  portraitStyle: a.portraitStyle || '',
-  portraitImageUrl: a.portraitImageUrl || '',
-});
-
-// Build the image-gen prompt for an artist portrait from the persona's physical
-// description (the subject) and portrait style (the art direction). Either field
-// alone is enough to render; both are folded into one prompt.
-const buildPortraitPrompt = (f) => {
-  const desc = (f.physicalDescription || '').trim();
-  const style = (f.portraitStyle || '').trim();
-  const subject = desc ? `Music artist portrait. ${desc}` : 'Music artist promotional portrait.';
-  return style ? `${subject} ${style}` : subject;
+const PORTRAIT = {
+  label: 'Portrait', fieldLabel: 'Portrait image', imageKey: 'portraitImageUrl',
+  descriptionKey: 'physicalDescription', styleKey: 'portraitStyle', styleLabel: 'Portrait style',
+  maxLength: ARTIST_PORTRAIT_IMAGE_URL_MAX,
+  hint: 'Optional — generate from the description + style, choose or upload one via the gallery, or paste a URL.',
+  generateTitle: 'Generate a portrait from the description + style',
+  buildPrompt: (form) => {
+    const description = form.physicalDescription.trim();
+    const style = form.portraitStyle.trim();
+    const subject = description ? `Music artist portrait. ${description}` : 'Music artist promotional portrait.';
+    return style ? `${subject} ${style}` : subject;
+  },
 };
 
 export default function ArtistsManager() {
-  const navigate = useNavigate();
-  // Selection lives in the URL (`/music/artists/:id`, `/music/artists/new`) so
-  // it's deep-linkable and reload-safe. `id === 'new'` is create mode; a real id
-  // is edit mode; absent is idle.
   const { id } = useParams();
-  const [artists, setArtists] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState(emptyForm);
-  const [saving, setSaving] = useState(false);
-  const { isConfirming: isConfirmingDelete, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
-  const [galleryOpen, setGalleryOpen] = useState(false);
-  const [startingGen, setStartingGen] = useState(false);
-  const [genJobId, setGenJobId] = useState(null);
-  // Bumped on every artist switch / new-artist so a stale generate response
-  // can't write the wrong persona's portrait (mirrors Authors' genRequestRef).
-  const genRequestRef = useRef(0);
-
-  const gen = useMediaJobProgress(genJobId);
-  const isGenerating = startingGen || !!genJobId;
-
-  const setPortrait = (url) => setForm((f) => ({ ...f, portraitImageUrl: url }));
-  const clearGeneration = () => { genRequestRef.current += 1; setGenJobId(null); setStartingGen(false); };
-
-  useEffect(() => {
-    if (!genJobId) return;
-    if (gen.status === 'completed' && gen.filename) {
-      setPortrait(gen.path || `/data/images/${gen.filename}`);
-      setGenJobId(null);
-      toast.success('Portrait generated');
-    } else if (gen.status === 'failed' || gen.status === 'canceled') {
-      setGenJobId(null);
-      toast.error(gen.error || 'Portrait generation failed');
-    }
-  }, [genJobId, gen.status, gen.filename, gen.path, gen.error]);
-
-  const handleGeneratePortrait = async () => {
-    if (isGenerating) return;
-    if (!form.physicalDescription.trim() && !form.portraitStyle.trim()) {
-      toast.error('Add a physical description or portrait style to generate from');
-      return;
-    }
-    const requestId = genRequestRef.current;
-    setStartingGen(true);
-    const queued = await generateImage({
-      prompt: buildPortraitPrompt(form),
-      negativePrompt: `${DEFAULT_NEGATIVE_PROMPT}, extra limbs, nsfw, nude`,
-      width: 768,
-      height: 1024,
-    }, { silent: true }).catch((err) => ({ error: err }));
-    if (genRequestRef.current !== requestId) return;
-    setStartingGen(false);
-    if (queued?.error) {
-      toast.error(queued.error.message || 'Portrait generation failed');
-      return;
-    }
-    if (queued.jobId) {
-      setGenJobId(queued.jobId);
-      toast.success('Generating portrait…');
-      return;
-    }
-    const path = queued.path || (queued.filename ? `/data/images/${queued.filename}` : '');
-    if (path) {
-      setPortrait(path);
-      toast.success('Portrait generated');
-    } else {
-      toast.error('Portrait generation returned no image');
-    }
-  };
-
-  // Both "pick an existing gallery image" and "upload one from disk" land here —
-  // GalleryImagePicker's `allowUpload` owns the read + POST and hands back the
-  // saved image already normalized (issue #4127).
-  const handlePortraitPick = (item) => {
-    setGalleryOpen(false);
-    const url = item?.previewUrl || (item?.filename ? `/data/images/${item.filename}` : '');
-    if (url) setPortrait(url);
-  };
-
-  useEffect(() => {
-    listArtists({ silent: true })
-      .then((list) => setArtists(Array.isArray(list) ? list : []))
-      .catch((err) => toast.error(err.message || 'Failed to load artists'))
-      .finally(() => setLoading(false));
-  }, []);
-
-  const isCreate = id === 'new';
-  const selected = useMemo(
-    () => (isCreate || !id ? null : artists.find((a) => a.id === id) || null),
-    [artists, id, isCreate],
-  );
-  const notFound = !isCreate && !!id && !loading && !selected;
-  const canGenerate = !!(form.physicalDescription.trim() || form.portraitStyle.trim());
-
-  const selectArtist = (a) => navigate(`/music/artists/${encodeURIComponent(a.id)}`);
-  const startCreate = () => navigate('/music/artists/new');
-
-  // Hydrate the editor form from the URL-selected artist. Keyed on the id so a
-  // list refresh doesn't clobber the open form; resets run for every selection
-  // change (incl. idle / not-found) so a stray render can't land on the previous
-  // artist (see Authors.jsx for the base pattern).
-  const hydratedRef = useRef(null);
-  const selectionKey = id ?? null;
-  useEffect(() => {
-    if (loading) return;
-    if (hydratedRef.current === selectionKey) return;
-    hydratedRef.current = selectionKey;
-    cancelDelete();
-    clearGeneration();
-    if (isCreate) setForm(emptyForm());
-    else if (selected) setForm(formFromArtist(selected));
-  }, [selectionKey, isCreate, selected, loading]);
-
-  const handleSave = async () => {
-    const name = form.name.trim();
-    if (!name) { toast.error('Artist name is required'); return; }
-    setSaving(true);
-    const payload = { ...form, name };
-    if (isCreate) {
-      const created = await createArtist(payload, { silent: true }).catch((err) => {
-        toast.error(err.message || 'Failed to create artist');
-        return null;
-      });
-      setSaving(false);
-      if (!created) return;
-      setArtists((prev) => [...prev, created].sort((a, b) => (a.name || '').localeCompare(b.name || '')));
-      navigate(`/music/artists/${encodeURIComponent(created.id)}`);
-      toast.success(`Created "${created.name}"`);
-    } else {
-      const updated = await updateArtist(id, payload, { silent: true }).catch((err) => {
-        toast.error(err.message || 'Failed to save artist');
-        return null;
-      });
-      setSaving(false);
-      if (!updated) return;
-      setArtists((prev) => prev
-        .map((a) => (a.id === updated.id ? updated : a))
-        .sort((a, b) => (a.name || '').localeCompare(b.name || '')));
-      toast.success('Saved');
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!selected) return;
-    const prior = artists;
-    setArtists((prev) => prev.filter((a) => a.id !== selected.id));
-    navigate('/music/artists');
-    await deleteArtist(selected.id, { silent: true }).catch((err) => {
-      toast.error(err.message || 'Delete failed');
-      setArtists(prior);
-    });
-  };
-
   return (
-    <div>
-      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-        <p className="text-sm text-gray-400 max-w-2xl">
-          Artist personas are reusable across albums and tracks — the byline plus the genre, musical
-          style, bio, and the physical description + style used to generate (or upload) an artist portrait.
-        </p>
-        <button
-          type="button"
-          onClick={startCreate}
-          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent hover:bg-port-accent/90 text-white text-sm font-medium shrink-0"
-        >
-          <Plus size={16} aria-hidden="true" />
-          New Artist
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-4">
-        <div className="bg-port-card border border-port-border rounded-lg p-2">
-          {loading ? (
-            <div className="text-sm p-2"><BrailleSpinner text="Loading…" /></div>
-          ) : artists.length === 0 ? (
-            <div className="text-gray-500 text-sm p-2">No artists yet. Click <span className="text-port-accent">New Artist</span>.</div>
-          ) : (
-            <ul className="space-y-1">
-              {artists.map((a) => (
-                <li key={a.id}>
-                  <button
-                    type="button"
-                    onClick={() => selectArtist(a)}
-                    className={`w-full text-left px-3 py-2 rounded text-sm truncate ${
-                      a.id === id ? 'bg-port-accent/20 text-white' : 'text-gray-300 hover:bg-port-bg'
-                    }`}
-                  >
-                    {a.name}
-                    {a.genre ? <span className="block text-[11px] text-gray-500 truncate">{a.genre}</span> : null}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className="bg-port-card border border-port-border rounded-lg p-4">
-          {notFound ? (
-            <div className="text-gray-500 text-sm">
-              That artist could not be found — it may have been deleted.{' '}
-              <button type="button" onClick={() => navigate('/music/artists')} className="text-port-accent hover:underline">
-                Back to artists
-              </button>
-            </div>
-          ) : !isCreate && !selected ? (
-            <div className="text-gray-500 text-sm">Select an artist to edit, or create a new one.</div>
-          ) : (
-            <div className="space-y-3">
-              <Field compact label="Name">
-                <input
-                  value={form.name}
-                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                  placeholder="Nova Vale"
-                  maxLength={ARTIST_NAME_MAX}
-                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white"
-                  autoFocus
-                />
-              </Field>
-              <Field compact label="Genre" hint="Primary genre(s) — e.g. 'indie folk, dream pop'.">
-                <input
-                  value={form.genre}
-                  onChange={(e) => setForm((f) => ({ ...f, genre: e.target.value }))}
-                  placeholder="indie folk, dream pop"
-                  maxLength={ARTIST_GENRE_MAX}
-                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm"
-                />
-              </Field>
-              <Field compact label="Musical style" hint="Voice / production / instrumentation notes — fed into music-gen prompts.">
-                <textarea
-                  value={form.musicalStyle}
-                  onChange={(e) => setForm((f) => ({ ...f, musicalStyle: e.target.value }))}
-                  rows={4}
-                  maxLength={ARTIST_MUSICAL_STYLE_MAX}
-                  placeholder="Warm fingerpicked guitar, breathy close-mic vocals, tape saturation, sparse reverb."
-                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm"
-                />
-              </Field>
-              <Field compact label="Bio" hint="About-the-artist blurb.">
-                <textarea
-                  value={form.bio}
-                  onChange={(e) => setForm((f) => ({ ...f, bio: e.target.value }))}
-                  rows={4}
-                  maxLength={ARTIST_BIO_MAX}
-                  placeholder="Nova Vale is a songwriter working at the seam of folk and ambient…"
-                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm"
-                />
-              </Field>
-              <Field compact label="Physical description" hint="Subject of the portrait — appearance, age, expression, wardrobe.">
-                <textarea
-                  value={form.physicalDescription}
-                  onChange={(e) => setForm((f) => ({ ...f, physicalDescription: e.target.value }))}
-                  rows={3}
-                  maxLength={ARTIST_PHYSICAL_DESCRIPTION_MAX}
-                  placeholder="Androgynous figure, late 20s, cropped platinum hair, vintage band tee, calm gaze."
-                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm"
-                />
-              </Field>
-              <Field compact label="Portrait style" hint="Art / photography direction for the portrait render.">
-                <textarea
-                  value={form.portraitStyle}
-                  onChange={(e) => setForm((f) => ({ ...f, portraitStyle: e.target.value }))}
-                  rows={3}
-                  maxLength={ARTIST_PORTRAIT_STYLE_MAX}
-                  placeholder="Moody film photograph, neon backlight, grainy 35mm, shallow depth of field."
-                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm"
-                />
-              </Field>
-              <Field compact label="Portrait image" hint="Optional — generate from the description + style, choose or upload one via the gallery, or paste a URL.">
-                <div className="flex items-start gap-3">
-                  {isGenerating ? (
-                    <div className="relative w-20 h-20 rounded border border-port-border bg-port-bg overflow-hidden flex items-center justify-center shrink-0">
-                      {gen.currentImage ? (
-                        <img
-                          src={`data:image/png;base64,${gen.currentImage}`}
-                          alt="Generating portrait preview"
-                          className="w-full h-full object-cover opacity-70"
-                        />
-                      ) : (
-                        <Loader2 size={20} className="animate-spin text-port-accent" aria-hidden="true" />
-                      )}
-                      {gen.totalSteps ? (
-                        <div className="absolute bottom-0 inset-x-0 bg-black/60 text-[9px] text-white text-center py-0.5 font-mono">
-                          {Math.round((gen.step / gen.totalSteps) * 100)}%
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : form.portraitImageUrl ? (
-                    <div className="relative shrink-0">
-                      <img
-                        src={form.portraitImageUrl}
-                        alt="Artist portrait"
-                        className="w-20 h-20 rounded object-cover border border-port-border bg-port-bg"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setPortrait('')}
-                        title="Remove portrait" aria-label="Remove portrait"
-                        className="absolute -top-2 -right-2 p-1 rounded-full bg-port-bg border border-port-border text-gray-400 hover:text-port-error"
-                      >
-                        <X size={12} />
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="w-20 h-20 rounded border border-dashed border-port-border bg-port-bg flex items-center justify-center text-gray-600 shrink-0">
-                      <ImageIcon size={20} aria-hidden="true" />
-                    </div>
-                  )}
-                  <div className="flex-1 space-y-2">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <button
-                        type="button"
-                        onClick={handleGeneratePortrait}
-                        disabled={isGenerating || !canGenerate}
-                        title={canGenerate
-                          ? 'Generate a portrait from the description + style'
-                          : 'Add a physical description or portrait style first'}
-                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent disabled:opacity-50"
-                      >
-                        {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                        Generate
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setGalleryOpen(true)}
-                        disabled={isGenerating}
-                        title="Pick a gallery image, or upload one from this device"
-                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-bg border border-port-border text-white text-sm hover:border-port-accent disabled:opacity-50"
-                      >
-                        <ImageIcon size={14} /> Choose or upload
-                      </button>
-                    </div>
-                    <input
-                      aria-label="Portrait image URL"
-                      value={form.portraitImageUrl}
-                      onChange={(e) => setPortrait(e.target.value)}
-                      disabled={isGenerating}
-                      placeholder="/images/…  or  https://…"
-                      maxLength={ARTIST_PORTRAIT_IMAGE_URL_MAX}
-                      className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm disabled:opacity-50"
-                    />
-                  </div>
-                </div>
-              </Field>
-
-              <div className="flex items-center gap-2 pt-1 flex-wrap">
-                <button
-                  type="button"
-                  onClick={handleSave}
-                  disabled={saving || !form.name.trim()}
-                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
-                >
-                  {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                  {isCreate ? 'Create' : 'Save'}
-                </button>
-                {!isCreate && selected ? (
-                  isConfirmingDelete(selected.id) ? (
-                    <ConfirmButtonPair
-                      prompt="Delete this artist?"
-                      confirmText="Yes, delete"
-                      ariaLabel="Confirm delete artist"
-                      tone="error"
-                      onConfirm={() => confirmDelete(handleDelete)}
-                      onCancel={cancelDelete}
-                    />
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => requestDelete(selected.id)}
-                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-gray-400 hover:text-port-error text-sm"
-                    >
-                      <Trash2 size={14} /> Delete
-                    </button>
-                  )
-                ) : null}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <GalleryImagePicker
-        open={galleryOpen}
-        onClose={() => setGalleryOpen(false)}
-        onSelect={handlePortraitPick}
-        allowUpload
-        maxBytes={PORTRAIT_MAX_BYTES}
-      />
-    </div>
+    <PersonaMasterDetail
+      basePath="/music/artists"
+      selectedId={id}
+      intro="Artist personas are reusable across albums and tracks — the byline plus the genre, musical style, bio, and the physical description + style used to generate (or upload) an artist portrait."
+      singular="Artist"
+      plural="Artists"
+      fields={FIELDS}
+      listSecondaryKey="genre"
+      portrait={PORTRAIT}
+      listRecords={listArtists}
+      createRecord={createArtist}
+      updateRecord={updateArtist}
+      deleteRecord={deleteArtist}
+      generateImage={generateImage}
+    />
   );
 }
