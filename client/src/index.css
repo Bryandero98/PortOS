@@ -628,6 +628,111 @@ html[data-port-theme] :is(
   color: rgb(var(--port-on-error)) !important;
 }
 
+/* A semantic tint stops being a tonal surface at 40% opacity. Existing
+   controls still use surface-text classes on those high-opacity states, so
+   promote the fill and its semantic text together. The state-aware selectors
+   include Tailwind's variant prefix; matching the class without its pseudo
+   state would make a hover fill active before the pointer arrives. */
+html[data-port-theme] :is(
+  [class~="bg-port-accent/40"], [class~="bg-port-accent/50"], [class~="bg-port-accent/60"],
+  [class~="bg-port-accent/70"], [class~="bg-port-accent/75"], [class~="bg-port-accent/80"],
+  [class~="bg-port-accent/90"], [class~="bg-port-accent/95"], [class~="bg-port-accent/100"],
+  [class*="hover:bg-port-accent/4"]:hover, [class*="hover:bg-port-accent/5"]:hover,
+  [class*="hover:bg-port-accent/6"]:hover, [class*="hover:bg-port-accent/7"]:hover,
+  [class*="hover:bg-port-accent/8"]:hover, [class*="hover:bg-port-accent/9"]:hover,
+  [class*="hover:bg-port-accent/100"]:hover,
+  [class*="active:bg-port-accent/4"]:active, [class*="active:bg-port-accent/5"]:active,
+  [class*="active:bg-port-accent/6"]:active, [class*="active:bg-port-accent/7"]:active,
+  [class*="active:bg-port-accent/8"]:active, [class*="active:bg-port-accent/9"]:active,
+  [class*="active:bg-port-accent/100"]:active
+):is(
+  [class~="text-port-accent"], [class^="text-port-accent/"], [class*=" text-port-accent/"],
+  [class*="text-cyan-"], [class*="text-sky-"], [class*="text-blue-"], [class*="text-indigo-"]
+) {
+  background-color: rgb(var(--port-accent)) !important;
+  color: rgb(var(--port-on-accent)) !important;
+}
+
+html[data-port-theme] :is(
+  [class~="bg-port-accent-2/40"], [class~="bg-port-accent-2/50"], [class~="bg-port-accent-2/60"],
+  [class~="bg-port-accent-2/70"], [class~="bg-port-accent-2/75"], [class~="bg-port-accent-2/80"],
+  [class~="bg-port-accent-2/90"], [class~="bg-port-accent-2/95"], [class~="bg-port-accent-2/100"],
+  [class*="hover:bg-port-accent-2/4"]:hover, [class*="hover:bg-port-accent-2/5"]:hover,
+  [class*="hover:bg-port-accent-2/6"]:hover, [class*="hover:bg-port-accent-2/7"]:hover,
+  [class*="hover:bg-port-accent-2/8"]:hover, [class*="hover:bg-port-accent-2/9"]:hover,
+  [class*="hover:bg-port-accent-2/100"]:hover,
+  [class*="active:bg-port-accent-2/4"]:active, [class*="active:bg-port-accent-2/5"]:active,
+  [class*="active:bg-port-accent-2/6"]:active, [class*="active:bg-port-accent-2/7"]:active,
+  [class*="active:bg-port-accent-2/8"]:active, [class*="active:bg-port-accent-2/9"]:active,
+  [class*="active:bg-port-accent-2/100"]:active
+):is(
+  [class~="text-port-accent-2"], [class^="text-port-accent-2/"], [class*=" text-port-accent-2/"],
+  [class*="text-violet-"], [class*="text-purple-"], [class*="text-fuchsia-"], [class*="text-pink-"]
+) {
+  background-color: rgb(var(--port-accent-2)) !important;
+  color: rgb(var(--port-on-accent-2)) !important;
+}
+
+html[data-port-theme] :is(
+  [class~="bg-port-success/40"], [class~="bg-port-success/50"], [class~="bg-port-success/60"],
+  [class~="bg-port-success/70"], [class~="bg-port-success/75"], [class~="bg-port-success/80"],
+  [class~="bg-port-success/90"], [class~="bg-port-success/95"], [class~="bg-port-success/100"],
+  [class*="hover:bg-port-success/4"]:hover, [class*="hover:bg-port-success/5"]:hover,
+  [class*="hover:bg-port-success/6"]:hover, [class*="hover:bg-port-success/7"]:hover,
+  [class*="hover:bg-port-success/8"]:hover, [class*="hover:bg-port-success/9"]:hover,
+  [class*="hover:bg-port-success/100"]:hover,
+  [class*="active:bg-port-success/4"]:active, [class*="active:bg-port-success/5"]:active,
+  [class*="active:bg-port-success/6"]:active, [class*="active:bg-port-success/7"]:active,
+  [class*="active:bg-port-success/8"]:active, [class*="active:bg-port-success/9"]:active,
+  [class*="active:bg-port-success/100"]:active
+):is(
+  [class~="text-port-success"], [class^="text-port-success/"], [class*=" text-port-success/"],
+  [class*="text-lime-"], [class*="text-green-"], [class*="text-emerald-"], [class*="text-teal-"]
+) {
+  background-color: rgb(var(--port-success)) !important;
+  color: rgb(var(--port-on-success)) !important;
+}
+
+html[data-port-theme] :is(
+  [class~="bg-port-warning/40"], [class~="bg-port-warning/50"], [class~="bg-port-warning/60"],
+  [class~="bg-port-warning/70"], [class~="bg-port-warning/75"], [class~="bg-port-warning/80"],
+  [class~="bg-port-warning/90"], [class~="bg-port-warning/95"], [class~="bg-port-warning/100"],
+  [class*="hover:bg-port-warning/4"]:hover, [class*="hover:bg-port-warning/5"]:hover,
+  [class*="hover:bg-port-warning/6"]:hover, [class*="hover:bg-port-warning/7"]:hover,
+  [class*="hover:bg-port-warning/8"]:hover, [class*="hover:bg-port-warning/9"]:hover,
+  [class*="hover:bg-port-warning/100"]:hover,
+  [class*="active:bg-port-warning/4"]:active, [class*="active:bg-port-warning/5"]:active,
+  [class*="active:bg-port-warning/6"]:active, [class*="active:bg-port-warning/7"]:active,
+  [class*="active:bg-port-warning/8"]:active, [class*="active:bg-port-warning/9"]:active,
+  [class*="active:bg-port-warning/100"]:active
+):is(
+  [class~="text-port-warning"], [class^="text-port-warning/"], [class*=" text-port-warning/"],
+  [class*="text-orange-"], [class*="text-amber-"], [class*="text-yellow-"]
+) {
+  background-color: rgb(var(--port-warning)) !important;
+  color: rgb(var(--port-on-warning)) !important;
+}
+
+html[data-port-theme] :is(
+  [class~="bg-port-error/40"], [class~="bg-port-error/50"], [class~="bg-port-error/60"],
+  [class~="bg-port-error/70"], [class~="bg-port-error/75"], [class~="bg-port-error/80"],
+  [class~="bg-port-error/90"], [class~="bg-port-error/95"], [class~="bg-port-error/100"],
+  [class*="hover:bg-port-error/4"]:hover, [class*="hover:bg-port-error/5"]:hover,
+  [class*="hover:bg-port-error/6"]:hover, [class*="hover:bg-port-error/7"]:hover,
+  [class*="hover:bg-port-error/8"]:hover, [class*="hover:bg-port-error/9"]:hover,
+  [class*="hover:bg-port-error/100"]:hover,
+  [class*="active:bg-port-error/4"]:active, [class*="active:bg-port-error/5"]:active,
+  [class*="active:bg-port-error/6"]:active, [class*="active:bg-port-error/7"]:active,
+  [class*="active:bg-port-error/8"]:active, [class*="active:bg-port-error/9"]:active,
+  [class*="active:bg-port-error/100"]:active
+):is(
+  [class~="text-port-error"], [class^="text-port-error/"], [class*=" text-port-error/"],
+  [class*="text-red-"], [class*="text-rose-"]
+) {
+  background-color: rgb(var(--port-error)) !important;
+  color: rgb(var(--port-on-error)) !important;
+}
+
 /* Solid legacy semantic fills are aliases too. This covers provider/status
    buttons whose class names still come from a data-driven palette (for example
    `bg-purple-500 text-white`) while leaving low-opacity decorative tints alone.
