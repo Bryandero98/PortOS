@@ -432,9 +432,8 @@ const GROK_RENDER_STALE_MS = GROK_TUI_TIMEOUT_MS + 60_000;
 const LOCAL_RENDER_STALE_MS = 24 * 60 * 60_000;
 // How long a run of EITHER lane may sit at `postprocessing`. Unlike a render,
 // packaging is bounded local CPU work measured in minutes, so grok's window is
-// already generous and the lane makes no difference to it. Measured from
-// `createdAt` like the others — packaging follows the render, so this is only
-// ever reached well after a real render would have finished.
+// already generous and the lane makes no difference to it — but it is measured
+// from `postprocessingStartedAt`, NOT `createdAt`; see the branch below.
 const PACKAGING_STALE_MS = GROK_RENDER_STALE_MS;
 
 /**
@@ -474,7 +473,16 @@ export const normalizeStaleAnimationRun = (run, errorMessage) => {
   // dead end `rendering` had, one state further along. Both lanes, because the
   // packaging is identical on both.
   if (run?.status === 'postprocessing') {
-    return Date.now() - runCreatedAtMs(run.createdAt) <= PACKAGING_STALE_MS
+    // Measured from when PACKAGING started, not from when the render was queued.
+    // A local render can precede its packaging by hours, so a createdAt-anchored
+    // window would report every healthy local run as interrupted the instant it
+    // began to pack — and, because the in-flight guards read this normalized
+    // status, would release them and invite a second multi-hour render for a
+    // facing that already has a good candidate. Records written before this
+    // field existed fall back to `createdAt`, which is what they were measured
+    // against anyway.
+    const startedAt = run.postprocessingStartedAt ?? run.createdAt;
+    return Date.now() - runCreatedAtMs(startedAt) <= PACKAGING_STALE_MS
       ? run
       : { ...run, status: 'error', postprocessError: errorMessage };
   }

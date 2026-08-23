@@ -1166,6 +1166,11 @@ export async function attachTuiWalkResult(recordId, runId, videoAbs) {
   }
   run.sourceVideoSha256 = await sha256File(videoAbs);
   run.status = 'postprocessing';
+  // Anchors the packaging staleness window (normalizeStaleAnimationRun). It MUST
+  // be measured from here rather than from `createdAt`: a local render can have
+  // been queued hours before packaging starts, so a createdAt-anchored window
+  // reports every healthy local run as interrupted the moment it begins to pack.
+  run.postprocessingStartedAt = new Date().toISOString();
   await saveRunRecord(recordId, run);
   await packageRun(recordId, run);
   await saveRunRecord(recordId, run);

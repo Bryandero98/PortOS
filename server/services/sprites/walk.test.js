@@ -688,6 +688,45 @@ describe('startWalkGeneration — local render lane (#4876)', () => {
     expect(run.status).toBe('rendering');
   });
 
+  it('keeps a local run that renders for HOURS then packs looking healthy, and still blocked', async () => {
+    // The user-visible shape of the packaging-window bug: `getWalkState` is what
+    // the card polls every few seconds while a run packages, and the in-flight
+    // guard reads the same normalized state. Anchoring the window on `createdAt`
+    // made a successful 3-hour render report "interrupted" the instant it began
+    // to pack AND released the guard — so a Regenerate click would start a second
+    // multi-hour render for a facing that already had a good candidate.
+    const id = await characterWithLockedAnchors(newId());
+    const { runId } = await startWalkGeneration(id, { direction: 'east', provider: 'local' });
+    const runJson = join(TEST_ROOT, 'sprites', id, 'runs', runId, 'animation-run.json');
+    const stored = JSON.parse(await readFile(runJson, 'utf8'));
+    stored.createdAt = new Date(Date.now() - 3 * 60 * 60_000).toISOString();
+    stored.status = 'postprocessing';
+    stored.postprocessingStartedAt = new Date().toISOString();
+    await writeFile(runJson, JSON.stringify(stored));
+
+    const run = (await getWalkState(id)).runs.find((r) => r.id === runId);
+    expect(run.status).toBe('postprocessing');
+    expect(run.postprocessError).toBeUndefined();
+    await expect(startWalkGeneration(id, { direction: 'east', provider: 'local' }))
+      .rejects.toMatchObject({ code: 'WALK_RENDER_IN_PROGRESS' });
+  });
+
+  it('errors a run whose PACKAGING itself was interrupted, freeing the direction', async () => {
+    const id = await characterWithLockedAnchors(newId());
+    const { runId } = await startWalkGeneration(id, { direction: 'east', provider: 'local' });
+    const runJson = join(TEST_ROOT, 'sprites', id, 'runs', runId, 'animation-run.json');
+    const stored = JSON.parse(await readFile(runJson, 'utf8'));
+    stored.status = 'postprocessing';
+    stored.postprocessingStartedAt = new Date(Date.now() - 40 * 60_000).toISOString();
+    await writeFile(runJson, JSON.stringify(stored));
+
+    const run = (await getWalkState(id)).runs.find((r) => r.id === runId);
+    expect(run.status).toBe('error');
+    // Both in-flight guards count `postprocessing` as busy, so without the
+    // normalization this direction would be unrenderable forever.
+    await expect(startWalkGeneration(id, { direction: 'east', provider: 'local' })).resolves.toBeTruthy();
+  });
+
   it('reports a local attach that found no clip in local terms, not grok terms', async () => {
     const id = await characterWithLockedAnchors(newId());
     const { runId } = await startWalkGeneration(id, { direction: 'east', provider: 'local' });

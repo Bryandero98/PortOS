@@ -422,6 +422,11 @@ export async function attachTrackTuiResult(trackId, recordId, runId, videoAbs) {
     return;
   }
   run.status = 'postprocessing';
+  // Anchors the packaging staleness window (normalizeStaleAnimationRun). It MUST
+  // be measured from here rather than from `createdAt`: a local render can have
+  // been queued hours before packaging starts, so a createdAt-anchored window
+  // reports every healthy local run as interrupted the moment it begins to pack.
+  run.postprocessingStartedAt = new Date().toISOString();
   run.sourceVideoPath = `${runRelPath(run.id)}/generated/${SOURCE_CLIP_NAME}`;
   await saveRun(recordId, run);
   await packageTrackRun(row, recordId, run);

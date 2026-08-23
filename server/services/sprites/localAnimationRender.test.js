@@ -454,34 +454,55 @@ describe('collectLocalAnimationClip', () => {
 });
 
 describe('normalizeStaleAnimationRun — a run stranded mid-PACKAGING', () => {
-  const grokRun = (overrides = {}) => ({ status: 'postprocessing', createdAt: new Date().toISOString(), ...overrides });
   const ago = (ms) => new Date(Date.now() - ms).toISOString();
+  const packing = (overrides = {}) => ({
+    status: 'postprocessing',
+    createdAt: ago(60_000),
+    postprocessingStartedAt: ago(60_000),
+    ...overrides,
+  });
 
   it('leaves a run that is genuinely still packaging alone', () => {
-    const run = grokRun({ createdAt: ago(2 * 60_000) });
+    const run = packing({ postprocessingStartedAt: ago(2 * 60_000) });
     expect(normalizeStaleAnimationRun(run, 'boom')).toBe(run);
   });
 
-  it('errors a run still packaging long afterwards, on EITHER lane', () => {
-    // Packaging is bounded local CPU work (decode, align, despill, pack). A run
-    // still in it half an hour later means the process doing it died — and both
+  it('leaves a LOCAL run alone that packed just now after rendering for HOURS', () => {
+    // The regression this window is easiest to get wrong: anchoring it on
+    // `createdAt` reports every healthy local run as interrupted the instant it
+    // starts packing — and, because the in-flight guards read the normalized
+    // status, releases them and invites a second multi-hour render for a facing
+    // that already has a good candidate.
+    const run = packing({
+      provider: LOCAL_VIDEO_PROVIDER_ID,
+      jobId: 'j',
+      createdAt: ago(3 * 60 * 60_000),
+      postprocessingStartedAt: ago(30_000),
+    });
+    expect(normalizeStaleAnimationRun(run, 'boom')).toBe(run);
+  });
+
+  it('errors a run still packaging long after packaging began, on EITHER lane', () => {
+    // Packaging is bounded local CPU work (decode, align, despill, pack). Still
+    // in it half an hour later means the process doing it died — and both
     // in-flight guards count `postprocessing` as busy, so without this the
     // facing is permanently unrenderable.
     for (const provider of ['grok-tui', LOCAL_VIDEO_PROVIDER_ID]) {
-      const normalized = normalizeStaleAnimationRun(grokRun({ provider, createdAt: ago(40 * 60_000) }), 'boom');
+      const normalized = normalizeStaleAnimationRun(
+        packing({ provider, postprocessingStartedAt: ago(40 * 60_000) }), 'boom',
+      );
       expect(normalized.status).toBe('error');
       expect(normalized.postprocessError).toBe('boom');
     }
   });
 
-  it('does not use the local lane\'s day-long render window for packaging', () => {
-    // A local RENDER gets 24h; its packaging must not inherit that, or a run
-    // interrupted mid-package blocks its facing for a day.
-    const normalized = normalizeStaleAnimationRun(
-      grokRun({ provider: LOCAL_VIDEO_PROVIDER_ID, jobId: 'j', createdAt: ago(2 * 60 * 60_000) }),
-      'boom',
-    );
-    expect(normalized.status).toBe('error');
+  it('falls back to createdAt for a record written before the field existed', () => {
+    // Which is what such a record was already measured against, so this changes
+    // nothing for it either way.
+    const legacy = { status: 'postprocessing', createdAt: ago(40 * 60_000) };
+    expect(normalizeStaleAnimationRun(legacy, 'boom').status).toBe('error');
+    const fresh = { status: 'postprocessing', createdAt: ago(60_000) };
+    expect(normalizeStaleAnimationRun(fresh, 'boom')).toBe(fresh);
   });
 
   it('never touches a run that already reached a terminal state', () => {
