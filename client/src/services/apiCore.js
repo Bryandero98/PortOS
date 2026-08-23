@@ -7,7 +7,7 @@ export const API_BASE = '/api'; // exported for sub-modules that use fetch() dir
 // only need the id don't drag this module's React import along with it.
 export { PORTOS_APP_ID } from '../lib/appIdentity.js';
 
-// Bounce to /login when the auth gate (server: lib/authGate.js) rejects a
+// Bounce to /login when the auth gate (server: services/authGate.js) rejects a
 // request with 401 + AUTH_REQUIRED. Shared by request() AND the streaming-fetch
 // helpers (apiLocalLlm.streamLocalLlmTest, etc.) that bypass request() to read a
 // stream body but must still honor session expiry — otherwise a session that
@@ -47,7 +47,7 @@ export async function request(endpoint, options = {}) {
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Request failed' }));
     const errorMessage = error.error || `HTTP ${response.status}`;
-    // Auth gate (server: lib/authGate.js) returns 401 with code AUTH_REQUIRED
+    // Auth gate (server: services/authGate.js) returns 401 with code AUTH_REQUIRED
     // for any /api request without a valid session. Bounce to /login so the
     // user can re-authenticate; skip if we're already there.
     maybeRedirectToLogin(response, error);
