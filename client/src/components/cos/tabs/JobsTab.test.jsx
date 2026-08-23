@@ -13,7 +13,7 @@ const api = vi.hoisted(() => ({
   getProviders: vi.fn(),
 }));
 
-const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
+const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), loading: vi.fn() }));
 
 vi.mock('../../../services/api', () => api);
 vi.mock('../../ui/Toast', () => ({ default: toast }));
@@ -45,6 +45,24 @@ beforeEach(() => {
 });
 
 describe('JobsTab / JobCard Run Now disable behavior (#4036)', () => {
+  it('surfaces a deliberate skipped trigger without claiming the job ran', async () => {
+    api.triggerCosJob.mockResolvedValue({
+      success: false,
+      status: 'skipped',
+      reason: 'Task was not queued'
+    });
+    render(<JobsTab apps={[]} providers={[]} />);
+    await waitFor(() => expect(screen.getByText('Test Job')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
+      'Task was not queued',
+      { id: 'job-trigger' }
+    ));
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
   it('enables the Run now button when not editing and disables it while editing (save flow)', async () => {
     render(<JobsTab apps={[]} providers={[]} />);
 

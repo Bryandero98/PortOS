@@ -283,9 +283,8 @@ export default function CustomTasksSection({ appId, appName }) {
 
   // The api.* job wrappers toast HTTP/network errors themselves (request() is not
   // silent here), so catches just return null — guarding on the result avoids a
-  // second toast and the success-on-error footgun. Business-logic failures the
-  // server returns as a 200 { success: false } are NOT toasted by the helper, so
-  // those branches toast explicitly.
+  // second toast and the success-on-error footgun. Deliberate 200 `skipped`
+  // outcomes are NOT toasted by the helper, so those branches toast explicitly.
   const handleCreate = async () => {
     if (!validate(createForm)) return;
     const created = await api.createCosJob(toPayload(createForm, appId)).catch(() => null);
@@ -321,7 +320,10 @@ export default function CustomTasksSection({ appId, appName }) {
     const result = await api.triggerCosJob(job.id).catch(() => null);
     setTriggering(null);
     if (!result) return; // HTTP/network error already toasted by the api helper
-    if (result.success === false) toast.error('Task failed to trigger');
+    if (result.status === 'skipped') {
+      const notify = result.duplicate ? toast.success : toast.error;
+      notify(result.reason || 'Task was not queued');
+    } else if (result.success === false) toast.error(result.reason || 'Task failed to trigger');
     else toast.success(`Triggered "${job.name}" for ${appName}`);
     fetchTasks();
   };
