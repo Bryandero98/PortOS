@@ -18,6 +18,7 @@ import {
 } from '../lib/validation.js';
 import { grokVideoDurationSchema } from '../lib/sharedSchemas.js';
 import { MIN_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
+import { I2V_REFERENCE_MODES, isDefaultI2vReferenceMode } from '../lib/videoReferenceModes.js';
 import {
   VIDEO_BACKEND_DISCLOSURES, acceptedVideoModelTerms,
   videoModelTermsGateId,
@@ -170,6 +171,16 @@ export const LOCAL_ONLY_VIDEO_PARAMS = Object.freeze({
   guidanceScale: optionalNum(0, 30, 'guidanceScale'),
   seed: optionalNum(0, Number.MAX_SAFE_INTEGER, 'seed'),
   imageStrength: optionalNum(0, 1, 'imageStrength'),
+  // What the conditioning image PROMISES (#4874) — 'anchor' (default) pins it as
+  // frame one, 'inspire' conditions loosely for subject/style. Local-only by
+  // construction: grok's image_to_video always anchors, so a request that names a
+  // mode is not grok-deliverable and must stay on the local lane rather than be
+  // rerouted into a render that silently ignores it. Preprocessed like the numeric
+  // knobs because a multipart body sends an unset select as ''.
+  i2vReferenceMode: z.preprocess(
+    (v) => (v == null || v === '' ? undefined : v),
+    z.enum(I2V_REFERENCE_MODES).optional(),
+  ),
   tiling: z.enum(['auto', 'none', 'spatial', 'temporal']).optional(),
   // Which prompt conditioner reads the prompt (lib/videoTextEncoders.js).
   // Validated loosely here and resolved against the MODEL's own option list in
@@ -1036,6 +1047,14 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
       ['LoRA weights', body.loraFilenames?.length],
       ['chained chunks', body.chunks > 1],
       ['the Grok backend', body.backend === 'grok'],
+      // A loose reference (#4874) is a per-runtime CAPABILITY, and this side
+      // cannot see which runtime the peer will pick — nor can an older peer even
+      // parse the field, which its wire schema would strip on the way in. Sending
+      // it would hand back an anchored clip under an Inspire label, which is the
+      // one outcome the contract exists to make impossible. Refuse instead: the
+      // user renders locally, or switches to Anchor and gets exactly what a peer
+      // can actually deliver.
+      ['a loose reference mode', !isDefaultI2vReferenceMode(body.i2vReferenceMode)],
       // A director-board render is image-to-video by construction (its scene
       // reference frame conditions the shot), and its project/scene ids are
       // validated inside prepareVideoGenParams, which this branch bypasses.
@@ -1187,6 +1206,11 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     extendFromVideoPath,
     mode,
     imageStrength: body.imageStrength,
+    // Persisted only when it is NOT the default, exactly like textEncoderId above:
+    // storing an explicit 'anchor' would make a resumed/remixed render carry a knob
+    // that changed nothing, and would differ from what the service records in
+    // history for the same render.
+    ...(isDefaultI2vReferenceMode(body.i2vReferenceMode) ? {} : { i2vReferenceMode: body.i2vReferenceMode }),
     chunks: effectiveChunks,
     // Undefined when the request doesn't chain (or every beat was blank) — the
     // key is simply absent from job.params then, so a resumed form restores no
@@ -1231,6 +1255,9 @@ const ACTIVE_JOB_PARAM_FIELDS = [
   'width', 'height', 'numFrames', 'fps',
   'steps', 'guidanceScale', 'seed',
   'tiling', 'disableAudio', 'mode', 'chunks', 'chunkPrompts', 'contextFrames', 'imageStrength',
+  // Plain enum, no path — safe to echo so a reloading page restores the promise the
+  // in-flight render is actually keeping.
+  'i2vReferenceMode',
   // A registry id, not a path — safe to echo so a reloading page restores the
   // conditioner the in-flight render is actually using.
   'textEncoderId',

@@ -12,6 +12,7 @@ import MediaImage from '../MediaImage';
 import { useScrollLock } from '../../hooks/useScrollLock';
 import { useSwipeNav } from '../../hooks/useSwipeNav';
 import { isEditableTarget } from '../../lib/a11yKeyboard';
+import { i2vReferenceModeLabel } from '../../lib/videoReferenceModes';
 import useFocusTrap from '../../hooks/useFocusTrap.js';
 import { copyToClipboard } from '../../lib/clipboard';
 import { IMAGE_GEN_MODE } from '../../lib/imageGenBackends';
@@ -228,6 +229,12 @@ export default function MediaLightbox({
     ['Cleaned', cleanedLabel],
     ['Frames', item.numFrames],
     ['FPS', item.fps],
+    // What the conditioning image promised (#4874). Recorded on the render only
+    // when it wasn't the default, so this row appears exactly on the clips whose
+    // opening frame was generated rather than reproduced — the one fact the
+    // Image Strength number alone never told anyone.
+    ['Reference', item.raw?.i2vReferenceMode ? i2vReferenceModeLabel(item.raw.i2vReferenceMode) : null],
+    ['Image strength', item.raw?.imageStrength],
     ['Created', item.createdAt && formatDateTime(item.createdAt)],
   ].filter(([, v]) => v != null && v !== '');
 

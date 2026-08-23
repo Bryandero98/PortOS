@@ -5,6 +5,10 @@ import { extractLastFrame } from '../services/api';
 import { trackAudioUrl } from '../services/apiTracks.js';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
 import { videoLoraFamily, isVideoLoraFamily, loraFamilyOf, VIDEO_LORA_FAMILIES, isLtx2FamilyRuntime } from '../lib/runnerFamilies';
+import {
+  DEFAULT_I2V_REFERENCE_MODE, isDefaultI2vReferenceMode, normalizeI2vReferenceMode,
+  runtimeSupportsI2vReferenceMode, resolveI2vReferenceStrength,
+} from '../lib/videoReferenceModes';
 import { randomSeed } from '../lib/genUtils';
 import {
   resolutionOptionsForModel, defaultResolutionForModel, snapAspectToImage,
@@ -117,6 +121,12 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
   const [steps, setSteps] = useState('');
   const [guidanceScale, setGuidanceScale] = useState('');
   const [imageStrength, setImageStrength] = useState('');
+  // What the source image PROMISES (#4874): Anchor reproduces it as frame one,
+  // Inspire uses it for subject/style guidance and generates frame one. The
+  // effect below snaps this back to the default whenever the selected model or
+  // mode can't keep the promise, so the form can never submit a mode the server
+  // would reject — or, worse, display a promise the render would not honor.
+  const [i2vReferenceMode, setI2vReferenceMode] = useState(DEFAULT_I2V_REFERENCE_MODE);
   const [seed, setSeed] = useState('');
   const [tiling, setTiling] = useState('auto');
   // Which prompt conditioner reads the prompt. Only MiniMax H3 offers a choice
@@ -586,6 +596,30 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
   // (server/services/videoGen/runtimes.js), so this can't drift from the
   // resize/forwarding decision the render path makes off the same flag.
   const lastFrameIsAdvisory = !currentModel?.lastFrameAnchored;
+  // A loose reference needs a runtime that carries per-image conditioning
+  // strength (LTX-2.5 today) AND an image-mode render to loosen. Both are read
+  // from the shared contract the server gates on, so the picker can never offer
+  // an option the POST would 400 on.
+  const referenceModeSupported = runtimeSupportsI2vReferenceMode(currentModel?.runtime, 'inspire');
+  // Hoisted above the reference-mode derivation below, which needs it: the grok
+  // lane reads only prompt/dims/source-image/duration, so its image_to_video
+  // always anchors and the promise has to collapse to the default there.
+  const isGrok = grokEnabled && backend === 'grok';
+  const referenceModeApplies = mode === 'image' && !isGrok;
+  // The strength the render will actually use, for the slider readout — an
+  // untouched slider under Inspire still resolves to the contract's low default
+  // rather than the pipeline's 1.0, and the panel must say so.
+  const effectiveImageStrength = resolveI2vReferenceStrength(i2vReferenceMode, imageStrength);
+  useEffect(() => {
+    if (isDefaultI2vReferenceMode(i2vReferenceMode)) return;
+    // The mode half is always knowable. The RUNTIME half is not: `currentModel`
+    // is undefined until the catalog loads, and reading that as "unsupported"
+    // would clear a restored Inspire pick during a page resume before the model
+    // it belongs to is even known — the render would then keep its promise while
+    // the form denied making one. Defer to the post-load pass instead.
+    if (referenceModeApplies && (!currentModel || referenceModeSupported)) return;
+    setI2vReferenceMode(DEFAULT_I2V_REFERENCE_MODE);
+  }, [currentModel, i2vReferenceMode, referenceModeApplies, referenceModeSupported]);
   // IC-LoRA remix mode is on. `icSpec` is the registry entry (reference count +
   // the resolution-divisibility rule its encoder imposes); null outside the
   // family, so every consumer gates on `icModeActive` first.
@@ -996,6 +1030,17 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
     // store a boolean here — silently ignore unknown values so the <select>
     // stays valid and the next POST doesn't 400.
     if (typeof item.tiling === 'string' && VIDEO_TILING_ENUM_SET.has(item.tiling)) setTiling(item.tiling);
+    // ALWAYS set explicitly, like steps/guidanceScale above: history stamps the
+    // strength only when it applied, so a missing field means "the model default"
+    // and has to clear a leftover value rather than steer a render the user asked
+    // to reproduce faithfully.
+    setImageStrength(item.imageStrength != null && item.imageStrength !== '' ? String(item.imageStrength) : '');
+    // The reference mode is NOT restored, on purpose. Remix drops to text mode
+    // below and clears every conditioning input, so there is no reference left for
+    // a promise to be about — carrying one forward would attach the record's
+    // Inspire label to whatever image the user picks next. Reset it outright, the
+    // same way the source image and keyframes are cleared.
+    setI2vReferenceMode(DEFAULT_I2V_REFERENCE_MODE);
     // ALWAYS set explicitly (like steps/guidanceScale above): history records the
     // conditioner only when it wasn't the stock one, so a missing field means
     // 'stock' and must clear a leftover override rather than silently reusing it
@@ -1101,6 +1146,12 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
     if (p.guidanceScale != null) setGuidanceScale(String(p.guidanceScale));
     if (p.seed != null) setSeed(String(p.seed));
     if (p.tiling) setTiling(p.tiling);
+    // Conditioning promise + strength. Both are echoed only when they applied, so
+    // absence means "the defaults" and must CLEAR whatever the form last held —
+    // a resumed page that kept a stale Inspire pick would describe the running
+    // render's frame one wrongly.
+    setImageStrength(p.imageStrength != null && p.imageStrength !== '' ? String(p.imageStrength) : '');
+    setI2vReferenceMode(normalizeI2vReferenceMode(p.i2vReferenceMode));
     // Resume echoes the field only for a non-stock render, so absence is 'stock'.
     setTextEncoderId(textEncoderIdFromRecord(p.textEncoderId));
     if (typeof p.disableAudio === 'boolean') setDisableAudio(p.disableAudio);
@@ -1224,7 +1275,6 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
 
   // Snapshot the current form into a generate-payload. Used both by the
   // inline Generate button and by enqueue, so the two paths stay in lockstep.
-  const isGrok = grokEnabled && backend === 'grok';
 
   // A hidden mute checkbox from a prior model must not suppress H3's visible
   // prompt-audio steering. Treat mute as effective only on a model that can
@@ -1336,6 +1386,10 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
       disableAudio: effectiveDisableAudio ? 'true' : 'false',
       mode,
       imageStrength: imageStrength || '',
+      // Dropped entirely on the default so an anchored render posts exactly the
+      // body it did before this knob existed. The snap-back effect guarantees a
+      // non-default value here is one the selected model + mode can honor.
+      i2vReferenceMode: isDefaultI2vReferenceMode(i2vReferenceMode) ? '' : i2vReferenceMode,
       // ltx2-extend bypasses the last-frame i2v path: we send the source
       // video's history id directly so the server resolves it to a disk
       // path and routes through ExtendPipeline. Legacy extend (mlx_video)
@@ -1420,6 +1474,8 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
     steps, setSteps,
     guidanceScale, setGuidanceScale,
     imageStrength, setImageStrength,
+    i2vReferenceMode, setI2vReferenceMode,
+    referenceModeSupported, effectiveImageStrength,
     seed, setSeed, handleRandomSeed,
     tiling, setTiling,
     textEncoderId, setTextEncoderId, textEncoderOptions,

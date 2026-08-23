@@ -24,6 +24,10 @@ import { createLineReader } from '../../lib/streamLines.js';
 import { claimHeavyLocalJob } from '../../lib/heavyJobClaim.js';
 import { prepareLocalMemory, gpuBlockersMessage } from '../../lib/localMemory.js';
 import { ServerError } from '../../lib/errorHandler.js';
+import {
+  isDefaultI2vReferenceMode, normalizeI2vReferenceMode, resolveI2vReferenceStrength,
+} from '../../lib/videoReferenceModes.js';
+import { videoReferenceModeError } from './modeContract.js';
 import { videoLoraLayoutIssue } from '../../lib/safetensors.js';
 import { videoGenEvents } from './events.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay, PYTHON_NOISE_RE } from '../../lib/sseUtils.js';
@@ -492,7 +496,7 @@ export const ltx25TextEncoderArgs = (textEncoder) => {
   return args;
 };
 
-const buildLtx2Args = ({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, disableAudio, outputPath, previewDir, textEncoderRepo, textEncoder, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
+const buildLtx2Args = ({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, disableAudio, outputPath, previewDir, textEncoderRepo, textEncoder, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
   assertByovRuntimeInstalled(model.runtime);
   // Map PortOS UI modes to the helper's subcommand. Native extend on ltx2
   // routes to ExtendPipeline.extend_from_video — conditions on the entire
@@ -622,6 +626,14 @@ const buildLtx2Args = ({ model, ltxModelPath, prompt, negativePrompt, width, hei
   if (stage2Steps != null) args.push('--stage2-steps', String(stage2Steps));
   if (negativePrompt) args.push('--negative-prompt', negativePrompt);
   if (imageStrength != null) args.push('--image-strength', String(imageStrength));
+  // The reference-mode promise (#4874). Emitted only when it is NOT the default so
+  // an anchored render's argv stays byte-identical to what it was before the flag
+  // existed. buildArgs already rejected a mode this model cannot honor; the helper
+  // re-checks against the LIVE pipeline API and fails rather than anchoring
+  // silently, which is the failure the flag exists to make impossible.
+  if (!isDefaultI2vReferenceMode(i2vReferenceMode)) {
+    args.push('--i2v-reference-mode', normalizeI2vReferenceMode(i2vReferenceMode));
+  }
   if (disableAudio) args.push('--no-audio');
   if (helperMode === 'image' && sourceImagePath) args.push('--image', sourceImagePath);
   if (helperMode === 'fflf') {
@@ -924,12 +936,25 @@ const buildHunyuanArgs = ({ model, prompt, negativePrompt, width, height, numFra
   return { bin: HUNYUAN_VENV_PYTHON, args };
 };
 
-const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, textEncoderRepo, textEncoder, outputPath, previewDir, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
+const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, textEncoderRepo, textEncoder, outputPath, previewDir, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
+  // Reference-mode promise (#4874) — checked HERE rather than inside
+  // buildLtx2Args because every runtime reaches this function and only one can
+  // honor a loose reference. A wan22/mlx_video/H3 render that fell through to its
+  // own branch would pin frame one while the request asked for guidance, which is
+  // exactly the silent downgrade the contract forbids. The route rejects this too;
+  // internal producers, persisted-queue replays and retries all land here instead.
+  const referenceModeError = videoReferenceModeError({
+    model,
+    mode: mode || (sourceImagePath ? 'image' : 'text'),
+    referenceMode: i2vReferenceMode,
+    hasFirstImage: Boolean(sourceImagePath),
+  });
+  if (referenceModeError) throw referenceModeError;
   // Route to the dgrauet/ltx-2-mlx helper when the model declares the new
   // runtime. Existing notapalindrome models default to runtime: 'mlx_video'
   // (or undefined in legacy registries — see backfillRuntime in mediaModels.js).
   if (isLtx2FamilyRuntime(model.runtime)) {
-    return buildLtx2Args({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, disableAudio, outputPath, previewDir, textEncoderRepo, textEncoder, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 });
+    return buildLtx2Args({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, disableAudio, outputPath, previewDir, textEncoderRepo, textEncoder, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 });
   }
   // IC-LoRA remix modes are an LTX-2 primitive (ICLoraPipeline) — no other
   // runtime has an equivalent. The route guards this too, but a non-route
@@ -1081,7 +1106,7 @@ const resolveVideoDimensions = (model, width, height) => ({
   height: height ?? configuredVideoDimension(model?.defaultHeight, 512),
 });
 
-export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = null, height = null, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, textEncoderId = null, hidden = false, jobId: providedJobId = null }) {
+export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = null, height = null, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, i2vReferenceMode = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, textEncoderId = null, hidden = false, jobId: providedJobId = null }) {
   uploadedTempPaths = Array.isArray(uploadedTempPaths) ? uploadedTempPaths : [];
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   // Single-flight is now enforced by the mediaJobQueue worker upstream — only
@@ -1319,8 +1344,13 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     actualStage2Steps = t2vTwoStage.stage2Steps;
     console.log(`🎬 PORTOS_T2V_TWO_STAGE on — T2V Standard via fast two-stage (${actualSteps}/${actualStage2Steps} steps, cfg ${actualGuidance}) [${jobId.slice(0, 8)}]`);
   }
-  // Caller may pass null/'' to use mlx_video's default (1.0 = preserve source).
-  const actualImageStrength = imageStrength != null && imageStrength !== '' ? Number(imageStrength) : null;
+  // Caller may pass null/'' to use the runtime's own default (1.0 = preserve
+  // source). An unset strength under the "inspire" promise is the one exception:
+  // "no value" there still has to mean "do not reproduce frame one", so the
+  // contract substitutes its low default rather than deferring to a pipeline that
+  // would anchor. An explicit slider value always wins on both modes.
+  const effectiveReferenceMode = normalizeI2vReferenceMode(i2vReferenceMode);
+  const actualImageStrength = resolveI2vReferenceStrength(effectiveReferenceMode, imageStrength);
   // IC-LoRA dials. `icStrength` weights the reference-video conditioning
   // channel (default 1.0 matches the pipeline); `icAttentionStrength` stays
   // null when unset so the pipeline applies its own default rather than us
@@ -1536,6 +1566,13 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     // from `keyframes` even when caller omitted `mode`, so without this the
     // history entry would say 'text' for a multi-keyframe render.
     mode: mode || (hasMultiKeyframes ? 'fflf' : sourceImagePath ? 'image' : 'text'),
+    // What the conditioning image promised, and the strength that delivered it
+    // (#4874). Both are recorded only when they actually applied, so every text
+    // render and every pre-feature row stays byte-identical — and a Remix of an
+    // anchored render can't resurrect a mode the user never chose. The mode is the
+    // EFFECTIVE one, so a record never claims a promise the render did not make.
+    ...(isDefaultI2vReferenceMode(effectiveReferenceMode) ? {} : { i2vReferenceMode: effectiveReferenceMode }),
+    ...(actualImageStrength != null ? { imageStrength: actualImageStrength } : {}),
     // Durable re-render provenance (#3696). `seed` above is ALWAYS the resolved
     // seed (a caller-omitted seed was rolled into `actualSeed` before the child
     // ever ran), so a random-seed render records the seed it actually used and
@@ -1602,7 +1639,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // logic of the spawn-error handler so failure modes converge.
   let bin, args;
   try {
-    ({ bin, args } = buildArgs({ pythonPath, modelId, model: loraCapableModel, wanModelPath, wanRequiredWeights, ltxModelPath, prompt: renderPrompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, textEncoder: resolvedTextEncoder, outputPath, previewDir: stepwiseDir, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
+    ({ bin, args } = buildArgs({ pythonPath, modelId, model: loraCapableModel, wanModelPath, wanRequiredWeights, ltxModelPath, prompt: renderPrompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, i2vReferenceMode: effectiveReferenceMode, textEncoderRepo: actualTextEncoderRepo, textEncoder: resolvedTextEncoder, outputPath, previewDir: stepwiseDir, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
   } catch (err) {
     job.status = 'error';
     const reason = err.message || 'Failed to build video gen args';
@@ -2526,6 +2563,13 @@ export async function generateChainedVideo({ chunks, chunkPrompts, contextFrames
       // chunks fall through to the image-chain path, conditioning on the
       // prior chunk's tail frame.
       keyframes: i === 0 ? rest.keyframes : null,
+      // The reference-mode promise (#4874) belongs to the first chunk alone. Every
+      // continuation conditions on the PRIOR chunk's tail — a still or a window
+      // clip the chain produced, not something the user offered as inspiration —
+      // and loosening that hop would break the seam it exists to hold. A window hop
+      // isn't image mode at all, so carrying the mode forward would also fail the
+      // gate outright.
+      i2vReferenceMode: i === 0 ? rest.i2vReferenceMode : null,
     }).catch((err) => {
       detach();
       reject(err);
