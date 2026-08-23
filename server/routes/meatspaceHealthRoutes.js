@@ -6,7 +6,7 @@
 
 import { Router } from 'express';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
-import { validateRequest } from '../lib/validation.js';
+import { parseIndexParam, validateRequest } from '../lib/validation.js';
 import {
   bloodTestSchema,
   bodyEntrySchema,
@@ -143,10 +143,7 @@ router.post('/eyes', asyncHandler(async (req, res) => {
  * Update an eye exam
  */
 router.put('/eyes/:index', asyncHandler(async (req, res) => {
-  const index = parseInt(req.params.index, 10);
-  if (!Number.isInteger(index) || index < 0) {
-    throw new ServerError('Invalid index', { status: 400, code: 'INVALID_INDEX' });
-  }
+  const index = parseIndexParam(req.params.index);
   const data = validateRequest(eyeExamUpdateSchema, req.body);
   const exam = await healthService.updateEyeExam(index, data);
   if (!exam) {
@@ -160,10 +157,7 @@ router.put('/eyes/:index', asyncHandler(async (req, res) => {
  * Remove an eye exam
  */
 router.delete('/eyes/:index', asyncHandler(async (req, res) => {
-  const index = parseInt(req.params.index, 10);
-  if (!Number.isInteger(index) || index < 0) {
-    throw new ServerError('Invalid index', { status: 400, code: 'INVALID_INDEX' });
-  }
+  const index = parseIndexParam(req.params.index);
   const removed = await healthService.removeEyeExam(index);
   if (!removed) {
     throw new ServerError('Eye exam not found', { status: 404, code: 'NOT_FOUND' });

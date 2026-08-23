@@ -13,6 +13,7 @@ import toast from '../../ui/Toast';
 import useProviderModels from '../../../hooks/useProviderModels';
 import ProviderModelSelector from '../../ProviderModelSelector';
 import FilePickerButton from '../../ui/FilePickerButton';
+import { UPLOAD_IMAGE_ACCEPT, validateImageFile } from '../../../utils/fileUpload';
 
 // Cap the uploaded image so the base64 data URL stays well under the server's
 // JSON body limit and vision providers don't choke on huge payloads.
@@ -21,8 +22,7 @@ const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB
 // Mirror the server's identityImageInputSchema regex so an unsupported format
 // (e.g. an iPhone HEIC) is rejected here with a clear message naming the real
 // cause, instead of passing the loose image/* gate and failing a generic 400.
-const ACCEPTED_MIME = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
-const ACCEPT_ATTR = ACCEPTED_MIME.join(',');
+const ACCEPT_ATTR = UPLOAD_IMAGE_ACCEPT;
 
 const DETAIL_FIELDS = [
   { key: 'appearance', label: 'Appearance' },
@@ -46,12 +46,9 @@ export default function AppearanceTab({ onRefresh }) {
 
   const handleFile = (file) => {
     if (!file) return;
-    if (!ACCEPTED_MIME.includes(file.type)) {
-      toast.error('Unsupported format — use a PNG, JPEG, GIF, or WebP image');
-      return;
-    }
-    if (file.size > MAX_IMAGE_BYTES) {
-      toast.error('Image is too large (max 10MB)');
+    const validationError = validateImageFile(file, MAX_IMAGE_BYTES);
+    if (validationError) {
+      toast.error(validationError);
       return;
     }
     const reader = new FileReader();

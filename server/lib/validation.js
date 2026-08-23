@@ -310,6 +310,46 @@ export const referenceRepoUpdateSchema = z.object({
 // either — all ref CRUD goes through /api/apps/:appId/reference-repos.
 export const appUpdateSchema = partialWithoutDefaults(appSchema);
 
+const standardizePlanFileSchema = z.string().trim().min(1).max(500)
+  .refine((file) => {
+    const segments = file.split(/[/\\]/);
+    return !file.startsWith('/')
+      && !file.startsWith('\\')
+      && !/^[A-Za-z]:/.test(file)
+      && !segments.includes('..');
+  }, { message: 'file must be a repo-relative path without parent traversal' });
+
+const standardizePlanProcessSchema = z.object({
+  name: z.string().trim().min(1).max(120)
+}).passthrough();
+
+const standardizePlanStrayPortSchema = z.object({
+  file: standardizePlanFileSchema,
+  variable: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(120),
+  value: z.number().int().min(1).max(65535),
+  line: z.number().int().positive(),
+  action: z.enum(['remove', 'keep'])
+}).passthrough();
+
+export const standardizePlanSchema = z.object({
+  currentState: z.object({
+    hasGit: z.boolean()
+  }).passthrough(),
+  proposedChanges: z.object({
+    createEcosystem: z.boolean(),
+    ecosystemContent: z.string().min(1).max(1_000_000),
+    processes: z.array(standardizePlanProcessSchema).max(100),
+    strayPorts: z.array(standardizePlanStrayPortSchema).max(500)
+  }).passthrough()
+}).passthrough();
+
+export const standardizeApplySchema = z.object({
+  repoPath: z.string().trim().min(1).max(4096).optional(),
+  appId: z.string().trim().min(1).max(200).optional(),
+  plan: standardizePlanSchema,
+  overwriteEcosystem: z.boolean().optional().default(false)
+});
+
 // Game studio (#3177): managed-app binding, reusable asset bindings, bundle
 // compile, and user-triggered AI feedback.
 const gameNameSchema = z.string().trim().min(1).max(120);
@@ -1186,6 +1226,19 @@ export const clientErrorReportSchema = z.object({
 // =============================================================================
 // PAGINATION HELPERS
 // =============================================================================
+
+/**
+ * Parse a zero-based array index from an Express route parameter.
+ * @param {unknown} raw - Route parameter value
+ * @returns {number}
+ */
+export function parseIndexParam(raw) {
+  const index = Number(raw);
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw) || !Number.isSafeInteger(index)) {
+    throw new ServerError('Invalid index', { status: 400, code: 'INVALID_INDEX' });
+  }
+  return index;
+}
 
 /**
  * Parse limit/offset pagination from query params with defaults and clamping.
