@@ -54,6 +54,10 @@ import { computePostStreaks, computeUnifiedStreak, normalizeYmd, recordDayKey, w
 import { getUserTimezone, todayInTimezone, userLocalToday as localToday } from '../lib/timezone.js';
 import { getStoredPostSession, listPostSessions, saveStoredPostSession } from './postRunStore.js';
 import { ServerError } from '../lib/errorHandler.js';
+import { getPostStats } from './meatspacePostStats.js';
+
+export { getPostStats } from './meatspacePostStats.js';
+export { getPostRecommendations } from './meatspacePostRecommendations.js';
 
 // Re-export the shared streak helper so existing importers of
 // `computePostStreaks` from this module keep working after it moved to
@@ -998,92 +1002,6 @@ function summarizeSkillEvidence(sessions, training) {
   };
 }
 
-export async function getPostStats(days = 30) {
-  const atDate = new Date();
-  const sessions = await getPostSessions();
-  const timezone = await getUserTimezone();
-  const todayStr = todayInTimezone(timezone, atDate);
-  // Streaks are computed over ALL history, independent of the stats window, and
-  // over BOTH scored sessions and the training log so the launcher/dashboard
-  // streak matches the Morse trainer and the Progress page (issue #2091).
-  // `completedToday`/`todayScore` stay SCORED-session specific — they answer
-  // "did you complete a scored POST today / what did you score", which a
-  // practice-only day legitimately doesn't satisfy.
-  const sessionStreaks = computePostStreaks(sessions, todayStr, timezone);
-  const training = await getAllTrainingEntries();
-  const unified = computeUnifiedStreak(sessions, training, todayStr, timezone);
-  const streaks = {
-    ...sessionStreaks,
-    currentStreak: unified.current,
-    longestStreak: unified.longest,
-    lastDate: unified.lastActiveDate,
-  };
-  let recent = sessions;
-  let recentTraining = training;
-  if (days > 0) {
-    // Window the stats relative to the user's local today (day-string math via
-    // UTC midnight, DST-safe) so the cutoff matches the tz-correct session dates.
-    const cutoffStr = ymdShift(todayStr, -days);
-    recent = sessions.filter(s => {
-      const date = recordDayKey(s, timezone);
-      return date && date >= cutoffStr;
-    });
-    recentTraining = training.filter((entry) => {
-      const date = recordDayKey(entry, timezone);
-      return date && date >= cutoffStr;
-    });
-  }
-
-  const evidence = summarizeSkillEvidence(recent, recentTraining);
-
-  if (recent.length === 0) {
-    return { days, sessionCount: 0, overall: null, byModule: {}, byDrill: {}, byDrillCount: {}, byDrillAccuracy: {}, byDrillCompletion: {}, ...evidence, ...streaks };
-  }
-
-  const scores = recent.map(s => s.score);
-  const overall = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
-
-  const byModule = {};
-  const byDrill = {};
-  // Accuracy (answered-only) and completion tracked per drill alongside the
-  // blended score, so reporting and the adaptive signal can separate "how right"
-  // from "how fast/complete" (issue #2094). Legacy tasks are derived, not skipped.
-  const byDrillAccuracyList = {};
-  const byDrillCompletionList = {};
-  for (const session of recent) {
-    for (const task of session.tasks) {
-      if (!byModule[task.module]) byModule[task.module] = [];
-      byModule[task.module].push(task.score);
-
-      const key = `${task.module}:${task.type}`;
-      if (!byDrill[key]) byDrill[key] = [];
-      byDrill[key].push(task.score);
-
-      const acc = deriveTaskAccuracy(task);
-      if (acc != null) (byDrillAccuracyList[key] ||= []).push(acc);
-      const comp = deriveTaskCompletion(task);
-      if (comp != null) (byDrillCompletionList[key] ||= []).push(comp);
-    }
-  }
-
-  const avg = arr => Math.round(arr.reduce((a, b) => a + b, 0) / arr.length);
-  const avgFrac = arr => arr.reduce((a, b) => a + b, 0) / arr.length;
-  for (const key of Object.keys(byModule)) byModule[key] = avg(byModule[key]);
-  // byDrillCount is the per-drill sample size, used to gate adaptive difficulty
-  // (don't adapt off a single lucky/unlucky run). Captured before averaging.
-  const byDrillCount = {};
-  for (const key of Object.keys(byDrill)) byDrillCount[key] = byDrill[key].length;
-  for (const key of Object.keys(byDrill)) byDrill[key] = avg(byDrill[key]);
-  // Per-drill accuracy (0-1) and completion (0-1) means. Separate sample lists so
-  // a drill with no derivable accuracy still reports a completion figure.
-  const byDrillAccuracy = {};
-  for (const key of Object.keys(byDrillAccuracyList)) byDrillAccuracy[key] = avgFrac(byDrillAccuracyList[key]);
-  const byDrillCompletion = {};
-  for (const key of Object.keys(byDrillCompletionList)) byDrillCompletion[key] = avgFrac(byDrillCompletionList[key]);
-
-  return { days, sessionCount: recent.length, overall, byModule, byDrill, byDrillCount, byDrillAccuracy, byDrillCompletion, ...evidence, ...streaks };
-}
-
 // =============================================================================
 // PROGRESS (time-series) — issue #2091
 // =============================================================================
@@ -1716,77 +1634,6 @@ export function isRecDrillRunnable(config, module, type, memoryItemId = null) {
  * filters the config-dependent ones (weakest/stalled) to drills the current
  * config can actually run.
  */
-export async function getPostRecommendations({ limit = RECOMMENDATION_LIMIT } = {}) {
-  const atDate = new Date();
-  const [dueMemoryItems, dueReviews, stats, mulProgress, powersProgress, cogProgress, morse, sessions, config, training, timezone] = await Promise.all([
-    getDueMemoryItems(),
-    getDueReviews(new Date(), Infinity),
-    getPostStats(MASTERY_DEFAULTS.windowDays),
-    getMultiplicationProgress(),
-    getPowersProgress(),
-    getCognitiveProgress(),
-    getMorseProgress(MASTERY_DEFAULTS.windowDays),
-    getPostSessions(),
-    getPostConfig(),
-    getAllTrainingEntries(),
-    getUserTimezone(),
-  ]);
-  const todayStr = todayInTimezone(timezone, atDate);
-
-  // Weakest skill — drop it unless the drill is currently runnable; a memory
-  // weak-skill deep-links to its own tab rather than a composed session.
-  let weakestSkill = weakestSkillFromStats(stats);
-  if (weakestSkill) {
-    weakestSkill = isRecDrillRunnable(config, weakestSkill.module, weakestSkill.type)
-      ? { ...weakestSkill, deepLink: weakestSkill.module === 'memory' ? '/post/memory' : '/post/launcher' }
-      : null;
-  }
-
-  // Due memory items — drop the ones the user has switched off for the daily
-  // rotation (issue #3252). The item keeps its mastery/schedule history and is
-  // still practiceable on demand from its own page; it just stops being
-  // recommended. getDueMemoryItems() itself stays unfiltered — it also backs the
-  // Memory tab's own list.
-  //
-  // Gated on the topic + module + per-ITEM flags only, never on a drill type:
-  // these recs deep-link into a practice MODE (`spaced` / `element-flash`), so
-  // probing them with one arbitrary drill type would let switching off a single
-  // mode blank the entire spaced-repetition feed.
-  const enabledDueMemoryItems = dueMemoryItems
-    .filter(item => isMemoryItemEnabled(config, item.id));
-
-  // Due re-verifications are config-dependent recommendations like weakest-skill
-  // and stalled-progression, so they get the same gate. A memory chunk
-  // re-verification points at a specific item (same mode-not-drill-type reasoning
-  // as above); a ladder re-verification names its drill, so it routes through
-  // isRecDrillRunnable exactly as the stalled rec for that same ladder does.
-  const enabledDueReviews = dueReviews.filter((review) => {
-    if (review.kind === 'memory') return isMemoryItemEnabled(config, memoryItemIdFromReview(review));
-    return isRecDrillRunnable(config, recModuleForDrillType(review.drillType, 'cognitive'), review.drillType);
-  });
-
-  // Stalled progressions — Morse runs from its own tab (so it's gated by its own
-  // topic/config block rather than session composition), and any ladder whose
-  // drill is still runnable under the current config.
-  const stalled = stalledProgressions(mulProgress, powersProgress, cogProgress, {
-    kochLevel: morse?.kochLevel,
-    kochLevelSet: morse?.kochLevelSet,
-    maxKochLevel: MAX_KOCH_LEVEL,
-  }).filter(s => isRecDrillRunnable(config, recModuleForDrillType(s.drillType, 'cognitive'), s.drillType));
-
-  return {
-    recommendations: composePostRecommendations({
-      dueMemoryItems: enabledDueMemoryItems,
-      dueReviews: enabledDueReviews,
-      weakestSkill,
-      stalled,
-      hasHistory: sessions.length > 0,
-      practicedToday: practicedTodayFromActivity(sessions, training, todayStr, timezone),
-      limit,
-    }),
-  };
-}
-
 // =============================================================================
 // DRILL GENERATORS (pure functions)
 // =============================================================================
