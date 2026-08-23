@@ -449,7 +449,7 @@ function CapabilityTestDrawer({
         {/* ---- gate: shown until the first run of this pairing ---- */}
         {!showTabs && (
           <>
-            <div className="border border-port-border rounded-lg p-3 space-y-2">
+            <div className="bg-port-bg border border-port-border rounded-lg p-3 space-y-2">
               <h3 className="text-xs font-medium text-gray-400">What PortOS will send</h3>
               <pre className="text-[11px] text-gray-300 whitespace-pre-wrap font-mono leading-relaxed max-h-56 overflow-y-auto">{prompt}</pre>
             </div>
@@ -569,7 +569,7 @@ function CapabilityRecommendations({ report, onOpen }) {
   const models = report?.models || [];
   const tasks = TASK_FILTERS.filter((task) => task.id !== 'all');
   return (
-    <div className="border border-port-accent/30 rounded-lg p-3 space-y-2">
+    <div className="bg-port-bg border border-port-accent/30 rounded-lg p-3 space-y-2">
       <div className="flex items-center gap-1.5 text-xs text-gray-300">
         <Trophy size={12} className="text-port-accent" />
         <h4 className="font-medium">Evidence-based task picks</h4>
@@ -584,7 +584,7 @@ function CapabilityRecommendations({ report, onOpen }) {
         {tasks.map((task) => {
           const winner = bestForTask(models, tests, task);
           return (
-            <div key={task.id} className="border border-port-border/70 rounded p-2 space-y-1.5">
+            <div key={task.id} className="bg-port-card border border-port-border/70 rounded p-2 space-y-1.5">
               <div className="text-[11px] text-gray-300">Best {task.label.toLowerCase()} evidence</div>
               {winner ? (
                 <>
@@ -799,7 +799,7 @@ export default function ModelCapabilityTests({ report, loading, onReload, disabl
   }, [updateParams]);
 
   return (
-    <div className="border border-port-border rounded-lg p-3 space-y-3">
+    <div className="bg-port-bg border border-port-border rounded-lg p-3 space-y-3">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-1.5">
           <FlaskConical size={13} className="text-port-accent-2" />
@@ -843,7 +843,7 @@ export default function ModelCapabilityTests({ report, loading, onReload, disabl
             const meta = testMeta(t.id);
             const Icon = meta.Icon;
             return (
-              <div key={t.id} className={`border ${meta.border} rounded p-2.5 space-y-1.5`}>
+              <div key={t.id} className={`bg-port-card border ${meta.border} rounded p-2.5 space-y-1.5`}>
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <Icon size={13} className={meta.cls} />
                   <span className="text-xs font-medium text-gray-200">{t.label}</span>

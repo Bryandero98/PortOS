@@ -157,6 +157,15 @@ describe('the matrix', () => {
     const card = screen.getByText('Best coding evidence').parentElement;
     expect(within(card).getByText('qwen3-coder:30b')).toBeInTheDocument();
   });
+
+  it('uses themed surfaces for task and recommendation cards', () => {
+    renderPanel();
+
+    expect(screen.getByText('Fix a broken module in a sandbox.').parentElement)
+      .toHaveClass('bg-port-card');
+    expect(screen.getByText('Best coding evidence').parentElement)
+      .toHaveClass('bg-port-card');
+  });
 });
 
 describe('the run gate', () => {
