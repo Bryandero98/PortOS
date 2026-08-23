@@ -16,14 +16,26 @@
  * The paths themselves never cross the wire — they are resolved to ids
  * immediately before submission and are meaningless to the peer, which is the
  * same reason the audio marker keeps its profile rather than a rendered prompt.
+ *
+ * That resolution — the upload itself — lives here too, not in the shared
+ * remote-media executor. Staging must still run inside a run's retry/cancel/
+ * timeout envelope, so the executor lends the ONE thing only it can provide (an
+ * authenticated, in-envelope `requestJson`) and everything image-shaped stays on
+ * this side of the seam: the size cap, the MIME allowlist, the digest check.
  */
 
+import { readFile, stat } from 'node:fs/promises';
 import { z } from 'zod';
 import {
+  FEDERATED_MEDIA_ASSET_MAX_BYTES,
   FEDERATED_MEDIA_ASSET_MAX_COUNT,
+  FEDERATED_MEDIA_ASSET_MIME_TYPES,
   FEDERATED_MEDIA_INPUT_ROLES,
+  federatedMediaAssetId,
+  federatedMediaAssetSchema,
   isMultiInputRole,
 } from '../../lib/federatedMediaWire.js';
+import { detectImageFormat, resolveImageInputPath, sha256File } from '../../lib/fileUtils.js';
 
 // Deliberately NOT imported from remoteExecutor.js. That module statically
 // pulls the peer registry and consumer, and this one is reached from the image
@@ -107,6 +119,115 @@ export function inputAssetRejection(capability, assets = []) {
 }
 
 /**
+ * Build this run's conditioning-image stager: local path -> provider asset id
+ * (ADR docs/decisions/2026-08-22-federated-media-input-assets.md rule 1).
+ *
+ * The executor lends exactly one capability — `requestJson`, its own
+ * authenticated request helper already bound to the run, so peer resolution,
+ * auth, cancellation and the timeout envelope all stay intact and the upload
+ * happens INSIDE the run's retry/cancel envelope rather than beside it.
+ * Everything image-shaped — the approved-roots re-anchor, the size cap, the MIME
+ * allowlist, the digest verification — lives here, where the next non-image
+ * sub-request will not inherit it.
+ *
+ * The `localPath -> assetId` memo is per run and deliberately not persisted: an
+ * id names a slot in the provider's TTL-swept staging area, so caching it across
+ * a restart would produce a confident reference to bytes that are gone. Within
+ * one run the memo means a retried submission re-sends the body once, not once
+ * per attempt.
+ *
+ * @param {object} ctx
+ * @param {(path: string, options?: object, requestOptions?: object) => Promise<any>} ctx.requestJson
+ * @param {(message: string) => void} ctx.emitStatus
+ * @returns {(localPath: string) => Promise<string>}
+ */
+function createInputAssetStager({ requestJson, emitStatus }) {
+  const assetIds = new Map();
+
+  return async function stageInputAsset(localPath) {
+    const cached = assetIds.get(localPath);
+    if (cached) return cached;
+
+    // Re-anchored against the approved image roots on every attempt, exactly as
+    // the LOCAL runner re-validates the same input. The marker is persisted,
+    // user-editable queue state, so the path that becomes an outbound upload has
+    // to be one this machine would have rendered from — a bare basename resolves,
+    // and anything outside those roots resolves to null and is refused.
+    const resolved = resolveImageInputPath(localPath);
+    const info = resolved ? await stat(resolved).catch(() => null) : null;
+    if (!info?.isFile()) {
+      throw inputAssetError(
+        'A conditioning image for this render is missing or unreadable',
+        'MEDIA_PROVIDER_INPUT_UNREADABLE',
+      );
+    }
+    if (info.size > FEDERATED_MEDIA_ASSET_MAX_BYTES) {
+      throw inputAssetError(
+        'A conditioning image for this render is too large to send to a peer',
+        'MEDIA_PROVIDER_ASSET_TOO_LARGE',
+      );
+    }
+    // Streamed above 512 KB, so the ASK-FIRST path below never buffers a
+    // multi-megabyte image just to learn it is already staged.
+    const digest = await sha256File(resolved);
+    // Lazily imported, not statically: the image/video generate routes reach
+    // this module, and a static edge to the peer registry would drag it (and
+    // its settings/DB dependencies) into every route suite's module graph.
+    // Same reason remoteSubmission.js defers the same import.
+    const { getInstanceId } = await import('../instances.js');
+    const assetId = federatedMediaAssetId(await getInstanceId(), digest);
+
+    // Ask before sending. The id is fully derivable from our own instance id and
+    // the content digest — that is what content addressing buys — so a job
+    // replayed after a restart, or a second render from the same init image,
+    // costs one small GET instead of re-sending up to 32 MiB. A 404 is the
+    // normal miss (never uploaded, or swept), not an error.
+    const staged = await requestJson(`/api/federation/media/v1/assets/${assetId}`)
+      .then((body) => federatedMediaAssetSchema.safeParse(body), () => null);
+    if (staged?.success && staged.data.sha256 === digest) {
+      assetIds.set(localPath, staged.data.assetId);
+      return staged.data.assetId;
+    }
+
+    const body = await readFile(resolved).catch(() => null);
+    if (!body) {
+      throw inputAssetError(
+        'A conditioning image for this render is missing or unreadable',
+        'MEDIA_PROVIDER_INPUT_UNREADABLE',
+      );
+    }
+    const detected = detectImageFormat(body);
+    if (!detected || !FEDERATED_MEDIA_ASSET_MIME_TYPES.includes(detected.mime)) {
+      throw inputAssetError(
+        'A conditioning image for this render is not a format peers accept',
+        'MEDIA_PROVIDER_ASSET_TYPE_UNSUPPORTED',
+      );
+    }
+    emitStatus('Sending source image to the remote provider');
+    const response = await requestJson('/api/federation/media/v1/assets', {
+      method: 'POST',
+      headers: { 'Content-Type': detected.mime, 'X-Content-SHA256': digest },
+      body,
+    }, {
+      // A multi-megabyte upload legitimately outruns the JSON request timeout.
+      timeoutScale: 10,
+    });
+    const parsed = federatedMediaAssetSchema.safeParse(response);
+    // The provider echoes back the digest it computed. A mismatch means the
+    // bytes it stored are not the bytes we sent, and rendering from them would
+    // produce a plausible image of the wrong thing.
+    if (!parsed.success || parsed.data.sha256 !== digest) {
+      throw inputAssetError(
+        'Remote media provider returned an invalid asset receipt',
+        'MEDIA_PROVIDER_ASSET_INTEGRITY',
+      );
+    }
+    assetIds.set(localPath, parsed.data.assetId);
+    return parsed.data.assetId;
+  };
+}
+
+/**
  * Stage each local asset on the provider and fold the returned ids into the
  * wire request.
  *
@@ -120,12 +241,15 @@ export function inputAssetRejection(capability, assets = []) {
  *
  * @param {object} request - validated wire submission, without asset refs
  * @param {Array<{role: string, path: string}>} assets
- * @param {(path: string) => Promise<string>} stageAsset - uploads and returns an assetId
+ * @param {{requestJson: Function, emitStatus: Function}} ctx - the executor's
+ *   in-envelope request capability for this run; the stager is built from it
+ *   lazily, so a text-only render never allocates one.
  * @param {import('zod').ZodTypeAny} [schema] - refined schema for the finished body
  * @returns {Promise<object>} the request with `{ assetId }` refs filled in
  */
-export async function applyRemoteInputAssets(request, assets, stageAsset, schema) {
+export async function applyRemoteInputAssets(request, assets, ctx, schema) {
   if (!Array.isArray(assets) || assets.length === 0) return request;
+  const stageAsset = createInputAssetStager(ctx);
   // Staged CONCURRENTLY: up to 8 independent multi-megabyte uploads, each one
   // otherwise waiting out the last inside the run's timeout envelope. The
   // results are folded in afterwards, in the original order, because reference

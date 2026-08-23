@@ -14,30 +14,31 @@
  * supplied by the caller. The retry/cancel/idempotency/integrity semantics are
  * NOT: they are the part that must stay identical across kinds, which is why
  * this module owns them instead of each adapter re-deriving them.
+ *
+ * A kind whose request body cannot be built without talking to the peer first
+ * (image conditioning has to be uploaded and turned into asset ids) gets this
+ * run's own `requestJson` handed to `buildRequest` rather than a routine of its
+ * own here. The cross-kind concept is "an authenticated sub-request inside the
+ * run's envelope"; WHAT is sent stays with the kind that knows — see
+ * federatedMedia/inputAssets.js.
  */
 
 import { createWriteStream } from 'node:fs';
-import { mkdir, readFile, rename, stat, unlink } from 'node:fs/promises';
+import { mkdir, rename, stat, unlink } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { sha256File } from '../../lib/fileUtils.js';
 import {
-  detectImageFormat, resolveImageInputPath, sha256File, sha256Text,
-} from '../../lib/fileUtils.js';
-import {
-  FEDERATED_MEDIA_ASSET_MAX_BYTES,
-  FEDERATED_MEDIA_ASSET_MIME_TYPES,
   FEDERATED_MEDIA_WIRE_VERSION,
-  federatedMediaAssetId,
-  federatedMediaAssetSchema,
   federatedMediaProviderJobSchema,
 } from '../../lib/federatedMediaWire.js';
 import { peerFetch } from '../../lib/peerHttpClient.js';
 import { peerBaseUrl } from '../../lib/peerUrl.js';
 import { readResponseJson } from '../../lib/readResponseJson.js';
 import { resolveFederatedMediaProvider } from '../federatedMediaConsumer.js';
-import { getInstanceId, getPeers } from '../instances.js';
+import { getPeers } from '../instances.js';
 import { isTailnetPeer } from '../../lib/tailnetPeer.js';
 
 const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429]);
@@ -76,7 +77,13 @@ const isRetryableTransportError = (error) =>
  * @param {string} config.label - Human noun used in progress/failure messages.
  * @param {import('events').EventEmitter} config.events - The kind's gen event emitter.
  * @param {import('zod').ZodTypeAny} config.markerSchema - Schema for `params.remoteMedia`.
- * @param {(marker: object) => object} config.buildRequest - Wire submission body builder.
+ * @param {(marker: object, ctx: object) => object|Promise<object>} config.buildRequest -
+ *   Wire submission body builder. `ctx` carries this run's `requestJson` — the
+ *   same authenticated, in-envelope request helper the executor uses itself, so
+ *   a body that has to make a sub-request while it is being built (staging
+ *   conditioning images today) does so inside the run's retry, cancel and
+ *   timeout envelope — plus `emitStatus` to narrate it. WHAT that sub-request is
+ *   stays kind-specific; the executor only lends the channel.
  * @param {(ctx: object) => {dir: string, filename: string}} config.resolveDestination -
  *   Where the verified result lands. Called per job so a PATHS proxy stays live.
  * @param {(ctx: object) => Promise<object>} config.finalize - Register the downloaded
@@ -125,7 +132,15 @@ export function createRemoteMediaExecutor({
     });
   }
 
-  async function withRequest(state, fn, { respectCancel = true, timeoutMs = requestTimeoutMs } = {}) {
+  // `timeoutScale` multiplies the JSON request timeout for a sub-request that
+  // legitimately outruns it (a multi-megabyte conditioning upload). It stays a
+  // scale rather than an absolute so callers outside this module never have to
+  // know — or fall out of sync with — the configured base timeout.
+  async function withRequest(
+    state,
+    fn,
+    { respectCancel = true, timeoutScale = 1, timeoutMs = requestTimeoutMs * timeoutScale } = {},
+  ) {
     const controller = new AbortController();
     const timer = timeoutMs === null ? null : setTimeout(() => controller.abort(), timeoutMs);
     timer?.unref?.();
@@ -186,91 +201,6 @@ export function createRemoteMediaExecutor({
       });
     }
     return body;
-  }
-
-  /**
-   * Upload one local conditioning image and return the provider's asset id
-   * (ADR docs/decisions/2026-08-22-federated-media-input-assets.md rule 1).
-   *
-   * Memoized per run rather than persisted: an id belongs to the provider's
-   * TTL-swept staging area, so caching it across a restart would produce a
-   * confident reference to bytes that are gone. Within one run the cache means
-   * a retried submission re-sends the body once, not once per attempt.
-   *
-   * The digest is computed here and echoed back by the provider; a mismatch
-   * means the bytes it stored are not the bytes we sent, and rendering from
-   * them would produce a plausible image of the wrong thing.
-   */
-  async function stageInputAsset(state, localPath) {
-    const cached = state.assetIds.get(localPath);
-    if (cached) return cached;
-
-    // Re-anchored against the approved image roots on every attempt, exactly as
-    // the LOCAL runner re-validates the same input. The marker is persisted,
-    // user-editable queue state, so the path that becomes an outbound upload has
-    // to be one this machine would have rendered from — a bare basename resolves,
-    // and anything outside those roots resolves to null and is refused.
-    const resolved = resolveImageInputPath(localPath);
-    const info = resolved ? await stat(resolved).catch(() => null) : null;
-    if (!info?.isFile()) {
-      throw remoteMediaError('A conditioning image for this render is missing or unreadable', {
-        code: 'MEDIA_PROVIDER_INPUT_UNREADABLE',
-      });
-    }
-    if (info.size > FEDERATED_MEDIA_ASSET_MAX_BYTES) {
-      throw remoteMediaError('A conditioning image for this render is too large to send to a peer', {
-        code: 'MEDIA_PROVIDER_ASSET_TOO_LARGE',
-      });
-    }
-    // Streamed above 512 KB, so the ASK-FIRST path below never buffers a
-    // multi-megabyte image just to learn it is already staged.
-    const digest = await sha256File(resolved);
-    const assetId = federatedMediaAssetId(await getInstanceId(), digest);
-
-    // Ask before sending. The id is fully derivable from our own instance id and
-    // the content digest — that is what content addressing buys — so a job
-    // replayed after a restart, or a second render from the same init image,
-    // costs one small GET instead of re-sending up to 32 MiB. A 404 is the
-    // normal miss (never uploaded, or swept), not an error.
-    const staged = await requestJson(state, `/api/federation/media/v1/assets/${assetId}`)
-      .then((body) => federatedMediaAssetSchema.safeParse(body), () => null);
-    if (staged?.success && staged.data.sha256 === digest) {
-      state.assetIds.set(localPath, staged.data.assetId);
-      return staged.data.assetId;
-    }
-
-    const body = await readFile(resolved).catch(() => null);
-    if (!body) {
-      throw remoteMediaError('A conditioning image for this render is missing or unreadable', {
-        code: 'MEDIA_PROVIDER_INPUT_UNREADABLE',
-      });
-    }
-    const detected = detectImageFormat(body);
-    if (!detected || !FEDERATED_MEDIA_ASSET_MIME_TYPES.includes(detected.mime)) {
-      throw remoteMediaError('A conditioning image for this render is not a format peers accept', {
-        code: 'MEDIA_PROVIDER_ASSET_TYPE_UNSUPPORTED',
-      });
-    }
-    emitStatus(state.jobId, 'Sending source image to the remote provider');
-    const response = await requestJson(state, '/api/federation/media/v1/assets', {
-      method: 'POST',
-      headers: { 'Content-Type': detected.mime, 'X-Content-SHA256': digest },
-      body,
-    }, {
-      // A multi-megabyte upload legitimately outruns the JSON request timeout.
-      timeoutMs: requestTimeoutMs * 10,
-    });
-    const parsed = federatedMediaAssetSchema.safeParse(response);
-    // The provider echoes back the digest it computed. A mismatch means the
-    // bytes it stored are not the bytes we sent, and rendering from them would
-    // produce a plausible image of the wrong thing.
-    if (!parsed.success || parsed.data.sha256 !== digest) {
-      throw remoteMediaError('Remote media provider returned an invalid asset receipt', {
-        code: 'MEDIA_PROVIDER_ASSET_INTEGRITY',
-      });
-    }
-    state.assetIds.set(localPath, parsed.data.assetId);
-    return parsed.data.assetId;
   }
 
   function parseProviderJob(body, expectedId) {
@@ -522,10 +452,14 @@ export function createRemoteMediaExecutor({
   }
 
   async function runRemote(state, marker) {
-    // Awaited: an image/video marker resolves its persisted LOCAL conditioning
-    // paths into provider asset ids here, inside this run's retry, cancel and
-    // timeout envelope rather than before it.
-    const request = await buildRequest(marker, { stageAsset: (path) => stageInputAsset(state, path) });
+    // Awaited, and handed this run's own request channel: an image/video marker
+    // resolves its persisted LOCAL conditioning paths into provider asset ids
+    // here, inside this run's retry, cancel and timeout envelope rather than
+    // before it. See federatedMedia/inputAssets.js for what that entails.
+    const request = await buildRequest(marker, {
+      requestJson: (path, options, requestOptions) => requestJson(state, path, options, requestOptions),
+      emitStatus: (message) => emitStatus(state.jobId, message),
+    });
     const selection = { kind, engine: request.engine, modelId: request.modelId };
     if (!marker.reconcile) await preflight(state, selection);
     if (state.cancelRequested && !marker.reconcile && !state.submissionMayExist) throw canceledError();
@@ -570,11 +504,6 @@ export function createRemoteMediaExecutor({
       // Absent on an interactive marker (and on any marker queued before this
       // shipped), which reads correctly as "not a standing route".
       standingRoute: marker.data.standingRoute === true,
-      // localPath -> provider assetId, for this run only. Deliberately not
-      // persisted: the id names a slot in the peer's TTL-swept staging area, so
-      // a cached id that outlived the run would be a confident reference to
-      // bytes that are gone. See federatedMedia/inputAssets.js.
-      assetIds: new Map(),
       requestController: null,
       wake: null,
     };
