@@ -29,7 +29,7 @@ import { launchArgs, normalizeTuning, tuningSpecsFor } from '../lib/localModelTu
 import { LOCAL_RUNTIMES, localEndpointPort, localRuntimeKind, isLocalInstanceEndpoint } from '../lib/localProviderRuntime.js';
 import { listMtplxCachedModels, pickMtplxCachedModel } from '../lib/mtplxModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
-import { createDaemonLogBuffer, pm2ArgValue, idleWindowMs, markDaemonUsed, registerIdleDaemon } from '../lib/managedDaemon.js';
+import { createDaemonLogBuffer, pm2ArgValue, idleWindowMs, markDaemonUsed, registerIdleDaemon, MTPLX_APP } from '../lib/managedDaemon.js';
 // `settings.js` is lazy-imported at its call sites below, never statically: it
 // eagerly resolves `fileUtils.PATHS` at module load, which drags PATHS into the
 // module graph of every consumer of this manager and breaks the many suites that
@@ -41,7 +41,7 @@ import { findCommandOnPath } from '../lib/processEnv.js';
 import { runStreamingCommand } from '../lib/streamingSpawn.js';
 import { execPm2, getAppStatusStrict, clearJlistCache, getSavedProcessNames } from './pm2.js';
 
-export const MTPLX_APP = 'portos-mtplx';
+export { MTPLX_APP };
 
 const PROBE_TIMEOUT_MS = 1500;
 /**

@@ -232,6 +232,36 @@ describe('useShellSession', () => {
     });
   });
 
+  // The Shell page's provider launch menu. The ID is what crosses the wire —
+  // the server pairs it with the provider's own env, which a typed command line
+  // would leave behind (and which is secret, so it can't cross at all).
+  describe('launchProvider', () => {
+    it('starts a new session by provider ID, inheriting the displayed cwd', () => {
+      const { result } = attachedTo('s1', [session('s1', { cwd: '/repos/example-app' })]);
+      act(() => { result.current.launchProvider('claude-code-tui'); });
+      expect(lastEmit('shell:start')).toEqual([
+        'shell:start', { cwd: '/repos/example-app', providerId: 'claude-code-tui' },
+      ]);
+    });
+
+    it('omits cwd when the displayed session reports none', () => {
+      const { result } = attachedTo('s1', [session('s1')]);
+      act(() => { result.current.launchProvider('codex-tui'); });
+      expect(lastEmit('shell:start')).toEqual(['shell:start', { providerId: 'codex-tui' }]);
+    });
+
+    it('never emits — and never arms a stale launch — without a provider id', () => {
+      const { result } = attachedTo('s1', [session('s1')]);
+      const before = emitted.length;
+      act(() => { result.current.launchProvider(''); });
+      expect(emitted.length).toBe(before);
+      // The id must not have been parked in the pending-opts slot either: a
+      // later plain "New" would otherwise spawn the provider instead of a shell.
+      act(() => { result.current.startNewSession(); });
+      expect(lastEmit('shell:start')).toEqual(['shell:start', undefined]);
+    });
+  });
+
   // Restart asks for a *replacement* shell, so it must not run the survivor
   // adoption path even when another shell is free.
   describe('restartSession', () => {
