@@ -1,5 +1,9 @@
 import { Router } from 'express';
+import { realpath } from 'fs/promises';
+import { resolve } from 'path';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
+import { standardizeApplySchema, validateRequest } from '../lib/validation.js';
+import { isWithinAllowedRoots, outsideAllowedRootsMessage } from '../lib/workspaceRoots.js';
 import * as pm2Standardizer from '../services/pm2Standardizer.js';
 import * as appsService from '../services/apps.js';
 
@@ -20,9 +24,11 @@ const router = Router();
  * rewriting a different directory would make the gate decorative: a permitted
  * Node `appId` alongside some other repo's path would carry a Python or Docker
  * project straight past the refusal. No caller sends both (the client wrappers
- * in `apiSystem.js` send one or the other), so this only closes the hole.
+ * in `apiSystem.js` send one or the other), so this only closes the hole. Every
+ * selected target is still canonicalized and confined to the workspace roots.
  */
 async function resolveStandardizeTarget({ repoPath, appId }) {
+  let target;
   if (appId) {
     const app = await appsService.getAppById(appId);
     if (!app) {
@@ -32,12 +38,36 @@ async function resolveStandardizeTarget({ repoPath, appId }) {
     if (refusal) {
       throw new ServerError(refusal, { status: 400, code: 'NOT_STANDARDIZABLE' });
     }
-    return app.repoPath;
+    target = app.repoPath;
+  } else if (repoPath) {
+    target = repoPath;
+  } else {
+    throw new ServerError('Either repoPath or appId is required', { status: 400, code: 'MISSING_PATH' });
   }
 
-  if (repoPath) return repoPath;
+  if (typeof target !== 'string' || !target.trim()) {
+    throw new ServerError('Standardization target is invalid', { status: 400, code: 'INVALID_PATH' });
+  }
 
-  throw new ServerError('Either repoPath or appId is required', { status: 400, code: 'MISSING_PATH' });
+  // Resolve symlinks before checking containment so a path that appears to sit
+  // below an allowed root cannot redirect the standardizer's writes elsewhere.
+  const realTarget = await realpath(resolve(target)).catch(() => null);
+  if (!realTarget) {
+    throw new ServerError('Standardization target is not accessible', { status: 400, code: 'INVALID_PATH' });
+  }
+  if (!isWithinAllowedRoots(realTarget)) {
+    console.error(`❌ ${outsideAllowedRootsMessage(realTarget, { field: 'standardization target' })}`);
+    throw new ServerError('Standardization target is outside allowed directories', {
+      status: 403,
+      code: 'FORBIDDEN'
+    });
+  }
+
+  // Keep the registered/requested spelling after checking its canonical target.
+  // analyzeApp uses the stored repoPath for managed-app identity (including its
+  // own-port exemption), so replacing a symlinked path with realTarget would
+  // make that app look unrelated and unnecessarily reassign its ports.
+  return target;
 }
 
 // POST /api/standardize/analyze - Analyze app and generate standardization plan
@@ -61,17 +91,17 @@ router.post('/analyze', asyncHandler(async (req, res) => {
 
 // POST /api/standardize/apply - Apply standardization changes
 router.post('/apply', asyncHandler(async (req, res) => {
-  const { repoPath, appId, plan, overwriteEcosystem = false } = req.body;
+  const { repoPath, appId, plan, overwriteEcosystem } = validateRequest(standardizeApplySchema, req.body);
 
   const path = await resolveStandardizeTarget({ repoPath, appId });
-
-  if (!plan) {
-    throw new ServerError('Standardization plan is required', { status: 400, code: 'MISSING_PLAN' });
-  }
 
   console.log(`🔧 Applying PM2 standardization to: ${path}`);
 
   const result = await pm2Standardizer.applyStandardization(path, plan, { overwriteEcosystem });
+
+  if (!result.success) {
+    throw new ServerError(result.error || 'Standardization failed', { status: 400, code: 'APPLY_FAILED' });
+  }
 
   if (result.backupBranch) {
     console.log(`📦 Backup branch created: ${result.backupBranch}`);
