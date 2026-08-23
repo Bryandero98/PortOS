@@ -4,9 +4,8 @@ import { Save, Loader2, Music, Link2, LogOut, RefreshCw, CheckCircle2, AlertCirc
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatDateTime } from '../../utils/formatters';
+import { useSyncSourceSettings } from '../../hooks/useSyncSourceSettings';
 import {
-  getSettings,
-  updateSettings,
   getSpotifyStatus,
   getSpotifyAuthUrl,
   saveSpotifyCredentials,
@@ -19,40 +18,19 @@ import {
 // default — requires a user-created Spotify developer app + OAuth connection.
 export function SpotifyTab() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [loading, setLoading] = useState(true);
-  const [enabled, setEnabled] = useState(false);
-  const [intervalMinutes, setIntervalMinutes] = useState(25);
-  const [savedEnabled, setSavedEnabled] = useState(false);
-  const [savedInterval, setSavedInterval] = useState(25);
-  const [saving, setSaving] = useState(false);
+  const {
+    loading, enabled, setEnabled, intervalMinutes, setIntervalMinutes, saving,
+    status, setStatus, dirty, save,
+  } = useSyncSourceSettings({ domain: 'spotify', defaultInterval: 25, getStatus: getSpotifyStatus });
 
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
   const [savingCreds, setSavingCreds] = useState(false);
 
-  const [status, setStatus] = useState(null);
   const [connecting, setConnecting] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
   const loadStatus = () => getSpotifyStatus({ silent: true }).catch(() => null).then((st) => { if (st) setStatus(st); return st; });
-
-  useEffect(() => {
-    Promise.all([
-      getSettings({ silent: true }).catch(() => ({})),
-      getSpotifyStatus({ silent: true }).catch(() => null),
-    ])
-      .then(([settings, st]) => {
-        const c = settings?.spotify || {};
-        const en = typeof c.enabled === 'boolean' ? c.enabled : false;
-        const iv = Number.isFinite(c.intervalMinutes) ? c.intervalMinutes : 25;
-        setEnabled(en);
-        setIntervalMinutes(iv);
-        setSavedEnabled(en);
-        setSavedInterval(iv);
-        setStatus(st);
-      })
-      .finally(() => setLoading(false));
-  }, []);
 
   // Surface the OAuth callback outcome (the browser redirect lands back here).
   useEffect(() => {
@@ -68,18 +46,10 @@ export function SpotifyTab() {
     }
   }, [searchParams, setSearchParams]);
 
-  const dirty = enabled !== savedEnabled || Number(intervalMinutes) !== Number(savedInterval);
   const auth = status?.auth;
 
   const handleSave = async () => {
-    const iv = Math.max(1, Math.min(1440, Math.floor(Number(intervalMinutes) || 25)));
-    setSaving(true);
-    const merged = await updateSettings({ spotify: { enabled, intervalMinutes: iv } }).catch(() => null);
-    setSaving(false);
-    if (!merged) return;
-    setIntervalMinutes(iv);
-    setSavedEnabled(enabled);
-    setSavedInterval(iv);
+    if (!await save()) return;
     toast.success('Saved — scheduler applies on next server restart');
   };
 
