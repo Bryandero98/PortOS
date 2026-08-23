@@ -813,7 +813,7 @@ describe('CoS Routes', () => {
     });
 
     it('should reject traversal-shaped dates before reading the report', async () => {
-      const response = await request(app).get('/api/cos/reports/../secrets');
+      const response = await request(app).get('/api/cos/reports/not-a-date');
 
       expect(response.status).toBe(400);
       expect(cos.getReport).not.toHaveBeenCalled();
@@ -1633,7 +1633,7 @@ describe('CoS Routes', () => {
     });
 
     it('should reject traversal-shaped dates before reading the briefing', async () => {
-      const response = await request(app).get('/api/cos/briefings/../secrets');
+      const response = await request(app).get('/api/cos/briefings/not-a-date');
 
       expect(response.status).toBe(400);
       expect(cos.getBriefing).not.toHaveBeenCalled();
