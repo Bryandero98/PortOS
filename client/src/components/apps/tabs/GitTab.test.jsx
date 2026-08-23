@@ -9,6 +9,7 @@ vi.mock('../../../services/api', () => ({
   getRemoteBranches: vi.fn(),
   getGitDiff: vi.fn(),
   cleanupMergedBranches: vi.fn(),
+  resetToDefaultBranch: vi.fn(),
 }));
 
 import * as api from '../../../services/api';
@@ -36,6 +37,7 @@ beforeEach(() => {
   api.getRemoteBranches.mockResolvedValue({ branches: [], defaultBranch: 'main' });
   api.getGitDiff.mockResolvedValue({ diff: '@@ -1 +1 @@\n-old\n+new' });
   api.cleanupMergedBranches.mockResolvedValue({ deleted: [], skipped: [] });
+  api.resetToDefaultBranch.mockResolvedValue({ success: true, branch: 'main', previousBranch: 'main', previousHead: 'b'.repeat(40), head: 'a'.repeat(40), discardedFiles: 1, fetched: true });
 });
 
 afterEach(() => {
@@ -147,5 +149,58 @@ describe('GitTab merged branches checked out in worktrees', () => {
 
     await screen.findByText('claim/issue-1');
     expect(screen.getAllByText('worktree')).toHaveLength(2);
+  });
+});
+
+describe('GitTab reset to origin', () => {
+  it('confirms before resetting, and names what is discarded and what survives', async () => {
+    render(<GitTab appId="x" appName="App" repoPath="/repo" />);
+
+    fireEvent.click(await screen.findByText('Reset to origin'));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-labelledby', 'git-reset-modal-title');
+    expect(document.getElementById('git-reset-modal-title')).toHaveTextContent('Reset App to origin/main');
+    // Scope is stated, not implied: one dirty file in GIT_INFO, untracked kept.
+    expect(dialog).toHaveTextContent('Discards 1 uncommitted file change');
+    expect(dialog).toHaveTextContent('Keeps untracked files');
+    // Opening the dialog alone must not touch the repo.
+    expect(api.resetToDefaultBranch).not.toHaveBeenCalled();
+  });
+
+  it('does not reset when the confirmation is cancelled', async () => {
+    render(<GitTab appId="x" appName="App" repoPath="/repo" />);
+
+    fireEvent.click(await screen.findByText('Reset to origin'));
+    fireEvent.click(await screen.findByText('Cancel'));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(api.resetToDefaultBranch).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the dirty-file count when the dialog opens', async () => {
+    render(<GitTab appId="x" appName="App" repoPath="/repo" />);
+    await screen.findByText('Reset to origin');
+    const onMount = api.getGitInfo.mock.calls.length;
+
+    fireEvent.click(screen.getByText('Reset to origin'));
+
+    // The dialog names how many files it will destroy, so it must not quote a
+    // count from whenever the tab last polled.
+    await waitFor(() => expect(api.getGitInfo.mock.calls.length).toBeGreaterThan(onMount));
+  });
+
+  it('resets on confirm and reloads git state', async () => {
+    render(<GitTab appId="x" appName="App" repoPath="/repo" />);
+
+    fireEvent.click(await screen.findByText('Reset to origin'));
+    await screen.findByRole('dialog');
+    const beforeConfirm = api.getGitInfo.mock.calls.length;
+
+    fireEvent.click(screen.getByText('Discard and reset'));
+
+    await waitFor(() => expect(api.resetToDefaultBranch).toHaveBeenCalledWith('/repo', { silent: true }));
+    // The tab re-reads git state rather than trusting its pre-reset snapshot.
+    await waitFor(() => expect(api.getGitInfo.mock.calls.length).toBeGreaterThan(beforeConfirm));
   });
 });
