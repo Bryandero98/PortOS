@@ -811,6 +811,13 @@ describe('CoS Routes', () => {
 
       expect(response.status).toBe(404);
     });
+
+    it('should reject traversal-shaped dates before reading the report', async () => {
+      const response = await request(app).get('/api/cos/reports/../secrets');
+
+      expect(response.status).toBe(400);
+      expect(cos.getReport).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /api/cos/watcher', () => {
@@ -1623,6 +1630,13 @@ describe('CoS Routes', () => {
       const response = await request(app).get('/api/cos/briefings/1999-01-01');
 
       expect(response.status).toBe(404);
+    });
+
+    it('should reject traversal-shaped dates before reading the briefing', async () => {
+      const response = await request(app).get('/api/cos/briefings/../secrets');
+
+      expect(response.status).toBe(400);
+      expect(cos.getBriefing).not.toHaveBeenCalled();
     });
   });
 
