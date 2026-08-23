@@ -584,7 +584,14 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // run's state back onto the v6 peer — which by then had correctly passed over
   // the task. Per-category gate → only cos-tasks sync pauses until the peer
   // upgrades.
-  cosTasks: 6,
+  // v7 = plan-only issue-filing tasks (metadata.planOnly, the forced
+  // plan-task --issues --yes invocation, and the task-description context
+  // bridge). A <=v6 peer accepts the permissive metadata map but does not
+  // understand the no-delivery execution contract, so it can claim the task
+  // and run the workflow without the description context needed to file the
+  // issue. Per-category gate -> only cos-tasks sync pauses until the peer
+  // upgrades.
+  cosTasks: 7,
   // NOTE: `videoHistory` is intentionally NOT listed here. The version gate
   // rejects the ENTIRE snapshot/push payload on ANY ahead-mismatch (the
   // comparator walks the union of keys), so declaring a brand-new key would

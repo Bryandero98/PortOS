@@ -40,6 +40,7 @@ import {
   buildCosTasksPayload,
   syncCosTasksFromPeer,
 } from './peerSync.js';
+import { PORTOS_SCHEMA_VERSIONS } from '../../lib/schemaVersions.js';
 import { getPeers } from '../instances.js';
 import { peerFetch } from '../../lib/peerHttpClient.js';
 import { getUserTasks, getCosTasks, mergePeerTasks } from '../cosTaskStore.js';
@@ -69,7 +70,7 @@ describe('buildCosTasksPayload', () => {
     vi.mocked(getUserTasks).mockResolvedValue({ tasks: [task('task-a', 'pending')] });
     vi.mocked(getCosTasks).mockResolvedValue({ tasks: [task('sys-b', 'in_progress', { metadata: { claimedBy: 'i1' } })] });
     const p = await buildCosTasksPayload();
-    expect(p.schemaVersion).toBe(6); // v6: metadata.targetInstanceId — per-task instance pin (#4520)
+    expect(p.schemaVersion).toBe(PORTOS_SCHEMA_VERSIONS.cosTasks); // v7: plan-only issue-filing execution semantics
     expect(p.listHash).toMatch(/^[a-f0-9]{64}$/);
     expect(p.tasks).toHaveLength(2);
     const user = p.tasks.find((t) => t.id === 'task-a');
@@ -104,7 +105,7 @@ describe('buildCosTasksPayload', () => {
   it('returns an empty payload when there are no tasks', async () => {
     const p = await buildCosTasksPayload();
     expect(p.tasks).toEqual([]);
-    expect(p.schemaVersion).toBe(6); // v6: metadata.targetInstanceId — per-task instance pin (#4520)
+    expect(p.schemaVersion).toBe(PORTOS_SCHEMA_VERSIONS.cosTasks); // v7: plan-only issue-filing execution semantics
   });
 });
 
@@ -116,7 +117,11 @@ describe('syncCosTasksFromPeer', () => {
   });
 
   it('gently skips a sender whose payload schema is ahead', async () => {
-    vi.mocked(peerFetch).mockResolvedValue(payloadRes({ schemaVersion: 999, listHash: sha('x'), tasks: [] }));
+    vi.mocked(peerFetch).mockResolvedValue(payloadRes({
+      schemaVersion: PORTOS_SCHEMA_VERSIONS.cosTasks + 1,
+      listHash: sha('x'),
+      tasks: [],
+    }));
     const r = await syncCosTasksFromPeer(PEER);
     expect(r).toEqual({ merged: 0, skipped: 'schema-ahead' });
     expect(mergePeerTasks).not.toHaveBeenCalled();
