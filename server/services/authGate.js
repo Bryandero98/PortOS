@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
-import { extractToken, isAuthEnabled, verifyPassword, verifySession } from '../services/auth.js';
+import { extractToken, isAuthEnabled, verifyPassword, verifySession } from './auth.js';
 // Shared with sidecar processes (lib/sidecarAuthGate.js) so the Autofixer UI
 // on :5560 applies byte-identical credential extraction and CSRF rules.
 import { extractBasicPassword, isCrossOrigin } from '../../lib/portosAuthCore.js';
-import { getSettings, settingsEvents } from '../services/settings.js';
-import { isRegistryPublic } from './apiRegistry.js';
-import { sendErrorResponse, ServerError } from './errorHandler.js';
+import { getSettings, settingsEvents } from './settings.js';
+import { isRegistryPublic } from '../lib/apiRegistry.js';
+import { sendErrorResponse, ServerError } from '../lib/errorHandler.js';
 
 // Paths that bypass the auth gate even when a password is set:
 //   - /api/auth/status, /api/auth/whoami, /api/auth/login → the login UI

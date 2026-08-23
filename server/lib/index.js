@@ -374,7 +374,6 @@ export * from './arrayUtils.js';
 export * from './assetMounts.js';
 export * from './assetRoutePrefixes.js';
 export * from './asyncMutex.js';
-export * from './authGate.js';
 export * from './concurrencyGate.js';
 export * from './dispatchLabels.js';
 export * from './domainAutonomy.js';

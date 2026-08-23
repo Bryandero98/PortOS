@@ -15,7 +15,7 @@
  * Honest framing: `X-PortOS-Instance-Id` is *identification*, not
  * authentication — it is self-asserted and spoofable on an unauthenticated
  * tailnet. The real authentication control remains the optional instance
- * password (`server/lib/authGate.js`). The value here is that the pull path
+ * password (`server/services/authGate.js`). The value here is that the pull path
  * honors the sharing config the user actually configured.
  *
  * Compatibility (required by the distribution model — peers upgrade
