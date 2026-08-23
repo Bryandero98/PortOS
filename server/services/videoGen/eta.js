@@ -74,15 +74,43 @@ const entryTime = (entry) => {
 };
 
 /**
- * Timed, shape-complete history records for one model, newest first.
- * `renderMs` is stamped by finalizeGeneratedVideo; entries that predate it
- * (and non-render entries like downloaded videos) simply have no measurement
- * and are excluded rather than guessed at.
+ * Normalize a record's / request's speed profile to a single comparable key.
+ * Absence and the default profile are the same bucket, exactly as they are the
+ * same request everywhere else (lib/videoSpeedProfiles.js). Kept local rather
+ * than imported so this module stays free of registry dependencies — the only
+ * thing it needs is that two spellings of "unchanged" compare equal.
  */
-export const timedRenderSamples = (history, modelId) => {
+const DEFAULT_SPEED_BUCKET = 'quality';
+const speedBucket = (id) => (id == null || id === '' ? DEFAULT_SPEED_BUCKET : String(id));
+
+/**
+ * Timed, shape-complete history records for one model AND one speed profile,
+ * newest first. `renderMs` is stamped by finalizeGeneratedVideo; entries that
+ * predate it (and non-render entries like downloaded videos) simply have no
+ * measurement and are excluded rather than guessed at.
+ *
+ * The speed profile is part of the sample key — unlike mode and LoRAs, which
+ * the module docblock explains are deliberately left out. The difference is
+ * magnitude and shape: a profile swaps the whole schedule (CFG 1.0 drops the
+ * negative branch, stage 2 runs fewer steps, TeaCache skips residuals), so it
+ * moves the COST CURVE's slope rather than adding variance around it. Pooling
+ * the two buckets would systematically over-estimate every fast render and
+ * under-estimate every quality one — a confidently wrong number, which this
+ * module treats as strictly worse than no number at all. The cost is that the
+ * first renders on a newly-picked profile have no estimate, which is exactly
+ * what a newly-added model already does.
+ *
+ * A render whose profile partly degraded (the runner couldn't apply TeaCache,
+ * say) still lands in its requested bucket: degradation is rare, surfaced to
+ * the user at render time, and ordinary variance next to the slope difference
+ * this split exists to capture.
+ */
+export const timedRenderSamples = (history, modelId, speedProfileId = null) => {
   if (!Array.isArray(history)) return [];
+  const wantBucket = speedBucket(speedProfileId);
   return history
-    .filter((e) => e && e.modelId === modelId && Number.isFinite(Number(e.renderMs)) && Number(e.renderMs) > 0)
+    .filter((e) => e && e.modelId === modelId && speedBucket(e.speedProfileId) === wantBucket
+      && Number.isFinite(Number(e.renderMs)) && Number(e.renderMs) > 0)
     .map((e) => ({
       workUnits: renderWorkUnits(e),
       durationMs: Number(e.renderMs),
@@ -143,18 +171,21 @@ export const fitRenderCost = (samples) => {
  * @param {number} ctx.height
  * @param {number} ctx.numFrames - frames rendered PER CHUNK
  * @param {number} ctx.steps
+ * @param {string|null} [ctx.speedProfileId=null] - the speed profile this render
+ *   will use (#4875). Samples are scoped to the matching profile; absence and
+ *   the default profile are the same bucket. See `timedRenderSamples`.
  * @param {number} [ctx.chunks=1] - chained-render chunk count. Each chunk is a
  *   full render of its own and pays the fixed per-render cost again, so the
  *   chain estimate is `chunks × per-chunk estimate` — not a single render
  *   scaled by total frames.
  * @returns {{ etaMs: number, perChunkMs: number, chunks: number, basis: 'measured'|'linear'|'proportional', sampleCount: number } | null}
- *   null when history holds no usable measurement for this model.
+ *   null when history holds no usable measurement for this model + profile.
  */
-export const estimateRenderMs = ({ history, modelId, width, height, numFrames, steps, chunks = 1 }) => {
+export const estimateRenderMs = ({ history, modelId, width, height, numFrames, steps, speedProfileId = null, chunks = 1 }) => {
   const workUnits = renderWorkUnits({ width, height, numFrames, steps });
   if (workUnits == null) return null;
   const chunkCount = Number.isFinite(Number(chunks)) && Number(chunks) > 0 ? Math.floor(Number(chunks)) : 1;
-  const samples = timedRenderSamples(history, modelId);
+  const samples = timedRenderSamples(history, modelId, speedProfileId);
   if (!samples.length) return null;
 
   // Final backstop: an estimate that isn't a positive finite number is not an

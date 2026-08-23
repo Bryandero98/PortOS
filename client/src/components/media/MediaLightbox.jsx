@@ -207,6 +207,27 @@ export default function MediaLightbox({
   const entryKindLabel = ({ canon: 'Canon entry', variation: 'Category variation', sheet: 'Composite sheet' })[item.entryKind] || item.entryKind;
   const cleanedLabel = describeCleanedLineage(item);
 
+  // Speed profile (#4875). The REQUESTED schedule, annotated with whatever the
+  // runner could not actually apply. Without this the degraded case exists only
+  // as a transient STATUS line during the render, so a user who wasn't watching
+  // would never learn their "faster" render ran without TeaCache or without the
+  // distilled adapter — which is precisely the misleading speed claim the
+  // feature is built to avoid. Absent on every Quality render.
+  const speedProfileLabel = (() => {
+    const id = item.raw?.speedProfileId;
+    if (!id) return null;
+    const applied = item.raw?.speedProfileApplied;
+    // No report at all: the request named a profile but the runner never said
+    // what it managed to apply. Say exactly that rather than let a bare id read
+    // as a clean full run — the whole point is that an unverified speed-up is
+    // never presented as a verified one.
+    if (!applied) return `${id} — outcome not reported`;
+    const degraded = applied.degraded;
+    return Array.isArray(degraded) && degraded.length
+      ? `${id} — reduced: ${degraded.join(', ')} unavailable`
+      : id;
+  })();
+
   const meta = [
     // Universe Builder context — placed first so "this is Ash from MyVerse"
     // reads before the technical render params. Sidecars without a universe
@@ -217,6 +238,7 @@ export default function MediaLightbox({
     ['Category', item.entryCategory],
     ['Model', item.modelId],
     ['Resolution', item.width && item.height ? `${item.width}×${item.height}` : null],
+    ['Speed profile', speedProfileLabel],
     ['Steps', item.steps],
     ['Guidance', item.guidance],
     ['CFG', item.raw?.cfgScale ?? item.raw?.cfg_scale],

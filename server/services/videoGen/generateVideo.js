@@ -57,6 +57,10 @@ import {
   resolveT2vTwoStageOverride,
 } from './renderArgs.js';
 import { spawnAndWatchVideo } from './spawnWatch.js';
+import {
+  resolveVideoSpeedProfile, speedProfileDeclineReason, resolveVideoSampler,
+  inferEffectiveVideoMode,
+} from '../../lib/videoSpeedProfiles.js';
 // Re-export the extracted runtime + history surface so existing deep imports
 // (`from '../videoGen/local.js'`) keep resolving every symbol they used to.
 export * from './runtimes.js';
@@ -117,7 +121,7 @@ export const listVideoModels = () => getVideoModels().map(decorateVideoModel);
 
 export const defaultVideoModelId = () => getDefaultVideoModelId();
 
-export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = null, height = null, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, i2vReferenceMode = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, textEncoderId = null, hidden = false, jobId: providedJobId = null }) {
+export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = null, height = null, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, i2vReferenceMode = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, textEncoderId = null, speedProfileId = null, hidden = false, jobId: providedJobId = null }) {
   uploadedTempPaths = Array.isArray(uploadedTempPaths) ? uploadedTempPaths : [];
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   // Single-flight is now enforced by the mediaJobQueue worker upstream — only
@@ -336,15 +340,41 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   const w = Math.floor(Number(width) / resolutionStep) * resolutionStep;
   const h = Math.floor(Number(height) / resolutionStep) * resolutionStep;
   const actualSeed = seed != null && seed !== '' ? Number(seed) : Math.floor(Math.random() * 2147483647);
-  let actualSteps = model.samplerLocked ? model.steps : (steps ? Number(steps) : model.steps);
-  let actualGuidance = model.samplerLocked
-    ? model.guidance
-    : (guidanceScale != null && guidanceScale !== '' ? Number(guidanceScale) : model.guidance);
+  // User-facing speed profile (#4875). Resolved BEFORE the sampler so it can
+  // drive steps/guidance/stage-2 together — a half-applied schedule would make
+  // the profile's speed claim false. `null` whenever the request is
+  // incompatible (wrong mode, unpinned weights, samplerLocked model, unknown
+  // id), in which case the render proceeds at its own default sampler and the
+  // reason is logged rather than 400'd: a knob that only ever makes a render
+  // faster must degrade, not reject.
+  //
+  // Resolved against the mode the runner will actually INFER, not the raw
+  // (possibly absent) request field: buildLtx2Args derives fflf from keyframes
+  // and image from a source frame, so gating on a bare `mode` would hand a
+  // two-stage schedule to a KeyframeInterpolation render for any direct caller
+  // that omits it (Writers Room batch dispatch, scripts).
+  const speedProfileMode = inferEffectiveVideoMode({
+    mode, keyframes, sourceImagePath, extendFromVideoPath, audioFilePath,
+  });
+  const speedProfile = resolveVideoSpeedProfile({ model, profileId: speedProfileId, mode: speedProfileMode });
+  const speedProfileDeclined = speedProfile ? null : speedProfileDeclineReason({ model, profileId: speedProfileId, mode: speedProfileMode });
+  if (speedProfileDeclined) {
+    console.log(`⚠️ Speed profile declined [${jobId.slice(0, 8)}] ${speedProfileDeclined.code}: ${speedProfileDeclined.message}`);
+  }
+  const sampler = resolveVideoSampler({ model, steps, guidanceScale, speedProfile });
+  let actualSteps = sampler.steps;
+  let actualGuidance = sampler.guidance;
+  let actualStage2Steps = sampler.stage2Steps;
+  if (speedProfile) {
+    console.log(`⚡ Speed profile "${speedProfile.id}" [${jobId.slice(0, 8)}]: ${actualSteps}+${actualStage2Steps} steps, cfg ${actualGuidance}${speedProfile.teacache ? ', teacache' : ''}`);
+  }
   // Opt-in T2V Standard two-stage perf experiment — overrides steps/guidance
   // (and adds an explicit stage-2 step count) only for a plain default text
-  // render when PORTOS_T2V_TWO_STAGE is on. No-op otherwise.
-  let actualStage2Steps = null;
-  const t2vTwoStage = resolveT2vTwoStageOverride({
+  // render when PORTOS_T2V_TWO_STAGE is on. No-op otherwise. Skipped entirely
+  // once a speed profile applied: the profile IS the user-chosen schedule, and
+  // letting the env experiment overwrite it would silently render something
+  // other than what the picker promised.
+  const t2vTwoStage = speedProfile ? null : resolveT2vTwoStageOverride({
     runtime: model.runtime, mode, guidanceScale, steps,
     sourceImagePath, uploadedTempPath, uploadedTempPaths,
     keyframes, extendFromVideoPath, audioFilePath,
@@ -605,6 +635,15 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     // render apart from a user who happened to pick 8 steps — comparing it
     // against the default Standard render is the whole point of the knob.
     ...(t2vTwoStage ? { twoStageT2v: true, stage2Steps: actualStage2Steps } : {}),
+    // Speed profile (#4875). Recorded as the REQUESTED id so a Remix
+    // round-trips the schedule the user picked, and — critically — so the ETA
+    // estimator can keep fast and quality samples in separate cost buckets
+    // (see timedRenderSamples in ./eta.js): a profile roughly halves render
+    // time, which is a different cost curve, not sample noise. Absent on a
+    // quality render, so every pre-feature history row stays byte-identical.
+    // What the runner ACTUALLY managed to apply is stamped separately by
+    // finalizeGeneratedVideo from the child's SPEEDPROFILE: report.
+    ...(speedProfile ? { speedProfileId: speedProfile.id, stage2Steps: actualStage2Steps } : {}),
     // IC-LoRA remix settings, stamped so the lightbox Remix flow can round-trip
     // them. The reference clip is recorded by BASENAME (not the absolute
     // staging path) — history is user-facing and a durable upload path is both
@@ -650,7 +689,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // logic of the spawn-error handler so failure modes converge.
   let bin, args;
   try {
-    ({ bin, args } = buildArgs({ pythonPath, modelId, model: loraCapableModel, wanModelPath, wanRequiredWeights, ltxModelPath, prompt: renderPrompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, i2vReferenceMode: effectiveReferenceMode, textEncoderRepo: actualTextEncoderRepo, textEncoder: resolvedTextEncoder, outputPath, previewDir: stepwiseDir, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2 }));
+    ({ bin, args } = buildArgs({ pythonPath, modelId, model: loraCapableModel, wanModelPath, wanRequiredWeights, ltxModelPath, prompt: renderPrompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, stage2Steps: actualStage2Steps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, keyframes: resolvedKeyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength: actualImageStrength, i2vReferenceMode: effectiveReferenceMode, textEncoderRepo: actualTextEncoderRepo, textEncoder: resolvedTextEncoder, outputPath, previewDir: stepwiseDir, loras: resolvedLoras, icReferencePaths: resolvedIcReferencePaths, icLoraWeightPath, icStrength: actualIcStrength, icAttentionStrength: actualIcAttentionStrength, icSkipStage2, speedProfile }));
   } catch (err) {
     job.status = 'error';
     const reason = err.message || 'Failed to build video gen args';
@@ -665,6 +704,9 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
 
   await spawnAndWatchVideo({
     jobId,
+    // Keeps this render's ETA samples in its own cost bucket — a speed profile
+    // changes the slope, not just the step count.
+    speedProfileId: speedProfile?.id ?? null,
     cleanupTempFiles,
     stepwiseDir,
     job,

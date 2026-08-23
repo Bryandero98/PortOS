@@ -184,6 +184,12 @@ export function getRenderConfigForItem(item) {
       tiling: raw.tiling,
       disableAudio: raw.disableAudio ?? raw.disable_audio,
       textEncoderId: raw.textEncoderId,
+      // The named sampler schedule (#4875), when the record was rendered with
+      // one. Without it a requeue would carry the profile's steps/CFG but none
+      // of its levers (stage-2 budget, TeaCache) — a slower, different render
+      // presented as a re-run of the same one. Absent on a Quality record, so
+      // the payload stays byte-identical to a pre-feature requeue.
+      speedProfileId: raw.speedProfileId,
       loraFilenames: pickLoraFilenames(raw),
       loraScales: raw.loraScales ?? raw.lora_scales,
     };
