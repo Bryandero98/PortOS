@@ -215,6 +215,11 @@ function describeCauseChain(err) {
  */
 export function normalizeError(err) {
   if (err instanceof ServerError) {
+    if (FILESYSTEM_ERROR_CODES.has(err.code)) {
+      const originalMessage = err.message;
+      err.message = FILESYSTEM_ERROR_MESSAGE;
+      err.originalMessage = originalMessage;
+    }
     return err;
   }
 

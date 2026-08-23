@@ -125,6 +125,16 @@ describe('errorHandler.js', () => {
       expect(normalized.originalMessage).toBe(error.message);
     });
 
+    it('redacts filesystem-coded ServerErrors created by route services', () => {
+      const normalized = normalizeError(new ServerError('EACCES: open /private/install/data/example.json', {
+        status: 500,
+        code: 'EACCES',
+      }));
+
+      expect(normalized.message).toBe('Filesystem operation failed');
+      expect(normalized.originalMessage).toContain('/private/install/data/example.json');
+    });
+
     it('should convert string to ServerError', () => {
       const normalized = normalizeError('String error');
       expect(normalized instanceof ServerError).toBe(true);
