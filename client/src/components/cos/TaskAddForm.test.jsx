@@ -103,6 +103,13 @@ describe('TaskAddForm responsive layout', () => {
       worktreeChangesExpected: false,
       createJiraTicket: false,
     });
+
+    await user.click(planOnlyToggle());
+    await waitFor(() => {
+      expect(planOnlyToggle()).not.toBeChecked();
+      expect(worktreeToggle()).toBeChecked();
+      expect(openPrToggle()).toBeChecked();
+    });
   });
 });
 

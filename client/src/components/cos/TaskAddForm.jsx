@@ -177,7 +177,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     setUseWorktree(defaultUseWorktree);
     setOpenPR(defaultOpenPR);
     setPrCompletion(selectedApp?.defaultPrCompletion || DEFAULT_PR_COMPLETION);
-  }, [appDefaultsSig]);
+  }, [appDefaultsSig, planOnly]);
 
   // Get models for selected provider. The form carries its own Thinking Effort
   // select and submits it, so Antigravity lists BASE models (`gemini-3.6-flash`)

@@ -2630,6 +2630,7 @@ describe('buildAgentPrompt — slashdo-backed tasks', () => {
       { providerType: 'cli', providerId: 'codex' });
 
     expect(prompt).toContain('--issues --yes');
+    expect(prompt).toContain('Apply it to the task described above.');
     expect(prompt).toContain('## Completion (No Code Output)');
     expect(prompt).not.toContain('## Completion Workflow');
     expect(prompt).not.toContain('## Simplify Step');

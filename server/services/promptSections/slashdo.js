@@ -147,6 +147,14 @@ export async function applySlashdoInvocation(task, {
   // spawns (the `/do:pr` completion step further down is a different invocation
   // entirely, and for a slashdo-backed task usually isn't reached).
   const reviewerEffortNote = buildReviewerEffortNote(resolvedReviewers, resolvedEfforts, { reviewWith, reviewerModels: resolvedModels });
-  const section = buildSlashdoSection(resolved, body, { bodyPath, reviewWith, reviewerEffortNote });
+  // Plan-only supplies destination/approval flags as slashdo args, so preserve
+  // the task description bridge that those flags would otherwise suppress.
+  const includeTaskContext = task.metadata?.planOnly === true || task.metadata?.planOnly === 'true';
+  const section = buildSlashdoSection(resolved, body, {
+    bodyPath,
+    reviewWith,
+    reviewerEffortNote,
+    includeTaskContext,
+  });
   return { ...task, description: `${task.description}\n\n${section}` };
 }
