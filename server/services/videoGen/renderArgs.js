@@ -15,7 +15,9 @@ import {
 } from '../../lib/videoReferenceModes.js';
 import { extendLatentFrames } from '../../lib/videoContinuity.js';
 import { videoLoraLayoutIssue } from '../../lib/safetensors.js';
+import { formatLoraEffect, loraEffectIssue } from '../../lib/loraEffect.js';
 import { assertSafeLoraFilename, getLoraKeyLayout } from '../loras.js';
+import { LORA_EFFECT_PROBE_BUDGET_MS, probeLoraEffect } from '../loraEffectProbe.js';
 import { videoLoraFamily, isLtx2FamilyRuntime } from '../../lib/runners.js';
 import {
   isIcLoraMode, icLoraSpecForMode, assertIcReferenceCount, icResolutionIssue,
@@ -161,9 +163,13 @@ export const resolveT2vTwoStageOverride = ({
 // lora_up) or diffusers/PEFT-prefixed file matches nothing: the render burns
 // minutes of GPU time and comes back as an un-LoRA'd (or noisy) clip with no
 // error anywhere. Refuse it up front with the layout named.
-export const resolveVideoLoras = async (loras) => {
+export const resolveVideoLoras = async (loras, { probeEffect = false } = {}) => {
   if (!Array.isArray(loras) || loras.length === 0) return [];
   const out = [];
+  // ONE budget for every selected adapter, not one each. This runs before
+  // generateVideo mints a job id, so anything spent here is silence in the UI —
+  // a 4-LoRA render must not be able to stall for four full probe budgets.
+  const effectDeadline = probeEffect ? Date.now() + LORA_EFFECT_PROBE_BUDGET_MS : null;
   for (const l of loras) {
     assertSafeLoraFilename(l?.filename);
     const path = join(PATHS.loras, l.filename);
@@ -180,6 +186,29 @@ export const resolveVideoLoras = async (loras) => {
     }
     if (layout == null) {
       console.log(`⚠️ LoRA key layout undetermined for ${l.filename} — fusing anyway`);
+    }
+    // Adapter-effect gate (#4872). Opt-in — a passive library read must never
+    // spawn a probe — and the render path opts in, because this is the last
+    // moment before GPU minutes are spent on weights that may be inert. The
+    // measurement is cached in the sidecar, so this costs a Python child once
+    // per LoRA file and nothing thereafter.
+    //
+    // Only a POSITIVE measurement of entirely-zero effect refuses. A probe that
+    // could not run (no numpy anywhere), an unreadable adapter, or one whose
+    // modules all measured NaN, all render exactly as they did before this
+    // gate existed — see loraEffectIssue().
+    if (probeEffect) {
+      const report = await probeLoraEffect(l.filename, { deadline: effectDeadline });
+      const effectIssue = loraEffectIssue(report);
+      if (effectIssue) {
+        throw new ServerError(
+          `LoRA "${l.filename}" can't be used for video: ${effectIssue}.`,
+          { status: 400, code: 'LORA_EFFECT_ZERO' },
+        );
+      }
+      if (report?.measured > 0) {
+        console.log(`🔬 LoRA effect ${l.filename}: ${formatLoraEffect(report)}`);
+      }
     }
     const strength = Number.isFinite(l?.scale) ? l.scale : 1.0;
     out.push({ path, strength, filename: l.filename });

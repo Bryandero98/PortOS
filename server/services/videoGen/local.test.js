@@ -307,6 +307,18 @@ vi.mock('../loras.js', () => ({
   )),
 }));
 
+// Adapter-effect gate (#4872). generateVideo opts every render into the probe,
+// so it has to be stubbed here — the shared child_process mock resolves every
+// spawn successfully, which would report a fabricated measurement. Default
+// verdict is 'unmeasurable' (the permissive one: no interpreter on the box),
+// so every pre-existing LoRA render test reaches the spawn path unchanged; the
+// gate's own tests set a status explicitly.
+const loraEffectState = vi.hoisted(() => ({ reportByFilename: {}, defaultReport: { status: 'unmeasurable', measured: 0, reason: 'no numpy' } }));
+vi.mock('../loraEffectProbe.js', () => ({
+  LORA_EFFECT_PROBE_BUDGET_MS: 300_000,
+  probeLoraEffect: vi.fn(async (filename) => loraEffectState.reportByFilename[filename] || loraEffectState.defaultReport),
+}));
+
 vi.mock('fs/promises', () => ({
   unlink: vi.fn(async () => {}),
   writeFile: vi.fn(async () => {}),
@@ -4302,6 +4314,85 @@ describe('resolveVideoLoras — safetensors key-layout gate', () => {
     expect(await resolveVideoLoras([])).toEqual([]);
     expect(await resolveVideoLoras(undefined)).toEqual([]);
     expect(getLoraKeyLayout).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveVideoLoras — adapter-effect gate (#4872)', () => {
+  let resolveVideoLoras;
+  let probeLoraEffect;
+  beforeEach(async () => {
+    vi.resetModules();
+    loraLayoutState.layout = 'comfyui';
+    loraEffectState.reportByFilename = {};
+    loraEffectState.defaultReport = { status: 'unmeasurable', measured: 0, reason: 'no numpy' };
+    ({ resolveVideoLoras } = await import('./local.js'));
+    ({ probeLoraEffect } = await import('../loraEffectProbe.js'));
+    vi.mocked(probeLoraEffect).mockClear();
+  });
+  afterEach(() => {
+    loraLayoutState.layout = null;
+    loraEffectState.reportByFilename = {};
+  });
+
+  it('does NOT probe unless the caller opts in — a passive resolve stays free', async () => {
+    await resolveVideoLoras([{ filename: 'style.safetensors' }]);
+    expect(probeLoraEffect).not.toHaveBeenCalled();
+  });
+
+  it('probes every selected LoRA once the caller opts in', async () => {
+    await resolveVideoLoras(
+      [{ filename: 'a.safetensors' }, { filename: 'b.safetensors' }],
+      { probeEffect: true },
+    );
+    expect(vi.mocked(probeLoraEffect).mock.calls.map(([f]) => f)).toEqual(['a.safetensors', 'b.safetensors']);
+  });
+
+  it('refuses a measured entirely-zero adapter with an actionable 400', async () => {
+    loraEffectState.reportByFilename['dead.safetensors'] = {
+      status: 'zero', measured: 6, zeroModules: 6,
+      reason: 'all 6 measurable LoRA module(s) have exactly zero effect — fusing it would change nothing',
+    };
+    await expect(resolveVideoLoras([{ filename: 'dead.safetensors' }], { probeEffect: true }))
+      .rejects.toMatchObject({ status: 400, code: 'LORA_EFFECT_ZERO' });
+    await expect(resolveVideoLoras([{ filename: 'dead.safetensors' }], { probeEffect: true }))
+      .rejects.toThrow(/dead\.safetensors.*zero effect/s);
+  });
+
+  it('refuses the whole render when ANY selected LoRA measures zero', async () => {
+    loraEffectState.reportByFilename = {
+      'ok.safetensors': { status: 'ok', measured: 4, medianRms: 0.01, maxRms: 0.02 },
+      'dead.safetensors': { status: 'zero', measured: 4, zeroModules: 4, reason: 'zero effect' },
+    };
+    await expect(resolveVideoLoras(
+      [{ filename: 'ok.safetensors' }, { filename: 'dead.safetensors' }],
+      { probeEffect: true },
+    )).rejects.toMatchObject({ code: 'LORA_EFFECT_ZERO' });
+  });
+
+  it('lets every other verdict through — the probe is a diagnostic, not a second gate', async () => {
+    // A machine with no numpy, an adapter the probe cannot parse, and one whose
+    // modules all diverged must all render exactly as they did before this
+    // existed. Refusing on anything we did not positively measure would turn a
+    // missing dependency into an un-renderable install.
+    for (const report of [
+      { status: 'unmeasurable', measured: 0, reason: 'numpy is not installed' },
+      { status: 'unreadable', measured: 0, reason: 'no lora_A/lora_B pairs' },
+      { status: 'nonfinite', measured: 0, skippedNonFinite: 8, reason: 'every module measured NaN' },
+      { status: 'ok', measured: 8, medianRms: 1e-9, maxRms: 1e-8 },
+      null,
+    ]) {
+      loraEffectState.defaultReport = report;
+      const resolved = await resolveVideoLoras([{ filename: 'x.safetensors', scale: 0.6 }], { probeEffect: true });
+      expect(resolved).toEqual([
+        { path: join(MOCK_PATHS.loras, 'x.safetensors'), strength: 0.6, filename: 'x.safetensors' },
+      ]);
+    }
+  });
+
+  it('never probes a LoRA the key-layout gate already refused', async () => {
+    loraLayoutState.layout = 'kohya';
+    await expect(resolveVideoLoras([{ filename: 'style.safetensors' }], { probeEffect: true })).rejects.toThrow();
+    expect(probeLoraEffect).not.toHaveBeenCalled();
   });
 });
 

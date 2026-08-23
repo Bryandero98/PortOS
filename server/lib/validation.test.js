@@ -40,6 +40,7 @@ import {
   subdirFilterSchema,
   isPaginationRequested,
   paginateArray,
+  parseIndexParam,
   parsePagination,
   seriesAutopilotSettingsSchema,
   portsCheckSchema,
@@ -71,6 +72,24 @@ import {
 } from './brainValidation.js';
 
 describe('validation.js', () => {
+  describe('parseIndexParam', () => {
+    it('returns a non-negative integer route parameter', () => {
+      expect(parseIndexParam('0')).toBe(0);
+      expect(parseIndexParam('42')).toBe(42);
+    });
+
+    it.each(['', ' ', '-1', '1.5', '1abc', '1e2', 'abc', '9007199254740992'])(
+      'rejects invalid index %j',
+      (raw) => {
+        expect(() => parseIndexParam(raw)).toThrow(expect.objectContaining({
+          message: 'Invalid index',
+          status: 400,
+          code: 'INVALID_INDEX',
+        }));
+      },
+    );
+  });
+
   describe('isPaginationRequested', () => {
     it('is false when neither limit nor offset is present', () => {
       expect(isPaginationRequested({})).toBe(false);

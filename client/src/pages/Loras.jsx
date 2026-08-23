@@ -9,7 +9,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router';
-import { Trash2, Download, ExternalLink, Sparkles, AlertTriangle, KeyRound, Check, X, RefreshCw, Wand2, Search } from 'lucide-react';
+import { Trash2, Download, ExternalLink, Sparkles, AlertTriangle, KeyRound, Check, X, RefreshCw, Wand2, Search, Activity } from 'lucide-react';
 import BrailleSpinner from '../components/BrailleSpinner';
 import PageSkeleton from '../components/ui/PageSkeleton';
 import toast from '../components/ui/Toast';
@@ -21,6 +21,7 @@ import { FormField } from '../components/ui/FormField';
 import { useConfirmDelete } from '../hooks/useConfirmDelete';
 import { formatBytes } from '../utils/formatters';
 import { RUNNER_FAMILIES, VIDEO_LORA_FAMILIES, isVideoLoraFamily } from '../lib/runnerFamilies';
+import { LORA_EFFECT_STATUSES, formatLoraEffect, loraEffectBadge } from '../lib/loraEffect';
 import {
   listLorasFull,
   installLoraFromCivitai,
@@ -31,6 +32,7 @@ import {
   clearCivitaiAuth,
   getCivitaiSuggestions,
   searchCivitaiLoras,
+  probeLoraEffect,
 } from '../services/api';
 
 const RUNNER_LABEL = {
@@ -252,6 +254,15 @@ export default function Loras() {
       .finally(() => { setInstallingVideoKey(null); setHfProgress(null); });
   }, [installingVideoKey, hfInstalling, refresh]);
 
+  // The measurement lives in the LIST, not in the card. The Installed section
+  // swaps between LoraGrid and InstalledGroups when the media filter changes,
+  // which unmounts every card — a badge held only in card state would vanish
+  // right after the user ran the check. The server has cached the same report in
+  // the sidecar, so this just keeps the page consistent without a refetch.
+  const handleMeasured = useCallback((filename, effectReport) => {
+    setLoras((prev) => prev.map((l) => (l.filename === filename ? { ...l, effectReport } : l)));
+  }, []);
+
   const handleDelete = async (filename) => {
     setDeleting(filename);
     await deleteLoraFull(filename, { silent: true })
@@ -456,8 +467,8 @@ export default function Loras() {
             render it flat. */}
         {visibleLoras.length > 0 && (
           mediaFilter === 'all'
-            ? <InstalledGroups loras={visibleLoras} deleting={deleting} onDelete={handleDelete} deleteConfirm={deleteConfirm} />
-            : <LoraGrid loras={visibleLoras} deleting={deleting} onDelete={handleDelete} deleteConfirm={deleteConfirm} />
+            ? <InstalledGroups loras={visibleLoras} deleting={deleting} onDelete={handleDelete} onMeasured={handleMeasured} deleteConfirm={deleteConfirm} />
+            : <LoraGrid loras={visibleLoras} deleting={deleting} onDelete={handleDelete} onMeasured={handleMeasured} deleteConfirm={deleteConfirm} />
         )}
       </div>
     </div>
@@ -1060,7 +1071,7 @@ function CivitaiAuthModal({ pendingUrl, message, auth, onClose, onSaved, onRetry
 // Responsive grid of installed LoRA cards. Extracted so the Installed section
 // can render either one flat grid (filtered view) or several grouped grids
 // (the "All" view) without duplicating the grid markup.
-function LoraGrid({ loras, deleting, onDelete, deleteConfirm }) {
+function LoraGrid({ loras, deleting, onDelete, onMeasured, deleteConfirm }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
       {loras.map((lora) => (
@@ -1068,6 +1079,7 @@ function LoraGrid({ loras, deleting, onDelete, deleteConfirm }) {
           key={lora.filename}
           lora={lora}
           onDelete={() => onDelete(lora.filename)}
+          onMeasured={onMeasured}
           deleting={deleting === lora.filename}
           deleteConfirm={deleteConfirm}
         />
@@ -1080,7 +1092,7 @@ function LoraGrid({ loras, deleting, onDelete, deleteConfirm }) {
 // with a labeled header mirroring the suggestion panel's grouping. Empty groups
 // are omitted. Video is listed first (fewer, and the source of the layout
 // confusion this grouping resolves).
-function InstalledGroups({ loras, deleting, onDelete, deleteConfirm }) {
+function InstalledGroups({ loras, deleting, onDelete, onMeasured, deleteConfirm }) {
   const video = loras.filter((l) => isVideoLoraFamily(l.runnerFamily));
   const image = loras.filter((l) => !isVideoLoraFamily(l.runnerFamily));
   const groups = [
@@ -1095,14 +1107,14 @@ function InstalledGroups({ loras, deleting, onDelete, deleteConfirm }) {
             <h3 className="text-sm font-medium text-gray-300">{g.label}</h3>
             <span className="text-xs text-gray-600">{g.items.length}</span>
           </div>
-          <LoraGrid loras={g.items} deleting={deleting} onDelete={onDelete} deleteConfirm={deleteConfirm} />
+          <LoraGrid loras={g.items} deleting={deleting} onDelete={onDelete} onMeasured={onMeasured} deleteConfirm={deleteConfirm} />
         </div>
       ))}
     </div>
   );
 }
 
-function LoraCard({ lora, onDelete, deleting, deleteConfirm }) {
+function LoraCard({ lora, onDelete, onMeasured, deleting, deleteConfirm }) {
   const family = lora.runnerFamily;
   const familyLabel = family ? (RUNNER_LABEL[family] || family) : 'Unsupported base';
   const badgeClass = family ? (RUNNER_BADGE_CLASS[family] || 'bg-gray-600/20 text-gray-300 border-gray-500/30') : 'bg-port-warning/20 text-port-warning border-port-warning/30';
@@ -1122,6 +1134,30 @@ function LoraCard({ lora, onDelete, deleting, deleteConfirm }) {
   // falls back to the filename, but peers and hand-dropped files predate that),
   // and "Delete undefined" is a bad thing to announce over a destructive action.
   const displayName = lora.name || lora.filename;
+
+  // Read straight off the server's CACHED report (listLoras never probes) — an
+  // explicit re-check hands the new one to `onMeasured`, which updates the list
+  // entry, so the badge survives this card being unmounted by a filter change.
+  const effect = lora.effectReport || null;
+  const [checkingEffect, setCheckingEffect] = useState(false);
+  const effectSummary = formatLoraEffect(effect);
+  const runEffectCheck = async () => {
+    setCheckingEffect(true);
+    await probeLoraEffect(lora.filename, { force: true, silent: true })
+      .then((report) => {
+        onMeasured?.(lora.filename, report);
+        const summary = formatLoraEffect(report);
+        if (report?.status === LORA_EFFECT_STATUSES.ZERO) {
+          toast.error(`${displayName} has no measurable effect — a render would look as if it were off`);
+        } else if (report?.status === LORA_EFFECT_STATUSES.OK) {
+          toast.success(`${displayName} is active — ${summary}`);
+        } else {
+          toast(summary || `${displayName}: ${loraEffectBadge(report?.status).label}`);
+        }
+      })
+      .catch((err) => toast.error(err?.message || 'Effect check failed'))
+      .finally(() => setCheckingEffect(false));
+  };
 
   return (
     <div className="bg-port-card border border-port-border rounded-lg overflow-hidden flex flex-col">
@@ -1178,6 +1214,18 @@ function LoraCard({ lora, onDelete, deleting, deleteConfirm }) {
           {civitai?.baseModel && (<><span>Base model</span><span className="text-gray-300 truncate text-right" title={civitai.baseModel}>{civitai.baseModel}</span></>)}
         </div>
 
+        {effect && (
+          <div className="text-[11px] mb-3 -mt-1">
+            <span className={`font-medium ${loraEffectBadge(effect.status).tone}`}>
+              {loraEffectBadge(effect.status).label}
+            </span>
+            {/* formatLoraEffect returns null when the badge already says
+                everything, so a reason-less verdict doesn't render as
+                "Unreadable — Unreadable". */}
+            {effectSummary && <span className="text-gray-500"> — {effectSummary}</span>}
+          </div>
+        )}
+
         {/* Armed state replaces the whole action row instead of squeezing the
             confirm pair in beside Test/Civitai — a narrow card (or a phone at
             one column) has no room for both, and the row would wrap. */}
@@ -1224,6 +1272,15 @@ function LoraCard({ lora, onDelete, deleting, deleteConfirm }) {
                 <ExternalLink size={14} />
               </a>
             )}
+            <button
+              onClick={runEffectCheck}
+              disabled={checkingEffect}
+              className="text-gray-400 hover:text-gray-200 p-1.5 rounded hover:bg-port-bg disabled:opacity-50 disabled:cursor-not-allowed"
+              title={`Check whether ${displayName} actually changes a render`}
+              aria-label={`Check effect of ${displayName}`}
+            >
+              {checkingEffect ? <BrailleSpinner /> : <Activity size={14} />}
+            </button>
             <button
               onClick={() => deleteConfirm.requestDelete(lora.filename)}
               className="text-port-error hover:text-port-error/80 p-1.5 rounded hover:bg-port-error/10"
