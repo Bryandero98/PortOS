@@ -55,10 +55,10 @@ const decodeSpriteAnimationJob = (job) => {
  *
  * The attach is the single place a run leaves `rendering`, on either outcome:
  * it packages the clip into a candidate when the MP4 is there, and writes a
- * terminal error naming the Render Queue when it is not. So this deliberately
- * does NOT branch on the job's status beyond deciding whether staging is worth
- * attempting — a failed, canceled, and clip-less-but-completed job all converge
- * on the same honest error.
+ * terminal error naming the Render Queue when it is not. So the outcome is
+ * decided by WHAT IS ON DISK, not by the job's status — which is what lets a
+ * render interrupted after it wrote its MP4 still be recovered, and makes a
+ * genuinely failed or clip-less job converge on the same honest error.
  *
  * Both the staging and the attach run INSIDE the per-record write tail: the
  * clip lands at the same path a user-triggered Reprocess reads, and a copy racing
@@ -79,12 +79,26 @@ async function settleSpriteAnimationJob(job) {
     // with TODAY's anchor for a clip rendered from a previous one. That is not
     // hypothetical, because the boot pass sweeps the archive unconditionally and
     // a job outlives the run it filed by the archive's whole TTL.
+    //
+    // Scope note: a job RETRIED from the Render Queue reuses this tag, so its
+    // completion lands on a run that is already `error` and is skipped here. That
+    // is deliberate — the sprite UI's own Regenerate mints a fresh run, and
+    // re-filing an old one from a generic queue surface would resurrect a render
+    // the user may have moved on from.
     const record = await readJSONFile(join(spriteDir(recordId), runRel, RUN_RECORD_NAME), null);
     if (record?.status !== 'rendering') return false;
-    if (job.status === 'completed') {
-      await collectLocalAnimationClip({ jobId: job.id, videoAbs, label });
+    // Try to stage the clip for a FAILED job too, not just a completed one. The
+    // queue stamps `interrupted by restart` on anything that was running when
+    // the process died — and the H3 child may well have written its final MP4
+    // before that happened, since the job only flips to `completed` once the
+    // queue persists the runner's event. Skipping collection there would file an
+    // error over a render that exists and orphan the clip under data/videos.
+    // `canceled` is excluded on purpose: a user who stopped a render must not
+    // get a candidate out of it, even if the file happened to land.
+    if (job.status === 'canceled') {
+      console.log(`🎞️ ${label} local render canceled — filing the run as errored`);
     } else {
-      console.log(`🎞️ ${label} local render ${job.status} — filing the run as errored`);
+      await collectLocalAnimationClip({ jobId: job.id, videoAbs, label });
     }
     await (track === WALK_TRACK
       ? attachTuiWalkResult(recordId, runId, videoAbs)

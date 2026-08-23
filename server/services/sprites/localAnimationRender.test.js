@@ -64,7 +64,7 @@ const {
   resolveLocalVideoModel, resolveLocalFrameCount, pickLocalRenderCanvas, localRenderFps,
   getLocalAnimationProviderStatus, listAnimationProviders, planLocalAnimationRender,
   localRenderManifest, enqueueLocalAnimationRender, collectLocalAnimationClip,
-  localRunLiveness, spriteAnimationJobTag,
+  localRunLiveness, spriteAnimationJobTag, normalizeStaleAnimationRun,
 } = await import('./localAnimationRender.js');
 // The lane VOCABULARY (ids, the request normalizer, the run-record predicate)
 // lives in animationWorkflow.js so lib/spriteValidation.js can build its enum
@@ -450,6 +450,45 @@ describe('collectLocalAnimationClip', () => {
     const dest = join(TEST_ROOT, 'no-such-dir', 'source-video.mp4');
     await expect(collectLocalAnimationClip({ jobId: 'job-nodir', videoAbs: dest, label: 'walk east' }))
       .resolves.toBe(false);
+  });
+});
+
+describe('normalizeStaleAnimationRun — a run stranded mid-PACKAGING', () => {
+  const grokRun = (overrides = {}) => ({ status: 'postprocessing', createdAt: new Date().toISOString(), ...overrides });
+  const ago = (ms) => new Date(Date.now() - ms).toISOString();
+
+  it('leaves a run that is genuinely still packaging alone', () => {
+    const run = grokRun({ createdAt: ago(2 * 60_000) });
+    expect(normalizeStaleAnimationRun(run, 'boom')).toBe(run);
+  });
+
+  it('errors a run still packaging long afterwards, on EITHER lane', () => {
+    // Packaging is bounded local CPU work (decode, align, despill, pack). A run
+    // still in it half an hour later means the process doing it died — and both
+    // in-flight guards count `postprocessing` as busy, so without this the
+    // facing is permanently unrenderable.
+    for (const provider of ['grok-tui', LOCAL_VIDEO_PROVIDER_ID]) {
+      const normalized = normalizeStaleAnimationRun(grokRun({ provider, createdAt: ago(40 * 60_000) }), 'boom');
+      expect(normalized.status).toBe('error');
+      expect(normalized.postprocessError).toBe('boom');
+    }
+  });
+
+  it('does not use the local lane\'s day-long render window for packaging', () => {
+    // A local RENDER gets 24h; its packaging must not inherit that, or a run
+    // interrupted mid-package blocks its facing for a day.
+    const normalized = normalizeStaleAnimationRun(
+      grokRun({ provider: LOCAL_VIDEO_PROVIDER_ID, jobId: 'j', createdAt: ago(2 * 60 * 60_000) }),
+      'boom',
+    );
+    expect(normalized.status).toBe('error');
+  });
+
+  it('never touches a run that already reached a terminal state', () => {
+    for (const status of ['candidate', 'error', 'approved']) {
+      const run = { status, createdAt: ago(10 * 24 * 60 * 60_000) };
+      expect(normalizeStaleAnimationRun(run, 'boom')).toBe(run);
+    }
   });
 });
 

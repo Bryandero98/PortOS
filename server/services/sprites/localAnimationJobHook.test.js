@@ -150,11 +150,28 @@ describe('settleSpriteAnimationJob', () => {
     // a failed job strands the run at 'rendering' — permanently on the track
     // lane, whose in-flight guard then 409s every retry.
     await settleSpriteAnimationJob(walkJob({ status: 'failed' }));
+    expect(attachTuiWalkResult).toHaveBeenCalled();
+  });
+
+  it('STILL TRIES to stage a clip for a failed job, recovering a restart-interrupted render', async () => {
+    // The queue stamps 'interrupted by restart' on whatever was running when the
+    // process died, and the H3 child may already have written its final MP4 —
+    // the job only flips to 'completed' once the queue persists that event.
+    // Refusing to look would file an error over a render that exists and orphan
+    // the clip under data/videos.
+    await settleSpriteAnimationJob(walkJob({ status: 'failed' }));
+    expect(collectLocalAnimationClip).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'mjob-1' }));
+  });
+
+  it('does NOT stage a clip for a CANCELED job', async () => {
+    // A user who stopped a render must not get a candidate out of it, even if
+    // the file happened to land.
+    await settleSpriteAnimationJob(walkJob({ status: 'canceled' }));
     expect(collectLocalAnimationClip).not.toHaveBeenCalled();
     expect(attachTuiWalkResult).toHaveBeenCalled();
   });
 
-  it('still runs the attach on a CANCELED job', async () => {
+  it('still runs the attach on a CANCELED track job', async () => {
     await settleSpriteAnimationJob(trackJob({ status: 'canceled' }));
     expect(attachTrackTuiResult).toHaveBeenCalled();
   });

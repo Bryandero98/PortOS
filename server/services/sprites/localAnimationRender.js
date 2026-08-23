@@ -374,7 +374,9 @@ export async function collectLocalAnimationClip({ jobId, videoAbs, label }) {
   // generateVideo names its output after the job id (`filename = ${jobId}.mp4`).
   const renderedAbs = join(PATHS.videos, `${jobId}.mp4`);
   if (!await pathExists(renderedAbs)) {
-    console.error(`❌ ${label} local render reported complete with no MP4 at ${renderedAbs}`);
+    // Expected for a genuinely failed render, and the reason the caller files
+    // the run as errored — so this is informational, not an error line.
+    console.log(`🎞️ ${label} has no local clip at ${renderedAbs}`);
     return false;
   }
   try {
@@ -428,6 +430,12 @@ const GROK_RENDER_STALE_MS = GROK_TUI_TIMEOUT_MS + 60_000;
 // than grok's half hour: a local H3 clip is a multi-HOUR render on current
 // Apple Silicon, and the completion hook wins this race in every normal case.
 const LOCAL_RENDER_STALE_MS = 24 * 60 * 60_000;
+// How long a run of EITHER lane may sit at `postprocessing`. Unlike a render,
+// packaging is bounded local CPU work measured in minutes, so grok's window is
+// already generous and the lane makes no difference to it. Measured from
+// `createdAt` like the others — packaging follows the render, so this is only
+// ever reached well after a real render would have finished.
+const PACKAGING_STALE_MS = GROK_RENDER_STALE_MS;
 
 /**
  * Read-time normalization of a run stuck at `rendering`, shared by both lanes
@@ -458,6 +466,18 @@ const LOCAL_RENDER_STALE_MS = 24 * 60 * 60_000;
  * server was down for longer than its TTL, or an attach that threw.
  */
 export const normalizeStaleAnimationRun = (run, errorMessage) => {
+  // `postprocessing` needs the same treatment as `rendering`, and a TIGHTER
+  // window: it is bounded LOCAL work (decode the clip, align, despill, pack), so
+  // a run still in it long afterwards means the process doing that work died.
+  // Both in-flight guards count `postprocessing` as busy, so without this a run
+  // interrupted mid-package makes its facing permanently unrenderable — the same
+  // dead end `rendering` had, one state further along. Both lanes, because the
+  // packaging is identical on both.
+  if (run?.status === 'postprocessing') {
+    return Date.now() - runCreatedAtMs(run.createdAt) <= PACKAGING_STALE_MS
+      ? run
+      : { ...run, status: 'error', postprocessError: errorMessage };
+  }
   if (run?.status !== 'rendering') return run;
   const local = isLocalProviderRun(run);
   if (local) {
