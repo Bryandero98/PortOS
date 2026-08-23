@@ -75,7 +75,7 @@ import { v4 as uuidv4 } from '../lib/uuid.js';
 // Imported for use here only; the pass-through re-exports that used to sit
 // below them were retired with the `subAgentSpawner.js` barrel (#3450).
 import { resolveAgentProviderAndModel } from './agentProviderResolution.js';
-import { providerBaseUrl } from './cosLocalEndpointSlots.js';
+import { cloudSwarmThreadCapacity, providerBaseUrl } from './cosLocalEndpointSlots.js';
 import { prepareAgentWorkspace } from './agentWorkspacePrep.js';
 // `releaseRetryHold` is imported STATICALLY here (the TUI/direct-CLI spawners
 // reach for it via `await import()` only because they sit BELOW this module and
@@ -684,9 +684,15 @@ async function runAgentSpawn(task) {
     // Per-task reasoning-effort override (task form / schedule config). The
     // builders no-op it for providers without an effort control.
     const taskEffort = task.metadata?.effort || null;
+    // Codex counts the root orchestrator against its per-session thread cap.
+    // Lift that cap to root + configured workers for cloud swarms so a six-way
+    // claim run can actually fan out six issue agents. Never lift it for a
+    // provider whose inference lands on this machine: local runtimes retain
+    // their deliberately bounded GPU concurrency posture.
+    const maxConcurrentThreads = cloudSwarmThreadCapacity(runProvider, task.metadata?.swarmCount);
     const cliConfig = isTui
-      ? buildTuiSpawnConfig(runProvider, selectedModel, { systemPromptFile, effort: taskEffort })
-      : buildCliSpawnConfig(runProvider, selectedModel, cliSettingsEnv, { systemPromptFile, effort: taskEffort });
+      ? buildTuiSpawnConfig(runProvider, selectedModel, { systemPromptFile, effort: taskEffort, maxConcurrentThreads })
+      : buildCliSpawnConfig(runProvider, selectedModel, cliSettingsEnv, { systemPromptFile, effort: taskEffort, maxConcurrentThreads });
 
     emitLog('success', `Spawning agent for task ${task.id}`, {
       agentId,

@@ -264,11 +264,21 @@ export function createStreamJsonParser() {
  * no gemini-cli row so a legacy gemini-cli provider falls through to claude's
  * default, exactly as before this registry existed).
  */
-export function buildCliSpawnConfig(provider, model, settingsEnv = {}, { systemPromptFile = null, effort = null } = {}) {
+export function buildCliSpawnConfig(provider, model, settingsEnv = {}, {
+  systemPromptFile = null,
+  effort = null,
+  maxConcurrentThreads = null,
+} = {}) {
   // Configured-default sentinels (Codex / Antigravity / Grok Build) → null so
   // the CLI uses its own default without a --model flag.
   const effectiveModel = resolveCliModel(model);
-  return buildVendorSpawnConfig(provider, { effectiveModel, effort, systemPromptFile, settingsEnv });
+  return buildVendorSpawnConfig(provider, {
+    effectiveModel,
+    effort,
+    maxConcurrentThreads,
+    systemPromptFile,
+    settingsEnv,
+  });
 }
 
 /**

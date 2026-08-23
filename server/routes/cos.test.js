@@ -1126,7 +1126,8 @@ describe('CoS Routes', () => {
           optionalReviewers: [],
           reviewerMaxRounds: { codex: 2 },
           reviewerModels: {},
-          reviewerEfforts: { codex: 'high' }
+          reviewerEfforts: { codex: 'high' },
+          swarmCount: 6
         }
       });
       cos.addTask.mockResolvedValue({ id: 'task-sd-next-reviewers', status: 'pending' });
@@ -1144,6 +1145,7 @@ describe('CoS Routes', () => {
         reviewerMaxRounds: { codex: 2 },
         reviewerModels: {},
         reviewerEfforts: { codex: 'high' },
+        swarmCount: 6,
         claimFlow: true
       });
       // `reviewLoop` stays off — the claim prompt owns its own review sequence.

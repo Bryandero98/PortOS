@@ -80,7 +80,7 @@ import {
   applyPerpetualDrainCap
 } from './cosTaskGenerator.js';
 import { cosEvents } from './cosEvents.js';
-import { DEFAULT_TASK_INTERVALS } from './taskSchedule.js';
+import { DEFAULT_TASK_INTERVALS, getTaskInterval } from './taskSchedule.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1680,5 +1680,29 @@ describe('buildClaimWorkTask reviewer pin', () => {
     const { prompt, taskMetadata } = await buildClaimWorkTask(app, { reviewers: ['claude'] });
     expect(prompt).toContain('Reviewers: claude,@alice');
     expect(taskMetadata.reviewers).toEqual(['claude']);
+  });
+
+  it('persists the cloud swarm count that the manual claim prompt renders', async () => {
+    getTaskInterval.mockResolvedValueOnce({
+      prompt: null,
+      taskMetadata: { reviewers: ['codex'], swarmCount: 6 },
+    });
+
+    const { prompt, taskMetadata } = await buildClaimWorkTask(app);
+
+    expect(prompt).toContain('--swarm=6');
+    expect(taskMetadata.swarmCount).toBe(6);
+  });
+
+  it('does not persist a configured swarm count when a manual claim pins one target', async () => {
+    getTaskInterval.mockResolvedValueOnce({
+      prompt: null,
+      taskMetadata: { reviewers: ['codex'], swarmCount: 6 },
+    });
+
+    const { prompt, taskMetadata } = await buildClaimWorkTask(app, { target: '42' });
+
+    expect(prompt).not.toContain('--swarm=6');
+    expect(taskMetadata.swarmCount).toBeUndefined();
   });
 });
