@@ -46,13 +46,21 @@
  * fires on a denial so the scheduler can log queued-no-slot without this module
  * importing the event bus.
  *
- * `gateLocalEndpoint: false` opts a tier out of that third cap. Priority 0 does,
- * because a denial there is DESTRUCTIVE, not a defer: the on-demand request has
- * already been cleared and the app-review marker bound by the time `canSpawn`
- * runs, so a `false` discards the user's explicit "Run" and strands the marker.
+ * `gateLocalEndpoint: false` opts a tier out of that third cap. Three tiers do,
+ * because a denial there is DESTRUCTIVE rather than a defer — each has already
+ * committed side effects by the time `canSpawn` runs, and none of them persists
+ * the task, so `false` discards the only copy:
+ *
+ *   - Priority 0 has cleared the on-demand request and bound the app-review
+ *     marker — a denial silently swallows the user's explicit "Run".
+ *   - Priority 3 has flipped the mission sub-task to `in_progress` and saved the
+ *     mission; `generateMissionTask` only ever re-picks `pending` sub-tasks.
+ *   - Priority 4 has bound the app-review marker and advanced the 30-minute
+ *     review cooldown (issue #978's failure mode).
+ *
  * Emitting instead is strictly better — the authoritative cap at subAgentSpawner's
  * `task:ready` chokepoint HOLDS the task (still `pending`, marker released, job
- * reservation freed), which is exactly the outcome this tier cannot produce.
+ * reservation freed), which is exactly the outcome these tiers cannot produce.
  * The global/per-project caps carry the same hazard here; that is pre-existing.
  */
 export function createDequeueCapacity(state, {

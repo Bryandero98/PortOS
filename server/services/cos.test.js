@@ -104,10 +104,12 @@ function priorityDequeue(buckets, capacity, { paused = false } = {}) {
   const ceiling = capacity.availableSlots;
 
   const drain = (bucketName) => {
-    // Priority 0 opts OUT of the local-endpoint cap, exactly as production does:
-    // a denial there discards the already-cleared on-demand request instead of
-    // deferring it, so the task is emitted and the spawner chokepoint holds it.
-    const opts = { gateLocalEndpoint: bucketName !== 'onDemand' };
+    // Priorities 0, 3 and 4 opt OUT of the local-endpoint cap, exactly as
+    // production does: a denial there DISCARDS an already-committed task (a
+    // cleared on-demand request, an `in_progress` mission sub-task, a bound
+    // app-review marker) instead of deferring it, so they emit and let the
+    // spawner chokepoint hold.
+    const opts = { gateLocalEndpoint: !['onDemand', 'mission', 'idle'].includes(bucketName) };
     for (const task of buckets[bucketName] || []) {
       if (capacity.spawned >= capacity.availableSlots) return;
       if (!capacity.canSpawn(task, undefined, opts)) continue;
@@ -568,6 +570,49 @@ describe('dequeueNextTask — per-local-endpoint agent cap (#4834)', () => {
 
     expect(spawned.map(t => t.id)).toEqual(['task-run-now']);
     expect(holds).toEqual([]);
+  });
+
+  it('does NOT suppress a mission or idle task at a saturated endpoint', () => {
+    // Both tiers commit before canSpawn and never persist: Priority 3 has
+    // already flipped the mission sub-task to `in_progress` (and only `pending`
+    // sub-tasks are ever re-picked), Priority 4 has already bound the app-review
+    // marker and advanced its 30-minute cooldown. A denial strands both; the
+    // chokepoint's hold at least releases the marker.
+    const state = makeState({
+      maxConcurrentAgents: 5,
+      runningAgents: [makeRunningAgentOnProvider('lmstudio-tui')],
+    });
+    const { capacity } = makeLocalSlotCapacity(state);
+
+    const spawned = priorityDequeue({
+      onDemand: [],
+      user: [],
+      autoSystem: [],
+      mission: [taskOnProvider('mission-task', 'lmstudio-tui')],
+      idle: [],
+    }, capacity);
+
+    expect(spawned.map(t => t.id)).toEqual(['mission-task']);
+  });
+
+  it('keeps gating the deferrable tiers (1 and 2) at the same endpoint', () => {
+    // The opt-out is scoped to the tiers whose denial is destructive. A
+    // persisted user- or system-queue task stays queued, which is a real defer.
+    const state = makeState({
+      maxConcurrentAgents: 5,
+      runningAgents: [makeRunningAgentOnProvider('lmstudio-tui')],
+    });
+    const { capacity } = makeLocalSlotCapacity(state);
+
+    const spawned = priorityDequeue({
+      onDemand: [],
+      user: [],
+      autoSystem: [taskOnProvider('system-task', 'lmstudio-tui')],
+      mission: [],
+      idle: [],
+    }, capacity);
+
+    expect(spawned).toEqual([]);
   });
 
   it('still gates the SAME task from a deferrable tier', () => {
@@ -1411,14 +1456,19 @@ describe('cos.js source — priority + capacity invariants', () => {
       .toMatch(/getFallbackProvider\(/);
   });
 
-  it('Priority 0 opts out of the local-endpoint cap so a Run is never discarded (#4834)', () => {
-    // The on-demand tier clears the request and binds the app-review marker
-    // before canSpawn, and is the only path that persists the task — a denial
-    // there is destructive, not a defer. Pin the opt-out at the call site.
-    const p0 = extractFnBody(COS_SRC, COS_SRC.indexOf('async function spawnDequeuePriority0OnDemand'));
-    expect(p0).toMatch(/canSpawn\(task,\s*undefined,\s*\{\s*gateLocalEndpoint:\s*false\s*\}\)/);
-    // Every other tier keeps the cap: none of them may pass the opt-out.
-    for (const tier of ['spawnDequeuePriority1UserTasks', 'spawnDequeuePriority2AutoApproved', 'spawnDequeuePriority3Missions', 'spawnDequeuePriority4IdleReview']) {
+  it('the DESTRUCTIVE-denial tiers opt out of the local-endpoint cap (#4834)', () => {
+    // Priorities 0, 3 and 4 each commit side effects before `canSpawn` and never
+    // persist the task, so a denial DISCARDS it rather than deferring it: the
+    // on-demand request is already cleared, the mission sub-task is already
+    // flipped to `in_progress` (and only `pending` ones are ever re-picked), the
+    // app-review marker is already bound. They emit and let the chokepoint hold.
+    // Priorities 1 and 2 read from persisted queues, so skipping there is a
+    // genuine defer — they keep the cap.
+    for (const tier of ['spawnDequeuePriority0OnDemand', 'spawnDequeuePriority3Missions', 'spawnDequeuePriority4IdleReview']) {
+      const body = extractFnBody(COS_SRC, COS_SRC.indexOf(`async function ${tier}`));
+      expect(body, `${tier} must opt out of the local-endpoint cap`).toMatch(/gateLocalEndpoint:\s*false/);
+    }
+    for (const tier of ['spawnDequeuePriority1UserTasks', 'spawnDequeuePriority2AutoApproved']) {
       const body = extractFnBody(COS_SRC, COS_SRC.indexOf(`async function ${tier}`));
       expect(body, `${tier} must not opt out of the local-endpoint cap`).not.toMatch(/gateLocalEndpoint:\s*false/);
     }

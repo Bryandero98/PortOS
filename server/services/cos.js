@@ -1183,7 +1183,13 @@ async function spawnDequeuePriority3Missions(ctx) {
       taskType: 'internal',
       approvalRequired: !missionTask.autoApprove
     };
-    if (!capacity.canSpawn(cosTask, ctx.autonomousSpawnCeiling)) continue;
+    // `gateLocalEndpoint: false` — same reason as Priority 0 (#4834). Mission
+    // tasks are never written to COS-TASKS.md, and `generateMissionTasks` has
+    // ALREADY flipped the sub-task to `in_progress` and saved the mission by the
+    // time we get here. A denial would drop the only copy of a sub-task that
+    // `generateMissionTask` will never re-pick (it selects `pending` only).
+    // Emitting lets the chokepoint hold it instead.
+    if (!capacity.canSpawn(cosTask, ctx.autonomousSpawnCeiling, { gateLocalEndpoint: false })) continue;
     cosEvents.emit('task:ready', cosTask);
     capacity.trackSpawn(cosTask);
     emitLog('info', `Generated mission task: ${missionTask.id}`, {
@@ -1211,7 +1217,12 @@ async function spawnDequeuePriority4IdleReview(ctx) {
   const pendingSystemTasks = freshCosTasks.autoApproved?.length || 0;
   if (pendingSystemTasks === 0) {
     const idleTask = await generateIdleReviewTask(state, { ignoreTaskId });
-    if (idleTask && capacity.canSpawn(idleTask, ctx.autonomousSpawnCeiling)) {
+    // `gateLocalEndpoint: false` — same reason as Priority 0 (#4834).
+    // `generateIdleReviewTask` has already bound the app-review marker and
+    // advanced the 30-minute review cooldown by the time we get here, and only
+    // `holdTask` releases that marker — which requires the emit. A denial would
+    // leave the app reading "in review" indefinitely (issue #978's failure mode).
+    if (idleTask && capacity.canSpawn(idleTask, ctx.autonomousSpawnCeiling, { gateLocalEndpoint: false })) {
       cosEvents.emit('task:ready', idleTask);
       capacity.trackSpawn(idleTask);
     }
