@@ -16,6 +16,7 @@ import { CODEX_EFFORT_LEVELS } from '../lib/providerModels.js';
 import { sanitizeJob } from '../services/mediaJobQueue/sanitizeJob.js';
 import { isRemoteMediaJob } from '../services/mediaJobQueue/remoteMediaJob.js';
 import { validateVideoRetryParams } from '../services/videoGen/prepareParams.js';
+import { I2V_REFERENCE_MODES } from '../lib/videoReferenceModes.js';
 
 const router = Router();
 
@@ -216,6 +217,10 @@ const RETRY_OVERRIDE_SCHEMA = z.object({
   tiling: z.enum(['auto', 'none', 'spatial', 'temporal']).optional(),
   disableAudio: z.boolean().optional(),
   imageStrength: z.number().min(0).max(1).nullable().optional(),
+  // What the conditioning image promises (#4874). `null` clears it back to the
+  // default, like the numeric knobs above — the schema STRIPS unknown keys, so
+  // an override missing from here is silently dropped rather than rejected.
+  i2vReferenceMode: z.enum(I2V_REFERENCE_MODES).nullable().optional(),
   textEncoderId: z.string().max(64).optional().transform(emptyToUndef),
   chunks: z.number().int().min(1).max(8).optional(),
   chunkPrompts: z.array(z.string().max(8000)).max(8).optional(),
@@ -283,7 +288,7 @@ router.post('/:id/retry', asyncHandler(async (req, res) => {
     const bounds = VIDEO_RETRY_BOUNDS_SCHEMA.safeParse(rawOverrides);
     if (!bounds.success) throw new ServerError('Video retry settings are outside the supported range', { status: 400, code: 'VALIDATION_ERROR' });
   }
-  for (const key of ['seed', 'steps', 'guidanceScale', 'imageStrength']) {
+  for (const key of ['seed', 'steps', 'guidanceScale', 'imageStrength', 'i2vReferenceMode']) {
     if (rawOverrides[key] === null) delete params[key];
   }
   if (rawOverrides.chunks === 1) delete params.chunkPrompts;

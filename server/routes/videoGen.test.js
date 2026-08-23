@@ -710,6 +710,11 @@ describe('videoGen routes', () => {
         'guidanceScale',
         'seed',
         'imageStrength',
+        // Not in the it.each table above: a non-default value is only legal on
+        // an image-mode request with a source image, so the generic
+        // prompt-only round-trip would 400 rather than assert anything. Its
+        // own case is below.
+        'i2vReferenceMode',
         'tiling',
         // Not in the it.each table above: the route deliberately DROPS the
         // stock value from persisted params, so the generic round-trip
@@ -738,6 +743,21 @@ describe('videoGen routes', () => {
       const [call] = mediaJobQueue.enqueueJob.mock.calls;
       expect(call[0].params.mode).not.toBe('grok');
       expect(call[0].params.textEncoderId).toBeUndefined();
+    });
+
+    // grok's image_to_video always anchors, so naming a reference mode must keep
+    // the render local — including the default, which the route then drops from
+    // persisted params so an anchored render's job params stay byte-identical to
+    // a request that never sent the field. Both halves matter: keeping it local
+    // without dropping it would persist a knob that never applied.
+    it('keeps i2vReferenceMode on the local path under a grok pin, without persisting the default', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({ imageGen: grokReady, videoGen: { mode: 'grok' } });
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox', i2vReferenceMode: 'anchor' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+      expect(call[0].params.i2vReferenceMode).toBeUndefined();
     });
 
     it('a grok pin degrades to local when the request carries local-only machinery', async () => {
@@ -2401,6 +2421,43 @@ describe('videoGen routes', () => {
       expect(r.body.error).toMatch(/LoRA weights/);
       expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
       expect(prepareRemoteMediaJob).not.toHaveBeenCalled();
+    });
+
+    // A loose reference (#4874) is a per-runtime capability this side cannot
+    // verify on the peer — and an older peer's wire schema strips the field
+    // outright. Shipping it would return an anchored clip under an Inspire
+    // label, so the request is refused rather than silently downgraded.
+    it('refuses a federated render that asks for a loose reference mode', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a slow pan across a harbour',
+        modelId: 'ltx2',
+        mode: 'image',
+        sourceImageFile: 'frame.png',
+        i2vReferenceMode: 'inspire',
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body.code).toBe('MEDIA_PROVIDER_INPUT_UNSUPPORTED');
+      expect(r.body.error).toMatch(/loose reference mode/);
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
+      expect(prepareRemoteMediaJob).not.toHaveBeenCalled();
+    });
+
+    // The default is not a capability claim, so it must NOT block a federated
+    // render — an over-broad guard here would refuse every ordinary i2v submit.
+    it('still routes a federated i2v render that leaves the reference mode at the default', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a slow pan across a harbour',
+        modelId: 'ltx2',
+        mode: 'image',
+        sourceImageFile: 'frame.png',
+        i2vReferenceMode: 'anchor',
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(r.status).toBe(200);
+      expect(prepareRemoteMediaJob).toHaveBeenCalled();
     });
 
     it('refuses a federated chained render rather than shipping one unchained clip', async () => {

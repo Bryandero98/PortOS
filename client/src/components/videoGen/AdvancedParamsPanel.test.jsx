@@ -190,3 +190,61 @@ describe('AdvancedParamsPanel', () => {
     });
   });
 });
+
+// What the source image PROMISES (#4874). The panel is the surface that states
+// the promise, so a wrong option list here is a lie the user acts on.
+describe('AdvancedParamsPanel — i2v reference mode (#4874)', () => {
+  const LTX25 = { runtime: 'ltx25', name: 'LTX-2.5 MLX Q8', supportedModes: MLX_MODES };
+  const withReference = (props = {}) => renderPanel({
+    mode: 'image',
+    currentModel: LTX25,
+    i2vReferenceMode: 'anchor',
+    onI2vReferenceModeChange: vi.fn(),
+    ...props,
+  });
+
+  it('offers both promises on a runtime that can keep them, and prints the active one', () => {
+    withReference();
+    const select = screen.getByLabelText('Reference mode');
+    expect([...select.options].map((o) => o.value)).toEqual(['anchor', 'inspire']);
+    expect(select.disabled).toBe(false);
+    expect(screen.getByText(/reference is frame one/i)).toBeTruthy();
+  });
+
+  it('states the Inspire promise when Inspire is selected', () => {
+    withReference({ i2vReferenceMode: 'inspire' });
+    expect(screen.getByText(/without reproducing it/i)).toBeTruthy();
+  });
+
+  it('offers only Anchor — locked, and explains why — on a runtime that pins frame one', () => {
+    withReference({ currentModel: { runtime: 'ltx2', name: 'LTX-2 Unified', supportedModes: MLX_MODES } });
+    const select = screen.getByLabelText('Reference mode');
+    expect([...select.options].map((o) => o.value)).toEqual(['anchor']);
+    expect(select.disabled).toBe(true);
+    expect(screen.getByText(/Pick an LTX-2\.5 model to loosen it/i)).toBeTruthy();
+  });
+
+  it.each(['text', 'fflf', 'extend', 'a2v'])('hides the picker in %s mode', (mode) => {
+    withReference({ mode });
+    expect(screen.queryByLabelText('Reference mode')).toBeNull();
+  });
+
+  it('hides the picker when no handler is wired, rather than rendering a dead control', () => {
+    renderPanel({ mode: 'image', currentModel: LTX25 });
+    expect(screen.queryByLabelText('Reference mode')).toBeNull();
+  });
+
+  it('reports the change up', () => {
+    const onI2vReferenceModeChange = vi.fn();
+    withReference({ onI2vReferenceModeChange });
+    fireEvent.change(screen.getByLabelText('Reference mode'), { target: { value: 'inspire' } });
+    expect(onI2vReferenceModeChange).toHaveBeenCalledWith('inspire');
+  });
+
+  it('shows the strength the render will ACTUALLY use, not the pipeline default', () => {
+    // An untouched slider under Inspire resolves to the contract's low default;
+    // printing "1.0" there would describe an anchored render.
+    withReference({ i2vReferenceMode: 'inspire', imageStrength: '', effectiveImageStrength: 0.35 });
+    expect(screen.getByText('0.35')).toBeTruthy();
+  });
+});

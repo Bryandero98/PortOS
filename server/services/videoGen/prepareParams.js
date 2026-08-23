@@ -56,7 +56,7 @@ import {
 } from './local.js';
 // Straight from the leaf, not through local.js: the suites that exercise this
 // module mock local.js wholesale, and a mocked rule table would assert nothing.
-import { videoModeContractError, videoChainUnsupportedError } from './modeContract.js';
+import { videoModeContractError, videoChainUnsupportedError, videoReferenceModeError } from './modeContract.js';
 import { resolveByovRuntimeLoraCapable, videoLoraUnsupportedError } from './runtimes.js';
 
 // Retries reuse persisted worker parameters instead of passing through the
@@ -84,6 +84,17 @@ export async function validateVideoRetryParams(params = {}) {
     icReferences: params.icReferencePaths,
   });
   if (modeError) throw modeError;
+  // Reference-mode promise (#4874). A retry replays persisted params without
+  // passing the route schema, so an entry written by a newer/edited install (or
+  // a model swapped to a runtime that can't honor the mode) has to be caught
+  // here rather than reaching the render as a silent downgrade to anchor.
+  const referenceModeError = videoReferenceModeError({
+    model,
+    mode,
+    referenceMode: params.i2vReferenceMode,
+    hasFirstImage: Boolean(params.sourceImagePath),
+  });
+  if (referenceModeError) throw referenceModeError;
   if (Number(params.chunks || 1) > 1) {
     const chainError = videoChainUnsupportedError(model);
     if (chainError) throw chainError;
@@ -513,6 +524,21 @@ async function resolvePreparedParams({
     await cleanupStaged();
     throw modeContractError;
   }
+  // What the conditioning image PROMISES (#4874) — the orthogonal axis to the
+  // mode/source pairing above, and the same "reject rather than silently deliver
+  // something else" rule. Runs on the DECLARED shape for the same reason the
+  // mode contract does: rejecting before durable staging keeps cleanup cheap, and
+  // the resolved pass below re-checks once a gallery pick has become a real path.
+  const declaredReferenceModeError = videoReferenceModeError({
+    model: effectiveModel,
+    mode: declaredMode,
+    referenceMode: body.i2vReferenceMode,
+    hasFirstImage: hasDeclaredFirstImage,
+  });
+  if (declaredReferenceModeError) {
+    await cleanupStaged();
+    throw declaredReferenceModeError;
+  }
   // MiniMax H3 is fixed-24fps, joint A/V and CFG-distilled on both its runtimes
   // (MLX and CUDA). These are the model's non-mode controls; the mode gate
   // above already ran. Fail before queue persistence so a direct API caller
@@ -589,6 +615,19 @@ async function resolvePreparedParams({
   if (resolvedModeError) {
     await cleanupStaged();
     throw resolvedModeError;
+  }
+  // Same re-check for the reference-mode promise: a declared gallery pick that
+  // failed to resolve leaves an i2v request with no image, and "Inspire" over
+  // nothing is not a promise anything can keep.
+  const resolvedReferenceModeError = videoReferenceModeError({
+    model: effectiveModel,
+    mode: declaredMode,
+    referenceMode: body.i2vReferenceMode,
+    hasFirstImage: Boolean(sourceImagePath),
+  });
+  if (resolvedReferenceModeError) {
+    await cleanupStaged();
+    throw resolvedReferenceModeError;
   }
   // Music Video director-board renders are always i2v FROM the scene's reference
   // frame (#1760 Phase 1). resolveGalleryImage returns null for a missing/invalid
