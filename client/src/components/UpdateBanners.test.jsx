@@ -70,6 +70,22 @@ describe('UpdateBanners', () => {
     expect(document.querySelector('.fixed')).toBeNull();
   });
 
+  it('gives banner actions a 44px touch target while preserving desktop density', async () => {
+    getUpdateStatus.mockResolvedValue({
+      installState: { outOfSync: true, currentCommit: 'abc123' },
+      updateAvailable: true,
+      currentVersion: '1.0.0',
+      latestRelease: { version: '1.1.0' },
+    });
+    renderBanners();
+    await screen.findByRole('button', { name: 'Reconcile' });
+
+    screen.getAllByRole('button').forEach((button) => {
+      expect(button.className).toContain('min-h-[44px]');
+      expect(button.className).toContain('sm:min-h-0');
+    });
+  });
+
   it('persists the out-of-sync dismissal per commit so it does not re-raise', async () => {
     getUpdateStatus.mockResolvedValue({
       installState: { outOfSync: true, currentCommit: 'abc123' }

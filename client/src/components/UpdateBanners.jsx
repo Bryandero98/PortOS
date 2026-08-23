@@ -30,14 +30,14 @@ export default function UpdateBanners() {
               <button
                 type="button"
                 onClick={() => { clearOutOfSync(); goToUpdate(); }}
-                className="px-2 py-1 bg-port-warning text-black text-xs rounded hover:bg-port-warning/80"
+                className="min-h-[44px] px-2 py-2 bg-port-warning text-black text-xs rounded hover:bg-port-warning/80 sm:min-h-0 sm:py-1"
               >
                 Reconcile
               </button>
               <button
                 type="button"
                 onClick={dismissOutOfSync}
-                className="px-2 py-1 bg-gray-600 text-white text-xs rounded hover:bg-gray-500"
+                className="min-h-[44px] px-2 py-2 bg-gray-600 text-white text-xs rounded hover:bg-gray-500 sm:min-h-0 sm:py-1"
               >
                 Dismiss
               </button>
@@ -58,14 +58,14 @@ export default function UpdateBanners() {
               <button
                 type="button"
                 onClick={() => { dismissUpdate(); goToUpdate(); }}
-                className="px-2 py-1 bg-port-accent text-white text-xs rounded hover:bg-port-accent/80"
+                className="min-h-[44px] px-2 py-2 bg-port-accent text-white text-xs rounded hover:bg-port-accent/80 sm:min-h-0 sm:py-1"
               >
                 Update
               </button>
               <button
                 type="button"
                 onClick={ignoreUpdate}
-                className="px-2 py-1 bg-gray-600 text-white text-xs rounded hover:bg-gray-500"
+                className="min-h-[44px] px-2 py-2 bg-gray-600 text-white text-xs rounded hover:bg-gray-500 sm:min-h-0 sm:py-1"
               >
                 Ignore
               </button>
