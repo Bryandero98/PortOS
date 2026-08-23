@@ -296,6 +296,7 @@ export * from './capabilityMap.js';
 export * from './chiptuneRender.js';
 export * from './chiptuneScore.js';
 export * from './civitai.js';
+export * from './createSettingsGatedSyncScheduler.js';
 export * from './huggingfaceLora.js';
 export * from './huggingfaceModel.js';
 export * from './localLlmCatalog.js';
