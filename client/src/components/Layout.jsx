@@ -419,7 +419,7 @@ function PinButton({ label, pinned, onTogglePin }) {
 function WorkingSetRow({ entry, pinned, onTogglePin, onNavigate, isActive }) {
   const Icon = entry.icon;
   return (
-    <div className="group relative mx-2 min-w-0">
+    <div className="group relative mx-2 min-w-0 min-h-[44px] lg:min-h-0">
       <NavLink
         to={entry.path}
         end={entry.end}
@@ -452,7 +452,7 @@ export function SingleNavRow({ item, collapsed, active, badgeCount, pinned, onTo
   const showBadge = item.showBadge && badgeCount > 0;
   const badgeText = badgeCount > 9 ? '9+' : badgeCount;
   return (
-    <div className={`group relative min-w-0 mx-2 ${collapsed ? 'lg:flex lg:justify-center' : ''}`}>
+    <div className={`group relative min-w-0 mx-2 min-h-[44px] lg:min-h-0 ${collapsed ? 'lg:flex lg:justify-center' : ''}`}>
       <NavLink
         to={item.to}
         end={item.to === '/'}
