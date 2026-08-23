@@ -12,9 +12,10 @@
  * one-option dropdown implying a choice it does not have.
  *
  * An unready lane stays visible but disabled, with the server's own `reason`
- * shown as text beside it. That is deliberate — hiding it would leave the user
- * with no way to discover the local lane exists, and per the repo's UI rules a
- * warning that lives only in a `title` is missed on touch.
+ * shown as text beside the control whether or not that lane is selected. That is
+ * deliberate — hiding it would leave the user with no way to discover the local
+ * lane exists or what would make it work, and per the repo's UI rules a warning
+ * that lives only in a `title` is missed on touch.
  */
 export default function AnimationProviderPicker({
   id, providers, provider, onChange, disabled = false,
@@ -22,8 +23,11 @@ export default function AnimationProviderPicker({
   // `null` = not fetched yet (distinct from `[]` = fetched and empty), so a
   // slow or failed probe never flashes a picker that then disappears.
   if (!Array.isArray(providers) || providers.length < 2) return null;
-  const selected = providers.find((entry) => entry.id === provider) || null;
-  const blockedReason = selected && selected.ready === false ? selected.reason : null;
+  // Reasons for EVERY unready lane, not just the selected one. Keying this off
+  // the selection made it unreachable in practice: an unready lane is a disabled
+  // <option>, so it can never BE the selection — and the reason is the only place
+  // the one thing to fix is named.
+  const blocked = providers.filter((entry) => entry.ready === false && entry.reason);
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
       <label className="flex items-center gap-1.5 text-xs text-gray-400" htmlFor={id}>
@@ -43,9 +47,9 @@ export default function AnimationProviderPicker({
           ))}
         </select>
       </label>
-      {blockedReason && (
-        <p className="text-xs text-port-warning basis-full sm:basis-auto">{blockedReason}</p>
-      )}
+      {blocked.map((entry) => (
+        <p key={entry.id} className="text-xs text-port-warning basis-full sm:basis-auto">{entry.reason}</p>
+      ))}
     </div>
   );
 }

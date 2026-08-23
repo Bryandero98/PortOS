@@ -32,7 +32,7 @@ import { getRecord, updateRecord } from './records.js';
 import {
   spriteDir, resolveSpriteAssetPath, toRecordRelativeAssetPath, altRunLayoutPath,
   runDirOfPath, resolveDriftTolerantRel, isSourcePipelinePath, SOURCE_CLIP_NAME,
-  rawFramesRelOf, RAW_FRAME_NAME,
+  rawFramesRelOf, RAW_FRAME_NAME, runRelPath,
 } from './paths.js';
 import {
   requireCharacter, loadManifest,
@@ -63,8 +63,7 @@ import {
   SCANNER_TRACK, sourceReferenceFor,
 } from './animationTracks.js';
 import {
-  planLocalAnimationRender, enqueueLocalAnimationRender, collectLocalAnimationRender,
-  localRenderManifest, localRunLiveness,
+  planLocalAnimationRender, enqueueLocalAnimationRender, localRenderManifest, localRunLiveness,
 } from './localAnimationRender.js';
 // #3152 — the anchor-invalidation sweep below must cover a USER-DEFINED track too:
 // a stored row seeded from a directional anchor holds approvals descended from the
@@ -94,7 +93,6 @@ export const walkSetRelPath = (id) => `walk/${id}-walk-set-v1.json`;
 // the historical `grok/<runId>/` layout into this one; the reader still scans
 // `grok/` too (RUN_SCAN_DIRS) for pre-migration installs and forks, and
 // RUN_DIR_MATCH (paths.js) still accepts both prefixes.
-const runRelPath = (runId) => `runs/${runId}`;
 // The two on-disk homes a run can be found in: the neutral `runs/` layout (all
 // new generations, post-migration) and `grok/` — both a straggler on an
 // un-migrated install/fork AND where a source-pipeline import lands whenever its
@@ -291,29 +289,36 @@ function runCreatedAtMs(createdAt) {
 // forever, surfaces regenerate, and the in-flight guard in startWalkGeneration
 // stops treating it as live. RENDER_STALE_MS is the hard cap plus a buffer.
 const RENDER_STALE_MS = WALK_TUI_TIMEOUT_MS + 60_000;
-// The LOCAL lane's backstop, used only when the media-job queue can no longer
-// answer for a run (its archive has rolled past that job). Deliberately a day
-// rather than grok's half hour: a local H3 clip is a multi-HOUR render on
-// current Apple Silicon, so anything tighter would report healthy work as dead.
+// The LOCAL lane's backstop, used only when the media-job queue cannot answer
+// for a run — it has no job id, its job has rolled out of the archive, or the
+// job COMPLETED and its attach has not landed yet. Deliberately a day rather
+// than grok's half hour: a local H3 clip is a multi-HOUR render on current
+// Apple Silicon, and the completion hook wins this race in every normal case.
 const LOCAL_RENDER_STALE_MS = 24 * 60 * 60_000;
 // Which lane a run came from, for logs shared by both.
 const runProviderLabel = (run) => (isLocalProviderRun(run) ? 'local' : 'grok-tui');
 const STALE_RENDER_ERROR = 'Walk render was interrupted (server restart or timeout) — regenerate to retry.';
 function normalizeStaleRendering(run) {
   if (run?.status !== 'rendering') return run;
-  const staleAfterMs = isLocalProviderRun(run) ? LOCAL_RENDER_STALE_MS : RENDER_STALE_MS;
   // A local render's real liveness signal is its queued media job, not the wall
   // clock — the queue persists and rehydrates across restarts, so it answers
-  // correctly for a render that has legitimately been going for hours AND for
-  // one whose server died. The clock is only the fallback for `unknown` (no job
-  // id, or a job the archive has forgotten), which is why the three-way liveness
-  // is not collapsed to a boolean: treating `unknown` as `terminal` would error
-  // a live run the moment its job aged out of the archive.
+  // correctly both for a render that has legitimately been going for hours and
+  // for one whose server died mid-flight.
+  //
+  // Only `dead` (failed / canceled, including the queue's own "interrupted by
+  // restart") decides anything here. `settling` — the job finished and the
+  // attach is copying and hashing a 20-80 MB clip — must NOT read as dead, or a
+  // detail poll landing in that window reports a SUCCESSFUL render as
+  // interrupted and, worse, unblocks the in-flight guard so a second multi-hour
+  // render can be started for the same direction. `unknown` must not either, or
+  // a live run errors the moment its job ages out of the archive. Both fall
+  // through to the (generous) local clock below.
   if (isLocalProviderRun(run)) {
     const liveness = localRunLiveness(run);
     if (liveness === 'live') return run;
-    if (liveness === 'terminal') return { ...run, status: 'error', postprocessError: STALE_RENDER_ERROR };
+    if (liveness === 'dead') return { ...run, status: 'error', postprocessError: STALE_RENDER_ERROR };
   }
+  const staleAfterMs = isLocalProviderRun(run) ? LOCAL_RENDER_STALE_MS : RENDER_STALE_MS;
   if (Date.now() - runCreatedAtMs(run.createdAt) <= staleAfterMs) return run;
   return { ...run, status: 'error', postprocessError: STALE_RENDER_ERROR };
 }
@@ -1073,19 +1078,13 @@ async function startWalkGenerationImpl(recordId, body) {
   const prompt = buildWalkVideoPrompt({ name: record.name, direction, chromaKey, correctionPrompt });
   const videoAbs = join(generatedAbs, 'source-video.mp4');
   const grokPath = settings.imageGen?.grok?.grokPath;
-  // The local job id has to be on the run record BEFORE anything awaits it —
-  // `localRunLiveness` reads it to tell a live multi-hour render from one the
-  // server died inside, and a run saved without it would read as `unknown`
-  // forever. `enqueueJob` returns synchronously, so there is no window here.
-  const jobId = localPlan
-    ? enqueueLocalAnimationRender({
-      plan: localPlan, canvas, prompt, inputAbs, owner: `sprite-walk:${recordId}:${direction}`,
-    })
-    : null;
-
-  // Run record BEFORE the render starts: a crash between the two leaves an inert
-  // 'rendering' run (harmless, regenerable) rather than a session the attach
-  // can't file. `shellSession` is the id the walk card deep-links to.
+  // Run record BEFORE the job is queued: the completion hook finds the run by
+  // `runId` out of the job's own params, so the record must already exist when
+  // the job can first settle. (The grok lane persists first for the mirror
+  // reason — a crash between the two leaves an inert 'rendering' run rather
+  // than a session the attach can't file.) `shellSession` is the id the walk
+  // card deep-links to; a local render is a queued media job, not a PTY, so it
+  // carries `jobId` instead — the two are mutually exclusive on purpose.
   const now = new Date().toISOString();
   const run = {
     schemaVersion: 1,
@@ -1097,8 +1096,6 @@ async function startWalkGenerationImpl(recordId, body) {
     id: runId,
     // The TUI run id doubles as the attachable Shell session id (executeTuiRun
     // registers the PTY under this id), so the card can link to /shell/<id>.
-    // A local render is a queued media job, not a PTY, so it carries `jobId`
-    // instead — the two are mutually exclusive on purpose.
     shellSession: runId,
     characterId: recordId,
     direction,
@@ -1115,21 +1112,31 @@ async function startWalkGenerationImpl(recordId, body) {
     createdAt: now,
     // Spread LAST so the local lane's provider/geometry provenance overrides the
     // grok defaults above rather than being silently overwritten by them.
-    ...(localPlan ? { ...localRenderManifest(localPlan, canvas), jobId, shellSession: null } : {}),
+    ...(localPlan ? { ...localRenderManifest(localPlan, canvas), shellSession: null } : {}),
   };
   await saveRunRecord(recordId, run);
 
-  // Fire the render off fire-and-forget (do NOT await — this impl holds the
-  // per-record write tail, which a long render must not). Completion re-enters
-  // the tail via attachTuiWalkResult; errors are captured onto the run record
-  // (no request lifecycle to bubble to).
   if (localPlan) {
-    collectLocalAnimationRender({ jobId, videoAbs, label: `sprite walk ${recordId}/${direction}` })
-      .then(() => walkWriteTail(recordId, () => attachTuiWalkResult(recordId, runId, videoAbs)))
-      .catch((err) => console.error(`❌ sprite walk local render crashed ${recordId}/${runId}: ${err?.message || err}`));
+    // Queued AFTER the record is durable. Nothing here awaits the render: the
+    // boot-registered completion hook stages the clip and runs the attach, which
+    // is what lets a render outlive this request, the client, and a restart.
+    const jobId = enqueueLocalAnimationRender({
+      plan: localPlan, canvas, prompt, inputAbs, recordId, runId, track: WALK_TRACK, direction,
+    });
+    // Stamped in a SECOND write so a failure here cannot strand the job: the
+    // hook already has everything it needs from the job's own params, and a run
+    // that misses this only degrades `localRunLiveness` to `unknown`, whose
+    // wall-clock fallback still resolves it.
+    run.jobId = jobId;
+    await saveRunRecord(recordId, run);
     console.log(`🚶 sprite walk local render started ${recordId}/${runId} (job ${jobId.slice(0, 8)}, ${localPlan.numFrames}f @ ${localPlan.fps}fps)`);
     return { runId, direction, duration, provider: 'local', jobId };
   }
+
+  // Fire the observable grok-tui render fire-and-forget (do NOT await — this
+  // impl holds the per-record write tail, which a ~10-min render must not).
+  // Completion re-enters the tail via attachTuiWalkResult; errors are captured
+  // onto the run record (no request lifecycle to bubble to).
   runWalkTuiRender(recordId, {
     runId, direction, grokPath, task: buildGrokI2vTask({ prompt, inputAbs, videoAbs, duration }),
     generatedAbs, videoAbs,

@@ -589,7 +589,12 @@ describe('startWalkGeneration — local render lane (#4876)', () => {
     expect(res.jobId).toBe('mjob-1');
     // No PTY exists, so the card must not offer a Shell deep-link.
     expect(res.shellSession).toBeUndefined();
-    expect(enqueuedVideoJobs[0]).toMatchObject({ kind: 'video', owner: `sprite-walk:${id}:east` });
+    // owner 'sprites' + the spriteWalk tag is the shipped contract the client's
+    // pending-render rehydrate reads; spriteAnimation is what the durable
+    // completion hook decodes.
+    expect(enqueuedVideoJobs[0]).toMatchObject({ kind: 'video', owner: 'sprites' });
+    expect(enqueuedVideoJobs[0].params.spriteWalk).toEqual({ recordId: id, direction: 'east' });
+    expect(enqueuedVideoJobs[0].params.spriteAnimation).toMatchObject({ recordId: id, track: 'walk', direction: 'east' });
     expect(enqueuedVideoJobs[0].params).toMatchObject({
       modelId: 'minimax_h3_8bit',
       mode: 'image',

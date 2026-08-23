@@ -30,11 +30,13 @@ import { join } from 'path';
 import { copyFile } from 'fs/promises';
 import { PATHS, pathExists } from '../../lib/fileUtils.js';
 import { ServerError } from '../../lib/errorHandler.js';
-import { getVideoModels } from '../../lib/mediaModels.js';
+import { getVideoModels, requiredModelCacheGroups } from '../../lib/mediaModels.js';
 import { inspectModelCache, findCachedRepoFiles } from '../../lib/hfCache.js';
 import { BYOV_RUNTIME_INFO, isByovRuntimeReady } from '../videoGen/runtimes.js';
-import { enqueueJob, getJob, mediaJobEvents } from '../mediaJobQueue/index.js';
+import { enqueueJob, getJob } from '../mediaJobQueue/index.js';
+import { minimaxH3ControlError } from '../videoGen/minimaxH3Controls.js';
 import { LOCAL_VIDEO_PROVIDER_ID } from './animationWorkflow.js';
+import { WALK_TRACK } from './animationTargets.js';
 
 // H3's video VAE decodes only 17n+5 frame counts and the model runs at a fixed
 // 24 fps (both enforced by `videoGen/minimaxH3Controls.js`), so a sprite's
@@ -153,27 +155,33 @@ export const pickLocalRenderCanvas = (model, { width, height } = {}) => {
 /**
  * Whether every weight `model` needs is resolvable in the HF cache.
  *
- * Coarse ON PURPOSE relative to the render path's own preflight
- * (`assertMiniMaxH3Preflight`), which additionally verifies the pinned runtime
- * checkout is clean. Restating that contract here would be a second copy free to
- * drift; this answers the question the UI actually asks — "is there any point
- * offering the button?" — and a deeper failure still surfaces as a captured
- * error on the run record, naming the exact missing piece.
+ * `requiredModelCacheGroups` is what makes this correct on BOTH platforms: the
+ * MLX row pins its upstream FL2VA checkpoint in `requiredWeights`, while the
+ * CUDA row pins its ~144 GB diffusers subset in `repoFiles` against its own
+ * (~498 GB) repo. Checking only `requiredWeights` reported a CUDA download that
+ * was interrupted after a few shards as complete, so the picker offered a render
+ * that then died inside the runner's cache-only resolve.
+ *
+ * Still coarser than the render path's own preflight (`assertMiniMaxH3Preflight`
+ * additionally verifies the pinned runtime checkout is clean). Restating THAT
+ * here would be a second copy free to drift; this answers the question the UI
+ * asks — "is there any point offering the button?" — and a deeper failure still
+ * surfaces as a captured error on the run record naming the exact missing piece.
  */
 const localModelWeightsCached = async (model) => {
-  const [base, ...deps] = await Promise.all([
+  const groups = requiredModelCacheGroups(model);
+  const [base, ...resolved] = await Promise.all([
     inspectModelCache(model.repo, model.revision ? { revision: model.revision } : {}),
-    ...(Array.isArray(model.requiredWeights) ? model.requiredWeights : []).map((dep) => (
-      Array.isArray(dep?.files) && dep.files.length && dep.repo
-        ? findCachedRepoFiles(dep.repo, dep.files, dep.revision ? { revision: dep.revision } : {})
+    ...groups.map((group) => (
+      group?.repo && Array.isArray(group.files) && group.files.length
+        ? findCachedRepoFiles(group.repo, group.files, group.revision ? { revision: group.revision } : {})
         : Promise.resolve(null)
     )),
   ]);
   if (!base.cached) return false;
-  // findCachedRepoFiles resolves to null when ANY pinned file is missing, so a
-  // dependency that has no resolvable set is a hard no — but a model with no
-  // requiredWeights at all (the CUDA row) never enters this loop.
-  return deps.every((resolved) => Array.isArray(resolved) && resolved.length > 0);
+  // findCachedRepoFiles resolves to null when ANY pinned file is missing. A row
+  // with no groups at all never enters this loop, so its base snapshot stands.
+  return resolved.every((files) => Array.isArray(files) && files.length > 0);
 };
 
 /**
@@ -266,10 +274,24 @@ export async function planLocalAnimationRender({ durationSeconds } = {}) {
       { status: 500, code: 'LOCAL_VIDEO_MODEL_MISCONFIGURED' },
     );
   }
+  const fps = localRenderFps(model);
+  // Validate the plan against the RENDER BOUNDARY'S OWN gate rather than a
+  // restatement of it. `data/media-models.json` is user-editable, so an install
+  // that edits `fpsOptions` or the frame grid would otherwise get a plan this
+  // module happily accepts and a job that 400s hours later inside the runner
+  // args. Calling the real checker means every current and future H3 control
+  // rule is inherited here for free instead of drifting from a local copy.
+  const controlError = minimaxH3ControlError({ model, numFrames, fps });
+  if (controlError) {
+    throw new ServerError(
+      `${model.name} cannot render this clip: ${controlError.message}`,
+      { status: 500, code: 'LOCAL_VIDEO_MODEL_MISCONFIGURED' },
+    );
+  }
   return {
     model,
     numFrames,
-    fps: localRenderFps(model),
+    fps,
     chooseCanvas: (anchorSize) => pickLocalRenderCanvas(model, anchorSize),
   };
 }
@@ -290,8 +312,24 @@ export const localRenderManifest = (plan, canvas) => ({
 });
 
 /**
- * Queue the render. Returns the media-job id synchronously enough to stamp on
- * the run record before anything awaits the result.
+ * The media-job params tag that makes a queued render self-describing.
+ *
+ * Load-bearing, not decoration: the completion hook decodes ONLY this — it holds
+ * no in-memory state — so a render that outlives the request, the client, or the
+ * whole server process can still be filed onto the run it belongs to. The
+ * shipped `spriteWalk` tag rides along for the walk lane because the client's
+ * `useSpritePendingRenders` rehydrate already keys off it (`owner: 'sprites'` +
+ * `params.spriteWalk.direction`), so a browser reload mid-render shows the
+ * direction as in-flight instead of re-enabling its Generate button.
+ */
+export const spriteAnimationJobTag = ({ recordId, runId, track, direction }) => ({
+  spriteAnimation: { recordId, runId, track, direction },
+  ...(track === WALK_TRACK ? { spriteWalk: { recordId, direction } } : {}),
+});
+
+/**
+ * Queue the render. Returns the media-job id synchronously so the caller can
+ * stamp it on an already-persisted run record.
  *
  * `hidden: true` keeps the clip out of the user's video gallery: it is an
  * intermediate the sprite pipeline consumes, not a video they asked to keep.
@@ -299,10 +337,11 @@ export const localRenderManifest = (plan, canvas) => ({
  * explicitly chose the LOCAL provider, and the unattended helper's default
  * routing could send the job to a peer instead.
  */
-export function enqueueLocalAnimationRender({ plan, canvas, prompt, inputAbs, owner }) {
+export function enqueueLocalAnimationRender({ plan, canvas, prompt, inputAbs, recordId, runId, track, direction }) {
   return enqueueJob({
     kind: 'video',
-    owner,
+    // The owner the client's sprite pending-render hook filters on.
+    owner: 'sprites',
     params: {
       modelId: plan.model.id,
       prompt,
@@ -312,83 +351,67 @@ export function enqueueLocalAnimationRender({ plan, canvas, prompt, inputAbs, ow
       numFrames: plan.numFrames,
       fps: plan.fps,
       hidden: true,
+      ...spriteAnimationJobTag({ recordId, runId, track, direction }),
     },
   }).jobId;
 }
 
-const TERMINAL_JOB_STATUSES = Object.freeze(['completed', 'failed', 'canceled']);
-
 /**
- * Resolve when `jobId` reaches a terminal state, as `{ status, error }`.
+ * Copy a finished render's clip to where the deterministic postprocess reads it.
  *
- * The immediate re-check after the listeners are attached is load-bearing, not
- * belt-and-braces: `enqueueJob` starts the worker synchronously, so a job that
- * fails fast (an unconfigured interpreter, a buildArgs throw) can settle in the
- * gap between the enqueue and this subscription — and a missed terminal event
- * strands the run at `rendering` forever with nothing to advance it.
- */
-export function awaitMediaJobTerminalState(jobId) {
-  return new Promise((resolve) => {
-    let settled = false;
-    const settle = (job) => {
-      if (settled || job?.id !== jobId) return;
-      settled = true;
-      mediaJobEvents.off('completed', settle);
-      mediaJobEvents.off('failed', settle);
-      mediaJobEvents.off('canceled', settle);
-      resolve({ status: job.status, error: job.error || null });
-    };
-    mediaJobEvents.on('completed', settle);
-    mediaJobEvents.on('failed', settle);
-    mediaJobEvents.on('canceled', settle);
-    const current = getJob(jobId);
-    if (current && TERMINAL_JOB_STATUSES.includes(current.status)) settle(current);
-  });
-}
-
-/**
- * Drive one queued local render to completion and put its clip where the
- * deterministic postprocess expects it.
+ * NEVER throws. The caller's contract is that the attach runs either way — the
+ * attach already treats "no clip at videoAbs" as a terminal, user-visible error,
+ * so a copy failure that propagated instead would skip that attach and strand
+ * the run at `rendering` with nothing to move it (permanently, on the track
+ * lane, whose in-flight guard then refuses every retry).
  *
- * Resolves either way — like the grok lane, the attach decides the outcome from
- * whether the MP4 actually landed on disk, so a failure here needs only to leave
- * the destination absent (and say why in the log).
+ * COPY rather than move: the (hidden) gallery record generateVideo wrote still
+ * points at this file, and its thumbnail sits beside it.
  */
-export async function collectLocalAnimationRender({ jobId, videoAbs, label }) {
-  const { status, error } = await awaitMediaJobTerminalState(jobId);
-  if (status !== 'completed') {
-    console.error(`❌ ${label} local render ${status} [${jobId.slice(0, 8)}]: ${error || 'no error reported'}`);
-    return;
-  }
+export async function collectLocalAnimationClip({ jobId, videoAbs, label }) {
   // generateVideo names its output after the job id (`filename = ${jobId}.mp4`).
   const renderedAbs = join(PATHS.videos, `${jobId}.mp4`);
   if (!await pathExists(renderedAbs)) {
-    console.error(`❌ ${label} local render completed without an MP4 at ${renderedAbs}`);
-    return;
+    console.error(`❌ ${label} local render reported complete with no MP4 at ${renderedAbs}`);
+    return false;
   }
-  // COPY rather than move: the gallery record generateVideo wrote still points
-  // at this file (hidden, but real), and its thumbnail sits beside it. Moving it
-  // would leave a history row pointing at nothing.
-  await copyFile(renderedAbs, videoAbs);
+  try {
+    await copyFile(renderedAbs, videoAbs);
+    return true;
+  } catch (err) {
+    console.error(`❌ ${label} could not stage the local clip into its run: ${err?.message || err}`);
+    return false;
+  }
 }
 
 /**
- * Whether a `rendering` local run is still genuinely live.
+ * What the media-job queue says about a `rendering` local run.
  *
- * A local H3 render is a multi-HOUR job on current Apple Silicon, so the grok
- * lane's wall-clock staleness cutoff (its TUI hard cap plus a minute) would
- * declare a perfectly healthy render dead less than an hour in. The media job
- * is the real signal, and it survives a restart because the queue persists and
- * rehydrates both its queue and its archive.
+ * FOUR states, and collapsing any pair of them breaks something concrete:
  *
- * Three outcomes, deliberately not two: a job the queue has never heard of is
- * `unknown`, NOT `terminal`. Collapsing those would turn "the archive has rolled
- * past this job" into "this render failed" and mark a live run errored.
+ *  - `live`     — queued or running. A local H3 clip is a multi-HOUR render, so
+ *                 the grok lane's wall-clock cutoff would call this dead.
+ *  - `settling` — the job COMPLETED and the attach is in flight (or the boot hook
+ *                 is about to run it). Reading this as dead is the bug that
+ *                 mattered: the attach spends a second or two copying and
+ *                 hashing a 20–80 MB clip, and a detail poll landing in that gap
+ *                 would report a SUCCESSFUL render as "interrupted" — and, worse,
+ *                 unblock the in-flight guard so a second multi-hour render could
+ *                 be started for the same direction.
+ *  - `dead`     — failed or canceled, including the `interrupted by restart` the
+ *                 queue stamps on a job that was running when the server died.
+ *  - `unknown`  — no job id, or a job the archive has rolled past. NOT `dead`:
+ *                 that would error a live run the moment its job aged out.
+ *
+ * Only `dead` is decided here; `settling` and `unknown` defer to the caller's
+ * wall clock, which is generous enough that the boot hook wins the race.
  */
 export const localRunLiveness = (run) => {
   const jobId = run?.jobId;
   if (typeof jobId !== 'string' || !jobId) return 'unknown';
   const job = getJob(jobId);
   if (!job) return 'unknown';
-  return TERMINAL_JOB_STATUSES.includes(job.status) ? 'terminal' : 'live';
+  if (job.status === 'completed') return 'settling';
+  if (job.status === 'failed' || job.status === 'canceled') return 'dead';
+  return 'live';
 };

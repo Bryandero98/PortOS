@@ -30,7 +30,10 @@ vi.mock('../../lib/fileUtils.js', async (importOriginal) => {
 // each test states the environment it is about rather than depending on what
 // this machine happens to have installed.
 let videoModels = [];
-vi.mock('../../lib/mediaModels.js', () => ({
+// Only the CATALOG accessor is stubbed; the pure row-shape helpers stay real so
+// "what must be cached" is exercised rather than restated in a mock.
+vi.mock('../../lib/mediaModels.js', async (importOriginal) => ({
+  ...await importOriginal(),
   getVideoModels: () => videoModels,
 }));
 
@@ -49,22 +52,19 @@ vi.mock('../../lib/hfCache.js', () => ({
 
 const enqueued = [];
 let queueJobs = new Map();
-const { EventEmitter } = await import('events');
-const mediaJobEvents = new EventEmitter();
 vi.mock('../mediaJobQueue/index.js', () => ({
   enqueueJob: (job) => {
     enqueued.push(job);
     return { jobId: `job-${enqueued.length}` };
   },
   getJob: (id) => queueJobs.get(id) || null,
-  mediaJobEvents,
 }));
 
 const {
   resolveLocalVideoModel, resolveLocalFrameCount, pickLocalRenderCanvas, localRenderFps,
   getLocalAnimationProviderStatus, listAnimationProviders, planLocalAnimationRender,
-  localRenderManifest, enqueueLocalAnimationRender, awaitMediaJobTerminalState,
-  collectLocalAnimationRender, localRunLiveness,
+  localRenderManifest, enqueueLocalAnimationRender, collectLocalAnimationClip,
+  localRunLiveness, spriteAnimationJobTag,
 } = await import('./localAnimationRender.js');
 // The lane VOCABULARY (ids, the request normalizer, the run-record predicate)
 // lives in animationWorkflow.js so lib/spriteValidation.js can build its enum
@@ -105,7 +105,6 @@ beforeEach(() => {
   cachedFiles = ['/cache/a.safetensors'];
   enqueued.length = 0;
   queueJobs = new Map();
-  mediaJobEvents.removeAllListeners();
 });
 
 describe('resolveLocalVideoModel', () => {
@@ -368,13 +367,20 @@ describe('localRenderManifest', () => {
 });
 
 describe('enqueueLocalAnimationRender', () => {
+  const enqueueWalk = () => enqueueLocalAnimationRender({
+    plan: { model: H3_MLX, numFrames: 141, fps: 24 },
+    canvas: { width: 768, height: 1344 },
+    prompt: 'walk east',
+    inputAbs: '/in.png',
+    recordId: 'hero',
+    runId: 'walk-east-abc12345',
+    track: 'walk',
+    direction: 'east',
+  });
+
   it('queues an image-conditioned, hidden render at the planned geometry', () => {
-    const plan = { model: H3_MLX, numFrames: 141, fps: 24 };
-    const jobId = enqueueLocalAnimationRender({
-      plan, canvas: { width: 768, height: 1344 }, prompt: 'walk east', inputAbs: '/in.png', owner: 'sprite-walk:a:east',
-    });
-    expect(jobId).toBe('job-1');
-    expect(enqueued[0]).toMatchObject({ kind: 'video', owner: 'sprite-walk:a:east' });
+    expect(enqueueWalk()).toBe('job-1');
+    expect(enqueued[0]).toMatchObject({ kind: 'video', owner: 'sprites' });
     expect(enqueued[0].params).toMatchObject({
       modelId: 'minimax_h3_8bit',
       prompt: 'walk east',
@@ -388,73 +394,62 @@ describe('enqueueLocalAnimationRender', () => {
       hidden: true,
     });
   });
-});
 
-describe('awaitMediaJobTerminalState', () => {
-  it('resolves when the queue emits the job terminal', async () => {
-    const pending = awaitMediaJobTerminalState('job-9');
-    mediaJobEvents.emit('completed', { id: 'job-9', status: 'completed' });
-    await expect(pending).resolves.toEqual({ status: 'completed', error: null });
-  });
-
-  it('ignores terminal events for OTHER jobs', async () => {
-    let settled = false;
-    const pending = awaitMediaJobTerminalState('job-9').then((r) => { settled = true; return r; });
-    mediaJobEvents.emit('failed', { id: 'job-other', status: 'failed', error: 'nope' });
-    await Promise.resolve();
-    expect(settled).toBe(false);
-    mediaJobEvents.emit('failed', { id: 'job-9', status: 'failed', error: 'boom' });
-    await expect(pending).resolves.toEqual({ status: 'failed', error: 'boom' });
-  });
-
-  it('settles from queue state when the job ALREADY finished before we subscribed', async () => {
-    // enqueueJob starts the worker synchronously, so a fast failure can settle
-    // in the gap before this subscription — without the re-check the run would
-    // sit at 'rendering' forever.
-    queueJobs.set('job-fast', { id: 'job-fast', status: 'failed', error: 'PYTHON not configured' });
-    await expect(awaitMediaJobTerminalState('job-fast')).resolves.toEqual({
-      status: 'failed', error: 'PYTHON not configured',
+  it('tags the job so the completion hook can file it with no in-memory state', () => {
+    enqueueWalk();
+    expect(enqueued[0].params.spriteAnimation).toEqual({
+      recordId: 'hero', runId: 'walk-east-abc12345', track: 'walk', direction: 'east',
     });
   });
 
-  it('does NOT settle early for a job the queue reports still running', async () => {
-    queueJobs.set('job-live', { id: 'job-live', status: 'running' });
-    let settled = false;
-    awaitMediaJobTerminalState('job-live').then(() => { settled = true; });
-    await Promise.resolve();
-    expect(settled).toBe(false);
+  it('also carries the shipped spriteWalk tag the client rehydrate keys off', () => {
+    // owner 'sprites' + params.spriteWalk.direction is what
+    // useSpritePendingRenders reads, so a browser reload mid-render still shows
+    // the direction in flight instead of re-enabling its Generate button.
+    enqueueWalk();
+    expect(enqueued[0].params.spriteWalk).toEqual({ recordId: 'hero', direction: 'east' });
+  });
+
+  it('leaves spriteWalk OFF a non-walk track, whose cards do not use that map', () => {
+    expect(spriteAnimationJobTag({
+      recordId: 'hero', runId: 'scanner-east-abc', track: 'scanner', direction: 'east',
+    })).toEqual({
+      spriteAnimation: { recordId: 'hero', runId: 'scanner-east-abc', track: 'scanner', direction: 'east' },
+    });
   });
 });
 
-describe('collectLocalAnimationRender', () => {
+describe('collectLocalAnimationClip', () => {
   const videosDir = join(TEST_ROOT, 'videos');
 
-  it('copies the rendered clip to where the postprocess reads it', async () => {
+  it('stages the rendered clip where the postprocess reads it', async () => {
     await mkdir(videosDir, { recursive: true });
     await writeFile(join(videosDir, 'job-ok.mp4'), 'clip-bytes');
     const dest = join(TEST_ROOT, 'run', 'source-video.mp4');
     await mkdir(join(TEST_ROOT, 'run'), { recursive: true });
-    const pending = collectLocalAnimationRender({ jobId: 'job-ok', videoAbs: dest, label: 'walk east' });
-    mediaJobEvents.emit('completed', { id: 'job-ok', status: 'completed' });
-    await pending;
+    await expect(collectLocalAnimationClip({ jobId: 'job-ok', videoAbs: dest, label: 'walk east' }))
+      .resolves.toBe(true);
     expect(await readFile(dest, 'utf8')).toBe('clip-bytes');
   });
 
-  it('leaves the destination ABSENT on a failed job, so the attach reports the failure', async () => {
+  it('reports false — never throws — when the render wrote no MP4', async () => {
     const dest = join(TEST_ROOT, 'run2', 'source-video.mp4');
     await mkdir(join(TEST_ROOT, 'run2'), { recursive: true });
-    const pending = collectLocalAnimationRender({ jobId: 'job-bad', videoAbs: dest, label: 'walk east' });
-    mediaJobEvents.emit('failed', { id: 'job-bad', status: 'failed', error: 'oom' });
-    await pending;
+    await expect(collectLocalAnimationClip({ jobId: 'job-empty', videoAbs: dest, label: 'walk east' }))
+      .resolves.toBe(false);
     await expect(readFile(dest, 'utf8')).rejects.toThrow();
   });
 
-  it('does not throw when a completed job wrote no MP4', async () => {
-    const dest = join(TEST_ROOT, 'run3', 'source-video.mp4');
-    await mkdir(join(TEST_ROOT, 'run3'), { recursive: true });
-    const pending = collectLocalAnimationRender({ jobId: 'job-empty', videoAbs: dest, label: 'walk east' });
-    mediaJobEvents.emit('completed', { id: 'job-empty', status: 'completed' });
-    await expect(pending).resolves.toBeUndefined();
+  it('reports false — never throws — when the COPY itself fails', async () => {
+    // A throw here would skip the caller's attach, and the attach is the only
+    // thing that moves a run out of 'rendering'. On the track lane (no staleness
+    // normalization) that wedges the facing behind TRACK_RENDER_IN_PROGRESS
+    // forever.
+    await mkdir(videosDir, { recursive: true });
+    await writeFile(join(videosDir, 'job-nodir.mp4'), 'clip-bytes');
+    const dest = join(TEST_ROOT, 'no-such-dir', 'source-video.mp4');
+    await expect(collectLocalAnimationClip({ jobId: 'job-nodir', videoAbs: dest, label: 'walk east' }))
+      .resolves.toBe(false);
   });
 });
 
@@ -466,16 +461,25 @@ describe('localRunLiveness', () => {
     expect(localRunLiveness({ jobId: 'j' })).toBe('live');
   });
 
-  it('reports a settled job as terminal', () => {
-    for (const status of ['completed', 'failed', 'canceled']) {
+  it('reports a failed or canceled job as DEAD', () => {
+    for (const status of ['failed', 'canceled']) {
       queueJobs.set('j', { id: 'j', status });
-      expect(localRunLiveness({ jobId: 'j' })).toBe('terminal');
+      expect(localRunLiveness({ jobId: 'j' })).toBe('dead');
     }
   });
 
-  it('reports UNKNOWN — not terminal — for a job the queue has forgotten', () => {
-    // Collapsing this into 'terminal' would flip a live run to error the moment
-    // its job aged out of the archive.
+  it('reports a COMPLETED job as settling, not dead', () => {
+    // The attach spends a second or two copying and hashing a 20-80 MB clip
+    // after the job completes. Calling that window dead would report a
+    // SUCCESSFUL render as interrupted — and unblock the in-flight guard, so a
+    // poll landing there could start a second multi-hour render.
+    queueJobs.set('j', { id: 'j', status: 'completed' });
+    expect(localRunLiveness({ jobId: 'j' })).toBe('settling');
+  });
+
+  it('reports UNKNOWN — not dead — for a job the queue has forgotten', () => {
+    // Collapsing this into 'dead' would flip a live run to error the moment its
+    // job aged out of the archive.
     expect(localRunLiveness({ jobId: 'gone' })).toBe('unknown');
     expect(localRunLiveness({})).toBe('unknown');
     expect(localRunLiveness(null)).toBe('unknown');

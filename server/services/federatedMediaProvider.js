@@ -15,7 +15,7 @@ import {
   PATHS, makePathResolver, resolveGalleryImage, sha256File, sha256Text,
 } from '../lib/fileUtils.js';
 import { findCachedRepoFiles, inspectModelCache } from '../lib/hfCache.js';
-import { getImageModels, getVideoModels, isEditOnly, isFlux2, repoForModel } from '../lib/mediaModels.js';
+import { getImageModels, getVideoModels, isEditOnly, isFlux2, repoForModel, requiredModelCacheGroups } from '../lib/mediaModels.js';
 import { isMiniMaxH3Runtime, usesDiffusersRunner } from '../lib/runners.js';
 import {
   FEDERATED_MEDIA_ASSET_MAX_BYTES,
@@ -245,15 +245,6 @@ async function resolveSubmissionInputAssets({ callerId, input, capability }) {
   }
   return params;
 }
-
-const requiredModelCacheGroups = (model) => {
-  const groups = [];
-  if (Array.isArray(model?.repoFiles)) {
-    groups.push({ repo: model.repo, revision: model.revision, files: model.repoFiles });
-  }
-  if (Array.isArray(model?.requiredWeights)) groups.push(...model.requiredWeights);
-  return groups;
-};
 
 const inspectFederatedModelCache = async (model, repo) => {
   const revision = model?.revision ? { revision: model.revision } : undefined;

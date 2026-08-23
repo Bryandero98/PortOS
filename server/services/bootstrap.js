@@ -112,6 +112,7 @@ import { initSyncLog } from './brainSyncLog.js';
 import { backfillOriginInstanceId, brainCollectionStores } from './brainStorage.js';
 import { initSyncOrchestrator } from './syncOrchestrator.js';
 import { initMediaJobQueue } from './mediaJobQueue/index.js';
+import { initSpriteLocalAnimationHook } from './sprites/localAnimationJobHook.js';
 import { initLoraTraining } from './loraTraining/index.js';
 import { initSharing } from './sharing/index.js';
 import { initMortalLoomStore } from './mortalLoomStore.js';
@@ -478,6 +479,12 @@ const initMediaJobDependentHooks = () => {
   // Universe Builder needs the media job queue running before it can listen
   // for `completed` events — so initialize the hook here.
   initUniverseBuilderCollectionHook();
+  // Sprite local-render hook (#4876) — stages a finished MiniMax H3 clip into
+  // its animation run and files the outcome, for renders that outlive the
+  // request that started them. Its boot pass also reconciles jobs that settled
+  // while the server was down, which is the only thing that can rescue a
+  // multi-hour render interrupted by a restart.
+  initSpriteLocalAnimationHook();
   // Catalog image-attach hook — durably files a queued render onto its target
   // ingredient on completion, even if the editor page unmounted mid-render
   // (#1359).

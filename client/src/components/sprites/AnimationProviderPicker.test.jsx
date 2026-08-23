@@ -68,16 +68,27 @@ describe('AnimationProviderPicker', () => {
     expect(screen.getByRole('option', { name: 'Grok (cloud)' })).not.toBeDisabled();
   });
 
-  it('shows the blocking reason as TEXT once that lane is the selected one', () => {
-    // Not a `title`: per the repo's UI rules a tooltip-only warning is missed on
-    // touch, and this is the only place the fix is named.
-    renderPicker({ providers: [GROK, LOCAL_BLOCKED], provider: 'local' });
+  it('shows the blocking reason as TEXT while another lane is selected', () => {
+    // The reachable case, and the one that matters: an unready lane is a
+    // DISABLED option, so it can never be the selection. Gating the reason on
+    // being selected made it dead code, and the reason is the only place the one
+    // thing to fix is named. Not a `title` either — per the repo's UI rules a
+    // tooltip-only warning is missed on touch.
+    renderPicker({ providers: [GROK, LOCAL_BLOCKED], provider: 'grok' });
     expect(screen.getByText(/runtime is not installed/)).toBeInTheDocument();
   });
 
-  it('stays quiet about a blocked lane the user has not selected', () => {
-    renderPicker({ providers: [GROK, LOCAL_BLOCKED], provider: 'grok' });
+  it('says nothing when every lane is ready', () => {
+    renderPicker({ providers: [GROK, LOCAL_READY], provider: 'grok' });
     expect(screen.queryByText(/runtime is not installed/)).toBeNull();
+    expect(screen.queryByText(/not downloaded/)).toBeNull();
+  });
+
+  it('names EACH unready lane rather than only the first', () => {
+    const other = { id: 'other', label: 'Other', ready: false, reason: 'Other lane is not downloaded.' };
+    renderPicker({ providers: [GROK, LOCAL_BLOCKED, other], provider: 'grok' });
+    expect(screen.getByText(/runtime is not installed/)).toBeInTheDocument();
+    expect(screen.getByText(/Other lane is not downloaded/)).toBeInTheDocument();
   });
 
   it('disables the whole control when the caller says the set is frozen', () => {

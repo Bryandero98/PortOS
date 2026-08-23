@@ -46,8 +46,7 @@ import { executeTuiRun } from '../../lib/tuiPromptRunner.js';
 import { GROK_TUI_ID } from '../../lib/grok.js';
 import { resolveGrokDuration } from '../../lib/grokVideoClip.js';
 import {
-  planLocalAnimationRender, enqueueLocalAnimationRender, collectLocalAnimationRender,
-  localRenderManifest,
+  planLocalAnimationRender, enqueueLocalAnimationRender, localRenderManifest,
 } from './localAnimationRender.js';
 import { getSettings } from '../settings.js';
 import { getRecord, listRecords } from './records.js';
@@ -60,7 +59,7 @@ import { clampTrackFrameCount, clampTrackFps, sourceReferenceFor } from './anima
 // track reaches generate/approve through exactly this path with no new code.
 import { effectiveTrack, getEffectiveAnimationTracks } from './animationTrackStore.js';
 import { trackDirections } from './atlasGrid.js';
-import { spriteDir, resolveSpriteAssetPath, SOURCE_CLIP_NAME } from './paths.js';
+import { spriteDir, resolveSpriteAssetPath, SOURCE_CLIP_NAME, runRelPath } from './paths.js';
 import { prepareWalkAnchorChromaInput, runWalkPostprocess } from './walkPostprocess.js';
 import { verifyPackagedFrames } from './walkFrames.js';
 import {
@@ -87,7 +86,6 @@ export const trackAuthoringDirections = (trackId) => trackDirections(trackId);
 // which is exactly what scanner.js and ambient.js each spelled for themselves.
 const selectionRelPath = (trackId, id) => `${trackId}/${id}-${trackId}-selection-v1.json`;
 export const trackSetRelPath = (trackId, id) => `${trackId}/${id}-${trackId}-set-v1.json`;
-const runRelPath = (runId) => `runs/${runId}`;
 
 const setFinalError = (row) => new ServerError(
   row.directional
@@ -315,13 +313,6 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
   const prompt = buildTrackVideoPrompt(row.id, {
     name: record.name, kind: record.kind, direction, chromaKey, correctionPrompt,
   });
-  // Stamped on the run record BEFORE anything awaits the job — see the walk
-  // lane's note: a local run with no `jobId` can never be told from a dead one.
-  const jobId = localPlan
-    ? enqueueLocalAnimationRender({
-      plan: localPlan, canvas, prompt, inputAbs, owner: `sprite-${row.id}:${recordId}:${direction}`,
-    })
-    : null;
   const run = {
     schemaVersion: 1,
     kind: 'grok-game-animation-frames-run',
@@ -349,13 +340,19 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
     // Spread LAST so the local lane's provider/geometry provenance wins over the
     // grok defaults above. A local render is a queued media job, not a PTY, so it
     // carries `jobId` in place of an attachable `shellSession`.
-    ...(localPlan ? { ...localRenderManifest(localPlan, canvas), jobId, shellSession: null } : {}),
+    ...(localPlan ? { ...localRenderManifest(localPlan, canvas), shellSession: null } : {}),
   };
   await saveRun(recordId, run);
   if (localPlan) {
-    collectLocalAnimationRender({ jobId, videoAbs, label: `sprite ${row.id} ${recordId}/${direction}` })
-      .then(() => withAnimationWriteTail(recordId, () => attachTrackTuiResult(row.id, recordId, runId, videoAbs)))
-      .catch((err) => console.error(`❌ sprite ${row.id} local render crashed ${recordId}/${runId}: ${err?.message || err}`));
+    // Queued after the record is durable, and never awaited here — the
+    // boot-registered completion hook stages the clip and runs the attach. See
+    // the walk lane's note: that is what survives a restart, which matters most
+    // on this lane because track runs have no wall-clock backstop at all.
+    const jobId = enqueueLocalAnimationRender({
+      plan: localPlan, canvas, prompt, inputAbs, recordId, runId, track: row.id, direction,
+    });
+    run.jobId = jobId;
+    await saveRun(recordId, run);
     console.log(`📡 sprite ${row.id} local render started ${recordId}/${runId} (job ${jobId.slice(0, 8)}, ${localPlan.numFrames}f @ ${localPlan.fps}fps)`);
     return row.directional
       ? { runId, direction, duration, provider: 'local', jobId }
