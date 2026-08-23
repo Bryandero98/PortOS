@@ -26,14 +26,14 @@
  * - The age gate is measured from `updatedAt` (the most recent touch), so a
  *   user mid-flight on a fresh analyze is never swept out from under them.
  *
- * Runs OUTSIDE the Express request lifecycle (a `setInterval` from index.js),
- * so this module wraps its sweep in try/catch and logs single-line per the
- * repo logging convention — an uncaught throw here would crash the process.
+ * Runs OUTSIDE the Express request lifecycle through eventScheduler, which
+ * catches handler failures and records them in scheduler history.
  */
 
 import { listUniverses, deleteUniverse } from './universeBuilder.js';
 import { listSeries, deleteSeries } from './pipeline/series.js';
 import { listAllIssues } from './pipeline/issues.js';
+import { createSweepScheduler } from './sweepScheduler.js';
 
 // Grace window before an abandoned, never-committed shell is eligible for GC.
 // Measured against `updatedAt`. Generous on purpose — the cost of an orphan
@@ -44,9 +44,6 @@ export const ORPHAN_SHELL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 // How often the sweep runs once started. The shells are cheap to leave around,
 // so a slow cadence is fine — daily keeps `data/` tidy without churn.
 const SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-let sweepTimer = null;
-let initialSweepTimer = null;
 
 const ageMs = (record, now) => {
   const ts = Date.parse(record?.updatedAt || record?.createdAt || '');
@@ -139,40 +136,22 @@ export async function sweepOrphanShells({ now = Date.now(), maxAgeMs = ORPHAN_SH
 }
 
 /**
- * Start the periodic sweep. Fires once on a short delay after boot (so a long
- * grace window doesn't mean orphans wait a full day after a restart) then on
- * SWEEP_INTERVAL_MS. Idempotent — a second call is a no-op.
+ * Log the domain summary for one scheduler-owned sweep.
  */
-export function startOrphanShellGc() {
-  if (sweepTimer) return;
-
-  const runSweep = () => {
-    sweepOrphanShells()
-      .then(({ deletedSeries, deletedUniverses }) => {
-        if (deletedSeries.length > 0 || deletedUniverses.length > 0) {
-          console.log(`🧹 Importer orphan GC: removed ${deletedSeries.length} series + ${deletedUniverses.length} universe shells`);
-        }
-      })
-      .catch((err) => console.error(`❌ Importer orphan GC sweep failed: ${err.message}`));
-  };
-
-  // Initial pass ~5 min after boot — outside the startup hot path, but soon
-  // enough that a restart doesn't reset the cleanup clock. Keep the handle so
-  // stopOrphanShellGc() can cancel it if shutdown lands inside the 5-min window.
-  initialSweepTimer = setTimeout(() => { initialSweepTimer = null; runSweep(); }, 5 * 60 * 1000);
-  initialSweepTimer.unref?.();
-  sweepTimer = setInterval(runSweep, SWEEP_INTERVAL_MS);
-  sweepTimer.unref?.();
-}
-
-/** Stop the periodic sweep (used by tests / graceful shutdown). */
-export function stopOrphanShellGc() {
-  if (initialSweepTimer) {
-    clearTimeout(initialSweepTimer);
-    initialSweepTimer = null;
+const runSweep = async () => {
+  const { deletedSeries, deletedUniverses } = await sweepOrphanShells();
+  if (deletedSeries.length > 0 || deletedUniverses.length > 0) {
+    console.log(`🧹 Importer orphan GC: removed ${deletedSeries.length} series + ${deletedUniverses.length} universe shells`);
   }
-  if (sweepTimer) {
-    clearInterval(sweepTimer);
-    sweepTimer = null;
-  }
-}
+};
+
+export const {
+  start: startOrphanShellGc,
+  stop: stopOrphanShellGc,
+} = createSweepScheduler({
+  id: 'importer-orphan-gc',
+  intervalMs: SWEEP_INTERVAL_MS,
+  initialDelayMs: 5 * 60 * 1000,
+  handler: runSweep,
+  source: 'importerOrphanGc',
+});
