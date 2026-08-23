@@ -34,37 +34,91 @@
  * against both the global slots and the budget. A task with no `metadata.app`
  * buckets into the `_self` project key (PortOS-on-itself work) so app-less tasks
  * can't bypass the per-project cap.
+ *
+ * The THIRD cap is per local inference endpoint (issue #4834): a single GPU
+ * can't hold N model contexts at once, so agents whose provider resolves to the
+ * same local endpoint dispatch `localEndpointLimit` at a time and the rest stay
+ * queued. Callers supply the already-resolved pieces — `localEndpointCounts`
+ * (endpoint → running agents) and `resolveLocalEndpoint(task)` (which endpoint a
+ * candidate would land on, built by cosLocalEndpointSlots.js) — so this module
+ * stays pure and dependency-free. A task resolving to `null` (cloud provider, or
+ * a TUI provider with no recorded endpoint) is ungated. `onLocalEndpointHold`
+ * fires on a denial so the scheduler can log queued-no-slot without this module
+ * importing the event bus.
  */
-export function createDequeueCapacity(state, { agentsByProject = {} } = {}) {
+export function createDequeueCapacity(state, {
+  agentsByProject = {},
+  localEndpointCounts = {},
+  localEndpointLimit = Infinity,
+  resolveLocalEndpoint = () => null,
+  onLocalEndpointHold = null,
+} = {}) {
   const runningAgents = Object.values(state.agents).filter(a => a.status === 'running').length;
   const availableSlots = state.config.maxConcurrentAgents - runningAgents;
   const perProjectLimit = state.config.maxConcurrentAgentsPerProject || state.config.maxConcurrentAgents;
+  // A caller passing 0/NaN would wedge every local-endpoint task forever; floor
+  // at 1 so the cap degrades to "serialize", never to "never dispatch".
+  const localSlotLimit = localEndpointLimit === Infinity
+    ? Infinity
+    : Math.max(1, Number(localEndpointLimit) || 1);
 
   const spawnProjectCounts = { ...agentsByProject };
+  const spawnLocalEndpointCounts = { ...localEndpointCounts };
   let spawned = 0;
 
   const canSpawn = (task, ceiling = availableSlots) => {
     if (spawned >= ceiling) return false;
     const project = task.metadata?.app || '_self';
-    return (spawnProjectCounts[project] || 0) < perProjectLimit;
+    if ((spawnProjectCounts[project] || 0) >= perProjectLimit) return false;
+    const endpoint = resolveLocalEndpoint(task);
+    if (endpoint) {
+      const running = spawnLocalEndpointCounts[endpoint] || 0;
+      if (running >= localSlotLimit) {
+        onLocalEndpointHold?.(task, endpoint, running);
+        return false;
+      }
+    }
+    return true;
   };
 
   const trackSpawn = (task) => {
     const project = task.metadata?.app || '_self';
     spawnProjectCounts[project] = (spawnProjectCounts[project] || 0) + 1;
+    const endpoint = resolveLocalEndpoint(task);
+    if (endpoint) spawnLocalEndpointCounts[endpoint] = (spawnLocalEndpointCounts[endpoint] || 0) + 1;
     spawned++;
   };
 
   return {
     availableSlots,
     perProjectLimit,
+    localEndpointLimit: localSlotLimit,
     spawnProjectCounts,
+    spawnLocalEndpointCounts,
     canSpawn,
     trackSpawn,
     // Live read of the running spawn count — a getter so callers always see the
     // current total after trackSpawn mutations rather than a stale snapshot.
     get spawned() { return spawned; },
   };
+}
+
+/**
+ * Count running agents grouped by the local inference endpoint they occupy
+ * (issue #4834). `endpointForAgent` maps a running agent to its local endpoint
+ * or null — supplied by cosLocalEndpointSlots.js so this stays pure. Agents on
+ * cloud providers (and TUI providers with no recorded endpoint) resolve to null
+ * and are not counted, mirroring the ungated path in `createDequeueCapacity`.
+ */
+export function countRunningAgentsByLocalEndpoint(agents, endpointForAgent) {
+  const counts = {};
+  for (const agent of Object.values(agents || {})) {
+    if (agent.status !== 'running') continue;
+    const endpoint = endpointForAgent(agent);
+    if (!endpoint) continue;
+    counts[endpoint] = (counts[endpoint] || 0) + 1;
+  }
+  return counts;
 }
 
 /**

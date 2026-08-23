@@ -146,7 +146,8 @@ import {
 // predicates are shared with the scheduler unit tests so they exercise the real
 // guards instead of a local replica. The async tiers stay here as
 // `spawnDequeuePriorityN(ctx)` helpers.
-import { createDequeueCapacity, isMissionTierEligible, isIdleTierEligible } from './cosDequeue.js';
+import { createDequeueCapacity, countRunningAgentsByLocalEndpoint, isMissionTierEligible, isIdleTierEligible } from './cosDequeue.js';
+import { buildLocalEndpointSlotContext } from './cosLocalEndpointSlots.js';
 
 /**
  * Get current CoS status
@@ -842,6 +843,20 @@ async function tryImmediateSpawn(task) {
     return;
   }
 
+  // Per-local-endpoint cap (#4834). This path bypasses the evaluation interval
+  // entirely, so without the same gate a user-submitted task would dispatch
+  // straight past the local-GPU slot limit dequeueNextTask enforces.
+  const localSlots = await buildLocalEndpointSlotContext();
+  const taskEndpoint = localSlots.resolveLocalEndpoint(task);
+  if (taskEndpoint) {
+    const endpointCounts = countRunningAgentsByLocalEndpoint(state.agents, localSlots.endpointForAgent);
+    const running = endpointCounts[taskEndpoint] || 0;
+    if (running >= localSlots.limit) {
+      emitLog('debug', `⏳ Queued task ${task.id} - local endpoint ${taskEndpoint} at capacity (${running}/${localSlots.limit})`);
+      return;
+    }
+  }
+
   emitLog('info', `⚡ Immediate spawn: ${task.id} (${task.priority || 'MEDIUM'})`, {
     taskId: task.id,
     availableSlots
@@ -1228,7 +1243,24 @@ async function dequeueNextTask({ ignoreTaskId = null } = {}) {
   const paused = await isPaused();
 
   const state = await loadState();
-  const capacity = createDequeueCapacity(state, { agentsByProject: countRunningAgentsByProject(state.agents) });
+  // Per-local-endpoint agent slots (#4834). A CoS agent runs a vendor CLI that
+  // talks to the local model server directly, so promptRunner's in-flight gate
+  // never sees it; without this, two agents can be dispatched at one GPU and
+  // take an accelerator OOM. Resolved once per cycle and threaded into the
+  // capacity tracker, which enforces it alongside the global/per-project caps.
+  const localSlots = await buildLocalEndpointSlotContext();
+  const capacity = createDequeueCapacity(state, {
+    agentsByProject: countRunningAgentsByProject(state.agents),
+    localEndpointCounts: countRunningAgentsByLocalEndpoint(state.agents, localSlots.endpointForAgent),
+    localEndpointLimit: localSlots.limit,
+    resolveLocalEndpoint: localSlots.resolveLocalEndpoint,
+    onLocalEndpointHold: (task, endpoint, running) => {
+      emitLog('debug', `⏳ Queued task ${task.id} - local endpoint ${endpoint} at capacity (${running}/${localSlots.limit})`, {
+        taskId: task.id,
+        endpoint
+      });
+    }
+  });
   const availableSlots = capacity.availableSlots;
 
   if (availableSlots <= 0) return;
