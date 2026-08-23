@@ -519,7 +519,7 @@ describe('claim-work single-source routing', () => {
     // resolver, which keeps local LLMs and excludes the retired Copilot path.
     expect(fn).toMatch(/resolveClaimReviewerConfig\(\{\s*\.\.\.metadata,/);
     expect(fn).toMatch(/reviewers: reviewers !== undefined/);
-    expect(fn).toMatch(/LOCAL_LLM_REVIEWERS\.includes/);
+    expect(fn).toMatch(/buildLocalReviewerInstructions\(reviewersList/);
     // A direct claim-work prompt customization overrides the tracker body, same
     // as the scheduled router's promptKeyForBody selection.
     expect(fn).toMatch(/getTaskPrompt\(interval\.prompt \? 'claim-work' : promptTaskType\)/);
