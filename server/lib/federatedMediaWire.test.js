@@ -238,12 +238,37 @@ describe('federated media status kind projection', () => {
     expect(federatedMediaSupports(parsed.data, 'holoProjection')).toBe(true);
   });
 
-  it('rejects a features entry shaped like free-form text', () => {
-    const bad = (features) => federatedMediaProviderStatusSchema
-      .safeParse(status({ features })).success;
-    expect(bad(['a private note about the user'])).toBe(false);
-    expect(bad([''])).toBe(false);
-    expect(bad(['x'.repeat(41)])).toBe(false);
+  // A future feature this build has never heard of must survive the trip,
+  // whatever its naming style — rejecting it would take the peer's WHOLE status
+  // with it, which is the failure the list exists to prevent.
+  it('carries a future feature name in any identifier style', () => {
+    const parsed = federatedMediaProviderStatusSchema
+      .parse(status({ features: ['lyrics', 'conditioning-images', 'input_assets'] }));
+    expect(parsed.features).toEqual(['lyrics', 'conditioning-images', 'input_assets']);
+  });
+
+  // Dropping the member, not the payload: prose never reaches storage, and the
+  // features the peer legitimately published still arrive.
+  it('drops a features entry shaped like free-form text and keeps the rest', () => {
+    const featuresOf = (features) => federatedMediaProviderStatusSchema
+      .parse(status({ features })).features;
+    expect(featuresOf(['lyrics', 'a private note about the user'])).toEqual(['lyrics']);
+    expect(featuresOf(['lyrics', ''])).toEqual(['lyrics']);
+    expect(featuresOf(['lyrics', 'x'.repeat(65)])).toEqual(['lyrics']);
+  });
+
+  // A field too malformed to filter reads as ABSENT — the undecidable wire-v1
+  // baseline — never as `[]`, which would be the peer positively denying every
+  // feature, a stronger claim than a broken field has earned. And never as a
+  // failed parse, which would take the whole peer offline over one bad field.
+  it('degrades an unusable features field to absent without failing the payload', () => {
+    const parsed = (features) => federatedMediaProviderStatusSchema
+      .safeParse(status({ features }));
+    for (const bad of ['lyrics', ['lyrics', 123], Array.from({ length: 300 }, (_, i) => `f${i}`)]) {
+      const result = parsed(bad);
+      expect(result.success).toBe(true);
+      expect(result.data.features).toBeUndefined();
+    }
   });
 
   it('rejects a concurrency that claims no capacity at all', () => {

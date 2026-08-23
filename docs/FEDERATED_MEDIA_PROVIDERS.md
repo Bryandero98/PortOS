@@ -425,8 +425,15 @@ which a per-capability boolean could not: both looked like an absent field.
 conditioning — for the same fail-closed reason `concurrency` and `byKind` read
 absent as unknown: a provider that never shipped the handling rejects the field
 at submission, so inferring consent from silence turns every such render into a
-400 the user cannot act on. A feature this build does not recognize is ignored
-rather than invalidating the payload, so a newer provider stays readable.
+400 the user cannot act on.
+
+A consumer **filters** this list rather than validating it. A feature name it
+does not recognize is carried through and simply never matched; one that is not
+a short identifier token is dropped; a `features` value too malformed to filter
+at all degrades to absent. None of those invalidate the status. That matters
+more than it looks: a strict element schema would take a peer's ENTIRE status
+offline over one string, turning "ignores a feature we have not heard of" into
+"cannot read this peer" — the failure this list was introduced to prevent.
 
 Consumers ask `federatedMediaSupports(status, feature, capability)` rather than
 testing the list inline, which is also where the overlap fallback to the legacy

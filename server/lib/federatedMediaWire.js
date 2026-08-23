@@ -356,13 +356,31 @@ const federatedMediaQueueStatusSchema = z.object({
 // absent list reads as the wire-v1 baseline (see federatedMediaSupports).
 export const FEDERATED_MEDIA_FEATURES = Object.freeze(['lyrics', 'inputAssets']);
 
-// Deliberately NOT a z.enum over FEDERATED_MEDIA_FEATURES: a Zod enum rejects
-// the whole payload on an unknown member, so the day a provider adds a fourth
-// feature every older consumer would fail to parse its entire status rather
-// than ignoring one string it does not recognize — the same trap `byKind`
-// avoids with partialRecord. The pattern still bounds the shape so the field
-// cannot smuggle free-form text (and therefore PII) across the boundary.
-const federatedMediaFeatureSchema = z.string().regex(/^[a-zA-Z][a-zA-Z0-9]{0,39}$/);
+// A feature name is a short identifier token. Underscores and hyphens are in
+// the alphabet even though this build's own vocabulary is camelCase: the point
+// is to bound the shape so the field cannot smuggle free-form text (and
+// therefore PII) across the boundary, not to force a naming style on a peer
+// that may be several versions ahead of us.
+const FEDERATED_MEDIA_FEATURE_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+
+// FILTERS rather than validates, and deliberately NOT a z.enum over
+// FEDERATED_MEDIA_FEATURES. Either a strict enum or a strict element schema
+// would reject the WHOLE status payload over one string the consumer merely
+// does not recognize, so the day a provider ships a feature named outside our
+// expectations every older consumer would go from "ignores one feature" to
+// "cannot read this peer at all" — the same trap `byKind` avoids with
+// partialRecord, and the exact failure this list was introduced to prevent.
+//
+// Dropping an out-of-shape member is also what keeps the PII bound meaningful:
+// prose never reaches storage, instead of a prose-carrying payload being
+// rejected wholesale after we have already read it.
+const federatedMediaFeaturesSchema = z.array(z.string()).max(256)
+  .transform((features) => features.filter((feature) => FEDERATED_MEDIA_FEATURE_RE.test(feature)))
+  // A `features` value that is not even a bounded array of strings degrades to
+  // ABSENT — the undecidable wire-v1 baseline — rather than invalidating the
+  // status. Not `[]`: an empty list is a peer positively denying every feature,
+  // which is a stronger claim than a malformed field has earned.
+  .catch(() => undefined);
 
 // The ONE place the "absent reads as false" reasoning lives (#4826). Every
 // consumer gate — server route, consumer service, client panel — asks through
@@ -462,7 +480,7 @@ export const federatedMediaProviderStatusSchema = z.object({
   // Optional and additive; **absent reads as the wire-v1 baseline** (no lyrics,
   // no conditioning). Bounded well above this build's own vocabulary so a
   // provider that speaks more than we do still validates.
-  features: z.array(federatedMediaFeatureSchema).max(32).optional(),
+  features: federatedMediaFeaturesSchema.optional(),
   kinds: z.array(mediaKindSchema).max(KNOWN_MEDIA_KINDS.length),
   queue: federatedMediaQueueStatusSchema,
   capabilities: z.array(federatedMediaCapabilitySchema).max(300),
