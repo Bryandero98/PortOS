@@ -223,6 +223,14 @@ export const SELF_IMPROVEMENT_TASK_TYPES = [
   // PR. No-ops on any repo lacking that catalog file, so enabling it on a
   // non-PortOS app does nothing. See DEFAULT_TASK_PROMPTS['refresh-local-llm-catalog'].
   'refresh-local-llm-catalog',
+  // The planning-only sibling of `feature-ideas`: runs the same brainstorm
+  // research (GOALS.md, changelog/git log, REJECTED.md, closed-unmerged PRs)
+  // but NEVER implements — its deliverable is ONE decision-complete feature
+  // plan filed into the app's resolved work tracker via {trackerInstructions}
+  // (PLAN.md checklist item / GitHub / GitLab issue / JIRA ticket), which the
+  // claim flows pick up later. Always-filing tracker-filing type
+  // (TRACKER_FILING_PRESETS['plan-feature']), like reference-watch/repo-study.
+  'plan-feature',
   // layered-intelligence is a PROGRAMMATIC-I/O task: it spawns a NORMAL reasoning
   // agent (visible in the CoS queue + Active Agents, TUI-attachable) with two
   // deterministic hooks around it — buildTaskInput gathers the app's goals +
@@ -473,6 +481,13 @@ export const DEFAULT_TASK_INTERVALS = {
   // a PR when the catalog is actually stale, so most runs are no-ops. Off by
   // default; the user enables it on the PortOS app.
   'refresh-local-llm-catalog': { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: true, openPR: true, simplify: true } },
+  // plan-feature files a plan, not code — tracker-filing posture mirrors
+  // reference-watch: writable (the PLAN.md path commits checklist items), no
+  // managed worktree, no PR. Weekly (not daily like feature-ideas) so an
+  // enabled run doesn't flood the tracker with plans — one filed plan per run.
+  // runAfter do-replan for the same grounding feature-ideas has: proposals are
+  // checked against a fresh PLAN.md that already accounts for in-flight work.
+  'plan-feature':         { type: INTERVAL_TYPES.WEEKLY, enabled: false, providerId: null, model: null, prompt: null, runAfter: ['do-replan'], taskMetadata: { useWorktree: false, openPR: false, readOnly: false } },
   // layered-intelligence is a programmatic-I/O task (agent-backed, hooked). Daily
   // by default; per-app scheduling (enabled/interval/provider/model) is set in the
   // Intelligence tab and stored on the app's taskTypeOverrides['layered-intelligence'].
@@ -2321,6 +2336,7 @@ export const TASK_TYPE_DESCRIPTIONS = {
   'simplify': 'Dead-code/duplication audit — file issues (default) or implement removals',
   'stash-cleanup': 'Triage git stash list — drop entries superseded by or stale relative to main, leave real unlanded work in place',
   'refresh-local-llm-catalog': "Refresh PortOS's bundled suggested local-model catalog + editorial ranking (PortOS repo only)",
+  'plan-feature': "Brainstorm one feature and file its decision-complete plan to the app's work tracker (no code)",
   'layered-intelligence': "Read this app's goals + telemetry, ask a reasoning model for one improvement, and file one deduplicated tracker issue — no code, no agent"
 };
 

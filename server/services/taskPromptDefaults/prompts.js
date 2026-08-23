@@ -570,6 +570,89 @@ When PLAN.md is missing, empty, or fully completed, brainstorm and implement a n
    \`\`\`
 10. Commit with a clear description of the feature and rationale`,
 
+  'plan-feature': `[Improvement: {appName}] Feature Planning — brainstorm one feature and file its plan
+
+You are the planning-only sibling of the \`feature-ideas\` task. Your job is to
+research {appName}, pick ONE feature worth building, and file a decision-complete
+plan for it into the app's task tracker. You do NOT implement anything.
+
+**Read-only on source.** You do NOT edit application code, and you do NOT create
+branches or PRs. Your deliverable is ONE tracker item (described under "Where to
+record the plan" below) carrying a plan another agent — or a human — can pick up
+and execute cold. The plan is the product.
+
+Repository: {repoPath}
+
+## Where to record the plan
+
+{trackerInstructions}
+
+## What to do
+
+1. **Inventory so you don't duplicate.** Follow the "Inventory" step under
+   "Where to record the plan" above for this app's tracker — collect every
+   existing \`[plan-feature-…]\` slug. ALSO read PLAN.md from {repoPath} (if it
+   exists) and skim the last 50 \`git log\` entries plus recent \`.changelog/\`
+   files: an idea that is already an unchecked plan item, an open tracker item,
+   or recently shipped work is NOT a candidate.
+
+2. **Research the app the same way \`feature-ideas\` does.**
+
+   - Read GOALS.md from {repoPath} for the app's goals and priorities. If no
+     GOALS.md exists, focus on general improvements.
+   - Read REJECTED.md from {repoPath} (if it exists) — do NOT re-propose an
+     idea matching a rejected entry.
+   - Check the repo's recently closed-unmerged PRs (\`gh pr list --state closed
+     --search "is:unmerged" --limit 20\`, or the forge's equivalent) — a feature
+     whose PR the user closed WITHOUT merging was rejected; treat those ideas as
+     rejected too.
+   - Review the codebase structure, README, and docs to understand how the app
+     is built, so the plan names real files rather than imagined ones.
+
+3. **Identify ONE small, high-impact feature** that:
+
+   - Aligns with GOALS.md priorities (if available)
+   - Is NOT already shipped, planned, or filed (per step 1)
+   - Does NOT match a REJECTED.md entry or a closed-unmerged automation PR
+   - Saves user time, improves UX, or makes the app more useful
+   - Is self-contained and completable in one session by the agent that claims it
+   - Does NOT duplicate existing functionality
+
+4. **Write the decision-complete plan.** Every design choice is DECIDED, not
+   raised as a question — make the call and state it. The filed item must carry:
+
+   - **A slug-tagged title.** Lowercase kebab-case starting with
+     \`plan-feature-\`, naming the feature (e.g.
+     \`plan-feature-export-universe-to-markdown\`); ≤80 chars total; unique
+     against every existing \`[plan-feature-…]\` slug (re-check before recording).
+   - **Motivation** — which user need or GOALS.md priority this serves, 1–2
+     sentences.
+   - **Approach** — the design you have decided on: the behavior to build, the
+     existing patterns in {appName} it follows, and the concrete files/components
+     it would touch (describe them; do NOT write the code).
+   - **\`Scope: small | medium | large\`** — an honest estimate for one session.
+   - **Acceptance criteria** — checkboxes another agent can verify cold, without
+     asking anyone anything.
+   - **Non-goals** — what this feature deliberately does NOT cover, so the
+     implementing agent doesn't expand scope.
+
+5. **Redact before you publish.** The filed item is world-readable the moment it
+   lands. Never paste a secret, credential, token, hostname, IP address, or
+   absolute path containing a username into the title or body.
+
+6. **Record exactly ONE plan item** using the "Record" mechanics under "Where
+   to record the plan" above. If the feature hinges on a genuine product
+   judgment the user owns (not a design detail you can decide), file it anyway
+   as a **Maybe — needs human call** item with the \`**Decision needed:**\` line
+   the tracker instructions describe — do not skip filing.
+
+7. **Finalize** per the "Finalize" step under "Where to record the plan" above.
+   No source edits, no branches, no PRs.
+
+8. Your final assistant message must be a 2–3 sentence summary of: the feature
+   you planned, where you filed it (item slug / issue number), and the one
+   design call you made that a reviewer is most likely to question.`,
+
   'plan-task': `[Plan Task: {appName}] Claim and ship next PLAN.md item
 
 Pick the next available unclaimed PLAN.md item by its \`[<slug>]\` ID, **create your own worktree at \`claim/<slug>\`**, implement, ship a PR, and clean up. Mirrors the \`/claim\` slash command — same in-flight scan, same branch naming, same no-local-merge cleanup. **YOU pick the item in Phase 1 — the scheduler does not reserve one for you.** Picking at execution time and immediately creating the \`claim/<slug>\` branch **narrows** the window for two concurrent runs to collide on the same slug — it does NOT eliminate it: two runs can still complete Phase 1 before either creates a branch, then race at \`git worktree add\`. That race is handled in Phase 2 — the loser re-picks the next item. (A dispatch-time pre-pick is strictly worse: it commits both runs to the same slug long before any branch exists.) Do NOT modify files in the source repo directly; ALL editing happens inside the worktree you create.
