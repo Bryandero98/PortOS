@@ -541,6 +541,12 @@ export async function buildClaimWorkTask(app, {
   // names — the reviewer pin is emitted once from there (#4770).
   const delegatedMeta = taskSchedule.DEFAULT_TASK_INTERVALS[promptTaskType]?.taskMetadata || {};
   const taskMetadata = { ...reviewerConfigMetadata(claimReviewers), claimFlow: true };
+  // The manual `/do:next` path persists this non-raw task through addTask's
+  // metadata allowlist before agentLifecycle sees it. Carry the same count that
+  // rendered the swarm block so Codex can size its session to root + workers.
+  // A pinned target suppresses swarmBlock above and therefore must not retain a
+  // stale configured count.
+  if (swarmBlock) taskMetadata.swarmCount = metadata.swarmCount;
   if ('useWorktree' in delegatedMeta) taskMetadata.useWorktree = delegatedMeta.useWorktree;
   if ('openPR' in delegatedMeta) taskMetadata.openPR = delegatedMeta.openPR;
 
