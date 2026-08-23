@@ -154,6 +154,19 @@ describe('formatContextLength', () => {
     expect(formatContextLength(1048576)).toBe('1M ctx');
   });
 
+  // Cloud vendors quote DECIMAL windows; local runtimes report BINARY ones.
+  // Dividing a decimal window by 1024 is what printed a 128,000-token provider
+  // as "125K ctx" — a number no vendor publishes, which reads as a PortOS cap.
+  it('formats decimal-quoted windows in decimal units', () => {
+    expect(formatContextLength(128000)).toBe('128K ctx');
+    expect(formatContextLength(200000)).toBe('200K ctx');
+    expect(formatContextLength(256000)).toBe('256K ctx');
+    expect(formatContextLength(400000)).toBe('400K ctx');
+    expect(formatContextLength(1000000)).toBe('1M ctx');
+    expect(formatContextLength(2000000)).toBe('2M ctx');
+    expect(formatContextLength(1500000)).toBe('1.5M ctx');
+  });
+
   // Callers whose surrounding prose already says "tokens of context" drop the
   // badge suffix rather than keeping a near-copy of this function.
   it('drops the suffix when asked, across every magnitude bucket', () => {

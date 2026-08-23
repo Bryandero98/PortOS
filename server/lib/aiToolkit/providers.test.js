@@ -1435,6 +1435,73 @@ describe('Provider Service', () => {
       expect((await providerService.getProviderById(bad.id)).models).toEqual(['model-a']);
     });
 
+    it('records each model’s declared context window alongside the id list', async () => {
+      // Without this the whole catalog fell through to the blanket 128K
+      // assumption, so a 1M-context model was budgeted — and manuscripts were
+      // CHUNKED — as if it were an eighth the size.
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: [
+            { id: 'stealth/ox-alpha', context_length: 1_000_000 },
+            { id: 'openrouter/auto' },
+          ],
+        }),
+      }));
+      const p = await providerService.createProvider({
+        name: 'Gateway API', type: 'api', endpoint: 'https://api.generic.com/v1', allowCustomEndpoint: true,
+      });
+
+      const updated = await providerService.refreshProviderModels(p.id);
+      expect(updated.models).toEqual(['stealth/ox-alpha', 'openrouter/auto']);
+      expect(updated.modelContextWindows).toEqual({ 'stealth/ox-alpha': 1_000_000 });
+      expect((await providerService.getProviderById(p.id)).modelContextWindows)
+        .toEqual({ 'stealth/ox-alpha': 1_000_000 });
+    });
+
+    it('merges a partial catalog per model instead of replacing the whole map', async () => {
+      // Catalogs are inconsistent about declaring `context_length`. A listing
+      // that declares it for one model says NOTHING about the others — wiping
+      // them would drop those back to the assumed 128K one refresh later, which
+      // is the bug this whole feature exists to fix.
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: 'a', context_length: 512_000 }, { id: 'b' }] }),
+      }));
+      const p = await providerService.createProvider({
+        name: 'Partial API',
+        type: 'api',
+        endpoint: 'https://api.generic.com/v1',
+        allowCustomEndpoint: true,
+        // `b' was learned earlier; `gone' is no longer in the catalog.
+        modelContextWindows: { a: 128_000, b: 1_000_000, gone: 64_000 },
+      });
+
+      const updated = await providerService.refreshProviderModels(p.id);
+      expect(updated.modelContextWindows).toEqual({ a: 512_000, b: 1_000_000 });
+    });
+
+    it('keeps previously-learned windows when a later catalog declares none', async () => {
+      // "The listing said nothing about context" is UNKNOWN, not "no model has
+      // a window" — erasing the map on an id-only listing would silently drop a
+      // 1M model back to the assumed 128K.
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: 'model-a' }] }),
+      }));
+      const p = await providerService.createProvider({
+        name: 'Forgetful API',
+        type: 'api',
+        endpoint: 'https://api.generic.com/v1',
+        allowCustomEndpoint: true,
+        modelContextWindows: { 'model-a': 400_000 },
+      });
+
+      const updated = await providerService.refreshProviderModels(p.id);
+      expect(updated.models).toEqual(['model-a']);
+      expect(updated.modelContextWindows).toEqual({ 'model-a': 400_000 });
+    });
+
     it('throws and leaves the stored list untouched when a 200 body is not JSON', async () => {
       // A captive portal / login page / proxy error served as HTTP 200. Degrading
       // to `[]` here emptied the model dropdown while the UI toasted "Models

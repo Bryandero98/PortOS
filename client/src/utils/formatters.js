@@ -402,8 +402,17 @@ export function formatDownloadGb(gb) {
 
 /**
  * Format a model context window (in tokens) compactly, e.g. 32768 → "32K ctx",
- * 131072 → "128K ctx", 1048576 → "1M ctx". Returns null for missing/invalid
+ * 131072 → "128K ctx", 1000000 → "1M ctx". Returns null for missing/invalid
  * values so callers can omit the label entirely.
+ *
+ * Two unit systems, picked per value, because model context windows are quoted
+ * in both and neither divisor is right for the other: local runtimes report
+ * BINARY windows (131072, 32768 — "128K", "32K"), while cloud vendors quote
+ * DECIMAL ones (128000, 1000000 — "128K", "1M"). Dividing a decimal window by
+ * 1024 is what rendered a 128,000-token provider as "125K ctx", a number no
+ * vendor publishes and which reads as a PortOS-imposed cap rather than the
+ * model's own spec. So: a value that divides evenly by 1000 is decimal, and
+ * everything else is binary.
  *
  * `suffix` is what follows the number. The default reads as a standalone badge;
  * pass `''` when the surrounding prose already supplies the noun ("up to 32K
@@ -417,11 +426,12 @@ export function formatDownloadGb(gb) {
 export function formatContextLength(tokens, { suffix = ' ctx' } = {}) {
   const n = Number(tokens);
   if (!Number.isFinite(n) || n <= 0) return null;
-  if (n >= 1024 * 1024) {
-    const m = n / (1024 * 1024);
+  const k = n % 1000 === 0 ? 1000 : 1024;
+  if (n >= k * k) {
+    const m = n / (k * k);
     return `${parseFloat(m.toFixed(m % 1 ? 1 : 0))}M${suffix}`;
   }
-  if (n >= 1024) return `${Math.round(n / 1024)}K${suffix}`;
+  if (n >= k) return `${Math.round(n / k)}K${suffix}`;
   return `${n}${suffix}`;
 }
 

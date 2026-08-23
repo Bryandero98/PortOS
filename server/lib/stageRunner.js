@@ -168,11 +168,13 @@ export function resolveEffortHint(stage, options = {}) {
   return options.effortOverride || stage?.effort || options.effortDefault || null;
 }
 
-// A conservative-large window assumed for frontier CLI / cloud-API providers
+// A conservative-large window ASSUMED for frontier CLI / cloud-API providers
 // that haven't declared one. 128K is below every current frontier model's real
 // ceiling (Claude/GPT/Gemini are ≥128K, often ~1M), so it means "a typical
-// whole manuscript fits in one call" without over-promising. Users with very
-// large manuscripts can set an explicit `contextWindow` to lift it further.
+// whole manuscript fits in one call" without over-promising. It is a floor to
+// escape, not a cap to honor: refreshing the provider's models records each
+// model's real window (`modelContextWindows`), and an explicit `contextWindow`
+// overrides both.
 export const DEFAULT_LARGE_CONTEXT_WINDOW = 128_000;
 export const CODEX_CONTEXT_WINDOW = 1_000_000;
 export const GEMINI_CONTEXT_WINDOW = 1_048_576;
@@ -235,14 +237,33 @@ const isLikelyLargeContextProvider = (provider) => {
   return false;
 };
 
+/**
+ * The window this provider's own `/models` catalog reported for this model, or
+ * `null` when the catalog never mentioned it. Populated by model refresh (see
+ * aiToolkit/internal/modelCatalog.js), so it is the serving side's declaration
+ * rather than a guess — which is why it outranks the hand-maintained regex
+ * table below. Mirror of `catalogModelContextWindow` in
+ * client/src/utils/providers.js.
+ */
+export function catalogModelContextWindow(provider, model) {
+  const windows = provider?.modelContextWindows;
+  if (!windows || typeof windows !== 'object') return null;
+  if (typeof model !== 'string' || !model) return null;
+  const tokens = Number(windows[model]);
+  return Number.isFinite(tokens) && tokens > 0 ? tokens : null;
+}
+
 // Planning-time context window for a provider/model: an explicit
-// `contextWindow` wins, else a known model window for the resolved model, else
-// a known provider-level window for configured-default process providers, else
-// the Ollama per-request `numCtx`, else a large default for frontier providers,
+// `contextWindow` wins, else the window the provider's own catalog reported for
+// this model, else a known model window for the resolved model, else a known
+// provider-level window for configured-default process providers, else the
+// Ollama per-request `numCtx`, else a large default for frontier providers,
 // else null (the budgeter applies a conservative floor for unknown local
 // backends).
 export function effectiveContextWindow(provider, model) {
   if (Number(provider?.contextWindow) > 0) return Number(provider.contextWindow);
+  const catalogWindow = catalogModelContextWindow(provider, model);
+  if (catalogWindow) return catalogWindow;
   const modelWindow = knownModelContextWindow(model);
   if (modelWindow) return modelWindow;
   const providerWindow = knownProviderContextWindow(provider);
