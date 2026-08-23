@@ -8,6 +8,7 @@
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { atomicWrite, PATHS, ensureDir, readJSONFile, readJSONFileStrict } from '../lib/fileUtils.js';
+import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { isPlainObject } from '../lib/objects.js';
 import { readLocalDailyLog } from './meatspaceDailyLog.js';
 import { getSnpIndex } from './genome.js';
@@ -31,6 +32,7 @@ function pickMortalLoomLifestyle(lifestyle) {
 
 const MEATSPACE_DIR = PATHS.meatspace;
 const CONFIG_FILE = join(MEATSPACE_DIR, 'config.json');
+const queueConfigWrite = createFileWriteQueue();
 
 // Digital Twin paths (read-only)
 const LONGEVITY_FILE = join(PATHS.digitalTwin, 'longevity.json');
@@ -200,17 +202,22 @@ export function computeLEV(birthDate, adjustedLE) {
 // === Exported Service Functions ===
 
 export async function getConfig() {
-  const config = await loadConfig();
+  let config = await loadConfig();
 
   // Auto-detect sex from genome if not set
   if (!config.sex) {
     const detectedSex = await detectSexFromGenome();
     if (detectedSex) {
-      config.sex = detectedSex;
-      config.sexSource = 'genome';
-      config.updatedAt = new Date().toISOString();
-      await saveConfig(config);
-      console.log(`🧬 Sex auto-detected from genome: ${detectedSex}`);
+      config = await queueConfigWrite(async () => {
+        const freshConfig = await loadConfig();
+        if (freshConfig.sex) return freshConfig;
+        freshConfig.sex = detectedSex;
+        freshConfig.sexSource = 'genome';
+        freshConfig.updatedAt = new Date().toISOString();
+        await saveConfig(freshConfig);
+        console.log(`🧬 Sex auto-detected from genome: ${detectedSex}`);
+        return freshConfig;
+      });
     }
   }
 
@@ -232,14 +239,17 @@ export async function getConfig() {
 }
 
 export async function updateConfig(updates) {
-  const config = await loadConfig();
-  if (updates.sex !== undefined) config.sex = updates.sex;
-  if (updates.sexSource !== undefined) config.sexSource = updates.sexSource;
-  if (updates.lifestyle) {
-    config.lifestyle = { ...config.lifestyle, ...updates.lifestyle };
-  }
-  config.updatedAt = new Date().toISOString();
-  await saveConfig(config);
+  const config = await queueConfigWrite(async () => {
+    const config = await loadConfig();
+    if (updates.sex !== undefined) config.sex = updates.sex;
+    if (updates.sexSource !== undefined) config.sexSource = updates.sexSource;
+    if (updates.lifestyle) {
+      config.lifestyle = { ...config.lifestyle, ...updates.lifestyle };
+    }
+    config.updatedAt = new Date().toISOString();
+    await saveConfig(config);
+    return config;
+  });
 
   const mlPatch = {};
   if (updates.sex !== undefined) mlPatch.biologicalSex = updates.sex || null;
@@ -251,10 +261,13 @@ export async function updateConfig(updates) {
 }
 
 export async function updateLifestyle(updates) {
-  const config = await loadConfig();
-  config.lifestyle = { ...config.lifestyle, ...updates };
-  config.updatedAt = new Date().toISOString();
-  await saveConfig(config);
+  const config = await queueConfigWrite(async () => {
+    const config = await loadConfig();
+    config.lifestyle = { ...config.lifestyle, ...updates };
+    config.updatedAt = new Date().toISOString();
+    await saveConfig(config);
+    return config;
+  });
 
   const mlLifestyle = pickMortalLoomLifestyle(updates);
   if (mlLifestyle) await mlPatchProfileIfEnabled({ lifestyle: mlLifestyle });
@@ -266,13 +279,17 @@ export async function updateLifestyle(updates) {
 
 async function migrateBirthDateFromGoals(config) {
   if (config.birthDate) return config;
-  const goals = await readJSONFile(GOALS_FILE, null);
-  if (!goals?.birthDate) return config;
-  config.birthDate = goals.birthDate;
-  config.updatedAt = new Date().toISOString();
-  await saveConfig(config);
-  console.log(`📅 Migrated birthDate from goals.json to meatspace config`);
-  return config;
+  return queueConfigWrite(async () => {
+    const freshConfig = await loadConfig();
+    if (freshConfig.birthDate) return freshConfig;
+    const goals = await readJSONFile(GOALS_FILE, null);
+    if (!goals?.birthDate) return freshConfig;
+    freshConfig.birthDate = goals.birthDate;
+    freshConfig.updatedAt = new Date().toISOString();
+    await saveConfig(freshConfig);
+    console.log(`📅 Migrated birthDate from goals.json to meatspace config`);
+    return freshConfig;
+  });
 }
 
 export async function getBirthDate() {
@@ -298,10 +315,12 @@ export async function getBirthDateStrict() {
 }
 
 export async function updateBirthDate(birthDate, { syncGoals = true } = {}) {
-  const config = await loadConfig();
-  config.birthDate = birthDate;
-  config.updatedAt = new Date().toISOString();
-  await saveConfig(config);
+  await queueConfigWrite(async () => {
+    const config = await loadConfig();
+    config.birthDate = birthDate;
+    config.updatedAt = new Date().toISOString();
+    await saveConfig(config);
+  });
 
   // Keep goals.json in sync for backward compatibility
   if (syncGoals) {
