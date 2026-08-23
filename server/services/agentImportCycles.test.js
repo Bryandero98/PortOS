@@ -190,6 +190,17 @@ describe('agent lifecycle cluster — no static import cycles (#2837)', () => {
     }
   });
 
+  it('keeps prompt section modules as leaves under agentPromptBuilder (#4896)', () => {
+    const sections = [...graph.keys()].filter(file => file.startsWith('promptSections/'));
+    expect(sections.length, 'prompt section extraction is missing').toBeGreaterThan(5);
+
+    const backEdges = sections.filter(file => (graph.get(file) || []).includes('agentPromptBuilder.js'));
+    expect(backEdges, `prompt sections must not import agentPromptBuilder.js: ${backEdges.join(', ')}`).toEqual([]);
+
+    const sectionCycles = findCycles(graph).filter(cycle => sections.some(file => cycle.split(' -> ').includes(file)));
+    expect(sectionCycles, `prompt section cycle(s) introduced:\n${sectionCycles.join('\n')}`).toEqual([]);
+  });
+
   it('keeps the agentOrchestrator facade outside the graph it fronts (#3450)', () => {
     // The facade only stays a facade while its edges point one way: it imports
     // the cluster, the cluster never imports it back.

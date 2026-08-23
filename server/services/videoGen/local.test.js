@@ -371,12 +371,13 @@ let updateHistoryItemPrompt;
 let generateChainedVideo;
 let generateVideo;
 let extractLastFrame;
+let stitchVideos;
 let videoGenEvents;
 
 beforeEach(async () => {
   vi.resetModules();
   // Re-import fresh copies so mock reset above applies cleanly
-  ({ generateChainedVideo, generateVideo, extractLastFrame, updateHistoryItemPrompt } = await import('./local.js'));
+  ({ generateChainedVideo, generateVideo, extractLastFrame, stitchVideos, updateHistoryItemPrompt } = await import('./local.js'));
   ({ videoGenEvents } = await import('./events.js'));
 });
 
@@ -387,6 +388,68 @@ afterEach(() => {
   spawnState.nextExitCode = null;
   anchorPick.best = null;
   vi.clearAllMocks();
+});
+
+describe('stitchVideos — history provenance', () => {
+  const renderFields = [
+    'steps',
+    'guidanceScale',
+    'tiling',
+    'disableAudio',
+    'mode',
+    'textEncoderId',
+    'imageStrength',
+    'i2vReferenceMode',
+    'conditioning',
+    'renderInputsVersion',
+  ];
+
+  const stitchHistory = async (firstChunkFields = {}) => {
+    const { readJSONFile } = await import('../../lib/fileUtils.js');
+    const chunkIds = ['chunk-a', 'chunk-b'];
+    vi.mocked(readJSONFile).mockResolvedValue([
+      {
+        id: chunkIds[0], filename: 'chunk-a.mp4', prompt: 'first beat',
+        modelId: 'ltx2_unified', seed: 42, width: 768, height: 512,
+        numFrames: 49, fps: 24, ...firstChunkFields,
+      },
+      {
+        id: chunkIds[1], filename: 'chunk-b.mp4', prompt: 'second beat',
+        modelId: 'ltx2_unified', seed: 43, width: 768, height: 512,
+        numFrames: 49, fps: 24,
+      },
+    ]);
+    return stitchVideos(chunkIds, {
+      id: randomUUID(),
+      filenamePrefix: 'chained',
+      historyKey: 'chainedFrom',
+    });
+  };
+
+  it('inherits every render dial and provenance field from the first chunk', async () => {
+    const chunkRenderConfig = {
+      steps: 20,
+      guidanceScale: 0,
+      tiling: 'none',
+      disableAudio: false,
+      mode: 'image',
+      textEncoderId: 'example-encoder',
+      imageStrength: 0,
+      i2vReferenceMode: 'inspire',
+      conditioning: [],
+      renderInputsVersion: 1,
+    };
+
+    const stitched = await stitchHistory(chunkRenderConfig);
+
+    expect(stitched).toMatchObject(chunkRenderConfig);
+  });
+
+  it('does not stamp absent render fields onto a legacy stitched entry', async () => {
+    const stitched = await stitchHistory();
+
+    for (const field of renderFields) expect(stitched).not.toHaveProperty(field);
+  });
 });
 
 describe('extractLastFrame — anchor selection', () => {

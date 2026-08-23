@@ -3235,6 +3235,22 @@ export async function stitchVideos(videoIds, opts = {}) {
     createdAt: new Date().toISOString(),
     [historyKey]: videoIds,
     ...(Array.isArray(chunkPrompts) ? { chunkPrompts } : {}),
+    // The stitched clip is the chain's visible history row, so it must carry
+    // the same render controls and provenance as the hidden chunks. Preserve
+    // meaningful falsey values (guidance 0, audio enabled, empty conditioning)
+    // while keeping legacy/partial entries free of explicit undefined fields.
+    ...Object.fromEntries([
+      'steps',
+      'guidanceScale',
+      'tiling',
+      'disableAudio',
+      'mode',
+      'textEncoderId',
+      'imageStrength',
+      'i2vReferenceMode',
+      'conditioning',
+      'renderInputsVersion',
+    ].flatMap((key) => videos[0][key] === undefined ? [] : [[key, videos[0][key]]])),
     // Inherit applied LoRAs from the first constituent clip (a chunk chain
     // shares one LoRA set across all chunks), so the visible stitched entry
     // round-trips LoRAs on Remix the same way a single render does — mirrors
