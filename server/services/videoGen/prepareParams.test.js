@@ -57,7 +57,7 @@ import { prepareVideoGenParams, withStagedRollback, cleanupMultipartTemp } from 
 
 // Field names the route owns Zod schemas for; the service only needs the keys
 // to decide grok eligibility. Mirrors LOCAL_ONLY_VIDEO_PARAMS in the route.
-const LOCAL_ONLY_KEYS = ['numFrames', 'fps', 'steps', 'guidanceScale', 'seed', 'imageStrength', 'tiling'];
+const LOCAL_ONLY_KEYS = ['numFrames', 'fps', 'steps', 'guidanceScale', 'seed', 'imageStrength', 'i2vReferenceMode', 'tiling'];
 
 const upload = (fieldname, name = 'frame.png') => ({
   fieldname,
@@ -488,5 +488,70 @@ describe('prepareVideoGenParams — MiniMax H3 contract', () => {
       fps: 24,
     });
     expect(prepared.effectiveModelId).toBe(H3_MODEL.id);
+  });
+});
+
+// The reference-mode promise (#4874) at the REQUEST boundary — rejected before
+// any durable upload is staged, so a doomed job never reaches the persisted
+// queue and the cleanup stays cheap.
+describe('prepareVideoGenParams — i2v reference mode (#4874)', () => {
+  const LTX25 = { id: 'ltx25_mlx_q8', name: 'LTX-2.5 MLX Q8', runtime: 'ltx25' };
+  const LTX2 = { id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'ltx2' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listVideoModels.mockReturnValue([LTX2, LTX25]);
+    loadHistory.mockResolvedValue([]);
+  });
+
+  it('accepts a loose reference on an LTX-2.5 image render', async () => {
+    const prepared = await prepare(
+      { modelId: 'ltx25_mlx_q8', mode: 'image', i2vReferenceMode: 'inspire' },
+      { sourceImage: upload('sourceImage') },
+    );
+    expect(prepared.mode).toBe('image');
+    expect(unlinkedDurablePaths()).toEqual([]);
+  });
+
+  it.each([undefined, '', 'anchor'])('never rejects a request that left the field at %s', async (i2vReferenceMode) => {
+    await expect(prepare({ modelId: 'ltx2_unified', i2vReferenceMode })).resolves.toBeTruthy();
+  });
+
+  it('rejects a loose reference on a runtime that pins frame one, before staging', async () => {
+    await expect(prepare(
+      { modelId: 'ltx2_unified', mode: 'image', i2vReferenceMode: 'inspire' },
+      { sourceImage: upload('sourceImage') },
+    )).rejects.toMatchObject({ status: 400, code: 'I2V_REFERENCE_MODE_UNSUPPORTED' });
+    // Nothing durable was written, so nothing had to be rolled back.
+    expect(unlinkedDurablePaths()).toEqual([]);
+  });
+
+  // The model gate alone is not enough: an explicit grok backend never reaches
+  // the chosen model's runtime at all, and its short-circuit drops every
+  // local-only knob — so a loose reference would come back anchored from the
+  // cloud lane with nothing having reported it.
+  it('rejects a loose reference on an explicit grok backend, even with an LTX-2.5 model', async () => {
+    await expect(prepare(
+      { backend: 'grok', modelId: 'ltx25_mlx_q8', mode: 'image', sourceImageFile: 'frame.png', i2vReferenceMode: 'inspire' },
+    )).rejects.toMatchObject({ status: 400, code: 'I2V_REFERENCE_MODE_UNSUPPORTED' });
+  });
+
+  it('still routes a default-reference request through the grok backend', async () => {
+    const prepared = await prepare({ backend: 'grok', mode: 'image', sourceImageFile: 'frame.png', i2vReferenceMode: 'anchor' });
+    expect(prepared.backend).toBe('grok');
+  });
+
+  it('rejects a loose reference on a text render', async () => {
+    await expect(prepare({ modelId: 'ltx25_mlx_q8', i2vReferenceMode: 'inspire' }))
+      .rejects.toMatchObject({ status: 400, code: 'I2V_REFERENCE_MODE_REQUIRES_IMAGE' });
+  });
+
+  it('rejects a loose reference whose gallery pick failed to resolve', async () => {
+    // The declared pass sees a filename and lets it through; the resolved pass
+    // is what catches an i2v request that has quietly become text-to-video.
+    vi.mocked(resolveGalleryImage).mockReturnValueOnce(null);
+    await expect(prepare({
+      modelId: 'ltx25_mlx_q8', mode: 'image', sourceImageFile: 'missing.png', i2vReferenceMode: 'inspire',
+    })).rejects.toMatchObject({ status: 400, code: 'I2V_REFERENCE_MODE_REQUIRES_IMAGE' });
   });
 });

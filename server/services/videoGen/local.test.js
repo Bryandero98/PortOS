@@ -9,6 +9,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { basename, join } from 'path';
 import { tmpdir, totalmem } from 'os';
 import { randomUUID } from 'crypto';
+// Pure table, no mocking involved — a static import survives vi.resetModules().
+import { INSPIRE_DEFAULT_IMAGE_STRENGTH } from '../../lib/videoReferenceModes.js';
 
 const { heavyClaimRelease, heavyClaimHandoff, mockPrepareLocalMemory } = vi.hoisted(() => ({
   heavyClaimRelease: vi.fn(async () => {}),
@@ -4989,5 +4991,87 @@ describe('updateHistoryItemPrompt — trigger-weave provenance (#4665)', () => {
     await updateHistoryItemPrompt('plain-1', 'a beach');
     const item = written();
     expect(item).toEqual({ id: 'plain-1', prompt: 'a beach', seed: 42 });
+  });
+});
+
+// The reference-mode promise (#4874) at the RENDER boundary. The route gates it
+// too, but persisted-queue replays, retries and internal producers all reach
+// generateVideo directly — a hole here means a clip anchored under an Inspire
+// label, which is precisely the lie the contract exists to prevent.
+describe('generateVideo — i2v reference mode (#4874)', () => {
+  const renderWithReference = async ({ jobId, modelId = 'ltx25_mlx_q8', i2vReferenceMode, imageStrength, mode = 'image' }) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    let startedMeta = null;
+    const onStarted = (e) => { if (e.generationId === jobId) startedMeta = e; };
+    videoGenEvents.on('started', onStarted);
+    await generateVideo({
+      jobId,
+      pythonPath: '/usr/bin/python3',
+      modelId,
+      prompt: 'a fox in the rain',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      mode,
+      sourceImagePath: mode === 'image' ? '/mock/uploads/start.png' : null,
+      i2vReferenceMode,
+      imageStrength,
+    });
+    videoGenEvents.off('started', onStarted);
+    const call = spawnMock.mock.calls.find(([, args]) => Array.isArray(args) && args.includes('--mode'));
+    return { args: call?.[1] || [], startedMeta };
+  };
+
+  const valueAfter = (args, flag) => args[args.indexOf(flag) + 1];
+
+  it('emits no reference-mode argv for a default (anchored) render', async () => {
+    // An anchored render's argv must stay byte-identical to what it was before
+    // the flag existed, so an older helper pin can still run it.
+    const { args, startedMeta } = await renderWithReference({ jobId: 'ref-anchor-default' });
+    expect(args).not.toContain('--i2v-reference-mode');
+    expect(args).not.toContain('--image-strength');
+    expect(startedMeta.i2vReferenceMode).toBeUndefined();
+    expect(startedMeta.imageStrength).toBeUndefined();
+  });
+
+  it('emits the flag AND a resolved strength for a loose reference on LTX-2.5', async () => {
+    const { args, startedMeta } = await renderWithReference({
+      jobId: 'ref-inspire', i2vReferenceMode: 'inspire',
+    });
+    expect(valueAfter(args, '--i2v-reference-mode')).toBe('inspire');
+    // "Unset" under Inspire cannot mean "let the pipeline decide" — that would
+    // anchor. The contract's low default is substituted instead.
+    expect(Number(valueAfter(args, '--image-strength'))).toBe(INSPIRE_DEFAULT_IMAGE_STRENGTH);
+    // History provenance, so Remix and the gallery can describe the promise.
+    expect(startedMeta.i2vReferenceMode).toBe('inspire');
+    expect(startedMeta.imageStrength).toBe(INSPIRE_DEFAULT_IMAGE_STRENGTH);
+  });
+
+  it('honors an explicit strength under a loose reference', async () => {
+    const { args, startedMeta } = await renderWithReference({
+      jobId: 'ref-inspire-explicit', i2vReferenceMode: 'inspire', imageStrength: 0.8,
+    });
+    expect(Number(valueAfter(args, '--image-strength'))).toBe(0.8);
+    expect(startedMeta.imageStrength).toBe(0.8);
+  });
+
+  it('rejects a loose reference on the 2.3 pin rather than silently anchoring', async () => {
+    // ltx2 and ltx25 share the family predicate but not the per-image
+    // conditioning API — waving this through would deliver an anchored clip.
+    await expect(renderWithReference({
+      jobId: 'ref-inspire-ltx2', modelId: 'ltx2_unified', i2vReferenceMode: 'inspire',
+    })).rejects.toMatchObject({ status: 400, code: 'I2V_REFERENCE_MODE_UNSUPPORTED' });
+  });
+
+  it('rejects a loose reference outside image mode', async () => {
+    await expect(renderWithReference({
+      jobId: 'ref-inspire-text', i2vReferenceMode: 'inspire', mode: 'text',
+    })).rejects.toMatchObject({ status: 400, code: 'I2V_REFERENCE_MODE_REQUIRES_IMAGE' });
+  });
+
+  it('rejects an unknown reference mode instead of collapsing it to anchor', async () => {
+    await expect(renderWithReference({
+      jobId: 'ref-bogus', i2vReferenceMode: 'inspiration',
+    })).rejects.toMatchObject({ status: 400, code: 'I2V_REFERENCE_MODE_UNKNOWN' });
   });
 });

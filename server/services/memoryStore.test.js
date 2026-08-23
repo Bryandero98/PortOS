@@ -177,5 +177,9 @@ describe('memoryStore', () => {
     it('is a no-op for a non-existent id (does not throw)', async () => {
       await expect(deleteMemoryFiles('ghost-id')).resolves.not.toThrow();
     });
+
+    it.each(['../outside', '/tmp', 'nested/path', '', '..'])('rejects unsafe id %j before deleting files', async (id) => {
+      await expect(deleteMemoryFiles(id)).rejects.toThrow('Invalid memory');
+    });
   });
 });

@@ -190,3 +190,136 @@ describe('AdvancedParamsPanel', () => {
     });
   });
 });
+
+// What the source image PROMISES (#4874). The panel is the surface that states
+// the promise, so a wrong option list here is a lie the user acts on.
+describe('AdvancedParamsPanel — i2v reference mode (#4874)', () => {
+  const LTX25 = { runtime: 'ltx25', name: 'LTX-2.5 MLX Q8', supportedModes: MLX_MODES };
+  const withReference = (props = {}) => renderPanel({
+    mode: 'image',
+    currentModel: LTX25,
+    i2vReferenceMode: 'anchor',
+    onI2vReferenceModeChange: vi.fn(),
+    ...props,
+  });
+
+  it('offers both promises on a runtime that can keep them, and prints the active one', () => {
+    withReference();
+    const select = screen.getByLabelText('Reference mode');
+    expect([...select.options].map((o) => o.value)).toEqual(['anchor', 'inspire']);
+    expect(select.disabled).toBe(false);
+    expect(screen.getByText(/reference is frame one/i)).toBeTruthy();
+  });
+
+  it('states the Inspire promise when Inspire is selected', () => {
+    withReference({ i2vReferenceMode: 'inspire' });
+    expect(screen.getByText(/without reproducing it/i)).toBeTruthy();
+  });
+
+  it('offers only Anchor — locked, and explains why — on a runtime that pins frame one', () => {
+    withReference({ currentModel: { runtime: 'ltx2', name: 'LTX-2 Unified', supportedModes: MLX_MODES } });
+    const select = screen.getByLabelText('Reference mode');
+    expect([...select.options].map((o) => o.value)).toEqual(['anchor']);
+    expect(select.disabled).toBe(true);
+    expect(screen.getByText(/Pick an LTX-2\.5 model to loosen it/i)).toBeTruthy();
+  });
+
+  it.each(['text', 'fflf', 'extend', 'a2v'])('hides the picker in %s mode', (mode) => {
+    withReference({ mode });
+    expect(screen.queryByLabelText('Reference mode')).toBeNull();
+  });
+
+  it('hides the picker when no handler is wired, rather than rendering a dead control', () => {
+    renderPanel({ mode: 'image', currentModel: LTX25 });
+    expect(screen.queryByLabelText('Reference mode')).toBeNull();
+  });
+
+  it('reports the change up', () => {
+    const onI2vReferenceModeChange = vi.fn();
+    withReference({ onI2vReferenceModeChange });
+    fireEvent.change(screen.getByLabelText('Reference mode'), { target: { value: 'inspire' } });
+    expect(onI2vReferenceModeChange).toHaveBeenCalledWith('inspire');
+  });
+
+  it('shows the strength the render will ACTUALLY use, not the pipeline default', () => {
+    // An untouched slider under Inspire resolves to the contract's low default;
+    // printing "1.0" there would describe an anchored render.
+    withReference({ i2vReferenceMode: 'inspire', imageStrength: '', effectiveImageStrength: 0.35 });
+    expect(screen.getByText('0.35')).toBeTruthy();
+  });
+});
+
+// `0` is a legal image strength ("ignore the source entirely"), and the Render
+// Queue's retry editor hands it over as a NUMBER. A truthiness fallback rendered
+// the control at 1 while the form still submitted 0 — the control lying about
+// the render it would produce.
+describe('AdvancedParamsPanel — image strength presence vs zero', () => {
+  const inImageMode = (props) => renderPanel({ mode: 'image', ...props });
+
+  it.each([
+    ['a numeric 0 from the retry editor', 0],
+    ['a string "0"', '0'],
+  ])('shows %s as 0, not the 1.0 default', (_label, imageStrength) => {
+    inImageMode({ imageStrength });
+    expect(screen.getByLabelText('Image Strength').value).toBe('0');
+    expect(screen.getByText('0')).toBeTruthy();
+  });
+
+  it('falls back to the pipeline default only when nothing was set', () => {
+    inImageMode({ imageStrength: '' });
+    expect(screen.getByLabelText('Image Strength').value).toBe('1');
+    expect(screen.getByText('1.0')).toBeTruthy();
+  });
+
+  it('prefers an explicit value over the resolved loose default', () => {
+    inImageMode({ imageStrength: 0, effectiveImageStrength: 0.35 });
+    expect(screen.getByLabelText('Image Strength').value).toBe('0');
+  });
+});
+
+// The picker must not contradict the state it renders. The form's snap-back
+// deliberately defers clearing an Inspire pick until the model catalog resolves,
+// so a picker that reads an unresolved model as "anchor only" would disable
+// itself, drop the selected option, and claim something about a model nobody has
+// seen yet — on exactly the resume/retry path this feature hardened.
+describe('AdvancedParamsPanel — reference mode before the model catalog loads', () => {
+  const beforeLoad = (props) => renderPanel({
+    mode: 'image',
+    currentModel: undefined,
+    i2vReferenceMode: 'inspire',
+    onI2vReferenceModeChange: vi.fn(),
+    ...props,
+  });
+
+  it('keeps the selected promise listed and the control usable', () => {
+    beforeLoad();
+    const select = screen.getByLabelText('Reference mode');
+    expect(select.value).toBe('inspire');
+    expect([...select.options].map((o) => o.value)).toEqual(['anchor', 'inspire']);
+    expect(select.disabled).toBe(false);
+  });
+
+  it('makes no claim about a model it has not seen', () => {
+    beforeLoad();
+    expect(screen.queryByText(/can only anchor a reference/i)).toBeNull();
+  });
+
+  it('never renders a controlled value with no matching option, even mid-switch', () => {
+    // The render between "model switched to one that pins frame one" and "the
+    // snap-back effect ran" still holds `inspire`; it stays listed so the select
+    // is not silently blank, while the option list is already narrowed.
+    renderPanel({
+      mode: 'image',
+      currentModel: { runtime: 'ltx2', name: 'LTX-2 Unified', supportedModes: MLX_MODES },
+      i2vReferenceMode: 'inspire',
+      onI2vReferenceModeChange: vi.fn(),
+    });
+    const select = screen.getByLabelText('Reference mode');
+    expect(select.value).toBe('inspire');
+    expect([...select.options].map((o) => o.value)).toContain('inspire');
+    // The model genuinely cannot loosen a reference, so the control still locks
+    // and still says why.
+    expect(select.disabled).toBe(true);
+    expect(screen.getByText(/can only anchor a reference/i)).toBeTruthy();
+  });
+});

@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { partialWithoutDefaults } from './zodCompat.js';
 
+// Memory ids are directory names in the file-backed store. Keep route input
+// constrained to one plain path segment before it reaches any filesystem code.
+export const memoryIdSchema = z.string().regex(/^[A-Za-z0-9._-]+$/);
+export const memoryIdParamSchema = z.object({ id: memoryIdSchema });
+
 // Memory types enum
 export const memoryTypeEnum = z.enum([
   'fact',

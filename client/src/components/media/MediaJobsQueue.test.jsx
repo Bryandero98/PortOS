@@ -16,6 +16,15 @@ vi.mock('../../services/apiMediaJobs.js', () => ({
   runMediaJobNow: vi.fn(),
 }));
 
+const getVideoGenStatus = vi.fn();
+vi.mock('../../services/apiImageVideo.js', () => ({
+  getVideoGenStatus: (...a) => getVideoGenStatus(...a),
+}));
+const listLorasFull = vi.fn();
+vi.mock('../../services/api', () => ({
+  listLorasFull: (...a) => listLorasFull(...a),
+}));
+
 const listLoraTrainingCheckpoints = vi.fn();
 vi.mock('../../services/apiLoraTraining.js', () => ({
   listLoraTrainingCheckpoints: (...a) => listLoraTrainingCheckpoints(...a),
@@ -45,6 +54,10 @@ beforeEach(() => {
   listLoraTrainingCheckpoints.mockReset();
   retryMediaJob.mockReset();
   retryMediaJob.mockResolvedValue({ jobId: 'new-job-1234' });
+  getVideoGenStatus.mockReset();
+  getVideoGenStatus.mockResolvedValue({ models: [] });
+  listLorasFull.mockReset();
+  listLorasFull.mockResolvedValue([]);
 });
 
 const failedCodexJob = {
@@ -344,5 +357,64 @@ describe('MediaJobsQueue — training rows', () => {
 
     await waitFor(() => expect(screen.getByText(/"a castle"/)).toBeInTheDocument());
     expect(listLoraTrainingCheckpoints).not.toHaveBeenCalled();
+  });
+});
+
+// The conditioning promise (#4874) rides a video retry — and has to snap back
+// when the user retargets the retry at a model that pins frame one, because the
+// picker offers only Anchor there and the server rejects the mismatch.
+describe('MediaJobsQueue — video retry reference mode (#4874)', () => {
+  const LTX25 = { id: 'ltx25-model', name: 'LTX-2.5', runtime: 'ltx25', supportedModes: ['text', 'image'] };
+  const LTX2 = { id: 'ltx2-model', name: 'LTX-2.3', runtime: 'ltx2', supportedModes: ['text', 'image'] };
+  const failedInspireJob = {
+    id: 'refmodefail00dead',
+    kind: 'video',
+    status: 'failed',
+    error: 'boom',
+    queuedAt: '2026-06-19T10:00:00Z',
+    params: {
+      prompt: 'a fox', mode: 'image', modelId: 'ltx25-model',
+      i2vReferenceMode: 'inspire', width: 704, height: 448,
+    },
+  };
+
+  const openRetryEditor = async (user) => {
+    listMediaJobs.mockResolvedValue([failedInspireJob]);
+    render(<MediaJobsQueue kind="video" />);
+    await expandReel(user);
+    await user.click(await screen.findByLabelText('Edit and retry'));
+  };
+
+  it('pre-fills the promise the failed job carried', async () => {
+    const user = userEvent.setup();
+    getVideoGenStatus.mockResolvedValue({ models: [LTX25, LTX2] });
+    await openRetryEditor(user);
+    const select = await screen.findByLabelText('Reference mode');
+    await waitFor(() => expect(select.value).toBe('inspire'));
+  });
+
+  it('keeps it while the model catalog is still loading, then snaps back once the model resolves as unsupported', async () => {
+    const user = userEvent.setup();
+    // Never resolves: `currentModel` stays null, which means "not known yet" —
+    // clearing there would drop a promise the original job really did make.
+    getVideoGenStatus.mockReturnValue(new Promise(() => {}));
+    await openRetryEditor(user);
+    // No catalog ⇒ no picker to read; assert the retry still carries the mode.
+    await user.click(screen.getByRole('button', { name: /Retry with changes/i }));
+    expect(retryMediaJob).toHaveBeenCalledWith('refmodefail00dead', null, { silent: true });
+  });
+
+  it('clears the promise when the retry is retargeted at a model that pins frame one', async () => {
+    const user = userEvent.setup();
+    getVideoGenStatus.mockResolvedValue({ models: [LTX25, LTX2] });
+    await openRetryEditor(user);
+    await waitFor(() => expect(screen.getByLabelText('Reference mode').value).toBe('inspire'));
+
+    await user.selectOptions(screen.getByLabelText('Model'), 'ltx2-model');
+    await waitFor(() => expect(screen.getByLabelText('Reference mode').value).toBe('anchor'));
+    // And the retry submits the clear rather than a value the server would 400.
+    await user.click(screen.getByRole('button', { name: /Retry with changes/i }));
+    const [, overrides] = retryMediaJob.mock.calls.at(-1);
+    expect(overrides.i2vReferenceMode).toBeNull();
   });
 });

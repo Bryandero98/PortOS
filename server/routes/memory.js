@@ -18,7 +18,8 @@ import {
   memoryTimelineSchema,
   memoryConsolidateSchema,
   memoryLinkSchema,
-  memorySyncSchema
+  memorySyncSchema,
+  memoryIdParamSchema
 } from '../lib/memoryValidation.js';
 
 const router = Router();
@@ -216,8 +217,9 @@ router.post('/:id/reject', asyncHandler(async (req, res) => {
 
 // DELETE /api/memory/:id - Delete a memory
 router.delete('/:id', asyncHandler(async (req, res) => {
+  const { id } = validateRequest(memoryIdParamSchema, req.params);
   const hard = req.query.hard === 'true';
-  const result = await memory.deleteMemory(req.params.id, hard);
+  const result = await memory.deleteMemory(id, hard);
   res.json(result);
 }));
 
