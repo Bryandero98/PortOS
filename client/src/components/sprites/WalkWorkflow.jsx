@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import {
-  Check, Film, RefreshCw, Scissors, Lock, Unlock, Terminal, Gauge, RotateCcw,
+  Check, Film, RefreshCw, Scissors, Lock, Unlock, Terminal, Gauge, RotateCcw, Cpu,
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import {
@@ -339,6 +339,20 @@ function DirectionCard({
           className="flex items-center gap-1 w-full justify-center px-2 py-0.5 text-xs bg-port-card border border-port-accent rounded text-port-accent hover:bg-port-accent hover:text-white"
         >
           <Terminal className="w-3 h-3" /> Watch in Shell
+        </Link>
+      )}
+
+      {/* The local lane has no PTY to attach to, so its observability is the
+          Render Queue row for the job — same slot, same shape, so a rendering
+          card is never a dead end on either lane. Mutually exclusive with the
+          Shell link above: a run carries a shellSession OR a jobId. */}
+      {rendering && !run?.shellSession && run?.jobId && (
+        <Link
+          to="/system-resources/queues"
+          title="Watch this local render in the Render Queue (progress / cancel)"
+          className="flex items-center gap-1 w-full justify-center px-2 py-0.5 text-xs bg-port-card border border-port-accent rounded text-port-accent hover:bg-port-accent hover:text-white"
+        >
+          <Cpu className="w-3 h-3" /> Watch in Render Queue
         </Link>
       )}
 

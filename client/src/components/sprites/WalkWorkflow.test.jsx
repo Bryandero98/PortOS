@@ -262,6 +262,33 @@ describe('WalkWorkflow render-lane picker (#4876)', () => {
       'title', expect.stringContaining('fixed frame grid'),
     );
   });
+
+  it('offers the Render Queue instead of the Shell for a LOCAL render', () => {
+    // The local lane has no PTY to attach to, so its rendering card would
+    // otherwise be a dead end with no way to watch or cancel the job.
+    renderPanel({
+      walk: {
+        runs: [{ id: 'walk-east-abc', direction: 'east', status: 'rendering', jobId: 'mjob-1' }],
+        selection: { directions: {} },
+        walkSet: null,
+      },
+    });
+    expect(screen.getByRole('link', { name: /Watch in Render Queue/ }))
+      .toHaveAttribute('href', '/system-resources/queues');
+    expect(screen.queryByRole('link', { name: /Watch in Shell/ })).toBeNull();
+  });
+
+  it('keeps the Shell link for a grok render, and offers only that one', () => {
+    renderPanel({
+      walk: {
+        runs: [{ id: 'walk-east-abc', direction: 'east', status: 'rendering', shellSession: 'walk-east-abc' }],
+        selection: { directions: {} },
+        walkSet: null,
+      },
+    });
+    expect(screen.getByRole('link', { name: /Watch in Shell/ })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Watch in Render Queue/ })).toBeNull();
+  });
 });
 
 describe('WalkWorkflow idle anchor preview', () => {
