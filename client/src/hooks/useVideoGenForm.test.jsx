@@ -886,6 +886,17 @@ describe('useVideoGenForm — i2v reference mode (#4874)', () => {
     expect(result.current.i2vReferenceMode).toBe('inspire');
   });
 
+  it('clears the promise when the backend switches to grok, which always anchors', async () => {
+    // The grok lane reads only prompt/dims/source-image/duration, so its payload
+    // has nowhere to carry the mode — leaving `inspire` in state would keep the
+    // source-image panel promising a generated frame one that grok never delivers.
+    const result = await inImageMode({ grokEnabled: true });
+    await act(async () => { result.current.setI2vReferenceMode('inspire'); });
+    await act(async () => { result.current.handleBackendChange('grok'); });
+    await waitFor(() => expect(result.current.i2vReferenceMode).toBe('anchor'));
+    expect(result.current.buildGeneratePayload().i2vReferenceMode).toBeUndefined();
+  });
+
   it('restores the strength a resume echoes, and clears it when the resume echoes none', async () => {
     const result = await inImageMode();
     await act(async () => { result.current.applyResumedParams({ imageStrength: 0.35 }); });

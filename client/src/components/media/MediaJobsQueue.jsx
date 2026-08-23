@@ -9,7 +9,10 @@ import { listLoraTrainingCheckpoints } from '../../services/apiLoraTraining.js';
 import { isCloudCliMode, IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_EFFORT, supportsCloudModelOverride, modeLabel } from '../../lib/imageGenBackends';
 import { ANTIGRAVITY_CONFIGURED_DEFAULT, CODEX_EFFORT_LEVELS, isConfiguredDefaultModel } from '../../utils/providers';
 import { lossSparklineGeometry } from '../../lib/lossSparkline';
-import { isDefaultI2vReferenceMode, normalizeI2vReferenceMode, resolveI2vReferenceStrength } from '../../lib/videoReferenceModes';
+import {
+  DEFAULT_I2V_REFERENCE_MODE, isDefaultI2vReferenceMode, normalizeI2vReferenceMode,
+  resolveI2vReferenceStrength, runtimeSupportsI2vReferenceMode,
+} from '../../lib/videoReferenceModes';
 import { useAutoRefetch } from '../../hooks/useAutoRefetch';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import useMounted from '../../hooks/useMounted';
@@ -722,6 +725,19 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
   }, []);
 
   const currentModel = models.find((model) => model.id === modelId) || null;
+  // Switching the retry to a model that pins frame one has to clear the promise
+  // with it (#4874) — the picker offers only Anchor there, so leaving `inspire`
+  // in state would strand the form on a value the user cannot see or change and
+  // the server would reject on submit. Mirrors the same snap-back in
+  // useVideoGenForm — including the deferral: `models` loads async from
+  // getVideoGenStatus, so an unresolved `currentModel` means "not known yet",
+  // never "cannot honor it".
+  useEffect(() => {
+    if (isDefaultI2vReferenceMode(i2vReferenceMode)) return;
+    if (!currentModel) return;
+    if (runtimeSupportsI2vReferenceMode(currentModel.runtime, i2vReferenceMode)) return;
+    setI2vReferenceMode(DEFAULT_I2V_REFERENCE_MODE);
+  }, [currentModel, i2vReferenceMode]);
   const isGrok = p.mode === 'grok';
   const loraFamily = videoLoraFamily(currentModel);
   const videoLoras = loraFamily ? availableLoras.filter((lora) => loraFamilyOf(lora) === loraFamily) : [];

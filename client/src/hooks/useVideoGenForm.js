@@ -601,7 +601,11 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
   // from the shared contract the server gates on, so the picker can never offer
   // an option the POST would 400 on.
   const referenceModeSupported = runtimeSupportsI2vReferenceMode(currentModel?.runtime, 'inspire');
-  const referenceModeApplies = mode === 'image';
+  // Hoisted above the reference-mode derivation below, which needs it: the grok
+  // lane reads only prompt/dims/source-image/duration, so its image_to_video
+  // always anchors and the promise has to collapse to the default there.
+  const isGrok = grokEnabled && backend === 'grok';
+  const referenceModeApplies = mode === 'image' && !isGrok;
   // The strength the render will actually use, for the slider readout — an
   // untouched slider under Inspire still resolves to the contract's low default
   // rather than the pipeline's 1.0, and the panel must say so.
@@ -1271,7 +1275,6 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
 
   // Snapshot the current form into a generate-payload. Used both by the
   // inline Generate button and by enqueue, so the two paths stay in lockstep.
-  const isGrok = grokEnabled && backend === 'grok';
 
   // A hidden mute checkbox from a prior model must not suppress H3's visible
   // prompt-audio steering. Treat mute as effective only on a model that can
