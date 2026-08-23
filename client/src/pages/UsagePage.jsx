@@ -50,23 +50,23 @@ function UsageMeter({ limit }) {
   const used = limit.percentUsed ?? 0;
   const remaining = limit.percentRemaining;
   return (
-    <div className="py-2 border-b border-port-border last:border-0">
-      <div className="flex items-baseline justify-between gap-2 mb-1">
-        <span className="text-white text-sm sm:text-base">{limit.label}</span>
-        <span className="text-xs sm:text-sm text-gray-400">
+    <div className="py-1 sm:py-2 border-b border-port-border last:border-0">
+      <div className="flex items-baseline justify-between gap-2 mb-0.5 sm:mb-1">
+        <span className="text-white text-xs sm:text-base truncate">{limit.label}</span>
+        <span className="shrink-0 text-gray-400 text-[10px] sm:text-sm">
           {remaining == null ? '—' : `${remaining}% left`}
         </span>
       </div>
-      <div className="h-2 rounded-full bg-port-bg overflow-hidden">
+      <div className="h-1.5 sm:h-2 rounded-full bg-port-bg overflow-hidden">
         <div
           className={`h-full rounded-full ${meterColor(limit.percentUsed)}`}
           style={{ width: `${Math.min(100, Math.max(0, used))}%` }}
         />
       </div>
-      <div className="flex items-center justify-between mt-1">
-        <span className="text-[10px] sm:text-xs text-gray-500">{used}% used</span>
+      <div className="flex items-center justify-between mt-0.5 sm:mt-1">
+        <span className="text-[9px] sm:text-xs text-gray-500">{used}% used</span>
         {limit.resetsAt && (
-          <span className="text-[10px] sm:text-xs text-gray-500 flex items-center gap-1">
+          <span className="hidden sm:flex text-xs text-gray-500 items-center gap-1 truncate">
             <Clock size={11} /> resets {formatResetsAt(limit.resetsAt)}
           </span>
         )}
@@ -79,10 +79,10 @@ function UsageMeter({ limit }) {
 // `metrics[]` a backend returns when its quota can't be queried at all.
 function StatTile({ label, value, detail }) {
   return (
-    <div className="bg-port-bg border border-port-border rounded-lg p-2.5">
-      <div className="text-xs text-gray-400 mb-0.5">{label}</div>
-      <div className="text-sm text-white">{value}</div>
-      {detail && <div className="text-[10px] sm:text-xs text-gray-500 mt-0.5">{detail}</div>}
+    <div className="bg-port-bg border border-port-border rounded-lg p-1.5 sm:p-2.5">
+      <div className="text-[10px] sm:text-xs text-gray-400 mb-0.5">{label}</div>
+      <div className="text-xs sm:text-sm text-white">{value}</div>
+      {detail && <div className="text-[9px] sm:text-xs text-gray-500 mt-0.5">{detail}</div>}
     </div>
   );
 }
@@ -92,12 +92,12 @@ function StatTile({ label, value, detail }) {
 // error; a supported adapter that failed transiently shows a soft warning.
 function ProviderQuotaCard({ quota, onRefresh, refreshing, disabled }) {
   return (
-    <div className="bg-port-card border border-port-border rounded-xl p-3 sm:p-4">
-      <div className="flex items-center justify-between gap-2 mb-2">
-        <h3 className="text-base font-semibold text-white">{quota.label}</h3>
-        <div className="flex items-center gap-2 shrink-0">
+    <div className="bg-port-card border border-port-border rounded-lg p-2 sm:rounded-xl sm:p-4">
+      <div className="flex items-center justify-between gap-1 sm:gap-2 mb-1 sm:mb-2">
+        <h3 className="text-sm sm:text-base font-semibold text-white truncate">{quota.label}</h3>
+        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
           {quota.plan && quota.plan !== 'unknown' && (
-            <Pill tone="context" size="xs">{quota.plan}</Pill>
+            <Pill tone="context" size="xs" className="hidden sm:inline-flex">{quota.plan}</Pill>
           )}
           {/* Per-card refresh: every family's reading is its own multi-second
               CLI/TUI scrape, so re-reading one provider must not respawn all
@@ -110,13 +110,13 @@ function ProviderQuotaCard({ quota, onRefresh, refreshing, disabled }) {
             title={`Refresh ${quota.label} usage`}
             aria-label={`Refresh ${quota.label} usage`}
           >
-            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+            <RefreshCw size={14} className={`w-3 h-3 sm:w-3.5 sm:h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
           </button>
         </div>
       </div>
 
       {!quota.supported && (
-        <p className="text-sm text-gray-500">{quota.note || 'Usage reporting is not available for this provider.'}</p>
+        <p className="text-xs sm:text-sm text-gray-500">{quota.note || 'Usage reporting is not available for this provider.'}</p>
       )}
 
       {/* The reading is still being taken. It comes BEFORE the error and empty
@@ -124,7 +124,7 @@ function ProviderQuotaCard({ quota, onRefresh, refreshing, disabled }) {
           those says "No rate-limit data reported", which is a verdict about the
           provider rather than a statement about a scrape still in flight. */}
       {quota.supported && quota.pending && (
-        <div className="flex items-center gap-2 text-sm text-gray-400 py-1">
+        <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm text-gray-400 py-1">
           <BrailleSpinner />
           <span>{quota.note || 'Reading quota…'}</span>
         </div>
@@ -134,17 +134,17 @@ function ProviderQuotaCard({ quota, onRefresh, refreshing, disabled }) {
           meter, so the note rides along — otherwise the one state where the
           reading's age matters most is the one state that hides it. */}
       {quota.supported && !quota.pending && quota.error && (
-        <div className="flex items-start gap-2 text-sm text-gray-400 py-1">
+        <div className="flex items-start gap-1.5 sm:gap-2 text-xs sm:text-sm text-gray-400 py-1">
           <AlertTriangle size={15} className="text-port-warning mt-0.5 shrink-0" />
-          <span>
-            {quota.error}
+            <span>
+              {quota.error}
             {quota.note && <span className="block text-xs text-gray-500 mt-1">{quota.note}</span>}
           </span>
         </div>
       )}
 
       {quota.supported && !quota.pending && !quota.error && (
-        <div className="space-y-2">
+        <div className="space-y-1 sm:space-y-2">
           {quota.limits?.length > 0 && (
             <div>
               {quota.limits.map((limit) => (
@@ -154,13 +154,13 @@ function ProviderQuotaCard({ quota, onRefresh, refreshing, disabled }) {
           )}
 
           {!quota.limits?.length && !quota.metrics?.length && (
-            <div className="text-gray-500 text-sm">No rate-limit data reported</div>
+            <div className="text-xs sm:text-sm text-gray-500">No rate-limit data reported</div>
           )}
 
           {/* Backends with no queryable quota report observed counts instead of
               a meter — a percentage we cannot measure must not be invented. */}
           {quota.metrics?.length > 0 && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-2">
               {quota.metrics.map((m) => (
                 <StatTile key={m.key} label={m.label} value={m.value} detail={m.detail} />
               ))}
@@ -168,7 +168,7 @@ function ProviderQuotaCard({ quota, onRefresh, refreshing, disabled }) {
           )}
 
           {quota.activity?.length > 0 && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+            <div className="hidden sm:grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
               {quota.activity.map((a) => (
                 <StatTile
                   key={a.period}
@@ -186,7 +186,7 @@ function ProviderQuotaCard({ quota, onRefresh, refreshing, disabled }) {
           )}
 
           {quota.note && (
-            <p className="text-[10px] sm:text-xs text-gray-500">{quota.note}</p>
+            <p className="hidden sm:block text-xs text-gray-500">{quota.note}</p>
           )}
         </div>
       )}
@@ -283,11 +283,11 @@ function ProviderQuotaSection() {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Subscription Usage</h1>
+        <h1 className="text-xl sm:text-2xl font-bold text-white">Subscription Usage</h1>
         <button
           onClick={() => load(true)}
           disabled={loading}
-          className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-400 hover:text-white disabled:opacity-50"
+          className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs sm:text-sm text-gray-400 hover:text-white disabled:opacity-50"
           title="Refresh every provider's usage"
         >
           <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Refresh all
@@ -302,7 +302,7 @@ function ProviderQuotaSection() {
           header="none"
           label="Reading provider usage"
           layout="grid"
-          gridColsClass="lg:grid-cols-2"
+          gridColsClass="grid-cols-2 sm:grid-cols-1 lg:grid-cols-2"
           cards={4}
         />
       )}
@@ -315,12 +315,12 @@ function ProviderQuotaSection() {
       )}
 
       {quotas && (
-        // `items-start` keeps every card at its natural height: a one-meter
-        // Codex/Grok card must not be stretched to the height of the tallest
-        // card in its row, which is what left the old grid mostly whitespace.
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4 items-start">
+        // `contents` makes the grouped desktop cells transparent to the mobile
+        // grid, so each provider gets its own compact cell without duplicating
+        // the card tree (which would confuse screen readers and text queries).
+        <div className="grid grid-cols-2 sm:grid-cols-1 lg:grid-cols-2 gap-2 sm:gap-3 lg:gap-4 items-start" aria-label="Subscription provider usage">
           {arrangeQuotaCells(quotas).map((cell) => (
-            <div key={cell.key} className="space-y-3 sm:space-y-4">
+            <div key={cell.key} className="contents sm:block sm:space-y-4">
               {cell.cards.map((quota) => (
                 <ProviderQuotaCard
                   key={quota.family}
@@ -333,7 +333,7 @@ function ProviderQuotaSection() {
             </div>
           ))}
           {quotas.length === 0 && (
-            <div className="text-gray-500 text-sm">No enabled providers report subscription usage.</div>
+            <div className="col-span-2 sm:col-span-1 text-gray-500 text-sm">No enabled providers report subscription usage.</div>
           )}
         </div>
       )}
