@@ -20,7 +20,11 @@ vi.mock('./settings.js', () => ({
   getSettings: vi.fn(async () => state.settings),
 }));
 
-vi.mock('../lib/mediaModels.js', () => ({
+// Only the CATALOG accessors are stubbed — the pure row-shape helpers come from
+// the real module, so a change to what "must be cached" is felt here rather than
+// re-stated in a mock that could drift from it.
+vi.mock('../lib/mediaModels.js', async (importOriginal) => ({
+  ...await importOriginal(),
   getImageModels: vi.fn(() => state.imageModels),
   getVideoModels: vi.fn(() => state.videoModels),
   isEditOnly: (model) => model?.editOnly === true,

@@ -6,6 +6,7 @@ import { useAsyncAction } from '../../hooks/useAsyncAction.js';
 import { SPRITE_DIRECTIONS } from '../../lib/spriteFacets.js';
 import { CorrectionNoteToggle, trackCorrectionKey } from './CorrectionNote.jsx';
 import { checkerboardStyle, spriteAssetUrl } from './spriteAssets.js';
+import AnimationProviderPicker from './AnimationProviderPicker.jsx';
 
 /**
  * One review/approve surface for EVERY non-walk animation track (#3136).
@@ -28,6 +29,7 @@ import { checkerboardStyle, spriteAssetUrl } from './spriteAssets.js';
  */
 export default function TrackWorkflow({
   record, reference, state, onGenerate, onChanged, corrections = null, onCorrectionChange = null,
+  providers = null, provider = 'grok', onProviderChange = () => {},
 }) {
   const definition = state?.definition || null;
   const runs = state?.runs || [];
@@ -81,7 +83,7 @@ export default function TrackWorkflow({
 
   return (
     <section className="bg-port-card border border-port-border rounded-lg p-4 space-y-3">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="flex items-center gap-1.5 text-sm font-semibold text-white">
           <Icon className="w-4 h-4" /> {definition.label}
           <span className="text-xs font-normal text-gray-500">
@@ -89,7 +91,22 @@ export default function TrackWorkflow({
             {' · '}{definition.defaultFrameCount}f @ {definition.defaultFps}fps
           </span>
         </h3>
-        <span className="text-[11px] text-gray-500">directly requested Grok render; local deterministic packing</span>
+        {/* The lane caption is derived, not hardcoded (#4876): it read
+            "directly requested Grok render" while grok was the only engine, and
+            would have been a lie the moment a local render was picked. Only the
+            packing half is unconditional — that is deterministic either way. */}
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+          <AnimationProviderPicker
+            id={`track-provider-${record.id}-${definition.id}`}
+            providers={providers}
+            provider={provider}
+            onChange={onProviderChange}
+            disabled={finalized}
+          />
+          <span className="text-[11px] text-gray-500">
+            directly requested {provider === 'local' ? 'local' : 'Grok'} render; local deterministic packing
+          </span>
+        </div>
       </div>
       <div className={`grid gap-2 ${directional ? 'sm:grid-cols-2 xl:grid-cols-4' : ''}`}>
         {directions.map((direction) => {

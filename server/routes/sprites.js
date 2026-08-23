@@ -54,6 +54,7 @@ import {
   listReferenceSources, listSpriteThumbnails, forkSprite,
 } from '../services/sprites/reference.js';
 import { resolveSpriteAssetPrompt } from '../services/sprites/assetPrompt.js';
+import { listAnimationProviders } from '../services/sprites/localAnimationRender.js';
 import {
   WALK_TRACK,
   isAnimationTrack, kindSupportsTrack, tracksForKind,
@@ -197,6 +198,19 @@ router.put('/animation-tracks/:trackId', asyncHandler(async (req, res) => {
 router.delete('/animation-tracks/:trackId', asyncHandler(async (req, res) => {
   const { trackId } = validateRequest(spriteTrackParamsSchema, req.params);
   res.json(await deleteAnimationTrack(trackId));
+}));
+
+// Which engines can render an animation clip on THIS install, and why one
+// cannot (#4876). Must precede `GET /:id` for the same reason the block above
+// does — a literal first segment would otherwise be captured as a record id.
+//
+// Read-only readiness: it probes an already-installed venv and the local HF
+// cache, and starts no render, so it does not touch the user-triggered
+// AI-provider gate. The client shows the reason beside a disabled option, which
+// is what turns "why is Local greyed out?" into an answer in place rather than a
+// 409 after a click.
+router.get('/animation-providers', asyncHandler(async (_req, res) => {
+  res.json({ providers: await listAnimationProviders() });
 }));
 
 // Create a character record — the entry point of the reference workflow.

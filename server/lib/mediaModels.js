@@ -1405,6 +1405,27 @@ const platformBroken = (broken) =>
 // normalizeRegistry) and peer-synced entries in one place, and keeps the derived
 // list out of data/media-models.json — a persisted copy would read back as a
 // *declared* list that no later correction to VIDEO_RUNTIME_MODES could reach.
+/**
+ * Every pinned file group a model needs resolvable in the HF cache.
+ *
+ * Two shapes, and a caller that checks only one gets the other wrong: a
+ * selective row pins its subset with `repoFiles` against its OWN repo (the H3
+ * CUDA entry, whose base repo is ~498 GB and whose diffusers layout is ~144 GB
+ * of it), while a row that composes weights from a SECOND repo pins them in
+ * `requiredWeights` (the H3 MLX entry's upstream FL2VA checkpoint). Checking
+ * `requiredWeights` alone reports a half-downloaded CUDA model as complete.
+ *
+ * An empty result means "the base snapshot is the whole answer".
+ */
+export const requiredModelCacheGroups = (model) => {
+  const groups = [];
+  if (Array.isArray(model?.repoFiles)) {
+    groups.push({ repo: model.repo, revision: model.revision, files: model.repoFiles });
+  }
+  if (Array.isArray(model?.requiredWeights)) groups.push(...model.requiredWeights);
+  return groups;
+};
+
 export const getVideoModels = () => {
   const reg = loadMediaModels();
   const list = readVideoBucket(reg.video, activeVideoBucket()) || [];
