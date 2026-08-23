@@ -205,6 +205,31 @@ describe('cosHealthMonitor.runHealthCheck', () => {
     expect(issues.some(i => i.category === 'memory' && /High memory usage/.test(i.message))).toBe(true);
   });
 
+  // A model server's RSS is the checkpoint it loaded, so it clears any generic
+  // cap the moment it comes up — flagging it produced a warning the user could
+  // never clear, on every install that runs a local model.
+  describe('model servers are exempt from the per-process memory cap', () => {
+    const overLimitBytes = 24 * 1024 * 1024 * 1024;
+
+    it.each(['portos-llama-server', 'portos-mtplx'])('does not flag %s', async (name) => {
+      mock.pm2Stdout = JSON.stringify([{ name, pm2_env: { status: 'online' }, monit: { memory: overLimitBytes } }]);
+      const { issues } = await runHealthCheck();
+      expect(issues.filter(i => i.category === 'memory')).toEqual([]);
+    });
+
+    it('still flags a non-model-server process alongside an exempt one', async () => {
+      mock.pm2Stdout = JSON.stringify([
+        { name: 'portos-llama-server', pm2_env: { status: 'online' }, monit: { memory: overLimitBytes } },
+        { name: 'hog', pm2_env: { status: 'online' }, monit: { memory: overLimitBytes } }
+      ]);
+      const { issues } = await runHealthCheck();
+      const memoryIssues = issues.filter(i => i.category === 'memory');
+      expect(memoryIssues).toHaveLength(1);
+      expect(memoryIssues[0].message).toContain('hog');
+      expect(memoryIssues[0].message).not.toContain('portos-llama-server');
+    });
+  });
+
   it('persists the latest snapshot to state and emits health:check', async () => {
     mock.pm2Stdout = '[]';
     const { metrics } = await runHealthCheck();

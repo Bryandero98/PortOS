@@ -11,7 +11,7 @@ import { spawn } from '../lib/childProcess.js';
 import { commandExists } from '../lib/commandExists.js';
 import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
 import { expandHome, sleep } from '../lib/fileUtils.js';
-import { createDaemonLogBuffer, pm2ArgValue } from '../lib/managedDaemon.js';
+import { createDaemonLogBuffer, pm2ArgValue, LLAMA_APP } from '../lib/managedDaemon.js';
 import { resolveSpecModelPath } from './specDecodeModels.js';
 import { parseSpecTypes, isDraftSpecType } from '../lib/specDecodePresets.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
@@ -21,7 +21,7 @@ import { tuningSpecsFor } from '../lib/localModelTuning.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { execPm2, getAppStatusStrict, clearJlistCache, getSavedProcessNames } from './pm2.js';
 
-export const LLAMA_APP = 'portos-llama-server';
+export { LLAMA_APP };
 
 const PROBE_TIMEOUT_MS = 1500;
 const STARTUP_WAIT_TIMEOUT_MS = 4000;
