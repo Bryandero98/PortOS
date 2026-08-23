@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Power, PowerOff, AlertTriangle, FlaskConical, Zap, ChevronDown, ChevronUp, Terminal } from 'lucide-react';
+import { Cpu, Box, Download, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Power, PowerOff, AlertTriangle, Zap, ChevronDown, ChevronUp, Terminal } from 'lucide-react';
 import toast from '../ui/Toast';
-import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatAgeDays, formatBytes, formatContextLength, timeAgo, recommendedRamGb, formatDateNumeric } from '../../utils/formatters';
 import { localLlmTargetKey } from '../../lib/localLlmTargetKey';
@@ -21,24 +20,13 @@ import SpecDecodeWeightRow from './SpecDecodeWeightRow.jsx';
 import RuntimeServersCard from './RuntimeServersCard.jsx';
 import MtplxServerCard from './MtplxServerCard.jsx';
 import LocalLlmBackendCard from './LocalLlmBackendCard.jsx';
+import LocalLlmInstalledModels from './LocalLlmInstalledModels.jsx';
 
 const BACKENDS = [
   { id: 'ollama', label: 'Ollama', icon: Cpu },
   { id: 'lmstudio', label: 'LM Studio', icon: Box }
 ];
 const labelFor = (id) => BACKENDS.find((b) => b.id === id)?.label || id;
-
-// LM Studio's installed list is folder-scoped (`publisher/repo`) plus a separate
-// `quantization` field. A force redownload has to target a tagged id so the
-// server evicts that GGUF instead of no-op'ing on a bare repo.
-const redownloadInstallId = (model, backend) => {
-  if (backend !== 'lmstudio') return model.id;
-  if (/@/.test(model.id || '')) return model.id;
-  if (model?.quantization) return `${model.id}@${model.quantization}`;
-  // /v1/models fallback has no quantization — a bare repo force-redownload
-  // would skip existing GGUFs and still toast success.
-  return null;
-};
 
 // The speculative-decoding presets come from the server
 // (`server/lib/specDecodePresets.js`, surfaced on the llama-server status
@@ -564,7 +552,6 @@ export function LocalLlmTab() {
   const selectedOllamaStartupAction = selectedData?.service?.supported ? 'enable' : 'start';
   const selectedOllamaStartupLabel = selectedData?.service?.supported ? 'Run at Startup' : 'Start Ollama';
   const installedModels = selectedData?.models || [];
-  const compareTargetKeys = useMemo(() => new Set(compareTargets.map(localLlmTargetKey)), [compareTargets]);
   const catalogCategories = useMemo(() => {
     const counts = new Map();
     for (const model of catalog) {
@@ -1778,105 +1765,21 @@ export function LocalLlmTab() {
           )}
         </div>
 
-        {/* Installed models */}
-        <div className="space-y-2 pt-2 border-t border-port-border/50">
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <h3 className="text-xs font-medium text-gray-400">Installed on {labelFor(selected)} ({installedModels.length})</h3>
-            {compareTargets.length > 0 && (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-500">{compareTargets.length} selected</span>
-                <button
-                  onClick={openCompare}
-                  disabled={compareTargets.length < 2}
-                  className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 flex items-center gap-1"
-                >
-                  <ArrowRightLeft size={12} />
-                  Compare selected
-                </button>
-              </div>
-            )}
-          </div>
-          {installedModels.length === 0 ? (
-            <p className="text-xs text-gray-500">No models installed yet.</p>
-          ) : installedModels.map((m) => (
-            // Mobile: identity stacks above the action row so the (often very
-            // long) `hf.co/…` model id gets the full row width and wraps instead
-            // of being ellipsised down to "hf.co/sja…". Desktop keeps the single
-            // line with actions trailing on the right.
-            <div key={m.id} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 bg-port-bg border border-port-border rounded-lg p-3">
-              <div className="flex items-start gap-3 min-w-0 flex-1">
-                <label className="shrink-0 flex items-center pt-0.5" title={`Include ${m.name || m.id} in a comparison`}>
-                  <input
-                    type="checkbox"
-                    checked={compareTargetKeys.has(localLlmTargetKey({ backend: selected, modelId: m.id }))}
-                    onChange={() => toggleCompareTarget(selected, m.id)}
-                    className="h-4 w-4 accent-port-accent"
-                    aria-label={`Select ${m.name || m.id} for comparison`}
-                  />
-                </label>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm text-white break-all">{m.name}</div>
-                  <div className="text-xs text-gray-500 break-words">
-                    {[
-                      m.params,
-                      m.quantization,
-                      m.family,
-                      formatContextLength(m.contextLength),
-                      m.size != null ? formatBytes(m.size) : null
-                    ].filter(Boolean).join(' · ')}
-                  </div>
-                  {(m.capabilities || []).length > 0 && (
-                    <div className="flex items-center gap-1 flex-wrap mt-1">
-                      <CapabilityBadges capabilities={m.capabilities} />
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-2 shrink-0 justify-end flex-wrap">
-                <Link
-                  to={`/local-llm/playground?backend=${encodeURIComponent(selected)}&model=${encodeURIComponent(m.id)}`}
-                  className="px-2.5 py-1 text-xs bg-port-accent-2/15 hover:bg-port-accent-2/25 text-port-accent-2 rounded flex items-center gap-1 shrink-0 no-underline"
-                  title={`Chat with ${m.name || m.id}`}
-                >
-                  <FlaskConical size={12} />
-                  Chat
-                </Link>
-                {redownloadInstallId(m, selected) && (
-                <button
-                  onClick={() => install(redownloadInstallId(m, selected), { force: true })}
-                  disabled={busy}
-                  title="Pull this build again. Updated GGUF files keep the same name, so an existing install will not refresh until you redownload."
-                  className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 flex items-center gap-1 shrink-0"
-                  aria-label={`Redownload ${m.name || m.id}`}
-                >
-                  {actionInProgress === `install-${redownloadInstallId(m, selected)}` ? <BrailleSpinner /> : <RefreshCw size={12} />}
-                  Redownload
-                </button>
-                )}
-                {isConfirmingDelete(m.id) ? (
-                  <ConfirmButtonPair
-                    prompt="Delete?"
-                    confirmIcon={Trash2}
-                    busy={busy}
-                    className="shrink-0"
-                    onConfirm={() => confirmDelete(() => remove(m.id))}
-                    onCancel={cancelDelete}
-                  />
-                ) : (
-                  <button
-                    onClick={() => requestDelete(m.id)}
-                    disabled={busy}
-                    className="px-2.5 py-1 text-xs bg-port-error/20 hover:bg-port-error/40 text-port-error rounded disabled:opacity-50 flex items-center gap-1 shrink-0"
-                    aria-label={`Delete ${m.name}`}
-                  >
-                    {actionInProgress === `delete-${m.id}` ? <BrailleSpinner /> : <Trash2 size={12} />}
-                    Delete
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
+        <LocalLlmInstalledModels
+          actionInProgress={actionInProgress}
+          backend={selected}
+          busy={busy}
+          cancelDelete={cancelDelete}
+          compareTargets={compareTargets}
+          confirmDelete={confirmDelete}
+          install={install}
+          isConfirmingDelete={isConfirmingDelete}
+          models={installedModels}
+          onCompare={openCompare}
+          onToggleCompare={toggleCompareTarget}
+          remove={remove}
+          requestDelete={requestDelete}
+        />
       </div>
     </div>
   );

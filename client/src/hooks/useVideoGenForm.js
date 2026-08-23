@@ -12,18 +12,19 @@ import { randomSeed } from '../lib/genUtils';
 import {
   resolutionOptionsForModel, defaultResolutionForModel, snapAspectToImage,
 } from '../lib/videoGenResolutions';
-import { GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVideoClip.js';
 import { VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';
-import { buildVideoGenSubmission, envelopVideoPrompt } from '../lib/videoGenSubmission';
 import {
-  MAX_CHUNKS, DEFAULT_CONTEXT_FRAMES,
-  videoModelMemoryGb, computeFflfSafeFrames, isModelAllowedForMode,
+  MAX_CHUNKS,
+  videoModelMemoryGb, isModelAllowedForMode,
   normalizeFramesForModel, normalizeFpsForModel,
-  icLoraSpecForMode, icResolutionIssue,
-  STOCK_TEXT_ENCODER_ID, textEncoderOptionsForModel, normalizeTextEncoderForModel,
+  icLoraSpecForMode,
+  textEncoderOptionsForModel, normalizeTextEncoderForModel,
   textEncoderIdFromRecord,
-  DEFAULT_SPEED_PROFILE_ID, normalizeSpeedProfileForModel, speedProfileIdFromRecord,
+  normalizeSpeedProfileForModel, speedProfileIdFromRecord,
 } from '../lib/videoGenParams.js';
+import { useVideoGenFieldState } from './useVideoGenFieldState.js';
+import { useVideoGenSubmitFlow } from './useVideoGenSubmitFlow.js';
+import { useVideoGenValidation } from './useVideoGenValidation.js';
 
 // A Remix is an editing starting point. A fixed sampler profile (for example,
 // MiniMax H3) cannot honor a negative prompt, steps, or CFG override, so
@@ -75,99 +76,57 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
   const incomingWidth = searchParams.get('w');
   const incomingHeight = searchParams.get('h');
 
-  // Grok Build CLI video backend (#2859 phase 2) — surfaced only when the
-  // user enabled Grok in Settings → Image Gen (one toggle covers image +
-  // video). 'local' keeps every existing flow untouched.
-  const [backend, setBackend] = useState('local');
-  const [grokDuration, setGrokDuration] = useState(GROK_VIDEO_DEFAULT_DURATION);
-
-  const [mode, setMode] = useState(incomingAudioFilename ? 'a2v' : (incomingSourceImage ? 'image' : 'text'));
-  const [prompt, setPrompt] = useState(incomingPrompt || '');
-  const [negativePrompt, setNegativePrompt] = useState(incomingNegativePrompt || '');
-  const [stylePreset, setStylePreset] = useState(null);
-  const [modelId, setModelId] = useState('');
-  // Source model awaiting the catalog load. Both cross-page and in-page Remix
-  // arrive before/after models independently, so this state gives them one
-  // reconciliation path once the model capabilities are known. Recorded
-  // model-specific conditioning (a substitute text encoder or LoRAs) cannot
-  // survive a model swap, so it explicitly keeps that source model selected
-  // for a faithful remix.
-  const [remixSourceModel, setRemixSourceModel] = useState(null);
-  const [remixModelFallback, setRemixModelFallback] = useState(null);
-  const [width, setWidth] = useState(768);
-  const [height, setHeight] = useState(512);
-  // Set once the size has been chosen deliberately — the user picking a preset,
-  // or an explicit size arriving via Continue/Remix/restore. While it's false,
-  // selecting an I2V source image auto-snaps W×H to the source's aspect ratio
-  // (so the default frame doesn't cover-crop the subject). The snap itself does
-  // NOT set this, so re-picking a different source still re-snaps until the user
-  // takes the size into their own hands.
-  const sizeManuallySetRef = useRef(false);
-  const [numFrames, setNumFrames] = useState(121);
-  const [fps, setFps] = useState(24);
-  const [chunks, setChunks] = useState(1);
-  // Per-chunk prompt beats (#3695) — one editable string per chained chunk, so
-  // a longer shot can progress instead of replaying the same prompt at each
-  // seam. Kept as a plain sparse-by-blank array (index i steers chunk i); a
-  // blank entry means "use the main prompt for this chunk". Grown on demand by
-  // `setChunkPromptAt` rather than eagerly resized on every chunk change, so
-  // lowering then raising the count doesn't lose typed text.
-  const [chunkPrompts, setChunkPrompts] = useState([]);
-  // Continuation context window — how many of the previous chunk's frames each
-  // chained chunk conditions on. 0 means "last frame only"; the server clamps
-  // and ignores it on a runtime with no extend pipeline.
-  const [contextFrames, setContextFrames] = useState(DEFAULT_CONTEXT_FRAMES);
-  const [steps, setSteps] = useState('');
-  const [guidanceScale, setGuidanceScale] = useState('');
-  const [imageStrength, setImageStrength] = useState('');
-  // What the source image PROMISES (#4874): Anchor reproduces it as frame one,
-  // Inspire uses it for subject/style guidance and generates frame one. The
-  // effect below snaps this back to the default whenever the selected model or
-  // mode can't keep the promise, so the form can never submit a mode the server
-  // would reject — or, worse, display a promise the render would not honor.
-  const [i2vReferenceMode, setI2vReferenceMode] = useState(DEFAULT_I2V_REFERENCE_MODE);
-  const [seed, setSeed] = useState('');
-  const [tiling, setTiling] = useState('auto');
-  // Which prompt conditioner reads the prompt. Only MiniMax H3 offers a choice
-  // today (`model.textEncoderOptions`, decorated server-side); everywhere else
-  // the list is empty and this stays on the stock sentinel, which the submit
-  // builder drops from the payload entirely.
-  const [textEncoderId, setTextEncoderId] = useState(STOCK_TEXT_ENCODER_ID);
-  // Named sampler schedule (#4875). Defaults to Quality, the shipped contract —
-  // it is a real selectable value rather than '' so the <select> always has a
-  // matching <option>, and the submit builder drops it as "unchanged".
-  const [speedProfileId, setSpeedProfileId] = useState(DEFAULT_SPEED_PROFILE_ID);
-  const [disableAudio, setDisableAudio] = useState(false);
-  // Video LoRAs (ltx2 runtime only) — `{ filename, name, scale }` entries the
-  // LoraPicker owns; `availableLoras` is the full installed library filtered
-  // by the picker to the model's video family. See videoLoraFamily().
-  const [selectedLoras, setSelectedLoras] = useState([]);
-  // "No music" appends a soundscape constraint at submit time. LTX-2 and
-  // MiniMax H3 both steer generated audio from prompt text — adding "no music,
-  // no soundtrack" pushes them toward ambient/diegetic sound (footsteps, room
-  // tone) and away from generated background music.
-  const [noMusic, setNoMusic] = useState(false);
-  const [sourceImageFile, setSourceImageFile] = useState(incomingSourceImage || null);
-  const [sourceImageUpload, setSourceImageUpload] = useState(null);
-  const [lastImageFile, setLastImageFile] = useState(null);
-  const [lastImageUpload, setLastImageUpload] = useState(null);
-  // Multi-keyframe FFLF (ltx2 runtime only): the user anchors 2–8 gallery
-  // images at specific pixel-frame indices and the model interpolates between
-  // them. This is a distinct server path from the legacy first/last pair
-  // (the route rejects mixing the two) — `keyframesMode` flips fflf between
-  // the two pickers. Each entry is { file, index } where file is a gallery
-  // basename; the route resolves it to an absolute path. Keyframes are
-  // gallery-only (no per-frame upload) because the route only accepts
-  // gallery references for them.
-  const [keyframesMode, setKeyframesMode] = useState(false);
-  const [keyframes, setKeyframes] = useState([]);
-  const [extendFromVideoId, setExtendFromVideoId] = useState('');
-  const [extendingFrame, setExtendingFrame] = useState(false);
-  // a2v mode — direct audio upload only (no gallery for audio yet). The File
-  // is sent as multipart field name 'audioFile'; the server stages it under
-  // data/uploads, then the python helper passes it to AudioToVideoPipeline.
-  const [audioFile, setAudioFile] = useState(null);
-  const audioHandoffRef = useRef(null);
+  const {
+    audioFile, setAudioFile, audioHandoffRef,
+    backend, setBackend,
+    chunks, setChunks,
+    chunkPrompts, setChunkPrompts,
+    contextFrames, setContextFrames,
+    disableAudio, setDisableAudio,
+    extendingFrame, setExtendingFrame,
+    extendFromVideoId, setExtendFromVideoId,
+    fps, setFps,
+    grokDuration, setGrokDuration,
+    guidanceScale, setGuidanceScale,
+    height, setHeight,
+    i2vReferenceMode, setI2vReferenceMode,
+    icReferenceFile, setIcReferenceFile,
+    icReferenceImageFiles, setIcReferenceImageFiles,
+    icReferenceNames, setIcReferenceNames,
+    icReferenceVideoId, setIcReferenceVideoId,
+    icSkipStage2, setIcSkipStage2,
+    icStrength, setIcStrength,
+    imageStrength, setImageStrength,
+    keyframes, setKeyframes,
+    keyframesMode, setKeyframesMode,
+    lastImageFile, setLastImageFile,
+    lastImageUpload, setLastImageUpload,
+    mode, setMode,
+    modelId, setModelId,
+    negativePrompt, setNegativePrompt,
+    noMusic, setNoMusic,
+    numFrames, setNumFrames,
+    prompt, setPrompt,
+    remixModelFallback, setRemixModelFallback,
+    remixSourceModel, setRemixSourceModel,
+    seed, setSeed,
+    selectedLoras, setSelectedLoras,
+    sizeManuallySetRef,
+    speedProfileId, setSpeedProfileId,
+    staleModelToastRef,
+    steps, setSteps,
+    stylePreset, setStylePreset,
+    sourceImageFile, setSourceImageFile,
+    sourceImageUpload, setSourceImageUpload,
+    textEncoderId, setTextEncoderId,
+    tiling, setTiling,
+    width, setWidth,
+  } = useVideoGenFieldState({
+    incomingAudioFilename,
+    incomingNegativePrompt,
+    incomingPrompt,
+    incomingSourceImage,
+  });
 
   // Music renders live in the shared library rather than in the browser's
   // local file picker. Turn a render's deep-link filename into the same File
@@ -199,29 +158,6 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
       });
     return () => { cancelled = true; };
   }, [incomingAudioFilename, setSearchParams]);
-  // IC-LoRA remix modes (issue #3100) — the reference clip is either a fresh
-  // upload (multipart field 'icReference') or a prior render picked by history
-  // id. The two are mutually exclusive server-side, so the panel's Clear drops
-  // both. `icStrength` weights the reference conditioning channel.
-  const [icReferenceFile, setIcReferenceFile] = useState(null);
-  const [icReferenceVideoId, setIcReferenceVideoId] = useState('');
-  // Image-kind IC references (Ingredients, #3112) — 2-8 gallery basenames rather
-  // than the single clip above. Gallery-only, mirroring the route: the reference
-  // list is a separate submit field (icReferenceImageFiles) so a clip can never
-  // ride into an image-kind weight (which would silently produce garbage).
-  const [icReferenceImageFiles, setIcReferenceImageFiles] = useState([]);
-  const [icStrength, setIcStrength] = useState(1.0);
-  const [icSkipStage2, setIcSkipStage2] = useState(false);
-  // Display-only: the reference clip name(s) of an IN-FLIGHT render restored via
-  // /active. An upload isn't re-derivable from its basename, so this can't
-  // repopulate the picker — it just tells the user what the running job is
-  // conditioned on instead of showing an empty panel.
-  const [icReferenceNames, setIcReferenceNames] = useState([]);
-  // Tracks the last stale modelId we already toasted about so the
-  // validateModelId effect fires the "original model gone" toast exactly once
-  // per unique stale id, even if the effect re-runs (e.g. models list updates).
-  const staleModelToastRef = useRef(null);
-
   // Seed the model dropdown from the server's default once /status lands,
   // without clobbering a Remix/deep-link/user pick that already set it.
   useEffect(() => {
@@ -654,33 +590,6 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
   // below numFrames. Compute the same cap the server enforces so the picker can
   // gate indices (and the auto-seed) against it. Falls back to numFrames when
   // the budget hasn't loaded yet (server still enforces the real cap).
-  const maxSafeFrames = useMemo(
-    () => computeFflfSafeFrames(width, height, numFrames, status?.fflfLtx2PixelBudget),
-    [width, height, numFrames, status?.fflfLtx2PixelBudget],
-  );
-  const keyframesError = useMemo(() => {
-    if (!keyframesActive) return null;
-    if (keyframes.length < 2) return 'Add at least 2 keyframes.';
-    if (keyframes.length > 8) return 'Use at most 8 keyframes.';
-    let prev = -1;
-    for (let i = 0; i < keyframes.length; i++) {
-      const kf = keyframes[i];
-      if (!kf.file) return `Keyframe ${i + 1} needs a gallery image.`;
-      if (!Number.isInteger(kf.index) || kf.index < 0) return `Keyframe ${i + 1} needs a frame index ≥ 0.`;
-      if (kf.index > numFrames - 1) return `Keyframe ${i + 1} frame ${kf.index} must be below numFrames (${numFrames}).`;
-      // Effective cap from the resolution-dependent pixel budget (< numFrames at
-      // higher resolutions). Mirrors the worker's clamp so we don't POST a
-      // render that 400s with LTX2_FFLF_PIXEL_BUDGET_EXCEEDED.
-      if (maxSafeFrames < numFrames && kf.index > maxSafeFrames - 1) {
-        return `Keyframe ${i + 1} frame ${kf.index} exceeds the ${width}×${height} pixel budget (max frame ${maxSafeFrames - 1}). Lower the resolution or raise FFLF_LTX2_PIXEL_BUDGET.`;
-      }
-      if (kf.index <= prev) return 'Keyframe frame indices must be strictly ascending.';
-      prev = kf.index;
-    }
-    return null;
-  }, [keyframesActive, keyframes, numFrames, maxSafeFrames, width, height]);
-  const keyframesBlocked = keyframesActive && !!keyframesError;
-
   // Preset pick or custom W×H edit — mark the size as manually set so aspect-snap
   // on image upload stops overriding it (same flag the remix/deep-link paths set).
   // ResolutionField passes a transient 0 mid-edit and blur-snaps each edge to the
@@ -739,6 +648,36 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
     if (file && lastImageFile) setLastImageFile(null);
     setLastImageUpload(file);
   };
+
+  const {
+    a2vModeBlocked,
+    chainingActive,
+    extendModeBlocked,
+    icLoraModeBlocked,
+    keyframesBlocked,
+    keyframesError,
+    maxSafeFrames,
+  } = useVideoGenValidation({
+    audioFile,
+    chunks,
+    currentModel,
+    extendFromVideoId,
+    extendingFrame,
+    height,
+    icImageKind,
+    icModeActive,
+    icReferenceFile,
+    icReferenceImageFiles,
+    icReferenceVideoId,
+    icSpec,
+    keyframes,
+    keyframesActive,
+    mode,
+    numFrames,
+    pixelBudget: status?.fflfLtx2PixelBudget,
+    sourceImageFile,
+    width,
+  });
 
   // The last addressable frame index — the smaller of numFrames and the
   // resolution-dependent pixel-budget cap (maxSafeFrames), minus 1. Seeding new
@@ -1227,49 +1166,6 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
     }
   };
 
-  // In Extend mode the source image is populated asynchronously after the
-  // user picks a prior video — until that extraction lands, sourceImageFile
-  // is empty and the request would silently fall back to T2V while still
-  // sending mode='extend'. Block submit/enqueue until the extend frame is
-  // actually ready (and unblocks the disabled state on the buttons too).
-  // ltx2-extend doesn't need a frame extraction — the route resolves the
-  // video id directly. Block only on extendFromVideoId being unset (and on
-  // legacy runtime, also wait for the extracted frame).
-  const extendModeBlocked = mode === 'extend' && (
-    !extendFromVideoId
-    || (!isLtx2FamilyRuntime(currentModel?.runtime) && (extendingFrame || !sourceImageFile))
-  );
-  // a2v requires an audio upload AND an ltx2-runtime model — the legacy
-  // mlx_video runtime has no audio-conditioned pipeline. Block submit when
-  // either is missing so the request fails the form, not the worker.
-  const a2vModeBlocked = mode === 'a2v' && (!audioFile || !isLtx2FamilyRuntime(currentModel?.runtime));
-  // IC-LoRA remix needs a reference clip AND an ltx2-runtime model, and the
-  // resolution must divide by the weight's reference-downscale factor (the
-  // server rejects otherwise). Block submit for all three so the request fails
-  // the form rather than the worker.
-  // An image-kind weight is satisfied by min..max FILLED gallery rows (blank rows
-  // are dropped from the payload, so an unfilled row must block rather than
-  // silently submit a short list the route would 400).
-  const icFilledImageRefs = icReferenceImageFiles.filter(Boolean).length;
-  const icLoraModeBlocked = icModeActive && (
-    (icImageKind
-      ? (icFilledImageRefs < icSpec.minReferences || icFilledImageRefs > icSpec.maxReferences)
-      : (!icReferenceFile && !icReferenceVideoId))
-    || !isLtx2FamilyRuntime(currentModel?.runtime)
-    || !!icResolutionIssue(icSpec, width, height)
-  );
-  // Chaining seeds each chunk from the previous one's last frame, so it needs
-  // i2v — asked through the shared predicate so the picker, this gate and the
-  // server's videoChainUnsupportedError can't answer differently.
-  const modelSupportsChaining = isModelAllowedForMode(currentModel, 'image');
-  // The single predicate for "this request really chains" — keyframes, IC
-  // references and a2v each anchor a SINGLE clip, so the route pins them to one
-  // chunk (KEYFRAMES_CHUNKS_CONFLICT / IC_LORA_CHUNKS_CONFLICT). Derived once so
-  // the submitted `chunks`, the submitted `chunkPrompts`, and the per-chunk beat
-  // editor can never disagree about whether chaining is active.
-  const chainingActive = mode !== 'a2v' && !keyframesActive && !icModeActive
-    && modelSupportsChaining && chunks > 1;
-
   // Edit one beat. The backing array is only ever GROWN (never truncated on a
   // chunk-count change) so lowering the count and raising it again restores the
   // text the user already typed; submit and the editor slice to the live count.
@@ -1297,7 +1193,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
     icReferenceImageFiles, icStrength, icSkipStage2,
     chainingActive, chunks, chunkPrompts, contextFrames,
   };
-  const buildGeneratePayload = () => buildVideoGenSubmission(submissionState);
+  const { buildGeneratePayload, envelopedPrompt } = useVideoGenSubmitFlow(submissionState);
 
   return {
     // Backend + mode
@@ -1309,7 +1205,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
     // The exact prompt a render would be submitted with right now (style preset
     // + no-music envelope). The LoRA picker's #4665 trigger hint reads THIS, not
     // the raw textarea, so it can never disagree with the server-side weave.
-    envelopedPrompt: envelopVideoPrompt(prompt, submissionState),
+    envelopedPrompt,
     negativePrompt, setNegativePrompt,
     stylePreset, setStylePreset,
     remixModelFallback,
