@@ -63,6 +63,7 @@ import {
   resolveInjectedTuiModel,
   resolveBedrockCliModel,
   buildCodexStartupArgs,
+  buildCodexAgentThreadArgs,
   buildEffortArgs,
   isOpencodeCommand,
   prefixOpencodeModel,
@@ -115,11 +116,16 @@ function codexCliArgs(baseArgs, { model, effort, provider }) {
   return args;
 }
 
-function codexSpawnArgs(provider, { effectiveModel, effort }) {
+function codexSpawnArgs(provider, { effectiveModel, effort, maxConcurrentThreads }) {
   // Injected UNCONDITIONALLY: this arm builds codex's argv from scratch and
   // never forwards provider.args, so there's no pin to detect here (see the
   // long-form comment history on this in agentCliSpawning.js before #3618).
-  const args = ['exec', '--dangerously-bypass-approvals-and-sandbox', ...buildCodexStartupArgs()];
+  const args = [
+    'exec',
+    '--dangerously-bypass-approvals-and-sandbox',
+    ...buildCodexStartupArgs(),
+    ...buildCodexAgentThreadArgs(maxConcurrentThreads),
+  ];
   if (effectiveModel) {
     args.push('--model', effectiveModel);
   }

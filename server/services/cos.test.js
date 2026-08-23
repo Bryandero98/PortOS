@@ -39,6 +39,7 @@ import { canQueueImprovementTasks } from './cosState.js';
 import { createDequeueCapacity, countRunningAgentsByLocalEndpoint, isMissionTierEligible, isIdleTierEligible } from './cosDequeue.js';
 import {
   createLocalEndpointSlotContext,
+  cloudSwarmThreadCapacity,
   localEndpointOfProvider,
   providerBaseUrl,
   reserveLocalEndpointSpawn,
@@ -799,6 +800,23 @@ describe('localEndpointOfProvider (#4834)', () => {
     // The issue is explicit: a TUI provider whose endpoint isn't recorded stays
     // ungated even when its model id names a local runtime.
     expect(localEndpointOfProvider({ type: 'tui', defaultModel: 'mtplx/local-qwen-27b', endpoint: null })).toBeNull();
+  });
+});
+
+describe('cloudSwarmThreadCapacity', () => {
+  it('reserves one root thread in addition to every configured cloud worker', () => {
+    expect(cloudSwarmThreadCapacity(CLOUD_PROVIDER, 6)).toBe(7);
+    expect(cloudSwarmThreadCapacity(CLOUD_PROVIDER, '6')).toBe(7);
+  });
+
+  it('does not lift the harness cap for a local inference endpoint', () => {
+    expect(cloudSwarmThreadCapacity(LOCAL_TUI_PROVIDER, 6)).toBeNull();
+  });
+
+  it('does not override the harness outside a valid multi-worker swarm', () => {
+    expect(cloudSwarmThreadCapacity(CLOUD_PROVIDER, 1)).toBeNull();
+    expect(cloudSwarmThreadCapacity(CLOUD_PROVIDER, 2.5)).toBeNull();
+    expect(cloudSwarmThreadCapacity(CLOUD_PROVIDER, null)).toBeNull();
   });
 });
 

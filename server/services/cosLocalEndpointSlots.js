@@ -74,6 +74,18 @@ export function localEndpointOfProvider(provider) {
   return localSlotKey(providerBaseUrl(provider));
 }
 
+/**
+ * Codex's multi-agent limit includes the root orchestrator. Cloud claim swarms
+ * therefore need `workers + 1` session threads to honor the configured worker
+ * count. A provider on this machine deliberately gets no override: local
+ * inference remains governed by its bounded GPU concurrency posture.
+ */
+export function cloudSwarmThreadCapacity(provider, swarmCount) {
+  const workers = Number(swarmCount);
+  if (!Number.isSafeInteger(workers) || workers < 2) return null;
+  return localEndpointOfProvider(provider) ? null : workers + 1;
+}
+
 // Normalize first so a schemeless value still parses — `localEndpointPort` goes
 // through `new URL`, which reads `localhost:1234` as a SCHEME and yields null.
 // Providers configured through the UI can carry a bare `host:port`.

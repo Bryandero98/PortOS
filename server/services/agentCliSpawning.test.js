@@ -222,6 +222,17 @@ describe('buildCliSpawnConfig', () => {
     expect(config.args).toEqual(['exec', '--dangerously-bypass-approvals-and-sandbox', '-c', 'check_for_update_on_startup=false', '--model', 'gpt-5.4']);
   });
 
+  it('gives a cloud Codex swarm enough threads for its root plus every worker', () => {
+    const config = buildCliSpawnConfig(
+      { id: 'codex', command: 'codex' },
+      'gpt-5.4',
+      {},
+      { maxConcurrentThreads: 7 },
+    );
+
+    expect(config.args).toContain('agents.max_concurrent_threads_per_session=7');
+  });
+
   it('disables the codex update check unconditionally on the headless agent path (ignores provider.args)', () => {
     // This builder constructs codex argv from scratch and never forwards
     // provider.args, so a provider.args pin is NOT honored here — a headless CoS
