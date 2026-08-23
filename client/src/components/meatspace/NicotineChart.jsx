@@ -5,7 +5,7 @@ import {
 import * as api from '../../services/api';
 import BrailleSpinner from '../BrailleSpinner';
 import useChartColors from '../../hooks/useChartColors.js';
-import { localDateKey } from '../../utils/formatters';
+import { formatMonthDay, localDateKey } from '../../utils/formatters';
 
 const VIEWS = [
   { id: '7d', label: '7 Days', days: 7 },
@@ -53,7 +53,7 @@ export default function NicotineChart({ onRefreshKey, onViewChange }) {
       const mg = dateMap[dateStr] || 0;
       chartData.push({
         date: dateStr,
-        label: `${cursor.getMonth() + 1}/${cursor.getDate()}`,
+        label: formatMonthDay(cursor),
         mg
       });
       cursor.setDate(cursor.getDate() + 1);

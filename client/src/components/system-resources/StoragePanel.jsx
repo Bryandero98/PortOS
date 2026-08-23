@@ -5,7 +5,7 @@ import ProviderModelSelector from '../ProviderModelSelector.jsx';
 import Banner from '../ui/Banner.jsx';
 import CleanupControl from './CleanupControl.jsx';
 import useProviderModels from '../../hooks/useProviderModels.js';
-import { formatBytes } from '../../utils/formatters.js';
+import { formatBytes, formatDateTime } from '../../utils/formatters.js';
 import * as api from '../../services/api.js';
 import toast from '../ui/Toast.jsx';
 
@@ -272,7 +272,7 @@ function AiTriage({ report, onReport }) {
 
 export default function StoragePanel({ report, loading, onRunReport, onReport, cleanup }) {
   if (!report) return <ReportEmpty loading={loading} onRun={onRunReport} />;
-  const generated = new Date(report.generatedAt).toLocaleString();
+  const generated = formatDateTime(report.generatedAt);
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 rounded-xl border border-port-border bg-port-card p-3 sm:flex-row sm:items-center sm:justify-between">
