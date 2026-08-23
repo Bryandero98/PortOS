@@ -18,7 +18,7 @@
 //
 // Local gallery only — no external/web search (deliberate, see plan).
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Search, X, RefreshCw, Upload } from 'lucide-react';
 import Modal from '../ui/Modal';
 import FilePickerButton from '../ui/FilePickerButton';
@@ -71,6 +71,10 @@ export default function GalleryImagePicker({
   // tears the picker down instead of toggling `open` — so an async upload can
   // tell whether the picker session it started in is still the current one.
   const sessionRef = useRef(0);
+  const handleSelectCard = useCallback((item) => {
+    onSelect?.(item);
+    onClose?.();
+  }, [onClose, onSelect]);
   useEffect(() => {
     sessionRef.current += 1;
     return () => { sessionRef.current += 1; };
@@ -360,7 +364,7 @@ export default function GalleryImagePicker({
                 item={item}
                 hideActions
                 showCollectionMenu={false}
-                onClick={() => { onSelect?.(item); onClose?.(); }}
+                onClick={handleSelectCard}
               />
             ))}
           </div>

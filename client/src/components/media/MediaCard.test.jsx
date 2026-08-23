@@ -33,6 +33,48 @@ beforeEach(() => {
 });
 
 describe('MediaCard', () => {
+  it('skips repeated renders when its item and action props are unchanged', () => {
+    let promptReads = 0;
+    const stableItem = {
+      ...imageItem,
+      get prompt() {
+        promptReads += 1;
+        return imageItem.prompt;
+      },
+    };
+    const onPreview = vi.fn();
+    const { rerender } = render(
+      <MediaCard
+        item={stableItem}
+        onPreview={onPreview}
+        showCollectionMenu={false}
+        showMoodBoardMenu={false}
+      />
+    );
+
+    expect(promptReads).toBe(1);
+    rerender(
+      <MediaCard
+        item={stableItem}
+        onPreview={onPreview}
+        showCollectionMenu={false}
+        showMoodBoardMenu={false}
+      />
+    );
+    expect(promptReads).toBe(1);
+
+    rerender(
+      <MediaCard
+        item={stableItem}
+        onPreview={onPreview}
+        selected
+        showCollectionMenu={false}
+        showMoodBoardMenu={false}
+      />
+    );
+    expect(promptReads).toBe(2);
+  });
+
   it('uses MediaImage for grid thumbnails so peer-synced assets show and recover from the syncing placeholder', () => {
     render(<MediaCard item={imageItem} showCollectionMenu={false} />);
 
