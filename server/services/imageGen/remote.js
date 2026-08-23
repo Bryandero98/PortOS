@@ -54,8 +54,8 @@ const executor = createRemoteMediaExecutor({
   label: 'image',
   events: imageGenEvents,
   markerSchema: remoteImageMarkerSchema,
-  buildRequest: (marker, { stageAsset }) => applyRemoteInputAssets(
-    marker.request, marker.inputAssets, stageAsset, federatedMediaImageJobSubmissionSchema,
+  buildRequest: (marker, ctx) => applyRemoteInputAssets(
+    marker.request, marker.inputAssets, ctx, federatedMediaImageJobSubmissionSchema,
   ),
   // PATHS is read per job (not captured at module load) so a test that swaps
   // the gallery directory still sees its own temp root. The `<jobId>.png`

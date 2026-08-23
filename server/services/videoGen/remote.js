@@ -56,8 +56,8 @@ const executor = createRemoteMediaExecutor({
   label: 'video',
   events: videoGenEvents,
   markerSchema: remoteVideoMarkerSchema,
-  buildRequest: (marker, { stageAsset }) => applyRemoteInputAssets(
-    marker.request, marker.inputAssets, stageAsset, federatedMediaVideoJobSubmissionSchema,
+  buildRequest: (marker, ctx) => applyRemoteInputAssets(
+    marker.request, marker.inputAssets, ctx, federatedMediaVideoJobSubmissionSchema,
   ),
   // `<jobId>.mp4` is videoGen/local.js's own filename shape, which is what the
   // provider-side result guard and the local history row both key on.

@@ -276,6 +276,52 @@ describe('federated image consumer adapter', () => {
       expect(submission[1].body).not.toContain('init.png');
     });
 
+    // A render can legitimately name one file twice — two identical reference
+    // images, or a video source frame reused as the last frame. Every path is
+    // staged concurrently, so the per-run memo has to hold the in-flight upload
+    // rather than the finished id, or both copies transfer the same bytes.
+    it('stages a repeated conditioning path once', async () => {
+      writeFileSync(join(tempImageDir, 'init.png'), png);
+      transport.fetch.mockImplementation(async (url, options) => {
+        if (url.includes('/assets/')) return jsonResponse({ code: 'MEDIA_PROVIDER_ASSET_NOT_FOUND' }, 404);
+        if (url.endsWith('/assets') && options.method === 'POST') {
+          return jsonResponse({
+            wireVersion: 1,
+            assetId: ASSET_ID,
+            sha256: sha256(png),
+            sizeBytes: png.length,
+            mimeType: 'image/png',
+            expiresAt: '2026-08-22T18:00:00.000Z',
+          }, 201);
+        }
+        if (url.endsWith('/jobs') && options.method === 'POST') return jsonResponse(providerJob('canceled'), 202);
+        throw new Error(`Unexpected test URL: ${url}`);
+      });
+
+      const base = params();
+      const terminal = captureTerminal(LOCAL_JOB_ID);
+      await generateImage({
+        ...base,
+        remoteMedia: {
+          ...base.remoteMedia,
+          inputAssets: [
+            { role: 'referenceImages', path: 'init.png' },
+            { role: 'referenceImages', path: 'init.png' },
+          ],
+        },
+      }).catch(() => {});
+      await terminal;
+
+      const uploads = transport.fetch.mock.calls
+        .filter(([url, options]) => url.endsWith('/assets') && options.method === 'POST');
+      expect(uploads).toHaveLength(1);
+      // Both slots still resolve — deduping the transfer must not drop a ref.
+      const submission = transport.fetch.mock.calls
+        .find(([url, options]) => url.endsWith('/jobs') && options.method === 'POST');
+      expect(JSON.parse(submission[1].body).referenceImages)
+        .toEqual([{ assetId: ASSET_ID }, { assetId: ASSET_ID }]);
+    });
+
     // Content addressing only pays off if BOTH sides can compute the address.
     // The consumer derives the id from its own instance id and the file digest,
     // asks, and sends nothing when the peer already has it — which is what makes
