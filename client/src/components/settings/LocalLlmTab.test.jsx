@@ -118,19 +118,34 @@ describe('LocalLlmTab runtime servers', () => {
     }
   });
 
-  it('starts MTPLX from that surface', async () => {
-    const { getMtplxServerStatus, startMtplxServer } = await import('../../services/api');
+  // MTPLX starts on demand — the first request routed to it brings it up — so
+  // this surface offers Install and Configure, never Start.
+  it('offers no MTPLX Start on that surface', async () => {
+    const { getMtplxServerStatus } = await import('../../services/api');
     getMtplxServerStatus.mockResolvedValue({
       installed: true, running: false, supported: true, cachedModels: ['Example/Qwen-MTP'], endpoint: 'http://127.0.0.1:8000/v1',
     });
-    startMtplxServer.mockResolvedValue({ success: true, online: true, endpoint: 'http://127.0.0.1:8000/v1' });
 
     await renderTab();
     const card = screen.getByRole('heading', { name: 'Local Runtime Servers' }).closest('div.bg-port-card');
     const mtplxRow = within(card).getByText('MTPLX').closest('div.flex.flex-col');
-    fireEvent.click(within(mtplxRow).getByRole('button', { name: /^Start/ }));
 
-    await waitFor(() => expect(startMtplxServer).toHaveBeenCalled());
+    expect(within(mtplxRow).queryByRole('button', { name: /^Start/ })).toBeNull();
+    expect(within(mtplxRow).getByText(/Starts on demand/)).toBeInTheDocument();
+  });
+
+  it('saves an idle window through the settings slice for that runtime', async () => {
+    const { getLlamaServerStatus, patchSettingsSlice } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue({ installed: true, running: true, idleMinutes: 0, config: {} });
+
+    await renderTab();
+    const card = screen.getByRole('heading', { name: 'Local Runtime Servers' }).closest('div.bg-port-card');
+    const llamaRow = within(card).getByText('llama.cpp').closest('div.flex.flex-col');
+    const field = within(llamaRow).getByLabelText('Idle release');
+    fireEvent.change(field, { target: { value: '30' } });
+    fireEvent.blur(field);
+
+    await waitFor(() => expect(patchSettingsSlice).toHaveBeenCalledWith('localLlm.llama', { idleMinutes: 30 }));
   });
 
   it('reports a failed checkpoint download as one error, not an empty success', async () => {

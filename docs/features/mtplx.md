@@ -31,10 +31,13 @@ valid CoS coding-agent runner.
 server PortOS can run:
 
 - **Local Runtime Servers** — one table covering Ollama, LM Studio, llama.cpp
-  and MTPLX, with the same Install / Start / Stop controls for each and a
+  and MTPLX, with an **Idle release** window per PM2-managed server and a
   **Save PM2 list for reboot** action (see [Startup at boot](#startup-at-boot)).
+  MTPLX's row offers **Install**, **Configure** and **Stop** but deliberately no
+  **Start** — see [Idle release and lazy start](#idle-release-and-lazy-start).
 - The **MTPLX** card below it picks *which* cached checkpoint and *which* port to
-  serve on, and shows the server's recent log lines.
+  serve on, **saves that as the launch line an on-demand start replays**, and
+  shows the server's recent log lines.
 
 PortOS runs MTPLX as a **PM2 process named `portos-mtplx`**, exactly like
 `portos-llama-server`. So `pm2 list` shows it next to the rest of the install,
@@ -65,11 +68,12 @@ you are already on.
    `mtplx serve` exits before it binds a port on an empty cache, and the card
    refuses to start until something is cached — but the fix is a button, not a
    terminal.
-3. **Start MTPLX** from the MTPLX card, choosing a cached checkpoint and the port
-   your provider points at. PortOS runs `mtplx serve` under PM2. A cold MLX
-   checkpoint takes a while to load: the request comes back as soon as the
-   server survives its first seconds, and the card's status finishes the story
-   once the endpoint answers.
+3. **Save configuration** on the MTPLX card, choosing a cached checkpoint and the
+   port your provider points at. There is no Start button: the first PortOS
+   request routed to MTPLX runs `mtplx serve` under PM2 on exactly those options
+   and waits for it to answer. A cold MLX checkpoint takes a while to load, so
+   that first request pays the load; the card's status shows the server once the
+   endpoint answers.
 
 **From AI Providers** (one click, MTPLX's own default checkpoint):
 
@@ -86,7 +90,7 @@ you are already on.
    verified checkpoint, a multi-gigabyte download) and then starts the server,
    with the download's progress streaming into the same modal. To use a
    different MTP checkpoint instead, search for and download it on the MTPLX
-   card in Models → LLMs, then click **Start MTPLX**.
+   card in Models → LLMs, then **Save configuration** there.
 
 Then, either way:
 
@@ -179,17 +183,51 @@ Two things worth knowing:
 `mtplx tune` — upstream's own depth auto-tuner, which writes a saved winner into
 MTPLX's config — stays an explicit operator action outside PortOS.
 
+## Idle release and lazy start
+
+MTPLX holds its whole MLX checkpoint resident for as long as the process is up —
+20GB is ordinary — and it has no way to put that down in place. Its
+`--retrieval-idle-timeout` unloads *retrieval* models (embedding/rerank) only,
+never the main checkpoint, and `mtplx settings set` covers live tunables like
+depth, not residency. So the only lever is the process itself.
+
+**Idle release.** Set a window in minutes on the MTPLX row under Local Runtime
+Servers. When no PortOS request has been routed to MTPLX for that long, PortOS
+stops `portos-mtplx` and the memory comes back. `0` (the default) means never —
+exactly the behaviour every install had before this existed.
+
+**Lazy start.** Because it can be stopped automatically, MTPLX has no Start
+button: the next PortOS request routed to it starts it and waits for readiness.
+It comes back on the launch line it last ran with, or — after a PortOS restart —
+on the options saved from the MTPLX card.
+
+**Only PortOS traffic counts.** A client hitting the MTPLX port directly is
+invisible to the idle timer and cannot lazily start a stopped server. If you
+drive MTPLX from outside PortOS, set the window to `0`.
+
+**llama.cpp works differently.** `llama-server` carries its own
+`--sleep-idle-seconds`, which unloads the checkpoint *in place* and reloads it on
+the next request without the process going away, so PortOS passes that flag
+rather than stopping it. Its Idle release field sets that flag, and it applies
+from the next start (a launch flag, not a live setting). A llama.cpp build too
+old to advertise the flag keeps starting normally — PortOS probes `--help` and
+leaves it off, saying so in the server's log lines.
+
 ## Startup at boot
 
-`portos-mtplx` and `portos-llama-server` come back after a reboot the same way
-every other PortOS process does — through PM2's saved dump:
+`portos-llama-server` comes back after a reboot the same way every other PortOS
+process does — through PM2's saved dump. **`portos-mtplx` deliberately does
+not**: it starts on demand, so resurrecting it at boot would pin its checkpoint
+on a machine nobody has asked anything of yet. **Save PM2 list for reboot**
+filters it out of the dump after `pm2 save` writes it; the running process is
+left alone, it just isn't in the list a reboot replays.
 
 1. Run `pm2 startup` **once** in a terminal and follow the privileged command it
    prints. PortOS deliberately never runs this: it writes a launchd/systemd unit
    and is blocked in PortOS's PM2 command guard.
 2. With the servers you want running, click **Save PM2 list for reboot** on
-   Models → LLMs (a plain `pm2 save`). Each PM2-managed runtime then shows a
-   **starts at boot** pill.
+   Models → LLMs (a `pm2 save`, minus `portos-mtplx`). Each runtime the dump
+   holds then shows a **starts at boot** pill — MTPLX never will.
 
 Ollama and LM Studio are not PM2 processes — they manage their own
 launch-at-login (Ollama through its service manager, via the **Run at login**

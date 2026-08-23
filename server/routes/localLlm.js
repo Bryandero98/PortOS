@@ -40,7 +40,7 @@ import {
   localLlmSpecModelDownloadSchema
 } from '../lib/validation.js'
 import { getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer } from '../services/llamaServerManager.js'
-import { getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx } from '../services/mtplxServerManager.js'
+import { MTPLX_APP, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx } from '../services/mtplxServerManager.js'
 import { searchMtplxCatalog, pullMtplxModel, removeMtplxModel } from '../services/mtplxModelManager.js'
 import { saveProcessList } from '../services/pm2.js'
 import { getSpecDecodePresetStatus, downloadSpecDecodeModel } from '../services/specDecodeModels.js'
@@ -753,12 +753,18 @@ router.post('/mtplx/models/remove', asyncHandler(async (req, res) => {
 }))
 
 // POST /api/local-llm/save-startup — `pm2 save`, so the PM2-managed local
-// runtime servers currently running (llama-server, MTPLX, PortOS itself) are in
-// the dump a boot-time `pm2 resurrect` replays. The privileged half — `pm2
+// runtime servers currently running (llama-server, PortOS itself) are in the
+// dump a boot-time `pm2 resurrect` replays. The privileged half — `pm2
 // startup`, which writes the launchd/systemd unit — is deliberately blocked and
 // stays a one-time operator command.
+//
+// MTPLX is deliberately EXCLUDED. It is started on demand by the first request
+// that needs it and stopped again when idle, so resurrecting it at boot would
+// pin its multi-gigabyte checkpoint on a machine nobody has asked anything of
+// yet — the exact waste the idle stop exists to end. The running process is
+// left alone; only the boot list drops it.
 router.post('/save-startup', asyncHandler(async (_req, res) => {
-  res.json(await saveProcessList())
+  res.json(await saveProcessList(null, { exclude: [MTPLX_APP] }))
 }))
 
 export default router

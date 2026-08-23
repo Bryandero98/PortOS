@@ -1388,6 +1388,23 @@ export const settingsEmbeddingsSchema = z.object({
 export const localLlmSettingsSchema = z.object({
   ollama: z.object({ disabled: z.boolean().optional() }).strict().optional(),
   lmstudio: z.object({ disabled: z.boolean().optional() }).strict().optional(),
+  // Idle windows for the two PM2-managed model servers, in minutes. `0` = never
+  // release the model, which is what every install did before this setting
+  // existed and stays the default. Capped at a day: a longer window is
+  // indistinguishable from "never" and is far likelier a units mix-up.
+  llama: z.object({ idleMinutes: z.number().int().min(0).max(1440).optional() }).strict().optional(),
+  mtplx: z.object({
+    idleMinutes: z.number().int().min(0).max(1440).optional(),
+    // The launch line a lazy start replays. MTPLX has no Start button any more —
+    // the first request that needs it brings it up — so the checkpoint and port
+    // the user chose have to outlive the process, or an on-demand start would
+    // fall back to "first verified checkpoint in the cache" and quietly serve
+    // something they didn't pick.
+    launch: z.object({
+      model: z.string().trim().max(300).nullable().optional(),
+      port: z.number().int().min(1).max(65535).optional(),
+    }).strict().optional(),
+  }).strict().optional(),
 }).strict();
 
 // =============================================================================

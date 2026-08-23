@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
-import { Gauge, RefreshCw, ExternalLink, Play, Square, Download, Terminal } from 'lucide-react';
+import { Gauge, RefreshCw, ExternalLink, Save, Square, Download, Terminal } from 'lucide-react';
 import BrailleSpinner from '../BrailleSpinner';
 import MtplxCheckpoints from './MtplxCheckpoints.jsx';
 
@@ -24,7 +24,7 @@ export default function MtplxServerCard({
   busy,
   actionInProgress,
   onRefresh,
-  onStart,
+  onSaveLaunch,
   onStop,
   onInstall,
   onSearchModels,
@@ -122,7 +122,7 @@ export default function MtplxServerCard({
         <div className="bg-port-bg border border-port-border rounded-lg p-3 space-y-3">
           {emptyCache ? (
             <p className="text-xs text-port-warning">
-              MTPLX's model cache is empty, so its server exits before it binds a port. Download a checkpoint below, then start it.
+              MTPLX's model cache is empty, so its server exits before it binds a port. Download a checkpoint below — the first request that needs MTPLX will start it on one.
             </p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -153,16 +153,22 @@ export default function MtplxServerCard({
             </div>
           )}
           {status?.cacheError && (
-            <p className="text-xs text-gray-500">Couldn't read MTPLX's model cache ({status.cacheError}) — starting will fall through to MTPLX's own default checkpoint.</p>
+            <p className="text-xs text-gray-500">Couldn't read MTPLX's model cache ({status.cacheError}) — an on-demand start will fall through to MTPLX's own default checkpoint.</p>
           )}
+          <p className="text-[11px] text-gray-500">
+            MTPLX starts on demand — the first PortOS request routed to it brings it up on these
+            options, and its idle window (set under Local Runtime Servers) stops it again to release
+            the checkpoint. There is no Start button because a manually-started server would only pin
+            those gigabytes ahead of a request that may never come.
+          </p>
           <button
-            onClick={() => onStart({ ...(model ? { model } : {}), ...(port ? { port: Number(port) } : {}) })}
+            onClick={() => onSaveLaunch({ model: model || null, ...(port ? { port: Number(port) } : {}) })}
             disabled={busy || emptyCache}
             className={`${btnClass} bg-port-accent/20 hover:bg-port-accent/30 text-port-accent`}
-            title={emptyCache ? 'Download an MTP checkpoint below first — a start never fetches weights' : 'Start `mtplx serve` under PM2'}
+            title={emptyCache ? 'Download an MTP checkpoint below first — a start never fetches weights' : 'Remember these options for the next on-demand start'}
           >
-            {actionInProgress === 'runtime-start-mtplx' ? <BrailleSpinner /> : <Play size={13} />}
-            Start MTPLX
+            {actionInProgress === 'runtime-save-mtplx-launch' ? <BrailleSpinner /> : <Save size={13} />}
+            Save configuration
           </button>
         </div>
       )}

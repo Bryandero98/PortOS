@@ -11,7 +11,7 @@ import {
   getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
   deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService,
   installAudioModel, patchSettingsSlice, getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer,
-  downloadSpecDecodeModel, controlLmStudioService, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx,
+  downloadSpecDecodeModel, controlLmStudioService, getMtplxServerStatus, stopMtplxServer, installMtplx,
   searchMtplxModels, pullMtplxModel, removeMtplxModel,
   saveRuntimeStartupList
 } from '../../services/api';
@@ -634,15 +634,24 @@ export function LocalLlmTab() {
     () => installMtplx(),
     'MTPLX installed'
   ).then(loadMtplxStatus);
-  const runtimeStartMtplx = (config = {}) => runAction(
-    'runtime-start-mtplx',
-    () => startMtplxServer(config),
-    // `online: false` is "started, still loading its checkpoint" — not a
-    // failure. Saying "running" there would be wrong the moment the user checks.
-    (r) => (r?.online
-      ? `MTPLX is running at ${r?.endpoint || 'its endpoint'}`
-      : 'MTPLX started — it\'s loading its checkpoint, refresh in a moment')
+  // MTPLX has no Start action: the first PortOS request routed to it starts it.
+  // What the card saves is the launch line that on-demand start will replay.
+  const saveMtplxLaunch = (launch) => runAction(
+    'runtime-save-mtplx-launch',
+    () => patchSettingsSlice('localLlm.mtplx', { launch }),
+    'Saved — MTPLX will start on these options when a request needs it'
   ).then(loadMtplxStatus);
+
+  // The idle window is a plain settings write for both daemons; only what
+  // happens when it elapses differs (llama.cpp unloads in place on its next
+  // start, MTPLX is stopped and lazily restarted).
+  const saveIdleWindow = (runtime, minutes) => runAction(
+    `runtime-idle-${runtime}`,
+    () => patchSettingsSlice(`localLlm.${runtime}`, { idleMinutes: minutes }),
+    minutes === 0
+      ? `${runtime === 'llama' ? 'llama.cpp' : 'MTPLX'} will stay loaded while idle`
+      : `${runtime === 'llama' ? 'llama.cpp' : 'MTPLX'} releases its model after ${minutes} idle minute${minutes === 1 ? '' : 's'}`
+  ).then(runtime === 'llama' ? loadLlamaStatus : loadMtplxStatus);
   const runtimeStopMtplx = () => runAction(
     'runtime-stop-mtplx',
     () => stopMtplxServer(),
@@ -1045,9 +1054,9 @@ export function LocalLlmTab() {
         onConfigureLlama={() => scrollTo(llamaSectionRef)}
         onConfigureMtplx={() => scrollTo(mtplxSectionRef)}
         onInstallMtplx={runtimeInstallMtplx}
-        onStartMtplx={runtimeStartMtplx}
         onStopMtplx={runtimeStopMtplx}
         onSaveStartup={saveRuntimeStartup}
+        onSaveIdleWindow={saveIdleWindow}
       />
 
       {/* Backends — model catalog, default marker, cross-backend import */}
@@ -1162,7 +1171,7 @@ export function LocalLlmTab() {
           busy={busy}
           actionInProgress={actionInProgress}
           onRefresh={loadMtplxStatus}
-          onStart={runtimeStartMtplx}
+          onSaveLaunch={saveMtplxLaunch}
           onStop={runtimeStopMtplx}
           onInstall={runtimeInstallMtplx}
           onSearchModels={mtplxSearch}
