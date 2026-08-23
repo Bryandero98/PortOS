@@ -95,7 +95,7 @@ carve-out, submitted image/video job bodies, is decided in ADR
 ### Why not "federate, but gate it on HTTPS + the instance password"
 
 This was seriously considered, and the machinery for it already exists: the
-optional instance password (`server/services/auth.js` + `server/lib/authGate.js`)
+optional instance password (`server/services/auth.js` + `server/services/authGate.js`)
 gates all of `/api/*` including `/api/peer-sync/*`; per-peer Basic credentials
 are stored on the peer record and attached to every outbound hop by
 `peerFetch` (`server/lib/peerHttpClient.js`); and `GET /api/auth/status` is
