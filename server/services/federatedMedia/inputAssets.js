@@ -130,11 +130,11 @@ export function inputAssetRejection(capability, assets = []) {
  * allowlist, the digest verification — lives here, where the next non-image
  * sub-request will not inherit it.
  *
- * The `localPath -> assetId` memo is per run and deliberately not persisted: an
- * id names a slot in the provider's TTL-swept staging area, so caching it across
- * a restart would produce a confident reference to bytes that are gone. Within
- * one run the memo means a retried submission re-sends the body once, not once
- * per attempt.
+ * The `localPath` memo is per run and deliberately not persisted: an id names a
+ * slot in the provider's TTL-swept staging area, so caching it across a restart
+ * would produce a confident reference to bytes that are gone. Within one run it
+ * collapses a repeated path — two identical reference images, or a source frame
+ * reused as the last frame — into a single upload.
  *
  * @param {object} ctx
  * @param {(path: string, options?: object, requestOptions?: object) => Promise<any>} ctx.requestJson
@@ -142,12 +142,9 @@ export function inputAssetRejection(capability, assets = []) {
  * @returns {(localPath: string) => Promise<string>}
  */
 function createInputAssetStager({ requestJson, emitStatus }) {
-  const assetIds = new Map();
+  const uploads = new Map();
 
-  return async function stageInputAsset(localPath) {
-    const cached = assetIds.get(localPath);
-    if (cached) return cached;
-
+  async function uploadInputAsset(localPath) {
     // Re-anchored against the approved image roots on every attempt, exactly as
     // the LOCAL runner re-validates the same input. The marker is persisted,
     // user-editable queue state, so the path that becomes an outbound upload has
@@ -184,10 +181,7 @@ function createInputAssetStager({ requestJson, emitStatus }) {
     // normal miss (never uploaded, or swept), not an error.
     const staged = await requestJson(`/api/federation/media/v1/assets/${assetId}`)
       .then((body) => federatedMediaAssetSchema.safeParse(body), () => null);
-    if (staged?.success && staged.data.sha256 === digest) {
-      assetIds.set(localPath, staged.data.assetId);
-      return staged.data.assetId;
-    }
+    if (staged?.success && staged.data.sha256 === digest) return staged.data.assetId;
 
     const body = await readFile(resolved).catch(() => null);
     if (!body) {
@@ -222,8 +216,19 @@ function createInputAssetStager({ requestJson, emitStatus }) {
         'MEDIA_PROVIDER_ASSET_INTEGRITY',
       );
     }
-    assetIds.set(localPath, parsed.data.assetId);
     return parsed.data.assetId;
+  }
+
+  // Keyed on the in-flight PROMISE, not the resolved id: the caller stages every
+  // path concurrently, so memoizing only completed uploads would let a repeated
+  // path start a second transfer of the same bytes before the first could
+  // populate the cache — the exact case the memo exists to collapse.
+  return function stageInputAsset(localPath) {
+    const pending = uploads.get(localPath);
+    if (pending) return pending;
+    const upload = uploadInputAsset(localPath);
+    uploads.set(localPath, upload);
+    return upload;
   };
 }
 
