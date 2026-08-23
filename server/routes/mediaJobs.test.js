@@ -497,6 +497,32 @@ describe('POST /:id/retry — i2v reference mode overrides (#4874)', () => {
     expect(stubs.enqueueJob.mock.calls[0][0].params.i2vReferenceMode).toBe('inspire');
   });
 
+  // A grok job skips validateVideoRetryParams entirely (its `mode` is the
+  // cloud-dispatch discriminator, not a semantic mode), so the gate has to be
+  // stated on that branch too — otherwise the override merges through unchecked
+  // and grok anchors the image regardless.
+  it('rejects a loose reference on a grok retry, which skips the local validator', async () => {
+    jobStore.set('j-ref-grok', {
+      id: 'j-ref-grok', kind: 'video', owner: null, status: 'failed',
+      params: { prompt: 'a fox', mode: 'grok', videoMode: 'image' },
+    });
+    const r = await request(makeApp()).post('/api/media-jobs/j-ref-grok/retry')
+      .send({ params: { i2vReferenceMode: 'inspire' } });
+    expect(r.status).toBe(400);
+    expect(r.body.code).toBe('I2V_REFERENCE_MODE_UNSUPPORTED');
+    expect(stubs.enqueueJob).not.toHaveBeenCalled();
+  });
+
+  it('still retries a grok job that leaves the reference mode alone', async () => {
+    jobStore.set('j-ref-grok-ok', {
+      id: 'j-ref-grok-ok', kind: 'video', owner: null, status: 'failed',
+      params: { prompt: 'a fox', mode: 'grok', videoMode: 'image' },
+    });
+    const r = await request(makeApp()).post('/api/media-jobs/j-ref-grok-ok/retry').send({});
+    expect(r.status).toBe(200);
+    expect(stubs.enqueueJob).toHaveBeenCalled();
+  });
+
   it('rejects an unknown reference mode instead of stripping it', async () => {
     seed(null);
     const r = await request(makeApp()).post('/api/media-jobs/j-ref-mode/retry')

@@ -526,6 +526,21 @@ describe('prepareVideoGenParams — i2v reference mode (#4874)', () => {
     expect(unlinkedDurablePaths()).toEqual([]);
   });
 
+  // The model gate alone is not enough: an explicit grok backend never reaches
+  // the chosen model's runtime at all, and its short-circuit drops every
+  // local-only knob — so a loose reference would come back anchored from the
+  // cloud lane with nothing having reported it.
+  it('rejects a loose reference on an explicit grok backend, even with an LTX-2.5 model', async () => {
+    await expect(prepare(
+      { backend: 'grok', modelId: 'ltx25_mlx_q8', mode: 'image', sourceImageFile: 'frame.png', i2vReferenceMode: 'inspire' },
+    )).rejects.toMatchObject({ status: 400, code: 'I2V_REFERENCE_MODE_UNSUPPORTED' });
+  });
+
+  it('still routes a default-reference request through the grok backend', async () => {
+    const prepared = await prepare({ backend: 'grok', mode: 'image', sourceImageFile: 'frame.png', i2vReferenceMode: 'anchor' });
+    expect(prepared.backend).toBe('grok');
+  });
+
   it('rejects a loose reference on a text render', async () => {
     await expect(prepare({ modelId: 'ltx25_mlx_q8', i2vReferenceMode: 'inspire' }))
       .rejects.toMatchObject({ status: 400, code: 'I2V_REFERENCE_MODE_REQUIRES_IMAGE' });

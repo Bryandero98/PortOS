@@ -819,3 +819,90 @@ describe('useVideoGenForm', () => {
     expect(payload.height).toBe(2048);
   });
 });
+
+// What the source image PROMISES (#4874). The form is where the promise is made,
+// so it must never display or submit one the render cannot keep — and must never
+// silently drop one the render IS keeping.
+describe('useVideoGenForm — i2v reference mode (#4874)', () => {
+  const LTX25 = {
+    id: 'ltx25-model', name: 'LTX-2.5', runtime: 'ltx25',
+    lastFrameAnchored: true, supportedModes: RUNTIME_MODES,
+  };
+  const LTX25_MODELS = [LTX25, LTX2];
+  const LTX25_STATUS = { connected: true, defaultModel: LTX25.id };
+
+  const inImageMode = async (opts = {}) => {
+    const { result } = render({ models: LTX25_MODELS, status: LTX25_STATUS, ...opts });
+    await act(async () => { result.current.handleModeChange('image'); });
+    return result;
+  };
+
+  it('defaults to Anchor and omits the field from the payload', async () => {
+    const result = await inImageMode();
+    expect(result.current.i2vReferenceMode).toBe('anchor');
+    expect(result.current.buildGeneratePayload().i2vReferenceMode).toBe('');
+  });
+
+  it('submits an Inspire pick on a runtime that can keep it', async () => {
+    const result = await inImageMode();
+    await act(async () => { result.current.setI2vReferenceMode('inspire'); });
+    expect(result.current.i2vReferenceMode).toBe('inspire');
+    expect(result.current.buildGeneratePayload().i2vReferenceMode).toBe('inspire');
+  });
+
+  it('snaps back to Anchor when the model is switched to one that pins frame one', async () => {
+    const result = await inImageMode();
+    await act(async () => { result.current.setI2vReferenceMode('inspire'); });
+    await act(async () => { result.current.handleModelChange(LTX2.id); });
+    await waitFor(() => expect(result.current.i2vReferenceMode).toBe('anchor'));
+  });
+
+  it('snaps back to Anchor when the mode leaves image-to-video', async () => {
+    const result = await inImageMode();
+    await act(async () => { result.current.setI2vReferenceMode('inspire'); });
+    await act(async () => { result.current.handleModeChange('text'); });
+    await waitFor(() => expect(result.current.i2vReferenceMode).toBe('anchor'));
+  });
+
+  it('keeps a resumed Inspire pick while the model catalog is still empty', async () => {
+    // The regression this guards: reading an unresolved `currentModel` as
+    // "unsupported" cleared a restored pick before the model it belongs to had
+    // even loaded, so the resumed form denied a promise the running render was
+    // actually keeping.
+    const { result, rerender } = renderHook(
+      (props) => useVideoGenForm(props),
+      {
+        wrapper: ({ children }) => <MemoryRouter initialEntries={['/media/video']}>{children}</MemoryRouter>,
+        initialProps: { models: [], status: LTX25_STATUS, availableLoras: [], grokEnabled: false },
+      },
+    );
+    await act(async () => {
+      result.current.applyResumedParams({ modelId: LTX25.id, mode: 'image', i2vReferenceMode: 'inspire' });
+    });
+    expect(result.current.i2vReferenceMode).toBe('inspire');
+
+    rerender({ models: LTX25_MODELS, status: LTX25_STATUS, availableLoras: [], grokEnabled: false });
+    await waitFor(() => expect(result.current.currentModel?.id).toBe(LTX25.id));
+    expect(result.current.i2vReferenceMode).toBe('inspire');
+  });
+
+  it('restores the strength a resume echoes, and clears it when the resume echoes none', async () => {
+    const result = await inImageMode();
+    await act(async () => { result.current.applyResumedParams({ imageStrength: 0.35 }); });
+    expect(result.current.imageStrength).toBe('0.35');
+    await act(async () => { result.current.applyResumedParams({}); });
+    expect(result.current.imageStrength).toBe('');
+  });
+
+  it('does NOT carry a remixed record\'s promise onto whatever image the user picks next', async () => {
+    const result = await inImageMode();
+    await act(async () => { result.current.setI2vReferenceMode('inspire'); });
+    await act(async () => {
+      result.current.applyRemix({ prompt: 'a fox', modelId: LTX25.id, i2vReferenceMode: 'inspire' });
+    });
+    // Remix drops to text mode and clears every conditioning input, so there is
+    // no reference left for a promise to be about.
+    expect(result.current.mode).toBe('text');
+    await waitFor(() => expect(result.current.i2vReferenceMode).toBe('anchor'));
+  });
+});

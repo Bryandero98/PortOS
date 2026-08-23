@@ -608,9 +608,14 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
   const effectiveImageStrength = resolveI2vReferenceStrength(i2vReferenceMode, imageStrength);
   useEffect(() => {
     if (isDefaultI2vReferenceMode(i2vReferenceMode)) return;
-    if (referenceModeApplies && referenceModeSupported) return;
+    // The mode half is always knowable. The RUNTIME half is not: `currentModel`
+    // is undefined until the catalog loads, and reading that as "unsupported"
+    // would clear a restored Inspire pick during a page resume before the model
+    // it belongs to is even known — the render would then keep its promise while
+    // the form denied making one. Defer to the post-load pass instead.
+    if (referenceModeApplies && (!currentModel || referenceModeSupported)) return;
     setI2vReferenceMode(DEFAULT_I2V_REFERENCE_MODE);
-  }, [i2vReferenceMode, referenceModeApplies, referenceModeSupported]);
+  }, [currentModel, i2vReferenceMode, referenceModeApplies, referenceModeSupported]);
   // IC-LoRA remix mode is on. `icSpec` is the registry entry (reference count +
   // the resolution-divisibility rule its encoder imposes); null outside the
   // family, so every consumer gates on `icModeActive` first.
@@ -1021,15 +1026,17 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
     // store a boolean here — silently ignore unknown values so the <select>
     // stays valid and the next POST doesn't 400.
     if (typeof item.tiling === 'string' && VIDEO_TILING_ENUM_SET.has(item.tiling)) setTiling(item.tiling);
-    // ALWAYS set explicitly, like steps/guidanceScale above: history stamps these
-    // only when they applied, so a missing field means "the defaults" and has to
-    // clear a leftover value rather than steer a render the user asked to
-    // reproduce faithfully. Remix resets to text mode below, which snaps the
-    // reference mode back to Anchor — restoring it is still what keeps the value
-    // correct the moment the user switches back to image mode with the record's
-    // own source.
+    // ALWAYS set explicitly, like steps/guidanceScale above: history stamps the
+    // strength only when it applied, so a missing field means "the model default"
+    // and has to clear a leftover value rather than steer a render the user asked
+    // to reproduce faithfully.
     setImageStrength(item.imageStrength != null && item.imageStrength !== '' ? String(item.imageStrength) : '');
-    setI2vReferenceMode(normalizeI2vReferenceMode(item.i2vReferenceMode));
+    // The reference mode is NOT restored, on purpose. Remix drops to text mode
+    // below and clears every conditioning input, so there is no reference left for
+    // a promise to be about — carrying one forward would attach the record's
+    // Inspire label to whatever image the user picks next. Reset it outright, the
+    // same way the source image and keyframes are cleared.
+    setI2vReferenceMode(DEFAULT_I2V_REFERENCE_MODE);
     // ALWAYS set explicitly (like steps/guidanceScale above): history records the
     // conditioner only when it wasn't the stock one, so a missing field means
     // 'stock' and must clear a leftover override rather than silently reusing it

@@ -47,6 +47,7 @@ import { getSettings } from '../settings.js';
 import { getProject as getMusicVideoProject } from '../musicVideo/projects.js';
 import { getTrack } from '../tracks/index.js';
 import { VIDEO_GEN_MODE, resolveVideoMode } from './modes.js';
+import { isDefaultI2vReferenceMode } from '../../lib/videoReferenceModes.js';
 import {
   listVideoModels,
   defaultVideoModelId,
@@ -232,6 +233,19 @@ export async function prepareVideoGenParams({ body, uploads, localOnlyParamKeys 
     || (grokDeliverable
       ? resolveVideoMode(null, settings, { target: body.musicVideo ? RENDER_TARGET.MUSIC_VIDEO : null })
       : VIDEO_GEN_MODE.LOCAL);
+  // A loose reference (#4874) is a LOCAL-runtime capability. The model gate
+  // further down asks whether the chosen model's runtime can honor it — but an
+  // explicit `backend: 'grok'` never reaches that runtime at all: grok's
+  // image_to_video always anchors, and its short-circuit below drops every
+  // local-only knob. Rejecting here (before any staging) is what keeps
+  // "Inspire" from quietly returning an anchored clip from the cloud lane.
+  if (backend !== VIDEO_GEN_MODE.LOCAL && !isDefaultI2vReferenceMode(body.i2vReferenceMode)) {
+    await cleanupMultipartTemp(uploads);
+    throw new ServerError(
+      `The ${backend} backend always anchors a reference image as frame one — switch to a local LTX-2.5 model, or use the Anchor reference mode.`,
+      { status: 400, code: 'I2V_REFERENCE_MODE_UNSUPPORTED' },
+    );
+  }
   const pythonPath = settings.imageGen?.local?.pythonPath || null;
   // Resolve the effective model up front — both the modelId-exists check
   // below AND the a2v runtime guard further down need the model entry,

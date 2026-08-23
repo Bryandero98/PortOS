@@ -16,7 +16,7 @@ import { CODEX_EFFORT_LEVELS } from '../lib/providerModels.js';
 import { sanitizeJob } from '../services/mediaJobQueue/sanitizeJob.js';
 import { isRemoteMediaJob } from '../services/mediaJobQueue/remoteMediaJob.js';
 import { validateVideoRetryParams } from '../services/videoGen/prepareParams.js';
-import { I2V_REFERENCE_MODES } from '../lib/videoReferenceModes.js';
+import { I2V_REFERENCE_MODES, isDefaultI2vReferenceMode } from '../lib/videoReferenceModes.js';
 
 const router = Router();
 
@@ -293,8 +293,23 @@ router.post('/:id/retry', asyncHandler(async (req, res) => {
   }
   if (rawOverrides.chunks === 1) delete params.chunkPrompts;
   // Grok video jobs use `mode` as the cloud-dispatch discriminator, not the
-  // local semantic mode validated by prepareParams.
-  if (job.kind === 'video' && params.mode !== 'grok') await validateVideoRetryParams(params);
+  // local semantic mode validated by prepareParams. They still need the
+  // reference-mode gate (#4874): the override schema accepts the field and the
+  // merge preserves it, but grok's image_to_video always anchors — so without
+  // this a retry would hand back an anchored clip wearing an Inspire label,
+  // the exact failure the local path is gated against.
+  if (job.kind === 'video') {
+    if (params.mode === 'grok') {
+      if (!isDefaultI2vReferenceMode(params.i2vReferenceMode)) {
+        throw new ServerError(
+          'The grok backend always anchors a reference image as frame one — retry this job with the Anchor reference mode, or render it locally on LTX-2.5.',
+          { status: 400, code: 'I2V_REFERENCE_MODE_UNSUPPORTED' },
+        );
+      }
+    } else {
+      await validateVideoRetryParams(params);
+    }
+  }
   // Reset Codex effort to the shipped default: dropping the key lets codex.js's
   // fallback (CODEX_IMAGEGEN_DEFAULT_EFFORT) take over, which a merged sentinel
   // string could not do (it would fail the CODEX_EFFORT_LEVELS validation).
