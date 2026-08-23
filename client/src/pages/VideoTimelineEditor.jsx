@@ -11,156 +11,109 @@ import {
   SortableContext,
   arrayMove,
   horizontalListSortingStrategy,
-  useSortable,
 } from '@dnd-kit/sortable';
-import { dndTransformToCss } from '../lib/dndTransform';
 import {
-  Play, Pause, Plus, Trash2, X, Save, Film, Loader2, ArrowLeft, Volume2, VolumeX,
+  Play, Pause, Save, Film, Loader2, ArrowLeft, Volume2, VolumeX,
+  Image as ImageIcon, Music,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
-import { formatTimecode } from '../utils/formatters';
+import { formatTimecode, clamp } from '../utils/formatters';
 import { useSseProgress, isTerminalSseFrame } from '../hooks/useSseProgress';
-import { clickableProps } from '../lib/a11yKeyboard.js';
+import {
+  TimelineBlock, FloatingLane, LibraryTile, StillTile, AudioRow, BedAudio,
+} from '../components/media/VideoTimelineLanes';
+import { NumberField, FadeFields, RemoveButton } from '../components/media/VideoTimelineInspector';
+import {
+  assetUrl,
+  segmentDuration,
+  timelineDuration,
+  canvasAspectRatio,
+  findSegmentAt,
+  fadeMultiplier,
+  overlayOpacityAt,
+  audioTrackStateAt,
+  segmentVolumeAt,
+  clampTrim,
+  fitFadePatch,
+  timelinePatch,
+  withKeys,
+  laneKey,
+} from '../lib/videoTimelineModel';
 
-// Map project-time t (every clip contributes its trimmed duration) to the
-// (clipIndex, withinClipSec) pair the preview <video> element needs. The
-// strict t < acc+dur comparison falls through on exact boundaries so a
-// playhead landing on a seam plays the next clip, not the end of the prior.
-const findClipAt = (clips, t) => {
-  let acc = 0;
-  for (let i = 0; i < clips.length; i++) {
-    const dur = Math.max(0, clips[i].outSec - clips[i].inSec);
-    if (t < acc + dur || i === clips.length - 1) {
-      return { index: i, within: Math.max(0, t - acc), startAtProj: acc };
-    }
-    acc += dur;
-  }
-  return { index: -1, within: 0, startAtProj: 0 };
+const EMPTY_LANES = { segments: [], overlays: [], audio: { clipVolume: 1, tracks: [] } };
+
+// Default lengths for a newly-added still/overlay/bed. The bed length is a
+// guess — the client can't probe the file — so the server clamps it down to
+// the real duration at render time.
+const DEFAULT_STILL_SEC = 3;
+const DEFAULT_OVERLAY_SEC = 3;
+const DEFAULT_BED_SEC = 10;
+// Mirrors MAX_STILL_SEC / MIN_MEDIA_SEC on the server.
+const MIN_ENTRY_SEC = 0.05;
+const MAX_ENTRY_SEC = 600;
+const MAX_VOLUME = 4;
+// Mirrors MAX_SEGMENTS / MAX_OVERLAYS / MAX_AUDIO_TRACKS in
+// server/services/videoTimeline/segments.js.
+const LANE_CAPS = {
+  segment: { max: 200, label: 'Video lane' },
+  overlay: { max: 50, label: 'Overlay lane' },
+  audio: { max: 20, label: 'Audio lane' },
 };
 
-const totalDuration = (clips) => clips.reduce((s, c) => s + Math.max(0, c.outSec - c.inSec), 0);
+const LIBRARY_TABS = [
+  { id: 'clips', label: 'Clips', Icon: Film },
+  { id: 'stills', label: 'Stills', Icon: ImageIcon },
+  { id: 'audio', label: 'Audio', Icon: Music },
+];
 
-// Draggable+sortable timeline block. Snaps the trimmed duration to a width
-// derived from `pxPerSec` so longer clips visibly take more horizontal space.
-export function TimelineBlock({ clip, clipMeta, isSelected, isMissing, pxPerSec, onSelect, onRemove }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: clip._key });
-  const dur = Math.max(0.05, clip.outSec - clip.inSec);
-  const removeLabel = isMissing ? 'missing clip' : clipMeta?.prompt?.trim().slice(0, 40) || 'clip';
-  const width = Math.max(60, dur * pxPerSec);
-  const style = {
-    transform: dndTransformToCss(transform),
-    transition,
-    width: `${width}px`,
-    opacity: isDragging ? 0.4 : 1,
-  };
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className={`relative shrink-0 h-20 rounded-md border-2 cursor-pointer transition-colors group ${
-        isMissing
-          ? 'bg-port-error/20 border-port-error'
-          : isSelected
-            ? 'border-port-accent bg-port-accent/10'
-            : 'bg-port-card border-port-border hover:border-port-accent/50'
-      }`}
-      onClick={() => onSelect(clip._key)}
-      {...attributes}
-      {...listeners}
-      {...clickableProps(() => onSelect(clip._key))}
-    >
-      {clipMeta?.thumbnail && (
-        <img
-          src={`/data/video-thumbnails/${clipMeta.thumbnail}`}
-          alt=""
-          draggable={false}
-          className="w-full h-full object-cover rounded-md opacity-80"
-        />
-      )}
-      <div className="absolute inset-0 rounded-md bg-gradient-to-t from-black/70 via-transparent to-transparent pointer-events-none" />
-      <div className="absolute bottom-1 left-1.5 right-1.5 text-[10px] text-white truncate font-medium">
-        {isMissing ? '(missing)' : clipMeta?.prompt?.slice(0, 40) || 'clip'}
-      </div>
-      <div className="absolute top-1 left-1.5 text-[9px] text-white bg-black/60 px-1 rounded">
-        {dur.toFixed(2)}s
-      </div>
-      <button
-        type="button"
-        onClick={(e) => { e.stopPropagation(); onRemove(clip._key); }}
-        onPointerDown={(e) => e.stopPropagation()}
-        className="absolute top-0 right-0 inline-flex min-w-[44px] min-h-[44px] items-start justify-end p-1 rounded opacity-40 lg:opacity-0 lg:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-white group/remove"
-        title="Remove from timeline"
-        aria-label={`Remove ${removeLabel} from timeline`}
-      >
-        <span className="inline-flex items-center justify-center p-0.5 bg-black/60 group-hover/remove:bg-port-error rounded transition-colors" aria-hidden="true">
-          <X className="w-3 h-3" />
-        </span>
-      </button>
-    </div>
-  );
-}
+// One accessor per lane, so adding a lane doesn't mean a fourth branch in
+// every ternary chain that needs "the entries for this lane".
+const laneEntries = (lanes, lane) => {
+  if (lane === 'overlay') return lanes.overlays;
+  if (lane === 'audio') return lanes.audio.tracks;
+  if (lane === 'segment') return lanes.segments;
+  return null;
+};
 
-// Library tile — renders a clip from history with an "Add to timeline" button.
-// Does not use DnD here; click-to-add at end is simpler and equally functional
-// for v1. Reordering on the timeline itself uses sortable.
-function LibraryTile({ clip, onAdd }) {
-  const dur = clip.numFrames && clip.fps ? clip.numFrames / clip.fps : 0;
-  return (
-    <div className="bg-port-card border border-port-border rounded-md overflow-hidden hover:border-port-accent/50 transition-colors">
-      <div className="aspect-video bg-port-bg relative">
-        {clip.thumbnail ? (
-          <img src={`/data/video-thumbnails/${clip.thumbnail}`} alt={clip.prompt} className="w-full h-full object-cover" loading="lazy" />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-gray-600">
-            <Film className="w-6 h-6" />
-          </div>
-        )}
-        <span className="absolute bottom-1 right-1 text-[9px] px-1 py-0.5 bg-black/70 text-white rounded">
-          {dur.toFixed(1)}s
-        </span>
-      </div>
-      <div className="p-1.5 space-y-1">
-        <p className="text-[10px] text-gray-300 line-clamp-2" title={clip.prompt}>{clip.prompt}</p>
-        <button
-          type="button"
-          onClick={() => onAdd(clip)}
-          className="w-full flex items-center justify-center gap-1 px-1.5 py-1 bg-port-accent/20 hover:bg-port-accent/40 text-port-accent text-[10px] rounded"
-        >
-          <Plus className="w-3 h-3" /> Add to timeline
-        </button>
-      </div>
-    </div>
-  );
-}
+const withLaneEntries = (lanes, lane, next) => {
+  if (lane === 'overlay') return { ...lanes, overlays: next };
+  if (lane === 'audio') return { ...lanes, audio: { ...lanes.audio, tracks: next } };
+  return { ...lanes, segments: next };
+};
 
 export default function VideoTimelineEditor() {
   const { projectId } = useParams();
   const navigate = useNavigate();
   const [project, setProject] = useState(null);
   const [history, setHistory] = useState([]);
+  const [images, setImages] = useState([]);
+  const [musicTracks, setMusicTracks] = useState([]);
+  // Which catalogues have actually been fetched — see knownAbsent below.
+  const [loaded, setLoaded] = useState({ clips: false, images: false, music: false });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  // Local timeline (each clip gets a stable _key for dnd-kit identity)
-  const [clips, setClips] = useState([]);
-  const [selectedKey, setSelectedKey] = useState(null);
-  // Track the current selection by its STABLE identity (clipId + position) so a
-  // refresh — which regenerates every clip's random _key — can re-derive selectedKey
-  // instead of collapsing the inspector to "Select a clip". Read from a ref so refresh
-  // needn't depend on clips/selectedKey (which would re-trigger the load-on-mount loop).
-  const selectionRef = useRef({ clipId: null, index: -1 });
+  // The three lanes live in ONE state object so a save always ships a
+  // consistent snapshot — three separate useStates would let a debounced PATCH
+  // read a half-updated timeline.
+  const [lanes, setLanes] = useState(EMPTY_LANES);
+  // { lane: 'segment' | 'overlay' | 'audio', key } — null when nothing is selected.
+  const [selection, setSelection] = useState(null);
+  // Track the current selection by its STABLE position so a refresh — which
+  // regenerates every entry's random _key — can re-derive it instead of
+  // collapsing the inspector to "Select a block". Read from a ref so refresh
+  // needn't depend on lanes/selection (which would re-trigger the load-on-mount loop).
+  const selectionRef = useRef({ lane: null, index: -1 });
   const [pxPerSec, setPxPerSec] = useState(60);
   const [t, setT] = useState(0); // project-time in seconds
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
   const [renderJobId, setRenderJobId] = useState(null);
-  const [renderProgress, setRenderProgress] = useState(0);
   const [showLibrary, setShowLibrary] = useState(true);
-  // Local input drafts. Editing the canonical state on every keystroke makes
-  // the rename onBlur-vs-canonical comparison always-equal, and forces the
-  // trim inputs through toFixed() per stroke (which prevents typing "0.").
+  const [libraryTab, setLibraryTab] = useState('clips');
+  // Local input draft. Editing the canonical state on every keystroke makes the
+  // rename onBlur-vs-canonical comparison always-equal.
   const [nameDraft, setNameDraft] = useState('');
-  const [trimDraft, setTrimDraft] = useState({ inSec: '', outSec: '' });
 
   const videoRef = useRef(null);
   const lastSrcRef = useRef('');
@@ -170,45 +123,70 @@ export default function VideoTimelineEditor() {
   // ref we update synchronously gives the handler the live value.
   const playingRef = useRef(false);
   useEffect(() => { playingRef.current = playing; }, [playing]);
-  const playClipIndexRef = useRef(-1);
+  const playSegmentIndexRef = useRef(-1);
+  // One <audio> element per bed track, keyed by its client-side _key.
+  const bedRefs = useRef(new Map());
+  // `updatedAt` is the only field the save path reads off `project`; holding it
+  // in a ref keeps the whole updateLanes → patchLane callback chain stable
+  // across the setProject that every successful save performs.
+  const updatedAtRef = useRef(null);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+
+  const { segments, overlays, audio } = lanes;
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const [proj, hist] = await Promise.all([
+    // `null` = the request FAILED; `[]` = a genuinely empty library. Collapsing
+    // the two would wipe a populated list on a transient error and then mark
+    // every segment, overlay and bed drawing on it as "missing" — sources the
+    // server can still render perfectly well.
+    const [proj, hist, gallery, library] = await Promise.all([
       api.getTimelineProject(projectId).catch((err) => { setError(err.message); return null; }),
-      api.listVideoHistory().catch(() => []),
+      api.listVideoHistory({ silent: true }).catch(() => null),
+      api.listImageGallery({ silent: true }).catch(() => null),
+      api.listMusicLibrary({ silent: true }).catch(() => null),
     ]);
     if (proj) {
-      const newClips = (proj.clips || []).map((c, idx) => ({ ...c, _key: `${c.clipId}-${idx}-${Math.random().toString(36).slice(2, 8)}` }));
+      const nextLanes = {
+        segments: withKeys(proj.segments, 'seg'),
+        overlays: withKeys(proj.overlays, 'ov'),
+        audio: {
+          clipVolume: proj.audio?.clipVolume == null ? 1 : proj.audio.clipVolume,
+          tracks: withKeys(proj.audio?.tracks, 'bed'),
+        },
+      };
       setProject(proj);
-      setClips(newClips);
-      // Re-derive selection from the stable clipId (+ prior position) so a refresh —
-      // e.g. a CONFLICT reload mid-edit — doesn't leave selectedKey pointing at a
-      // now-regenerated _key and collapse the inspector. Prefer the same index; fall
-      // back to the first clip with the same clipId; clear if the clip is gone.
-      const { clipId: selId, index: selIdx } = selectionRef.current;
-      if (selId != null) {
-        const match = newClips[selIdx]?.clipId === selId
-          ? newClips[selIdx]
-          : newClips.find((c) => c.clipId === selId);
-        setSelectedKey(match ? match._key : null);
-      }
+      updatedAtRef.current = proj.updatedAt;
+      setLanes(nextLanes);
+      // Re-derive selection from its lane + prior position so a refresh — e.g. a
+      // CONFLICT reload mid-edit — doesn't leave `selection` pointing at a
+      // now-regenerated _key and collapse the inspector.
+      const { lane, index } = selectionRef.current;
+      const entries = laneEntries(nextLanes, lane);
+      setSelection(entries?.[index] ? { lane, key: entries[index]._key } : null);
     }
-    setHistory(hist);
+    if (Array.isArray(hist)) setHistory(hist);
+    if (Array.isArray(gallery)) setImages(gallery);
+    if (library) setMusicTracks(Array.isArray(library.tracks) ? library.tracks : []);
+    // Whether each library actually loaded, so the "missing source" badges can
+    // stay silent about a lane whose catalogue we never received.
+    setLoaded((prev) => ({
+      clips: prev.clips || Array.isArray(hist),
+      images: prev.images || Array.isArray(gallery),
+      music: prev.music || !!library,
+    }));
     setLoading(false);
   }, [projectId]);
 
-  // Keep the stable-identity mirror of the current selection current so refresh() can
-  // reattach selectedKey after it regenerates clip _keys.
+  // Keep the stable-position mirror of the current selection current so refresh()
+  // can reattach it after it regenerates lane _keys.
   useEffect(() => {
-    const idx = clips.findIndex((c) => c._key === selectedKey);
-    selectionRef.current = idx >= 0
-      ? { clipId: clips[idx].clipId, index: idx }
-      : { clipId: null, index: -1 };
-  }, [selectedKey, clips]);
+    const entries = selection && laneEntries(lanes, selection.lane);
+    const idx = entries ? entries.findIndex((e) => e._key === selection.key) : -1;
+    selectionRef.current = idx >= 0 ? { lane: selection.lane, index: idx } : { lane: null, index: -1 };
+  }, [selection, lanes]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -219,48 +197,69 @@ export default function VideoTimelineEditor() {
     if (project?.name) setNameDraft(project.name);
   }, [project?.id, project?.name]);
 
-  // Sync trim drafts when the user picks a different clip. While editing the
-  // selected clip, the draft is the source of truth — committing on blur
-  // drives the canonical update.
-  useEffect(() => {
-    setTrimDraft((prev) => {
-      const sel = clips.find((c) => c._key === selectedKey);
-      if (!sel) return { inSec: '', outSec: '' };
-      const next = { inSec: sel.inSec.toFixed(2), outSec: sel.outSec.toFixed(2) };
-      if (prev.inSec === next.inSec && prev.outSec === next.outSec) return prev;
-      return next;
-    });
-  }, [selectedKey, clips]);
-
-  // O(1) clip metadata lookup. The video-sync effect runs on every rAF tick
-  // during playback; a linear find() per frame multiplied by clip count is
+  // O(1) clip metadata lookup. The video-sync effect can run per frame during
+  // playback; a linear find() per frame multiplied by segment count is
   // measurable on long timelines.
-  const historyMap = useMemo(() => {
-    const m = new Map();
-    for (const h of history) m.set(h.id, h);
-    return m;
-  }, [history]);
+  const historyMap = useMemo(() => new Map(history.map((h) => [h.id, h])), [history]);
   const metaFor = useCallback((clipId) => historyMap.get(clipId), [historyMap]);
 
-  const total = useMemo(() => totalDuration(clips), [clips]);
+  const imageNames = useMemo(() => new Set(images.map((i) => i.filename)), [images]);
+  const musicNames = useMemo(() => new Set(musicTracks.map((m) => m.filename)), [musicTracks]);
+
+  // A lane entry is "missing" when its source is gone from the catalogue it
+  // came from — the render would 404, so the editor flags it up front.
+  //
+  // Only `images`, `music` and the video history have a client-side catalogue.
+  // For an asset kind we cannot enumerate — or a catalogue whose fetch failed —
+  // "absent from the list" is NOT evidence of absence on disk, so say nothing
+  // and let the render's MISSING_CLIPS report be the authority.
+  const knownAbsent = useCallback((kind, file) => {
+    if (kind === 'images') return loaded.images && !imageNames.has(file);
+    if (kind === 'music') return loaded.music && !musicNames.has(file);
+    return false; // 'video-thumbnails' / 'audio' — no catalogue to check against
+  }, [loaded.images, loaded.music, imageNames, musicNames]);
+
+  const isSegmentMissing = useCallback((seg) => (seg.type === 'still'
+    ? knownAbsent(seg.assetKind, seg.assetFile)
+    : loaded.clips && !historyMap.has(seg.clipId)), [knownAbsent, loaded.clips, historyMap]);
+  const isOverlayMissing = useCallback((ov) => knownAbsent(ov.assetKind, ov.assetFile), [knownAbsent]);
+  const isBedMissing = useCallback((tr) => knownAbsent(tr.assetKind, tr.assetFile), [knownAbsent]);
+
+  const total = useMemo(() => timelineDuration(segments), [segments]);
+  const canvasAspect = useMemo(
+    () => canvasAspectRatio(segments, (clipId) => historyMap.get(clipId)),
+    [segments, historyMap],
+  );
 
   // Clamp the playhead into [0, total] when the timeline duration shrinks
-  // (clip removal, tighter trim, etc.). Without this, t can exceed total
-  // and findClipAt returns a `within` past the last clip's outSec — the
+  // (segment removal, tighter trim, etc.). Without this, t can exceed total
+  // and findSegmentAt returns a `within` past the last segment's end — the
   // preview seeks to black frames.
   useEffect(() => {
     if (t > total) { setT(total); setPlaying(false); }
   }, [total, t]);
 
-  // Save current timeline (debounced via the caller). Server validates and
-  // returns the canonical project; we only update updatedAt and preserve
+  // Save the whole timeline (debounced via the caller). The server validates
+  // and returns the canonical project; we only update updatedAt and preserve
   // local _keys to avoid blowing away the dnd identity.
-  const saveTimeline = useCallback(async (next) => {
-    if (!project) return false;
-    const cleanClips = next.map((c) => ({ clipId: c.clipId, inSec: c.inSec, outSec: c.outSec }));
+  // Every PATCH from this editor — a lane save, a rename — chains onto one
+  // tail. All of them assert `expectedUpdatedAt`, so two in flight together
+  // means the second is guaranteed a 409 even though nothing outside the
+  // editor changed; if the loser is a lane save, its reload discards the edit
+  // the user just made. Serializing here mirrors the server's own single-tail
+  // write queue and leaves 409 meaning what it should: someone ELSE wrote.
+  const writeTailRef = useRef(Promise.resolve());
+  const queueWrite = useCallback((fn) => {
+    const next = writeTailRef.current.then(fn, fn);
+    writeTailRef.current = next.catch(() => {});
+    return next;
+  }, []);
+
+  const saveTimeline = useCallback((next) => queueWrite(async () => {
+    if (updatedAtRef.current == null) return false;
     const updated = await api.updateTimelineProject(projectId, {
-      clips: cleanClips,
-      expectedUpdatedAt: project.updatedAt,
+      ...timelinePatch(next),
+      expectedUpdatedAt: updatedAtRef.current,
     }, { silent: true }).catch((err) => {
       if (err.code === 'CONFLICT') {
         toast.error('Project was modified elsewhere — reloading');
@@ -271,11 +270,12 @@ export default function VideoTimelineEditor() {
       return null;
     });
     if (!updated) return false;
+    updatedAtRef.current = updated.updatedAt;
     setProject((p) => ({ ...p, updatedAt: updated.updatedAt }));
     return true;
-  }, [project, projectId, refresh]);
+  }), [projectId, refresh, queueWrite]);
 
-  // Debounced save: trim-input edits fire many PATCHes per drag if we don't
+  // Debounced save: trim/fade edits fire many PATCHes per drag if we don't
   // batch them. 400ms gives the user time to stop fiddling before we hit the
   // server.
   const saveTimerRef = useRef(null);
@@ -288,63 +288,130 @@ export default function VideoTimelineEditor() {
   // timeout doesn't fire after navigation.
   useEffect(() => () => clearTimeout(saveTimerRef.current), []);
 
-  const updateClips = useCallback((updater) => {
-    setClips((prev) => {
+  const updateLanes = useCallback((updater) => {
+    setLanes((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
       queueSave(next);
       return next;
     });
   }, [queueSave]);
 
-  // Add a clip to the end of the timeline at its full natural duration
-  const addClip = (clip) => {
+  // One patcher for every lane — `patch(entry)` returns the fields to merge.
+  const patchLane = useCallback((lane, key, patch) => {
+    updateLanes((prev) => withLaneEntries(
+      prev,
+      lane,
+      laneEntries(prev, lane).map((e) => (e._key === key ? { ...e, ...patch(e) } : e)),
+    ));
+  }, [updateLanes]);
+
+  // Refuse the add at the cap rather than letting it through: the server's Zod
+  // gate 400s the whole PATCH, so one entry over the limit makes EVERY
+  // subsequent debounced save fail with a message that names no lane, and the
+  // user has to guess which one to trim.
+  //
+  // The decision reads `lanes` directly, NOT a flag set inside the setState
+  // updater — React only runs an updater eagerly when the fiber has no pending
+  // work, and the rAF playhead loop keeps work pending throughout playback, so
+  // such a flag would still be false when read and report a spurious "limit
+  // reached" on a perfectly good add.
+  const addToLane = useCallback((lane, entry) => {
+    if (laneEntries(lanes, lane).length >= LANE_CAPS[lane].max) {
+      toast.error(`${LANE_CAPS[lane].label} limit reached (${LANE_CAPS[lane].max}) — remove one first`);
+      return;
+    }
+    updateLanes((prev) => withLaneEntries(prev, lane, [...laneEntries(prev, lane), entry]));
+    setSelection({ lane, key: entry._key });
+  }, [lanes, updateLanes]);
+
+  const removeFromLane = useCallback((lane, key) => {
+    updateLanes((prev) => withLaneEntries(prev, lane, laneEntries(prev, lane).filter((e) => e._key !== key)));
+    setSelection((sel) => (sel && sel.key === key ? null : sel));
+  }, [updateLanes]);
+
+  // --- Add ---------------------------------------------------------------
+
+  const addClip = useCallback((clip) => {
     const fullDur = clip.numFrames && clip.fps ? clip.numFrames / clip.fps : 4;
-    const next = {
-      _key: `${clip.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    addToLane('segment', {
+      _key: laneKey(clip.id, 0),
+      type: 'clip',
       clipId: clip.id,
       inSec: 0,
       outSec: fullDur,
-    };
-    updateClips((prev) => [...prev, next]);
-    setSelectedKey(next._key);
-  };
-
-  const removeClip = (key) => {
-    updateClips((prev) => prev.filter((c) => c._key !== key));
-    if (selectedKey === key) setSelectedKey(null);
-  };
-
-  // Update the inSec/outSec of the selected clip; clamp to 0..sourceDuration.
-  const editSelected = (patch) => {
-    updateClips((prev) => prev.map((c) => {
-      if (c._key !== selectedKey) return c;
-      const meta = metaFor(c.clipId);
-      const sourceDur = meta?.numFrames && meta?.fps ? meta.numFrames / meta.fps : Infinity;
-      // Match the server's CLIP_TOO_SHORT guard (1/fps). Hardcoded 0.04 was
-      // too lenient at 24fps and would let the UI build a project that the
-      // render rejected with 400 CLIP_TOO_SHORT.
-      const minDur = meta?.fps && meta.fps > 0 ? 1 / meta.fps : 0.04;
-      let inSec = patch.inSec != null ? patch.inSec : c.inSec;
-      let outSec = patch.outSec != null ? patch.outSec : c.outSec;
-      inSec = Math.max(0, Math.min(inSec, sourceDur - minDur));
-      outSec = Math.max(inSec + minDur, Math.min(outSec, sourceDur));
-      return { ...c, inSec, outSec };
-    }));
-  };
-
-  const onDragEnd = ({ active, over }) => {
-    if (!over || active.id === over.id) return;
-    updateClips((prev) => {
-      const oldIdx = prev.findIndex((c) => c._key === active.id);
-      const newIdx = prev.findIndex((c) => c._key === over.id);
-      if (oldIdx === -1 || newIdx === -1) return prev;
-      return arrayMove(prev, oldIdx, newIdx);
+      fadeInSec: 0,
+      fadeOutSec: 0,
+      volume: 1,
     });
-  };
+  }, [addToLane]);
 
-  // Preview playback: keep a single <video> element that follows project-time.
-  // On every rAF tick, advance `t` by elapsed wall-time, find which clip we're
-  // in, and swap the <video>.src + currentTime when crossing a boundary.
+  const addStill = useCallback((image) => {
+    addToLane('segment', {
+      _key: laneKey('still', 0),
+      type: 'still',
+      assetKind: 'images',
+      assetFile: image.filename,
+      durationSec: DEFAULT_STILL_SEC,
+      fadeInSec: 0,
+      fadeOutSec: 0,
+    });
+  }, [addToLane]);
+
+  // Overlays and beds land at the playhead — the user has already scrubbed to
+  // the moment they want them.
+  const playheadRef = useRef(0);
+  useEffect(() => { playheadRef.current = t; }, [t]);
+  const totalRef = useRef(0);
+  useEffect(() => { totalRef.current = total; }, [total]);
+
+  const addOverlay = useCallback((image) => {
+    addToLane('overlay', {
+      _key: laneKey('ov', 0),
+      type: 'image',
+      assetKind: 'images',
+      assetFile: image.filename,
+      startSec: Math.min(playheadRef.current, Math.max(0, totalRef.current - 0.1)),
+      durationSec: DEFAULT_OVERLAY_SEC,
+      x: 0.05,
+      y: 0.05,
+      width: 0.25,
+      opacity: 1,
+      fadeInSec: 0,
+      fadeOutSec: 0,
+    });
+  }, [addToLane]);
+
+  const addBed = useCallback((track) => {
+    addToLane('audio', {
+      _key: laneKey('bed', 0),
+      assetKind: 'music',
+      assetFile: track.filename,
+      startSec: Math.min(playheadRef.current, Math.max(0, totalRef.current - 0.1)),
+      offsetSec: 0,
+      // The client can't probe the file; the server clamps this down to the
+      // real duration when it renders.
+      durationSec: Math.max(1, Math.min(DEFAULT_BED_SEC, totalRef.current || DEFAULT_BED_SEC)),
+      volume: 0.6,
+      fadeInSec: 0,
+      fadeOutSec: 0,
+    });
+  }, [addToLane]);
+
+  const onDragEnd = useCallback(({ active, over }) => {
+    if (!over || active.id === over.id) return;
+    updateLanes((prev) => {
+      const oldIdx = prev.segments.findIndex((s) => s._key === active.id);
+      const newIdx = prev.segments.findIndex((s) => s._key === over.id);
+      if (oldIdx === -1 || newIdx === -1) return prev;
+      return { ...prev, segments: arrayMove(prev.segments, oldIdx, newIdx) };
+    });
+  }, [updateLanes]);
+
+  // --- Preview -----------------------------------------------------------
+
+  // Playback: keep a single <video> element that follows project-time. On every
+  // rAF tick, advance `t` by elapsed wall-time; the sync effects below drive
+  // the media elements from it.
   const rafRef = useRef(null);
   const lastTickRef = useRef(0);
   useEffect(() => {
@@ -367,58 +434,114 @@ export default function VideoTimelineEditor() {
     return () => cancelAnimationFrame(rafRef.current);
   }, [playing, total]);
 
-  // Sync the <video> element to project-time `t` whenever it changes.
+  const { index: activeIndex, within: activeWithin } = useMemo(
+    () => (segments.length > 0 ? findSegmentAt(segments, t) : { index: -1, within: 0 }),
+    [segments, t],
+  );
+  const activeSegment = activeIndex >= 0 ? segments[activeIndex] : null;
+  // `within` advances every frame; the media-sync effects read it from a ref so
+  // they re-run on a segment CHANGE rather than once per animation frame.
+  const withinRef = useRef(0);
+  useEffect(() => { withinRef.current = activeWithin; }, [activeWithin]);
+
+  // Sync the <video> element to project-time whenever the active segment or the
+  // scrub position changes. A still segment has no video source — the effect
+  // parks the element so the <img> below takes over the frame.
   useEffect(() => {
-    if (clips.length === 0) return;
-    const { index, within } = findClipAt(clips, t);
-    if (index < 0) return;
-    const clip = clips[index];
-    const meta = metaFor(clip.clipId);
+    const video = videoRef.current;
+    if (!video || !activeSegment) return;
+    if (activeSegment.type === 'still') {
+      lastSrcRef.current = '';
+      playSegmentIndexRef.current = activeIndex;
+      video.pause();
+      return;
+    }
+    const meta = metaFor(activeSegment.clipId);
     if (!meta) return;
     const src = `/data/videos/${meta.filename}`;
-    const video = videoRef.current;
-    if (!video) return;
-    const wantTime = clip.inSec + within;
+    const wantTime = activeSegment.inSec + withinRef.current;
     if (lastSrcRef.current !== src) {
       lastSrcRef.current = src;
       video.src = src;
       // Wait for metadata before seeking — seek-before-load silently no-ops
       // and the user sees frame 0 of the clip instead of `inSec + within`.
       video.onloadedmetadata = () => {
-        // Rapid scrubbing across clip boundaries reassigns src (and this
+        // Rapid scrubbing across segment boundaries reassigns src (and this
         // handler) before the prior metadata load fires; bail if this src is
         // no longer the one we want so a stale load can't seek the new clip.
         if (lastSrcRef.current !== src) return;
         video.currentTime = wantTime;
         if (playingRef.current) video.play().catch(() => {});
       };
-    } else if (index !== playClipIndexRef.current) {
+    } else if (activeIndex !== playSegmentIndexRef.current) {
       video.currentTime = wantTime;
     } else if (!playing && Math.abs(video.currentTime - wantTime) > 0.05) {
-      // Scrubbing while paused or moving the playhead within the same clip:
-      // the rAF loop only fires while playing, so we need to drive the
-      // element manually. During playback the video element advances on its
-      // own — re-seeking on every rAF tick would cause buffering stutter.
+      // Scrubbing while paused: the rAF loop only runs while playing, so we
+      // drive the element manually. During playback the element advances on its
+      // own — re-seeking every frame would cause buffering stutter.
       video.currentTime = wantTime;
     }
-    playClipIndexRef.current = index;
-  }, [clips, t, metaFor, playing]);
+    playSegmentIndexRef.current = activeIndex;
+  }, [activeSegment, activeIndex, activeWithin, metaFor, playing]);
 
-  // Pause/play the underlying element in lockstep with `playing`.
+  // Pause/play the underlying element in lockstep with `playing`. A still
+  // segment holds no video, so there is nothing to start.
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    if (playing) video.play().catch(() => {});
+    if (playing && activeSegment?.type !== 'still') video.play().catch(() => {});
     else video.pause();
-  }, [playing]);
+  }, [playing, activeSegment?.type]);
 
+  // The clip lane's own audio level — clipVolume × the segment's volume × its
+  // fade ramp, the same product the export builds into each segment's chain.
+  // Without this the user ducks the dialogue, hears no change while auditioning,
+  // and gets a different mix out of the render.
+  const clipVolume = audio.clipVolume;
+  const activeClipVolume = segmentVolumeAt(activeSegment, clipVolume, activeWithin);
   useEffect(() => {
     const video = videoRef.current;
-    if (video) video.muted = muted;
-  }, [muted]);
+    if (!video) return;
+    if (video.muted !== muted) video.muted = muted;
+    // Only correct real drift — a media property write per frame queues a
+    // `volumechange` event per frame for no audible gain.
+    if (Math.abs(video.volume - activeClipVolume) > 0.01) video.volume = activeClipVolume;
+  }, [muted, activeClipVolume]);
+
+  // Drive the bed <audio> elements from the same playhead the export mixes
+  // against, so what the user hears while scrubbing is what amix will produce.
+  useEffect(() => {
+    for (const track of audio.tracks) {
+      const el = bedRefs.current.get(track._key);
+      if (!el) continue;
+      const state = audioTrackStateAt(track, t);
+      if (el.muted !== muted) el.muted = muted;
+      // clipVolume scales the video lane's OWN audio, not the bed — the export
+      // applies it inside each segment's chain, before amix.
+      const want = clamp(state.volume, 0, 1);
+      if (Math.abs(el.volume - want) > 0.01) el.volume = want;
+      if (!state.active) {
+        if (!el.paused) el.pause();
+        continue;
+      }
+      // Re-seeking every tick causes audible stutter; only correct real drift.
+      if (Math.abs(el.currentTime - state.sourceTime) > 0.25) el.currentTime = state.sourceTime;
+      if (playing && el.paused) el.play().catch(() => {});
+      if (!playing && !el.paused) el.pause();
+    }
+  }, [audio.tracks, t, playing, muted]);
+
+  // Stop every bed when the editor unmounts — a detached <audio> that was
+  // playing keeps producing sound in some browsers.
+  useEffect(() => {
+    const els = bedRefs.current;
+    return () => { for (const el of els.values()) el?.pause(); };
+  }, []);
+
+  // --- Render ------------------------------------------------------------
 
   const handleRender = async () => {
-    if (clips.length === 0) {
+    if (segments.length === 0) {
       toast.error('Add at least one clip before rendering');
       return;
     }
@@ -426,37 +549,38 @@ export default function VideoTimelineEditor() {
     // layout. If the save fails (conflict, network), abort — otherwise we'd
     // render a stale server-side timeline while the UI shows fresh edits.
     clearTimeout(saveTimerRef.current);
-    const saved = await saveTimeline(clips);
+    const saved = await saveTimeline(lanes);
     if (!saved) return;
     const result = await api.renderTimelineProject(projectId, { silent: true }).catch((err) => {
       if (err.code === 'RENDER_IN_PROGRESS') {
         const jobId = err.context?.jobId;
         if (jobId) { setRenderJobId(jobId); toast('Re-attaching to in-flight render'); return null; }
       }
+      if (err.code === 'MISSING_CLIPS') {
+        const gone = [...(err.context?.missingClipIds || []), ...(err.context?.missingAssets || [])];
+        toast.error(`Render failed — ${gone.length} missing source${gone.length === 1 ? '' : 's'}`);
+        return null;
+      }
       toast.error(`Render failed: ${err.message}`);
       return null;
     });
-    if (result?.jobId) {
-      setRenderJobId(result.jobId);
-      setRenderProgress(0);
-    }
+    if (result?.jobId) setRenderJobId(result.jobId);
   };
 
   // SSE progress wiring — subscribes to the render jobId's event stream (via
-  // the shared useSseProgress lifecycle), updates the progress bar, and on
-  // 'complete' navigates to Media History focused on the new clip. Frame
-  // shapes come from server/services/videoTimeline/local.js
-  // (progress / complete / error / canceled).
+  // the shared useSseProgress lifecycle) and, on 'complete', navigates to Media
+  // History focused on the new clip. Frame shapes come from
+  // server/services/videoTimeline/local.js (progress / complete / error / canceled).
   const { latest: renderFrame, closed: renderStreamClosed } = useSseProgress(
     renderJobId ? `/api/video-timeline/${renderJobId}/events` : null,
     { enabled: !!renderJobId },
   );
+  // Derived, not stored: a terminal frame isn't type 'progress', so the reset to
+  // zero on complete/error/cancel falls out for free.
+  const renderProgress = renderFrame?.type === 'progress' ? renderFrame.progress : 0;
   useEffect(() => {
     if (!renderJobId || !renderFrame) return;
-    if (renderFrame.type === 'progress') {
-      setRenderProgress(renderFrame.progress);
-      return;
-    }
+    if (renderFrame.type === 'progress') return;
     // A genuine terminal frame sets `latest` and `closed` in the same commit,
     // so they're visible together here. A STALE terminal frame — the hook
     // keeps `latest` across the disabled gap, so starting a second render
@@ -475,7 +599,6 @@ export default function VideoTimelineEditor() {
       // canceled (either spelling — the hook treats both as terminal)
       toast('Render cancelled');
       setRenderJobId(null);
-      setRenderProgress(0);
     }
   }, [renderJobId, renderFrame, renderStreamClosed, navigate]);
   useEffect(() => {
@@ -485,8 +608,40 @@ export default function VideoTimelineEditor() {
     if (isTerminalSseFrame(renderFrame)) return;
     toast.error('Lost connection to render — check Media History');
     setRenderJobId(null);
-    setRenderProgress(0);
   }, [renderJobId, renderStreamClosed, renderFrame]);
+
+  // --- Derived view data -------------------------------------------------
+
+  // Filter the library: hide outputs of any timeline render so the rail
+  // doesn't grow unbounded with the user's own renders.
+  const libraryClips = useMemo(
+    () => history.filter((h) => !h.timelineProjectId && !h.hidden),
+    [history],
+  );
+  const usedClipIds = useMemo(
+    () => new Set(segments.filter((s) => s.type === 'clip').map((s) => s.clipId)),
+    [segments],
+  );
+  const segmentKeys = useMemo(() => segments.map((s) => s._key), [segments]);
+  // Everything about an overlay except its opacity is frame-invariant; only the
+  // opacity is recomputed as the playhead moves.
+  const overlayChrome = useMemo(() => overlays.map((ov) => ({
+    key: ov._key,
+    src: assetUrl(ov.assetKind, ov.assetFile),
+    left: `${(ov.x || 0) * 100}%`,
+    top: `${(ov.y || 0) * 100}%`,
+    width: `${(ov.width || 0.25) * 100}%`,
+    overlay: ov,
+  })), [overlays]);
+
+  const selectSegment = useCallback((key) => setSelection({ lane: 'segment', key }), []);
+  const removeSegment = useCallback((key) => removeFromLane('segment', key), [removeFromLane]);
+  const selectOverlay = useCallback((key) => setSelection({ lane: 'overlay', key }), []);
+  const removeOverlay = useCallback((key) => removeFromLane('overlay', key), [removeFromLane]);
+  const selectBed = useCallback((key) => setSelection({ lane: 'audio', key }), []);
+  const removeBed = useCallback((key) => removeFromLane('audio', key), [removeFromLane]);
+  const overlayLabel = useCallback((ov) => ov.assetFile, []);
+  const bedLabel = useCallback((tr) => tr.assetFile, []);
 
   if (loading) return <div className="text-gray-500 text-sm">Loading project…</div>;
   if (error || !project) {
@@ -504,16 +659,33 @@ export default function VideoTimelineEditor() {
     );
   }
 
-  const selectedClip = clips.find((c) => c._key === selectedKey);
-  const selectedMeta = selectedClip ? metaFor(selectedClip.clipId) : null;
+  const selected = selection ? laneEntries(lanes, selection.lane)?.find((e) => e._key === selection.key) : null;
+  const selectedSegment = selection?.lane === 'segment' ? selected : null;
+  const selectedOverlay = selection?.lane === 'overlay' ? selected : null;
+  const selectedBed = selection?.lane === 'audio' ? selected : null;
+  const selectedMeta = selectedSegment?.type === 'clip' ? metaFor(selectedSegment.clipId) : null;
   const selectedSourceDur = selectedMeta?.numFrames && selectedMeta?.fps ? selectedMeta.numFrames / selectedMeta.fps : null;
 
-  // Filter the library: hide outputs of any timeline render so the rail
-  // doesn't grow unbounded with the user's own renders.
-  const libraryClips = history.filter((h) => !h.timelineProjectId && !h.hidden);
+  // Committing a duration also has to refit the fades that were sized against
+  // the old one, so the three lanes share one commit path.
+  const commitDuration = (lane, key, seconds) => patchLane(lane, key, (e) => fitFadePatch(e, { durationSec: seconds }, seconds));
 
-  const usedClipIds = new Set(clips.map((c) => c.clipId));
-  const missingKeys = new Set(clips.filter((c) => !metaFor(c.clipId)).map((c) => c._key));
+  const activeStillSrc = activeSegment?.type === 'still'
+    ? assetUrl(activeSegment.assetKind, activeSegment.assetFile)
+    : null;
+  // The same linear ramp ffmpeg's `fade` applies, rendered as a black scrim so
+  // the preview shows the cut the export will make.
+  const activeFadeScrim = activeSegment
+    ? 1 - fadeMultiplier(
+      activeSegment.fadeInSec || 0,
+      activeSegment.fadeOutSec || 0,
+      segmentDuration(activeSegment),
+      activeWithin,
+    )
+    : 0;
+
+  const laneWidth = Math.max(240, total * pxPerSec);
+  const playheadSec = Math.min(t, total);
 
   return (
     <div className="space-y-3">
@@ -532,25 +704,33 @@ export default function VideoTimelineEditor() {
             aria-label="Project name"
             value={nameDraft}
             onChange={(e) => setNameDraft(e.target.value)}
-            onBlur={async (e) => {
+            onBlur={(e) => {
               const trimmed = e.target.value.trim();
               if (!trimmed) { setNameDraft(project.name); return; }
               if (trimmed === project.name) return;
-              const updated = await api.updateTimelineProject(projectId, {
-                name: trimmed, expectedUpdatedAt: project.updatedAt,
-              }, { silent: true }).catch((err) => {
-                toast.error(`Rename failed: ${err.message}`);
-                setNameDraft(project.name);
-                return null;
+              // Through the same tail as the lane saves — see queueWrite. The
+              // expectedUpdatedAt read has to happen INSIDE the queued fn, or
+              // it captures a value the preceding write has already replaced.
+              queueWrite(async () => {
+                const updated = await api.updateTimelineProject(projectId, {
+                  name: trimmed, expectedUpdatedAt: updatedAtRef.current,
+                }, { silent: true }).catch((err) => {
+                  toast.error(`Rename failed: ${err.message}`);
+                  setNameDraft(project.name);
+                  return null;
+                });
+                if (updated) {
+                  updatedAtRef.current = updated.updatedAt;
+                  setProject((p) => ({ ...p, name: updated.name, updatedAt: updated.updatedAt }));
+                  setNameDraft(updated.name);
+                }
               });
-              if (updated) {
-                setProject((p) => ({ ...p, name: updated.name, updatedAt: updated.updatedAt }));
-                setNameDraft(updated.name);
-              }
             }}
             className="bg-transparent text-white font-medium text-lg focus:outline-none focus:bg-port-card focus:px-2 rounded transition-all"
           />
-          <span className="text-xs text-gray-500">{clips.length} clips · {formatTimecode(total)}</span>
+          <span className="text-xs text-gray-500">
+            {segments.length} segments · {overlays.length} overlays · {audio.tracks.length} beds · {formatTimecode(total)}
+          </span>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -563,7 +743,7 @@ export default function VideoTimelineEditor() {
           <button
             type="button"
             onClick={handleRender}
-            disabled={clips.length === 0 || !!renderJobId}
+            disabled={segments.length === 0 || !!renderJobId}
             className="flex items-center gap-2 px-3 py-1.5 bg-port-success hover:bg-port-success/80 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm rounded-md"
           >
             {renderJobId ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
@@ -576,8 +756,26 @@ export default function VideoTimelineEditor() {
         {/* Left rail — library */}
         {showLibrary && (
           <div className="bg-port-card/50 border border-port-border rounded-lg p-2 max-h-[600px] overflow-y-auto">
-            <div className="text-xs uppercase text-gray-500 tracking-wide mb-2 px-1">Clip library</div>
-            {libraryClips.length === 0 ? (
+            <div className="flex gap-1 mb-2" role="tablist" aria-label="Clip library">
+              {LIBRARY_TABS.map(({ id, label, Icon }) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={libraryTab === id}
+                  onClick={() => setLibraryTab(id)}
+                  className={`flex-1 flex items-center justify-center gap-1 px-1.5 py-1 text-[10px] rounded ${
+                    libraryTab === id
+                      ? 'bg-port-accent/20 text-port-accent'
+                      : 'text-gray-400 hover:text-white border border-port-border'
+                  }`}
+                >
+                  <Icon className="w-3 h-3" aria-hidden="true" /> {label}
+                </button>
+              ))}
+            </div>
+
+            {libraryTab === 'clips' && (libraryClips.length === 0 ? (
               <div className="text-xs text-gray-500 px-1 py-4">No clips. Generate some on the Video page.</div>
             ) : (
               <div className="grid grid-cols-1 gap-2">
@@ -587,31 +785,95 @@ export default function VideoTimelineEditor() {
                   </div>
                 ))}
               </div>
-            )}
+            ))}
+
+            {libraryTab === 'stills' && (images.length === 0 ? (
+              <div className="text-xs text-gray-500 px-1 py-4">No images. Generate some on the Image page.</div>
+            ) : (
+              <div className="grid grid-cols-1 gap-2">
+                {images.map((image) => (
+                  <StillTile key={image.filename} image={image} onAddStill={addStill} onAddOverlay={addOverlay} />
+                ))}
+              </div>
+            ))}
+
+            {libraryTab === 'audio' && (musicTracks.length === 0 ? (
+              <div className="text-xs text-gray-500 px-1 py-4">No audio in the shared music library.</div>
+            ) : (
+              <div className="grid grid-cols-1 gap-1.5">
+                {musicTracks.map((track) => (
+                  <AudioRow key={track.filename} track={track} onAdd={addBed} />
+                ))}
+              </div>
+            ))}
           </div>
         )}
 
-        {/* Center — preview + track */}
+        {/* Center — preview + tracks */}
         <div className="space-y-3 min-w-0">
-          <div className="bg-black rounded-lg overflow-hidden aspect-video relative">
+          {/* The preview adopts the CANONICAL render canvas, not a fixed 16:9
+              box — overlay x/y/width are normalized against that canvas, so a
+              portrait or square project would otherwise place them somewhere
+              the export does not. */}
+          <div className="bg-black rounded-lg overflow-hidden relative" style={{ aspectRatio: canvasAspect }}>
             <video
               ref={videoRef}
-              className="w-full h-full"
+              className={`w-full h-full ${activeStillSrc ? 'invisible' : ''}`}
               playsInline
               preload="auto"
             />
-            {clips.length === 0 && (
+            {activeStillSrc && (
+              <img src={activeStillSrc} alt="" className="absolute inset-0 w-full h-full object-contain" />
+            )}
+            {/* The segment fade scrim sits UNDER the overlay lane, matching the
+                export: ffmpeg fades each segment before concat and composites
+                overlays afterwards, so a fade dims the base video and leaves
+                the overlay at its own opacity. */}
+            {activeFadeScrim > 0 && (
+              <div
+                data-testid="fade-scrim"
+                aria-hidden="true"
+                style={{ opacity: activeFadeScrim }}
+                className="absolute inset-0 bg-black pointer-events-none"
+              />
+            )}
+            {/* Overlay lane, composited exactly as ffmpeg will: normalized
+                position/width against the canvas, alpha from the same ramp.
+                Every overlay stays MOUNTED and rides its opacity to zero —
+                unmounting at the window edge would re-decode the image on each
+                boundary crossing while scrubbing. */}
+            {overlayChrome.map(({ key, src, left, top, width, overlay }) => (src ? (
+              <img
+                key={key}
+                src={src}
+                alt=""
+                data-testid="overlay-preview"
+                style={{ left, top, width, opacity: overlayOpacityAt(overlay, t, total) }}
+                className="absolute pointer-events-none"
+              />
+            ) : null))}
+            {segments.length === 0 && (
               <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">
                 Add clips to start
               </div>
             )}
           </div>
 
+          {/* Bed playback elements. Hidden — the timeline lane is the UI. */}
+          {audio.tracks.map((track) => (
+            <BedAudio
+              key={track._key}
+              trackKey={track._key}
+              src={assetUrl(track.assetKind, track.assetFile)}
+              registry={bedRefs.current}
+            />
+          ))}
+
           <div className="flex items-center gap-2 text-xs text-gray-400">
             <button
               type="button"
               onClick={() => setPlaying((p) => !p)}
-              disabled={clips.length === 0}
+              disabled={segments.length === 0}
               className="p-2 bg-port-card border border-port-border rounded-md hover:border-port-accent disabled:opacity-40"
               title={playing ? 'Pause' : 'Play'} aria-label={playing ? 'Pause' : 'Play'}
             >
@@ -631,17 +893,18 @@ export default function VideoTimelineEditor() {
               min={0}
               max={Math.max(0.01, total)}
               step={0.01}
-              value={Math.min(t, total)}
+              value={playheadSec}
               onChange={(e) => { setPlaying(false); setT(Number(e.target.value)); }}
               className="flex-1"
-              disabled={clips.length === 0}
+              disabled={segments.length === 0}
             />
             <span className="font-mono text-[11px] tabular-nums">
               {formatTimecode(t)} / {formatTimecode(total)}
             </span>
-            <label className="flex items-center gap-1 ml-2">
+            <label htmlFor="timeline-zoom" className="flex items-center gap-1 ml-2">
               <span>zoom</span>
               <input
+                id="timeline-zoom"
                 type="range"
                 min={20}
                 max={200}
@@ -652,30 +915,71 @@ export default function VideoTimelineEditor() {
             </label>
           </div>
 
-          <div className="bg-port-card/30 border border-port-border rounded-lg p-2 overflow-x-auto">
-            {clips.length === 0 ? (
+          <div className="bg-port-card/30 border border-port-border rounded-lg p-2 overflow-x-auto space-y-1">
+            {segments.length === 0 && overlays.length === 0 && audio.tracks.length === 0 ? (
               <div className="text-xs text-gray-500 py-6 text-center">
-                Drag-drop reorder once you've added clips. Add from the library on the left.
+                Drag-drop reorder once you've added clips. Add clips, stills, overlays and audio from the library on the left.
               </div>
             ) : (
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-                <SortableContext items={clips.map((c) => c._key)} strategy={horizontalListSortingStrategy}>
-                  <div className="flex gap-1 items-stretch min-w-min py-1">
-                    {clips.map((clip) => (
-                      <TimelineBlock
-                        key={clip._key}
-                        clip={clip}
-                        clipMeta={metaFor(clip.clipId)}
-                        isSelected={clip._key === selectedKey}
-                        isMissing={missingKeys.has(clip._key)}
-                        pxPerSec={pxPerSec}
-                        onSelect={setSelectedKey}
-                        onRemove={removeClip}
-                      />
-                    ))}
-                  </div>
-                </SortableContext>
-              </DndContext>
+              /* Every lane renders whenever ANY lane has content. Gating the
+                 free lanes on the video lane would strand an overlay or bed
+                 added to an empty project — unselectable and unremovable until
+                 a video segment happened to be added. */
+              <>
+                <div className="text-[9px] uppercase tracking-wide text-gray-600 px-0.5">Video</div>
+                {segments.length === 0 ? (
+                  <div className="text-[10px] text-gray-600 pl-2 py-2">Add a clip or a still from the library</div>
+                ) : (
+                  <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+                    <SortableContext items={segmentKeys} strategy={horizontalListSortingStrategy}>
+                      <div className="flex gap-1 items-stretch min-w-min py-1">
+                        {segments.map((segment) => (
+                          <TimelineBlock
+                            key={segment._key}
+                            clip={segment}
+                            clipMeta={segment.type === 'clip' ? metaFor(segment.clipId) : null}
+                            isSelected={selection?.lane === 'segment' && segment._key === selection.key}
+                            isMissing={isSegmentMissing(segment)}
+                            pxPerSec={pxPerSec}
+                            onSelect={selectSegment}
+                            onRemove={removeSegment}
+                          />
+                        ))}
+                      </div>
+                    </SortableContext>
+                  </DndContext>
+                )}
+
+                <FloatingLane
+                  title="Overlays"
+                  entries={overlays}
+                  emptyHint="Add an overlay from the Stills tab"
+                  tone="bg-port-accent/15 border-port-accent/40"
+                  labelOf={overlayLabel}
+                  isMissing={isOverlayMissing}
+                  selectedKey={selection?.lane === 'overlay' ? selection.key : null}
+                  pxPerSec={pxPerSec}
+                  width={laneWidth}
+                  playheadSec={playheadSec}
+                  onSelect={selectOverlay}
+                  onRemove={removeOverlay}
+                />
+
+                <FloatingLane
+                  title="Audio"
+                  entries={audio.tracks}
+                  emptyHint="Add a bed from the Audio tab"
+                  tone="bg-port-success/15 border-port-success/40"
+                  labelOf={bedLabel}
+                  isMissing={isBedMissing}
+                  selectedKey={selection?.lane === 'audio' ? selection.key : null}
+                  pxPerSec={pxPerSec}
+                  width={laneWidth}
+                  playheadSec={playheadSec}
+                  onSelect={selectBed}
+                  onRemove={removeBed}
+                />
+              </>
             )}
           </div>
         </div>
@@ -683,78 +987,134 @@ export default function VideoTimelineEditor() {
         {/* Right rail — inspector */}
         <div className="bg-port-card/50 border border-port-border rounded-lg p-3 space-y-3">
           <div className="text-xs uppercase text-gray-500 tracking-wide">Inspector</div>
-          {!selectedClip ? (
-            <div className="text-xs text-gray-500">Select a clip on the timeline to trim it.</div>
-          ) : missingKeys.has(selectedClip._key) ? (
+
+          {!selected && (
+            <div className="text-xs text-gray-500">Select a block on the timeline to edit it.</div>
+          )}
+
+          {selectedSegment && isSegmentMissing(selectedSegment) && (
             <div className="text-xs text-port-error space-y-2">
-              <p>Source clip missing — it may have been deleted from the gallery. Remove this block from the timeline.</p>
-              <button
-                type="button"
-                onClick={() => removeClip(selectedClip._key)}
-                className="w-full px-2 py-1.5 bg-port-error/20 hover:bg-port-error/40 text-port-error text-xs rounded flex items-center justify-center gap-1"
-              >
-                <Trash2 className="w-3 h-3" /> Remove
-              </button>
+              <p>Source missing — it may have been deleted from the gallery. Remove this block from the timeline.</p>
+              <RemoveButton label="Remove" onClick={() => removeSegment(selectedSegment._key)} />
             </div>
-          ) : (
+          )}
+
+          {selectedSegment && !isSegmentMissing(selectedSegment) && selectedSegment.type === 'clip' && (
             <>
               {selectedMeta?.thumbnail && (
-                <img
-                  src={`/data/video-thumbnails/${selectedMeta.thumbnail}`}
-                  alt=""
-                  className="w-full aspect-video object-cover rounded"
-                />
+                <img src={assetUrl('video-thumbnails', selectedMeta.thumbnail)} alt="" className="w-full aspect-video object-cover rounded" />
               )}
-              <div className="text-[11px] text-gray-300 line-clamp-3" title={selectedMeta?.prompt}>
-                {selectedMeta?.prompt}
-              </div>
+              <div className="text-[11px] text-gray-300 line-clamp-3" title={selectedMeta?.prompt}>{selectedMeta?.prompt}</div>
               <div className="text-[10px] text-gray-500">
                 source: {selectedSourceDur?.toFixed(2) ?? '?'}s · {selectedMeta?.width}×{selectedMeta?.height} · {selectedMeta?.fps}fps
               </div>
-              <label className="block text-xs text-gray-400">
-                In (s)
-                <input
-                  type="number"
-                  step="0.05"
-                  min={0}
-                  max={selectedSourceDur || undefined}
-                  value={trimDraft.inSec}
-                  onChange={(e) => setTrimDraft((d) => ({ ...d, inSec: e.target.value }))}
-                  onBlur={(e) => {
-                    const n = Number(e.target.value);
-                    if (Number.isFinite(n)) editSelected({ inSec: n });
-                  }}
-                  className="w-full mt-1 px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm focus:outline-none focus:border-port-accent"
-                />
-              </label>
-              <label className="block text-xs text-gray-400">
-                Out (s)
-                <input
-                  type="number"
-                  step="0.05"
-                  min={selectedClip.inSec + 0.05}
-                  max={selectedSourceDur || undefined}
-                  value={trimDraft.outSec}
-                  onChange={(e) => setTrimDraft((d) => ({ ...d, outSec: e.target.value }))}
-                  onBlur={(e) => {
-                    const n = Number(e.target.value);
-                    if (Number.isFinite(n)) editSelected({ outSec: n });
-                  }}
-                  className="w-full mt-1 px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm focus:outline-none focus:border-port-accent"
-                />
-              </label>
+              <NumberField
+                id="segment-in" label="In (s)" value={selectedSegment.inSec} max={selectedSourceDur ?? undefined}
+                onCommit={(n) => patchLane('segment', selectedSegment._key, (s) => clampTrim(s, { inSec: n }, selectedSourceDur, selectedMeta?.fps))}
+              />
+              <NumberField
+                id="segment-out" label="Out (s)" value={selectedSegment.outSec} max={selectedSourceDur ?? undefined}
+                onCommit={(n) => patchLane('segment', selectedSegment._key, (s) => clampTrim(s, { outSec: n }, selectedSourceDur, selectedMeta?.fps))}
+              />
               <div className="text-[10px] text-gray-500">
-                trimmed: {(selectedClip.outSec - selectedClip.inSec).toFixed(2)}s
+                trimmed: {segmentDuration(selectedSegment).toFixed(2)}s
               </div>
-              <button
-                type="button"
-                onClick={() => removeClip(selectedClip._key)}
-                className="w-full px-2 py-1.5 bg-port-error/20 hover:bg-port-error/40 text-port-error text-xs rounded flex items-center justify-center gap-1"
-              >
-                <Trash2 className="w-3 h-3" /> Remove from timeline
-              </button>
+              <FadeFields
+                idPrefix="segment"
+                entry={selectedSegment}
+                duration={segmentDuration(selectedSegment)}
+                onCommit={(patch) => patchLane('segment', selectedSegment._key, (s) => fitFadePatch(s, patch, segmentDuration(s)))}
+              />
+              <NumberField
+                id="segment-volume" label="Volume (×)" value={selectedSegment.volume ?? 1} max={MAX_VOLUME}
+                onCommit={(n) => patchLane('segment', selectedSegment._key, () => ({ volume: n }))}
+              />
+              <RemoveButton label="Remove from timeline" onClick={() => removeSegment(selectedSegment._key)} />
             </>
           )}
+
+          {selectedSegment && !isSegmentMissing(selectedSegment) && selectedSegment.type === 'still' && (
+            <>
+              <img src={assetUrl(selectedSegment.assetKind, selectedSegment.assetFile)} alt="" className="w-full aspect-video object-cover rounded" />
+              <div className="text-[11px] text-gray-300 truncate" title={selectedSegment.assetFile}>{selectedSegment.assetFile}</div>
+              <NumberField
+                id="still-duration" label="Hold (s)" value={selectedSegment.durationSec} min={MIN_ENTRY_SEC} max={MAX_ENTRY_SEC}
+                onCommit={(n) => commitDuration('segment', selectedSegment._key, n)}
+              />
+              <FadeFields
+                idPrefix="still"
+                entry={selectedSegment}
+                duration={segmentDuration(selectedSegment)}
+                onCommit={(patch) => patchLane('segment', selectedSegment._key, (s) => fitFadePatch(s, patch, segmentDuration(s)))}
+              />
+              <RemoveButton label="Remove from timeline" onClick={() => removeSegment(selectedSegment._key)} />
+            </>
+          )}
+
+          {selectedOverlay && (
+            <>
+              <img src={assetUrl(selectedOverlay.assetKind, selectedOverlay.assetFile)} alt="" className="w-full aspect-video object-contain rounded bg-port-bg" />
+              <div className="text-[11px] text-gray-300 truncate" title={selectedOverlay.assetFile}>{selectedOverlay.assetFile}</div>
+              <NumberField id="overlay-start" label="Start (s)" value={selectedOverlay.startSec}
+                onCommit={(n) => patchLane('overlay', selectedOverlay._key, () => ({ startSec: n }))} />
+              <NumberField id="overlay-duration" label="Duration (s)" value={selectedOverlay.durationSec} min={MIN_ENTRY_SEC} max={MAX_ENTRY_SEC}
+                onCommit={(n) => commitDuration('overlay', selectedOverlay._key, n)} />
+              <div className="grid grid-cols-2 gap-2">
+                <NumberField id="overlay-x" label="X (0–1)" value={selectedOverlay.x ?? 0} step={0.01} min={-1} max={2}
+                  onCommit={(n) => patchLane('overlay', selectedOverlay._key, () => ({ x: n }))} />
+                <NumberField id="overlay-y" label="Y (0–1)" value={selectedOverlay.y ?? 0} step={0.01} min={-1} max={2}
+                  onCommit={(n) => patchLane('overlay', selectedOverlay._key, () => ({ y: n }))} />
+              </div>
+              <NumberField id="overlay-width" label="Width (× canvas)" value={selectedOverlay.width ?? 0.25} step={0.01} min={0.01} max={4}
+                onCommit={(n) => patchLane('overlay', selectedOverlay._key, () => ({ width: n }))} />
+              <NumberField id="overlay-opacity" label="Opacity (0–1)" value={selectedOverlay.opacity ?? 1} max={1}
+                onCommit={(n) => patchLane('overlay', selectedOverlay._key, () => ({ opacity: n }))} />
+              <FadeFields
+                idPrefix="overlay"
+                entry={selectedOverlay}
+                duration={selectedOverlay.durationSec}
+                onCommit={(patch) => patchLane('overlay', selectedOverlay._key, (o) => fitFadePatch(o, patch, o.durationSec))}
+              />
+              <RemoveButton label="Remove overlay" onClick={() => removeOverlay(selectedOverlay._key)} />
+            </>
+          )}
+
+          {selectedBed && (
+            <>
+              <div className="flex items-center gap-2 text-[11px] text-gray-300">
+                <Music className="w-3 h-3 text-gray-500" aria-hidden="true" />
+                <span className="truncate" title={selectedBed.assetFile}>{selectedBed.assetFile}</span>
+              </div>
+              <NumberField id="bed-start" label="Start (s)" value={selectedBed.startSec}
+                onCommit={(n) => patchLane('audio', selectedBed._key, () => ({ startSec: n }))} />
+              <NumberField id="bed-offset" label="Source offset (s)" value={selectedBed.offsetSec ?? 0}
+                hint="Where playback starts inside the file"
+                onCommit={(n) => patchLane('audio', selectedBed._key, () => ({ offsetSec: n }))} />
+              <NumberField id="bed-duration" label="Duration (s)" value={selectedBed.durationSec} min={MIN_ENTRY_SEC} max={MAX_ENTRY_SEC}
+                hint="Clamped to the file's real length at render"
+                onCommit={(n) => commitDuration('audio', selectedBed._key, n)} />
+              <NumberField id="bed-volume" label="Volume (×)" value={selectedBed.volume ?? 1} max={MAX_VOLUME}
+                onCommit={(n) => patchLane('audio', selectedBed._key, () => ({ volume: n }))} />
+              <FadeFields
+                idPrefix="bed"
+                entry={selectedBed}
+                duration={selectedBed.durationSec}
+                onCommit={(patch) => patchLane('audio', selectedBed._key, (tr) => fitFadePatch(tr, patch, tr.durationSec))}
+              />
+              <RemoveButton label="Remove bed" onClick={() => removeBed(selectedBed._key)} />
+            </>
+          )}
+
+          <div className="pt-2 border-t border-port-border">
+            <NumberField
+              id="mix-clip-volume"
+              label="Clip audio (×)"
+              value={clipVolume ?? 1}
+              max={MAX_VOLUME}
+              hint="Scales every video segment's own audio"
+              onCommit={(n) => updateLanes((prev) => ({ ...prev, audio: { ...prev.audio, clipVolume: n } }))}
+            />
+          </div>
         </div>
       </div>
     </div>
