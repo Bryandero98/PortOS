@@ -505,7 +505,11 @@ async function runAgentSpawn(task) {
       // alone can't answer that once the provider record is edited or deleted
       // mid-run. Pre-#4834 agent records have no value here, so the counter
       // falls back to resolving the id against the live provider list.
-      providerEndpoint: provider.endpoint || null,
+      //
+      // `ANTHROPIC_BASE_URL` is the second source because an Ollama-backed CLI
+      // provider (shipped: claude-ollama, claude-ollama-tui) records its daemon
+      // there and leaves `endpoint` unset.
+      providerEndpoint: provider.endpoint || provider.envVars?.ANTHROPIC_BASE_URL || null,
       leanMode,
       // Whether THIS run's prompt told the agent to push, open, review, and merge
       // its own PR. Persisted rather than re-derived at cleanup time: the two

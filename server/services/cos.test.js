@@ -1063,6 +1063,71 @@ describe('readEndpointCapacity (#4834)', () => {
   });
 });
 
+describe('localEndpointOfProvider — Ollama-backed CLI/TUI providers (#4834)', () => {
+  // Four SHIPPED providers run against the local Ollama daemon with no
+  // `endpoint` field at all. They are the archetype of this issue — PortOS
+  // launches a vendor CLI that opens its own connection — so leaving them
+  // ungated would make the cap inconsistent across providers of the same shape.
+  it('reads the daemon from ANTHROPIC_BASE_URL when endpoint is unset', () => {
+    expect(localEndpointOfProvider({
+      id: 'claude-ollama-tui', type: 'tui', ollamaBacked: true,
+      envVars: { ANTHROPIC_BASE_URL: 'http://localhost:11434' },
+    })).toBe('localhost:11434');
+  });
+
+  it('falls back to the default daemon for a bare ollamaBacked marker', () => {
+    // opencode-ollama* keep their base inside an OPENCODE_CONFIG_CONTENT blob;
+    // the marker alone means the default daemon (what the toolkit's own
+    // ollamaBaseFromProvider does).
+    expect(localEndpointOfProvider({
+      id: 'opencode-ollama-tui', type: 'tui', ollamaBacked: true,
+      envVars: { OPENCODE_CONFIG_CONTENT: '{}' },
+    })).toBe('localhost:11434');
+  });
+
+  it('shares ONE slot with the api-type `ollama` provider on the same daemon', () => {
+    const cli = localEndpointOfProvider({ id: 'claude-ollama', ollamaBacked: true, envVars: { ANTHROPIC_BASE_URL: 'http://localhost:11434' } });
+    const api = localEndpointOfProvider({ id: 'ollama', type: 'api', endpoint: 'http://localhost:11434/v1' });
+    expect(cli).toBe(api);
+  });
+
+  it('does NOT localize a REMOTE Ollama daemon', () => {
+    // The recorded base wins over the local default — an Ollama on another host
+    // is not this machine's GPU.
+    expect(localEndpointOfProvider({ id: 'remote-ollama', type: 'api', endpoint: 'http://192.0.2.10:11434' })).toBeNull();
+    expect(localEndpointOfProvider({
+      id: 'remote-claude-ollama', ollamaBacked: true,
+      envVars: { ANTHROPIC_BASE_URL: 'http://192.0.2.10:11434' },
+    })).toBeNull();
+  });
+
+  it('leaves a non-Ollama CLI provider with no endpoint ungated', () => {
+    expect(localEndpointOfProvider({ id: 'claude-cli', type: 'cli', endpoint: null })).toBeNull();
+  });
+});
+
+describe('endpointForAgent — a present stamp is authoritative both ways (#4834)', () => {
+  const slots = createLocalEndpointSlotContext({ providers: ALL_PROVIDERS, activeProvider: CLOUD_PROVIDER });
+
+  it('does NOT re-resolve when the stamp is REMOTE', () => {
+    // The agent is talking to the cloud. If its provider record is re-pointed at
+    // a local server mid-run, falling through to the id lookup would count this
+    // cloud agent against that GPU — saturating an endpoint with zero agents on
+    // it and holding every task behind it at the default limit of 1.
+    const cloudAgent = {
+      status: 'running',
+      metadata: { providerId: 'lmstudio-tui', providerEndpoint: 'https://api.orcarouter.ai/v1' },
+    };
+    expect(slots.endpointForAgent(cloudAgent)).toBeNull();
+    expect(countRunningAgentsByLocalEndpoint({ a: cloudAgent }, slots.endpointForAgent)).toEqual({});
+  });
+
+  it('still falls back to the id lookup when the stamp is ABSENT', () => {
+    expect(slots.endpointForAgent({ status: 'running', metadata: { providerId: 'lmstudio-tui' } })).toBe(LOCAL_ENDPOINT);
+    expect(slots.endpointForAgent({ status: 'running', metadata: { providerId: 'lmstudio-tui', providerEndpoint: null } })).toBe(LOCAL_ENDPOINT);
+  });
+});
+
 // ─── Source-level regression guards ────────────────────────────────────────
 //
 // These pin two structural invariants of the production code that the
@@ -1419,7 +1484,9 @@ describe('cos.js source — priority + capacity invariants', () => {
     // Counting a running agent by provider id alone breaks when the provider is
     // edited or deleted while the agent still holds the GPU.
     const LIFECYCLE_SRC = readFileSync(join(__dirname, 'agentLifecycle.js'), 'utf-8');
-    expect(LIFECYCLE_SRC).toMatch(/providerEndpoint:\s*provider\.endpoint\s*\|\|\s*null/);
+    // Second source: an Ollama-backed CLI provider records its daemon in
+    // ANTHROPIC_BASE_URL and leaves `endpoint` unset.
+    expect(LIFECYCLE_SRC).toMatch(/providerEndpoint:\s*provider\.endpoint\s*\|\|\s*provider\.envVars\?\.ANTHROPIC_BASE_URL\s*\|\|\s*null/);
   });
 
   it('forceSpawnTask refuses synchronously when the local endpoint is full (#4834)', () => {

@@ -23,7 +23,7 @@
  */
 
 import { isLocalEndpoint, LOCAL_LLM_MAX_CONCURRENCY } from '../lib/promptRunner.js';
-import { listProviders, getActiveProvider } from './providers.js';
+import { listProviders, getActiveProvider, isOllamaBackedProvider } from './providers.js';
 import { isProviderAvailable, getFallbackProvider } from './providerStatus.js';
 
 // One knob governs both paths — no new config key. A local box beefy enough to
@@ -31,13 +31,26 @@ import { isProviderAvailable, getFallbackProvider } from './providerStatus.js';
 // along with N in-flight API calls.
 export const LOCAL_ENDPOINT_AGENT_LIMIT = LOCAL_LLM_MAX_CONCURRENCY;
 
+// An Ollama-backed CLI/TUI provider carries the daemon in `envVars`, not in
+// `endpoint` — the shipped `claude-ollama` / `claude-ollama-tui` set
+// `ANTHROPIC_BASE_URL`, and `opencode-ollama` / `opencode-ollama-tui` carry only
+// the `ollamaBacked` marker (their base lives inside an OPENCODE_CONFIG_CONTENT
+// blob, which `ollamaBaseFromProvider` in the toolkit does not parse either —
+// the marker alone means the default daemon).
+const DEFAULT_OLLAMA_BASE = 'http://localhost:11434';
+
 /**
  * The local endpoint a provider runs against, or null when it has none.
  *
- * Reads ONLY the endpoint recorded on the provider — never a model-id prefix.
- * A CLI/TUI provider with no recorded endpoint resolves to null and stays
- * ungated, which is the intended behavior: PortOS cannot know where an
- * unconfigured vendor CLI points.
+ * Reads ONLY what the provider RECORD says — the endpoint, else the Ollama base
+ * its `envVars` name, else the default daemon when (and only when) the record
+ * carries an explicit `ollamaBacked` marker. Never a model-id prefix. Everything
+ * else stays ungated: PortOS cannot know where an unconfigured vendor CLI points.
+ *
+ * The Ollama arm matters because four SHIPPED CLI/TUI providers run against the
+ * local daemon with no `endpoint` at all — precisely the "the vendor CLI opens
+ * its own connection and PortOS never sees it" case #4834 exists for. Skipping
+ * them would leave the cap inconsistent across providers of the same shape.
  *
  * Not gated on `provider.type === 'api'` (unlike promptRunner's request gate):
  * a TUI provider pointed at a local LM Studio IS the case this exists for.
@@ -47,7 +60,12 @@ export const LOCAL_ENDPOINT_AGENT_LIMIT = LOCAL_LLM_MAX_CONCURRENCY;
  * queued-no-slot log line.
  */
 export function localEndpointOfProvider(provider) {
-  return localSlotKey(provider?.endpoint);
+  if (!provider) return null;
+  // A recorded base is authoritative, including when it is REMOTE: an Ollama
+  // daemon on another host must resolve to null, not to the local default.
+  const recorded = provider.endpoint || provider.envVars?.ANTHROPIC_BASE_URL;
+  if (recorded) return localSlotKey(recorded);
+  return isOllamaBackedProvider(provider) ? localSlotKey(DEFAULT_OLLAMA_BASE) : null;
 }
 
 // Host+port identifies the model server; the scheme, path (`/v1`) and host
@@ -120,12 +138,15 @@ export function createLocalEndpointSlotContext({
   return {
     limit,
     endpointForAgent: (agent) => {
-      // The endpoint stamped at spawn wins: it is what this agent's inference
-      // ACTUALLY landed on, and it survives the provider record being edited or
-      // deleted while the agent is still holding the GPU. Falling back to the id
-      // lookup keeps pre-#4834 agent records counted.
-      const stamped = localEndpointOfProvider({ endpoint: agent?.metadata?.providerEndpoint });
-      if (stamped) return stamped;
+      // A PRESENT stamp is authoritative in BOTH directions: it is what this
+      // agent's inference actually landed on, so a REMOTE stamp means "not on a
+      // local endpoint" — never "go re-resolve the provider". Falling through
+      // there would reintroduce the mid-run edit the stamp exists to prevent: a
+      // cloud agent would start counting against whatever endpoint its provider
+      // record now names, saturating a GPU that has no agents on it at all.
+      // Only an ABSENT stamp (a pre-#4834 record) falls back to the id lookup.
+      const stamped = agent?.metadata?.providerEndpoint;
+      if (stamped != null) return localSlotKey(stamped);
       const providerId = agent?.metadata?.providerId || agent?.providerId;
       return providerId ? endpointById(providerId) : null;
     },
