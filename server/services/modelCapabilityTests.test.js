@@ -211,6 +211,24 @@ describe('runCapabilityTest — story outline', () => {
   });
 });
 
+describe('runCapabilityTest — fiction scene', () => {
+  it('keeps the scene and returns the structural craft score', async () => {
+    runLocalLlmTest.mockResolvedValue({
+      text: [
+        'The tidal marsh smelled of mud as the oyster farmer watched the dying beds.',
+        'She waded to the sea wall and pulled the gate open.',
+        '“No,” she said, as black water spilled through the breach.',
+      ].join('\n\n'),
+      timings: null,
+    });
+    const record = await runCapabilityTest({ backend: 'ollama', modelId: 'writer', testId: 'fiction-scene' });
+    expect(record.output).toContain('oyster farmer');
+    expect(record.detail.wordCount).toBeGreaterThan(0);
+    expect(record.detail.hasDialogue).toBe(true);
+    expect(record.verdict).toBe('partial');
+  });
+});
+
 describe('runCapabilityTest — sandbox repair', () => {
   beforeEach(() => {
     getAllProviders.mockResolvedValue({ activeProvider: null, providers: [OPENCODE_LLAMA] });
@@ -348,6 +366,24 @@ describe('the machine-wide heavy-job claim', () => {
 
     await expect(runCapabilityTest({ backend: 'lmstudio', modelId: 'vlm', testId: 'image-analysis' })).rejects.toThrow();
     expect(release).toHaveBeenCalled();
+  });
+
+  it('releases the claim when the progress consumer disconnects before the runner starts', async () => {
+    const release = vi.fn(async () => {});
+    claimHeavyLocalJob.mockResolvedValue({ ok: true, holder: null, release });
+    let firstFrame = true;
+    const onProgress = vi.fn(() => {
+      if (firstFrame) {
+        firstFrame = false;
+        throw new Error('progress consumer disconnected');
+      }
+    });
+
+    await expect(runCapabilityTest({
+      backend: 'lmstudio', modelId: 'vlm', testId: 'image-analysis', onProgress,
+    })).rejects.toThrow(/progress consumer disconnected/);
+    expect(release).toHaveBeenCalledOnce();
+    expect(runLocalLlmTest).not.toHaveBeenCalled();
   });
 });
 

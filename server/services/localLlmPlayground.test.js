@@ -58,6 +58,15 @@ describe('summarizeTimings', () => {
     expect(t.tokensEstimated).toBe(false);
   });
 
+  it('uses wall clock for a one-chunk response when no runtime decode duration exists', () => {
+    const t = summarizeTimings({
+      startedAt: 0, firstChunkAt: 1000, endedAt: 3000, text: 'abc', streamChunks: 1,
+      usage: { completionTokens: 100, promptTokens: 4000, estimated: false },
+    });
+    expect(t.tokensPerSecond).toBe(33.33);
+    expect(t.timingSource).toBe('wall-clock');
+  });
+
   it('prefers native decode and prefill durations when the runtime reports them', () => {
     const t = summarizeTimings({
       startedAt: 0, firstChunkAt: 1000, endedAt: 3000, text: 'abc',
@@ -379,6 +388,15 @@ describe('token counting through the stream', () => {
     await runLocalLlmTest({ backend: 'lmstudio', modelId: 'm1', prompt: 'hi', timeoutMs: 5000 });
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(JSON.parse(global.fetch.mock.calls[0][1].body).stream_options).toBeUndefined();
+  });
+
+  it('does not cache an unrelated 400 as stream_options incompatibility', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => 'invalid model name' });
+
+    const result = await runLocalLlmTest({ backend: 'lmstudio', modelId: 'm1', prompt: 'hi', timeoutMs: 5000 });
+
+    expect(result.error).toContain('invalid model name');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
   // A 401 says nothing about the body. Retrying it would double every real

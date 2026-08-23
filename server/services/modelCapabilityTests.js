@@ -3,17 +3,20 @@
  *
  * The assessments panel next door answers "how fast is this model here". This
  * one answers the question speed cannot: **can it actually do what its badges
- * claim?** Three tests, each bound to the capability badges the install catalog
+ * claim?** Four tests, each bound to the capability badges the install catalog
  * already shows, each keeping the model's full output:
  *
  *   - `sandbox-repair` (`tools`) — a broken module and its failing test are
- *     copied into a throwaway sandbox and a real OpenCode TUI agent is pointed
- *     at it. The model has to read the files, write a fix to disk, and make the
- *     test pass. The transcript streams to the page while it works.
+ *     copied into a throwaway sandbox and the configured OpenCode task driver is
+ *     pointed at it. The model has to read the files, write a fix to disk, and
+ *     make the test pass. Its structured transcript streams to the page while it
+ *     works; the PTY-backed TUI path is measured separately by the harness check.
  *   - `image-analysis` (`vision`) — a fixture image with known contents goes in;
  *     the description is scored against required and bonus keywords.
  *   - `story-outline` (`chat`) — one hero's-journey outline from a fixed
  *     premise, scored on beat coverage and ordering.
+ *   - `fiction-scene` (`chat`) — a short opening scene from the same premise,
+ *     scored on story anchors and basic scene craft before a human reads it.
  *
  * ## Rules this file exists to honour
  *
@@ -52,9 +55,9 @@ import {
 } from '../lib/localProviderRuntime.js';
 import {
   CAPABILITY_TESTS, CAPABILITY_TEST_IDS, CAPABILITY_TEST_PROMPTS, SANDBOX_TASK_PROMPT,
-  VISION_FIXTURE_KEYWORDS, HEROS_JOURNEY_BEATS,
+  VISION_FIXTURE_KEYWORDS, FICTION_SCENE_KEYWORDS, HEROS_JOURNEY_BEATS,
   applicableTests, getCapabilityTest,
-  scoreKeywords, scoreStoryBeats, scoreSandboxRepair, rollUpVerdict,
+  scoreKeywords, scoreFictionScene, scoreStoryBeats, scoreSandboxRepair, rollUpVerdict,
 } from '../lib/modelCapabilityTests.js';
 import { listRuntimeModels, runtimeEndpoint, runtimeApiKey } from './localModelAssessments.js';
 import { runLocalLlmTest, runEndpointLlmTest } from './localLlmPlayground.js';
@@ -209,10 +212,10 @@ async function generate({ backend, modelId, prompt, images, maxTokens, signal })
   });
 }
 
-// ---- the three tests --------------------------------------------------------
+// ---- the generative tests ---------------------------------------------------
 
 /**
- * The two generative tests, which differ only in what they send and how the
+ * The generative tests, which differ only in what they send and how the
  * answer is scored. Everything else — the empty-output contract, keeping the
  * text whichever way the run ended — is identical, and was worth having in one
  * place rather than twice.
@@ -232,6 +235,12 @@ const CHAT_TESTS = {
     message: (modelId) => `Asking ${modelId} for a twelve-beat outline…`,
     images: async () => undefined,
     score: (text) => scoreStoryBeats(text, HEROS_JOURNEY_BEATS),
+  },
+  'fiction-scene': {
+    maxTokens: 1400,
+    message: (modelId) => `Asking ${modelId} for a short fiction scene…`,
+    images: async () => undefined,
+    score: (text) => scoreFictionScene(text, FICTION_SCENE_KEYWORDS),
   },
 };
 
@@ -291,95 +300,102 @@ async function runSandboxRepair({ backend, modelId, signal, emit, runId, provide
 
   const sandboxRoot = join(PATHS.data, 'model-tests', 'sandboxes');
   const sandbox = join(sandboxRoot, runId);
-  await ensureDir(sandbox);
-  await cp(SANDBOX_FIXTURE, sandbox, { recursive: true });
-  emit({ event: 'progress', message: `Sandbox ready — ${Object.keys(SANDBOX_FILES).length} files copied.` });
+  const run = async () => {
+    await ensureDir(sandbox);
+    await cp(SANDBOX_FIXTURE, sandbox, { recursive: true });
+    emit({ event: 'progress', message: `Sandbox ready — ${Object.keys(SANDBOX_FILES).length} files copied.` });
 
-  const fixtureHashes = await sandboxFixtureHashes();
+    const fixtureHashes = await sandboxFixtureHashes();
 
-  let transcript = '';
-  let toolCalls = 0;
-  const startedAt = Date.now();
+    let transcript = '';
+    let toolCalls = 0;
+    const startedAt = Date.now();
 
-  emit({ event: 'progress', message: `Starting the ${driver.provider.name || 'OpenCode'} agent on ${modelId}…` });
-  const agent = await runOpencodeTask({
-    provider: driver.provider,
-    modelId,
-    cwd: sandbox,
-    prompt: SANDBOX_TASK_PROMPT,
-    timeoutMs: AGENT_TIMEOUT_MS,
-    // One parse feeds both the stored transcript and the live view, so the two
-    // can never disagree about what the agent did.
-    onEvent: (event) => {
-      const rendered = formatAgentEvent(event);
-      if (!rendered) return;
-      if (rendered.toolCall) toolCalls += 1;
-      transcript += `${rendered.line}\n`;
-      // Watching the loop work is the point of driving a TUI here rather than an
-      // in-process tool loop.
-      emit({ event: 'output', line: rendered.line });
-    },
-  });
+    emit({ event: 'progress', message: `Starting the ${driver.provider.name || 'OpenCode'} agent on ${modelId}…` });
+    const agent = await runOpencodeTask({
+      provider: driver.provider,
+      modelId,
+      cwd: sandbox,
+      prompt: SANDBOX_TASK_PROMPT,
+      timeoutMs: AGENT_TIMEOUT_MS,
+      signal,
+      // One parse feeds both the stored transcript and the live view, so the two
+      // can never disagree about what the agent did.
+      onEvent: (event) => {
+        const rendered = formatAgentEvent(event);
+        if (!rendered) return;
+        if (rendered.toolCall) toolCalls += 1;
+        transcript += `${rendered.line}\n`;
+        // Watching the structured tool loop work is the point of streaming this
+        // driver rather than hiding it behind an in-process helper.
+        emit({ event: 'output', line: rendered.line });
+      },
+    });
 
-  // ---- verification: disk only, never the transcript ----
-  emit({ event: 'progress', message: 'Agent finished — checking the sandbox on disk…' });
+    // ---- verification: disk only, never the transcript ----
+    emit({ event: 'progress', message: 'Agent finished — checking the sandbox on disk…' });
 
-  const hashOf = (name) => sha256File(join(sandbox, name)).catch(() => null);
-  const [moduleHash, testHash, dataHash] = await Promise.all([
-    hashOf(SANDBOX_FILES.module), hashOf(SANDBOX_FILES.test), hashOf(SANDBOX_FILES.data),
-  ]);
+    const hashOf = (name) => sha256File(join(sandbox, name)).catch(() => null);
+    const [moduleHash, testHash, dataHash] = await Promise.all([
+      hashOf(SANDBOX_FILES.module), hashOf(SANDBOX_FILES.test), hashOf(SANDBOX_FILES.data),
+    ]);
 
-  // PortOS runs the test itself rather than believing the agent's own run: the
-  // exit code of a command we issued is the only evidence that survives a model
-  // reporting a success it did not achieve.
-  const verify = await bufferedSpawn(SANDBOX_VERIFY_COMMAND[0], SANDBOX_VERIFY_COMMAND.slice(1), {
-    cwd: sandbox,
-    // PWD pinned at the call site (#3193). `node` resolves the test path from
-    // cwd rather than PWD, so this is belt-and-braces today — but the command is
-    // the kind of thing that grows a package runner later, and an inherited PWD
-    // pointing at the PortOS checkout is exactly how one ends up verifying the
-    // wrong directory.
-    env: withSpawnCwdEnv(process.env, sandbox),
-    timeoutMs: VERIFY_TIMEOUT_MS,
-  });
+    // PortOS runs the test itself rather than believing the agent's own run: the
+    // exit code of a command we issued is the only evidence that survives a model
+    // reporting a success it did not achieve.
+    const verify = await bufferedSpawn(SANDBOX_VERIFY_COMMAND[0], SANDBOX_VERIFY_COMMAND.slice(1), {
+      cwd: sandbox,
+      // PWD pinned at the call site (#3193). `node` resolves the test path from
+      // cwd rather than PWD, so this is belt-and-braces today — but this is the
+      // kind of command that grows a package runner later, and an inherited PWD
+      // pointing at the PortOS checkout is exactly how one ends up verifying the
+      // wrong directory.
+      env: withSpawnCwdEnv(process.env, sandbox),
+      timeoutMs: VERIFY_TIMEOUT_MS,
+    });
 
-  const detail = scoreSandboxRepair({
-    // A deleted module reads as "never wrote a fix", not as a change.
-    moduleChanged: Boolean(moduleHash) && moduleHash !== fixtureHashes.module,
-    fixturesIntact: testHash === fixtureHashes.test && dataHash === fixtureHashes.data,
-    testsPass: verify.success,
-    toolCalls,
-  });
+    const detail = scoreSandboxRepair({
+      // A deleted module reads as "never wrote a fix", not as a change.
+      moduleChanged: Boolean(moduleHash) && moduleHash !== fixtureHashes.module,
+      fixturesIntact: testHash === fixtureHashes.test && dataHash === fixtureHashes.data,
+      testsPass: verify.success,
+      toolCalls,
+    });
 
-  await pruneSandboxes(sandboxRoot);
-
-  return {
-    verdict: detail.verdict,
-    summary: detail.summary,
-    // The test's "output" is what PortOS's own verification run printed — the
-    // thing that decided the verdict — with the agent's narration beside it.
-    output: verify.stdout || verify.stderr || '',
-    transcript,
-    detail: {
-      ...detail,
-      driver: driver.provider.id,
-      driverLabel: driver.provider.name || driver.provider.id,
-      verifyCommand: SANDBOX_VERIFY_COMMAND.join(' '),
-      verifyExitCode: verify.code,
-      sandboxPath: sandbox,
-      elapsedMs: Math.max(0, Date.now() - startedAt),
-    },
-    // Recorded even when the verdict already stands on its own: "never wrote a
-    // fix" and "never wrote a fix because the CLI was missing" need different
-    // responses from the user.
-    error: agent.error,
-    timings: null,
+    return {
+      verdict: detail.verdict,
+      summary: detail.summary,
+      // The test's "output" is what PortOS's own verification run printed — the
+      // thing that decided the verdict — with the agent's narration beside it.
+      output: verify.stdout || verify.stderr || '',
+      transcript,
+      detail: {
+        ...detail,
+        driver: driver.provider.id,
+        driverLabel: driver.provider.name || driver.provider.id,
+        verifyCommand: SANDBOX_VERIFY_COMMAND.join(' '),
+        verifyExitCode: verify.code,
+        sandboxPath: sandbox,
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+      },
+      // Recorded even when the verdict already stands on its own: "never wrote a
+      // fix" and "never wrote a fix because the CLI was missing" need different
+      // responses from the user.
+      error: agent.error,
+      timings: null,
+    };
   };
+  try {
+    return await run();
+  } finally {
+    await pruneSandboxes(sandboxRoot);
+  }
 }
 
 const RUNNERS = {
   'image-analysis': runChatTest,
   'story-outline': runChatTest,
+  'fiction-scene': runChatTest,
   'sandbox-repair': runSandboxRepair,
 };
 
@@ -422,11 +438,11 @@ export async function runCapabilityTest({ backend, modelId, testId, signal, onPr
   }
 
   console.log(`🧪 Capability tests: ${test.id} on ${backend}/${modelId} (run ${runId})`);
-  emit({ event: 'start', message: `${test.label}: starting on ${modelId}…`, runId });
 
   const startedAt = Date.now();
   let outcome;
   try {
+    emit({ event: 'start', message: `${test.label}: starting on ${modelId}…`, runId });
     // The claim wait is bounded but can be long, and it does not observe the
     // abort signal. A cancel that landed while we waited must not turn into a
     // run now that the machine is free.
