@@ -431,7 +431,7 @@ rather than invalidating the payload, so a newer provider stays readable.
 Consumers ask `federatedMediaSupports(status, feature, capability)` rather than
 testing the list inline, which is also where the overlap fallback to the legacy
 per-capability `acceptsLyrics` lives — one place to retire it from once no
-supported peer sends it.
+supported peer sends it (#4850).
 
 CUDA has three states: `available`, `absent`, and `unknown`. A CUDA model is ready only when the state is positively `available`; a failed or ambiguous probe blocks admission. Runtime, host-platform, exact fixed-checkpoint readiness, and queue capacity are similarly fail-closed.
 

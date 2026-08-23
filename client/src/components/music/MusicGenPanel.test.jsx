@@ -291,10 +291,10 @@ describe('MusicGenPanel', () => {
     },
   });
 
-  // The mixed-version case, and the reason `acceptsLyrics` exists at all: this
-  // peer's MODEL sings (`lyrics: true`) but its build predates lyrical
-  // federation and never publishes `acceptsLyrics`. Absent must read as false,
-  // or the panel offers a render the peer answers with a 400.
+  // One end of the mixed-version window: this peer's MODEL sings
+  // (`lyrics: true`) but its build predates lyrical federation, so it publishes
+  // neither the `lyrics` feature nor the legacy `acceptsLyrics`. Absent must
+  // read as false, or the panel offers a render the peer answers with a 400.
   it('falls back to an instrumental remote render when the peer build cannot carry lyrics', async () => {
     api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
     api.getInstances.mockResolvedValue({ peers: [lyricCapablePeer()] });

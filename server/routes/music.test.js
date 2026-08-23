@@ -681,9 +681,9 @@ describe('music routes', () => {
     const peer = { id: '00000000-0000-4000-8000-000000000001', enabled: true };
     remoteProvider.peers = [peer];
     // A provider predating lyrical federation: the MODEL sings, so `lyrics` is
-    // true, but it never publishes `acceptsLyrics` and rejects the field on
-    // submit. Absent must read as false or every such render is a hard 400 from
-    // the peer that the user cannot act on.
+    // true, but it publishes neither the `lyrics` feature nor the legacy
+    // `acceptsLyrics`, and rejects the field on submit. Absent must read as
+    // false or every such render is a hard 400 the user cannot act on.
     remoteProvider.resolve.mockResolvedValueOnce({
       peer, capability: remoteLyricCapability({ lyrics: true }),
     });

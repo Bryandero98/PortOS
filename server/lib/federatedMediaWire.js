@@ -295,6 +295,7 @@ export const federatedMediaCapabilitySchema = z.object({
   // sender rather than of any one engine. Read it only through
   // `federatedMediaSupports`, never directly. Do not add a second field in
   // this shape — a new per-field wire capability belongs in `features`.
+  // Retirement tracked in #4850.
   acceptsLyrics: z.boolean().optional(),
   autoDuration: z.boolean(),
   frameStride: z.number().int().min(1).max(64).nullable().optional(),
