@@ -1,11 +1,14 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { buildVideoGenSubmission, envelopVideoPrompt } from '../lib/videoGenSubmission.js';
 
 /** Keeps request shaping behind one focused boundary for every VideoGen lane. */
 export function useVideoGenSubmitFlow(submissionState) {
+  const submissionStateRef = useRef(submissionState);
+  submissionStateRef.current = submissionState;
+
   const buildGeneratePayload = useCallback(
-    () => buildVideoGenSubmission(submissionState),
-    [submissionState],
+    () => buildVideoGenSubmission(submissionStateRef.current),
+    [],
   );
 
   return {

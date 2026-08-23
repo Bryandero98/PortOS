@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, useLocation } from 'react-router';
 
 vi.mock('../../services/api', () => ({
   getLocalLlmStatus: vi.fn(),
@@ -38,7 +38,13 @@ vi.mock('../ui/Toast', () => ({
   default: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
 }));
 
-import { getLocalLlmStatus, getLocalLlmCatalog, patchSettingsSlice, installLocalLlmModel } from '../../services/api';
+import {
+  deleteLocalLlmModel,
+  getLocalLlmStatus,
+  getLocalLlmCatalog,
+  patchSettingsSlice,
+  installLocalLlmModel,
+} from '../../services/api';
 import socket from '../../services/socket';
 import { LocalLlmTab } from './LocalLlmTab';
 
@@ -46,10 +52,16 @@ import { LocalLlmTab } from './LocalLlmTab';
 // "hf.co/sja…" on a phone before the row was allowed to wrap.
 const LONG_ID = 'hf.co/example-org/Example-Long-Model-Name-34B-Instruct-GGUF:Q6_K';
 
+const LocationProbe = () => {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname}{location.search}</output>;
+};
+
 const renderTab = async () => {
   render(
     <MemoryRouter>
       <LocalLlmTab />
+      <LocationProbe />
     </MemoryRouter>,
   );
   await waitFor(() => expect(screen.getByText(/Installed on Ollama/)).toBeTruthy());
@@ -82,6 +94,7 @@ beforeEach(() => {
   });
   getLocalLlmCatalog.mockResolvedValue({ models: [] });
   patchSettingsSlice.mockResolvedValue({});
+  deleteLocalLlmModel.mockResolvedValue({ success: true });
 });
 
 describe('LocalLlmTab backend disable state', () => {
@@ -229,6 +242,42 @@ describe('LocalLlmTab installed models', () => {
       LONG_ID,
       expect.objectContaining({ force: true, silent: true }),
     ));
+  });
+
+  it('limits comparisons to six models and navigates with those targets', async () => {
+    const models = Array.from({ length: 7 }, (_, index) => ({
+      id: `example-model-${index + 1}`,
+      name: `Example model ${index + 1}`,
+    }));
+    getLocalLlmStatus.mockResolvedValue({
+      backend: 'ollama',
+      ollama: { installed: true, available: true, modelCount: models.length, models },
+      lmstudio: { installed: false, available: false, modelCount: 0, models: [] },
+    });
+    const toast = (await import('../ui/Toast')).default;
+
+    await renderTab();
+    for (const model of models.slice(0, 6)) {
+      fireEvent.click(screen.getByRole('checkbox', { name: `Select ${model.name} for comparison` }));
+    }
+    fireEvent.click(screen.getByRole('checkbox', { name: `Select ${models[6].name} for comparison` }));
+    expect(toast.error).toHaveBeenCalledWith('Compare up to 6 models at once');
+
+    fireEvent.click(screen.getByRole('button', { name: /Compare selected/ }));
+    const location = screen.getByTestId('location').textContent;
+    expect(location).toMatch(/^\/local-llm\/playground\?/);
+    const targets = JSON.parse(new URLSearchParams(location.split('?')[1]).get('targets'));
+    expect(targets).toEqual(models.slice(0, 6).map((model) => ({ backend: 'ollama', modelId: model.id })));
+  });
+
+  it('requires inline confirmation before deleting an installed model', async () => {
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: `Delete ${LONG_ID}` }));
+    expect(screen.getByText('Delete?')).toBeInTheDocument();
+    expect(deleteLocalLlmModel).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(deleteLocalLlmModel).toHaveBeenCalledWith('ollama', LONG_ID));
   });
 
   it('tags an LM Studio installed model with its quantization so redownload can evict that GGUF', async () => {
