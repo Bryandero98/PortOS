@@ -61,11 +61,22 @@ export default function AdvancedParamsPanel({
   // selected model cannot honor the loose option.
   const showReferenceMode = mode === 'image' && typeof onI2vReferenceModeChange === 'function';
   const referenceMode = normalizeI2vReferenceMode(i2vReferenceMode);
-  const referenceOptions = I2V_REFERENCE_MODE_OPTIONS.filter(
-    (o) => runtimeSupportsI2vReferenceMode(currentModel?.runtime, o.value),
-  );
+  // Which promises this model can actually keep. An unresolved `currentModel`
+  // means "the catalog has not loaded yet", NOT "anchor only" — the same
+  // deferral the form's snap-back makes, so the picker can't contradict the
+  // state it is rendering: collapsing to Anchor here would disable the control
+  // and claim "this model can only anchor" about a model nobody has seen.
+  const supportedReferenceOptions = currentModel
+    ? I2V_REFERENCE_MODE_OPTIONS.filter((o) => runtimeSupportsI2vReferenceMode(currentModel.runtime, o.value))
+    : I2V_REFERENCE_MODE_OPTIONS;
+  // A controlled <select> must never hold a value with no matching <option>.
+  // A restored pick survives one render past a model switch — until the
+  // snap-back effect lands — so keep it listed for exactly that window.
+  const referenceOptions = supportedReferenceOptions.some((o) => o.value === referenceMode)
+    ? supportedReferenceOptions
+    : [...supportedReferenceOptions, I2V_REFERENCE_MODE_OPTIONS.find((o) => o.value === referenceMode)].filter(Boolean);
   const referencePromise = I2V_REFERENCE_MODE_OPTIONS.find((o) => o.value === referenceMode);
-  const referenceModeLocked = referenceOptions.length < 2;
+  const referenceModeLocked = supportedReferenceOptions.length < 2;
   // `0` is a legal strength (ignore the source entirely) and the retry editor
   // hands it over as a NUMBER, so presence has to be tested explicitly — a
   // `imageStrength || …` fallback renders the slider at 1 while the form still

@@ -276,3 +276,50 @@ describe('AdvancedParamsPanel — image strength presence vs zero', () => {
     expect(screen.getByLabelText('Image Strength').value).toBe('0');
   });
 });
+
+// The picker must not contradict the state it renders. The form's snap-back
+// deliberately defers clearing an Inspire pick until the model catalog resolves,
+// so a picker that reads an unresolved model as "anchor only" would disable
+// itself, drop the selected option, and claim something about a model nobody has
+// seen yet — on exactly the resume/retry path this feature hardened.
+describe('AdvancedParamsPanel — reference mode before the model catalog loads', () => {
+  const beforeLoad = (props) => renderPanel({
+    mode: 'image',
+    currentModel: undefined,
+    i2vReferenceMode: 'inspire',
+    onI2vReferenceModeChange: vi.fn(),
+    ...props,
+  });
+
+  it('keeps the selected promise listed and the control usable', () => {
+    beforeLoad();
+    const select = screen.getByLabelText('Reference mode');
+    expect(select.value).toBe('inspire');
+    expect([...select.options].map((o) => o.value)).toEqual(['anchor', 'inspire']);
+    expect(select.disabled).toBe(false);
+  });
+
+  it('makes no claim about a model it has not seen', () => {
+    beforeLoad();
+    expect(screen.queryByText(/can only anchor a reference/i)).toBeNull();
+  });
+
+  it('never renders a controlled value with no matching option, even mid-switch', () => {
+    // The render between "model switched to one that pins frame one" and "the
+    // snap-back effect ran" still holds `inspire`; it stays listed so the select
+    // is not silently blank, while the option list is already narrowed.
+    renderPanel({
+      mode: 'image',
+      currentModel: { runtime: 'ltx2', name: 'LTX-2 Unified', supportedModes: MLX_MODES },
+      i2vReferenceMode: 'inspire',
+      onI2vReferenceModeChange: vi.fn(),
+    });
+    const select = screen.getByLabelText('Reference mode');
+    expect(select.value).toBe('inspire');
+    expect([...select.options].map((o) => o.value)).toContain('inspire');
+    // The model genuinely cannot loosen a reference, so the control still locks
+    // and still says why.
+    expect(select.disabled).toBe(true);
+    expect(screen.getByText(/can only anchor a reference/i)).toBeTruthy();
+  });
+});
