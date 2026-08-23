@@ -48,6 +48,18 @@ const TARGETS = {
   'opencode-openrouter-tui': { defaultModel: OX_ALPHA },
 };
 
+// Logged relative, never as `doc.path` — that is an absolute path carrying the
+// operator's home directory, and a boot line is the wrong place to print it.
+const PROVIDERS_REL_PATH = 'data/providers.json';
+
+// `readProvidersDoc` is deliberately silent so each caller can say what ITS skip
+// costs the user; this is 294's copy of that message.
+const SKIP_REASONS = {
+  'no-file': 'not present (a fresh install seeds OpenRouter from data.reference)',
+  unreadable: 'is not valid JSON',
+  'bad-shape': 'has no providers map',
+};
+
 // Untouched means: exactly 293's one-model list, with every tier pointer still
 // parked on it. Anything else — a list refreshed from the gateway, a trimmed
 // list, a pinned model — is a user having spoken, and is left alone.
@@ -60,13 +72,9 @@ const isUntouchedSeed = (provider, tiers) =>
 export default {
   async up({ rootDir }) {
     const doc = await readProvidersDoc({ rootDir });
-    // `readProvidersDoc` is deliberately silent — each caller owns its own log
-    // copy, so an install that skips still says why on the boot line.
     if (!doc.ok) {
-      const why = doc.reason === 'no-file'
-        ? 'not present (a fresh install seeds OpenRouter from data.reference)'
-        : `unreadable: ${doc.reason === 'unreadable' ? 'invalid JSON' : 'no providers map'}`;
-      console.log(`📄 data/providers.json ${why} — skipping the OpenRouter ${OX_ALPHA} preset`);
+      const why = SKIP_REASONS[doc.reason] ?? 'could not be read';
+      console.log(`📄 ${PROVIDERS_REL_PATH} ${why} — skipping the OpenRouter ${OX_ALPHA} preset`);
       return { ok: false, reason: doc.reason, updated: 0 };
     }
 
@@ -81,7 +89,7 @@ export default {
 
     if (!updated) return { ok: true, reason: 'already-current-or-custom', updated: 0 };
     await writeJsonAtomic(doc.path, doc.config);
-    console.log(`📝 ${doc.path}: added ${OX_ALPHA} to ${updated} OpenRouter provider preset${updated === 1 ? '' : 's'}`);
+    console.log(`📝 ${PROVIDERS_REL_PATH}: added ${OX_ALPHA} to ${updated} OpenRouter provider preset${updated === 1 ? '' : 's'}`);
     return { ok: true, reason: 'updated', updated };
   },
 };
