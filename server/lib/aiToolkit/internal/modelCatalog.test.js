@@ -100,9 +100,23 @@ describe('modelCatalogUpdate', () => {
       .toEqual({ a: 512_000 });
   });
 
+  it('clears a stale map when every known model is delisted at once', () => {
+    // `updateProvider` shallow-merges, so an OMITTED key leaves the stored map
+    // in place — the prune would no-op in exactly the case it has the most to
+    // remove, leaving windows keyed to models the provider no longer serves.
+    const patch = modelCatalogUpdate({ models: ['fresh'], contextWindows: {} }, { gone: 64_000 });
+    expect('modelContextWindows' in patch).toBe(true);
+    expect(patch.modelContextWindows).toBeUndefined();
+    // And the shallow merge a real update performs actually drops it.
+    expect({ ...{ modelContextWindows: { gone: 64_000 } }, ...patch }.modelContextWindows).toBeUndefined();
+  });
+
   it('omits the key entirely when nothing is known', () => {
-    // Absent, not `{}` — a record that never refreshed stays clean.
-    expect(modelCatalogUpdate({ models: ['a'], contextWindows: {} })).toEqual({ models: ['a'] });
+    // Absent, not `{}` and not an explicit `undefined` — a record that never
+    // learned a window has nothing to clear, so it stays clean.
+    const patch = modelCatalogUpdate({ models: ['a'], contextWindows: {} });
+    expect(patch).toEqual({ models: ['a'] });
+    expect('modelContextWindows' in patch).toBe(false);
   });
 
   it('always writes the model list, including a legitimately empty one', () => {

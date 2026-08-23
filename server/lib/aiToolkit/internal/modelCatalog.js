@@ -126,13 +126,23 @@ export function toModelCatalog(result) {
 }
 
 /**
- * The one place that decides whether `modelContextWindows` is written at all:
- * a non-empty map becomes a patch, an empty one writes nothing. Both the
- * refresh path and `createProvider` go through this so the rule can't be
- * relaxed on one side only.
+ * The one place that decides whether `modelContextWindows` is written at all.
+ * Both the refresh path and `createProvider` go through this so the rule can't
+ * be relaxed on one side only.
+ *
+ * `clearWhenEmpty` is what separates the two callers. `createProvider` builds a
+ * NEW record, so an empty map simply means "omit the field". A refresh PATCHES
+ * an existing record through `updateProvider`'s shallow merge, where an omitted
+ * key leaves the stored value untouched — so clearing a stale map there needs an
+ * explicit `undefined`. Without it the prune below would silently no-op in
+ * exactly the case it has the most to remove: every previously-known model
+ * delisted at once, leaving windows keyed to models the provider no longer
+ * serves (and still consulted for a `defaultModel` that dropped out of the list).
  */
-export const modelContextWindowPatch = (windows) =>
-  windows && Object.keys(windows).length > 0 ? { modelContextWindows: { ...windows } } : {};
+export const modelContextWindowPatch = (windows, { clearWhenEmpty = false } = {}) => {
+  if (windows && Object.keys(windows).length > 0) return { modelContextWindows: { ...windows } };
+  return clearWhenEmpty ? { modelContextWindows: undefined } : {};
+};
 
 /**
  * The `updateProvider` patch a probed catalog produces.
@@ -160,5 +170,8 @@ export function modelCatalogUpdate(catalog, previousWindows) {
     if (kept && listed.has(id)) merged[id] = kept;
   }
   Object.assign(merged, catalog.contextWindows || {});
-  return { models: [...catalog.models], ...modelContextWindowPatch(merged) };
+  // Clear only when the record actually had windows — no need to write an
+  // explicit `undefined` onto a provider that never learned any.
+  const hadWindows = Boolean(previousWindows && Object.keys(previousWindows).length > 0);
+  return { models: [...catalog.models], ...modelContextWindowPatch(merged, { clearWhenEmpty: hadWindows }) };
 }
