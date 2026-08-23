@@ -24,6 +24,31 @@ export function formatTime(timestamp) {
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
+ * Format a Date as a browser-local YYYY-MM-DD calendar key.
+ * Unlike `toISOString()`, this preserves the user's local day near UTC boundaries.
+ * @param {Date} date
+ * @returns {string}
+ */
+export function localDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Shift a YYYY-MM-DD calendar key by whole days without local-time/DST drift.
+ * @param {string} dateKey
+ * @param {number} days
+ * @returns {string}
+ */
+export function shiftISODate(dateKey, days) {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  const shifted = new Date(Date.UTC(year, month - 1, day + days));
+  return shifted.toISOString().slice(0, 10);
+}
+
+/**
  * Coerce a Date / ISO timestamp / epoch ms into a Date for display.
  *
  * A bare calendar date ("2026-03-05") is parsed by `new Date(...)` as UTC
@@ -763,4 +788,3 @@ export function clamp(n, min, max) {
 export function capitalize(s) {
   return typeof s === 'string' && s.length ? s[0].toUpperCase() + s.slice(1) : s;
 }
-
