@@ -29,8 +29,10 @@
 
 import { join } from 'path';
 import { mediaJobEvents, listJobs } from '../mediaJobQueue/index.js';
-import { spriteDir, runRelPath, SOURCE_CLIP_NAME } from './paths.js';
+import { readJSONFile } from '../../lib/fileUtils.js';
+import { spriteDir, runRelPath, SOURCE_CLIP_NAME, RUN_RECORD_NAME } from './paths.js';
 import { WALK_TRACK } from './animationTargets.js';
+
 import { withAnimationWriteTail } from './animationWorkflow.js';
 import { collectLocalAnimationClip } from './localAnimationRender.js';
 import { attachTuiWalkResult } from './walk.js';
@@ -57,27 +59,38 @@ const decodeSpriteAnimationJob = (job) => {
  * does NOT branch on the job's status beyond deciding whether staging is worth
  * attempting — a failed, canceled, and clip-less-but-completed job all converge
  * on the same honest error.
+ *
+ * Both the staging and the attach run INSIDE the per-record write tail: the
+ * clip lands at the same path a user-triggered Reprocess reads, and a copy racing
+ * that read would hand ffmpeg a truncated MP4 and error a previously-good run.
  */
 async function settleSpriteAnimationJob(job) {
   const decoded = decodeSpriteAnimationJob(job);
   if (!decoded) return false;
   const { recordId, runId, track, direction } = decoded;
   const label = `sprite ${track} ${recordId}/${direction || 'row-0'}`;
-  const videoAbs = join(spriteDir(recordId), runRelPath(runId), 'generated', SOURCE_CLIP_NAME);
-  if (job.status === 'completed') {
-    await collectLocalAnimationClip({ jobId: job.id, videoAbs, label });
-  } else {
-    console.log(`🎞️ ${label} local render ${job.status} — filing the run as errored`);
-  }
-  // Both attaches re-read the run record and no-op on frozen evidence (a
-  // finalized set, an approved run), so a duplicate settle is harmless — which
-  // is what lets the boot reconcile be unconditional.
-  await withAnimationWriteTail(recordId, () => (
-    track === WALK_TRACK
+  const runRel = runRelPath(runId);
+  const videoAbs = join(spriteDir(recordId), runRel, 'generated', SOURCE_CLIP_NAME);
+  return withAnimationWriteTail(recordId, async () => {
+    // Settle a run ONCE. Neither attach looks at `run.status` — they guard only
+    // frozen evidence (a finalized set, an approved run) — so re-entering here
+    // for a run that is already `candidate` would re-stage the clip and re-run
+    // the whole postprocess: minutes of frame decoding, and a manifest restamped
+    // with TODAY's anchor for a clip rendered from a previous one. That is not
+    // hypothetical, because the boot pass sweeps the archive unconditionally and
+    // a job outlives the run it filed by the archive's whole TTL.
+    const record = await readJSONFile(join(spriteDir(recordId), runRel, RUN_RECORD_NAME), null);
+    if (record?.status !== 'rendering') return false;
+    if (job.status === 'completed') {
+      await collectLocalAnimationClip({ jobId: job.id, videoAbs, label });
+    } else {
+      console.log(`🎞️ ${label} local render ${job.status} — filing the run as errored`);
+    }
+    await (track === WALK_TRACK
       ? attachTuiWalkResult(recordId, runId, videoAbs)
-      : attachTrackTuiResult(track, recordId, runId, videoAbs)
-  ));
-  return true;
+      : attachTrackTuiResult(track, recordId, runId, videoAbs));
+    return true;
+  });
 }
 
 let terminalHandler = null;
@@ -85,10 +98,10 @@ let terminalHandler = null;
 /**
  * Reconcile jobs that reached a terminal state while this process was down.
  *
- * Only jobs whose run is still `rendering` need anything, but that check lives
- * in the attach (which re-reads the record and skips frozen evidence), so this
- * stays a simple sweep over the restored archive rather than a second copy of
- * the run-state rules.
+ * An unconditional sweep of the restored archive — every already-filed job in it
+ * is a no-op, because `settleSpriteAnimationJob` refuses any run that is not
+ * still `rendering`. That is what keeps this pass safe to run on every boot for
+ * the archive's whole retention window.
  */
 async function reconcileSettledSpriteJobs() {
   const jobs = listJobs({ kind: 'video', owner: 'sprites' })

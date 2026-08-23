@@ -24,6 +24,17 @@ vi.mock('./paths.js', async (importOriginal) => ({
   spriteDir: (recordId) => `/sprites/${recordId}`,
 }));
 
+// The on-disk run records, keyed by the record path the hook derives. Every test
+// states the run state it is about — which is the whole point of the settle
+// guard, so it must not be faked away.
+let runRecords = {};
+vi.mock('../../lib/fileUtils.js', async (importOriginal) => ({
+  ...await importOriginal(),
+  readJSONFile: async (path) => runRecords[path] ?? null,
+}));
+
+const runPath = (recordId, runId) => `/sprites/${recordId}/runs/${runId}/animation-run.json`;
+
 const collectLocalAnimationClip = vi.fn(async () => true);
 vi.mock('./localAnimationRender.js', () => ({
   collectLocalAnimationClip: (...args) => collectLocalAnimationClip(...args),
@@ -64,10 +75,16 @@ const trackJob = (overrides = {}) => ({
 
 beforeEach(() => {
   queuedJobs = [];
+  runRecords = {
+    [runPath('hero', 'walk-east-abc12345')]: { id: 'walk-east-abc12345', status: 'rendering' },
+    [runPath('hero', 'scanner-east-abc12345')]: { id: 'scanner-east-abc12345', status: 'rendering' },
+  };
   collectLocalAnimationClip.mockClear();
   collectLocalAnimationClip.mockResolvedValue(true);
-  attachTuiWalkResult.mockClear();
-  attachTrackTuiResult.mockClear();
+  attachTuiWalkResult.mockReset();
+  attachTuiWalkResult.mockResolvedValue(undefined);
+  attachTrackTuiResult.mockReset();
+  attachTrackTuiResult.mockResolvedValue(undefined);
 });
 afterEach(() => __testing.reset());
 
@@ -155,6 +172,53 @@ describe('settleSpriteAnimationJob', () => {
   });
 });
 
+describe('settle guard — a run is filed exactly once', () => {
+  it('does nothing for a run that is already a candidate', async () => {
+    // The boot pass sweeps the archive unconditionally, so a job outlives the
+    // run it filed by the archive's whole retention. Re-settling would re-stage
+    // the clip and re-run the entire postprocess — minutes of frame decoding —
+    // and restamp the manifest with TODAY's anchor for a clip rendered from a
+    // previous one.
+    runRecords[runPath('hero', 'walk-east-abc12345')] = { status: 'candidate' };
+    expect(await settleSpriteAnimationJob(walkJob())).toBe(false);
+    expect(collectLocalAnimationClip).not.toHaveBeenCalled();
+    expect(attachTuiWalkResult).not.toHaveBeenCalled();
+  });
+
+  it('does nothing for a run already filed as an error', async () => {
+    runRecords[runPath('hero', 'walk-east-abc12345')] = { status: 'error' };
+    expect(await settleSpriteAnimationJob(walkJob({ status: 'failed' }))).toBe(false);
+    expect(attachTuiWalkResult).not.toHaveBeenCalled();
+  });
+
+  it('does nothing while an earlier settle is still postprocessing', async () => {
+    runRecords[runPath('hero', 'scanner-east-abc12345')] = { status: 'postprocessing' };
+    expect(await settleSpriteAnimationJob(trackJob())).toBe(false);
+    expect(attachTrackTuiResult).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when the run record is gone entirely', async () => {
+    // A deleted sprite, or a record the write never landed for. Filing into a
+    // phantom directory would litter, not help.
+    runRecords = {};
+    expect(await settleSpriteAnimationJob(walkJob())).toBe(false);
+    expect(attachTuiWalkResult).not.toHaveBeenCalled();
+  });
+
+  it('files a rendering run, then ignores a second terminal event for it', async () => {
+    // The one-shot property end to end: the guard reads the record, so the
+    // second call only skips because the FIRST one moved the run on.
+    let filed = 0;
+    attachTuiWalkResult.mockImplementation(async () => {
+      filed += 1;
+      runRecords[runPath('hero', 'walk-east-abc12345')] = { status: 'candidate' };
+    });
+    expect(await settleSpriteAnimationJob(walkJob())).toBe(true);
+    expect(await settleSpriteAnimationJob(walkJob({ status: 'canceled' }))).toBe(false);
+    expect(filed).toBe(1);
+  });
+});
+
 describe('initSpriteLocalAnimationHook', () => {
   it('files a job that settles while this process is up', async () => {
     initSpriteLocalAnimationHook();
@@ -166,8 +230,8 @@ describe('initSpriteLocalAnimationHook', () => {
     initSpriteLocalAnimationHook();
     mediaJobEvents.emit('failed', walkJob({ status: 'failed' }));
     await vi.waitFor(() => expect(attachTuiWalkResult).toHaveBeenCalledTimes(1));
-    mediaJobEvents.emit('canceled', walkJob({ status: 'canceled' }));
-    await vi.waitFor(() => expect(attachTuiWalkResult).toHaveBeenCalledTimes(2));
+    mediaJobEvents.emit('canceled', trackJob({ status: 'canceled' }));
+    await vi.waitFor(() => expect(attachTrackTuiResult).toHaveBeenCalledTimes(1));
   });
 
   it('is idempotent — a double init must not file every clip twice', async () => {

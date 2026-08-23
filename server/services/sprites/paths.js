@@ -56,6 +56,11 @@ export const SOURCE_CLIP_NAME = 'source-video.mp4';
 // — walk.js and animationTrackWorkflow.js had each declared their own copy.
 export const runRelPath = (runId) => `runs/${runId}`;
 
+// The per-run record inside that directory. Hoisted for the same reason
+// `runRelPath` was: walk.js, animationTrackWorkflow.js, and the local-render
+// completion hook each need to name the same file.
+export const RUN_RECORD_NAME = 'animation-run.json';
+
 /**
  * Normalize an asset-path field read out of an imported manifest to the
  * record-relative form `spriteAssetUrl`/`resolveSpriteAssetPath` expect. The

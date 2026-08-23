@@ -32,7 +32,7 @@ import { getRecord, updateRecord } from './records.js';
 import {
   spriteDir, resolveSpriteAssetPath, toRecordRelativeAssetPath, altRunLayoutPath,
   runDirOfPath, resolveDriftTolerantRel, isSourcePipelinePath, SOURCE_CLIP_NAME,
-  rawFramesRelOf, RAW_FRAME_NAME, runRelPath,
+  rawFramesRelOf, RAW_FRAME_NAME, runRelPath, RUN_RECORD_NAME,
 } from './paths.js';
 import {
   requireCharacter, loadManifest,
@@ -57,13 +57,14 @@ import { resolveGrokDuration } from '../../lib/grokVideoClip.js';
 import {
   withAnimationWriteTail, resolveChromaKey, lockedAnchorFor,
   GROK_TUI_IDLE_MS, GROK_TUI_TIMEOUT_MS, grokTuiProvider, buildGrokI2vTask,
-  resolveAnimationProvider, isLocalProviderRun,
+  resolveAnimationProvider, isLocalProviderRun, runCreatedAtMs,
 } from './animationWorkflow.js';
 import {
   SCANNER_TRACK, sourceReferenceFor,
 } from './animationTracks.js';
 import {
-  planLocalAnimationRender, enqueueLocalAnimationRender, localRenderManifest, localRunLiveness,
+  planLocalAnimationRender, enqueueLocalAnimationRender, localRenderManifest,
+  normalizeStaleAnimationRun,
 } from './localAnimationRender.js';
 // #3152 — the anchor-invalidation sweep below must cover a USER-DEFINED track too:
 // a stored row seeded from a directional anchor holds approvals descended from the
@@ -101,7 +102,6 @@ export const walkSetRelPath = (id) => `walk/${id}-walk-set-v1.json`;
 // through their selection entry, so the scan covers unapproved candidates plus
 // any run whose entry has been dropped by an unlock/reopen.
 const RUN_SCAN_DIRS = ['runs', 'grok'];
-const RUN_RECORD_NAME = 'animation-run.json';
 
 // Serialize walk-state read-modify-writes per record (run records, the
 // selection file, the walk set, and trim versioning share one lifecycle) —
@@ -271,16 +271,6 @@ async function requireUnfinalized(recordId) {
   if (await loadWalkSet(recordId)) throw walkSetFinalError();
 }
 
-// PortOS stamps createdAt as an ISO string (Date.parse handles it); imported
-// source-pipeline run records (issue #2895 importer) stamp it as a Python
-// time.time() epoch-seconds float instead — .localeCompare on that throws
-// and 500s the whole detail endpoint. Normalize both to comparable ms.
-function runCreatedAtMs(createdAt) {
-  if (typeof createdAt === 'number') return createdAt * 1000;
-  const ms = Date.parse(createdAt);
-  return Number.isNaN(ms) ? 0 : ms;
-}
-
 // A 'rendering' run's status is flipped to a terminal state by attachTuiWalkResult
 // when executeTuiRun settles — including on grok's 30-min hard timeout. So a run
 // still 'rendering' well past that cap can only be stranded: the server process
@@ -288,40 +278,13 @@ function runCreatedAtMs(createdAt) {
 // Present it as an error at read time — never persisted — so the UI stops polling
 // forever, surfaces regenerate, and the in-flight guard in startWalkGeneration
 // stops treating it as live. RENDER_STALE_MS is the hard cap plus a buffer.
-const RENDER_STALE_MS = WALK_TUI_TIMEOUT_MS + 60_000;
-// The LOCAL lane's backstop, used only when the media-job queue cannot answer
-// for a run — it has no job id, its job has rolled out of the archive, or the
-// job COMPLETED and its attach has not landed yet. Deliberately a day rather
-// than grok's half hour: a local H3 clip is a multi-HOUR render on current
-// Apple Silicon, and the completion hook wins this race in every normal case.
-const LOCAL_RENDER_STALE_MS = 24 * 60 * 60_000;
 // Which lane a run came from, for logs shared by both.
 const runProviderLabel = (run) => (isLocalProviderRun(run) ? 'local' : 'grok-tui');
 const STALE_RENDER_ERROR = 'Walk render was interrupted (server restart or timeout) — regenerate to retry.';
-function normalizeStaleRendering(run) {
-  if (run?.status !== 'rendering') return run;
-  // A local render's real liveness signal is its queued media job, not the wall
-  // clock — the queue persists and rehydrates across restarts, so it answers
-  // correctly both for a render that has legitimately been going for hours and
-  // for one whose server died mid-flight.
-  //
-  // Only `dead` (failed / canceled, including the queue's own "interrupted by
-  // restart") decides anything here. `settling` — the job finished and the
-  // attach is copying and hashing a 20-80 MB clip — must NOT read as dead, or a
-  // detail poll landing in that window reports a SUCCESSFUL render as
-  // interrupted and, worse, unblocks the in-flight guard so a second multi-hour
-  // render can be started for the same direction. `unknown` must not either, or
-  // a live run errors the moment its job ages out of the archive. Both fall
-  // through to the (generous) local clock below.
-  if (isLocalProviderRun(run)) {
-    const liveness = localRunLiveness(run);
-    if (liveness === 'live') return run;
-    if (liveness === 'dead') return { ...run, status: 'error', postprocessError: STALE_RENDER_ERROR };
-  }
-  const staleAfterMs = isLocalProviderRun(run) ? LOCAL_RENDER_STALE_MS : RENDER_STALE_MS;
-  if (Date.now() - runCreatedAtMs(run.createdAt) <= staleAfterMs) return run;
-  return { ...run, status: 'error', postprocessError: STALE_RENDER_ERROR };
-}
+// Both lanes' staleness rules live in one place (localAnimationRender.js) so the
+// walk and non-walk tracks cannot drift on when a render counts as stranded —
+// only the user-facing wording differs.
+const normalizeStaleRendering = (run) => normalizeStaleAnimationRun(run, STALE_RENDER_ERROR);
 
 // PortOS's own postprocess stamps `stripPreview.stripPath` record-relative
 // (walkPostprocess.js). The imported source pipeline stamps the same field

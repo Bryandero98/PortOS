@@ -127,3 +127,17 @@ export const resolveAnimationProvider = (value) => {
 
 /** Whether a run record was produced by the local lane. */
 export const isLocalProviderRun = (run) => run?.provider === LOCAL_VIDEO_PROVIDER_ID;
+
+/**
+ * A run record's creation instant in ms, comparable across both record flavors.
+ *
+ * PortOS stamps `createdAt` as an ISO string (Date.parse handles it); imported
+ * source-pipeline run records (#2895) stamp a Python `time.time()` epoch-seconds
+ * FLOAT instead — `.localeCompare` on that threw and 500'd the whole detail
+ * endpoint. Unparseable stays 0 so the ordering is total.
+ */
+export function runCreatedAtMs(createdAt) {
+  if (typeof createdAt === 'number') return createdAt * 1000;
+  const ms = Date.parse(createdAt);
+  return Number.isNaN(ms) ? 0 : ms;
+}

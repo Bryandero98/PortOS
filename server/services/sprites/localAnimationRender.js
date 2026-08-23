@@ -35,7 +35,9 @@ import { inspectModelCache, findCachedRepoFiles } from '../../lib/hfCache.js';
 import { BYOV_RUNTIME_INFO, isByovRuntimeReady } from '../videoGen/runtimes.js';
 import { enqueueJob, getJob } from '../mediaJobQueue/index.js';
 import { minimaxH3ControlError } from '../videoGen/minimaxH3Controls.js';
-import { LOCAL_VIDEO_PROVIDER_ID } from './animationWorkflow.js';
+import {
+  LOCAL_VIDEO_PROVIDER_ID, isLocalProviderRun, GROK_TUI_TIMEOUT_MS, runCreatedAtMs,
+} from './animationWorkflow.js';
 import { WALK_TRACK } from './animationTargets.js';
 
 // H3's video VAE decodes only 17n+5 frame counts and the model runs at a fixed
@@ -414,4 +416,56 @@ export const localRunLiveness = (run) => {
   if (job.status === 'completed') return 'settling';
   if (job.status === 'failed' || job.status === 'canceled') return 'dead';
   return 'live';
+};
+
+// How long a GROK run may sit at `rendering` before a read treats it as
+// stranded: its TUI hard cap plus a buffer. Past that the session and its
+// completion handler can only have died with the process.
+const GROK_RENDER_STALE_MS = GROK_TUI_TIMEOUT_MS + 60_000;
+// The LOCAL lane's equivalent, used only when the media-job queue cannot answer
+// for a run — it has no job id, its job has rolled out of the archive, or the
+// job COMPLETED and its attach has not landed yet. Deliberately a day rather
+// than grok's half hour: a local H3 clip is a multi-HOUR render on current
+// Apple Silicon, and the completion hook wins this race in every normal case.
+const LOCAL_RENDER_STALE_MS = 24 * 60 * 60_000;
+
+/**
+ * Read-time normalization of a run stuck at `rendering`, shared by both lanes
+ * and never persisted.
+ *
+ * A run's status is flipped to a terminal state by its attach. So a run still
+ * `rendering` long past when that could have happened is stranded — the server
+ * died mid-render, and the in-memory session or awaiter went with it. Presenting
+ * it as an error at read time is what stops the UI polling forever, surfaces
+ * regenerate, and releases the in-flight guard that would otherwise refuse every
+ * retry for that facing.
+ *
+ * For a LOCAL run the media-job queue is a better signal than the clock: it
+ * persists and rehydrates across restarts, so it answers correctly both for a
+ * render that has legitimately been going for hours and for one whose server
+ * died. Only `dead` (failed / canceled, including the queue's own "interrupted
+ * by restart") decides anything here:
+ *
+ *  - `settling` — the job finished and the attach is copying and hashing a
+ *    20–80 MB clip — must NOT read as dead, or a poll landing in that window
+ *    reports a SUCCESSFUL render as interrupted and, worse, unblocks the
+ *    in-flight guard so a second multi-hour render can start for the same facing.
+ *  - `unknown` must not either, or a live run errors the moment its job ages out
+ *    of the archive.
+ *
+ * Both fall through to the (generous) local clock, which is the backstop for the
+ * cases the completion hook cannot reach at all: an archive pruned while the
+ * server was down for longer than its TTL, or an attach that threw.
+ */
+export const normalizeStaleAnimationRun = (run, errorMessage) => {
+  if (run?.status !== 'rendering') return run;
+  const local = isLocalProviderRun(run);
+  if (local) {
+    const liveness = localRunLiveness(run);
+    if (liveness === 'live') return run;
+    if (liveness === 'dead') return { ...run, status: 'error', postprocessError: errorMessage };
+  }
+  const staleAfterMs = local ? LOCAL_RENDER_STALE_MS : GROK_RENDER_STALE_MS;
+  if (Date.now() - runCreatedAtMs(run.createdAt) <= staleAfterMs) return run;
+  return { ...run, status: 'error', postprocessError: errorMessage };
 };

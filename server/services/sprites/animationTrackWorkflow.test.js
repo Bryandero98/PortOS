@@ -18,7 +18,7 @@ import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { mkdir, writeFile } from 'fs/promises';
+import { mkdir, writeFile, readFile } from 'fs/promises';
 import { createHash } from 'crypto';
 import { lockAllAnchors, placeCandidate, expectCarriesCorrection } from './spriteTestFixtures.js';
 
@@ -97,14 +97,18 @@ vi.mock('../../lib/hfCache.js', async (importOriginal) => ({
   findCachedRepoFiles: async () => ['/snap/a.safetensors'],
 }));
 const enqueuedVideoJobs = [];
+// Job states are controllable so the staleness tests can state the queue answer
+// they are about; an enqueue defaults its job to running.
+const queuedJobsById = new Map();
 vi.mock('../mediaJobQueue/index.js', async (importOriginal) => ({
   ...await importOriginal(),
   enqueueJob: (job) => {
     const id = `mjob-${enqueuedVideoJobs.length + 1}`;
     enqueuedVideoJobs.push({ id, ...job });
+    queuedJobsById.set(id, { id, status: 'running' });
     return { jobId: id, position: 1, status: 'queued' };
   },
-  getJob: (id) => ({ id, status: 'running' }),
+  getJob: (id) => queuedJobsById.get(id) || null,
 }));
 
 const records = await import('./records.js');
@@ -343,6 +347,7 @@ describe('local render lane (#4876)', () => {
   beforeEach(() => {
     localRuntimeReady = true;
     enqueuedVideoJobs.length = 0;
+    queuedJobsById.clear();
   });
 
   it.each(TRACKS)('$id defaults to the grok TUI when no provider is named', async (track) => {
@@ -406,6 +411,84 @@ describe('local render lane (#4876)', () => {
       .rejects.toMatchObject({ status: 400, code: 'ANIMATION_PROVIDER_INVALID' });
     expect(executeTuiRun).not.toHaveBeenCalled();
     expect(enqueuedVideoJobs).toHaveLength(0);
+  });
+});
+
+// A track run stuck at `rendering` used to be UNRECOVERABLE: the in-flight guard
+// 409s every regenerate for that facing, there is no per-run delete, and
+// `reopenTrackDirection` only touches APPROVED runs. The walk lane always had a
+// read-time backstop for this; the track lane never did, and the local lane's
+// multi-hour renders (whose only resolver is a completion hook that a pruned
+// archive or a throwing attach can miss) made the gap materially reachable.
+describe('stranded-run normalization (#4876)', () => {
+  const runRecordPath = (recordId, runId) => join(
+    TEST_ROOT, 'sprites', recordId, 'runs', runId, 'animation-run.json',
+  );
+  const backdateRun = async (recordId, runId, ms) => {
+    const stored = JSON.parse(await readFile(runRecordPath(recordId, runId), 'utf8'));
+    stored.createdAt = new Date(Date.now() - ms).toISOString();
+    await writeFile(runRecordPath(recordId, runId), JSON.stringify(stored));
+  };
+
+  beforeEach(() => {
+    localRuntimeReady = true;
+    enqueuedVideoJobs.length = 0;
+    queuedJobsById.clear();
+  });
+
+  it.each(TRACKS)('$id: a grok run past the TUI cap reads as an error and unblocks regenerate', async (track) => {
+    const id = await track.seed(newId());
+    const { runId } = await startTrackGeneration(track.id, id, track.body);
+    await backdateRun(id, runId, 31 * 60_000 + 60_000);
+    const run = (await getTrackState(track.id, id)).runs.find((r) => r.id === runId);
+    expect(run.status).toBe('error');
+    expect(run.postprocessError).toMatch(/interrupted/);
+    // The point of the normalization: the facing becomes renderable again.
+    await expect(startTrackGeneration(track.id, id, track.body)).resolves.toBeTruthy();
+  });
+
+  it.each(TRACKS)('$id: a grok run inside the cap is left alone', async (track) => {
+    const id = await track.seed(newId());
+    const { runId } = await startTrackGeneration(track.id, id, track.body);
+    await backdateRun(id, runId, 5 * 60_000);
+    const run = (await getTrackState(track.id, id)).runs.find((r) => r.id === runId);
+    expect(run.status).toBe('rendering');
+  });
+
+  it.each(TRACKS)('$id: a LOCAL run stays live for hours while its job runs', async (track) => {
+    const id = await track.seed(newId());
+    const { runId } = await startTrackGeneration(track.id, id, { ...track.body, provider: 'local' });
+    await backdateRun(id, runId, 5 * 60 * 60_000);
+    const run = (await getTrackState(track.id, id)).runs.find((r) => r.id === runId);
+    expect(run.status).toBe('rendering');
+  });
+
+  it.each(TRACKS)('$id: a LOCAL run whose job died reads as an error immediately', async (track) => {
+    const id = await track.seed(newId());
+    const { runId, jobId } = await startTrackGeneration(track.id, id, { ...track.body, provider: 'local' });
+    queuedJobsById.set(jobId, { id: jobId, status: 'failed', error: 'interrupted by restart' });
+    const run = (await getTrackState(track.id, id)).runs.find((r) => r.id === runId);
+    expect(run.status).toBe('error');
+  });
+
+  it.each(TRACKS)('$id: a LOCAL run whose job COMPLETED is settling, not dead', async (track) => {
+    // The attach is copying and hashing the clip. Calling that dead would report
+    // a successful render as interrupted and unblock a duplicate render.
+    const id = await track.seed(newId());
+    const { runId, jobId } = await startTrackGeneration(track.id, id, { ...track.body, provider: 'local' });
+    queuedJobsById.set(jobId, { id: jobId, status: 'completed' });
+    const run = (await getTrackState(track.id, id)).runs.find((r) => r.id === runId);
+    expect(run.status).toBe('rendering');
+  });
+
+  it.each(TRACKS)('$id: a LOCAL run the queue has forgotten falls back to a DAY, not the grok cap', async (track) => {
+    const id = await track.seed(newId());
+    const { runId, jobId } = await startTrackGeneration(track.id, id, { ...track.body, provider: 'local' });
+    queuedJobsById.delete(jobId);
+    await backdateRun(id, runId, 5 * 60 * 60_000);
+    expect((await getTrackState(track.id, id)).runs.find((r) => r.id === runId).status).toBe('rendering');
+    await backdateRun(id, runId, 25 * 60 * 60_000);
+    expect((await getTrackState(track.id, id)).runs.find((r) => r.id === runId).status).toBe('error');
   });
 });
 

@@ -47,6 +47,7 @@ import { GROK_TUI_ID } from '../../lib/grok.js';
 import { resolveGrokDuration } from '../../lib/grokVideoClip.js';
 import {
   planLocalAnimationRender, enqueueLocalAnimationRender, localRenderManifest,
+  normalizeStaleAnimationRun,
 } from './localAnimationRender.js';
 import { getSettings } from '../settings.js';
 import { getRecord, listRecords } from './records.js';
@@ -59,16 +60,17 @@ import { clampTrackFrameCount, clampTrackFps, sourceReferenceFor } from './anima
 // track reaches generate/approve through exactly this path with no new code.
 import { effectiveTrack, getEffectiveAnimationTracks } from './animationTrackStore.js';
 import { trackDirections } from './atlasGrid.js';
-import { spriteDir, resolveSpriteAssetPath, SOURCE_CLIP_NAME, runRelPath } from './paths.js';
+import {
+  spriteDir, resolveSpriteAssetPath, SOURCE_CLIP_NAME, runRelPath, RUN_RECORD_NAME,
+} from './paths.js';
 import { prepareWalkAnchorChromaInput, runWalkPostprocess } from './walkPostprocess.js';
 import { verifyPackagedFrames } from './walkFrames.js';
 import {
   resolveChromaKey, withAnimationWriteTail, lockedAnchorFor, lockedMainFor,
   GROK_TUI_IDLE_MS, GROK_TUI_TIMEOUT_MS, grokTuiProvider, buildGrokI2vTask,
-  resolveAnimationProvider, isLocalProviderRun,
+  resolveAnimationProvider, isLocalProviderRun, runCreatedAtMs,
 } from './animationWorkflow.js';
 
-const RUN_RECORD_NAME = 'animation-run.json';
 
 /**
  * The facings a track is authored across: every direction for a directional
@@ -116,7 +118,19 @@ async function saveRun(recordId, run) {
   await atomicWrite(join(dir, RUN_RECORD_NAME), run);
 }
 
-/** Every run on disk belonging to `trackId`, newest first. */
+/**
+ * Every run on disk belonging to `trackId`, newest first.
+ *
+ * Stranded `rendering` runs are normalized to `error` at READ time — never
+ * persisted — by the same rule the walk lane uses. Without it a run whose render
+ * could no longer be resolved (its server died and the completion hook could not
+ * reach it) sits at `rendering` forever, and the in-flight guard below then
+ * refuses every regenerate for that facing with TRACK_RENDER_IN_PROGRESS — with
+ * no per-run delete and `reopenTrackDirection` only touching APPROVED runs, that
+ * is unrecoverable short of hand-editing the record. The walk lane always had
+ * this backstop; the track lane never did, and the local lane's multi-hour
+ * renders made the gap materially more reachable.
+ */
 async function trackRuns(trackId, recordId) {
   const runsDir = join(spriteDir(recordId), 'runs');
   const entries = await readdir(runsDir, { withFileTypes: true }).catch(() => []);
@@ -124,8 +138,15 @@ async function trackRuns(trackId, recordId) {
     readJSONFile(join(runsDir, entry.name, RUN_RECORD_NAME), null)
   )));
   return runs.filter((run) => run?.track === trackId)
-    .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0));
+    .map((run) => normalizeStaleAnimationRun(run, staleRenderError(trackId)))
+    .sort((a, b) => runCreatedAtMs(b.createdAt) - runCreatedAtMs(a.createdAt));
 }
+
+/** The read-time message a stranded run carries, named for the track it is on. */
+const staleRenderError = (trackId) => (
+  `The ${effectiveTrack(trackId).label.toLowerCase()} render was interrupted `
+  + '(server restart or timeout) — regenerate to retry.'
+);
 
 /**
  * The track's authoring state: `{ track, definition, selection, set, runs }`.
