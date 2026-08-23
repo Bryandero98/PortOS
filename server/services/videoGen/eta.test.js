@@ -182,3 +182,39 @@ describe('estimateRenderMs', () => {
     expect(estimateRenderMs({ history, ...target }).etaMs).toBe(600_000);
   });
 });
+
+// #4875 — a speed profile roughly halves render time, so its samples belong in
+// their own cost bucket. These pin the split in BOTH directions: a fast render
+// must not be estimated from quality history, and vice versa.
+describe('speed-profile sample bucketing', () => {
+  const target = { modelId: MODEL, width: 768, height: 512, numFrames: 121, steps: 30 };
+  const quality = rec({ renderMs: 600_000 });
+  const fast = { ...rec({ renderMs: 300_000 }), speedProfileId: 'fast' };
+
+  it('treats an absent speedProfileId and the default id as the same bucket', () => {
+    const history = [quality, { ...quality, speedProfileId: 'quality' }];
+    expect(timedRenderSamples(history, MODEL)).toHaveLength(2);
+    expect(timedRenderSamples(history, MODEL, 'quality')).toHaveLength(2);
+    expect(timedRenderSamples(history, MODEL, '')).toHaveLength(2);
+  });
+
+  it('excludes profiled renders from the default bucket', () => {
+    expect(timedRenderSamples([quality, fast], MODEL).map((s) => s.durationMs)).toEqual([600_000]);
+  });
+
+  it('excludes default renders from a profiled bucket', () => {
+    expect(timedRenderSamples([quality, fast], MODEL, 'fast').map((s) => s.durationMs)).toEqual([300_000]);
+  });
+
+  it('estimates each bucket from its own measurements, not the pooled median', () => {
+    const history = [quality, fast];
+    expect(estimateRenderMs({ history, ...target }).etaMs).toBe(600_000);
+    expect(estimateRenderMs({ history, ...target, speedProfileId: 'fast' }).etaMs).toBe(300_000);
+  });
+
+  it('returns no estimate for a profile this install has never measured', () => {
+    // Deliberate: an honest "unknown" beats a confidently wrong number derived
+    // from a different cost curve. Same contract as a newly-added model.
+    expect(estimateRenderMs({ history: [quality], ...target, speedProfileId: 'fast' })).toBeNull();
+  });
+});

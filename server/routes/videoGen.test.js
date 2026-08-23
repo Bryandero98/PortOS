@@ -734,9 +734,10 @@ describe('videoGen routes', () => {
         'i2vReferenceMode',
         'tiling',
         // Not in the it.each table above: the route deliberately DROPS the
-        // stock value from persisted params, so the generic round-trip
-        // assertion can't cover it. Its own case is below.
+        // stock/default value from persisted params, so the generic round-trip
+        // assertion can't cover either. Their own cases are below.
         'textEncoderId',
+        'speedProfileId',
       ]);
       const { getSettings } = await import('../services/settings.js');
       getSettings.mockResolvedValueOnce({ imageGen: grokReady, videoGen: { mode: 'grok' } });
@@ -775,6 +776,30 @@ describe('videoGen routes', () => {
       const [call] = mediaJobQueue.enqueueJob.mock.calls;
       expect(call[0].params.mode).not.toBe('grok');
       expect(call[0].params.i2vReferenceMode).toBeUndefined();
+    });
+
+    // Same two halves for the speed profile (#4875): naming one keeps the
+    // render local (grok has no sampler-schedule knob), and the default
+    // 'quality' value is dropped from persisted params so a default render's
+    // job params stay byte-identical to a request that never sent the field.
+    it('keeps speedProfileId on the local path under a grok pin, without persisting the default value', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({ imageGen: grokReady, videoGen: { mode: 'grok' } });
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox', speedProfileId: 'quality' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+      expect(call[0].params.speedProfileId).toBeUndefined();
+    });
+
+    it('persists a non-default speedProfileId on the local path under a grok pin', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({ imageGen: grokReady, videoGen: { mode: 'grok' } });
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox', speedProfileId: 'fast' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+      expect(call[0].params.speedProfileId).toBe('fast');
     });
 
     it('a grok pin degrades to local when the request carries local-only machinery', async () => {

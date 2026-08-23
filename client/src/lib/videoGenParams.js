@@ -109,6 +109,105 @@ export const textEncoderIdFromRecord = (value) => (
   typeof value === 'string' && value ? value : STOCK_TEXT_ENCODER_ID
 );
 
+// Speed profiles (#4875) follow the SAME shape as the conditioner picker above,
+// and for the same reason: the option list is decorated onto each model entry
+// by the server (`applyVideoSpeedProfiles` in server/lib/videoSpeedProfiles.js),
+// so the picker offers exactly what this install's registry declares and a
+// stale client can't submit a schedule that no longer exists. Only the "no
+// override" sentinel is duplicated here, and it must stay equal to
+// `SPEED_PROFILE_DEFAULT_ID` on the server: the submit builder drops the field
+// when it holds this value, and the server treats absence and this id
+// identically.
+export const DEFAULT_SPEED_PROFILE_ID = 'quality';
+// Absence, the empty string and the default id are one request — mirrors
+// `isDefaultSpeedProfile` on the server.
+export const isDefaultSpeedProfileId = (id) => (
+  id == null || id === '' || id === DEFAULT_SPEED_PROFILE_ID
+);
+// Every profile the model DECLARES, mode-independent. Used to validate a
+// stored selection; the picker wants the mode-filtered view below.
+export const speedProfilesForModel = (model) => (
+  Array.isArray(model?.speedProfiles) ? model.speedProfiles.filter((p) => p?.id) : []
+);
+// The profiles that actually apply to THIS mode — what the picker offers, and
+// the set a selection must be in to drive the sampler. The mode filter lives
+// here rather than at each call site because both consumers need the same
+// answer: a profile the server would decline must neither appear in the picker
+// nor lock Steps/CFG. Mirrors the server's gate (`speedProfileDeclineReason`),
+// pinned by server/lib/videoSpeedProfiles.parity.test.js. An absent mode is the
+// default text render. A profile declaring no `modes` falls back to the
+// two-stage set — NOT to "unrestricted": the server's decline check applies
+// exactly that fallback, and reading a missing field as permissive here would
+// offer a profile on fflf that the server then declines. (Such a profile can't
+// reach a shipped registry — `validateSpeedProfileTable` strips it — so this is
+// belt-and-braces against a hand-edited one, and must not diverge.)
+export const DEFAULT_SPEED_PROFILE_MODES = ['text', 'image'];
+// Accepts a single mode OR the list of modes a request will actually run in —
+// a chained render is one clip whose chunks differ (see videoChainChunkModes),
+// and the server applies a profile to such a request only when EVERY chunk
+// accepts it. Matching that here is what stops the picker from offering a
+// speed-up the chain then declines wholesale.
+export const speedProfilesForMode = (model, mode) => {
+  const wanted = (Array.isArray(mode) ? mode : [mode]).map((m) => m || 'text');
+  const modes = wanted.length > 0 ? wanted : ['text'];
+  return speedProfilesForModel(model).filter((p) => {
+    const declared = Array.isArray(p.modes) ? p.modes : DEFAULT_SPEED_PROFILE_MODES;
+    return modes.every((m) => declared.includes(m));
+  });
+};
+
+// The modes a request's chunks will run in, mirroring generateChainedVideo's
+// own dispatch: chunk 0 keeps the request's mode, and chunks 1+ re-enter as
+// `extend` on a window-continuity chain or `image` on a frame hop. The
+// window/frame rule mirrors resolveContinuityStrategy in
+// server/lib/videoContinuity.js — the same predicate supportsContextWindow
+// already mirrors for the Continuity control above.
+// `hasSourceImage` mirrors the server's own inference for an ABSENT mode
+// (`rest.mode || (rest.sourceImagePath ? 'image' : 'text')`). The panel always
+// passes `mode`, so it never fires there — but keeping the fallback identical
+// means the two cannot disagree for a caller that omits it, which matters the
+// moment a profile ships supporting 'text' but not 'image'.
+export const videoChainChunkModes = ({ model, mode, chaining, contextFrames, hasSourceImage = false }) => {
+  const first = mode || (hasSourceImage ? 'image' : 'text');
+  if (!chaining) return [first];
+  // resolveContextFrames (server/lib/videoContinuity.js) reads absent / '' /
+  // non-finite as DEFAULT_CONTEXT_FRAMES, NOT as zero — so a request that omits
+  // the field chains with a window. Reading it as a frame hop here would show
+  // the Fast picker and grey out Steps/CFG for a chain the server then declines
+  // wholesale, which is the precise failure this gate exists to prevent.
+  const windowHop = resolveContextFramesForDisplay(contextFrames) > 0 && supportsContextWindow(model);
+  return [first, windowHop ? 'extend' : 'image'];
+};
+
+// Display-side mirror of resolveContextFrames. Only the absent/invalid→default
+// rule matters for the gate above; the clamp is the server's business.
+export const resolveContextFramesForDisplay = (requested) => {
+  if (requested == null || requested === '') return DEFAULT_CONTEXT_FRAMES;
+  const n = Number(requested);
+  return Number.isFinite(n) ? n : DEFAULT_CONTEXT_FRAMES;
+};
+// Snap a selection onto what the (possibly just-switched) model declares, so
+// the <select> is never left on a value with no matching <option>. Deliberately
+// NOT mode-filtered: switching to fflf hides the picker, it must not silently
+// rewrite the choice the user makes again when they switch back.
+export const normalizeSpeedProfileForModel = (id, model) => (
+  speedProfilesForModel(model).some((p) => p.id === id) ? id : DEFAULT_SPEED_PROFILE_ID
+);
+// Read a profile out of a persisted record (a history entry, a resumed job's
+// params). Both record only a NON-default profile, so a missing field means
+// Quality — and must CLEAR a leftover selection rather than carry it into a
+// render the user asked to reproduce.
+export const speedProfileIdFromRecord = (value) => (
+  typeof value === 'string' && value ? value : DEFAULT_SPEED_PROFILE_ID
+);
+// The profile actually driving THIS render, or null for Quality / an unknown id
+// / one this mode doesn't support. The picker disables Steps and CFG on exactly
+// this — a profile owns both dials together, the same way a `samplerLocked`
+// model does — so it must agree with what the server will resolve.
+export const selectedSpeedProfile = (id, model, mode = null) => (
+  isDefaultSpeedProfileId(id) ? null : speedProfilesForMode(model, mode).find((p) => p.id === id) || null
+);
+
 // Per-edge bounds for video: mirrors the videoGen route (64..2048). The base
 // grid is 64px, while a model may declare a finer resolutionStep (H3 uses 32).
 // Shared by the ResolutionField control and the submit-time clamp so a

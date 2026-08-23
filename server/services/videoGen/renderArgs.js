@@ -312,7 +312,7 @@ export const ltx25TextEncoderArgs = (textEncoder) => {
   return args;
 };
 
-const buildLtx2Args = ({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, disableAudio, outputPath, previewDir, textEncoderRepo, textEncoder, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
+const buildLtx2Args = ({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, disableAudio, outputPath, previewDir, textEncoderRepo, textEncoder, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2, speedProfile }) => {
   assertByovRuntimeInstalled(model.runtime);
   // Map PortOS UI modes to the helper's subcommand. Native extend on ltx2
   // routes to ExtendPipeline.extend_from_video — conditions on the entire
@@ -440,6 +440,30 @@ const buildLtx2Args = ({ model, ltxModelPath, prompt, negativePrompt, width, hei
   // Two-stage T2V experiment passes an explicit stage-2 step count; omitted
   // otherwise so the pipeline keeps its own default.
   if (stage2Steps != null) args.push('--stage2-steps', String(stage2Steps));
+  // Speed-profile levers (#4875). Emitted ONLY for a resolved profile — a
+  // quality render must build byte-identical args to one from before the
+  // feature existed, so absence is the whole contract here.
+  //
+  // The helper, not this builder, decides whether each lever is actually
+  // available: `--speed-profile` names the profile in the child's
+  // SPEEDPROFILE: report, `--teacache` REQUESTS stage-1 caching (the helper
+  // probes the pinned pipeline for the kwarg and reports `degraded` when it
+  // isn't there), and `--require-adapter` names the distilled adapter the
+  // schedule was measured with so a pack missing it degrades loudly instead
+  // of rendering slower than the profile claims.
+  if (speedProfile) {
+    args.push('--speed-profile', speedProfile.id);
+    if (speedProfile.teacache) {
+      args.push('--teacache');
+      if (speedProfile.teacacheThresh != null) {
+        args.push('--teacache-thresh', String(speedProfile.teacacheThresh));
+      }
+    }
+    // String()'d like every other value pushed here: spawn throws
+    // ERR_INVALID_ARG_TYPE on a non-string argv entry, and a hand-edited
+    // registry can put a number in this field.
+    if (speedProfile.requiresAdapter) args.push('--require-adapter', String(speedProfile.requiresAdapter));
+  }
   if (negativePrompt) args.push('--negative-prompt', negativePrompt);
   if (imageStrength != null) args.push('--image-strength', String(imageStrength));
   // The reference-mode promise (#4874). Emitted only when it is NOT the default so
@@ -752,7 +776,7 @@ const buildHunyuanArgs = ({ model, prompt, negativePrompt, width, height, numFra
   return { bin: HUNYUAN_VENV_PYTHON, args };
 };
 
-export const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, textEncoderRepo, textEncoder, outputPath, previewDir, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 }) => {
+export const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequiredWeights, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, textEncoderRepo, textEncoder, outputPath, previewDir, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2, speedProfile }) => {
   // Reference-mode promise (#4874) — checked HERE rather than inside
   // buildLtx2Args because every runtime reaches this function and only one can
   // honor a loose reference. A wan22/mlx_video/H3 render that fell through to its
@@ -770,7 +794,7 @@ export const buildArgs = ({ pythonPath, modelId, model, wanModelPath, wanRequire
   // runtime. Existing notapalindrome models default to runtime: 'mlx_video'
   // (or undefined in legacy registries — see backfillRuntime in mediaModels.js).
   if (isLtx2FamilyRuntime(model.runtime)) {
-    return buildLtx2Args({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, disableAudio, outputPath, previewDir, textEncoderRepo, textEncoder, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2 });
+    return buildLtx2Args({ model, ltxModelPath, prompt, negativePrompt, width, height, numFrames, fps, steps, stage2Steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, audioStartSec, mode, imageStrength, i2vReferenceMode, disableAudio, outputPath, previewDir, textEncoderRepo, textEncoder, loras, icReferencePaths, icLoraWeightPath, icStrength, icAttentionStrength, icSkipStage2, speedProfile });
   }
   // IC-LoRA remix modes are an LTX-2 primitive (ICLoraPipeline) — no other
   // runtime has an equivalent. The route guards this too, but a non-route

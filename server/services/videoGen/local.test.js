@@ -90,8 +90,14 @@ vi.mock('../settings.js', () => ({
   getSettings: vi.fn(async () => ({ videoGen: { acceptedModelTerms: [...settingsState.acceptedModelTerms] } })),
 }));
 
-vi.mock('../../lib/mediaModels.js', () => ({
-  getVideoModels: vi.fn(() => [
+// The SHIPPED speed-profile decorator runs over this fixture rather than the
+// profiles being hand-copied onto the ltx25 entry: the mock carries the real
+// repo + revision, so the pin guard is exercised and the fixture cannot drift
+// from server/lib/videoSpeedProfiles.js.
+vi.mock('../../lib/mediaModels.js', async () => {
+  const { applyVideoSpeedProfiles } = await import('../../lib/videoSpeedProfiles.js');
+  return ({
+  getVideoModels: vi.fn(() => applyVideoSpeedProfiles([
     { id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'ltx2', repo: 'Lightricks/LTX-Video', steps: 30, guidance: 3.5 },
     {
       id: 'ltx25_mlx_q8', name: 'LTX-2.5 MLX Q8', runtime: 'ltx25',
@@ -171,10 +177,11 @@ vi.mock('../../lib/mediaModels.js', () => ({
         targetRoles: ['high_noise_transformer', 'low_noise_transformer'],
       }],
     },
-  ]),
+  ])),
   getDefaultVideoModelId: vi.fn(() => 'ltx2_unified'),
   getTextEncoderRepo: vi.fn(() => 'some/text-encoder'),
-}));
+});
+});
 
 vi.mock('../../lib/sseUtils.js', () => ({
   broadcastSse: vi.fn(),
@@ -1199,6 +1206,41 @@ describe('generateChainedVideo — continuation strategy (context window vs last
     // that's what kept the chain from growing a copy of itself per hop.
     expect(flagValue(renders[1], '--extend-from-video'))
       .toBe(join(tmpdir(), `chaincontext-${innerJobIds[0]}.mp4`));
+  });
+
+  // #4875 — a chained render is ONE clip, so a speed profile applies to every
+  // chunk or to none. Chunks 1+ re-enter as `extend` on a window-continuity
+  // chain (the default), and no two-stage profile is validated for that
+  // pipeline; applying it per chunk would render chunk 0 fast and the rest at
+  // the model default, stitching a visible seam mid-clip.
+  it('declines a speed profile for the whole chain when continuation runs as extend', async () => {
+    const { renders } = await runChain(
+      { modelId: 'ltx25_mlx_q8', contextFrames: 22, speedProfileId: 'fast' }, 2,
+    );
+    expect(renders).toHaveLength(2);
+    for (const args of renders) {
+      expect(args).not.toContain('--speed-profile');
+      expect(args).not.toContain('--teacache');
+      // Every chunk on the model's own sampler — no seam.
+      expect(flagValue(args, '--steps')).toBe('8');
+      expect(flagValue(args, '--cfg-scale')).toBe('3');
+    }
+  });
+
+  it('applies a speed profile to every chunk of a frame-hop chain, where all modes qualify', async () => {
+    // contextFrames: 0 → frame hop → chunks 1+ are `image`, which the profile
+    // IS validated for, so the whole chain takes it.
+    const { renders } = await runChain(
+      { modelId: 'ltx25_mlx_q8', contextFrames: 0, speedProfileId: 'fast' }, 2,
+    );
+    expect(renders).toHaveLength(2);
+    for (const args of renders) {
+      expect(flagValue(args, '--speed-profile')).toBe('fast');
+      expect(args).toContain('--teacache');
+      expect(flagValue(args, '--steps')).toBe('8');
+      expect(flagValue(args, '--cfg-scale')).toBe('1');
+      expect(flagValue(args, '--stage2-steps')).toBe('3');
+    }
   });
 });
 
@@ -5145,6 +5187,200 @@ describe('updateHistoryItemPrompt — trigger-weave provenance (#4665)', () => {
     await updateHistoryItemPrompt('plain-1', 'a beach');
     const item = written();
     expect(item).toEqual({ id: 'plain-1', prompt: 'a beach', seed: 42 });
+  });
+});
+
+// #4875 — the user-facing speed profile. Three things must hold end to end:
+// the profile's schedule and levers reach the helper's argv; an incompatible
+// request degrades to the model's own sampler instead of half-applying; and a
+// Quality render builds byte-identical argv to one from before the feature
+// existed (the default-preservation contract).
+describe('generateVideo — LTX-2.5 speed profile (#4875)', () => {
+  const renderArgs = async ({ jobId, modelId = 'ltx25_mlx_q8', ...rest }) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    await generateVideo({
+      jobId,
+      pythonPath: '/usr/bin/python3',
+      modelId,
+      prompt: 'a quiet street at dusk',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      ...rest,
+    });
+    const call = spawnMock.mock.calls.find(
+      ([bin, args]) => (isLtx25Python(bin) || isLtx2Python(bin))
+        && Array.isArray(args) && args.includes('--mode'),
+    );
+    expect(call).toBeTruthy();
+    return call[1];
+  };
+
+  const valueAfter = (args, flag) => args[args.indexOf(flag) + 1];
+
+  it('threads the profile schedule and its levers into the helper argv', async () => {
+    const args = await renderArgs({ jobId: 'sp-fast', mode: 'text', speedProfileId: 'fast' });
+    expect(valueAfter(args, '--steps')).toBe('8');
+    expect(valueAfter(args, '--stage2-steps')).toBe('3');
+    expect(valueAfter(args, '--cfg-scale')).toBe('1');
+    expect(valueAfter(args, '--speed-profile')).toBe('fast');
+    expect(args).toContain('--teacache');
+    expect(valueAfter(args, '--require-adapter')).toBe('ltx-2.5-22b-distilled-lora-450.safetensors');
+    // The profile declares no threshold override, so the pin's calibrated
+    // default must be left alone rather than pinned to a literal here.
+    expect(args).not.toContain('--teacache-thresh');
+  });
+
+  it('applies on image mode too — the other mode the schedule was validated for', async () => {
+    const args = await renderArgs({ jobId: 'sp-image', mode: 'image', sourceImagePath: '/mock/first.png', speedProfileId: 'fast' });
+    expect(valueAfter(args, '--speed-profile')).toBe('fast');
+    expect(valueAfter(args, '--steps')).toBe('8');
+  });
+
+  // DEFAULT PRESERVATION: the whole point of 'quality' being a no-op.
+  it.each([
+    ['omitted', 'omitted', undefined],
+    ['the explicit default id', 'explicit', 'quality'],
+    ['an empty string', 'empty', ''],
+  ])('leaves a render with %s byte-identical to the pre-feature argv', async (_name, label, speedProfileId) => {
+    // Pin the seed and strip the per-job output path so the comparison is of
+    // the SCHEDULE, not of the two values that are per-render by design.
+    const strip = (a) => a.map((v) => String(v).replace(/sp-[a-z-]+\.mp4$/, "<job>.mp4"));
+    const baseline = strip(await renderArgs({ jobId: `sp-base-${label}`, mode: 'text', seed: 7 }));
+    const args = strip(await renderArgs({ jobId: `sp-default-${label}`, mode: 'text', seed: 7, speedProfileId }));
+    expect(args).toEqual(baseline);
+    expect(args.filter((a) => String(a).startsWith('--speed-profile')
+      || String(a).startsWith('--teacache') || String(a).startsWith('--require-adapter'))).toEqual([]);
+    expect(args).not.toContain('--stage2-steps');
+    expect(valueAfter(args, '--steps')).toBe('8');
+    expect(valueAfter(args, '--cfg-scale')).toBe('3');
+  });
+
+  it('declines on a mode the profile was never validated for, keeping the model sampler', async () => {
+    const args = await renderArgs({
+      jobId: 'sp-extend-declines',
+      mode: 'extend',
+      extendFromVideoPath: '/mock/source.mp4',
+      speedProfileId: 'fast',
+    });
+    expect(args).not.toContain('--speed-profile');
+    expect(args).not.toContain('--teacache');
+    expect(valueAfter(args, '--steps')).toBe('8');
+    expect(valueAfter(args, '--cfg-scale')).toBe('3');
+  });
+
+  // MODEL PIN COMPATIBILITY: the 2.3 entry points at different weights, so it
+  // declares no profiles — asking for one must degrade, not half-apply.
+  it('declines on a model that declares no profiles', async () => {
+    const args = await renderArgs({ jobId: 'sp-wrong-model', modelId: 'ltx2_unified', mode: 'text', speedProfileId: 'fast' });
+    expect(args).not.toContain('--speed-profile');
+    expect(valueAfter(args, '--steps')).toBe('30');
+    expect(valueAfter(args, '--cfg-scale')).toBe('3.5');
+  });
+
+  it('declines an id no model offers', async () => {
+    const args = await renderArgs({ jobId: 'sp-unknown-id', mode: 'text', speedProfileId: 'turbo' });
+    expect(args).not.toContain('--speed-profile');
+    expect(valueAfter(args, '--steps')).toBe('8');
+    expect(valueAfter(args, '--cfg-scale')).toBe('3');
+  });
+
+  // The profile owns steps AND CFG together — a half-override would give the
+  // user neither the profile's speed nor their own setting.
+  it('overrides explicit steps and CFG rather than blending with them', async () => {
+    const args = await renderArgs({ jobId: 'sp-overrides-user', mode: 'text', speedProfileId: 'fast', steps: 30, guidanceScale: 7 });
+    expect(valueAfter(args, '--steps')).toBe('8');
+    expect(valueAfter(args, '--cfg-scale')).toBe('1');
+  });
+
+  describe('history metadata', () => {
+    const metaFor = async (jobId, extra) => {
+      let started = null;
+      const onStarted = (e) => { if (e.generationId === jobId) started = e; };
+      videoGenEvents.on('started', onStarted);
+      await generateVideo({
+        jobId,
+        pythonPath: '/usr/bin/python3',
+        modelId: 'ltx25_mlx_q8',
+        prompt: 'a quiet street at dusk',
+        width: 512, height: 512, numFrames: 25, fps: 24,
+        mode: 'text',
+        ...extra,
+      });
+      videoGenEvents.off('started', onStarted);
+      expect(started).toBeTruthy();
+      return started;
+    };
+
+    it('stamps the REQUESTED profile id and the effective schedule', async () => {
+      const meta = await metaFor('sp-meta-fast', { speedProfileId: 'fast' });
+      expect(meta.speedProfileId).toBe('fast');
+      expect(meta.stage2Steps).toBe(3);
+      expect(meta.steps).toBe(8);
+      expect(meta.guidanceScale).toBe(1);
+    });
+
+    // The ETA estimator buckets on this field, so a Quality render must carry
+    // NO key at all — an explicit 'quality' would be a second spelling of the
+    // default and would not match pre-feature history.
+    it('stamps nothing on a default render', async () => {
+      const meta = await metaFor('sp-meta-default', {});
+      expect(meta.speedProfileId).toBeUndefined();
+      expect(meta.stage2Steps).toBeUndefined();
+    });
+
+    it('stamps nothing when the profile was declined', async () => {
+      const meta = await metaFor('sp-meta-declined', { speedProfileId: 'turbo' });
+      expect(meta.speedProfileId).toBeUndefined();
+    });
+  });
+});
+
+// #4875 — the chunk entries of a chain are written `hidden: true`, so the
+// STITCHED record is the only one the user ever sees. Without inheriting the
+// profile there, a chained render's lightbox shows no "Speed profile" row at
+// all — including for a chain whose TeaCache or adapter was unavailable, which
+// is exactly the silent speed claim the feature exists to prevent — and a Remix
+// of the clip quietly reverts to Quality.
+describe('stitchVideos — speed-profile inheritance (#4875)', () => {
+  const chunk = (id, extra = {}) => ({
+    id, filename: `${id}.mp4`, prompt: 'a shot', modelId: 'ltx25_mlx_q8',
+    width: 512, height: 512, fps: 24, numFrames: 25, seed: 7, ...extra,
+  });
+
+  const stitchOf = async (entries) => {
+    const { readJSONFile, atomicWrite } = await import('../../lib/fileUtils.js');
+    const { probeFrameCount } = await import('../../lib/ffmpeg.js');
+    vi.mocked(atomicWrite).mockClear();
+    vi.mocked(probeFrameCount).mockImplementation(async () => 25);
+    vi.mocked(readJSONFile).mockImplementation(async () => entries);
+    return stitchVideos(entries.map((e) => e.id));
+  };
+
+  it('carries the requested profile and the runner outcome from the first chunk', async () => {
+    const applied = { id: 'fast', teacache: false, degraded: ['teacache'] };
+    const stitched = await stitchOf([
+      chunk('c1', { speedProfileId: 'fast', speedProfileApplied: applied }),
+      chunk('c2', { speedProfileId: 'fast', speedProfileApplied: applied }),
+    ]);
+    // Both halves: the REQUEST (what Remix round-trips, what the ETA buckets
+    // on) and the OUTCOME (what stops a degraded run reading as a full one).
+    expect(stitched.speedProfileId).toBe('fast');
+    expect(stitched.speedProfileApplied).toEqual(applied);
+  });
+
+  it('stamps neither field for a Quality chain, so the record stays pre-feature shaped', async () => {
+    const stitched = await stitchOf([chunk('c1'), chunk('c2')]);
+    expect('speedProfileId' in stitched).toBe(false);
+    expect('speedProfileApplied' in stitched).toBe(false);
+  });
+
+  it('carries the id alone when the runner reported no outcome', async () => {
+    const stitched = await stitchOf([
+      chunk('c1', { speedProfileId: 'fast' }), chunk('c2', { speedProfileId: 'fast' }),
+    ]);
+    expect(stitched.speedProfileId).toBe('fast');
+    expect('speedProfileApplied' in stitched).toBe(false);
   });
 });
 

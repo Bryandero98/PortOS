@@ -135,6 +135,26 @@ export function makeVideoGenLineHandler({ job, jobId, pythonNoiseRe }) {
         return false;
       }
     }
+    // What the runner ACTUALLY applied of a requested speed profile
+    // (SPEEDPROFILE:<json> — see scripts/generate_ltx2.py). PortOS asks for a
+    // schedule declaratively, but only the child can see whether the pinned
+    // pipeline accepts `enable_teacache` and whether the distilled adapter is
+    // in the pack; `degraded` names every lever it could not apply. Stamped on
+    // the job so finalizeGeneratedVideo persists it, which is what keeps a
+    // half-applied profile from reading back as a full speed claim.
+    if (line.startsWith('SPEEDPROFILE:')) {
+      try {
+        const applied = JSON.parse(line.slice('SPEEDPROFILE:'.length));
+        job.speedProfile = applied;
+        const degraded = Array.isArray(applied?.degraded) ? applied.degraded : [];
+        console.log(`⚡ speed profile [${jobId.slice(0, 8)}] ${applied?.id || '?'}${degraded.length ? ` — degraded: ${degraded.join(', ')}` : ''}`);
+        return true;
+      } catch {
+        // Malformed payload — fall through to raw-logging so the broken line
+        // is visible rather than silently swallowed (same as RUNTIME: above).
+        return false;
+      }
+    }
     // Heartbeat for the queue's idle watchdog (see imageGen/local.js).
     videoGenEvents.emit('activity', { generationId: jobId });
     if (line.startsWith('STATUS:')) {
@@ -546,7 +566,18 @@ export async function finalizeGeneratedVideo({ job, jobId, outputPath, filename,
     }
     : {};
   await mutateHistory((history) => {
-    history.unshift({ ...meta, thumbnail, ...timing, ...(job.runtime ? { runtime: job.runtime } : {}) });
+    history.unshift({
+      ...meta,
+      thumbnail,
+      ...timing,
+      ...(job.runtime ? { runtime: job.runtime } : {}),
+      // What the speed profile actually resolved to at render time (#4875).
+      // `meta.speedProfileId` above is the REQUEST; this is the outcome, so a
+      // render whose TeaCache or distilled adapter was unavailable reads back
+      // as degraded instead of as a full speed claim. Absent on every quality
+      // render and on runners that don't report one.
+      ...(job.speedProfile ? { speedProfileApplied: job.speedProfile } : {}),
+    });
     return history;
   });
   console.log(`✅ Video generated [${jobId.slice(0, 8)}]: ${filename}`);

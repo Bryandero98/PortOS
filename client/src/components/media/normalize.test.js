@@ -274,6 +274,18 @@ describe('getRenderConfigForItem - video', () => {
     expect(cfg.loraScales).toEqual([0.5]);
   });
 
+  // #4875 — a requeue must carry the named schedule, not just the steps/CFG it
+  // resolved to, or it silently re-renders without the profile's other levers.
+  it('carries a speed profile through a requeue, and omits it on a Quality record', () => {
+    const withProfile = normalizeVideo({
+      id: 'v4', filename: 'd.mp4', prompt: '', modelId: 'ltx25_mlx_q8',
+      steps: 8, guidanceScale: 1, speedProfileId: 'fast',
+    });
+    expect(getRenderConfigForItem(withProfile).speedProfileId).toBe('fast');
+    const quality = normalizeVideo({ id: 'v5', filename: 'e.mp4', prompt: '', modelId: 'ltx25_mlx_q8', steps: 8 });
+    expect(getRenderConfigForItem(quality).speedProfileId).toBeUndefined();
+  });
+
   it('preserves a deliberate guidanceScale of 0', () => {
     // 0 is a valid setting for some video models — must not be coerced via
     // truthy fallback.

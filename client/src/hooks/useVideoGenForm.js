@@ -24,6 +24,8 @@ import {
   icLoraSpecForMode, icResolutionIssue,
   STOCK_TEXT_ENCODER_ID, textEncoderOptionsForModel, normalizeTextEncoderForModel,
   textEncoderIdFromRecord,
+  DEFAULT_SPEED_PROFILE_ID, normalizeSpeedProfileForModel, speedProfileIdFromRecord,
+  selectedSpeedProfile, videoChainChunkModes,
 } from '../lib/videoGenParams.js';
 
 // A Remix is an editing starting point. A fixed sampler profile (for example,
@@ -134,6 +136,10 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
   // the list is empty and this stays on the stock sentinel, which the submit
   // builder drops from the payload entirely.
   const [textEncoderId, setTextEncoderId] = useState(STOCK_TEXT_ENCODER_ID);
+  // Named sampler schedule (#4875). Defaults to Quality, the shipped contract —
+  // it is a real selectable value rather than '' so the <select> always has a
+  // matching <option>, and the submit builder drops it as "unchanged".
+  const [speedProfileId, setSpeedProfileId] = useState(DEFAULT_SPEED_PROFILE_ID);
   const [disableAudio, setDisableAudio] = useState(false);
   // Video LoRAs (ltx2 runtime only) — `{ filename, name, scale }` entries the
   // LoraPicker owns; `availableLoras` is the full installed library filtered
@@ -524,6 +530,10 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
     setNumFrames((current) => normalizeFramesForModel(current, currentModel));
     setFps((current) => normalizeFpsForModel(current, currentModel));
     setTextEncoderId((current) => normalizeTextEncoderForModel(current, currentModel));
+    // Same reconcile for the speed profile: a model switch must not leave a
+    // profile selected that the new entry never declared, or submit would send
+    // a schedule the server declines and the picker would show a phantom.
+    setSpeedProfileId((current) => normalizeSpeedProfileForModel(current, currentModel));
   }, [currentModel]);
 
   // Substitutable prompt conditioners the selected model can load, straight off
@@ -1047,6 +1057,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
     // on a render the user asked to reproduce faithfully. The currentModel effect
     // snaps an id this model can't load back to stock.
     setTextEncoderId(textEncoderIdFromRecord(item.textEncoderId));
+    setSpeedProfileId(speedProfileIdFromRecord(item.speedProfileId));
     // disableAudio: always set explicitly (true/false) so the toggle reliably
     // matches the remixed render. Skipping the false branch would leave the
     // toggle stuck ON when the user remixes a clip that had audio enabled.
@@ -1154,6 +1165,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
     setI2vReferenceMode(normalizeI2vReferenceMode(p.i2vReferenceMode));
     // Resume echoes the field only for a non-stock render, so absence is 'stock'.
     setTextEncoderId(textEncoderIdFromRecord(p.textEncoderId));
+    setSpeedProfileId(speedProfileIdFromRecord(p.speedProfileId));
     if (typeof p.disableAudio === 'boolean') setDisableAudio(p.disableAudio);
     if (p.mode === 'grok') {
       // Grok job: 'grok' is the queue discriminator, not a semantic video
@@ -1383,6 +1395,19 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
       textEncoderId: normalizeTextEncoderForModel(textEncoderId, currentModel) === STOCK_TEXT_ENCODER_ID
         ? undefined
         : textEncoderId,
+      // Dropped for Quality on the same rule as the conditioner above, so a
+      // default render posts the body it did before this knob existed.
+      //
+      // Gated on the SAME mode/chain-filtered set the picker uses, not merely
+      // on what the model declares: selecting Fast in text mode and then
+      // switching to fflf (or raising Chunks with window continuity) hides the
+      // picker and unlocks Steps/CFG, and posting the profile anyway would
+      // persist a knob that never applied — echoed back on reload and seeded
+      // into a Retry as a schedule the render never used. Exactly what the
+      // sibling textEncoderId rule exists to prevent.
+      speedProfileId: selectedSpeedProfile(speedProfileId, currentModel, videoChainChunkModes({
+        model: currentModel, mode, chaining: chainingActive, contextFrames,
+      }))?.id,
       disableAudio: effectiveDisableAudio ? 'true' : 'false',
       mode,
       imageStrength: imageStrength || '',
@@ -1479,6 +1504,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled, r
     seed, setSeed, handleRandomSeed,
     tiling, setTiling,
     textEncoderId, setTextEncoderId, textEncoderOptions,
+    speedProfileId, setSpeedProfileId,
     disableAudio, setDisableAudio,
     noMusic, setNoMusic,
     // Frames
