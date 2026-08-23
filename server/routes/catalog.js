@@ -6,7 +6,6 @@ import * as catalogDB from '../services/catalogDB.js';
 import * as catalogSync from '../services/catalogSync.js';
 import { resolveRefs, listDanglingRefs } from '../services/catalogRefResolver.js';
 import { projectToCanon } from '../services/catalogCanonProjection.js';
-import { withTransaction } from '../lib/db.js';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest, parsePagination } from '../lib/validation.js';
 import {
@@ -162,27 +161,10 @@ router.post('/scraps/:id/commit', asyncHandler(async (req, res) => {
   const seeds = req.body.accepted.map((d) => ingredientEmbedSeed(d));
   const embeds = await embedBatch(seeds);
 
-  // Wrap the per-draft loop in a transaction so a mid-loop failure (DB
-  // timeout, future unique-constraint violation, span shape error) rolls back
-  // the whole batch instead of leaving some ingredients persisted without
-  // their source-link rows.
-  const created = await withTransaction(async (client) => {
-    const out = [];
-    for (let i = 0; i < req.body.accepted.length; i++) {
-      const draft = req.body.accepted[i];
-      const e = embeds[i];
-      const ing = await catalogDB.createIngredient({
-        type: draft.type,
-        name: draft.name,
-        payload: draft.payload || {},
-        tags: draft.tags || [],
-        embedding: e?.embedding ?? null,
-        embeddingModel: e?.model ?? null,
-      }, { client, source: 'extract' });
-      await catalogDB.linkIngredientToSource(ing.id, scrap.id, draft.span || null, { client });
-      out.push(ing);
-    }
-    return out;
+  const created = await catalogDB.commitScrap({
+    scrapId: scrap.id,
+    accepted: req.body.accepted,
+    embeds,
   });
 
   res.status(201).json({ scrap, ingredients: created });
