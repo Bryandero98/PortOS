@@ -47,6 +47,23 @@ describe('video download routes (#1946)', () => {
     expect(svc.attachDownloadSseClient).not.toHaveBeenCalled();
   });
 
+  it('GET /downloads returns a bounded envelope when pagination is requested', async () => {
+    svc.listDownloads.mockResolvedValueOnce(
+      Array.from({ length: 5 }, (_, i) => ({ id: `dl-${i}`, source: 'download' })),
+    );
+    const r = await request(app).get('/api/devtools/video-download/downloads?limit=2&offset=1');
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({
+      items: [
+        { id: 'dl-1', source: 'download' },
+        { id: 'dl-2', source: 'download' },
+      ],
+      total: 5,
+      limit: 2,
+      offset: 1,
+    });
+  });
+
   it('DELETE /downloads/:id deletes a download', async () => {
     const r = await request(app).delete('/api/devtools/video-download/downloads/dl-1');
     expect(r.status).toBe(200);
