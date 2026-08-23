@@ -28,6 +28,7 @@ import { ServerError } from '../lib/errorHandler.js';
 import { atomicWrite, assertSafeFilename, ensureDir, listDirectoryByExtension, sha256File, PATHS } from '../lib/fileUtils.js';
 import { verifySafetensorsStructure } from '../lib/hfCache.js';
 import { isPlainObject } from '../lib/objects.js';
+import { readCachedLoraEffectReport } from '../lib/loraEffect.js';
 import {
   applyDownloadToken,
   baseModelToRunner,
@@ -223,6 +224,13 @@ export const listLoras = async () => {
         source: sidecar?.source || null,
         character: sidecar?.character || null,
         trainedFromDatasetId: sidecar?.datasetId || null,
+        // Adapter-effect diagnostic (#4872). CACHED ONLY — listing the library
+        // must never fan out into one Python child per installed LoRA, so this
+        // surfaces whatever the explicit probe last measured and drops it when
+        // the file has changed size underneath it. `null` = never measured (or
+        // measured against a different file), which the UI shows as an offer to
+        // run the check, not as a verdict.
+        effectReport: readCachedLoraEffectReport(sidecar?.effectReport, s.size),
       };
     },
   });

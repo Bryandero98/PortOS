@@ -568,3 +568,10 @@ export const patchLora = (filename, patch) => request(`/loras/${encodeURICompone
   body: JSON.stringify(patch),
 });
 export const deleteLoraFull = (filename, options = {}) => request(`/loras/${encodeURIComponent(filename)}`, { method: 'DELETE', ...options });
+// Adapter-effect diagnostic (#4872) — measures whether a LoRA actually changes
+// anything before a long render commits to it. POST because it spawns the probe
+// and caches the measurement in the sidecar; `force` re-measures a cached one.
+export const probeLoraEffect = (filename, { force = false, ...options } = {}) => request(
+  `/loras/${encodeURIComponent(filename)}/effect${force ? '?force=1' : ''}`,
+  { method: 'POST', ...options },
+);

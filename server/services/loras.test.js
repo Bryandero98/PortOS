@@ -202,6 +202,58 @@ describe('listLoras', () => {
   });
 });
 
+// Adapter-effect diagnostic (#4872). listLoras is a PASSIVE read — a library
+// page with 40 installed LoRAs must never fan out into 40 Python children — so
+// it surfaces only what the explicit probe already measured, and only while
+// that measurement still describes the file on disk.
+describe('listLoras — cached adapter-effect report', () => {
+  const writeLora = async (filename, bytes, sidecar) => {
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    await fs.writeFile(join(tmpLoras, filename), Buffer.alloc(bytes, 1));
+    await fs.writeFile(join(tmpLoras, `${filename}.metadata.json`), JSON.stringify({ filename, ...sidecar }));
+  };
+  const freshReport = (sizeBytes) => ({
+    probeVersion: 1, status: 'ok', modules: 8, measured: 8, skippedNonFinite: 0,
+    skippedUnsupported: 0, zeroModules: 0, medianRms: 0.004, maxRms: 0.02, minRms: 0.001,
+    reason: null, sizeBytes, measuredAt: '2026-08-23T00:00:00.000Z',
+  });
+
+  it('surfaces a stored report whose size still matches the file', async () => {
+    await writeLora('measured.safetensors', 512, { effectReport: freshReport(512) });
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toMatchObject({ status: 'ok', measured: 8, medianRms: 0.004, sizeBytes: 512 });
+  });
+
+  it('reports null when the LoRA was never measured', async () => {
+    await writeLora('unmeasured.safetensors', 512, { name: 'Unmeasured' });
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toBeNull();
+  });
+
+  it('drops a stored report once the file has been replaced under the same name', async () => {
+    // A different size is a different adapter. Surfacing the old verdict would
+    // badge a freshly-installed LoRA with the previous file's measurement.
+    await writeLora('swapped.safetensors', 1024, { effectReport: freshReport(512) });
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toBeNull();
+  });
+
+  it('drops a stored report written by a different probe version', async () => {
+    await writeLora('old.safetensors', 512, { effectReport: { ...freshReport(512), probeVersion: 99 } });
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toBeNull();
+  });
+
+  it('normalizes a hand-edited sidecar rather than trusting it', async () => {
+    await writeLora('edited.safetensors', 512, {
+      effectReport: { ...freshReport(512), status: 'catastrophic', medianRms: 'lots', maxRms: null },
+    });
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toMatchObject({ status: 'unmeasurable', medianRms: null, maxRms: null });
+  });
+});
+
 describe('deleteLora', () => {
   it('removes file + sidecar', async () => {
     const fs = await import('fs/promises');
