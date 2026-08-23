@@ -23,6 +23,7 @@ import {
   isProcessProvider,
   isRunnerAllowedCommand,
   isTuiProvider,
+  isLaunchableTuiProvider,
   providerTypeClass,
   supportsModelRefresh,
 } from '../../utils/providers';
@@ -188,7 +189,7 @@ export default function ProviderCard({
               are secret, so they can't ride a URL anyway. `tuiCommandLine` is
               the display half of the same resolution: it shows what will run,
               and an older server that omits it simply renders no button. */}
-          {isTuiProvider(provider) && provider.tuiCommandLine && (
+          {isLaunchableTuiProvider(provider) && (
             <Link
               to={`/shell?provider=${encodeURIComponent(provider.id)}`}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-port-accent/20 text-port-accent hover:bg-port-accent/30 rounded transition-colors"

@@ -29,6 +29,7 @@ import {
   mergeModelLists,
   modelOptionLabel,
   isTuiProvider,
+  isLaunchableTuiProvider,
   isCliProvider,
   isApiProvider,
   isProcessProvider,
@@ -462,6 +463,18 @@ describe('provider type predicates', () => {
     expect(isTuiProvider(tui)).toBe(true);
     expect(isTuiProvider(cli)).toBe(false);
     expect(isTuiProvider(api)).toBe(false);
+  });
+
+  // Shared by the Providers card's "Launch in Shell" button and the Shell page's
+  // launch menu, so the two can't disagree about what is launchable.
+  it('isLaunchableTuiProvider needs a TUI AND a server-resolved command line', () => {
+    expect(isLaunchableTuiProvider({ ...tui, tuiCommandLine: 'claude --dangerously-skip-permissions' })).toBe(true);
+    // A TUI the server resolved no command for, or an older server that omits
+    // the field entirely, is not offered.
+    expect(isLaunchableTuiProvider(tui)).toBe(false);
+    expect(isLaunchableTuiProvider({ ...cli, tuiCommandLine: 'claude' })).toBe(false);
+    expect(isLaunchableTuiProvider({ ...api, tuiCommandLine: 'x' })).toBe(false);
+    expect(isLaunchableTuiProvider(null)).toBe(false);
   });
 
   it('isCliProvider matches only cli providers', () => {

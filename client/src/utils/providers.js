@@ -855,6 +855,21 @@ export const modelOptionLabel = (id, ctxById) => {
 export const isTuiProvider = (provider) => provider?.type === PROVIDER_TYPES.TUI;
 
 /**
+ * Can a human launch this provider at a shell prompt?
+ *
+ * TUI is the only type that has an interactive form — a `cli` provider's args
+ * are headless (`--print`), and an `api` provider has no local binary at all.
+ * `tuiCommandLine` is the server's own resolution of what the launch will run
+ * (`server/lib/tuiShellLaunch.js`, published by `GET /api/providers`), so a
+ * provider it could not resolve a command for is not offered, and an older
+ * server that omits the field simply offers nothing.
+ *
+ * Shared so the AI Providers card's "Launch in Shell" button and the Shell
+ * page's launch menu can't disagree about which providers are launchable.
+ */
+export const isLaunchableTuiProvider = (provider) => isTuiProvider(provider) && Boolean(provider?.tuiCommandLine);
+
+/**
  * Check if a provider is a one-shot CLI agent provider.
  */
 export const isCliProvider = (provider) => provider?.type === PROVIDER_TYPES.CLI;
