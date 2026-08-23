@@ -585,7 +585,7 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // the task. Per-category gate → only cos-tasks sync pauses until the peer
   // upgrades.
   // v7 = plan-only issue-filing tasks (metadata.planOnly, the forced
-  // plan-task --issues --yes invocation, and the task-description context
+  // plan-task --yes invocation, and the task-description context
   // bridge). A <=v6 peer accepts the permissive metadata map but does not
   // understand the no-delivery execution contract, so it can claim the task
   // and run the workflow without the description context needed to file the

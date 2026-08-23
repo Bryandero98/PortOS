@@ -33,12 +33,13 @@ vi.mock('../services/cosTaskGenerator.js', () => ({
   buildClaimWorkTask: vi.fn(),
   buildJiraTicketTask: vi.fn(),
 }));
-vi.mock('../services/apps.js', () => ({ getAppById: vi.fn() }));
+vi.mock('../services/apps.js', () => ({ getAppById: vi.fn(), getAppWorkTracker: vi.fn(), PORTOS_APP_ID: 'portos-default' }));
 vi.mock('../services/streamingDetect.js', () => ({ NON_PM2_TYPES: new Set() }));
 vi.mock('../services/instances.js', () => ({ getAssignableInstances: vi.fn() }));
 
 import * as cos from '../services/cos.js';
 import { getAssignableInstances } from '../services/instances.js';
+import { getAppWorkTracker } from '../services/apps.js';
 import cosTaskRoutes from './cosTaskRoutes.js';
 
 const SELF = 'self-instance-id';
@@ -84,6 +85,31 @@ describe('POST /api/cos/tasks — targetInstanceId (#4520)', () => {
     expect(res.status).toBe(200);
     expect(getAssignableInstances).not.toHaveBeenCalled();
     expect(cos.addTask.mock.calls[0][0].targetInstanceId).toBeUndefined();
+  });
+});
+
+describe('POST /api/cos/tasks — plan-only tracker gate', () => {
+  it('rejects issue-only planning for a non-issue tracker', async () => {
+    getAppWorkTracker.mockResolvedValue({ resolved: 'jira' });
+
+    const res = await request(buildApp())
+      .post('/api/cos/tasks')
+      .send({ description: 'plan the change', app: 'jira-app', planOnly: true });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('UNSUPPORTED_PLAN_ONLY_TRACKER');
+    expect(cos.addTask).not.toHaveBeenCalled();
+  });
+
+  it('allows issue-only planning for a GitLab tracker', async () => {
+    getAppWorkTracker.mockResolvedValue({ resolved: 'gitlab' });
+
+    const res = await request(buildApp())
+      .post('/api/cos/tasks')
+      .send({ description: 'plan the change', app: 'gitlab-app', planOnly: true });
+
+    expect(res.status).toBe(200);
+    expect(cos.addTask).toHaveBeenCalledWith(expect.objectContaining({ planOnly: true }), 'user');
   });
 });
 

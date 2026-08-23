@@ -100,7 +100,9 @@ vi.mock('../services/cosTaskGenerator.js', async (importActual) => ({
   buildClaimWorkTask: vi.fn()
 }));
 vi.mock('../services/apps.js', () => ({
-  getAppById: vi.fn()
+  getAppById: vi.fn(),
+  getAppWorkTracker: vi.fn(),
+  PORTOS_APP_ID: 'portos-default'
 }));
 
 // The per-ticket `/tasks/jira-ticket` route loads the claim-issue-jira prompt

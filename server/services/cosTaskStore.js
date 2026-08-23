@@ -508,11 +508,11 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     }
     if (planOnly) {
       // Plan-and-file is a single bounded CoS action. The bundled plan-task
-      // command defaults to PLAN.md, so force issue mode as well as `--yes` to
-      // make this toggle's GitHub/GitLab deliverable unambiguous and unattended.
+      // command is already issue-only, so pass its supported `--yes` flag to
+      // make this toggle's issue-filing action unattended.
       metadata.planOnly = true;
       metadata.slashdoCommand = 'plan-task';
-      metadata.slashdoArgs = '--issues --yes';
+      metadata.slashdoArgs = '--yes';
       metadata.readOnly = true;
       metadata.noCodeOutput = true;
       metadata.useWorktree = false;

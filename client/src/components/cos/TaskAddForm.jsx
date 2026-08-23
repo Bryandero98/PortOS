@@ -141,6 +141,52 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     [apps, newTask.app]
   );
   const appHasJira = selectedApp?.jira?.enabled;
+  const [resolvedWorkTracker, setResolvedWorkTracker] = useState({ appId: null, tracker: null });
+
+  // Plan-and-file uses the bundled issue-only `plan-task` command. Resolve an
+  // app's effective tracker before exposing the toggle so PLAN.md and JIRA
+  // apps cannot queue an issue workflow their tracker does not support.
+  useEffect(() => {
+    const configuredTracker = selectedApp?.workTracker;
+    if (!selectedApp?.id || (configuredTracker && configuredTracker !== 'auto')) {
+      setResolvedWorkTracker({ appId: selectedApp?.id || null, tracker: null });
+      return undefined;
+    }
+
+    const appId = selectedApp.id;
+    setResolvedWorkTracker({ appId, tracker: null });
+    let cancelled = false;
+    Promise.resolve(api.getAppWorkTracker(appId, { silent: true }))
+      .then(info => {
+        if (!cancelled) setResolvedWorkTracker({ appId, tracker: info?.resolved || null });
+      })
+      .catch(() => {
+        if (!cancelled) setResolvedWorkTracker({ appId, tracker: null });
+      });
+    return () => { cancelled = true; };
+  }, [selectedApp?.id, selectedApp?.workTracker]);
+
+  const planOnlyTrackerStatus = useMemo(() => {
+    if (!selectedApp) return 'supported';
+    const configuredTracker = selectedApp.workTracker;
+    const tracker = configuredTracker && configuredTracker !== 'auto'
+      ? configuredTracker
+      : resolvedWorkTracker.appId === selectedApp.id ? resolvedWorkTracker.tracker : null;
+    if (!tracker) return 'pending';
+    return tracker === 'github' || tracker === 'gitlab' ? 'supported' : 'unsupported';
+  }, [resolvedWorkTracker, selectedApp]);
+  const planOnlySupported = planOnlyTrackerStatus === 'supported';
+
+  // Clear a template or an already-selected mode when an app resolves to a
+  // tracker that cannot receive the issue-only plan-task workflow.
+  useEffect(() => {
+    if (planOnlyTrackerStatus !== 'unsupported' || !planOnly) return;
+    setPlanOnly(false);
+    if (slashdoCommand === 'plan-task') {
+      setSlashdoCommand('');
+      setWorktreeChangesExpected(undefined);
+    }
+  }, [planOnly, planOnlyTrackerStatus, slashdoCommand]);
 
   // Gate on a content signature of the selected app's defaults (not the
   // `apps` array reference) so periodic re-fetches in the parent don't
@@ -194,6 +240,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   })();
 
   const handlePlanOnlyChange = (enabled) => {
+    if (enabled && !planOnlySupported) return;
     setPlanOnly(enabled);
     if (enabled) {
       setSlashdoCommand('plan-task');
@@ -395,7 +442,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       targetInstanceId: targetInstanceId || undefined,
       planOnly,
       slashdoCommand: planOnly ? 'plan-task' : (slashdoCommand || undefined),
-      slashdoArgs: planOnly ? '--issues --yes' : undefined,
+      slashdoArgs: planOnly ? '--yes' : undefined,
       createJiraTicket: planOnly ? false : createJiraTicket,
       useWorktree: planOnly ? false : useWorktree,
       openPR: planOnly ? false : useWorktree && openPR,
@@ -618,19 +665,32 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
               Enhance
             </span>
           </label>
-          <label htmlFor="task-plan-only" className="flex items-center gap-2 cursor-pointer select-none whitespace-nowrap py-1">
-            <input
-              id="task-plan-only"
-              type="checkbox"
-              checked={planOnly}
-              onChange={(e) => handlePlanOnlyChange(e.target.checked)}
-              className="w-4 h-4 rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent focus:ring-offset-0"
-            />
-            <span className="flex items-center gap-1.5 text-sm text-gray-400" title="Read the codebase and file a GitHub or GitLab issue without implementing the task.">
-              <FileText size={14} className="text-port-accent" />
-              Plan &amp; file issue
-            </span>
-          </label>
+          {planOnlyTrackerStatus !== 'unsupported' && (
+            <label htmlFor="task-plan-only" className="flex items-center gap-2 cursor-pointer select-none whitespace-nowrap py-1">
+              <input
+                id="task-plan-only"
+                type="checkbox"
+                checked={planOnly}
+                disabled={!planOnlySupported}
+                onChange={(e) => handlePlanOnlyChange(e.target.checked)}
+                className="w-4 h-4 rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent focus:ring-offset-0 disabled:opacity-40"
+              />
+              <span className="flex items-center gap-1.5 text-sm text-gray-400" title="Read the codebase and file a GitHub or GitLab issue without implementing the task.">
+                <FileText size={14} className="text-port-accent" />
+                Plan &amp; file issue
+              </span>
+            </label>
+          )}
+          {planOnlyTrackerStatus === 'pending' && (
+            <p className="basis-full text-xs text-gray-500">
+              Checking the app&apos;s work tracker before enabling issue planning.
+            </p>
+          )}
+          {planOnlyTrackerStatus === 'unsupported' && (
+            <p className="basis-full text-xs text-gray-500">
+              Plan &amp; file issue is available for GitHub or GitLab issue trackers.
+            </p>
+          )}
           {planOnly && (
             <p className="basis-full text-xs text-gray-500">
               Read-only planning: file the issue without code changes, a worktree, PR, simplify pass, or review.

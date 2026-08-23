@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   // Back the reviewer table's Model column (useReviewerModelOptions).
   getLocalLlmStatus: vi.fn(),
   getProviders: vi.fn(),
+  getAppWorkTracker: vi.fn(),
   applyCosTaskTemplate: vi.fn(),
   addCosTask: vi.fn()
 }));
@@ -30,6 +31,7 @@ describe('TaskAddForm responsive layout', () => {
     api.getCodeReviewDefaults.mockResolvedValue(null);
     api.getLocalLlmStatus.mockResolvedValue({ ollama: { models: [] }, lmstudio: { models: [] } });
     api.getProviders.mockResolvedValue({ providers: [] });
+    api.getAppWorkTracker.mockResolvedValue({ resolved: 'github' });
     api.applyCosTaskTemplate.mockResolvedValue({ success: true });
     apiSystem.getAssignableInstances.mockResolvedValue({ instances: [] });
   });
@@ -96,7 +98,7 @@ describe('TaskAddForm responsive layout', () => {
     expect(api.addCosTask.mock.calls.at(-1)[0]).toMatchObject({
       planOnly: true,
       slashdoCommand: 'plan-task',
-      slashdoArgs: '--issues --yes',
+      slashdoArgs: '--yes',
       useWorktree: false,
       openPR: false,
       simplify: false,
@@ -110,6 +112,30 @@ describe('TaskAddForm responsive layout', () => {
       expect(worktreeToggle()).toBeChecked();
       expect(openPrToggle()).toBeChecked();
     });
+  });
+
+  it.each([
+    ['PLAN.md', 'plan', 'plan'],
+    ['JIRA', 'jira', 'jira'],
+    ['auto-resolved JIRA', 'auto', 'jira'],
+  ])('does not offer plan-and-file mode for %s apps', async (_label, workTracker, resolvedTracker) => {
+    api.getAppWorkTracker.mockResolvedValue({ resolved: resolvedTracker });
+    render(
+      <TaskAddForm
+        providers={[]}
+        apps={[{
+          id: 'tracker-app',
+          name: 'Tracker App',
+          repoPath: 'example.com/repo',
+          workTracker,
+        }]}
+        defaultApp="tracker-app"
+        onTaskAdded={vi.fn()}
+      />
+    );
+
+    await waitFor(() => expect(screen.getByText(/Plan & file issue is available for GitHub or GitLab/i)).toBeInTheDocument());
+    expect(screen.queryByLabelText(/Plan & file issue/i)).toBeNull();
   });
 });
 
@@ -125,7 +151,7 @@ describe('TaskAddForm quick templates', () => {
   const renderForm = () => render(
     <TaskAddForm
       providers={[]}
-      apps={[{ id: 'example-app', name: 'Example App', repoPath: 'example.com/repo', defaultOpenPR: true, defaultUseWorktree: true }]}
+      apps={[{ id: 'example-app', name: 'Example App', repoPath: 'example.com/repo', workTracker: 'github', defaultOpenPR: true, defaultUseWorktree: true }]}
       defaultApp="example-app"
       onTaskAdded={vi.fn()}
     />
@@ -136,6 +162,7 @@ describe('TaskAddForm quick templates', () => {
     api.getCodeReviewDefaults.mockResolvedValue(null);
     api.getLocalLlmStatus.mockResolvedValue({ ollama: { models: [] }, lmstudio: { models: [] } });
     api.getProviders.mockResolvedValue({ providers: [] });
+    api.getAppWorkTracker.mockResolvedValue({ resolved: 'github' });
     api.applyCosTaskTemplate.mockResolvedValue({ success: true });
   });
 

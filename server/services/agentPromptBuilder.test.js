@@ -2619,7 +2619,7 @@ describe('buildAgentPrompt — slashdo-backed tasks', () => {
     const prompt = await buildAgentPrompt(
       slashdoTask({
         planOnly: true,
-        slashdoArgs: '--issues --yes',
+        slashdoArgs: '--yes',
         readOnly: true,
         noCodeOutput: true,
         useWorktree: false,
@@ -2629,7 +2629,7 @@ describe('buildAgentPrompt — slashdo-backed tasks', () => {
       }), {}, '/r', null, isTruthyMeta,
       { providerType: 'cli', providerId: 'codex' });
 
-    expect(prompt).toContain('--issues --yes');
+    expect(prompt).toContain('--yes');
     expect(prompt).toContain('Apply it to the task described above.');
     expect(prompt).toContain('## Completion (No Code Output)');
     expect(prompt).not.toContain('## Completion Workflow');

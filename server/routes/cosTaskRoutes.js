@@ -8,7 +8,7 @@ import * as cos from '../services/cos.js';
 import * as taskWatcher from '../services/taskWatcher.js';
 import { enhanceTaskPrompt } from '../services/taskEnhancer.js';
 import { buildClaimWorkTask, buildJiraTicketTask } from '../services/cosTaskGenerator.js';
-import { getAppById } from '../services/apps.js';
+import { getAppById, getAppWorkTracker, PORTOS_APP_ID } from '../services/apps.js';
 import { getAssignableInstances } from '../services/instances.js';
 import { workTrackerLabel } from '../lib/workTracker.js';
 import { getSlashdoWorkflow, slashdoWorkflowAppliesTo, SLASHDO_COMMAND_NAMES } from '../lib/slashdoCatalog.js';
@@ -46,6 +46,21 @@ async function assertAssignableInstance(instanceId) {
   const assignable = await getAssignableInstances();
   if (assignable.some(i => i.instanceId === instanceId)) return;
   throw new ServerError('Unknown instance — pick one of this install\'s federated instances', { status: 400, code: 'UNKNOWN_INSTANCE' });
+}
+
+const ISSUE_TRACKERS = new Set(['github', 'gitlab']);
+
+// The bundled plan-task workflow files an issue; it cannot target PLAN.md or
+// JIRA. Keep the API contract aligned with the quick-task form so direct
+// callers cannot bypass the tracker gate.
+async function assertPlanOnlyTracker(taskData) {
+  if (taskData.planOnly !== true && taskData.slashdoCommand !== 'plan-task') return;
+  const trackerInfo = await getAppWorkTracker(taskData.app || PORTOS_APP_ID);
+  if (!trackerInfo || ISSUE_TRACKERS.has(trackerInfo.resolved)) return;
+  throw new ServerError(
+    `Plan-and-file tasks require a GitHub or GitLab issue tracker (resolved to ${trackerInfo.resolved})`,
+    { status: 400, code: 'UNSUPPORTED_PLAN_ONLY_TRACKER' }
+  );
 }
 
 const router = Router();
@@ -305,6 +320,7 @@ router.post('/tasks', asyncHandler(async (req, res) => {
   if (!parsed.success) failValidation(parsed);
   const { type, ...taskData } = parsed.data;
   if (taskData.targetInstanceId) await assertAssignableInstance(taskData.targetInstanceId);
+  await assertPlanOnlyTracker(taskData);
   const result = await cos.addTask(taskData, type);
 
   if (result?.duplicate) {

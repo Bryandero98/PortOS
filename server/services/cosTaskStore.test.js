@@ -513,7 +513,7 @@ describe('cosTaskStore.addTask', () => {
     expect(created.metadata).toMatchObject({
       planOnly: true,
       slashdoCommand: 'plan-task',
-      slashdoArgs: '--issues --yes',
+      slashdoArgs: '--yes',
       readOnly: true,
       noCodeOutput: true,
       useWorktree: false,
