@@ -62,7 +62,8 @@ function startProgressPolling(baseUrl, generationId) {
   let lastProgress = -1;
   let lastImageEmit = 0;
   let inFlight = false;
-  const interval = setInterval(async () => {
+  let interval;
+  const poll = async () => {
     if (inFlight) return;
     inFlight = true;
     try {
@@ -93,10 +94,14 @@ function startProgressPolling(baseUrl, generationId) {
         activeJob.totalSteps = data.state?.sampling_steps ?? activeJob.totalSteps;
         if (includeImage) activeJob.currentImage = data.current_image;
       }
+    } catch (err) {
+      clearInterval(interval);
+      console.error(`❌ External image generation progress polling failed: ${err.message}`);
     } finally {
       inFlight = false;
     }
-  }, PROGRESS_POLL_INTERVAL);
+  };
+  interval = setInterval(() => { void poll(); }, PROGRESS_POLL_INTERVAL);
 
   return () => clearInterval(interval);
 }
@@ -135,47 +140,43 @@ export async function generateImage({ sdapiUrl, prompt, negativePrompt, width, h
   };
 
   const stopPolling = startProgressPolling(baseUrl, generationId);
-
-  let res;
   try {
-    res = await fetchWithTimeout(
+    const res = await fetchWithTimeout(
       `${baseUrl}/sdapi/v1/txt2img`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
       300000
     );
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      throw new Error(`SD API error ${res.status}: ${errBody.slice(0, 200)}`);
+    }
+
+    const data = await res.json();
+    if (!data.images?.length) throw new Error('SD API returned no images');
+
+    await ensureDir(PATHS.images);
+    const filename = `${randomUUID()}.png`;
+    const pngPath = join(PATHS.images, filename);
+    await writeFile(pngPath, Buffer.from(data.images[0], 'base64'));
+    // Auto-clean BEFORE the SSE complete fires so the URL the client opens
+    // serves the cleaned bytes. External mode has no sidecar — pass null so
+    // the helper just patches the PNG in place.
+    await autoCleanGeneratedImage({ cleanC2PA, denoise, pngPath, sidecarPath: null, mode: IMAGE_GEN_MODE.EXTERNAL });
+    const path = `/data/images/${filename}`;
+    console.log(`🖼️ Image saved: ${filename}`);
+    activeJob = null;
+    imageGenEvents.emit('completed', { mode: IMAGE_GEN_MODE.EXTERNAL, generationId, path, filename });
+    return { generationId, filename, path, mode: IMAGE_GEN_MODE.EXTERNAL, model };
   } catch (err) {
-    stopPolling();
-    activeJob = null;
-    imageGenEvents.emit('failed', { mode: IMAGE_GEN_MODE.EXTERNAL, generationId, error: 'Network error contacting image generation service' });
+    if (activeJob?.generationId === generationId) activeJob = null;
+    imageGenEvents.emit('failed', {
+      mode: IMAGE_GEN_MODE.EXTERNAL,
+      generationId,
+      error: err.message === 'fetch failed' ? 'Network error contacting image generation service' : err.message,
+    });
     throw err;
+  } finally {
+    stopPolling();
+    if (activeJob?.generationId === generationId) activeJob = null;
   }
-  stopPolling();
-
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => '');
-    activeJob = null;
-    imageGenEvents.emit('failed', { mode: IMAGE_GEN_MODE.EXTERNAL, generationId, error: `SD API error ${res.status}` });
-    throw new Error(`SD API error ${res.status}: ${errBody.slice(0, 200)}`);
-  }
-
-  const data = await res.json();
-  if (!data.images?.length) {
-    activeJob = null;
-    imageGenEvents.emit('failed', { mode: IMAGE_GEN_MODE.EXTERNAL, generationId, error: 'No images returned' });
-    throw new Error('SD API returned no images');
-  }
-
-  await ensureDir(PATHS.images);
-  const filename = `${randomUUID()}.png`;
-  const pngPath = join(PATHS.images, filename);
-  await writeFile(pngPath, Buffer.from(data.images[0], 'base64'));
-  // Auto-clean BEFORE the SSE complete fires so the URL the client opens
-  // serves the cleaned bytes. External mode has no sidecar — pass null so
-  // the helper just patches the PNG in place.
-  await autoCleanGeneratedImage({ cleanC2PA, denoise, pngPath, sidecarPath: null, mode: IMAGE_GEN_MODE.EXTERNAL });
-  const path = `/data/images/${filename}`;
-  console.log(`🖼️ Image saved: ${filename}`);
-  activeJob = null;
-  imageGenEvents.emit('completed', { mode: IMAGE_GEN_MODE.EXTERNAL, generationId, path, filename });
-  return { generationId, filename, path, mode: IMAGE_GEN_MODE.EXTERNAL, model };
 }
