@@ -6,6 +6,7 @@ import * as catalogDB from '../services/catalogDB.js';
 import * as catalogSync from '../services/catalogSync.js';
 import { resolveRefs, listDanglingRefs } from '../services/catalogRefResolver.js';
 import { projectToCanon } from '../services/catalogCanonProjection.js';
+import { withTransaction } from '../lib/db.js';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest, parsePagination } from '../lib/validation.js';
 import {
