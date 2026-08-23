@@ -9,24 +9,7 @@ import PageHeader from '../components/PageHeader';
 import TimelineImportPanels, { IMPORT_SOURCE_COUNT } from '../components/timeline/TimelineImportPanels';
 import * as api from '../services/api';
 import toast from '../components/ui/Toast';
-import { formatClockTime, formatDurationSec, formatWeekdayDate } from '../utils/formatters';
-
-// Local (browser-tz) YYYY-MM-DD for a Date — matches the server's local-day math
-// closely enough for defaulting the URL; the server is the source of truth for
-// which UTC instants fall in the day it returns.
-function localDateStr(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-function shiftDate(dateStr, days) {
-  const [y, m, d] = dateStr.split('-').map(Number);
-  const dt = new Date(y, m - 1, d);
-  dt.setDate(dt.getDate() + days);
-  return localDateStr(dt);
-}
+import { formatClockTime, formatDurationSec, formatWeekdayDate, localDateKey, shiftISODate } from '../utils/formatters';
 
 const SOURCE_ICON = {
   gmail: Mail,
@@ -172,7 +155,7 @@ export default function Timeline() {
 
   // Browser-local fallbacks cover only the loading/error window before the
   // server response supplies the authoritative `date` and `today`.
-  const today = day?.today || localDateStr(new Date());
+  const today = day?.today || localDateKey();
   const date = day?.date || urlDate || today;
 
   const goto = (target) => navigate(target === today ? '/timeline' : `/timeline/${target}`);
@@ -200,7 +183,7 @@ export default function Timeline() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => goto(shiftDate(date, -1))}
+            onClick={() => goto(shiftISODate(date, -1))}
             className="rounded border border-port-border bg-port-card p-2 hover:border-port-accent"
             aria-label="Previous day"
           >
@@ -216,7 +199,7 @@ export default function Timeline() {
           />
           <button
             type="button"
-            onClick={() => goto(shiftDate(date, 1))}
+            onClick={() => goto(shiftISODate(date, 1))}
             disabled={date >= today}
             className="rounded border border-port-border bg-port-card p-2 hover:border-port-accent disabled:cursor-not-allowed disabled:opacity-40"
             aria-label="Next day"
