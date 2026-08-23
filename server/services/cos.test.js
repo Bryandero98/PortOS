@@ -43,6 +43,7 @@ import {
   reserveLocalEndpointSpawn,
   pendingLocalEndpointSpawns,
   __resetLocalEndpointSpawnReservations,
+  readEndpointCapacity,
 } from './cosLocalEndpointSlots.js';
 import { PENDING_MERGE_SWEEP_INTERVAL_MS, MAX_PENDING_MERGE_TICKS } from './prWatcher.js';
 
@@ -477,16 +478,21 @@ describe('dequeueNextTask — capacity guards', () => {
 // tracker — the same pair `dequeueNextTask` wires together — so a regression in
 // either half fails here.
 
-const LOCAL_ENDPOINT = 'http://localhost:1234/v1';
-const OTHER_LOCAL_ENDPOINT = 'http://127.0.0.1:11434';
+// What the PROVIDER RECORD holds, vs the normalized SLOT KEY the cap is keyed
+// by. They differ on purpose: host+port identifies the model server, so
+// `localhost` and `127.0.0.1` on one port must share a single slot.
+const LOCAL_URL = 'http://localhost:1234/v1';
+const LOCAL_ENDPOINT = 'localhost:1234';
+const OTHER_LOCAL_URL = 'http://127.0.0.1:11434';
+const OTHER_LOCAL_ENDPOINT = 'localhost:11434';
 
 // A TUI provider pointed at a local server is exactly the case #4834 exists
 // for: PortOS launches the CLI, the CLI talks to the GPU directly.
-const LOCAL_TUI_PROVIDER = { id: 'lmstudio-tui', type: 'tui', endpoint: LOCAL_ENDPOINT };
-const OTHER_LOCAL_PROVIDER = { id: 'ollama-local', type: 'api', endpoint: OTHER_LOCAL_ENDPOINT };
+const LOCAL_TUI_PROVIDER = { id: 'lmstudio-tui', type: 'tui', enabled: true, endpoint: LOCAL_URL };
+const OTHER_LOCAL_PROVIDER = { id: 'ollama-local', type: 'api', enabled: true, endpoint: OTHER_LOCAL_URL };
 // No recorded endpoint — PortOS cannot know where it points, so it stays ungated.
-const BARE_CLI_PROVIDER = { id: 'claude-cli', type: 'cli', endpoint: null };
-const CLOUD_PROVIDER = { id: 'anthropic', type: 'api', endpoint: 'https://api.anthropic.com/v1' };
+const BARE_CLI_PROVIDER = { id: 'claude-cli', type: 'cli', enabled: true, endpoint: null };
+const CLOUD_PROVIDER = { id: 'anthropic', type: 'api', enabled: true, endpoint: 'https://api.anthropic.com/v1' };
 
 const ALL_PROVIDERS = [LOCAL_TUI_PROVIDER, OTHER_LOCAL_PROVIDER, BARE_CLI_PROVIDER, CLOUD_PROVIDER];
 
@@ -735,8 +741,32 @@ describe('countRunningAgentsByLocalEndpoint (#4834)', () => {
 
 describe('localEndpointOfProvider (#4834)', () => {
   it('resolves a local endpoint regardless of provider type', () => {
-    expect(localEndpointOfProvider({ type: 'tui', endpoint: 'http://localhost:1234/v1' })).toBe('http://localhost:1234/v1');
-    expect(localEndpointOfProvider({ type: 'api', endpoint: 'http://127.0.0.1:11434' })).toBe('http://127.0.0.1:11434');
+    expect(localEndpointOfProvider({ type: 'tui', endpoint: 'http://localhost:1234/v1' })).toBe('localhost:1234');
+    expect(localEndpointOfProvider({ type: 'api', endpoint: 'http://127.0.0.1:11434' })).toBe('localhost:11434');
+  });
+
+  it('collapses every spelling of ONE local server onto a single slot key', () => {
+    // Host+port identifies the model server; scheme, path and host spelling do
+    // not. The shipped catalog already mixes spellings (`lmstudio` is seeded at
+    // localhost:1234, everything else at 127.0.0.1), so keying on the raw string
+    // would give one LM Studio process two independent caps — and let two agents
+    // onto the same GPU, the exact OOM this issue exists to prevent.
+    const spellings = [
+      'http://localhost:1234/v1',
+      'http://127.0.0.1:1234/v1',
+      'http://127.0.0.1:1234',
+      'https://localhost:1234/v1',
+      'localhost:1234',
+      '  http://0.0.0.0:1234/v1  ',
+    ];
+    for (const endpoint of spellings) {
+      expect(localEndpointOfProvider({ endpoint }), endpoint).toBe('localhost:1234');
+    }
+  });
+
+  it('keeps distinct local servers on distinct keys', () => {
+    expect(localEndpointOfProvider({ endpoint: 'http://127.0.0.1:1234/v1' }))
+      .not.toBe(localEndpointOfProvider({ endpoint: 'http://127.0.0.1:11434/v1' }));
   });
 
   it('returns null for a remote endpoint, a missing endpoint, or no provider', () => {
@@ -860,7 +890,7 @@ describe('endpointForAgent — stamped endpoint wins over the id lookup (#4834)'
     // Only `providerId` was persisted pre-#4834, so a deleted provider made a
     // still-running agent invisible to the cap — freeing a slot the GPU was
     // still holding. The stamped endpoint survives the deletion.
-    const orphaned = { status: 'running', metadata: { providerId: 'deleted-provider', providerEndpoint: LOCAL_ENDPOINT } };
+    const orphaned = { status: 'running', metadata: { providerId: 'deleted-provider', providerEndpoint: LOCAL_URL } };
     expect(slots.endpointForAgent(orphaned)).toBe(LOCAL_ENDPOINT);
     expect(countRunningAgentsByLocalEndpoint({ a: orphaned }, slots.endpointForAgent)).toEqual({ [LOCAL_ENDPOINT]: 1 });
   });
@@ -868,7 +898,7 @@ describe('endpointForAgent — stamped endpoint wins over the id lookup (#4834)'
   it('prefers the stamp when the provider record was re-pointed mid-run', () => {
     // The agent is still talking to the endpoint it started on, not the one the
     // provider now names.
-    const agent = { status: 'running', metadata: { providerId: 'ollama-local', providerEndpoint: LOCAL_ENDPOINT } };
+    const agent = { status: 'running', metadata: { providerId: 'ollama-local', providerEndpoint: LOCAL_URL } };
     expect(slots.endpointForAgent(agent)).toBe(LOCAL_ENDPOINT);
   });
 
@@ -879,6 +909,112 @@ describe('endpointForAgent — stamped endpoint wins over the id lookup (#4834)'
   it('ignores a stamped REMOTE endpoint rather than gating on it', () => {
     const agent = { status: 'running', metadata: { providerId: 'anthropic', providerEndpoint: 'https://api.anthropic.com/v1' } };
     expect(slots.endpointForAgent(agent)).toBeNull();
+  });
+});
+
+describe('resolveLocalEndpoint — follows the fallback swap (#4834)', () => {
+  // An unavailable provider is not where the task lands, so the gate follows the
+  // SAME getFallbackProvider spawn uses. Both directions matter: a cloud
+  // fallback must ungate (or the task starves behind a GPU it never touches),
+  // and a fallback on the same local server must stay gated (or the cap
+  // disappears exactly when the endpoint is unhealthy — the shipped catalog has
+  // four providers on 127.0.0.1:18021).
+  const SAME_SERVER_SIBLING = { id: 'lmstudio-api', type: 'api', enabled: true, endpoint: 'http://127.0.0.1:1234' };
+
+  const withFallback = (fallbackProvider) => createLocalEndpointSlotContext({
+    providers: [...ALL_PROVIDERS, SAME_SERVER_SIBLING],
+    activeProvider: CLOUD_PROVIDER,
+    isAvailable: (id) => id !== 'lmstudio-tui',
+    resolveFallback: () => fallbackProvider,
+  });
+
+  it('stays gated when the fallback lands on the SAME local server', () => {
+    // Different provider record, different host spelling, same GPU.
+    expect(withFallback(SAME_SERVER_SIBLING).resolveLocalEndpoint(taskOnProvider('t', 'lmstudio-tui')))
+      .toBe(LOCAL_ENDPOINT);
+  });
+
+  it('ungates when the fallback is a cloud provider', () => {
+    expect(withFallback(CLOUD_PROVIDER).resolveLocalEndpoint(taskOnProvider('t', 'lmstudio-tui'))).toBeNull();
+  });
+
+  it('gates on the FALLBACK endpoint when it is a different local server', () => {
+    expect(withFallback(OTHER_LOCAL_PROVIDER).resolveLocalEndpoint(taskOnProvider('t', 'lmstudio-tui')))
+      .toBe(OTHER_LOCAL_ENDPOINT);
+  });
+
+  it('ungates when no fallback resolves at all', () => {
+    expect(withFallback(null).resolveLocalEndpoint(taskOnProvider('t', 'lmstudio-tui'))).toBeNull();
+  });
+
+  it('passes the task through so a task-level fallback pin is honored', () => {
+    // getFallbackProvider's first tier reads metadata.fallbackProvider /
+    // metadata.fallbackModel off the task; the context must hand them over.
+    const seen = [];
+    const slots = createLocalEndpointSlotContext({
+      providers: ALL_PROVIDERS,
+      activeProvider: CLOUD_PROVIDER,
+      isAvailable: () => false,
+      resolveFallback: (primaryId, providersMap, task) => { seen.push({ primaryId, task }); return null; },
+    });
+    slots.resolveLocalEndpoint({ id: 't', metadata: { provider: 'lmstudio-tui', fallbackProvider: 'ollama-local' } });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].primaryId).toBe('lmstudio-tui');
+    expect(seen[0].task.metadata.fallbackProvider).toBe('ollama-local');
+  });
+});
+
+describe('readEndpointCapacity (#4834)', () => {
+  beforeEach(() => __resetLocalEndpointSpawnReservations());
+
+  const slots = createLocalEndpointSlotContext({ providers: ALL_PROVIDERS, activeProvider: CLOUD_PROVIDER, limit: 1 });
+  const runningOn = (providerId, taskId) => ({ status: 'running', taskId, metadata: { providerId } });
+
+  it('counts a running agent against its endpoint', () => {
+    const capacity = readEndpointCapacity(LOCAL_ENDPOINT, { a: runningOn('lmstudio-tui', 'task-a') }, slots);
+    expect(capacity).toMatchObject({ inFlight: 1, limit: 1, atCapacity: true });
+  });
+
+  it('excludes the dispatching task\'s OWN agent so Run-now can supersede a zombie', () => {
+    // forceSpawnTask deliberately supersedes a `running` holder older than the
+    // spawn grace — that is the documented recovery for an agent whose PTY died
+    // without a close handler. Counting the zombie would make the one recovery
+    // the route exists to provide unreachable at a limit of 1.
+    const agents = { a: runningOn('lmstudio-tui', 'task-stuck') };
+    expect(readEndpointCapacity(LOCAL_ENDPOINT, agents, slots, { ignoreTaskId: 'task-stuck' }).atCapacity).toBe(false);
+    expect(readEndpointCapacity(LOCAL_ENDPOINT, agents, slots, { ignoreTaskId: 'other-task' }).atCapacity).toBe(true);
+  });
+
+  it('does not double-count a reservation whose agent already registered', () => {
+    // registerAgent flips the record to `running` well before spawnAgentForTask
+    // returns, so for the whole PTY-launch window the same agent is both in the
+    // running tally and holding its reservation.
+    reserveLocalEndpointSpawn(LOCAL_ENDPOINT, 'task-a');
+    const agents = { a: runningOn('lmstudio-tui', 'task-a') };
+
+    expect(readEndpointCapacity(LOCAL_ENDPOINT, agents, slots).inFlight).toBe(1);
+  });
+
+  it('still counts a reservation that has NOT registered yet', () => {
+    reserveLocalEndpointSpawn(LOCAL_ENDPOINT, 'task-b');
+    const agents = { a: runningOn('lmstudio-tui', 'task-a') };
+
+    expect(readEndpointCapacity(LOCAL_ENDPOINT, agents, slots).inFlight).toBe(2);
+  });
+
+  it('counts an anonymous reservation (no task id) unconditionally', () => {
+    reserveLocalEndpointSpawn(LOCAL_ENDPOINT, null);
+    expect(readEndpointCapacity(LOCAL_ENDPOINT, {}, slots).inFlight).toBe(1);
+  });
+
+  it('ignores agents on other endpoints and non-running agents', () => {
+    const agents = {
+      a: runningOn('ollama-local', 'task-a'),
+      b: runningOn('anthropic', 'task-b'),
+      c: { status: 'completed', taskId: 'task-c', metadata: { providerId: 'lmstudio-tui' } },
+    };
+    expect(readEndpointCapacity(LOCAL_ENDPOINT, agents, slots).inFlight).toBe(0);
   });
 });
 
@@ -1255,15 +1391,24 @@ describe('cos.js source — priority + capacity invariants', () => {
       .toBeLessThan(forceFn.indexOf("cosEvents.emit('task:ready'"));
   });
 
+  it('forceSpawnTask excludes the task\'s own zombie agent from the tally (#4834)', () => {
+    // The route deliberately supersedes a stale `running` holder — counting it
+    // would make that recovery unreachable at a limit of 1.
+    const forceFn = extractFnBody(COS_SRC, COS_SRC.indexOf('export async function forceSpawnTask'));
+    expect(forceFn).toMatch(/localEndpointCapacityError\(resolution\.provider,\s*state\.agents,\s*taskId\)/);
+  });
+
   it('the gate ignores an UNAVAILABLE provider so a held task cannot starve (#4834)', () => {
     // A saturated local provider that is down is not where the task lands —
     // spawn swaps it for a fallback. Holding on it would wait on a GPU the task
     // never touches, with nothing to clear the hold.
     const SLOTS_SRC = readFileSync(join(__dirname, 'cosLocalEndpointSlots.js'), 'utf-8');
     const ctxFn = extractFnBody(SLOTS_SRC, SLOTS_SRC.indexOf('export function createLocalEndpointSlotContext'));
-    expect(ctxFn).toMatch(/if \(!isAvailable\(provider\.id\)\) return null;/);
+    expect(ctxFn).toMatch(/isAvailable\(primary\.id\)\s*\?\s*primary\s*:\s*resolveFallback\(/);
     expect(SLOTS_SRC, 'the live context must use the real provider-status predicate')
       .toMatch(/isAvailable:\s*isProviderAvailable/);
+    expect(SLOTS_SRC, 'and the REAL fallback resolver, so the prediction cannot drift from spawn')
+      .toMatch(/getFallbackProvider\(/);
   });
 
   it('Priority 0 opts out of the local-endpoint cap so a Run is never discarded (#4834)', () => {

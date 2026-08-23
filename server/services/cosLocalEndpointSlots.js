@@ -24,8 +24,7 @@
 
 import { isLocalEndpoint, LOCAL_LLM_MAX_CONCURRENCY } from '../lib/promptRunner.js';
 import { listProviders, getActiveProvider } from './providers.js';
-import { isProviderAvailable } from './providerStatus.js';
-import { countRunningAgentsByLocalEndpoint } from './cosDequeue.js';
+import { isProviderAvailable, getFallbackProvider } from './providerStatus.js';
 
 // One knob governs both paths — no new config key. A local box beefy enough to
 // hold N model contexts lifts LOCAL_LLM_MAX_CONCURRENCY and gets N agent slots
@@ -42,10 +41,30 @@ export const LOCAL_ENDPOINT_AGENT_LIMIT = LOCAL_LLM_MAX_CONCURRENCY;
  *
  * Not gated on `provider.type === 'api'` (unlike promptRunner's request gate):
  * a TUI provider pointed at a local LM Studio IS the case this exists for.
+ *
+ * The return value is a NORMALIZED SLOT KEY (`localhost:<port>`), not the raw
+ * string — see `LOCAL_SLOT_KEY_RE`. It is only ever used as a Map key and in the
+ * queued-no-slot log line.
  */
 export function localEndpointOfProvider(provider) {
-  const endpoint = provider?.endpoint;
-  return isLocalEndpoint(endpoint) ? endpoint.trim() : null;
+  return localSlotKey(provider?.endpoint);
+}
+
+// Host+port identifies the model server; the scheme, path (`/v1`) and host
+// SPELLING do not. The shipped catalog already mixes spellings — `lmstudio` is
+// seeded at `http://localhost:1234/v1` while everything else uses `127.0.0.1` —
+// so keying on the raw string would give one LM Studio process two independent
+// caps and let two agents onto the same GPU, the exact OOM #4834 prevents.
+// Every loopback host collapses onto one key; the port keeps distinct local
+// servers apart.
+const LOCAL_SLOT_KEY_RE = /^(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)(?::(\d+))?(?:[/?#]|$)/i;
+
+/** The slot key for `endpoint`, or null when it is remote/absent/unparseable. */
+function localSlotKey(endpoint) {
+  if (!isLocalEndpoint(endpoint)) return null;
+  const match = endpoint.trim().match(LOCAL_SLOT_KEY_RE);
+  if (!match) return null;
+  return match[1] ? `localhost:${match[1]}` : 'localhost';
 }
 
 /**
@@ -58,20 +77,26 @@ export function localEndpointOfProvider(provider) {
  *  - `resolveLocalEndpoint(task)` — the endpoint a QUEUED task would land on.
  *    Mirrors `resolveAgentProviderAndModel`: a `metadata.provider` pin wins, an
  *    unknown pin falls back to the active provider, and an UNAVAILABLE provider
- *    resolves to null because spawn will swap it for a fallback (often cloud) —
- *    gating on it would hold the task behind a GPU it is never going to touch,
- *    with nothing to clear the hold. A runtime fallback swap after that point
- *    can still move a run: this is avoidance, not a guarantee, and
- *    promptRunner's gate plus the OOM nudge/fail-over remain the recovery half.
+ *    is followed through the SAME `getFallbackProvider` spawn uses. Following
+ *    the swap matters in both directions: gating on a benched provider would
+ *    hold the task behind a GPU it never touches (nothing would clear the hold),
+ *    while ignoring the swap entirely would drop the cap exactly when the
+ *    endpoint is unhealthy — the shipped catalog has four providers sharing
+ *    `127.0.0.1:18021`, so a fallback commonly lands on the same server. A
+ *    RUNTIME fallback after this point can still move a run: this is avoidance,
+ *    not a guarantee, and promptRunner's gate plus the OOM nudge/fail-over
+ *    remain the recovery half.
  *
- * `isAvailable` is injected (rather than imported) so this stays pure and a
- * test can drive the real resolver without provider-status module state.
+ * `isAvailable` / `resolveFallback` are injected (rather than imported) so this
+ * stays pure and a test can drive the real resolver without provider-status
+ * module state.
  */
 export function createLocalEndpointSlotContext({
   providers = [],
   activeProvider = null,
   limit = LOCAL_ENDPOINT_AGENT_LIMIT,
   isAvailable = () => true,
+  resolveFallback = () => null,
 } = {}) {
   const byId = new Map();
   for (const provider of providers) {
@@ -80,6 +105,9 @@ export function createLocalEndpointSlotContext({
   if (activeProvider?.id && !byId.has(activeProvider.id)) byId.set(activeProvider.id, activeProvider);
 
   const endpointById = (id) => localEndpointOfProvider(byId.get(id));
+  // `getFallbackProvider` indexes its providers arg BY ID, so hand it a map —
+  // not the array (mirrors the same note in promptRunner.js / agentProviderResolution.js).
+  const providersMap = Object.fromEntries(byId);
 
   // The provider a queued task would be resolved onto, before the availability
   // check below. An unknown pin falls through to the active provider, exactly
@@ -102,14 +130,17 @@ export function createLocalEndpointSlotContext({
       return providerId ? endpointById(providerId) : null;
     },
     resolveLocalEndpoint: (task) => {
-      const provider = providerForTask(task);
-      if (!provider?.id) return null;
+      const primary = providerForTask(task);
+      if (!primary?.id) return null;
       // An unavailable provider is NOT where this task lands — spawn swaps it
-      // for a fallback. Holding the task at this endpoint anyway would starve
-      // it: the fallback it actually wants may be cloud, and nothing about the
-      // busy GPU would ever clear the hold.
-      if (!isAvailable(provider.id)) return null;
-      return localEndpointOfProvider(provider);
+      // for a fallback, which may be cloud (gating would starve the task behind
+      // a GPU it never touches) or may be another provider on the SAME local
+      // server (ignoring it would drop the cap when the endpoint is unhealthy).
+      // Follow the real resolver rather than guessing either way.
+      const effective = isAvailable(primary.id)
+        ? primary
+        : resolveFallback(primary.id, providersMap, task);
+      return localEndpointOfProvider(effective);
     },
   };
 }
@@ -124,11 +155,22 @@ export function createLocalEndpointSlotContext({
 export async function buildLocalEndpointSlotContext() {
   const providers = await listProviders();
   const activeProvider = await getActiveProvider().catch(() => null);
-  return createLocalEndpointSlotContext({ providers, activeProvider, isAvailable: isProviderAvailable });
+  return createLocalEndpointSlotContext({
+    providers,
+    activeProvider,
+    isAvailable: isProviderAvailable,
+    // The REAL resolver spawn uses, so the prediction can't drift from it.
+    resolveFallback: (primaryId, providersMap, task) => getFallbackProvider(
+      primaryId,
+      providersMap,
+      task?.metadata?.fallbackProvider ?? null,
+      task?.metadata?.fallbackModel ?? null
+    )?.provider ?? null,
+  });
 }
 
 // ── In-flight spawn reservations ───────────────────────────────────────────
-// A dispatched task is invisible to `countRunningAgentsByLocalEndpoint` until
+// A dispatched task is invisible to the running-agent tally until
 // its agent record reaches `running` — a window several awaits wide (provider
 // resolution, prompt build, worktree setup, PTY spawn). Two `task:ready`
 // dispatches landing inside that window would both read the same snapshot and
@@ -139,31 +181,58 @@ export async function buildLocalEndpointSlotContext() {
 // in-process re-entrancy guard over one server's own dispatch loop, not a
 // defense against competing actors (see the Security Model in CLAUDE.md).
 // Mirrors `spawningJobIds` in cosJobScheduler.js, which bridges the same gap.
-const pendingSpawnsByEndpoint = new Map();
+//
+// Each reservation carries its task id, because `registerAgent` flips the record
+// to `running` well BEFORE `spawnAgentForTask` returns: for the config + PTY
+// launch window one agent would otherwise be counted twice (running tally AND
+// reservation) and under-admit at limits above 1. Counting only reservations
+// whose task has no running agent yet removes the overlap exactly, without
+// releasing early and reopening the window the reservation exists to close.
+const pendingSpawnsByEndpoint = new Map(); // endpoint -> Map<token, taskId|null>
+let reservationSeq = 0;
 
 const NOOP_RELEASE = () => {};
 
 /**
- * Reserve an in-flight spawn slot on `endpoint`. Returns the release function,
- * which is idempotent so a double-release (a throw plus the `finally`) can't
- * drive the count negative and hand out a slot that is still occupied.
+ * Reserve an in-flight spawn slot on `endpoint` for `taskId`. Returns the
+ * release function, which is idempotent so a double-release (a throw plus the
+ * `finally`) can't free a slot that is still occupied.
  */
-export function reserveLocalEndpointSpawn(endpoint) {
+export function reserveLocalEndpointSpawn(endpoint, taskId = null) {
   if (!endpoint) return NOOP_RELEASE;
-  pendingSpawnsByEndpoint.set(endpoint, (pendingSpawnsByEndpoint.get(endpoint) || 0) + 1);
+  const token = ++reservationSeq;
+  let held = pendingSpawnsByEndpoint.get(endpoint);
+  if (!held) {
+    held = new Map();
+    pendingSpawnsByEndpoint.set(endpoint, held);
+  }
+  held.set(token, taskId);
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    const remaining = (pendingSpawnsByEndpoint.get(endpoint) || 1) - 1;
-    if (remaining > 0) pendingSpawnsByEndpoint.set(endpoint, remaining);
-    else pendingSpawnsByEndpoint.delete(endpoint);
+    const current = pendingSpawnsByEndpoint.get(endpoint);
+    if (!current) return;
+    current.delete(token);
+    if (current.size === 0) pendingSpawnsByEndpoint.delete(endpoint);
   };
 }
 
-/** Spawns dispatched at `endpoint` that have not yet reached `running`. */
-export function pendingLocalEndpointSpawns(endpoint) {
-  return endpoint ? (pendingSpawnsByEndpoint.get(endpoint) || 0) : 0;
+/**
+ * Spawns dispatched at `endpoint` that have not yet reached `running`.
+ *
+ * `excludeTaskIds` drops reservations whose agent HAS already registered — the
+ * running tally counts those, and double-counting them under-admits.
+ */
+export function pendingLocalEndpointSpawns(endpoint, { excludeTaskIds = null } = {}) {
+  const held = endpoint ? pendingSpawnsByEndpoint.get(endpoint) : null;
+  if (!held) return 0;
+  if (!excludeTaskIds?.size) return held.size;
+  let count = 0;
+  for (const taskId of held.values()) {
+    if (!taskId || !excludeTaskIds.has(taskId)) count++;
+  }
+  return count;
 }
 
 /** Test hook — drop every outstanding reservation. */
@@ -193,17 +262,34 @@ export async function acquireLocalEndpointSpawnSlot(task, agents) {
   const endpoint = slots.resolveLocalEndpoint(task);
   if (!endpoint) return { ok: true, release: NOOP_RELEASE };
 
-  const { atCapacity, inFlight, limit } = readEndpointCapacity(endpoint, agents, slots);
+  const { atCapacity, inFlight, limit } = readEndpointCapacity(endpoint, agents, slots, { ignoreTaskId: task?.id });
   if (atCapacity) {
     return { ok: false, reason: `local endpoint ${endpoint} is at capacity (${inFlight}/${limit})` };
   }
-  return { ok: true, release: reserveLocalEndpointSpawn(endpoint) };
+  return { ok: true, release: reserveLocalEndpointSpawn(endpoint, task?.id ?? null) };
 }
 
-/** Running agents plus in-flight reservations on `endpoint`, against the cap. */
-function readEndpointCapacity(endpoint, agents, slots) {
-  const running = countRunningAgentsByLocalEndpoint(agents, slots.endpointForAgent)[endpoint] || 0;
-  const inFlight = running + pendingLocalEndpointSpawns(endpoint);
+/**
+ * Running agents plus in-flight reservations on `endpoint`, against the cap.
+ *
+ * `ignoreTaskId` excludes agents belonging to the task being dispatched. A task
+ * never competes with itself, and counting its own agent would break the two
+ * paths that deliberately re-dispatch one: `forceSpawnTask` supersedes a stale
+ * `running` holder (the documented "Run now" recovery for a zombie agent whose
+ * PTY died), and a retry re-runs the same task. Without this, that recovery is
+ * unreachable at a limit of 1 — the zombie it is meant to replace fills the slot.
+ */
+export function readEndpointCapacity(endpoint, agents, slots, { ignoreTaskId = null } = {}) {
+  const runningTaskIds = new Set();
+  let running = 0;
+  for (const agent of Object.values(agents || {})) {
+    if (agent.status !== 'running') continue;
+    if (ignoreTaskId && agent.taskId === ignoreTaskId) continue;
+    if (slots.endpointForAgent(agent) !== endpoint) continue;
+    running++;
+    if (agent.taskId) runningTaskIds.add(agent.taskId);
+  }
+  const inFlight = running + pendingLocalEndpointSpawns(endpoint, { excludeTaskIds: runningTaskIds });
   return { inFlight, limit: slots.limit, atCapacity: inFlight >= slots.limit };
 }
 
@@ -218,11 +304,11 @@ function readEndpointCapacity(endpoint, agents, slots) {
  * it exists to prevent. Takes the post-fallback provider, so it is strictly more
  * accurate than the queued-task prediction in `resolveLocalEndpoint`.
  */
-export async function localEndpointCapacityError(provider, agents) {
+export async function localEndpointCapacityError(provider, agents, taskId = null) {
   const endpoint = localEndpointOfProvider(provider);
   if (!endpoint) return null;
   const slots = await buildLocalEndpointSlotContext();
-  const { atCapacity, inFlight, limit } = readEndpointCapacity(endpoint, agents, slots);
+  const { atCapacity, inFlight, limit } = readEndpointCapacity(endpoint, agents, slots, { ignoreTaskId: taskId });
   if (!atCapacity) return null;
   return `Local inference endpoint ${endpoint} is at capacity (${inFlight}/${limit}) — wait for a running agent to finish`;
 }

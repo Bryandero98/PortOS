@@ -596,7 +596,7 @@ export async function forceSpawnTask(taskId) {
   // "Run now" would toast "Spawning" for a task the chokepoint immediately holds
   // as pending. Checked against the RESOLVED provider (post-fallback), so it
   // never refuses a run that would have swapped to a cloud provider anyway.
-  const localCapacityError = await localEndpointCapacityError(resolution.provider, state.agents);
+  const localCapacityError = await localEndpointCapacityError(resolution.provider, state.agents, taskId);
   if (localCapacityError) {
     return { error: localCapacityError };
   }
