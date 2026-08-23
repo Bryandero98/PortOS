@@ -15,7 +15,7 @@
  * - cosHealthMonitor.js  — daemon health checks (PM2/memory, auto-restart)
  */
 
-import { readFile, writeFile, readdir } from 'fs/promises';
+import { readFile, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { getActiveProvider } from './providers.js';
@@ -28,7 +28,8 @@ import { getPerformanceSummary, checkAndRehabilitateSkippedTasks, getLearningIns
 import { schedule as scheduleEvent, cancel as cancelEvent } from './eventScheduler.js';
 import { generateProactiveTasks as generateMissionTasks } from './missions.js';
 import { recordJobExecution } from './autonomousJobs.js';
-import { atomicWrite, safeJSONParse, sleep } from '../lib/fileUtils.js';
+import { safeJSONParse, sleep, isTopLevelEntryName } from '../lib/fileUtils.js';
+import { ServerError } from '../lib/errorHandler.js';
 import { addNotification, NOTIFICATION_TYPES } from './notifications.js';
 import { getUserTimezone, todayInTimezone } from '../lib/timezone.js';
 import { normalizeDomainAutonomy, getDomainMode } from '../lib/domainAutonomy.js';
@@ -751,25 +752,6 @@ async function resetOrphanedTasks({ bootRecovery = false } = {}) {
 }
 
 /**
- * Save a generated script
- */
-export async function saveScript(name, content, metadata = {}) {
-  await ensureDirectories();
-  const scriptPath = join(SCRIPTS_DIR, `${name}.sh`);
-  await writeFile(scriptPath, content, { mode: 0o755 });
-
-  // Save metadata
-  const metaPath = join(SCRIPTS_DIR, `${name}.json`);
-  await atomicWrite(metaPath, {
-    name,
-    createdAt: new Date().toISOString(),
-    ...metadata
-  });
-
-  return { path: scriptPath, name };
-}
-
-/**
  * List generated scripts
  */
 export async function listScripts() {
@@ -782,6 +764,9 @@ export async function listScripts() {
  * Get script content
  */
 export async function getScript(name) {
+  if (!isTopLevelEntryName(name) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+    throw new ServerError('Invalid script name', { status: 400, code: 'VALIDATION_ERROR' });
+  }
   const scriptPath = join(SCRIPTS_DIR, `${name}.sh`);
   const metaPath = join(SCRIPTS_DIR, `${name}.json`);
 
