@@ -66,6 +66,14 @@ export default function AdvancedParamsPanel({
   );
   const referencePromise = I2V_REFERENCE_MODE_OPTIONS.find((o) => o.value === referenceMode);
   const referenceModeLocked = referenceOptions.length < 2;
+  // `0` is a legal strength (ignore the source entirely) and the retry editor
+  // hands it over as a NUMBER, so presence has to be tested explicitly — a
+  // `imageStrength || …` fallback renders the slider at 1 while the form still
+  // submits 0, which is the control lying about the render it will produce.
+  const hasExplicitStrength = imageStrength != null && imageStrength !== '';
+  const displayedImageStrength = hasExplicitStrength
+    ? imageStrength
+    : (effectiveImageStrength != null ? effectiveImageStrength : 1);
   const frameOptions = frameOptionsForModel(currentModel, numFrames);
   const fpsOptions = fpsOptionsForModel(currentModel);
   const samplerLocked = currentModel?.samplerLocked === true;
@@ -272,12 +280,12 @@ export default function AdvancedParamsPanel({
             <div className="col-span-2 sm:col-span-3">
               <div className="flex items-center justify-between gap-3 mb-1">
                 <label htmlFor={fieldId('video-image-strength')} className="block text-xs font-medium text-gray-400">Image Strength</label>
-                <span className="text-[11px] text-gray-500">{imageStrength || (effectiveImageStrength != null ? String(effectiveImageStrength) : '1.0')}</span>
+                <span className="text-[11px] text-gray-500">{hasExplicitStrength || effectiveImageStrength != null ? String(displayedImageStrength) : '1.0'}</span>
               </div>
               <input
                 id={fieldId('video-image-strength')}
                 type="range" min={0} max={1} step={0.05}
-                value={imageStrength || effectiveImageStrength || 1}
+                value={displayedImageStrength}
                 onChange={(e) => onImageStrengthChange(e.target.value)}
                 className="w-full accent-port-accent"
                 title="Higher values preserve the source frame more strongly"

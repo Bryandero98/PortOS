@@ -248,3 +248,31 @@ describe('AdvancedParamsPanel — i2v reference mode (#4874)', () => {
     expect(screen.getByText('0.35')).toBeTruthy();
   });
 });
+
+// `0` is a legal image strength ("ignore the source entirely"), and the Render
+// Queue's retry editor hands it over as a NUMBER. A truthiness fallback rendered
+// the control at 1 while the form still submitted 0 — the control lying about
+// the render it would produce.
+describe('AdvancedParamsPanel — image strength presence vs zero', () => {
+  const inImageMode = (props) => renderPanel({ mode: 'image', ...props });
+
+  it.each([
+    ['a numeric 0 from the retry editor', 0],
+    ['a string "0"', '0'],
+  ])('shows %s as 0, not the 1.0 default', (_label, imageStrength) => {
+    inImageMode({ imageStrength });
+    expect(screen.getByLabelText('Image Strength').value).toBe('0');
+    expect(screen.getByText('0')).toBeTruthy();
+  });
+
+  it('falls back to the pipeline default only when nothing was set', () => {
+    inImageMode({ imageStrength: '' });
+    expect(screen.getByLabelText('Image Strength').value).toBe('1');
+    expect(screen.getByText('1.0')).toBeTruthy();
+  });
+
+  it('prefers an explicit value over the resolved loose default', () => {
+    inImageMode({ imageStrength: 0, effectiveImageStrength: 0.35 });
+    expect(screen.getByLabelText('Image Strength').value).toBe('0');
+  });
+});
