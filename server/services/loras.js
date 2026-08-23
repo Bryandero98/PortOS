@@ -30,6 +30,7 @@ import { verifySafetensorsStructure } from '../lib/hfCache.js';
 import { isPlainObject } from '../lib/objects.js';
 import { readCachedLoraEffectReport } from '../lib/loraEffect.js';
 import { createKeyedFileWriteQueue } from '../lib/fileWriteQueue.js';
+import { createSingleFlight } from '../lib/singleFlight.js';
 import {
   applyDownloadToken,
   baseModelToRunner,
@@ -67,10 +68,10 @@ import { getSettings } from './settings.js';
 
 const SIDECAR_SUFFIX = '.metadata.json';
 
-// One install attempt per Civitai model at a time. The slot is a promise so a
-// duplicate submit shares the original result instead of racing it to the same
-// destination files. Different model ids remain independent.
-const civitaiInstalls = new Map();
+// One install attempt per requested Civitai model version at a time. A duplicate
+// submit shares the original result instead of racing it to the same destination
+// files, while two explicitly different versions remain independent.
+const civitaiInstalls = createSingleFlight();
 
 const sidecarPath = (loraFilename) => join(PATHS.loras, `${loraFilename}${SIDECAR_SUFFIX}`);
 
@@ -597,15 +598,11 @@ const performCivitaiInstall = async (input, { modelId, versionId, fetchImpl }) =
 
 export const installFromCivitai = async (input, { fetchImpl = fetch } = {}) => {
   const { modelId, versionId } = parseCivitaiUrl(input?.url);
-  const active = civitaiInstalls.get(modelId);
-  if (active) return active;
-
-  const attempt = performCivitaiInstall(input, { modelId, versionId, fetchImpl });
-  const tracked = attempt.finally(() => {
-    if (civitaiInstalls.get(modelId) === tracked) civitaiInstalls.delete(modelId);
-  });
-  civitaiInstalls.set(modelId, tracked);
-  return tracked;
+  const installKey = `${modelId}:${versionId ?? 'latest'}`;
+  return civitaiInstalls.run(
+    installKey,
+    () => performCivitaiInstall(input, { modelId, versionId, fetchImpl }),
+  );
 };
 
 // Set of recognized LoRA families an HF import may target (image runners +

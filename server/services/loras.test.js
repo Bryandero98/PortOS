@@ -469,6 +469,56 @@ describe('installFromCivitai', () => {
     expect(downloadCalls).toBe(1);
   });
 
+  it('keeps concurrent installs for different versions of one model independent', async () => {
+    const downloadedBytes = validSafetensors();
+    const model = {
+      ...FAKE_MODEL,
+      modelVersions: [
+        ...FAKE_MODEL.modelVersions,
+        {
+          ...FAKE_MODEL.modelVersions[0],
+          id: 8,
+          files: [{
+            ...FAKE_MODEL.modelVersions[0].files[0],
+            downloadUrl: 'https://civitai.com/api/download/models/8',
+          }],
+        },
+      ],
+    };
+    let releaseMetadata;
+    const metadataGate = new Promise((resolve) => { releaseMetadata = resolve; });
+    let metadataCalls = 0;
+    let downloadCalls = 0;
+    const fetchImpl = async (url) => {
+      if (url.startsWith('https://civitai.com/api/v1/models/2600698')) {
+        metadataCalls += 1;
+        await metadataGate;
+        return mockJsonResponse(model);
+      }
+      if (url.startsWith('https://civitai.com/api/download/models/')) {
+        downloadCalls += 1;
+        const stream = new ReadableStream({
+          start(c) { c.enqueue(new Uint8Array(downloadedBytes)); c.close(); },
+        });
+        return { ok: true, status: 200, body: stream };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    };
+
+    const version7 = lorasService.installFromCivitai({
+      url: 'https://civitai.com/models/2600698?modelVersionId=7',
+    }, { fetchImpl });
+    const version8 = lorasService.installFromCivitai({
+      url: 'https://civitai.com/models/2600698?modelVersionId=8',
+    }, { fetchImpl });
+
+    await vi.waitFor(() => expect(metadataCalls).toBe(2));
+    releaseMetadata();
+    const results = await Promise.all([version7, version8]);
+    expect(results.map((result) => result.civitai.versionId)).toEqual([7, 8]);
+    expect(downloadCalls).toBe(2);
+  });
+
   it('releases the in-flight slot after a failed install so retry can proceed', async () => {
     let metadataCalls = 0;
     const fetchImpl = async () => {
