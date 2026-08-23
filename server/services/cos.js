@@ -1177,10 +1177,9 @@ async function spawnDequeuePriority3Missions(ctx) {
     // Committed tier — `generateMissionTasks` has already flipped the sub-task to
     // `in_progress` and saved the mission, and mission tasks are never written to
     // COS-TASKS.md, so a denial drops the only copy of a sub-task that
-    // `generateMissionTask` will never re-pick (it selects `pending` only). See
-    // canSpawnCommitted (#4834). Note the emit does NOT recover the sub-task
-    // either — `holdTask` releases `metadata.app`/`jobId`, and a mission task
-    // carries neither — it just avoids making the loss worse here. Filed as #4858.
+    // `generateMissionTask` will never re-pick (it selects `pending` only).
+    // Emitting hands it to the chokepoint, whose `holdTask` reverts the flip
+    // (#4858) — so the sub-task really is recovered. See canSpawnCommitted (#4834).
     if (!capacity.canSpawnCommitted(cosTask, ctx.autonomousSpawnCeiling)) continue;
     cosEvents.emit('task:ready', cosTask);
     capacity.trackSpawn(cosTask);

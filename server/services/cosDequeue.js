@@ -54,7 +54,8 @@
  *   - Priority 0 has cleared the on-demand request and bound the app-review
  *     marker — a denial silently swallows the user's explicit "Run".
  *   - Priority 3 has flipped the mission sub-task to `in_progress` and saved the
- *     mission; `generateMissionTask` only ever re-picks `pending` sub-tasks.
+ *     mission; `generateMissionTask` only ever re-picks `pending` sub-tasks, and
+ *     the emitted object is the only copy (holdTask reverts the flip — #4858).
  *   - Priority 4 has bound the app-review marker and advanced the 30-minute
  *     review cooldown (issue #978's failure mode).
  *

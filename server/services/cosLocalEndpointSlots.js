@@ -205,7 +205,7 @@ export async function buildLocalEndpointSlotContext() {
 // So the chokepoint reserves the slot up front and releases it once the spawn
 // settles — by which point the agent record carries the load. This is a simple
 // in-process re-entrancy guard over one server's own dispatch loop, not a
-// defense against competing actors (see the Security Model in CLAUDE.md).
+// defense against competing actors (see the Security Model in AGENTS.md).
 // Mirrors `spawningJobIds` in cosJobScheduler.js, which bridges the same gap.
 //
 // Each reservation carries its task id, because `registerAgent` flips the record
