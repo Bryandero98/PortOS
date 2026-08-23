@@ -325,7 +325,7 @@ export function buildOpencodeEnvVars(provider, model) {
   // alongside it, and a local run on a box carrying an `ANTHROPIC_API_KEY` /
   // `OPENAI_API_KEY` (spawns inherit `process.env`, see `cliChildEnv.js`) can
   // reach a cloud provider the operator never opted into — exactly the
-  // unrequested provider call the root CLAUDE.md's AI Provider Usage Policy
+  // unrequested provider call the root AGENTS.md's AI Provider Usage Policy
   // forbids.
   //
   // So this is unconditional, not gateway-only: the invariant is that a run stays
