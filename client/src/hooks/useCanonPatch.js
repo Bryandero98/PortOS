@@ -38,7 +38,7 @@ export function useCanonPatch({ universe, apply, mountedRef }) {
     apply({ ...universe, [kindKey]: list });
     // `{ silent: true }` because the .catch below owns the failure toast —
     // without it the apiCore request() helper fires a second, duplicate one
-    // (CLAUDE.md "Custom catch ⇒ silent: true").
+    // (AGENTS.md "Custom catch ⇒ silent: true").
     const updated = await updateUniverse(capturedId, { [kindKey]: list }, { silent: true })
       .catch((err) => { toast.error(`Save failed: ${err.message}`); return null; });
     if (updated && mountedRef.current && currentUniverseIdRef.current === capturedId) {

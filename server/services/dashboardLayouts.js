@@ -396,7 +396,7 @@ export async function getState() {
 // concurrent writers (e.g. an auto-window-activate PUT + a manual layout
 // save firing from the same browser, or palette + dashboard tabs) can't
 // interleave load → modify → write and lose each other's changes. Mirrors
-// the `issueWriteTail` / `cacheWriteTails` pattern documented in CLAUDE.md
+// the `issueWriteTail` / `cacheWriteTails` pattern documented in AGENTS.md
 // ("Async PATCH races on shared records — serialize writes server-side").
 let layoutsWriteTail = Promise.resolve();
 const queueLayoutsWrite = (fn) => {
@@ -430,7 +430,7 @@ export function saveLayout(layout) {
     // doesn't include the key, but cleared when the caller sends `null`. The
     // existing editor's saveLayout() doesn't send activateWindow, so a vanilla
     // widget edit must NOT wipe a previously-configured morning window.
-    // Mirrors the "absent vs intentionally empty" convention in CLAUDE.md.
+    // Mirrors the "absent vs intentionally empty" convention in AGENTS.md.
     const existing = idx >= 0 ? state.layouts[idx] : null;
     const buildEntry = () => {
       const entry = {

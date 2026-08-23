@@ -295,7 +295,7 @@ export function unavailableReason(target, caps = {}) {
     // told the one thing it can actually act on.
     if (!caps.cuda) {
       // "The probe couldn't run" is not "there is no GPU" — never report absent
-      // hardware we failed to look for (CLAUDE.md sentinel rule).
+      // hardware we failed to look for (AGENTS.md sentinel rule).
       return caps.cudaProbe === 'unknown' ? 'cuda-probe-failed' : 'requires-cuda';
     }
     if (req.linuxHost && !caps.linuxHost) return 'requires-linux-host';

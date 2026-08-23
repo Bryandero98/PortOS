@@ -156,7 +156,7 @@ export async function refineReaderMap(seriesId, feedback, options = {}) {
   const readerMap = sanitizeReaderMap({ ...content, status: 'draft' });
   // Refine is meant to PRESERVE — never let an empty LLM payload null out the
   // existing map. Fall back to the current reader map when the refine produced
-  // nothing usable (mirrors the CLAUDE.md absent-vs-empty rule).
+  // nothing usable (mirrors the AGENTS.md absent-vs-empty rule).
   const safeReaderMap = readerMap || arc.readerMap || null;
   if (!safeReaderMap) {
     throw makeErr('LLM returned an empty reader map and there is none to preserve', ERR_VALIDATION);

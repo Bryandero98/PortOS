@@ -121,7 +121,7 @@ describe('Provider Service', () => {
     ).rejects.toThrow('Provider with this ID already exists');
   });
 
-  // Guards the regression noted in CLAUDE.md: `updateProvider` uses spread so
+  // Guards the regression noted in AGENTS.md: `updateProvider` uses spread so
   // existing providers preserve custom fields, but `createProvider` has an
   // explicit field list. A field added to the schema without being added to
   // `createProvider` would silently disappear on the create → save → load

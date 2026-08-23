@@ -58,7 +58,7 @@ const SNAPSHOTS_FILE = join(DATA_DIR, 'city-snapshots.jsonl');
 
 // Sentinel a getter falls back to when it throws — distinct from a successful
 // empty read. `null` for object/array sources means "source unavailable at
-// capture time" (CLAUDE.md's absent-vs-empty rule), so a transient failure
+// capture time" (AGENTS.md's absent-vs-empty rule), so a transient failure
 // never reads as a legitimate "zero apps / zero peers" in the history.
 const FAILED = null;
 
@@ -145,7 +145,7 @@ function resolveAgentApp(agent, appStatuses) {
  * useful to a scrubber than a missing one. Crucially, a thrown getter records
  * `null` (source unavailable), NOT an empty array / zero count, so a transient
  * failure can't masquerade as a legitimate "zero apps / zero peers" in the
- * history (CLAUDE.md's absent-vs-empty rule). Counts derived from a FAILED
+ * history (AGENTS.md's absent-vs-empty rule). Counts derived from a FAILED
  * source are likewise `null`, distinct from a real `0` on a successful read.
  */
 async function buildSnapshot() {

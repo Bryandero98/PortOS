@@ -48,7 +48,7 @@ export async function appendProposalToPlan({ repoPath, appName, slug, title, bod
  * reconcile a completed PLAN proposal: `- [x] [lil-foo]` reads as `closed`,
  * `- [ ] [lil-foo]` as `open`.
  *
- * Absent ≠ done (the CLAUDE.md sentinel rule): a bare tag with NO preceding
+ * Absent ≠ done (the AGENTS.md sentinel rule): a bare tag with NO preceding
  * checkbox stays `open` (still tracked/suppressed) rather than collapsing to
  * `closed` — a missing checkbox must not silently make an item re-proposable.
  * A `closed` item carries no `closedAt` (PLAN.md checkboxes have no timestamp),

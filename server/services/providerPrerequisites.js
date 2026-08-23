@@ -30,7 +30,7 @@
  * prevents.
  *
  * No LLM call is made here. Probing a CLI is a `--version` spawn, so this is
- * safe under the no-cold-bootstrap policy in CLAUDE.md.
+ * safe under the no-cold-bootstrap policy in AGENTS.md.
  */
 
 import { blocksRouting, describeMissingPrerequisites, providerPrerequisites, providerRuntimeKey } from '../lib/providerPrerequisites.js';

@@ -22,7 +22,7 @@
  * spawning an agent at all. Every deterministic side effect stays in these hooks.
  *
  * Runs OUTSIDE the request lifecycle (scheduler tick / agent completion), so per
- * the CLAUDE.md no-try/catch rule the dispatchers own the async boundary; these
+ * the AGENTS.md no-try/catch rule the dispatchers own the async boundary; these
  * stay defensive so a partial failure degrades to a recorded no-op.
  */
 

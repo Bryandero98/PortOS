@@ -19,7 +19,7 @@
  *   2. **Optional LLM narrative (opt-in).** "This week you said X mattered but
  *      spent 6× more time on Y." Behind the same provider config as the activity
  *      digest (#2155) — silent until the user configures a provider AND clicks
- *      Refresh. See CLAUDE.md "AI Provider Usage Policy".
+ *      Refresh. See AGENTS.md "AI Provider Usage Policy".
  *
  * The scorecard artifact lives under `data/insights/` alongside the cross-domain
  * insights caches. All reads are disk-only; compute is an explicit user action.

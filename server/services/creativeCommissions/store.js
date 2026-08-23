@@ -644,7 +644,7 @@ export async function updateCommission(id, patch) {
   // Serialize the load→merge→save on the per-id write queue so a concurrent
   // scheduler fire (recordCommissionRun, also queued) can't have its run-history
   // append clobbered by a stale pre-read here — the scheduler-vs-request race
-  // CLAUDE.md requires serializing at the record level.
+  // AGENTS.md requires serializing at the record level.
   const merged = await store.queueRecordWrite(id, async () => {
     const currentRaw = await store.readRaw(id);
     if (!currentRaw) return null;

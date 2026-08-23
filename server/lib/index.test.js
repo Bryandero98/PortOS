@@ -15,7 +15,7 @@ const sourceFiles = readdirSync(HERE)
 // `server/lib/`. If a `export * from './foo.js'` line points to a non-existent
 // module, the `import * as barrel` above throws — and so does this test. The
 // catalog-parity test below catches the inverse drift: a file added without
-// a README row. Both halves keep the discovery contract in CLAUDE.md honest.
+// a README row. Both halves keep the discovery contract in AGENTS.md honest.
 
 describe('server/lib/ barrel', () => {
   it('re-exports every non-test .js file from index.js', () => {

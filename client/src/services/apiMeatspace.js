@@ -176,7 +176,7 @@ export const removeEyeExam = (index) => request(`/meatspace/eyes/${index}`, {
 export const getPostConfig = () => request('/meatspace/post/config');
 export const getPostBenchmarkProtocol = (options = {}) => request('/meatspace/post/benchmark/protocol', options);
 // `options` lets a caller that owns its own error UI pass `{ silent: true }` so
-// the failure only toasts once (see CLAUDE.md's silent-vs-toasting convention).
+// the failure only toasts once (see AGENTS.md's silent-vs-toasting convention).
 export const updatePostConfig = (data, options = {}) => request('/meatspace/post/config', {
   method: 'PUT',
   body: JSON.stringify(data),

@@ -461,7 +461,7 @@ describe('storyArc — Vonnegut shape catalog', () => {
 
   // Lock the server-side `points` arrays to the client's `STORY_SHAPES`
   // definitions so the sparkline and the prompt guidance stay in sync.
-  // (CLAUDE.md: "Keep `points` arrays in sync with client/.../StoryShapes.jsx".)
+  // (AGENTS.md: "Keep `points` arrays in sync with client/.../StoryShapes.jsx".)
   it('points arrays match the client-side STORY_SHAPES curves', () => {
     const CLIENT_POINTS = {
       'rags-to-riches':  [-1, -0.7, -0.4, -0.1, 0.3, 0.7, 1],

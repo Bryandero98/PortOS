@@ -20,7 +20,7 @@
  *
  * ## Rules this file exists to honour
  *
- * 1. **No cold-bootstrap LLM calls** (root CLAUDE.md). `getCapabilityTestReport`
+ * 1. **No cold-bootstrap LLM calls** (root AGENTS.md). `getCapabilityTestReport`
  *    touches disk (plus, for Ollama, cached loopback capability probes) and
  *    calls no provider, so it is safe from a poll or a page load.
  *    `runCapabilityTest` is the ONLY path that reaches a model, and it fires

@@ -66,7 +66,7 @@ const streamKey = (socketId, processName) => `${socketId}:${processName}`;
 // bails and its client waits forever for `logs:subscribed`. Every claim and
 // release bumps this counter and a handler only resumes while its own generation
 // is current — the server-side mirror of the `{ target, generation }`
-// pending-request convention in CLAUDE.md.
+// pending-request convention in AGENTS.md.
 const streamGenerations = new Map();
 const bumpStreamGeneration = (key) => {
   const next = (streamGenerations.get(key) || 0) + 1;

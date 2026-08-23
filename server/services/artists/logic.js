@@ -123,7 +123,7 @@ export function mergeArtistRecord(local, remoteRaw) {
 /**
  * Apply a partial patch onto an existing record. Only keys PRESENT in `patch`
  * overwrite — an absent key preserves the current value, a present empty-string
- * applies the clear (distinguish-absent-vs-empty per CLAUDE.md). Bumps updatedAt.
+ * applies the clear (distinguish-absent-vs-empty per AGENTS.md). Bumps updatedAt.
  */
 export function applyArtistPatch(current, patch = {}) {
   const next = { ...current };

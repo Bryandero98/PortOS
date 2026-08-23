@@ -8,7 +8,7 @@
 // MAINTENANCE RULE: any new module added to server/lib/ MUST be re-exported
 // here AND get a one-line entry in README.md. The same rule applies to
 // client/src/lib/, client/src/hooks/, and client/src/services/. See
-// CLAUDE.md "Module organization" for the full convention.
+// AGENTS.md "Module organization" for the full convention.
 
 // === Validation (Zod schemas + validators) ===
 // Domain-prefixed validators are namespace-exported so generic names that
@@ -184,6 +184,7 @@ export * from './conflictJournal.js';
 export * from './createKeyCachedQueue.js';
 export * from './createNewestWinsGuard.js';
 export * from './dataRoot.js';
+export * from './agentInstructionsFile.js';
 export * from './fileUtils.js';
 export * from './fileWriteQueue.js';
 export * from './icloudFile.js';

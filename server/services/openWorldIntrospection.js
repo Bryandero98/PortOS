@@ -38,7 +38,7 @@ const toNumber = (v) => {
 
 // The database section. A down/unreachable DB yields `null` (absent), never a
 // hollow `{ tables: [] }` — the harbor renders "DB OFFLINE" instead of an empty
-// quay (CLAUDE.md's absent-vs-empty rule).
+// quay (AGENTS.md's absent-vs-empty rule).
 async function buildDbSection() {
   const tables = await query(
     `SELECT relname AS name,

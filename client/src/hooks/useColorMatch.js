@@ -14,7 +14,7 @@
 // downbeat — kicks a rAF loop that reads elapsed audio time, finds the active
 // note, grades it, and accumulates the best grade per note (a note "wins" its
 // best attempt across the frames it's active). Everything tears down on stop and
-// on unmount (the deferred-work teardown rule in CLAUDE.md).
+// on unmount (the deferred-work teardown rule in AGENTS.md).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createStreamAnalyser } from '../lib/audioRecorder.js';

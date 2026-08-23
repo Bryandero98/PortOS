@@ -64,7 +64,7 @@ router.get('/processing', asyncHandler(async (req, res) => {
  * peer deliberately GET any /api/* path, as it can for every other endpoint on
  * this server. The point here is that the stamp is not PUSHED into a payload
  * that federates unprompted.
- * See the root CLAUDE.md privacy rules and #4694 ("local-only diagnostic data
+ * See the root AGENTS.md privacy rules and #4694 ("local-only diagnostic data
  * — must not join a sync payload"). `health.test.js` pins both halves.
  */
 router.get('/build', asyncHandler(async (req, res) => {

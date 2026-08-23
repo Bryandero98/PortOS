@@ -2,7 +2,7 @@
  * Atomic file write helper for the aiToolkit.
  *
  * Vendored copy of server/lib/fileUtils.js#atomicWrite so the toolkit stays
- * self-contained (no imports out to sibling PortOS modules — see CLAUDE.md
+ * self-contained (no imports out to sibling PortOS modules — see AGENTS.md
  * "AI Toolkit" section). Keep in sync with the upstream implementation:
  *
  *   PARITY REQUIREMENT: every change to server/lib/fileUtils.js#atomicWrite

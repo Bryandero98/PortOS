@@ -5,7 +5,7 @@
  * prose lives apart from the version/upgrade machinery in ./versions.js and
  * ./previousDefaults.js. Do NOT change a prompt here without bumping its
  * PROMPT_VERSIONS entry and preserving the prior default in
- * PREVIOUS_DEFAULT_PROMPTS — see the barrel's header and CLAUDE.md
+ * PREVIOUS_DEFAULT_PROMPTS — see the barrel's header and AGENTS.md
  * "Distribution model".
  */
 
@@ -300,7 +300,7 @@ Repository: {repoPath}
 
 4. Update PLAN.md if present:
    - Remove completed milestones from PLAN.md outright. Do NOT archive to a \`DONE.md\` — that file is retired; \`git log\` and \`.changelog/\` (or per-app equivalent) are the audit trail.
-   - If the repo maintains a changelog, log what shipped there **following the convention the repo documents** — check its \`CLAUDE.md\` and changelog README first. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge. Fall back to appending to the unreleased section (\`.changelog/NEXT.md\`, or \`## Unreleased\` in \`CHANGELOG.md\`) in the project's existing prose style only when no convention is documented.
+   - If the repo maintains a changelog, log what shipped there **following the convention the repo documents** — check its \`AGENTS.md\` (or \`CLAUDE.md\`) and changelog README first. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge. Fall back to appending to the unreleased section (\`.changelog/NEXT.md\`, or \`## Unreleased\` in \`CHANGELOG.md\`) in the project's existing prose style only when no convention is documented.
    - Keep PLAN.md focused on next actions and future work
 
 Commit documentation improvements.`,
@@ -657,7 +657,7 @@ After Phase 3b runs, **exit** — do NOT proceed to Phase 4. The implementing pa
 
 ## Phase 4 — Implement
 
-Write the code, tests, and any docs the item requires. Follow the repo conventions in CLAUDE.md (no try/catch in route handlers, functional programming, Zod validation, Tailwind tokens, reactive UI updates).
+Write the code, tests, and any docs the item requires. Follow the repo conventions in AGENTS.md / CLAUDE.md (no try/catch in route handlers, functional programming, Zod validation, Tailwind tokens, reactive UI updates).
 
 Run the relevant test suite as you go.
 
@@ -676,7 +676,7 @@ Use \`feat:\` / \`fix:\` / \`refactor:\` / \`chore:\` / etc. (The bracketed-scop
 **Remove the item from PLAN.md outright.** The audit trail for shipped work lives in \`git log\` and the project's changelog (however that repo keeps it) — do NOT archive to a \`DONE.md\`, that file has been retired. Do NOT leave a checked \`- [x]\` behind in PLAN.md.
 
 1. Remove the picked \`- [ ]\` line from PLAN.md entirely. If removing it leaves a heading empty, leave the heading alone — section curation is \`do-replan\`'s job.
-2. Record the shipped item in the repo's changelog, **following the convention that repo documents** — read its \`CLAUDE.md\` and changelog README (e.g. \`.changelog/README.md\`) BEFORE writing anything. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge. When such a convention is documented, use it — run the documented command and remember the fragment file it created as \`CHANGELOG_FILE\`.
+2. Record the shipped item in the repo's changelog, **following the convention that repo documents** — read its \`AGENTS.md\` (or \`CLAUDE.md\`) and changelog README (e.g. \`.changelog/README.md\`) BEFORE writing anything. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge. When such a convention is documented, use it — run the documented command and remember the fragment file it created as \`CHANGELOG_FILE\`.
 
    Only when no convention is documented, detect a changelog file (in this order — pick the first match) and append an entry there:
    - \`.changelog/NEXT.md\` (staged-release file)
@@ -817,7 +817,7 @@ Read the full issue (\`gh issue view "\${NUM}" --comments\`) before writing any 
 
 ## Phase 4 — Implement
 
-Write the code, tests, and any docs the issue requires. Follow the repo conventions in CLAUDE.md (no try/catch in route handlers, functional programming, Zod validation, Tailwind tokens, reactive UI updates). Run the relevant test suite as you go.
+Write the code, tests, and any docs the issue requires. Follow the repo conventions in AGENTS.md / CLAUDE.md (no try/catch in route handlers, functional programming, Zod validation, Tailwind tokens, reactive UI updates). Run the relevant test suite as you go.
 
 **Roll discovered backbone work INTO this PR** — small supporting helpers, refactors, and tests that the fix depends on belong here, not a follow-up. Only defer genuinely-large adjacent work; when you do, file a NEW issue (\`gh issue create\`) tagged \`plan\` that references this one (\`Related to #<num>\`) rather than appending to PLAN.md. Choose independent dispatch hints (\`model:light|medium|heavy\`, \`effort:low|medium|high|xhigh|max\`) and contributor labels (\`good first issue\`, \`help wanted\`) only when justified; omit an axis rather than guessing; create each missing label immediately before applying it; use repeated \`--label\` flags; do not prefix the title with \`[category]\` / \`[model:…]\`.
 
@@ -836,7 +836,7 @@ The configured reviewers for this task, in order, are \`{reviewers}\`. Split tha
 - **LOCAL reviewers — every token that is NOT an \`@<login>\`.** \`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` / \`cursor\` invoke a local-CLI critique; \`lmstudio\` / \`ollama\` use the appended Local Reviewer Procedure. They read this branch's own diff and need no PR — run them in THIS phase.
 - **PR-SIDE reviewers — every \`@<login>\` token**, plus any review bot the repo requests automatically when a PR opens. They review cloud-side and cannot start before the PR exists — they run in Phase 6.
 
-1. **Write the changelog entry now, not after the reviewers run** — every commit the reviewers are about to read must already be on the branch, or the PR carries work nobody reviewed. If the repo maintains a changelog, record a one-line entry **following the convention that repo documents** — read its \`CLAUDE.md\` and changelog README (e.g. \`.changelog/README.md\`) first. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge; use that flow when it's documented. Fall back to appending to the unreleased section (\`.changelog/NEXT.md\`, or \`## Unreleased\` in \`CHANGELOG.md\`) in the repo's existing prose style only when no convention is documented. If the repo has no changelog, skip this — the PR + commit history is the record.
+1. **Write the changelog entry now, not after the reviewers run** — every commit the reviewers are about to read must already be on the branch, or the PR carries work nobody reviewed. If the repo maintains a changelog, record a one-line entry **following the convention that repo documents** — read its \`AGENTS.md\` (or \`CLAUDE.md\`) and changelog README (e.g. \`.changelog/README.md\`) first. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge; use that flow when it's documented. Fall back to appending to the unreleased section (\`.changelog/NEXT.md\`, or \`## Unreleased\` in \`CHANGELOG.md\`) in the repo's existing prose style only when no convention is documented. If the repo has no changelog, skip this — the PR + commit history is the record.
 2. **Self-review your diff for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix the findings in the same diff, before any reviewer runs. Claude Code runs this as the three-agent \`/simplify\` pass; on other CLIs, do the equivalent review by hand.
 3. **Run each LOCAL reviewer in the listed order against the BRANCH diff, not a PR diff.** No PR exists yet, so \`gh pr diff\` has nothing to read — use the CLI's own base-diff mode or \`git diff origin/main...HEAD\` (substitute the repo's default branch when it isn't \`main\`). Apply the findings, run the tests, and commit the fixes — capped at 3 rounds per reviewer — then advance to the next reviewer. A missing CLI, timeout, transport failure, malformed response, or empty response is UNSATISFIED, not clean. Do NOT substitute your own self-review, and do NOT open a PR on the strength of it.
 4. **If the branch cannot be brought to a shippable state here, do NOT open a PR** — that is a local reviewer still unsatisfied after 3 rounds, or fixes that leave the build/tests red. Comment on the ISSUE naming the reviewer and the failure (\`gh issue comment "\${NUM}" --body "..."\`), leave the assignee and the \`in-progress\` label in place, remove ONLY the worktree (\`cd {repoPath} && git worktree remove "\${WORKTREE}"\`), and stop. The branch stays for a human to pick up cold. Do NOT run Phase 7.
@@ -963,7 +963,7 @@ Read the full issue (\`glab issue view "\${NUM}"\`) before writing any code. **E
 
 ## Phase 4 — Implement
 
-Write the code, tests, and any docs the issue requires. Follow the repo conventions in CLAUDE.md. Run the relevant test suite as you go.
+Write the code, tests, and any docs the issue requires. Follow the repo conventions in AGENTS.md (or CLAUDE.md). Run the relevant test suite as you go.
 
 **Roll discovered backbone work INTO this MR** — small supporting helpers, refactors, and tests that the fix depends on belong here, not a follow-up. Only defer genuinely-large adjacent work; when you do, file a NEW issue (\`glab issue create\`) tagged \`plan\` that references this one (\`Related to #<num>\`). Choose independent dispatch hints (\`model:light|medium|heavy\`, \`effort:low|medium|high|xhigh|max\`) and contributor labels (\`good first issue\`, \`help wanted\`) only when justified; omit an axis rather than guessing; create each missing label immediately before applying it; use repeated \`--label\` flags; do not prefix the title with \`[category]\` / \`[model:…]\`.
 
@@ -982,7 +982,7 @@ The configured reviewers for this task, in order, are \`{reviewers}\`. Split tha
 - **LOCAL reviewers — every token that is NOT an \`@<login>\`.** \`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` / \`cursor\` invoke a local-CLI critique; \`lmstudio\` / \`ollama\` use the appended Local Reviewer Procedure. They read this branch's own diff and need no MR — run them in THIS phase.
 - **MR-SIDE reviewers — every \`@<login>\` token**, plus any review bot the project requests automatically when an MR opens. They review server-side and cannot start before the MR exists — they run in Phase 6.
 
-1. **Write the changelog entry now, not after the reviewers run** — every commit the reviewers are about to read must already be on the branch, or the MR carries work nobody reviewed. If the repo maintains a changelog, record a one-line entry **following the convention that repo documents** — read its \`CLAUDE.md\` and changelog README (e.g. \`.changelog/README.md\`) first. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge; use that flow when it's documented. Fall back to appending to the unreleased section (\`.changelog/NEXT.md\`, or \`## Unreleased\` in \`CHANGELOG.md\`) in the repo's existing prose style only when no convention is documented. If the repo has no changelog, skip this.
+1. **Write the changelog entry now, not after the reviewers run** — every commit the reviewers are about to read must already be on the branch, or the MR carries work nobody reviewed. If the repo maintains a changelog, record a one-line entry **following the convention that repo documents** — read its \`AGENTS.md\` (or \`CLAUDE.md\`) and changelog README (e.g. \`.changelog/README.md\`) first. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge; use that flow when it's documented. Fall back to appending to the unreleased section (\`.changelog/NEXT.md\`, or \`## Unreleased\` in \`CHANGELOG.md\`) in the repo's existing prose style only when no convention is documented. If the repo has no changelog, skip this.
 2. **Self-review your diff for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix the findings in the same diff, before any reviewer runs. Claude Code runs this as the three-agent \`/simplify\` pass; on other CLIs, do the equivalent review by hand.
 3. **Run each LOCAL reviewer in the listed order against the BRANCH diff, not an MR diff.** No MR exists yet, so \`glab mr diff\` has nothing to read — use the CLI's own base-diff mode or \`git diff "origin/\${DEFAULT_BRANCH}...HEAD"\`. Apply the findings, run the tests, and commit the fixes — capped at 3 rounds per reviewer — then advance to the next reviewer. A missing CLI, timeout, transport failure, malformed response, or empty response is UNSATISFIED, not clean. Do NOT substitute your own self-review, and do NOT open an MR on the strength of it.
 4. **If the branch cannot be brought to a shippable state here, do NOT open an MR** — that is a local reviewer still unsatisfied after 3 rounds, or fixes that leave the build/tests red. Post a note on the ISSUE naming the reviewer and the failure (\`glab issue note "\${NUM}" -m "..."\`), leave the assignee and the \`in-progress\` label in place, remove ONLY the worktree (\`cd {repoPath} && git worktree remove "\${WORKTREE}"\`), and stop. The branch stays for a human to pick up cold. Do NOT run Phase 7.
@@ -1108,7 +1108,7 @@ Do NOT leave an *unexplained* ticket in "In Progress" with no branch — that is
 
 ## Phase 4 — Implement
 
-Write the code, tests, and any docs the ticket requires. Follow the repo conventions in CLAUDE.md (no try/catch in route handlers, functional programming, Zod validation, Tailwind tokens, reactive UI updates). Run the relevant test suite as you go.
+Write the code, tests, and any docs the ticket requires. Follow the repo conventions in AGENTS.md / CLAUDE.md (no try/catch in route handlers, functional programming, Zod validation, Tailwind tokens, reactive UI updates). Run the relevant test suite as you go.
 
 **Roll discovered backbone work INTO this MR/PR** — small supporting helpers, refactors, and tests the fix depends on belong here, not a follow-up. Only defer genuinely-large adjacent work.
 
@@ -1124,7 +1124,7 @@ The audit trail is the merged MR/PR + \`git log\`. Detect the forge from the git
 
 The configured reviewers for this task, in order, are \`{reviewers}\`. Split them by where they can run, preserving order: **LOCAL reviewers** — every token that is NOT an \`@<login>\` (\`claude\` / \`codex\` / \`antigravity\` (CLI binary: \`agy\`) / \`grok\` / \`cursor\` invoke a local-CLI critique; \`lmstudio\` / \`ollama\` use the appended Local Reviewer Procedure) read the working tree and need no MR/PR, so they run in steps 1–2 below, BEFORE it is opened. **PR-SIDE reviewers** — every \`@<login>\` token, plus any review bot the repo requests automatically on open — review cloud-side and run in Phase 6, once the MR/PR exists.
 
-1. **Write the changelog entry now, not after the reviewers run** — every commit the reviewers are about to read must already be on the branch, or the MR/PR carries work nobody reviewed. If the repo maintains a changelog, record a one-line entry **following the convention that repo documents** — read its \`CLAUDE.md\` and changelog README (e.g. \`.changelog/README.md\`) first. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge; use that flow when it's documented. Fall back to appending to the unreleased section (\`.changelog/NEXT.md\`, or \`## Unreleased\` in \`CHANGELOG.md\`) in the repo's existing prose style only when no convention is documented. Otherwise skip it.
+1. **Write the changelog entry now, not after the reviewers run** — every commit the reviewers are about to read must already be on the branch, or the MR/PR carries work nobody reviewed. If the repo maintains a changelog, record a one-line entry **following the convention that repo documents** — read its \`AGENTS.md\` (or \`CLAUDE.md\`) and changelog README (e.g. \`.changelog/README.md\`) first. Some repos collect per-branch fragments in a directory (e.g. \`.changelog/next/\`) via a helper script rather than appending to one shared file, precisely so parallel agents don't conflict on every merge; use that flow when it's documented. Fall back to appending to the unreleased section (\`.changelog/NEXT.md\`, or \`## Unreleased\` in \`CHANGELOG.md\`) in the repo's existing prose style only when no convention is documented. Otherwise skip it.
 2. **Self-review your diff for reuse, quality, and efficiency** (DRY, dead code, naming, simpler equivalents, missed edge cases) and fix the findings in the same diff. Claude Code runs this as the three-agent \`/simplify\` pass; on other CLIs, do the equivalent by hand.
 3. **Run each LOCAL reviewer in the listed order against the BRANCH diff, not an MR/PR diff.** Nothing is open yet, so use the CLI's own base-diff mode or \`git diff "origin/\${DEFAULT_BRANCH}...HEAD"\`; local LLM reviewers go through the appended endpoint procedure. Apply the findings, run the tests, and commit the fixes — capped at 3 rounds per reviewer — then advance. A missing CLI, timeout, transport failure, malformed response, or empty response is UNSATISFIED, not clean. Do NOT substitute your own self-review, and do NOT open an MR/PR on the strength of it. If a local reviewer stays unsatisfied after 3 rounds, or its fixes leave the build/tests red, do NOT open one — leave the branch and worktree in place, comment the failure on the ticket (POST ${PORTOS_API_URL}/api/jira/instances/<instanceId>/tickets/<KEY>/comments), and stop.
 4. Push the branch: \`git push -u origin "claim/\${KEY}"\`, then confirm \`git log --oneline @{u}..HEAD\` is empty so every review fix from step 3 is in the MR/PR's diff.
@@ -1168,7 +1168,7 @@ Repository: {repoPath}
 2. Read PLAN.md (if exists) to understand already-planned work — do NOT re-suggest items already planned
 3. Skim recent \`.changelog/\` entries (or equivalent) and \`git log\` (last 50 commits) to understand completed work — do NOT re-suggest items already shipped
 4. Read REJECTED.md (if exists) to understand previously rejected recommendations — do NOT re-suggest rejected items
-5. Read CLAUDE.md for project conventions and architecture
+5. Read AGENTS.md (or CLAUDE.md) for project conventions and architecture
 6. Review the codebase structure, key files, recent git log (last 20 commits)
 
 ## Phase 2 — Deep Review
@@ -1220,7 +1220,7 @@ Repository: {repoPath}
 2. Read GOALS.md (if exists) for alignment context
 3. Read PLAN.md (if exists) for current planned work
 4. Skim recent \`.changelog/\` entries and \`git log\` for completed work
-5. Read CLAUDE.md for project conventions
+5. Read AGENTS.md (or CLAUDE.md) for project conventions
 
 ## Phase 2 — Triage Each Recommendation
 
@@ -1238,7 +1238,7 @@ Categorize into:
 ## Phase 3 — Implement
 
 6. For each IMPLEMENT item:
-   - Implement the change following existing code patterns and CLAUDE.md conventions
+   - Implement the change following existing code patterns and AGENTS.md (or CLAUDE.md) conventions
    - Run tests to verify nothing is broken
    - Commit with a clear message referencing the review recommendation
 
@@ -1336,7 +1336,7 @@ First, extract \`<OWNER>\` and \`<REPO>\`:
 cd {repoPath} && gh repo view --json owner,name --jq '"OWNER=" + .owner.login + " REPO=" + .name'
 \`\`\`
 
-Then search for release documentation. Check your CLAUDE.md context (already provided above) for "Git Workflow", "Release", or "Changelog" sections. If the release process is not clear from CLAUDE.md, check these files in order (use whichever exist):
+Then search for release documentation. Check your AGENTS.md (or CLAUDE.md) context (already provided above) for "Git Workflow", "Release", or "Changelog" sections. If the release process is not clear from those instructions, check these files in order (use whichever exist):
 1. \`cat {repoPath}/README.md\` — look for release/deployment/workflow sections
 2. \`cat {repoPath}/.changelog/README.md\` — changelog format and release conventions
 3. \`cat {repoPath}/CONTRIBUTING.md\` — contributing/release guidelines
@@ -1480,7 +1480,7 @@ Run \`git stash list\`. For each \`stash@{N}\`:
 2. For every changed symbol or section in the patch, check whether current \`main\`/HEAD already contains the same change or a superset of it — grep the target file(s) for the added identifiers, read the surrounding code, and compare. If the stash's message references a branch name, also check \`git branch -a\` and \`git log --all --oneline\` for whether that branch was already merged or deleted (a strong signal the stash is redundant leftover cruft).
 3. Classify each stash:
    - **SUPERSEDED** — the change (or a superset of it) already exists on \`main\`. Safe to drop.
-   - **STALE/ABANDONED** — old WIP, exploratory scratch, lockfile-only diff noise, a reference to a file that no longer exists in the repo, or a change that contradicts current architecture/policy (check this repo's CLAUDE.md before assuming). Safe to drop.
+   - **STALE/ABANDONED** — old WIP, exploratory scratch, lockfile-only diff noise, a reference to a file that no longer exists in the repo, or a change that contradicts current architecture/policy (check this repo's AGENTS.md (or CLAUDE.md) before assuming). Safe to drop.
    - **REAL UNLANDED WORK** — a coherent change that is not on \`main\` and is not obviously abandoned. Do NOT drop it. Note what it does, which files it touches, and how stale the underlying branch/context looks.
 4. Before diffing two stashes independently, check for duplicates: \`diff <(git stash show -p stash@{A}) <(git stash show -p stash@{B})\`. Identical stashes are one unit — classify and act on them together.
 

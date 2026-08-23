@@ -7,7 +7,7 @@
  * (to decide between the CUDA and CPU torch wheels) — previously each had its own
  * `nvidia-smi` invocation and its own idea of what "no GPU" meant.
  *
- * **Three outcomes, never two.** Per the CLAUDE.md sentinel rule, "the probe could
+ * **Three outcomes, never two.** Per the AGENTS.md sentinel rule, "the probe could
  * not run" is NOT the same answer as "there is no GPU". The result carries a single
  * `status` (deliberately not a boolean, so there is no falsy value a caller can
  * accidentally read as "no GPU"):
@@ -20,7 +20,7 @@
  *                     rather than lying about the hardware.
  *
  * The probe is a subprocess boundary outside the request lifecycle, so every path
- * resolves — nothing throws into a route (CLAUDE.md child-process exception).
+ * resolves — nothing throws into a route (AGENTS.md child-process exception).
  */
 
 import { execFile } from './childProcess.js';

@@ -1,7 +1,7 @@
 /**
  * Agent Prompt Builder
  *
- * Builds the full agent prompt including memory context, CLAUDE.md instructions,
+ * Builds the full agent prompt including memory context, AGENTS.md instructions,
  * digital twin, worktree/pipeline/JIRA sections, skill templates, and tools summary.
  * Also handles JIRA ticket creation and app workspace resolution.
  */
@@ -17,6 +17,7 @@ import { getActiveProvider } from './providers.js';
 import { runPromptThroughProvider } from '../lib/promptRunner.js';
 import { readJSONFile, PATHS, tryReadFile, expandHome } from '../lib/fileUtils.js';
 import { loadSlashdoFile, loadSlashdoLib, writeResolvedSlashdoBody } from '../lib/slashdoLoader.js';
+import { AGENT_INSTRUCTIONS_FILENAME, CLAUDE_BRIDGE_FILENAME } from '../lib/agentInstructionsFile.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, MODEL_CAPABLE_CLI_REVIEWERS, describeReviewerCli, isCliReviewer, reviewerCliBinary, normalizeReviewUsernames, normalizeOptionalReviewers, normalizeReviewerMaxRounds, resolveReviewerConfig, resolveClaimReviewerConfig, buildReviewerPinNote, reviewerEffortArgs, reviewerModelArg, buildReviewerEffortNote, resolveKeyedReviewers, buildReviewWithArgs, buildReviewersCsv } from '../lib/validation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { doneSentinelName, PROGRAMMATIC_OUTPUT_COMPLETION_HEADING } from '../lib/agentSentinel.js';
@@ -227,71 +228,126 @@ export async function loadSkillTemplates(skillNames, loadTemplate = loadSkillTem
   return templates.filter(Boolean).join('\n\n') || null;
 }
 
-// Nested-CLAUDE.md discovery bounds (#3866). On-demand nested memory files are a
-// Claude Code feature — an API-provider agent reads nothing natively, so PortOS
-// has to splice them in itself or a subtree rule (including a data-loss guard)
-// never reaches that class of agent. The walk is bounded on three axes so a repo
-// that grows nested files can't silently balloon every agent prompt or turn one
-// prompt build into a full-tree crawl.
-const NESTED_CLAUDE_MD_MAX_DEPTH = 5;
-const NESTED_CLAUDE_MD_MAX_FILES = 10;
-const NESTED_CLAUDE_MD_MAX_DIRS = 2000;
+// Nested agent-instruction discovery bounds (#3866). On-demand nested memory
+// files are a Claude Code feature — an API-provider agent reads nothing
+// natively, so PortOS has to splice them in itself or a subtree rule (including
+// a data-loss guard) never reaches that class of agent. The walk is bounded on
+// three axes so a repo that grows nested files can't silently balloon every
+// agent prompt or turn one prompt build into a full-tree crawl.
+const NESTED_AGENT_MD_MAX_DEPTH = 5;
+const NESTED_AGENT_MD_MAX_FILES = 10;
+const NESTED_AGENT_MD_MAX_DIRS = 2000;
 // Dot-directories are skipped wholesale (covers `.git`), so these are the
 // non-dot trees that are either vendored, generated, or runtime state. The list
 // is deliberately polyglot: an agent workspace is any app PortOS manages, not
 // just this repo, so a Rust `target/` or a Go `vendor/` would otherwise burn the
 // directory budget on generated files.
-const NESTED_CLAUDE_MD_SKIP_DIRS = new Set([
+const NESTED_AGENT_MD_SKIP_DIRS = new Set([
   'node_modules', 'data', 'data.reference', 'dist', 'build', 'coverage',
   'out', 'obj', 'bin', 'target', 'vendor', 'tmp', 'venv', 'Pods', '__pycache__',
 ]);
 
+// Instruction filenames in preference order (#4852). `AGENTS.md` is the
+// cross-vendor standard PortOS now ships; `CLAUDE.md` stays discoverable because
+// a managed app may still carry only that name, and a plain rename would
+// silently drop its context. A directory holding both contributes exactly ONE
+// entry — otherwise this repo's four nested pairs would count as eight against
+// NESTED_AGENT_MD_MAX_FILES and the budget would overflow without a signal.
+const AGENT_INSTRUCTION_FILENAMES = [AGENT_INSTRUCTIONS_FILENAME, CLAUDE_BRIDGE_FILENAME];
+
 /**
- * Collect workspace-relative paths of nested `CLAUDE.md` files (the root one is
- * excluded — its caller reads it separately and must keep it first). Depth-first
- * in lexicographic order, so the result is deterministic and prompt caching stays
+ * True for a bridge `CLAUDE.md` whose entire body is an `@AGENTS.md` import —
+ * how PortOS and its scaffolders keep Claude Code (which has no configurable
+ * memory filename) reading the shared file. It carries no content of its own, so
+ * splicing it would add a useless one-line section to every agent prompt and
+ * burn a slot against the file cap.
+ * @param {string} content
+ */
+const isImportOnlyInstructionFile = (content) => {
+  const lines = String(content)
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return false;
+  if (!lines.every((line) => /^@\S+$/.test(line))) return false;
+  return lines.some((line) => basename(line.slice(1)).toLowerCase() === 'agents.md');
+};
+
+/**
+ * Read one instruction file, collapsing "absent", "empty", and "import-only
+ * bridge" to the same null so callers can fall through to the next candidate.
+ * @param {string} path
+ * @returns {Promise<string|null>} trimmed content, or null
+ */
+const readInstructionFile = async (path) => {
+  const content = await tryReadFile(path);
+  if (!content?.trim()) return null;
+  if (basename(path) === CLAUDE_BRIDGE_FILENAME && isImportOnlyInstructionFile(content)) return null;
+  return content.trim();
+};
+
+/**
+ * Collect nested per-directory instruction files (the workspace root is excluded
+ * — its caller reads it separately and must keep it first). Depth-first in
+ * lexicographic order, so the result is deterministic and prompt caching stays
  * stable across builds.
  * @param {string} workspaceDir
- * @returns {Promise<string[]>} repo-relative paths, e.g. `['server/CLAUDE.md']`
+ * @returns {Promise<Array<{ rel: string, content: string }>>} e.g. `[{ rel: 'server/AGENTS.md', … }]`
  */
-async function findNestedClaudeMdFiles(workspaceDir) {
+async function findNestedAgentInstructionFiles(workspaceDir) {
   const found = [];
   let dirsVisited = 0;
 
   const walk = async (dir, relDir, depth) => {
-    if (found.length >= NESTED_CLAUDE_MD_MAX_FILES) return;
-    if (depth > NESTED_CLAUDE_MD_MAX_DEPTH) return;
-    if (dirsVisited >= NESTED_CLAUDE_MD_MAX_DIRS) return;
+    if (found.length >= NESTED_AGENT_MD_MAX_FILES) return;
+    if (depth > NESTED_AGENT_MD_MAX_DEPTH) return;
+    if (dirsVisited >= NESTED_AGENT_MD_MAX_DIRS) return;
     dirsVisited += 1;
 
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => null);
     if (!entries) return;
     // A nested directory carrying its own `.git` is a submodule or vendored
-    // checkout (`lib/slashdo` here) — its CLAUDE.md is that project's
-    // instructions, not this workspace's. Detected structurally rather than by
-    // an allowlist of paths, which would silently stop matching the moment the
-    // workspace root is something other than this repo's root.
+    // checkout (`lib/slashdo` here) — its instructions are that project's, not
+    // this workspace's. Detected structurally rather than by an allowlist of
+    // paths, which would silently stop matching the moment the workspace root is
+    // something other than this repo's root.
     if (depth > 0 && entries.some((entry) => entry.name === '.git')) return;
     const sorted = [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
     const subdirs = [];
+    const instructionNames = new Set();
     for (const entry of sorted) {
       const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         if (entry.name.startsWith('.')) continue;
-        if (NESTED_CLAUDE_MD_SKIP_DIRS.has(entry.name)) continue;
+        if (NESTED_AGENT_MD_SKIP_DIRS.has(entry.name)) continue;
         subdirs.push({ path: join(dir, entry.name), rel });
         // Symlinked directories are deliberately NOT followed — a link back up
         // the tree would loop, and the depth cap alone wouldn't make the result
-        // meaningful. A symlinked CLAUDE.md *file* is still read (below).
-      } else if (entry.name === 'CLAUDE.md' && relDir) {
-        found.push(rel);
-        if (found.length >= NESTED_CLAUDE_MD_MAX_FILES) return;
+        // meaningful. A symlinked instruction *file* is still read (below).
+      } else if (AGENT_INSTRUCTION_FILENAMES.includes(entry.name)) {
+        instructionNames.add(entry.name);
       }
     }
 
+    // One entry per directory. Content is read here rather than by the caller so
+    // an import-only bridge can be dropped before it consumes a slot against the
+    // file cap — filtering after the walk would let a directory of bridges push
+    // real instructions out of the budget.
+    if (relDir) {
+      for (const name of AGENT_INSTRUCTION_FILENAMES) {
+        if (!instructionNames.has(name)) continue;
+        const content = await readInstructionFile(join(dir, name));
+        if (!content) continue;
+        found.push({ rel: `${relDir}/${name}`, content });
+        break;
+      }
+      if (found.length >= NESTED_AGENT_MD_MAX_FILES) return;
+    }
+
     for (const sub of subdirs) {
-      if (found.length >= NESTED_CLAUDE_MD_MAX_FILES) return;
+      if (found.length >= NESTED_AGENT_MD_MAX_FILES) return;
       await walk(sub.path, sub.rel, depth + 1);
     }
   };
@@ -301,42 +357,43 @@ async function findNestedClaudeMdFiles(workspaceDir) {
 }
 
 /**
- * Read CLAUDE.md files for agent context.
- * Reads the global (`~/.claude/CLAUDE.md`), the workspace-root `CLAUDE.md`, and
- * every nested `CLAUDE.md` under the workspace (#3866) — nested last, each as its
- * own labeled section, so precedence still reads root-then-specific.
+ * Read agent-instruction files for agent context.
+ * Reads the global (`~/.claude/CLAUDE.md`), the workspace-root `AGENTS.md` (or
+ * `CLAUDE.md`), and every nested instruction file under the workspace (#3866) —
+ * nested last, each as its own labeled section, so precedence still reads
+ * root-then-specific.
  */
-export async function getClaudeMdContext(workspaceDir) {
+export async function getAgentInstructionsContext(workspaceDir) {
   const contexts = [];
 
-  // Try to read global CLAUDE.md from ~/.claude/CLAUDE.md
+  // Claude Code's own global memory location — a user-level path, not a repo
+  // convention, so it keeps the CLAUDE.md name (#4852).
   const globalPath = join(homedir(), '.claude', 'CLAUDE.md');
   const globalContent = await tryReadFile(globalPath);
   if (globalContent?.trim()) {
     contexts.push({ type: 'Global Instructions', path: globalPath, content: globalContent.trim() });
   }
 
-  // Try to read project-specific CLAUDE.md from workspace directory
-  const projectPath = join(workspaceDir, 'CLAUDE.md');
-  const projectContent = await tryReadFile(projectPath);
-  if (projectContent?.trim()) {
-    contexts.push({ type: 'Project Instructions', path: projectPath, content: projectContent.trim() });
+  // Workspace-root instructions, `AGENTS.md` preferred.
+  for (const name of AGENT_INSTRUCTION_FILENAMES) {
+    const projectPath = join(workspaceDir, name);
+    const projectContent = await readInstructionFile(projectPath);
+    if (projectContent) {
+      contexts.push({ type: 'Project Instructions', path: projectPath, content: projectContent });
+      break;
+    }
   }
 
   // Nested per-directory instructions, appended after the root file.
-  for (const rel of await findNestedClaudeMdFiles(workspaceDir)) {
-    const nestedPath = join(workspaceDir, rel);
-    const nestedContent = await tryReadFile(nestedPath);
-    if (nestedContent?.trim()) {
-      contexts.push({ type: `Project Instructions (${rel})`, path: nestedPath, content: nestedContent.trim() });
-    }
+  for (const { rel, content } of await findNestedAgentInstructionFiles(workspaceDir)) {
+    contexts.push({ type: `Project Instructions (${rel})`, path: join(workspaceDir, rel), content });
   }
 
   if (contexts.length === 0) {
     return null;
   }
 
-  let section = '## CLAUDE.md Instructions\n\n';
+  let section = '## Agent Instructions\n\n';
   section += 'The following instructions must be followed when working on this task:\n\n';
 
   for (const ctx of contexts) {
@@ -347,7 +404,6 @@ export async function getClaudeMdContext(workspaceDir) {
 
   return section;
 }
-
 /**
  * Build a compaction instruction section for retries after context-limit failures.
  * Provides explicit guidance to the agent on reducing output verbosity.
@@ -376,7 +432,7 @@ ${hints.map(h => `- ${h}`).join('\n')}
 
 /**
  * Provider types that get the **light** prompt: agentic CLIs with native
- * filesystem tools and CLAUDE.md loading (Claude Code, Codex, Antigravity —
+ * filesystem tools and agent-instruction loading (Claude Code, Codex, Antigravity —
  * whether running interactively as `tui` or one-shot as `cli`). Everything
  * else (`api`: LM Studio, raw OpenAI/Anthropic) needs the full pasted-in
  * context because it has no native filesystem access.
@@ -1546,10 +1602,10 @@ function buildClaimFlowCompletionSection({ isTui = false, sentinelPath = null, r
  *
  * - **Light** (`tui` / `cli`): minimal prompt — task description, attached
  *   context, screenshot paths, worktree/jira/pipeline coordinates, and the
- *   completion-workflow contract. Memory, CLAUDE.md, digital twin, tools
+ *   completion-workflow contract. Memory, AGENTS.md, digital twin, tools
  *   summary, planning context, skill templates, and compaction warnings are
  *   deliberately omitted because the agent can fetch them itself.
- * - **Full** (`api`): kitchen-sink prompt with memory + CLAUDE.md + digital
+ * - **Full** (`api`): kitchen-sink prompt with memory + AGENTS.md + digital
  *   twin + tools + skills + planning + git hygiene. The leading
  *   "# Chief of Staff Agent Briefing" header is dropped from both modes.
  *
@@ -1671,11 +1727,11 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
 
   // Creative Director tasks (scene evaluation, treatment/plan run via API) judge
   // generated content rather than writing PortOS code — shared below by both
-  // `skipDevContext` (the repo's CLAUDE.md files plus memory / digital-twin /
+  // `skipDevContext` (the repo's instruction files plus memory / digital-twin /
   // onboard-tools are pure noise for that prompt) and `noCodeOutput` (the
   // deliverable is an HTTP PATCH, not a commit).
   const isCreativeDirectorTask = !!task.metadata?.creativeDirector;
-  // Full path: API providers don't read CLAUDE.md natively, so always include it —
+  // Full path: API providers read no instruction file natively, so always include it —
   // except for Creative Director tasks, per above. Memory, digital-twin, and the
   // onboard-tools catalog are the same category of dev-oriented noise for a
   // vision/PATCH task (#4650) — CD evaluate uses native Read + HTTP PATCH, and
@@ -1683,15 +1739,15 @@ export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo 
   // own prompt, not this section.
   const skipDevContext = isCreativeDirectorTask;
   // Fetch independent context sections in parallel
-  const [memorySection, claudeMdSection, digitalTwinSection] = await Promise.all([
+  const [memorySection, agentInstructionsSection, digitalTwinSection] = await Promise.all([
     skipDevContext
       ? Promise.resolve(null)
       : getMemorySection(task, { maxTokens: config.memory?.maxContextTokens || 2000 })
           .catch(err => { console.log(`⚠️ Memory retrieval failed: ${err.message}`); return null; }),
     skipDevContext
       ? Promise.resolve(null)
-      : getClaudeMdContext(workspaceDir)
-          .catch(err => { console.log(`⚠️ CLAUDE.md retrieval failed: ${err.message}`); return null; }),
+      : getAgentInstructionsContext(workspaceDir)
+          .catch(err => { console.log(`⚠️ Agent instructions retrieval failed: ${err.message}`); return null; }),
     skipDevContext
       ? Promise.resolve(null)
       : getDigitalTwinForPrompt({ maxTokens: config.digitalTwin?.maxContextTokens || config.soul?.maxContextTokens || 2000, personaId: 'active' })
@@ -1965,7 +2021,7 @@ ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch 
     targetAppLabel,
     config,
     memorySection,
-    claudeMdSection,
+    agentInstructionsSection,
     digitalTwinSection,
     worktreeSection,
     pipelineSection,
@@ -1978,6 +2034,7 @@ ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch 
     skillSection,
     planningContextSection,
     toolsSection,
+    claudeMdSection: agentInstructionsSection, // Backwards compatibility for prompt templates (pre-#4852 name)
     soulSection: digitalTwinSection, // Backwards compatibility for prompt templates
     timestamp: new Date().toISOString()
   }).catch(() => null);
@@ -1989,7 +2046,7 @@ ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch 
   const taskBlock = buildTaskBlock(task, { screenshotsAsList: false });
 
   // Fallback to built-in template
-  return `${claudeMdSection || ''}
+  return `${agentInstructionsSection || ''}
 
 ${memorySection || ''}
 
@@ -2077,10 +2134,10 @@ Begin working on the task now.`;
 
 /**
  * Build the **light-context** prompt for agents that have native filesystem
- * tools and CLAUDE.md loading (Claude Code, Codex, Antigravity — `tui` or `cli`).
+ * tools and agent-instruction loading (Claude Code, Codex, Antigravity — `tui` or `cli`).
  *
  * The agent already has direct access to the project, so we don't paste in:
- *   memory dumps, CLAUDE.md contents, digital twin, tools summary,
+ *   memory dumps, AGENTS.md contents, digital twin, tools summary,
  *   `.planning/` snippets, auto-matched skill templates, or compaction
  *   warnings. We just hand it the task, any user-attached context/screenshots/attachments,
  *   and the PortOS-specific contract bits it can't infer (worktree branch,
@@ -2215,7 +2272,7 @@ function buildLightContextSections(task, workspaceDir, worktreeInfo, isTruthyMet
   // --- Unattended run ----------------------------------------------------
   // First contract section, and unconditional: the light path is the one that
   // actually stalled on an approval gate, and "no human will answer you" is not
-  // something the agent can infer from CLAUDE.md or its cwd.
+  // something the agent can infer from AGENTS.md or its cwd.
   contractSections.push(UNATTENDED_RUN_RULE);
 
   // --- Worktree ----------------------------------------------------------
@@ -2842,7 +2899,7 @@ function buildCliCompletionSection({ worktreeInfo, willOpenPR, prCompletion = PR
  *
  * So this returns an explicit `null` sentinel and lets each caller decide
  * whether "no workspace" is legal for it (per the sentinel-and-validate rule in
- * CLAUDE.md — absent must not collapse into a valid-looking value). The reason
+ * AGENTS.md — absent must not collapse into a valid-looking value). The reason
  * is logged here, where it's known.
  *
  * @returns {Promise<string|null>} the app's repoPath, or null if unresolvable

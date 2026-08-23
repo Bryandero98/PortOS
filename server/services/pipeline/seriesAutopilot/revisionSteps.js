@@ -237,7 +237,7 @@ export async function runRevisionCycle(sId, record) {
   }
 
   // 7. Record the cycle: post-cycle mean drives the plateau detector; the ledger
-  //    line is the experiment log (single emoji line per the CLAUDE.md convention).
+  //    line is the experiment log (single emoji line per the AGENTS.md convention).
   record.runState.revisionCyclesRun = (record.runState.revisionCyclesRun || 0) + 1;
   const postSeriesJudge = await getSeriesJudge(sId, { issues: await listIssues({ seriesId: sId }) });
   const postMean = meanQualityScore(postSeriesJudge);

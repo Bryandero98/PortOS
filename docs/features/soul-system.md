@@ -22,7 +22,7 @@ LLMs can embody specific personas, but creating comprehensive identity documents
 2. **Documents Tab**: Sidebar-based document editor for managing soul markdown files by category (core, audio, behavioral, enrichment)
 3. **Test Tab**: Multi-model behavioral testing against 14 predefined tests, with side-by-side result comparison
 4. **Enrich Tab**: Guided questionnaire across 10 categories that generates soul document content from answers
-5. **Export Tab**: Export soul for use in external LLMs (System Prompt, CLAUDE.md, JSON, individual files)
+5. **Export Tab**: Export soul for use in external LLMs (System Prompt, AGENTS.md, JSON, individual files)
 
 ### CoS Integration
 

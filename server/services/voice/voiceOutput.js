@@ -22,7 +22,7 @@
 // (which predates the announce/claim protocol) also never announces — the
 // `emitVoiceOutput` fallback covers that transient case.
 //
-// Single-user trust model (see CLAUDE.md): no locking/atomicity needed here —
+// Single-user trust model (see AGENTS.md): no locking/atomicity needed here —
 // one server process, one human. This is a re-entrancy-free in-memory registry.
 
 // Membership set of announced candidate sockets. Iteration order is connection

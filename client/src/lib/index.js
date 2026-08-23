@@ -1,6 +1,6 @@
 // Barrel for client/src/lib/ — discovery surface, not a forced import path.
 // See client/src/lib/README.md for the human-readable catalog and
-// CLAUDE.md "Module organization" for the maintenance convention.
+// AGENTS.md "Module organization" for the maintenance convention.
 
 // === Prompt & rendering (mirror server/lib/ — keep byte-for-byte in sync) ===
 export * from './canonPrompt.js';

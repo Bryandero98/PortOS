@@ -13,7 +13,7 @@
  * The needle/note are colored by `tuningQuality` (green in-tune, yellow close,
  * red off) using `--port-*` tokens only. The AnalyserNode + the pitch tracker's
  * rAF loop are torn down on stop, on stream-change, and on unmount (the
- * deferred-work teardown rule in CLAUDE.md) so no audio graph or loop dangles.
+ * deferred-work teardown rule in AGENTS.md) so no audio graph or loop dangles.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';

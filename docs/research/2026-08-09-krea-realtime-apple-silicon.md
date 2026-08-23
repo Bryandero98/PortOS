@@ -5,7 +5,7 @@ let alone executed, on Apple Silicon; the only native-MLX path is a third party'
 unpublished in-tree crate.
 **Date:** 2026-08-09
 **Host:** Apple M5 Max, 128 GB unified-memory tier, macOS 26.5 (host identity
-deliberately omitted per `CLAUDE.md`)
+deliberately omitted per `AGENTS.md`)
 **Closes:** #3673
 **Related:** #3674 (shipped the per-model `disclosure` block this report's license
 findings would have to populate)

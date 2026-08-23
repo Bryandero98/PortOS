@@ -104,7 +104,7 @@ export const CURSOR_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhi
 
 // Effort values no CLI ladder accepts any more, kept ACCEPTED as stored/API
 // input so records saved under an older ladder still validate after an install
-// updates (see the distribution model in CLAUDE.md — installs update
+// updates (see the distribution model in AGENTS.md — installs update
 // independently). `resolveCliEffort` clamps them to a level the target CLI
 // really takes, so none of these ever reaches a CLI verbatim.
 const LEGACY_EFFORT_LEVELS = Object.freeze(['ultra']);
@@ -834,7 +834,7 @@ export function isClaudeCommand(command) {
  * True for an Ollama-backed provider that launches the Claude Code binary
  * (`claude-ollama` / `claude-ollama-tui`). These sessions run a small local
  * model that drowns in Claude Code's full personal environment — hooks,
- * plugins, MCP servers, global CLAUDE.md — so the spawners put them in lean
+ * plugins, MCP servers, the global ~/.claude/CLAUDE.md — so the spawners put them in lean
  * mode (see `applyLeanClaudeArgs`). Keyed on the `ollamaBacked` marker + the
  * launch command, not provider ids, so renamed/custom local providers get the
  * same treatment.
@@ -864,7 +864,7 @@ export function providerSuppliesGithubToken(provider) {
 
 /**
  * Lean-context flags for local-model Claude Code sessions:
- * - `--bare` — skip hooks, plugin sync, auto-memory, and CLAUDE.md
+ * - `--bare` — skip hooks, plugin sync, auto-memory, and AGENTS.md
  *   auto-discovery (the user's personal environment derails small models).
  * - `--strict-mcp-config` — with no `--mcp-config` given, load zero MCP
  *   servers (their tool schemas alone can blow a small Ollama context).

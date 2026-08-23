@@ -83,7 +83,7 @@ export function buildSpriteRecord(input, { id, now }) {
 }
 
 // Whitelist patch — key-absent preserves, key-present applies (including an
-// intentional clear via null/''), per the LLM/merge convention in CLAUDE.md.
+// intentional clear via null/''), per the LLM/merge convention in AGENTS.md.
 const PATCHABLE = ['name', 'status', 'kind', 'spec', 'chromaKey', 'publishBinding', 'notes', 'imageMode', 'imageModelId'];
 
 export function applySpriteRecordPatch(record, patch) {

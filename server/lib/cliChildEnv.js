@@ -35,7 +35,7 @@
  * shapes differ too much (child_process vs node-pty vs an HTTP hand-off to the
  * CoS runner, stdio variants, kill-tree wiring) to fold in the same change.
  * `lib/aiToolkit/runner.js` is also out of scope: it is vendored and must not
- * import out to other PortOS modules (see `lib/aiToolkit/CLAUDE.md`), and its
+ * import out to other PortOS modules (see `lib/aiToolkit/AGENTS.md`), and its
  * spawn is dormant under PortOS's `setCliRunner` override, so it keeps its
  * inline copy.
  */

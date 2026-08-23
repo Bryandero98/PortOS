@@ -73,7 +73,7 @@ const WIN_EXECUTABLE_EXTS = ['.exe', '.cmd', '.bat', '.com'];
 /**
  * Resolve a bare command name to its full path WITH extension on Windows —
  * mirrors `resolveWindowsExecutable` in `server/lib/bufferedSpawn.js`
- * (duplicated here for this directory's self-containment; see ./CLAUDE.md).
+ * (duplicated here for this directory's self-containment; see ./AGENTS.md).
  * Filesystem-only (no subprocess), so it can't reorder/misselect the way a
  * raw `where` first-line read can.
  */
@@ -130,7 +130,7 @@ function escapeCmdMetacharsIfUnquoted(value) {
 }
 
 // windowsHide is applied here rather than by importing server/lib/childProcess.js:
-// the aiToolkit is contractually self-contained (see aiToolkit/CLAUDE.md), so it
+// the aiToolkit is contractually self-contained (see aiToolkit/AGENTS.md), so it
 // carries its own copy of the default. Without it, every CLI probe below spawns
 // a console from PortOS's console-less PM2 fork, which Windows hands off to
 // Windows Terminal as a focus-stealing window. See docs/WINDOWS_CONSOLE.md.
@@ -1203,7 +1203,7 @@ export function createProviderService(config = {}) {
      * flattening it to null, so the toast names the actual cause instead of the
      * route's generic not-found text — and the stored list is left untouched
      * either way, since nothing is persisted. Same posture as
-     * `_fetchOllamaToolCapableModels`, and the root CLAUDE.md rule that a
+     * `_fetchOllamaToolCapableModels`, and the root AGENTS.md rule that a
      * reachable-but-list-failed backend must surface an explicit error rather
      * than a plausible-looking empty/default result.
      *

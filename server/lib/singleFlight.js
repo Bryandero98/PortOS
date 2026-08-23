@@ -12,7 +12,7 @@
  * in-flight-coalescing sites deliberately do NOT use this helper:
  * - It does NOT layer a TTL / result cache on top. `aiToolkit/providers.js`
  *   keeps its own self-contained TTL-cache-then-coalesce logic — the vendored
- *   toolkit must not import PortOS-side lib modules (CLAUDE.md), so it can't
+ *   toolkit must not import PortOS-side lib modules (AGENTS.md), so it can't
  *   build on this even if it wanted the bare coalesce.
  * - It does NOT reject concurrent callers. `sseDownload.js` deliberately uses
  *   the opposite "reject-if-busy" idiom (a second client can't share one

@@ -154,7 +154,7 @@ async function readListStrict(fn) {
  *    for "nothing on disk" and wipe live rows whose files still exist; in that
  *    case we upsert what we did read and skip pruning that kind, leaving the
  *    existing rows until a later clean reconcile. (This is the absent-vs-empty
- *    sentinel rule from CLAUDE.md — failed-read ≠ legitimately-empty.)
+ *    sentinel rule from AGENTS.md — failed-read ≠ legitimately-empty.)
  *
  * Idempotent: re-running with no disk changes is a no-op upsert + empty prune.
  * Cheap enough to run unconditionally at boot.

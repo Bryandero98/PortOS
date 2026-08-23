@@ -148,7 +148,7 @@ export async function runMultiTurnTests(providerId, model, testIds = null, perso
   };
 
   // Reuse the meta loaded above — single-process, so nothing else mutated it
-  // while the scenario loop ran (cf. the trust model in CLAUDE.md).
+  // while the scenario loop ran (cf. the trust model in AGENTS.md).
   if (!Array.isArray(meta.multiTurnTestHistory)) meta.multiTurnTestHistory = [];
   meta.multiTurnTestHistory.unshift(historyEntry);
   meta.multiTurnTestHistory = meta.multiTurnTestHistory.slice(0, 50); // Keep last 50 runs

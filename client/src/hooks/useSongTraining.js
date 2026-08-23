@@ -96,7 +96,7 @@ export default function useSongTraining({
 
   // Cancel a pending loop relaunch on stop / unmount / loop-off so a deferred
   // restart can't fire after the user stopped (the deferred-work staleness +
-  // unmount guard from CLAUDE.md).
+  // unmount guard from AGENTS.md).
   const clearRelaunch = useCallback(() => {
     if (relaunchRef.current != null) { clearTimeout(relaunchRef.current); relaunchRef.current = null; }
   }, []);

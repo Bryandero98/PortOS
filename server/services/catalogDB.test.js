@@ -11,7 +11,7 @@
  * `instances.js` is left under the global vitest.setup.js mock (getPeers → [])
  * so no row created here fans out to live sync peers; nothing here exercises
  * the createUniverse/createSeries peerSync import path, so mockNoPeers alone
- * is sufficient per the CLAUDE.md record-creating-tests rule.
+ * is sufficient per the AGENTS.md record-creating-tests rule.
  */
 
 import { describe, it, expect, afterAll } from 'vitest';

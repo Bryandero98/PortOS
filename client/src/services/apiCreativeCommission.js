@@ -5,7 +5,7 @@ import { request } from './apiCore.js';
 // directive pipeline.
 //
 // `options` lets a caller that owns its own error toast pass `{ silent: true }`
-// so request() doesn't also toast — see CLAUDE.md "Custom catch ⇒ silent: true".
+// so request() doesn't also toast — see AGENTS.md "Custom catch ⇒ silent: true".
 
 export const listCommissions = (options = {}) => request('/creative-commission', options);
 

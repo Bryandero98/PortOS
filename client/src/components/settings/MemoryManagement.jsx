@@ -18,7 +18,7 @@
 // fallbacks in `refresh()` (for poll failures, which must NOT toast — the
 // panel would otherwise spam an error toast every 5s during a transient
 // Ollama outage). Every API helper is called with `{ silent: true }` so
-// apiCore's default toast doesn't fire underneath; per the CLAUDE.md
+// apiCore's default toast doesn't fire underneath; per the AGENTS.md
 // "Silent vs. toasting API requests" rule, custom catch ⇒ silent: true.
 
 import { useState, useEffect, useCallback, useRef } from 'react';

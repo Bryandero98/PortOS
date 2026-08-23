@@ -73,7 +73,7 @@ export default function WordplayTrainer({ onBack, onContinue, config, onConfigUp
   // Which mode we've already kicked off generation for, so the URL-driven
   // effect below doesn't regenerate on every render.
   const initiatedRef = useRef(null);
-  // Per-run generation token (CLAUDE.md's {target, generation} pattern). Every
+  // Per-run generation token (AGENTS.md's {target, generation} pattern). Every
   // generation start bumps it; a completing runMode aborts unless its captured
   // token is still current — so a superseded run (re-enter the same mode, or a
   // direct mode→mode URL change mid-generation) can't land a stale drill or

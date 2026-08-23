@@ -452,7 +452,7 @@ describe('AI Toolkit runner — built-in executeCliRun spawn (#1865)', () => {
   // Mirrors server/services/runner.test.js's equivalent assertion — this is
   // the toolkit's OWN spawn path (inert in PortOS, which always registers a
   // host CLI runner via setCliRunner, but must stay behaviorally in sync per
-  // the override-consistency contract in ./CLAUDE.md).
+  // the override-consistency contract in ./AGENTS.md).
   function makeChild() {
     const child = new EventEmitter();
     child.stdout = new EventEmitter();

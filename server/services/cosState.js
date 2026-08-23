@@ -22,7 +22,7 @@ export const ROOT_DIR = PATHS.root;
 // Serialize every state.json read-merge-write on a single tail so two
 // concurrent loadState→modify→saveState cycles can't interleave and clobber
 // each other. Standardized on `createFileWriteQueue` — the documented
-// single-JSON-file write-serialization convention (CLAUDE.md; same mechanism
+// single-JSON-file write-serialization convention (AGENTS.md; same mechanism
 // settings.js and the issues/series/mediaCollections stores use) — instead of a
 // bespoke async mutex. Identical `(fn) => Promise` contract, so the ~34 existing
 // `withStateLock(...)` call sites are unchanged; the name is kept for that

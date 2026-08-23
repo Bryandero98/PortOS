@@ -34,7 +34,7 @@ import { listJiraIssues, plannedWorkJql } from './jiraFiler.js';
  * a failed tracker read can never be mistaken for "this app has nothing planned" —
  * the two are opposite instructions to the reasoner (be conservative vs. the field
  * is wide open), and collapsing them is exactly the failure the sentinel rule in
- * CLAUDE.md exists to prevent.
+ * AGENTS.md exists to prevent.
  */
 export function plannedWorkUnavailable(why) {
   return `${PLANNED_WORK_UNAVAILABLE_PREFIX} (${why}). Do NOT treat this as "nothing is planned" — this app may well have a committed backlog that simply could not be listed this run. Be conservative: prefer proposal: null over filing work that might already be in scope.`;

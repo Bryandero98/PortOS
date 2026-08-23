@@ -96,7 +96,7 @@ export default function ReferenceReposPanel({ appId, appName }) {
     fetch();
   };
 
-  // Two-click delete per CLAUDE.md "no window.confirm". First click arms the
+  // Two-click delete per AGENTS.md "no window.confirm". First click arms the
   // row, second click within 4s actually deletes.
   const pendingDeleteRef = useRef({ id: null, expiresAt: 0 });
   const handleDelete = async (ref) => {

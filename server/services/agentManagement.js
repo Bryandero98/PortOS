@@ -511,7 +511,7 @@ async function replacePausedTask({ agentId, task, taskType, overrides }) {
 /**
  * The dialog's edits as a task-metadata patch. Every field is "unchanged unless
  * supplied" — the dialog seeds its selects from the paused run, so a blank value
- * is absence rather than an intentional clear (CLAUDE.md's absent-vs-empty rule).
+ * is absence rather than an intentional clear (AGENTS.md's absent-vs-empty rule).
  * `context` APPENDS to `existingContext`: the task's own note is what the
  * original run was given, and dropping it would resume with less information than
  * the run that paused. It never touches `metadata.prompt` — the dialog edits the

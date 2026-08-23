@@ -6,7 +6,7 @@ import { CREATIVE_DIRECTOR_GOAL_MAX, DELIVERABLE_OPTIONS } from '../../lib/creat
  * universe/series pickers, and a budget cap. Controlled + presentational: all
  * state is hoisted into the host (the list-page create form or the detail-page
  * "convert to directive" Drawer) so the Drawer's per-tab remount can't reset it
- * (the CLAUDE.md Drawer state-hoisting rule), and the host owns the submit
+ * (the AGENTS.md Drawer state-hoisting rule), and the host owns the submit
  * affordances (Create / Preview plan / Cancel).
  *
  * `directive` shape mirrors the server schema:

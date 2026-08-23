@@ -68,7 +68,7 @@ export default function WhileAwayWidget() {
   // reflect the window we actually queried (not a value that drifted since).
   const sinceRef = useRef(null);
   // A socket-driven refresh can land after the widget unmounts — guard the
-  // async setState so it doesn't fire into the void (CLAUDE.md unmount rule).
+  // async setState so it doesn't fire into the void (AGENTS.md unmount rule).
   const mountedRef = useMounted();
 
   const load = useCallback(() => {

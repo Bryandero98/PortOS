@@ -14,7 +14,7 @@ import { estimateTokens } from '../lib/contextBudget.js';
 export function getExportFormats() {
   return [
     { id: 'system_prompt', label: 'System Prompt', description: 'Combined markdown for direct injection' },
-    { id: 'claude_md', label: 'CLAUDE.md', description: 'Format for Claude Code integration' },
+    { id: 'agents_md', label: 'AGENTS.md', description: 'Format for agent-instructions files (AGENTS.md / CLAUDE.md)' },
     { id: 'json', label: 'JSON', description: 'Structured JSON for API integration' },
     { id: 'individual', label: 'Individual Files', description: 'Separate files for each document' },
     { id: 'legacy_portrait', label: 'Legacy Portrait', description: 'Comprehensive human-readable identity document' }
@@ -55,8 +55,11 @@ export async function exportDigitalTwin(format, documentIds = null, includeDisab
   switch (format) {
     case 'system_prompt':
       return exportAsSystemPrompt(documentsWithContent);
+    // 'claude_md' is the pre-#4852 id, still accepted so a persisted export
+    // preference keeps resolving instead of throwing 'Unknown export format'.
+    case 'agents_md':
     case 'claude_md':
-      return exportAsClaudeMd(documentsWithContent);
+      return exportAsAgentsMd(documentsWithContent);
     case 'json':
       return exportAsJson(documentsWithContent);
     case 'individual':
@@ -86,7 +89,7 @@ function exportAsSystemPrompt(docs) {
   };
 }
 
-function exportAsClaudeMd(docs) {
+function exportAsAgentsMd(docs) {
   let output = '# Soul - User Identity\n\n';
   output += '> This section defines the identity, values, and preferences of the user.\n\n';
 
@@ -97,7 +100,7 @@ function exportAsClaudeMd(docs) {
   }
 
   return {
-    format: 'claude_md',
+    format: 'agents_md',
     content: output.trim(),
     documentCount: docs.length,
     tokenEstimate: estimateTokens(output)

@@ -19,7 +19,7 @@
  * the LWW-merged series `index.json`. Two hashes pin the inputs so the UI flags
  * the ledger stale once either the manuscript (`sourceContentHash`) or the canon
  * (`sourceCanonHash`) changes. Writes serialize on a per-series tail (single
- * tail per shared file, per CLAUDE.md). The SSE wrapper mirrors
+ * tail per shared file, per AGENTS.md). The SSE wrapper mirrors
  * reverseOutline.js via lib/sseUtils.js.
  */
 

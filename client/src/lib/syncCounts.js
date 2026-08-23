@@ -10,7 +10,7 @@
 // Sequences arrive as numbers (brain) or numeric strings (memory BIGSERIAL),
 // so compare as BigInt to stay exact past Number.MAX_SAFE_INTEGER.
 //
-// Sentinel discipline (see CLAUDE.md): a MISSING input must NOT collapse to 0.
+// Sentinel discipline (see AGENTS.md): a MISSING input must NOT collapse to 0.
 // - For pull, an absent `ourCursor` legitimately means "pulled nothing" → treat
 //   as 0 (the caller passes `ourCursor ?? 0`). An absent `peerMax` means the
 //   peer hasn't been probed yet → unknown (null).

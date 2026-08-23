@@ -135,7 +135,7 @@ export async function runValuesAlignmentTests(providerId, model, testIds = null,
   };
 
   // Reuse the meta loaded above — single-process, so nothing else mutated it
-  // while the dilemma loop ran (cf. the trust model in CLAUDE.md).
+  // while the dilemma loop ran (cf. the trust model in AGENTS.md).
   if (!Array.isArray(meta.valuesTestHistory)) meta.valuesTestHistory = [];
   meta.valuesTestHistory.unshift(historyEntry);
   meta.valuesTestHistory = meta.valuesTestHistory.slice(0, 50); // Keep last 50 runs

@@ -14,7 +14,7 @@
  *     which gates whether a peer push is even accepted; and
  *   - the storage-LAYOUT version (Postgres tables) handled by `ensureSchema`.
  * This is the per-record payload-SHAPE version, mirroring the
- * `data/{type}/index.json` `schemaVersion` convention documented in CLAUDE.md.
+ * `data/{type}/index.json` `schemaVersion` convention documented in AGENTS.md.
  *
  * Idempotency: a marker in `data/catalog-payload.applied.json` records the
  * highest registry payload version this install has fully migrated to, so the

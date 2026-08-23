@@ -217,7 +217,7 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
       return;
     }
     // Flush any pending local edits to the server before rendering — otherwise
-    // the server reads the pre-edit shot.description (CLAUDE.md "In-flight
+    // the server reads the pre-edit shot.description (AGENTS.md "In-flight
     // saves must gate dependent actions"). persist() returns when the PATCH
     // has settled, so the next read by the enqueue route sees the latest text.
     await persist(scenes);
@@ -243,7 +243,7 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
   };
 
   // Replacing existing scenes shows an inline confirm near the buttons (no
-  // window.confirm per CLAUDE.md, no two-click-arm — the user disliked it). A
+  // window.confirm per AGENTS.md, no two-click-arm — the user disliked it). A
   // fresh stage (no scenes yet) extracts immediately.
   const onExtractClick = (from) => {
     if (scenes.length > 0) {

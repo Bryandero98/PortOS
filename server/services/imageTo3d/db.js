@@ -107,7 +107,7 @@ export async function deleteModel(id) {
 /**
  * A render child cannot survive the PortOS process. Mark interrupted records
  * failed-retryable on boot without launching any new render work (the GLB
- * render is user-triggered only — CLAUDE.md no-cold-bootstrap policy).
+ * render is user-triggered only — AGENTS.md no-cold-bootstrap policy).
  */
 export async function recoverInterruptedModels() {
   const result = await query(

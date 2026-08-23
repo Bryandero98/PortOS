@@ -25,7 +25,7 @@ const TABS = [
   { id: 'accounts', label: 'Automation & accounts', icon: ShieldAlert },
 ];
 // The account form is a broad config surface, so it lives in the shared
-// tabbed Drawer rather than a page-length flat scroll (client/src/CLAUDE.md).
+// tabbed Drawer rather than a page-length flat scroll (client/src/AGENTS.md).
 const ACCOUNT_TABS = [
   { id: 'identity', label: 'Identity' },
   { id: 'monitoring', label: 'Monitoring & models' },

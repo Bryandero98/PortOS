@@ -109,7 +109,7 @@ export function levelFromAge(ageYears) {
 // unset date from one that is present-but-unusable (#2757). `levelFromAge(ageYears)` collapses
 // all of unset/invalid/future/unreadable into `null`, which the client used to treat uniformly
 // as "set your birth date" — telling a user to *set* a date they already entered. This restores
-// the sentinel distinction (absent vs failed vs valid — see CLAUDE.md) as an explicit status:
+// the sentinel distinction (absent vs failed vs valid — see AGENTS.md) as an explicit status:
 //   'unreadable' → the meatspace config could not be read/parsed (getBirthDateStrict readable:false)
 //   'unset'      → no birthDate on record
 //   'invalid'    → birthDate present but not a usable calendar date (unparseable, or an

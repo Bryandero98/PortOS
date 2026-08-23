@@ -531,7 +531,7 @@ export function formatDateShort(value) {
 // Per-call LLM timeout bounds. Client-side mirror of the canonical
 // MIN_TIMEOUT / MAX_TIMEOUT in server/lib/aiToolkit/constants.js — the
 // client can't import across the server boundary (Vite vs Node, plus the
-// aiToolkit directory is kept self-contained per CLAUDE.md). The server
+// aiToolkit directory is kept self-contained per AGENTS.md). The server
 // validators (validation.js, stageRunner.js) and aiToolkit's own
 // provider/run schemas all import from constants.js; this file is the
 // only known mirror. Bumping these here without the server constants —

@@ -176,7 +176,7 @@ export async function updateMemory(id, updates) {
 
     // Update summary if content changed. Gate on "is a string", not truthiness:
     // clearing content to "" is an intentional edit that must regenerate (clear)
-    // the summary, not leave the stale one behind (absent-vs-cleared, CLAUDE.md).
+    // the summary, not leave the stale one behind (absent-vs-cleared, AGENTS.md).
     // The typeof check keeps null/undefined/absent out of generateSummary (which
     // would throw on .length) while still treating "" as a present-but-empty clear.
     if (typeof updates.content === 'string' && !updates.summary) {
@@ -197,7 +197,7 @@ export async function updateMemory(id, updates) {
     // Update BM25 index if content or tags changed. Gate on shape, not truthiness:
     // clearing content to "" (a string) must reindex so the now-empty document
     // stops matching its old terms, and clearing tags to [] (Array.isArray) must
-    // reindex too (absent-vs-cleared, CLAUDE.md). null/undefined/absent are skipped.
+    // reindex too (absent-vs-cleared, AGENTS.md). null/undefined/absent are skipped.
     if (typeof updates.content === 'string' || Array.isArray(updates.tags)) {
       memoryBM25.indexMemory({
         id: memory.id,

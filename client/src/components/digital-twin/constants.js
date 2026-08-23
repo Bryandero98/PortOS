@@ -356,10 +356,10 @@ export const EXPORT_FORMATS = {
     label: 'System Prompt',
     description: 'Combined markdown for direct injection into LLM system prompts'
   },
-  claude_md: {
-    id: 'claude_md',
-    label: 'CLAUDE.md',
-    description: 'Format optimized for Claude Code integration'
+  agents_md: {
+    id: 'agents_md',
+    label: 'AGENTS.md',
+    description: 'Format for agent-instructions files (AGENTS.md / CLAUDE.md)'
   },
   json: {
     id: 'json',

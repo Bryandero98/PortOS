@@ -4,7 +4,7 @@
  * Split from `modelCapabilityTests.js` for the same two reasons the assessment
  * store is split from its runner:
  *
- *   1. **AI Provider Usage Policy** (root CLAUDE.md). Nothing in this file can
+ *   1. **AI Provider Usage Policy** (root AGENTS.md). Nothing in this file can
  *      reach a provider, so a read path that imports it is safe by construction
  *      rather than by review.
  *   2. **No import cycle** — the report builder needs stored results, and the

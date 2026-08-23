@@ -75,7 +75,7 @@ async function saveMorseProgress(data) {
 // client at once; without this tail their load→mutate→save cycles interleave
 // and whichever saves last drops the other's change (the just-earned level, or
 // the just-finished round). atomicWrite makes each file write atomic but not the
-// surrounding read-modify-write — see CLAUDE.md "serialize writes server-side".
+// surrounding read-modify-write — see AGENTS.md "serialize writes server-side".
 let morseWriteTail = Promise.resolve();
 function withMorseWriteTail(fn) {
   const run = morseWriteTail.then(fn, fn);

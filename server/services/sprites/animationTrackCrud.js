@@ -38,7 +38,7 @@
  *
  * **The writes are serialized and the cache is invalidated.** One `data/` file, one
  * `createFileWriteQueue` tail, so a create landing while a delete is mid-flight
- * cannot read a stale pre-image (the CLAUDE.md rule for a service that owns a single
+ * cannot read a stale pre-image (the AGENTS.md rule for a service that owns a single
  * JSON state file). Every mutation ends in `__resetAnimationTrackStore()` so the
  * running server serves the table it just wrote instead of reporting success against
  * a cache nothing dropped.
@@ -66,7 +66,7 @@ import {
 } from './animationTrackStore.js';
 import { recordsCarryingTrack } from './animationTrackWorkflow.js';
 
-// One store file, so ONE tail — per CLAUDE.md's "collapse the queue to a single
+// One store file, so ONE tail — per AGENTS.md's "collapse the queue to a single
 // tail per shared file". A per-id queue would let two different tracks' writes
 // interleave on the same JSON and lose one of them.
 const queueStoreWrite = createFileWriteQueue();

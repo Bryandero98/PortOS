@@ -8,7 +8,7 @@
  *  2. Raw PTY bytes → the append-only `raw.txt` disk spool (no ANSI strip, no
  *     line semantics) that `analyzeAgentFailure` reads on failure.
  *
- * Both pipelines debounce writes on a 250ms window (see CLAUDE.md "High-
+ * Both pipelines debounce writes on a 250ms window (see AGENTS.md "High-
  * frequency state writes must batch") — a chatty TUI emits hundreds of chunks
  * /sec, and per-chunk state writes would thrash the filesystem and slow the PTY
  * event loop. Extracted from spawnTuiAgent so the buffering/spooling concern is

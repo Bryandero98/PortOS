@@ -21,7 +21,7 @@
  * single `data/workspace-contexts.json` keyed by app id is the right shape
  * (small records, no relational queries, no tombstones/sync cursor). Writes
  * are serialized through a single-tail queue because both the blur/save path
- * and an explicit restore can mutate the same file (CLAUDE.md: "serialize
+ * and an explicit restore can mutate the same file (AGENTS.md: "serialize
  * writes server-side… collapse the queue to a single tail per shared file").
  *
  * This service is read-only with respect to user work: it NEVER stashes,
@@ -175,7 +175,7 @@ export async function getContext(appId) {
 export async function saveContext(appId) {
   // The whole capture→write runs inside the queue so a concurrent delete can't
   // complete between this save's capture and its write and then be silently
-  // resurrected (CLAUDE.md: serialize the full read→modify→write on the shared
+  // resurrected (AGENTS.md: serialize the full read→modify→write on the shared
   // file). Returns null (unknown app id) from inside the queue — fine, the
   // caller still gets the resolved value.
   return queueWrite(async () => {

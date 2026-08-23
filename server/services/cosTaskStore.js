@@ -127,7 +127,7 @@ function isContentEdit(updates, existingMetadata = {}) {
 // Cache the parsed array per file so an unchanged file costs one `stat` plus a
 // structured clone instead of a read + full parse.
 //
-// One server process, one user (CLAUDE.md trust model) — no locking, no atomic
+// One server process, one user (AGENTS.md trust model) — no locking, no atomic
 // write dance. Correctness rests on two independent invalidation signals:
 //
 //   1. The stamp (`mtimeMs` + `size`) catches writes this module did NOT make —
@@ -637,7 +637,7 @@ async function writeTaskUpdate(taskId, updates, taskType, { now }) {
   // Handle legacy fields that may be passed directly in updates. Use ?? not ||
   // so an intentional clear to "" is preserved as "" rather than dropped: || maps
   // every falsy value (incl. "") to undefined, which the cleanup pass below then
-  // deletes, conflating "cleared" with "absent" (absent-vs-cleared, CLAUDE.md).
+  // deletes, conflating "cleared" with "absent" (absent-vs-cleared, AGENTS.md).
   // Only null becomes undefined (→ deleted); absent fields never enter this loop.
   for (const f of LEGACY_DIRECT_FIELDS) {
     if (updates[f] !== undefined) updatedMetadata[f] = updates[f] ?? undefined;

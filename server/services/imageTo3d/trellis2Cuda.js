@@ -10,7 +10,7 @@
  * `exists`/`spawnImpl`, so the wiring is unit-testable WITHOUT a 24 GB NVIDIA box, a
  * ~15 GB weight download, or a live render. `runTrellis2CudaGenerate` is the one real
  * subprocess boundary and NEVER auto-runs: it rejects unless the model is installed,
- * and is only reached from an explicit user action (CLAUDE.md no-cold-bootstrap policy).
+ * and is only reached from an explicit user action (AGENTS.md no-cold-bootstrap policy).
  *
  * **Two things differ from the MPS lane, and both drive the design here:**
  *

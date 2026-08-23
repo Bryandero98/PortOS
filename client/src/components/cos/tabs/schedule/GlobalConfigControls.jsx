@@ -57,7 +57,7 @@ export default function GlobalConfigControls({ taskType, config, onUpdate, onTri
   const [promptValue, setPromptValue] = useState(config.prompt || '');
   // Comma-separated free text, committed to taskMetadata.issueExcludeLabels
   // (an array) on blur. Routes through setUpdating like every other handler
-  // in this file so RunTaskButton (client/src/CLAUDE.md's "gate on in-flight
+  // in this file so RunTaskButton (client/src/AGENTS.md's "gate on in-flight
   // saves, not just the form" rule) can't fire against the pre-edit list
   // while this PATCH is still in flight.
   const excludeLabelsDraft = useFieldDraft(

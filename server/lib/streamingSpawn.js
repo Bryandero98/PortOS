@@ -91,7 +91,7 @@ export function runStreamingCommand(cmd, args, onLine, { timeoutMs = 0, cwd, env
     //
     // The callback runs outside the Express request lifecycle, so a throwing
     // `isCancelled` would take the process down with no `next(err)` to bubble to
-    // (see the try/catch exception in CLAUDE.md). A predicate that cannot be
+    // (see the try/catch exception in AGENTS.md). A predicate that cannot be
     // asked is treated as "not cancelled" — the timeout still bounds the run.
     const cancelTimer = typeof isCancelled === 'function'
       ? setInterval(() => {

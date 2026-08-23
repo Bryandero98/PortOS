@@ -8,7 +8,7 @@ import { createKeyCachedQueue } from './createKeyCachedQueue.js';
  * mediaCollections, universeBuilder, …) needs the same guarantee: a
  * `readState → modify → writeState` cycle must not interleave with another
  * cycle on the same file, or one writer's pre-image read overwrites the
- * other's just-persisted record. CLAUDE.md: "Async PATCH races on shared
+ * other's just-persisted record. AGENTS.md: "Async PATCH races on shared
  * records — serialize writes server-side… collapse the queue to a single
  * tail per shared file."
  *

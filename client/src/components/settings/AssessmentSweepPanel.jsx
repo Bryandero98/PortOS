@@ -9,7 +9,7 @@
  *      reloading, must not stop or lose an overnight run — so there is no abort
  *      controller here and no in-flight request to hold open.
  *   2. **Consent names real numbers.** The AI Provider Usage Policy (root
- *      CLAUDE.md) requires that a batch of provider calls be preceded by a gate
+ *      AGENTS.md) requires that a batch of provider calls be preceded by a gate
  *      that says exactly what will run. The counts come from the server's own
  *      target selector and its own tuning grid, not from a client-side estimate,
  *      so the number shown is the number that executes.
@@ -58,7 +58,7 @@ const measuredUnit = (status) => (status?.mode === 'tunings' ? 'tuning' : 'model
 /**
  * The Cancel/Start footer both sweeps share.
  *
- * The AI Provider Usage Policy (root CLAUDE.md) demands the same three things of
+ * The AI Provider Usage Policy (root AGENTS.md) demands the same three things of
  * either sweep — say what will run, say how many generations that is, and let
  * the user decline. The two gates differ in their container (the batch gate
  * targets no record, so it stays a modal; the per-model gate is a routable

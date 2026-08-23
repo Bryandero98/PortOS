@@ -32,7 +32,7 @@ export default function useAutoscroll(
   pxPerSecRef.current = pxPerSec;
 
   // Gates the auto-stop setState so a rAF frame that lands after unmount is
-  // inert. (The CLAUDE.md "never reset to true" rule is for deferred network
+  // inert. (The AGENTS.md "never reset to true" rule is for deferred network
   // emits, where staying false is the safe direction — here it gates live UI.)
   const mountedRef = useMounted();
 

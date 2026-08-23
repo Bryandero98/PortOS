@@ -281,7 +281,7 @@ export function CognitiveDrillTutorialPreview({ type, drillConfig, cognitiveProg
     );
   }
   return (
-    // `usePortal` per the overlay convention in client/src/CLAUDE.md: this is
+    // `usePortal` per the overlay convention in client/src/AGENTS.md: this is
     // rendered mid-tree inside two long settings/launcher pages, and a
     // `backdrop-filter` ancestor (every bordered `.bg-port-card` on the glass
     // themes) would otherwise become the fixed overlay's containing block.

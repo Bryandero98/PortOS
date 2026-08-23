@@ -15,6 +15,14 @@
  * on any install and there is no migration to write — the cost is that an
  * improved prompt reaches existing jobs only when the user re-picks the preset.
  *
+ * ONE exception exists: #4852 renamed the agent-instructions file this contract
+ * tells the agent to read, and a stored job naming CLAUDE.md but not AGENTS.md
+ * would send an agent to a file its target repo may no longer have. Migration
+ * 294 rewrites those job prompts — but ONLY where the stored string is byte-for-byte
+ * a prior unmodified render, which is the same 'unmodified default ⇒ safe to
+ * upgrade' rule PREVIOUS_DEFAULT_PROMPTS uses. Any future preset edit that must
+ * reach existing jobs needs the same treatment.
+ *
  * Pure module: strings only, no I/O. `routes/quotaBurn.js` serves the list in
  * the config catalog; the client's preset picker applies one to a job row.
  */
@@ -118,10 +126,10 @@ token from the local keyring:
 \`curl -sS -H "Authorization: Bearer $TOK" -H "Accept: application/vnd.github+json" -d @"$BODY" https://api.github.com/repos/<owner>/<repo>/issues\`.
 A window spent finding real problems and filing none is a wasted window.
 
-Read this repository's \`CLAUDE.md\` (and any nested per-directory ones covering
-the slice) before you start, and honor its conventions and its explicitly
-declared non-issues — a finding that contradicts a documented project decision
-is noise, not a bug.`.trim();
+Read this repository's \`AGENTS.md\` (or \`CLAUDE.md\`, and any nested
+per-directory ones covering the slice) before you start, and honor its
+conventions and its explicitly declared non-issues — a finding that contradicts
+a documented project decision is noise, not a bug.`.trim();
 
 const auditPreset = ({ id, label, summary, labels, dedupeSearch, mission }) => Object.freeze({
   id,

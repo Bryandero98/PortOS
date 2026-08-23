@@ -18,7 +18,7 @@
  * `queueRecordWrite(id, fn)`: two writes to the SAME (type, id) serialize —
  * local create/update AND remote peer applies AND tombstone GC all queue on the
  * same per-id tail, so a peer sync landing mid-way through a local write can't
- * read a stale snapshot and drop the other write (the CLAUDE.md-sanctioned
+ * read a stale snapshot and drop the other write (the AGENTS.md-sanctioned
  * "serialize two write paths that mutate the same record" case). Writes to
  * different records no longer serialize against each other. brainJournal layers
  * its own storeMutex ON TOP for the read→mutate→write of a single journal entry;

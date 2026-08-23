@@ -301,7 +301,7 @@ export function mergeTrackRecord(local, remoteRaw) {
   if (!local) return { next: remote, inserted: true, remoteWins: true, changed: true };
   const remoteWins = compareNewerWins(remote.updatedAt, local.updatedAt);
   let next = remoteWins ? remote : local;
-  // Absent-vs-cleared (#2911, per the CLAUDE.md merge convention): a payload
+  // Absent-vs-cleared (#2911, per the AGENTS.md merge convention): a payload
   // from a chiptune-unaware (≤v2) peer lacks the chiptune KEYS entirely, while
   // a v3 peer that intentionally cleared the score sends `chiptuneScore: null`
   // explicitly. Sanitizing collapses both to null, so gate on key presence in
@@ -321,7 +321,7 @@ export function mergeTrackRecord(local, remoteRaw) {
 
 /**
  * Apply a partial patch onto an existing record. Only keys PRESENT in `patch`
- * overwrite — absent preserves, present-empty clears (per CLAUDE.md). Bumps
+ * overwrite — absent preserves, present-empty clears (per AGENTS.md). Bumps
  * updatedAt.
  */
 export function applyTrackPatch(current, patch = {}) {

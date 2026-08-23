@@ -583,7 +583,7 @@ const OLLAMA_CAPABILITY_BADGES = {
  * `null` for a NON-ARRAY input, which is what `/api/tags` gives: that listing
  * carries no capability flags at all, so nothing was reported and nothing is
  * known. Returning `[]` there would collapse "not probed" into "claims
- * nothing" — the sentinel mistake root CLAUDE.md forbids — which rendered an
+ * nothing" — the sentinel mistake root AGENTS.md forbids — which rendered an
  * empty badge row on the install catalog and made every capability test look
  * inapplicable. `/api/show` is what actually knows; an EMPTY array from it is a
  * real answer and stays `[]`.

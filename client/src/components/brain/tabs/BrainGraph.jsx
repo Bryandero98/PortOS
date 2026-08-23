@@ -428,7 +428,7 @@ export default function BrainGraph() {
           : 'Syncing brain data to memory…',
       { id: toastId }
     );
-    // silent:true — this catch owns the error toast (CLAUDE.md: custom catch ⇒ silent).
+    // silent:true — this catch owns the error toast (AGENTS.md: custom catch ⇒ silent).
     const stats = await api.syncBrainData({ refresh, onlyMissing }, { silent: true }).catch(err => {
       toast.error(err.message || 'Sync failed', { id: toastId });
       return null;

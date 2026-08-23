@@ -8,7 +8,7 @@
  *
  * ## Two rules this panel exists to honour
  *
- * 1. **No cold-bootstrap LLM calls** (root CLAUDE.md). Reading assessments hits
+ * 1. **No cold-bootstrap LLM calls** (root AGENTS.md). Reading assessments hits
  *    disk only, so it loads with the tab. Running one calls a provider, so it
  *    fires only from an explicit click AND a consent modal that names the
  *    backend, the model, and how many generations are about to happen. The
@@ -728,7 +728,7 @@ export function LocalModelAssessments() {
   const load = useCallback(async (nextIntent) => {
     setLoading(true);
     // The panel owns its own empty/error rendering, so silence the default toast
-    // (client/src/CLAUDE.md: custom catch ⇒ silent).
+    // (client/src/AGENTS.md: custom catch ⇒ silent).
     const data = await getLocalLlmAssessments(nextIntent, { silent: true }).catch(() => null);
     setReport(data);
     setLoading(false);
@@ -738,7 +738,7 @@ export function LocalModelAssessments() {
 
   const loadCapabilities = useCallback(async () => {
     setCapabilityLoading(true);
-    // The panel renders its own empty/error state (client/src/CLAUDE.md: custom
+    // The panel renders its own empty/error state (client/src/AGENTS.md: custom
     // catch ⇒ silent).
     const data = await getModelCapabilityTests({ silent: true }).catch(() => null);
     setCapabilityReport(data);

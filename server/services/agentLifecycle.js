@@ -402,7 +402,7 @@ async function runAgentSpawn(task) {
 
     // Lean mode: an Ollama-backed Claude session gets `--bare --strict-mcp-config`
     // (see applyLeanClaudeArgs) so the user's personal environment — hooks,
-    // plugins, MCP servers, global CLAUDE.md — doesn't drown the small local
+    // plugins, MCP servers, the global ~/.claude/CLAUDE.md — doesn't drown the small local
     // model. This is orthogonal to the prompt split below.
     const leanMode = isOllamaClaudeProvider(provider);
 

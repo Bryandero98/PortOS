@@ -4,7 +4,7 @@
  *
  * It replaced the `[task-<id>]` commit-marker grep that used to live in
  * `agentRunTracking.js`: nothing in PortOS ever emitted that marker (the root
- * CLAUDE.md requires human-readable commit subjects, so stamping an opaque task
+ * AGENTS.md requires human-readable commit subjects, so stamping an opaque task
  * id into every permanent commit was never an option), so the criterion was
  * unsatisfiable and scored every ordinary code-editing run a failure.
  *

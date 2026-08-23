@@ -30,7 +30,7 @@
  * neither probes this host for it nor offers to start it here.
  *
  * No LLM call is ever made here — `GET /v1/models` is a listing, so this is safe
- * to poll from a settings page under the no-cold-bootstrap policy in CLAUDE.md.
+ * to poll from a settings page under the no-cold-bootstrap policy in AGENTS.md.
  */
 
 import { localRuntimeForProvider } from '../lib/localProviderRuntime.js';

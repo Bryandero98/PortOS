@@ -190,7 +190,7 @@ describe('image-to-3D model orchestration', () => {
     const result = await recoverInterruptedModels();
     expect(result).toEqual({ recovered: 2 });
     // The whole point of boot recovery: mark interrupted renders failed-retryable
-    // WITHOUT relaunching any GPU work (CLAUDE.md no-cold-bootstrap policy).
+    // WITHOUT relaunching any GPU work (AGENTS.md no-cold-bootstrap policy).
     expect(runTrellis2Generate).not.toHaveBeenCalled();
   });
 

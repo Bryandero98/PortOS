@@ -53,7 +53,7 @@ function execGlab(args, cwd, timeoutMs = DEFAULT_EXEC_GLAB_TIMEOUT_MS) {
 
 /**
  * Run a `glab … list` command and parse its JSON array. Three answers, not two —
- * the absent-vs-empty split every caller needs (CLAUDE.md):
+ * the absent-vs-empty split every caller needs (AGENTS.md):
  *
  *   - `ok`         — glab answered; `rows` is the (possibly empty) array.
  *   - `cli-failed` — we could not ask (non-zero exit: unauthenticated, no

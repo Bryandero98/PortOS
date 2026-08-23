@@ -278,7 +278,7 @@ export async function createTicket(instanceId, ticketData) {
 /**
  * Search JIRA issues by an arbitrary JQL string. STRICT variant — lets fetch
  * errors bubble so a caller can distinguish a transient API failure from a
- * legitimately empty result set (the CLAUDE.md sentinel rule). `fields` selects
+ * legitimately empty result set (the AGENTS.md sentinel rule). `fields` selects
  * the returned issue fields; `maxResults` caps the page.
  *
  * Returns `[{ key, summary, description, status, statusCategory, labels, updated, url }]`.
@@ -443,7 +443,7 @@ export async function transitionTicket(instanceId, ticketId, transitionId) {
  * Fetch tickets assigned to the current user in the active sprint for a project —
  * STRICT variant that lets fetch errors bubble. Used by the issue-reconcile JIRA
  * gatherer, which must distinguish a transient API failure (skip, don't park) from
- * a legitimately empty sprint ([], a valid answer) — the sentinel rule in CLAUDE.md.
+ * a legitimately empty sprint ([], a valid answer) — the sentinel rule in AGENTS.md.
  * The UI-facing `getMyCurrentSprintTickets` wraps this and swallows to [] instead.
  */
 export async function fetchMyCurrentSprintTickets(instanceId, projectKey) {

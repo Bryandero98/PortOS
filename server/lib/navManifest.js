@@ -1,7 +1,7 @@
 // Single source of truth for PortOS navigation. Consumed by
 // server/services/voice/tools.js#ui_navigate and the Cmd+K palette.
 // Entry: { id, path, label, section, aliases?, keywords?, previousPaths? }.
-// See CLAUDE.md "Command Palette & Voice Nav" for the contract.
+// See AGENTS.md "Command Palette & Voice Nav" for the contract.
 //
 // `previousPaths` lists every path this page has ANSWERED TO BEFORE — including
 // its parameterized drill-downs, written with the OLD route's param name (the

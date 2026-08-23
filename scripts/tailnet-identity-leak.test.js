@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 // Regression guard: a real Tailscale MagicDNS tailnet suffix, real device
 // names, and a real CGNAT peer IP were once committed across ~14 tracked
 // files (server routes/lib, client lib, several test fixtures, doc plans,
-// and two changelog entries) — a violation of this repo's own CLAUDE.md
+// and two changelog entries) — a violation of this repo's own AGENTS.md
 // "Sensitive Data & Privacy" section, which lists Tailscale node/MagicDNS
 // names and Tailscale/LAN IPs as never-commit categories. This test fails
 // the moment a real-looking value of either kind lands in a tracked file
@@ -102,7 +102,7 @@ function realTailnetOffenders(text) {
     .map(([match]) => match);
 }
 
-describe('no real Tailscale identity in tracked files (see CLAUDE.md Sensitive Data & Privacy)', () => {
+describe('no real Tailscale identity in tracked files (see AGENTS.md Sensitive Data & Privacy)', () => {
   it('detector matches a real-shaped tailnet suffix and not existing placeholders (self-check)', () => {
     // Synthetic values shaped like real auto-generated Tailscale suffixes
     // (never observed real ones) — proves the detector actually fires.

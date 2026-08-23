@@ -10,7 +10,7 @@
  *   - re-reads the commission + autonomy config on every fire (only the cron is
  *     captured at registration).
  *
- * Cold-bootstrap compliance (CLAUDE.md AI Provider Usage Policy): a commission is
+ * Cold-bootstrap compliance (AGENTS.md AI Provider Usage Policy): a commission is
  * a user-configured scheduled automation — the sanctioned exception. `start…()`
  * only ARMS crons; nothing fires until the cadence elapses. The fire handler
  * additionally gates on creative autonomy mode === 'execute' AND the daily cos

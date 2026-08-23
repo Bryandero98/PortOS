@@ -45,7 +45,7 @@ function persist() {
 }
 
 // Raise the reminder. Runs outside the request lifecycle, so the write is
-// guarded (per CLAUDE.md) — a thrown notification write can't crash the process.
+// guarded (per AGENTS.md) — a thrown notification write can't crash the process.
 function notify(timer, { overdue = false } = {}) {
   return addNotification({
     type: NOTIFICATION_TYPES.AGENT_WARNING,

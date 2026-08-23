@@ -141,7 +141,7 @@ capture, a free-text prompt for a follow-up agent, and tags.
 **The agent prompt.** Supplying `agentPrompt` queues a CoS task pointed at the
 stored transcript with that prompt as its brief — "here is what I want done with
 this content." Leaving it blank queues nothing: PortOS never starts AI work the
-user did not ask for (see the AI Provider Usage Policy in the root `CLAUDE.md`).
+user did not ask for (see the AI Provider Usage Policy in the root `AGENTS.md`).
 
 **Transcripts.** yt-dlp is asked for English captions; the metadata dump's
 `subtitles` key (not the produced filename, which is identical for both kinds)

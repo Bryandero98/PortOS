@@ -586,7 +586,7 @@ describe('mediaJobQueue', () => {
     // reaches disk; this one proves the debounce, by counting writes. Without
     // it the test above would still pass if scheduleProgressPersist regressed
     // to a naive per-event persist() — the high-frequency-write antipattern
-    // CLAUDE.md forbids. We pin the coalescing by counting atomicWrite calls
+    // AGENTS.md forbids. We pin the coalescing by counting atomicWrite calls
     // under a burst of N progress events (must be ≪ N within one window).
     const file = join(tempDataDir, 'media-jobs.json');
     const job = mediaJobQueue.enqueueJob({ kind: 'video', params: { prompt: 'burst' } });

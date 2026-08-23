@@ -342,7 +342,7 @@ export async function spawnDirectly({
   const fullCommand = `${cliConfig.command} ${cliConfig.args.join(' ')} <<< "${(task.description || '').substring(0, 100)}..."`;
 
   const ROOT_DIR = PATHS.root;
-  // CD no-worktree tasks get an isolated scratch cwd so native CLAUDE.md
+  // CD no-worktree tasks get an isolated scratch cwd so native AGENTS.md
   // discovery cannot reach the PortOS repo tree (#4650). Everyone else keeps
   // workspacePath, falling back to the repo root when it was omitted.
   const cwd = resolveAgentCliCwd({ workspacePath, fallbackRoot: ROOT_DIR, task, agentId });

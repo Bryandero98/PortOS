@@ -746,7 +746,7 @@ export async function pullMissingAssetsFromPeer(senderInstanceId, missingAssets)
   if (!isStr(senderInstanceId) || !Array.isArray(missingAssets) || missingAssets.length === 0) return;
   // Trust posture: `senderInstanceId` arrives in the push payload (the route
   // is Tailnet-only per the project's documented threat model — see
-  // CLAUDE.md "Security Model"). We DON'T derive it from the TCP origin
+  // AGENTS.md "Security Model"). We DON'T derive it from the TCP origin
   // because Express behind Tailscale loses that fidelity to the SO_REUSEADDR
   // socket. The guard below means even a payload that *spoofs* a different
   // peer's id can only redirect the asset pull at one of our OWN registered

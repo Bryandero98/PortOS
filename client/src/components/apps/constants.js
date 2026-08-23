@@ -102,7 +102,7 @@ export const workItemNoun = (tracker) =>
 
 // Overview first, then alphabetical. Every id is a real route segment
 // (`/apps/:appId/:tab`) so each tab is linkable, bookmarkable, and reachable
-// from ⌘K — see the routing rules in client/src/CLAUDE.md.
+// from ⌘K — see the routing rules in client/src/AGENTS.md.
 //
 // `visibleWhen(app)` gates a tab that only some apps earn; omit it for the tabs
 // every app gets. Keeping the predicate on the entry means adding a conditional

@@ -88,7 +88,7 @@ export const buildSchedule = (score, bpmOverride) => {
 
 // Guard a UI callback that fires from a setInterval tick — an uncaught throw
 // there has no request boundary to bubble to and would leave the scheduler
-// interval orphaned. (CLAUDE.md: wrap non-request-lifecycle callbacks.)
+// interval orphaned. (AGENTS.md: wrap non-request-lifecycle callbacks.)
 // Exported as a factory so midiPlayback.js shares the guard with its own
 // log prefix instead of duplicating the body.
 export const makeSafeCall = (label) => (cb, ...args) => {

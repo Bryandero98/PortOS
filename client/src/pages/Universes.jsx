@@ -132,7 +132,7 @@ export default function Universes() {
     let cancelled = false;
     // Universes drive the page; resolve `loading` as soon as they land so a
     // slow/hung series fetch can't keep the list stuck on "Loading…".
-    // silent: the custom catch below owns the error toast (CLAUDE.md).
+    // silent: the custom catch below owns the error toast (AGENTS.md).
     listUniverses({ silent: true })
       .catch((err) => {
         toast.error(err.message || 'Failed to load universes');
@@ -204,11 +204,11 @@ export default function Universes() {
 
   // Inline delete confirm: the trash button arms the row (one at a time) and an
   // explicit Delete?/Cancel row fires it. Avoids window.confirm (banned per
-  // CLAUDE.md) and the non-discoverable two-click-arm pattern.
+  // AGENTS.md) and the non-discoverable two-click-arm pattern.
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
   const handleDelete = (u) => confirmDelete(async () => {
     setUniverses((prev) => prev.filter((x) => x.id !== u.id));
-    // silent: the custom catch below owns the error toast (CLAUDE.md).
+    // silent: the custom catch below owns the error toast (AGENTS.md).
     await deleteUniverse(u.id, { silent: true }).catch((err) => {
       toast.error(err.message || 'Delete failed');
       // Roll back only this row (re-insert if still missing) so a concurrent

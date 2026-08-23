@@ -1,6 +1,6 @@
 // Barrel for client/src/hooks/ — discovery surface, not a forced import path.
 // See client/src/hooks/README.md for the human-readable catalog and
-// CLAUDE.md "Module organization" for the maintenance convention.
+// AGENTS.md "Module organization" for the maintenance convention.
 //
 // Hooks export shape: most are named exports (`export function useX`), but a
 // handful default-export (`export default function useX`). The barrel

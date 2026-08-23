@@ -14,7 +14,7 @@
  *            perpetual mode parks on 'no-detector' — so it reads the same sprint
  *            query the app's Kanban board uses, minus already-started tickets)
  *
- * Sentinel discipline (CLAUDE.md): a failed probe returns `items: []` WITH the
+ * Sentinel discipline (AGENTS.md): a failed probe returns `items: []` WITH the
  * detector's `reason` + `transient: true`, so the caller can say "couldn't
  * reach the tracker" instead of the lie "no work available".
  */
