@@ -58,6 +58,7 @@ const DUAL_NAME_IMPLEMENTATION = [
   'server/services/agentPromptBuilder.js',
   'server/services/agentPromptBuilder.test.js',
   'server/lib/agentInstructionsFile.js',
+  'server/lib/agentInstructionsFile.test.js',
   'scripts/agent-instructions-files.test.js',
 ];
 
