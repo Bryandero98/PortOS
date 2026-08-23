@@ -271,7 +271,7 @@ export const deleteLora = async (filename) => {
     );
   }
   await rm(filePath, { force: true });
-  await rm(sidecarPath(filename), { force: true });
+  await removeSidecar(filename);
   console.log(`🗑️ Deleted LoRA: ${filename}`);
   return { ok: true, filename };
 };
@@ -279,13 +279,26 @@ export const deleteLora = async (filename) => {
 // Patch the sidecar with user-editable fields (name, recommendedScale, notes).
 // Civitai-derived fields are passed through but the route layer scopes the
 // patch so callers can't trample those.
-// One sidecar patch at a time per LoRA. Every patch is a read-modify-write of a
-// whole JSON document, and there are now several writers: the user renaming a
-// LoRA in the manager, listLoras() healing keyLayout/fluxVariant on read, and
-// the effect probe caching its measurement when it finishes. Interleaved, the
-// last write wins the whole file and silently drops the other's field. Keyed, so
-// patches to different LoRAs still run in parallel.
+// One sidecar write at a time per LoRA. A patch is a read-modify-write of a
+// whole JSON document, and there are several writers: the user renaming a LoRA
+// in the manager, listLoras() healing keyLayout/fluxVariant on read, the effect
+// probe caching its measurement when it finishes, and the two installers
+// replacing the sidecar wholesale. Interleaved, the last write wins the whole
+// file and silently drops the other's field — a re-install over an existing
+// filename could have its fresh civitai block overwritten by a patch that read
+// the pre-install sidecar. EVERY writer goes through here, not just patches, or
+// the serialization is a half-measure. Keyed, so different LoRAs still run in
+// parallel.
 const queueSidecarWrite = createKeyedFileWriteQueue();
+
+// Replace a sidecar wholesale (the install paths), serialized against patches.
+const writeSidecar = (filename, sidecar) => queueSidecarWrite(filename, () =>
+  atomicWrite(sidecarPath(filename), JSON.stringify(sidecar, null, 2) + '\n'));
+
+// Remove a sidecar, serialized so a queued patch can't recreate it after the
+// LoRA is gone.
+const removeSidecar = (filename) => queueSidecarWrite(filename, () =>
+  rm(sidecarPath(filename), { force: true }));
 
 export const patchLoraSidecar = async (filename, patch) => {
   assertSafeLoraFilename(filename);
@@ -573,7 +586,7 @@ export const installFromCivitai = async (input, { fetchImpl = fetch } = {}) => {
   await verifyDownloadedLora(destPath, { expectedSha256: file?.hashes?.SHA256 || null, source: 'civitai' });
 
   const sidecar = await withKeyLayout(buildSidecar({ model, version, file, filename }), destPath);
-  await atomicWrite(sidecarPath(filename), JSON.stringify(sidecar, null, 2) + '\n');
+  await writeSidecar(filename, sidecar);
   console.log(`✅ Installed Civitai LoRA: ${filename} [layout=${sidecar.keyLayout || 'unknown'}]`);
   return sidecar;
 };
@@ -672,7 +685,7 @@ export const installFromHuggingface = async (input, { fetchImpl = fetch, onProgr
     buildHfLoraSidecar({ repo, revision, file, model, family, filename, fluxVariant }),
     destPath,
   );
-  await atomicWrite(sidecarPath(filename), JSON.stringify(sidecar, null, 2) + '\n');
+  await writeSidecar(filename, sidecar);
   console.log(`✅ Installed HuggingFace LoRA: ${filename} [layout=${sidecar.keyLayout || 'unknown'}]`);
   return sidecar;
 };

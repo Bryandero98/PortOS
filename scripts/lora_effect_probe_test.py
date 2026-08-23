@@ -96,13 +96,14 @@ def run(tmp):
     check("read_header refuses an absurd header length", read_header(absurd) == (None, 0))
 
     # --- pairing ------------------------------------------------------------
-    paired = pair_lora_modules({
+    paired, unpairable = pair_lora_modules({
         "m.lora_A.weight": {}, "m.lora_B.weight": {},
         "k.lora_down.weight": {}, "k.lora_up.weight": {}, "k.alpha": {},
         "lonely.lora_A.weight": {},
         "__metadata__": {},
     })
     check("pairs bare and kohya modules, drops the unpaired one", sorted(paired) == ["k", "m"])
+    check("the unpaired module is COUNTED, not silently dropped", unpairable == 1)
     check("kohya alpha is attached to its module", paired["k"].get("alpha") == "k.alpha")
 
     # --- a healthy adapter --------------------------------------------------
@@ -265,6 +266,26 @@ def run(tmp):
     report = measure_lora_effect(tiny)
     check("a tiny-but-real adapter is ok, never underflowed into a zero refusal",
           report["status"] == "ok" and report["maxRms"] > 0)
+
+    # A hybrid adapter whose lora pairs are zeroed but whose effect rides on a
+    # DoRA/LyCORIS tensor we cannot multiply out must NOT be refused: `zero`
+    # claims the adapter is provably inert, and we did not measure all of it.
+    hybrid = tmp / "hybrid_dora.safetensors"
+    write_safetensors(hybrid, {
+        **bare_pair("m", rng.normal(size=(8, 64)).astype(np.float32), np.zeros((64, 8), np.float32)),
+        "m.lora_magnitude_vector": np.full((64,), 1.5, np.float32),
+    })
+    report = measure_lora_effect(hybrid)
+    check("a zeroed pair beside an unmeasurable DoRA tensor does not refuse",
+          report["status"] == "ok" and report["skippedUnsupported"] == 1)
+
+    lycoris = tmp / "hybrid_lycoris.safetensors"
+    write_safetensors(lycoris, {
+        **bare_pair("m", rng.normal(size=(8, 64)).astype(np.float32), np.zeros((64, 8), np.float32)),
+        "m.hada_w1_a": np.ones((4, 4), np.float32),
+    })
+    check("a LyCORIS Hadamard factor also blocks the zero refusal",
+          measure_lora_effect(lycoris)["status"] == "ok")
 
     # --- kohya alpha edge cases ---------------------------------------------
     neg_alpha = tmp / "kohya_negative_alpha.safetensors"

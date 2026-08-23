@@ -13,12 +13,16 @@
  *    route or from the render path that is about to spend GPU minutes on the
  *    adapter — both of which are a user asking for the answer.
  *
- * 2. **Cached in the sidecar, keyed by file size + probe version.** A LoRA is
- *    measured once; every later render and every library page reads the stored
- *    report for free. Replacing the file (different size) or bumping the probe
- *    re-measures. An `unmeasurable` result is deliberately NOT cached — it
- *    describes this machine's Python, not the adapter, and caching it would
- *    make a transient environment problem permanent.
+ * 2. **Cached in the sidecar, keyed by probe version + file size + mtime.** A
+ *    LoRA is measured once; every later render and every library page reads the
+ *    stored report for free. Bumping the probe, or any rewrite of the file
+ *    (including a same-size one), re-measures. An `unmeasurable` result is
+ *    deliberately NOT cached — it describes this machine's Python, not the
+ *    adapter, and caching it would make a transient environment problem
+ *    permanent. The ONE exception is our own timeout: that describes what
+ *    reading this file costs on this storage, which is what the key already
+ *    scopes, and without caching it a slow adapter re-burns the budget before
+ *    every render.
  *
  * 3. **Never fatal.** Every PROBE failure — no interpreter, no numpy, spawn
  *    error, timeout, malformed output — resolves to an `unmeasurable` report.
@@ -60,7 +64,8 @@ export const LORA_EFFECT_PROBE_SCRIPT = join(PATHS.root, 'scripts', 'lora_effect
 // It is a budget for the WHOLE candidate walk, not per interpreter: this runs
 // inline ahead of a render, before the job even has an id to report progress
 // against, so N installed venvs must not be able to multiply the stall.
-const PROBE_TIMEOUT_MS = 300_000;
+export const LORA_EFFECT_PROBE_BUDGET_MS = 300_000;
+const PROBE_TIMEOUT_MS = LORA_EFFECT_PROBE_BUDGET_MS;
 
 const installedCandidates = (paths) => [
   ...new Set(paths.filter((p) => typeof p === 'string' && p && existsSync(p))),
@@ -133,9 +138,16 @@ const runProbeOnce = async (bin, filePath, budgetMs) => {
   // forever. Hold the handle and escalate to SIGKILL, as every other
   // runSidecarProcess caller does.
   let child = null;
+  // OUR timeout, specifically. `result.canceled` is set for ANY SIGTERM/SIGKILL
+  // death of the child — an OOM kill, a stray pkill, a process-group signal
+  // during shutdown — and only our own budget expiring may be reported as (and
+  // cached as) a timeout. Reading them as the same thing would permanently badge
+  // an adapter "Not measurable" because something unrelated killed one probe.
+  let didTimeout = false;
   try {
     result = await withAbortTimeout(budgetMs, (signal) => {
       signal.addEventListener('abort', () => {
+        didTimeout = true;
         if (child) killWithEscalation(child, { label: 'LoRA effect probe', stillRunning: () => true });
       }, { once: true });
       return runSidecarProcess({
@@ -157,8 +169,11 @@ const runProbeOnce = async (bin, filePath, budgetMs) => {
   // caller needs the honest "no result" reason, not a null dereference.
   const report = parsed ? normalizeLoraEffectReport(parsed) : null;
   if (report) return { report };
+  if (didTimeout) return { report: timeoutReport(), timedOut: true };
   if (result.canceled) {
-    return { report: timeoutReport(), timedOut: true };
+    // Killed by something that isn't us — report it honestly and let the walk
+    // try another interpreter; nothing about the adapter has been learned.
+    return { report: unmeasurable(`the effect probe was killed (${result.reason || 'signal'})`) };
   }
   return { report: unmeasurable(`the effect probe produced no result (${result.reason || 'no output'})`) };
 };
@@ -166,7 +181,7 @@ const runProbeOnce = async (bin, filePath, budgetMs) => {
 // The measurement proper — everything after the cache miss. Split out so the
 // never-fatal guarantee is one `.catch` at the single call site below rather
 // than a defensive wrapper around each step.
-const measureLoraEffect = async (filename, filePath, { sizeBytes, mtimeMs }) => {
+const measureLoraEffect = async (filename, filePath, { sizeBytes, mtimeMs, deadline }) => {
   const candidates = await probeInterpreterCandidates();
   if (!candidates.length) {
     return unmeasurable('no Python interpreter with numpy is installed — set up a Video Gen or Image Gen runtime first');
@@ -175,7 +190,6 @@ const measureLoraEffect = async (filename, filePath, { sizeBytes, mtimeMs }) => 
   // and this runs inline ahead of a render — say so, or the pause looks like a
   // hang with nothing in the log.
   console.log(`🔬 Measuring LoRA effect for ${filename} (${Math.round(sizeBytes / 1e6)} MB)`);
-  const deadline = Date.now() + PROBE_TIMEOUT_MS;
   let last = null;
   let timedOut = false;
   for (const bin of candidates) {
@@ -205,9 +219,12 @@ const measureLoraEffect = async (filename, filePath, { sizeBytes, mtimeMs }) => 
     // a pathologically slow adapter re-burns the full budget ahead of every
     // single render, forever.
     if (!timedOut) return last;
-    const timeoutReport = normalizeLoraEffectReport(last, { sizeBytes, mtimeMs, measuredAt: new Date().toISOString() });
-    await patchLoraSidecar(filename, { effectReport: timeoutReport }).catch(() => {});
-    return timeoutReport;
+    // NOT named `timeoutReport`: that is a module-level helper, and shadowing it
+    // here would turn any future call to it earlier in this block into a TDZ
+    // ReferenceError rather than the helper.
+    const cachedTimeout = normalizeLoraEffectReport(last, { sizeBytes, mtimeMs, measuredAt: new Date().toISOString() });
+    await patchLoraSidecar(filename, { effectReport: cachedTimeout }).catch(() => {});
+    return cachedTimeout;
   }
   const report = normalizeLoraEffectReport(last, { sizeBytes, mtimeMs, measuredAt: new Date().toISOString() });
   console.log(`🔬 LoRA effect ${filename}: ${report.status} (${report.measured}/${report.modules} modules)`);
@@ -225,8 +242,12 @@ const measureLoraEffect = async (filename, filePath, { sizeBytes, mtimeMs }) => 
  * Returns a normalized report (never throws for a probe failure — see the
  * module header). `force: true` re-measures even when a fresh cached report
  * exists, which is what the manager's explicit re-check button passes.
+ *
+ * `deadline` (an epoch ms) lets a caller measuring SEVERAL adapters share one
+ * budget across all of them. Without it a 4-LoRA render could stall for four
+ * full budgets back to back, before the job even has an id to report against.
  */
-export const probeLoraEffect = async (filename, { force = false } = {}) => {
+export const probeLoraEffect = async (filename, { force = false, deadline = null } = {}) => {
   assertSafeLoraFilename(filename);
   const filePath = join(PATHS.loras, filename);
   const fileStat = await stat(filePath).catch(() => null);
@@ -254,7 +275,12 @@ export const probeLoraEffect = async (filename, { force = false } = {}) => {
   // rejects in an unmodelled way, anything. `assertSafeLoraFilename` above is
   // deliberately OUTSIDE it — a path-traversal attempt is a caller bug that
   // must still surface as a 400, not be swallowed into a soft verdict.
-  return inFlight.run(filePath, () => measureLoraEffect(filename, filePath, stamps)
+  // A caller-supplied deadline can only ever SHORTEN the budget — it is a
+  // shared allowance, not a way to ask for more time than the probe permits.
+  const ownDeadline = Date.now() + PROBE_TIMEOUT_MS;
+  const effectiveDeadline = deadline == null ? ownDeadline : Math.min(deadline, ownDeadline);
+
+  return inFlight.run(filePath, () => measureLoraEffect(filename, filePath, { ...stamps, deadline: effectiveDeadline })
     .catch((err) => {
       console.log(`⚠️ LoRA effect probe failed for ${filename}: ${err?.message || err}`);
       return unmeasurable(`the effect probe failed unexpectedly (${err?.message || err})`);

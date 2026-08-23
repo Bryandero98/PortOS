@@ -90,6 +90,26 @@ EXIT_NO_NUMPY = 3
 _DOWN_SUFFIXES = ("lora_a.weight", "lora_down.weight", "lora_a", "lora_down")
 _UP_SUFFIXES = ("lora_b.weight", "lora_up.weight", "lora_b", "lora_up")
 
+# Adapter tensors that carry real effect but are NOT a low-rank pair this probe
+# can multiply out: DoRA magnitude vectors, LyCORIS Hadamard/Kronecker factors,
+# orthogonal fine-tuning blocks, and kohya's full-rank `.diff` deltas.
+#
+# They exist only so the `zero` verdict stays honest. `zero` refuses a render on
+# the claim that the adapter is PROVABLY inert — but a hybrid file whose lora_A/
+# lora_B pairs are zeroed while its effect rides on one of these would otherwise
+# look entirely-zero, because tensors that never enter pair_lora_modules are
+# neither measured NOR counted as skipped. Counting them makes the file report
+# `ok` with a skip count, which is the truthful answer: we could not measure all
+# of it.
+_UNMEASURABLE_ADAPTER_MARKERS = (
+    "lora_magnitude_vector",
+    "hada_w",
+    "lokr_",
+    "oft_",
+    "boft_",
+    ".diff",
+)
+
 # dtype tag -> (numpy dtype string, bytes per element). BF16 has no numpy dtype;
 # it is widened to float32 by shifting the 16 stored bits into the high half of
 # a float32, which is exact (bfloat16 IS the top half of a float32).
@@ -144,7 +164,7 @@ def _split_suffix(name: str) -> tuple[str, str] | None:
     return None
 
 
-def pair_lora_modules(header: dict) -> dict[str, dict[str, str]]:
+def pair_lora_modules(header: dict) -> tuple[dict[str, dict[str, str]], int]:
     """Group tensor names into ``{module: {'down': name, 'up': name, 'alpha': name}}``.
 
     Covers every layout PortOS classifies: bare and ComfyUI files name the pair
@@ -152,6 +172,10 @@ def pair_lora_modules(header: dict) -> dict[str, dict[str, str]]:
     ships a companion ``alpha`` scalar. The diagnostic deliberately measures
     layouts the LTX-2 loader cannot fuse too — "this adapter is dead" is worth
     knowing about a kohya file the user is about to re-export.
+
+    Also returns a count of adapter tensors it could NOT pair: an incomplete pair,
+    or one of the _UNMEASURABLE_ADAPTER_MARKERS families. See that constant for
+    why the count matters to the `zero` verdict.
     """
     modules: dict[str, dict[str, str]] = {}
     for name in header:
@@ -169,7 +193,13 @@ def pair_lora_modules(header: dict) -> dict[str, dict[str, str]]:
         prefix, role = split
         modules.setdefault(prefix, {})[role] = name
     # Only complete pairs are measurable; a lone lora_A carries no delta.
-    return {k: v for k, v in modules.items() if "down" in v and "up" in v}
+    complete = {k: v for k, v in modules.items() if "down" in v and "up" in v}
+    unpairable = len(modules) - len(complete)
+    for name in header:
+        lowered = name.lower()
+        if any(marker in lowered for marker in _UNMEASURABLE_ADAPTER_MARKERS):
+            unpairable += 1
+    return complete, unpairable
 
 
 def _read_tensor(np, handle, payload_offset: int, desc, file_size: int, *, allow_scalar: bool = False):
@@ -306,8 +336,9 @@ def measure_lora_effect(path) -> dict:
         report["reason"] = f"{path.name} is not a readable safetensors file"
         return report
 
-    modules = pair_lora_modules(header)
+    modules, unpairable = pair_lora_modules(header)
     report["modules"] = len(modules)
+    report["skippedUnsupported"] = unpairable
     if not modules:
         report["reason"] = f"{path.name} contains no lora_A/lora_B (or lora_down/lora_up) pairs"
         return report

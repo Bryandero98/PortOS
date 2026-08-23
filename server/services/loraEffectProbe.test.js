@@ -35,9 +35,17 @@ vi.mock('../lib/fileUtils.js', () => ({ PATHS: { root: '/mock/root', loras: MOCK
 
 vi.mock('../lib/sidecarProcess.js', async (importOriginal) => ({
   ...await importOriginal(),
-  runSidecarProcess: vi.fn(async ({ bin, args }) => {
+  runSidecarProcess: vi.fn(async ({ bin, args, signal }) => {
     state.runs.push({ bin, args });
-    return state.responses.shift() || { ok: true, stdout: '' };
+    const response = state.responses.shift() || { ok: true, stdout: '' };
+    // `aborted: true` models OUR budget expiring: withAbortTimeout fires the
+    // signal, the caller's listener observes it, and the child then dies of the
+    // SIGTERM that follows. A response with `canceled` but no `aborted` models
+    // an EXTERNAL kill (OOM, stray pkill), where the signal never fires — the
+    // distinction the production code has to make.
+    if (response.aborted) signal?.dispatchEvent(new Event('abort'));
+    const { aborted, ...rest } = response;
+    return rest;
   }),
 }));
 
@@ -191,7 +199,7 @@ describe('probeLoraEffect — never fatal, never a false verdict', () => {
   });
 
   it('reports unmeasurable on a timeout rather than surfacing a cancel', async () => {
-    state.responses = [{ ok: false, canceled: true, reason: 'cancelled (SIGTERM)', stdout: '' }];
+    state.responses = [{ ok: false, canceled: true, aborted: true, reason: 'cancelled (SIGTERM)', stdout: '' }];
     state.existing = new Set(['/venv/ltx2/bin/python3']);
     const report = await probeLoraEffect('style.safetensors');
     expect(report.status).toBe('unmeasurable');
@@ -204,7 +212,7 @@ describe('probeLoraEffect — never fatal, never a false verdict', () => {
     // runs before generateVideo even mints a job id, so the UI shows nothing
     // while it waits.
     state.responses = [
-      { ok: false, canceled: true, reason: 'cancelled (SIGTERM)', stdout: '' },
+      { ok: false, canceled: true, aborted: true, reason: 'cancelled (SIGTERM)', stdout: '' },
       { ok: true, stdout: resultLine(OK_PAYLOAD) },
     ];
     const report = await probeLoraEffect('style.safetensors');
@@ -221,7 +229,7 @@ describe('probeLoraEffect — never fatal, never a false verdict', () => {
     // Asserting the WRITE alone is vacuous: a report stamped with the wrong
     // probe version is written and then never read back, which is exactly how
     // this regressed once. Feed the stored value back through the cache.
-    state.responses = [{ ok: false, canceled: true, reason: 'cancelled (SIGTERM)', stdout: '' }];
+    state.responses = [{ ok: false, canceled: true, aborted: true, reason: 'cancelled (SIGTERM)', stdout: '' }];
     await probeLoraEffect('style.safetensors');
     expect(state.patched).toHaveLength(1);
     const stored = state.patched[0].patch.effectReport;
@@ -233,6 +241,30 @@ describe('probeLoraEffect — never fatal, never a false verdict', () => {
     const second = await probeLoraEffect('style.safetensors');
     expect(state.runs).toHaveLength(0);
     expect(second.status).toBe('unmeasurable');
+  });
+
+  it('does not mistake an EXTERNAL kill for its own timeout', async () => {
+    // runSidecarProcess reports `canceled` for any SIGTERM/SIGKILL death — an
+    // OOM kill, a stray pkill, a process-group signal at shutdown. Reading that
+    // as "our budget expired" would permanently badge the adapter Not
+    // measurable, because timeouts are the one unmeasurable verdict we cache.
+    state.responses = [
+      { ok: false, canceled: true, reason: 'cancelled (SIGKILL)', stdout: '' },
+      { ok: true, stdout: resultLine(OK_PAYLOAD) },
+    ];
+    const report = await probeLoraEffect('style.safetensors');
+    expect(state.runs.length).toBeGreaterThan(1);
+    expect(report.status).toBe('ok');
+    expect(state.patched.some((w) => w.patch.effectReport?.status === 'unmeasurable')).toBe(false);
+  });
+
+  it('reports an external kill honestly rather than as a budget overrun', async () => {
+    state.existing = new Set(['/venv/ltx2/bin/python3']);
+    state.responses = [{ ok: false, canceled: true, reason: 'cancelled (SIGKILL)', stdout: '' }];
+    const report = await probeLoraEffect('style.safetensors');
+    expect(report.status).toBe('unmeasurable');
+    expect(report.reason).toMatch(/killed/i);
+    expect(state.patched).toHaveLength(0);
   });
 
   it('never caches the previous candidate\'s verdict when the budget runs out between them', async () => {
@@ -311,6 +343,15 @@ describe('probeLoraEffect — never fatal, never a false verdict', () => {
     const report = await probeLoraEffect('style.safetensors');
     expect(report.status).toBe('unmeasurable');
     expect(report.reason).toMatch(/could not be started/i);
+  });
+
+  it('honors a caller deadline that has already passed, without spawning', async () => {
+    // resolveVideoLoras shares ONE deadline across every selected adapter, so a
+    // batch cannot stall for one full budget per LoRA.
+    state.responses = [{ ok: true, stdout: resultLine(OK_PAYLOAD) }];
+    const report = await probeLoraEffect('style.safetensors', { deadline: Date.now() - 1 });
+    expect(state.runs).toHaveLength(0);
+    expect(report.status).toBe('unmeasurable');
   });
 
   it('coalesces concurrent probes of the same file into one child', async () => {

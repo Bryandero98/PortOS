@@ -315,6 +315,7 @@ vi.mock('../loras.js', () => ({
 // gate's own tests set a status explicitly.
 const loraEffectState = vi.hoisted(() => ({ reportByFilename: {}, defaultReport: { status: 'unmeasurable', measured: 0, reason: 'no numpy' } }));
 vi.mock('../loraEffectProbe.js', () => ({
+  LORA_EFFECT_PROBE_BUDGET_MS: 300_000,
   probeLoraEffect: vi.fn(async (filename) => loraEffectState.reportByFilename[filename] || loraEffectState.defaultReport),
 }));
 
