@@ -2,8 +2,9 @@
  * YouTube Watch-History Sync Scheduler (#2153)
  *
  * Registers an interval job that periodically runs the CDP scrape of the
- * signed-in YouTube history page (see youtubeSync.js). Mirrors spotifyScheduler /
- * imessageScheduler.
+ * signed-in YouTube history page (see youtubeSync.js). Shape shared with the
+ * iMessage/Signal/Spotify schedulers via `createSyncScheduler`
+ * (server/lib/createSettingsGatedSyncScheduler.js).
  *
  * OFF by default: only registered when the user has opted in via Settings →
  * YouTube (`settings.youtube.enabled`) AND is logged into YouTube in the managed
@@ -17,40 +18,17 @@
  * user intent + a signed-in browser profile.
  */
 
-import { schedule } from './eventScheduler.js';
+import { createSyncScheduler } from '../lib/createSettingsGatedSyncScheduler.js';
 import { getYoutubeConfig, runSync } from './youtubeSync.js';
-
-const EVENT_ID = 'youtube-sync';
 
 /**
  * Start the YouTube sync scheduler. No-ops when disabled in settings.
  */
-export async function startYoutubeScheduler() {
-  const { enabled, intervalMinutes } = await getYoutubeConfig();
-
-  if (!enabled) {
-    console.log('📺 YouTube sync scheduler: disabled in settings — skipping');
-    return;
-  }
-
-  const intervalMs = intervalMinutes * 60 * 1000;
-
-  schedule({
-    id: EVENT_ID,
-    type: 'interval',
-    intervalMs,
-    handler: async () => {
-      // Re-read settings each run so an `enabled: false` toggle takes effect
-      // without a restart (the interval value itself is locked at registration).
-      const current = await getYoutubeConfig();
-      if (!current.enabled) {
-        console.log('📺 YouTube sync scheduler: disabled since registration — skipping run');
-        return;
-      }
-      await runSync();
-    },
-    metadata: { source: 'youtubeScheduler' },
-  });
-
-  console.log(`📺 YouTube sync scheduler: registered every ${intervalMinutes}min`);
-}
+export const startYoutubeScheduler = createSyncScheduler({
+  id: 'youtube-sync',
+  label: 'YouTube',
+  icon: '📺',
+  source: 'youtubeScheduler',
+  getConfig: getYoutubeConfig,
+  runSync,
+});
