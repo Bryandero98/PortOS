@@ -110,6 +110,21 @@ describe('errorHandler.js', () => {
       expect(normalized.code).toBe('DUPLICATE_ENTRY');
     });
 
+    it.each(['ENOENT', 'EACCES', 'EISDIR', 'ENOTDIR', 'EPERM'])('hides filesystem details for %s errors', (code) => {
+      const error = Object.assign(new Error(`${code}: open /private/install/data/example.json`), { code });
+      const normalized = normalizeError(error);
+
+      expect(normalized.message).toBe('Filesystem operation failed');
+      expect(normalized.originalMessage).toContain('/private/install/data/example.json');
+      expect(buildErrorEnvelope(normalized, {})).not.toMatchObject({ error: expect.stringContaining('/private/install') });
+    });
+
+    it('keeps the original filesystem detail available to server-side logging', () => {
+      const error = Object.assign(new Error('ENOENT: open /private/install/data/example.json'), { code: 'ENOENT' });
+      const normalized = normalizeError(error);
+      expect(normalized.originalMessage).toBe(error.message);
+    });
+
     it('should convert string to ServerError', () => {
       const normalized = normalizeError('String error');
       expect(normalized instanceof ServerError).toBe(true);
