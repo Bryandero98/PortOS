@@ -98,7 +98,7 @@ import { GROK_VIDEO_DURATIONS, GROK_VIDEO_DEFAULT_DURATION } from '../lib/grokVi
 import ResolutionField from '../components/media/ResolutionField';
 import { VIDEO_EDGE_BOUNDS, videoEdgeBoundsForModel, IC_LORA_MODES } from '../lib/videoGenParams.js';
 import { finishTargetForRecord } from '../lib/videoFinish.js';
-import { peerModelAcceptsInput, peerModelRequiresInput } from '../lib/federatedMediaReadiness.js';
+import { peerModelRequiresInput } from '../lib/federatedMediaReadiness.js';
 const MODES = [
   { id: 'text',   label: 'Text',   icon: Type,       desc: 'Text-to-video' },
   { id: 'image',  label: 'Image',  icon: ImageIcon,  desc: 'Image-to-video (start frame)' },
@@ -206,8 +206,8 @@ export default function VideoGen() {
       // mode can be set before that input is filled — so gate the mode too
       // rather than letting an a2v render reach the peer as plain text-to-video.
       [`${mode} mode`, ![undefined, 'text', 'image', 'fflf'].includes(mode)],
-      ['a source image', !!sourceImageFile && !peerModelAcceptsInput(model, 'sourceImage')],
-      ['an end frame', !!lastImageFile && !peerModelAcceptsInput(model, 'lastImage')],
+      ['a source image', !!sourceImageFile && !remoteTarget.acceptsInput('sourceImage')],
+      ['an end frame', !!lastImageFile && !remoteTarget.acceptsInput('lastImage')],
       ['an uploaded frame (save it to the gallery first)', !!sourceImageUpload || !!lastImageUpload],
       ['keyframes', keyframesActive],
       ['a source clip to extend', !!extendFromVideoId],
@@ -228,7 +228,7 @@ export default function VideoGen() {
       return `${model?.modelName || 'The selected peer model'} renders only from a source image — add a start frame, or pick a text-to-video model.`;
     }
     return null;
-  }, [remoteTarget.isRemote, remoteTarget.model, isGrok, mode, sourceImageFile, sourceImageUpload,
+  }, [remoteTarget.isRemote, remoteTarget.model, remoteTarget.acceptsInput, isGrok, mode, sourceImageFile, sourceImageUpload,
     lastImageFile, lastImageUpload, keyframesActive, extendFromVideoId, audioFile, icReferenceFile,
     icReferenceVideoId, icReferenceImageFiles, selectedLoras, chunks]);
   // One reading for the Generate button, the enqueue guard and the caption.

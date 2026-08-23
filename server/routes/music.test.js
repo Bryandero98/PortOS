@@ -681,9 +681,9 @@ describe('music routes', () => {
     const peer = { id: '00000000-0000-4000-8000-000000000001', enabled: true };
     remoteProvider.peers = [peer];
     // A provider predating lyrical federation: the MODEL sings, so `lyrics` is
-    // true, but it never publishes `acceptsLyrics` and rejects the field on
-    // submit. Absent must read as false or every such render is a hard 400 from
-    // the peer that the user cannot act on.
+    // true, but it publishes neither the `lyrics` feature nor the legacy
+    // `acceptsLyrics`, and rejects the field on submit. Absent must read as
+    // false or every such render is a hard 400 the user cannot act on.
     remoteProvider.resolve.mockResolvedValueOnce({
       peer, capability: remoteLyricCapability({ lyrics: true }),
     });
@@ -707,6 +707,45 @@ describe('music routes', () => {
 
     expect(r.status).toBe(400);
     expect(r.body.code).toBe('MEDIA_PROVIDER_LYRICS_UNSUPPORTED');
+    expect(r.body.error).toContain('instrumental audio only');
+    expect(mediaQueue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('POST /generate accepts lyrics from a peer that advertises only the status-root feature', async () => {
+    const peer = { id: '00000000-0000-4000-8000-000000000001', enabled: true };
+    remoteProvider.peers = [peer];
+    // The post-migration provider: `features` at the status root and no
+    // `acceptsLyrics` on the capability at all. A consumer that had kept
+    // reading the per-capability field would refuse this peer outright.
+    remoteProvider.resolve.mockResolvedValueOnce({
+      peer,
+      capability: remoteLyricCapability({ lyrics: true }),
+      status: { features: ['lyrics', 'inputAssets'] },
+    });
+
+    const r = await request(app).post('/api/music/generate').send(remoteLyricRequest(peer));
+
+    expect(r.status).toBe(202);
+    expect(mediaQueue.enqueue.mock.calls[0][0].params.remoteMedia.lyrics)
+      .toContain('Call alice@example.com');
+  });
+
+  it('POST /generate still refuses an instrumental-only model on a build that speaks the lyrics feature', async () => {
+    const peer = { id: '00000000-0000-4000-8000-000000000001', enabled: true };
+    remoteProvider.peers = [peer];
+    // The two facts are independent, and the root feature answers only one of
+    // them: this build carries lyrics, but the model picked cannot sing. A
+    // gate that collapsed to the feature alone would queue a render that comes
+    // back wordless, which is the failure the per-capability field prevented.
+    remoteProvider.resolve.mockResolvedValueOnce({
+      peer,
+      capability: remoteLyricCapability({ lyrics: false }),
+      status: { features: ['lyrics'] },
+    });
+
+    const r = await request(app).post('/api/music/generate').send(remoteLyricRequest(peer));
+
+    expect(r.status).toBe(400);
     expect(r.body.error).toContain('instrumental audio only');
     expect(mediaQueue.enqueue).not.toHaveBeenCalled();
   });

@@ -21,6 +21,7 @@ import {
   FEDERATED_MEDIA_ASSET_MAX_BYTES,
   FEDERATED_MEDIA_ASSET_MAX_COUNT,
   FEDERATED_MEDIA_ASSET_MIME_TYPES,
+  FEDERATED_MEDIA_FEATURES,
   FEDERATED_MEDIA_RESULT_EXTENSION,
   FEDERATED_MEDIA_STALE_AFTER_MS,
   FEDERATED_MEDIA_WIRE_VERSION,
@@ -382,6 +383,9 @@ async function configuredAudioCapabilities(config) {
       maxDurationSec: engine?.maxDurationSec ?? null,
       defaultDurationSec: engine?.defaultDurationSec ?? null,
       lyrics: engine?.lyrics === true,
+      // Overlap-release duplicate of the status-root `lyrics` feature (#4826).
+      // Always equal to `lyrics` because it never carried a per-model fact;
+      // drop it once no supported peer reads the legacy field.
       acceptsLyrics: engine?.lyrics === true,
       inputAssets: null,
       autoDuration: engine?.autoDuration === true,
@@ -596,6 +600,11 @@ export async function getFederatedMediaProviderStatus(config, { kinds = ['audio'
     generatedAt: new Date().toISOString(),
     staleAfterMs: FEDERATED_MEDIA_STALE_AFTER_MS,
     status: !anyReady ? 'unavailable' : (queue.accepting ? 'ready' : 'busy'),
+    // What this BUILD speaks, verbatim and unconditional — a feature is listed
+    // because the code handling it shipped, not because a configured model
+    // happens to use it. Copied rather than passed by reference so a consumer
+    // deserializing this payload cannot mutate the frozen module constant.
+    features: [...FEDERATED_MEDIA_FEATURES],
     kinds: requestedKinds,
     queue,
     capabilities: capabilities.map(publicCapability),

@@ -243,13 +243,12 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   const hasLyrics = typeof lyrics === 'string' && lyrics.trim().length > 0;
   // Two independent facts, and the server refuses the combination where they
   // disagree (ADR docs/decisions/2026-08-22-federated-media-input-assets.md
-  // rule 2): `lyrics` is the model's own capability, `acceptsLyrics` is whether
-  // the peer's BUILD carries the words. A peer predating lyrical federation
-  // publishes the first and not the second, so absent must read as false —
-  // otherwise this panel offers a lyric render the peer answers with a 400.
+  // rule 2): `lyrics` is the model's own capability, while the `lyrics` FEATURE
+  // is whether the peer's BUILD carries the words at all. Why an absent feature
+  // must read as false lives in `federatedMediaSupports`, not here.
   const remoteLyricsAvailable = isRemote
     && generationEngine?.lyrics === true
-    && generationEngine?.acceptsLyrics === true;
+    && remoteTarget.supports('lyrics');
   // Remote renders that cannot carry lyrics are instrumental by construction,
   // not by choice — the checkbox reflects that rather than pretending the user
   // picked it. Where the peer CAN sing, it is an ordinary choice again.

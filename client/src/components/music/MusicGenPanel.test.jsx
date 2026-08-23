@@ -266,7 +266,7 @@ describe('MusicGenPanel', () => {
     expect(onGenerated).toHaveBeenCalledWith(expect.objectContaining({ id: 'generated-track' }));
   });
 
-  const lyricCapablePeer = (capabilityOverrides = {}) => ({
+  const lyricCapablePeer = (capabilityOverrides = {}, features) => ({
     id: 'peer-example',
     name: 'Example GPU',
     status: 'online',
@@ -279,6 +279,7 @@ describe('MusicGenPanel', () => {
       checkedAt: new Date().toISOString(),
       freshUntil: new Date(Date.now() + 60_000).toISOString(),
       snapshot: {
+        ...(features ? { features } : {}),
         queue: { accepting: true, running: 0, queued: 0 },
         capabilities: [{
           kind: 'audio', engine: 'minimax-music3', engineName: 'MiniMax Music 3', modelId: 'minimax-music3',
@@ -290,10 +291,10 @@ describe('MusicGenPanel', () => {
     },
   });
 
-  // The mixed-version case, and the reason `acceptsLyrics` exists at all: this
-  // peer's MODEL sings (`lyrics: true`) but its build predates lyrical
-  // federation and never publishes `acceptsLyrics`. Absent must read as false,
-  // or the panel offers a render the peer answers with a 400.
+  // One end of the mixed-version window: this peer's MODEL sings
+  // (`lyrics: true`) but its build predates lyrical federation, so it publishes
+  // neither the `lyrics` feature nor the legacy `acceptsLyrics`. Absent must
+  // read as false, or the panel offers a render the peer answers with a 400.
   it('falls back to an instrumental remote render when the peer build cannot carry lyrics', async () => {
     api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
     api.getInstances.mockResolvedValue({ peers: [lyricCapablePeer()] });
@@ -340,6 +341,41 @@ describe('MusicGenPanel', () => {
       instrumentalOnly: false,
       lyrics: 'private lyrics',
     }), { silent: true }));
+  });
+
+  // The other end of the same mixed-version window (#4826): a peer on the NEW
+  // build advertises the `lyrics` feature at the status root and stops stamping
+  // `acceptsLyrics` on every capability. A panel still reading the per-capability
+  // field would pin this peer to Instrumental only for no reason.
+  it('sends lyrics to a peer that advertises the lyrics feature and no per-capability flag', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    api.getInstances.mockResolvedValue({ peers: [lyricCapablePeer({}, ['lyrics', 'inputAssets'])] });
+    api.generateMusic.mockResolvedValue({ track: { id: 'track-1' } });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" lyrics="private lyrics" />);
+
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    expect(screen.getByLabelText(/instrumental only/i)).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /^generate$/i }));
+
+    await waitFor(() => expect(api.generateMusic).toHaveBeenCalledWith(expect.objectContaining({
+      mediaProviderPeerId: 'peer-example',
+      instrumentalOnly: false,
+      lyrics: 'private lyrics',
+    }), { silent: true }));
+  });
+
+  it('still pins instrumental for an instrumental-only model on a lyrics-capable build', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    api.getInstances.mockResolvedValue({ peers: [lyricCapablePeer({ lyrics: false }, ['lyrics'])] });
+    api.generateMusic.mockResolvedValue({ track: { id: 'track-1' } });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" lyrics="private lyrics" />);
+
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    // The build carries words; this model cannot sing them. Two facts, and the
+    // root feature answers only one.
+    expect(screen.getByLabelText(/instrumental only/i)).toBeDisabled();
   });
 
   it('drops lyrics from a lyric-capable remote render when instrumental-only is chosen', async () => {

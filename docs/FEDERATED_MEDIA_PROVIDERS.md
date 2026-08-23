@@ -93,14 +93,17 @@ An API caller deliberately selects remote execution on Music generation by sendi
 
 **Lyrics do cross**, and the asymmetry between the two text fields is deliberate. A style/mood/instrument profile renders the prompt at no expressive cost, so the privacy-safe canonical form is required there; lyrics *are* the words, so no alphabet encodes them without discarding them (ADR [conditioning crosses to an allowlisted peer](decisions/2026-08-22-federated-media-input-assets.md) rule 2). Add a `lyrics` field alongside the profile to condition a remote render.
 
-Sending them needs **two** capability signals to agree, and the second is the one that matters on a mixed-version tailnet:
+Sending them needs **two** signals to agree, and they live at different levels of the payload because they answer different questions:
 
-| Capability field | Means | Absent |
-|---|---|---|
-| `lyrics` | the **model** sings | — (always present) |
-| `acceptsLyrics` | **this provider's build** carries lyrics on the wire | reads as `false` |
+| Signal | Where | Means | Absent |
+|---|---|---|---|
+| `lyrics` | on the capability | the **model** sings | — (always present) |
+| the `lyrics` feature | `features` at the status root | **this provider's build** carries lyrics on the wire | reads as `false` |
+| `acceptsLyrics` | on the capability | superseded duplicate of the feature, kept for one overlap release | reads as `false` |
 
-A provider predating lyrical federation advertises `lyrics: true` for MiniMax Music 3 and then rejects the field at submission, so absence must fail closed or every remote lyrical render becomes a 400 the user cannot act on. When it does, `POST /api/music/generate` refuses with `400 MEDIA_PROVIDER_LYRICS_UNSUPPORTED` naming which half is missing, and Music Studio pins Instrumental only with the reason — it never silently renders a wordless take of a song the user wrote words for.
+A provider predating lyrical federation advertises `lyrics: true` for MiniMax Music 3 and then rejects the field at submission, so absence must fail closed or every remote lyrical render becomes a 400 the user cannot act on. When either half is missing, `POST /api/music/generate` refuses with `400 MEDIA_PROVIDER_LYRICS_UNSUPPORTED` naming which one, and Music Studio pins Instrumental only with the reason — it never silently renders a wordless take of a song the user wrote words for.
+
+Consumers ask through `federatedMediaSupports(status, feature, capability)` (`server/lib/federatedMediaWire.js`, mirrored in `client/src/lib/federatedMediaReadiness.js`) rather than reading either field directly, so the fail-closed reasoning lives in one place and the overlap fallback retires from one place.
 
 
 ### Remote image and video renders
@@ -392,6 +395,56 @@ All successful JSON responses include `wireVersion: 1`. The version is also fixe
 `GET /status` reports **audio only** unless the caller opts in with `?kinds=audio,image,video`. That default is what keeps an already-deployed audio-only consumer working: its own copy of the wire schema validates `kinds`/`capabilities` against a literal `audio`, can never be patched retroactively, and would reject a capability naming a kind it has not heard of. A consumer asks for a kind only when it has models allowlisted for it.
 
 `GET /status` is computed live and carries `generatedAt` plus `staleAfterMs`. Consumers must stop assigning new work after that window instead of treating stale capacity as available. A provider timestamp more than 30 seconds in the future is also rejected as unknown clock state rather than extending capacity indefinitely.
+
+#### `features` — what the provider's BUILD speaks
+
+```jsonc
+{
+  "wireVersion": 1,
+  "features": ["lyrics", "inputAssets"],   // optional; absent = the wire-v1 baseline
+  "capabilities": [ /* … */ ]
+}
+```
+
+Some wire capabilities are properties of the **sender**, not of any one model:
+whether the payload can carry lyrics, or conditioning images, is a fact about
+the code the provider is running. Those live in one `features` list at the
+status root rather than as a boolean stamped onto every capability. Per-model
+facts stay on the capability (`lyrics` — does this engine sing; `inputAssets.roles`
+— which conditioning slots this model takes), and a consumer must satisfy
+**both** before it sends the field.
+
+The list is emitted verbatim from what the build implements — a feature is
+listed because the code shipped, never because a configured model happens to use
+it. That is what lets a consumer tell "this peer predates conditioning" apart
+from "this peer speaks conditioning but has only text-only models allowlisted",
+which a per-capability boolean could not: both looked like an absent field.
+
+`features` is optional and additive in both directions, so it needs no
+`SCHEMA_VERSIONS` bump. **Absent reads as the wire-v1 baseline** — no lyrics, no
+conditioning — for the same fail-closed reason `concurrency` and `byKind` read
+absent as unknown: a provider that never shipped the handling rejects the field
+at submission, so inferring consent from silence turns every such render into a
+400 the user cannot act on.
+
+A consumer **filters** this list rather than validating it, per member:
+
+- a feature name it does not recognize is carried through and simply never matched;
+- a member that is not a short identifier token — prose, a number, `null` — is dropped, and costs its neighbours nothing;
+- only a `features` value that is not a bounded array at all degrades to absent.
+
+None of those invalidate the status, and that matters more than it looks. A
+strict element schema fails before any filtering runs, so ONE bad string would
+take a peer's entire status offline — turning "ignores a feature we have not
+heard of" into "cannot read this peer", the failure this list was introduced to
+prevent. Degrading to absent rather than `[]` matters for the same reason: an
+empty list is a peer positively denying every feature, which is a stronger claim
+than a malformed field has earned.
+
+Consumers ask `federatedMediaSupports(status, feature, capability)` rather than
+testing the list inline, which is also where the overlap fallback to the legacy
+per-capability `acceptsLyrics` lives — one place to retire it from once no
+supported peer sends it (#4850).
 
 CUDA has three states: `available`, `absent`, and `unknown`. A CUDA model is ready only when the state is positively `available`; a failed or ambiguous probe blocks admission. Runtime, host-platform, exact fixed-checkpoint readiness, and queue capacity are similarly fail-closed.
 

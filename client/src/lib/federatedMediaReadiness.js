@@ -134,6 +134,54 @@ function verifiedState(status, now) {
   return state;
 }
 
+// Overlap-release fallbacks, mirroring FEDERATED_MEDIA_LEGACY_FEATURE_TELL in
+// server/lib/federatedMediaWire.js. A provider on the previous build advertises
+// the same build-level fact per-capability instead of at the status root.
+// `Object.create(null)` for the same reason the server table uses it: the key
+// is a feature name off the wire, and on a normal object `'constructor'` and
+// friends resolve to inherited values rather than being absent.
+const LEGACY_FEATURE_TELL = Object.freeze(Object.assign(Object.create(null), {
+  lyrics: (capability) => capability?.acceptsLyrics === true,
+  inputAssets: (capability) => isRecord(capability?.inputAssets),
+}));
+
+/**
+ * Does the build that sent this status speak `feature`? Client mirror of
+ * `federatedMediaSupports` (server/lib/federatedMediaWire.js), and the ONE
+ * place the "absent reads as false" reasoning lives on this side (#4826).
+ *
+ * A provider built before a feature shipped omits it and then rejects the field
+ * outright at submission, so a surface that read an absent signal as consent
+ * would offer a render the peer answers with a 400. Display only — the route
+ * re-checks and the provider re-checks again at admission.
+ *
+ * A published list WINS over the legacy per-capability field rather than being
+ * OR'd with it: a peer that told us its whole vocabulary and left this feature
+ * out has positively denied it, so the legacy tell is consulted only when there
+ * is no list to read. Mirrors the server rule exactly.
+ *
+ * @param {object|null} status - a peer's `mediaProviderStatus.snapshot`
+ * @param {string} feature - 'lyrics' | 'inputAssets'
+ * @param {object|null} [capability] - for the overlap fallback against a peer
+ *   that has not migrated yet
+ * @returns {boolean} false whenever the answer cannot be established
+ */
+export function federatedMediaSupports(status, feature, capability = null) {
+  if (Array.isArray(status?.features)) return status.features.includes(feature);
+  return LEGACY_FEATURE_TELL[feature]?.(capability) === true;
+}
+
+/**
+ * The validated status payload behind a peer's last probe, or null.
+ *
+ * Shape-checked only, like everything else here: the server does the
+ * authoritative wire validation, and a second copy client-side would be one
+ * more thing to keep in sync.
+ */
+export const peerMediaProviderSnapshot = (peer) => (isRecord(peer?.mediaProviderStatus?.snapshot)
+  ? peer.mediaProviderStatus.snapshot
+  : null);
+
 const isCount = (value) => Number.isInteger(value) && value >= 0;
 
 // "<label> 1 running, 2 queued", or null when nothing is there to report.
@@ -199,7 +247,7 @@ export function summarizePeerMediaQueue(queue) {
 export function resolvePeerMediaReadiness(peer, { now = Date.now() } = {}) {
   const config = peerMediaProviderConfig(peer);
   const status = isRecord(peer?.mediaProviderStatus) ? peer.mediaProviderStatus : null;
-  const snapshot = isRecord(status?.snapshot) ? status.snapshot : null;
+  const snapshot = peerMediaProviderSnapshot(peer);
   // An unverifiable status does not get to keep whatever the probe concluded —
   // including the `ready` it concluded at probe time.
   const state = status ? verifiedState(status, now) : null;
@@ -264,7 +312,7 @@ export function federatedMediaModelsForPeer(peer, kind) {
     .filter((model) => model?.engine && model?.modelId)
     .map(federatedMediaModelKey));
   if (allowed.size === 0) return NO_CAPABILITIES;
-  const advertised = peer?.mediaProviderStatus?.snapshot?.capabilities;
+  const advertised = peerMediaProviderSnapshot(peer)?.capabilities;
   if (!Array.isArray(advertised)) return NO_CAPABILITIES;
   const matched = advertised.filter((capability) => capability?.kind === kind
     && allowed.has(federatedMediaModelKey(capability)));
@@ -275,11 +323,10 @@ export function federatedMediaModelsForPeer(peer, kind) {
  * Does this advertised capability accept a conditioning image in `role`
  * (`initImage` / `referenceImages` / `sourceImage` / `lastImage`)?
  *
- * **Absent reads as NO.** A provider built before ADR
- * `docs/decisions/2026-08-22-federated-media-input-assets.md` omits the
- * `inputAssets` block entirely and rejects the fields, so treating a missing
- * block as unrestricted would offer a render the peer answers with a 400. Same
- * fail-closed rule the queue-capacity fields follow.
+ * **Absent reads as NO**, and two independent things must both hold: the
+ * peer's BUILD has to speak conditioning at all (the `inputAssets` feature,
+ * asked through `federatedMediaSupports` so the fail-closed reasoning stays in
+ * one place), and THIS MODEL has to advertise the role.
  *
  * Mirrors the server's `inputAssetRejection`
  * (`server/services/federatedMedia/inputAssets.js`) — display only; the route
@@ -287,9 +334,11 @@ export function federatedMediaModelsForPeer(peer, kind) {
  *
  * @param {object|null} capability - an entry from `federatedMediaModelsForPeer`
  * @param {string} role
+ * @param {object|null} [status] - the peer snapshot the capability came from
  * @returns {boolean}
  */
-export function peerModelAcceptsInput(capability, role) {
+export function peerModelAcceptsInput(capability, role, status = null) {
+  if (!federatedMediaSupports(status, 'inputAssets', capability)) return false;
   const roles = capability?.inputAssets?.roles;
   return Array.isArray(roles) && roles.includes(role);
 }

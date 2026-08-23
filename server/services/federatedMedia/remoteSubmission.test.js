@@ -223,9 +223,9 @@ describe('prepareRemoteMediaJob — conditioning gate', () => {
     roles: names, required: false, maxCount: 8, maxBytes: 1, mimeTypes: ['image/png'],
   });
 
-  const prepare = (kind, request, inputAssets, cap) => {
+  const prepare = (kind, request, inputAssets, cap, status) => {
     mockGetPeers.mockResolvedValue([peer]);
-    mockResolveFederatedMediaProvider.mockResolvedValue({ peer, capability: cap });
+    mockResolveFederatedMediaProvider.mockResolvedValue({ peer, capability: cap, status });
     return prepareRemoteMediaJob({ peerId: PEER_ID, kind, request, inputAssets });
   };
 
@@ -271,6 +271,26 @@ describe('prepareRemoteMediaJob — conditioning gate', () => {
       [],
       capability({ ...roles('initImage'), required: true }, 'image'),
     )).rejects.toThrow(/text-to-image/);
+  });
+
+  // The conflation the status-root feature list exists to undo (#4826): before
+  // it, "this peer's build predates conditioning" and "this peer speaks
+  // conditioning but the model you picked takes none" were the same absent
+  // block, so both got the same remedy and one of them was wrong.
+  it('tells a peer too old to carry conditioning apart from a model that takes none', async () => {
+    const textOnly = { ...capability(roles('initImage'), 'image'), inputAssets: null };
+    const submit = (status) => prepare(
+      'image',
+      { kind: 'image', engine: 'local', modelId: 'flux', prompt: 'a lighthouse', width: 512, height: 512 },
+      [{ role: 'initImage', path: 'init.png' }],
+      textOnly,
+      status,
+    );
+    await expect(submit({ features: ['lyrics', 'inputAssets'] })).rejects.toThrow(/pick a peer model that does/);
+    await expect(submit({ features: ['lyrics'] })).rejects.toThrow(/Update the peer/);
+    // No status at all keeps the older merged message rather than accusing a
+    // peer of being out of date on no evidence.
+    await expect(submit(undefined)).rejects.toThrow(/pick a peer model that does/);
   });
 
   it('refuses a role the peer model never advertised', async () => {

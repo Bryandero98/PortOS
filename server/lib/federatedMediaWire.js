@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { isPlainObject } from './objects.js';
 
 export const FEDERATED_MEDIA_WIRE_VERSION = 1;
 export const FEDERATED_MEDIA_STALE_AFTER_MS = 60_000;
@@ -287,15 +288,15 @@ export const federatedMediaCapabilitySchema = z.object({
   // predate lyrical federation entirely — which is why it cannot double as the
   // consumer's permission to send words.
   lyrics: z.boolean(),
-  // Does THIS PROVIDER's wire accept lyrics for this capability? Added after
-  // wire v1 shipped (ADR
-  // docs/decisions/2026-08-22-federated-media-input-assets.md rule 2), so it is
-  // optional and **absent must read as false**: a provider built before that
-  // ADR advertises `lyrics: true` for MiniMax Music 3 and then rejects the
-  // lyrics field outright at submission. Treating the older signal as consent
-  // would turn every remote lyrical render into a hard 400 the user cannot act
-  // on. Fail closed here and the consumer degrades to an instrumental render it
-  // can explain instead.
+  // SUPERSEDED by the status-root `features` list (#4826), and kept on the
+  // wire for one overlap release so a consumer on the previous build still
+  // reads this provider correctly. Emitted per-capability but never per-model:
+  // it always equalled `lyrics`, because the fact it carried was "does this
+  // BUILD carry lyrics on the wire", which is a property of the payload's
+  // sender rather than of any one engine. Read it only through
+  // `federatedMediaSupports`, never directly. Do not add a second field in
+  // this shape — a new per-field wire capability belongs in `features`.
+  // Retirement tracked in #4850.
   acceptsLyrics: z.boolean().optional(),
   autoDuration: z.boolean(),
   frameStride: z.number().int().min(1).max(64).nullable().optional(),
@@ -340,6 +341,146 @@ const federatedMediaQueueStatusSchema = z.object({
   byKind: z.partialRecord(mediaKindSchema, federatedMediaKindOccupancySchema).optional(),
 });
 
+// What THIS BUILD speaks on the wire, beyond the wire-v1 baseline (#4826).
+//
+// A build-version probe, not a model capability: "does the sender carry lyrics
+// on the wire" is a property of the payload's sender, which is why it sits at
+// the status root rather than being stamped onto every capability. Emitted
+// verbatim by the provider — a feature is listed because the code that handles
+// it shipped, not because some allowlisted model happens to use it. Per-model
+// facts stay per-capability (`lyrics`, `inputAssets.roles`), and a consumer
+// must satisfy BOTH before it sends the field.
+//
+// Additive and optional in both directions, so no SCHEMA_VERSIONS bump: a
+// newer feature reaches an older consumer as an unmatched string, and an
+// absent list reads as the wire-v1 baseline (see federatedMediaSupports).
+export const FEDERATED_MEDIA_FEATURES = Object.freeze(['lyrics', 'inputAssets']);
+
+// A feature name is a short identifier token. Underscores and hyphens are in
+// the alphabet even though this build's own vocabulary is camelCase: the point
+// is to bound the shape so the field cannot smuggle free-form text (and
+// therefore PII) across the boundary, not to force a naming style on a peer
+// that may be several versions ahead of us.
+const FEDERATED_MEDIA_FEATURE_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+
+// FILTERS rather than validates, and deliberately NOT a z.enum over
+// FEDERATED_MEDIA_FEATURES. Either a strict enum or a strict element schema
+// would reject the WHOLE status payload over one string the consumer merely
+// does not recognize, so the day a provider ships a feature named outside our
+// expectations every older consumer would go from "ignores one feature" to
+// "cannot read this peer at all" — the same trap `byKind` avoids with
+// partialRecord, and the exact failure this list was introduced to prevent.
+//
+// Dropping an out-of-shape member is also what keeps the PII bound meaningful:
+// prose never reaches storage, instead of a prose-carrying payload being
+// rejected wholesale after we have already read it.
+const federatedMediaFeaturesSchema = z.array(z.unknown()).max(256)
+  .transform((features) => features.filter((feature) => typeof feature === 'string'
+    && FEDERATED_MEDIA_FEATURE_RE.test(feature)))
+  // `z.array(z.unknown())`, not `z.array(z.string())`: a strict element type
+  // fails before the transform runs, so ONE non-string member would collapse the
+  // whole list to absent — a peer reading as supporting nothing rather than
+  // losing one entry, which is the same cliff a strict schema creates at the
+  // payload level. Filtering keeps every well-formed feature its neighbours
+  // published.
+  //
+  // A `features` value that is not even a bounded array degrades to ABSENT — the
+  // undecidable wire-v1 baseline — rather than invalidating the status. Not
+  // `[]`: an empty list is a peer positively denying every feature, a stronger
+  // claim than a malformed field has earned.
+  .catch(() => undefined);
+
+// The ONE place the "absent reads as false" reasoning lives (#4826). Every
+// consumer gate — server route, consumer service, client panel — asks through
+// here rather than restating it.
+//
+// A provider built before a feature shipped omits it and then rejects the field
+// outright at submission, so treating an absent signal as consent would turn
+// every such render into a hard 400 the user cannot act on. Fail closed and the
+// consumer degrades to something it can explain instead.
+//
+// `capability` is the OVERLAP path only: for one release a provider on the
+// previous build advertises the same build-level fact per-capability. A
+// published list WINS over it outright rather than being OR'd with it — a peer
+// that told us its whole vocabulary and left this feature out has positively
+// denied it, and honoring a stale or contradictory per-capability field against
+// that would resurrect the very ambiguity the list replaced. The legacy tell is
+// consulted only when there is no list to read.
+// `decisive` records whether a FAILING legacy tell proves the peer's build is
+// old, and it differs per feature — which is why it belongs in the table rather
+// than in a comment at each call site (whoever adds the third feature would
+// otherwise inherit whichever policy they happened to read first):
+//
+//   lyrics      — the previous build stamped `acceptsLyrics` on EVERY audio
+//                 capability, so its absence can only mean an older build.
+//   inputAssets — the block is genuinely per-model, so its absence is ambiguous:
+//                 mid-overlap the peer may speak conditioning and simply have a
+//                 text-only model configured.
+//
+// Both gate identically; only a message that blames the BUILD may distinguish
+// them. See federatedMediaDeniesFeature.
+// `Object.create(null)`, not a bare literal: the lookup is keyed by a feature
+// name off the wire, and on a normal object `'constructor'` / `'toString'`
+// resolve to inherited values — truthy enough to defeat `?.` and then blow up
+// on `.tell`. A null prototype makes an unknown name simply absent, which is
+// also what keeps this end and the client mirror answering alike.
+const FEDERATED_MEDIA_LEGACY_FEATURE_TELL = Object.freeze(Object.assign(Object.create(null), {
+  lyrics: { tell: (capability) => capability?.acceptsLyrics === true, decisive: true },
+  // A build that predates conditioning omits the block entirely; one that
+  // speaks it advertises the block (possibly with no roles for this model).
+  // `isPlainObject`, not a bare `typeof === 'object'`: the client mirror uses
+  // its own array-excluding record guard, and a malformed `inputAssets: []`
+  // reading true here and false there is exactly the provider/consumer
+  // disagreement this helper exists to prevent.
+  inputAssets: { tell: (capability) => isPlainObject(capability?.inputAssets), decisive: false },
+}));
+
+/**
+ * Does the build that sent this status speak `feature`?
+ *
+ * @param {object|null} status - a validated provider status payload
+ * @param {string} feature - a FEDERATED_MEDIA_FEATURES member
+ * @param {object|null} [capability] - the capability being acted on, for the
+ *   overlap fallback against a provider that has not migrated yet
+ * @returns {boolean} false whenever the answer cannot be established
+ */
+export function federatedMediaSupports(status, feature, capability = null) {
+  if (federatedMediaDeclaresFeatures(status)) return status.features.includes(feature);
+  return FEDERATED_MEDIA_LEGACY_FEATURE_TELL[feature]?.tell(capability) === true;
+}
+
+/**
+ * Did this provider publish its feature vocabulary at all?
+ *
+ * @param {object|null} status - a validated provider status payload
+ * @returns {boolean}
+ */
+export function federatedMediaDeclaresFeatures(status) {
+  return Array.isArray(status?.features);
+}
+
+/**
+ * Is this a denial we can attribute to the peer's BUILD, rather than merely an
+ * answer we could not establish?
+ *
+ * `federatedMediaSupports` flattens two different "no"s, because both must gate
+ * the same way: a peer that published a list and left the feature out has
+ * POSITIVELY denied it, while a peer that published no list may simply predate
+ * the list — or, for an ambiguous feature, speak it and have nothing configured
+ * that uses it. Only a MESSAGE may distinguish them, and telling a healthy peer
+ * to update itself is worse than giving the generic remedy.
+ *
+ * @param {object|null} status - a validated provider status payload
+ * @param {string} feature - a FEDERATED_MEDIA_FEATURES member
+ * @param {object|null} [capability] - the capability being acted on
+ * @returns {boolean} true only when the peer's build is provably the reason
+ */
+export function federatedMediaDeniesFeature(status, feature, capability = null) {
+  if (federatedMediaSupports(status, feature, capability)) return false;
+  return federatedMediaDeclaresFeatures(status)
+    || FEDERATED_MEDIA_LEGACY_FEATURE_TELL[feature]?.decisive === true;
+}
+
 // Strip unknown fields from peer responses before persisting or exposing them
 // locally. Mixed-version compatibility lives in the versioned route and the
 // known-field schema; an older consumer must not relay an unreviewed future
@@ -349,6 +490,10 @@ export const federatedMediaProviderStatusSchema = z.object({
   generatedAt: z.string().datetime(),
   staleAfterMs: z.number().int().positive().max(300_000),
   status: z.enum(['ready', 'busy', 'unavailable']),
+  // Optional and additive; **absent reads as the wire-v1 baseline** (no lyrics,
+  // no conditioning). Bounded well above this build's own vocabulary so a
+  // provider that speaks more than we do still validates.
+  features: federatedMediaFeaturesSchema.optional(),
   kinds: z.array(mediaKindSchema).max(KNOWN_MEDIA_KINDS.length),
   queue: federatedMediaQueueStatusSchema,
   capabilities: z.array(federatedMediaCapabilitySchema).max(300),

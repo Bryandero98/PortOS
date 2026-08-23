@@ -43,6 +43,8 @@ import { getCudaCapability } from '../lib/cudaCapability.js';
 import {
   FEDERATED_MEDIA_WIRE_VERSION,
   federatedMediaAudioProfileSchema,
+  federatedMediaDeniesFeature,
+  federatedMediaSupports,
 } from '../lib/federatedMediaWire.js';
 import { enqueueJob, listJobs } from '../services/mediaJobQueue/index.js';
 import { resolveFederatedMediaProvider } from '../services/federatedMediaConsumer.js';
@@ -453,18 +455,31 @@ router.post('/generate', asyncHandler(async (req, res) => {
       });
     }
     // Two independent facts, and conflating them is how a lyrical render
-    // silently comes back instrumental: `lyrics` says the MODEL sings,
-    // `acceptsLyrics` says this PEER'S BUILD carries the words. A provider
-    // predating lyrical federation reports the first as true and the second not
-    // at all — so absent reads as false, and a caller that actually sent words
-    // is told why rather than getting a plausible render of the wrong thing.
-    if (body.lyrics && !body.instrumentalOnly && capability.acceptsLyrics !== true) {
-      throw new ServerError(
-        capability.lyrics
-          ? 'The selected peer runs a PortOS build that cannot carry lyrics to its provider. Update the peer, or render this track locally.'
-          : 'The selected remote model renders instrumental audio only. Pick a lyric-capable model, or render this track locally.',
-        { status: 400, code: 'MEDIA_PROVIDER_LYRICS_UNSUPPORTED' },
-      );
+    // silently comes back instrumental: `capability.lyrics` says the MODEL
+    // sings — the same check the provider's own admission gate makes — while
+    // the `lyrics` FEATURE says this PEER'S BUILD carries the words at all.
+    // Each failure gets its own message, so a caller who actually sent words is
+    // told which half is missing rather than getting a plausible render of the
+    // wrong thing. Why absent fails closed lives in federatedMediaSupports.
+    if (body.lyrics && !body.instrumentalOnly) {
+      if (!capability.lyrics) {
+        throw new ServerError(
+          'The selected remote model renders instrumental audio only. Pick a lyric-capable model, or render this track locally.',
+          { status: 400, code: 'MEDIA_PROVIDER_LYRICS_UNSUPPORTED' },
+        );
+      }
+      if (!federatedMediaSupports(resolved.status, 'lyrics', capability)) {
+        // Blaming the peer's build is safe for THIS feature — the previous
+        // build stamped the legacy tell on every audio capability, so its
+        // absence can only mean an older one. `federatedMediaDeniesFeature`
+        // is what records that, per feature, rather than this call site.
+        throw new ServerError(
+          federatedMediaDeniesFeature(resolved.status, 'lyrics', capability)
+            ? 'The selected peer runs a PortOS build that cannot carry lyrics to its provider. Update the peer, or render this track locally.'
+            : 'The selected peer is not reporting that it can carry lyrics to its provider. Render this track locally, or pick a lyric-capable peer.',
+          { status: 400, code: 'MEDIA_PROVIDER_LYRICS_UNSUPPORTED' },
+        );
+      }
     }
     engine = {
       id: capability.engine,

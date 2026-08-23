@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  FEDERATED_MEDIA_FEATURES,
   federatedMediaAudioProfileSchema,
+  federatedMediaDeclaresFeatures,
+  federatedMediaDeniesFeature,
   federatedMediaCapabilitySchema,
   federatedMediaProviderStatusSchema,
   federatedMediaProviderJobSchema,
   effectiveJobPrompt,
   isFederatedMediaAudioPrompt,
+  federatedMediaSupports,
   normalizeRequestedMediaKinds,
   renderFederatedMediaAudioPrompt,
 } from './federatedMediaWire.js';
@@ -217,6 +221,60 @@ describe('federated media status kind projection', () => {
     expect(bad({ holo: { running: 1, queued: 0 } })).toBe(false);
   });
 
+  it('validates a features list and drops the field entirely when a provider omits it', () => {
+    expect(federatedMediaProviderStatusSchema.parse(status({ features: ['lyrics'] })).features)
+      .toEqual(['lyrics']);
+    expect(federatedMediaProviderStatusSchema.parse(status()).features).toBeUndefined();
+  });
+
+  // The byKind lesson applied to features: a Zod enum would reject the ENTIRE
+  // payload on an unrecognized member, so the day a provider ships a fourth
+  // feature every older consumer would stop reading its status at all instead
+  // of ignoring one string.
+  it('accepts a feature this build does not recognize rather than failing the payload', () => {
+    const parsed = federatedMediaProviderStatusSchema
+      .safeParse(status({ features: ['lyrics', 'holoProjection'] }));
+    expect(parsed.success).toBe(true);
+    expect(federatedMediaSupports(parsed.data, 'holoProjection')).toBe(true);
+  });
+
+  // A future feature this build has never heard of must survive the trip,
+  // whatever its naming style — rejecting it would take the peer's WHOLE status
+  // with it, which is the failure the list exists to prevent.
+  it('carries a future feature name in any identifier style', () => {
+    const parsed = federatedMediaProviderStatusSchema
+      .parse(status({ features: ['lyrics', 'conditioning-images', 'input_assets'] }));
+    expect(parsed.features).toEqual(['lyrics', 'conditioning-images', 'input_assets']);
+  });
+
+  // Dropping the member, not the payload: prose never reaches storage, and the
+  // features the peer legitimately published still arrive.
+  it('drops a features entry shaped like free-form text and keeps the rest', () => {
+    const featuresOf = (features) => federatedMediaProviderStatusSchema
+      .parse(status({ features })).features;
+    expect(featuresOf(['lyrics', 'a private note about the user'])).toEqual(['lyrics']);
+    expect(featuresOf(['lyrics', ''])).toEqual(['lyrics']);
+    expect(featuresOf(['lyrics', 'x'.repeat(65)])).toEqual(['lyrics']);
+    // A non-string member costs its neighbours nothing. A strict element type
+    // would fail before the filter runs and collapse the whole list to absent,
+    // reading a peer as supporting NOTHING rather than losing one entry.
+    expect(featuresOf(['lyrics', 123, null, 'inputAssets'])).toEqual(['lyrics', 'inputAssets']);
+  });
+
+  // A field too malformed to filter reads as ABSENT — the undecidable wire-v1
+  // baseline — never as `[]`, which would be the peer positively denying every
+  // feature, a stronger claim than a broken field has earned. And never as a
+  // failed parse, which would take the whole peer offline over one bad field.
+  it('degrades an unusable features field to absent without failing the payload', () => {
+    const parsed = (features) => federatedMediaProviderStatusSchema
+      .safeParse(status({ features }));
+    for (const bad of ['lyrics', 42, { lyrics: true }, Array.from({ length: 300 }, (_, i) => `f${i}`)]) {
+      const result = parsed(bad);
+      expect(result.success).toBe(true);
+      expect(result.data.features).toBeUndefined();
+    }
+  });
+
   it('rejects a concurrency that claims no capacity at all', () => {
     expect(federatedMediaProviderStatusSchema.safeParse(status({
       queue: { ...status().queue, concurrency: 0 },
@@ -298,4 +356,90 @@ describe('effectiveJobPrompt', () => {
     // "nothing was recorded".
     expect(effectiveJobPrompt({ kind: 'image', params: { prompt: '' } })).toBe('');
   });
+});
+
+describe('federatedMediaSupports', () => {
+  const capability = (overrides = {}) => ({ kind: 'audio', lyrics: true, ...overrides });
+
+  it('reads an absent features list as the wire-v1 baseline', () => {
+    expect(federatedMediaSupports(null, 'lyrics')).toBe(false);
+    expect(federatedMediaSupports({}, 'lyrics', capability())).toBe(false);
+    expect(federatedMediaSupports({ features: [] }, 'inputAssets')).toBe(false);
+    // A model that sings is not, on its own, a build that carries the words.
+    expect(federatedMediaSupports({ features: [] }, 'lyrics', capability({ lyrics: true }))).toBe(false);
+  });
+
+  it('reads the status-root list without needing a capability', () => {
+    expect(federatedMediaSupports({ features: ['lyrics'] }, 'lyrics')).toBe(true);
+    expect(federatedMediaSupports({ features: ['lyrics'] }, 'inputAssets')).toBe(false);
+  });
+
+  // The overlap release: a peer on the previous build sends the per-capability
+  // field and no root list, and must keep working unchanged.
+  it('falls back to the legacy per-capability field only when no list was published', () => {
+    expect(federatedMediaSupports({}, 'lyrics', capability({ acceptsLyrics: true }))).toBe(true);
+    // A peer that published its vocabulary and left the feature out has
+    // positively denied it; a stale or contradictory legacy field on the
+    // capability does not get to overrule that.
+    expect(federatedMediaSupports({ features: [] }, 'lyrics', capability({ acceptsLyrics: true }))).toBe(false);
+    expect(federatedMediaSupports({ features: ['inputAssets'] }, 'lyrics', capability({ acceptsLyrics: true }))).toBe(false);
+    expect(federatedMediaSupports({}, 'lyrics', capability({ acceptsLyrics: false }))).toBe(false);
+    expect(federatedMediaSupports({}, 'inputAssets', capability({ inputAssets: { roles: ['initImage'] } }))).toBe(true);
+    expect(federatedMediaSupports({}, 'inputAssets', capability({ inputAssets: null }))).toBe(false);
+    // An array is not a block. The client mirror's record guard excludes
+    // arrays, so a bare `typeof === 'object'` here would have the two ends
+    // disagreeing on a malformed capability — pinned on both sides.
+    expect(federatedMediaSupports({}, 'inputAssets', capability({ inputAssets: [] }))).toBe(false);
+  });
+
+  // The tri-state `federatedMediaSupports` flattens: "published a list without
+  // this feature" is a positive denial, "published no list" is undecidable.
+  // Only a message that blames the peer's build may distinguish them.
+  it('separates a published vocabulary from silence', () => {
+    expect(federatedMediaDeclaresFeatures({ features: [] })).toBe(true);
+    expect(federatedMediaDeclaresFeatures({})).toBe(false);
+    expect(federatedMediaDeclaresFeatures(null)).toBe(false);
+    expect(federatedMediaDeclaresFeatures({ features: 'lyrics' })).toBe(false);
+  });
+
+  // Gating is identical for both "no"s; only a MESSAGE may distinguish them,
+  // and which missing signal indicts the peer's build differs per feature.
+  it('attributes a denial to the build only where the missing signal proves it', () => {
+    const withBlock = capability({ inputAssets: { roles: ['initImage'] } });
+    // A published list that omits the feature is a positive denial either way.
+    expect(federatedMediaDeniesFeature({ features: [] }, 'lyrics', capability())).toBe(true);
+    expect(federatedMediaDeniesFeature({ features: ['lyrics'] }, 'inputAssets', withBlock)).toBe(true);
+    // No list: the previous build stamped acceptsLyrics on EVERY audio
+    // capability, so its absence can only mean an older build...
+    expect(federatedMediaDeniesFeature({}, 'lyrics', capability())).toBe(true);
+    // ...while an absent inputAssets block is ambiguous — a healthy peer may
+    // speak conditioning and simply have a text-only model configured, so it
+    // must not be told to update itself.
+    expect(federatedMediaDeniesFeature({}, 'inputAssets', capability({ inputAssets: null }))).toBe(false);
+    // Never a denial when the feature is actually supported.
+    expect(federatedMediaDeniesFeature({ features: ['lyrics'] }, 'lyrics', capability())).toBe(false);
+    expect(federatedMediaDeniesFeature({}, 'inputAssets', withBlock)).toBe(false);
+  });
+
+  it('exposes every feature this build emits', () => {
+    expect([...FEDERATED_MEDIA_FEATURES]).toEqual(['lyrics', 'inputAssets']);
+    for (const feature of FEDERATED_MEDIA_FEATURES) {
+      expect(federatedMediaSupports({ features: [...FEDERATED_MEDIA_FEATURES] }, feature)).toBe(true);
+    }
+  });
+
+  // The feature name is a string off the wire, so it can collide with an
+  // Object.prototype key. These MUST take the legacy-tell path (no `features`
+  // list) — with a list present every case short-circuits before the lookup and
+  // the guard would be vacuous. On a normal object literal `'constructor'`
+  // resolves to an inherited value, truthy enough to defeat `?.` and then throw
+  // on the property access after it.
+  it.each(['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__'])(
+    'answers false for the inherited key %s instead of throwing',
+    (feature) => {
+      expect(federatedMediaSupports({}, feature, capability())).toBe(false);
+      expect(federatedMediaSupports(null, feature)).toBe(false);
+      expect(federatedMediaDeniesFeature({}, feature, capability())).toBe(false);
+    },
+  );
 });
