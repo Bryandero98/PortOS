@@ -527,11 +527,11 @@ export async function spawnTuiAgent({
   // /sec; a per-run in-memory buffer would grow without bound on long agents
   // and the join-into-single-string at finalize would double peak RAM. The
   // disk file is appended in 250ms-debounced batches (same pattern as
-  // `flushPendingLines` for parsed output — see CLAUDE.md "High-frequency
+  // `flushPendingLines` for parsed output — see AGENTS.md "High-frequency
   // state writes must batch"), and `analyzeAgentFailure` reads the file on
   // failure so it gets the full PTY stream regardless of run length.
   const rawFile = join(agentDir, 'raw.txt');
-  // CD no-worktree tasks get an isolated scratch cwd so native CLAUDE.md
+  // CD no-worktree tasks get an isolated scratch cwd so native AGENTS.md
   // discovery cannot reach the PortOS repo tree (#4650). Everyone else keeps
   // workspacePath, falling back to the repo root when it was omitted.
   const cwd = resolveAgentCliCwd({ workspacePath, fallbackRoot: PATHS.root, task, agentId });
@@ -1412,7 +1412,7 @@ export async function spawnTuiAgent({
   // sendPrompt / finishStartupFailure are async and dispatched fire-and-forget
   // from the interval below. A setInterval callback can't await, and an
   // unhandled rejection there (e.g. a finalizeAgent throw inside finish())
-  // would crash the process — the callback-boundary hazard CLAUDE.md calls out.
+  // would crash the process — the callback-boundary hazard AGENTS.md calls out.
   // Wrap each floating call so a rejection is logged, not thrown.
   const safeSendPrompt = (reason) => pasteController.sendPrompt(reason).catch((err) =>
     emitLog('error', `TUI agent ${agentId} sendPrompt(${reason}) failed: ${err?.message || err}`, { agentId }));
@@ -1523,7 +1523,7 @@ export async function spawnTuiAgent({
     const expired = selfClearingGate.takeExpired(Date.now());
     if (expired) {
       // setInterval can't await, and an unhandled rejection here would crash the
-      // process (the callback-boundary hazard CLAUDE.md calls out).
+      // process (the callback-boundary hazard AGENTS.md calls out).
       failOverToFallback(expired).catch((err) =>
         emitLog('error', `TUI agent ${agentId} deferred fallback finish failed: ${err?.message || err}`, { agentId }));
       return;

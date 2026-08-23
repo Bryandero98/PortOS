@@ -3,9 +3,9 @@
  *
  * The split is by `provider.type`:
  *   - `tui` / `cli` → light prompt (Claude Code, Codex, Antigravity — agentic
- *     CLIs with native filesystem tools and CLAUDE.md loading)
+ *     CLIs with native filesystem tools and agent-instruction loading)
  *   - `api`         → full prompt (LM Studio, raw OpenAI/Anthropic — no
- *     native filesystem access, so we paste in memory/CLAUDE.md/etc.)
+ *     native filesystem access, so we paste in memory/AGENTS.md/etc.)
  *
  * The light path is the focus here because it's the new code. The full
  * path is exercised by a single negative assertion that confirms the
@@ -92,7 +92,7 @@ vi.mock('./codeReview.js', () => ({
   getCodeReviewDefaults: vi.fn().mockResolvedValue({ reviewers: ['copilot'] }),
 }));
 
-import { buildLightContextPrompt, buildAgentPrompt, buildCompletionGuidelineBullet, reconcileSplitContext, buildReviewLoopFollowUpSection, getAppWorkspace, getClaudeMdContext, detectSkillTemplates, loadSkillTemplates, UNATTENDED_RUN_RULE } from './agentPromptBuilder.js';
+import { buildLightContextPrompt, buildAgentPrompt, buildCompletionGuidelineBullet, reconcileSplitContext, buildReviewLoopFollowUpSection, getAppWorkspace, getAgentInstructionsContext, detectSkillTemplates, loadSkillTemplates, UNATTENDED_RUN_RULE } from './agentPromptBuilder.js';
 import { getCodeReviewDefaults } from './codeReview.js'; // mocked above — control the configured default
 import { isTruthyMeta } from './agentState.js';
 import { buildPrompt } from './promptService.js'; // mocked above — inspect call args
@@ -381,7 +381,7 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).not.toMatch(/You are an autonomous agent/);
     });
 
-    it('does NOT paste memory, CLAUDE.md, digital-twin, tools-summary, planning, or skill blocks', () => {
+    it('does NOT paste memory, AGENTS.md, digital-twin, tools-summary, planning, or skill blocks', () => {
       // Light path is synchronous and reads NONE of these — proving it by
       // checking the rendered output has no section headings for them.
       const prompt = buildLightContextPrompt(makeTask({
@@ -2259,8 +2259,8 @@ describe('discardWorktree (reasoning-only) completion contract', () => {
     it('splices the fixture verbatim yet still suppresses commit/push/merge in every builder-generated section', async () => {
       // Sanity: the fixture is live and carries the strings under test. Without
       // this the assertions below could pass because nothing was read at all.
-      const claudeMdSection = await getClaudeMdContext('/r');
-      expect(claudeMdSection).toMatch(/## CLAUDE\.md Instructions/);
+      const claudeMdSection = await getAgentInstructionsContext('/r');
+      expect(claudeMdSection).toMatch(/## Agent Instructions/);
       expect(claudeMdSection).toMatch(/gh pr merge/);
       expect(claudeMdSection).toMatch(/Commit and push your changes/);
 
@@ -2316,6 +2316,8 @@ describe('discardWorktree (reasoning-only) completion contract', () => {
       expect(context.memorySection).toBeNull();
       expect(context.digitalTwinSection).toBeNull();
       expect(context.toolsSection).toBe('');
+      expect(context.agentInstructionsSection).toBeNull();
+      // Pre-#4852 template variable name, still passed for stored custom templates.
       expect(context.claudeMdSection).toBeNull();
       expect(prompt).not.toContain('CD_MEMORY_SENTINEL');
       expect(prompt).not.toContain('CD_TWIN_SENTINEL');
@@ -2346,7 +2348,7 @@ describe('discardWorktree (reasoning-only) completion contract', () => {
       vi.mocked(getToolsSummaryForPrompt).mockResolvedValue('');
     });
 
-    it('a CD scratch cwd does not leak repo CLAUDE.md into getClaudeMdContext', async () => {
+    it('a CD scratch cwd does not leak repo AGENTS.md into getAgentInstructionsContext', async () => {
       // Mirrors the fixture-pinning in this block: a dir with no CLAUDE.md
       // (the CD scratch shape) must not surface content that lives in a sibling
       // "repo" fixture. Global ~/.claude/CLAUDE.md still splices here because
@@ -2355,8 +2357,8 @@ describe('discardWorktree (reasoning-only) completion contract', () => {
       const repo = mkdtempSync(join(tmpdir(), 'portos-cd-repo-'));
       writeFileSync(join(repo, 'CLAUDE.md'), 'REPO_CLAUDE_MD_LEAK_SENTINEL');
       const scratch = mkdtempSync(join(tmpdir(), 'portos-cd-scratch-'));
-      expect(await getClaudeMdContext(repo)).toContain('REPO_CLAUDE_MD_LEAK_SENTINEL');
-      expect(await getClaudeMdContext(scratch)).not.toContain('REPO_CLAUDE_MD_LEAK_SENTINEL');
+      expect(await getAgentInstructionsContext(repo)).toContain('REPO_CLAUDE_MD_LEAK_SENTINEL');
+      expect(await getAgentInstructionsContext(scratch)).not.toContain('REPO_CLAUDE_MD_LEAK_SENTINEL');
       rmSync(repo, { recursive: true, force: true });
       rmSync(scratch, { recursive: true, force: true });
     });
@@ -2900,32 +2902,33 @@ describe('getAppWorkspace — tilde expansion (#3180)', () => {
   });
 });
 
-// #3866 — getClaudeMdContext used to splice only the global + workspace-root
-// CLAUDE.md, so a subtree rule (including a data-loss guard) never reached an
-// API-provider agent. These pin the nested walk and its bounds.
-describe('getClaudeMdContext — nested CLAUDE.md discovery (#3866)', () => {
+// #3866 — getAgentInstructionsContext used to splice only the global +
+// workspace-root instructions, so a subtree rule (including a data-loss guard)
+// never reached an API-provider agent. These pin the nested walk and its bounds.
+// #4852 widened the match from `CLAUDE.md` to `AGENTS.md` + `CLAUDE.md`.
+describe('getAgentInstructionsContext — nested instruction discovery (#3866)', () => {
   let workspace;
 
-  const writeClaudeMd = (relDir, body) => {
+  const writeInstructions = (relDir, body, name = 'AGENTS.md') => {
     const dir = relDir ? join(workspace, relDir) : workspace;
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'CLAUDE.md'), body);
+    writeFileSync(join(dir, name), body);
   };
 
   beforeAll(() => {
-    workspace = mkdtempSync(join(tmpdir(), 'portos-nested-claudemd-'));
-    writeClaudeMd('', '# Root rules\nAnchor every backup exclude.');
-    writeClaudeMd('server', '# Server rules\nSchema parity when adding fields.');
-    writeClaudeMd('client/src/components/dashboard', '# Dashboard rules\nRegister the widget.');
-    // Ignored trees: each carries a CLAUDE.md that must NOT be spliced.
-    writeClaudeMd('node_modules/some-dep', '# Vendored dep rules');
-    writeClaudeMd('data/cos/worktrees/claim-issue-1', '# Runtime worktree rules');
+    workspace = mkdtempSync(join(tmpdir(), 'portos-nested-agentmd-'));
+    writeInstructions('', '# Root rules\nAnchor every backup exclude.');
+    writeInstructions('server', '# Server rules\nSchema parity when adding fields.');
+    writeInstructions('client/src/components/dashboard', '# Dashboard rules\nRegister the widget.');
+    // Ignored trees: each carries instructions that must NOT be spliced.
+    writeInstructions('node_modules/some-dep', '# Vendored dep rules');
+    writeInstructions('data/cos/worktrees/claim-issue-1', '# Runtime worktree rules');
     // Submodule / vendored checkout — recognized by its own `.git`, not by path.
-    writeClaudeMd('lib/slashdo', '# Submodule rules');
+    writeInstructions('lib/slashdo', '# Submodule rules');
     writeFileSync(join(workspace, 'lib/slashdo/.git'), 'gitdir: ../../.git/modules/slashdo\n');
-    writeClaudeMd('.hidden', '# Dot dir rules');
-    // Past the depth cap (depth 6): a/b/c/d/e/f/CLAUDE.md.
-    writeClaudeMd('a/b/c/d/e/f', '# Too deep rules');
+    writeInstructions('.hidden', '# Dot dir rules');
+    // Past the depth cap (depth 6): a/b/c/d/e/f/AGENTS.md.
+    writeInstructions('a/b/c/d/e/f', '# Too deep rules');
   });
 
   afterAll(() => {
@@ -2933,14 +2936,14 @@ describe('getClaudeMdContext — nested CLAUDE.md discovery (#3866)', () => {
   });
 
   it('splices nested files after the root one, each labeled with its repo-relative path', async () => {
-    const section = await getClaudeMdContext(workspace);
+    const section = await getAgentInstructionsContext(workspace);
 
     expect(section).toContain('### Project Instructions\n');
     expect(section).toContain('Anchor every backup exclude.');
     // The whole point of the issue: subtree content reaches the prompt.
-    expect(section).toContain('### Project Instructions (server/CLAUDE.md)');
+    expect(section).toContain('### Project Instructions (server/AGENTS.md)');
     expect(section).toContain('Schema parity when adding fields.');
-    expect(section).toContain('### Project Instructions (client/src/components/dashboard/CLAUDE.md)');
+    expect(section).toContain('### Project Instructions (client/src/components/dashboard/AGENTS.md)');
     expect(section).toContain('Register the widget.');
 
     // Root stays first so precedence still reads root-then-specific, and the
@@ -2954,7 +2957,7 @@ describe('getClaudeMdContext — nested CLAUDE.md discovery (#3866)', () => {
   });
 
   it('skips vendored, runtime, submodule, dot, and over-depth trees', async () => {
-    const section = await getClaudeMdContext(workspace);
+    const section = await getAgentInstructionsContext(workspace);
 
     expect(section).not.toContain('Vendored dep rules');
     expect(section).not.toContain('Runtime worktree rules');
@@ -2967,27 +2970,27 @@ describe('getClaudeMdContext — nested CLAUDE.md discovery (#3866)', () => {
     // `lib/slashdo` above is skipped only because it carries a `.git`. A sibling
     // under the same parent, with no `.git`, must still be spliced — otherwise
     // the skip is really matching `lib/` and the structural check is vacuous.
-    writeClaudeMd('lib/inhouse', '# In-house lib rules');
-    const section = await getClaudeMdContext(workspace);
-    expect(section).toContain('### Project Instructions (lib/inhouse/CLAUDE.md)');
+    writeInstructions('lib/inhouse', '# In-house lib rules');
+    const section = await getAgentInstructionsContext(workspace);
+    expect(section).toContain('### Project Instructions (lib/inhouse/AGENTS.md)');
     expect(section).toContain('In-house lib rules');
     expect(section).not.toContain('Submodule rules');
     rmSync(join(workspace, 'lib/inhouse'), { recursive: true, force: true });
   });
 
   it('caps the number of nested files spliced', async () => {
-    const capped = mkdtempSync(join(tmpdir(), 'portos-nested-claudemd-cap-'));
+    const capped = mkdtempSync(join(tmpdir(), 'portos-nested-agentmd-cap-'));
     mkdirSync(capped, { recursive: true });
-    writeFileSync(join(capped, 'CLAUDE.md'), '# Root of capped workspace');
+    writeFileSync(join(capped, 'AGENTS.md'), '# Root of capped workspace');
     // 12 nested files > the 10-file cap. Zero-padded so lexicographic order
     // matches numeric order and the assertions below are unambiguous.
     for (let i = 1; i <= 12; i++) {
       const dir = join(capped, `pkg-${String(i).padStart(2, '0')}`);
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, 'CLAUDE.md'), `# Nested rule ${String(i).padStart(2, '0')}`);
+      writeFileSync(join(dir, 'AGENTS.md'), `# Nested rule ${String(i).padStart(2, '0')}`);
     }
 
-    const section = await getClaudeMdContext(capped);
+    const section = await getAgentInstructionsContext(capped);
     const spliced = section.match(/### Project Instructions \(/g) || [];
     expect(spliced).toHaveLength(10);
     // Non-vacuous: the survivors are the first 10 by path, and the overflow is
@@ -2999,11 +3002,101 @@ describe('getClaudeMdContext — nested CLAUDE.md discovery (#3866)', () => {
     rmSync(capped, { recursive: true, force: true });
   });
 
-  it('returns null for a workspace with no CLAUDE.md at any level', async () => {
-    const empty = mkdtempSync(join(tmpdir(), 'portos-nested-claudemd-empty-'));
+  it('returns null for a workspace with no instruction file at any level', async () => {
+    const empty = mkdtempSync(join(tmpdir(), 'portos-nested-agentmd-empty-'));
     mkdirSync(join(empty, 'sub'), { recursive: true });
-    expect(await getClaudeMdContext(empty)).toBeNull();
+    expect(await getAgentInstructionsContext(empty)).toBeNull();
     rmSync(empty, { recursive: true, force: true });
+  });
+});
+
+// #4852 — AGENTS.md is the canonical cross-vendor name, with `CLAUDE.md` kept as
+// a one-line `@AGENTS.md` import so Claude Code (no configurable memory
+// filename) still loads the shared content. The walker has to cope with a
+// managed app carrying either name, or both.
+describe('getAgentInstructionsContext — AGENTS.md / CLAUDE.md resolution (#4852)', () => {
+  const makeWorkspace = () => mkdtempSync(join(tmpdir(), 'portos-agentmd-resolve-'));
+  const write = (root, rel, body) => {
+    const path = join(root, rel);
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, body);
+  };
+
+  it('still contributes a workspace that has only CLAUDE.md', async () => {
+    // Regression guard for the managed-app case: a plain rename would silently
+    // drop every app that hasn't adopted AGENTS.md.
+    const ws = makeWorkspace();
+    write(ws, 'CLAUDE.md', '# Legacy root\nLEGACY_ROOT_SENTINEL');
+    write(ws, 'server/CLAUDE.md', '# Legacy nested\nLEGACY_NESTED_SENTINEL');
+
+    const section = await getAgentInstructionsContext(ws);
+    expect(section).toContain('LEGACY_ROOT_SENTINEL');
+    expect(section).toContain('### Project Instructions (server/CLAUDE.md)');
+    expect(section).toContain('LEGACY_NESTED_SENTINEL');
+    rmSync(ws, { recursive: true, force: true });
+  });
+
+  it('prefers AGENTS.md and yields ONE entry per directory when both are present', async () => {
+    // Without the dedupe this repo's four nested pairs would count as eight
+    // against the 10-file cap and silently push real instructions out.
+    const ws = makeWorkspace();
+    write(ws, 'AGENTS.md', '# Root\nROOT_AGENTS_SENTINEL');
+    write(ws, 'CLAUDE.md', '# Root\nROOT_CLAUDE_SENTINEL');
+    write(ws, 'server/AGENTS.md', '# Server\nNESTED_AGENTS_SENTINEL');
+    write(ws, 'server/CLAUDE.md', '# Server\nNESTED_CLAUDE_SENTINEL');
+
+    const section = await getAgentInstructionsContext(ws);
+    expect(section).toContain('ROOT_AGENTS_SENTINEL');
+    expect(section).not.toContain('ROOT_CLAUDE_SENTINEL');
+    expect(section).toContain('### Project Instructions (server/AGENTS.md)');
+    expect(section).toContain('NESTED_AGENTS_SENTINEL');
+    expect(section).not.toContain('NESTED_CLAUDE_SENTINEL');
+    expect(section.match(/### Project Instructions \(/g) || []).toHaveLength(1);
+    rmSync(ws, { recursive: true, force: true });
+  });
+
+  it('skips an import-only CLAUDE.md bridge instead of splicing an empty section', async () => {
+    // The bridge carries no content of its own; splicing it adds a useless
+    // one-line section to every agent prompt and burns a cap slot.
+    const ws = makeWorkspace();
+    write(ws, 'AGENTS.md', '# Root\nBRIDGE_ROOT_SENTINEL');
+    write(ws, 'CLAUDE.md', '@AGENTS.md\n');
+    write(ws, 'server/CLAUDE.md', '@AGENTS.md\n');
+
+    const section = await getAgentInstructionsContext(ws);
+    expect(section).toContain('BRIDGE_ROOT_SENTINEL');
+    expect(section).not.toContain('@AGENTS.md');
+    // `server/` holds nothing but the bridge, so it contributes no section at all.
+    expect(section).not.toContain('### Project Instructions (server/');
+    rmSync(ws, { recursive: true, force: true });
+  });
+
+  it('an import-only bridge does not consume a slot against the file cap', async () => {
+    // Filtering after the walk instead of during it would let 10 bridges push
+    // the real nested file out of the budget.
+    const ws = makeWorkspace();
+    write(ws, 'AGENTS.md', '# Root');
+    for (let i = 1; i <= 10; i++) {
+      write(ws, `bridge-${String(i).padStart(2, '0')}/CLAUDE.md`, '@AGENTS.md\n');
+    }
+    write(ws, 'zz-real/AGENTS.md', '# Real\nREAL_AFTER_BRIDGES_SENTINEL');
+
+    const section = await getAgentInstructionsContext(ws);
+    expect(section).toContain('REAL_AFTER_BRIDGES_SENTINEL');
+    rmSync(ws, { recursive: true, force: true });
+  });
+
+  it('keeps a CLAUDE.md that only LOOKS like a bridge', async () => {
+    // Non-vacuous guard on the import-only check: content below the import, or
+    // an import of something other than AGENTS.md, is real content.
+    const ws = makeWorkspace();
+    write(ws, 'extra/CLAUDE.md', '@AGENTS.md\n\nClaude-only addendum: NOT_A_BRIDGE_SENTINEL');
+    write(ws, 'other/CLAUDE.md', '@docs/conventions.md\n');
+
+    const section = await getAgentInstructionsContext(ws);
+    expect(section).toContain('NOT_A_BRIDGE_SENTINEL');
+    expect(section).toContain('### Project Instructions (other/CLAUDE.md)');
+    rmSync(ws, { recursive: true, force: true });
   });
 });
 

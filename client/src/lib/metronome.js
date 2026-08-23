@@ -149,7 +149,7 @@ export function createMetronome({
     const id = setTimeout(() => {
       pendingTimeouts.delete(id);
       // setTimeout runs outside the request lifecycle — a throwing consumer
-      // callback must not crash the process (CLAUDE.md deferred-work boundary).
+      // callback must not crash the process (AGENTS.md deferred-work boundary).
       try {
         if (firstMusicBeat && onCountInComplete) onCountInComplete(info);
         if (onBeat) onBeat(info);

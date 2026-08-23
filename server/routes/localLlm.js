@@ -466,7 +466,7 @@ router.post('/compare', asyncHandler(async (req, res) => {
 // endpoints back the measured alternative: run a model at several context sizes
 // and rank installed models on the evidence.
 //
-// The read/run split is the AI Provider Usage Policy boundary (root CLAUDE.md):
+// The read/run split is the AI Provider Usage Policy boundary (root AGENTS.md):
 // GET touches disk only and is safe to poll; POST /run is the ONLY path that
 // reaches a provider, and it fires solely from a deliberate user action whose
 // UI names the backend, model, and run count first. Do not add a boot hook, a

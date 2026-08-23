@@ -18,7 +18,7 @@ const {
 } = await import('./usageReconciler.js');
 
 // Fake HOME per test so the parsers read fixtures, never the developer's real
-// ~/.claude or ~/.codex (which hold private session data — see CLAUDE.md).
+// ~/.claude or ~/.codex (which hold private session data — see AGENTS.md).
 let home;
 const WORKSPACE = '/work/example-repo';
 // claudeProjectSlug(WORKSPACE) — the CLI names its project dir after the cwd.

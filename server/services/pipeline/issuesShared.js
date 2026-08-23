@@ -502,7 +502,7 @@ export const AUDIO_MODES = Object.freeze(['per-clip', 'silent', 'generated', 'up
 // Read-side default: an absent / unknown audioMode collapses to 'per-clip' —
 // today's behavior — so an un-migrated record (or one synced from an older,
 // audioMode-unaware peer) reads correctly before migration 067 stamps the
-// explicit value. Never let "absent" become a wrong mode (CLAUDE.md sentinel
+// explicit value. Never let "absent" become a wrong mode (AGENTS.md sentinel
 // discipline).
 export const sanitizeAudioMode = (raw) => (AUDIO_MODES.includes(raw) ? raw : 'per-clip');
 

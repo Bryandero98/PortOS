@@ -15,7 +15,7 @@
  *     Every dependency arrives as a parameter; that is what keeps this testable.
  *   - `await` vs fire-and-forget is part of the contract, not an accident: an
  *     awaited step blocks every later step, and the tests assert which is which.
- *   - No step here may reach an AI provider (CLAUDE.md "No cold-bootstrap LLM
+ *   - No step here may reach an AI provider (AGENTS.md "No cold-bootstrap LLM
  *     calls"). Boot loads on-disk state and ARMS schedulers, nothing more.
  */
 

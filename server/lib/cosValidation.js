@@ -1183,7 +1183,7 @@ const cosTaskDiagnosticsSchema = z.object({
 // Reasoning-effort override for effort-capable CLIs (claude/codex). On create,
 // '' from a form's "Default" option → undefined (no override persisted). On
 // update, ''/null must survive as null so the store's legacy-field normalizer
-// deletes the pin (absent-vs-cleared, CLAUDE.md) — emptyToUndefined would drop
+// deletes the pin (absent-vs-cleared, AGENTS.md) — emptyToUndefined would drop
 // the clear signal at the route's `!== undefined` gate and make a set effort
 // permanent through the API.
 const effortInputSchema = z.preprocess(emptyToUndefined, z.enum(EFFORT_LEVELS).optional());
@@ -1191,7 +1191,7 @@ const effortUpdateSchema = z.preprocess(emptyToNull, z.enum(EFFORT_LEVELS).nulla
 // Federated instance this task is PINNED to (#4520) — only that instance's CoS
 // evaluator claims and runs it. On create, '' from the picker's "Any instance"
 // option → undefined (no pin persisted). On update, ''/null must survive as null
-// so the route can clear an existing pin (absent-vs-cleared, CLAUDE.md).
+// so the route can clear an existing pin (absent-vs-cleared, AGENTS.md).
 // Bounded-but-format-free on purpose: the id vocabulary is whatever the peers in
 // this install's registry advertise, and the route is what checks membership.
 const INSTANCE_ID_MAX_LENGTH = 128;

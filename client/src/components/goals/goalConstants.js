@@ -3,7 +3,7 @@ import {
 } from 'lucide-react';
 
 // Canonical goals routes. Which goal is open lives in the URL, never in local state
-// (see client/src/CLAUDE.md), so a specific goal is shareable, bookmarkable, and
+// (see client/src/AGENTS.md), so a specific goal is shareable, bookmarkable, and
 // linkable from other surfaces — e.g. the Character sheet's Life Goals card.
 export const GOALS_LIST_PATH = '/goals/list';
 export const goalDetailPath = (goalId) => `${GOALS_LIST_PATH}/${encodeURIComponent(goalId)}`;

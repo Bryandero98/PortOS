@@ -6,7 +6,7 @@
  *   - key absent from LLM response → preserve existing value
  *   - key present with empty string/array → IGNORED (no-op; expand flow has
  *     no "clear" intent — an empty proposal just means the LLM had nothing
- *     to add). Distinct from the CLAUDE.md merge convention used for
+ *     to add). Distinct from the AGENTS.md merge convention used for
  *     direct-user PATCHes, where empty CAN mean clear.
  *   - key present with non-empty value → fill ONLY when target field is blank.
  */

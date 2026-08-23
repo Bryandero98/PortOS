@@ -3,6 +3,7 @@ import { join } from 'path';
 import { exec } from '../lib/childProcess.js';
 import { promisify } from 'util';
 import { ensureDir, ensureDirs } from '../lib/fileUtils.js';
+import { writeAgentInstructions } from '../lib/agentInstructionsFile.js';
 import {
   XCODE_TEAM_ID, XCODE_BUNDLE_PREFIX, XCODE_ENV_EXAMPLE,
   toBundleId, toTargetName,
@@ -386,8 +387,8 @@ final class ScreenshotTests: XCTestCase {
     ]);
   }
 
-  // CLAUDE.md
-  await writeFile(join(repoPath, 'CLAUDE.md'), `# ${name}
+  // AGENTS.md (+ the Claude Code bridge)
+  await writeAgentInstructions(repoPath, `# ${name}
 
 Multi-platform native app built with SwiftUI (iOS + macOS + watchOS) and XcodeGen.
 

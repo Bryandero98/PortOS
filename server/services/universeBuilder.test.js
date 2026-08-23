@@ -2784,7 +2784,7 @@ describe("universeBuilder service", () => {
   });
 
   // Regression for "Async PATCH races on shared records — serialize writes
-  // server-side" (CLAUDE.md). Each updateUniverse() now goes through a
+  // server-side" (AGENTS.md). Each updateUniverse() now goes through a
   // file-level write tail so a stale snapshot can't clobber a sibling write.
   describe("write serialization", () => {
     it("concurrent updates to the same universe preserve every field", async () => {
@@ -2808,7 +2808,7 @@ describe("universeBuilder service", () => {
     });
 
     it("concurrent updates to DIFFERENT universes preserve every field", async () => {
-      // Per CLAUDE.md: a Map<id, Promise> is NOT enough — both universes
+      // Per AGENTS.md: a Map<id, Promise> is NOT enough — both universes
       // share the same JSON file, so writes to different ids can still race.
       // The single file-level tail covers this.
       const a = await svc.createUniverse({ name: "A" });

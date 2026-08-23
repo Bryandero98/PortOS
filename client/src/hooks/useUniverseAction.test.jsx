@@ -209,7 +209,7 @@ describe('useUniverseAction', () => {
       return { universe: { id } };
     });
     await run({ ref, setBusy, action });
-    // CLAUDE.md "Deferred work must respect both staleness and unmount" —
+    // AGENTS.md "Deferred work must respect both staleness and unmount" —
     // hook intentionally skips ref/busy reset when unmounted to avoid
     // post-unmount setState.
     expect(ref.current).toBe(true);

@@ -67,7 +67,7 @@ export function extractIssuePriority(labels = []) {
  * Returns `{ ok, issues }` — `ok:false` means the tracker read FAILED (CLI error
  * or unparseable output), which is NOT the same as "no existing issues" (`ok:true,
  * issues:[]`). The handler must NOT file when the read failed, or a transient
- * `gh` blip would defeat dedup and file a duplicate (CLAUDE.md sentinel rule).
+ * `gh` blip would defeat dedup and file a duplicate (AGENTS.md sentinel rule).
  */
 export async function listForgeIssues({ cli, cwd, env, label = LI_LABEL, state = 'all', exec = runCli } = {}) {
   // glab lists open issues by default and needs `--all` to widen to every state;

@@ -23,7 +23,7 @@
  * each source sync or on a daily rollup tick with no user consent (no provider
  * calls). The ONLY provider call is `interpretConsumption()`, invoked strictly
  * from an explicit user-action route (the "what does my consumption say about
- * me" button), per CLAUDE.md's AI-provider policy (no cold-bootstrap calls).
+ * me" button), per AGENTS.md's AI-provider policy (no cold-bootstrap calls).
  */
 
 import { join } from 'path';

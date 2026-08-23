@@ -66,7 +66,7 @@ export async function getSubscriptionCosts() {
  * Merge a patch of plan prices into settings and return the normalized map.
  *
  * Absent key vs. present-but-empty are DIFFERENT (the LLM/merge convention in
- * CLAUDE.md applies to user edits too): a family the patch omits keeps its
+ * AGENTS.md applies to user edits too): a family the patch omits keeps its
  * stored price, while a family sent as `null`/`0` is an intentional clear and
  * is deleted. Without that split, an editor that only submits changed rows
  * could never remove a plan the user cancelled.

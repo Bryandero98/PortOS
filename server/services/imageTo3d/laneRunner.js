@@ -15,7 +15,7 @@
  *
  * Everything here is a child-process boundary running OUTSIDE the request lifecycle,
  * so outcomes flow through events and rejected promises — never a throw into Express
- * (CLAUDE.md child-process exception).
+ * (AGENTS.md child-process exception).
  */
 
 import { execFile, spawn } from '../../lib/childProcess.js';
@@ -38,7 +38,7 @@ export const PYTHON_MODULE_PROBE_SOURCE = 'import importlib.util as u,json,sys;'
  * set, and only the CLASSIFICATION of the answer is lane-specific (TRELLIS.2 maps it
  * to a texture-bake quality, Pixal3D to a NAF availability). Returns `null` — never a
  * partial map — when the probe could not run, so callers can keep "failed to
- * determine" distinct from "determined to be missing" (CLAUDE.md sentinel rule).
+ * determine" distinct from "determined to be missing" (AGENTS.md sentinel rule).
  *
  * Child-process boundary outside the request lifecycle: every failure path resolves.
  * Note the JSON parse happens AFTER the callback resolves rather than inside it — a

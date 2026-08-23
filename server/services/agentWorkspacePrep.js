@@ -147,13 +147,13 @@ export async function prepareAgentWorkspace({ agentId, task }) {
   // Creative Director treatment/plan/evaluate tasks are HTTP-PATCH deliverables
   // and never asked for a worktree. Pin them to an isolated scratch cwd BEFORE
   // the PortOS-root resolution / git-pull / conflict scan, so a CLI/TUI provider
-  // cannot natively discover the repo CLAUDE.md tree (#4650).
+  // cannot natively discover the repo AGENTS.md tree (#4650).
   if (usesCreativeDirectorScratchCwd(task)) {
     const workspacePath = creativeDirectorScratchCwd(agentId);
     await ensureDir(workspacePath);
     // Codex (and any CLI that refuses a non-git cwd) needs a repo root here.
     // Initializing INSIDE the scratch makes the scratch itself the git root, so
-    // native CLAUDE.md discovery cannot walk up into the PortOS checkout —
+    // native AGENTS.md discovery cannot walk up into the PortOS checkout —
     // `--skip-git-repo-check` would only cover Codex's exec path, not TUI.
     await execGit(['init'], workspacePath).catch((err) => {
       emitLog('warn', `⚠️ CD scratch git init failed for ${agentId}: ${err.message}`, {

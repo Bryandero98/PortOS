@@ -6,7 +6,7 @@
  * the voice layers (lead / bass / harmony / drone / counter-melody) the user is
  * stacking — plus per-layer learning notes. Persisted to data/rounds.json.
  *
- * Pure-ish CRUD over a single JSON file: PortOS is single-user (see CLAUDE.md
+ * Pure-ish CRUD over a single JSON file: PortOS is single-user (see AGENTS.md
  * "Security Model"), so a per-file write queue serializes the read-modify-write
  * cycle rather than guarding against competing humans.
  *
@@ -509,7 +509,7 @@ const seedTemplate = (id) => SEED_ROUNDS.find((s) => s.id === id) || null;
 // Serialize the read-modify-write cycle so two mutations issued back-to-back
 // (e.g. a rename PATCH followed by a layer edit) each merge against the freshest
 // persisted state instead of racing on a stale snapshot. Single-user, so this
-// is re-entrancy hygiene, not a multi-actor lock (see CLAUDE.md Security Model).
+// is re-entrancy hygiene, not a multi-actor lock (see AGENTS.md Security Model).
 const enqueue = createFileWriteQueue();
 
 // Pure read + sanitize — NO write side effect. When the file is absent or

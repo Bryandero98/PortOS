@@ -16,7 +16,7 @@ export const WORLD_INFLUENCES_PER_LIST_MAX = 30;
 export const WORLD_STYLE_REFERENCES_MAX = 20;
 
 // `options` lets a caller that owns its own error toast pass `{ silent: true }`
-// so request() doesn't also toast — see CLAUDE.md "Custom catch ⇒ silent: true".
+// so request() doesn't also toast — see AGENTS.md "Custom catch ⇒ silent: true".
 export const listUniverses = (options = {}) => request('/universe-builder', options);
 export const getUniverse = (id, options = {}) => request(`/universe-builder/${encodeURIComponent(id)}`, options);
 
@@ -40,7 +40,7 @@ export const updateUniverse = (id, patch, options = {}) => request(`/universe-bu
 
 // `options` lets callers that own their own error toast (a custom `.catch`)
 // pass `{ silent: true }` so the request() helper doesn't also toast — see
-// CLAUDE.md "Custom catch ⇒ silent: true". Mirrors updateUniverse's signature.
+// AGENTS.md "Custom catch ⇒ silent: true". Mirrors updateUniverse's signature.
 export const deleteUniverse = (id, options = {}) => request(`/universe-builder/${encodeURIComponent(id)}`, {
   method: 'DELETE',
   ...options,
@@ -396,7 +396,7 @@ export const setUniverseVariationsLockAll = (universeId, { locked, category = nu
 // Promote a category variation into a full canon entry. `targetKind` is
 // required only when the source bucket's `kind` is 'other' (otherwise the
 // server derives it from the bucket). Pass `{ silent: true }` in `options`
-// when the caller owns its own error toast (per CLAUDE.md).
+// when the caller owns its own error toast (per AGENTS.md).
 export const promoteVariationToCanon = (universeId, {
   category, label, targetKind, providerId, model,
 } = {}, options = {}) =>

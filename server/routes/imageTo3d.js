@@ -84,7 +84,7 @@ router.get('/targets', asyncHandler(async (_req, res) => {
  * `complete` / `error`) while the target's adapter installs. Gated on hardware
  * support and single-flighted per target; killed if the client navigates away.
  * Only fires the real install on this explicit user request — never from boot
- * (CLAUDE.md no-cold-bootstrap policy). Mirrors imageGenSetup.js's `/flux2-install`.
+ * (AGENTS.md no-cold-bootstrap policy). Mirrors imageGenSetup.js's `/flux2-install`.
  */
 async function handleTargetInstall(targetId, req, res) {
   const { send, safeEnd } = openSseStream(res);

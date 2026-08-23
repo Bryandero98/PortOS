@@ -40,7 +40,7 @@ const CONFIG_EXPECTED_MAX_CHARS = 120;
 // Machine-identity / network / PII fragments stripped before a captured failure
 // snippet (or any interpolated free text) lands in a human-facing — and possibly
 // federated — investigation task body. See the "Sensitive Data & Privacy" section
-// in CLAUDE.md: the *shape* of the failure is what a human needs, never the live
+// in AGENTS.md: the *shape* of the failure is what a human needs, never the live
 // hostnames, paths, addresses, or secrets pulled off the running instance.
 const SNIPPET_REDACTIONS = [
   // Home-dir paths that embed an OS username → strip the user segment only.
@@ -128,7 +128,7 @@ export const ERROR_PATTERNS = [
   // 2026-08-17: `model_reasoning_effort = "max"`, a variant codex does not
   // accept, sitting in the global config). Deliberately does NOT echo the
   // matched path — it embeds the OS username (see Sensitive Data & Privacy in
-  // CLAUDE.md).
+  // AGENTS.md).
   //
   // The rejected key can come from either side, and the fix text says which
   // (see `extract`): PortOS injects only PORTOS_CLI_CONFIG_KEYS via `-c`, so

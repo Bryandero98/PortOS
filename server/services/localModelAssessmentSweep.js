@@ -25,7 +25,7 @@
  * identical, and a second queue could run concurrently with this one — which
  * would make every number either produced describe the contention.
  *
- * ## AI Provider Usage Policy (root CLAUDE.md) — read before editing
+ * ## AI Provider Usage Policy (root AGENTS.md) — read before editing
  *
  * A sweep calls a provider once per queued measurement, so it is STRICTLY
  * user-triggered, the same as the single-model run:
@@ -230,7 +230,7 @@ export function __resetSweep() {
 
 // The sweep loop runs OUTSIDE the request lifecycle — there is no `next(err)` to
 // bubble to, so an uncaught throw here would take the process down (root
-// CLAUDE.md). Every model is individually caught, and the loop itself is wrapped.
+// AGENTS.md). Every model is individually caught, and the loop itself is wrapped.
 //
 // It mutates the `run` it was handed, NOT the module-level `sweep`: a cancelled
 // queue is replaceable the moment it is cancelled, and a loop still winding down

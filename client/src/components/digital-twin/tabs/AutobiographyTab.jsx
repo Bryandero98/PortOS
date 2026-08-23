@@ -163,7 +163,7 @@ export default function AutobiographyTab({ onRefresh }) {
   const handleWeaveNarrative = async (storyId) => {
     setWeavingStoryId(storyId);
     // request() already toasts on failure; the catch only swallows so the
-    // loading state still resets (avoids the double-toast in CLAUDE.md).
+    // loading state still resets (avoids the double-toast in AGENTS.md).
     const result = await api.weaveAutobiographyNarrative(storyId).catch(() => null);
     if (result?.narrative) {
       setNarrative({ storyId, text: result.narrative, storyCount: result.storyCount });

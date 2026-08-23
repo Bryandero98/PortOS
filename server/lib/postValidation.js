@@ -414,7 +414,7 @@ export const postConfigUpdateSchema = z.object({
   // "HH:MM" string interpreted in the user's configured timezone. The native
   // <input type="time"> can be cleared to '' by the user; treat that as
   // "no change" (absent) rather than a validation failure that would reject
-  // the whole config PUT — same UI-sentinel-tolerance pattern CLAUDE.md
+  // the whole config PUT — same UI-sentinel-tolerance pattern AGENTS.md
   // documents for CLI provider endpoints.
   reminder: z.object({
     enabled: z.boolean().optional(),

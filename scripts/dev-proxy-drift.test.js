@@ -65,7 +65,7 @@ const navPaths = NAV_COMMANDS.map((command) => command.path);
 /**
  * Every path the client router declares, with nesting resolved.
  *
- * NOT just `NAV_COMMANDS`: `client/src/CLAUDE.md` requires a selectable view to
+ * NOT just `NAV_COMMANDS`: `client/src/AGENTS.md` requires a selectable view to
  * register only its BASE path in the nav manifest while its `:id` detail route
  * lives in `App.jsx` alone. A convention-following `<Route path="data/:category">`
  * would therefore be invisible to a nav-manifest-only check — and the terminator

@@ -359,7 +359,7 @@ export default function PostSessionLauncher({
   // (mental-math + cognitive) excludes Memory and LLM drills, so both remain
   // deliberate opt-ins and wit/verbal work
   // is never auto-added to a default session — provider-cost consent stays
-  // opt-in (CLAUDE.md AI-provider policy). An empty/absent list means "all
+  // opt-in (AGENTS.md AI-provider policy). An empty/absent list means "all
   // enabled" (back-compat). Focus-practice on a specific weak domain bypasses
   // this filter (it's an explicit user choice, not a default composition).
   // `null` = no sessionModules set (legacy/absent) → include all enabled

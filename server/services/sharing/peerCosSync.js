@@ -64,7 +64,7 @@ function cosAgentsDir() {
 
 // Cap so a pathologically large history can't build an unbounded manifest. Each
 // agent contributes up to 3 files; 150k entries ≈ 50k agents, far beyond any
-// realistic single-user history. When exceeded we LOG + truncate (CLAUDE.md "no
+// realistic single-user history. When exceeded we LOG + truncate (AGENTS.md "no
 // silent caps"). Kept in sync with the `entries` cap in peerCosHistoryManifestSchema.
 // Chosen so the worst-case serialized manifest (~180 bytes/entry ≈ 27MB) stays
 // UNDER COS_HISTORY_MANIFEST_MAX_BYTES below — otherwise this sender-side

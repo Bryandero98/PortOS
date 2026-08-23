@@ -16,7 +16,7 @@
  * (see `listAppIssues`), so the Claim button can never queue a run against a
  * tracker other than the one the user is looking at.
  *
- * Sentinel discipline (CLAUDE.md): "couldn't ask the forge" never collapses into
+ * Sentinel discipline (AGENTS.md): "couldn't ask the forge" never collapses into
  * "there are no issues". A failed probe returns `issues: []` WITH
  * `transient: true`, a `reason`, and the `headline`/`remedy` that describe it, so
  * the UI says "couldn't load" instead of the lie "no open issues" — and says WHY

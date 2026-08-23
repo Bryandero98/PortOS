@@ -228,7 +228,7 @@ export async function streamLocalLlmTest(payload, { signal, onToken } = {}) {
 // The catalog fit badge is a size estimate; these run the model and record what
 // it actually did. GET is disk-only and safe to call on mount; the run endpoint
 // calls a provider and must only fire from a deliberate user action (root
-// CLAUDE.md, "AI Provider Usage Policy").
+// AGENTS.md, "AI Provider Usage Policy").
 
 // Persisted assessments + the intent-ranked recommendation + which installed
 // models have no evidence yet. Zero LLM calls, so it's safe to load with the tab.

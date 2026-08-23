@@ -8,7 +8,7 @@
  * programmatic PortOS job like rendering the universe bible entries that have
  * no image yet.
  *
- * The master switch is the consent gate for the whole feature (CLAUDE.md's AI
+ * The master switch is the consent gate for the whole feature (AGENTS.md's AI
  * provider policy): with it off nothing here contacts a provider, and the page
  * names the family, provider, model, and work before it can be turned on.
  */
@@ -147,7 +147,7 @@ export default function QuotaBurn() {
     const seq = editSeqRef.current;
     const requestSeq = ++loadSeqRef.current;
     // `silent: true` because the failure is rendered by this page's own banner
-    // rather than the request helper's toast — see client/src/CLAUDE.md's
+    // rather than the request helper's toast — see client/src/AGENTS.md's
     // silent-vs-toasting rule.
     const data = await api.getQuotaBurn(refresh, { silent: true })
       .catch((err) => {

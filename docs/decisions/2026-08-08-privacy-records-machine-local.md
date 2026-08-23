@@ -84,7 +84,7 @@ the first two so the boundary fails loudly rather than eroding.
 
 ### Scope of the rule this ADR states
 
-`CLAUDE.md` summarizes this decision as the flat rule that **PII must not ride
+`AGENTS.md` summarizes this decision as the flat rule that **PII must not ride
 the federation layer at all**, and for Privacy Center records that is exact and
 unconditional. The rule governs *records* — what one instance replicates to
 another, and what a status or capability payload may disclose. It is not a rule
@@ -146,7 +146,7 @@ fix for the creative-data federation that already exists.
   **#3659** — a general federation fix benefiting every federated kind, not a
   privacy prerequisite. It is version-gated so an older peer that does not
   present identity degrades gracefully rather than losing sync.
-- `CLAUDE.md`'s Security Model previously stated that PortOS "intentionally
+- `AGENTS.md`'s Security Model previously stated that PortOS "intentionally
   omits authentication … HTTPS." Both exist as opt-in, off-by-default features,
   and the stale wording actively misleads anyone reasoning about what a peer
   channel can guarantee. Corrected as part of this change.

@@ -42,7 +42,7 @@ const MediaModels = lazyWithReload(() => import('./MediaModels'));
  * `docs/plans/2026-08-21-models-navigation.md`.
  *
  * `?tab` is a route param, not local state, so every one is deep-linkable and
- * reachable from ⌘K and voice (`client/src/CLAUDE.md`).
+ * reachable from ⌘K and voice (`client/src/AGENTS.md`).
  */
 const TAB_CONTENT = {
   '3d': Image3dRuntimes,

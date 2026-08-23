@@ -13,7 +13,7 @@
  * working. taskPromptDefaults.test.js pins the exported values against a hash
  * snapshot so a split/refactor can't silently alter the upgrade contract.
  *
- * Distribution-model machinery (see CLAUDE.md "Distribution model"):
+ * Distribution-model machinery (see AGENTS.md "Distribution model"):
  * - PROMPT_VERSIONS — bumped when a default prompt changes so existing installs auto-upgrade.
  * - PREVIOUS_DEFAULT_PROMPTS — prior shipped defaults, recognized on read so a stored
  *   (non-customized) prompt can be safely auto-upgraded across installs/versions.

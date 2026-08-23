@@ -569,7 +569,7 @@ export async function tryReadFileStrict(filePath, encoding = 'utf8') {
  * rollout JSONL). `readFile` on one of those loads the whole thing into heap;
  * this reads only the trailing window.
  *
- * Non-throwing, with the sentinel distinction the CLAUDE.md rule demands:
+ * Non-throwing, with the sentinel distinction the AGENTS.md rule demands:
  *   - missing / unopenable / read error → `null`
  *   - zero-byte file                    → `''`
  * so a caller can tell "nothing to read" from "couldn't read".
@@ -687,7 +687,7 @@ async function readWithSwapRetry(filePath, encoding = 'utf-8') {
  * Read a JSON file, reporting whether the read is TRUSTWORTHY rather than
  * collapsing every failure into the default (the `readJSONFile` behavior below).
  *
- * The absent-vs-unreadable distinction (see CLAUDE.md's "Sentinel + validate"):
+ * The absent-vs-unreadable distinction (see AGENTS.md's "Sentinel + validate"):
  *
  *   - ENOENT (never written)      → `{ ok: true,  value: defaultValue }` — a genuine
  *     empty. A caller counting records may trust this as a real zero.
@@ -950,7 +950,7 @@ export async function writeJSONLines(filePath, values) {
  * assignment. For read-modify-write, use `mutate(fn)` — it runs the whole
  * `load → fn → persist` cycle under the same tail, so a `load` always sees the
  * previous cycle's committed result and one writer can't clobber the other
- * (CLAUDE.md: "serialize writes server-side… a single tail per shared file").
+ * (AGENTS.md: "serialize writes server-side… a single tail per shared file").
  * A bare `load()` + `save()` pair does NOT get that guarantee; reach for
  * `mutate()` whenever the new value depends on the current one.
  */
@@ -1619,7 +1619,7 @@ export function isPathInsideDir(dir, candidatePath) {
  *     and flow into ffmpeg / image-gen as an "image path" where it'd fail in
  *     confusing ways). Note: `statSync` follows symlinks, so a symlink under
  *     the root pointing to a regular file outside still passes. PortOS is
- *     single-user (see CLAUDE.md "Security Model") so we accept that — for
+ *     single-user (see AGENTS.md "Security Model") so we accept that — for
  *     symlink rejection, swap to `lstatSync`.
  *
  * Pass `{ mustExist: false }` at call time for code paths that intentionally

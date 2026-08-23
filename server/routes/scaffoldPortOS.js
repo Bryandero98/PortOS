@@ -1,6 +1,7 @@
 import { writeFile } from 'fs/promises';
 import { join } from 'path';
 import { atomicWrite, ensureDir, ensureDirs } from '../lib/fileUtils.js';
+import { writeAgentInstructions } from '../lib/agentInstructionsFile.js';
 
 // Inline CORS middleware snippet for generated projects (no cors package dependency)
 const CORS_SNIPPET = `app.use((req, res, next) => {
@@ -569,10 +570,10 @@ jobs:
 
   addStep('Create GitHub Actions', 'done');
 
-  // === CLAUDE.md ===
-  await writeFile(join(repoPath, 'CLAUDE.md'), `# CLAUDE.md
+  // === AGENTS.md (+ the Claude Code bridge) ===
+  await writeAgentInstructions(repoPath, `# AGENTS.md
 
-This file provides guidance to Claude Code when working with code in this repository.
+This file provides guidance to AI coding agents working with code in this repository.
 
 ## Commands
 

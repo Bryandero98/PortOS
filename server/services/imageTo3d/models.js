@@ -10,7 +10,7 @@
  *
  * The render NEVER auto-runs: it is only reached from an explicit user create /
  * generate request, and it is gated on the target being installed + runnable on
- * this host (CLAUDE.md no-cold-bootstrap AI policy + the host's sensitivity to
+ * this host (AGENTS.md no-cold-bootstrap AI policy + the host's sensitivity to
  * sustained GPU load). Adding a second target is a registration in `adapters.js`,
  * not a rewrite here.
  */

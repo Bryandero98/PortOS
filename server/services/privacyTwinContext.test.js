@@ -1,6 +1,6 @@
 /**
  * Unit tests for getPrivacyTwinContext (issue #2147). DB + crypto are mocked —
- * this is a pure logic test, never touches a real Postgres (see CLAUDE.md
+ * this is a pure logic test, never touches a real Postgres (see AGENTS.md
  * DB-test safety) and never runs as a *.db.test.js.
  */
 

@@ -12,7 +12,7 @@
  *      the template fed to the LLM.
  *   2. LLM narrative (opt-in). Only when a provider is configured in settings —
  *      the config UI names the provider/model. See "AI Provider Usage Policy" in
- *      CLAUDE.md: the feature is silent until the user enables it, and the
+ *      AGENTS.md: the feature is silent until the user enables it, and the
  *      scheduled run is a sanctioned automation the user set up.
  *
  * The scheduler lives in activityDigestScheduler.js; the manual "draft today

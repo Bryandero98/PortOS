@@ -216,7 +216,7 @@ export function bulkReassignSeason(seriesId, fromSeasonId, toSeasonId = null, { 
   return queueSeriesIssuesWrite(seriesId, async () => {
     // Honor per-season locks — refuse to move issues OUT of or INTO a locked
     // volume. Series lives in a different write queue, so this is best-effort
-    // single-user gating, not strict serialization (fine per CLAUDE.md).
+    // single-user gating, not strict serialization (fine per AGENTS.md).
     // Callers that already hold a fresh series (e.g. `deleteSeason` reads it
     // for the reassign-target validation) can pass `_preloadedSeries` to skip
     // the duplicate read.

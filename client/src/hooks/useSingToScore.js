@@ -10,7 +10,7 @@
 //
 // All Web Audio + rAF resources (mic stream, analyser graph, tracker loop,
 // metronome) tear down on stop AND on unmount (the deferred-work teardown rule
-// in CLAUDE.md) so nothing dangles after navigation-away.
+// in AGENTS.md) so nothing dangles after navigation-away.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createStreamAnalyser } from '../lib/audioRecorder.js';

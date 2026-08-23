@@ -338,7 +338,7 @@ router.put('/tasks/:id', asyncHandler(async (req, res) => {
   // is the explicit clear the schema preserves — it lands as `undefined` in the
   // metadata patch, which the store's undefined-stripping turns into a real key
   // removal, restoring opportunistic first-claim-wins. Absent leaves the pin
-  // untouched (absent-vs-cleared, CLAUDE.md).
+  // untouched (absent-vs-cleared, AGENTS.md).
   if (fields.targetInstanceId !== undefined) {
     if (fields.targetInstanceId !== null) await assertAssignableInstance(fields.targetInstanceId);
     updates.metadata = { ...updates.metadata, targetInstanceId: fields.targetInstanceId ?? undefined };

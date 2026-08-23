@@ -9,7 +9,7 @@ import {
 
 // Fixtures are hand-authored to match the real formats (verified against a live
 // install) with invented paths/ids — never a transcribed real record, per the
-// Sensitive Data rules in CLAUDE.md.
+// Sensitive Data rules in AGENTS.md.
 
 const claudeLine = (overrides = {}) => JSON.stringify({
   type: 'assistant',

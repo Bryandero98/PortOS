@@ -341,7 +341,7 @@ async function loadModelWithArgs(modelId, args = []) {
   if (await checkLMStudioAvailable(true)) {
     const resident = await getLoadedModels(true).catch(() => [])
     // `[]` from `getLoadedModels` means "nothing is loaded" OR "both list
-    // endpoints failed" — the null-vs-empty sentinel trap in root CLAUDE.md, and
+    // endpoints failed" — the null-vs-empty sentinel trap in root AGENTS.md, and
     // `getLastLoadedModelsError` is the module's own way out of it. An
     // untrustworthy list must not read as "not resident": that skips the unload,
     // `lms load` hands back the existing instance, and the previous

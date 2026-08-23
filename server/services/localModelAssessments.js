@@ -14,7 +14,7 @@
  * was taken in. `lib/localModelAssessment.js` turns that evidence into a verdict
  * and an intent-specific ranking.
  *
- * ## AI Provider Usage Policy (root CLAUDE.md) — read before editing
+ * ## AI Provider Usage Policy (root AGENTS.md) — read before editing
  *
  * Assessments call an LLM, so they are STRICTLY user-triggered. This module
  * mirrors the `initDrillCache` / `requestCacheFill` split from

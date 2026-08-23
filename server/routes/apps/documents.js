@@ -18,7 +18,9 @@ import { loadApp, pathExists } from './shared.js';
 
 const router = Router();
 
-const ALLOWED_DOCUMENTS = ['PLAN.md', 'CLAUDE.md', 'GOALS.md', 'REVIEW.md', 'REJECTED.md'];
+// Both agent-instruction names are listed (#4852): AGENTS.md is canonical, while a
+// managed app's CLAUDE.md is either its one-line AGENTS.md bridge or its only file.
+const ALLOWED_DOCUMENTS = ['PLAN.md', 'AGENTS.md', 'CLAUDE.md', 'GOALS.md', 'REVIEW.md', 'REJECTED.md'];
 
 // GET /api/apps/:id/documents - List which documents exist
 router.get('/:id/documents', loadApp, asyncHandler(async (req, res) => {

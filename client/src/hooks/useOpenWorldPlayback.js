@@ -23,7 +23,7 @@ export function useOpenWorldPlayback() {
   // load" vs "nothing recorded yet" — the absent-vs-empty rule.
   const [error, setError] = useState(false);
 
-  // Guards a deferred/interval callback against firing after unmount (CLAUDE.md
+  // Guards a deferred/interval callback against firing after unmount (AGENTS.md
   // deferred-work rule).
   const mountedRef = useMounted();
 

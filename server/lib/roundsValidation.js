@@ -60,7 +60,7 @@ export const PROGRESS_SCOPES_MAX = 80;    // distinct training scopes tracked
 export const RECORDING_GRADES = ['in-tune', 'close', 'off', 'missed', 'pending'];
 
 // Trim a string field, returning '' for non-strings. Mirrors the
-// absent-vs-empty rule in CLAUDE.md: callers decide whether '' clears.
+// absent-vs-empty rule in AGENTS.md: callers decide whether '' clears.
 const trimField = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
 // Clamp an integer tempo into the supported band; null when unparseable so a

@@ -18,7 +18,7 @@
  * database. This file supplies the real implementations; that file decides when
  * each one runs and which are awaited. Read both before reordering anything.
  *
- * NOTE (CLAUDE.md "No cold-bootstrap LLM calls"): nothing in this file may
+ * NOTE (AGENTS.md "No cold-bootstrap LLM calls"): nothing in this file may
  * queue an AI provider call. Boot only loads on-disk state and ARMS schedulers;
  * every scheduler here is off by default or user-configured.
  */
@@ -221,7 +221,7 @@ export const bootstrapServices = async ({ io, dataDir, dataReferenceDir, serverD
     // Verify every registered collection's on-disk type-level schemaVersion
     // matches what the code expects. Mismatches mean a migration didn't run (or
     // the user rolled the code back below a forward-only migration) — log loudly
-    // but DO NOT crash the server. PortOS is single-user (CLAUDE.md "Security
+    // but DO NOT crash the server. PortOS is single-user (AGENTS.md "Security
     // Model"); a hard exit on startup is worse than a noisy log the user can act
     // on. Returns per-store statuses for downstream telemetry; we discard them.
     verifyCollections: () => verifyCollectionVersions([universeStore(), seriesStore(), issueStore(), conflictJournalStore(), storyBuilderStore(), mediaCollectionStore(), loraDatasetStore, liOutcomesStore(), commissionStore(), gameStore, fableLoomStore, ...brainCollectionStores()]),

@@ -4,7 +4,7 @@
  *
  * Run this ONLY after an intentional prompt-default change that also bumped
  * PROMPT_VERSIONS and appended the outgoing default to PREVIOUS_DEFAULT_PROMPTS
- * (see CLAUDE.md "Distribution model"). Regenerating to silence a failing
+ * (see AGENTS.md "Distribution model"). Regenerating to silence a failing
  * integrity test without those two steps blesses whatever edited a preserved
  * historical body — which is precisely what the test exists to catch.
  *

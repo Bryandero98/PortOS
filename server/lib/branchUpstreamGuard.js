@@ -45,7 +45,7 @@ const GIT_TIMEOUT_MS = 10_000;
 /**
  * Read a branch's configured upstream as raw config values.
  *
- * Three outcomes, deliberately NOT collapsed (see CLAUDE.md, "Sentinel +
+ * Three outcomes, deliberately NOT collapsed (see AGENTS.md, "Sentinel +
  * validate"): `''` is UNSET (a healthy untracked branch), a string is the
  * configured ref, and `null` is COULD NOT READ. Folding the third into `''`
  * would let a wedged git, a timeout, or an unreadable repo report a branch that

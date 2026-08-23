@@ -11,7 +11,7 @@
 
 ## Context
 
-`CLAUDE.md` states flatly that **PII must not ride the federation layer at all**,
+`AGENTS.md` states flatly that **PII must not ride the federation layer at all**,
 pointing at the privacy-records ADR. Read literally against the federated media
 wire, that rule looks violated: a federated image or video job carries its
 `prompt` to the peer as submitted, and a Creative Director / Creative Commission
@@ -59,7 +59,7 @@ Concretely:
    readiness signals, queue depth and staleness — never a prompt, a job body, a
    record excerpt, or a filename derived from one. The owner-scoped job
    projection is likewise a sanitized status view. This is the line that must not
-   move, and it is the line `CLAUDE.md`'s rule is protecting.
+   move, and it is the line `AGENTS.md`'s rule is protecting.
 
 4. **The counterparty is not an anonymous third party.** Sending is gated on
    *local* configuration, not on the peer asking nicely: the peer record must be
@@ -100,7 +100,7 @@ Concretely:
    counterparty is a permanent leak where an interactive mistake is a one-time
    one — and `peerFetch`'s `rejectUnauthorized: false` posture leaves a plain-LAN
    or non-`.ts.net` peer with no server authentication at all (see the HTTPS
-   bullet in `CLAUDE.md`). Authentication does not save this: the prompt rides
+   bullet in `AGENTS.md`). Authentication does not save this: the prompt rides
    the request body, so an impostor holding the connection reads it before it
    fails to answer. When unattended routing ships, a route whose peer is not
    recognized as a tailnet host must be refused, naming the reason (see
@@ -148,7 +148,7 @@ later slice of #4348 and must revisit this ADR before shipping.
 ## Consequences
 
 - Privacy Center records are unaffected: nothing here adds a federated kind, a
-  sync category, or a wire version. `CLAUDE.md` and the privacy-records ADR link
+  sync category, or a wire version. `AGENTS.md` and the privacy-records ADR link
   here rather than re-arguing the carve-out, and the schemas and route fields
   stop restating the rationale inline, so a reviewer's objection has one citable
   answer instead of four paraphrases.

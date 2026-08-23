@@ -47,14 +47,14 @@ Your deliverable is tracker items, not code. The run must end with the same \`gi
 5. **Redact before you publish.** An issue is world-readable the moment it is filed. Never paste a secret, credential, token, hostname, IP address, absolute path containing a username, or any personal record into a title or body.
 6. **Report at the end**: the slice you audited, each item you filed, and anything you deliberately did not file and why.
 
-Read this repository's \`CLAUDE.md\` (and any nested per-directory ones covering the slice) before you start, and honor its conventions and its explicitly declared non-issues.`;
+Read this repository's \`AGENTS.md\` (and any nested per-directory ones covering the slice) before you start, and honor its conventions and its explicitly declared non-issues.`;
 
 export const DO_WORK_MODE_CONTRACT = `## Mode: implement the highest-value fix
 
 This banner OVERRIDES any later instruction to file issues, leave source unchanged, or skip commits. Pick ONE coherent, high-value finding from the mission below and implement it this run. Do not boil the ocean.
 
 1. **Pick a bounded slice** and say so first.
-2. **Read the actual code** and the project's \`CLAUDE.md\` / conventions. Honor documented non-issues.
+2. **Read the actual code** and the project's \`AGENTS.md\` / conventions. Honor documented non-issues.
 3. **Implement the fix** — the smallest change that actually solves the user-visible problem. If the only obstacle was a design choice, make the call and state it.
 4. **Verify** with the project's tests (or a focused new test when the path is untested and a silent break would cost data, money, or quota).
 5. **Commit** following the repo's conventions. Do not bundle unrelated cleanup.

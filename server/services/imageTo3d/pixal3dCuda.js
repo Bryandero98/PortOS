@@ -12,7 +12,7 @@
  * Everything is either pure or exercised through injectable `exists`/`spawnImpl`, so
  * the wiring is unit-testable WITHOUT an NVIDIA box, a ~40 GB install, or a live
  * render. `runPixal3dCudaGenerate` is the one real subprocess boundary and NEVER
- * auto-runs (CLAUDE.md no-cold-bootstrap policy).
+ * auto-runs (AGENTS.md no-cold-bootstrap policy).
  *
  * **Four things differ from the TRELLIS.2 CUDA lane, and each drives the design:**
  *
@@ -261,7 +261,7 @@ const [PIXAL3D_RES_FLOOR, PIXAL3D_RES_FULL] = PIXAL3D_RESOLUTIONS;
  *  - otherwise → the floor resolution with `--low_vram`, the least this lane supports.
  *
  * An unknown/unparseable VRAM reading degrades to the floor rather than overcommitting
- * a card we failed to size (CLAUDE.md sentinel rule).
+ * a card we failed to size (AGENTS.md sentinel rule).
  *
  * @param {number|null} vramGb
  * @returns {{lowVram: boolean, resolution: number}}
@@ -410,7 +410,7 @@ export const PIXAL3D_NAF_FALLBACK_HELP = 'Pixal3D is installed, but NATTEN is mi
  * `isPixal3dNafError` classifies the failure into an actionable message. Reported as
  * `'unknown'` when the probe itself could not run — deliberately distinct from
  * `'unavailable'`, so a broken probe never renders a warning about a fine install
- * (CLAUDE.md sentinel rule: "failed to determine" ≠ "determined to be bad").
+ * (AGENTS.md sentinel rule: "failed to determine" ≠ "determined to be bad").
  *
  * @param {{execFileImpl?: Function, exists?: (p: string) => boolean,
  *          env?: NodeJS.ProcessEnv}} [opts]

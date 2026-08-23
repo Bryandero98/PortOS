@@ -455,7 +455,7 @@ export async function listProcesses(pm2Home = null) {
  * `listProcesses()` flattens a failed read into `[]`, which is the right
  * forgiving behavior for log/command/voice callers that just want "whatever is
  * running." But app-status getters MUST distinguish "PM2 unreachable" from
- * "nothing running" (CLAUDE.md absent-vs-empty rule) — collapsing them records
+ * "nothing running" (AGENTS.md absent-vs-empty rule) — collapsing them records
  * a transient blip as every app `not_started`. Those callers use this instead.
  *
  * @param {string} pm2Home Optional custom PM2_HOME path

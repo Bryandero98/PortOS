@@ -186,7 +186,7 @@ describe('BackupTab', () => {
   });
 
   describe('Run Now gating (saved state)', () => {
-    // The CLAUDE.md invariant: "Run Now must gate on saved state, not the form
+    // The AGENTS.md invariant: "Run Now must gate on saved state, not the form
     // input." `canRun` keys off `savedDestPath` + `dirty`, never the live input.
     it('disables Run Backup Now when no destination is saved', async () => {
       getSettings.mockResolvedValue({ backup: { destPath: '', enabled: false, cronExpression: '0 2 * * *', excludePaths: [], disabledDefaultExcludes: [] } });

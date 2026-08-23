@@ -5,7 +5,7 @@
  * (no LLM) in-app notification at a user-chosen time-of-day when today's POST
  * (Power On Self Test) session is still incomplete. Nothing here calls an AI
  * provider — the "scheduled automations are user-configured" exception in
- * CLAUDE.md's AI Provider Usage Policy covers this even though it's moot, since
+ * AGENTS.md's AI Provider Usage Policy covers this even though it's moot, since
  * this feature makes zero LLM calls of its own.
  *
  * Mirrors backupScheduler.js's daily-cron registration pattern via

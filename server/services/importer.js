@@ -243,7 +243,7 @@ const ARC_POSITION_MAX = 9999;
  *     throws ERR_VALIDATION if that would exceed SEASON_NUMBER_MAX (99).
  *   - Where the assigned number matches an existing season, the existing
  *     season's id (+ timestamps) are preserved — re-import is a metadata
- *     refresh, not a new season. **String-field merge follows CLAUDE.md's
+ *     refresh, not a new season. **String-field merge follows AGENTS.md's
  *     "absent vs intentionally empty" rule**: `undefined`/`null` preserves
  *     the existing value; an empty string `""` is treated as an intentional
  *     clear and applied. `updatedAt` bumps when any tracked field
@@ -292,7 +292,7 @@ export function mergeSeasons(existingSeasons, incomingSeasons, buildSeasonImpl =
   const nowIso = new Date().toISOString();
   // String-field merge: absent (`undefined`/`null`) preserves the existing
   // value; everything else — including `""` — is the user's intent and is
-  // applied verbatim. Mirrors the CLAUDE.md "distinguish absent vs
+  // applied verbatim. Mirrors the AGENTS.md "distinguish absent vs
   // intentionally empty" rule so a Review-phase blank-out actually clears.
   const mergeStr = (incoming, existing) => (incoming == null ? (existing ?? '') : incoming);
   const incomingBuilt = incomingSeasons.map((s) => {

@@ -240,7 +240,7 @@ export default function Pipeline() {
     });
     setCreating(false);
     if (!created) return;
-    // Reactive insert — no full refetch (CLAUDE.md convention).
+    // Reactive insert — no full refetch (AGENTS.md convention).
     setSeries((prev) => [created, ...prev]);
     setForm(emptyForm());
     clearCandidates();
@@ -269,7 +269,7 @@ export default function Pipeline() {
 
   // Inline delete confirm: the trash button arms the row (one at a time) and an
   // explicit Delete?/Cancel row fires it. Avoids window.confirm (banned per
-  // CLAUDE.md) and the non-discoverable two-click-arm pattern.
+  // AGENTS.md) and the non-discoverable two-click-arm pattern.
   const { isConfirming, requestDelete, cancelDelete, confirmDelete } = useConfirmDelete();
   const handleDelete = (s) => confirmDelete(() => {
     const prior = series;

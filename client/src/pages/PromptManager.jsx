@@ -340,7 +340,7 @@ export default function PromptManager() {
 
   // A failed save must say so: the button re-enabling on its own reads as
   // "saved" and the edit is silently lost. `silent: true` + an explicit toast
-  // keeps the notification to one layer (see client/src/CLAUDE.md).
+  // keeps the notification to one layer (see client/src/AGENTS.md).
   const saveJobSkill = async () => {
     setSaving(true);
     // Snapshot what we actually sent — the textarea may change while the PATCH

@@ -12,7 +12,7 @@
  * 1. **An unclaimed capability is not a failure.** A model with no `vision`
  *    badge shows "not applicable" on the image test, in muted grey, never a red
  *    X. A red cell always means "it said it could, and it could not".
- * 2. **No cold-bootstrap LLM calls** (root CLAUDE.md). The report loads with the
+ * 2. **No cold-bootstrap LLM calls** (root AGENTS.md). The report loads with the
  *    tab and calls nothing. Running a test goes through a consent gate that
  *    names the runtime, the model, the test and the prompt first.
  * 3. **Show the output.** Every result view leads with what the model actually
@@ -693,7 +693,7 @@ export default function ModelCapabilityTests({ report, loading, onReload, disabl
     if (!open || !slot?.result) { setFullResult(null); return undefined; }
     let live = true;
     // The drawer renders its own empty state, so the default toast is silenced
-    // (client/src/CLAUDE.md: custom catch ⇒ silent).
+    // (client/src/AGENTS.md: custom catch ⇒ silent).
     getModelCapabilityTestResult(backend, modelId, testId, { silent: true })
       .then((record) => { if (live) setFullResult(record); })
       .catch(() => { if (live) setFullResult(null); });
@@ -728,7 +728,7 @@ export default function ModelCapabilityTests({ report, loading, onReload, disabl
       setRunning(true);
 
       // The panel renders its own progress and error state, so the default toast
-      // is silenced (client/src/CLAUDE.md: custom catch ⇒ silent).
+      // is silenced (client/src/AGENTS.md: custom catch ⇒ silent).
       const result = await runModelCapabilityTest(
         { backend: runBackend, modelId: runModel, testId: id },
         { signal: controller.signal, silent: true },

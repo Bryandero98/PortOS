@@ -126,7 +126,7 @@ export function ensureStoryboardIds(scenes) {
 export function resolveStoryboardTarget(list, { id = null, index = null } = {}) {
   const arr = Array.isArray(list) ? list : [];
   // `Number(null)` / `Number('')` are 0 — an absent index must NOT read as
-  // "index 0" (CLAUDE.md sentinel discipline), so coerce only real numerics.
+  // "index 0" (AGENTS.md sentinel discipline), so coerce only real numerics.
   const idx = index === null || index === undefined || index === '' ? NaN : Number(index);
   const hasIndex = Number.isInteger(idx) && idx >= 0;
   if (isNonEmptyStr(id)) {

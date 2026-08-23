@@ -8,7 +8,7 @@
  * so the wiring is unit-testable **without** downloading the ~15 GB model or running
  * a live GPU render. `runTrellis2Generate` is the one real-subprocess boundary and
  * NEVER auto-runs — it throws unless the model is installed and is only reached from
- * an explicit user action (CLAUDE.md no-cold-bootstrap policy). The exact wording of
+ * an explicit user action (AGENTS.md no-cold-bootstrap policy). The exact wording of
  * `generate.py`'s progress output is refined during hands-on validation, so the
  * parser keys on format-agnostic signals (a percentage, a `.glb` path) rather than
  * guessing internal stage names.
@@ -149,7 +149,7 @@ export const TRELLIS2_FALLBACK_BAKE_HELP = 'TRELLIS.2 is installed, but its Meta
  * confetti surface described in `TRELLIS2_FALLBACK_BAKE_HELP`), or `'unknown'` when
  * the probe itself could not run — deliberately distinct from `'fallback'` so a
  * broken probe never renders a scary warning about a possibly-fine install
- * (CLAUDE.md sentinel rule: "failed to determine" ≠ "determined to be bad").
+ * (AGENTS.md sentinel rule: "failed to determine" ≠ "determined to be bad").
  *
  * @param {{base?: string, execFileImpl?: Function, exists?: (p: string) => boolean}} [opts]
  * @returns {Promise<{quality: 'metal'|'fallback'|'unknown', modules: Record<string, boolean>,
@@ -241,7 +241,7 @@ export async function probeMetalToolchain({
 } = {}) {
   if (platformImpl() !== 'darwin') return { available: null };
   // Subprocess boundary outside the request lifecycle — every outcome resolves,
-  // nothing throws into the route (CLAUDE.md child-process exception).
+  // nothing throws into the route (AGENTS.md child-process exception).
   const run = (command, args) => new Promise((resolve) => {
     execFileImpl(command, args, { timeout: 15000 }, (err, stdout) => {
       resolve(err ? null : String(stdout ?? ''));
@@ -920,7 +920,7 @@ export const TRELLIS2_WATCHDOG_HELP = 'The macOS GPU watchdog stopped this rende
  *    "run nothing"**. That is not incidental: a parameter default only applies to
  *    `undefined`, so `null` already meant this before the fallback became computed,
  *    and using `??` here would quietly turn it back into force-opaque — absent vs.
- *    explicitly-empty, per CLAUDE.md.
+ *    explicitly-empty, per AGENTS.md.
  *  - Otherwise force-opaque applies unless the caller asked the exporter for a
  *    transparent material. The rewrite still defaults on because an older o_voxel
  *    promoted to BLEND off a single low-alpha texel, which is what it was written for.

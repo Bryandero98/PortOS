@@ -20,7 +20,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLIENT_PATH = resolve(__dirname, '../../client/src/components/brain/RepoIntakeOptions.jsx');
 
 // The client table is a .jsx module importing lucide-react, so a server-env
-// suite can't import it (see the CI note in CLAUDE.md about server tests pulling
+// suite can't import it (see the CI note in AGENTS.md about server tests pulling
 // client deps). Read the `key:` entries out of the REPO_INTAKE_OPTIONS literal.
 const clientKeys = () => {
   const src = readFileSync(CLIENT_PATH, 'utf8');

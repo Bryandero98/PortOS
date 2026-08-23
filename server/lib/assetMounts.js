@@ -4,7 +4,7 @@
  *
  * `server/index.js` used to spell each `app.use('/data/…', express.static(…))`
  * out inline, so nothing could enumerate what was served without regexing the
- * source. This is the `server/lib/navManifest.js` pattern the root CLAUDE.md
+ * source. This is the `server/lib/navManifest.js` pattern the root AGENTS.md
  * recommends for exactly that drift problem: one table, iterated by the thing
  * that mounts and read as data by the guard. The route strings themselves live
  * one level down in `assetRoutePrefixes.js`, alongside the namespaces the

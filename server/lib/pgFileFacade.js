@@ -24,7 +24,7 @@ import { checkHealth, ensureSchema } from './db.js';
 
 /**
  * True when the file/escape-hatch backend should be used instead of PostgreSQL.
- * Dev/test only — see the Storage backend policy in CLAUDE.md.
+ * Dev/test only — see the Storage backend policy in AGENTS.md.
  */
 export function isFileBackend() {
   return process.env.MEMORY_BACKEND === 'file' || process.env.NODE_ENV === 'test';

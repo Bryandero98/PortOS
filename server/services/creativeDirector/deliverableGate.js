@@ -24,7 +24,7 @@
  *      has come back empty, so the caller can stop re-dispatching and surface a
  *      blocked stage instead of burning the provider indefinitely.
  *
- * Sentinel discipline (root CLAUDE.md): `undefined` = no baseline recorded (a run
+ * Sentinel discipline (root AGENTS.md): `undefined` = no baseline recorded (a run
  * enqueued before this change) and `null` = recorded-and-absent are DISTINCT.
  * Collapsing them would either mis-fail every legacy run or mis-pass every empty
  * one.

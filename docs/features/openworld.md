@@ -139,7 +139,7 @@ what's healthy, what's not, find a specific app, and take action.
 | **1.11** | **Clickable HUD stats** — every count routes somewhere: PENDING REVIEWS → `/review`, AGENTS → `/cos`, NODES → `/instances`, etc. | XS |
 | **1.12** | **Richer billboards** — rotate today's briefing headline, productivity streak, top actionable insight, recent agent completion summary, goal progress. | S |
 | **1.13** | **Agent → building tether** — visible light from `AgentEntity` to its assigned building; color = agent state. Plus window-pulse animation on the building. | M |
-| **1.14** | **Mobile / touch support** — `pointer: coarse` detection, single-finger orbit, two-finger pinch zoom, tap-to-select. Below 640px collapse HUD into a bottom sheet with search + filters + needs-attention. WASD exploration disables. CLAUDE.md mandate. | M |
+| **1.14** | **Mobile / touch support** — `pointer: coarse` detection, single-finger orbit, two-finger pinch zoom, tap-to-select. Below 640px collapse HUD into a bottom sheet with search + filters + needs-attention. WASD exploration disables. AGENTS.md mandate. | M |
 | **1.15** | **Adaptive render budget** — the scene selects an internal detail tier from sustained frame time; player settings do not expose renderer knobs. | XS |
 
 ### Phase 2 — Holistic Coverage

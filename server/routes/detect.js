@@ -19,7 +19,7 @@ const router = Router();
 // path and reads a small set of well-known project files under it (package.json
 // scripts + name, project.yml, vite.config, and PORT/VITE_PORT lines from .env),
 // returning their values verbatim. This is INTENTIONAL: PortOS is a single-user
-// app on a private Tailscale network (see CLAUDE.md "Security Model"), where the
+// app on a private Tailscale network (see AGENTS.md "Security Model"), where the
 // sole operator legitimately points the "import a repo" flow at any directory on
 // their own machine — there is no second user to read data from, so no path
 // confinement is required for safety.

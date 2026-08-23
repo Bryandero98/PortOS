@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ANTIGRAVITY_CONFIGURED_DEFAULT, isAntigravityCommand, parseAntigravityModelList } from './antigravity.js';
-// The toolkit SOURCE may not import out to server/lib (see ../CLAUDE.md); a test
+// The toolkit SOURCE may not import out to server/lib (see ../AGENTS.md); a test
 // may, and this is the only way to actually pin the duplication it documents.
 import {
   isAntigravityCommand as upstreamIsAntigravityCommand,

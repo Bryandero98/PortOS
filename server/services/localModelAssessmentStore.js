@@ -5,7 +5,7 @@
  * Split out of `localModelAssessments.js` so the READ side has no path to a
  * provider. Two reasons that matters:
  *
- *   1. **AI Provider Usage Policy** (root CLAUDE.md). Everything here touches
+ *   1. **AI Provider Usage Policy** (root AGENTS.md). Everything here touches
  *      disk (plus, on the run path, one cheap version probe). Nothing in this
  *      file can reach an LLM, so importing it from a status/catalog read is safe
  *      by construction rather than by review.

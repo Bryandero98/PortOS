@@ -20,7 +20,7 @@
  * Finally, when the user supplies an `agentPrompt` at ingest time, a CoS task is
  * queued that points an agent at the freshly-stored transcript with that prompt
  * — "here is what I want done with this content." No prompt, no task: PortOS
- * must never queue AI work the user didn't ask for (root CLAUDE.md, AI Provider
+ * must never queue AI work the user didn't ask for (root AGENTS.md, AI Provider
  * Usage Policy).
  *
  * Storage:
@@ -629,7 +629,7 @@ export async function startYoutubeIngest({
 
     // Every await in this fire-and-forget coordinator must sit INSIDE the try:
     // there is no request lifecycle to bubble to, so a rejection escaping it
-    // takes the whole Node process down (root CLAUDE.md, no-try/catch exception).
+    // takes the whole Node process down (root AGENTS.md, no-try/catch exception).
     try {
       // Read once: the vault/folder decision and the CoS task priority both come
       // from here, and an ingest should use one settings snapshot throughout.

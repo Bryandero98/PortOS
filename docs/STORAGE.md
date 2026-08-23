@@ -155,7 +155,7 @@ The escape hatch is **guarded from bitrot by the test suite** (tests boot with `
 3. **`PGMODE=native`:** runs `scripts/db.sh setup-native` (idempotent: brew install, role, db, extensions, schema) and verifies at the domain level (role can auth + schema present) before reporting ready on `:5432`.
 4. **Failure is non-zero exit.** A started-but-unresponsive container, a failed native bootstrap, or a non-interactive context with no usable DB exits non-zero with an actionable message — so the `&&`-chained `npm start` halts here instead of crash-looping under PM2 against an unready database.
 
-`PGPASSWORD`/`PGUSER`/`PGDATABASE`/`PGPORT` are resolved from `process.env` first, then `.env`, then the backward-compatible defaults (`portos`/`portos`/`portos`/`5432`). The default `portos` password is an **intentional** local-development fallback (see the Distribution model note in [`CLAUDE.md`](../CLAUDE.md)); production deployments override it via `PGPASSWORD`.
+`PGPASSWORD`/`PGUSER`/`PGDATABASE`/`PGPORT` are resolved from `process.env` first, then `.env`, then the backward-compatible defaults (`portos`/`portos`/`portos`/`5432`). The default `portos` password is an **intentional** local-development fallback (see the Distribution model note in [`AGENTS.md`](../AGENTS.md)); production deployments override it via `PGPASSWORD`.
 
 ### Boot schema upgrades & the CREATE INDEX lock window
 
@@ -178,7 +178,7 @@ Apply this checklist to **every new feature that persists data**, and require it
 - [ ] **Does it need search?** Full-text or vector search → PostgreSQL (`search_tsv` / pgvector), not an app-level scan over JSON files.
 - [ ] **If you chose a new `data/*.json`, why not the DB?** Acceptable reasons: large binary bytes (`asset-file-db-indexed` — index the metadata, keep bytes on disk), long externally-editable prose, an iCloud/file-sync workflow PortOS does not own, or genuinely transient runtime state (`ephemeral-file`). "It was faster to write a JSON file" is **not** acceptable for app-native relational records.
 - [ ] **Bytes vs. pointer.** If binary assets are involved, confirm bytes stay on disk and the DB holds only an `asset_key` / `media_key` row + integrity metadata. Never store bytes in a column.
-- [ ] **Federation.** If the record syncs to peers, does it have a per-table/per-record sequence cursor and tombstone strategy? (See `server/lib/schemaVersions.js`, `server/lib/syncWire.js`.) Cross-machine sync is first-class — see the Distribution model in [`CLAUDE.md`](../CLAUDE.md).
+- [ ] **Federation.** If the record syncs to peers, does it have a per-table/per-record sequence cursor and tombstone strategy? (See `server/lib/schemaVersions.js`, `server/lib/syncWire.js`.) Cross-machine sync is first-class — see the Distribution model in [`AGENTS.md`](../AGENTS.md).
 - [ ] **Migration.** On-disk/DB format changes need a migration in `scripts/migrations/` (applied-list tracked per install in `data/migrations.applied.json`) and seed files in `data.reference/`. Other installs and other federated machines upgrade independently.
 - [ ] **Backup coverage.** Will the new store be captured by backup? `db-primary` is covered by the Postgres dump; `file-primary` / `asset-file-db-indexed` by the rsync snapshot; `ephemeral-file` is correctly excluded (`DEFAULT_EXCLUDES`). Confirm the store lands in the right bucket. See [Backup & Restore](./BACKUP.md).
 

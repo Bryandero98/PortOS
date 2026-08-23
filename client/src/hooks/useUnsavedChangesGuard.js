@@ -16,7 +16,7 @@ import { useBlocker } from 'react-router';
 // `createMemoryRouter` + `<RouterProvider>`, not `<MemoryRouter>`.
 //
 // The caller renders its OWN confirm UI from `blocked` — an `InlineConfirmRow`,
-// never `window.confirm` (see client/src/CLAUDE.md).
+// never `window.confirm` (see client/src/AGENTS.md).
 //
 //   const { blocked, proceed, reset } = useUnsavedChangesGuard(isDirty);
 //   {blocked && <InlineConfirmRow onConfirm={discardAndProceed} onCancel={reset} … />}

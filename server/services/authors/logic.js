@@ -132,7 +132,7 @@ export function mergeAuthorRecord(local, remoteRaw) {
  * Apply a partial patch onto an existing record. Only keys PRESENT in `patch`
  * overwrite — an absent key preserves the current value, while a present
  * empty-string value applies the clear (distinguish-absent-vs-empty per
- * CLAUDE.md). Always bumps `updatedAt`.
+ * AGENTS.md). Always bumps `updatedAt`.
  */
 export function applyAuthorPatch(current, patch = {}) {
   const next = { ...current };

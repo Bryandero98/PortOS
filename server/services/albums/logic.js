@@ -143,7 +143,7 @@ export function mergeAlbumRecord(local, remoteRaw) {
 
 /**
  * Apply a partial patch onto an existing record. Only keys PRESENT in `patch`
- * overwrite — absent preserves, present-empty clears (per CLAUDE.md). Bumps
+ * overwrite — absent preserves, present-empty clears (per AGENTS.md). Bumps
  * updatedAt.
  */
 export function applyAlbumPatch(current, patch = {}) {

@@ -73,7 +73,7 @@ const PATTERNS = [
 //
 // `prompts.js` used to sit here too — a stored prompt default cannot be corrected
 // by editing the string alone, since each edit needs a PROMPT_VERSIONS bump plus
-// the outgoing body preserved in PREVIOUS_DEFAULT_PROMPTS (CLAUDE.md
+// the outgoing body preserved in PREVIOUS_DEFAULT_PROMPTS (AGENTS.md
 // "Distribution model"). Issue #4685 did that migration, so the current defaults
 // are now held to the same standard as every other server source. Prose in a
 // prompt body that merely EXPLAINS a trap still reads as an instance of it —

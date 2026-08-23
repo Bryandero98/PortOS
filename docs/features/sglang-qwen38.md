@@ -252,7 +252,7 @@ buys you the thinking switch.
 
 Claude Ollama runs in **lean mode** (`--bare --strict-mcp-config`) because a 7B
 local model drowns in Claude Code's full personal environment — hooks, plugins,
-MCP servers, global `CLAUDE.md`. The SGLang pair does not, and that is a choice
+MCP servers, the global `~/.claude/CLAUDE.md`. The SGLang pair does not, and that is a choice
 rather than an oversight: Qwen3.8-27B has a 262,144-token native window, the
 same environment is what lets a CoS agent type `/do:pr` and drive a change
 through to merge, and a large prompt prefix costs nothing per turn once

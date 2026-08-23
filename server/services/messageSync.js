@@ -385,7 +385,7 @@ export async function refreshMessage(accountId, messageId) {
     if (existing) {
       // Use ?? not ||: a genuinely empty-body message (body === '') is a valid
       // full extraction and must overwrite the old text, not collapse back to it
-      // (absent-vs-cleared, CLAUDE.md). Only an absent body (null/undefined) keeps
+      // (absent-vs-cleared, AGENTS.md). Only an absent body (null/undefined) keeps
       // the prior text.
       existing.bodyText = threadMsg.body ?? existing.bodyText;
       existing.bodyFull = true;
@@ -423,7 +423,7 @@ export async function refreshMessage(accountId, messageId) {
   // Update the original message too if it wasn't matched by externalId
   if (!updatedMessages.find(m => m.id === message.id)) {
     // ?? not ||: an empty extracted body ('') is a valid clear, not a fall-back
-    // to the stale text (absent-vs-cleared, CLAUDE.md).
+    // to the stale text (absent-vs-cleared, AGENTS.md).
     message.bodyText = detail[0]?.body ?? message.bodyText;
     message.bodyFull = true;
     if (!message.threadId) message.threadId = threadKey;

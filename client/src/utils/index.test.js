@@ -14,7 +14,7 @@ const sourceFiles = readdirSync(HERE).filter(
 
 // Collect every top-level named export per module so we can prove no two flat
 // `export * from` modules collide (a collision would silently shadow under the
-// barrel — see CLAUDE.md "Name collisions").
+// barrel — see AGENTS.md "Name collisions").
 const EXPORT_RE = /^export\s+(?:const|let|function|async function|class)\s+([A-Za-z0-9_$]+)/gm;
 const exportsByName = new Map();
 for (const f of sourceFiles) {

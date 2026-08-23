@@ -135,7 +135,7 @@ export default function Apps() {
   // Retry and a re-expand re-issue the request; a genuine `[]` is still cached.
   // Per-app request generation, so a slow earlier fetch can't land after a newer
   // one and overwrite a good board with its stale error (the pending-request
-  // convention in client/src/CLAUDE.md).
+  // convention in client/src/AGENTS.md).
   const loadSprintTickets = useCallback(async (app) => {
     const key = sprintKey(app);
     const generation = (ticketRequestsRef.current[key]?.generation || 0) + 1;

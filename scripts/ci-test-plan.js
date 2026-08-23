@@ -99,7 +99,7 @@ export const WINDOWS_CONTRACT_TESTS = [
 
 // Contract guards that run on EVERY plan, whatever the impact scope selects.
 // `taskPromptDefaults.test.js` pins the cross-install prompt-upgrade contract
-// (CLAUDE.md "Distribution model"): edit a preserved historical default and
+// (AGENTS.md "Distribution model"): edit a preserved historical default and
 // other installs stop recognizing their stored prompt, so they are treated as
 // having customized it and stay on it forever. Nothing else in the suite
 // notices, and neither can a scoped run that happens not to select this file —

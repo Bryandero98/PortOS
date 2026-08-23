@@ -22,7 +22,7 @@
  *
  * Privacy: commit / branch / dirty only. No absolute paths (they embed the OS
  * username), no hostname, no checkout directory — see the Sensitive Data
- * section of the root CLAUDE.md. Deliberately no timestamp either: "how long
+ * section of the root AGENTS.md. Deliberately no timestamp either: "how long
  * has this process been up" is already `system.uptime` on the health payload,
  * and a second spelling of it here would drift (uptime is recomputed per
  * request; this tuple is frozen at first read).
@@ -79,7 +79,7 @@ export function parsePorcelainV2(stdout) {
       const value = line.slice('# branch.oid '.length).trim();
       // Empty stays null rather than becoming '': an empty-string commit
       // compares unequal to every real commit and would report a permanent
-      // false mismatch downstream (root CLAUDE.md's absent-vs-empty rule).
+      // false mismatch downstream (root AGENTS.md's absent-vs-empty rule).
       if (value && value !== NO_COMMIT) commit = value;
     } else if (line.startsWith('# branch.head ')) {
       const value = line.slice('# branch.head '.length).trim();

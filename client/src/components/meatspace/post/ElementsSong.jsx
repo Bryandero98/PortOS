@@ -109,7 +109,7 @@ export default function ElementsSong({ item: itemProp, onBack, loadItemOnMount, 
 // Sum `{ attempts, correct }` mastery buckets into a single accuracy in [0,1].
 // Returns null when nothing has been attempted, so "never practiced" stays
 // distinguishable from "practiced and scored zero" (the sentinel rule in
-// CLAUDE.md) — the caller routes those two to different modes.
+// AGENTS.md) — the caller routes those two to different modes.
 function bucketAccuracy(buckets) {
   const attempted = Object.values(buckets || {})
     .map(stat => {

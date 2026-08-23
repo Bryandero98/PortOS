@@ -125,7 +125,7 @@ describe('analyzeAgentFailure — ERROR_PATTERNS classification', () => {
     expect(analysis.message).toContain('max');
     expect(analysis.message).toContain('model_reasoning_effort');
     // The rejection line embeds the OS username in its path — it must never be
-    // echoed into a failure record (Sensitive Data & Privacy, CLAUDE.md).
+    // echoed into a failure record (Sensitive Data & Privacy, AGENTS.md).
     expect(analysis.message).not.toContain('/home/x/');
   });
 

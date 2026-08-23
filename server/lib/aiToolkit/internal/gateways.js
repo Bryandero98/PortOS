@@ -4,7 +4,7 @@
  *
  * A DELIBERATE MIRROR of `server/lib/providerGateways.js`. This directory is
  * vendored and stays self-contained — no imports out to other PortOS modules
- * (see `aiToolkit/CLAUDE.md`) — so the table is duplicated rather than imported.
+ * (see `aiToolkit/AGENTS.md`) — so the table is duplicated rather than imported.
  * `server/lib/providerGateways.parity.test.js` fails when the two drift.
  *
  * Lives in `internal/` for the same reason `ollamaBacked.js` does: the

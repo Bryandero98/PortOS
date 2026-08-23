@@ -54,7 +54,7 @@ describe('cosValidation effort field', () => {
   });
 
   it("update: ''/null survive as null so the API can CLEAR a set effort pin", () => {
-    // absent-vs-cleared (CLAUDE.md): the route gates on `!== undefined`, and the
+    // absent-vs-cleared (AGENTS.md): the route gates on `!== undefined`, and the
     // store's legacy-field normalizer deletes a null pin — so the clear signal
     // must reach the route as null, not be preprocessed away to undefined.
     expect(updateCosTaskSchema.parse({ effort: '' }).effort).toBeNull();

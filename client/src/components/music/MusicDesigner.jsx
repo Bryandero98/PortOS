@@ -13,7 +13,7 @@
  *
  * Two constraints shape this component:
  *
- * - **No cold-bootstrap LLM calls** (root CLAUDE.md). Both provider calls fire
+ * - **No cold-bootstrap LLM calls** (root AGENTS.md). Both provider calls fire
  *   only from an explicit button press in the same interaction — nothing runs
  *   on mount, on blur, or ahead of the user.
  * - **Selection lives in the URL.** The active step is the `:id` slot of the

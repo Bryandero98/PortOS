@@ -14,7 +14,7 @@
  * bloating the LWW-merged series `index.json`. A `sourceContentHash` pins the
  * analyzed manuscript so the UI flags the outline as stale once the draft
  * changes. Writes serialize on a per-series tail (single tail per shared file,
- * per CLAUDE.md).
+ * per AGENTS.md).
  *
  * The SSE wrapper at the bottom mirrors editorial/checkRunner.js: a single
  * in-memory runs map keyed by seriesId via lib/sseUtils.js.

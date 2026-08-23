@@ -306,7 +306,7 @@ const OUTPUT_FLUSH_INTERVAL_MS = 250;
 // Debounced per-agent output batcher. Wraps appendAgentOutputLines with a
 // ~250ms flush window so a hot streaming producer triggers one state load+save
 // per window instead of per line — the write-amplification guard documented in
-// CLAUDE.md ("High-frequency state writes must batch"). The TUI spawner rolls
+// AGENTS.md ("High-frequency state writes must batch"). The TUI spawner rolls
 // its own equivalent inline because it co-flushes an output.txt appendFile in
 // the same batch; producers that only need the state write should use this.
 //
@@ -324,7 +324,7 @@ export function createAgentOutputBatcher(agentId, { intervalMs = OUTPUT_FLUSH_IN
     pending = [];
     // Swallow+log state-write failures so neither the debounced timer nor a
     // caller's `await flush()` ever rejects — this runs in child-process /
-    // timer callbacks where an uncaught throw would crash Node (CLAUDE.md "No
+    // timer callbacks where an uncaught throw would crash Node (AGENTS.md "No
     // try/catch" exception). The authoritative transcript lives in output.txt;
     // a dropped live-tail batch is non-fatal. Mirrors the TUI spawner's
     // `.catch(() => {})` on its own batched append.

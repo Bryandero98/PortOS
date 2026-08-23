@@ -49,7 +49,7 @@ const DraggableTicket = memo(function DraggableTicket({ ticket, disabled, appId,
 
   const handleQueue = async () => {
     setQueuing(true);
-    // silent: this caller owns its own success/error toasts (see CLAUDE.md).
+    // silent: this caller owns its own success/error toasts (see AGENTS.md).
     await api.createJiraTicketTask(appId, ticket.key, { silent: true })
       .then(() => toast.success(`Queued agent task for ${ticket.key}`))
       .catch((err) => toast.error(`Failed to queue ${ticket.key}: ${err.message}`))

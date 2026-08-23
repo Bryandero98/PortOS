@@ -352,7 +352,7 @@ export const DEFAULT_TUNING_GRID_VARIANTS = 6;
  *
  * The returned length IS the run count, so a caller can name it in a consent
  * gate before anything starts — which the AI Provider Usage Policy (root
- * CLAUDE.md) requires of any batch of provider calls. `maxVariants` truncates in
+ * AGENTS.md) requires of any batch of provider calls. `maxVariants` truncates in
  * catalog order; nothing here reports the grid as exhaustive. It is an
  * in-process option only — there is no wire path that shrinks the grid, because
  * a request that could would run a different count than consent named.

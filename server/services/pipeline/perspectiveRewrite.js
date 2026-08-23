@@ -13,7 +13,7 @@
  * editorialAnalysis.js). The canonical `stages.prose` draft is never touched —
  * the user folds insights back by hand. Each rewrite pins a `sourceContentHash`
  * so the UI can flag it stale once the analyzed draft changes. Per-issue writes
- * serialize on a single tail (one tail per shared file, per CLAUDE.md).
+ * serialize on a single tail (one tail per shared file, per AGENTS.md).
  *
  * Errors bubble (no try/catch) — the route owns the request boundary.
  */

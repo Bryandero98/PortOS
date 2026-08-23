@@ -1703,7 +1703,7 @@ describe('mergeSeasons (pure helper)', () => {
     expect(newNumbers).toEqual([4, 5]);
   });
 
-  // Round-7 review: distinguish absent-vs-empty per CLAUDE.md's "LLM
+  // Round-7 review: distinguish absent-vs-empty per AGENTS.md's "LLM
   // response merging" convention. An empty string is the user's intent
   // to clear the field; null/undefined is the LLM omitting it and the
   // existing value should win.

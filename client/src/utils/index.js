@@ -1,6 +1,6 @@
 // Barrel for client/src/utils/ — discovery surface, not a forced import path.
 // See client/src/utils/README.md for the human-readable catalog and
-// CLAUDE.md "Module organization" for the maintenance convention.
+// AGENTS.md "Module organization" for the maintenance convention.
 //
 // Every module here exports named (no defaults), so a flat `export * from`
 // surfaces each helper under its own name. The barrel exists so helpers are

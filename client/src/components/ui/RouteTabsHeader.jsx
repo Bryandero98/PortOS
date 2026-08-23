@@ -14,7 +14,7 @@ const selectIdFor = (ariaLabel) => `${String(ariaLabel || 'section').toLowerCase
  * the "tab bar" is really a navigation control: selecting one navigates instead
  * of swapping state. That is what makes each tab deep-linkable and reachable
  * from ⌘K and voice — the URL is the source of truth for what is open
- * (`client/src/CLAUDE.md`).
+ * (`client/src/AGENTS.md`).
  *
  * Each section owns its own `TABS` array (`{ id, label, to }`) and passes it in;
  * the navigation shim is the same for all of them. Sections may include a tab
