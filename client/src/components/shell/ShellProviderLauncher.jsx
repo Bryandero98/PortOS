@@ -104,7 +104,6 @@ export default function ShellProviderLauncher({ providers, onLaunch, onOpen, loa
         title="Launch an AI CLI from your enabled providers"
         aria-label="Launch an AI CLI"
         aria-expanded={open}
-        aria-haspopup="menu"
       >
         <Bot size={14} />
         <span className="hidden sm:inline">Launch AI</span>
@@ -140,13 +139,15 @@ export default function ShellProviderLauncher({ providers, onLaunch, onOpen, loa
             </div>
           )}
 
-          {/* The `menu` role wraps only the items — an `<input>` is not a valid
-              child of a menu, so the filter row stays outside it. */}
-          <div role="menu" aria-label="Enabled AI providers">
+          {/* Deliberately NOT role="menu"/"menuitem": those roles promise arrow-key
+              navigation and a typeahead this widget doesn't implement, and they'd
+              also make the filter <input> an invalid child. It is a disclosure of
+              plain buttons — Tab reaches every row natively — which is what the
+              sibling `cd to app` dropdown on this page already is. */}
+          <div role="group" aria-label="Enabled AI providers">
             {visible.map((provider) => (
               <button
                 key={provider.id}
-                role="menuitem"
                 onClick={() => handlePick(provider.id)}
                 className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-port-border transition-colors border-b border-port-border/50 last:border-b-0"
                 title={provider.tuiCommandLine}
