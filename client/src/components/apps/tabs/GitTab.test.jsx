@@ -168,6 +168,27 @@ describe('GitTab reset to origin', () => {
     expect(api.resetToDefaultBranch).not.toHaveBeenCalled();
   });
 
+  it('does not count untracked files among what it says it will discard', async () => {
+    // The dialog promises "Keeps untracked files" two rows below this number,
+    // so counting them there contradicts the same dialog.
+    api.getGitInfo.mockResolvedValue({
+      ...GIT_INFO,
+      status: {
+        files: [
+          { path: 'a.js', status: 'modified', staged: false },
+          { path: 'b.js', status: 'added', staged: true },
+          { path: 'scratch.log', status: 'untracked', staged: false },
+        ],
+      },
+    });
+    render(<GitTab appId="x" appName="App" repoPath="/repo" />);
+
+    fireEvent.click(await screen.findByText('Reset to origin'));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Discards 2 uncommitted file changes');
+  });
+
   it('does not reset when the confirmation is cancelled', async () => {
     render(<GitTab appId="x" appName="App" repoPath="/repo" />);
 

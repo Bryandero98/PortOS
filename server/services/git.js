@@ -1164,6 +1164,60 @@ export async function checkoutRemoteBranch(dir, branchName) {
 }
 
 /**
+ * How many entries in raw `git status --porcelain` output a hard reset would
+ * actually destroy — i.e. everything except untracked (`??`) files, which
+ * survive because nothing here runs `git clean`.
+ * @param {string} porcelain - Raw `git status --porcelain` stdout
+ * @returns {number}
+ */
+export function countDiscardable(porcelain) {
+  return String(porcelain || '')
+    .split('\n')
+    .filter(line => line.trim() && !line.startsWith('??'))
+    .length;
+}
+
+/**
+ * Sequencer state files a forced checkout does NOT clear, mapped to the command
+ * that drops each. `--quit` rather than `--abort`: abort rewinds to the
+ * pre-operation HEAD, which is the very state a reset is discarding, while
+ * `--quit` removes the bookkeeping and leaves the tree the checkout just
+ * restored alone. (`MERGE_HEAD` is absent here on purpose — a plain conflicted
+ * merge IS cleared by `checkout --force`.)
+ */
+const SEQUENCER_STATE = [
+  ['rebase-merge', 'rebase'],
+  ['rebase-apply', 'rebase'],
+  ['CHERRY_PICK_HEAD', 'cherry-pick'],
+  ['REVERT_HEAD', 'revert']
+];
+
+/**
+ * Drop any half-finished rebase / cherry-pick / revert.
+ *
+ * Without this a checkout left mid-rebase still reports "You are currently
+ * rebasing" after the reset, and every later `git rebase` in that repo dies on
+ * "there is already a rebase-merge directory" until someone deletes it by hand
+ * — so the reset would report success while leaving the repo in exactly the
+ * stuck state it is advertised to fix.
+ *
+ * @param {string} dir - Repo root
+ * @param {string} gitDirPath - Absolute path to the repo's git dir
+ * @returns {Promise<string[]>} - The operations that were cleared
+ */
+async function clearSequencerState(dir, gitDirPath) {
+  const stuck = [...new Set(
+    SEQUENCER_STATE
+      .filter(([marker]) => existsSync(join(gitDirPath, marker)))
+      .map(([, command]) => command)
+  )];
+  for (const command of stuck) {
+    await execGitSafe([command, '--quit'], dir);
+  }
+  return stuck;
+}
+
+/**
  * The id of a running CoS agent whose workspace IS `dir`, or null when none is.
  * Paths are compared after `resolve` so a trailing slash or a `..` segment on
  * either side doesn't let a live run slip past the check.
@@ -1199,8 +1253,13 @@ async function findActiveAgentInWorkspace(dir) {
  *     recovers them (the commits stay in the reflog for git's gc window).
  *   - Untracked files stay. There is no `git clean` here: a checkout's
  *     untracked set is where `.env` files, build output, and scratch work live,
- *     and losing those is not recoverable from a reflog.
+ *     and losing those is not recoverable from a reflog. `discardedFiles`
+ *     excludes them for the same reason — it counts what was destroyed, not
+ *     what was merely dirty.
  *   - Other local branches are untouched — this moves the default branch only.
+ *   - A half-finished rebase / cherry-pick / revert IS cleared (`clearedOperations`
+ *     names which), because leaving one behind is the stuck state this exists
+ *     to escape.
  *
  * A fetch failure is not fatal: the reset falls back to the cached
  * `origin/<default>` ref so an offline machine can still get back to a known
@@ -1208,7 +1267,8 @@ async function findActiveAgentInWorkspace(dir) {
  *
  * @param {string} dir - Working directory (a repo root, not a linked worktree)
  * @returns {Promise<{success: boolean, branch: string, previousBranch: string|null,
- *   previousHead: string|null, discardedFiles: number, fetched: boolean}>}
+ *   previousHead: string|null, discardedFiles: number, clearedOperations: string[],
+ *   fetched: boolean}>}
  */
 export async function resetToDefaultBranch(dir) {
   // A linked worktree cannot check out the default branch — the main checkout
@@ -1270,6 +1330,11 @@ export async function resetToDefaultBranch(dir) {
   const previousHead = head || null;
   const previousBranch = branchName || null;
 
+  // A half-finished rebase/cherry-pick survives the checkout below, so drop it
+  // first — otherwise the reset "succeeds" into a repo that still refuses every
+  // later rebase.
+  const clearedOperations = await clearSequencerState(dir, resolve(dir, gitDir || '.git'));
+
   // `checkout --force -B` is the whole operation: `-B` repoints the local branch
   // at the remote ref and `--force` resets index AND working tree to it, so a
   // trailing `reset --hard` would re-walk every tracked file to change nothing.
@@ -1280,7 +1345,12 @@ export async function resetToDefaultBranch(dir) {
     branch,
     previousBranch,
     previousHead,
-    discardedFiles: dirty ? dirty.split('\n').filter(Boolean).length : 0,
+    // Untracked files (`??`) are the ones this reset deliberately KEEPS, so
+    // counting them would tell the user more was destroyed than actually was —
+    // directly contradicting the "keeps untracked files" line the confirm
+    // dialog shows two rows above this number.
+    discardedFiles: countDiscardable(dirty),
+    clearedOperations,
     fetched
   };
 }

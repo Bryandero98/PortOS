@@ -45,10 +45,23 @@ describe('parseNpmUserAgent', () => {
     expect(parseNpmUserAgent('yarn/4.1.0 npm/? node/v24.10.0 linux x64')).toBeNull();
   });
 
-  it('returns null when not running under npm', () => {
-    expect(parseNpmUserAgent(undefined)).toBeNull();
+  it('returns null when there is no npm user agent to read', () => {
+    // NOT `parseNpmUserAgent(undefined)`: the parameter defaults to
+    // `process.env.npm_config_user_agent`, and passing an explicit `undefined`
+    // is indistinguishable from omitting the argument — so under `npm test`
+    // that call reads the ambient agent and returns a version, not null.
     expect(parseNpmUserAgent('')).toBeNull();
     expect(parseNpmUserAgent(null)).toBeNull();
+  });
+
+  it('falls back to the ambient npm_config_user_agent, and to null without one', () => {
+    vi.stubEnv('npm_config_user_agent', 'npm/10.9.0 node/v22.12.0 linux x64');
+    expect(parseNpmUserAgent()).toBe('10.9.0');
+    // The "not running under npm" case the default parameter exists for. Stubbed
+    // rather than assumed, because the suite itself usually runs under npm.
+    vi.stubEnv('npm_config_user_agent', '');
+    expect(parseNpmUserAgent()).toBeNull();
+    vi.unstubAllEnvs();
   });
 });
 

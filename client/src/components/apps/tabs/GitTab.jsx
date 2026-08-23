@@ -448,6 +448,9 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
         ? ` from ${result.previousBranch}`
         : '';
       toast.success(`Reset to origin/${result.branch}${from} — discarded ${result.discardedFiles} file change${result.discardedFiles === 1 ? '' : 's'}`);
+      if (result.clearedOperations?.length) {
+        toast(`Also cleared an in-progress ${result.clearedOperations.join(' and ')}`, { icon: '🧹' });
+      }
       if (result.previousHead) {
         toast(`Previous state was ${result.previousHead.slice(0, 7)} — git reset --hard ${result.previousHead.slice(0, 7)} to undo`, { icon: '↩️' });
       }
@@ -458,7 +461,9 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
     }
   };
 
-  const dirtyCount = gitInfo?.status?.files?.length || 0;
+  // Untracked files are the ones a reset KEEPS, so they must not be counted in
+  // what it says it will discard — the dialog claims both things two rows apart.
+  const dirtyCount = gitInfo?.status?.files?.filter(f => f.status !== 'untracked').length || 0;
 
   const getStatusIcon = (file) => {
     if (file.added) return <Plus size={14} className="text-port-success" />;

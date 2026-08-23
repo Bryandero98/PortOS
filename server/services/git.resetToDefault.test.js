@@ -12,9 +12,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const execGitMock = vi.hoisted(() => vi.fn());
 const getAgentsMock = vi.hoisted(() => vi.fn());
+const existsSyncMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../lib/execGit.js', () => ({
   execGit: execGitMock
+}));
+
+// Only the sequencer-state probe reads the filesystem here; everything else in
+// git.js reaches git through the mock above.
+vi.mock('fs', async (importOriginal) => ({
+  ...(await importOriginal()),
+  existsSync: existsSyncMock
 }));
 
 vi.mock('./cosAgentLifecycle.js', () => ({
@@ -60,6 +68,9 @@ beforeEach(() => {
   execGitMock.mockReset();
   getAgentsMock.mockReset();
   getAgentsMock.mockResolvedValue([]);
+  // Default: no rebase/cherry-pick/revert in progress.
+  existsSyncMock.mockReset();
+  existsSyncMock.mockReturnValue(false);
   clearFetchCache();
 });
 
@@ -116,6 +127,47 @@ describe('resetToDefaultBranch', () => {
     await resetToDefaultBranch('/repo');
 
     expect(calledCommands().some((cmd) => cmd.startsWith('clean'))).toBe(false);
+  });
+
+  it('excludes untracked files from the discarded count, since it keeps them', async () => {
+    // Counting `??` entries would claim more was destroyed than was — the
+    // confirm dialog promises "keeps untracked files" two rows above the number.
+    routeGit({
+      ...HAPPY_PATH,
+      'status --porcelain': ok(' M tracked.js\nA  staged.js\n?? scratch.log\n?? build/')
+    });
+
+    const result = await resetToDefaultBranch('/repo');
+
+    expect(result.discardedFiles).toBe(2);
+  });
+
+  it('clears a half-finished rebase, which the forced checkout leaves behind', async () => {
+    // Verified against real git: `checkout --force` empties the tree and index
+    // but leaves .git/rebase-merge, so the reset "succeeds" into a repo where
+    // every later `git rebase` dies on "already a rebase-merge directory".
+    existsSyncMock.mockImplementation((path) => String(path).endsWith('rebase-merge'));
+    routeGit(HAPPY_PATH);
+
+    const result = await resetToDefaultBranch('/repo');
+
+    expect(result.clearedOperations).toEqual(['rebase']);
+    expect(calledCommands()).toContain('rebase --quit');
+    // --quit, never --abort: abort rewinds to the pre-rebase HEAD, which is the
+    // state the reset is deliberately discarding.
+    expect(calledCommands().some((cmd) => cmd.includes('--abort'))).toBe(false);
+    // And it runs BEFORE the checkout, so the checkout lands on a normal repo.
+    expect(calledCommands().indexOf('rebase --quit'))
+      .toBeLessThan(calledCommands().indexOf('checkout --force -B main origin/main'));
+  });
+
+  it('leaves the sequencer alone when no operation is in progress', async () => {
+    routeGit(HAPPY_PATH);
+
+    const result = await resetToDefaultBranch('/repo');
+
+    expect(result.clearedOperations).toEqual([]);
+    expect(calledCommands().some((cmd) => cmd.includes('--quit'))).toBe(false);
   });
 
   it('refuses to reset a linked worktree', async () => {
