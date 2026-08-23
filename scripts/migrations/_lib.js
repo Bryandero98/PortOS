@@ -20,7 +20,11 @@
  *   7. Seeded-provider-tier bumps — `makeSeededProviderTierMigration` collapses
  *      the exact-match → rewrite-models → swap-retired-pointers shell that
  *      032 / 058 / 153 / 206 each hand-copied. Those four stay frozen; the
- *      factory is for the next bump.
+ *      factory is for the next RETIREMENT bump. It expresses id→id retirement
+ *      only: `idMap` maps 1:1 over `oldModels`, and `swapTierPointers` moves
+ *      EVERY pointer off a retired id. An ADDITIVE change — appending a model
+ *      while keeping the old one listed, or re-pointing some tiers but not all
+ *      (292, 294) — does not fit, and hand-rolls on `readProvidersDoc` instead.
  *
  * Families 5 and 7 both target `data/providers.json` and share its
  * read → parse → shape-guard preamble via `readProvidersDoc`; each still owns

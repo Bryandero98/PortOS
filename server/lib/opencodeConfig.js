@@ -18,7 +18,7 @@
  * `provider.<local-backend>.models` with bare ids.
  */
 
-import { getOpencodeLocalProviderNamespace, isOpencodeCommand } from './providerModels.js';
+import { getOpencodeLocalProviderNamespace, isOpencodeCommand, prefixOpencodeModel } from './providerModels.js';
 import { PROVIDER_GATEWAYS, PROVIDER_GATEWAY_IDS, gatewayById, isGatewayNamespace } from './providerGateways.js';
 import { PORTS } from './ports.js';
 
@@ -226,6 +226,10 @@ export function buildAgentGeneration(generation, providerKey) {
  * is invented), identical to the shipped base. When `base` is absent/unusable,
  * the canonical endpoint for the selected local runtime is used.
  *
+ * NOT the whole config: `small_model` is applied downstream by
+ * `buildOpencodeEnvVars`, which is the only caller that knows THIS run's single
+ * model (this one takes a list). A config built here alone is unpinned.
+ *
  * @param {string|string[]|null|undefined} models
  * @param {object|null} [base] - existing config to merge into (a fresh clone is made)
  * @param {'ollama'|'mtplx'|'llama'|'vllm'|'sglang'|string} [providerKey='ollama']
@@ -314,6 +318,24 @@ export function buildOpencodeEnvVars(provider, model) {
     model,
   ];
   const config = buildOpencodeConfig(ids, base, providerKey, provider);
+  // Pin the auxiliary model OpenCode uses for its OWN side work (session titles,
+  // summarization). Left unset it falls back to its built-in default, which is a
+  // real hosted model nobody here chose — an OpenRouter run on the free
+  // `stealth/ox-alpha` otherwise emits paid `google/gemini-3.7-flash` calls
+  // alongside it, and a local run on a box carrying an `ANTHROPIC_API_KEY` /
+  // `OPENAI_API_KEY` (spawns inherit `process.env`, see `cliChildEnv.js`) can
+  // reach a cloud provider the operator never opted into — exactly the
+  // unrequested provider call the root AGENTS.md's AI Provider Usage Policy
+  // forbids.
+  //
+  // So this is unconditional, not gateway-only: the invariant is that a run stays
+  // on the model it was dispatched with, and it holds for every namespace. The
+  // run model is always in the declared models map above, so it always resolves.
+  // A stored config that already pins `small_model` wins — same
+  // customization-preserving contract as the base merge above.
+  if (!config.small_model && model) {
+    config.small_model = prefixOpencodeModel(provider, model);
+  }
   // Every key-bearing namespace reads the SAME `provider.apiKey` field; a
   // gateway's `legacyApiKeyField` (`orcarouterApiKey`) is an older alias kept
   // readable forever. vLLM's compose stack is started with `VLLM_API_KEY`, so a
