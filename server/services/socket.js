@@ -1,10 +1,7 @@
-import { spawnPm2, buildEnv } from './pm2.js';
-import { streamDetection } from './streamingDetect.js';
 import { cosEvents } from './cosEvents.js';
-import { appsEvents, getAppById, resolvePm2HomeForProcess } from './apps.js';
+import { appsEvents } from './apps.js';
 import { errorEvents, sanitizeContext } from '../lib/errorHandler.js';
 import { handleErrorRecovery } from './autoFixer.js';
-import * as pm2Standardizer from './pm2Standardizer.js';
 import { notificationEvents } from './notifications.js';
 import { agentPersonalityEvents } from './agentPersonalities.js';
 import { platformAccountEvents } from './platformAccounts.js';
@@ -28,95 +25,16 @@ import { videoGenEvents } from './videoGen/events.js';
 import { audioGenEvents } from './audioGen/events.js';
 import { aiStatusEvents } from './aiStatusEvents.js';
 import { wireProactiveTriggers } from './voice/proactiveTriggers.js';
-import * as shellService from './shell.js';
-import { getProviderById } from './providers.js';
-import { buildTuiShellLaunch } from '../lib/tuiShellLaunch.js';
 import {
   validateSocketData,
-  detectStartSchema,
-  standardizeStartSchema,
-  logsSubscribeSchema,
-  logsUnsubscribeSchema,
-  errorRecoverSchema,
-  shellInputSchema,
-  shellCdSchema,
-  shellResizeSchema,
-  shellAttachSchema,
-  shellStopSchema,
-  appUpdateSchema,
-  appStandardizeSchema,
-  appDeploySchema
+  errorRecoverSchema
 } from '../lib/socketValidation.js';
-import * as appsService from './apps.js';
-import * as appUpdater from './appUpdater.js';
-import * as appDeployer from './appDeployer.js';
 import { registerVoiceHandlers } from '../sockets/voice.js';
+import { registerAppHandlers } from '../sockets/apps.js';
+import { cleanupSocketStreams, registerLogHandlers } from '../sockets/logs.js';
+import { detachShellSocket, registerShellHandlers } from '../sockets/shell.js';
 import { getBuildId } from '../lib/buildId.js';
 import { authEvents, extractToken, isAuthEnabled, verifySession } from './auth.js';
-
-// Store active log streams per socket/process pair.
-const activeStreams = new Map();
-const streamKey = (socketId, processName) => `${socketId}:${processName}`;
-// Monotonic per-stream subscribe generation. `logs:subscribe` awaits an app
-// lookup before it can spawn `pm2 logs`, so the request it started for may be
-// obsolete by the time it resolves. Stream occupancy alone cannot tell the cases
-// apart: an `logs:unsubscribe` that lands mid-lookup leaves the slot EMPTY, so a
-// stale handler would spawn an orphan `pm2 logs` nothing ever kills; and when two
-// subscribes for the same process overlap, the OLDER one can fill the slot first, so the newer one
-// bails and its client waits forever for `logs:subscribed`. Every claim and
-// release bumps this counter and a handler only resumes while its own generation
-// is current — the server-side mirror of the `{ target, generation }`
-// pending-request convention in AGENTS.md.
-const streamGenerations = new Map();
-const bumpStreamGeneration = (key) => {
-  const next = (streamGenerations.get(key) || 0) + 1;
-  streamGenerations.set(key, next);
-  return next;
-};
-// In-flight app update/standardize operations, keyed by app id. These run for
-// minutes (git pull → npm install → setup → pm2 restart) and are dispatched from
-// a page the user can navigate away from, so the server — not the client — is
-// the only place that reliably knows one is still running. Two jobs of it:
-//   1. re-entrancy guard: a second `app:update` for an id already in the map is
-//      rejected instead of interleaving a second npm install in the same
-//      checkout (sanctioned by the Security Model — duplicate in-flight
-//      operations, not competing humans);
-//   2. resumable progress: each entry buffers the steps emitted so far, so a
-//      client that mounts (or remounts) mid-operation rehydrates the whole log
-//      via `app:operations:active` instead of showing a clean slate.
-const activeAppOperations = new Map();
-
-// repoPath stays server-side: the client only needs to name and render the run.
-const activeOperationsPayload = () => ({
-  operations: [...activeAppOperations.values()].map(({ repoPath: _repoPath, ...op }) => op)
-});
-
-// Two app records may point at the same checkout, so the app id alone doesn't
-// identify the resource being mutated — match the repo path too, or a second
-// record's Update would run `npm install` in a directory already being rebuilt.
-const findConflictingOperation = (app) => activeAppOperations.get(app.id)
-  || (app.repoPath ? [...activeAppOperations.values()].find(op => op.repoPath === app.repoPath) : undefined);
-
-const beginAppOperation = (io, app, type) => {
-  const operation = { appId: app.id, appName: app.name, type, steps: [], startedAt: Date.now(), repoPath: app.repoPath };
-  activeAppOperations.set(app.id, operation);
-  io.emit('app:operations:active', activeOperationsPayload());
-  return operation;
-};
-
-const endAppOperation = (io, appId) => {
-  if (!activeAppOperations.delete(appId)) return;
-  io.emit('app:operations:active', activeOperationsPayload());
-};
-
-// Record a step into the operation's buffer using the same last-write-wins
-// per-step semantics the client renders with, so a rehydrated log matches a
-// live-streamed one.
-const recordOperationStep = (operation, frame) => {
-  const existing = operation.steps.findIndex(s => s.step === frame.step);
-  if (existing >= 0) operation.steps[existing] = frame;
-  else operation.steps.push(frame);
-};
 
 // Store CoS subscribers
 const cosSubscribers = new Set();
@@ -164,673 +82,142 @@ function registerSubscriber(socket, namespace, set) {
   });
 }
 
-export function initSocket(io) {
+function registerAuthHandlers(socket, _io) {
+  // Per-event auth re-check: the handshake gate only runs once at connection
+  // time, so every inbound event re-verifies an enabled session.
+  if (typeof socket.use === 'function') {
+    socket.use(async ([_event, ..._args], next) => {
+      try {
+        if (!(await isAuthEnabled())) return next();
+        const token = extractToken({ headers: socket.handshake?.headers || {} });
+        if (await verifySession(token)) return next();
+        socket.disconnect(true);
+      } catch (err) {
+        console.error(`❌ Socket auth middleware error: ${err?.message ?? err}`);
+        socket.disconnect(true);
+      }
+    });
+  }
+}
+
+function registerBuildHandlers(socket, _io) {
+  // The bundle hash is safe to push across federated socket relays. Git
+  // identity remains on the machine-local system-build API (#4694).
+  socket.emit('build:id', { buildId: getBuildId() });
+}
+
+function registerImporterHandlers(socket, _io) {
+  // Replay on demand because the importer UI mounts after the shared socket.
+  socket.on('importer:progress:replay', () => {
+    for (const frame of getImporterProgressFrames()) {
+      socket.emit('importer:progress', frame);
+    }
+  });
+}
+
+function registerSubscriptionHandlers(socket, _io) {
+  registerSubscriber(socket, 'cos', cosSubscribers);
+  registerSubscriber(socket, 'errors', errorSubscribers);
+  registerSubscriber(socket, 'notifications', notificationSubscribers);
+  registerSubscriber(socket, 'agents', agentSubscribers);
+  registerSubscriber(socket, 'instances', instanceSubscribers);
+  registerSubscriber(socket, 'loops', loopSubscribers);
+}
+
+function registerErrorHandlers(socket, io) {
+  socket.on('error:recover', async (rawData) => {
+    try {
+      const data = validateSocketData(errorRecoverSchema, rawData, socket, 'error:recover');
+      if (!data) return;
+      const { code, context } = data;
+      console.log(`🔧 Error recovery requested: ${code}`);
+
+      const task = await handleErrorRecovery(code, context);
+      io.emit('error:recover:requested', {
+        code,
+        context,
+        taskId: task.id,
+        timestamp: Date.now()
+      });
+    } catch (err) {
+      const message = err?.message ?? String(err);
+      console.error(`❌ Socket handler error [error:recover]: ${message}`);
+      socket.emit('error:recover:error', { message });
+    }
+  });
+}
+
+function registerLifecycleHandlers(socket, _io) {
+  socket.on('disconnect', () => {
+    console.log(`🔌 Client disconnected: ${socket.id}`);
+    cleanupSocketStreams(socket.id);
+    for (const set of ALL_SUBSCRIBER_SETS) set.delete(socket);
+    const detached = detachShellSocket(socket);
+    if (detached > 0) {
+      console.log(`🐚 Detached ${detached} shell session(s) (still running)`);
+    }
+    socket.removeAllListeners();
+  });
+}
+
+const SOCKET_HANDLER_REGISTRARS = [
+  registerAuthHandlers,
+  registerVoiceHandlers,
+  registerBuildHandlers,
+  registerImporterHandlers,
+  registerAppHandlers,
+  registerLogHandlers,
+  registerSubscriptionHandlers,
+  registerErrorHandlers,
+  registerShellHandlers,
+  registerLifecycleHandlers
+];
+
+function registerAuthRevocationHandler(io) {
   // Auth-state changes (first-time enable, rotation, disable) all funnel
-  // through revokeAllSessions in services/auth.js, which fires this event.
-  // Disconnect every currently-connected socket so clients re-handshake
-  // against the fresh session store — sockets accepted before the change
-  // would otherwise keep emitting privileged events on their stale
-  // handshake-time auth grant.
+  // through revokeAllSessions in services/auth.js. Disconnect every current
+  // socket so its next event cannot use a stale handshake-time grant.
   authEvents.on('sessions:revoked-all', () => {
     console.log(`🔐 Auth state changed — disconnecting all sockets`);
     if (typeof io.disconnectSockets === 'function') io.disconnectSockets(true);
   });
+}
+
+function setupEventForwarding() {
+  setupCosEventForwarding();
+  setupErrorEventForwarding();
+  setupAppsEventForwarding();
+  setupNotificationEventForwarding();
+  setupAgentEventForwarding();
+  setupBrainEventForwarding();
+  setupMoltworldWsEventForwarding();
+  setupMoltworldQueueEventForwarding();
+  setupInstanceEventForwarding();
+  setupReviewEventForwarding();
+  setupPeerAgentEventForwarding();
+  setupUpdateEventForwarding();
+  setupLoopEventForwarding();
+  setupMediaGenEventForwarding();
+  setupAIStatusEventForwarding();
+  setupImporterEventForwarding();
+  setupCatalogEventForwarding();
+  setupWritersRoomEventForwarding();
+  setupMusicVideoEventForwarding();
+  setupProactiveSpeechForwarding();
+}
+
+export function initSocket(io) {
+  registerAuthRevocationHandler(io);
 
   io.on('connection', (socket) => {
     console.log(`🔌 Client connected: ${socket.id}`);
-    // Per-event auth re-check: the handshake gate (lib/authGate.js
-    // socketAuthGate) only runs once at connection time. If a session
-    // expires or is revoked while the socket is open, the next inbound
-    // event re-verifies and kicks the socket. Cheap (hashed-Map lookup),
-    // and no-op when auth is off. Guarded for tests that pass a mock
-    // socket without the `use` middleware hook.
-    if (typeof socket.use === 'function') {
-      socket.use(async ([_event, ..._args], next) => {
-        // Fail closed: if isAuthEnabled / verifySession throw (e.g. a
-        // transient settings.json read error) we MUST disconnect rather
-        // than skip the check by neither calling next nor disconnecting,
-        // which would silently stall the event and leave the socket
-        // attached on stale credentials.
-        try {
-          if (!(await isAuthEnabled())) return next();
-          const token = extractToken({ headers: socket.handshake?.headers || {} });
-          if (await verifySession(token)) return next();
-          socket.disconnect(true);
-        } catch (err) {
-          console.error(`❌ Socket auth middleware error: ${err?.message ?? err}`);
-          socket.disconnect(true);
-        }
-      });
+    for (const registerHandlers of SOCKET_HANDLER_REGISTRARS) {
+      registerHandlers(socket, io);
     }
-    registerVoiceHandlers(socket);
-
-    // Tell the client what build the server is on. The client compares this
-    // to its own embedded <meta name="portos-build-id"> value; a mismatch
-    // means the tab is running stale code against a freshly-rebuilt server
-    // and the user is offered a reload.
-    //
-    // The bundle HASH is safe to push to every socket. The git identity is
-    // deliberately NOT here: `connection` fires for every socket, and
-    // `peerSocketRelay.js` connects PortOS installs to each other over
-    // Socket.IO, so anything pushed here reaches other people's machines. The
-    // client reads the commit from `GET /api/system/build` instead — see that
-    // route in routes/systemHealth.js for the full reasoning (#4694).
-    socket.emit('build:id', { buildId: getBuildId() });
-
-    // Replay the in-flight importer analyze snapshot ON DEMAND so a tab that
-    // (re)connects mid-analyze rebuilds its stage checklist instead of staying
-    // stuck on "Starting…" — the original gate dropped every `stage` frame
-    // whose run the client never saw a `start` for. Replay is request-driven
-    // (not fired at `connection` time) because the socket auto-connects at app
-    // load, before the lazily-mounted Importer page registers its
-    // `importer:progress` listener — a connection-time replay would land
-    // before any listener exists and be lost. The client requests this right
-    // after registering its listener and again on every reconnect (see
-    // useImporterProgress). No-op when no analyze is running (empty list).
-    // `setupImporterEventForwarding` (below) keeps the snapshot fed; it's armed
-    // at server start.
-    socket.on('importer:progress:replay', () => {
-      for (const frame of getImporterProgressFrames()) {
-        socket.emit('importer:progress', frame);
-      }
-    });
-
-    // Handle streaming app detection
-    socket.on('detect:start', async (rawData) => {
-      try {
-        const data = validateSocketData(detectStartSchema, rawData, socket, 'detect:start');
-        if (!data) return;
-        console.log(`🔍 Starting detection: ${data.path}`);
-        await streamDetection(socket, data.path);
-      } catch (err) {
-        const message = err?.message ?? String(err);
-        console.error(`❌ Socket handler error [detect:start]: ${message}`);
-        socket.emit('error:server', { message });
-        socket.emit('detect:complete', { success: false, error: message });
-      }
-    });
-
-    // Handle PM2 standardization — the multi-step analyze→backup→apply flow
-    // lives in pm2Standardizer.runStandardizeFlow (testable + HTTP-callable);
-    // the socket handler only wires progress callbacks to socket events.
-    socket.on('standardize:start', async (rawData) => {
-      try {
-        const data = validateSocketData(standardizeStartSchema, rawData, socket, 'standardize:start');
-        if (!data) return;
-        const { repoPath, providerId, overwriteEcosystem = false } = data;
-        console.log(`🔧 Starting PM2 standardization: ${repoPath}`);
-
-        const outcome = await pm2Standardizer.runStandardizeFlow(repoPath, providerId, {
-          overwriteEcosystem,
-          onStep: ({ step, status, data }) => {
-            socket.emit('standardize:step', { step, status, data, timestamp: Date.now() });
-          },
-          onAnalyzed: (payload) => socket.emit('standardize:analyzed', payload)
-        });
-
-        socket.emit('standardize:complete', outcome);
-      } catch (err) {
-        const message = err?.message ?? String(err);
-        console.error(`❌ Socket handler error [standardize:start]: ${message}`);
-        socket.emit('error:server', { message });
-        socket.emit('standardize:complete', { success: false, error: message });
-      }
-    });
-
-    // Handle log streaming requests
-    socket.on('logs:subscribe', async (rawData) => {
-      // Declared outside the try so the catch can echo it back: the client's
-      // logs:error listener filters on processName, so an error emitted
-      // without it is silently dropped and the log panel just hangs.
-      let processName;
-      try {
-        const data = validateSocketData(logsSubscribeSchema, rawData, socket, 'logs:subscribe');
-        if (!data) return;
-        let lines, appId;
-        ({ processName, lines, appId } = data);
-        const key = streamKey(socket.id, processName);
-
-        // Clean up only this process's existing stream, then claim this request.
-        // Claiming AFTER the cleanup bump is what makes this generation current.
-        cleanupStream(key);
-        const generation = bumpStreamGeneration(key);
-
-        // Resolve the app's custom PM2_HOME so the stream tails the home its
-        // processes actually run in. appId remains the disambiguating fast path;
-        // legacy callers without it fall back to the process-name registry lookup.
-        // This runs outside the Express lifecycle, so a lookup failure must not
-        // throw — fall back to the default home.
-        let pm2Home = null;
-        if (appId) {
-          pm2Home = await getAppById(appId)
-            .then(app => app?.pm2Home || null)
-            .catch(err => {
-              console.error(`❌ logs:subscribe could not resolve app ${appId}: ${err.message}`);
-              return null;
-            });
-        } else {
-          pm2Home = await resolvePm2HomeForProcess(processName)
-            .catch(err => {
-              console.error(`❌ logs:subscribe could not resolve ${processName}: ${err.message}`);
-              return null;
-            });
-        }
-
-        // The await above yields, so a disconnect, an unsubscribe, or a newer
-        // subscribe may have landed in the meantime. Bail if this socket is gone
-        // rather than spawning an orphan `pm2 logs` nothing will ever clean up.
-        if (socket.disconnected) return;
-        // Superseded or cancelled while the lookup was in flight. Covers both the
-        // unsubscribe (slot left empty) and the two-overlapping-subscribes cases
-        // that a bare `activeStreams.has()` check gets wrong in opposite directions.
-        if (streamGenerations.get(key) !== generation) return;
-
-        console.log(`📜 Log stream started: ${processName} (${lines} lines)`);
-
-        // Spawn pm2 logs with --raw flag
-        // buildEnv(null) is the default-home case, so this is unconditional —
-        // matching every other buildEnv call site in pm2.js.
-        const logProcess = spawnPm2(
-          ['logs', processName, '--raw', '--lines', String(lines)],
-          { env: buildEnv(pm2Home) }
-        );
-
-        activeStreams.set(key, { process: logProcess, processName });
-
-        let buffer = '';
-
-        logProcess.stdout.on('data', (data) => {
-          buffer += data.toString();
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          lines.forEach(line => {
-            if (line.trim()) {
-              socket.emit('logs:line', {
-                line,
-                type: 'stdout',
-                timestamp: Date.now(),
-                processName
-              });
-            }
-          });
-        });
-
-        logProcess.stderr.on('data', (data) => {
-          buffer += data.toString();
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          lines.forEach(line => {
-            if (line.trim()) {
-              socket.emit('logs:line', {
-                line,
-                type: 'stderr',
-                timestamp: Date.now(),
-                processName
-              });
-            }
-          });
-        });
-
-        logProcess.on('error', (err) => {
-          socket.emit('logs:error', { error: err.message, processName });
-        });
-
-        logProcess.on('close', (code) => {
-          // A SIGTERM'd predecessor's `close` fires asynchronously — after the
-          // replacement stream has already registered — so an unscoped
-          // `activeStreams.delete` here would unregister the LIVE stream and leak
-          // it (no later cleanupStream would find it to kill), while `logs:close`
-          // would tell the client the stream it is watching had ended.
-          if (activeStreams.get(key)?.process !== logProcess) return;
-          socket.emit('logs:close', { code, processName });
-          activeStreams.delete(key);
-          streamGenerations.delete(key);
-        });
-
-        socket.emit('logs:subscribed', { processName, timestamp: Date.now() });
-      } catch (err) {
-        const message = err?.message ?? String(err);
-        console.error(`❌ Socket handler error [logs:subscribe]: ${message}`);
-        socket.emit('logs:error', { error: message, processName });
-      }
-    });
-
-    // Handle unsubscribe
-    socket.on('logs:unsubscribe', (rawData) => {
-      const data = validateSocketData(logsUnsubscribeSchema, rawData, socket, 'logs:unsubscribe');
-      if (!data) return;
-      if (data.processName) cleanupStream(streamKey(socket.id, data.processName));
-      else cleanupSocketStreams(socket.id);
-      socket.emit('logs:unsubscribed', { processName: data.processName });
-    });
-
-    // CoS subscriptions
-    registerSubscriber(socket, 'cos', cosSubscribers);
-
-    // Error event subscriptions
-    registerSubscriber(socket, 'errors', errorSubscribers);
-
-    // Notification subscriptions
-    registerSubscriber(socket, 'notifications', notificationSubscribers);
-
-    // Agent subscriptions
-    registerSubscriber(socket, 'agents', agentSubscribers);
-
-    // Instance subscriptions
-    registerSubscriber(socket, 'instances', instanceSubscribers);
-
-    // Loop subscriptions
-    registerSubscriber(socket, 'loops', loopSubscribers);
-
-    // Handle error recovery requests (can trigger auto-fix agents)
-    socket.on('error:recover', async (rawData) => {
-      try {
-        const data = validateSocketData(errorRecoverSchema, rawData, socket, 'error:recover');
-        if (!data) return;
-        const { code, context } = data;
-        console.log(`🔧 Error recovery requested: ${code}`);
-
-        // Create auto-fix task
-        const task = await handleErrorRecovery(code, context);
-
-        // Broadcast recovery task created
-        io.emit('error:recover:requested', {
-          code,
-          context,
-          taskId: task.id,
-          timestamp: Date.now()
-        });
-      } catch (err) {
-        const message = err?.message ?? String(err);
-        console.error(`❌ Socket handler error [error:recover]: ${message}`);
-        socket.emit('error:recover:error', { message });
-      }
-    });
-
-    // App update handler — streams progress via socket
-    socket.on('app:update', async (rawData) => {
-      // Tracked outside the try so every exit path releases the in-flight slot.
-      let operatingAppId = null;
-      try {
-        const data = validateSocketData(appUpdateSchema, rawData, socket, 'app:update');
-        if (!data) return;
-
-        const app = await appsService.getAppById(data.appId);
-        if (!app) {
-          socket.emit('app:update:error', { message: 'App not found' });
-          return;
-        }
-
-        const inFlight = findConflictingOperation(app);
-        if (inFlight) {
-          // `duplicate` marks this as "your dispatch was refused", not "the
-          // running operation failed" — the client must not show a failure for
-          // a run that is still healthy.
-          socket.emit('app:update:error', {
-            appId: app.id,
-            duplicate: true,
-            message: `An ${inFlight.type} is already running for ${inFlight.appName}`
-          });
-          return;
-        }
-
-        console.log(`⬇️ Socket update started for ${app.name}`);
-        const operation = beginAppOperation(io, app, 'update');
-        operatingAppId = app.id;
-        // Broadcast (not socket.emit): the client that dispatched may have
-        // unmounted, and any other open tab should see the same progress.
-        const emit = (step, status, message) => {
-          const frame = { appId: app.id, step, status, message, timestamp: Date.now() };
-          recordOperationStep(operation, frame);
-          io.emit('app:update:step', frame);
-        };
-
-        const result = await appUpdater.updateApp(app, emit).catch(err => {
-          io.emit('app:update:error', { appId: app.id, message: err.message });
-          return null;
-        });
-
-        if (result) {
-          io.emit('app:update:complete', { appId: app.id, success: result.success, steps: result.steps });
-          console.log(`✅ Socket update complete for ${app.name}`);
-        }
-      } catch (err) {
-        const message = err?.message ?? String(err);
-        console.error(`❌ Socket handler error [app:update]: ${message}`);
-        io.emit('app:update:error', { appId: operatingAppId, message });
-        io.emit('app:update:complete', { appId: operatingAppId, success: false, steps: [] });
-      } finally {
-        if (operatingAppId) endAppOperation(io, operatingAppId);
-      }
-    });
-
-    // App standardize handler — streams progress via socket
-    socket.on('app:standardize', async (rawData) => {
-      // Tracked outside the try so every exit path (early return, thrown error)
-      // releases the in-flight slot in the finally below.
-      let operatingAppId = null;
-      try {
-        const data = validateSocketData(appStandardizeSchema, rawData, socket, 'app:standardize');
-        if (!data) return;
-
-        const app = await appsService.getAppById(data.appId);
-        if (!app) {
-          socket.emit('app:standardize:error', { message: 'App not found' });
-          return;
-        }
-
-        const refusal = pm2Standardizer.standardizeRefusalFor(app);
-        if (refusal) {
-          socket.emit('app:standardize:error', { appId: app.id, message: refusal });
-          return;
-        }
-
-        const inFlight = findConflictingOperation(app);
-        if (inFlight) {
-          socket.emit('app:standardize:error', {
-            appId: app.id,
-            duplicate: true,
-            message: `An ${inFlight.type} is already running for ${inFlight.appName}`
-          });
-          return;
-        }
-
-        console.log(`🔧 Socket standardize started for ${app.name}`);
-        const operation = beginAppOperation(io, app, 'standardize');
-        operatingAppId = app.id;
-        const emit = (step, status, message) => {
-          const frame = { appId: app.id, step, status, message, timestamp: Date.now() };
-          recordOperationStep(operation, frame);
-          io.emit('app:standardize:step', frame);
-        };
-
-        // Step 1: Analyze
-        emit('analyze', 'running', 'Analyzing project configuration...');
-        const analysis = await pm2Standardizer.analyzeApp(app.repoPath)
-          .catch(err => ({ success: false, error: err.message }));
-
-        if (!analysis.success) {
-          emit('analyze', 'error', analysis.error);
-          io.emit('app:standardize:error', { appId: app.id, message: analysis.error });
-          return;
-        }
-        emit('analyze', 'done', `Found ${analysis.proposedChanges.processes?.length || 0} processes`);
-
-        // Step 2: Backup
-        emit('backup', 'running', 'Creating git backup...');
-        const backup = await pm2Standardizer.createGitBackup(app.repoPath)
-          .catch(err => ({ success: false, reason: err.message }));
-
-        if (backup.success) {
-          emit('backup', 'done', `Backup branch: ${backup.branch}`);
-        } else {
-          emit('backup', 'skipped', backup.reason || 'No git repository');
-        }
-
-        // Step 3: Apply
-        emit('apply', 'running', 'Writing ecosystem.config.cjs...');
-        const result = await pm2Standardizer.applyStandardization(app.repoPath, analysis, {
-          overwriteEcosystem: data.overwriteEcosystem ?? false
-        }).catch(err => ({ success: false, errors: [err.message] }));
-
-        if (result.errors?.length > 0) {
-          emit('apply', 'error', result.errors.join(', '));
-          io.emit('app:standardize:error', { appId: app.id, message: result.errors.join(', ') });
-          return;
-        }
-        const preserved = result.filesPreserved || [];
-        emit('apply', 'done', preserved.length
-          ? `Modified ${result.filesModified.length} files, preserved ${preserved.length}`
-          : `Modified ${result.filesModified.length} files`);
-
-        // Update app with new PM2 process names
-        if (analysis.proposedChanges?.processes) {
-          const pm2ProcessNames = analysis.proposedChanges.processes.map(p => p.name);
-          await appsService.updateApp(data.appId, { pm2ProcessNames });
-        }
-
-        io.emit('app:standardize:complete', {
-          appId: app.id,
-          success: true,
-          result: {
-            backupBranch: result.backupBranch,
-            filesModified: result.filesModified,
-            filesPreserved: preserved,
-            processes: analysis.proposedChanges.processes
-          }
-        });
-        console.log(`✅ Socket standardize complete for ${app.name}`);
-      } catch (err) {
-        const message = err?.message ?? String(err);
-        console.error(`❌ Socket handler error [app:standardize]: ${message}`);
-        io.emit('app:standardize:error', { appId: operatingAppId, message });
-      } finally {
-        if (operatingAppId) endAppOperation(io, operatingAppId);
-      }
-    });
-
-    // Current in-flight app operations — pushed on connect and on demand, so a
-    // client mounting mid-operation (or after a remount) restores the live
-    // progress instead of showing a clean slate.
-    socket.on('app:operations:list', () => {
-      socket.emit('app:operations:active', activeOperationsPayload());
-    });
-    socket.emit('app:operations:active', activeOperationsPayload());
-
-    // App deploy handler — streams real-time output from deploy.sh. The
-    // app-lookup → deploy-script check → run orchestration lives in
-    // appDeployer.runDeployFlow (testable + HTTP-callable); the handler only
-    // forwards streamed frames and maps the terminal outcome to socket events.
-    socket.on('app:deploy', async (rawData) => {
-      try {
-        const data = validateSocketData(appDeploySchema, rawData, socket, 'app:deploy');
-        if (!data) return;
-
-        const onOutput = (type, payload) => {
-          socket.emit(`app:deploy:${type}`, { ...payload, timestamp: Date.now() });
-        };
-
-        const outcome = await appDeployer.runDeployFlow(data.appId, data.flags, { onOutput });
-        if (!outcome.ok) {
-          socket.emit('app:deploy:error', { message: outcome.error });
-          return;
-        }
-        socket.emit('app:deploy:complete', { success: outcome.success, code: outcome.code });
-      } catch (err) {
-        const message = err?.message ?? String(err);
-        console.error(`❌ Socket handler error [app:deploy]: ${message}`);
-        socket.emit('app:deploy:error', { message });
-      }
-    });
-
-    // Shell session handlers.
-    //
-    // `providerId` is the AI Providers page's "Launch in Shell" path. The client
-    // sends only the ID and the SERVER resolves both the command line and the
-    // provider's env — a TUI provider's backend lives in `envVars`
-    // (ANTHROPIC_BASE_URL for an Ollama-backed or Bedrock claude,
-    // OPENCODE_CONFIG_CONTENT for an OpenCode wrapper), so a session started
-    // from a bare `initialCommand` would run the right binary against the WRONG
-    // backend — silently billing the vendor cloud for a provider the user
-    // pointed at a local daemon. Those values are secret besides, so they must
-    // never round-trip through the client. Resolving server-side also means the
-    // client can't choose the command: the ID only selects among the user's own
-    // stored providers.
-    socket.on('shell:start', async (options) => {
-      try {
-        const cwd = options?.cwd || undefined;
-        const providerId = typeof options?.providerId === 'string' ? options.providerId : null;
-        let initialCommand = options?.initialCommand || undefined;
-        let env;
-        if (providerId) {
-          const provider = await getProviderById(providerId).catch(() => null);
-          const launch = buildTuiShellLaunch(provider);
-          if (!launch) {
-            socket.emit('shell:error', { error: `Provider '${providerId}' is not a launchable TUI provider` });
-            return;
-          }
-          // Server-resolved wins outright — never fall back to a client-supplied
-          // command for a provider launch.
-          initialCommand = launch.commandLine;
-          env = launch.env;
-        }
-        const sessionId = shellService.createShellSession(socket, { cwd, env });
-        if (sessionId) {
-          socket.emit('shell:started', { sessionId });
-          if (initialCommand) {
-            setTimeout(() => shellService.submitToSession(sessionId, initialCommand), 200);
-          }
-        } else {
-          socket.emit('shell:error', { error: 'Failed to create shell session' });
-        }
-      } catch (err) {
-        const message = err?.message ?? String(err);
-        console.error(`❌ Socket handler error [shell:start]: ${message}`);
-        socket.emit('shell:error', { error: message });
-      }
-    });
-
-    socket.on('shell:attach', (rawData) => {
-      const validated = validateSocketData(shellAttachSchema, rawData, socket, 'shell:attach');
-      if (!validated) return;
-      const result = shellService.attachSession(validated.sessionId, socket, { claim: validated.claim });
-      if (result?.claimRejected) {
-        // sessionId in payload lets the client correlate this error to its pending
-        // request and ignore stale errors from earlier rapid clicks.
-        socket.emit('shell:error', { error: 'Session attached to another client', sessionId: validated.sessionId });
-      } else if (result) {
-        socket.emit('shell:attached', result);
-      } else {
-        socket.emit('shell:error', { error: 'Session not found', sessionId: validated.sessionId });
-      }
-    });
-
-    socket.on('shell:list', () => {
-      shellService.subscribeSessionList(socket);
-      socket.emit('shell:sessions', shellService.listAllSessions(socket));
-    });
-
-    socket.on('shell:input', (rawData) => {
-      const validated = validateSocketData(shellInputSchema, rawData, socket, 'shell:input');
-      if (!validated) return;
-      if (!shellService.writeToSession(validated.sessionId, validated.data)) {
-        socket.emit('shell:error', { sessionId: validated.sessionId, error: 'Session not found' });
-      }
-    });
-
-    // The client picks a FOLDER; the server renders the `cd` for the shell this
-    // session is running. A hard-coded POSIX `cd '<path>'` from the client is what
-    // made every managed-app folder unreachable from a Windows (cmd.exe) session.
-    socket.on('shell:cd', (rawData) => {
-      const validated = validateSocketData(shellCdSchema, rawData, socket, 'shell:cd');
-      if (!validated) return;
-      if (!shellService.changeSessionDirectory(validated.sessionId, validated.path)) {
-        // Two different refusals: the session is gone, or it is a live agent run
-        // whose PTY would read the `cd` as a typed message rather than a command.
-        const isRun = shellService.getSession(validated.sessionId)?.external;
-        socket.emit('shell:error', {
-          sessionId: validated.sessionId,
-          error: isRun ? 'This is a live agent run, not a shell — cd is unavailable here' : 'Session not found'
-        });
-      }
-    });
-
-    socket.on('shell:resize', (rawData) => {
-      const validated = validateSocketData(shellResizeSchema, rawData, socket, 'shell:resize');
-      if (!validated) return;
-      shellService.resizeSession(validated.sessionId, validated.cols, validated.rows);
-    });
-
-    socket.on('shell:stop', (rawData) => {
-      const validated = validateSocketData(shellStopSchema, rawData, socket, 'shell:stop');
-      if (!validated) return;
-      shellService.killSession(validated.sessionId);
-    });
-
-    // Client left the Shell page — release any watched TUI-run views so those
-    // runs resume normal completion instead of staying paused (the persistent
-    // SocketProvider socket means a navigation doesn't fire `disconnect`).
-    socket.on('shell:release-views', () => {
-      shellService.releaseExternalViewsForSocket(socket);
-    });
-
-    // Cleanup on disconnect — detach sessions, don't kill them
-    socket.on('disconnect', () => {
-      console.log(`🔌 Client disconnected: ${socket.id}`);
-      cleanupSocketStreams(socket.id);
-      for (const set of ALL_SUBSCRIBER_SETS) set.delete(socket);
-      const detached = shellService.detachSocketSessions(socket);
-      if (detached > 0) {
-        console.log(`🐚 Detached ${detached} shell session(s) (still running)`);
-      }
-      // Remove all event handlers registered on this socket to prevent leaks
-      socket.removeAllListeners();
-    });
   });
 
-  // Store io instance for apps broadcasting
   ioInstance = io;
-
-  // Set up CoS event forwarding to subscribers
-  setupCosEventForwarding();
-
-  // Set up error event forwarding to subscribers
-  setupErrorEventForwarding();
-
-  // Set up apps event forwarding to all clients
-  setupAppsEventForwarding();
-
-  // Set up notification event forwarding
-  setupNotificationEventForwarding();
-
-  // Set up agent event forwarding
-  setupAgentEventForwarding();
-
-  // Set up brain event forwarding
-  setupBrainEventForwarding();
-
-  // Set up Moltworld WebSocket event forwarding
-  setupMoltworldWsEventForwarding();
-
-  // Set up Moltworld queue event forwarding
-  setupMoltworldQueueEventForwarding();
-
-  // Set up instance event forwarding
-  setupInstanceEventForwarding();
-
-  // Set up review hub event forwarding
-  setupReviewEventForwarding();
-
-  // Set up peer agent event forwarding
-  setupPeerAgentEventForwarding();
-
-  // Set up update event forwarding
-  setupUpdateEventForwarding();
-
-  // Set up loop event forwarding
-  setupLoopEventForwarding();
-
-  // Set up image generation event forwarding
-  setupMediaGenEventForwarding();
-
-  // Set up AI status event forwarding (broadcast to all clients)
-  setupAIStatusEventForwarding();
-
-  // Set up importer stage-progress forwarding (broadcast to all clients)
-  setupImporterEventForwarding();
-
-  // Set up catalog extraction-progress forwarding (broadcast to all clients)
-  setupCatalogEventForwarding();
-
-  // Set up Writers-Room scene-image forwarding (broadcast to all clients)
-  setupWritersRoomEventForwarding();
-
-  // Set up Music Video scene reference-frame forwarding (broadcast to all clients)
-  setupMusicVideoEventForwarding();
-
-  // Wire proactive voice (CoS speaks first on high-severity errors, new tasks,
-  // and high-priority notifications — rate-limited per source).
-  setupProactiveSpeechForwarding();
+  setupEventForwarding();
 }
 
 // Bridge importer analyze-phase stage progress onto Socket.IO so the Importer
@@ -898,32 +285,6 @@ function setupProactiveSpeechForwarding() {
   if (proactiveSpeechForwardingSetup) return;
   proactiveSpeechForwardingSetup = true;
   wireProactiveTriggers({ io: ioInstance });
-}
-
-function cleanupStream(key) {
-  // Bump unconditionally, even with no stream to kill: this is the cancellation
-  // point for a `logs:subscribe` still awaiting its app lookup, which has not
-  // claimed the slot yet and so would otherwise survive an unsubscribe.
-  bumpStreamGeneration(key);
-  const stream = activeStreams.get(key);
-  if (stream) {
-    stream.process.kill('SIGTERM');
-    activeStreams.delete(key);
-  }
-}
-
-function cleanupSocketStreams(socketId) {
-  const prefix = `${socketId}:`;
-  for (const [key, stream] of activeStreams) {
-    if (!key.startsWith(prefix)) continue;
-    stream.process.kill('SIGTERM');
-    activeStreams.delete(key);
-  }
-  // Dropping a pending stream's generation invalidates an in-flight lookup
-  // without needing a synthetic process entry to represent it.
-  for (const key of streamGenerations.keys()) {
-    if (key.startsWith(prefix)) streamGenerations.delete(key);
-  }
 }
 
 // Broadcast to all connected clients
