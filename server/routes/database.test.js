@@ -1,5 +1,5 @@
 /**
- * Tests for POST /api/database/destroy (and the adjacent validation paths).
+ * Tests for the database route boundary and destructive admin operations.
  *
  * Strategy: mock child_process.execFile — which is what runCmd() wraps — so
  * we can control every shell invocation without touching the real filesystem
@@ -46,10 +46,11 @@ vi.mock('../lib/childProcess.js', async (importOriginal) => {
 import { execFile, spawn } from '../lib/childProcess.js';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
-import { writeFileSync, mkdtempSync } from 'fs';
+import { writeFileSync, mkdtempSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join as pathJoin } from 'path';
-import databaseRoutes, { isPg17OnlyDirective, importDumpFile } from './database.js';
+import databaseRoutes from './database.js';
+import { isPg17OnlyDirective, importDumpFile } from '../services/dbAdmin.js';
 
 // Helper: make execFile call the callback with controlled output
 function mockExecFile(responses) {
@@ -78,6 +79,16 @@ function makeApp() {
   });
   return app;
 }
+
+describe('database route boundary', () => {
+  it('delegates subprocess, filesystem, and database work to dbAdmin', () => {
+    const source = readFileSync(new URL('./database.js', import.meta.url), 'utf8');
+
+    expect(source).toContain("from '../services/dbAdmin.js'");
+    expect(source).not.toMatch(/childProcess|from 'fs'|from 'fs\/promises'|from '\.\.\/lib\/db\.js'/);
+    expect(source).not.toMatch(/\b(?:execFile|spawn|query|mkdirSync|createReadStream)\s*\(/);
+  });
+});
 
 describe('isPg17OnlyDirective (sed-replacement line filter)', () => {
   it('matches the pg17-only directives the legacy sed stripped', () => {
