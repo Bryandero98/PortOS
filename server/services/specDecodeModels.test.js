@@ -5,6 +5,7 @@ import { isAbsolute, join } from 'path';
 import { Readable } from 'stream';
 import {
   downloadSpecDecodeModel,
+  cancelSpecDecodeModelDownload,
   getSpecDecodePresetStatus,
   pickGgufSibling,
   resolveSpecModelPath,
@@ -193,6 +194,60 @@ describe('downloadSpecDecodeModel', () => {
       .rejects.toThrow(/connection reset/);
     const { readdir } = await import('fs/promises');
     expect(await readdir(dir)).toEqual([]);
+  });
+
+  it('cancels an active transfer, emits a terminal frame, and removes its partial file', async () => {
+    stubPreset();
+    vi.spyOn(huggingfaceLora, 'fetchHuggingfaceModel').mockResolvedValue(siblings('Example-Q4_K_M.gguf'));
+    let signal;
+    const stream = new Readable({ read() {} });
+    stream.push(Buffer.from('gg'));
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, options) => {
+      signal = options.signal;
+      signal.addEventListener('abort', () => stream.destroy(new Error('aborted')));
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => '99' },
+        body: Readable.toWeb(stream),
+      };
+    });
+    const frames = [];
+    const download = downloadSpecDecodeModel({
+      presetId: 'test-preset', role: 'model', onProgress: (frame) => frames.push(frame),
+    });
+
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    expect(cancelSpecDecodeModelDownload({ presetId: 'test-preset', role: 'model' })).toBe(true);
+    await expect(download).rejects.toMatchObject({ code: 'SPEC_DOWNLOAD_CANCELLED' });
+
+    const { readdir } = await import('fs/promises');
+    expect(await readdir(dir)).toEqual([]);
+    expect(frames.at(-1)).toMatchObject({ event: 'cancelled', message: 'Download cancelled' });
+  });
+
+  it('aborts a byte-silent transfer when its idle watchdog expires', async () => {
+    vi.useFakeTimers();
+    stubPreset();
+    vi.spyOn(huggingfaceLora, 'fetchHuggingfaceModel').mockResolvedValue(siblings('Example-Q4_K_M.gguf'));
+    let signal;
+    const stream = new Readable({ read() {} });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, options) => {
+      signal = options.signal;
+      signal.addEventListener('abort', () => stream.destroy(new Error('aborted')));
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => '99' },
+        body: Readable.toWeb(stream),
+      };
+    });
+
+    const download = downloadSpecDecodeModel({ presetId: 'test-preset', role: 'model' });
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    await vi.advanceTimersByTimeAsync(20 * 60 * 1000);
+    await expect(download).rejects.toMatchObject({ code: 'SPEC_DOWNLOAD_STALLED' });
+    vi.useRealTimers();
   });
 
   // The slot is claimed before the Hugging Face round trip: a second click

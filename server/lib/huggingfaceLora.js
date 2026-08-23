@@ -118,7 +118,7 @@ export const buildHfResolveUrl = (repo, revision, file) =>
 // Fetch model metadata from the public HF API. Returns the parsed JSON with
 // `siblings` (file list), `tags`, and `cardData` (carries `base_model`).
 // fetchImpl is injectable for tests.
-export const fetchHuggingfaceModel = async (repo, { token, revision, fetchImpl = fetch } = {}) => {
+export const fetchHuggingfaceModel = async (repo, { token, revision, fetchImpl = fetch, signal } = {}) => {
   if (!/^[^/\s]+\/[^/\s]+$/.test(String(repo))) {
     throw new ServerError(`Invalid HuggingFace repo id: ${repo}`, { status: 400, code: 'HF_BAD_URL' });
   }
@@ -127,7 +127,7 @@ export const fetchHuggingfaceModel = async (repo, { token, revision, fetchImpl =
   const url = revision
     ? `${HF_API}/${repo}/revision/${encodeURIComponent(revision)}`
     : `${HF_API}/${repo}`;
-  const res = await fetchImpl(url, { headers: { Accept: 'application/json', ...buildHfAuthHeaders(token) } });
+  const res = await fetchImpl(url, { headers: { Accept: 'application/json', ...buildHfAuthHeaders(token) }, signal });
   if (!res.ok) {
     if (res.status === 404) {
       throw new ServerError(`HuggingFace repo ${repo} not found`, { status: 404, code: 'HF_NOT_FOUND' });

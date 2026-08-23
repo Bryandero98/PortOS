@@ -30,6 +30,7 @@ vi.mock('../../services/api', () => ({
   stopLlamaServer: vi.fn(),
   installLlamaServer: vi.fn().mockResolvedValue({ success: true }),
   downloadSpecDecodeModel: vi.fn(),
+  cancelSpecDecodeModelDownload: vi.fn(),
 }));
 vi.mock('../../services/socket', () => ({
   default: { on: vi.fn(), off: vi.fn() },
@@ -777,6 +778,21 @@ describe('LocalLlmTab llama-server management', () => {
     expect(toast.error).not.toHaveBeenCalled();
     // Mount + the catch's check + the finally's refresh.
     await waitFor(() => expect(getLlamaServerStatus).toHaveBeenCalledTimes(3));
+  });
+
+  it('offers Cancel for a running preset download and calls the cancel endpoint', async () => {
+    const { getLlamaServerStatus, cancelSpecDecodeModelDownload } = await import('../../services/api');
+    const downloading = specPresets({ baseExists: false });
+    downloading[0].model.downloading = true;
+    getLlamaServerStatus.mockResolvedValue(llamaReady({ presets: downloading }));
+    cancelSpecDecodeModelDownload.mockResolvedValue({ success: true, cancelled: true });
+
+    await renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: /^Cancel$/ }));
+
+    await waitFor(() => {
+      expect(cancelSpecDecodeModelDownload).toHaveBeenCalledWith('qwen3.8-27b-dspark', 'model', { silent: true });
+    });
   });
 
   it('blocks Start while a preset GGUF is missing and names the fix', async () => {
