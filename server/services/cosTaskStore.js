@@ -318,6 +318,10 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
   } else {
     // Generate a unique ID if not provided
     const id = taskData.id || `${taskType === 'user' ? 'task' : 'sys'}-${Date.now().toString(36)}`;
+    // Planning is an explicit workflow mode, not just a collection of UI
+    // toggles. Keep the server-side contract authoritative for direct API
+    // callers and for older clients that only send the plan-task command.
+    const planOnly = taskData.planOnly === true || taskData.slashdoCommand === 'plan-task';
 
     // Build metadata object
     const metadata = {};
@@ -501,6 +505,31 @@ export async function addTask(taskData, taskType = 'user', { raw = false, ignore
     // it gates on still reads healthy). See quotaBurnDenials.js.
     if (Number.isFinite(taskData.quotaBurnLimitingResetAt)) {
       metadata.quotaBurnLimitingResetAt = taskData.quotaBurnLimitingResetAt;
+    }
+    if (planOnly) {
+      // Plan-and-file is a single bounded CoS action. The bundled plan-task
+      // command defaults to PLAN.md, so force issue mode as well as `--yes` to
+      // make this toggle's GitHub/GitLab deliverable unambiguous and unattended.
+      metadata.planOnly = true;
+      metadata.slashdoCommand = 'plan-task';
+      metadata.slashdoArgs = '--issues --yes';
+      metadata.readOnly = true;
+      metadata.noCodeOutput = true;
+      metadata.useWorktree = false;
+      metadata.openPR = false;
+      metadata.simplify = false;
+      metadata.reviewLoop = false;
+      metadata.worktreeChangesExpected = false;
+      delete metadata.createJiraTicket;
+      delete metadata.prCompletion;
+      delete metadata.reviewers;
+      delete metadata.usernames;
+      delete metadata.optionalReviewers;
+      delete metadata.reviewerMaxRounds;
+      delete metadata.reviewerModels;
+      delete metadata.reviewerEfforts;
+      delete metadata.reviewStopMode;
+      delete metadata.reviewerApplies;
     }
     // Content-edit timestamp for cross-peer newest-edit-wins LWW (#1714). Stamped
     // at creation so a freshly-added task always carries a stamp; the merge treats

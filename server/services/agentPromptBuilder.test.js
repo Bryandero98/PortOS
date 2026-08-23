@@ -2615,6 +2615,28 @@ describe('buildAgentPrompt — slashdo-backed tasks', () => {
     expect(prompt).toContain('/do:plan-task --issues 42');
   });
 
+  it('keeps plan-only issue filing non-interactive and outside the delivery loop', async () => {
+    const prompt = await buildAgentPrompt(
+      slashdoTask({
+        planOnly: true,
+        slashdoArgs: '--issues --yes',
+        readOnly: true,
+        noCodeOutput: true,
+        useWorktree: false,
+        openPR: false,
+        simplify: false,
+        reviewLoop: false,
+      }), {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+
+    expect(prompt).toContain('--issues --yes');
+    expect(prompt).toContain('## Completion (No Code Output)');
+    expect(prompt).not.toContain('## Completion Workflow');
+    expect(prompt).not.toContain('## Simplify Step');
+    expect(prompt).not.toContain('Commit and push using');
+    expect(prompt).not.toContain('gh pr merge');
+  });
+
   it('reaches the api-path briefing template through task.description', async () => {
     vi.mocked(buildPrompt).mockClear();
     await buildAgentPrompt(slashdoTask(), {}, '/r', null, isTruthyMeta, { providerType: 'api', providerId: 'claude-code' });

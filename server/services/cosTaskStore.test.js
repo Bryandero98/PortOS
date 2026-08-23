@@ -495,6 +495,41 @@ describe('cosTaskStore.addTask', () => {
     expect(tasks.find(t => t.id === created.id).metadata.slashdoCommand).toBe('plan-task');
   });
 
+  it('normalizes plan-only tasks to the issue-filing, no-delivery posture', async () => {
+    const created = await addTask({
+      description: 'Plan the widget API',
+      planOnly: true,
+      slashdoCommand: 'review',
+      slashdoArgs: '--label plan',
+      createJiraTicket: true,
+      useWorktree: true,
+      openPR: true,
+      simplify: true,
+      reviewLoop: true,
+      reviewers: ['codex'],
+      worktreeChangesExpected: true,
+    }, 'user');
+
+    expect(created.metadata).toMatchObject({
+      planOnly: true,
+      slashdoCommand: 'plan-task',
+      slashdoArgs: '--issues --yes',
+      readOnly: true,
+      noCodeOutput: true,
+      useWorktree: false,
+      openPR: false,
+      simplify: false,
+      reviewLoop: false,
+      worktreeChangesExpected: false,
+    });
+    expect(created.metadata.createJiraTicket).toBeUndefined();
+    expect(created.metadata.prCompletion).toBeUndefined();
+    expect(created.metadata.reviewers).toBeUndefined();
+
+    const { tasks } = await getUserTasks();
+    expect(tasks.find(t => t.id === created.id).metadata.slashdoCommand).toBe('plan-task');
+  });
+
   it('persists a pinned claim target through the task markdown round-trip', async () => {
     const created = await addTask({
       description: 'Claim GitHub issue 42 for Example App',
