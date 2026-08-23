@@ -263,16 +263,51 @@ export async function getAgentStats(agentId, days = 7) {
  */
 export async function getActivityTimeline(options = {}) {
   const { agentIds = null, limit = 100, beforeTimestamp = null } = options;
+  const before = beforeTimestamp ? new Date(beforeTimestamp).getTime() : null;
 
-  const activities = await getRecentActivities({ limit: limit * 2, agentIds });
+  await ensureActivityDir();
+  if (!existsSync(ACTIVITY_DIR)) return [];
 
-  // Filter by timestamp if provided
-  let filtered = activities;
-  if (beforeTimestamp) {
-    filtered = activities.filter(a => new Date(a.timestamp) < new Date(beforeTimestamp));
+  const entries = await readdir(ACTIVITY_DIR, { withFileTypes: true });
+  const agentDirs = entries
+    .filter(entry => entry.isDirectory() && (!agentIds || agentIds.includes(entry.name)))
+    .map(entry => entry.name);
+  const dates = new Set();
+
+  for (const agentId of agentDirs) {
+    const files = await readdir(join(ACTIVITY_DIR, agentId));
+    for (const file of files) {
+      if (/^\d{4}-\d{2}-\d{2}\.json$/.test(file)) dates.add(file.slice(0, -5));
+    }
   }
 
-  return filtered.slice(0, limit);
+  const activities = [];
+  for (const date of [...dates].sort().reverse()) {
+    const dayActivities = [];
+    for (const agentId of agentDirs) {
+      const data = await loadActivity(agentId, date);
+      for (const activity of data.activities || []) {
+        const timestamp = new Date(activity.timestamp).getTime();
+        if (before === null || timestamp < before) {
+          dayActivities.push({ agentId, ...activity });
+        }
+      }
+    }
+
+    dayActivities.sort((a, b) => {
+      const timestampOrder = new Date(b.timestamp) - new Date(a.timestamp);
+      if (timestampOrder !== 0) return timestampOrder;
+      const agentOrder = a.agentId.localeCompare(b.agentId);
+      return agentOrder || String(a.id).localeCompare(String(b.id));
+    });
+    activities.push(...dayActivities);
+
+    // Files are visited newest-day first. Once a complete day fills the page,
+    // older files cannot contribute an entry ahead of the current window.
+    if (activities.length >= limit) break;
+  }
+
+  return activities.slice(0, limit);
 }
 
 /**
