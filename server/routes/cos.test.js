@@ -812,7 +812,7 @@ describe('CoS Routes', () => {
       expect(response.status).toBe(404);
     });
 
-    it('should reject traversal-shaped dates before reading the report', async () => {
+    it('should reject malformed dates before reading the report', async () => {
       const response = await request(app).get('/api/cos/reports/not-a-date');
 
       expect(response.status).toBe(400);
@@ -1632,7 +1632,7 @@ describe('CoS Routes', () => {
       expect(response.status).toBe(404);
     });
 
-    it('should reject traversal-shaped dates before reading the briefing', async () => {
+    it('should reject malformed dates before reading the briefing', async () => {
       const response = await request(app).get('/api/cos/briefings/not-a-date');
 
       expect(response.status).toBe(400);
