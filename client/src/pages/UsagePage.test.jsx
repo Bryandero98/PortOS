@@ -241,6 +241,7 @@ describe('UsagePage provider reset times', () => {
     // wording — it shows a localized instant plus "in 3h".
     const reset = await screen.findByText(/resets .*\(in 3h\)/);
     expect(reset).toBeInTheDocument();
+    expect(reset.className.split(/\s+/)).not.toContain('hidden');
     expect(reset.textContent).not.toContain(resetsAt);
   });
 });
