@@ -37,7 +37,9 @@ import { ServerError } from '../lib/errorHandler.js';
 import { createSingleFlight } from '../lib/singleFlight.js';
 import { runSidecarProcess, parseSidecarResult } from '../lib/sidecarProcess.js';
 import { withAbortTimeout } from '../lib/abortTimeout.js';
+import { killWithEscalation } from '../lib/killWithEscalation.js';
 import {
+  LORA_EFFECT_PROBE_VERSION,
   LORA_EFFECT_STATUSES,
   normalizeLoraEffectReport,
   readCachedLoraEffectReport,
@@ -89,7 +91,19 @@ const probeInterpreterCandidates = async () => {
   return installedCandidates([await detectPython()]);
 };
 
+const timeoutReport = () => unmeasurable(
+  `the effect probe ran out of its ${PROBE_TIMEOUT_MS / 1000}s budget reading this adapter`,
+);
+
+// Stamped with the CURRENT probe version because we are BUILDING this report,
+// not reading one: a locally-constructed verdict is current by definition.
+// Without the stamp it normalizes to version 0, and caching a timeout becomes a
+// silent no-op — the freshness check rejects its own freshly-written value, so
+// the stall the cache exists to prevent repeats before every render. The shared
+// normalizer deliberately does NOT infer this: an absent version in a SIDECAR
+// means "written by something that didn't stamp it", which stays untrusted.
 const unmeasurable = (reason) => normalizeLoraEffectReport({
+  probeVersion: LORA_EFFECT_PROBE_VERSION,
   status: LORA_EFFECT_STATUSES.UNMEASURABLE,
   reason,
 });
@@ -112,12 +126,25 @@ const runProbeOnce = async (bin, filePath, budgetMs) => {
   // a diagnostic. withAbortTimeout owns the timer lifecycle and clears it on
   // both settle paths.
   let result;
+  // runSidecarProcess's abort handler only SIGTERMs. A python child blocked in
+  // an uninterruptible read (a network or iCloud-backed volume — exactly the
+  // storage that makes this time out) never reaches its signal handler, so the
+  // promise would never settle and the render would wait past its own timeout,
+  // forever. Hold the handle and escalate to SIGKILL, as every other
+  // runSidecarProcess caller does.
+  let child = null;
   try {
-    result = await withAbortTimeout(budgetMs, (signal) => runSidecarProcess({
-      bin,
-      args: [LORA_EFFECT_PROBE_SCRIPT, filePath],
-      signal,
-    }));
+    result = await withAbortTimeout(budgetMs, (signal) => {
+      signal.addEventListener('abort', () => {
+        if (child) killWithEscalation(child, { label: 'LoRA effect probe', stillRunning: () => true });
+      }, { once: true });
+      return runSidecarProcess({
+        bin,
+        args: [LORA_EFFECT_PROBE_SCRIPT, filePath],
+        signal,
+        onProcess: (proc) => { child = proc; },
+      });
+    });
   } catch (err) {
     return { report: unmeasurable(`the effect probe could not be started (${err?.message || err})`) };
   }
@@ -131,10 +158,7 @@ const runProbeOnce = async (bin, filePath, budgetMs) => {
   const report = parsed ? normalizeLoraEffectReport(parsed) : null;
   if (report) return { report };
   if (result.canceled) {
-    return {
-      report: unmeasurable(`the effect probe ran out of its ${PROBE_TIMEOUT_MS / 1000}s budget reading this adapter`),
-      timedOut: true,
-    };
+    return { report: timeoutReport(), timedOut: true };
   }
   return { report: unmeasurable(`the effect probe produced no result (${result.reason || 'no output'})`) };
 };
@@ -157,13 +181,20 @@ const measureLoraEffect = async (filename, filePath, { sizeBytes, mtimeMs }) => 
   for (const bin of candidates) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) { timedOut = true; break; }
-    ({ report: last, timedOut = false } = await runProbeOnce(bin, filePath, remaining));
+    const attempt = await runProbeOnce(bin, filePath, remaining);
+    last = attempt.report;
+    timedOut = attempt.timedOut === true;
     // Only an unmeasurable verdict is worth another interpreter; every other
     // status is a real answer about the file and identical on any Python. A
     // timeout stops the walk outright — see runProbeOnce.
     if (timedOut || last.status !== LORA_EFFECT_STATUSES.UNMEASURABLE) break;
   }
-  if (last === null) last = unmeasurable(`the effect probe ran out of its ${PROBE_TIMEOUT_MS / 1000}s budget reading this adapter`);
+  // The budget can also run out BETWEEN candidates, leaving `last` holding the
+  // previous interpreter's verdict — very possibly "numpy is not installed",
+  // which is about this machine and must never be cached. Rebuild the report
+  // from the timeout so what gets stored describes what actually happened.
+  if (timedOut) last = timeoutReport();
+  if (last === null) last = timeoutReport();
   if (last.status === LORA_EFFECT_STATUSES.UNMEASURABLE) {
     console.log(`⚠️ LoRA effect probe unavailable for ${filename}: ${last.reason || 'unknown'}`);
     // A timeout is cached, unlike every other unmeasurable verdict. The others

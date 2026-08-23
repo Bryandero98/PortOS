@@ -212,15 +212,42 @@ describe('probeLoraEffect — never fatal, never a false verdict', () => {
     expect(report.status).toBe('unmeasurable');
   });
 
-  it('CACHES a timeout, so a pathologically slow adapter stalls one render and not every one', async () => {
+  it('CACHES a timeout so the next render READS IT BACK instead of stalling again', async () => {
     // Unlike the other unmeasurable verdicts (which describe this machine's
     // Python and may fix themselves the moment a venv installs), a timeout
     // describes what reading THIS file costs on THIS storage — exactly what the
     // size+mtime key already scopes.
+    //
+    // Asserting the WRITE alone is vacuous: a report stamped with the wrong
+    // probe version is written and then never read back, which is exactly how
+    // this regressed once. Feed the stored value back through the cache.
     state.responses = [{ ok: false, canceled: true, reason: 'cancelled (SIGTERM)', stdout: '' }];
     await probeLoraEffect('style.safetensors');
     expect(state.patched).toHaveLength(1);
-    expect(state.patched[0].patch.effectReport).toMatchObject({ status: 'unmeasurable', sizeBytes: 4096 });
+    const stored = state.patched[0].patch.effectReport;
+    expect(stored).toMatchObject({ status: 'unmeasurable', sizeBytes: 4096 });
+
+    state.sidecar = { effectReport: stored };
+    state.runs = [];
+    state.responses = [{ ok: true, stdout: resultLine(OK_PAYLOAD) }];
+    const second = await probeLoraEffect('style.safetensors');
+    expect(state.runs).toHaveLength(0);
+    expect(second.status).toBe('unmeasurable');
+  });
+
+  it('never caches the previous candidate\'s verdict when the budget runs out between them', async () => {
+    // The walk can end on budget exhaustion with `last` still holding a
+    // machine-specific "numpy is not installed" — freezing that into the
+    // sidecar would keep reporting unmeasurable long after the user installs a
+    // runtime, because its probe version IS current.
+    state.responses = [
+      { ok: false, reason: 'exit 3', stdout: resultLine({ probeVersion: 1, status: 'unmeasurable', reason: 'numpy is not installed in this interpreter' }) },
+      { ok: false, reason: 'exit 3', stdout: resultLine({ probeVersion: 1, status: 'unmeasurable', reason: 'numpy is not installed in this interpreter' }) },
+      { ok: false, reason: 'exit 3', stdout: resultLine({ probeVersion: 1, status: 'unmeasurable', reason: 'numpy is not installed in this interpreter' }) },
+    ];
+    const report = await probeLoraEffect('style.safetensors');
+    expect(report.reason).toMatch(/numpy/i);
+    expect(state.patched).toHaveLength(0);
   });
 
   it('does NOT cache an unmeasurable that is only about this machine', async () => {

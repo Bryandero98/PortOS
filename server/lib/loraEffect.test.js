@@ -131,6 +131,28 @@ describe('readCachedLoraEffectReport', () => {
     expect(readCachedLoraEffectReport(cached, {})).toBeNull();
   });
 
+  it('round-trips a report that carries the current probe version', () => {
+    // The read side of the cache, exercised end-to-end: whatever a writer
+    // stamps must come back out. A report stamped with the WRONG version is
+    // written and then never readable, which is a silently-dead cache rather
+    // than an error — see the constructor in services/loraEffectProbe.js.
+    const built = normalizeLoraEffectReport({
+      probeVersion: LORA_EFFECT_PROBE_VERSION, status: 'unmeasurable', reason: 'ran out of budget',
+    });
+    const stored = normalizeLoraEffectReport(built, { sizeBytes: 4096, mtimeMs: 111, measuredAt: 'x' });
+    expect(readCachedLoraEffectReport(stored, { sizeBytes: 4096, mtimeMs: 111 }))
+      .toMatchObject({ status: 'unmeasurable', reason: 'ran out of budget' });
+  });
+
+  it('keeps an unstamped sidecar payload untrusted', () => {
+    // An absent version means "written by something that didn't stamp it" — a
+    // legacy or hand-edited sidecar. It must NOT be inferred as current.
+    const unstamped = normalizeLoraEffectReport(
+      { ...okPayload, probeVersion: undefined }, { sizeBytes: 4096, mtimeMs: 111 },
+    );
+    expect(readCachedLoraEffectReport(unstamped, { sizeBytes: 4096, mtimeMs: 111 })).toBeNull();
+  });
+
   it('returns null for a missing sidecar field rather than a hollow report', () => {
     expect(readCachedLoraEffectReport(undefined, onDisk)).toBeNull();
   });

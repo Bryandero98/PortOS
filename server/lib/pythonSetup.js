@@ -538,9 +538,13 @@ export const HF_HUB_PYTHON_RESOLVERS = Object.freeze([
 // The LTX-2.x video venvs are deliberately NOT here — their paths are owned by
 // services/videoGen/runtimes.js, and lib/ must not import from services/. The
 // probe prepends them itself; this list is everything pythonSetup can see.
+// NOTE the mflux entry resolves the venv PATH directly rather than going through
+// `resolveMfluxPython`: that resolver answers "which interpreter can run
+// mflux-train", so it returns null on an mflux install without the trainer
+// package — an interpreter that has numpy and would have measured fine.
 export const NUMPY_PYTHON_RESOLVERS = Object.freeze([
   resolveFlux2Python,
-  resolveMfluxPython,
+  () => MFLUX_VENV_DEFAULT,
   ...HF_HUB_PYTHON_RESOLVERS,
 ]);
 
