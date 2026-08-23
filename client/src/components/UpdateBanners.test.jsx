@@ -82,7 +82,7 @@ describe('UpdateBanners', () => {
 
     screen.getAllByRole('button').forEach((button) => {
       expect(button.className).toContain('min-h-[44px]');
-      expect(button.className).toContain('sm:min-h-0');
+      expect(button.className).toContain('lg:min-h-0');
     });
   });
 
