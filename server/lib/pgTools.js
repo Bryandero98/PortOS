@@ -10,7 +10,7 @@
  *
  * Shared by both pg_dump consumers — the backup snapshot path
  * (`server/services/backup.js`) and the native↔Docker backend-copy / export
- * path (`server/routes/database.js`) — so the version-aware selection and the
+ * path (`server/services/dbAdmin.js`) — so the version-aware selection and the
  * `PORTOS_PGDUMP` override behave identically in both. Self-contained: no
  * imports out to other PortOS services.
  */
