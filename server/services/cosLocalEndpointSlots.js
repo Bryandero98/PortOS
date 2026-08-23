@@ -22,68 +22,56 @@
  * A shared counter across process boundaries isn't worth the coupling.
  */
 
-import { isLocalEndpoint, LOCAL_LLM_MAX_CONCURRENCY } from '../lib/promptRunner.js';
-import { listProviders, getActiveProvider, isOllamaBackedProvider } from './providers.js';
+import { LOCAL_LLM_MAX_CONCURRENCY } from '../lib/promptRunner.js';
+import { localRuntimeForProvider, localEndpointPort, normalizeOpenAiBaseUrl } from '../lib/localProviderRuntime.js';
+import { listProviders, getActiveProvider } from './providers.js';
 import { isProviderAvailable, getFallbackProvider } from './providerStatus.js';
 
-// One knob governs both paths — no new config key. A local box beefy enough to
-// hold N model contexts lifts LOCAL_LLM_MAX_CONCURRENCY and gets N agent slots
-// along with N in-flight API calls.
-export const LOCAL_ENDPOINT_AGENT_LIMIT = LOCAL_LLM_MAX_CONCURRENCY;
-
-// An Ollama-backed CLI/TUI provider carries the daemon in `envVars`, not in
-// `endpoint` — the shipped `claude-ollama` / `claude-ollama-tui` set
-// `ANTHROPIC_BASE_URL`, and `opencode-ollama` / `opencode-ollama-tui` carry only
-// the `ollamaBacked` marker (their base lives inside an OPENCODE_CONFIG_CONTENT
-// blob, which `ollamaBaseFromProvider` in the toolkit does not parse either —
-// the marker alone means the default daemon).
-const DEFAULT_OLLAMA_BASE = 'http://localhost:11434';
+/**
+ * The raw base URL a provider's inference actually goes to, local or not.
+ *
+ * `localRuntimeForProvider` already owns this question — it reads the base the
+ * provider ITSELF configures (an OpenCode `baseURL`, `ANTHROPIC_BASE_URL`, or
+ * `endpoint`), then the `OLLAMA_URL`/`OLLAMA_HOST`/`LM_STUDIO_URL` overrides the
+ * backend managers read, then the runtime's canonical default. That matters
+ * here: a user who relocates their daemon with `OLLAMA_HOST` would otherwise get
+ * two independent slot keys for one daemon — the exact double-booking this cap
+ * exists to prevent.
+ *
+ * It answers `null` for a provider that maps to no KNOWN local runtime, so fall
+ * back to the recorded endpoint: an arbitrary local server (the shipped
+ * `opencode-vllm-tui` on `127.0.0.1:18020`, or a user's own TUI provider) still
+ * occupies a GPU. Whether either is on THIS box is decided by
+ * `localEndpointPort` below, never by the provider's name or model id.
+ */
+export function providerBaseUrl(provider) {
+  return localRuntimeForProvider(provider)?.endpoint || provider?.endpoint || null;
+}
 
 /**
- * The local endpoint a provider runs against, or null when it has none.
+ * The slot key a provider's inference occupies, or null when it isn't on this
+ * machine. Host+port identifies the model server; the scheme, the path (`/v1`)
+ * and the host SPELLING do not — the shipped catalog seeds `lmstudio` at
+ * `localhost:1234` and everything else at `127.0.0.1`, so keying on the raw
+ * string would give one LM Studio process two independent caps.
  *
- * Reads ONLY what the provider RECORD says — the endpoint, else the Ollama base
- * its `envVars` name, else the default daemon when (and only when) the record
- * carries an explicit `ollamaBacked` marker. Never a model-id prefix. Everything
- * else stays ungated: PortOS cannot know where an unconfigured vendor CLI points.
- *
- * The Ollama arm matters because four SHIPPED CLI/TUI providers run against the
- * local daemon with no `endpoint` at all — precisely the "the vendor CLI opens
- * its own connection and PortOS never sees it" case #4834 exists for. Skipping
- * them would leave the cap inconsistent across providers of the same shape.
- *
- * Not gated on `provider.type === 'api'` (unlike promptRunner's request gate):
- * a TUI provider pointed at a local LM Studio IS the case this exists for.
- *
- * The return value is a NORMALIZED SLOT KEY (`localhost:<port>`), not the raw
- * string — see `LOCAL_SLOT_KEY_RE`. It is only ever used as a Map key and in the
- * queued-no-slot log line.
+ * `localEndpointPort` supplies that normalization (every loopback spelling
+ * collapses, the port defaults by scheme) AND rejects a LAN/Tailscale peer that
+ * merely shares a port. Not gated on `provider.type === 'api'` (unlike
+ * promptRunner's request gate): a TUI provider pointed at a local LM Studio is
+ * the case this exists for.
  */
 export function localEndpointOfProvider(provider) {
-  if (!provider) return null;
-  // A recorded base is authoritative, including when it is REMOTE: an Ollama
-  // daemon on another host must resolve to null, not to the local default.
-  const recorded = provider.endpoint || provider.envVars?.ANTHROPIC_BASE_URL;
-  if (recorded) return localSlotKey(recorded);
-  return isOllamaBackedProvider(provider) ? localSlotKey(DEFAULT_OLLAMA_BASE) : null;
+  return localSlotKey(providerBaseUrl(provider));
 }
 
-// Host+port identifies the model server; the scheme, path (`/v1`) and host
-// SPELLING do not. The shipped catalog already mixes spellings — `lmstudio` is
-// seeded at `http://localhost:1234/v1` while everything else uses `127.0.0.1` —
-// so keying on the raw string would give one LM Studio process two independent
-// caps and let two agents onto the same GPU, the exact OOM #4834 prevents.
-// Every loopback host collapses onto one key; the port keeps distinct local
-// servers apart.
-const LOCAL_SLOT_KEY_RE = /^(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)(?::(\d+))?(?:[/?#]|$)/i;
-
-/** The slot key for `endpoint`, or null when it is remote/absent/unparseable. */
-function localSlotKey(endpoint) {
-  if (!isLocalEndpoint(endpoint)) return null;
-  const match = endpoint.trim().match(LOCAL_SLOT_KEY_RE);
-  if (!match) return null;
-  return match[1] ? `localhost:${match[1]}` : 'localhost';
-}
+// Normalize first so a schemeless value still parses — `localEndpointPort` goes
+// through `new URL`, which reads `localhost:1234` as a SCHEME and yields null.
+// Providers configured through the UI can carry a bare `host:port`.
+const localSlotKey = (endpoint) => {
+  const port = localEndpointPort(normalizeOpenAiBaseUrl(endpoint));
+  return port ? `localhost:${port}` : null;
+};
 
 /**
  * Build the per-cycle local-endpoint lookups from an ALREADY-FETCHED provider
@@ -112,7 +100,10 @@ function localSlotKey(endpoint) {
 export function createLocalEndpointSlotContext({
   providers = [],
   activeProvider = null,
-  limit = LOCAL_ENDPOINT_AGENT_LIMIT,
+  // One knob governs both paths — no new config key. A box beefy enough to hold
+  // N model contexts lifts LOCAL_LLM_MAX_CONCURRENCY and gets N agent slots
+  // along with N in-flight API calls.
+  limit = LOCAL_LLM_MAX_CONCURRENCY,
   isAvailable = () => true,
   resolveFallback = () => null,
 } = {}) {
@@ -173,7 +164,33 @@ export function createLocalEndpointSlotContext({
  * an uninitialized toolkit yields a null active provider — which resolves every
  * task to null (ungated) rather than stalling the queue.
  */
+// One dispatch consults this 2-3 times — the dequeue cycle, then the chokepoint
+// per emitted task (and "Run now" checks before emitting too). Each build costs
+// two provider reads plus a Map and an object over the whole catalog, so cache
+// the SNAPSHOT for a beat. Deliberately the same TTL the toolkit's own provider
+// cache uses: this adds no staleness the callers didn't already have.
+//
+// Only the provider LIST is cached. `isAvailable` and `resolveFallback` are read
+// live inside the returned closures, so a provider going unavailable still
+// changes the answer immediately — which is what the gate turns on.
+const SNAPSHOT_TTL_MS = 1000;
+let snapshot = null;
+let snapshotAt = 0;
+
+/** Test hook — drop the cached provider snapshot. */
+export function __resetLocalEndpointSlotCache() {
+  snapshot = null;
+  snapshotAt = 0;
+}
+
 export async function buildLocalEndpointSlotContext() {
+  if (snapshot && Date.now() - snapshotAt < SNAPSHOT_TTL_MS) return snapshot;
+  snapshot = await buildSlotContextUncached();
+  snapshotAt = Date.now();
+  return snapshot;
+}
+
+async function buildSlotContextUncached() {
   const providers = await listProviders();
   const activeProvider = await getActiveProvider().catch(() => null);
   return createLocalEndpointSlotContext({
@@ -215,9 +232,9 @@ let reservationSeq = 0;
 const NOOP_RELEASE = () => {};
 
 /**
- * Reserve an in-flight spawn slot on `endpoint` for `taskId`. Returns the
- * release function, which is idempotent so a double-release (a throw plus the
- * `finally`) can't free a slot that is still occupied.
+ * Reserve an in-flight spawn slot on `endpoint` for `taskId`. Release is
+ * idempotent because the spawner calls it from a `finally` that a throw can
+ * reach twice — a second decrement would free a slot still occupied.
  */
 export function reserveLocalEndpointSpawn(endpoint, taskId = null) {
   if (!endpoint) return NOOP_RELEASE;
@@ -239,12 +256,7 @@ export function reserveLocalEndpointSpawn(endpoint, taskId = null) {
   };
 }
 
-/**
- * Spawns dispatched at `endpoint` that have not yet reached `running`.
- *
- * `excludeTaskIds` drops reservations whose agent HAS already registered — the
- * running tally counts those, and double-counting them under-admits.
- */
+/** Spawns dispatched at `endpoint` that have not yet reached `running`. */
 export function pendingLocalEndpointSpawns(endpoint, { excludeTaskIds = null } = {}) {
   const held = endpoint ? pendingSpawnsByEndpoint.get(endpoint) : null;
   if (!held) return 0;

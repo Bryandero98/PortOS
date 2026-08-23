@@ -75,6 +75,7 @@ import { v4 as uuidv4 } from '../lib/uuid.js';
 // Imported for use here only; the pass-through re-exports that used to sit
 // below them were retired with the `subAgentSpawner.js` barrel (#3450).
 import { resolveAgentProviderAndModel } from './agentProviderResolution.js';
+import { providerBaseUrl } from './cosLocalEndpointSlots.js';
 import { prepareAgentWorkspace } from './agentWorkspacePrep.js';
 // `releaseRetryHold` is imported STATICALLY here (the TUI/direct-CLI spawners
 // reach for it via `await import()` only because they sit BELOW this module and
@@ -506,10 +507,12 @@ async function runAgentSpawn(task) {
       // mid-run. Pre-#4834 agent records have no value here, so the counter
       // falls back to resolving the id against the live provider list.
       //
-      // `ANTHROPIC_BASE_URL` is the second source because an Ollama-backed CLI
-      // provider (shipped: claude-ollama, claude-ollama-tui) records its daemon
-      // there and leaves `endpoint` unset.
-      providerEndpoint: provider.endpoint || provider.envVars?.ANTHROPIC_BASE_URL || null,
+      // Resolved through the SAME helper the counter reads with, so writer and
+      // reader can't drift — a CLI provider records its daemon in envVars or an
+      // OpenCode config, not in `endpoint`. Stamped as the RAW url, never the
+      // slot key: a slot key is null for a cloud provider, and stamping null
+      // would re-open the mid-run-edit hole this exists to close.
+      providerEndpoint: providerBaseUrl(provider),
       leanMode,
       // Whether THIS run's prompt told the agent to push, open, review, and merge
       // its own PR. Persisted rather than re-derived at cleanup time: the two

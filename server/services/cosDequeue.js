@@ -46,7 +46,7 @@
  * fires on a denial so the scheduler can log queued-no-slot without this module
  * importing the event bus.
  *
- * `gateLocalEndpoint: false` opts a tier out of that third cap. Three tiers do,
+ * `canSpawnCommitted` opts a tier out of that third cap. Three tiers use it,
  * because a denial there is DESTRUCTIVE rather than a defer — each has already
  * committed side effects by the time `canSpawn` runs, and none of them persists
  * the task, so `false` discards the only copy:
@@ -75,15 +75,14 @@ export function createDequeueCapacity(state, {
   const perProjectLimit = state.config.maxConcurrentAgentsPerProject || state.config.maxConcurrentAgents;
   // A caller passing 0/NaN would wedge every local-endpoint task forever; floor
   // at 1 so the cap degrades to "serialize", never to "never dispatch".
-  const localSlotLimit = localEndpointLimit === Infinity
-    ? Infinity
-    : Math.max(1, Number(localEndpointLimit) || 1);
+  // `Infinity` (the no-cap default) passes through unchanged.
+  const localSlotLimit = Math.max(1, Number(localEndpointLimit) || 1);
 
   const spawnProjectCounts = { ...agentsByProject };
   const spawnLocalEndpointCounts = { ...localEndpointCounts };
   let spawned = 0;
 
-  const canSpawn = (task, ceiling = availableSlots, { gateLocalEndpoint = true } = {}) => {
+  const admit = (task, ceiling, gateLocalEndpoint) => {
     if (spawned >= ceiling) return false;
     const project = task.metadata?.app || '_self';
     if ((spawnProjectCounts[project] || 0) >= perProjectLimit) return false;
@@ -97,6 +96,12 @@ export function createDequeueCapacity(state, {
     }
     return true;
   };
+
+  const canSpawn = (task, ceiling = availableSlots) => admit(task, ceiling, true);
+  // For a COMMITTED tier — one that has already taken side effects and does not
+  // persist the task, so a denial would discard it rather than defer it. Skips
+  // only the local-endpoint cap; see the header for which tiers qualify and why.
+  const canSpawnCommitted = (task, ceiling = availableSlots) => admit(task, ceiling, false);
 
   const trackSpawn = (task) => {
     const project = task.metadata?.app || '_self';
@@ -113,6 +118,7 @@ export function createDequeueCapacity(state, {
     spawnProjectCounts,
     spawnLocalEndpointCounts,
     canSpawn,
+    canSpawnCommitted,
     trackSpawn,
     // Live read of the running spawn count — a getter so callers always see the
     // current total after trackSpawn mutations rather than a stale snapshot.

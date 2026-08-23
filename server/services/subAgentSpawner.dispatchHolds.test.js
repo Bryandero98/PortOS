@@ -18,6 +18,7 @@
  *    vendor CLI that talks to the local model server directly, so promptRunner's
  *    in-flight gate never sees it; two agents at one GPU takes an accelerator
  *    OOM. The slot is reserved across the spawn window and released after.
+ *
  * The holds live in that listener, not inside `runAgentSpawn`, because a hold
  * below the spawn body's entry returns past `releaseAppReviewMarker` and strands
  * the synthetic "in review" marker for the whole outage (issue #989). The side
