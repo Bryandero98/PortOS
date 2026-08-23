@@ -159,7 +159,7 @@ export default function MediaCollectionDetail() {
   // from the local image/video maps makes `hydrate()` filter it out of every
   // collection view at once — server-side `collection.items[]` may briefly
   // hold a dangling ref until the next mutation rewrites the file.
-  const handleDelete = async (item) => {
+  const handleDelete = useCallback(async (item) => {
     const ok = await (item.kind === 'image'
       ? deleteImage(item.filename, { silent: true })
       : deleteVideoHistoryItem(item.id, { silent: true })
@@ -182,14 +182,18 @@ export default function MediaCollectionDetail() {
       });
     }
     toast.success(`Deleted ${item.kind === 'image' ? item.filename : 'video'}`);
-  };
+  }, []);
 
   // Unordered membership — Set, not array.
-  const toggleSelect = (key) => setSelected((prev) => {
+  const toggleSelect = useCallback((key) => setSelected((prev) => {
     const next = new Set(prev);
     if (next.has(key)) next.delete(key); else next.add(key);
     return next;
-  });
+  }), []);
+  const handleSelectCard = useCallback((item) => toggleSelect(item.key), [toggleSelect]);
+  const handleAnnotate = useCallback((item) => {
+    navigate(`/media/annotate/${encodeURIComponent(item.key)}`);
+  }, [navigate]);
   const exitSelectMode = () => { setSelectMode(false); setSelected(new Set()); setPickerMode(null); };
   const selectedItems = useMemo(
     () => items.filter((it) => selected.has(it.key)),
@@ -524,7 +528,7 @@ export default function MediaCollectionDetail() {
                 <MediaCard
                   item={item}
                   onPreview={selectMode ? undefined : setPreview}
-                  onClick={selectMode ? () => toggleSelect(key) : undefined}
+                  onClick={selectMode ? handleSelectCard : undefined}
                   onRemix={!selectMode ? handleRemix : undefined}
                   onSendToImage={!selectMode && item.kind === 'image' ? handleSendToImage : undefined}
                   onSendToVideo={!selectMode && item.kind === 'image' ? handleSendToVideo : undefined}
@@ -534,7 +538,7 @@ export default function MediaCollectionDetail() {
                   selected={isSelected}
                   {...getCardProps(key)}
                   onToggleStar={!selectMode ? toggleStar : undefined}
-                  onAnnotate={!selectMode && item.kind === 'image' ? (m) => navigate(`/media/annotate/${encodeURIComponent(m.key)}`) : undefined}
+                  onAnnotate={!selectMode && item.kind === 'image' ? handleAnnotate : undefined}
                 />
                 {!selectMode && !isUnsorted && (
                   <button

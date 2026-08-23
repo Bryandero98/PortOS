@@ -109,10 +109,9 @@ export const STATUS_COLORS = {
   unknown: 'text-gray-500'
 };
 
-// Local date string (YYYY-MM-DD) — avoids UTC timezone shift from toISOString()
-export function localDateStr(d = new Date()) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
+// Compatibility name for date-oriented MeatSpace consumers. The implementation
+// is canonical in utils/formatters so other client areas no longer duplicate it.
+export { localDateKey as localDateStr } from '../../utils/formatters';
 
 // Shared day-of-week helpers (used by AlcoholTab, NicotineTab, etc.)
 export const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];

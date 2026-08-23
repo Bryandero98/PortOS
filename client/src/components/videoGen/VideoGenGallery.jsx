@@ -1,3 +1,4 @@
+import { useCallback, useMemo } from 'react';
 import { Link } from 'react-router';
 import MediaCard from '../media/MediaCard';
 import FavoritesFilterChip from '../media/FavoritesFilterChip';
@@ -13,16 +14,29 @@ export default function VideoGenGallery({
   onPreview, onRemix, onContinue, onUpscale, onDelete, onToggleHidden, getCardProps,
   finishTargetFor, onFinish,
 }) {
+  const visibleItems = useMemo(
+    () => galleryVisible.map((item) => item?.key ? item : normalizeVideo(item)),
+    [galleryVisible],
+  );
+  const hiddenItems = useMemo(
+    () => galleryHidden.map((item) => item?.key ? item : normalizeVideo(item)),
+    [galleryHidden],
+  );
   // Finish (#3696) is offered per-card, and only when the stored record is a
   // fully reproducible text-to-video draft whose declared delivery model is
   // available here — `finishTargetFor` returns null otherwise and the button
   // is simply absent. Clicking only prefills the form; the user still presses
   // Generate, so no render is kicked off from the gallery.
-  const finishProps = (v) => {
-    const target = finishTargetFor?.(v) || null;
+  const handleFinish = useCallback((item) => {
+    const raw = item?.raw || item;
+    const target = finishTargetFor?.(raw) || null;
+    if (target) onFinish?.(raw, target);
+  }, [finishTargetFor, onFinish]);
+  const finishProps = (item) => {
+    const target = finishTargetFor?.(item.raw || item) || null;
     if (!target) return {};
     return {
-      onFinish: () => onFinish?.(v, target),
+      onFinish: handleFinish,
       finishTitle: `Re-render this draft on ${target.name || target.id} (same prompt and seed, delivery quality)`,
     };
   };
@@ -43,23 +57,20 @@ export default function VideoGenGallery({
             <div className="text-xs text-gray-500 py-3">No favorited videos yet.</div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-              {galleryVisible.slice(0, 5).map((v) => {
-                const item = normalizeVideo(v);
-                return (
+              {visibleItems.slice(0, 5).map((item) => (
                   <MediaCard
                     key={item.key}
                     item={item}
-                    onPreview={() => onPreview(item)}
-                    onRemix={onRemix ? () => onRemix(v) : undefined}
-                    onContinue={() => onContinue(v)}
-                    {...finishProps(v)}
-                    onUpscale={() => onUpscale(v)}
-                    onDelete={() => onDelete(v)}
-                    onToggleHidden={() => onToggleHidden(v)}
+                    onPreview={onPreview}
+                    onRemix={onRemix}
+                    onContinue={onContinue}
+                    {...finishProps(item)}
+                    onUpscale={onUpscale}
+                    onDelete={onDelete}
+                    onToggleHidden={onToggleHidden}
                     {...getCardProps(item.key)}
                   />
-                );
-              })}
+              ))}
             </div>
           )}
         </div>
@@ -77,22 +88,19 @@ export default function VideoGenGallery({
           </button>
           {showHidden && (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-              {galleryHidden.map((v) => {
-                const item = normalizeVideo(v);
-                return (
+              {hiddenItems.map((item) => (
                   <MediaCard
                     key={item.key}
                     item={item}
-                    onPreview={() => onPreview(item)}
-                    onRemix={onRemix ? () => onRemix(v) : undefined}
-                    onContinue={() => onContinue(v)}
-                    {...finishProps(v)}
-                    onDelete={() => onDelete(v)}
-                    onToggleHidden={() => onToggleHidden(v)}
+                    onPreview={onPreview}
+                    onRemix={onRemix}
+                    onContinue={onContinue}
+                    {...finishProps(item)}
+                    onDelete={onDelete}
+                    onToggleHidden={onToggleHidden}
                     {...getCardProps(item.key)}
                   />
-                );
-              })}
+              ))}
             </div>
           )}
         </div>

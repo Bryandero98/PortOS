@@ -5,7 +5,7 @@
  * into Video Gen.
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { Combine, Image as ImageIcon, Film, Search, X } from 'lucide-react';
 import PageSkeleton from '../components/ui/PageSkeleton';
@@ -115,9 +115,10 @@ export default function MediaHistory() {
     return c;
   }, [searched]);
 
-  const toggleSelect = (videoId) => {
+  const toggleSelect = useCallback((videoId) => {
     setSelected((s) => s.includes(videoId) ? s.filter((x) => x !== videoId) : [...s, videoId]);
-  };
+  }, []);
+  const handleSelectCard = useCallback((item) => toggleSelect(item.id), [toggleSelect]);
 
   const handleStitch = async () => {
     if (selected.length < 2) return;
@@ -135,7 +136,7 @@ export default function MediaHistory() {
     }
   };
 
-  const handleDelete = async (item) => {
+  const handleDelete = useCallback(async (item) => {
     try {
       await (item.kind === 'image'
         ? deleteImage(item.filename, { silent: true })
@@ -144,11 +145,11 @@ export default function MediaHistory() {
     } catch (err) {
       toast.error(err.message || 'Delete failed');
     }
-  };
+  }, []);
 
-  const handlePromptSaved = (item, prompt) => {
+  const handlePromptSaved = useCallback((item, prompt) => {
     setItems((all) => all.map((current) => current.key === item.key ? { ...current, prompt } : current));
-  };
+  }, []);
 
   // Remix / SendToVideo / Continue / Clean all share a single implementation
   // with MediaCollectionDetail, ImageGen, and the Universe Builder lightbox
@@ -156,28 +157,32 @@ export default function MediaHistory() {
   // the cleaned image to the top of the local list) is page-specific —
   // wired through `onCleanComplete` so the cleaned record lands in `items`
   // without a full gallery refetch.
+  const handleCleanComplete = useCallback((cleaned) => {
+    const normalized = normalizeImage(cleaned);
+    setItems((prev) => [normalized, ...prev.filter((x) => x.key !== normalized.key)]);
+  }, []);
   const { handleRemix, handleSendToImage, handleSendToVideo, handleSendTo3d, handleContinue, handleClean, handleRemoveWatermark } = useMediaPreviewActions({
-    onCleanComplete: (cleaned) => {
-      const normalized = normalizeImage(cleaned);
-      setItems((prev) => [normalized, ...prev.filter((x) => x.key !== normalized.key)]);
-    },
+    onCleanComplete: handleCleanComplete,
   });
 
-  const [upscalingId, setUpscalingId] = useState(null);
-  const handleUpscale = async (item) => {
-    if (upscalingId) return;
-    setUpscalingId(item.id);
+  const upscalingRef = useRef(false);
+  const handleUpscale = useCallback(async (item) => {
+    if (upscalingRef.current) return;
+    upscalingRef.current = true;
     toast.loading('Upscaling 2× — typically 10-30s…');
     const result = await upscaleVideo(item.id, { silent: true }).catch((err) => {
       toast.error(err.message || 'Upscale failed');
       return null;
     });
-    setUpscalingId(null);
+    upscalingRef.current = false;
     if (result?.video) {
       setItems((all) => [normalizeVideo(result.video), ...all]);
       toast.success('Upscaled 2×');
     }
-  };
+  }, []);
+  const handleAnnotate = useCallback((item) => {
+    navigate(`/media/annotate/${encodeURIComponent(item.key)}`);
+  }, [navigate]);
 
 
   return (
@@ -276,8 +281,8 @@ export default function MediaHistory() {
                 <MediaCard
                   key={it.key}
                   item={it}
-                  onPreview={(media) => setPreview(media)}
-                  onClick={inStitch ? () => toggleSelect(it.id) : undefined}
+                  onPreview={setPreview}
+                  onClick={inStitch ? handleSelectCard : undefined}
                   onRemix={!stitchMode ? handleRemix : undefined}
                   onSendToImage={!stitchMode ? handleSendToImage : undefined}
                   onSendToVideo={!stitchMode ? handleSendToVideo : undefined}
@@ -291,7 +296,7 @@ export default function MediaHistory() {
                   hideActions={stitchMode}
                   {...getCardProps(it.key)}
                   onToggleStar={!stitchMode ? toggleStar : undefined}
-                  onAnnotate={!stitchMode && it.kind === 'image' ? (m) => navigate(`/media/annotate/${encodeURIComponent(m.key)}`) : undefined}
+                  onAnnotate={!stitchMode && it.kind === 'image' ? handleAnnotate : undefined}
                 />
               );
             })}
