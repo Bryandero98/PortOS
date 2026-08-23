@@ -98,7 +98,6 @@ import {
 import { getMtplxServerEndpoint, getMtplxServerStatus, relaunchMtplxServerWithTuning } from './mtplxServerManager.js';
 import { getSpecDecodePresetStatus } from './specDecodeModels.js';
 import { listModels } from './localLlm.js';
-import { isEmbeddingModel } from '../lib/localModelHeuristics.js';
 import {
   getLoadedModels as getLoadedOllamaModels,
   getLastInstalledModelsError as getOllamaListError,
