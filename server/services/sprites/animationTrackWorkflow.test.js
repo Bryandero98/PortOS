@@ -44,18 +44,67 @@ vi.mock('../settings.js', () => ({
   getSettings: async () => ({ imageGen: { grok: { grokPath: '/usr/local/bin/grok' } } }),
 }));
 
-const prepareWalkAnchorChromaInput = vi.fn(async (_sourceAbs, inputAbs) => {
+// Reports a fixed PORTRAIT anchor size so the local lane's REAL canvas chooser
+// is exercised — only the sharp measurement is stubbed.
+const STUB_ANCHOR_SIZE = { width: 512, height: 896 };
+const prepareWalkAnchorChromaInput = vi.fn(async (_sourceAbs, inputAbs, _chromaKey, chooseCanvas = null) => {
   await mkdir(join(inputAbs, '..'), { recursive: true });
   const bytes = Buffer.from('track-chroma-input');
   await writeFile(inputAbs, bytes);
   return {
     preparation: 'composited-over-solid-chroma-matte',
     sha256: createHash('sha256').update(bytes).digest('hex'),
+    canvas: chooseCanvas ? chooseCanvas(STUB_ANCHOR_SIZE) : null,
   };
 });
 vi.mock('./walkPostprocess.js', async (importOriginal) => ({
   ...await importOriginal(),
   prepareWalkAnchorChromaInput: (...args) => prepareWalkAnchorChromaInput(...args),
+}));
+
+// ── Local render lane (#4876) ───────────────────────────────────────────────
+// Only the ENVIRONMENT is stubbed (model catalog, runtime/weight probes, job
+// queue) so the real lane logic runs through the workflow — see the same note in
+// walk.test.js. The point of running the table over BOTH tracks is that the
+// provider is registry-agnostic: a directional and a non-directional row must
+// dispatch identically, with no `if (track === …)` anywhere in the lane.
+const H3_MODEL = {
+  id: 'minimax_h3_8bit',
+  name: 'MiniMax H3 MLX 8-bit',
+  repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+  revision: 'rev-abc',
+  runtime: 'minimax_h3',
+  defaultFrames: 124,
+  frameOptions: [107, 124, 141, 158, 175],
+  fpsOptions: [24],
+  defaultWidth: 1344,
+  defaultHeight: 768,
+  resolutionOptions: [{ w: 1344, h: 768 }, { w: 768, h: 768 }, { w: 768, h: 1024 }],
+};
+let localRuntimeReady = true;
+vi.mock('../../lib/mediaModels.js', async (importOriginal) => ({
+  ...await importOriginal(),
+  getVideoModels: () => [H3_MODEL],
+}));
+vi.mock('../videoGen/runtimes.js', async (importOriginal) => ({
+  ...await importOriginal(),
+  BYOV_RUNTIME_INFO: { minimax_h3: { label: 'MiniMax H3 MLX' } },
+  isByovRuntimeReady: async () => localRuntimeReady,
+}));
+vi.mock('../../lib/hfCache.js', async (importOriginal) => ({
+  ...await importOriginal(),
+  inspectModelCache: async () => ({ cached: true, sizeBytes: 1, snapshotPath: '/snap' }),
+  findCachedRepoFiles: async () => ['/snap/a.safetensors'],
+}));
+const enqueuedVideoJobs = [];
+vi.mock('../mediaJobQueue/index.js', async (importOriginal) => ({
+  ...await importOriginal(),
+  enqueueJob: (job) => {
+    const id = `mjob-${enqueuedVideoJobs.length + 1}`;
+    enqueuedVideoJobs.push({ id, ...job });
+    return { jobId: id, position: 1, status: 'queued' };
+  },
+  getJob: (id) => ({ id, status: 'running' }),
 }));
 
 const records = await import('./records.js');
@@ -287,6 +336,76 @@ describe.each(TRACKS)('the generic workflow drives the $id track', (track) => {
       const { runs } = await getTrackState(track.id, id);
       expect(runs.find((r) => r.id === runId).direction).toBe(track.expectedDirection);
     }
+  });
+});
+
+describe('local render lane (#4876)', () => {
+  beforeEach(() => {
+    localRuntimeReady = true;
+    enqueuedVideoJobs.length = 0;
+  });
+
+  it.each(TRACKS)('$id defaults to the grok TUI when no provider is named', async (track) => {
+    const id = await track.seed(newId());
+    const res = await startTrackGeneration(track.id, id, track.body);
+    expect(res.provider).toBe('grok');
+    expect(res.shellSession).toBe(res.runId);
+    expect(executeTuiRun).toHaveBeenCalledTimes(1);
+    expect(enqueuedVideoJobs).toHaveLength(0);
+  });
+
+  it.each(TRACKS)('$id queues a local media job instead, carrying its OWN prompt', async (track) => {
+    const id = await track.seed(newId());
+    const res = await startTrackGeneration(track.id, id, { ...track.body, provider: 'local' });
+    expect(executeTuiRun).not.toHaveBeenCalled();
+    expect(res.provider).toBe('local');
+    expect(res.jobId).toBe('mjob-1');
+    expect(res.shellSession).toBeUndefined();
+    expect(enqueuedVideoJobs).toHaveLength(1);
+    expect(enqueuedVideoJobs[0]).toMatchObject({ kind: 'video' });
+    expect(enqueuedVideoJobs[0].params).toMatchObject({
+      modelId: 'minimax_h3_8bit', mode: 'image', fps: 24, hidden: true,
+    });
+    // The track's own prompt, not the walk's or the sibling track's.
+    expect(enqueuedVideoJobs[0].params.prompt).toContain(track.promptMarker);
+    // Portrait anchor → portrait canvas, so videoGen's center-crop is a no-op.
+    expect(enqueuedVideoJobs[0].params).toMatchObject({ width: 768, height: 1024 });
+  });
+
+  it.each(TRACKS)('$id stamps the lane provenance on its run record', async (track) => {
+    const id = await track.seed(newId());
+    const { runId } = await startTrackGeneration(track.id, id, { ...track.body, provider: 'local' });
+    const run = (await getTrackState(track.id, id)).runs.find((r) => r.id === runId);
+    expect(run).toMatchObject({
+      provider: 'minimax-h3-local',
+      videoModelId: 'minimax_h3_8bit',
+      videoRuntime: 'minimax_h3',
+      renderFps: 24,
+      jobId: 'mjob-1',
+      track: track.id,
+      status: 'rendering',
+    });
+    expect(run.shellSession).toBeNull();
+    // The track's own registry-derived packing knobs are untouched by the render.
+    expect(run.frameCount).toBe(EFFECTIVE[track.id].defaultFrameCount);
+    expect(run.fps).toBe(EFFECTIVE[track.id].defaultFps);
+  });
+
+  it.each(TRACKS)('$id 409s without creating a run directory when the runtime is missing', async (track) => {
+    const id = await track.seed(newId());
+    localRuntimeReady = false;
+    await expect(startTrackGeneration(track.id, id, { ...track.body, provider: 'local' }))
+      .rejects.toMatchObject({ status: 409, code: 'LOCAL_VIDEO_PROVIDER_NOT_READY' });
+    expect((await getTrackState(track.id, id)).runs).toEqual([]);
+    expect(enqueuedVideoJobs).toHaveLength(0);
+  });
+
+  it.each(TRACKS)('$id refuses an unknown provider rather than falling back to the paid lane', async (track) => {
+    const id = await track.seed(newId());
+    await expect(startTrackGeneration(track.id, id, { ...track.body, provider: 'minimax' }))
+      .rejects.toMatchObject({ status: 400, code: 'ANIMATION_PROVIDER_INVALID' });
+    expect(executeTuiRun).not.toHaveBeenCalled();
+    expect(enqueuedVideoJobs).toHaveLength(0);
   });
 });
 

@@ -45,6 +45,10 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { executeTuiRun } from '../../lib/tuiPromptRunner.js';
 import { GROK_TUI_ID } from '../../lib/grok.js';
 import { resolveGrokDuration } from '../../lib/grokVideoClip.js';
+import {
+  planLocalAnimationRender, enqueueLocalAnimationRender, collectLocalAnimationRender,
+  localRenderManifest,
+} from './localAnimationRender.js';
 import { getSettings } from '../settings.js';
 import { getRecord, listRecords } from './records.js';
 import { requireTrack, loadManifest } from './reference.js';
@@ -62,6 +66,7 @@ import { verifyPackagedFrames } from './walkFrames.js';
 import {
   resolveChromaKey, withAnimationWriteTail, lockedAnchorFor, lockedMainFor,
   GROK_TUI_IDLE_MS, GROK_TUI_TIMEOUT_MS, grokTuiProvider, buildGrokI2vTask,
+  resolveAnimationProvider, isLocalProviderRun,
 } from './animationWorkflow.js';
 
 const RUN_RECORD_NAME = 'animation-run.json';
@@ -277,6 +282,15 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
   // Optional re-roll note (#3134) — blank leaves the prompt and the run record
   // exactly as a blind regenerate would.
   const correctionPrompt = typeof body.correctionPrompt === 'string' ? body.correctionPrompt.trim() : '';
+  // WHICH lane renders the clip (#4876) — same contract the walk lane uses, so a
+  // track never needs its own provider rules. Absent → grok.
+  const provider = resolveAnimationProvider(body.provider);
+  const duration = resolveGrokDuration(body.duration);
+  // Readiness first: an install with no runnable local model 409s here, before a
+  // run record exists.
+  const localPlan = provider === 'local'
+    ? await planLocalAnimationRender({ durationSeconds: duration })
+    : null;
   // Run ids stay in the clones' shapes: `<track>-<direction>-<uuid8>` for a
   // directional track, `<track>-<uuid8>` for a single-row one.
   const runId = row.directional
@@ -293,11 +307,21 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
     );
   }
   const inputAbs = join(generatedAbs, source.inputName);
-  const [{ preparation, sha256: inputSha256 }, settings] = await Promise.all([
-    prepareWalkAnchorChromaInput(sourceAbs, inputAbs, chromaKey), getSettings(),
+  const [{ preparation, sha256: inputSha256, canvas }, settings] = await Promise.all([
+    prepareWalkAnchorChromaInput(sourceAbs, inputAbs, chromaKey, localPlan?.chooseCanvas || null),
+    getSettings(),
   ]);
-  const duration = resolveGrokDuration(body.duration);
   const videoAbs = join(generatedAbs, SOURCE_CLIP_NAME);
+  const prompt = buildTrackVideoPrompt(row.id, {
+    name: record.name, kind: record.kind, direction, chromaKey, correctionPrompt,
+  });
+  // Stamped on the run record BEFORE anything awaits the job — see the walk
+  // lane's note: a local run with no `jobId` can never be told from a dead one.
+  const jobId = localPlan
+    ? enqueueLocalAnimationRender({
+      plan: localPlan, canvas, prompt, inputAbs, owner: `sprite-${row.id}:${recordId}:${direction}`,
+    })
+    : null;
   const run = {
     schemaVersion: 1,
     kind: 'grok-game-animation-frames-run',
@@ -322,27 +346,33 @@ async function startTrackGenerationImpl(trackId, recordId, body) {
     animationInputPreparation: preparation,
     ...(correctionPrompt ? { correctionPrompt } : {}),
     createdAt: new Date().toISOString(),
+    // Spread LAST so the local lane's provider/geometry provenance wins over the
+    // grok defaults above. A local render is a queued media job, not a PTY, so it
+    // carries `jobId` in place of an attachable `shellSession`.
+    ...(localPlan ? { ...localRenderManifest(localPlan, canvas), jobId, shellSession: null } : {}),
   };
   await saveRun(recordId, run);
+  if (localPlan) {
+    collectLocalAnimationRender({ jobId, videoAbs, label: `sprite ${row.id} ${recordId}/${direction}` })
+      .then(() => withAnimationWriteTail(recordId, () => attachTrackTuiResult(row.id, recordId, runId, videoAbs)))
+      .catch((err) => console.error(`❌ sprite ${row.id} local render crashed ${recordId}/${runId}: ${err?.message || err}`));
+    console.log(`📡 sprite ${row.id} local render started ${recordId}/${runId} (job ${jobId.slice(0, 8)}, ${localPlan.numFrames}f @ ${localPlan.fps}fps)`);
+    return row.directional
+      ? { runId, direction, duration, provider: 'local', jobId }
+      : { runId, duration, provider: 'local', jobId };
+  }
   runTrackTuiRender(row, recordId, {
     runId,
     direction,
     generatedAbs,
     videoAbs,
     grokPath: settings.imageGen?.grok?.grokPath,
-    task: buildGrokI2vTask({
-      prompt: buildTrackVideoPrompt(row.id, {
-        name: record.name, kind: record.kind, direction, chromaKey, correctionPrompt,
-      }),
-      inputAbs,
-      videoAbs,
-      duration,
-    }),
+    task: buildGrokI2vTask({ prompt, inputAbs, videoAbs, duration }),
   }).catch((err) => console.error(`❌ sprite ${row.id} grok-tui render crashed ${recordId}/${runId}: ${err?.message || err}`));
   console.log(`📡 sprite ${row.id} grok-tui render started ${recordId}/${runId}`);
   return row.directional
-    ? { runId, direction, duration, shellSession: runId }
-    : { runId, duration, shellSession: runId };
+    ? { runId, direction, duration, provider: 'grok', shellSession: runId }
+    : { runId, duration, provider: 'grok', shellSession: runId };
 }
 
 async function runTrackTuiRender(row, recordId, { runId, direction, generatedAbs, videoAbs, grokPath, task }) {
@@ -366,7 +396,9 @@ export async function attachTrackTuiResult(trackId, recordId, runId, videoAbs) {
   if (selection?.directions?.[run.direction]?.runId === runId) return;
   if (!await pathExists(videoAbs)) {
     run.status = 'error';
-    run.postprocessError = `Grok finished without writing the ${row.label.toLowerCase()} video — check the shell session output`;
+    run.postprocessError = isLocalProviderRun(run)
+      ? `The local render produced no ${row.label.toLowerCase()} video — check the Render Queue for the failed job`
+      : `Grok finished without writing the ${row.label.toLowerCase()} video — check the shell session output`;
     run.completedAt = new Date().toISOString();
     await saveRun(recordId, run);
     return;

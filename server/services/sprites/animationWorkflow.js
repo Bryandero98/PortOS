@@ -1,6 +1,7 @@
 /**
  * Shared animation-render plumbing: per-record write serialization, chroma-key
- * precedence, the grok-TUI invocation, and the i2v task wrapper.
+ * precedence, the grok-TUI invocation, the i2v task wrapper, and the render-lane
+ * vocabulary both lanes and the request schemas share (#4876).
  *
  * Everything here is a fact about "how PortOS renders a sprite animation" rather
  * than about any one track, so both animation services (`walk.js`'s bespoke
@@ -11,6 +12,7 @@
 
 import { createKeyCachedQueue } from '../../lib/createKeyCachedQueue.js';
 import { GROK_TUI_ID } from '../../lib/grok.js';
+import { ServerError } from '../../lib/errorHandler.js';
 
 const animationWriteTail = createKeyCachedQueue();
 
@@ -79,3 +81,49 @@ export const buildGrokI2vTask = ({ prompt, inputAbs, videoAbs, duration }) => (
   + `Save the resulting animation as an MP4 file at exactly this path:\n${videoAbs}\n\n`
   + 'Do not create or modify any other files, and do not run any tools beyond what is needed to render and save that MP4.'
 );
+
+// ── Render lanes ────────────────────────────────────────────────────────────
+// Which engine produces a track's source clip. Grok's observable TUI session was
+// the only answer until #4876 added the local MiniMax H3 lane; the pipeline
+// downstream of the MP4 is identical either way, so the choice is a request
+// field and a run-record field, never a second pipeline.
+//
+// These four live HERE rather than beside the local lane's implementation
+// because `lib/spriteValidation.js` needs the id list to build its request
+// enum, and this module is dependency-light by design — importing the local
+// lane (which reaches the media-job queue and the model catalog) into the
+// validation layer would drag both into every route's import graph.
+
+/** The run record's `provider` for a locally-rendered clip. */
+export const LOCAL_VIDEO_PROVIDER_ID = 'minimax-h3-local';
+
+/** The provider ids a generate REQUEST may carry. */
+export const ANIMATION_PROVIDER_IDS = Object.freeze(['grok', 'local']);
+
+/**
+ * Absent → grok, so every pre-existing client, persisted retry, and test
+ * renders exactly where it did before the local lane existed.
+ */
+export const DEFAULT_ANIMATION_PROVIDER = 'grok';
+
+/**
+ * Normalize a request's `provider` to one of ANIMATION_PROVIDER_IDS.
+ *
+ * An unknown value is REFUSED rather than silently defaulted: a typo'd provider
+ * quietly rendering on the paid cloud lane is the one outcome nobody wants. The
+ * Zod enum already rejects it at the route, so this is the service-level
+ * backstop for a direct or internal caller.
+ */
+export const resolveAnimationProvider = (value) => {
+  if (value === undefined || value === null || value === '') return DEFAULT_ANIMATION_PROVIDER;
+  if (!ANIMATION_PROVIDER_IDS.includes(value)) {
+    throw new ServerError(
+      `Unknown animation provider "${value}" — expected one of ${ANIMATION_PROVIDER_IDS.join(', ')}`,
+      { status: 400, code: 'ANIMATION_PROVIDER_INVALID' },
+    );
+  }
+  return value;
+};
+
+/** Whether a run record was produced by the local lane. */
+export const isLocalProviderRun = (run) => run?.provider === LOCAL_VIDEO_PROVIDER_ID;

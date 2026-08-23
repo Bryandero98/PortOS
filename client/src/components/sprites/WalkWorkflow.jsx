@@ -10,6 +10,7 @@ import {
 import ConfirmButtonPair from '../ui/ConfirmButtonPair.jsx';
 import Banner from '../ui/Banner.jsx';
 import CycleTarget from './CycleTarget.jsx';
+import AnimationProviderPicker from './AnimationProviderPicker.jsx';
 import { CorrectionNoteToggle, walkCorrectionKey } from './CorrectionNote.jsx';
 import SpritePreview from './SpritePreview.jsx';
 import { useAsyncAction } from '../../hooks/useAsyncAction.js';
@@ -529,6 +530,7 @@ function DirectionCard({
 export default function WalkWorkflow({
   record, reference, walk, renders, duration, onDurationChange, onGenerate,
   onOpenTrimmer = () => {}, onChanged, corrections = null, onCorrectionChange = null,
+  providers = null, provider = 'grok', onProviderChange = () => {},
 }) {
   const recordId = record.id;
   // The cycle target is server-resolved (app contract → set pin → first approved
@@ -733,7 +735,16 @@ export default function WalkWorkflow({
               onChanged={onChanged}
               onSavingChange={setTargetSaving}
             />
-            <label className="flex items-center gap-1.5 text-xs text-gray-400" htmlFor={`walk-clip-${recordId}`} title="grok renders 6s or 10s clips — these are the only lengths it offers, and a shorter request comes back as 6s. Length only affects how much source footage the packer has to choose from, not the walk's speed.">
+            <AnimationProviderPicker
+              id={`walk-provider-${recordId}`}
+              providers={providers}
+              provider={provider}
+              onChange={onProviderChange}
+              disabled={finalized}
+            />
+            <label className="flex items-center gap-1.5 text-xs text-gray-400" htmlFor={`walk-clip-${recordId}`} title={provider === 'local'
+                ? "The local model renders on a fixed frame grid, so this length is snapped to the nearest legal clip. Length only affects how much source footage the packer has to choose from, not the walk's speed."
+                : "grok renders 6s or 10s clips — these are the only lengths it offers, and a shorter request comes back as 6s. Length only affects how much source footage the packer has to choose from, not the walk's speed."}>
               Clip
               <select
                 id={`walk-clip-${recordId}`}
