@@ -27,7 +27,7 @@
  * **Three copies of this table exist, by architecture, and must stay in lockstep:**
  *   1. this file — the PortOS server;
  *   2. `aiToolkit/internal/gateways.js` — the vendored toolkit, which may not
- *      import out of its own directory (see `aiToolkit/CLAUDE.md`);
+ *      import out of its own directory (see `aiToolkit/AGENTS.md`);
  *      `providerGateways.parity.test.js` fails when the two drift;
  *   3. `client/src/utils/providers.js` — the browser, which cannot import server
  *      code at all.
