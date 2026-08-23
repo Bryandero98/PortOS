@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { SPRITE_ID_PATTERN, SPRITE_RECORD_KINDS } from '../services/sprites/recordsLogic.js';
 import { ANCHOR_DIRECTIONS, SPRITE_DIRECTIONS, TURNAROUND_ID } from '../services/sprites/prompts.js';
 import { CHROMA_KEY_HEXES } from '../services/sprites/chromaKey.js';
+import { ANIMATION_PROVIDER_IDS } from '../services/sprites/animationWorkflow.js';
 import {
   WALK_TRACK, AUTHORED_TRACK_FIELDS, TRACK_BOUND_TRIPLES,
 } from '../services/sprites/animationTracks.js';
@@ -299,6 +300,11 @@ const spriteWalkFpsSchema = spriteTrackFpsSchema(WALK_TRACK);
 
 export const spriteWalkGenerateSchema = z.object({
   direction: spriteWalkDirectionSchema,
+  // WHICH engine renders the source clip (#4876): the cloud grok lane or the
+  // local MiniMax H3 one. Omitted → grok, so an older client and every persisted
+  // retry render exactly where they did before the local lane existed.
+  provider: z.enum(ANIMATION_PROVIDER_IDS).optional(),
+
   // Clip length in seconds; the service defaults to 6s when omitted. Only
   // affects how much source footage the packer can choose from — the cycle's
   // look is set by frameCount/fps below.
@@ -330,6 +336,11 @@ export const spriteWalkGenerateSchema = z.object({
 //   - the remaining knobs are already registry-derived.
 const buildSpriteTrackGenerateSchema = (track) => z.object({
   direction: spriteWalkDirectionSchema.optional(),
+  // WHICH engine renders the source clip (#4876): the cloud grok lane or the
+  // local MiniMax H3 one. Omitted → grok, so an older client and every persisted
+  // retry render exactly where they did before the local lane existed.
+  provider: z.enum(ANIMATION_PROVIDER_IDS).optional(),
+
   duration: grokVideoDurationSchema.optional(),
   frameCount: spriteTrackFrameCountSchema(track).optional(),
   fps: spriteTrackFpsSchema(track).optional(),

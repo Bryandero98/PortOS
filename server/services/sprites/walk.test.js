@@ -64,10 +64,20 @@ vi.mock('../../lib/ffmpeg.js', async (importOriginal) => ({
   probeVideoDuration: (...args) => probeVideoDuration(...args),
 }));
 
-const prepareWalkAnchorChromaInput = vi.fn(async (_anchorAbs, destAbs) => {
+// The real helper measures the anchor with sharp; the stub reports a fixed
+// PORTRAIT size so the local lane's canvas choice is exercised for real (the
+// chooser is the production one — only the measurement is stubbed).
+const STUB_ANCHOR_SIZE = { width: 512, height: 896 };
+const prepareWalkAnchorChromaInput = vi.fn(async (_anchorAbs, destAbs, _chromaKey, chooseCanvas = null) => {
   await mkdir(join(destAbs, '..'), { recursive: true });
   await writeFile(destAbs, 'stub-chroma-anchor');
-  return { preparation: 'composited-over-solid-chroma-matte' };
+  const canvas = chooseCanvas ? chooseCanvas(STUB_ANCHOR_SIZE) : null;
+  return {
+    preparation: canvas
+      ? 'composited-over-solid-chroma-matte-padded-to-render-canvas'
+      : 'composited-over-solid-chroma-matte',
+    canvas,
+  };
 });
 const runWalkPostprocess = vi.fn(async ({
   runRel, runAbs, recordId, direction, frameCount = 8, fps = 12,
@@ -118,6 +128,56 @@ vi.mock('./walkPostprocess.js', async (importOriginal) => {
     extractVideoFrames: (...args) => extractVideoFrames(...args),
   };
 });
+
+// ── Local render lane (#4876) ───────────────────────────────────────────────
+// The lane's own unit coverage lives in localAnimationRender.test.js; what these
+// mocks buy HERE is that the real lane logic runs THROUGH walk.js, so the
+// dispatch, the run-record provenance, and the job-backed staleness rule are
+// exercised end to end. Only the ENVIRONMENT is stubbed — the model catalog, the
+// runtime/weight probes, and the job queue — never the lane itself, which would
+// make these assertions a restatement of the mock.
+const H3_MODEL = {
+  id: 'minimax_h3_8bit',
+  name: 'MiniMax H3 MLX 8-bit',
+  repo: 'pipenetwork/MiniMax-H3-MLX-8bit',
+  revision: 'rev-abc',
+  runtime: 'minimax_h3',
+  defaultFrames: 124,
+  frameOptions: [107, 124, 141, 158, 175],
+  fpsOptions: [24],
+  defaultWidth: 1344,
+  defaultHeight: 768,
+  resolutionOptions: [
+    { w: 1344, h: 768 }, { w: 1024, h: 768 }, { w: 768, h: 768 }, { w: 768, h: 1024 },
+  ],
+};
+let localRuntimeReady = true;
+vi.mock('../../lib/mediaModels.js', async (importOriginal) => ({
+  ...await importOriginal(),
+  getVideoModels: () => [H3_MODEL],
+}));
+vi.mock('../videoGen/runtimes.js', async (importOriginal) => ({
+  ...await importOriginal(),
+  BYOV_RUNTIME_INFO: { minimax_h3: { label: 'MiniMax H3 MLX' } },
+  isByovRuntimeReady: async () => localRuntimeReady,
+}));
+vi.mock('../../lib/hfCache.js', async (importOriginal) => ({
+  ...await importOriginal(),
+  inspectModelCache: async () => ({ cached: true, sizeBytes: 1, snapshotPath: '/snap' }),
+  findCachedRepoFiles: async () => ['/snap/a.safetensors'],
+}));
+const enqueuedVideoJobs = [];
+const queuedJobsById = new Map();
+vi.mock('../mediaJobQueue/index.js', async (importOriginal) => ({
+  ...await importOriginal(),
+  enqueueJob: (job) => {
+    const id = `mjob-${enqueuedVideoJobs.length + 1}`;
+    enqueuedVideoJobs.push({ id, ...job });
+    queuedJobsById.set(id, { id, status: 'running' });
+    return { jobId: id, position: 1, status: 'queued' };
+  },
+  getJob: (id) => queuedJobsById.get(id) || null,
+}));
 
 const records = await import('./records.js');
 const { listSpriteAssets } = await import('./paths.js');
@@ -498,6 +558,199 @@ describe('startWalkGeneration', () => {
     const result = await startWalkGeneration(id, { direction: 'east' });
     expect(result.runId).toMatch(/^walk-east-[0-9a-f]{8}$/);
     expect(result.runId).not.toBe(staleId);
+  });
+});
+
+describe('startWalkGeneration — local render lane (#4876)', () => {
+  beforeEach(() => {
+    localRuntimeReady = true;
+    enqueuedVideoJobs.length = 0;
+    queuedJobsById.clear();
+  });
+
+  it('defaults to grok when no provider is requested, exactly as before the lane existed', async () => {
+    const id = await characterWithLockedAnchors(newId());
+    const res = await startWalkGeneration(id, { direction: 'east' });
+    expect(res.provider).toBe('grok');
+    expect(res.shellSession).toBe(res.runId);
+    expect(enqueuedVideoJobs).toHaveLength(0);
+    expect(executeTuiRun).toHaveBeenCalled();
+    const [run] = (await getWalkState(id)).runs;
+    expect(run.provider).toBe('grok-tui');
+    expect(run.jobId).toBeUndefined();
+  });
+
+  it('queues a MEDIA JOB instead of a TUI session when provider is local', async () => {
+    const id = await characterWithLockedAnchors(newId());
+    executeTuiRun.mockClear();
+    const res = await startWalkGeneration(id, { direction: 'east', provider: 'local', duration: 6 });
+    expect(executeTuiRun).not.toHaveBeenCalled();
+    expect(res.provider).toBe('local');
+    expect(res.jobId).toBe('mjob-1');
+    // No PTY exists, so the card must not offer a Shell deep-link.
+    expect(res.shellSession).toBeUndefined();
+    // owner 'sprites' + the spriteWalk tag is the shipped contract the client's
+    // pending-render rehydrate reads; spriteAnimation is what the durable
+    // completion hook decodes.
+    expect(enqueuedVideoJobs[0]).toMatchObject({ kind: 'video', owner: 'sprites' });
+    expect(enqueuedVideoJobs[0].params.spriteWalk).toEqual({ recordId: id, direction: 'east' });
+    expect(enqueuedVideoJobs[0].params.spriteAnimation).toMatchObject({ recordId: id, track: 'walk', direction: 'east' });
+    expect(enqueuedVideoJobs[0].params).toMatchObject({
+      modelId: 'minimax_h3_8bit',
+      mode: 'image',
+      // 6s at 24fps = 144 requested → 141 is the nearest legal H3 count.
+      numFrames: 141,
+      fps: 24,
+      hidden: true,
+    });
+    expect(enqueuedVideoJobs[0].params.prompt).toMatch(/walk-in-place/);
+  });
+
+  it('renders on the canvas matching the ANCHOR aspect, not the model default', async () => {
+    const id = await characterWithLockedAnchors(newId());
+    await startWalkGeneration(id, { direction: 'east', provider: 'local' });
+    // The stub anchor is 512x896 (portrait). H3 defaults to 1344x768; sending
+    // that would center-crop the character's head and feet off.
+    expect(enqueuedVideoJobs[0].params).toMatchObject({ width: 768, height: 1024 });
+  });
+
+  it('stamps the lane, model, runtime, geometry, and job id on the run record', async () => {
+    const id = await characterWithLockedAnchors(newId());
+    const { runId } = await startWalkGeneration(id, { direction: 'east', provider: 'local', duration: 6 });
+    const run = (await getWalkState(id)).runs.find((r) => r.id === runId);
+    expect(run).toMatchObject({
+      provider: 'minimax-h3-local',
+      videoModelId: 'minimax_h3_8bit',
+      videoRuntime: 'minimax_h3',
+      renderFrames: 141,
+      renderFps: 24,
+      renderWidth: 768,
+      renderHeight: 1024,
+      jobId: 'mjob-1',
+      status: 'rendering',
+    });
+    // The provenance spread must WIN over the grok defaults, not be overwritten.
+    expect(run.shellSession).toBeNull();
+    // The postprocess knobs stay the SET's target, untouched by the render
+    // geometry above — a 141-frame 24fps source clip still packs the pinned cycle.
+    const { walkTarget } = await getWalkState(id);
+    expect(run.frameCount).toBe(walkTarget.frameCount);
+    expect(run.fps).toBe(walkTarget.fps);
+    expect(run.frameCount).not.toBe(run.renderFrames);
+    expect(run.animationInputPreparation).toBe('composited-over-solid-chroma-matte-padded-to-render-canvas');
+  });
+
+  it('409s before writing any run record when the local runtime is not installed', async () => {
+    const id = await characterWithLockedAnchors(newId());
+    localRuntimeReady = false;
+    await expect(startWalkGeneration(id, { direction: 'east', provider: 'local' }))
+      .rejects.toMatchObject({ status: 409, code: 'LOCAL_VIDEO_PROVIDER_NOT_READY' });
+    expect((await getWalkState(id)).runs).toHaveLength(0);
+    expect(enqueuedVideoJobs).toHaveLength(0);
+  });
+
+  it('rejects an unknown provider rather than falling back to the paid lane', async () => {
+    const id = await characterWithLockedAnchors(newId());
+    await expect(startWalkGeneration(id, { direction: 'east', provider: 'minimax' }))
+      .rejects.toMatchObject({ status: 400, code: 'ANIMATION_PROVIDER_INVALID' });
+    expect(executeTuiRun).not.toHaveBeenCalledWith(expect.objectContaining({ label: expect.stringContaining(id) }));
+  });
+
+  it('keeps a long-running local render LIVE past the grok staleness cutoff', async () => {
+    const id = await characterWithLockedAnchors(newId());
+    const { runId } = await startWalkGeneration(id, { direction: 'east', provider: 'local' });
+    // Backdate the run well beyond grok's ~31-minute cutoff. A local H3 clip is
+    // a multi-hour render, so the wall clock must not decide this.
+    const runJson = join(TEST_ROOT, 'sprites', id, 'runs', runId, 'animation-run.json');
+    const stored = JSON.parse(await readFile(runJson, 'utf8'));
+    stored.createdAt = new Date(Date.now() - 5 * 60 * 60_000).toISOString();
+    await writeFile(runJson, JSON.stringify(stored));
+    const run = (await getWalkState(id)).runs.find((r) => r.id === runId);
+    expect(run.status).toBe('rendering');
+  });
+
+  it('flips a local run to error as soon as its job settles without an attach', async () => {
+    const id = await characterWithLockedAnchors(newId());
+    const { runId } = await startWalkGeneration(id, { direction: 'east', provider: 'local' });
+    // Job terminal but the run still says 'rendering' — the server died between
+    // the two. Reported immediately rather than after a wall-clock wait.
+    queuedJobsById.set('mjob-1', { id: 'mjob-1', status: 'failed', error: 'oom' });
+    const run = (await getWalkState(id)).runs.find((r) => r.id === runId);
+    expect(run.status).toBe('error');
+    expect(run.postprocessError).toMatch(/interrupted/);
+  });
+
+  it('leaves a local run alone when the queue has forgotten its job but the clock is young', async () => {
+    const id = await characterWithLockedAnchors(newId());
+    const { runId } = await startWalkGeneration(id, { direction: 'east', provider: 'local' });
+    queuedJobsById.delete('mjob-1');
+    const run = (await getWalkState(id)).runs.find((r) => r.id === runId);
+    expect(run.status).toBe('rendering');
+  });
+
+  it('keeps a local run that renders for HOURS then packs looking healthy, and still blocked', async () => {
+    // The user-visible shape of the packaging-window bug: `getWalkState` is what
+    // the card polls every few seconds while a run packages, and the in-flight
+    // guard reads the same normalized state. Anchoring the window on `createdAt`
+    // made a successful 3-hour render report "interrupted" the instant it began
+    // to pack AND released the guard — so a Regenerate click would start a second
+    // multi-hour render for a facing that already had a good candidate.
+    const id = await characterWithLockedAnchors(newId());
+    const { runId } = await startWalkGeneration(id, { direction: 'east', provider: 'local' });
+    const runJson = join(TEST_ROOT, 'sprites', id, 'runs', runId, 'animation-run.json');
+    const stored = JSON.parse(await readFile(runJson, 'utf8'));
+    stored.createdAt = new Date(Date.now() - 3 * 60 * 60_000).toISOString();
+    stored.status = 'postprocessing';
+    stored.postprocessingStartedAt = new Date().toISOString();
+    await writeFile(runJson, JSON.stringify(stored));
+
+    const run = (await getWalkState(id)).runs.find((r) => r.id === runId);
+    expect(run.status).toBe('postprocessing');
+    expect(run.postprocessError).toBeUndefined();
+    await expect(startWalkGeneration(id, { direction: 'east', provider: 'local' }))
+      .rejects.toMatchObject({ code: 'WALK_RENDER_IN_PROGRESS' });
+  });
+
+  it('errors a run whose PACKAGING itself was interrupted, freeing the direction', async () => {
+    const id = await characterWithLockedAnchors(newId());
+    const { runId } = await startWalkGeneration(id, { direction: 'east', provider: 'local' });
+    const runJson = join(TEST_ROOT, 'sprites', id, 'runs', runId, 'animation-run.json');
+    const stored = JSON.parse(await readFile(runJson, 'utf8'));
+    stored.status = 'postprocessing';
+    stored.postprocessingStartedAt = new Date(Date.now() - 40 * 60_000).toISOString();
+    await writeFile(runJson, JSON.stringify(stored));
+
+    const run = (await getWalkState(id)).runs.find((r) => r.id === runId);
+    expect(run.status).toBe('error');
+    // Both in-flight guards count `postprocessing` as busy, so without the
+    // normalization this direction would be unrenderable forever.
+    await expect(startWalkGeneration(id, { direction: 'east', provider: 'local' })).resolves.toBeTruthy();
+  });
+
+  it('reports a local attach that found no clip in local terms, not grok terms', async () => {
+    const id = await characterWithLockedAnchors(newId());
+    const { runId } = await startWalkGeneration(id, { direction: 'east', provider: 'local' });
+    await attachTuiWalkResult(id, runId, join(TEST_ROOT, 'sprites', id, 'runs', runId, 'generated', 'source-video.mp4'));
+    const stored = JSON.parse(await readFile(join(TEST_ROOT, 'sprites', id, 'runs', runId, 'animation-run.json'), 'utf8'));
+    expect(stored.status).toBe('error');
+    expect(stored.postprocessError).toMatch(/Render Queue/);
+    expect(stored.postprocessError).not.toMatch(/shell session/);
+  });
+
+  it('runs the SAME deterministic postprocess on a local clip as on a grok one', async () => {
+    const id = await characterWithLockedAnchors(newId());
+    const { runId } = await startWalkGeneration(id, { direction: 'east', provider: 'local' });
+    const videoAbs = join(TEST_ROOT, 'sprites', id, 'runs', runId, 'generated', 'source-video.mp4');
+    await writeFile(videoAbs, 'local-rendered-clip');
+    runWalkPostprocess.mockClear();
+    await attachTuiWalkResult(id, runId, videoAbs);
+    expect(runWalkPostprocess).toHaveBeenCalledTimes(1);
+    const stored = JSON.parse(await readFile(join(TEST_ROOT, 'sprites', id, 'runs', runId, 'animation-run.json'), 'utf8'));
+    expect(stored.status).toBe('candidate');
+    // Provenance survives packaging, so an approved frame set still names the
+    // model that produced it.
+    expect(stored.provider).toBe('minimax-h3-local');
+    expect(stored.videoModelId).toBe('minimax_h3_8bit');
   });
 });
 
@@ -1789,6 +2042,28 @@ describe('listSpriteAssets run-intermediate exclusion', () => {
     expect(paths).not.toContain('grok/walk-east-00c0ffee/generated/raw/source-0001.png');
     expect(paths).toContain('grok/walk-east-00c0ffee/generated/frames/00-left-contact.png');
     expect(paths).toContain('grok/walk-east-00c0ffee/generated/review/contrast.png');
+  });
+});
+
+describe('getWalkState — run directory with no readable record', () => {
+  it('skips the orphan instead of failing the whole read', async () => {
+    // A run directory can exist with no `animation-run.json`: the server died
+    // between creating it and writing the record, or a partial copy landed. The
+    // scan used to keep that null (`isWalkRun(null)` is true, since a run with no
+    // `track` IS a walk run) and then dereference `.id` on it — taking the entire
+    // walk panel down with a 500 for one stray directory.
+    const id = await characterWithLockedAnchors(newId());
+    await mkdir(join(TEST_ROOT, 'sprites', id, 'runs', 'walk-east-orphaned', 'generated'), { recursive: true });
+    const state = await getWalkState(id);
+    expect(state.runs).toEqual([]);
+  });
+
+  it('still surfaces the healthy runs alongside an orphan directory', async () => {
+    const id = await characterWithLockedAnchors(newId());
+    const { runId } = await makeCandidateRun(id, 'east');
+    await mkdir(join(TEST_ROOT, 'sprites', id, 'runs', 'walk-east-orphaned2', 'generated'), { recursive: true });
+    const state = await getWalkState(id);
+    expect(state.runs.map((r) => r.id)).toEqual([runId]);
   });
 });
 
