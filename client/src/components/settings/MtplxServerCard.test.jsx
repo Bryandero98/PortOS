@@ -6,7 +6,7 @@ import MtplxServerCard from './MtplxServerCard.jsx';
 const renderCard = async (status, props = {}) => {
   const handlers = {
     onRefresh: vi.fn(),
-    onStart: vi.fn(),
+    onSaveLaunch: vi.fn(),
     onStop: vi.fn(),
     onInstall: vi.fn(),
     // The checkpoint manager loads upstream's default listing on mount.
@@ -26,7 +26,10 @@ const renderCard = async (status, props = {}) => {
 };
 
 describe('MtplxServerCard', () => {
-  it('starts on the cached checkpoint and port the user picked', async () => {
+  // MTPLX has no Start button: the first PortOS request routed to it starts it.
+  // What this card saves is the launch line that on-demand start replays, so the
+  // user's checkpoint choice survives a stop/start cycle they never see.
+  it('saves the cached checkpoint and port the user picked', async () => {
     const handlers = await renderCard({
       installed: true,
       running: false,
@@ -37,24 +40,27 @@ describe('MtplxServerCard', () => {
 
     fireEvent.change(screen.getByLabelText('Checkpoint'), { target: { value: 'Example/Other-MTP' } });
     fireEvent.change(screen.getByLabelText('Port'), { target: { value: '8010' } });
-    fireEvent.click(screen.getByRole('button', { name: /Start MTPLX/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Save configuration/ }));
 
-    expect(handlers.onStart).toHaveBeenCalledWith({ model: 'Example/Other-MTP', port: 8010 });
+    expect(handlers.onSaveLaunch).toHaveBeenCalledWith({ model: 'Example/Other-MTP', port: 8010 });
   });
 
-  it('omits an untouched field so PortOS picks the cache default and the shipped port', async () => {
+  // An untouched port stays off the saved config so a lazy start falls through
+  // to the shipped default; an untouched checkpoint is saved as an explicit
+  // `null`, which is what CLEARS a previously-saved pick back to "Auto".
+  it('omits an untouched port and clears an untouched checkpoint', async () => {
     const handlers = await renderCard({ installed: true, running: false, supported: true, cachedModels: ['Example/Qwen-MTP'] });
-    fireEvent.click(screen.getByRole('button', { name: /Start MTPLX/ }));
-    expect(handlers.onStart).toHaveBeenCalledWith({});
+    fireEvent.click(screen.getByRole('button', { name: /Save configuration/ }));
+    expect(handlers.onSaveLaunch).toHaveBeenCalledWith({ model: null });
   });
 
-  it('offers an in-app download instead of a start that cannot bind', async () => {
+  it('offers an in-app download instead of a config that cannot bind', async () => {
     // No start downloads weights, and `mtplx serve` exits before it binds a port
     // on an empty cache — so the card offers the download itself rather than
     // naming a terminal command (PRD NR-9).
     const handlers = await renderCard({ installed: true, running: false, supported: true, cachedModels: [], cacheError: null });
     expect(screen.getByText(/model cache is empty/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Start MTPLX/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Save configuration/ })).toBeDisabled();
     expect(screen.queryByText(/in a terminal/i)).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /Download default checkpoint/ }));
@@ -131,12 +137,18 @@ describe('MtplxServerCard', () => {
     expect(screen.queryByRole('button', { name: /^Download$/ })).toBeNull();
   });
 
-  it('still offers a start when the cache could not be READ — unreadable is not empty', async () => {
+  it('still lets the config be saved when the cache could not be READ — unreadable is not empty', async () => {
     const handlers = await renderCard({ installed: true, running: false, supported: true, cachedModels: [], cacheError: '`mtplx models` timed out' });
-    const start = screen.getByRole('button', { name: /Start MTPLX/ });
-    expect(start).not.toBeDisabled();
-    fireEvent.click(start);
-    expect(handlers.onStart).toHaveBeenCalled();
+    const save = screen.getByRole('button', { name: /Save configuration/ });
+    expect(save).not.toBeDisabled();
+    fireEvent.click(save);
+    expect(handlers.onSaveLaunch).toHaveBeenCalled();
+  });
+
+  it('says MTPLX starts on demand, so the missing Start button reads as intent', async () => {
+    await renderCard({ installed: true, running: false, supported: true, cachedModels: ['Example/Qwen-MTP'] });
+    expect(screen.getByText(/starts on demand/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Start/ })).toBeNull();
   });
 
   it('will not offer to stop a server started outside PortOS', async () => {

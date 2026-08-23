@@ -6,6 +6,9 @@ import {
   relaunchMtplxServerWithTuning,
   installMtplx,
   _resetMtplxServerStateForTests,
+  ensureMtplxRunning,
+  ensureMtplxProviderReady,
+  isMtplxProvider,
   MTPLX_APP,
 } from './mtplxServerManager.js';
 import * as processEnv from '../lib/processEnv.js';
@@ -552,4 +555,148 @@ describe('mtplxServerManager', () => {
       expect(result.message).toMatch(/not running/i);
     });
   });
+
+  // ===========================================================================
+  // LAZY START
+  // ===========================================================================
+  //
+  // MTPLX cannot unload its checkpoint in place (its `--retrieval-idle-timeout`
+  // covers retrieval models only), so the idle reaper stops the whole process
+  // and the next PortOS request has to bring it back. There is no Start button
+  // any more — this IS how MTPLX starts.
+  describe('ensureMtplxRunning', () => {
+    const startCalls = () => execPm2Calls.filter((c) => c[0] === 'start');
+
+    beforeEach(() => {
+      // A lazy start that never answers waits out the READINESS budget, not the
+      // startup one — five real minutes by default. Shorten it here rather than
+      // in the shared setup, which the give-up-path tests below depend on.
+      _resetMtplxServerStateForTests({ startupWait: 50, startupPoll: 5, portRelease: 20, relaunchReadyTimeout: 30 });
+    });
+
+    it('is a no-op when the daemon is already online', async () => {
+      pm2State = { name: MTPLX_APP, status: 'online', pid: 777, args: ['serve', '--port', '8000'] };
+
+      const result = await ensureMtplxRunning();
+
+      expect(result).toEqual({ ready: true, reason: null });
+      expect(startCalls()).toHaveLength(0);
+    });
+
+    it('starts a stopped daemon and reports ready once it answers', async () => {
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(BINARY);
+      // Not answering yet at the guard probe, answering by the readiness poll —
+      // the ordinary cold-start shape for a multi-gigabyte MLX checkpoint.
+      const probe = vi.spyOn(openAiModelsProbe, 'probeOpenAiModels');
+      probe.mockResolvedValueOnce({ reachable: false })   // ensureMtplxRunning's "is someone else serving?" guard
+        .mockResolvedValueOnce({ reachable: false })      // startMtplxServer's port-collision guard
+        .mockResolvedValue({ reachable: true });          // startup poll
+
+      const result = await ensureMtplxRunning();
+
+      expect(result.ready).toBe(true);
+      expect(startCalls()).toHaveLength(1);
+    });
+
+    // A server the user started outside PortOS answers on the port but has no
+    // PM2 entry. Starting our own would collide, so back off and use it.
+    it('does not start anything when something else already serves the port', async () => {
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(BINARY);
+      vi.spyOn(openAiModelsProbe, 'probeOpenAiModels').mockResolvedValue({ reachable: true });
+
+      const result = await ensureMtplxRunning();
+
+      expect(result).toEqual({ ready: true, reason: null });
+      expect(startCalls()).toHaveLength(0);
+    });
+
+    it('reports the reason rather than throwing when the start fails', async () => {
+      // No binary on PATH — `startMtplxServer` throws a ServerError, and a
+      // caller sitting in front of an inference request must get a reason back,
+      // not an exception through its stack.
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(null);
+
+      const result = await ensureMtplxRunning();
+
+      expect(result.ready).toBe(false);
+      expect(result.reason).toMatch(/not found on PATH/);
+    });
+
+    it('relaunches on the checkpoint and port the recovered config names', async () => {
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(BINARY);
+      // Seed the recovered config the way a PortOS restart under a live daemon
+      // would, then stop it — the relaunch must reuse that line, not guess.
+      pm2State = { name: MTPLX_APP, status: 'online', pid: 5, args: ['serve', '--port', '8123', '--model', 'Example/Chosen-MTP'] };
+      await getMtplxServerStatus();
+      pm2State = null;
+
+      await ensureMtplxRunning();
+
+      const args = startCalls()[0].slice(startCalls()[0].indexOf('--') + 1);
+      expect(args).toContain('8123');
+      expect(args).toContain('Example/Chosen-MTP');
+    });
+
+    // The saved port is the ONLY record of where MTPLX belongs once PortOS has
+    // restarted with it stopped — probing the default port instead would miss a
+    // server already on the saved one and then collide with it on start.
+    it('probes the saved port, not the default, when there is no recovered config', async () => {
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(BINARY);
+      const settings = await import('./settings.js');
+      vi.spyOn(settings, 'getSettings').mockResolvedValue({ localLlm: { mtplx: { launch: { port: 8010 } } } });
+      const probe = vi.spyOn(openAiModelsProbe, 'probeOpenAiModels').mockResolvedValue({ reachable: true });
+
+      const result = await ensureMtplxRunning();
+
+      expect(result.ready).toBe(true);
+      expect(probe).toHaveBeenCalledWith('http://127.0.0.1:8010/v1', expect.anything());
+      expect(startCalls()).toHaveLength(0);
+    });
+
+    it('marks the daemon used, so a request resets the idle clock', async () => {
+      pm2State = { name: MTPLX_APP, status: 'online', pid: 777, args: ['serve', '--port', '8000'] };
+      const { daemonLastUsedAt } = await import('../lib/managedDaemon.js');
+
+      const before = daemonLastUsedAt(MTPLX_APP);
+      await new Promise((r) => setTimeout(r, 2));
+      await ensureMtplxRunning();
+
+      expect(daemonLastUsedAt(MTPLX_APP)).toBeGreaterThan(before);
+    });
+  });
+
+  describe('isMtplxProvider', () => {
+    it('matches a local MTPLX endpoint', () => {
+      expect(isMtplxProvider({ type: 'api', endpoint: 'http://127.0.0.1:8000/v1', id: 'mtplx', mtplxBacked: true })).toBe(true);
+    });
+
+    // An MTPLX on a tailnet peer is someone else's process — PortOS must
+    // neither start it nor count its traffic against this install's idle window.
+    it('does not match an MTPLX on another machine', () => {
+      expect(isMtplxProvider({ type: 'api', endpoint: 'http://100.64.0.5:8000/v1', id: 'mtplx', mtplxBacked: true })).toBe(false);
+    });
+
+    it('does not match a CLI provider', () => {
+      expect(isMtplxProvider({ type: 'cli', endpoint: 'http://127.0.0.1:8000/v1', id: 'mtplx', mtplxBacked: true })).toBe(false);
+    });
+  });
+
+  describe('ensureMtplxProviderReady', () => {
+    it('passes through a provider that is not MTPLX without touching PM2', async () => {
+      const result = await ensureMtplxProviderReady({ type: 'api', endpoint: 'https://api.example.com/v1', id: 'remote' });
+
+      expect(result).toEqual({ success: true });
+      expect(execPm2Calls.filter((c) => c[0] === 'start')).toHaveLength(0);
+    });
+
+    it('surfaces a failed lazy start as an error the caller can report', async () => {
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue(null);
+
+      const result = await ensureMtplxProviderReady({ type: 'api', endpoint: 'http://127.0.0.1:8000/v1', id: 'mtplx', mtplxBacked: true });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/not found on PATH/);
+    });
+  });
+
 });

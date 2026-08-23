@@ -5,7 +5,7 @@ import { writeFile, unlink } from 'fs/promises';
 import { join, dirname } from 'path';
 import { createRequire } from 'module';
 import { homedir } from 'os';
-import { extractJSONArray, safeJSONParse, tryReadFile } from '../lib/fileUtils.js';
+import { atomicWrite, extractJSONArray, safeJSONParse, tryReadFile } from '../lib/fileUtils.js';
 import { parseCommandArgs } from '../lib/commandSecurity.js';
 
 const IS_WIN = process.platform === 'win32';
@@ -664,9 +664,51 @@ function spawnPm2StartEcosystem(cwd, ecosystemFile, processNames, pm2Home) {
  *
  * @param {string|null} [pm2Home=null]
  */
-export async function saveProcessList(pm2Home = null) {
+export async function saveProcessList(pm2Home = null, { exclude = [] } = {}) {
   await execPm2(['save'], { env: buildEnv(pm2Home) });
-  return { success: true };
+  const dropped = await dropFromSavedList(exclude, pm2Home);
+  return { success: true, excluded: dropped };
+}
+
+/**
+ * Remove app entries from PM2's dump AFTER `pm2 save` wrote it.
+ *
+ * `pm2 save` is process-list wide with no exclusion flag — it snapshots whatever
+ * is running. That is the wrong answer for a daemon PortOS starts on demand:
+ * MTPLX is lazily started by the first request that needs it and stopped again
+ * when idle, so resurrecting it at boot would put 20GB back on a machine nobody
+ * has asked anything of yet — precisely the waste the idle stop exists to end.
+ *
+ * Rewriting the dump rather than stopping the daemon first keeps the running
+ * process untouched: the user's MTPLX stays up for the session, it just isn't in
+ * the list a reboot replays.
+ *
+ * Best-effort by design. An unreadable or non-JSON dump means PM2 owns a format
+ * this doesn't understand, and a save that persisted one extra process is a far
+ * better outcome than a corrupted dump that resurrects none.
+ *
+ * @param {string[]} names app names to drop
+ * @param {string|null} [pm2Home]
+ * @returns {Promise<string[]>} the names actually removed
+ */
+async function dropFromSavedList(names, pm2Home = null) {
+  if (!names?.length) return [];
+  const home = pm2Home || process.env.PM2_HOME || join(homedir(), '.pm2');
+  const dumpPath = join(home, 'dump.pm2');
+  const raw = await tryReadFile(dumpPath);
+  if (raw === null) return [];
+  const parsed = safeJSONParse(raw, null, { allowArray: true });
+  if (!Array.isArray(parsed)) return [];
+
+  const drop = new Set(names);
+  const kept = parsed.filter((app) => !drop.has(app?.name));
+  const removed = parsed.length - kept.length;
+  if (removed === 0) return [];
+
+  await atomicWrite(dumpPath, kept);
+  const dropped = parsed.filter((app) => drop.has(app?.name)).map((app) => app.name);
+  console.log(`💾 Excluded ${dropped.join(', ')} from the PM2 boot list (started on demand instead)`);
+  return dropped;
 }
 
 /**

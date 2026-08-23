@@ -1065,4 +1065,106 @@ describe('llamaServerManager', () => {
       // not by accident, so this one test buys the room rather than the suite.
     }, 30000);
   });
+
+  // ===========================================================================
+  // IDLE UNLOAD (--sleep-idle-seconds)
+  // ===========================================================================
+  //
+  // llama.cpp releases a checkpoint IN PLACE and reloads it on the next request,
+  // so PortOS passes a flag rather than stopping the process the way it does for
+  // MTPLX. The flag is recent, and an older build rejects an unknown flag and
+  // exits before it binds — hence the capability probe these tests pin.
+  describe('idle unload', () => {
+    /** Pin `llama-server --help` output for the capability probe. */
+    const mockHelp = (text) => vi.spyOn(childProcess, 'execFile')
+      .mockImplementation((_bin, _args, _opts, cb) => { cb(null, text, ''); return fakeSpawnProcess(); });
+
+    const startArgs = () => (execPm2Calls.find((c) => c[0] === 'start') || []).slice(8);
+
+    it('puts the window on the launch line in SECONDS when the build supports it', async () => {
+      mockHelp('--sleep-idle-seconds SECONDS  number of seconds of idleness');
+
+      await startLlamaServer({ model: modelPath, draftModel: null, specType: '', port: 8080, sleepIdleMinutes: 30 });
+
+      expect(startArgs()).toContain('--sleep-idle-seconds');
+      // 30 minutes on the card, 1800 seconds on the flag — the unit is the
+      // flag's, and getting this backwards would idle-unload after 30 seconds.
+      expect(startArgs()[startArgs().indexOf('--sleep-idle-seconds') + 1]).toBe('1800');
+    });
+
+    it('leaves the flag off entirely when the window is 0', async () => {
+      mockHelp('--sleep-idle-seconds SECONDS  number of seconds of idleness');
+
+      await startLlamaServer({ model: modelPath, draftModel: null, specType: '', port: 8080, sleepIdleMinutes: 0 });
+
+      expect(startArgs()).not.toContain('--sleep-idle-seconds');
+    });
+
+    // The compatibility guarantee: an install on an older llama.cpp must keep
+    // starting. Emitting an unknown flag would make the daemon exit immediately.
+    it('omits the flag on a build that does not advertise it, rather than failing the start', async () => {
+      mockHelp('--port PORT  port to listen on\n--ctx-size N  context size');
+
+      const result = await startLlamaServer({ model: modelPath, draftModel: null, specType: '', port: 8080, sleepIdleMinutes: 30 });
+
+      expect(result.success).toBe(true);
+      expect(startArgs()).not.toContain('--sleep-idle-seconds');
+      // ...and the status reports what actually reached the process, not what was asked for.
+      expect(result.config.sleepIdleMinutes).toBe(0);
+    });
+
+    it('says so in the logs when the build cannot idle-unload', async () => {
+      mockHelp('--port PORT  port to listen on');
+
+      await startLlamaServer({ model: modelPath, draftModel: null, specType: '', port: 8080, sleepIdleMinutes: 30 });
+      const status = await getLlamaServerStatus();
+
+      expect(status.recentLogs.join('\n')).toContain('--sleep-idle-seconds');
+    });
+
+    it('treats a --help probe that fails as "unsupported"', async () => {
+      vi.spyOn(childProcess, 'execFile')
+        .mockImplementation((_bin, _args, _opts, cb) => { cb(new Error('ENOENT'), '', ''); return fakeSpawnProcess(); });
+
+      const result = await startLlamaServer({ model: modelPath, draftModel: null, specType: '', port: 8080, sleepIdleMinutes: 30 });
+
+      expect(result.success).toBe(true);
+      expect(startArgs()).not.toContain('--sleep-idle-seconds');
+    });
+
+    it('probes --help once per binary, not once per start', async () => {
+      const spy = mockHelp('--sleep-idle-seconds SECONDS');
+
+      await startLlamaServer({ model: modelPath, draftModel: null, specType: '', port: 8080, sleepIdleMinutes: 30 });
+      await stopLlamaServer();
+      await startLlamaServer({ model: modelPath, draftModel: null, specType: '', port: 8080, sleepIdleMinutes: 30 });
+
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    // A PortOS restart under a still-running daemon recovers the launch line
+    // from PM2's argv; the window has to come back with it or the status card
+    // would report idle unload as off on a server that has it on.
+    it('recovers the window from a running process argv, converting back to minutes', async () => {
+      pm2State = {
+        name: LLAMA_APP,
+        status: 'online',
+        pid: 4242,
+        args: ['-m', modelPath, '--port', '8080', '--sleep-idle-seconds', '1800'],
+      };
+
+      const status = await getLlamaServerStatus();
+
+      expect(status.config.sleepIdleMinutes).toBe(30);
+    });
+
+    it('reports 0 for a running process whose argv carries no window', async () => {
+      pm2State = { name: LLAMA_APP, status: 'online', pid: 4242, args: ['-m', modelPath, '--port', '8080'] };
+
+      const status = await getLlamaServerStatus();
+
+      expect(status.config.sleepIdleMinutes).toBe(0);
+    });
+  });
+
 });

@@ -85,3 +85,171 @@ export function pm2ArgValue(args, flag) {
   const idx = list.indexOf(flag);
   return idx !== -1 && idx + 1 < list.length ? list[idx + 1] : null;
 }
+
+// =============================================================================
+// IDLE REAPER
+// =============================================================================
+
+/**
+ * Shared "stop this daemon when nothing has used it for a while" mechanism.
+ *
+ * ONLY for a daemon that cannot release its weights any other way. `llama-server`
+ * deliberately does NOT register here: it carries its own `--sleep-idle-seconds`,
+ * which unloads the model in place and reloads it on the next request without the
+ * process ever going away (see `llamaServerManager.js`). Stopping that process to
+ * reclaim the same memory would trade a cheap internal reload for a full PM2
+ * cold start, and lose the launch line with it. MTPLX has no such flag — its
+ * `--retrieval-idle-timeout` unloads retrieval models only, never the main
+ * checkpoint — so stopping the process is the only way to get its 20GB back, and
+ * it is the one registrant.
+ *
+ * One `setInterval` for every registrant, not one per daemon: the beat is a
+ * coarse poll against a timestamp, so N timers would buy nothing but N chances
+ * to leak one.
+ */
+
+/** How often the reaper checks. Coarse on purpose — the windows are minutes. */
+const IDLE_REAP_INTERVAL_MS = 60_000;
+
+/** name → `{ getIdleMs, stop, lastUsedAt }`. */
+const idleDaemons = new Map();
+let reaperTimer = null;
+
+/**
+ * A user-supplied idle window in minutes, as milliseconds.
+ *
+ * `0` means "never stop" and is returned as `0`, NOT as null — it is a real
+ * choice (today's always-on behaviour) and must survive a round-trip through
+ * settings distinguishably from "no value stored". Anything unparseable or
+ * negative is `null` = not configured, which the reaper also treats as never.
+ *
+ * @param {unknown} minutes
+ * @returns {number|null}
+ */
+export function idleWindowMs(minutes) {
+  // `Number(null)` and `Number('')` are both 0, which would make "nothing
+  // stored" indistinguishable from the user explicitly choosing "never stop".
+  // They mean the same thing to the reaper, but not to a caller reporting what
+  // is configured — so absent stays null.
+  if (minutes === null || minutes === undefined || minutes === '') return null;
+  const n = Number(minutes);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.floor(n) * 60_000;
+}
+
+/**
+ * Register a daemon the reaper may stop.
+ *
+ * `lastUsedAt` is seeded to NOW rather than to null, so a daemon that was just
+ * started by hand — or one PortOS re-adopted after its own restart — gets a
+ * full idle window before it is eligible. Seeding null and treating it as
+ * "infinitely idle" would reap a server the user started seconds ago.
+ *
+ * Re-registering the same name refreshes the hooks and leaves `lastUsedAt`
+ * alone, so a manager reloaded under test doesn't reset a live clock.
+ *
+ * @param {{name: string, getIdleMs: () => Promise<number|null>|number|null, stop: () => Promise<unknown>}} daemon
+ *   `getIdleMs` resolves the CURRENT configured window on every sweep (so a
+ *   settings change takes effect without a restart); `null`/`0` = never stop.
+ */
+export function registerIdleDaemon({ name, getIdleMs, stop }) {
+  const existing = idleDaemons.get(name);
+  idleDaemons.set(name, {
+    getIdleMs,
+    stop,
+    lastUsedAt: existing?.lastUsedAt ?? Date.now(),
+  });
+}
+
+/**
+ * Record that something just used `name` — the signal the whole mechanism runs
+ * on. Call it on real traffic (an inference request, a lazy start), never on a
+ * status poll: a status card that refreshes every few seconds would otherwise
+ * hold a 24GB checkpoint resident forever while nobody used it.
+ *
+ * A no-op for an unregistered name, so a call site doesn't have to know whether
+ * this install registered that daemon.
+ *
+ * @param {string} name
+ */
+export function markDaemonUsed(name) {
+  const entry = idleDaemons.get(name);
+  if (entry) entry.lastUsedAt = Date.now();
+}
+
+/** The recorded last-use timestamp for `name`, or `null`. Exposed for status cards. */
+export function daemonLastUsedAt(name) {
+  return idleDaemons.get(name)?.lastUsedAt ?? null;
+}
+
+/**
+ * One sweep: stop every registered daemon whose window has elapsed.
+ *
+ * Exported so a test can drive it directly instead of waiting on the timer, and
+ * so a caller can force a sweep after a settings change.
+ *
+ * @param {number} [now]
+ * @returns {Promise<string[]>} the names actually stopped
+ */
+export async function reapIdleDaemons(now = Date.now()) {
+  const stopped = [];
+  for (const [name, entry] of idleDaemons) {
+    // Resolved per sweep, so lowering the window in Settings applies to the very
+    // next beat rather than to the next server restart.
+    const windowMs = await Promise.resolve(entry.getIdleMs()).catch(() => null);
+    if (!windowMs || windowMs <= 0) continue;
+    if (now - entry.lastUsedAt < windowMs) continue;
+
+    const idleMin = Math.round((now - entry.lastUsedAt) / 60_000);
+    console.log(`💤 Stopping ${name} — idle ${idleMin}m (window ${Math.round(windowMs / 60_000)}m)`);
+    // `stop` reaches PM2 over a subprocess. A failure here must not kill the
+    // interval that every other daemon's reaping depends on.
+    const failed = await Promise.resolve(entry.stop()).then(() => null, (err) => err);
+    if (failed) {
+      console.error(`❌ Idle stop of ${name} failed: ${failed.message}`);
+      continue;
+    }
+    // Only on success: a failed stop that left the daemon up would otherwise
+    // retry every beat forever with the clock reset each time.
+    entry.lastUsedAt = now;
+    stopped.push(name);
+  }
+  return stopped;
+}
+
+/**
+ * Arm the single reaper timer. Idempotent — a second call is a no-op rather than
+ * a second interval.
+ *
+ * Boot-safe by construction: it arms a timer and reads timestamps. It makes no
+ * AI provider call, which is what lets `server/index.js` start it unconditionally
+ * under AGENTS.md's "No cold-bootstrap LLM calls" rule.
+ *
+ * @param {{intervalMs?: number}} [options]
+ */
+export function startIdleReaper({ intervalMs = IDLE_REAP_INTERVAL_MS } = {}) {
+  if (reaperTimer) return;
+  reaperTimer = setInterval(() => {
+    // Outside the Express request lifecycle: an unhandled rejection here would
+    // take the process down, so the sweep's own failures are swallowed after
+    // logging (each daemon's stop failure is already reported individually).
+    reapIdleDaemons().catch((err) => console.error(`❌ Idle reaper sweep failed: ${err.message}`));
+  }, intervalMs);
+  // Never hold the event loop open for this — a shutdown must not wait a minute
+  // for a poll that has nothing to do.
+  reaperTimer.unref?.();
+  console.log(`💤 Idle reaper armed (checking every ${Math.round(intervalMs / 1000)}s)`);
+}
+
+/** Disarm the reaper. For shutdown and for test isolation. */
+export function stopIdleReaper() {
+  if (!reaperTimer) return;
+  clearInterval(reaperTimer);
+  reaperTimer = null;
+}
+
+/** Test seam: drop every registration and disarm the timer. */
+export function _resetIdleDaemonsForTests() {
+  stopIdleReaper();
+  idleDaemons.clear();
+}

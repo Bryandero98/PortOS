@@ -18,7 +18,7 @@ const renderCard = (props = {}) => {
     onConfigureLlama: vi.fn(),
     onConfigureMtplx: vi.fn(),
     onInstallMtplx: vi.fn(),
-    onStartMtplx: vi.fn(),
+    onSaveIdleWindow: vi.fn(),
     onStopMtplx: vi.fn(),
     onSaveStartup: vi.fn(),
   };
@@ -83,33 +83,46 @@ describe('RuntimeServersCard', () => {
     expect(handlers.onConfigureLlama).toHaveBeenCalled();
   });
 
-  it('starts MTPLX in place once a checkpoint is cached', () => {
-    const handlers = renderCard({
+  // MTPLX cannot unload its checkpoint in place, so PortOS stops the process
+  // when it goes idle and the next request starts it again. A manual Start would
+  // only pin 20GB ahead of a request that may never come.
+  it('offers no MTPLX Start — it starts on demand', () => {
+    renderCard({
       mtplxStatus: { installed: true, running: false, supported: true, cachedModels: ['Example/Qwen-MTP'], endpoint: 'http://127.0.0.1:8000/v1' },
     });
-    fireEvent.click(within(row('MTPLX')).getByRole('button', { name: /^Start/ }));
-    expect(handlers.onStartMtplx).toHaveBeenCalled();
+    const mtplx = row('MTPLX');
+    expect(within(mtplx).queryByRole('button', { name: /^Start/ })).toBeNull();
+    expect(within(mtplx).getByText(/Starts on demand/)).toBeInTheDocument();
+  });
+
+  // llama.cpp keeps its Stop: it is started explicitly from the launcher, and
+  // its idle release keeps the process up rather than removing it.
+  it('still offers Stop for a running MTPLX', () => {
+    const handlers = renderCard({
+      mtplxStatus: { installed: true, running: true, managed: true, supported: true, cachedModels: ['Example/Qwen-MTP'] },
+    });
+    fireEvent.click(within(row('MTPLX')).getByRole('button', { name: /^Stop/ }));
+    expect(handlers.onStopMtplx).toHaveBeenCalled();
   });
 
   it('invokes a row action with NO arguments — never React\'s click event', () => {
-    // MTPLX's start handler takes a launch config and the client JSON.stringify's
-    // it into the request body. Binding it straight to `onClick` handed it the
-    // SyntheticEvent instead, which throws on its circular DOM refs.
+    // A handler bound straight to `onClick` is handed React's SyntheticEvent as
+    // its first argument, which throws on its circular DOM refs the moment a
+    // handler tries to serialize it into a request body.
     const handlers = renderCard({
-      mtplxStatus: { installed: true, running: false, supported: true, cachedModels: ['Example/Qwen-MTP'] },
+      mtplxStatus: { installed: true, running: true, managed: true, supported: true, cachedModels: ['Example/Qwen-MTP'] },
     });
-    const mtplx = row('MTPLX');
-    fireEvent.click(within(mtplx).getByRole('button', { name: /^Start/ }));
-    expect(handlers.onStartMtplx).toHaveBeenCalledWith();
+    fireEvent.click(within(row('MTPLX')).getByRole('button', { name: /^Stop/ }));
+    expect(handlers.onStopMtplx).toHaveBeenCalledWith();
 
     fireEvent.click(within(row('Ollama')).getByRole('button', { name: /Install/ }));
     expect(handlers.onInstallBackend).toHaveBeenCalledWith('ollama');
   });
 
-  it('blocks the MTPLX Start and points at the in-app download when its cache is empty', () => {
-    // No Start button downloads weights, and `mtplx serve` exits before it binds
-    // on an empty cache — so offering Start would only produce a failure. The
-    // fix is the Configure card below, never a terminal command (PRD NR-9).
+  it('points at the in-app download when the MTPLX cache is empty', () => {
+    // Nothing downloads weights on its own, and `mtplx serve` exits before it
+    // binds on an empty cache — so the row names the in-app fix (the Configure
+    // card below) rather than a terminal command (PRD NR-9).
     renderCard({
       mtplxStatus: { installed: true, running: false, supported: true, cachedModels: [], cacheError: null },
     });
@@ -152,4 +165,83 @@ describe('RuntimeServersCard', () => {
     expect(within(ollama).queryByRole('button', { name: /Install/ })).toBeNull();
     expect(within(ollama).getByRole('link', { name: /Download/ })).toHaveAttribute('href', 'https://ollama.com/download');
   });
+
+  // ===========================================================================
+  // IDLE RELEASE
+  // ===========================================================================
+  describe('idle release window', () => {
+    const idleField = (label) => within(row(label)).getByLabelText('Idle release');
+
+    it('shows the saved window for each managed daemon', () => {
+      renderCard({
+        llamaStatus: { installed: true, running: true, idleMinutes: 30 },
+        mtplxStatus: { installed: true, running: true, supported: true, idleMinutes: 15 },
+      });
+      expect(idleField('llama.cpp')).toHaveValue(30);
+      expect(idleField('MTPLX')).toHaveValue(15);
+    });
+
+    it('saves the window on blur, per runtime', () => {
+      const handlers = renderCard({ llamaStatus: { installed: true, running: true, idleMinutes: 0 } });
+      const field = idleField('llama.cpp');
+      fireEvent.change(field, { target: { value: '45' } });
+      fireEvent.blur(field);
+      expect(handlers.onSaveIdleWindow).toHaveBeenCalledWith('llama', 45);
+    });
+
+    // 0 is a real choice, not a cleared field — it reproduces the always-on
+    // behaviour every install had before this setting existed.
+    it('saves an explicit 0 and labels it "never"', () => {
+      const handlers = renderCard({ llamaStatus: { installed: true, running: true, idleMinutes: 30 } });
+      const field = idleField('llama.cpp');
+      fireEvent.change(field, { target: { value: '0' } });
+      fireEvent.blur(field);
+      expect(handlers.onSaveIdleWindow).toHaveBeenCalledWith('llama', 0);
+      expect(within(row('llama.cpp')).getByText(/never/)).toBeInTheDocument();
+    });
+
+    it('does not re-save a value that did not change', () => {
+      const handlers = renderCard({ llamaStatus: { installed: true, running: true, idleMinutes: 30 } });
+      fireEvent.blur(idleField('llama.cpp'));
+      expect(handlers.onSaveIdleWindow).not.toHaveBeenCalled();
+    });
+
+    it('reverts a nonsensical value instead of saving it', () => {
+      const handlers = renderCard({ llamaStatus: { installed: true, running: true, idleMinutes: 30 } });
+      const field = idleField('llama.cpp');
+      fireEvent.change(field, { target: { value: '-5' } });
+      fireEvent.blur(field);
+      expect(handlers.onSaveIdleWindow).not.toHaveBeenCalled();
+      expect(field).toHaveValue(30);
+    });
+
+    // A window longer than a day is indistinguishable from "never" and is far
+    // likelier a units mix-up (seconds typed into a minutes field).
+    it('clamps a window longer than a day', () => {
+      const handlers = renderCard({ llamaStatus: { installed: true, running: true, idleMinutes: 0 } });
+      const field = idleField('llama.cpp');
+      fireEvent.change(field, { target: { value: '99999' } });
+      fireEvent.blur(field);
+      expect(handlers.onSaveIdleWindow).toHaveBeenCalledWith('llama', 1440);
+    });
+
+    it('offers no window for a runtime that is not installed', () => {
+      renderCard({ llamaStatus: { installed: false, running: false } });
+      expect(within(row('llama.cpp')).queryByLabelText('Idle release')).toBeNull();
+    });
+
+    // Ollama and LM Studio own their own lifecycles — PortOS has no process to
+    // stop and no flag to pass, so offering the control would be a lie.
+    it('offers no window for the runtimes PortOS does not manage as PM2 processes', () => {
+      renderCard({});
+      expect(within(row('Ollama')).queryByLabelText('Idle release')).toBeNull();
+      expect(within(row('LM Studio')).queryByLabelText('Idle release')).toBeNull();
+    });
+
+    it('warns that only PortOS traffic counts', () => {
+      renderCard({});
+      expect(screen.getByText(/Only PortOS traffic counts/)).toBeInTheDocument();
+    });
+  });
+
 });

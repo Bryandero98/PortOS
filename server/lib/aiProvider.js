@@ -6,6 +6,7 @@
 import { getAllProviders } from '../services/providers.js';
 import { startAIOp } from '../services/aiStatusEvents.js';
 import { ensureProviderReady as ensureOllamaProviderReady, isOllamaProvider } from '../services/ollamaManager.js';
+import { ensureMtplxProviderReady, isMtplxProvider } from '../services/mtplxServerManager.js';
 // localModelHealing is lazy-imported at its (rare, error-recovery) call site
 // below — a static import here pulls its notifications/providers deps (which
 // eagerly import fileUtils `PATHS`) into every aiProvider consumer's module
@@ -271,6 +272,19 @@ export async function callProviderAISimple(provider, model, prompt, options = {}
     const ready = await ensureOllamaProviderReady(provider).catch((err) => ({ success: false, error: err.message }));
     if (!ready.success) {
       const error = `Ollama is not running and PortOS could not start it: ${ready.error || 'unknown error'}`;
+      statusOp.error(error);
+      return { error };
+    }
+  }
+
+  // The idle reaper may have stopped MTPLX to release its checkpoint. This is
+  // the lazy half of that bargain — and the only place the idle clock is
+  // refreshed, so a run that takes an hour still counts as use throughout.
+  if (isMtplxProvider(provider)) {
+    statusOp.update('provider:starting', 'Starting MTPLX if needed…', { providerId: provider.id });
+    const ready = await ensureMtplxProviderReady(provider).catch((err) => ({ success: false, error: err.message }));
+    if (!ready.success) {
+      const error = `MTPLX is not running and PortOS could not start it: ${ready.error || 'unknown error'}`;
       statusOp.error(error);
       return { error };
     }

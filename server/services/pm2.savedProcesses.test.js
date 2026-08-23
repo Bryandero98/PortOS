@@ -7,7 +7,8 @@ import { join } from 'path';
 // call is made). Mocked to keep the import side-effect-free in CI.
 vi.mock('pm2', () => ({ default: { connect: vi.fn(), list: vi.fn(), disconnect: vi.fn() } }));
 
-import { getSavedProcessNames } from './pm2.js';
+import { getSavedProcessNames, saveProcessList } from './pm2.js';
+import * as pm2Module from './pm2.js';
 
 /**
  * `getSavedProcessNames` reads `$PM2_HOME/dump.pm2` — the list a boot-time
@@ -51,5 +52,80 @@ describe('getSavedProcessNames', () => {
   it('skips entries with no usable name rather than emitting undefined', async () => {
     await writeFile(join(home, 'dump.pm2'), JSON.stringify([{ name: 'portos-mtplx' }, {}, { name: 42 }]));
     expect(await getSavedProcessNames(home)).toEqual(['portos-mtplx']);
+  });
+});
+
+
+/**
+ * `pm2 save` snapshots the whole running process list and has no exclusion flag,
+ * so a daemon PortOS starts ON DEMAND has to be filtered out of the dump after
+ * the fact. MTPLX is exactly that: the first request that needs it starts it and
+ * the idle reaper stops it again, so resurrecting it at boot would pin its
+ * multi-gigabyte checkpoint on a machine nobody has asked anything of yet.
+ */
+describe('saveProcessList exclusions', () => {
+  let home;
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), 'portos-pm2-home-'));
+    // `pm2 save` itself is the real subprocess; the dump it would have written
+    // is seeded per test so the filtering is what's under assertion.
+    vi.spyOn(pm2Module, 'execPm2').mockResolvedValue({ stdout: '', stderr: '' });
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await rm(home, { recursive: true, force: true });
+  });
+
+  const seedDump = (names) =>
+    writeFile(join(home, 'dump.pm2'), JSON.stringify(names.map((name) => ({ name, script: `/bin/${name}` }))));
+
+  it('drops an excluded app from the dump and leaves the rest', async () => {
+    await seedDump(['portos-server', 'portos-llama-server', 'portos-mtplx']);
+
+    const result = await saveProcessList(home, { exclude: ['portos-mtplx'] });
+
+    expect(result.excluded).toEqual(['portos-mtplx']);
+    expect(await getSavedProcessNames(home)).toEqual(['portos-server', 'portos-llama-server']);
+  });
+
+  // llama.cpp still runs at boot when the user saves — it has no lazy start, and
+  // its own idle unload releases the memory without the process going away.
+  it('leaves llama-server in the boot list', async () => {
+    await seedDump(['portos-llama-server', 'portos-mtplx']);
+
+    await saveProcessList(home, { exclude: ['portos-mtplx'] });
+
+    expect(await getSavedProcessNames(home)).toContain('portos-llama-server');
+  });
+
+  it('is a no-op when the excluded app was not running anyway', async () => {
+    await seedDump(['portos-server']);
+
+    const result = await saveProcessList(home, { exclude: ['portos-mtplx'] });
+
+    expect(result.excluded).toEqual([]);
+    expect(await getSavedProcessNames(home)).toEqual(['portos-server']);
+  });
+
+  it('saves everything when nothing is excluded', async () => {
+    await seedDump(['portos-server', 'portos-mtplx']);
+
+    const result = await saveProcessList(home);
+
+    expect(result).toEqual({ success: true, excluded: [] });
+    expect(await getSavedProcessNames(home)).toEqual(['portos-server', 'portos-mtplx']);
+  });
+
+  // A dump PM2 wrote in a shape this doesn't understand must be left ALONE. One
+  // extra resurrected process beats a rewritten dump that resurrects none.
+  it('leaves an unparseable dump untouched rather than rewriting it', async () => {
+    await writeFile(join(home, 'dump.pm2'), 'not json at all');
+
+    const result = await saveProcessList(home, { exclude: ['portos-mtplx'] });
+
+    expect(result.excluded).toEqual([]);
+    expect(await getSavedProcessNames(home)).toBeNull();
   });
 });

@@ -26,10 +26,16 @@ import { commandExists } from '../lib/commandExists.js';
 import { sleep } from '../lib/fileUtils.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { launchArgs, normalizeTuning, tuningSpecsFor } from '../lib/localModelTuning.js';
-import { LOCAL_RUNTIMES, localEndpointPort } from '../lib/localProviderRuntime.js';
+import { LOCAL_RUNTIMES, localEndpointPort, localRuntimeKind, isLocalInstanceEndpoint } from '../lib/localProviderRuntime.js';
 import { listMtplxCachedModels, pickMtplxCachedModel } from '../lib/mtplxModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
-import { createDaemonLogBuffer, pm2ArgValue } from '../lib/managedDaemon.js';
+import { createDaemonLogBuffer, pm2ArgValue, idleWindowMs, markDaemonUsed, registerIdleDaemon } from '../lib/managedDaemon.js';
+// `settings.js` is lazy-imported at its call sites below, never statically: it
+// eagerly resolves `fileUtils.PATHS` at module load, which drags PATHS into the
+// module graph of every consumer of this manager and breaks the many suites that
+// partial-mock fileUtils without it. Same reason `lib/aiProvider.js` defers
+// `localModelHealing`.
+
 import { isAppleSilicon, isPortInUse } from '../lib/platform.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
 import { runStreamingCommand } from '../lib/streamingSpawn.js';
@@ -300,6 +306,10 @@ export async function getMtplxServerStatus() {
     // Is this PM2 app in the saved dump `pm2 resurrect` replays at boot?
     // `null` = the dump could not be read, which is not the same as "no".
     runAtStartup: savedApps === null ? null : savedApps.includes(MTPLX_APP),
+    idleMinutes: await configuredIdleMinutes(),
+    // What a lazy start will launch on, so the card's fields show the saved
+    // choice rather than resetting to "Auto" on every page load.
+    launch: await savedLaunchConfig(),
     cachedModels: (cache.models || []).map((m) => m?.repo_id).filter(Boolean),
     // The same cache, with what the manage-checkpoints UI needs to let a user
     // free the disk: how big each pack is, and whether it is actually servable
@@ -699,7 +709,8 @@ async function restorePrevious(previous, failure) {
 }
 
 /** Clears in-memory state (used by test suites). */
-export function _resetMtplxServerStateForTests({ startupWait, startupPoll, portRelease, relaunchReadyTimeout } = {}) {
+export function _resetMtplxServerStateForTests({ startupWait, startupPoll, portRelease, relaunchReadyTimeout, idleMinutes = 0 } = {}) {
+  idleMinutesOverride = idleMinutes;
   currentConfig = null;
   logs.reset();
   lastExitError = null;
@@ -708,4 +719,164 @@ export function _resetMtplxServerStateForTests({ startupWait, startupPoll, portR
   startupPollMs = Number.isFinite(startupPoll) ? startupPoll : 1500;
   portReleaseTimeoutMs = Number.isFinite(portRelease) ? portRelease : 30_000;
   relaunchReadyTimeoutMs = Number.isFinite(relaunchReadyTimeout) ? relaunchReadyTimeout : 300_000;
+}
+
+// =============================================================================
+// IDLE STOP + LAZY START
+// =============================================================================
+
+/**
+ * Why MTPLX is stopped on idle while llama-server is not.
+ *
+ * MTPLX holds its whole MLX checkpoint — 20GB is ordinary — for as long as the
+ * process is up, and it has no way to put that down in place: its
+ * `--retrieval-idle-timeout` unloads RETRIEVAL models (embedding/rerank) only,
+ * never the main checkpoint, and `mtplx settings set` covers live tunables like
+ * depth, not residency. Stopping the process is therefore the only lever, and
+ * lazy-start is what makes stopping it safe to do automatically.
+ *
+ * `llamaServerManager` deliberately takes the other path (`--sleep-idle-seconds`),
+ * because llama.cpp CAN unload in place — see `supportsSleepIdle` there.
+ */
+
+/**
+ * The configured idle window for MTPLX, in minutes. `0`/absent = never stop,
+ * which is what every install did before this setting existed, so an upgrade
+ * changes nothing until the user opts in.
+ */
+const readSettings = () => import('./settings.js').then((m) => m.getSettings()).catch(() => null);
+// See `configuredIdleMinutes`. Only `_resetMtplxServerStateForTests` writes it.
+let idleMinutesOverride = null;
+
+async function configuredIdleMinutes() {
+  // Test seam, same reason as `llamaServerManager`'s: a suite must not depend on
+  // whether this developer has an idle window configured. `null` reads settings.
+  if (idleMinutesOverride !== null) return idleMinutesOverride;
+  const settings = await readSettings();
+  const raw = Number(settings?.localLlm?.mtplx?.idleMinutes);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+}
+
+// Registered at module load so the reaper knows about MTPLX regardless of which
+// call path touches this module first. Registration itself starts nothing and
+// reads no settings — the window is resolved per sweep, inside `getIdleMs`.
+registerIdleDaemon({
+  name: MTPLX_APP,
+  getIdleMs: async () => idleWindowMs(await configuredIdleMinutes()),
+  stop: () => stopMtplxServer(),
+});
+
+/**
+ * The checkpoint/port the user last saved on the MTPLX card, for a lazy start to
+ * replay. Empty when nothing was saved — `startMtplxServer` then resolves a
+ * cached checkpoint itself, which is what the old Start button did.
+ */
+async function savedLaunchConfig() {
+  const settings = await readSettings();
+  const launch = settings?.localLlm?.mtplx?.launch;
+  return {
+    model: typeof launch?.model === 'string' && launch.model.trim() ? launch.model.trim() : null,
+    port: Number.isFinite(Number(launch?.port)) ? Number(launch.port) : null,
+  };
+}
+
+/** Record real MTPLX traffic. Never call this from a status poll — see `markDaemonUsed`. */
+export const markMtplxUsed = () => markDaemonUsed(MTPLX_APP);
+
+/**
+ * Bring MTPLX up if the idle reaper (or the user) stopped it, and mark it used
+ * either way.
+ *
+ * A no-op when it is already online — the overwhelmingly common case, and it
+ * must stay cheap enough to sit in front of every request. The one PM2 status
+ * read it costs is the same read `getMtplxServerStatus` already does on a poll.
+ *
+ * The relaunch reuses the config recovered from PM2's argv when PortOS still
+ * holds one, so the daemon comes back on exactly the checkpoint, port, and
+ * tuning the user last launched it with. `startMtplxServer` resolves a cached
+ * checkpoint on its own when there is no such record (a fresh PortOS whose
+ * reaper stopped a server it never started), which is the same fallback the
+ * Start button used to take.
+ *
+ * Resolves `{ ready, reason }` rather than throwing: a caller in front of an
+ * inference request wants to report "MTPLX could not be started" alongside its
+ * own error, not have a lazy start unwind its stack.
+ *
+ * @returns {Promise<{ready: boolean, reason: string|null}>}
+ */
+export async function ensureMtplxRunning() {
+  markMtplxUsed();
+
+  const pm2Status = await getAppStatusStrict(MTPLX_APP);
+  if (pm2Status?.status === 'online') return { ready: true, reason: null };
+
+  // Resolve the launch line BEFORE probing, so the probe below asks about the
+  // port this start would actually bind. Precedence: the config recovered from
+  // the last live process (it carries the tuning an assessment relaunch applied,
+  // which settings never see), then the launch options the user saved on the
+  // MTPLX card, then MTPLX's own cache pick. Reversing the first two would let a
+  // stale saved port fight a daemon PortOS is already tracking on another one.
+  const saved = await savedLaunchConfig();
+  const config = {
+    port: currentConfig?.port ?? saved.port ?? DEFAULT_PORT,
+    model: currentConfig?.model ?? saved.model ?? null,
+    tuning: currentConfig?.tuning ?? null,
+  };
+
+  // Something else is already serving that port — an MTPLX the user started
+  // outside PortOS, or another daemon entirely. Either way this is not ours to
+  // start, and probing beats racing `startMtplxServer` into a port conflict.
+  // Probing `endpointFor(currentConfig)` instead would ask about the DEFAULT
+  // port whenever PortOS restarted while MTPLX was stopped, which is exactly
+  // when the saved port is the only record of where it belongs.
+  const endpoint = endpointFor(config);
+  if (await probeEndpoint(endpoint)) return { ready: true, reason: null };
+
+  console.log(`🚄 MTPLX is stopped — starting it for an incoming request`);
+  const started = await startMtplxServer(config).catch((err) => ({ error: err }));
+
+  if (started.error) return { ready: false, reason: started.error.message };
+  // `startMtplxServer` returns as soon as it knows the process did not die on
+  // the spot; a multi-gigabyte MLX checkpoint routinely outlasts that window, so
+  // the caller's request has to wait for the real readiness signal.
+  if (started.online) return { ready: true, reason: null };
+  return waitForRelaunchedEndpoint(started.endpoint ?? endpoint);
+}
+
+/**
+ * Is this provider served by the MTPLX daemon PortOS manages?
+ *
+ * Mirrors `ollamaManager.isOllamaProvider` so `lib/aiProvider.js` gates both
+ * local daemons the same way. Only a LOCAL endpoint counts: an MTPLX on a
+ * tailnet peer is someone else's process, and neither starting nor idle-stopping
+ * it is this install's business.
+ */
+export function isMtplxProvider(provider) {
+  if (!provider || provider.type !== 'api') return false;
+  if (!isLocalInstanceEndpoint(provider.endpoint)) return false;
+  // `localRuntimeKind`, not `localBackendForProvider` — the latter only ever
+  // answers 'ollama'/'lmstudio' (it maps those two catalog ports), so it reports
+  // every MTPLX provider as having no local backend at all. The authoritative
+  // signal is the `mtplxBacked` marker the spawner itself keys on.
+  if (localRuntimeKind(provider) === 'mtplx') return true;
+  // ...and an endpoint-only provider aimed at the port THIS daemon is serving.
+  // Deliberately compared against the live launch config rather than treating
+  // :8000 as "must be MTPLX" — 8000 is a generic port, and claiming any local
+  // server on it would lazily start MTPLX for someone else's API.
+  const managedPort = currentConfig?.port;
+  return Boolean(managedPort) && localEndpointPort(provider.endpoint) === managedPort;
+}
+
+/**
+ * The `ensureProviderReady` shape `lib/aiProvider.js` expects, for MTPLX.
+ *
+ * This is the one call site that both refreshes the idle clock and lazily
+ * restarts — deliberately on the INFERENCE path rather than in
+ * `getMtplxServerEndpoint`, which status polls call every few seconds and which
+ * would therefore keep a 20GB checkpoint resident for a UI nobody is watching.
+ */
+export async function ensureMtplxProviderReady(provider) {
+  if (!isMtplxProvider(provider)) return { success: true };
+  const { ready, reason } = await ensureMtplxRunning();
+  return ready ? { success: true } : { success: false, error: reason };
 }
