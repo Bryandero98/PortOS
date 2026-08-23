@@ -33,6 +33,7 @@ import {
   FEDERATED_MEDIA_INPUT_ROLES,
   federatedMediaAssetId,
   federatedMediaAssetSchema,
+  federatedMediaDeniesFeature,
   federatedMediaSupports,
   isMultiInputRole,
 } from '../../lib/federatedMediaWire.js';
@@ -111,13 +112,17 @@ export function inputAssetRejection(capability, assets = [], status = null) {
       ? `${model} renders only from a source image — add one, or pick a ${textToKind} model.`
       : null;
   }
-  if (!limits) {
-    // The build-level remedy fires only when the peer POSITIVELY published its
-    // vocabulary and this feature is not in it. A peer that sent no list at all
-    // is undecidable — mid-overlap it may speak conditioning and simply have
-    // only text-only models allowlisted — so it keeps the merged message rather
-    // than being accused of running an old build on no evidence.
-    return Array.isArray(status?.features) && !federatedMediaSupports(status, 'inputAssets', capability)
+  // Both halves, in the same order the client's `peerModelAcceptsInput` checks
+  // them: the BUILD has to carry conditioning at all, and THIS MODEL has to
+  // advertise a block. Gating on the block alone would admit a job a peer that
+  // published a vocabulary without `inputAssets` then answers with a 400 —
+  // and would leave this end more permissive than the UI that fronts it.
+  if (!limits || !federatedMediaSupports(status, 'inputAssets', capability)) {
+    // Which remedy is a MESSAGE decision, not a gating one, so it asks the
+    // shared policy rather than restating when a missing signal indicts the
+    // peer's build. For conditioning it does not: mid-overlap a healthy peer
+    // may speak it and simply have only text-only models allowlisted.
+    return federatedMediaDeniesFeature(status, 'inputAssets', capability)
       ? 'The selected peer runs a PortOS build that cannot carry conditioning images. Update the peer, or render locally.'
       : `${model} on this peer does not accept source or reference images. Render locally, or pick a peer model that does.`;
   }

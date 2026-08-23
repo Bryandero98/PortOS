@@ -43,7 +43,7 @@ import {
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
 import { isCloudCliMode, deriveAvailableBackends, AGY_IMAGEGEN_DEFAULT_MODEL, IMAGE_GEN_MODE, cloudPromptRequired, isI2iCapableMode, pickI2iMode, modeLabel, referenceSlotsFor, supportsReferenceStrength } from '../lib/imageGenBackends';
 import { clampImageDimensions, clampImageEdge } from '../lib/imageGenResolutions';
-import { peerModelAcceptsInput, peerModelRequiresInput } from '../lib/federatedMediaReadiness.js';
+import { peerModelRequiresInput } from '../lib/federatedMediaReadiness.js';
 import { DEFAULT_NEGATIVE_PROMPT } from '../lib/imageGenDefaults';
 import { resolveCleanersFromConfig } from '../lib/imageCleaners';
 import toast from '../components/ui/Toast';
@@ -694,8 +694,8 @@ export default function ImageGen() {
     if (!remoteTarget.isRemote) return null;
     const model = remoteTarget.model;
     const present = [
-      ['an init image', initImage.source != null && !peerModelAcceptsInput(model, 'initImage', remoteTarget.snapshot)],
-      ['reference images', populatedRefs.length > 0 && !peerModelAcceptsInput(model, 'referenceImages', remoteTarget.snapshot)],
+      ['an init image', initImage.source != null && !remoteTarget.acceptsInput('initImage')],
+      ['reference images', populatedRefs.length > 0 && !remoteTarget.acceptsInput('referenceImages')],
       ['LoRA weights', selectedLoras.length > 0],
     ].filter(([, set]) => set).map(([label]) => label);
     if (present.length) {
@@ -708,7 +708,7 @@ export default function ImageGen() {
       return `${model?.modelName || 'The selected peer model'} renders only from a source image — add an init image, or pick a text-to-image model.`;
     }
     return null;
-  }, [remoteTarget.isRemote, remoteTarget.model, remoteTarget.snapshot, initImage.source, populatedRefs.length, selectedLoras.length]);
+  }, [remoteTarget.isRemote, remoteTarget.model, remoteTarget.acceptsInput, initImage.source, populatedRefs.length, selectedLoras.length]);
   // One reading for the submit button and the picker caption alike.
   const remoteBlocked = remoteTarget.isRemote
     ? (remoteTarget.blockedReason || remoteUnsupportedInputs)

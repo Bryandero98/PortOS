@@ -152,6 +152,11 @@ const LEGACY_FEATURE_TELL = Object.freeze({
  * would offer a render the peer answers with a 400. Display only — the route
  * re-checks and the provider re-checks again at admission.
  *
+ * A published list WINS over the legacy per-capability field rather than being
+ * OR'd with it: a peer that told us its whole vocabulary and left this feature
+ * out has positively denied it, so the legacy tell is consulted only when there
+ * is no list to read. Mirrors the server rule exactly.
+ *
  * @param {object|null} status - a peer's `mediaProviderStatus.snapshot`
  * @param {string} feature - 'lyrics' | 'inputAssets'
  * @param {object|null} [capability] - for the overlap fallback against a peer
@@ -159,7 +164,7 @@ const LEGACY_FEATURE_TELL = Object.freeze({
  * @returns {boolean} false whenever the answer cannot be established
  */
 export function federatedMediaSupports(status, feature, capability = null) {
-  if (Array.isArray(status?.features) && status.features.includes(feature)) return true;
+  if (Array.isArray(status?.features)) return status.features.includes(feature);
   return LEGACY_FEATURE_TELL[feature]?.(capability) === true;
 }
 
@@ -239,7 +244,7 @@ export function summarizePeerMediaQueue(queue) {
 export function resolvePeerMediaReadiness(peer, { now = Date.now() } = {}) {
   const config = peerMediaProviderConfig(peer);
   const status = isRecord(peer?.mediaProviderStatus) ? peer.mediaProviderStatus : null;
-  const snapshot = isRecord(status?.snapshot) ? status.snapshot : null;
+  const snapshot = peerMediaProviderSnapshot(peer);
   // An unverifiable status does not get to keep whatever the probe concluded —
   // including the `ready` it concluded at probe time.
   const state = status ? verifiedState(status, now) : null;
@@ -304,7 +309,7 @@ export function federatedMediaModelsForPeer(peer, kind) {
     .filter((model) => model?.engine && model?.modelId)
     .map(federatedMediaModelKey));
   if (allowed.size === 0) return NO_CAPABILITIES;
-  const advertised = peer?.mediaProviderStatus?.snapshot?.capabilities;
+  const advertised = peerMediaProviderSnapshot(peer)?.capabilities;
   if (!Array.isArray(advertised)) return NO_CAPABILITIES;
   const matched = advertised.filter((capability) => capability?.kind === kind
     && allowed.has(federatedMediaModelKey(capability)));

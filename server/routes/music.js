@@ -43,6 +43,7 @@ import { getCudaCapability } from '../lib/cudaCapability.js';
 import {
   FEDERATED_MEDIA_WIRE_VERSION,
   federatedMediaAudioProfileSchema,
+  federatedMediaDeniesFeature,
   federatedMediaSupports,
 } from '../lib/federatedMediaWire.js';
 import { enqueueJob, listJobs } from '../services/mediaJobQueue/index.js';
@@ -468,8 +469,14 @@ router.post('/generate', asyncHandler(async (req, res) => {
         );
       }
       if (!federatedMediaSupports(resolved.status, 'lyrics', capability)) {
+        // Blaming the peer's build is safe for THIS feature — the previous
+        // build stamped the legacy tell on every audio capability, so its
+        // absence can only mean an older one. `federatedMediaDeniesFeature`
+        // is what records that, per feature, rather than this call site.
         throw new ServerError(
-          'The selected peer runs a PortOS build that cannot carry lyrics to its provider. Update the peer, or render this track locally.',
+          federatedMediaDeniesFeature(resolved.status, 'lyrics', capability)
+            ? 'The selected peer runs a PortOS build that cannot carry lyrics to its provider. Update the peer, or render this track locally.'
+            : 'The selected peer is not reporting that it can carry lyrics to its provider. Render this track locally, or pick a lyric-capable peer.',
           { status: 400, code: 'MEDIA_PROVIDER_LYRICS_UNSUPPORTED' },
         );
       }

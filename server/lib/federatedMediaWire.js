@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { isPlainObject } from './objects.js';
 
 export const FEDERATED_MEDIA_WIRE_VERSION = 1;
 export const FEDERATED_MEDIA_STALE_AFTER_MS = 60_000;
@@ -373,13 +374,34 @@ const federatedMediaFeatureSchema = z.string().regex(/^[a-zA-Z][a-zA-Z0-9]{0,39}
 // consumer degrades to something it can explain instead.
 //
 // `capability` is the OVERLAP path only: for one release a provider on the
-// previous build advertises the same build-level fact per-capability, so a
-// consumer reads the root list first and falls back to the legacy field.
+// previous build advertises the same build-level fact per-capability. A
+// published list WINS over it outright rather than being OR'd with it — a peer
+// that told us its whole vocabulary and left this feature out has positively
+// denied it, and honoring a stale or contradictory per-capability field against
+// that would resurrect the very ambiguity the list replaced. The legacy tell is
+// consulted only when there is no list to read.
+// `decisive` records whether a FAILING legacy tell proves the peer's build is
+// old, and it differs per feature — which is why it belongs in the table rather
+// than in a comment at each call site (whoever adds the third feature would
+// otherwise inherit whichever policy they happened to read first):
+//
+//   lyrics      — the previous build stamped `acceptsLyrics` on EVERY audio
+//                 capability, so its absence can only mean an older build.
+//   inputAssets — the block is genuinely per-model, so its absence is ambiguous:
+//                 mid-overlap the peer may speak conditioning and simply have a
+//                 text-only model configured.
+//
+// Both gate identically; only a message that blames the BUILD may distinguish
+// them. See federatedMediaDeniesFeature.
 const FEDERATED_MEDIA_LEGACY_FEATURE_TELL = Object.freeze({
-  lyrics: (capability) => capability?.acceptsLyrics === true,
+  lyrics: { tell: (capability) => capability?.acceptsLyrics === true, decisive: true },
   // A build that predates conditioning omits the block entirely; one that
   // speaks it advertises the block (possibly with no roles for this model).
-  inputAssets: (capability) => !!capability?.inputAssets && typeof capability.inputAssets === 'object',
+  // `isPlainObject`, not a bare `typeof === 'object'`: the client mirror uses
+  // its own array-excluding record guard, and a malformed `inputAssets: []`
+  // reading true here and false there is exactly the provider/consumer
+  // disagreement this helper exists to prevent.
+  inputAssets: { tell: (capability) => isPlainObject(capability?.inputAssets), decisive: false },
 });
 
 /**
@@ -392,8 +414,40 @@ const FEDERATED_MEDIA_LEGACY_FEATURE_TELL = Object.freeze({
  * @returns {boolean} false whenever the answer cannot be established
  */
 export function federatedMediaSupports(status, feature, capability = null) {
-  if (Array.isArray(status?.features) && status.features.includes(feature)) return true;
-  return FEDERATED_MEDIA_LEGACY_FEATURE_TELL[feature]?.(capability) === true;
+  if (federatedMediaDeclaresFeatures(status)) return status.features.includes(feature);
+  return FEDERATED_MEDIA_LEGACY_FEATURE_TELL[feature]?.tell(capability) === true;
+}
+
+/**
+ * Did this provider publish its feature vocabulary at all?
+ *
+ * @param {object|null} status - a validated provider status payload
+ * @returns {boolean}
+ */
+export function federatedMediaDeclaresFeatures(status) {
+  return Array.isArray(status?.features);
+}
+
+/**
+ * Is this a denial we can attribute to the peer's BUILD, rather than merely an
+ * answer we could not establish?
+ *
+ * `federatedMediaSupports` flattens two different "no"s, because both must gate
+ * the same way: a peer that published a list and left the feature out has
+ * POSITIVELY denied it, while a peer that published no list may simply predate
+ * the list — or, for an ambiguous feature, speak it and have nothing configured
+ * that uses it. Only a MESSAGE may distinguish them, and telling a healthy peer
+ * to update itself is worse than giving the generic remedy.
+ *
+ * @param {object|null} status - a validated provider status payload
+ * @param {string} feature - a FEDERATED_MEDIA_FEATURES member
+ * @param {object|null} [capability] - the capability being acted on
+ * @returns {boolean} true only when the peer's build is provably the reason
+ */
+export function federatedMediaDeniesFeature(status, feature, capability = null) {
+  if (federatedMediaSupports(status, feature, capability)) return false;
+  return federatedMediaDeclaresFeatures(status)
+    || FEDERATED_MEDIA_LEGACY_FEATURE_TELL[feature]?.decisive === true;
 }
 
 // Strip unknown fields from peer responses before persisting or exposing them

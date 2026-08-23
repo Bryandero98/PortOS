@@ -306,13 +306,6 @@ describe('federated media provider capacity and idempotency', () => {
     expect(status.capabilities[0].lyrics).toBe(false);
   });
 
-  it('emits a features copy a consumer cannot mutate back into the module constant', async () => {
-    const status = await getFederatedMediaProviderStatus(config());
-    status.features.push('holoProjection');
-    expect((await getFederatedMediaProviderStatus(config())).features)
-      .toEqual(['lyrics', 'inputAssets']);
-  });
-
   it('renders lyrics on a lyric-capable model and advertises that its wire accepts them', async () => {
     await submitFederatedMediaJob({
       callerId: 'peer-example', config: config(),

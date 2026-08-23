@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   FEDERATED_MEDIA_FEATURES,
   federatedMediaAudioProfileSchema,
+  federatedMediaDeclaresFeatures,
+  federatedMediaDeniesFeature,
   federatedMediaCapabilitySchema,
   federatedMediaProviderStatusSchema,
   federatedMediaProviderJobSchema,
@@ -244,7 +246,7 @@ describe('federated media status kind projection', () => {
     expect(bad(['x'.repeat(41)])).toBe(false);
   });
 
-    it('rejects a concurrency that claims no capacity at all', () => {
+  it('rejects a concurrency that claims no capacity at all', () => {
     expect(federatedMediaProviderStatusSchema.safeParse(status({
       queue: { ...status().queue, concurrency: 0 },
     })).success).toBe(false);
@@ -345,11 +347,49 @@ describe('federatedMediaSupports', () => {
 
   // The overlap release: a peer on the previous build sends the per-capability
   // field and no root list, and must keep working unchanged.
-  it('falls back to the legacy per-capability field', () => {
+  it('falls back to the legacy per-capability field only when no list was published', () => {
     expect(federatedMediaSupports({}, 'lyrics', capability({ acceptsLyrics: true }))).toBe(true);
+    // A peer that published its vocabulary and left the feature out has
+    // positively denied it; a stale or contradictory legacy field on the
+    // capability does not get to overrule that.
+    expect(federatedMediaSupports({ features: [] }, 'lyrics', capability({ acceptsLyrics: true }))).toBe(false);
+    expect(federatedMediaSupports({ features: ['inputAssets'] }, 'lyrics', capability({ acceptsLyrics: true }))).toBe(false);
     expect(federatedMediaSupports({}, 'lyrics', capability({ acceptsLyrics: false }))).toBe(false);
     expect(federatedMediaSupports({}, 'inputAssets', capability({ inputAssets: { roles: ['initImage'] } }))).toBe(true);
     expect(federatedMediaSupports({}, 'inputAssets', capability({ inputAssets: null }))).toBe(false);
+    // An array is not a block. The client mirror's record guard excludes
+    // arrays, so a bare `typeof === 'object'` here would have the two ends
+    // disagreeing on a malformed capability — pinned on both sides.
+    expect(federatedMediaSupports({}, 'inputAssets', capability({ inputAssets: [] }))).toBe(false);
+  });
+
+  // The tri-state `federatedMediaSupports` flattens: "published a list without
+  // this feature" is a positive denial, "published no list" is undecidable.
+  // Only a message that blames the peer's build may distinguish them.
+  it('separates a published vocabulary from silence', () => {
+    expect(federatedMediaDeclaresFeatures({ features: [] })).toBe(true);
+    expect(federatedMediaDeclaresFeatures({})).toBe(false);
+    expect(federatedMediaDeclaresFeatures(null)).toBe(false);
+    expect(federatedMediaDeclaresFeatures({ features: 'lyrics' })).toBe(false);
+  });
+
+  // Gating is identical for both "no"s; only a MESSAGE may distinguish them,
+  // and which missing signal indicts the peer's build differs per feature.
+  it('attributes a denial to the build only where the missing signal proves it', () => {
+    const withBlock = capability({ inputAssets: { roles: ['initImage'] } });
+    // A published list that omits the feature is a positive denial either way.
+    expect(federatedMediaDeniesFeature({ features: [] }, 'lyrics', capability())).toBe(true);
+    expect(federatedMediaDeniesFeature({ features: ['lyrics'] }, 'inputAssets', withBlock)).toBe(true);
+    // No list: the previous build stamped acceptsLyrics on EVERY audio
+    // capability, so its absence can only mean an older build...
+    expect(federatedMediaDeniesFeature({}, 'lyrics', capability())).toBe(true);
+    // ...while an absent inputAssets block is ambiguous — a healthy peer may
+    // speak conditioning and simply have a text-only model configured, so it
+    // must not be told to update itself.
+    expect(federatedMediaDeniesFeature({}, 'inputAssets', capability({ inputAssets: null }))).toBe(false);
+    // Never a denial when the feature is actually supported.
+    expect(federatedMediaDeniesFeature({ features: ['lyrics'] }, 'lyrics', capability())).toBe(false);
+    expect(federatedMediaDeniesFeature({}, 'inputAssets', withBlock)).toBe(false);
   });
 
   it('exposes every feature this build emits, and answers false for anything else', () => {

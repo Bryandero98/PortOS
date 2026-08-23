@@ -364,6 +364,11 @@ describe('peerModelAcceptsInput / peerModelRequiresInput', () => {
     // treated as a denial.
     const model = withInput({ roles: ['initImage'], required: false, maxCount: 8 });
     expect(peerModelAcceptsInput(model, 'initImage', { features: ['inputAssets'] })).toBe(true);
+    // A peer that published its vocabulary and left conditioning out has said
+    // no, and its capability block does not get to overrule that.
+    expect(peerModelAcceptsInput(model, 'initImage', { features: ['lyrics'] })).toBe(false);
+    // A peer that published no list at all is read through the block it did
+    // send, which is how the pre-migration build keeps working.
     expect(peerModelAcceptsInput(model, 'initImage', {})).toBe(true);
     // The build speaks it; this model simply takes nothing.
     expect(peerModelAcceptsInput(withInput(null), 'initImage', { features: ['inputAssets'] })).toBe(false);
@@ -404,8 +409,14 @@ describe('federatedMediaSupports / peerMediaProviderSnapshot', () => {
   it('reads the status-root list, and falls back to the legacy per-capability field', () => {
     expect(federatedMediaSupports({ features: ['lyrics'] }, 'lyrics')).toBe(true);
     expect(federatedMediaSupports({}, 'lyrics', { ...capability, acceptsLyrics: true })).toBe(true);
+    // List wins: a published vocabulary that omits the feature overrules the
+    // legacy field rather than being OR'd with it.
+    expect(federatedMediaSupports({ features: [] }, 'lyrics', { ...capability, acceptsLyrics: true })).toBe(false);
     expect(federatedMediaSupports({}, 'inputAssets', { inputAssets: { roles: [] } })).toBe(true);
     expect(federatedMediaSupports({}, 'inputAssets', { inputAssets: null })).toBe(false);
+    // Pinned identically in server/lib/federatedMediaWire.test.js: an array is
+    // not a block, and the two ends must not disagree on a malformed one.
+    expect(federatedMediaSupports({}, 'inputAssets', { inputAssets: [] })).toBe(false);
   });
 
   it('returns the peer snapshot only when one is actually stored', () => {
