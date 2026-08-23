@@ -469,6 +469,97 @@ describe.skipIf(!pyBin)('generate_ltx2.py', () => {
     expect(output.trim()).toBe(expected);
   });
 
+  // The reference-mode promise (#4874). "inspire" is only expressible where the
+  // pin carries a per-image conditioning strength; everywhere else the helper has
+  // to FAIL, because falling back to a bare `image=` would anchor the very frame
+  // the user asked not to be anchored.
+  describe('i2v reference mode', () => {
+    // A fake generate_and_save whose signature decides which pin the helper sees:
+    // `images=` present is the v0.14.x API, absent is a pre-rename pin.
+    const condKwargs = ({ hasImagesParam, referenceMode, imageStrength }) => runPython(`${importRunner}\n${[
+      'import sys, types',
+      hasImagesParam
+        ? 'def gen(prompt=None, images=None, image=None): pass'
+        : 'def gen(prompt=None, image=None): pass',
+      // Stand in for the ltx wheel: the helper only needs a constructor whose
+      // instances it can hand back, and repr is what we assert against.
+      'class ICI:',
+      '    def __init__(self, path, frame_idx, strength):',
+      '        self.path, self.frame_idx, self.strength = path, frame_idx, strength',
+      '    def __repr__(self):',
+      '        return f"ICI({self.path},{self.frame_idx},{self.strength})"',
+      hasImagesParam
+        ? 'runner._import_image_conditioning_input = lambda: ICI'
+        : 'runner._import_image_conditioning_input = lambda: None',
+      // The legacy monkey-patch needs the real ltx modules; report "absent" so
+      // the anchored fallback path is exercised without them.
+      'runner._apply_legacy_image_strength = lambda strength: False',
+      'try:',
+      `    print(repr(runner._image_conditioning_kwargs(gen, "/tmp/ref.png", ${imageStrength === null ? 'None' : imageStrength}, "${referenceMode}")))`,
+      'except SystemExit as exc:',
+      '    print("SystemExit:", str(exc))',
+    ].join('\n')}`);
+
+    it('leaves an unset anchored reference exactly as it was before the flag existed', () => {
+      const out = condKwargs({ hasImagesParam: true, referenceMode: 'anchor', imageStrength: null });
+      expect(out.trim()).toBe("{'image': '/tmp/ref.png'}");
+    });
+
+    it('resolves the loose default when no strength was given', () => {
+      const out = condKwargs({ hasImagesParam: true, referenceMode: 'inspire', imageStrength: null });
+      expect(out).toMatch(/ICI\(\/tmp\/ref\.png,0,0\.35\)/);
+    });
+
+    it('honors an explicit strength under a loose reference', () => {
+      const out = condKwargs({ hasImagesParam: true, referenceMode: 'inspire', imageStrength: 0.8 });
+      expect(out).toMatch(/ICI\(\/tmp\/ref\.png,0,0\.8\)/);
+    });
+
+    it('FAILS rather than anchoring when the pin has no per-image strength', () => {
+      const out = condKwargs({ hasImagesParam: false, referenceMode: 'inspire', imageStrength: 0.5 });
+      expect(out).toMatch(/SystemExit:/);
+      expect(out).toMatch(/does not expose/i);
+    });
+
+    it('still degrades gracefully for an anchored reference on the same old pin', () => {
+      const out = condKwargs({ hasImagesParam: false, referenceMode: 'anchor', imageStrength: 0.5 });
+      expect(out.trim()).toContain("{'image': '/tmp/ref.png'}");
+    });
+
+    it.each(['text', 'fflf', 'extend', 'a2v', 'ic'])('rejects a loose reference in %s mode', (mode) => {
+      const out = runPython(`${importRunner}\n${[
+        'from types import SimpleNamespace',
+        `args = SimpleNamespace(i2v_reference_mode="inspire", mode="${mode}")`,
+        'try:',
+        '    runner.validate_reference_mode_args(args)',
+        'except SystemExit as exc:',
+        '    print(str(exc))',
+        'else:',
+        '    raise SystemExit("a loose reference was accepted outside image mode")',
+      ].join('\n')}`);
+      expect(out).toMatch(/applies to --mode image only/);
+    });
+
+    it('accepts a loose reference in image mode, and anchor anywhere', () => {
+      const out = runPython(`${importRunner}\n${[
+        'from types import SimpleNamespace',
+        'runner.validate_reference_mode_args(SimpleNamespace(i2v_reference_mode="inspire", mode="image"))',
+        'runner.validate_reference_mode_args(SimpleNamespace(i2v_reference_mode="anchor", mode="a2v"))',
+        'print("ok")',
+      ].join('\n')}`);
+      expect(out.trim()).toBe('ok');
+    });
+
+    it('defaults the flag to anchor and rejects an unknown value at the parser', () => {
+      const parsed = runPython(`${importRunner}\n${[
+        'import sys',
+        'sys.argv = ["generate_ltx2.py", "--mode", "image", "--prompt", "p", "--output", "/tmp/o.mp4", "--model", "m"]',
+        'print(runner.parse_args().i2v_reference_mode)',
+      ].join('\n')}`);
+      expect(parsed.trim()).toBe('anchor');
+    });
+  });
+
   it('parses the optional bounded preview directory', () => {
     const output = runPython(`${importRunner}\n${[
       'import sys',

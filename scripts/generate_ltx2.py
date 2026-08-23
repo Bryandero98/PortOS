@@ -464,6 +464,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cfg-scale", type=float, default=None)
     p.add_argument("--image-strength", type=float, default=None,
                    help="First-frame conditioning strength for image mode (0.0-1.0).")
+    p.add_argument("--i2v-reference-mode", choices=["anchor", "inspire"], default="anchor",
+                   help="What --image PROMISES in image mode. 'anchor' (default) pins it as "
+                        "frame one, reproducing those pixels; 'inspire' conditions loosely so "
+                        "the reference guides subject/style while frame one is generated. "
+                        "'inspire' needs a pin whose generate_and_save accepts "
+                        "images=[ImageConditioningInput(...)]; the run FAILS rather than "
+                        "silently anchoring when it does not.")
     p.add_argument("--dev-transformer", default=None,
                    help="Filename of the non-distilled (dev) transformer inside the model repo. "
                         "Required for fflf mode — KeyframeInterpolationPipeline rejects pure-distilled "
@@ -563,6 +570,22 @@ def parse_text_encoder_config_overrides(raw: str | None) -> dict:
             f"--text-encoder-config-json must be a JSON object; got {type(parsed).__name__}."
         )
     return parsed
+
+
+def validate_reference_mode_args(args: argparse.Namespace) -> None:
+    """Reject a loose reference on a mode that cannot express one, before any load.
+
+    A loose ("inspire") reference is an image-mode promise. Every other mode pins
+    its conditioning by construction — fflf keyframes, extend latents, a2v audio,
+    an IC reference clip — so the flag has nothing to loosen there, and accepting
+    it would render an anchored clip under a loose-reference label. PortOS gates
+    this server-side too; this covers a direct CLI caller.
+    """
+    if args.i2v_reference_mode != "anchor" and args.mode != "image":
+        raise SystemExit(
+            f"--i2v-reference-mode {args.i2v_reference_mode} applies to --mode image only; "
+            f"got --mode {args.mode}."
+        )
 
 
 def validate_text_encoder_args(args: argparse.Namespace) -> None:
@@ -935,12 +958,31 @@ def _apply_legacy_image_strength(image_strength: float) -> bool:
     return True
 
 
+# Conditioning strength applied to a loose ("inspire") reference when the caller
+# passes no --image-strength. PortOS resolves the same default server-side and
+# always sends an explicit value (see lib/videoReferenceModes.js —
+# INSPIRE_DEFAULT_IMAGE_STRENGTH is authoritative), so this only covers a direct
+# CLI invocation of this script.
+INSPIRE_DEFAULT_IMAGE_STRENGTH = 0.35
+
+
 def _image_conditioning_kwargs(generate_and_save, image: str | None,
-                               image_strength: float | None) -> dict:
+                               image_strength: float | None,
+                               reference_mode: str = "anchor") -> dict:
     """I2V image kwarg(s) for generate_and_save, honoring --image-strength on both pins.
 
-    Returns {} when there's no source image. With no strength override we pass a
-    bare `image=` on every pin — unchanged behavior. With a strength override:
+    `reference_mode` is what the image PROMISES (#4874). "anchor" is the historical
+    behavior: the reference is frame one. "inspire" conditions the same frame-0 slot
+    at a deliberately low strength so the reference steers subject/style while the
+    opening frame is re-generated — the only loose-reference mechanism the MLX
+    pipelines expose. Because that mechanism IS the per-image strength field, a pin
+    without it cannot honor "inspire" at all; this raises there instead of falling
+    back to a bare `image=`, which would anchor the render the user asked NOT to be
+    anchored. "anchor" keeps its existing graceful degradation.
+
+    Returns {} when there's no source image. With no strength override and an
+    anchored reference we pass a bare `image=` on every pin — unchanged behavior.
+    With a strength override (or any loose reference, which always resolves one):
 
       - v0.14.x carries per-image strength as a first-class field on
         ImageConditioningInput passed through `images=[...]` (passing
@@ -957,21 +999,29 @@ def _image_conditioning_kwargs(generate_and_save, image: str | None,
     """
     if not image:
         return {}
-    if image_strength is None:
+    loose = reference_mode == "inspire"
+    if image_strength is None and not loose:
         return {"image": image}
-    if image_strength < 0.0 or image_strength > 1.0:
+    if image_strength is not None and (image_strength < 0.0 or image_strength > 1.0):
         raise SystemExit("--image-strength must be between 0.0 and 1.0")
+    strength = INSPIRE_DEFAULT_IMAGE_STRENGTH if image_strength is None else image_strength
 
     ImageConditioningInput = _import_image_conditioning_input()
     if ImageConditioningInput is not None and \
             "images" in inspect.signature(generate_and_save).parameters:
-        emit_status(f"Using image strength {image_strength:g}")
+        emit_status(f"Using {reference_mode} reference at image strength {strength:g}")
         return {"images": [ImageConditioningInput(
-            path=image, frame_idx=0, strength=image_strength,
+            path=image, frame_idx=0, strength=strength,
         )]}
 
-    if _apply_legacy_image_strength(image_strength):
-        emit_status(f"Using image strength {image_strength:g}")
+    if loose:
+        raise SystemExit(
+            "--i2v-reference-mode inspire needs per-image conditioning strength "
+            "(ImageConditioningInput), which this ltx-2-mlx pin does not expose. "
+            "Re-run with --i2v-reference-mode anchor, or select an LTX-2.5 model."
+        )
+    if _apply_legacy_image_strength(strength):
+        emit_status(f"Using image strength {strength:g}")
     else:
         emit_status(
             "--image-strength not supported at this ltx-2-mlx pin "
@@ -1059,7 +1109,8 @@ def run_two_stage(args: argparse.Namespace, image: str | None = None) -> str:
         stage1_steps=args.steps if args.steps is not None else 30,
         stage2_steps=args.stage2_steps,
         cfg_scale=args.cfg_scale if args.cfg_scale is not None else 3.0,
-        **_image_conditioning_kwargs(pipe.generate_and_save, image, args.image_strength),
+        **_image_conditioning_kwargs(pipe.generate_and_save, image, args.image_strength,
+                                     args.i2v_reference_mode),
         **_rate_kwargs(pipe.generate_and_save, args.fps),
     ))
 
@@ -1098,7 +1149,7 @@ def run_image(args: argparse.Namespace) -> str:
     emit_stage(1, 1, 1, "Loaded")
     emit_status("Generating I2V…")
     image_kwargs = _image_conditioning_kwargs(
-        pipe.generate_and_save, args.image, args.image_strength
+        pipe.generate_and_save, args.image, args.image_strength, args.i2v_reference_mode
     )
     return _run_with_ltx_stepwise_preview(pipe, args, lambda: pipe.generate_and_save(
         **_one_stage_kwargs(args, **image_kwargs),
@@ -1438,6 +1489,7 @@ def maybe_strip_audio(output_path: str) -> None:
 def main() -> NoReturn:
     args = parse_args()
     validate_text_encoder_args(args)
+    validate_reference_mode_args(args)
     # One-line runtime fingerprint at startup — captured by PortOS onto the
     # render record so garbled output can be tied to a specific ltx/mlx stack.
     emit_runtime_fingerprint("ltx2", ["ltx_pipelines_mlx", "ltx_core_mlx", "mlx", "mlx_metal"])

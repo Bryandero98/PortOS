@@ -134,6 +134,7 @@ export * from './videoContinuity.js';
 export * from './videoDisclosure.js';
 export * from './videoFinishProfiles.js';
 export * from './videoModeProfiles.js';
+export * from './videoReferenceModes.js';
 export * from './videoTextEncoders.js';
 export * from './promptPartials.js';
 export * from './promptRunner.js';

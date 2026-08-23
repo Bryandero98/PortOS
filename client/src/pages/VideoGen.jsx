@@ -161,6 +161,7 @@ export default function VideoGen() {
     chunkPrompts, setChunkPromptAt, chainingActive,
     contextFrames, setContextFrames,
     steps, setSteps, guidanceScale, setGuidanceScale, imageStrength, setImageStrength,
+    i2vReferenceMode, setI2vReferenceMode, referenceModeSupported, effectiveImageStrength,
     seed, setSeed, handleRandomSeed, tiling, setTiling,
     textEncoderId, setTextEncoderId, textEncoderOptions,
     disableAudio, setDisableAudio, noMusic, setNoMusic,
@@ -1075,6 +1076,14 @@ export default function VideoGen() {
                 onUpload={uploadSourceImage}
                 onClear={clearSourceImage}
                 alt="Source"
+                advisoryNote={mode === 'image' && i2vReferenceMode === 'inspire' ? {
+                  text: 'Inspire — frame one is generated from this, not copied.',
+                  title: 'Inspire conditions the opening frame loosely, so the clip carries this image\u2019s subject and style without reproducing its exact pixels. Switch Reference mode to Anchor under Advanced to make it frame one.',
+                } : null}
+                hint={mode === 'image' && currentModel && !referenceModeSupported ? {
+                  text: 'This model anchors the reference — it becomes frame one exactly.',
+                  title: 'Only LTX-2.5 carries a per-image conditioning strength, which is what a loose (Inspire) reference needs. Every other runtime pins the supplied image as frame one.',
+                } : null}
               />
               {mode === 'fflf' && (
                 <FramePanel
@@ -1342,6 +1351,8 @@ export default function VideoGen() {
               steps={steps} onStepsChange={setSteps}
               guidanceScale={guidanceScale} onGuidanceScaleChange={setGuidanceScale}
               imageStrength={imageStrength} onImageStrengthChange={setImageStrength}
+              i2vReferenceMode={i2vReferenceMode} onI2vReferenceModeChange={setI2vReferenceMode}
+              effectiveImageStrength={effectiveImageStrength}
               tiling={tiling} onTilingChange={setTiling}
               disableAudio={disableAudio} onDisableAudioChange={setDisableAudio}
               noMusic={noMusic} onNoMusicChange={setNoMusic}
