@@ -45,6 +45,15 @@
  * a TUI provider with no recorded endpoint) is ungated. `onLocalEndpointHold`
  * fires on a denial so the scheduler can log queued-no-slot without this module
  * importing the event bus.
+ *
+ * `gateLocalEndpoint: false` opts a tier out of that third cap. Priority 0 does,
+ * because a denial there is DESTRUCTIVE, not a defer: the on-demand request has
+ * already been cleared and the app-review marker bound by the time `canSpawn`
+ * runs, so a `false` discards the user's explicit "Run" and strands the marker.
+ * Emitting instead is strictly better — the authoritative cap at subAgentSpawner's
+ * `task:ready` chokepoint HOLDS the task (still `pending`, marker released, job
+ * reservation freed), which is exactly the outcome this tier cannot produce.
+ * The global/per-project caps carry the same hazard here; that is pre-existing.
  */
 export function createDequeueCapacity(state, {
   agentsByProject = {},
@@ -66,11 +75,11 @@ export function createDequeueCapacity(state, {
   const spawnLocalEndpointCounts = { ...localEndpointCounts };
   let spawned = 0;
 
-  const canSpawn = (task, ceiling = availableSlots) => {
+  const canSpawn = (task, ceiling = availableSlots, { gateLocalEndpoint = true } = {}) => {
     if (spawned >= ceiling) return false;
     const project = task.metadata?.app || '_self';
     if ((spawnProjectCounts[project] || 0) >= perProjectLimit) return false;
-    const endpoint = resolveLocalEndpoint(task);
+    const endpoint = gateLocalEndpoint ? resolveLocalEndpoint(task) : null;
     if (endpoint) {
       const running = spawnLocalEndpointCounts[endpoint] || 0;
       if (running >= localSlotLimit) {

@@ -966,7 +966,12 @@ async function spawnDequeuePriority0OnDemand(ctx) {
     }
 
     applyOnDemandConsent(task);
-    if (task && capacity.canSpawn(task)) {
+    // `gateLocalEndpoint: false` — a denial HERE would discard the user's "Run":
+    // the request is already cleared and the app-review marker bound, and this
+    // branch is the only thing that persists the task. Let it through and let the
+    // chokepoint hold it (#4834) — that path leaves the task pending and releases
+    // both side effects.
+    if (task && capacity.canSpawn(task, undefined, { gateLocalEndpoint: false })) {
       // Mark this as a MANUAL (on-demand) run so a completed perpetual drain
       // continues in the same user-initiated lane instead of the auto-run-gated
       // queue path (see perpetualRefillPlan). Stamped before addTask so the

@@ -103,9 +103,13 @@ function priorityDequeue(buckets, capacity, { paused = false } = {}) {
   const ceiling = capacity.availableSlots;
 
   const drain = (bucketName) => {
+    // Priority 0 opts OUT of the local-endpoint cap, exactly as production does:
+    // a denial there discards the already-cleared on-demand request instead of
+    // deferring it, so the task is emitted and the spawner chokepoint holds it.
+    const opts = { gateLocalEndpoint: bucketName !== 'onDemand' };
     for (const task of buckets[bucketName] || []) {
       if (capacity.spawned >= capacity.availableSlots) return;
-      if (!capacity.canSpawn(task)) continue;
+      if (!capacity.canSpawn(task, undefined, opts)) continue;
       capacity.trackSpawn(task);
       admitted.push({ ...task, _bucket: bucketName });
     }
@@ -534,6 +538,42 @@ describe('dequeueNextTask — per-local-endpoint agent cap (#4834)', () => {
     expect(spawned.map(t => t.id)).toEqual(['task-local-1']);
     expect(holds).toEqual([{ taskId: 'task-local-2', endpoint: LOCAL_ENDPOINT, running: 1 }]);
     expect(capacity.spawnLocalEndpointCounts[LOCAL_ENDPOINT]).toBe(1);
+  });
+
+  it('does NOT suppress an explicit on-demand Run at a saturated endpoint', () => {
+    // Priority 0 clears the request and binds the app-review marker BEFORE
+    // canSpawn runs, and that branch is the only thing that persists the task —
+    // so a denial here destroys the user's "Run" and strands the marker rather
+    // than deferring it. The task must be admitted and held at the spawner
+    // chokepoint instead, which leaves it pending and releases both side effects.
+    const state = makeState({
+      maxConcurrentAgents: 5,
+      runningAgents: [makeRunningAgentOnProvider('lmstudio-tui')],
+    });
+    const { capacity, holds } = makeLocalSlotCapacity(state);
+
+    const spawned = priorityDequeue({
+      onDemand: [taskOnProvider('task-run-now', 'lmstudio-tui')],
+      user: [],
+      autoSystem: [],
+      mission: [],
+      idle: [],
+    }, capacity);
+
+    expect(spawned.map(t => t.id)).toEqual(['task-run-now']);
+    expect(holds).toEqual([]);
+  });
+
+  it('still gates the SAME task from a deferrable tier', () => {
+    // The opt-out is scoped to Priority 0. A user-tier task at the same endpoint
+    // stays queued, because skipping it there is a genuine defer.
+    const state = makeState({
+      maxConcurrentAgents: 5,
+      runningAgents: [makeRunningAgentOnProvider('lmstudio-tui')],
+    });
+    const { capacity } = makeLocalSlotCapacity(state);
+
+    expect(priorityDequeue(userBuckets([taskOnProvider('task-run-now', 'lmstudio-tui')]), capacity)).toEqual([]);
   });
 
   it('dispatches the held task once the endpoint frees up (next cycle)', () => {
@@ -1224,6 +1264,19 @@ describe('cos.js source — priority + capacity invariants', () => {
     expect(ctxFn).toMatch(/if \(!isAvailable\(provider\.id\)\) return null;/);
     expect(SLOTS_SRC, 'the live context must use the real provider-status predicate')
       .toMatch(/isAvailable:\s*isProviderAvailable/);
+  });
+
+  it('Priority 0 opts out of the local-endpoint cap so a Run is never discarded (#4834)', () => {
+    // The on-demand tier clears the request and binds the app-review marker
+    // before canSpawn, and is the only path that persists the task — a denial
+    // there is destructive, not a defer. Pin the opt-out at the call site.
+    const p0 = extractFnBody(COS_SRC, COS_SRC.indexOf('async function spawnDequeuePriority0OnDemand'));
+    expect(p0).toMatch(/canSpawn\(task,\s*undefined,\s*\{\s*gateLocalEndpoint:\s*false\s*\}\)/);
+    // Every other tier keeps the cap: none of them may pass the opt-out.
+    for (const tier of ['spawnDequeuePriority1UserTasks', 'spawnDequeuePriority2AutoApproved', 'spawnDequeuePriority3Missions', 'spawnDequeuePriority4IdleReview']) {
+      const body = extractFnBody(COS_SRC, COS_SRC.indexOf(`async function ${tier}`));
+      expect(body, `${tier} must not opt out of the local-endpoint cap`).not.toMatch(/gateLocalEndpoint:\s*false/);
+    }
   });
 
   it('idle generator is fenced by spawned===0 / tasksToSpawn.length===0', () => {
