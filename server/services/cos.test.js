@@ -816,6 +816,7 @@ describe('cloudSwarmThreadCapacity', () => {
   it('does not override the harness outside a valid multi-worker swarm', () => {
     expect(cloudSwarmThreadCapacity(CLOUD_PROVIDER, 1)).toBeNull();
     expect(cloudSwarmThreadCapacity(CLOUD_PROVIDER, 2.5)).toBeNull();
+    expect(cloudSwarmThreadCapacity(CLOUD_PROVIDER, 7)).toBeNull();
     expect(cloudSwarmThreadCapacity(CLOUD_PROVIDER, null)).toBeNull();
   });
 });

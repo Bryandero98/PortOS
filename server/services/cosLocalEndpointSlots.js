@@ -23,6 +23,7 @@
  */
 
 import { LOCAL_LLM_MAX_CONCURRENCY } from '../lib/promptRunner.js';
+import { SWARM_COUNT_MAX, SWARM_COUNT_MIN } from '../lib/validation.js';
 import { localRuntimeForProvider, localEndpointPort, normalizeOpenAiBaseUrl } from '../lib/localProviderRuntime.js';
 import { listProviders, getActiveProvider } from './providers.js';
 import { isProviderAvailable, getFallbackProvider } from './providerStatus.js';
@@ -82,7 +83,7 @@ export function localEndpointOfProvider(provider) {
  */
 export function cloudSwarmThreadCapacity(provider, swarmCount) {
   const workers = Number(swarmCount);
-  if (!Number.isSafeInteger(workers) || workers < 2) return null;
+  if (!Number.isSafeInteger(workers) || workers < SWARM_COUNT_MIN || workers > SWARM_COUNT_MAX) return null;
   return localEndpointOfProvider(provider) ? null : workers + 1;
 }
 

@@ -516,7 +516,9 @@ describe('cosTaskStore.addTask', () => {
 
     expect(created.metadata.swarmCount).toBe(6);
     const { tasks } = await getUserTasks();
-    expect(tasks.find(t => t.id === created.id).metadata.swarmCount).toBe(6);
+    // Scalar task metadata parses from markdown as text; the lifecycle resolver
+    // normalizes it with Number() before applying the bounded thread override.
+    expect(Number(tasks.find(t => t.id === created.id).metadata.swarmCount)).toBe(6);
   });
 
   it('drops an out-of-range manual claim swarm count', async () => {
