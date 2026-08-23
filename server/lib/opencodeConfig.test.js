@@ -393,3 +393,41 @@ describe('SGLang OpenCode config', () => {
     expect(keyed.provider.sglang.options.apiKey).toBe('operator-key');
   });
 });
+
+describe('small-model pin', () => {
+  const gatewayProvider = (extra = {}) => ({
+    command: 'opencode',
+    gatewayBacked: 'openrouter',
+    apiKey: 'sk-or-v1-example',
+    models: ['openrouter/auto', 'stealth/ox-alpha'],
+    ...extra,
+  });
+
+  it('pins OpenCode\'s auxiliary model to the run model so a gateway run bills nothing else', () => {
+    const config = JSON.parse(
+      buildOpencodeEnvVars(gatewayProvider(), 'stealth/ox-alpha').OPENCODE_CONFIG_CONTENT,
+    );
+    expect(config.small_model).toBe('openrouter/stealth/ox-alpha');
+  });
+
+  it('leaves a stored small_model alone', () => {
+    const stored = JSON.stringify({
+      permission: 'allow',
+      small_model: 'openrouter/anthropic/claude-haiku-4.5',
+      provider: { openrouter: { npm: '@ai-sdk/openai-compatible', options: { baseURL: 'https://openrouter.ai/api/v1' } } },
+    });
+    const config = JSON.parse(
+      buildOpencodeEnvVars(gatewayProvider({ envVars: { OPENCODE_CONFIG_CONTENT: stored } }), 'stealth/ox-alpha')
+        .OPENCODE_CONFIG_CONTENT,
+    );
+    expect(config.small_model).toBe('openrouter/anthropic/claude-haiku-4.5');
+  });
+
+  it('pins a local runtime too — spawns inherit process.env, so an unset auxiliary model can reach a cloud provider the operator never opted into', () => {
+    const config = JSON.parse(
+      buildOpencodeEnvVars({ command: 'opencode', ollamaBacked: true, models: ['qwen3'] }, 'qwen3')
+        .OPENCODE_CONFIG_CONTENT,
+    );
+    expect(config.small_model).toBe('ollama/qwen3');
+  });
+});
