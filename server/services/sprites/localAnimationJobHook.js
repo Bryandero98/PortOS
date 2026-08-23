@@ -29,7 +29,7 @@
 
 import { join } from 'path';
 import { mediaJobEvents, listJobs } from '../mediaJobQueue/index.js';
-import { readJSONFile } from '../../lib/fileUtils.js';
+import { readJSONFile, atomicWrite } from '../../lib/fileUtils.js';
 import { spriteDir, runRelPath, SOURCE_CLIP_NAME, RUN_RECORD_NAME } from './paths.js';
 import { WALK_TRACK } from './animationTargets.js';
 
@@ -80,13 +80,22 @@ async function settleSpriteAnimationJob(job) {
     // hypothetical, because the boot pass sweeps the archive unconditionally and
     // a job outlives the run it filed by the archive's whole TTL.
     //
-    // Scope note: a job RETRIED from the Render Queue reuses this tag, so its
-    // completion lands on a run that is already `error` and is skipped here. That
-    // is deliberate — the sprite UI's own Regenerate mints a fresh run, and
-    // re-filing an old one from a generic queue surface would resurrect a render
-    // the user may have moved on from.
-    const record = await readJSONFile(join(spriteDir(recordId), runRel, RUN_RECORD_NAME), null);
-    if (record?.status !== 'rendering') return false;
+    // The ONE exception is a Render Queue retry: it re-enqueues the same params
+    // (tag included) under a NEW job id, so its completion lands on a run this
+    // hook already filed as `error`. Skipping that would waste the multi-hour
+    // render the user explicitly asked for. A different job id is exactly what
+    // separates it from the boot sweep re-seeing the job that PRODUCED the
+    // error — so the new id is stamped on the run before the attach, and a later
+    // sweep of that same job then reads as already-filed.
+    const recordPath = join(spriteDir(recordId), runRel, RUN_RECORD_NAME);
+    const record = await readJSONFile(recordPath, null);
+    const isRetryOfFiledRun = record?.status === 'error'
+      && typeof job.id === 'string' && job.id !== record.jobId;
+    if (record?.status !== 'rendering' && !isRetryOfFiledRun) return false;
+    if (isRetryOfFiledRun) {
+      console.log(`🎞️ ${label} retried as job ${job.id.slice(0, 8)} — re-filing the run`);
+      await atomicWrite(recordPath, { ...record, jobId: job.id });
+    }
     // Try to stage the clip for a FAILED job too, not just a completed one. The
     // queue stamps `interrupted by restart` on anything that was running when
     // the process died — and the H3 child may well have written its final MP4

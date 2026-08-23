@@ -31,6 +31,7 @@ let runRecords = {};
 vi.mock('../../lib/fileUtils.js', async (importOriginal) => ({
   ...await importOriginal(),
   readJSONFile: async (path) => runRecords[path] ?? null,
+  atomicWrite: async (path, value) => { runRecords[path] = value; },
 }));
 
 const runPath = (recordId, runId) => `/sprites/${recordId}/runs/${runId}/animation-run.json`;
@@ -202,9 +203,38 @@ describe('settle guard — a run is filed exactly once', () => {
     expect(attachTuiWalkResult).not.toHaveBeenCalled();
   });
 
-  it('does nothing for a run already filed as an error', async () => {
-    runRecords[runPath('hero', 'walk-east-abc12345')] = { status: 'error' };
+  it('does nothing when the job that PRODUCED the error settles again', async () => {
+    // The boot sweep re-seeing its own job. Same id → already filed.
+    runRecords[runPath('hero', 'walk-east-abc12345')] = { status: 'error', jobId: 'mjob-1' };
     expect(await settleSpriteAnimationJob(walkJob({ status: 'failed' }))).toBe(false);
+    expect(attachTuiWalkResult).not.toHaveBeenCalled();
+  });
+
+  it('DOES file a Render Queue retry, which carries the tag under a new job id', async () => {
+    // The retry route merges the original params, so the tag rides to a fresh
+    // job. Skipping it would waste the multi-hour render the user just asked for.
+    runRecords[runPath('hero', 'walk-east-abc12345')] = { status: 'error', jobId: 'mjob-1' };
+    expect(await settleSpriteAnimationJob(walkJob({ id: 'mjob-99' }))).toBe(true);
+    expect(collectLocalAnimationClip).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'mjob-99' }));
+    expect(attachTuiWalkResult).toHaveBeenCalled();
+  });
+
+  it('stamps the retry job id so a later sweep of it reads as already filed', async () => {
+    runRecords[runPath('hero', 'walk-east-abc12345')] = { status: 'error', jobId: 'mjob-1' };
+    await settleSpriteAnimationJob(walkJob({ id: 'mjob-99' }));
+    expect(runRecords[runPath('hero', 'walk-east-abc12345')].jobId).toBe('mjob-99');
+    // The attach is mocked, so the run is still 'error' — only the id changed,
+    // which is exactly what must now make the sweep skip it.
+    attachTuiWalkResult.mockClear();
+    expect(await settleSpriteAnimationJob(walkJob({ id: 'mjob-99' }))).toBe(false);
+    expect(attachTuiWalkResult).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-file a CANDIDATE run just because a new job carries its tag', async () => {
+    // Only an ERRORED run is retryable; a good candidate must never be
+    // re-packaged out from under the user.
+    runRecords[runPath('hero', 'walk-east-abc12345')] = { status: 'candidate', jobId: 'mjob-1' };
+    expect(await settleSpriteAnimationJob(walkJob({ id: 'mjob-99' }))).toBe(false);
     expect(attachTuiWalkResult).not.toHaveBeenCalled();
   });
 
