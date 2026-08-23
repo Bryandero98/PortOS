@@ -20,8 +20,10 @@
  *    describes this machine's Python, not the adapter, and caching it would
  *    make a transient environment problem permanent.
  *
- * 3. **Never fatal.** Every failure path — no interpreter, no numpy, spawn
+ * 3. **Never fatal.** Every PROBE failure — no interpreter, no numpy, spawn
  *    error, timeout, malformed output — resolves to an `unmeasurable` report.
+ *    Two caller errors still throw, because they are not probe failures: an
+ *    unsafe filename, and a LoRA that isn't on disk (a 404, as everywhere else).
  *    The diagnostic refuses a render only on a positive measurement of zero
  *    effect (`loraEffectIssue`), so a machine that cannot run the probe is a
  *    machine that renders exactly as it did before this existed.
@@ -31,6 +33,7 @@ import { existsSync } from 'fs';
 import { stat } from 'fs/promises';
 import { join } from 'path';
 import { PATHS } from '../lib/fileUtils.js';
+import { ServerError } from '../lib/errorHandler.js';
 import { createSingleFlight } from '../lib/singleFlight.js';
 import { runSidecarProcess, parseSidecarResult } from '../lib/sidecarProcess.js';
 import { withAbortTimeout } from '../lib/abortTimeout.js';
@@ -51,6 +54,10 @@ export const LORA_EFFECT_PROBE_SCRIPT = join(PATHS.root, 'scripts', 'lora_effect
 // bound is therefore sized to catch a wedged interpreter, NOT to cap a slow
 // read — timing out a legitimate measurement would report 'unmeasurable' for
 // exactly the largest adapters, where a wasted render costs the most.
+//
+// It is a budget for the WHOLE candidate walk, not per interpreter: this runs
+// inline ahead of a render, before the job even has an id to report progress
+// against, so N installed venvs must not be able to multiply the stall.
 const PROBE_TIMEOUT_MS = 300_000;
 
 const installedCandidates = (paths) => [
@@ -92,7 +99,11 @@ const unmeasurable = (reason) => normalizeLoraEffectReport({
 // spawning a pile of interpreters against the same weights.
 const inFlight = createSingleFlight();
 
-const runProbeOnce = async (bin, filePath) => {
+// Returns `{ report, timedOut }`. `timedOut` is what stops the candidate walk:
+// a timeout says the FILE is slow to read, which every interpreter would be
+// equally slow at, so retrying is guaranteed waste. Every other failure is about
+// this interpreter (no numpy, a broken venv) and is worth another candidate.
+const runProbeOnce = async (bin, filePath, budgetMs) => {
   // try/catch is warranted here despite the repo's no-try/catch rule: this runs
   // outside the Express lifecycle (a background render job awaits it), and
   // runSidecarProcess only *models* failures as resolutions — the underlying
@@ -102,21 +113,30 @@ const runProbeOnce = async (bin, filePath) => {
   // both settle paths.
   let result;
   try {
-    result = await withAbortTimeout(PROBE_TIMEOUT_MS, (signal) => runSidecarProcess({
+    result = await withAbortTimeout(budgetMs, (signal) => runSidecarProcess({
       bin,
       args: [LORA_EFFECT_PROBE_SCRIPT, filePath],
       signal,
     }));
   } catch (err) {
-    return unmeasurable(`the effect probe could not be started (${err?.message || err})`);
+    return { report: unmeasurable(`the effect probe could not be started (${err?.message || err})`) };
   }
   // The probe prints RESULT: even when it exits non-zero (the missing-numpy
   // case), so parse stdout before judging the exit — an exit code alone would
   // throw away the reason the caller needs.
   const parsed = parseSidecarResult(result.stdout);
-  if (parsed) return normalizeLoraEffectReport(parsed);
-  if (result.canceled) return unmeasurable(`the effect probe timed out after ${PROBE_TIMEOUT_MS / 1000}s`);
-  return unmeasurable(`the effect probe produced no result (${result.reason || 'no output'})`);
+  // `parsed` is whatever JSON.parse produced, so a `RESULT:[1,2]` line is truthy
+  // but not a report; normalizeLoraEffectReport answers null for it and the
+  // caller needs the honest "no result" reason, not a null dereference.
+  const report = parsed ? normalizeLoraEffectReport(parsed) : null;
+  if (report) return { report };
+  if (result.canceled) {
+    return {
+      report: unmeasurable(`the effect probe ran out of its ${PROBE_TIMEOUT_MS / 1000}s budget reading this adapter`),
+      timedOut: true,
+    };
+  }
+  return { report: unmeasurable(`the effect probe produced no result (${result.reason || 'no output'})`) };
 };
 
 // The measurement proper — everything after the cache miss. Split out so the
@@ -131,16 +151,32 @@ const measureLoraEffect = async (filename, filePath, { sizeBytes, mtimeMs }) => 
   // and this runs inline ahead of a render — say so, or the pause looks like a
   // hang with nothing in the log.
   console.log(`🔬 Measuring LoRA effect for ${filename} (${Math.round(sizeBytes / 1e6)} MB)`);
+  const deadline = Date.now() + PROBE_TIMEOUT_MS;
   let last = null;
+  let timedOut = false;
   for (const bin of candidates) {
-    last = await runProbeOnce(bin, filePath);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) { timedOut = true; break; }
+    ({ report: last, timedOut = false } = await runProbeOnce(bin, filePath, remaining));
     // Only an unmeasurable verdict is worth another interpreter; every other
-    // status is a real answer about the file and identical on any Python.
-    if (last.status !== LORA_EFFECT_STATUSES.UNMEASURABLE) break;
+    // status is a real answer about the file and identical on any Python. A
+    // timeout stops the walk outright — see runProbeOnce.
+    if (timedOut || last.status !== LORA_EFFECT_STATUSES.UNMEASURABLE) break;
   }
+  if (last === null) last = unmeasurable(`the effect probe ran out of its ${PROBE_TIMEOUT_MS / 1000}s budget reading this adapter`);
   if (last.status === LORA_EFFECT_STATUSES.UNMEASURABLE) {
     console.log(`⚠️ LoRA effect probe unavailable for ${filename}: ${last.reason || 'unknown'}`);
-    return last;
+    // A timeout is cached, unlike every other unmeasurable verdict. The others
+    // describe this machine's Python — a venv the user may install in a minute,
+    // so freezing them in would make a transient problem permanent. A timeout
+    // instead describes the cost of READING THIS FILE on this storage, which is
+    // exactly what the size+mtime cache key already scopes. Without caching it,
+    // a pathologically slow adapter re-burns the full budget ahead of every
+    // single render, forever.
+    if (!timedOut) return last;
+    const timeoutReport = normalizeLoraEffectReport(last, { sizeBytes, mtimeMs, measuredAt: new Date().toISOString() });
+    await patchLoraSidecar(filename, { effectReport: timeoutReport }).catch(() => {});
+    return timeoutReport;
   }
   const report = normalizeLoraEffectReport(last, { sizeBytes, mtimeMs, measuredAt: new Date().toISOString() });
   console.log(`🔬 LoRA effect ${filename}: ${report.status} (${report.measured}/${report.modules} modules)`);
@@ -164,7 +200,14 @@ export const probeLoraEffect = async (filename, { force = false } = {}) => {
   const filePath = join(PATHS.loras, filename);
   const fileStat = await stat(filePath).catch(() => null);
   if (!fileStat || !fileStat.isFile()) {
-    return unmeasurable(`LoRA "${filename}" is not a regular file on disk`);
+    // NOT a soft `unmeasurable`: that word is reserved for "this machine could
+    // not run the probe", and answering it here would tell the user their
+    // adapter is unmeasurable when it simply isn't there. A missing file is a
+    // caller-visible 404 exactly as it is for getLora/patch/delete, and it is
+    // outside the never-fatal contract for the same reason the filename
+    // assertion above is. `resolveVideoLoras` already proved the file exists
+    // before it probes, so the render path cannot reach this.
+    throw new ServerError(`LoRA not found: ${filename}`, { status: 404, code: 'NOT_FOUND' });
   }
   // The cache key: both stamps come from the stat we already did, so verifying a
   // stored report costs nothing and a same-size rewrite still invalidates it.

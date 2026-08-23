@@ -195,7 +195,42 @@ describe('probeLoraEffect — never fatal, never a false verdict', () => {
     state.existing = new Set(['/venv/ltx2/bin/python3']);
     const report = await probeLoraEffect('style.safetensors');
     expect(report.status).toBe('unmeasurable');
-    expect(report.reason).toMatch(/timed out/i);
+    expect(report.reason).toMatch(/budget/i);
+  });
+
+  it('stops the candidate walk on a timeout instead of paying the budget per interpreter', async () => {
+    // A timeout says the FILE is slow to read; every interpreter would be
+    // equally slow, so retrying multiplies an inline stall for nothing. This
+    // runs before generateVideo even mints a job id, so the UI shows nothing
+    // while it waits.
+    state.responses = [
+      { ok: false, canceled: true, reason: 'cancelled (SIGTERM)', stdout: '' },
+      { ok: true, stdout: resultLine(OK_PAYLOAD) },
+    ];
+    const report = await probeLoraEffect('style.safetensors');
+    expect(state.runs).toHaveLength(1);
+    expect(report.status).toBe('unmeasurable');
+  });
+
+  it('CACHES a timeout, so a pathologically slow adapter stalls one render and not every one', async () => {
+    // Unlike the other unmeasurable verdicts (which describe this machine's
+    // Python and may fix themselves the moment a venv installs), a timeout
+    // describes what reading THIS file costs on THIS storage — exactly what the
+    // size+mtime key already scopes.
+    state.responses = [{ ok: false, canceled: true, reason: 'cancelled (SIGTERM)', stdout: '' }];
+    await probeLoraEffect('style.safetensors');
+    expect(state.patched).toHaveLength(1);
+    expect(state.patched[0].patch.effectReport).toMatchObject({ status: 'unmeasurable', sizeBytes: 4096 });
+  });
+
+  it('does NOT cache an unmeasurable that is only about this machine', async () => {
+    state.responses = [
+      { ok: false, reason: 'exit 3', stdout: resultLine({ status: 'unmeasurable', reason: 'numpy is not installed' }) },
+      { ok: false, reason: 'exit 3', stdout: resultLine({ status: 'unmeasurable', reason: 'numpy is not installed' }) },
+      { ok: false, reason: 'exit 3', stdout: resultLine({ status: 'unmeasurable', reason: 'numpy is not installed' }) },
+    ];
+    await probeLoraEffect('style.safetensors');
+    expect(state.patched).toHaveLength(0);
   });
 
   it('reports unmeasurable for malformed probe output instead of a hollow verdict', async () => {
@@ -205,18 +240,33 @@ describe('probeLoraEffect — never fatal, never a false verdict', () => {
     expect(report.status).toBe('unmeasurable');
   });
 
+  it('survives well-formed JSON that is not a report object', async () => {
+    // `RESULT:[1,2]` parses fine and is truthy, but normalizes to null — a
+    // caller that only checked truthiness would dereference it.
+    for (const line of ['RESULT:[1,2]\n', 'RESULT:"nope"\n', 'RESULT:null\n', 'RESULT:7\n']) {
+      state.existing = new Set(['/venv/ltx2/bin/python3']);
+      state.responses = [{ ok: true, stdout: line }];
+      const report = await probeLoraEffect('style.safetensors');
+      expect(report.status).toBe('unmeasurable');
+      expect(report.reason).toMatch(/produced no result/i);
+    }
+  });
+
   it('still returns the measurement when the sidecar cache write fails', async () => {
     state.patchThrows = true;
     state.responses = [{ ok: true, stdout: resultLine(OK_PAYLOAD) }];
     await expect(probeLoraEffect('style.safetensors')).resolves.toMatchObject({ status: 'ok' });
   });
 
-  it('reports unmeasurable — not a verdict — when the LoRA is missing or not a regular file', async () => {
+  it('404s for a missing or non-regular LoRA rather than calling it unmeasurable', async () => {
+    // "unmeasurable" means this machine could not run the probe. Saying it about
+    // a file that isn't there would tell the user their adapter is unmeasurable
+    // when it simply does not exist — and every sibling route 404s.
     state.statThrows = true;
-    await expect(probeLoraEffect('gone.safetensors')).resolves.toMatchObject({ status: 'unmeasurable' });
+    await expect(probeLoraEffect('gone.safetensors')).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
     state.statThrows = false;
     state.statResult = { size: 0, mtimeMs: 0, isFile: () => false };
-    await expect(probeLoraEffect('dir.safetensors')).resolves.toMatchObject({ status: 'unmeasurable' });
+    await expect(probeLoraEffect('dir.safetensors')).rejects.toMatchObject({ status: 404 });
     expect(state.runs).toHaveLength(0);
   });
 

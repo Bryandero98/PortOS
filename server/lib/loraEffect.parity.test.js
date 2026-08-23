@@ -13,7 +13,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import {
+  LORA_EFFECT_PROBE_VERSION,
   LORA_EFFECT_STATUSES as SERVER_STATUSES,
   formatLoraEffect as serverFormat,
   loraEffectIssue,
@@ -40,6 +43,28 @@ const REPORTS = [
   { status: 'unmeasurable', measured: 0, medianRms: null, maxRms: null, skippedNonFinite: 0, skippedUnsupported: 0, zeroModules: 0, reason: null },
   { status: 'ok', measured: 3, medianRms: null, maxRms: 0.2, skippedNonFinite: 0, skippedUnsupported: 0, zeroModules: 0, reason: null },
 ];
+
+describe('loraEffect parity — JS vs the Python probe', () => {
+  it('keeps LORA_EFFECT_PROBE_VERSION in lockstep with PROBE_VERSION', () => {
+    // Drift here fails silently and expensively: every freshly written report
+    // reads as stale, so the sidecar cache stops working and each render
+    // re-reads the whole adapter with nothing logged anywhere.
+    const source = readFileSync(join(import.meta.dirname, '..', '..', 'scripts', 'lora_effect_probe.py'), 'utf-8');
+    const match = source.match(/^PROBE_VERSION = (\d+)$/m);
+    expect(match, 'scripts/lora_effect_probe.py must declare PROBE_VERSION').not.toBeNull();
+    expect(Number(match[1])).toBe(LORA_EFFECT_PROBE_VERSION);
+  });
+
+  it('agrees with the probe on the status vocabulary', () => {
+    const source = readFileSync(join(import.meta.dirname, '..', '..', 'scripts', 'lora_effect_probe.py'), 'utf-8');
+    // The probe's own docstring names the five it may emit; a status added on
+    // one side and not the other degrades to `unmeasurable` at normalization,
+    // which would quietly disable the verdict rather than fail.
+    for (const status of Object.values(SERVER_STATUSES)) {
+      expect(source, `probe never mentions status "${status}"`).toContain(status);
+    }
+  });
+});
 
 describe('loraEffect parity — server vs client', () => {
   it('mirrors the status vocabulary exactly', () => {
