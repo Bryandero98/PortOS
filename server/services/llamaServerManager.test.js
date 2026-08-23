@@ -1075,6 +1075,14 @@ describe('llamaServerManager', () => {
   // MTPLX. The flag is recent, and an older build rejects an unknown flag and
   // exits before it binds — hence the capability probe these tests pin.
   describe('idle unload', () => {
+    // Pin the binary like every other lifecycle test here: CI has no llama.cpp
+    // installed, so an unmocked `findCommandOnPath` makes `startLlamaServer`
+    // refuse before it ever builds a launch line — a failure that reproduces
+    // nowhere on a developer machine that has the real binary on PATH.
+    beforeEach(() => {
+      vi.spyOn(processEnv, 'findCommandOnPath').mockReturnValue('/usr/local/bin/llama-server');
+    });
+
     /** Pin `llama-server --help` output for the capability probe. */
     const mockHelp = (text) => vi.spyOn(childProcess, 'execFile')
       .mockImplementation((_bin, _args, _opts, cb) => { cb(null, text, ''); return fakeSpawnProcess(); });
