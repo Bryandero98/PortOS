@@ -67,6 +67,11 @@ import { getSettings } from './settings.js';
 
 const SIDECAR_SUFFIX = '.metadata.json';
 
+// One install attempt per Civitai model at a time. The slot is a promise so a
+// duplicate submit shares the original result instead of racing it to the same
+// destination files. Different model ids remain independent.
+const civitaiInstalls = new Map();
+
 const sidecarPath = (loraFilename) => join(PATHS.loras, `${loraFilename}${SIDECAR_SUFFIX}`);
 
 // Reads the sidecar JSON next to a LoRA file. Returns `null` when the
@@ -517,8 +522,7 @@ const verifyDownloadedLora = async (destPath, { expectedSha256 = null, source = 
 
 // Install a LoRA from a Civitai URL. Returns the new sidecar JSON so the
 // client can render it immediately without a second list round-trip.
-export const installFromCivitai = async (input, { fetchImpl = fetch } = {}) => {
-  const { modelId, versionId } = parseCivitaiUrl(input?.url);
+const performCivitaiInstall = async (input, { modelId, versionId, fetchImpl }) => {
   const apiKey = (typeof input?.apiKey === 'string' && input.apiKey.trim()) || (await resolveCivitaiKey());
   const model = await fetchCivitaiModel(modelId, { apiKey, fetchImpl });
   const version = pickVersion(model, versionId);
@@ -589,6 +593,19 @@ export const installFromCivitai = async (input, { fetchImpl = fetch } = {}) => {
   await writeSidecar(filename, sidecar);
   console.log(`✅ Installed Civitai LoRA: ${filename} [layout=${sidecar.keyLayout || 'unknown'}]`);
   return sidecar;
+};
+
+export const installFromCivitai = async (input, { fetchImpl = fetch } = {}) => {
+  const { modelId, versionId } = parseCivitaiUrl(input?.url);
+  const active = civitaiInstalls.get(modelId);
+  if (active) return active;
+
+  const attempt = performCivitaiInstall(input, { modelId, versionId, fetchImpl });
+  const tracked = attempt.finally(() => {
+    if (civitaiInstalls.get(modelId) === tracked) civitaiInstalls.delete(modelId);
+  });
+  civitaiInstalls.set(modelId, tracked);
+  return tracked;
 };
 
 // Set of recognized LoRA families an HF import may target (image runners +

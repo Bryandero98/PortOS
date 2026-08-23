@@ -436,6 +436,56 @@ describe('installFromCivitai', () => {
     expect(calls).toHaveLength(2);
   });
 
+  it('shares one in-flight install between duplicate model submissions', async () => {
+    const downloadedBytes = validSafetensors();
+    let releaseMetadata;
+    let metadataCalls = 0;
+    let downloadCalls = 0;
+    const fetchImpl = async (url) => {
+      if (url.startsWith('https://civitai.com/api/v1/models/2600698')) {
+        metadataCalls += 1;
+        return new Promise((resolve) => {
+          releaseMetadata = () => resolve(mockJsonResponse(FAKE_MODEL));
+        });
+      }
+      if (url.startsWith('https://civitai.com/api/download/models/7')) {
+        downloadCalls += 1;
+        const stream = new ReadableStream({
+          start(c) { c.enqueue(new Uint8Array(downloadedBytes)); c.close(); },
+        });
+        return { ok: true, status: 200, body: stream };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    };
+
+    const first = lorasService.installFromCivitai({ url: 'https://civitai.com/models/2600698' }, { fetchImpl });
+    await vi.waitFor(() => expect(releaseMetadata).toBeTypeOf('function'));
+    const second = lorasService.installFromCivitai({ url: 'https://civitai.com/models/2600698' }, { fetchImpl });
+
+    releaseMetadata();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(secondResult).toEqual(firstResult);
+    expect(metadataCalls).toBe(1);
+    expect(downloadCalls).toBe(1);
+  });
+
+  it('releases the in-flight slot after a failed install so retry can proceed', async () => {
+    let metadataCalls = 0;
+    const fetchImpl = async () => {
+      metadataCalls += 1;
+      if (metadataCalls === 1) throw new Error('metadata unavailable');
+      return mockJsonResponse({ ...FAKE_MODEL, type: 'Checkpoint' });
+    };
+
+    await expect(
+      lorasService.installFromCivitai({ url: 'https://civitai.com/models/2600698' }, { fetchImpl }),
+    ).rejects.toThrow(/metadata unavailable/);
+    await expect(
+      lorasService.installFromCivitai({ url: 'https://civitai.com/models/2600698' }, { fetchImpl }),
+    ).rejects.toThrow(/not a LoRA/);
+    expect(metadataCalls).toBe(2);
+  });
+
   it('refuses to install non-LoRA model types', async () => {
     const fetchImpl = async () => (mockJsonResponse({ ...FAKE_MODEL, type: 'Checkpoint' }));
     await expect(
