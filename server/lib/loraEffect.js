@@ -78,12 +78,21 @@ export const normalizeLoraEffectReport = (raw, { sizeBytes = null, mtimeMs = nul
   const declared = isKnownLoraEffectStatus(raw.status) ? raw.status : LORA_EFFECT_STATUSES.UNMEASURABLE;
   const measured = nonNegativeInt(raw.measured);
   const zeroModules = nonNegativeInt(raw.zeroModules);
+  const skippedNonFinite = nonNegativeInt(raw.skippedNonFinite);
+  const skippedUnsupported = nonNegativeInt(raw.skippedUnsupported);
   // `zero` is the only status that refuses a render, so it is the only one whose
-  // internal consistency is worth checking: it must be backed by at least one
-  // measurement, and by EVERY measurement being zero. A payload claiming `zero`
-  // with nothing measured (a hand-edited sidecar, a future probe that redefines
-  // the word) would otherwise block a render on no evidence at all.
-  const status = declared === LORA_EFFECT_STATUSES.ZERO && !(measured > 0 && zeroModules === measured)
+  // internal consistency is worth checking. It must mean the WHOLE adapter is
+  // provably inert: at least one measurement, every measurement zero, and
+  // nothing skipped — a module we could not read may carry all of the effect.
+  // This mirrors the same rule in scripts/lora_effect_probe.py; it is restated
+  // here because a sidecar is untrusted input (hand-edited, or written by a
+  // future probe that redefines the word) and this is the last check before a
+  // render is refused.
+  const zeroIsBacked = measured > 0
+    && zeroModules === measured
+    && skippedNonFinite === 0
+    && skippedUnsupported === 0;
+  const status = declared === LORA_EFFECT_STATUSES.ZERO && !zeroIsBacked
     ? LORA_EFFECT_STATUSES.UNMEASURABLE
     : declared;
   // Statistics only exist alongside a measurement. Dropping them when
@@ -96,8 +105,8 @@ export const normalizeLoraEffectReport = (raw, { sizeBytes = null, mtimeMs = nul
     status,
     modules: nonNegativeInt(raw.modules),
     measured,
-    skippedNonFinite: nonNegativeInt(raw.skippedNonFinite),
-    skippedUnsupported: nonNegativeInt(raw.skippedUnsupported),
+    skippedNonFinite,
+    skippedUnsupported,
     zeroModules,
     medianRms: stat(raw.medianRms),
     maxRms: stat(raw.maxRms),

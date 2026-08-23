@@ -336,6 +336,45 @@ describe('patchLoraSidecar', () => {
   });
 });
 
+// The sidecar is one JSON document with several writers — the manager renaming a
+// LoRA, listLoras() healing keyLayout on read, and the effect probe caching its
+// measurement. Each patch is a read-modify-write of the WHOLE file, so
+// interleaved cycles let the last writer silently drop the other's field.
+describe('patchLoraSidecar — concurrent patches', () => {
+  it('merges every field when two patches race, rather than last-write-wins', async () => {
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    await fs.writeFile(join(tmpLoras, 'shared.safetensors'), 'weights');
+    await fs.writeFile(join(tmpLoras, 'shared.safetensors.metadata.json'), JSON.stringify({
+      filename: 'shared.safetensors', name: 'Original',
+    }));
+
+    await Promise.all([
+      lorasService.patchLoraSidecar('shared.safetensors', { name: 'Renamed' }),
+      lorasService.patchLoraSidecar('shared.safetensors', { effectReport: { status: 'ok', measured: 4 } }),
+      lorasService.patchLoraSidecar('shared.safetensors', { keyLayout: 'comfyui' }),
+    ]);
+
+    const written = JSON.parse(await fs.readFile(join(tmpLoras, 'shared.safetensors.metadata.json'), 'utf-8'));
+    expect(written.name).toBe('Renamed');
+    expect(written.keyLayout).toBe('comfyui');
+    expect(written.effectReport).toMatchObject({ status: 'ok', measured: 4 });
+  });
+
+  it('does not serialize patches to DIFFERENT LoRAs behind each other', async () => {
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    for (const name of ['a.safetensors', 'b.safetensors']) {
+      await fs.writeFile(join(tmpLoras, name), 'weights');
+    }
+    const [a, b] = await Promise.all([
+      lorasService.patchLoraSidecar('a.safetensors', { name: 'A' }),
+      lorasService.patchLoraSidecar('b.safetensors', { name: 'B' }),
+    ]);
+    expect([a.name, b.name]).toEqual(['A', 'B']);
+  });
+});
+
 describe('installFromCivitai', () => {
   // Build a fake Civitai model JSON we can hand to the fetchImpl.
   const FAKE_MODEL = {

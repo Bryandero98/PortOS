@@ -140,6 +140,7 @@ describe('loraEffectIssue', () => {
   it('refuses a measured entirely-zero adapter, carrying the probe reason', () => {
     const report = normalizeLoraEffectReport({
       ...okPayload, status: 'zero', measured: 4, zeroModules: 4,
+      skippedNonFinite: 0, skippedUnsupported: 0,
       medianRms: 0, maxRms: 0, reason: 'all 4 measurable LoRA module(s) have exactly zero effect',
     });
     expect(loraEffectIssue(report)).toMatch(/zero effect/);
@@ -157,6 +158,10 @@ describe('loraEffectIssue', () => {
       { ...okPayload, status: 'zero', measured: 0, zeroModules: 0 },
       { ...okPayload, status: 'zero', measured: 0, zeroModules: 4 },
       { ...okPayload, status: 'zero', measured: 6, zeroModules: 3 },
+      // Skipped modules mean the adapter is not PROVABLY inert — one we could
+      // not read may carry all of its effect. Mirrors the probe's own rule.
+      { ...okPayload, status: 'zero', measured: 1, zeroModules: 1, skippedUnsupported: 1, skippedNonFinite: 0 },
+      { ...okPayload, status: 'zero', measured: 1, zeroModules: 1, skippedUnsupported: 0, skippedNonFinite: 2 },
     ]) {
       const report = normalizeLoraEffectReport(bogus);
       expect(report.status).toBe('unmeasurable');
@@ -167,6 +172,7 @@ describe('loraEffectIssue', () => {
   it('keeps a zero verdict that every measurement backs', () => {
     const report = normalizeLoraEffectReport({
       ...okPayload, status: 'zero', measured: 4, zeroModules: 4, medianRms: 0, maxRms: 0,
+      skippedNonFinite: 0, skippedUnsupported: 0,
     });
     expect(report.status).toBe('zero');
     expect(loraEffectIssue(report)).not.toBeNull();

@@ -252,6 +252,20 @@ def run(tmp):
     check("a zero module alongside a NON-FINITE one does not refuse",
           report["status"] == "ok" and report["skippedNonFinite"] == 1)
 
+    # A legitimately tiny adapter must not be refused. The Gram form squares the
+    # weights twice over, so 1e-20 inputs reach 1e-80 — below float32's floor.
+    # Accumulated in float32 this underflows to exactly 0.0 and the adapter is
+    # reported `zero`, which BLOCKS the render.
+    tiny = tmp / "tiny.safetensors"
+    write_safetensors(tiny, bare_pair(
+        "m",
+        np.full((1, 16), 1e-20, np.float32),
+        np.full((16, 1), 1e-20, np.float32),
+    ))
+    report = measure_lora_effect(tiny)
+    check("a tiny-but-real adapter is ok, never underflowed into a zero refusal",
+          report["status"] == "ok" and report["maxRms"] > 0)
+
     # --- kohya alpha edge cases ---------------------------------------------
     neg_alpha = tmp / "kohya_negative_alpha.safetensors"
     write_safetensors(neg_alpha, {

@@ -243,11 +243,20 @@ def _module_rms(np, down, up, scale: float) -> float:
     """
     out_features, rank = up.shape
     _, in_features = down.shape
+    # float64 for the products, whatever the storage dtype. The Gram form squares
+    # the weights TWICE over (||BA||_F^2 is a product of two Gram matrices), so a
+    # legitimately tiny adapter — 1e-20 weights are unusual but real — reaches
+    # 1e-80, far below float32's ~1e-38 floor. In float32 that underflows to
+    # exactly 0.0 and the adapter is reported `zero`, which REFUSES the render.
+    # A false refusal is the worst outcome this probe can produce, and the cast
+    # costs one transient copy of two rank-sized matrices.
+    up64 = up.astype(np.float64)
+    down64 = down.astype(np.float64)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         with np.errstate(over="ignore", invalid="ignore", divide="ignore", under="ignore"):
-            gram_up = up.T @ up          # (rank, rank), symmetric
-            gram_down = down @ down.T    # (rank, rank), symmetric
+            gram_up = up64.T @ up64          # (rank, rank), symmetric
+            gram_down = down64 @ down64.T    # (rank, rank), symmetric
             # trace(X @ Y) for symmetric X, Y is the elementwise sum of X * Y.
             total = float(np.sum(gram_up * gram_down))
     if not math.isfinite(total):

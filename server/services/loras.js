@@ -29,6 +29,7 @@ import { atomicWrite, assertSafeFilename, ensureDir, listDirectoryByExtension, s
 import { verifySafetensorsStructure } from '../lib/hfCache.js';
 import { isPlainObject } from '../lib/objects.js';
 import { readCachedLoraEffectReport } from '../lib/loraEffect.js';
+import { createKeyedFileWriteQueue } from '../lib/fileWriteQueue.js';
 import {
   applyDownloadToken,
   baseModelToRunner,
@@ -278,6 +279,14 @@ export const deleteLora = async (filename) => {
 // Patch the sidecar with user-editable fields (name, recommendedScale, notes).
 // Civitai-derived fields are passed through but the route layer scopes the
 // patch so callers can't trample those.
+// One sidecar patch at a time per LoRA. Every patch is a read-modify-write of a
+// whole JSON document, and there are now several writers: the user renaming a
+// LoRA in the manager, listLoras() healing keyLayout/fluxVariant on read, and
+// the effect probe caching its measurement when it finishes. Interleaved, the
+// last write wins the whole file and silently drops the other's field. Keyed, so
+// patches to different LoRAs still run in parallel.
+const queueSidecarWrite = createKeyedFileWriteQueue();
+
 export const patchLoraSidecar = async (filename, patch) => {
   assertSafeLoraFilename(filename);
   const filePath = join(PATHS.loras, filename);
@@ -294,10 +303,14 @@ export const patchLoraSidecar = async (filename, patch) => {
       { status: 400, code: 'INVALID_LORA_FILE' },
     );
   }
-  const current = (await readSidecar(filename)) || { filename };
-  const next = { ...current, ...patch, filename };
-  await atomicWrite(sidecarPath(filename), JSON.stringify(next, null, 2) + '\n');
-  return next;
+  // The read has to be INSIDE the queued cycle — reading before joining the
+  // queue would merge against a snapshot the previous write already superseded.
+  return queueSidecarWrite(filename, async () => {
+    const current = (await readSidecar(filename)) || { filename };
+    const next = { ...current, ...patch, filename };
+    await atomicWrite(sidecarPath(filename), JSON.stringify(next, null, 2) + '\n');
+    return next;
+  });
 };
 
 // Stamp the classified safetensors key layout onto a freshly-built sidecar so
