@@ -251,18 +251,19 @@ export async function withTransaction(fn) {
   // client.query accepts either a SQL string or a { text, values } config —
   // GUARDED_CLIENT_HANDLER reads the SQL out of both.
   const guardedClient = new Proxy(client, GUARDED_CLIENT_HANDLER);
-  await client.query('BEGIN');
-  let result;
+  let began = false;
   try {
-    result = await fn(guardedClient);
+    await client.query('BEGIN');
+    began = true;
+    const result = await fn(guardedClient);
     await client.query('COMMIT');
+    return result;
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (began) await client.query('ROLLBACK');
     throw err;
   } finally {
     client.release();
   }
-  return result;
 }
 
 /**

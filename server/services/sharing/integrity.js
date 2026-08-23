@@ -20,6 +20,8 @@ import { assetIntegrityForRecord } from './peerSync.js';
 import { peerBaseUrl } from '../../lib/peerUrl.js';
 import { peerFetch } from '../../lib/peerHttpClient.js';
 
+const PEER_INTEGRITY_TIMEOUT_MS = 15_000;
+
 async function recordsForKind(kind) {
   if (kind === 'mediaCollection') return listCollections({ includeDeleted: true });
   if (kind === 'universe') return listUniverses({ includeDeleted: true });
@@ -78,7 +80,7 @@ export async function getPeerIntegrity({ peerId, kind }) {
 
   const res = await peerFetch(
     `${peerBaseUrl(peer)}/api/peer-sync/manifest?kind=${encodeURIComponent(kind)}`,
-    {},
+    { signal: AbortSignal.timeout(PEER_INTEGRITY_TIMEOUT_MS) },
     peer,
   ).catch(() => null);
 
