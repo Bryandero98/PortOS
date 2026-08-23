@@ -244,7 +244,7 @@ async function probeEndpoints(apiKey) {
 const apiKey = await resolveApiKey();
 
 console.log(`🦞 Moltbook Challenge Probe`);
-console.log(`🔑 API Key: ${apiKey.substring(0, 16)}...`);
+console.log(`🔑 API Key: ${apiKey.substring(0, 6)}...`);
 console.log(`⏱️  Poll interval: ${BACKOFF_MS / 1000}s`);
 console.log(`🔁 Max poll attempts: ${MAX_POLL_ATTEMPTS}`);
 
