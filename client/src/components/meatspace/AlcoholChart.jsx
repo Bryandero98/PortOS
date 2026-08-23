@@ -5,7 +5,7 @@ import {
 import * as api from '../../services/api';
 import BrailleSpinner from '../BrailleSpinner';
 import useChartColors from '../../hooks/useChartColors.js';
-import { localDateKey } from '../../utils/formatters';
+import { formatMonthDay, localDateKey } from '../../utils/formatters';
 
 const VIEWS = [
   { id: '7d', label: '7 Days', days: 7 },
@@ -46,7 +46,7 @@ export default function AlcoholChart({ sex = 'male', onRefreshKey, onViewChange 
       const drinks = dateMap[dateStr] || 0;
       chartData.push({
         date: dateStr,
-        label: `${cursor.getMonth() + 1}/${cursor.getDate()}`,
+        label: formatMonthDay(cursor),
         drinks,
         grams: Math.round(drinks * GRAMS_PER_STD_DRINK * 100) / 100
       });

@@ -125,7 +125,7 @@ function fitTitle(source, entry) {
       : '';
     return `Estimated fit on this machine — model weights + ~20% overhead vs. usable memory.${stale}`;
   }
-  const measuredAt = entry?.assessedAt ? ` on ${new Date(entry.assessedAt).toLocaleDateString()}` : '';
+  const measuredAt = entry?.assessedAt ? ` on ${formatDateNumeric(entry.assessedAt)}` : '';
   const disagree = entry?.disagrees
     ? ` The size estimate said "${FIT_META[entry.estimatedFit]?.label || entry.estimatedFit}".`
     : '';
