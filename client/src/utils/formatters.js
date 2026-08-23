@@ -234,6 +234,29 @@ export function timeAgo(dateStr, fallback = 'never') {
 }
 
 /**
+ * Age in whole DAYS — "today", "1 day ago", "412 days ago".
+ *
+ * Distinct from `timeAgo`, which collapses anything past a month into "3mo ago"
+ * / "2y ago". Model-download lists want the day count itself: it is the number
+ * that says how current a checkpoint is, and a bucket label hides the difference
+ * between a 40-day-old release and a 400-day-old one.
+ * @param {string|number|Date|null} value - ISO timestamp, epoch ms, or Date
+ * @param {string} fallback - Text for null/missing/unparseable values
+ * @returns {string} Day-count label
+ */
+export function formatAgeDays(value, fallback = '') {
+  if (value === null || value === undefined || value === '') return fallback;
+  // toDisplayDate, not `new Date`: a bare "2026-03-05" parses as UTC midnight and
+  // would read a day older than it is everywhere west of Greenwich.
+  const time = toDisplayDate(value).getTime();
+  if (!Number.isFinite(time)) return fallback;
+  const days = Math.floor((Date.now() - time) / 86400000);
+  // <= 0 covers a clock skew ahead of the publish date — never "-1 days ago".
+  if (days <= 0) return 'today';
+  return `${days.toLocaleString()} day${days === 1 ? '' : 's'} ago`;
+}
+
+/**
  * Format a future timestamp as a relative "in X" string, mirroring timeAgo's
  * bucket thresholds. Returns `fallback` for null/missing or past dates (use
  * timeAgo for past-relative display). Example outputs: "in 5s", "in 3m",
@@ -381,18 +404,59 @@ export function formatDownloadGb(gb) {
  * Format a model context window (in tokens) compactly, e.g. 32768 → "32K ctx",
  * 131072 → "128K ctx", 1048576 → "1M ctx". Returns null for missing/invalid
  * values so callers can omit the label entirely.
+ *
+ * `suffix` is what follows the number. The default reads as a standalone badge;
+ * pass `''` when the surrounding prose already supplies the noun ("up to 32K
+ * tokens of context"), so the two spellings stay one implementation instead of
+ * a near-copy per caller.
+ *
  * @param {number|null|undefined} tokens
+ * @param {{ suffix?: string }} [options]
  * @returns {string|null}
  */
-export function formatContextLength(tokens) {
+export function formatContextLength(tokens, { suffix = ' ctx' } = {}) {
   const n = Number(tokens);
   if (!Number.isFinite(n) || n <= 0) return null;
   if (n >= 1024 * 1024) {
     const m = n / (1024 * 1024);
-    return `${parseFloat(m.toFixed(m % 1 ? 1 : 0))}M ctx`;
+    return `${parseFloat(m.toFixed(m % 1 ? 1 : 0))}M${suffix}`;
   }
-  if (n >= 1024) return `${Math.round(n / 1024)}K ctx`;
-  return `${n} ctx`;
+  if (n >= 1024) return `${Math.round(n / 1024)}K${suffix}`;
+  return `${n}${suffix}`;
+}
+
+/**
+ * Context length with NO unit suffix — `4096` → `"4K"` — for prose that
+ * already says "tokens of context" around it.
+ *
+ * Three surfaces in the Models section had each declared this same one-line
+ * alias privately; it lives here, beside `formatContextLength`, so a change to
+ * the K/M thresholds reaches all of them.
+ */
+export function formatContextTokens(tokens) {
+  return formatContextLength(tokens, { suffix: '' });
+}
+
+/**
+ * How fast a measured model generated, as one label: `"58.5 tok/s"`,
+ * `"~58.5 tok/s"` for a frame-counted estimate, or `"240 chars/s"` when the
+ * runtime reported no token counts at all. `null` when neither was measured.
+ *
+ * Tokens/s leads because it is the figure people compare local models on, and
+ * the two are never shown together — one row carrying both units reads as a
+ * contradiction. The `~` is not decoration: PortOS has no tokenizer, so a count
+ * derived from counting streamed frames must never be presented as one the
+ * daemon's tokenizer produced.
+ *
+ * @param {{meanTokensPerSecond?: number|null, meanCharsPerSecond?: number|null, tokensEstimated?: boolean|null}} perf
+ */
+export function throughputLabel(perf) {
+  const tokens = perf?.meanTokensPerSecond;
+  if (typeof tokens === 'number' && Number.isFinite(tokens)) {
+    return `${perf?.tokensEstimated ? '~' : ''}${tokens} tok/s`;
+  }
+  const chars = perf?.meanCharsPerSecond;
+  return typeof chars === 'number' && Number.isFinite(chars) ? `${chars} chars/s` : null;
 }
 
 /**
@@ -467,7 +531,7 @@ export function formatDateShort(value) {
 // Per-call LLM timeout bounds. Client-side mirror of the canonical
 // MIN_TIMEOUT / MAX_TIMEOUT in server/lib/aiToolkit/constants.js — the
 // client can't import across the server boundary (Vite vs Node, plus the
-// aiToolkit directory is kept self-contained per CLAUDE.md). The server
+// aiToolkit directory is kept self-contained per AGENTS.md). The server
 // validators (validation.js, stageRunner.js) and aiToolkit's own
 // provider/run schemas all import from constants.js; this file is the
 // only known mirror. Bumping these here without the server constants —

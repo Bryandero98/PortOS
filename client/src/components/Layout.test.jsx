@@ -291,6 +291,9 @@ describe('Layout — isFullWidthRoute classification', () => {
     // Data Manager owns its own bar+scroll shell, and is registered EXACT so
     // it can't leak onto the DataDog routes that share the `/data` prefix.
     ['/data', true], ['/datadog', false], ['/devtools/datadog', false],
+    // Models owns the same header/tabs/scroll shell as Settings — registered as
+    // a whole-section prefix, so the bare path and every tab classify alike.
+    ['/models', true], ['/models/performance', true], ['/models/llms', true],
     // Whole-section prefixes, and the default for an unlisted route.
     ['/songbook', true], ['/', false],
   ])('%s -> %s', (pathname, expected) => {

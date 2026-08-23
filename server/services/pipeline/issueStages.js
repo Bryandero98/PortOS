@@ -169,7 +169,7 @@ export function updateStageWithLatest(issueId, stageId, computeFn, { snapshotPri
   // issue — both share one mutex per series. The per-record split (migrations
   // 035/036) otherwise left renumbers on the series queue and stage saves on
   // the per-id queue (two independent mutexes over the same shared resource);
-  // see CLAUDE.md "single tail per shared file". seriesId is immutable, so read
+  // see AGENTS.md "single tail per shared file". seriesId is immutable, so read
   // it outside the lock to pick the queue, then re-read the issue INSIDE the
   // lock for the freshest stage.
   const work = async () => {

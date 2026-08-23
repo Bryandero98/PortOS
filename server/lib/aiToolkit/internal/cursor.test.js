@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { CURSOR_COMMAND, CURSOR_TUI_ID, isCursorCommand, parseCursorModelList } from './cursor.js';
-// The toolkit SOURCE may not import out to server/lib (see ../CLAUDE.md); a test
+// The toolkit SOURCE may not import out to server/lib (see ../AGENTS.md); a test
 // may, and this is the only way to actually pin the duplication it documents.
 import { CURSOR_COMMAND as UPSTREAM_COMMAND, isCursorCommand as upstreamIsCursorCommand } from '../../cursor.js';
 

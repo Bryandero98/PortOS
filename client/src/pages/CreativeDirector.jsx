@@ -208,7 +208,7 @@ export default function CreativeDirector() {
   };
 
   // Optimistic-update the row in place rather than refetching the whole list
-  // (per CLAUDE.md "Reactive UI updates"). The detail page's poll picks up the
+  // (per AGENTS.md "Reactive UI updates"). The detail page's poll picks up the
   // server's authoritative status within 5s if anything diverges.
   const handleStart = async (id) => {
     try {

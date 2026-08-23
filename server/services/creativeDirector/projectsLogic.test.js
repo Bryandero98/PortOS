@@ -80,6 +80,39 @@ describe('modelOverrides (per-project provider/model pins)', () => {
     // Neither → empty strings.
     expect(resolveStagePin('plan', {}, settings)).toEqual({ providerId: '', model: '' });
   });
+
+  // The layer precedence is WHOLE-OBJECT, not per-field: the layer that names a
+  // provider supplies the model too, even when it has none. Pinned because it is
+  // exactly what separates this resolver from the shared per-field
+  // `resolveLlmRoutePin` — merging the global model in here would hand the
+  // project's provider a model the user picked for a different one.
+  it('resolveStagePin does not inherit the global model into a provider-only override', () => {
+    const settings = { creativeDirector: { treatment: { providerId: 'global', model: 'gm' } } };
+    // Different provider — inheriting the global model would cross providers.
+    expect(resolveStagePin('treatment', { modelOverrides: { treatment: { providerId: 'proj' } } }, settings))
+      .toEqual({ providerId: 'proj', model: '' });
+    // SAME provider — still not inherited: the drawer's empty model means "this
+    // provider's default model", not "fall through to the global assignment".
+    expect(resolveStagePin('treatment', { modelOverrides: { treatment: { providerId: 'global' } } }, settings))
+      .toEqual({ providerId: 'global', model: '' });
+  });
+
+  it('resolveStagePin ignores a model-only override and falls through to the global', () => {
+    const settings = { creativeDirector: { plan: { providerId: 'global', model: 'gm' } } };
+    expect(resolveStagePin('plan', { modelOverrides: { plan: { model: 'orphan' } } }, settings))
+      .toEqual({ providerId: 'global', model: 'gm' });
+  });
+
+  it('resolveStagePin keeps a model-only global assignment (the base layer is never skipped)', () => {
+    const settings = { creativeDirector: { plan: { model: 'gm' } } };
+    expect(resolveStagePin('plan', {}, settings)).toEqual({ providerId: '', model: 'gm' });
+  });
+
+  it('resolveStagePin coerces absent layers and non-string fields to empty strings', () => {
+    expect(resolveStagePin('treatment', null, null)).toEqual({ providerId: '', model: '' });
+    expect(resolveStagePin('treatment', { modelOverrides: { treatment: { providerId: 'proj', model: 7 } } }, {}))
+      .toEqual({ providerId: 'proj', model: '' });
+  });
 });
 
 describe('buildProjectRecord', () => {

@@ -297,7 +297,7 @@ export function createCollectionStore({
    * corrupt record in an otherwise-readable collection. Callers that reason over
    * the whole set (merge-rate stats, adoption reports) need to distinguish
    * "N records" from "N-of-M records, K corrupt" so a silent undercount can't
-   * masquerade as complete truth — the same sentinel-vs-empty rule the CLAUDE.md
+   * masquerade as complete truth — the same sentinel-vs-empty rule the AGENTS.md
    * conventions call out. Mirrors the `loadAll`/`listOutcomesResult` precedent.
    *
    * @returns {Promise<{ records: any[], failedIds: string[] }>}

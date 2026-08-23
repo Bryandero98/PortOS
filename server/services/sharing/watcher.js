@@ -76,7 +76,7 @@ export async function attachWatcher(bucketId) {
   // not a manifest to process. Manifests live in manifests/ (always *.json).
   const isBundleSync = (p) => p.includes(`${assetsDir}/`) || p.includes(`${recordsDir}/`);
 
-  // try/catch around async event handlers — see CLAUDE.md "PTY/child-process
+  // try/catch around async event handlers — see AGENTS.md "PTY/child-process
   // /setTimeout/setInterval callbacks" rule (chokidar events fire outside the
   // request lifecycle, no Express middleware to bubble the throw to).
   w.on('add', async (path) => {

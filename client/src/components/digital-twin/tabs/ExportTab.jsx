@@ -102,6 +102,8 @@ export default function ExportTab({ onRefresh: _onRefresh }) {
     switch (formatId) {
       case 'system_prompt':
         return FileText;
+      case 'agents_md':
+      // Pre-#4852 id, still resolvable from a persisted preference.
       case 'claude_md':
         return Code;
       case 'json':
@@ -307,11 +309,11 @@ export default function ExportTab({ onRefresh: _onRefresh }) {
             </div>
           )}
 
-          {selectedFormat === 'claude_md' && (
+          {(selectedFormat === 'agents_md' || selectedFormat === 'claude_md') && (
             <div className="text-sm text-gray-400 space-y-2">
               <p>1. Download or copy the export</p>
-              <p>2. Add to your project as <code className="bg-port-bg px-1 rounded">CLAUDE.md</code></p>
-              <p>3. Claude Code will automatically read and apply these instructions</p>
+              <p>2. Add to your project as <code className="bg-port-bg px-1 rounded">AGENTS.md</code>, with a <code className="bg-port-bg px-1 rounded">CLAUDE.md</code> next to it containing just <code className="bg-port-bg px-1 rounded">@AGENTS.md</code></p>
+              <p>3. Every agent CLI — Claude Code included — will read and apply these instructions</p>
             </div>
           )}
 

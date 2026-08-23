@@ -271,7 +271,7 @@ const DEFAULT_CONFIG = {
   // (no-provider) modules the launcher can actually compose — mental math and
   // deterministic cognitive drills (issue #2100). LLM drills are deliberately
   // excluded: auto-enabling them would queue provider calls the user hasn't
-  // consented to (see CLAUDE.md's AI Provider Usage Policy) — a user who wants
+  // consented to (see AGENTS.md's AI Provider Usage Policy) — a user who wants
   // wit/verbal drills in every session adds `llm-drills` here explicitly.
   // `memory` is intentionally NOT a default: composed memory practice is opt-in,
   // so existing installs keep exactly their prior daily session mix. Legacy
@@ -297,7 +297,7 @@ const DEFAULT_CONFIG = {
   // Opt-in adaptive difficulty (default OFF). When enabled, math drills are
   // nudged harder/easier at generation time from recent scored performance.
   adaptive: { enabled: false },
-  // Opt-in daily reminder (default OFF, off-by-default per CLAUDE.md's
+  // Opt-in daily reminder (default OFF, off-by-default per AGENTS.md's
   // single-user/no-surprise-background-behavior convention). When enabled,
   // meatspacePostReminder.js fires a deterministic (no-LLM) in-app notification
   // at `time` (HH:MM, user's configured timezone) if today's POST is incomplete.

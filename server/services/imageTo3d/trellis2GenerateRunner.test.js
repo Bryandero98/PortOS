@@ -313,7 +313,7 @@ describe.skipIf(!pyBin)('trellis2RestoreFillHoles', () => {
   // Python's `write_text` translates \n to the platform line ending, so the patched
   // file is CRLF on Windows while Node's readFileSync returns the raw bytes. A
   // `\n\s+` regex then cannot match — this failed ONLY on the Windows CI runner and
-  // passed locally. Normalizing is the convention root CLAUDE.md prescribes for
+  // passed locally. Normalizing is the convention root AGENTS.md prescribes for
   // exactly this class of failure.
   const readNormalized = () => readFileSync(basePath(), 'utf8').replace(/\r\n?/g, '\n');
 

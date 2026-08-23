@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { onActivateKeyDown, clickableProps } from './a11yKeyboard.js';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { onActivateKeyDown, clickableProps, isButtonActivation, isPressKey, isEditableTarget, shouldIgnoreGlobalKey, noPointerFocusSurfaceProps } from './a11yKeyboard.js';
 
 describe('onActivateKeyDown', () => {
   it('returns undefined when handler is not a function', () => {
@@ -92,4 +92,163 @@ describe('clickableProps', () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 });
-// @vitest-environment node
+
+describe('isButtonActivation', () => {
+  // No DOM here (node env) — a stub target with .closest is exactly the
+  // surface the helper uses.
+  const target = (match) => ({ closest: (sel) => (sel.includes('button') ? match : null) });
+  const button = {};
+
+  it('is true for Space on a button-like target', () => {
+    expect(isButtonActivation({ key: ' ', target: target(button) })).toBe(true);
+    expect(isButtonActivation({ code: 'Space', target: target(button) })).toBe(true);
+    expect(isButtonActivation({ key: 'Spacebar', target: target(button) })).toBe(true);
+  });
+
+  it('is false for Space away from a button — a global Space hotkey still fires', () => {
+    expect(isButtonActivation({ key: ' ', target: target(null) })).toBe(false);
+  });
+
+  it('is false for keys that do not activate a button', () => {
+    // Enter DOES activate a button natively, but it also activates links and
+    // submits forms, and no global hotkey defaults to it — only Space needs
+    // the carve-out, so widening this would silently disable Enter shortcuts.
+    expect(isButtonActivation({ key: 'Enter', target: target(button) })).toBe(false);
+    expect(isButtonActivation({ key: 'a', target: target(button) })).toBe(false);
+  });
+
+  it('is false when the target cannot be inspected', () => {
+    expect(isButtonActivation({ key: ' ', target: null })).toBe(false);
+    expect(isButtonActivation({ key: ' ' })).toBe(false);
+    expect(isButtonActivation(null)).toBe(false);
+  });
+});
+
+describe('isPressKey', () => {
+  it('accepts Enter and every spelling of Space', () => {
+    expect(isPressKey({ key: 'Enter' })).toBe(true);
+    expect(isPressKey({ key: ' ' })).toBe(true);
+    expect(isPressKey({ key: 'Spacebar' })).toBe(true);
+    expect(isPressKey({ code: 'Space' })).toBe(true);
+  });
+
+  it('rejects other keys and a missing event', () => {
+    expect(isPressKey({ code: 'KeyA', key: 'a' })).toBe(false);
+    expect(isPressKey({ key: 'Escape' })).toBe(false);
+    expect(isPressKey(null)).toBe(false);
+  });
+});
+
+
+describe('isEditableTarget', () => {
+  it('flags the standard form fields and contentEditable, not plain elements', () => {
+    expect(isEditableTarget({ tagName: 'INPUT' })).toBe(true);
+    expect(isEditableTarget({ tagName: 'TEXTAREA' })).toBe(true);
+    expect(isEditableTarget({ tagName: 'SELECT' })).toBe(true);
+    expect(isEditableTarget({ tagName: 'DIV', isContentEditable: true })).toBe(true);
+    expect(isEditableTarget({ tagName: 'DIV' })).toBe(false);
+    expect(isEditableTarget(null)).toBe(false);
+    expect(isEditableTarget({})).toBe(false);
+  });
+});
+
+describe('shouldIgnoreGlobalKey', () => {
+  // Stand-ins for the two DOM surfaces the predicate reads. A stub `closest` is
+  // exactly what isButtonActivation consults; the dialog is a real element,
+  // because the predicate queries the document rather than any component.
+  const buttonTarget = { tagName: 'BUTTON', closest: (sel) => (sel.includes('button') ? {} : null) };
+  const plainTarget = { tagName: 'DIV', closest: () => null };
+  const openDialog = () => {
+    const dialog = document.createElement('div');
+    dialog.setAttribute('aria-modal', 'true');
+    document.body.appendChild(dialog);
+  };
+
+  afterEach(() => {
+    document.querySelectorAll('[aria-modal="true"]').forEach((el) => el.remove());
+  });
+
+  it('lets an ordinary keystroke through', () => {
+    expect(shouldIgnoreGlobalKey({ key: 'a', target: plainTarget })).toBe(false);
+  });
+
+  it('ignores typing in an editable target', () => {
+    expect(shouldIgnoreGlobalKey({ key: 'a', target: { tagName: 'INPUT' } })).toBe(true);
+  });
+
+  // The guard useKeyCapture was missing (#4748): Space on a focused button
+  // belongs to the browser, and no caller may opt out of that.
+  it('always ignores native button activation, whatever the options say', () => {
+    expect(shouldIgnoreGlobalKey({ key: ' ', target: buttonTarget })).toBe(true);
+    expect(shouldIgnoreGlobalKey({ key: ' ', target: buttonTarget }, {
+      allowChords: true, ignoreRepeat: false, enabledInDialog: true,
+    })).toBe(true);
+  });
+
+  it('ignores modifier chords unless allowChords', () => {
+    const chord = { key: 'a', ctrlKey: true, target: plainTarget };
+    expect(shouldIgnoreGlobalKey(chord)).toBe(true);
+    expect(shouldIgnoreGlobalKey(chord, { allowChords: true })).toBe(false);
+    expect(shouldIgnoreGlobalKey({ key: 'a', metaKey: true, target: plainTarget })).toBe(true);
+    expect(shouldIgnoreGlobalKey({ key: 'a', altKey: true, target: plainTarget })).toBe(true);
+  });
+
+  it('ignores auto-repeat unless ignoreRepeat is off', () => {
+    const repeat = { key: 'a', repeat: true, target: plainTarget };
+    expect(shouldIgnoreGlobalKey(repeat)).toBe(true);
+    expect(shouldIgnoreGlobalKey(repeat, { ignoreRepeat: false })).toBe(false);
+  });
+
+  it('ignores keys while an aria-modal dialog is open unless enabledInDialog', () => {
+    openDialog();
+    expect(shouldIgnoreGlobalKey({ key: 'a', target: plainTarget })).toBe(true);
+    expect(shouldIgnoreGlobalKey({ key: 'a', target: plainTarget }, { enabledInDialog: true })).toBe(false);
+  });
+});
+
+describe('noPointerFocusSurfaceProps', () => {
+  const press = (el) => {
+    const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    el.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+  // React would call the handler during capture; dispatching from the target and
+  // invoking it with the event is the same contract without a React tree.
+  const surface = (html) => {
+    const root = document.createElement('div');
+    root.innerHTML = html;
+    document.body.appendChild(root);
+    root.addEventListener(
+      'mousedown',
+      (e) => noPointerFocusSurfaceProps.onMouseDownCapture(e),
+      true,
+    );
+    return root;
+  };
+
+  it('cancels the mousedown default on a button, which is what would focus it', () => {
+    const root = surface('<div><span><button id="b">go</button></span></div>');
+    expect(press(root.querySelector('#b'))).toBe(true);
+
+    // Only focus is suppressed — the click still reaches the handler.
+    const clicked = vi.fn();
+    root.querySelector('#b').addEventListener('click', clicked);
+    root.querySelector('#b').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(clicked).toHaveBeenCalledTimes(1);
+    root.remove();
+  });
+
+  it('covers a nested target inside the button, and role=button too', () => {
+    const root = surface('<button id="b"><span id="icon">i</span></button><div id="r" role="button">r</div>');
+    expect(press(root.querySelector('#icon'))).toBe(true);
+    expect(press(root.querySelector('#r'))).toBe(true);
+    root.remove();
+  });
+
+  it('leaves non-button targets alone, so text inputs still focus and select', () => {
+    const root = surface('<input id="i" /><p id="p">text</p>');
+    expect(press(root.querySelector('#i'))).toBe(false);
+    expect(press(root.querySelector('#p'))).toBe(false);
+    root.remove();
+  });
+});

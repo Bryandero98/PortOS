@@ -200,7 +200,11 @@ export async function getWorkflowGraph({ horizonHours = 24, from = new Date() } 
       enabledAppCount: info.enabledAppCount || 0,
       totalAppCount: info.totalAppCount || 0,
       taskMetadata: info.taskMetadata || null,
-      managedAgentOptions: info.managedAgentOptions || null
+      managedAgentOptions: info.managedAgentOptions || null,
+      // The task's provider/model pin — the per-app rows render their
+      // "Inherit (…)" label from it and pin over it.
+      providerId: info.providerId || null,
+      model: info.model || null
     });
 
     for (const dep of runAfter) {

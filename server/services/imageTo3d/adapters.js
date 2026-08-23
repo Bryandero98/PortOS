@@ -32,15 +32,28 @@
  *  - `describeInstallState?()` — optional extra per-target diagnostics: async,
  *    returns `{ warnings?: string[], fields?: object }`. `warnings` are generic
  *    user-facing strings the route can surface (e.g. on an "already installed"
- *    short-circuit) without knowing what they're about; `fields` are extra keys
- *    merged onto the target in `GET /targets` (e.g. TRELLIS.2's texture-bake
- *    quality). Omit when a target has nothing extra to report.
+ *    short-circuit) without knowing what they're about — replayed into a `verify`
+ *    stage that renders ONE prose string per frame, so anything a warning needs to
+ *    say has to fit in the sentence; `fields` are extra keys merged onto the target
+ *    in `GET /targets` (e.g. TRELLIS.2's texture-bake quality). Omit when a target
+ *    has nothing extra to report.
  *
  *    **A degraded-but-working install reports `fields.degraded`**:
- *    `{ label, help, repairable }`. This is the ONE shape the client renders, so the
- *    badge / help panel / Repair button work for any target without a per-target
+ *    `{ label, help, repairable, detail? }`. This is the ONE shape the client renders,
+ *    so the badge / help panel / Repair button work for any target without a per-target
  *    branch. `repairable: false` means re-running install cannot fix it and no Repair
- *    button is offered.
+ *    button is offered. `detail` is an optional short line naming the *specific* thing
+ *    that is missing (`Missing: o_voxel`) — `help` says which remedy to run, `detail`
+ *    says what is actually broken, so a user whose Repair keeps failing has something
+ *    to act on instead of the same generic sentence.
+ *
+ *    **`help` carries the remedy and NOTHING ELSE** — never the culprit names, even
+ *    though it reads fine on its own that way: the card renders both, so interpolating
+ *    them into the sentence prints them twice on one target and styles them on the
+ *    next (#4741). Build both halves with `describeDegradedInstall` from
+ *    `degradedInstall.js` rather than assembling the object here — it applies the
+ *    omit-`detail`-when-there-is-nothing-to-name rule (an empty label must never
+ *    render) and produces the matching `warnings` sentence in one place.
  *
  *    A target may also return its own narrow diagnostic field, but keep it small and
  *    keep the UI off it. `trellis2` still returns `textureBake` with **no in-repo
@@ -55,6 +68,7 @@ import {
   runTrellis2Generate,
   probeTrellis2TextureBake,
   probeMetalToolchain,
+  resolveDegradedBakeRemedy,
 } from './trellis2.js';
 import {
   isTrellis2CudaInstalled,
@@ -66,7 +80,16 @@ import {
   installPixal3dCuda,
   runPixal3dCudaGenerate,
   probePixal3dModules,
+  PIXAL3D_INCOMPLETE_INSTALL_HELP,
 } from './pixal3dCuda.js';
+import {
+  isPixal3dMpsInstalled,
+  installPixal3dMps,
+  runPixal3dMpsGenerate,
+  describePixal3dMpsInstallState,
+  probeMetalToolchain as probePixal3dMpsToolchain,
+} from './pixal3dMps.js';
+import { describeDegradedInstall } from './degradedInstall.js';
 import { detectCudaComputeCapability } from '../../lib/cudaCapability.js';
 
 export const TARGET_ADAPTERS = Object.freeze({
@@ -93,31 +116,57 @@ export const TARGET_ADAPTERS = Object.freeze({
       const bake = await probeTrellis2TextureBake();
       const degradedBake = bake.quality === 'fallback';
       const toolchain = degradedBake ? await probeMetalToolchain() : null;
-      // A degraded bake has two very different remedies, and the card must not
-      // offer the wrong one: when the Metal Toolchain is merely missing, Repair
-      // install fetches it and rebuilds (#3041); when only the Command Line Tools
-      // are active there is nothing PortOS can run, and the user has to install
-      // Xcode first.
-      const textureBake = toolchain?.blocker
-        ? { ...bake, repairable: false, blocker: toolchain.blocker, help: toolchain.hint }
-        : { ...bake, ...(degradedBake ? { repairable: true } : {}) };
+      // A degraded bake has two very different remedies, and the card must not offer
+      // the wrong one: when the Metal Toolchain is merely missing, Repair install
+      // fetches it and rebuilds (#3041); when only the Command Line Tools are active
+      // there is nothing PortOS can run, and the user has to install Xcode first. The
+      // install's own `verify` frame resolves it through the SAME helper, so the two
+      // lanes cannot name different fixes for one host state (#4742).
+      const textureBake = { ...bake, ...(resolveDegradedBakeRemedy(bake, toolchain) ?? {}) };
+      // Which modules failed to build is kept on the toolchain-`blocker` path too, where
+      // `help` becomes the Xcode hint but WHICH modules failed is still the useful half.
+      // `degradedQuality` is deliberately NOT passed: `flex_gemm` lowers bake quality
+      // without forcing the fallback baker, so naming it would blame it for a confetti
+      // surface it did not cause.
+      const projection = degradedBake ? describeDegradedInstall({
+        label: 'degraded textures',
+        help: textureBake.help,
+        repairable: textureBake.repairable !== false,
+        missing: bake.missing,
+      }) : null;
       return {
         fields: {
           textureBake,
           // Normalized degraded-state projection — see the `degraded` note in this
           // file's adapter contract. The client renders THIS, not `textureBake`, so a
           // target with a different kind of degradation needs no new UI branch.
-          ...(degradedBake ? {
-            degraded: {
-              label: 'degraded textures',
-              help: textureBake.help,
-              repairable: textureBake.repairable !== false,
-            },
-          } : {}),
+          ...(projection ? { degraded: projection.degraded } : {}),
         },
-        warnings: degradedBake ? [textureBake.help] : [],
+        // Replayed verbatim into the install route's `verify` stage on the
+        // already-installed short-circuit — the SAME stage the install's own verify
+        // hook writes.
+        warnings: projection?.warnings ?? [],
       };
     },
+  }),
+  pixal3dMps: Object.freeze({
+    isInstalled: isPixal3dMpsInstalled,
+    // The Apple port downloads public Hugging Face artifacts, but a configured token
+    // avoids anonymous rate limits during its first explicit render.
+    resolveEnv: hfChildEnv,
+    async install({ onEvent = () => {}, env } = {}) {
+      // The fork's setup script refuses to start unless `xcrun metal` is available.
+      // Reuse the existing toolchain preflight so a full-Xcode host can fetch the
+      // optional component before the native packages compile, while a Command-Line-
+      // Tools-only host receives the same actionable Xcode guidance as TRELLIS.2.
+      const toolchain = await probePixal3dMpsToolchain();
+      if (toolchain.blocker) onEvent({ type: 'log', stage: 'preflight', message: `⚠️ ${toolchain.hint}` });
+      const installMetalToolchain = toolchain.available === false && toolchain.installable === true;
+      if (installMetalToolchain) onEvent({ type: 'log', stage: 'preflight', message: `ℹ️ ${toolchain.hint}` });
+      return installPixal3dMps({ onEvent, env, installMetalToolchain });
+    },
+    run: runPixal3dMpsGenerate,
+    describeInstallState: describePixal3dMpsInstallState,
   }),
   trellis2Cuda: Object.freeze({
     isInstalled: isTrellis2CudaInstalled,
@@ -173,25 +222,25 @@ export const TARGET_ADAPTERS = Object.freeze({
     async describeInstallState() {
       const probe = await probePixal3dModules();
       // A REQUIRED module missing means the install did not COMPLETE — `setup.sh` is
-      // sourced and can exit 0 with a failed extension build, and `installPixal3dCuda`'s
-      // `verify` hook only checks the interpreter and the entrypoint, never the compiled
-      // extensions. So this is the only place that can surface it: without this, a
-      // half-built install reads plain "Ready" and the first render dies deep in the GLB
-      // exporter as an unclassified failure.
+      // sourced and can exit 0 with a failed extension build. `installPixal3dCuda`'s
+      // `verify` hook now probes the same modules and warns as the install finishes, so
+      // this is the standing report of that state rather than the only one: a user who
+      // missed the install log must still not see a half-built install read plain
+      // "Ready" and then have the first render die deep in the GLB exporter as an
+      // unclassified failure.
       const incomplete = probe.missing?.length ? probe.missing : null;
       const nafFallback = probe.naf === 'unavailable';
       // An incomplete install outranks a NAF fallback — it is the more severe problem,
       // and the same Repair action addresses both, so only the worse one is reported.
-      const degraded = incomplete
-        ? {
+      const projection = incomplete
+        ? describeDegradedInstall({
           label: 'incomplete install',
-          help: `Pixal3D is installed but ${incomplete.join(' and ')} did not build, so renders `
-            + 'will fail in the mesh exporter. Repair install rebuilds the CUDA extensions; '
-            + 'your downloaded models are kept.',
-          repairable: true,
-        }
+          help: PIXAL3D_INCOMPLETE_INSTALL_HELP,
+          missing: incomplete,
+        })
         : nafFallback
-          ? { label: 'NAF fallback', help: probe.help, repairable: true }
+          // No module list to name — NATTEN is absent as a whole, not half-built.
+          ? describeDegradedInstall({ label: 'NAF fallback', help: probe.help })
           : null;
       return {
         fields: {
@@ -199,9 +248,12 @@ export const TARGET_ADAPTERS = Object.freeze({
           // `target.modules.modules` (a raw find_spec map) with no consumer.
           naf: probe.naf,
           // The normalized shape the client renders — see the adapter contract above.
-          ...(degraded ? { degraded } : {}),
+          ...(projection ? { degraded: projection.degraded } : {}),
         },
-        warnings: degraded?.help ? [degraded.help] : [],
+        // Replayed into the install route's `verify` stage on the already-installed
+        // short-circuit, which renders one prose string and has no second line for
+        // `detail` — so the module names ride along in the sentence there.
+        warnings: projection?.warnings ?? [],
       };
     },
   }),

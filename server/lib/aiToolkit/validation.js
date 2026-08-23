@@ -86,10 +86,17 @@ export const providerSchema = z.object({
   // Per-request context window (Ollama num_ctx). Lifts the ~4K default so long
   // prompts (e.g. a whole manuscript) aren't silently truncated. Null = unset.
   numCtx: z.number().int().min(512).max(1048576).nullable().optional(),
-  // Ollama generation controls. These are provider-level so the same local
-  // model keeps its defaults across API, CLI, and TUI launchers.
-  temperature: z.number().min(0).max(2).optional(),
-  thinking: z.boolean().optional(),
+  // Default generation controls for the local OpenAI-compatible backends
+  // (Ollama, llama.cpp, MTPLX, vLLM) and the OpenCode wrappers in front of them.
+  // Provider-level so the same local model keeps its defaults across API, CLI,
+  // and TUI launchers; a run may still override them per task.
+  // All three are nullable, and null is the UI's "unset" — a backend that is
+  // never told a temperature / top_p / thinking mode keeps its own, which is not
+  // the same as being pinned to a value. Without a clearable null the editor
+  // could only ever add a pin, never remove one.
+  temperature: z.number().min(0).max(2).nullable().optional(),
+  topP: z.number().min(0).max(1).nullable().optional(),
+  thinking: z.boolean().nullable().optional(),
   // Planning-time context window (tokens) the editorial budgeter may assume for
   // this provider — distinct from numCtx (what we *ask Ollama for*). For cloud
   // providers numCtx stays null and this reflects the model's real ceiling.
@@ -107,9 +114,24 @@ export const providerSchema = z.object({
   // Marks an OpenCode CLI/TUI wrapper for a separately started local llama.cpp
   // server (e.g. DFlash 2 speculative decoding).
   llamaBacked: z.boolean().optional(),
-  // Marks an OpenCode CLI/TUI wrapper for the OrcaRouter OpenAI-compatible
-  // gateway. Its API key is read from the sibling `orcarouter` API record at
-  // spawn/refresh time and is never stored in this wrapper's config.
+  // Marks an OpenCode CLI/TUI wrapper for a separately started local vLLM
+  // container serving Qwen3.8-27B with DFlash 2 drafting. Distinct from
+  // `llamaBacked`: a different engine, a different port, and a different auth
+  // story (vLLM is started behind an API key; llama-server is not).
+  vllmBacked: z.boolean().optional(),
+  // Marks an OpenCode CLI/TUI wrapper for a separately started local SGLang
+  // container serving Qwen3.8-27B on a Hopper/Blackwell card. Distinct from
+  // `vllmBacked`: a different engine, a different port, a different tool-call
+  // parser, and an API key that is optional rather than required.
+  sglangBacked: z.boolean().optional(),
+  // Marks an OpenCode CLI/TUI wrapper for a hosted OpenAI-compatible gateway
+  // ('orcarouter', 'openrouter' — see internal/gateways.js). Its API key is read
+  // from the sibling API record of the SAME id at spawn/refresh time and is
+  // never stored in this wrapper's config.
+  gatewayBacked: z.string().optional(),
+  // Legacy per-gateway marker, superseded by `gatewayBacked` and still read
+  // forever — stored records are never rewritten (installs upgrade on their own
+  // schedule, so an older peer/version must keep resolving its own data).
   orcarouterBacked: z.boolean().optional(),
   // Explicit opt-in to attach the provider's API key to an arbitrary
   // (non-local, non-allowlisted) endpoint. Guards against SSRF / key

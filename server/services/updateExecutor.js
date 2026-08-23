@@ -55,9 +55,12 @@ export async function executeUpdate(tag, emit, { forceCleanWorkspaces } = {}) {
   const cleanList = Array.isArray(forceCleanWorkspaces)
     ? forceCleanWorkspaces.filter(w => CLEANABLE_WORKSPACES.has(w))
     : [];
-  const childEnv = cleanList.length
-    ? { ...process.env, PORTOS_FORCE_CLEAN_WORKSPACES: cleanList.join(',') }
-    : process.env;
+  const childEnv = { ...process.env };
+  if (cleanList.length) {
+    childEnv.PORTOS_FORCE_CLEAN_WORKSPACES = cleanList.join(',');
+  } else {
+    delete childEnv.PORTOS_FORCE_CLEAN_WORKSPACES;
+  }
 
   // POSIX: double-fork via spawnDetached so the script reparents to init and
   // survives the pm2 TreeKill its own `pm2 delete`/`pm2 start` steps trigger.

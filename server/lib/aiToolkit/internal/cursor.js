@@ -3,7 +3,7 @@
  *
  * `CURSOR_COMMAND` and `isCursorCommand` are duplicated from
  * server/lib/cursor.js so the toolkit stays self-contained (no imports out to
- * sibling PortOS modules — see ../CLAUDE.md); keep those two in sync with
+ * sibling PortOS modules — see ../AGENTS.md); keep those two in sync with
  * upstream, the same arrangement as ./antigravity.js.
  *
  * `CURSOR_TUI_ID`, `CURSOR_MODEL_LINE` and `parseCursorModelList` are

@@ -24,7 +24,12 @@
  *
  * Anything that conflates those makes an unassessed model look worse than a
  * measured-bad one, which is the exact failure this feature exists to remove.
+ *
+ * (Dependency-free apart from `localModelHeuristics.js`, which is itself pure —
+ * a sweep has to know which installed models are even *assessable*.)
  */
+
+import { isEmbeddingModel } from './localModelHeuristics.js';
 
 /**
  * Fit verdicts. Deliberately four values, not a boolean:
@@ -144,18 +149,36 @@ function meanOf(samples, field) {
  * @param {Array<object>} samples
  */
 export function summarizePerformance(samples) {
-  const measured = okSamples(samples)
+  const ok = okSamples(samples);
+  const measured = ok
     .filter((s) => isMeasured(s.charsPerSecond) && s.charsPerSecond > 0 && isMeasured(s.contextTokens));
   const fastest = measured.length ? Math.max(...measured.map((s) => s.charsPerSecond)) : null;
   const atLongest = measured.length
     ? measured.reduce((longest, s) => (s.contextTokens > longest.contextTokens ? s : longest)).charsPerSecond
     : null;
+  const tokenRates = ok.map((s) => s.tokensPerSecond).filter(isMeasured);
   return {
     samplesRun: Array.isArray(samples) ? samples.length : 0,
-    samplesOk: okSamples(samples).length,
+    samplesOk: ok.length,
     meanCharsPerSecond: meanOf(samples, 'charsPerSecond'),
     meanTtftMs: meanOf(samples, 'ttftMs'),
     peakCharsPerSecond: fastest,
+    // Token-denominated throughput, present only when the daemon reported token
+    // counts. `null` here means the runtime told us nothing — a reader must show
+    // "not measured", not fall back to chars/s under a tokens/s label.
+    meanTokensPerSecond: meanOf(samples, 'tokensPerSecond'),
+    peakTokensPerSecond: tokenRates.length ? Math.max(...tokenRates) : null,
+    meanPromptTokensPerSecond: meanOf(samples, 'promptTokensPerSecond'),
+    timingSource: (() => {
+      const sources = [...new Set(ok.map((s) => s.timingSource).filter(Boolean))];
+      return sources.length === 1 ? sources[0] : (sources.length ? 'mixed' : null);
+    })(),
+    // `true` when ANY contributing sample counted streamed frames instead of
+    // reading the daemon's own count. One estimated sample makes the mean an
+    // estimate, so this is deliberately pessimistic. `null` = no token evidence.
+    tokensEstimated: tokenRates.length
+      ? ok.some((s) => isMeasured(s.tokensPerSecond) && s.tokensEstimated === true)
+      : null,
     maxWorkingContextTokens: maxWorkingContextTokens(samples),
     // Clamped: the longest context can measure marginally ABOVE the peak of the
     // others only through noise, and a >1 "degradation" is meaningless.
@@ -164,13 +187,116 @@ export function summarizePerformance(samples) {
   };
 }
 
-// Speed normalization anchor, in CHARACTERS per second — the unit PortOS
-// actually measures (`localLlmPlayground.summarizeTimings`). There is no
-// tokenizer anywhere in the repo, so reporting a tokens/sec figure would be an
-// invented number dressed as a measurement. 240 chars/s (~60 tok/s at the
-// conventional ~4 chars/token) is a comfortable interactive rate on consumer
-// hardware; at or above it the axis scores 1, below it the score is linear so a
-// crawling model reads as clearly worse rather than both bottoming out.
+/**
+ * Flatten every measurement into one tokens-per-second table, fastest first.
+ *
+ * This is the "how fast is each model, really" view: one row per measured
+ * model+tuning, carrying the per-context readings and elapsed test time so
+ * falloff as the prompt grows is visible rather than averaged away. It is a
+ * REPORT, not a ranking — no scoring, no intent, no exclusions — so a model that
+ * only ran at 512 tokens still appears, with one column filled and the rest
+ * honestly blank.
+ *
+ * Rows whose runtime reported no token counts are still included (with `null`
+ * rates) rather than dropped: "this runtime does not report tokens" is the
+ * answer to why a model is missing from a tokens/s table, and silently omitting
+ * it would make the table look complete when it isn't.
+ *
+ * @param {Array<object>} assessments stored assessment records
+ * @returns {{ rows: Array<object>, contexts: number[], modelsWithTokenRates: number }}
+ */
+export function buildThroughputReport(assessments) {
+  const list = Array.isArray(assessments) ? assessments : [];
+  // Every rate on a row is null-or-measured; nothing is defaulted to 0.
+  const num = (value) => (isMeasured(value) ? value : null);
+  const contexts = new Set();
+  const rows = [];
+
+  for (const assessment of list) {
+    const samples = Array.isArray(assessment?.samples) ? assessment.samples : [];
+    const perf = assessment?.performance || {};
+    const points = [];
+    for (const sample of samples) {
+      if (!isMeasured(sample?.contextTokens)) continue;
+      contexts.add(sample.contextTokens);
+      points.push({
+        contextTokens: sample.contextTokens,
+        ok: sample?.ok === true,
+        // A failed sample carries its error so the cell can say WHY it is blank
+        // instead of just being blank.
+        tokensPerSecond: num(sample.tokensPerSecond),
+        promptTokensPerSecond: num(sample.promptTokensPerSecond),
+        charsPerSecond: num(sample.charsPerSecond),
+        ttftMs: num(sample.ttftMs),
+        // Keep the end-to-end duration with the context column. Unlike the
+        // aggregate mean TTFT, this answers how long THIS individual test took,
+        // including prompt processing and generation.
+        totalMs: num(sample.totalMs),
+        completionTokens: num(sample.completionTokens),
+        timingSource: sample.timingSource || null,
+        error: sample?.error || null,
+      });
+    }
+    rows.push({
+      backend: assessment?.backend || null,
+      modelId: assessment?.modelId || null,
+      tuningKey: assessment?.tuningKey || '',
+      tuningLabel: assessment?.tuningLabel || null,
+      // A reading taken under a tuning that never reached the daemon describes
+      // some OTHER configuration. It stays in the table (the numbers are real)
+      // but has to carry the caveat, or the row credits the wrong config.
+      tuningApplied: assessment?.tuningApplied ?? null,
+      tuningNotApplied: assessment?.tuningNotApplied || null,
+      verdict: assessment?.verdict || 'unknown',
+      assessedAt: assessment?.assessedAt || null,
+      staleness: assessment?.staleness || null,
+      meanTokensPerSecond: num(perf.meanTokensPerSecond),
+      peakTokensPerSecond: num(perf.peakTokensPerSecond),
+      meanPromptTokensPerSecond: num(perf.meanPromptTokensPerSecond),
+      meanCharsPerSecond: num(perf.meanCharsPerSecond),
+      meanTtftMs: num(perf.meanTtftMs),
+      timingSource: perf.timingSource || null,
+      tokensEstimated: typeof perf.tokensEstimated === 'boolean' ? perf.tokensEstimated : null,
+      points: points.sort((a, b) => a.contextTokens - b.contextTokens),
+    });
+  }
+
+  // Fastest first, but a row with NO token rate sorts last rather than as zero —
+  // unmeasured is not slow. Ties fall back to model id so the order is stable.
+  rows.sort((a, b) => {
+    const left = a.meanTokensPerSecond;
+    const right = b.meanTokensPerSecond;
+    if (left === null && right === null) return String(a.modelId).localeCompare(String(b.modelId));
+    if (left === null) return 1;
+    if (right === null) return -1;
+    return right - left || String(a.modelId).localeCompare(String(b.modelId));
+  });
+
+  return {
+    rows,
+    contexts: [...contexts].sort((a, b) => a - b),
+    // How many rows actually carry a tokens/s figure, so the UI can explain an
+    // empty table ("no local runtime here reports token counts") instead of
+    // rendering a blank grid.
+    modelsWithTokenRates: rows.filter((r) => r.meanTokensPerSecond !== null).length,
+  };
+}
+
+// Speed normalization anchor, in CHARACTERS per second.
+//
+// Chars/s, not tokens/s, and deliberately so. PortOS now RECORDS tokens/s when
+// the daemon reports token counts (`summarizeTimings`), and reports it — but it
+// cannot SCORE on it: a runtime that reports no usage block would score `null`
+// on speed and drop out of the ranking entirely, and records written before
+// token counts existed carry none. Chars/s is the one figure every runtime and
+// every stored record has, so the ranking stays comparable across both.
+// Still no tokenizer in the repo: nothing here ever derives a token count from
+// a character count.
+//
+// 240 chars/s (~60 tok/s at the conventional ~4 chars/token) is a comfortable
+// interactive rate on consumer hardware; at or above it the axis scores 1, below
+// it the score is linear so a crawling model reads as clearly worse rather than
+// both bottoming out.
 const SPEED_CEILING_CHARS_PER_SECOND = 240;
 
 // Parameter-count anchor for the capability score. Local models above ~70B are
@@ -272,7 +398,14 @@ const INTENT_LABEL = {
 export function explainAssessment(assessment, intent) {
   const perf = assessment?.performance || {};
   const parts = [];
-  if (isMeasured(perf.meanCharsPerSecond)) parts.push(`${perf.meanCharsPerSecond} chars/s measured`);
+  // Tokens/s leads when the runtime reported token counts — it is the figure
+  // people actually compare local models on. Chars/s is the fallback, never both:
+  // two throughput numbers in one sentence read as a contradiction.
+  if (isMeasured(perf.meanTokensPerSecond)) {
+    parts.push(`${perf.meanTokensPerSecond} tok/s${perf.tokensEstimated ? ' (estimated)' : ''} measured`);
+  } else if (isMeasured(perf.meanCharsPerSecond)) {
+    parts.push(`${perf.meanCharsPerSecond} chars/s measured`);
+  }
   if (isMeasured(perf.maxWorkingContextTokens)) {
     parts.push(`ran at up to ${perf.maxWorkingContextTokens.toLocaleString('en-US')} tokens of context`);
   }
@@ -308,6 +441,8 @@ export function rankByIntent(assessments, intent = 'balanced') {
       excluded.push({
         backend: assessment?.backend || null,
         modelId: assessment?.modelId || null,
+        tuningKey: assessment?.tuningKey || '',
+        tuningLabel: assessment?.tuningLabel || null,
         verdict,
         reason: assessment?.verdictReason || null,
       });
@@ -319,6 +454,8 @@ export function rankByIntent(assessments, intent = 'balanced') {
       excluded.push({
         backend: assessment?.backend || null,
         modelId: assessment?.modelId || null,
+        tuningKey: assessment?.tuningKey || '',
+        tuningLabel: assessment?.tuningLabel || null,
         verdict,
         reason: 'ran, but no axis of this intent was measured',
       });
@@ -343,6 +480,19 @@ export function rankByIntent(assessments, intent = 'balanced') {
       // `null` = the caller did not annotate staleness, which is not the same as
       // "compared and current".
       staleness: assessment?.staleness || null,
+      // The tuning IS part of this row's identity, not decoration. A model can
+      // hold several measurements, one per launch configuration, and the
+      // consumer uses these to key the row, to delete THIS measurement rather
+      // than the backend-defaults one, and to pre-fill a re-measure with the
+      // configuration that produced it. Dropping them collapsed every variant
+      // onto the default record.
+      tuningKey: assessment?.tuningKey || '',
+      tuning: assessment?.tuning || {},
+      tuningLabel: assessment?.tuningLabel || null,
+      // `null` = nothing was settable (see runAssessment); `false` means these
+      // numbers describe some OTHER configuration, which the row has to say.
+      tuningApplied: assessment?.tuningApplied ?? null,
+      tuningNotApplied: assessment?.tuningNotApplied || null,
       explanation: explainAssessment(assessment, resolvedIntent),
     });
   }
@@ -361,8 +511,142 @@ export function rankByIntent(assessments, intent = 'balanced') {
     (isStale(a) - isStale(b))
     || (b.score - a.score)
     || (b.coverage - a.coverage)
-    || String(a.modelId).localeCompare(String(b.modelId)));
+    || String(a.modelId).localeCompare(String(b.modelId))
+    // Two tunings of ONE model tie on model id, so the signature is what makes
+    // their order stable across reloads.
+    || String(a.tuningKey).localeCompare(String(b.tuningKey)));
   return { intent: resolvedIntent, ranked, excluded };
+}
+
+// ---- batch measurement ------------------------------------------------------
+
+/** What a "measure everything" run can cover. */
+export const SWEEP_SCOPES = ['unmeasured', 'stale', 'all'];
+
+const targetKey = (t) => `${t.backend}:${t.modelId}@${t.tuningKey || ''}`;
+
+/**
+ * Expand a sweep scope into the exact list of measurements to run.
+ *
+ * Pure and deterministic so the consent modal can be told the real count before
+ * anything runs, and so the sweep and the count can never disagree about what
+ * "all" means — they call this same function.
+ *
+ * A re-measure reuses the tuning that produced the existing record, matching
+ * what the single-model Measure-again button does: "run it again" has to
+ * reproduce the same configuration, or the sweep would quietly replace every
+ * tuned reading with a backend-defaults one.
+ *
+ * ## The second dimension
+ *
+ * `tunings` swaps that rule out: instead of each model keeping the tuning it
+ * carries, every model is crossed with the supplied grid — one measurement per
+ * (model, tuning) pair. That is what makes a TUNING sweep a case of this
+ * function rather than a queue of its own, and it is why the dedupe below is
+ * keyed on model AND tuning: two variants sharing a key are one measurement, and
+ * running it twice would put the same configuration on both sides of the
+ * comparison table.
+ *
+ * @param {object} options
+ * @param {Array<object>} options.assessments stored records, already filtered to
+ *   models that are STILL INSTALLED — a sweep must not queue a model the runtime
+ *   can no longer load.
+ * @param {Array<{backend:string, modelId:string}>} options.unassessed models with
+ *   no evidence at all
+ * @param {'unmeasured'|'stale'|'all'} options.scope
+ * @param {{backend:string, modelId:string}|null} [options.only] restrict to one
+ *   model. Naming a model leaves the scope nothing to decide, so it implies
+ *   `all` — otherwise "sweep THIS model" would silently do nothing whenever the
+ *   model happened to fall outside the scope.
+ * @param {Array<{tuning:object, key:string, label:string|null}>|null} [options.tunings]
+ *   knob sets to measure every selected model under. Entries are taken as
+ *   already-normalized (they come from `localModelTuning.js#tuningGridFor`), so
+ *   this module stays dependency-free.
+ * @returns {Array<{backend:string, modelId:string, tuning:object, tuningKey:string, tuningLabel:string|null, reason:string}>}
+ */
+export function selectSweepTargets({ assessments = [], unassessed = [], scope = 'unmeasured', only = null, tunings = null } = {}) {
+  const resolved = only ? 'all' : (SWEEP_SCOPES.includes(scope) ? scope : 'unmeasured');
+  const wanted = (m) => !only || (m?.backend === only.backend && m?.modelId === only.modelId);
+  const stored = Array.isArray(assessments) ? assessments : [];
+  const fresh = Array.isArray(unassessed) ? unassessed : [];
+  const targets = [];
+  const seen = new Set();
+
+  const add = (target) => {
+    const key = targetKey(target);
+    if (!target.backend || !target.modelId || seen.has(key)) return;
+    // An assessment measures a model by GENERATING with it, so an embedding-only
+    // model has no measurement to take: the daemon answers every sample with
+    // `400 "<model>" does not support chat`, the record lands as `incompatible`
+    // (which reads as "this machine can't run it" — it can, that is just not
+    // what it does), and each doomed sample raises an AI-provider investigation
+    // task. Excluded from BOTH branches, so a bogus record written before this
+    // existed is not re-queued forever by the `stale`/`all` scopes.
+    if (isEmbeddingModel(target.modelId)) return;
+    seen.add(key);
+    targets.push(target);
+  };
+
+  // Never-measured models come first in every scope that includes them: they are
+  // the ones with no answer at all, so if an overnight run is cut short they are
+  // the measurements worth having got.
+  if (resolved === 'unmeasured' || resolved === 'all') {
+    for (const model of fresh) {
+      if (!wanted(model)) continue;
+      add({ backend: model?.backend, modelId: model?.modelId, tuning: {}, tuningKey: '', tuningLabel: null, reason: 'never measured' });
+    }
+  }
+
+  if (resolved === 'stale' || resolved === 'all') {
+    for (const assessment of stored) {
+      if (resolved === 'stale' && !assessment?.staleness?.stale) continue;
+      if (!wanted(assessment)) continue;
+      add({
+        backend: assessment?.backend,
+        modelId: assessment?.modelId,
+        tuning: assessment?.tuning && typeof assessment.tuning === 'object' ? assessment.tuning : {},
+        tuningKey: assessment?.tuningKey || '',
+        tuningLabel: assessment?.tuningLabel || null,
+        reason: assessment?.staleness?.stale ? 'measured on a different machine state' : 're-measure',
+      });
+    }
+  }
+
+  if (!Array.isArray(tunings) || tunings.length === 0) return targets;
+
+  // Cross the selected models with the grid. Re-running `add` rather than
+  // pushing directly keeps ONE dedupe rule for both dimensions — a model that
+  // reached this point under two stored tunings collapses back to one entry per
+  // grid variant instead of measuring each variant twice.
+  const models = targets.splice(0, targets.length);
+  seen.clear();
+  for (const model of models) {
+    for (const variant of tunings) {
+      add({
+        backend: model.backend,
+        modelId: model.modelId,
+        tuning: variant?.tuning && typeof variant.tuning === 'object' ? variant.tuning : {},
+        tuningKey: variant?.key || '',
+        tuningLabel: variant?.label ?? null,
+        // `''` is the baseline — the reading every other variant's throughput is
+        // reported relative to, so it is named rather than left blank.
+        reason: variant?.key ? 'tuning variant' : 'backend defaults',
+      });
+    }
+  }
+
+  return targets;
+}
+
+/**
+ * How many measurements each scope would run, for the consent gate.
+ * Derived from `selectSweepTargets` so a displayed count is always the count
+ * that would actually execute.
+ */
+export function summarizeSweepScopes({ assessments, unassessed } = {}) {
+  return Object.fromEntries(
+    SWEEP_SCOPES.map((scope) => [scope, selectSweepTargets({ assessments, unassessed, scope }).length])
+  );
 }
 
 // ---- staleness ---------------------------------------------------------------

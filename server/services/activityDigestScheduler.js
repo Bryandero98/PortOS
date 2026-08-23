@@ -7,7 +7,7 @@
  *
  * OFF by default: only runs when the user has enabled it in Settings →
  * Daily Log → Activity Digest (`enabled: true`). This is a sanctioned
- * scheduled automation per CLAUDE.md's AI policy — the user opted in and the
+ * scheduled automation per AGENTS.md's AI policy — the user opted in and the
  * config UI names the provider/model. Until then it is entirely silent (no
  * provider calls, no journal writes). The `enabled` flag + provider/model are
  * re-read every tick so toggling them takes effect without a restart.

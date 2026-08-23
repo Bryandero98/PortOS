@@ -31,7 +31,7 @@ export default function DailyDriverWidget({ dashboardState }) {
   const [goals, setGoals] = useState([]);
   // Sentinel: distinguish "goals failed to load" from "no goals exist" so a
   // transient fetch failure doesn't show the "Define your goals" CTA to a user
-  // who already has goals (CLAUDE.md "absent/failed vs legitimately-empty").
+  // who already has goals (AGENTS.md "absent/failed vs legitimately-empty").
   const [goalsFailed, setGoalsFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [dismissing, setDismissing] = useState(false);

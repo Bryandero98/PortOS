@@ -242,7 +242,7 @@ const median = (values) => {
 // fallback.
 //
 // Returns `{ stop }`. `stop()` cancels the loop — call it on stop/unmount so no
-// rAF or timer dangles (the deferred-work teardown rule in CLAUDE.md). The loop
+// rAF or timer dangles (the deferred-work teardown rule in AGENTS.md). The loop
 // body is wrapped so a throw inside an animation-frame callback (which has no
 // Express `next(err)` to bubble to) can't crash the tab.
 export const createPitchTracker = (analyser, opts = {}) => {

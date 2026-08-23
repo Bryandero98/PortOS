@@ -278,8 +278,10 @@ export default function Loras() {
 
   return (
     <div className="space-y-6">
+      {/* An h2, not an h1: this page is the LoRAs tab under the Models section
+          (#4728), whose PageHeader already owns the page's h1. */}
       <div>
-        <h1 className="text-2xl font-bold text-white mb-1">LoRA Manager</h1>
+        <h2 className="text-2xl font-bold text-white mb-1">LoRA Manager</h2>
         <p className="text-sm text-gray-400">
           Install LoRA fine-tunes from Civitai or HuggingFace and apply them to your Image Gen and Video Gen renders.
         </p>
@@ -1149,7 +1151,7 @@ function LoraCard({ lora, onDelete, deleting, deleteConfirm }) {
         {lora.source === 'trained' && lora.character && (
           <div className="mb-2">
             <Link
-              to={lora.trainedFromDatasetId ? `/media/training/${lora.trainedFromDatasetId}` : '/media/training'}
+              to={lora.trainedFromDatasetId ? `/models/training/${lora.trainedFromDatasetId}` : '/models/training'}
               className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-port-success/15 text-port-success border border-port-success/30 hover:bg-port-success/25"
               title="Trained in PortOS — open the training dataset"
             >

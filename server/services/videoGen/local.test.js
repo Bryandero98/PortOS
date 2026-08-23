@@ -16,14 +16,15 @@ const { heavyClaimRelease, heavyClaimHandoff, mockPrepareLocalMemory } = vi.hois
   // omitted so a test can make it fail, which is how the relaunch path's
   // spawned-but-never-wired child becomes observable.
   heavyClaimHandoff: vi.fn(async () => {}),
-  mockPrepareLocalMemory: vi.fn(async () => ({ unloaded: [], availableGb: 64, totalGb: 64, budgetGb: 64 })),
+  mockPrepareLocalMemory: vi.fn(async () => ({ unloaded: [], availableGb: 64, totalGb: 64, budgetGb: 64, blockers: [] })),
 }));
 vi.mock('../../lib/heavyJobClaim.js', () => ({
   claimHeavyLocalJob: vi.fn(async () => ({
     ok: true, holder: {}, release: heavyClaimRelease, handoffTo: heavyClaimHandoff,
   })),
 }));
-vi.mock('../../lib/localMemory.js', () => ({
+vi.mock('../../lib/localMemory.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   prepareLocalMemory: mockPrepareLocalMemory,
 }));
 
@@ -259,6 +260,7 @@ vi.mock('fs', () => ({
     if (i >= 0) { fsState.missOnce.splice(i, 1); return undefined; }
     return { size: 1000 };
   }),
+  watch: vi.fn(() => ({ close: vi.fn() })),
 }));
 
 // Anchor scoring. The scorer itself is unit-tested in lib/frameQuality.test.js;
@@ -289,9 +291,18 @@ vi.mock('./runtimes.js', async (importOriginal) => ({
 // the permissive default so the pre-existing LoRA-threading tests below still
 // reach the spawn path; the gate's own tests set a layout explicitly.
 const loraLayoutState = vi.hoisted(() => ({ layout: null }));
+const loraSidecarState = vi.hoisted(() => ({ byFilename: {} }));
 vi.mock('../loras.js', () => ({
   assertSafeLoraFilename: vi.fn(),
   getLoraKeyLayout: vi.fn(async () => loraLayoutState.layout),
+  // Trigger-word weaving (#4665) reads each selected LoRA's sidecar. Default to
+  // "no trigger words" so every pre-existing LoRA test renders its prompt
+  // unchanged; the weave tests populate `loraSidecarState.byFilename`.
+  readTriggerWordsByFilename: vi.fn(async (names) => Object.fromEntries(
+    (names || [])
+      .map((n) => [n, loraSidecarState.byFilename[n]?.triggerWords])
+      .filter(([, words]) => Array.isArray(words)),
+  )),
 }));
 
 vi.mock('fs/promises', () => ({
@@ -299,6 +310,8 @@ vi.mock('fs/promises', () => ({
   writeFile: vi.fn(async () => {}),
   copyFile: vi.fn(async () => {}),
   rm: vi.fn(async () => {}),
+  readFile: vi.fn(async () => Buffer.from('')),
+  mkdtemp: vi.fn(async (prefix) => `${prefix}mock`),
   // Unused by the code under test, but lib/ffmpeg.js imports it and the ffmpeg
   // mock above pulls the real module in for buildTrimConcatArgs.
   rename: vi.fn(async () => {}),
@@ -352,6 +365,7 @@ vi.mock('../../lib/detachedSpawn.js', () => ({
 
 // ─── module under test ───────────────────────────────────────────────────────
 // Import AFTER all vi.mock calls so the hoisted mocks are in place.
+let updateHistoryItemPrompt;
 let generateChainedVideo;
 let generateVideo;
 let extractLastFrame;
@@ -360,7 +374,7 @@ let videoGenEvents;
 beforeEach(async () => {
   vi.resetModules();
   // Re-import fresh copies so mock reset above applies cleanly
-  ({ generateChainedVideo, generateVideo, extractLastFrame } = await import('./local.js'));
+  ({ generateChainedVideo, generateVideo, extractLastFrame, updateHistoryItemPrompt } = await import('./local.js'));
   ({ videoGenEvents } = await import('./events.js'));
 });
 
@@ -1401,6 +1415,7 @@ describe('generateVideo — PORTOS_T2V_TWO_STAGE arg threading', () => {
   it('threads --stage2-steps 3 + fast steps/cfg when the knob is on', async () => {
     process.env.PORTOS_T2V_TWO_STAGE = '1';
     const args = await renderArgsFor('t2v-twostage-on');
+    expect(args[args.indexOf('--preview-dir') + 1]).toContain('portos-video-stepwise-');
     expect(args[args.indexOf('--stage2-steps') + 1]).toBe('3');
     expect(args[args.indexOf('--steps') + 1]).toBe('8');
     expect(args[args.indexOf('--cfg-scale') + 1]).toBe('1');
@@ -2466,6 +2481,92 @@ describe('generateVideo — LoRA history-record contract (Remix round-trip)', ()
   });
 });
 
+describe('generateVideo — LoRA trigger-word weaving (#4665)', () => {
+  const promptFrom = (spawnMock, jobId) => {
+    const call = spawnMock.mock.calls.find(([, args]) =>
+      Array.isArray(args) && args.some((a) => typeof a === 'string' && a.includes(jobId)));
+    if (!call) return null;
+    const i = call[1].indexOf('--prompt');
+    return i === -1 ? null : call[1][i + 1];
+  };
+
+  const renderWithLoras = async ({ jobId, prompt, loras }) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    let startedMeta = null;
+    const onStarted = (e) => { if (e.generationId === jobId) startedMeta = e; };
+    videoGenEvents.on('started', onStarted);
+    await generateVideo({
+      jobId,
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt,
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      mode: 'text',
+      loras,
+    });
+    videoGenEvents.off('started', onStarted);
+    return { renderedPrompt: promptFrom(spawnMock, jobId), startedMeta };
+  };
+
+  beforeEach(() => { loraSidecarState.byFilename = {}; });
+  afterEach(() => { loraSidecarState.byFilename = {}; });
+
+  it('appends the selected LoRA trigger word to the prompt the runner receives', async () => {
+    loraSidecarState.byFilename = { 'fox.safetensors': { triggerWords: ['fox_tok', 'animal'] } };
+    const { renderedPrompt, startedMeta } = await renderWithLoras({
+      jobId: 'weave-basic',
+      prompt: 'a clip in the rain',
+      loras: [{ filename: 'fox.safetensors', scale: 0.8 }],
+    });
+    // Only the FIRST trigger word — 'animal' is a loose Civitai tag, not an
+    // activation token.
+    expect(renderedPrompt).toBe('a clip in the rain, fox_tok');
+    // Provenance: history keeps the user's prompt so Remix re-derives triggers
+    // from whatever LoRAs are selected then rather than compounding this clause.
+    expect(startedMeta.prompt).toBe('a clip in the rain');
+    expect(startedMeta.renderPrompt).toBe('a clip in the rain, fox_tok');
+    expect(startedMeta.addedTriggerWords).toEqual(['fox_tok']);
+  });
+
+  it('does not duplicate a trigger word the prompt already carries', async () => {
+    loraSidecarState.byFilename = { 'fox.safetensors': { triggerWords: ['fox_tok'] } };
+    const { renderedPrompt, startedMeta } = await renderWithLoras({
+      jobId: 'weave-present',
+      prompt: 'fox_tok running through the rain',
+      loras: [{ filename: 'fox.safetensors', scale: 0.8 }],
+    });
+    expect(renderedPrompt).toBe('fox_tok running through the rain');
+    // No provenance fields — this history row stays byte-identical to a
+    // pre-feature one.
+    expect(startedMeta.renderPrompt).toBeUndefined();
+    expect(startedMeta.addedTriggerWords).toBeUndefined();
+  });
+
+  it('leaves the prompt untouched when the LoRA sidecar has no trigger words', async () => {
+    loraSidecarState.byFilename = { 'legacy.safetensors': { triggerWords: [] } };
+    const { renderedPrompt, startedMeta } = await renderWithLoras({
+      jobId: 'weave-legacy',
+      prompt: 'a clip in the rain',
+      loras: [{ filename: 'legacy.safetensors', scale: 1.0 }],
+    });
+    expect(renderedPrompt).toBe('a clip in the rain');
+    expect(startedMeta.renderPrompt).toBeUndefined();
+  });
+
+  it('is a no-op for a render with no LoRAs', async () => {
+    loraSidecarState.byFilename = { 'fox.safetensors': { triggerWords: ['fox_tok'] } };
+    const { renderedPrompt, startedMeta } = await renderWithLoras({
+      jobId: 'weave-no-loras',
+      prompt: 'a clip in the rain',
+      loras: undefined,
+    });
+    expect(renderedPrompt).toBe('a clip in the rain');
+    expect(startedMeta.renderPrompt).toBeUndefined();
+  });
+});
+
 describe('generateVideo — heavy claim setup cleanup (#4364)', () => {
   it('releases the claim when local setup fails before spawn', async () => {
     mockPrepareLocalMemory.mockRejectedValueOnce(new Error('memory setup failed'));
@@ -2479,6 +2580,34 @@ describe('generateVideo — heavy claim setup cleanup (#4364)', () => {
       mode: 'text',
     })).rejects.toThrow('memory setup failed');
 
+    expect(heavyClaimRelease).toHaveBeenCalledTimes(1);
+  });
+
+  // #4766 — the vLLM Qwen container holds ~23 GB of a 24 GB card and is invisible
+  // to the resident-model unload, so the render used to die inside its model load
+  // with an OOM naming neither vLLM nor a fix. Refuse up front, with the prose.
+  it('refuses before spawn when something else is holding the GPU', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    vi.mocked(spawnDetached).mockClear();
+    mockPrepareLocalMemory.mockResolvedValueOnce({
+      unloaded: [], availableGb: 64, totalGb: 64, budgetGb: 64,
+      blockers: [{
+        runtime: 'vllm', providerId: 'opencode-vllm-tui', providerName: 'OpenCode vLLM TUI',
+        endpoint: 'http://127.0.0.1:18020/v1',
+        reason: 'vLLM (Qwen3.8-27B) is serving and holds the GPU. Stop it with `docker compose --profile single stop` in /srv/example/qwen-serving.',
+      }],
+    });
+
+    await expect(generateVideo({
+      jobId: 'gpu-blocked',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'a clip',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      mode: 'text',
+    })).rejects.toThrow('docker compose --profile single stop');
+
+    expect(spawnDetached).not.toHaveBeenCalled();
     expect(heavyClaimRelease).toHaveBeenCalledTimes(1);
   });
 });
@@ -2765,6 +2894,7 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     expect(args[args.indexOf('--height') + 1]).toBe('672');
     expect(args[args.indexOf('--num-frames') + 1]).toBe('107');
     expect(args[args.indexOf('--steps') + 1]).toBe('8');
+    expect(args[args.indexOf('--preview-dir') + 1]).toContain('portos-video-stepwise-');
     expect(args.flatMap((arg, i) => arg === '--checkpoint-file' ? [args[i + 1]] : []))
       .toEqual(['LICENSE', 'FL2VA/vae/video/config.json']);
     expect(options.killProcessGroup).toBe(true);
@@ -2777,6 +2907,61 @@ describe('generateVideo — MiniMax H3 MLX contract', () => {
     expect(options.env).not.toHaveProperty('HF_TOKEN');
     expect(options.env).not.toHaveProperty('HUGGING_FACE_HUB_TOKEN');
     expect(hfChildEnv).not.toHaveBeenCalled();
+  });
+
+  it('forwards the newest preview as currentImage and ignores events after teardown', async () => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const { watch } = await import('fs');
+    const { readFile } = await import('fs/promises');
+    const listeners = {};
+    const proc = {
+      pid: 6789,
+      exitCode: null,
+      signalCode: null,
+      killed: false,
+      stdout: { on: vi.fn() },
+      stderr: { on: vi.fn() },
+      on(event, fn) { listeners[event] = fn; return proc; },
+      off(event, fn) { if (listeners[event] === fn) delete listeners[event]; return proc; },
+      kill: vi.fn(),
+    };
+    vi.mocked(spawnDetached).mockImplementationOnce(async () => proc);
+    const progress = [];
+    const onProgress = (event) => {
+      if (event.generationId === 'preview-current-image') progress.push(event);
+    };
+    videoGenEvents.on('progress', onProgress);
+
+    try {
+      await generateVideo({
+        jobId: 'preview-current-image',
+        pythonPath: '/usr/bin/python3',
+        modelId: 'ltx2_unified',
+        prompt: 'a quiet street at dusk',
+        width: 512,
+        height: 512,
+        numFrames: 25,
+        fps: 24,
+      });
+      const watchCall = vi.mocked(watch).mock.calls.at(-1);
+      expect(watchCall[0]).toContain('portos-video-stepwise-');
+      vi.mocked(readFile).mockResolvedValueOnce(Buffer.from('frame-one'));
+      watchCall[1]('rename', 'preview.png');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(progress).toContainEqual({
+        generationId: 'preview-current-image',
+        currentImage: Buffer.from('frame-one').toString('base64'),
+      });
+
+      listeners.close?.(1, null);
+      await new Promise((resolve) => setImmediate(resolve));
+      vi.mocked(readFile).mockResolvedValueOnce(Buffer.from('stale-frame'));
+      watchCall[1]('rename', 'preview.png');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(progress).toHaveLength(1);
+    } finally {
+      videoGenEvents.off('progress', onProgress);
+    }
   });
 
   // Substituted prompt conditioner (#4081). The whole override path has to stay
@@ -4768,5 +4953,41 @@ describe('generateVideo — first render child dies during the accelerator hando
     expect(child.proc.kill).toHaveBeenCalledWith('SIGTERM');
     expect(heavyClaimRelease).toHaveBeenCalled();
     expect(failures).toHaveLength(1);
+  });
+});
+
+describe('updateHistoryItemPrompt — trigger-weave provenance (#4665)', () => {
+  const seedHistory = async (item) => {
+    const { readJSONFile, atomicWrite } = await import('../../lib/fileUtils.js');
+    vi.mocked(readJSONFile).mockResolvedValue([item]);
+    vi.mocked(atomicWrite).mockClear();
+    return () => {
+      const calls = vi.mocked(atomicWrite).mock.calls;
+      return calls[calls.length - 1]?.[1]?.[0];
+    };
+  };
+
+  it('drops renderPrompt + addedTriggerWords when the user edits the prompt', async () => {
+    // The provenance describes the prompt this render was MADE with. Leaving it
+    // after an edit has the row claim a renderPrompt derived from text that is
+    // no longer there, and name tokens as "added" to a prompt they never were.
+    const written = await seedHistory({
+      id: 'woven-1',
+      prompt: 'a rooftop at dusk',
+      renderPrompt: 'a rooftop at dusk, fox_tok',
+      addedTriggerWords: ['fox_tok'],
+    });
+    await updateHistoryItemPrompt('woven-1', 'a beach at noon');
+    const item = written();
+    expect(item.prompt).toBe('a beach at noon');
+    expect(item.renderPrompt).toBeUndefined();
+    expect(item.addedTriggerWords).toBeUndefined();
+  });
+
+  it('leaves an un-woven row otherwise untouched', async () => {
+    const written = await seedHistory({ id: 'plain-1', prompt: 'a rooftop', seed: 42 });
+    await updateHistoryItemPrompt('plain-1', 'a beach');
+    const item = written();
+    expect(item).toEqual({ id: 'plain-1', prompt: 'a beach', seed: 42 });
   });
 });

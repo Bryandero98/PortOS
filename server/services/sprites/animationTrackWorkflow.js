@@ -381,7 +381,7 @@ export async function attachTrackTuiResult(trackId, recordId, runId, videoAbs) {
 async function packageTrackRun(row, recordId, run) {
   // Runs outside the request lifecycle (the TUI completion tail), so a throw
   // here would take the process down rather than reaching error middleware —
-  // hence the try/catch, per the CLAUDE.md boundary exception.
+  // hence the try/catch, per the AGENTS.md boundary exception.
   try {
     const [reference, record] = await Promise.all([loadManifest(recordId), getRecord(recordId)]);
     const source = trackSourceFor(row, reference, run.direction);

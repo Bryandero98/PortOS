@@ -111,7 +111,7 @@ function scheduleSave() {
   dirty = true
   if (saveTimer) return
   // Outside the request lifecycle — a throw here would be unhandled, so the
-  // failure is logged and swallowed (per the root CLAUDE.md timer-callback rule).
+  // failure is logged and swallowed (per the root AGENTS.md timer-callback rule).
   // A cache that fails to persist still works in memory; the next load refetches.
   saveTimer = setTimeout(() => {
     flush().catch((err) => console.error(`❌ Failed to persist Hugging Face repo cache: ${err.message}`))

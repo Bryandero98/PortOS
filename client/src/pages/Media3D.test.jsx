@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router';
+import { imageTo3dTarget } from '../lib/imageTo3dTargetFixture';
 import Media3D from './Media3D';
 
 const getImageTo3dTargets = vi.fn();
@@ -14,14 +15,6 @@ vi.mock('../services/api', () => ({
   getImageTo3dModel: (...a) => getImageTo3dModel(...a),
   listImageTo3dModels: (...a) => listImageTo3dModels(...a),
   getHfTokenStatus: (...a) => getHfTokenStatus(...a),
-}));
-
-// Stub the shared install modal so the test doesn't open a real EventSource;
-// assert only that it's opened with the chosen target.
-vi.mock('../components/install/RuntimeInstallModal', () => ({
-  default: ({ open, runtime, description }) => (open ? <div data-testid="install-modal">
-    installing {runtime}<span data-testid="install-description">{description}</span>
-  </div> : null),
 }));
 
 // GlbViewer wraps a WebGL canvas jsdom can't render — stub to a marker that
@@ -39,26 +32,7 @@ vi.mock('../components/imageGen/GalleryImagePicker', () => ({
 
 vi.mock('../components/MediaImage', () => ({ default: ({ alt }) => <img alt={alt} /> }));
 
-const target = (over = {}) => ({
-  id: 'trellis2',
-  label: 'TRELLIS.2',
-  description: 'Microsoft TRELLIS.2 — single image to a PBR-textured GLB mesh.',
-  executionLane: 'local-mps',
-  outputKind: 'glb-mesh',
-  available: true,
-  installed: false,
-  unavailableReason: null,
-  upstream: 'https://github.com/microsoft/TRELLIS.2',
-  port: 'https://github.com/shivampkumar/trellis-mac',
-  gatedRepos: [
-    {
-      label: 'facebook/dinov3-vitl16-pretrain-lvd1689m',
-      url: 'https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m',
-    },
-    { label: 'briaai/RMBG-2.0', url: 'https://huggingface.co/briaai/RMBG-2.0' },
-  ],
-  ...over,
-});
+const target = imageTo3dTarget;
 
 function LocationProbe() {
   return <output aria-label="Current query">{useLocation().search}</output>;
@@ -75,119 +49,43 @@ function renderAt(entry = '/3d', extra = null) {
   );
 }
 
-describe('Media3D — models & install', () => {
+// Install/repair moved to Models → 3D (#4728) and is covered by
+// `components/models/Image3dRuntimes.test.jsx`. What stays here is the contract
+// the generate flow still owns: it must name the runtime state and point at the
+// page that fixes it, rather than silently offering a dead Generate button.
+describe('Media3D — runtime state', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     listImageTo3dModels.mockResolvedValue([]);
     getHfTokenStatus.mockResolvedValue({ hfTokenPresent: false, source: 'none' });
   });
 
-  it('shows an Install button for an available, not-installed target and opens the modal', async () => {
-    getImageTo3dTargets.mockResolvedValue({ capabilities: {}, targets: [target()] });
-    renderAt();
-    const btn = await screen.findByRole('button', { name: /install/i });
-    fireEvent.click(btn);
-    expect(await screen.findByTestId('install-modal')).toHaveTextContent('trellis2');
-  });
-
-  it('uses the selected target gated-repo count in the install description', async () => {
-    getImageTo3dTargets.mockResolvedValue({ capabilities: {}, targets: [target()] });
-    renderAt();
-    fireEvent.click(await screen.findByRole('button', { name: /install/i }));
-    expect(await screen.findByTestId('install-description')).toHaveTextContent('2 gated Hugging Face models');
-  });
-
-  it('shows Ready and no Install button when the target is installed', async () => {
-    getImageTo3dTargets.mockResolvedValue({ targets: [target({ installed: true })] });
-    renderAt();
-    expect(await screen.findByText(/ready/i)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /install/i })).toBeNull();
-  });
-
-  // #2952: `setup.sh` exits 0 even when its Metal texture-baking backends failed to
-  // build, and such an install renders correct geometry with a scrambled surface —
-  // so a flat "Ready" would be a lie, and re-running Install is the repair.
-  it('flags a degraded texture bake and offers Repair install', async () => {
+  it('summarizes how many runtimes are ready and links to the manager', async () => {
     getImageTo3dTargets.mockResolvedValue({
-      targets: [target({
-        installed: true,
-        degraded: { label: 'degraded textures', help: 'Install the Metal Toolchain.', repairable: true },
-      })],
+      targets: [target({ installed: true }), target({ id: 'pixal3dCuda', label: 'Pixal3D (CUDA)' })],
     });
     renderAt();
-    expect(await screen.findByText(/degraded textures/i)).toBeInTheDocument();
-    expect(screen.getByText('Install the Metal Toolchain.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /repair install/i })).toBeInTheDocument();
+    expect(await screen.findByText(/1 of 2 ready on this host/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /manage runtimes/i }).getAttribute('href')).toBe('/models/3d');
   });
 
-  // #3041: on a Command-Line-Tools-only host, Repair install would fail the same
-  // way — so flag the problem but don't offer a button that can't fix it.
-  it('flags a degraded bake but offers no Repair button when the server says it is not repairable', async () => {
-    getImageTo3dTargets.mockResolvedValue({
-      targets: [target({
-        installed: true,
-        degraded: {
-          label: 'degraded textures', help: 'Install Xcode from the App Store.', repairable: false,
-        },
-      })],
-    });
-    renderAt();
-    expect(await screen.findByText(/degraded textures/i)).toBeInTheDocument();
-    expect(screen.getByText('Install Xcode from the App Store.')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /install/i })).toBeNull();
-  });
-
-  // The degraded projection is normalized server-side, so a target degraded for an
-  // entirely different reason (Pixal3D with no NATTEN) renders through the same path
-  // with no per-target UI branch.
-  it('renders a non-TRELLIS degradation through the same badge and Repair button', async () => {
-    getImageTo3dTargets.mockResolvedValue({
-      targets: [target({
-        id: 'pixal3dCuda',
-        label: 'Pixal3D (CUDA)',
-        installed: true,
-        degraded: { label: 'NAF fallback', help: 'NATTEN is missing.', repairable: true },
-      })],
-    });
-    renderAt();
-    expect(await screen.findByText(/NAF fallback/i)).toBeInTheDocument();
-    expect(screen.getByText('NATTEN is missing.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /repair install/i })).toBeInTheDocument();
-    // Must NOT leak the other lane's copy.
-    expect(screen.queryByText(/metal toolchain/i)).toBeNull();
-  });
-
-  it('stays plain Ready when the server reports no degradation', async () => {
-    // The server owns the unknown-vs-degraded distinction (a probe that merely failed
-    // must not cry wolf) and expresses it by OMITTING `degraded`. Asserting on the
-    // absence of that field is what actually exercises the component; a `textureBake`
-    // fixture would not, since nothing here reads it.
-    getImageTo3dTargets.mockResolvedValue({
-      targets: [target({ installed: true })],
-    });
-    renderAt();
-    expect(await screen.findByText(/ready/i)).toBeInTheDocument();
-    expect(screen.queryByText(/degraded/i)).toBeNull();
-    expect(screen.queryByRole('button', { name: /install/i })).toBeNull();
-  });
-
-  it('shows the unsupported reason and no Install button when the host cannot run it', async () => {
-    getImageTo3dTargets.mockResolvedValue({
-      targets: [target({ available: false, unavailableReason: 'requires-apple-silicon' })],
-    });
-    renderAt();
-    expect(await screen.findAllByText(/requires an apple silicon mac/i)).not.toHaveLength(0);
-    expect(screen.queryByRole('button', { name: /install/i })).toBeNull();
-  });
-
-  it('surfaces a load error with Retry, and recovers on retry', async () => {
+  it('surfaces a target-load failure and recovers from it without a page reload', async () => {
+    // The same failed list also gates Generate (no target resolves), so leaving the
+    // error with no Retry strands the user on a page whose primary action is dead.
     getImageTo3dTargets.mockRejectedValueOnce(new Error('boom'));
     renderAt();
     expect(await screen.findByText('boom')).toBeInTheDocument();
 
     getImageTo3dTargets.mockResolvedValueOnce({ targets: [target({ installed: true })] });
     fireEvent.click(screen.getByRole('button', { name: /retry/i }));
-    expect(await screen.findByText(/ready/i)).toBeInTheDocument();
+    expect(await screen.findByText(/1 of 1 ready on this host/i)).toBeInTheDocument();
+  });
+
+  it('does not host the install controls any more', async () => {
+    getImageTo3dTargets.mockResolvedValue({ targets: [target()] });
+    renderAt();
+    await screen.findByRole('link', { name: /manage runtimes/i });
+    expect(screen.queryByRole('button', { name: /install/i })).toBeNull();
   });
 });
 
@@ -323,7 +221,7 @@ describe('Media3D — generation workspace', () => {
     renderAt('/3d?image=example-robot.png');
     const btn = await screen.findByRole('button', { name: /Generate 3D/i });
     expect(btn).toBeDisabled();
-    expect(screen.getByText(/Install TRELLIS\.2 below before generating/i)).toBeInTheDocument();
+    expect(screen.getByText(/Install TRELLIS\.2 from Models → 3D before generating/i)).toBeInTheDocument();
   });
 
   it('writes a picked image into the shareable URL', async () => {

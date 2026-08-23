@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildAgentGeneration,
   buildOpencodeConfig,
   buildOpencodeConfigContent,
   buildOpencodeEnvVars,
+  opencodeLocalBaseUrl,
   toBareModelIds,
 } from './opencodeConfig.js';
+import { LOCAL_RUNTIMES } from './localProviderRuntime.js';
 
 describe('toBareModelIds', () => {
   it('strips the ollama/ namespace, drops empties, and dedupes', () => {
@@ -177,6 +180,35 @@ describe('buildOpencodeEnvVars', () => {
     expect(cfg.agent.build).toEqual({ temperature: 0.25, think: true, reasoningEffort: 'high' });
   });
 
+  it('sends llama.cpp its generation defaults, routing thinking through the chat template', () => {
+    // The OpenCode llama TUI is the headline case: llama.cpp has no native
+    // `think` flag, so a toggle emitted as Ollama's would be silently dropped.
+    const result = buildOpencodeEnvVars(
+      { command: 'opencode', llamaBacked: true, models: [], temperature: 0.2, topP: 0.9, thinking: true, effort: 'high' },
+      'qwen3.8-27b',
+    );
+    const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
+    expect(cfg.agent.build).toEqual({
+      temperature: 0.2,
+      topP: 0.9,
+      chat_template_kwargs: { enable_thinking: true },
+      reasoningEffort: 'high',
+    });
+  });
+
+  it('leaves a llama.cpp provider with no configured generation alone', () => {
+    // Only Ollama carries the historical 0.6 default — opening the editor up to
+    // the other backends must not start pinning a temperature they never had.
+    const result = buildOpencodeEnvVars({ command: 'opencode', llamaBacked: true, models: [] }, 'qwen3.8-27b');
+    const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
+    expect(cfg.agent).toBeUndefined();
+  });
+
+  it('omits the thinking toggle for OrcaRouter, whose upstreams own it', () => {
+    const cfg = buildOpencodeConfig('gpt-5', null, 'orcarouter', { temperature: 0.4, thinking: true });
+    expect(cfg.agent.build).toEqual({ temperature: 0.4 });
+  });
+
   it('declares the run model under provider.mtplx.models for MTPLX-backed OpenCode', () => {
     const result = buildOpencodeEnvVars({ command: 'opencode', mtplxBacked: true, models: ['mtplx'] }, 'mtplx');
     const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
@@ -201,6 +233,58 @@ describe('buildOpencodeEnvVars', () => {
     expect(cfg.provider.orcarouter.options.apiKey).toBe('sk-orca-example');
     expect(result.ORCAROUTER_API_KEY).toBe('sk-orca-example');
     expect(storedConfig).not.toContain('sk-orca-example');
+  });
+
+  it('declares the run model under provider.vllm at the container endpoint', () => {
+    const result = buildOpencodeEnvVars({ command: 'opencode', vllmBacked: true, models: ['qwen3.8-27b'] }, 'qwen3.8-27b');
+    const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
+    expect(cfg.provider.vllm.options.baseURL).toBe('http://127.0.0.1:18020/v1');
+    expect(cfg.provider.vllm.models['qwen3.8-27b']).toEqual({ name: 'qwen3.8-27b', tool_call: true });
+  });
+
+  it('sends vLLM its generation defaults, routing thinking through the chat template', () => {
+    // The container's own chat-template default applied instead until #4765:
+    // vLLM had no THINKING_STYLE row, so buildAgentGeneration bailed and dropped
+    // temperature and topP with it. `enable_thinking: false` + temperature 0.7
+    // is the documented posture for tool-calling agent work on this preset.
+    const result = buildOpencodeEnvVars(
+      { command: 'opencode', vllmBacked: true, models: [], temperature: 0.7, topP: 0.9, thinking: false, effort: 'high' },
+      'qwen3.8-27b',
+    );
+    const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
+    expect(cfg.agent.build).toEqual({
+      temperature: 0.7,
+      topP: 0.9,
+      chat_template_kwargs: { enable_thinking: false },
+      reasoningEffort: 'high',
+    });
+  });
+
+  it('leaves a vLLM provider with no configured generation alone', () => {
+    // Only Ollama carries the historical 0.6 default; an unset control must stay
+    // unset so the container keeps its own.
+    const result = buildOpencodeEnvVars({ command: 'opencode', vllmBacked: true, models: [] }, 'qwen3.8-27b');
+    expect(JSON.parse(result.OPENCODE_CONFIG_CONTENT).agent).toBeUndefined();
+  });
+
+  it("injects the vLLM container's API key into options.apiKey, and no ORCAROUTER_API_KEY", () => {
+    const result = buildOpencodeEnvVars({
+      command: 'opencode',
+      vllmBacked: true,
+      models: ['qwen3.8-27b'],
+      apiKey: 'vllm-key-example',
+    }, 'qwen3.8-27b');
+    const cfg = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
+    expect(cfg.provider.vllm.options.apiKey).toBe('vllm-key-example');
+    // The OrcaRouter env var is that vendor's, not a generic key channel.
+    expect(result.ORCAROUTER_API_KEY).toBeUndefined();
+  });
+
+  it('leaves options.apiKey off a keyless local namespace even when the provider carries a key', () => {
+    const cfg = JSON.parse(buildOpencodeEnvVars({
+      command: 'opencode', mtplxBacked: true, models: ['mtplx'], apiKey: 'should-not-leak',
+    }, 'mtplx').OPENCODE_CONFIG_CONTENT);
+    expect(cfg.provider.mtplx.options.apiKey).toBeUndefined();
   });
 
   it('unions the provider models, defaultModel, and the run model (deduped, bare)', () => {
@@ -254,5 +338,96 @@ describe('buildOpencodeEnvVars', () => {
     const cfg = JSON.parse(buildOpencodeEnvVars(provider, null).OPENCODE_CONFIG_CONTENT);
     expect(cfg.provider.ollama.options.baseURL).toBe('http://localhost:11434/v1');
     expect(cfg.provider.ollama.models['qwen2.5:7b']).toBeDefined();
+  });
+});
+
+// A local runtime OpenCode can be pointed at but that has no THINKING_STYLE row
+// does not merely lose its thinking checkbox: `buildAgentGeneration` bails on
+// the missing key and returns null, taking temperature, topP and
+// reasoningEffort with it. That is how the seeded vLLM providers shipped with
+// every generation control silently discarded (#4765). Walk LOCAL_RUNTIMES so a
+// seventh runtime cannot land with the same hole.
+describe('every OpenCode-reachable local runtime forwards generation controls', () => {
+  // LM Studio is skipped deliberately — nothing spawns OpenCode against it, so
+  // it has no provider entry (and no base URL) in opencodeConfig's table.
+  const opencodeRuntimes = Object.keys(LOCAL_RUNTIMES).filter((id) => opencodeLocalBaseUrl(id));
+
+  it('actually walks the runtimes (a degenerate filter would pass vacuously)', () => {
+    expect(opencodeRuntimes).toEqual(expect.arrayContaining(['vllm', 'sglang']));
+    expect(opencodeRuntimes.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it.each(opencodeRuntimes)('%s', (id) => {
+    expect(buildAgentGeneration({ temperature: 0.7, topP: 0.9, effort: 'high' }, id))
+      .toMatchObject({ temperature: 0.7, topP: 0.9, reasoningEffort: 'high' });
+  });
+});
+
+describe('SGLang OpenCode config', () => {
+  it('declares the sglang namespace at the loopback container endpoint', () => {
+    const result = buildOpencodeEnvVars(
+      { command: 'opencode', sglangBacked: true, models: ['qwen3.8-27b'] },
+      'qwen3.8-27b',
+    );
+    const config = JSON.parse(result.OPENCODE_CONFIG_CONTENT);
+    expect(config.provider.sglang.options.baseURL).toBe('http://127.0.0.1:18021/v1');
+    expect(config.provider.sglang.models['qwen3.8-27b']).toEqual({ name: 'qwen3.8-27b', tool_call: true });
+  });
+
+  it('routes the thinking toggle through the chat template, like every other local endpoint', () => {
+    expect(buildAgentGeneration({ thinking: false }, 'sglang'))
+      .toEqual({ chat_template_kwargs: { enable_thinking: false } });
+  });
+
+  it('attaches an API key only when the operator set one', () => {
+    // SGLang serves unauthenticated unless started with `--api-key`, so a blank
+    // key must NOT put an empty `apiKey` into the spawned OpenCode config.
+    const blank = JSON.parse(buildOpencodeEnvVars(
+      { command: 'opencode', sglangBacked: true, apiKey: '', models: [] }, 'qwen3.8-27b',
+    ).OPENCODE_CONFIG_CONTENT);
+    expect(blank.provider.sglang.options).not.toHaveProperty('apiKey');
+
+    const keyed = JSON.parse(buildOpencodeEnvVars(
+      { command: 'opencode', sglangBacked: true, apiKey: 'operator-key', models: [] }, 'qwen3.8-27b',
+    ).OPENCODE_CONFIG_CONTENT);
+    expect(keyed.provider.sglang.options.apiKey).toBe('operator-key');
+  });
+});
+
+describe('small-model pin', () => {
+  const gatewayProvider = (extra = {}) => ({
+    command: 'opencode',
+    gatewayBacked: 'openrouter',
+    apiKey: 'sk-or-v1-example',
+    models: ['openrouter/auto', 'stealth/ox-alpha'],
+    ...extra,
+  });
+
+  it('pins OpenCode\'s auxiliary model to the run model so a gateway run bills nothing else', () => {
+    const config = JSON.parse(
+      buildOpencodeEnvVars(gatewayProvider(), 'stealth/ox-alpha').OPENCODE_CONFIG_CONTENT,
+    );
+    expect(config.small_model).toBe('openrouter/stealth/ox-alpha');
+  });
+
+  it('leaves a stored small_model alone', () => {
+    const stored = JSON.stringify({
+      permission: 'allow',
+      small_model: 'openrouter/anthropic/claude-haiku-4.5',
+      provider: { openrouter: { npm: '@ai-sdk/openai-compatible', options: { baseURL: 'https://openrouter.ai/api/v1' } } },
+    });
+    const config = JSON.parse(
+      buildOpencodeEnvVars(gatewayProvider({ envVars: { OPENCODE_CONFIG_CONTENT: stored } }), 'stealth/ox-alpha')
+        .OPENCODE_CONFIG_CONTENT,
+    );
+    expect(config.small_model).toBe('openrouter/anthropic/claude-haiku-4.5');
+  });
+
+  it('pins a local runtime too — spawns inherit process.env, so an unset auxiliary model can reach a cloud provider the operator never opted into', () => {
+    const config = JSON.parse(
+      buildOpencodeEnvVars({ command: 'opencode', ollamaBacked: true, models: ['qwen3'] }, 'qwen3')
+        .OPENCODE_CONFIG_CONTENT,
+    );
+    expect(config.small_model).toBe('ollama/qwen3');
   });
 });

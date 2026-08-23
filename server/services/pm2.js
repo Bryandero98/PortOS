@@ -4,7 +4,8 @@ import { existsSync } from 'fs';
 import { writeFile, unlink } from 'fs/promises';
 import { join, dirname } from 'path';
 import { createRequire } from 'module';
-import { extractJSONArray, safeJSONParse } from '../lib/fileUtils.js';
+import { homedir } from 'os';
+import { extractJSONArray, safeJSONParse, tryReadFile } from '../lib/fileUtils.js';
 import { parseCommandArgs } from '../lib/commandSecurity.js';
 
 const IS_WIN = process.platform === 'win32';
@@ -454,7 +455,7 @@ export async function listProcesses(pm2Home = null) {
  * `listProcesses()` flattens a failed read into `[]`, which is the right
  * forgiving behavior for log/command/voice callers that just want "whatever is
  * running." But app-status getters MUST distinguish "PM2 unreachable" from
- * "nothing running" (CLAUDE.md absent-vs-empty rule) — collapsing them records
+ * "nothing running" (AGENTS.md absent-vs-empty rule) — collapsing them records
  * a transient blip as every app `not_started`. Those callers use this instead.
  *
  * @param {string} pm2Home Optional custom PM2_HOME path
@@ -645,6 +646,48 @@ function spawnPm2StartEcosystem(cwd, ecosystemFile, processNames, pm2Home) {
 
     child.on('error', reject);
   });
+}
+
+/**
+ * Persist the CURRENT PM2 process list to PM2's dump file (`pm2 save`).
+ *
+ * This is the half of "start at boot" PortOS can own. `pm2 startup` writes a
+ * system init/launchd unit and is deliberately blocked (see
+ * `PM2_BLOCKED_SUBCOMMANDS` in `lib/commandSecurity.js`) — it is a one-time,
+ * privileged, machine-level decision the operator makes in a terminal. `pm2
+ * save` only rewrites `$PM2_HOME/dump.pm2`, which that unit resurrects, so once
+ * the operator has run `pm2 startup` once, saving here is what makes a
+ * newly-started daemon (llama-server, MTPLX) come back after a reboot.
+ *
+ * The dump is process-list wide by design: it snapshots everything currently
+ * running, which is exactly what a resurrect needs.
+ *
+ * @param {string|null} [pm2Home=null]
+ */
+export async function saveProcessList(pm2Home = null) {
+  await execPm2(['save'], { env: buildEnv(pm2Home) });
+  return { success: true };
+}
+
+/**
+ * The app names in PM2's saved dump — i.e. what `pm2 resurrect` (and therefore
+ * a boot-time `pm2 startup` unit) would bring back.
+ *
+ * Returns `null` when the dump could not be READ (absent, unreadable, not JSON)
+ * — deliberately NOT the same value as `[]` ("read, and it saves nothing"), so a
+ * caller can say "unknown" instead of reporting a daemon as not-persisted when
+ * PortOS simply could not tell.
+ *
+ * @param {string|null} [pm2Home=null]
+ * @returns {Promise<string[]|null>}
+ */
+export async function getSavedProcessNames(pm2Home = null) {
+  const home = pm2Home || process.env.PM2_HOME || join(homedir(), '.pm2');
+  const raw = await tryReadFile(join(home, 'dump.pm2'));
+  if (raw === null) return null;
+  const parsed = safeJSONParse(raw, null, { allowArray: true });
+  if (!Array.isArray(parsed)) return null;
+  return parsed.map((app) => app?.name).filter((name) => typeof name === 'string');
 }
 
 /**

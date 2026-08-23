@@ -1,9 +1,19 @@
 import { Play, Square } from 'lucide-react';
 import { AGENT_STATES } from './constants';
 import { formatClockTime } from '../../utils/formatters';
+import { chipColors } from '../../lib/chipContrast';
+import { useThemeContext } from '../ThemeContext';
 
 export default function TerminalCoSPanel({ state, speaking, statusMessage, eventLogs, running, onStart, onStop, stats }) {
   const stateConfig = AGENT_STATES[state] || AGENT_STATES.sleeping;
+  const { theme } = useThemeContext();
+  // `AGENT_STATES` is an intentional 7-way category palette tuned for near-black
+  // surfaces, and this panel's is theme-following (`--port-terminal-bg`) — so
+  // `thinking`'s amber renders at ~2.1:1 on a day theme. Grade it: hue stays
+  // (that's what distinguishes the states), lightness moves until it clears AA.
+  // Every theme's terminal surface is at least as favorable as the reference
+  // surface `chipContrast` grades against, so the guarantee carries over.
+  const asciiColor = chipColors(stateConfig.color, theme?.mode)?.color || stateConfig.color;
 
   // Terminal-style ASCII art for the character - alien design
   const terminalAscii = {
@@ -132,7 +142,7 @@ export default function TerminalCoSPanel({ state, speaking, statusMessage, event
             <div
               key={i}
               className={`whitespace-pre leading-tight text-xs lg:text-sm ${speaking && [0, 1].includes(i) ? 'animate-pulse' : ''}`}
-              style={{ color: stateConfig.color }}
+              style={{ color: asciiColor }}
             >
               {line}
             </div>

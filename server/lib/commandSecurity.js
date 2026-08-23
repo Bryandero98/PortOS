@@ -55,7 +55,7 @@ export const PM2_BLOCKED_SUBCOMMANDS = new Set(['kill', 'startup', 'unstartup'])
 
 // Daemon-wide verbs that are fine against a single named process but catastrophic
 // with the `all` target (`pm2 stop all`, `pm2 delete all`, `pm2 restart all` —
-// the unscoped form the user's CLAUDE.md explicitly forbids). Blocked only when
+// the unscoped form the user's AGENTS.md explicitly forbids). Blocked only when
 // the target is `all`.
 export const PM2_ALL_TARGET_VERBS = new Set([
   'stop', 'delete', 'del', 'restart', 'reload', 'gracefulreload', 'scale',

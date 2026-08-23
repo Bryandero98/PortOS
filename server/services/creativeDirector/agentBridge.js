@@ -20,6 +20,7 @@ import { buildTreatmentPrompt, buildEvaluatePrompt, buildPlanPrompt } from '../.
 import { getToolSpecs } from '../creative/toolRegistry.js';
 import { getSettings } from '../settings.js';
 import { resolveStagePin } from './projectsLogic.js';
+import { llmRoutePinNamesProvider, pickLlmRoutePinLayer } from '../../lib/llmRoutePin.js';
 import { recordRun } from './local.js';
 import { DELIVERABLE_KINDS, deliverableMark } from './deliverableGate.js';
 
@@ -53,18 +54,24 @@ async function getStageAssignment(kind, project) {
   if (kind === 'evaluate') return {};
   // Only consult the commission when the project does NOT carry its own pin for
   // this stage — a drawer choice is the user's explicit override and must win.
-  const projectPin = project?.modelOverrides?.[kind]?.providerId ? project.modelOverrides[kind] : null;
+  // Shares `llmRoutePinNamesProvider` with `resolveStagePin`'s own layer test, so
+  // "what counts as a pin" can't drift between the skip check and the resolve.
+  const projectPinsStage = llmRoutePinNamesProvider(project?.modelOverrides?.[kind]);
   const [settings, commissionPin] = await Promise.all([
     getSettings().catch(() => ({})),
     // Lazy + only for a commission-owned project, so the CD graph doesn't take a
     // static dependency on the commission store for the common bare project.
-    (!projectPin && project?.commissionId)
+    (!projectPinsStage && project?.commissionId)
       ? import('../creativeCommissions/projectControl.js')
         .then(({ commissionStagePin }) => commissionStagePin(project.commissionId))
         .catch(() => null)
       : null,
   ]);
-  const assignment = commissionPin || resolveStagePin(kind, project, settings);
+  // The commission is the outermost layer of the same whole-layer ladder
+  // `resolveStagePin` resolves (commission → project override → global
+  // assignment); `commissionStagePin` returns null unless it names a usable
+  // provider, so it only ever wins by naming one.
+  const assignment = pickLlmRoutePinLayer(commissionPin, resolveStagePin(kind, project, settings));
   if (!assignment.providerId && !assignment.model) return {};
   return {
     ...(assignment.providerId ? { provider: assignment.providerId, providerId: assignment.providerId } : {}),

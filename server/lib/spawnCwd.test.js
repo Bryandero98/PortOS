@@ -154,8 +154,8 @@ describe('Creative Director scratch cwd (#4650)', () => {
     const cwd = creativeDirectorScratchCwd('agent-cd-1');
     expect(cwd).toBe(join(tmpdir(), 'portos-cd-cwd', 'agent-cd-1'));
     expect(cwd).not.toBe(PATHS.root);
-    // Native CLAUDE.md discovery walks parents to the git root. A path under
-    // the checkout (including gitignored data/) would still leak repo CLAUDE.md.
+    // Native AGENTS.md discovery walks parents to the git root. A path under
+    // the checkout (including gitignored data/) would still leak repo AGENTS.md.
     expect(cwd.startsWith(`${PATHS.root}/`)).toBe(false);
     expect(cwd.startsWith(PATHS.root + '\\')).toBe(false);
   });

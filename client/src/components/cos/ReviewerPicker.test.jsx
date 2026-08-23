@@ -108,7 +108,7 @@ describe('ReviewerPicker', () => {
     const user = userEvent.setup();
     render(<ReviewerPicker reviewers={['copilot']} onChange={onChange} />);
     await typeSettled(user, screen.getByLabelText('Add a GitHub reviewer username'), '@CodeReviewbot');
-    await user.click(screen.getByRole('button', { name: /^Add$/ }));
+    await user.click(screen.getByRole('button', { name: 'Add reviewer username' }));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ usernames: ['CodeReviewbot'] }));
   });
 

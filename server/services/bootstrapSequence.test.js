@@ -173,7 +173,7 @@ describe('runPreRouteSequence — pre-route boot order', () => {
   });
 
   it('does not reach the toolkit itself — every touch goes through an injected step', async () => {
-    // CLAUDE.md "No cold-bootstrap LLM calls": the sequence may construct and
+    // AGENTS.md "No cold-bootstrap LLM calls": the sequence may construct and
     // hand off the toolkit, never dispatch a run through it.
     const executeRun = vi.fn();
     const recorder = createRecorder();
@@ -702,7 +702,7 @@ describe('boot source contract', () => {
   const BOOTSTRAP = read('bootstrap.js');
   const SEQUENCE = read('bootstrapSequence.js');
 
-  // Every entry point that dispatches work to an AI provider. CLAUDE.md's
+  // Every entry point that dispatches work to an AI provider. AGENTS.md's
   // "No cold-bootstrap LLM calls": a fresh install coming online must be silent
   // until the user asks for AI-backed work. Boot may ARM a scheduler (which
   // gates on user config before it ever fires) but must never call these.

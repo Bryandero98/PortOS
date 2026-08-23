@@ -62,7 +62,7 @@ export default function Catalog() {
   // chips + the New-form dropdown; `getType` resolves badge/primary-content.
   const { types: TYPES, getType } = useCatalogTypes();
 
-  // ── URL-synced filter state (linkable routes per CLAUDE.md) ────────────────
+  // ── URL-synced filter state (linkable routes per AGENTS.md) ────────────────
   // `updateParams` merges a patch and drops keys set to '' so a cleared filter
   // leaves the URL clean; `replace` avoids history spam while typing.
   const [searchParams, updateParams] = useUrlParams();

@@ -594,6 +594,9 @@ Rules:
   const result = await callProviderAISimple(provider, model, prompt, {
     temperature: 0.6,
     max_tokens: 2000,
+    // First-person memoir prose that can name real works, people, and places —
+    // exactly what a model hedges around without the IP-latitude clause.
+    creative: true,
     op: 'autobiography-weave',
     opLabel: 'Weaving your story…'
   });

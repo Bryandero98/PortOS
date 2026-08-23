@@ -50,16 +50,21 @@ import { isFalsyMeta, isTruthyMeta } from './agentState.js';
 import { TRACKER_FILING_TASK_TYPES, CONCRETE_WORK_TRACKERS } from '../lib/workTracker.js';
 import { isAuditTaskType } from '../lib/auditCatalog.js';
 
-// taskType → () => import('./path/to/hookModule.js'). A module may export either
-// or both hooks; a missing export means "no hook of that kind for this type".
+// taskType → { load }. `load` is the module import thunk; a module may export
+// either or both hooks, and a missing export means "no hook of that kind for this
+// type". Entries stay objects rather than bare thunks so a capability a caller
+// must know WITHOUT paying for the import can be declared here, keeping this the
+// single registration point (a parallel per-capability list would be free to drift).
 const HOOK_MODULES = {
-  'layered-intelligence': () => import('./autonomousJobs/layeredIntelligenceHooks.js'),
+  'layered-intelligence': {
+    load: () => import('./autonomousJobs/layeredIntelligenceHooks.js')
+  },
 };
 const PAYLOAD_OPTIONAL_OUTPUT_HOOKS = new Set();
 
 async function loadHookModule(taskType) {
   if (!isProgrammaticIoTaskType(taskType)) return null;
-  return HOOK_MODULES[taskType]();
+  return HOOK_MODULES[taskType].load();
 }
 
 /**

@@ -14,6 +14,13 @@
  * supplied by the caller. The retry/cancel/idempotency/integrity semantics are
  * NOT: they are the part that must stay identical across kinds, which is why
  * this module owns them instead of each adapter re-deriving them.
+ *
+ * A kind whose request body cannot be built without talking to the peer first
+ * (image conditioning has to be uploaded and turned into asset ids) gets this
+ * run's own `requestJson` handed to `buildRequest` rather than a routine of its
+ * own here. The cross-kind concept is "an authenticated sub-request inside the
+ * run's envelope"; WHAT is sent stays with the kind that knows — see
+ * federatedMedia/inputAssets.js.
  */
 
 import { createWriteStream } from 'node:fs';
@@ -70,7 +77,13 @@ const isRetryableTransportError = (error) =>
  * @param {string} config.label - Human noun used in progress/failure messages.
  * @param {import('events').EventEmitter} config.events - The kind's gen event emitter.
  * @param {import('zod').ZodTypeAny} config.markerSchema - Schema for `params.remoteMedia`.
- * @param {(marker: object) => object} config.buildRequest - Wire submission body builder.
+ * @param {(marker: object, ctx: object) => object|Promise<object>} config.buildRequest -
+ *   Wire submission body builder. `ctx` carries this run's `requestJson` — the
+ *   same authenticated, in-envelope request helper the executor uses itself, so
+ *   a body that has to make a sub-request while it is being built (staging
+ *   conditioning images today) does so inside the run's retry, cancel and
+ *   timeout envelope — plus `emitStatus` to narrate it. WHAT that sub-request is
+ *   stays kind-specific; the executor only lends the channel.
  * @param {(ctx: object) => {dir: string, filename: string}} config.resolveDestination -
  *   Where the verified result lands. Called per job so a PATHS proxy stays live.
  * @param {(ctx: object) => Promise<object>} config.finalize - Register the downloaded
@@ -119,7 +132,15 @@ export function createRemoteMediaExecutor({
     });
   }
 
-  async function withRequest(state, fn, { respectCancel = true, timeoutMs = requestTimeoutMs } = {}) {
+  // `timeoutScale` multiplies the JSON request timeout for a sub-request that
+  // legitimately outruns it (a multi-megabyte conditioning upload). It stays a
+  // scale rather than an absolute so callers outside this module never have to
+  // know — or fall out of sync with — the configured base timeout.
+  async function withRequest(
+    state,
+    fn,
+    { respectCancel = true, timeoutScale = 1, timeoutMs = requestTimeoutMs * timeoutScale } = {},
+  ) {
     const controller = new AbortController();
     const timer = timeoutMs === null ? null : setTimeout(() => controller.abort(), timeoutMs);
     timer?.unref?.();
@@ -431,7 +452,14 @@ export function createRemoteMediaExecutor({
   }
 
   async function runRemote(state, marker) {
-    const request = buildRequest(marker);
+    // Awaited, and handed this run's own request channel: an image/video marker
+    // resolves its persisted LOCAL conditioning paths into provider asset ids
+    // here, inside this run's retry, cancel and timeout envelope rather than
+    // before it. See federatedMedia/inputAssets.js for what that entails.
+    const request = await buildRequest(marker, {
+      requestJson: (path, options, requestOptions) => requestJson(state, path, options, requestOptions),
+      emitStatus: (message) => emitStatus(state.jobId, message),
+    });
     const selection = { kind, engine: request.engine, modelId: request.modelId };
     if (!marker.reconcile) await preflight(state, selection);
     if (state.cancelRequested && !marker.reconcile && !state.submissionMayExist) throw canceledError();

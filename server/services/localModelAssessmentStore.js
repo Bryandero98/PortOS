@@ -5,7 +5,7 @@
  * Split out of `localModelAssessments.js` so the READ side has no path to a
  * provider. Two reasons that matters:
  *
- *   1. **AI Provider Usage Policy** (root CLAUDE.md). Everything here touches
+ *   1. **AI Provider Usage Policy** (root AGENTS.md). Everything here touches
  *      disk (plus, on the run path, one cheap version probe). Nothing in this
  *      file can reach an LLM, so importing it from a status/catalog read is safe
  *      by construction rather than by review.
@@ -34,6 +34,7 @@ import os from 'os';
 import { PATHS, atomicWrite, ensureDir, tryReadFile, safeJSONParse } from '../lib/fileUtils.js';
 import { getAvailableMemoryGb } from '../lib/localMemory.js';
 import { compareEnvironments, describeStaleness, measuredFitVerdict } from '../lib/localModelAssessment.js';
+import { ASSESSABLE_RUNTIMES } from '../lib/localProviderRuntime.js';
 import { getVersion as getOllamaVersion } from './ollamaManager.js';
 
 // Resolved lazily, not at import time: `PATHS.data` is patched by suites that
@@ -132,7 +133,7 @@ export function __resetBackendVersionCache() {
  * @param {{ backends?: string[] }} [options]
  * @returns {Promise<Record<string, object>>} keyed by backend
  */
-export async function captureLiveEnvironments({ backends = ['ollama', 'lmstudio'] } = {}) {
+export async function captureLiveEnvironments({ backends = ASSESSABLE_RUNTIMES } = {}) {
   const durable = captureDurableEnvironment();
   const entries = await Promise.all(backends.map(async (backend) => [
     backend,
@@ -143,7 +144,19 @@ export async function captureLiveEnvironments({ backends = ['ollama', 'lmstudio'
 
 // ---- store ------------------------------------------------------------------
 
-export const assessmentKey = (backend, modelId) => `${backend}:${modelId}`;
+/**
+ * Identity of one stored measurement.
+ *
+ * `tuningKey` is the stable signature from `lib/localModelTuning.js`. An UNTUNED
+ * measurement passes `''` and keys exactly as it did before tuning existed — so
+ * every record already on disk keeps resolving with no migration, and a tuned
+ * run of the same model lands beside it instead of overwriting it.
+ */
+export const assessmentKey = (backend, modelId, tuningKey = '') =>
+  (tuningKey ? `${backend}:${modelId}@${tuningKey}` : `${backend}:${modelId}`);
+
+/** The key of a stored record, from whichever fields it carries. */
+export const keyOfAssessment = (a) => assessmentKey(a?.backend, a?.modelId, a?.tuningKey || '');
 
 // Move an unparseable store aside so a fresh one can be written without losing
 // whatever the old file held. Best-effort: if the rename fails there is nothing
@@ -189,11 +202,13 @@ export async function saveAssessment(assessment) {
   // the unreadable file instead: nothing is lost, and the feature keeps working
   // rather than wedging on a file the user has no way to repair from the UI.
   if (readError) await quarantineStore(readError);
-  const key = assessmentKey(assessment.backend, assessment.modelId);
-  // One record per (backend, model): the newest measurement supersedes the old
-  // one. History is not kept — a stale reading from a different memory state is
-  // worse than no reading, and the run is cheap to repeat.
-  const next = assessments.filter((a) => assessmentKey(a?.backend, a?.modelId) !== key);
+  const key = keyOfAssessment(assessment);
+  // One record per (backend, model, TUNING): the newest measurement supersedes
+  // the old one for that exact configuration. History within one tuning is not
+  // kept — a stale reading from a different memory state is worse than no
+  // reading, and the run is cheap to repeat. Two DIFFERENT tunings are two
+  // different answers to two different questions, so they both survive.
+  const next = assessments.filter((a) => keyOfAssessment(a) !== key);
   next.push(assessment);
   await ensureDir(assessmentsDir());
   await atomicWrite(assessmentsFile(), { schemaVersion: STORE_SCHEMA_VERSION, assessments: next });
@@ -204,17 +219,17 @@ export async function saveAssessment(assessment) {
  * Drop one recorded assessment. Returns whether a record was actually removed,
  * so the caller can 404 rather than reporting a phantom success.
  */
-export async function deleteAssessment(backend, modelId) {
+export async function deleteAssessment(backend, modelId, tuningKey = '') {
   const { assessments, readError } = await loadStore();
   // Same hazard as saveAssessment: rewriting from an empty in-memory list would
   // wipe the file. A delete against an unreadable store has nothing to remove.
   if (readError) return { deleted: false };
-  const key = assessmentKey(backend, modelId);
-  const next = assessments.filter((a) => assessmentKey(a?.backend, a?.modelId) !== key);
+  const key = assessmentKey(backend, modelId, tuningKey);
+  const next = assessments.filter((a) => keyOfAssessment(a) !== key);
   if (next.length === assessments.length) return { deleted: false };
   await ensureDir(assessmentsDir());
   await atomicWrite(assessmentsFile(), { schemaVersion: STORE_SCHEMA_VERSION, assessments: next });
-  console.log(`🧹 Local LLM: dropped assessment for ${backend}/${modelId}`);
+  console.log(`🧹 Local LLM: dropped assessment for ${backend}/${modelId}${tuningKey ? ` (${tuningKey})` : ''}`);
   return { deleted: true };
 }
 
@@ -250,8 +265,17 @@ export async function getMeasuredFits(backend) {
   const { assessments } = await loadStore();
   const live = { ...captureDurableEnvironment(), backendVersion: await liveBackendVersion(backend) };
   const out = {};
-  for (const assessment of assessments) {
+  // A model can now hold several measurements (one per tuning). The badge has
+  // room for ONE, so the newest wins: it describes the configuration the user
+  // most recently cared about, and every tuning is visible in full on the
+  // Performance page. Records with no timestamp sort last rather than
+  // masquerading as the newest.
+  const newestFirst = [...assessments].sort(
+    (a, b) => String(b?.assessedAt || '').localeCompare(String(a?.assessedAt || ''))
+  );
+  for (const assessment of newestFirst) {
     if (assessment?.backend !== backend || !assessment?.modelId) continue;
+    if (out[assessment.modelId]) continue;
     const staleness = compareEnvironments(assessment.environment, live);
     out[assessment.modelId] = {
       fit: measuredFitVerdict(assessment),
@@ -271,6 +295,10 @@ export async function getMeasuredFits(backend) {
       // field (or the backend reported none), and a consumer must then decline
       // to match a quantized variant rather than guess.
       quantization: assessment.quantization ?? null,
+      // Which launch configuration produced this reading. `null` = the record
+      // predates tuning (or ran on backend defaults), which is a real answer —
+      // not an unknown.
+      tuningLabel: assessment.tuningLabel ?? null,
     };
   }
   return out;

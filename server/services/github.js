@@ -325,7 +325,7 @@ export async function getStatus() {
 // Roughly thirty call sites across PortOS run `gh` and swallow the failure into
 // an empty result (`.catch(() => [])`). That collapses "the forge said there is
 // nothing" into "we could not ask the forge" — the exact conflation the root
-// CLAUDE.md's sentinel-and-validate rule exists to prevent. In practice it means
+// AGENTS.md's sentinel-and-validate rule exists to prevent. In practice it means
 // a `gh` that cannot reach api.github.com is indistinguishable from a quiet
 // repo: prWatcher sees no PRs, branchReconcile sees no branches, and an agent
 // told to open a PR reports success having opened nothing.

@@ -289,7 +289,7 @@ export async function annotateExpectedExit(processes) {
  * primitive behind both `getAppStatusSummary()` (counts) and the OpenWorld
  * snapshot pipeline (per-building status), so the two never drift.
  *
- * Absent-vs-empty rule (CLAUDE.md): `listProcessesStrict(home)` returns `null`
+ * Absent-vs-empty rule (AGENTS.md): `listProcessesStrict(home)` returns `null`
  * when the PM2 read FAILED (vs `[]` for a successful read with no processes).
  * The generic `listProcesses` flattens a failed read into `[]`, which would
  * record every app in that home as `not_started` (status known: never launched)

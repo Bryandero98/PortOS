@@ -11,7 +11,7 @@ import {
 import { hashPromptBody, buildPromptIntegritySnapshot } from './taskPromptDefaults/integrityHash.js';
 
 // Hash snapshot of every exported prompt body and version. This pins the
-// cross-install prompt-upgrade contract (see CLAUDE.md "Distribution model"):
+// cross-install prompt-upgrade contract (see AGENTS.md "Distribution model"):
 // a refactor of the taskPromptDefaults/ split cannot silently alter a prompt
 // byte, and an INTENTIONAL prompt change forces the author through this file —
 // where the rule is: bump PROMPT_VERSIONS, append the outgoing default to
@@ -151,7 +151,7 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // reasonable reading, records it in an issue comment/note, ships) instead of
   // punting the choice back to a human. `needs-input` is reserved for
   // destructive/irreversible or genuinely human-gated (hardware/credentials)
-  // cases. Mirrors CLAUDE.md "Decide, don't defer". Pins the version-bump pairing
+  // cases. Mirrors AGENTS.md "Decide, don't defer". Pins the version-bump pairing
   // + preserved outgoing defaults for cross-install auto-upgrade.
   // Version numbers are pinned once, by the `agy` test below — a content test
   // that also asserts the version has to be edited by every unrelated bump.
@@ -482,7 +482,7 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // read as "not enough work accumulated for a release".
   it('release-check v9 reconciles missing releases before evaluating readiness, preserving the v8 default', () => {
     const current = DEFAULT_TASK_PROMPTS['release-check'];
-    expect(PROMPT_VERSIONS['release-check']).toBe(9);
+    expect(PROMPT_VERSIONS['release-check']).toBeGreaterThanOrEqual(9);
     expect(current).toContain('Reconcile Missing Releases');
     expect(current).toContain('Unpublished release detected');
     expect(current).toContain('--latest=false');
@@ -497,11 +497,14 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('test-database provisioning/setup command');
     expect(current).toContain('never substitute a production database');
 
+    // v8 is identified by content, not by position: later revisions append
+    // their own outgoing bodies after it, so `last` stops meaning v8.
     const previous = PREVIOUS_DEFAULT_PROMPTS['release-check'];
-    const v8 = previous[previous.length - 1];
-    expect(v8).toContain('database-backed test suite');
-    expect(v8).not.toContain('Reconcile Missing Releases');
-    expect(v8).not.toBe(current);
+    const v8Candidates = previous.filter(
+      (prompt) => prompt.includes('database-backed test suite') && !prompt.includes('Reconcile Missing Releases'),
+    );
+    expect(v8Candidates).toHaveLength(1);
+    expect(v8Candidates[0]).not.toBe(current);
   });
 
   // refresh-local-llm-catalog is the one PortOS-ONLY prompt in this set (it
@@ -595,8 +598,9 @@ describe('taskPromptDefaults integrity snapshot', () => {
       (prompt) => prompt.includes('glab issue list --per-page 100 -F json') && prompt.includes('{issueExcludeLabels}'),
     );
     expect(withBoth).toHaveLength(1);
-    // …and it is the newest entry, which is where an append lands.
-    expect(withBoth[0]).toBe(previous[previous.length - 1]);
+    // …and it was appended after every body that predates v15, so it sits in the
+    // newest third of the list even once later revisions append behind it.
+    expect(previous.indexOf(withBoth[0])).toBeGreaterThan(previous.length - 4);
     expect(withBoth[0]).not.toBe(current);
   });
 

@@ -7,7 +7,7 @@ import { processScreenshotUploads, processAttachmentUploads } from '../../servic
 import { ATTACHMENT_ACCEPT } from '../../utils/fileUpload';
 import FilePickerButton from '../ui/FilePickerButton';
 import { formatBytes } from '../../utils/formatters';
-import { effectiveModelFor, effortAwareModelOptions, effortSurvivingModel, isTuiProvider, isCliProvider, isProcessProvider, isCodexProvider, isOpencodeOllamaProvider, seedModelEffort } from '../../utils/providers';
+import { effectiveModelFor, effortAwareModelOptions, effortSurvivingModel, isTuiProvider, isCliProvider, isProcessProvider, isCodexProvider, isOpencodeLocalProvider, generationControlsFor, seedModelEffort } from '../../utils/providers';
 import { DEFAULT_PR_COMPLETION, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, PR_COMPLETION_OPTIONS, prCompletionOption } from './constants';
 import { clickableProps } from '../../lib/a11yKeyboard';
 import { slashdoLabel } from '../../lib/slashdoCatalog';
@@ -23,8 +23,12 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   const [addToTop, setAddToTop] = useState(false);
   const [enhancePrompt, setEnhancePrompt] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
-  const [useWorktree, setUseWorktree] = useState(false);
-  const [openPR, setOpenPR] = useState(false);
+  // Worktree + Open PR default ON: an isolated branch reviewed through a
+  // PR is the safe posture for agent work, so opting OUT is the deliberate act.
+  // An app that explicitly pins either flag false still wins — see the
+  // app-defaults effect below, which distinguishes absent from `false`.
+  const [useWorktree, setUseWorktree] = useState(true);
+  const [openPR, setOpenPR] = useState(true);
   const [simplify, setSimplify] = useState(true);
   // Hidden run-shape state, never a user-facing toggle: the slashdo catalog's
   // deliverable posture (#3636/#3651). `undefined` = the form pins no opinion,
@@ -141,7 +145,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   // `apps` array reference) so periodic re-fetches in the parent don't
   // stomp manual checkbox toggles between renders.
   const appDefaultsSig = useMemo(() => selectedApp
-    ? `${selectedApp.id}|${!!selectedApp.defaultOpenPR}|${selectedApp.defaultPrCompletion || DEFAULT_PR_COMPLETION}|${!!selectedApp.defaultUseWorktree}|${!!selectedApp.jira?.enabled}`
+    ? `${selectedApp.id}|${String(selectedApp.defaultOpenPR)}|${selectedApp.defaultPrCompletion || DEFAULT_PR_COMPLETION}|${String(selectedApp.defaultUseWorktree)}|${!!selectedApp.jira?.enabled}`
     : `none:${newTask.app || ''}`,
     [selectedApp, newTask.app]
   );
@@ -155,8 +159,12 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       templateAppChangeRef.current = false;
       return;
     }
-    const defaultOpenPR = !!selectedApp?.defaultOpenPR;
-    const defaultUseWorktree = !!selectedApp?.defaultUseWorktree || defaultOpenPR;
+    // Absent (app never configured, or no app selected) falls back to the
+    // form's on-by-default posture; an explicit `false` on the app record is a
+    // deliberate opt-out and is honored.
+    const worktreeOptOut = selectedApp?.defaultUseWorktree === false;
+    const defaultOpenPR = selectedApp?.defaultOpenPR ?? !worktreeOptOut;
+    const defaultUseWorktree = (selectedApp?.defaultUseWorktree ?? true) || defaultOpenPR;
     setCreateJiraTicket(!!selectedApp?.jira?.enabled);
     setUseWorktree(defaultUseWorktree);
     setOpenPR(defaultOpenPR);
@@ -715,21 +723,26 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
             className="sm:w-40 w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
           />
         </div>
-        {isOpencodeOllamaProvider(selectedProvider) && (
+        {isOpencodeLocalProvider(selectedProvider) && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label htmlFor="task-thinking" className="sr-only">Thinking</label>
-              <select
-                id="task-thinking"
-                value={newTask.thinking}
-                onChange={e => setNewTask(t => ({ ...t, thinking: e.target.value }))}
-                className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
-              >
-                <option value="">Provider thinking default</option>
-                <option value="true">Thinking on</option>
-                <option value="false">Thinking off</option>
-              </select>
-            </div>
+            {/* OrcaRouter fronts cloud models that own their own reasoning
+                switch, so it is the one local-namespace wrapper with no
+                thinking toggle to override. */}
+            {generationControlsFor(selectedProvider)?.thinking && (
+              <div>
+                <label htmlFor="task-thinking" className="sr-only">Thinking</label>
+                <select
+                  id="task-thinking"
+                  value={newTask.thinking}
+                  onChange={e => setNewTask(t => ({ ...t, thinking: e.target.value }))}
+                  className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm min-h-[44px]"
+                >
+                  <option value="">Provider thinking default</option>
+                  <option value="true">Thinking on</option>
+                  <option value="false">Thinking off</option>
+                </select>
+              </div>
+            )}
             <div>
               <label htmlFor="task-temperature" className="sr-only">Temperature</label>
               <input

@@ -795,3 +795,57 @@ describe('LoRA key layout — stored value validation', () => {
     expect(list.find((l) => l.filename === 'lora-bogus.safetensors').keyLayout).toBe('comfyui');
   });
 });
+
+describe('readTriggerWordsByFilename (#4665)', () => {
+  const writeSidecar = async (filename, body) => {
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    await fs.writeFile(join(tmpLoras, filename), 'fake-weights');
+    await fs.writeFile(join(tmpLoras, `${filename}.metadata.json`), JSON.stringify(body));
+  };
+
+  it('keys each LoRA basename to its sidecar trigger words', async () => {
+    await writeSidecar('aria.safetensors', { triggerWords: ['aria_tok', 'portrait'] });
+    await writeSidecar('grain.safetensors', { triggerWords: ['rstgrm'] });
+    expect(await lorasService.readTriggerWordsByFilename(['aria.safetensors', 'grain.safetensors'])).toEqual({
+      'aria.safetensors': ['aria_tok', 'portrait'],
+      'grain.safetensors': ['rstgrm'],
+    });
+  });
+
+  it('collapses an absolute path to its basename key (legacy sidecar replay)', async () => {
+    await writeSidecar('aria.safetensors', { triggerWords: ['aria_tok'] });
+    expect(await lorasService.readTriggerWordsByFilename([join(tmpLoras, 'aria.safetensors')]))
+      .toEqual({ 'aria.safetensors': ['aria_tok'] });
+  });
+
+  it('reads each LoRA once even when a basename and its path are both listed', async () => {
+    await writeSidecar('aria.safetensors', { triggerWords: ['aria_tok'] });
+    const out = await lorasService.readTriggerWordsByFilename([
+      'aria.safetensors',
+      join(tmpLoras, 'aria.safetensors'),
+    ]);
+    expect(Object.keys(out)).toEqual(['aria.safetensors']);
+  });
+
+  it('omits a LoRA with no sidecar, and one whose sidecar predates triggerWords', async () => {
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    await fs.writeFile(join(tmpLoras, 'orphan.safetensors'), 'fake-weights');
+    await writeSidecar('legacy.safetensors', { name: 'Legacy' });
+    // Absent, not `[]` — the weave then skips it entirely rather than treating
+    // it as "read and found none".
+    expect(await lorasService.readTriggerWordsByFilename(['orphan.safetensors', 'legacy.safetensors'])).toEqual({});
+  });
+
+  it('keeps an explicitly-empty triggerWords array (Civitai reported none)', async () => {
+    await writeSidecar('none.safetensors', { triggerWords: [] });
+    expect(await lorasService.readTriggerWordsByFilename(['none.safetensors'])).toEqual({ 'none.safetensors': [] });
+  });
+
+  it('returns {} for an empty / non-array / junk-entry input without touching disk', async () => {
+    expect(await lorasService.readTriggerWordsByFilename([])).toEqual({});
+    expect(await lorasService.readTriggerWordsByFilename(null)).toEqual({});
+    expect(await lorasService.readTriggerWordsByFilename([null, '', 42])).toEqual({});
+  });
+});

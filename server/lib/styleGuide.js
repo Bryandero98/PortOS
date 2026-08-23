@@ -97,7 +97,7 @@ const enumOrNull = (raw, allowed) => (allowed.includes(raw) ? raw : null);
 
 // Tri-state boolean: only `true`/`false` count as a set value — anything else is
 // "unspecified" (absent), so an LLM that omits a convention can't silently flip
-// it off (matches the absent-vs-empty rule in CLAUDE.md).
+// it off (matches the absent-vs-empty rule in AGENTS.md).
 const optBool = (raw) => (typeof raw === 'boolean' ? raw : null);
 
 // Target grade level. Finite → clamped to [1,18]; otherwise null (unspecified)

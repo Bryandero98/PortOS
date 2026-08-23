@@ -5,7 +5,7 @@
  * (0 cached) only fills via requestCacheFill(), which requires explicit user
  * consent (see meatspacePostRoutes.js). Once a type has been warmed at least
  * once, consuming a drill silently tops it back up in the background. Cache
- * persists to disk. See "AI Provider Usage Policy" in CLAUDE.md.
+ * persists to disk. See "AI Provider Usage Policy" in AGENTS.md.
  */
 
 import { readFile } from 'fs/promises';
@@ -177,7 +177,7 @@ export function getCacheStats() {
  * Explicitly requested cache fill — the only path allowed to perform a cold
  * fill (0 -> MAX_PER_TYPE). Called from the drill-cache/fill route after the
  * user has been prompted and picked a provider/model. See PortOS's
- * no-cold-bootstrap-LLM-calls rule in CLAUDE.md.
+ * no-cold-bootstrap-LLM-calls rule in AGENTS.md.
  *
  * Types are filled sequentially, not in parallel — a single consented "fill
  * all" request must not turn into several concurrent LLM batches hammering

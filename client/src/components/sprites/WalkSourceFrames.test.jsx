@@ -170,7 +170,7 @@ describe('WalkSourceFrames', () => {
   });
 
   // The dependent action must not fire against a target the server has not
-  // persisted yet (CLAUDE.md: in-flight saves gate dependent actions).
+  // persisted yet (AGENTS.md: in-flight saves gate dependent actions).
   it('disables the re-derive while the target PUT is in flight', async () => {
     let release;
     setSpriteWalkTarget.mockReturnValue(new Promise((resolve) => { release = resolve; }));

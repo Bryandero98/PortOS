@@ -2057,6 +2057,12 @@ export async function getScheduleStatus() {
         appOverrides[activeApps[i].id] = {
           enabled: isEnabledForApp(override),
           interval: override.interval || null,
+          // Surface the per-app provider/model pin: it OUTRANKS the global pin at
+          // spawn for every task type (#4783), so omitting it here made the Schedule
+          // page's provider read as authoritative when it wasn't (an app pinned to
+          // another provider ran on that one with no hint why).
+          ...(override.providerId && { providerId: override.providerId }),
+          ...(override.model && { model: override.model }),
           ...(override.taskMetadata && { taskMetadata: override.taskMetadata })
         };
       }

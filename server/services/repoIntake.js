@@ -13,7 +13,7 @@
  *
  * Both are queued only AFTER the clone succeeds (there is nothing to read
  * before that), and only because the user asked for them in the same request —
- * see the AI Provider Usage Policy in CLAUDE.md.
+ * see the AI Provider Usage Policy in AGENTS.md.
  */
 
 import { randomUUID } from 'crypto';

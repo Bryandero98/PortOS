@@ -72,7 +72,9 @@ describe('describeCron weekly cases', () => {
 
   it('labels weekdays and weekends', () => {
     expect(describeCron('0 7 * * 1-5')).toBe('Weekdays at 07:00');
+    expect(describeCron('0 6 * * 1,2,3,4,5')).toBe('Weekdays at 06:00');
     expect(describeCron('0 10 * * 0,6')).toBe('Weekends at 10:00');
+    expect(describeCron('0 10 * * 6,0')).toBe('Weekends at 10:00');
   });
 });
 

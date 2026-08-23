@@ -5,7 +5,7 @@
 - **Related:** issue #4115 (this audit), issue #2726 (introduced
   `readJSONFileStrict`, scoped to the Character sheet's file-backed signals),
   [`server/lib/fileUtils.js`](../../server/lib/fileUtils.js),
-  [`server/lib/README.md`](../../server/lib/README.md), root `CLAUDE.md`
+  [`server/lib/README.md`](../../server/lib/README.md), root `AGENTS.md`
   ("Sentinel + validate to distinguish 'not set / failed' from
   'present-but-empty / valid'").
 

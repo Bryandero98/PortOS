@@ -10,21 +10,36 @@
  * transcript.
  *
  * `readiness` is one entry of the map from `GET /api/providers/readiness`
- * (`{ kind, label, endpoint, ready, checks, manageUrl, docsUrl, setup }`).
+ * (`{ kind, label, endpoint, ready, checks, manageUrl, setup }`).
  * Renders nothing without one, so providers with no local dependency — and
  * cards drawn before the fetch resolves — show no checklist at all.
  *
- * `setup` is the one-click fix: when PortOS can install and/or start this
- * daemon itself (`services/localRuntimeSetup.js`), the banner leads with that
- * button instead of a setup-doc link. The docs link stays as a secondary
- * affordance — it is the right answer for the checks a button cannot fix (which
- * model to download) and for a host the setup does not support.
+ * Every unmet check is fixed from this banner: a one-click daemon setup
+ * (`setup.action`), a "use the served model as default" button when the
+ * running server answers under a different id, or an in-app Local LLM
+ * settings link. Vendor setup docs are never the way forward.
+ *
+ * A model mismatch is fixable from BOTH ends, and the banner offers both.
+ * llama.cpp serves one model per process and answers under the `--alias` on its
+ * launch line, so a provider pinned to `qwen3.8-27b-dflash2` against a server
+ * started as `dflash` is a naming mismatch, not a missing download — the user
+ * can move the provider onto the served id, or press "Serve as …" to relaunch
+ * the daemon on the weights it already has under the id they picked.
+ *
+ * That includes the case where the daemon is installed but nothing usable is on
+ * disk: the server can't start, so `setup.action` is one of the PROVISIONING
+ * actions and the button fetches what is missing before starting it — MTPLX's
+ * default checkpoint (`pull-start`), or the whole vLLM compose project
+ * (`provision-start`: clone, build, prepare). Offering a bare "Start" there was
+ * a catch-22 — the start could only ever fail, and its error message was the
+ * only place the missing payload was named.
  */
 
 import { Link } from 'react-router';
-import { CheckCircle2, HelpCircle, Wand2, Wrench, XCircle } from 'lucide-react';
+import { CheckCircle2, Download, HelpCircle, RefreshCw, Wand2, Wrench, XCircle } from 'lucide-react';
 import Banner from '../ui/Banner';
 import Pill from '../ui/Pill';
+
 
 const ICONS = {
   true: { Icon: CheckCircle2, cls: 'text-port-success' },
@@ -35,7 +50,7 @@ const ICONS = {
   null: { Icon: HelpCircle, cls: 'text-gray-500' },
 };
 
-const LINK_CLASS = 'text-port-accent hover:text-port-accent/80 underline underline-offset-2';
+const ACTION_CLASS = 'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-port-accent/20 text-port-accent hover:bg-port-accent/30 transition-colors font-medium';
 
 /**
  * Render `text` with `backtick`-quoted spans as inline code. The server writes
@@ -55,9 +70,9 @@ function CodeText({ text }) {
   );
 }
 
-export default function ProviderReadiness({ readiness, onAutoSetup, className = '' }) {
+export default function ProviderReadiness({ readiness, onAutoSetup, onUseServedModel, onServeWantedModel, serving = false, className = '' }) {
   if (!readiness || !Array.isArray(readiness.checks) || readiness.checks.length === 0) return null;
-  const { label, endpoint, ready, checks, manageUrl, docsUrl, setup } = readiness;
+  const { label, endpoint, ready, checks, manageUrl, setup } = readiness;
 
   if (ready) {
     return (
@@ -89,6 +104,39 @@ export default function ProviderReadiness({ readiness, onAutoSetup, className = 
                 {check.fixHint && (
                   <span className="block text-port-warning/90"><CodeText text={check.fixHint} /></span>
                 )}
+                {check.id === 'model' && check.ok === false
+                  && Array.isArray(check.servedModels) && check.servedModels.length > 0 && (
+                  <span className="flex flex-wrap gap-1.5 mt-1.5">
+                    {onUseServedModel && check.servedModels.slice(0, 3).map((id) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => onUseServedModel(id)}
+                        className={ACTION_CLASS}
+                        title={`Set this provider's default model to ${id} so it matches what ${label} is serving.`}
+                      >
+                        Use {id} as default
+                      </button>
+                    ))}
+                    {/* The other direction: move the SERVER onto the id this
+                        provider sends. Offered only when the runtime names its
+                        model with a launch-line label (`check.renameTo`), which
+                        makes the fix a rename of the loaded weights rather than
+                        a multi-gigabyte download. */}
+                    {check.renameTo && onServeWantedModel && (
+                      <button
+                        type="button"
+                        onClick={() => onServeWantedModel(check.renameTo)}
+                        disabled={serving}
+                        className={`${ACTION_CLASS} disabled:opacity-50 disabled:cursor-not-allowed`}
+                        title={`Restart ${label} serving the model it already has loaded under the id ${check.renameTo}. No weights are downloaded.`}
+                      >
+                        <RefreshCw size={12} className={serving ? 'animate-spin' : ''} />
+                        {serving ? 'Restarting…' : `Serve as ${check.renameTo}`}
+                      </button>
+                    )}
+                  </span>
+                )}
               </span>
             </li>
           );
@@ -99,18 +147,20 @@ export default function ProviderReadiness({ readiness, onAutoSetup, className = 
           <button
             type="button"
             onClick={() => onAutoSetup(setup)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-port-accent/20 text-port-accent hover:bg-port-accent/30 transition-colors font-medium"
-            title={`PortOS runs this on ${endpoint} for you — no terminal needed.`}
+            className={ACTION_CLASS}
+            // Provisioning is the one thing here that spends gigabytes, so the
+            // button says so before it is clicked rather than after. The label
+            // already names the payload; this says where it lands.
+            title={setup.provisions
+              ? `${setup.actionLabel} — a multi-gigabyte download onto this host, then ${label} starts on ${endpoint}.`
+              : `PortOS runs this on ${endpoint} for you — no terminal needed.`}
           >
-            <Wand2 size={12} />
+            {setup.provisions ? <Download size={12} /> : <Wand2 size={12} />}
             {setup.actionLabel}
           </button>
         )}
         {manageUrl && (
-          <Link to={manageUrl} className={LINK_CLASS}>Open Local LLM settings</Link>
-        )}
-        {docsUrl && (
-          <a href={docsUrl} target="_blank" rel="noreferrer" className={LINK_CLASS}>{label} setup docs</a>
+          <Link to={manageUrl} className={ACTION_CLASS}>Open the LLMs page</Link>
         )}
       </div>
     </Banner>

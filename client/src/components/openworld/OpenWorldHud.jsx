@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { Camera, Compass, History, Map as MapIcon, Settings } from 'lucide-react';
+import { noPointerFocusSurfaceProps } from '../../lib/a11yKeyboard';
 import OpenWorldIntelPane from './OpenWorldIntelPane';
 import OpenWorldFocusPanel from './OpenWorldFocusPanel';
 import OpenWorldAgentBar from './OpenWorldAgentBar';
@@ -59,11 +60,14 @@ function Crosshair() {
   );
 }
 
+// The HUD floats over a keyboard-driven world: a pointer click must not leave
+// focus parked on the button, or Space stops jumping and starts re-pressing it.
 function HudAction({ icon: Icon, label, hint, active, primary = false, onClick }) {
   return (
     <button
       type="button"
       onClick={onClick}
+     
       title={label}
       aria-label={label}
       aria-pressed={active === undefined ? undefined : active}
@@ -179,7 +183,10 @@ export default function OpenWorldHud({
   };
 
   return (
-    <div className="absolute inset-0 z-20 pointer-events-none openworld-hud-shell overflow-hidden">
+    // The HUD floats over a keyboard-driven world (WASD to move, Space to jump,
+    // the playback transport keys). A click on any HUD control must hand focus
+    // straight back, or the next Space re-presses that control instead.
+    <div className="absolute inset-0 z-20 pointer-events-none openworld-hud-shell overflow-hidden" {...noPointerFocusSurfaceProps}>
       {isDesktop ? (
         <>
           <div className="absolute left-4 top-4 pointer-events-auto">

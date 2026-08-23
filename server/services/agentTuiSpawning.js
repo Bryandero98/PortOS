@@ -32,7 +32,7 @@ import { resolveInteractiveShell } from '../lib/interactiveShellResolver.js';
 import { formatShellCommandLine } from '../lib/shellCd.js';
 import { isClaudeCommand, applyLeanClaudeArgs, providerSuppliesGithubToken } from '../lib/providerModels.js';
 import { createStreamingAnsiStripper, stripAnsi } from '../lib/ansiStrip.js';
-import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
+import { createImmediateFallbackSignalDetector, createLocalRuntimeOomDetector } from '../lib/aiToolkit/errorDetection.js';
 import { isAntigravityCommand } from '../lib/antigravity.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
@@ -41,6 +41,9 @@ import {
   PASTE_MARKER_POLL_MS,
   countPasteMarkers,
   createSelfClearingSignalGate,
+  createOomNudgeGate,
+  OOM_NUDGE_MAX_ATTEMPTS,
+  OOM_NUDGE_TEXT,
   createMcpBootTracker,
   MCP_BOOT_PASTE_DEADLINE_MS,
   MCP_BOOT_PASTE_RETRY_DELAY_MS,
@@ -272,8 +275,10 @@ function createPasteRetryController({
   let sent = false;
 
   /**
-   * Re-deliver the prompt while a self-clearing provider signal's grace window
-   * is open (agy's account-eligibility banner).
+   * Re-deliver text into the live session: the whole prompt while a
+   * self-clearing provider signal's grace window is open (agy's
+   * account-eligibility banner), or the short `continue` nudge that recovers a
+   * turn a local-GPU OOM killed (see createOomNudgeGate).
    *
    * The banner is the REJECTION of the submission, not a spinner over an
    * in-flight one: agy discards the prompt, empties its composer and returns to
@@ -293,15 +298,15 @@ function createPasteRetryController({
    *   session is gone — the caller must not claim a re-submission that didn't
    *   happen).
    */
-  const resubmit = () => {
+  const resubmit = ({ text = prompt, label = 'provider-handshake resubmit' } = {}) => {
     if (isFinalized() || !sessionId) return false;
     // Overwriting a live handle would leak the previous attempt's Enter interval
     // past cancel(); pasteToSession returns a fresh one, or false once the
     // session is gone — which is also the "don't bother" answer, since the
     // grace window's deadline still owns the fail-over.
     if (submitEnterTimer) clearInterval(submitEnterTimer);
-    const handle = shellService.pasteToSession(sessionId, prompt, {
-      label: '[cosAgents] provider-handshake resubmit',
+    const handle = shellService.pasteToSession(sessionId, text, {
+      label: `[cosAgents] ${label}`,
     });
     submitEnterTimer = handle || null;
     return !!handle;
@@ -522,11 +527,11 @@ export async function spawnTuiAgent({
   // /sec; a per-run in-memory buffer would grow without bound on long agents
   // and the join-into-single-string at finalize would double peak RAM. The
   // disk file is appended in 250ms-debounced batches (same pattern as
-  // `flushPendingLines` for parsed output — see CLAUDE.md "High-frequency
+  // `flushPendingLines` for parsed output — see AGENTS.md "High-frequency
   // state writes must batch"), and `analyzeAgentFailure` reads the file on
   // failure so it gets the full PTY stream regardless of run length.
   const rawFile = join(agentDir, 'raw.txt');
-  // CD no-worktree tasks get an isolated scratch cwd so native CLAUDE.md
+  // CD no-worktree tasks get an isolated scratch cwd so native AGENTS.md
   // discovery cannot reach the PortOS repo tree (#4650). Everyone else keeps
   // workspacePath, falling back to the repo root when it was omitted.
   const cwd = resolveAgentCliCwd({ workspacePath, fallbackRoot: PATHS.root, task, agentId });
@@ -548,6 +553,11 @@ export async function spawnTuiAgent({
   // (agy's account-eligibility banner). The provider-signal timer below resolves
   // its deadline and drives the re-submission cadence.
   const selfClearingGate = createSelfClearingSignalGate();
+  // A local-GPU OOM kills the turn but leaves the TUI session holding the whole
+  // conversation, so it is nudged to carry on rather than re-prompted — see
+  // createOomNudgeGate for why this is a separate mechanism from the gate above.
+  const detectLocalRuntimeOom = createLocalRuntimeOomDetector();
+  const oomNudgeGate = createOomNudgeGate();
   // Guards ingestDoneSentinel to a single read. finish() is its only caller and
   // is itself guarded by `finalized`, so this is defensive — it pins the
   // read-at-most-once invariant at the helper.
@@ -1096,6 +1106,26 @@ export async function spawnTuiAgent({
         return;
       }
 
+      // A local inference runtime that ran out of GPU memory. The turn is dead
+      // but the session is intact, so this arms a nudge instead of killing the
+      // run — the provider-signal timer sends it once the session has actually
+      // gone quiet. Gated on promptSubmittedAt for the same reason
+      // resubmitAfterSignal is: before the prompt is in, there is no turn to
+      // resume and the ordinary paste path still owns first delivery.
+      const oomSignal = promptSubmittedAt ? detectLocalRuntimeOom(stripped) : null;
+      if (oomSignal) {
+        const armed = oomNudgeGate.arm(oomSignal, now);
+        if (armed === 'armed') {
+          appendLine('⏳ Local runtime out of GPU memory — will nudge the session to continue if it goes quiet');
+        } else if (armed === 'exhausted') {
+          // Nudged its way through OOM_NUDGE_MAX_ATTEMPTS and it came back
+          // again: the conversation no longer fits this device, and it only
+          // grows from here. Hand the task to a fallback provider.
+          await failOverToFallback(oomSignal);
+          return;
+        }
+      }
+
       if (!promptSentAt) {
         const lowerStripped = stripped.toLowerCase();
         if (lowerStripped.includes('command not found') && lowerStripped.includes(commandName.toLowerCase())) {
@@ -1382,7 +1412,7 @@ export async function spawnTuiAgent({
   // sendPrompt / finishStartupFailure are async and dispatched fire-and-forget
   // from the interval below. A setInterval callback can't await, and an
   // unhandled rejection there (e.g. a finalizeAgent throw inside finish())
-  // would crash the process — the callback-boundary hazard CLAUDE.md calls out.
+  // would crash the process — the callback-boundary hazard AGENTS.md calls out.
   // Wrap each floating call so a rejection is logged, not thrown.
   const safeSendPrompt = (reason) => pasteController.sendPrompt(reason).catch((err) =>
     emitLog('error', `TUI agent ${agentId} sendPrompt(${reason}) failed: ${err?.message || err}`, { agentId }));
@@ -1396,6 +1426,16 @@ export async function spawnTuiAgent({
     const now = Date.now();
     const elapsed = now - startedAt;
 
+    // Every dismissal below rewinds the idle clock (`lastOutputAt`) AND clears
+    // `firstOutputAt`, which re-arms the idle path's "has it printed anything?"
+    // gate. The idle heuristic that governs codex reads silence as readiness,
+    // and a dialog is at its quietest right after it paints — so the dismissal
+    // keystroke and an idle paste can otherwise go out inside the same window,
+    // landing the prompt in a menu that has not repainted. Demanding fresh
+    // output-then-silence AFTER the keystroke makes the paste wait for whatever
+    // the dismissal reveals; if the TUI ignores the keystroke entirely,
+    // PASTE_DEADLINE_MS still backstops delivery.
+
     // Codex can present a hook-review selector before its composer exists.
     // Do not trust hooks from an unattended run: option 3 keeps them disabled
     // for this session and lets the agent continue without executing code
@@ -1405,20 +1445,33 @@ export async function spawnTuiAgent({
       hookReviewDeclined = true;
       shellService.writeToSession(sessionId, '\x1b[B\x1b[B\r');
       inputReady.ackHookReview();
+      lastOutputAt = now;
+      firstOutputAt = null;
       appendLine(`📟 Continued ${tuiConfig.command} without trusting startup hooks for session ${sessionId.slice(0, 8)}`);
       return;
     }
 
+    // Auto-confirm the first-run "trust this folder?" gate (claude's, agy's and
+    // codex's all default to yes) so agents can run in fresh worktrees. Send
+    // Enter once.
+    //
+    // Like the hook-review selector this runs for EVERY TUI, not only the
+    // positive input-ready providers below: codex takes the idle/deadline path,
+    // and its trust dialog goes quiet the instant it paints, so the idle
+    // heuristic reads that silence as "ready" and pastes the task straight into
+    // the menu — which swallows it and all three paste retries
+    // (agent-671af38f, 2026-08-21, `paste-not-rendered`). Answering the dialog
+    // first is what lets the composer appear at all.
+    if (inputReady.needsTrust && !trustAccepted) {
+      trustAccepted = true;
+      shellService.writeToSession(sessionId, SUBMIT_KEY);
+      lastOutputAt = now;
+      firstOutputAt = null;
+      appendLine(`📟 Auto-confirmed ${tuiConfig.command} folder-trust prompt for session ${sessionId.slice(0, 8)}`);
+      return;
+    }
+
     if (requireInputReady) {
-      // Auto-confirm the first-run "trust this folder?" gate (claude's and agy's
-      // both default to "Yes, I trust") so claims can run in fresh worktrees.
-      // Send Enter once.
-      if (inputReady.needsTrust && !trustAccepted) {
-        trustAccepted = true;
-        shellService.writeToSession(sessionId, SUBMIT_KEY);
-        appendLine(`📟 Auto-confirmed ${tuiConfig.command} folder-trust prompt for session ${sessionId.slice(0, 8)}`);
-        return;
-      }
       // Decline claude's "make auto mode your default permission mode?" offer
       // (v2.1.233+). Unlike the trust gate this one paints AFTER the composer is
       // live, so it swallows the paste and every retry unless it is cleared
@@ -1470,12 +1523,23 @@ export async function spawnTuiAgent({
     const expired = selfClearingGate.takeExpired(Date.now());
     if (expired) {
       // setInterval can't await, and an unhandled rejection here would crash the
-      // process (the callback-boundary hazard CLAUDE.md calls out).
+      // process (the callback-boundary hazard AGENTS.md calls out).
       failOverToFallback(expired).catch((err) =>
         emitLog('error', `TUI agent ${agentId} deferred fallback finish failed: ${err?.message || err}`, { agentId }));
       return;
     }
-    if (selfClearingGate.armed) resubmitAfterSignal();
+    if (selfClearingGate.armed) {
+      resubmitAfterSignal();
+      return;
+    }
+    // Nudge a session a local-GPU OOM parked. Rides this timer rather than one
+    // of its own so the nudge cadence and the fail-over verdict stay on the same
+    // clock — and so there is one fewer interval to leak past finish().
+    const nudge = oomNudgeGate.takeNudge(Date.now(), lastOutputAt);
+    if (!nudge) return;
+    if (pasteController?.resubmit({ text: OOM_NUDGE_TEXT, label: 'local-runtime OOM nudge' })) {
+      appendLine(`🔁 Local runtime OOM — nudged the session to continue (attempt ${nudge}/${OOM_NUDGE_MAX_ATTEMPTS})`);
+    }
   }, PROVIDER_SIGNAL_POLL_MS);
 
   // Sentinel-file watcher. The agent's prompt instructs it to write

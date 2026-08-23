@@ -643,6 +643,11 @@ describe('validation.js', () => {
       const result = providerSchema.safeParse({ name: 'MTPLX', type: 'cli', mtplxBacked: true });
       expect(result.success).toBe(true);
     });
+
+    it('should allow the explicit vLLM provider marker', () => {
+      expect(providerSchema.safeParse({ name: 'vLLM', type: 'tui', vllmBacked: true }).success).toBe(true);
+      expect(providerSchema.safeParse({ name: 'vLLM', type: 'tui', vllmBacked: 'true' }).success).toBe(false);
+    });
   });
 
   describe('runSchema', () => {

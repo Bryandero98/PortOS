@@ -26,6 +26,13 @@ import {
   reviewerEffortArgs,
   reviewerModelArg,
   buildReviewerEffortNote,
+  buildReviewerPinNote,
+  buildReviewersCsv,
+  claimSafeReviewers,
+  resolveReviewerConfig,
+  resolveClaimReviewerConfig,
+  reviewerConfigMetadata,
+  reviewerTokenSlug,
   sanitizeTaskMetadata,
   codeReviewSettingsSchema,
   taskTemplateSettingsSchema,
@@ -47,7 +54,7 @@ describe('cosValidation effort field', () => {
   });
 
   it("update: ''/null survive as null so the API can CLEAR a set effort pin", () => {
-    // absent-vs-cleared (CLAUDE.md): the route gates on `!== undefined`, and the
+    // absent-vs-cleared (AGENTS.md): the route gates on `!== undefined`, and the
     // store's legacy-field normalizer deletes a null pin — so the clear signal
     // must reach the route as null, not be preprocessed away to undefined.
     expect(updateCosTaskSchema.parse({ effort: '' }).effort).toBeNull();
@@ -550,5 +557,172 @@ describe('per-reviewer model pins', () => {
     expect(pairReviewerModelsAndEfforts({ grok: 'grok-code-fast-1' }, {}))
       .toEqual({ reviewerModels: { grok: 'grok-code-fast-1' }, reviewerEfforts: {} });
     expect(reviewerEffortLevels('grok')).toBeNull();
+  });
+});
+
+describe('reviewer pin note (saved slashdo defaults must not win)', () => {
+  it('names the resolved list AND the exact --review-with text to pass', () => {
+    const note = buildReviewerPinNote('codex,claude');
+    // Both halves matter: the list the phases run by hand, and the flag text for
+    // the moment the agent reaches for a slashdo command instead.
+    expect(note).toContain('`codex,claude`');
+    expect(note).toContain('--review-with codex,claude');
+    expect(note).toContain('/do:pr');
+    // The failure mode this block exists to prevent, named so the agent can
+    // recognize it: a bare invocation silently adopting the host's saved config.
+    expect(note).toMatch(/\.slashdo-config\.json/);
+  });
+
+  it('carries the per-entry suffixes verbatim so the pinned model/effort survive the paste', () => {
+    // A reviewer pin is only honored if the agent pastes the whole token — the
+    // bracket and the ~suffixes ARE the model/optional/cap/effort pins.
+    const csv = 'antigravity[gemini-3.7-flash]~opt~max=1~effort=medium';
+    expect(buildReviewerPinNote(csv)).toContain(`--review-with ${csv}`);
+  });
+
+  it('keeps a PortOS-served reviewer OUT of the pinned flag — slashdo aborts on a slug it does not know', () => {
+    const note = buildReviewerPinNote('lmstudio~effort=high,ollama,@alice');
+    // The flag text carries only tokens slashdo can parse...
+    expect(note).toContain('--review-with ollama,@alice');
+    expect(note).not.toContain('--review-with lmstudio');
+    // ...and the dropped reviewer is named by bare slug, pointed at the
+    // procedure that actually runs it, so dropping it from a slashdo call can't
+    // read as permission to skip the review.
+    expect(note).toContain('PortOS runs `lmstudio` itself');
+    expect(note).toContain('Local Reviewer Procedure');
+  });
+
+  it('states the pin with no flag text at all when every reviewer is PortOS-only', () => {
+    const note = buildReviewerPinNote('lmstudio');
+    expect(note).toContain('authoritative');
+    // No flag to hand out — the only `--review-with` mention left is the
+    // prohibition, never an instruction to pass one.
+    expect(note).not.toMatch(/pass `--review-with/);
+  });
+
+  it('reads back every slug an emitted token can carry (inverse of markSuffixes)', () => {
+    // reviewerTokenSlug is the only place the emitted grammar is parsed rather
+    // than built. Round-trip a fully decorated token through the real emitter so
+    // a new bracket or ~suffix in markSuffixes fails HERE instead of silently
+    // mis-slugging a reviewer out of (or into) the pinned flag.
+    const csv = buildReviewersCsv(
+      ['antigravity', 'lmstudio'],
+      ['alice'],
+      ['antigravity'],
+      { antigravity: 1 },
+      { antigravity: 'gemini-3.7-flash', lmstudio: 'qwen' },
+      { antigravity: 'medium', lmstudio: 'high' }
+    );
+    expect(csv.split(',').map(reviewerTokenSlug)).toEqual(['antigravity', 'lmstudio', '@alice']);
+  });
+
+  it('emits nothing when there is no list to pin', () => {
+    expect(buildReviewerPinNote('')).toBe('');
+    expect(buildReviewerPinNote('   ')).toBe('');
+    expect(buildReviewerPinNote(null)).toBe('');
+    expect(buildReviewerPinNote(undefined)).toBe('');
+  });
+});
+
+// The claim generators resolve reviewers BEFORE a task record exists and render
+// the CSV into `{reviewers}`; the prompt builder re-resolves them from the
+// persisted task at spawn time to emit the reviewer pin. Those two resolutions
+// have to land on the same list, or the pin names reviewers the prompt does not
+// (#4770). `reviewerConfigMetadata` is the round-trip that makes them agree.
+describe('claim reviewer round-trip (prompt CSV ↔ persisted metadata)', () => {
+  const defaults = {
+    reviewers: ['copilot'],
+    usernames: ['alice'],
+    optionalReviewers: ['ollama'],
+    reviewerMaxRounds: { codex: 2 },
+    antigravityModel: 'gemini-3.7-flash-high',
+    codexEffort: 'high'
+  };
+
+  it('claimSafeReviewers drops copilot and never falls back to it', () => {
+    expect(claimSafeReviewers(['codex', 'copilot'])).toEqual(['codex']);
+    expect(claimSafeReviewers(['copilot'])).toEqual(['codex']);
+    expect(claimSafeReviewers([])).toEqual(['codex']);
+    expect(claimSafeReviewers(undefined)).toEqual(['codex']);
+  });
+
+  it('resolves through the claim guard from every input shape a claim task can carry', () => {
+    // The install default is the fallback, the claim guard is applied after it,
+    // and legacy single-`reviewer` metadata still resolves.
+    expect(resolveClaimReviewerConfig({}, null, undefined).reviewers).toEqual(['codex']);
+    expect(resolveClaimReviewerConfig({ reviewers: ['copilot'] }, null, ['copilot']).reviewers).toEqual(['codex']);
+    expect(resolveClaimReviewerConfig({}, null, ['claude', 'copilot']).reviewers).toEqual(['claude']);
+    expect(resolveClaimReviewerConfig({ reviewer: 'grok' }, null, ['claude']).reviewers).toEqual(['grok']);
+  });
+
+  it('resolveClaimReviewerConfig emits a CSV matching its own resolved bundle', () => {
+    const config = resolveClaimReviewerConfig({ reviewers: ['codex', 'antigravity'] }, defaults, defaults.reviewers);
+    expect(config.reviewers).toEqual(['codex', 'antigravity']);
+    expect(config.csv).toBe(buildReviewersCsv(
+      config.reviewers, config.usernames, config.optionalReviewers,
+      config.reviewerMaxRounds, config.reviewerModels, config.reviewerEfforts
+    ));
+    // The agy model id's baked tier is split off exactly once — resolving the
+    // persisted config a second time must not re-split or double-apply it.
+    expect(config.reviewerModels.antigravity).toBe('gemini-3.7-flash');
+    expect(config.reviewerEfforts.antigravity).toBe('high');
+  });
+
+  it('persisting reviewerConfigMetadata makes the SECOND resolution reproduce the first CSV', () => {
+    // Round 1: the generator, with no task record yet.
+    const generated = resolveClaimReviewerConfig({ reviewers: ['codex', 'antigravity'] }, defaults, defaults.reviewers);
+    const metadata = { claimFlow: true, ...reviewerConfigMetadata(generated) };
+    // Round 2: the prompt builder, reading the task back — and deliberately
+    // WITHOUT the defaults it would otherwise fall through to, to prove the
+    // persisted values are what carry the list.
+    const rebuilt = resolveClaimReviewerConfig(metadata, null, null);
+    expect(rebuilt.csv).toBe(generated.csv);
+    expect(rebuilt).toMatchObject({
+      reviewers: generated.reviewers,
+      usernames: generated.usernames,
+      optionalReviewers: generated.optionalReviewers,
+      reviewerMaxRounds: generated.reviewerMaxRounds,
+      reviewerModels: generated.reviewerModels,
+      reviewerEfforts: generated.reviewerEfforts
+    });
+    // And the plain (non-claim) resolver the prompt builder shares with the
+    // review loop agrees too — that is the resolution #4770 was silently
+    // answering from the install-wide defaults.
+    expect(resolveReviewerConfig(metadata, null, null).reviewers).toEqual(generated.reviewers);
+  });
+
+  it('a DIFFERENT install default cannot override what the task persisted', () => {
+    const generated = resolveClaimReviewerConfig({ reviewers: ['grok'] }, defaults, defaults.reviewers);
+    const metadata = reviewerConfigMetadata(generated);
+    const otherInstall = { reviewers: ['claude'], usernames: ['bob'], optionalReviewers: ['grok'], reviewerMaxRounds: { grok: 9 } };
+    expect(resolveClaimReviewerConfig(metadata, otherInstall, otherInstall.reviewers).csv).toBe(generated.csv);
+  });
+
+  it('sanitizes rather than trusts: unknown keys and junk values never reach the task record', () => {
+    const meta = reviewerConfigMetadata({
+      reviewers: ['codex', 'bogus'],
+      usernames: ['@Alice', 'bad token'],
+      optionalReviewers: ['nope'],
+      reviewerMaxRounds: { codex: 'three' },
+      reviewerModels: {},
+      reviewerEfforts: {},
+      swarmCount: 6,
+      issueAuthorFilter: 'any'
+    });
+    expect(meta).toEqual({
+      reviewers: ['codex'],
+      usernames: ['Alice'],
+      optionalReviewers: [],
+      reviewerMaxRounds: {},
+      reviewerModels: {},
+      reviewerEfforts: {}
+    });
+  });
+
+  it('returns an empty patch rather than null when nothing survives sanitizing', () => {
+    // Callers spread this into a task's metadata, so a null would throw at the
+    // three claim generators rather than degrade.
+    expect(reviewerConfigMetadata(null)).toEqual({});
+    expect(reviewerConfigMetadata({ reviewers: ['bogus'] })).toEqual({});
   });
 });

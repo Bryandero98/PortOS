@@ -9,6 +9,11 @@ import {
   countPasteMarkers,
   createGenerationActivityTracker,
   createSelfClearingSignalGate,
+  createOomNudgeGate,
+  OOM_NUDGE_SETTLE_MS,
+  OOM_NUDGE_ARM_WINDOW_MS,
+  OOM_NUDGE_COOLDOWN_MS,
+  OOM_NUDGE_MAX_ATTEMPTS,
   SELF_CLEARING_RESUBMIT_INTERVAL_MS,
   SELF_CLEARING_RESUBMIT_ECHO_MS,
   MCP_BOOT_PASTE_DEADLINE_MS,
@@ -1024,7 +1029,7 @@ describe('createInputReadyTracker', () => {
     expect(tracker.ready).toBe(true);
   });
 
-  it('latches needsTrust on either trust-gate wording', () => {
+  it('latches needsTrust on every vendor trust-gate wording', () => {
     const claude = createInputReadyTracker();
     claude.observe('', 'Is this a project you trust?');
     expect(claude.needsTrust).toBe(true);
@@ -1032,6 +1037,15 @@ describe('createInputReadyTracker', () => {
     const agy = createInputReadyTracker();
     agy.observe('', 'Do you trust the contents of this project?\n> Yes, I trust this folder\n');
     expect(agy.needsTrust).toBe(true);
+
+    // Codex says "directory", and its options are "Yes, continue / No, quit" —
+    // neither of the two older alternatives appears anywhere in the dialog, so it
+    // went unmatched and the run pasted its task into the menu (agent-671af38f).
+    const codex = createInputReadyTracker();
+    codex.observe('', 'You are in /tmp/portos-cd-cwd/agent-abc\nDo you trust the contents of this directory?'
+      + ' Working with untrusted contents comes with higher risk of prompt injection.\n'
+      + '› 1. Yes, continue\n2. No, quit\nPress enter to continue\n');
+    expect(codex.needsTrust).toBe(true);
   });
 
   // Claude Code v2.1.233's auto-mode offer. Unlike the trust gate it paints with
@@ -1499,4 +1513,66 @@ describe('tuiHandshake — parity with the shipped provider catalog', () => {
         .toEqual(buildTuiInvocation({ ...provider, command: launchCommand(provider) }));
     }
   );
+});
+
+describe('createOomNudgeGate', () => {
+  const analysis = { category: 'resource-exhausted', message: 'Local inference runtime ran out of GPU memory' };
+
+  it('nudges only once the session has actually gone quiet', () => {
+    const gate = createOomNudgeGate();
+    const t0 = 1_000_000;
+    expect(gate.arm(analysis, t0)).toBe('armed');
+    // The TUI is still repainting the error box — nudging here would land on
+    // top of the repaint instead of at an idle composer.
+    expect(gate.takeNudge(t0 + OOM_NUDGE_SETTLE_MS, t0 + 5_000)).toBe(0);
+    expect(gate.takeNudge(t0 + OOM_NUDGE_SETTLE_MS + 5_001, t0 + 5_000)).toBe(1);
+    // Fired once; the arm is spent until the next distinct OOM.
+    expect(gate.takeNudge(t0 + 60_000, t0 + 5_000)).toBe(0);
+  });
+
+  it('treats repaints of the same error box as one OOM', () => {
+    const gate = createOomNudgeGate();
+    const t0 = 0;
+    expect(gate.arm(analysis, t0)).toBe('armed');
+    // Same window: already armed.
+    expect(gate.arm(analysis, t0 + 100)).toBeNull();
+    expect(gate.takeNudge(t0 + OOM_NUDGE_SETTLE_MS + 1, t0)).toBe(1);
+    // Disarmed, but still inside the dedupe cooldown — a repaint must not
+    // spend a second nudge on the same event.
+    expect(gate.arm(analysis, t0 + OOM_NUDGE_COOLDOWN_MS - 1)).toBeNull();
+    expect(gate.arm(analysis, t0 + OOM_NUDGE_COOLDOWN_MS)).toBe('armed');
+  });
+
+  it('drops a stale arm the session never went quiet for', () => {
+    const gate = createOomNudgeGate();
+    const t0 = 0;
+    gate.arm(analysis, t0);
+    // Output kept flowing for the whole window: the run recovered on its own,
+    // so the arm expires rather than waiting to fire into the next quiet spell.
+    expect(gate.takeNudge(t0 + OOM_NUDGE_ARM_WINDOW_MS + 1, t0 + OOM_NUDGE_ARM_WINDOW_MS)).toBe(0);
+    // An expired window costs nothing: the next real OOM still gets attempt 1.
+    const t1 = t0 + OOM_NUDGE_COOLDOWN_MS;
+    expect(gate.arm(analysis, t1)).toBe('armed');
+    expect(gate.takeNudge(t1 + OOM_NUDGE_SETTLE_MS + 1, t1)).toBe(1);
+  });
+
+  it('hands back an exhausted verdict once the nudge budget is spent', () => {
+    const gate = createOomNudgeGate();
+    let t = 0;
+    for (let i = 1; i <= OOM_NUDGE_MAX_ATTEMPTS; i += 1) {
+      expect(gate.arm(analysis, t)).toBe('armed');
+      t += OOM_NUDGE_SETTLE_MS + 1;
+      expect(gate.takeNudge(t, t - OOM_NUDGE_SETTLE_MS - 1)).toBe(i);
+      t += OOM_NUDGE_COOLDOWN_MS;
+    }
+    // A genuinely new OOM after the budget: the context no longer fits the
+    // device, so the caller fails over instead of nudging again.
+    expect(gate.arm(analysis, t)).toBe('exhausted');
+  });
+
+  it('ignores a null analysis', () => {
+    const gate = createOomNudgeGate();
+    expect(gate.arm(null, 0)).toBeNull();
+    expect(gate.takeNudge(OOM_NUDGE_SETTLE_MS + 1, 0)).toBe(0);
+  });
 });

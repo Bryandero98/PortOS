@@ -38,7 +38,11 @@ vi.mock('../services/imageTo3d/targets.js', async (importOriginal) => ({
   IMAGE_TO_3D_TARGET_IDS: ['trellis2'],
 }));
 
-vi.mock('../services/imageTo3d/trellis2.js', () => ({
+vi.mock('../services/imageTo3d/trellis2.js', async (importOriginal) => ({
+  // The pure half (`resolveDegradedBakeRemedy`, the `TRELLIS2_*` constants) comes through
+  // REAL — the adapter's `degraded` projection is asserted below, so stubbing it would
+  // test the stub.
+  ...(await importOriginal()),
   isTrellis2Installed: vi.fn(() => false),
   trellis2Root: vi.fn(() => '/tmp/trellis2'),
   installTrellis2: vi.fn(({ onEvent }) => {
@@ -160,6 +164,8 @@ describe('image-to-3d routes', () => {
     const res = await request(makeApp()).get('/api/image-to-3d/targets');
     expect(res.body.targets[0].textureBake).toMatchObject({ quality: 'metal' });
     expect(res.body.targets[0].textureBake.repairable).toBeUndefined();
+    // A healthy bake names no modules — and reports no degradation at all.
+    expect(res.body.targets[0].degraded).toBeUndefined();
     expect(trellis2.probeMetalToolchain).not.toHaveBeenCalled();
   });
 
@@ -216,7 +222,12 @@ describe('image-to-3d routes', () => {
     });
     const res = await request(makeApp()).get('/api/image-to-3d/targets');
     expect(res.body.targets[0].degraded).toEqual({
-      label: 'degraded textures', help: 'fix it', repairable: true,
+      label: 'degraded textures',
+      help: 'fix it',
+      repairable: true,
+      // #4636: `help` names the remedy, `detail` names what is actually missing —
+      // without it a Repair that keeps failing only ever reprints the same sentence.
+      detail: 'Missing: mtldiffrast',
     });
   });
 
@@ -328,7 +339,12 @@ describe('GET /trellis2/install (SSE)', () => {
     });
     const res = await request(makeApp()).get('/api/image-to-3d/trellis2/install');
     const frames = sseFrames(res.text);
-    expect(frames.find((f) => f.stage === 'verify' && f.type === 'log')?.message).toContain('repair me');
+    const warning = frames.find((f) => f.stage === 'verify' && f.type === 'log')?.message;
+    expect(warning).toContain('repair me');
+    // #4636: this lane writes the SAME `verify` stage the install's own hook does, so it
+    // has to name the culprit too — otherwise one condition emits two different frames
+    // depending on whether the caller hit the short-circuit or ran the install.
+    expect(warning).toContain('Missing: mtldiffrast.');
     expect(frames.at(-1)).toMatchObject({ type: 'complete' });
   });
 

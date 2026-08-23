@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { StrictMode } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import MusicGenPanel from './MusicGenPanel';
 import * as api from '../../services/api';
+import toast from '../ui/Toast';
 
 vi.mock('../../services/api', () => ({
   listMusicEngines: vi.fn(),
@@ -14,6 +15,10 @@ vi.mock('../../services/api', () => ({
   cancelMediaJob: vi.fn(),
   installAudioModel: vi.fn(),
   removeAudioModel: vi.fn(),
+}));
+
+vi.mock('../ui/Toast', () => ({
+  default: { error: vi.fn(), success: vi.fn(), info: vi.fn() },
 }));
 
 vi.mock('../install/RuntimeInstallModal', () => ({
@@ -64,6 +69,13 @@ describe('MusicGenPanel', () => {
     vi.clearAllMocks();
     api.getActiveProcessing.mockResolvedValue({ jobs: [] });
     api.getInstances.mockResolvedValue({ peers: [] });
+  });
+
+  // `clearAllMocks` resets calls but leaves a spy installed. A test that pins
+  // Date.now and then fails before restoring it would leave the clock frozen
+  // for every test after it, turning one failure into a cascade.
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('does not show a missing-runtime warning immediately for an empty saved track', async () => {
@@ -254,32 +266,44 @@ describe('MusicGenPanel', () => {
     expect(onGenerated).toHaveBeenCalledWith(expect.objectContaining({ id: 'generated-track' }));
   });
 
-  it('selects a fresh federated audio provider without sending prompt or lyrics as conditioning', async () => {
+  const lyricCapablePeer = (capabilityOverrides = {}, features) => ({
+    id: 'peer-example',
+    name: 'Example GPU',
+    status: 'online',
+    mediaProvider: { enabled: true, audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }] },
+    mediaProviderStatus: {
+      state: 'ready',
+      // A capacity claim needs a verifiable freshness window: the panel
+      // re-derives `stale` at render time rather than trusting the state
+      // the probe recorded, so a snapshot with no window reads as stale.
+      checkedAt: new Date().toISOString(),
+      freshUntil: new Date(Date.now() + 60_000).toISOString(),
+      snapshot: {
+        ...(features ? { features } : {}),
+        queue: { accepting: true, running: 0, queued: 0 },
+        capabilities: [{
+          kind: 'audio', engine: 'minimax-music3', engineName: 'MiniMax Music 3', modelId: 'minimax-music3',
+          modelName: 'MiniMax Music 3', ready: true, autoDuration: false, lyrics: true,
+          minDurationSec: 10, maxDurationSec: 300, defaultDurationSec: 60,
+          ...capabilityOverrides,
+        }],
+      },
+    },
+  });
+
+  // One end of the mixed-version window: this peer's MODEL sings
+  // (`lyrics: true`) but its build predates lyrical federation, so it publishes
+  // neither the `lyrics` feature nor the legacy `acceptsLyrics`. Absent must
+  // read as false, or the panel offers a render the peer answers with a 400.
+  it('falls back to an instrumental remote render when the peer build cannot carry lyrics', async () => {
     api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
-    api.getInstances.mockResolvedValue({
-      peers: [{
-        id: 'peer-example',
-        name: 'Example GPU',
-        status: 'online',
-        mediaProvider: { enabled: true, audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }] },
-        mediaProviderStatus: {
-          state: 'ready',
-          snapshot: {
-            queue: { accepting: true, running: 0, queued: 0 },
-            capabilities: [{
-              kind: 'audio', engine: 'minimax-music3', engineName: 'MiniMax Music 3', modelId: 'minimax-music3',
-              modelName: 'MiniMax Music 3', ready: true, autoDuration: false, lyrics: true,
-              minDurationSec: 10, maxDurationSec: 300, defaultDurationSec: 60,
-            }],
-          },
-        },
-      }],
-    });
+    api.getInstances.mockResolvedValue({ peers: [lyricCapablePeer()] });
     api.generateMusic.mockResolvedValue({ track: { id: 'track-1' } });
 
     render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" lyrics="private lyrics" />);
 
     fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    expect(screen.getByLabelText(/instrumental only/i)).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: /^generate$/i }));
 
     await waitFor(() => expect(api.generateMusic).toHaveBeenCalledWith(expect.objectContaining({
@@ -293,6 +317,268 @@ describe('MusicGenPanel', () => {
     }), { silent: true }));
     const requestBody = api.generateMusic.mock.calls[0][0];
     expect(requestBody).not.toHaveProperty('lyrics');
+  });
+
+  // ADR docs/decisions/2026-08-22-federated-media-input-assets.md rule 2: the
+  // words the model sings cross. The free-form style prompt still does not, but
+  // that is the SERVER's doing — it blanks params.prompt and renders the wire
+  // prompt from the profile — so this body legitimately carries it for the
+  // track record. federatedMediaProvider.test.js guards the wire side.
+  it('sends lyrics to a peer that advertises it accepts them', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    api.getInstances.mockResolvedValue({ peers: [lyricCapablePeer({ acceptsLyrics: true })] });
+    api.generateMusic.mockResolvedValue({ track: { id: 'track-1' } });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" lyrics="private lyrics" />);
+
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    // Instrumental is an ordinary choice again once the peer can sing.
+    expect(screen.getByLabelText(/instrumental only/i)).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /^generate$/i }));
+
+    await waitFor(() => expect(api.generateMusic).toHaveBeenCalledWith(expect.objectContaining({
+      mediaProviderPeerId: 'peer-example',
+      instrumentalOnly: false,
+      lyrics: 'private lyrics',
+    }), { silent: true }));
+  });
+
+  // The other end of the same mixed-version window (#4826): a peer on the NEW
+  // build advertises the `lyrics` feature at the status root and stops stamping
+  // `acceptsLyrics` on every capability. A panel still reading the per-capability
+  // field would pin this peer to Instrumental only for no reason.
+  it('sends lyrics to a peer that advertises the lyrics feature and no per-capability flag', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    api.getInstances.mockResolvedValue({ peers: [lyricCapablePeer({}, ['lyrics', 'inputAssets'])] });
+    api.generateMusic.mockResolvedValue({ track: { id: 'track-1' } });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" lyrics="private lyrics" />);
+
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    expect(screen.getByLabelText(/instrumental only/i)).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /^generate$/i }));
+
+    await waitFor(() => expect(api.generateMusic).toHaveBeenCalledWith(expect.objectContaining({
+      mediaProviderPeerId: 'peer-example',
+      instrumentalOnly: false,
+      lyrics: 'private lyrics',
+    }), { silent: true }));
+  });
+
+  it('still pins instrumental for an instrumental-only model on a lyrics-capable build', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    api.getInstances.mockResolvedValue({ peers: [lyricCapablePeer({ lyrics: false }, ['lyrics'])] });
+    api.generateMusic.mockResolvedValue({ track: { id: 'track-1' } });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" lyrics="private lyrics" />);
+
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    // The build carries words; this model cannot sing them. Two facts, and the
+    // root feature answers only one.
+    expect(screen.getByLabelText(/instrumental only/i)).toBeDisabled();
+  });
+
+  it('drops lyrics from a lyric-capable remote render when instrumental-only is chosen', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    api.getInstances.mockResolvedValue({ peers: [lyricCapablePeer({ acceptsLyrics: true })] });
+    api.generateMusic.mockResolvedValue({ track: { id: 'track-1' } });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" lyrics="private lyrics" />);
+
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    fireEvent.click(screen.getByLabelText(/instrumental only/i));
+    fireEvent.click(screen.getByRole('button', { name: /^generate$/i }));
+
+    // The field still rides along so the track record keeps the authored words;
+    // `instrumentalOnly` is what the server reads to drop the conditioning.
+    await waitFor(() => expect(api.generateMusic).toHaveBeenCalledWith(expect.objectContaining({
+      instrumentalOnly: true,
+    }), { silent: true }));
+  });
+
+  // The usable branch has no remedy text behind it, so without an assertion
+  // here collapsing it back to `help || 'requires a ready peer'` would print
+  // the not-ready sentence beside an enabled button and still ship green.
+  it('reports a usable peer’s queue, and says it is ready when there is nothing to report', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    const peer = (queue) => ({
+      id: 'peer-example',
+      name: 'Example GPU',
+      status: 'online',
+      enabled: true,
+      mediaProvider: { enabled: true, audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }] },
+      mediaProviderStatus: {
+        state: 'ready',
+        checkedAt: new Date().toISOString(),
+        freshUntil: new Date(Date.now() + 60_000).toISOString(),
+        // The peer has to be advertising the allowlisted model for this to be
+        // the USABLE branch at all: an allowlist the peer answers with nothing
+        // is its own blocked state, and it now says so here instead of printing
+        // a queue reading beside a disabled button.
+        snapshot: {
+          queue,
+          capabilities: [{
+            kind: 'audio', engine: 'minimax-music3', engineName: 'MiniMax Music 3', modelId: 'minimax-music3',
+            modelName: 'MiniMax Music 3', ready: true, autoDuration: false, lyrics: true,
+            minDurationSec: 10, maxDurationSec: 300, defaultDurationSec: 60,
+          }],
+        },
+      },
+    });
+
+    api.getInstances.mockResolvedValue({
+      peers: [peer({ accepting: true, running: 0, queued: 0, totalActive: 1, maxQueuedJobs: 4 })],
+    });
+    const { unmount } = render(<MusicGenPanel track={{ id: 'track-1' }} prompt="p" />);
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    expect(screen.getByText(/1\/4 shared slots active/)).toBeInTheDocument();
+    unmount();
+
+    // Same peer, but a queue block with no reportable counts at all.
+    api.getInstances.mockResolvedValue({ peers: [peer({ accepting: true })] });
+    render(<MusicGenPanel track={{ id: 'track-2' }} prompt="p" />);
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    expect(screen.getByText('Peer is ready.')).toBeInTheDocument();
+  });
+
+  // `state` is the provider's verdict on its own surface, so a peer switched off
+  // inside its freshness window still reads `ready`. Showing its queue there
+  // suppressed the one line explaining why Generate was disabled.
+  it('explains a switched-off peer instead of showing its last queue reading', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    api.getInstances.mockResolvedValue({
+      peers: [{
+        id: 'peer-example',
+        name: 'Example GPU',
+        status: 'online',
+        enabled: false,
+        mediaProvider: { enabled: true, audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }] },
+        mediaProviderStatus: {
+          state: 'ready',
+          checkedAt: new Date().toISOString(),
+          freshUntil: new Date(Date.now() + 60_000).toISOString(),
+          snapshot: {
+            queue: { accepting: true, running: 0, queued: 0, totalActive: 0, maxQueuedJobs: 4 },
+            capabilities: [{
+              kind: 'audio', engine: 'minimax-music3', engineName: 'MiniMax Music 3', modelId: 'minimax-music3',
+              modelName: 'MiniMax Music 3', ready: true, autoDuration: false, lyrics: true,
+              minDurationSec: 10, maxDurationSec: 300, defaultDurationSec: 60,
+            }],
+          },
+        },
+      }],
+    });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" />);
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+
+    expect(screen.getByRole('button', { name: /^generate$/i })).toBeDisabled();
+    expect(screen.getByText(/peer connection is switched off/i)).toBeInTheDocument();
+    expect(screen.queryByText(/shared slots active/i)).not.toBeInTheDocument();
+  });
+
+  // The dropdown, the caption and the button all describe the same peer. A
+  // switched-off peer keeps a stored `state: 'ready'` for as long as its
+  // snapshot stays fresh, so gating the suffix on `state` would list it with no
+  // suffix — reading as ready — beside a caption saying it is switched off.
+  it('marks a switched-off peer in the target dropdown, not just in the caption', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    api.getInstances.mockResolvedValue({
+      peers: [{
+        id: 'peer-example',
+        name: 'Example GPU',
+        status: 'online',
+        enabled: false,
+        mediaProvider: { enabled: true, audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }] },
+        mediaProviderStatus: {
+          state: 'ready',
+          checkedAt: new Date().toISOString(),
+          freshUntil: new Date(Date.now() + 60_000).toISOString(),
+          snapshot: { queue: { accepting: true, running: 0, queued: 0, totalActive: 0, maxQueuedJobs: 4 }, capabilities: [] },
+        },
+      }],
+    });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" />);
+    await screen.findByRole('combobox', { name: /generation target/i });
+    expect(screen.getByRole('option', { name: /Example GPU \(peer disabled\)/ })).toBeInTheDocument();
+  });
+
+  // A capacity window expires on the clock, not on a state change, so between
+  // polls the button can still be enabled against a peer that has gone stale.
+  it('refuses at click time when the window expired since the last render', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    const freshUntil = new Date(Date.now() + 60_000).toISOString();
+    api.getInstances.mockResolvedValue({
+      peers: [{
+        id: 'peer-example',
+        name: 'Example GPU',
+        status: 'online',
+        mediaProvider: { enabled: true, audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }] },
+        mediaProviderStatus: {
+          state: 'ready',
+          checkedAt: new Date().toISOString(),
+          freshUntil,
+          snapshot: {
+            queue: { accepting: true, running: 0, queued: 0 },
+            capabilities: [{
+              kind: 'audio', engine: 'minimax-music3', engineName: 'MiniMax Music 3', modelId: 'minimax-music3',
+              modelName: 'MiniMax Music 3', ready: true, autoDuration: false, lyrics: true,
+              minDurationSec: 10, maxDurationSec: 300, defaultDurationSec: 60,
+            }],
+          },
+        },
+      }],
+    });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" />);
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    const generate = screen.getByRole('button', { name: /^generate$/i });
+    expect(generate).toBeEnabled();
+
+    // The window lapses without anything re-rendering the panel. Advancing the
+    // clock rather than sleeping keeps this instant and load-independent —
+    // `resolvePeerMediaReadiness` reads Date.now(), no timers are involved.
+    const realNow = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(realNow + 120_000);
+    fireEvent.click(generate);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/capacity snapshot expired/i)));
+    expect(api.generateMusic).not.toHaveBeenCalled();
+  });
+
+  // The stored probe keeps saying `ready` long after the server would refuse
+  // the submission. Leaving Generate enabled beside a caption reading "stale"
+  // just moves the rejection to the server, after the user committed to it.
+  it('blocks generation on a peer whose capacity window has expired', async () => {
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'musicgen', engines: [engine({ ready: true })] });
+    api.getInstances.mockResolvedValue({
+      peers: [{
+        id: 'peer-example',
+        name: 'Example GPU',
+        status: 'online',
+        mediaProvider: { enabled: true, audioModels: [{ engine: 'minimax-music3', modelId: 'minimax-music3' }] },
+        mediaProviderStatus: {
+          state: 'ready',
+          checkedAt: new Date(Date.now() - 120_000).toISOString(),
+          freshUntil: new Date(Date.now() - 60_000).toISOString(),
+          snapshot: {
+            queue: { accepting: true, running: 0, queued: 0 },
+            capabilities: [{
+              kind: 'audio', engine: 'minimax-music3', engineName: 'MiniMax Music 3', modelId: 'minimax-music3',
+              modelName: 'MiniMax Music 3', ready: true, autoDuration: false, lyrics: true,
+              minDurationSec: 10, maxDurationSec: 300, defaultDurationSec: 60,
+            }],
+          },
+        },
+      }],
+    });
+
+    render(<MusicGenPanel track={{ id: 'track-1' }} prompt="private prompt" />);
+
+    fireEvent.change(await screen.findByRole('combobox', { name: /generation target/i }), { target: { value: 'peer-example' } });
+    expect(screen.getByRole('button', { name: /^generate$/i })).toBeDisabled();
+    expect(screen.getByText(/capacity snapshot expired/i)).toBeInTheDocument();
   });
 
   it('can render instrumentally without conditioning on or clearing the track lyrics', async () => {
@@ -603,6 +889,48 @@ describe('MusicGenPanel', () => {
       { engine: 'minimax-music3-mlx', repo: 'mlx-community/MiniMax-Music3-bf16' },
       expect.any(Function),
     ));
+  });
+
+  // Switching engine and immediately picking one of the NEW engine's snapshots
+  // is the closest this harness gets to the interleaving that failed on CI
+  // (#4819): the engine-defaults effect is queued holding the OLD engine's
+  // model id, which is absent from the new list, so a drain that ran after the
+  // pick would reset it. `act()` drains between the two discrete events, so
+  // this passes either way — it is here for the end-to-end behaviour (the pick
+  // survives an engine switch and every selected-snapshot gate follows it), NOT
+  // as the guard for the stale-closure reset. That guard has to read the source,
+  // and lives in musicGenModelSelection.guard.test.js.
+  it('follows a model picked right after an engine switch', async () => {
+    const alpha = engine({
+      id: 'alpha', name: 'Alpha', ready: true, customModels: false,
+      models: [{ id: 'alpha-1', name: 'Alpha One' }],
+      defaultModelId: 'alpha-1',
+    });
+    const beta = engine({
+      id: 'beta', name: 'Beta', ready: true, runtimeReady: true, customModels: false,
+      fixedModelInstall: true, modelReady: true,
+      modelReadyById: { 'beta-1': true, 'beta-2': false },
+      modelSizeGbById: { 'beta-1': 14, 'beta-2': 29 },
+      models: [{ id: 'beta-1', name: 'Beta One' }, { id: 'beta-2', name: 'Beta Two' }],
+      defaultModelId: 'beta-1',
+    });
+    api.listMusicEngines.mockResolvedValue({ defaultEngine: 'alpha', engines: [alpha, beta] });
+
+    render(<MusicGenPanel prompt="cinematic score" lyrics="" />);
+    const engineSelect = await screen.findByRole('combobox', { name: /engine/i });
+
+    await act(async () => {
+      // Commit 1: engine becomes Beta while modelId is still 'alpha-1', queuing
+      // the defaults effect with that stale id.
+      fireEvent.change(engineSelect, { target: { value: 'beta' } });
+      // Commit 2: the user picks Beta's un-installed snapshot before the drain.
+      fireEvent.change(screen.getByRole('combobox', { name: /model/i }), { target: { value: 'beta-2' } });
+    });
+
+    expect(screen.getByRole('combobox', { name: /model/i })).toHaveValue('beta-2');
+    expect(screen.getByText(/selected model weights are not installed yet/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /download model weights \(~29 GB\)/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /generate track/i })).toBeDisabled();
   });
 
   it('shows honest elapsed GPU feedback while MiniMax generation is running', async () => {

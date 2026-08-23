@@ -10,6 +10,9 @@
  */
 import { z } from 'zod';
 import { PORTS } from './ports.js';
+import { ASSESSABLE_RUNTIMES } from './localProviderRuntime.js';
+import { SWEEP_SCOPES } from './localModelAssessment.js';
+import { CAPABILITY_TEST_IDS } from './modelCapabilityTests.js';
 
 // OpenWorld snapshot pipeline (issue #877): how often to capture a city-state
 // frame and how many to retain. Validated as a settings slice on PUT /api/settings;
@@ -162,15 +165,72 @@ export const localLlmMigrateSchema = z.object({
 });
 export const localLlmInstallBackendSchema = z.object({ backend: localLlmBackendSchema });
 export const localLlmOllamaServiceSchema = z.object({ action: z.enum(['start', 'stop', 'enable', 'disable']) });
+// LM Studio's own server has no enable/disable equivalent (the app owns its
+// launch-at-login), so this is start/stop only — deliberately NOT reusing the
+// Ollama schema, which would accept two actions `lms` cannot perform.
+export const localLlmLmStudioServiceSchema = z.object({ action: z.enum(['start', 'stop']) });
+// MTPLX launch. Every field is optional: with none of them PortOS serves the
+// checkpoint already in MTPLX's cache on the port the shipped provider presets
+// point at. `model` is a Hugging Face repo id, which lands in the launch argv.
+export const localLlmMtplxStartSchema = z.object({
+  port: z.coerce.number().int().min(1).max(65535).optional(),
+  // No `host`: MTPLX is a loopback daemon and the manager never puts one on the
+  // launch line, so accepting one would only record an endpoint it isn't bound to.
+  model: z.string().trim().max(200).regex(
+    /^$|^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/,
+    'model must be a Hugging Face repo id',
+  ).optional().nullable(),
+});
+// MTPLX model catalog. `mtplx forge discover` is upstream's own index of
+// MTPLX-branded MTP checkpoints; an empty query means its default listing.
+export const localLlmMtplxSearchSchema = z.object({
+  query: z.string().trim().max(200).optional().default(''),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(24),
+  offset: z.coerce.number().int().min(0).max(10000).optional().default(0),
+});
+// A checkpoint download. `model` omitted means MTPLX's own verified default —
+// the same one the provider-readiness checklist pulls — so the two surfaces
+// cannot fetch different weights. A named model must be a Hugging Face repo id.
+const mtplxRepoIdSchema = z.string().trim().min(1).max(200).regex(
+  /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/,
+  'model must be a Hugging Face repo id (owner/name)',
+);
+export const localLlmMtplxPullSchema = z.object({
+  model: mtplxRepoIdSchema.optional().nullable(),
+});
+// Removal always names a checkpoint — there is no "remove whatever is cached".
+export const localLlmMtplxRemoveSchema = z.object({ model: mtplxRepoIdSchema });
 export const localLlmLlamaServerStartSchema = z.object({
   model: z.string().trim().min(1).max(500),
   draftModel: z.string().trim().max(500).optional().nullable(),
-  specType: z.string().trim().max(100).optional().default('draft-dflash'),
+  // A comma-separated list of llama.cpp `--spec-type` implementations
+  // (`ngram-map-k`, `draft-dflash,ngram-map-k`). Free vocabulary on purpose —
+  // fork builds ship their own — but shaped, since it lands in the launch argv.
+  // Empty is allowed and means "no speculative decoding".
+  specType: z.string().trim().max(100).regex(
+    /^$|^[A-Za-z0-9._-]+(?:\s*,\s*[A-Za-z0-9._-]+)*$/,
+    'specType must be a comma-separated list of llama.cpp spec-type names',
+  ).optional().default('draft-dflash'),
   port: z.coerce.number().int().min(1).max(65535).optional().default(PORTS.LLAMA_SERVER),
   host: z.string().trim().max(100).optional().default('127.0.0.1'),
   ctxSize: z.coerce.number().int().min(512).max(1048576).optional().default(32768),
   nGpuLayers: z.coerce.number().int().min(0).max(999).optional().default(99),
   alias: z.string().trim().max(100).optional().default('dflash'),
+  // PortOS-opinionated, unlike the tuning flags below: llama-server's own
+  // default is often 4 slots, which divides `--ctx-size` and spends VRAM on
+  // unused batch buffers. A TUI agent is one long session, so 1 is the pin.
+  parallel: z.coerce.number().int().min(1).max(16).optional().default(1),
+  // Tuning flags. Every one defaults to null = NOT SET, so the flag is left off
+  // the launch line and llama.cpp applies its own default — a numeric default
+  // here would silently pin a value the user never chose. Ranges mirror
+  // `lib/localModelTuning.js`; keep them in lockstep.
+  batchSize: z.coerce.number().int().min(1).max(8192).optional().nullable().default(null),
+  ubatchSize: z.coerce.number().int().min(1).max(8192).optional().nullable().default(null),
+  threads: z.coerce.number().int().min(1).max(256).optional().nullable().default(null),
+  flashAttn: z.boolean().optional().default(false),
+  cacheTypeK: z.enum(['f16', 'q8_0', 'q4_0']).optional().nullable().default(null),
+  cacheTypeV: z.enum(['f16', 'q8_0', 'q4_0']).optional().nullable().default(null),
+  draftMax: z.coerce.number().int().min(0).max(64).optional().nullable().default(null),
 });
 // Speculative-decoding weight download: which curated preset, and which half of
 // the pair. Both are enum-ish server-owned ids — no path or repo ever arrives
@@ -196,19 +256,91 @@ export const localLlmTestSchema = localLlmPlaygroundOptionsSchema.extend({
   modelId: localLlmModelIdSchema,
   prompt: z.string().trim().min(1).max(50000),
 });
+// Assessments reach EVERY local runtime PortOS can talk to, not just the two it
+// installs models for — llama.cpp, MTPLX, and vLLM are bare OpenAI-compatible
+// daemons with no PortOS-side catalog. `localLlmBackendSchema` stays narrow
+// because install/delete/migrate genuinely only work on the managed pair.
+export const localLlmRuntimeSchema = z.enum(ASSESSABLE_RUNTIMES);
+// Tuning knobs are validated for SHAPE only (a flat map of scalars). Which keys
+// a runtime accepts, and their ranges, live in `lib/localModelTuning.js` — one
+// catalog, applied by `normalizeTuning`, rather than a Zod copy that would drift
+// from it. Unknown keys are dropped there, so a bogus key cannot reach a launch
+// line.
+export const localLlmTuningSchema = z.record(
+  z.string().max(64),
+  z.union([z.number(), z.boolean(), z.string().max(64)])
+).optional();
 // Measured local-model assessment (server/services/localModelAssessments.js). One
 // request runs ONE model across up to 5 nominal context sizes; the cap keeps a
 // single user click from turning into an unbounded, minutes-long provider job.
 // 131072 is the largest context any shipped local model advertises.
 export const localLlmAssessmentRunSchema = z.object({
-  backend: localLlmBackendSchema,
+  backend: localLlmRuntimeSchema,
   modelId: localLlmModelIdSchema,
   contextTokens: z.array(z.coerce.number().int().min(64).max(131072)).min(1).max(5).optional(),
+  tuning: localLlmTuningSchema,
+});
+// "Measure everything" — one request, one server-side queue, hours of provider
+// work. The scope decides WHICH models (see `selectSweepTargets`); the target
+// list itself is derived server-side rather than sent, so a client can't ask for
+// an arbitrary batch of models.
+// A TUNING sweep names one model and sets `tunings: true`; the grid itself is
+// derived server-side (`tuningGridFor`) rather than sent, for the same reason
+// the model list is — a client must not be able to ask for an arbitrary batch of
+// provider calls. There is deliberately no wire knob for the grid SIZE either:
+// the consent gate names its count from the report's grid, so a request that
+// could shrink the grid would run a different number than the one the user
+// agreed to.
+export const localLlmAssessmentSweepSchema = z.object({
+  scope: z.enum(SWEEP_SCOPES).optional().default('unmeasured'),
+  contextTokens: z.array(z.coerce.number().int().min(64).max(131072)).min(1).max(5).optional(),
+  backend: localLlmRuntimeSchema.optional(),
+  modelId: localLlmModelIdSchema.optional(),
+  tunings: z.boolean().optional().default(false),
+}).refine((v) => Boolean(v.backend) === Boolean(v.modelId), {
+  // Half a model reference would silently fall back to the scope and measure
+  // every installed model — hours of work nobody asked for.
+  message: 'backend and modelId must be given together',
+  path: ['modelId'],
 });
 export const localLlmAssessmentIntentSchema = z.object({
   intent: z.enum(['balanced', 'smartest', 'fastest', 'lightweight']).optional().default('balanced'),
 });
-export const localLlmAssessmentDeleteSchema = localLlmInstallSchema;
+// One explicit local-TUI task through each configured Qwen runtime preset. The
+// service still restricts the model id and provider to the named target for that
+// backend, so this endpoint cannot become an arbitrary CLI launcher.
+export const localLlmAgentBenchmarkSchema = z.object({
+  backend: z.enum(['ollama', 'ollama-coder', 'mtplx', 'llama', 'claude-ollama']),
+  modelId: localLlmModelIdSchema,
+  timeoutMs: z.coerce.number().int().min(10000).max(600000).optional().default(600000),
+});
+// `tuningKey` identifies WHICH measurement of a model to drop — several can now
+// coexist, one per tuning. Absent/'' targets the backend-defaults record, which
+// is exactly what a pre-tuning client sends.
+export const localLlmAssessmentDeleteSchema = z.object({
+  backend: localLlmRuntimeSchema,
+  modelId: localLlmModelIdSchema,
+  tuningKey: z.string().max(500).optional().default(''),
+});
+
+// Capability tests (server/services/modelCapabilityTests.js). One request runs
+// ONE test against ONE model — deliberately not a batch. A capability run is a
+// manual act with a consent gate in front of it, and an endpoint that could
+// accept a list of models would turn one click into an unbounded, hours-long
+// sequence of provider calls the gate never named.
+//
+// `testId` is validated against the shipped catalog rather than as free text:
+// the id selects which runner executes, so an unknown one must be a 400 at the
+// edge, not a lookup miss deep in the service.
+export const localLlmCapabilityTestSchema = z.object({
+  backend: localLlmRuntimeSchema,
+  modelId: localLlmModelIdSchema,
+  testId: z.enum(CAPABILITY_TEST_IDS),
+});
+// Run, read-one and delete all name exactly one model+test pairing, so they
+// share a schema rather than three copies that could drift apart.
+export const localLlmCapabilityTestRunSchema = localLlmCapabilityTestSchema;
+export const localLlmCapabilityTestDeleteSchema = localLlmCapabilityTestSchema;
 
 export const localLlmCompareSchema = z.object({
   mode: z.enum(['round-robin', 'parallel']).optional().default('round-robin'),

@@ -287,7 +287,7 @@ export function isFreeModelId(model) {
 
 /**
  * True when a provider's usage is free — local inference (Ollama, LM Studio,
- * any Ollama-/MTPLX-backed CLI wrapper, or an API provider pointed at localhost).
+ * any Ollama-/MTPLX-/llama-/vLLM-backed CLI wrapper, or an API provider pointed at localhost).
  * Accepts a provider config object or a bare provider-id string (usage records
  * can outlive their provider config).
  * @param {object|string|null|undefined} providerOrId
@@ -297,7 +297,7 @@ export function isFreeProvider(providerOrId) {
   if (providerOrId == null) return false;
   if (typeof providerOrId === 'string') return FREE_ID.test(providerOrId);
   const p = providerOrId;
-  if (p.ollamaBacked === true || p.mtplxBacked === true || p.llamaBacked === true) return true;
+  if (p.ollamaBacked === true || p.mtplxBacked === true || p.llamaBacked === true || p.vllmBacked === true || p.sglangBacked === true) return true;
   if (FREE_ID.test(p.id || '') || FREE_ID.test(p.command || '')) return true;
   if (typeof p.endpoint === 'string' && LOCALHOST_ENDPOINT.test(p.endpoint.trim())) return true;
   return false;

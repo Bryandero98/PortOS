@@ -1,7 +1,18 @@
 // Single source of truth for PortOS navigation. Consumed by
 // server/services/voice/tools.js#ui_navigate and the Cmd+K palette.
-// Entry: { id, path, label, section, aliases?, keywords? }. See CLAUDE.md
-// "Command Palette & Voice Nav" for the contract.
+// Entry: { id, path, label, section, aliases?, keywords?, previousPaths? }.
+// See AGENTS.md "Command Palette & Voice Nav" for the contract.
+//
+// `previousPaths` lists every path this page has ANSWERED TO BEFORE — including
+// its parameterized drill-downs, written with the OLD route's param name (the
+// guard matches the `<Route path>` literally, and a deep link into a detail view
+// is exactly the kind of bookmark that breaks silently). Bookmarks,
+// stale palette history, and links held by other installs all still say the old
+// path, so a move that drops the redirect 404s them — and nothing else notices,
+// because every other guard here only looks at where a route points now. Declare
+// the old path when you move a page and `navManifest.test.js` proves App.jsx
+// still redirects it; the data lives next to the thing that moved, so the next
+// move needs no edit to the test.
 
 import { PORTOS_APP_ID } from './appIdentity.js';
 
@@ -44,39 +55,39 @@ const OPEN_WORLD_REGION_COMMANDS = [
 export const NAV_COMMANDS = [
   { id: 'nav.dashboard', path: '/', label: 'Dashboard', section: 'Main', aliases: ['dashboard', 'home'], keywords: ['overview', 'start'] },
   { id: 'nav.review-hub', path: '/review', label: 'Review Hub', section: 'Main', aliases: ['review', 'review-hub'] },
-  { id: 'nav.cybercity', path: '/openworld', label: 'OpenWorld', section: 'Main', aliases: ['openworld', 'open world', 'open-world', 'city'], keywords: ['3d', 'visualization', 'game', 'map', 'explore'] },
+  { id: 'nav.cybercity', path: '/openworld', label: 'OpenWorld', section: 'Main', previousPaths: ['/city'], aliases: ['openworld', 'open world', 'open-world', 'city'], keywords: ['3d', 'visualization', 'game', 'map', 'explore'] },
   { id: 'nav.cybercity.settings', path: '/openworld/settings', label: 'OpenWorld Settings', section: 'Main', aliases: ['openworld settings', 'open world settings', 'world settings', 'city settings', 'city-settings', 'openworld-config'], keywords: ['openworld', 'settings', '3d', 'configure', 'world style', 'low poly'] },
   ...OPEN_WORLD_REGION_COMMANDS,
   { id: 'nav.apps', path: '/apps', label: 'Apps', section: 'Main', aliases: ['apps'] },
   // Submodules are per-app (a tab on the app detail page), so this entry is
   // explicitly PortOS's own — the only repo whose app id is a fixed constant.
   // Every other app reaches its tab from /apps/<id>/submodules.
-  { id: 'nav.apps.submodules', path: `/apps/${PORTOS_APP_ID}/submodules`, label: 'PortOS Submodules', section: 'Apps', aliases: ['submodules', 'devtools-submodules', 'portos-submodules'], keywords: ['git', 'slashdo', 'vendored', 'update submodule'] },
+  { id: 'nav.apps.submodules', path: `/apps/${PORTOS_APP_ID}/submodules`, label: 'PortOS Submodules', section: 'Apps', previousPaths: ['/devtools/submodules'], aliases: ['submodules', 'devtools-submodules', 'portos-submodules'], keywords: ['git', 'slashdo', 'vendored', 'update submodule'] },
   { id: 'nav.templates', path: '/templates', label: 'Templates', section: 'Main', aliases: ['templates', 'app-templates'], keywords: ['app template', 'create app', 'pre-configured', 'starter'] },
 
   { id: 'nav.catalog', path: '/catalog', label: 'Catalog', section: 'Create', aliases: ['catalog', 'ingredients', 'cast', 'creative-catalog'], keywords: ['character', 'place', 'object', 'idea', 'scene', 'concept', 'inventory', 'reference', 'creative'] },
   { id: 'nav.catalog.ingest', path: '/catalog/ingest', label: 'Catalog Ingest', section: 'Create', aliases: ['catalog-ingest', 'ingest', 'paste-scrap', 'extract-ingredients'], keywords: ['paste', 'snippet', 'scene', 'idea', 'extract', 'scrap', 'import-catalog'] },
   { id: 'nav.media', path: '/media/image', label: 'Media Gen', section: 'Create', aliases: ['media', 'media-gen', 'mediagen', 'generate'], keywords: ['image', 'video', 'render', 'art', 'movie'] },
-  { id: 'nav.media.image', path: '/media/image', label: 'Image', section: 'Create', aliases: ['image-gen', 'imagegen', 'generate-image', 'sd', 'stable-diffusion'], keywords: ['stable diffusion', 'render', 'art', 'picture', 'photo', 'draw', 'flux', 'mflux'] },
-  { id: 'nav.media.video', path: '/media/video', label: 'Video', section: 'Create', aliases: ['video-gen', 'videogen', 'generate-video', 'ltx'], keywords: ['video', 'animate', 'movie', 'clip', 'ltx'] },
-  { id: 'nav.media.history', path: '/media/history', label: 'Media History', section: 'Create', aliases: ['media-history', 'video-history'], keywords: ['videos', 'gallery', 'stitch'] },
-  { id: 'nav.media.annotate', path: '/media/annotate', label: 'Annotate', section: 'Create', aliases: ['annotate', 'media-annotate', 'sketch', 'draw-over', 'markup'], keywords: ['annotation', 'sketch', 'draw', 'markup', 'scribble', 'label', 'canvas', 'overlay', 'stroke'] },
+  { id: 'nav.media.image', path: '/media/image', label: 'Image', section: 'Create', previousPaths: ['/image-gen'], aliases: ['image-gen', 'imagegen', 'generate-image', 'sd', 'stable-diffusion'], keywords: ['stable diffusion', 'render', 'art', 'picture', 'photo', 'draw', 'flux', 'mflux'] },
+  { id: 'nav.media.video', path: '/media/video', label: 'Video', section: 'Create', previousPaths: ['/video-gen'], aliases: ['video-gen', 'videogen', 'generate-video', 'ltx'], keywords: ['video', 'animate', 'movie', 'clip', 'ltx'] },
+  { id: 'nav.media.history', path: '/media/history', label: 'Media History', section: 'Create', previousPaths: ['/media-history'], aliases: ['media-history', 'video-history'], keywords: ['videos', 'gallery', 'stitch'] },
+  { id: 'nav.media.annotate', path: '/media/annotate', label: 'Annotate', section: 'Create', previousPaths: ['/annotate', '/annotate/:mediaKey'], aliases: ['annotate', 'media-annotate', 'sketch', 'draw-over', 'markup'], keywords: ['annotation', 'sketch', 'draw', 'markup', 'scribble', 'label', 'canvas', 'overlay', 'stroke'] },
   { id: 'nav.media.collections', path: '/media/collections', label: 'Collections', section: 'Create', aliases: ['collections', 'media-collections', 'stacks', 'projects'], keywords: ['bucket', 'group', 'project', 'album', 'organize'] },
-  { id: 'nav.create.creative-director', path: '/creative-director', label: 'Creative Director', section: 'Create', aliases: ['creative-director', 'creative', 'director', 'producer', 'orchestrator', 'long-form', 'episode'], keywords: ['story', 'episode', 'narrative', 'agent', 'auto-video', 'long-form', 'directive', 'production plan', 'plan board', 'orchestrator', 'studio', 'producer'] },
+  { id: 'nav.create.creative-director', path: '/creative-director', label: 'Creative Director', section: 'Create', previousPaths: ['/media/creative-director', '/media/creative-director/:id', '/media/creative-director/:id/:tab'], aliases: ['creative-director', 'creative', 'director', 'producer', 'orchestrator', 'long-form', 'episode'], keywords: ['story', 'episode', 'narrative', 'agent', 'auto-video', 'long-form', 'directive', 'production plan', 'plan board', 'orchestrator', 'studio', 'producer'] },
   { id: 'nav.create.creative-commission', path: '/creative-commission', label: 'Creative Commissions', section: 'Create', aliases: ['creative-commission', 'commissions', 'commission', 'creation-engine', 'autonomous-creation', 'standing-brief', 'recurring-brief'], keywords: ['schedule', 'recurring', 'nightly', 'brief', 'autonomous', 'creation engine', 'cron', 'feedback', 'taste', 'standing commission', 'auto-generate'] },
+  { id: 'nav.create.fableloom', path: '/fableloom', label: 'FableLoom', section: 'Create', aliases: ['fableloom', 'fable-loom', 'loom', 'branching-narrative', 'interactive-story', 'branching-story'], keywords: ['branching', 'interactive', 'narrative', 'intent', 'endings', 'reader', 'scene', 'node', 'graph', 'nonlinear', 'play', 'story graph'] },
   { id: 'nav.create.game', path: '/game', label: 'Game', section: 'Create', aliases: ['game', 'games', 'game-studio'], keywords: ['managed app', 'sprite', 'atlas', 'music', 'asset bundle', 'manifest', 'feedback'] },
-  { id: 'nav.create.music-video', path: '/music-video', label: 'Music Video', section: 'Create', aliases: ['music-video', 'musicvideo', 'music video', 'mv', 'sync-to-beat'], keywords: ['music', 'beat', 'sync', 'audio-reactive', 'director', 'scene board', 'tempo', 'choreography'] },
+  { id: 'nav.create.music-video', path: '/music-video', label: 'Music Video', section: 'Create', previousPaths: ['/media/music-video', '/media/music-video/:projectId'], aliases: ['music-video', 'musicvideo', 'music video', 'mv', 'sync-to-beat'], keywords: ['music', 'beat', 'sync', 'audio-reactive', 'director', 'scene board', 'tempo', 'choreography'] },
   { id: 'nav.create.mood-boards', path: '/mood-boards', label: 'Mood Boards', section: 'Create', aliases: ['mood-boards', 'mood-board', 'moodboard', 'mood', 'inspiration', 'references'], keywords: ['inspiration', 'reference', 'pin', 'visual', 'canvas', 'collect', 'pinboard', 'palette', 'ideas'] },
   // Promoted out of the Media Gen tabs to a top-level Create page (#2930).
   // The id stays `nav.media.sprites` — it's opaque and stored in palette
   // history, so renaming it would orphan those entries.
-  { id: 'nav.media.sprites', path: '/sprites', label: 'Sprites', section: 'Create', aliases: ['sprites', 'sprite', 'sprite-manager', 'sprite-sheets'], keywords: ['sprite sheet', 'atlas', 'game art', 'pixel art', 'character animation', 'walk cycle', 'anchors'] },
+  { id: 'nav.media.sprites', path: '/sprites', label: 'Sprites', section: 'Create', previousPaths: ['/media/sprites', '/media/sprites/:id'], aliases: ['sprites', 'sprite', 'sprite-manager', 'sprite-sheets'], keywords: ['sprite sheet', 'atlas', 'game art', 'pixel art', 'character animation', 'walk cycle', 'anchors'] },
   { id: 'nav.media.timeline', path: '/media/timeline', label: 'Timeline', section: 'Create', aliases: ['timeline', 'video-timeline', 'editor'], keywords: ['edit', 'trim', 'composite', 'stitch', 'cut', 'compose'] },
-  { id: 'nav.media.models', path: '/media/models', label: 'Media Models', section: 'Create', aliases: ['media-models', 'image-models', 'video-models', 'huggingface'], keywords: ['hf cache', 'model storage', 'disk', 'add model', 'install model', 'custom model'] },
   { id: 'nav.media.threejs', path: '/media/threejs', label: 'Three.js Models', section: 'Create', aliases: ['threejs', 'three-js', '3d-models', 'image-to-3d', 'img2threejs'], keywords: ['procedural', '3d', 'mesh', 'model', 'gallery', 'webgl', 'preview'] },
-  { id: 'nav.create.3d', path: '/3d', label: '3D', section: 'Create', aliases: ['3d', 'image-to-mesh', 'mesh', 'trellis', 'pixal3d', 'neural-3d'], keywords: ['trellis', 'pixal3d', 'pixal', 'glb', 'mesh', 'photogrammetry', 'neural', 'image to 3d', 'install', 'model', 'pbr'] },
+  { id: 'nav.create.3d', path: '/3d', label: '3D', section: 'Create', previousPaths: ['/media/3d', '/media/3d/:id'], aliases: ['3d', 'image-to-mesh', 'mesh', 'trellis', 'pixal3d', 'neural-3d'], keywords: ['trellis', 'pixal3d', 'pixal', 'glb', 'mesh', 'photogrammetry', 'neural', 'image to 3d', 'render', 'generate', 'pbr'] },
   { id: 'nav.create.authors', path: '/authors', label: 'Authors', section: 'Create', aliases: ['authors', 'author', 'byline', 'author-persona', 'writer-persona'], keywords: ['author', 'byline', 'pen name', 'persona', 'writing style', 'bio', 'headshot', 'cover', 'book author'] },
-  { id: 'nav.create.universe-builder', path: '/universes', label: 'Universes', section: 'Create', aliases: ['universes', 'universe', 'universe-builder', 'worldbuilder', 'worldbuild', 'world', 'lore', 'universe-canon', 'canon'], keywords: ['style template', 'sci-fi', 'fantasy', 'concept art', 'batch render', 'variations', 'characters', 'settings', 'objects', 'canon entries', 'list', 'manage'] },
+  { id: 'nav.create.universe-builder', path: '/universes', label: 'Universes', section: 'Create', previousPaths: ['/media/universe-builder', '/media/universe-builder/:universeId', '/universe-builder', '/universe-builder/:universeId'], aliases: ['universes', 'universe', 'universe-builder', 'worldbuilder', 'worldbuild', 'world', 'lore', 'universe-canon', 'canon'], keywords: ['style template', 'sci-fi', 'fantasy', 'concept art', 'batch render', 'variations', 'characters', 'settings', 'objects', 'canon entries', 'list', 'manage'] },
   { id: 'nav.create.importer', path: '/importer', label: 'Importer', section: 'Create', aliases: ['importer', 'import'], keywords: ['paste', 'screenplay', 'novel', 'short story', 'comic script', 'analyze', 'reverse-engineer', 'extract'] },
   { id: 'nav.create.pipeline', path: '/pipeline', label: 'Series Pipeline', section: 'Create', aliases: ['series', 'pipeline', 'production', 'series-pipeline', 'production-pipeline'], keywords: ['series', 'issue', 'episode', 'comic', 'script', 'prose', 'storyboard', 'narrative', 'workflow'] },
   { id: 'nav.create.pipeline.editorial-checks', path: '/pipeline/editorial-checks', label: 'Editorial Checks', section: 'Create', aliases: ['editorial-checks', 'editorial', 'checks', 'editorial-review', 'content-checks', 'manuscript-checks'], keywords: ['editorial', 'check', 'review', 'naming', 'exposition', 'info-dumping', 'continuity', 'quality', 'lint', 'triage', 'findings', 'deterministic', 'llm'] },
@@ -95,8 +106,6 @@ export const NAV_COMMANDS = [
   { id: 'nav.create.music-albums', path: '/music/albums', label: 'Music Albums', section: 'Create', aliases: ['albums', 'album', 'music-albums', 'discography', 'lp', 'ep'], keywords: ['album', 'cover art', 'tracklist', 'release', 'discography', 'record'] },
   { id: 'nav.create.music-tracks', path: '/music/tracks', label: 'Music Tracks', section: 'Create', aliases: ['tracks', 'track', 'music-tracks', 'singles', 'songs-audio'], keywords: ['track', 'single', 'audio', 'recording', 'lyrics', 'mp3', 'wav', 'generate track'] },
   { id: 'nav.create.sharing-conflicts', path: '/sharing/conflicts', label: 'Conflicts', section: 'Create', aliases: ['conflicts', 'sync-conflicts', 'edit-conflicts', 'conflict-journal'], keywords: ['conflict', 'overwrite', 'lost edit', 'restore', 'merge fields', 'last write wins', 'diverged', 'recover'] },
-  { id: 'nav.media.loras', path: '/media/loras', label: 'LoRAs', section: 'Create', aliases: ['loras', 'lora', 'lora-manager', 'civitai'], keywords: ['lora', 'civitai', 'fine-tune', 'style adapter', 'realstagram', 'photoreal', 'flux lora'] },
-  { id: 'nav.media.training', path: '/media/training', label: 'LoRA Training', section: 'Create', aliases: ['training', 'lora-training', 'train-lora', 'datasets', 'character-lora'], keywords: ['fine-tune', 'dataset', 'caption', 'dreambooth', 'character consistency', 'train', 'flux lora'] },
   { id: 'nav.media.settings', path: '/media/image?settings=1', label: 'Media Gen Settings', section: 'Create', aliases: ['media-settings', 'image-gen-settings', 'sd-settings', 'video-gen-settings'] },
   { id: 'nav.writers-room', path: '/writers-room', label: 'Writers Room', section: 'Create', aliases: ['writers-room', 'writersroom', 'writer', 'write', 'studio', 'novel'], keywords: ['prose', 'screenplay', 'story', 'draft', 'manuscript', 'literary', 'novel', 'short story'] },
   { id: 'nav.writers-room.guide', path: '/writers-room/guide', label: 'Writers Room Guide', section: 'Create', aliases: ['writers-room-guide', 'writing-guide', 'writing-rules', 'word-count', 'length-targets'], keywords: ['microfiction', 'flash fiction', 'short story', 'novelette', 'novella', 'novel length', 'word count', 'character count', 'book length', 'craft', 'writing advice', 'emotional roadmap', 'documentation', 'help'] },
@@ -137,7 +146,7 @@ export const NAV_COMMANDS = [
   { id: 'nav.cos.health', path: '/cos/health', label: 'Health', section: 'Chief of Staff', aliases: ['cos-health', 'health'] },
   { id: 'nav.cos.learning', path: '/cos/learning', label: 'Learning', section: 'Chief of Staff', aliases: ['cos-learning'] },
   { id: 'nav.cos.memory', path: '/cos/memory', label: 'Memory', section: 'Chief of Staff', aliases: ['cos-memory'] },
-  { id: 'nav.cos.runs', path: '/cos/runs', label: 'Runs', section: 'Chief of Staff', aliases: ['runs', 'ai-runs', 'cos-runs', 'recent-runs', 'run-history'], keywords: ['runs', 'run history', 'recent runs', 'ai runs', 'agent runs', 'failed runs'] },
+  { id: 'nav.cos.runs', path: '/cos/runs', label: 'Runs', section: 'Chief of Staff', previousPaths: ['/devtools/runs'], aliases: ['runs', 'ai-runs', 'cos-runs', 'recent-runs', 'run-history'], keywords: ['runs', 'run history', 'recent runs', 'ai runs', 'agent runs', 'failed runs'] },
   { id: 'nav.cos.run-events', path: '/cos/run-events', label: 'Run Events', section: 'Chief of Staff', aliases: ['run-events', 'cos-run-events', 'run-event-ledger', 'lifecycle-events'], keywords: ['run events', 'lifecycle', 'ledger', 'replay', 'diagnostics', 'orphaned', 'handoff', 'reconnect', 'interrupted', 'why did this run fail'] },
   { id: 'nav.cos.schedule', path: '/cos/schedule', label: 'Schedule', section: 'Chief of Staff', aliases: ['schedule', 'cos-schedule'] },
   { id: 'nav.social-agents', path: '/agents', label: 'Social Agents', section: 'Chief of Staff', aliases: ['social-agents'] },
@@ -149,8 +158,8 @@ export const NAV_COMMANDS = [
 
   { id: 'nav.messages.inbox', path: '/messages/inbox', label: 'Inbox', section: 'Comms', aliases: ['messages', 'comms', 'comms-inbox'], keywords: ['comms', 'email', 'inbox'] },
   { id: 'nav.messages.drafts', path: '/messages/drafts', label: 'Drafts', section: 'Comms', aliases: ['drafts', 'comms-drafts'], keywords: ['comms'] },
-  { id: 'nav.messages.imessage', path: '/messages/imessage', label: 'iMessage', section: 'Comms', aliases: ['imessage', 'i-message', 'apple-messages', 'comms-imessage'], keywords: ['comms', 'imessage', 'sms', 'text messages', 'chat.db', 'blocklist', 'spam'] },
-  { id: 'nav.messages.contacts', path: '/messages/contacts', label: 'Contacts', section: 'Comms', aliases: ['contacts', 'address-book', 'comms-contacts', 'settings-contacts'], keywords: ['comms', 'contacts', 'address book', 'phone', 'email', 'tribe', 'imessage', 'names', 'resolve'] },
+  { id: 'nav.messages.imessage', path: '/messages/imessage', label: 'iMessage', section: 'Comms', previousPaths: ['/imessage'], aliases: ['imessage', 'i-message', 'apple-messages', 'comms-imessage'], keywords: ['comms', 'imessage', 'sms', 'text messages', 'chat.db', 'blocklist', 'spam'] },
+  { id: 'nav.messages.contacts', path: '/messages/contacts', label: 'Contacts', section: 'Comms', previousPaths: ['/settings/contacts'], aliases: ['contacts', 'address-book', 'comms-contacts', 'settings-contacts'], keywords: ['comms', 'contacts', 'address book', 'phone', 'email', 'tribe', 'imessage', 'names', 'resolve'] },
   // Ingestion config is a drawer over the iMessage manager (?settings=1), not a
   // Settings page — the settings-* aliases stay so "open iMessage settings" still lands.
   { id: 'nav.messages.imessage-settings', path: '/messages/imessage?settings=1', label: 'iMessage Settings', section: 'Comms', aliases: ['settings-imessage', 'imessage-settings', 'imessage-sync'], keywords: ['imessage', 'sync', 'chat.db', 'sms', 'texts', 'tribe', 'timeline', 'full disk access'] },
@@ -164,12 +173,12 @@ export const NAV_COMMANDS = [
   { id: 'nav.devtools.agents', path: '/devtools/agents', label: 'AI Agents', section: 'Dev Tools', aliases: ['ai-agents', 'devtools'] },
   { id: 'nav.browser', path: '/browser', label: 'Browser', section: 'Dev Tools', aliases: ['browser'] },
   { id: 'nav.devtools.runner', path: '/devtools/runner', label: 'Code', section: 'Dev Tools', aliases: ['devtools-runner'] },
-  { id: 'nav.devtools.datadog', path: '/devtools/datadog', label: 'DataDog', section: 'Dev Tools', aliases: ['datadog', 'devtools-datadog'] },
+  { id: 'nav.devtools.datadog', path: '/devtools/datadog', label: 'DataDog', section: 'Dev Tools', previousPaths: ['/datadog'], aliases: ['datadog', 'devtools-datadog'] },
   { id: 'nav.devtools.flows', path: '/devtools/flows', label: 'Flows', section: 'Dev Tools', aliases: ['flows', 'integration-flows', 'workflows'], keywords: ['architecture', 'diagram', 'data flow', 'integrations', 'how it works'] },
   { id: 'nav.devtools.github', path: '/devtools/github', label: 'GitHub', section: 'Dev Tools', aliases: ['github', 'devtools-github'] },
   { id: 'nav.devtools.history', path: '/devtools/history', label: 'History', section: 'Dev Tools', aliases: ['devtools-history'] },
   { id: 'nav.devtools.image-clean', path: '/devtools/image-clean', label: 'Image Cleaner', section: 'Dev Tools', aliases: ['image-clean', 'image-cleaner'], keywords: ['metadata', 'c2pa', 'content-credentials', 'sharp', 'denoise'] },
-  { id: 'nav.devtools.jira', path: '/devtools/jira', label: 'JIRA', section: 'Dev Tools', aliases: ['jira', 'devtools-jira'] },
+  { id: 'nav.devtools.jira', path: '/devtools/jira', label: 'JIRA', section: 'Dev Tools', previousPaths: ['/jira'], aliases: ['jira', 'devtools-jira'] },
   { id: 'nav.devtools.jira-reports', path: '/devtools/jira/reports', label: 'JIRA Reports', section: 'Dev Tools', aliases: ['jira-reports'] },
   { id: 'nav.devtools.quota-burn', path: '/devtools/quota-burn', label: 'Quota Burn', section: 'Dev Tools', aliases: ['quota-burn', 'burn-quota', 'quota'], keywords: ['subscription', 'usage', 'reset window', 'spend quota', 'claude', 'codex', 'grok', 'agy', 'burn'] },
   { id: 'nav.shell', path: '/shell', label: 'Shell', section: 'Dev Tools', aliases: ['shell', 'terminal'] },
@@ -232,6 +241,7 @@ export const NAV_COMMANDS = [
 
   { id: 'nav.post.launcher', path: '/post/launcher', label: 'Launcher', section: 'POST', aliases: ['post', 'post-launcher'] },
   { id: 'nav.post.config', path: '/post/config', label: 'Config', section: 'POST', aliases: ['post-config'] },
+  { id: 'nav.post.explore', path: '/post/explore', label: 'Explore', section: 'POST', aliases: ['post-explore', 'practice-library', 'practice library', 'explore-post', 'all-drills', 'all drills', 'browse-practice'], keywords: ['catalog', 'library', 'browse', 'directory', 'what can i practice', 'test types', 'every drill', 'find a drill'] },
   { id: 'nav.post.history', path: '/post/history', label: 'History', section: 'POST', aliases: ['post-history'] },
   { id: 'nav.post.memory', path: '/post/memory', label: 'Memory', section: 'POST', aliases: ['post-memory'] },
   { id: 'nav.post.memory.elements', path: '/post/memory/elements', label: 'Elements', section: 'POST', aliases: ['post-elements', 'elements', 'periodic-table', 'elements-song'], keywords: ['periodic table', 'chemistry', 'symbols', 'flash cards', 'tom lehrer', 'atomic number'] },
@@ -252,8 +262,18 @@ export const NAV_COMMANDS = [
   { id: 'nav.post.morse.length', path: '/post/morse?ref=length', label: 'Morse Length', section: 'POST', aliases: ['morse-length', 'morse length', 'morse-by-length'], keywords: ['cw', 'reference', 'symbol length', 'chart'] },
   { id: 'nav.post.morse.list', path: '/post/morse?ref=list', label: 'Morse List', section: 'POST', aliases: ['morse-list', 'morse list', 'morse-table', 'morse-alphabet'], keywords: ['cw', 'reference', 'alphabet', 'table', 'chart'] },
   { id: 'nav.post.progress', path: '/post/progress', label: 'Progress', section: 'POST', aliases: ['post-progress', 'progress'], keywords: ['trends', 'stats', 'streak', 'dashboard', 'time in training', 'accuracy', 'speed'] },
+  { id: 'nav.post.progress.sessions', path: '/post/progress/sessions', label: 'Progress Sessions', section: 'POST', aliases: ['post-progress-sessions', 'progress-sessions', 'progress sessions', 'session-log'], keywords: ['session list', 'log', 'past runs', 'per-session', 'scores'] },
   { id: 'nav.post.rhetoric', path: '/post/rhetoric', label: 'Rhetoric', section: 'POST', aliases: ['post-rhetoric', 'rhetoric', 'rhetorical practice'], keywords: ['writing', 'brainstorming', 'iambic pentameter', 'diacope', 'chiasmus', 'progressia', 'figures of speech'] },
+  { id: 'nav.post.rhetoric.meter', path: '/post/rhetoric/meter', label: 'Rhetoric Iambic Pentameter', section: 'POST', aliases: ['rhetoric-meter', 'iambic-pentameter', 'iambic pentameter', 'meter'], keywords: ['ten syllables', 'da-dum', 'verse', 'poetry', 'line'] },
+  { id: 'nav.post.rhetoric.diacope', path: '/post/rhetoric/diacope', label: 'Rhetoric Diacope', section: 'POST', aliases: ['rhetoric-diacope', 'diacope'], keywords: ['repetition', 'emphasis', 'figure of speech'] },
+  { id: 'nav.post.rhetoric.chiasmus', path: '/post/rhetoric/chiasmus', label: 'Rhetoric Chiasmus', section: 'POST', aliases: ['rhetoric-chiasmus', 'chiasmus'], keywords: ['reversal', 'mirror', 'crossed', 'figure of speech'] },
+  { id: 'nav.post.rhetoric.progressia', path: '/post/rhetoric/progressia', label: 'Rhetoric Progressia', section: 'POST', aliases: ['rhetoric-progressia', 'progressia'], keywords: ['escalation', 'build', 'climax', 'figure of speech'] },
+  { id: 'nav.post.rhetoric.brainstorm', path: '/post/rhetoric/brainstorm', label: 'Rhetorical Brainstorm', section: 'POST', aliases: ['rhetoric-brainstorm', 'rhetorical brainstorm', 'brainstorm'], keywords: ['angles', 'ideation', 'openings', 'metaphors'] },
   { id: 'nav.post.wordplay', path: '/post/wordplay', label: 'Wordplay', section: 'POST', aliases: ['post-wordplay'] },
+  { id: 'nav.post.wordplay.compound-chain', path: '/post/wordplay/compound-chain', label: 'Compound Chain', section: 'POST', aliases: ['wordplay-compound-chain', 'compound-chain', 'compound chain'], keywords: ['compound words', 'seed word', 'chain'] },
+  { id: 'nav.post.wordplay.bridge-word', path: '/post/wordplay/bridge-word', label: 'Bridge Word', section: 'POST', aliases: ['wordplay-bridge-word', 'bridge-word', 'bridge word'], keywords: ['linking word', 'connector', 'puzzle'] },
+  { id: 'nav.post.wordplay.double-meaning', path: '/post/wordplay/double-meaning', label: 'Double Meaning', section: 'POST', aliases: ['wordplay-double-meaning', 'double-meaning', 'double meaning'], keywords: ['homonym', 'two meanings', 'pun'] },
+  { id: 'nav.post.wordplay.idiom-twist', path: '/post/wordplay/idiom-twist', label: 'Idiom Twist', section: 'POST', aliases: ['wordplay-idiom-twist', 'idiom-twist', 'idiom twist'], keywords: ['idiom', 'phrase', 'twist', 'domain swap'] },
 
   { id: 'nav.settings.ai-assignments', path: '/settings/ai-assignments', label: 'AI Assignments', section: 'Settings', aliases: ['ai-assignments', 'assignments', 'settings-ai-assignments', 'ai-inventory'], keywords: ['provider', 'model', 'pin', 'inventory', 'migration', 'llm'] },
   { id: 'nav.settings.api-access', path: '/settings/api-access', label: 'API Access', section: 'Settings', aliases: ['api-access', 'settings-api-access', 'public-api', 'swagger', 'openapi'], keywords: ['rest', 'external', 'tts api', 'sdapi', 'voice api', 'docs', 'curl', 'expose', 'passwordless', 'auth gating'] },
@@ -262,10 +282,25 @@ export const NAV_COMMANDS = [
   { id: 'nav.settings.catalog', path: '/settings/catalog', label: 'Catalog Types', section: 'Settings', aliases: ['settings-catalog', 'catalog-types'], keywords: ['catalog', 'types', 'character', 'place', 'object', 'taxonomy'] },
   { id: 'nav.settings.code-reviewers', path: '/settings/code-reviewers', label: 'Code Reviewers', section: 'Settings', aliases: ['code-reviewers', 'settings-code-reviewers', 'code-review', 'review-defaults', 'reviewers'], keywords: ['review loop', 'reviewer chain', 'codex', 'copilot', 'ollama', 'stop mode', 'max rounds', 'defaults'] },
   { id: 'nav.settings.database', path: '/settings/database', label: 'Database', section: 'Settings', aliases: ['settings-database', 'database'] },
-  { id: 'nav.settings.embeddings', path: '/settings/embeddings', label: 'Embeddings', section: 'Settings', aliases: ['settings-embeddings', 'embeddings', 'embedding'], keywords: ['vector', 'pgvector', 'semantic search', 'nomic', 'ollama', 'lm studio'] },
   { id: 'nav.settings.general', path: '/settings/general', label: 'General', section: 'Settings', aliases: ['settings', 'settings-general', 'general'] },
-  { id: 'nav.settings.local-llm', path: '/settings/local-llm', label: 'Local LLMs', section: 'Settings', aliases: ['local-llm', 'local-llms', 'ollama', 'lm-studio', 'lmstudio'], keywords: ['ollama', 'lm studio', 'local model', 'local llm', 'gguf', 'pull model', 'install model', 'migrate', 'switch backend'] },
-  { id: 'nav.settings.local-llm-playground', path: '/local-llm/playground', label: 'Local LLM Playground', section: 'Settings', aliases: ['llm-playground', 'playground', 'model-playground', 'compare-models'], keywords: ['ollama', 'lm studio', 'compare', 'benchmark', 'chat', 'test model', 'ttft', 'tokens per second', 'local llm'] },
+  // Local-model management is its own top-level section (#4736), which grew to
+  // cover every KIND of model this install manages (#4728) — image/video
+  // checkpoints, LoRAs and their training datasets, embeddings, and the
+  // image-to-3D runtimes. Several ids keep a `nav.settings.*` / `nav.media.*`
+  // prefix: they are opaque and stored in palette history, so renaming them
+  // would orphan those entries — only the path, label and section move.
+  { id: 'nav.models.3d', path: '/models/3d', label: '3D Runtimes', section: 'Models', aliases: ['3d-runtimes', 'image-to-3d-runtimes', 'trellis-install', 'pixal3d-install'], keywords: ['trellis', 'pixal3d', 'install', 'repair', 'runtime', 'mesh', 'image to 3d', 'on-device'] },
+  { id: 'nav.settings.embeddings', path: '/models/embeddings', label: 'Embeddings', section: 'Models', previousPaths: ['/settings/embeddings'], aliases: ['settings-embeddings', 'embeddings', 'embedding'], keywords: ['vector', 'pgvector', 'semantic search', 'nomic', 'ollama', 'lm studio'] },
+  { id: 'nav.settings.local-llm', path: '/models/llms', label: 'LLMs', section: 'Models', previousPaths: ['/settings/local-llm'], aliases: ['local-llm', 'local-llms', 'llms', 'models-llms', 'ollama', 'lm-studio', 'lmstudio'], keywords: ['ollama', 'lm studio', 'local model', 'local llm', 'gguf', 'pull model', 'install model', 'migrate', 'switch backend', 'llama.cpp'] },
+  { id: 'nav.media.loras', path: '/models/loras', label: 'LoRAs', section: 'Models', previousPaths: ['/media/loras'], aliases: ['loras', 'lora', 'lora-manager', 'civitai'], keywords: ['lora', 'civitai', 'fine-tune', 'style adapter', 'realstagram', 'photoreal', 'flux lora'] },
+  { id: 'nav.media.training', path: '/models/training', label: 'LoRA Training', section: 'Models', previousPaths: ['/media/training', '/media/training/:datasetId'], aliases: ['training', 'lora-training', 'train-lora', 'datasets', 'character-lora'], keywords: ['fine-tune', 'dataset', 'caption', 'dreambooth', 'character consistency', 'train', 'flux lora'] },
+  { id: 'nav.media.models', path: '/models/media', label: 'Media Models', section: 'Models', previousPaths: ['/media/models', '/media-models'], aliases: ['media-models', 'image-models', 'video-models', 'huggingface'], keywords: ['hf cache', 'model storage', 'disk', 'add model', 'install model', 'custom model'] },
+  { id: 'nav.models.performance', path: '/models/performance', label: 'Model Performance', section: 'Models', aliases: ['model-performance', 'performance', 'assessments', 'model-assessments', 'benchmark-models', 'tuning'], keywords: ['measure', 'assessment', 'benchmark', 'throughput', 'chars per second', 'ttft', 'context', 'tuning', 'llama.cpp', 'mtplx', 'vllm', 'which model', 'fastest model'] },
+  // Absorbed the Dev Tools 'Model Resources' page (#4728), so its aliases and
+  // keywords live here — 'model resources' and 'downloaded models' must keep
+  // resolving after the fold.
+  { id: 'nav.models.status', path: '/models/status', label: 'Model Status', section: 'Models', previousPaths: ['/system-resources/models'], aliases: ['model-status', 'models-status', 'memory-management', 'resident-models', 'model-resources', 'loaded-models', 'downloaded-models', 'model-memory'], keywords: ['memory', 'resident', 'loaded', 'unload', 'ram', 'vram', 'free memory', 'what is loaded', 'ollama', 'lm studio', 'hugging face', 'lora', 'delete model', 'disk'] },
+  { id: 'nav.settings.local-llm-playground', path: '/local-llm/playground', label: 'Local LLM Playground', section: 'Models', aliases: ['llm-playground', 'playground', 'model-playground', 'compare-models'], keywords: ['ollama', 'lm studio', 'compare', 'benchmark', 'chat', 'test model', 'ttft', 'tokens per second', 'local llm'] },
   { id: 'nav.settings.mortalloom', path: '/settings/mortalloom', label: 'MortalLoom', section: 'Settings', aliases: ['settings-mortalloom', 'mortalloom'] },
   { id: 'nav.settings.openclaw', path: '/openclaw', label: 'OpenClaw', section: 'Settings', aliases: ['openclaw', 'settings-openclaw'], keywords: ['operator', 'chat', 'agent', 'runtime', 'sessions', 'streaming'] },
   { id: 'nav.settings.security', path: '/settings/security', label: 'Security', section: 'Settings', aliases: ['settings-security', 'login-password', 'auth-password', 'password-settings'], keywords: ['password', 'login', 'auth', 'sign-in', 'lock', 'tailnet', 'sidecar'] },
@@ -283,9 +318,8 @@ export const NAV_COMMANDS = [
   { id: 'nav.loops', path: '/loops', label: 'Loops', section: 'Dev Tools', aliases: ['loops'] },
   { id: 'nav.devtools.processes', path: '/devtools/processes', label: 'Processes', section: 'Dev Tools', aliases: ['devtools-processes', 'processes'] },
   { id: 'nav.security', path: '/security', label: 'Security', section: 'Dev Tools', aliases: ['security'] },
-  { id: 'nav.system-health', path: '/system-resources/overview', label: 'System Resources', section: 'Dev Tools', aliases: ['system-resources', 'system-health', 'system-status', 'memory-usage', 'cpu-usage'], keywords: ['health', 'memory', 'cpu', 'disk', 'thresholds', 'top processes', 'resource usage'] },
+  { id: 'nav.system-health', path: '/system-resources/overview', label: 'System Resources', section: 'Dev Tools', previousPaths: ['/system-health'], aliases: ['system-resources', 'system-health', 'system-status', 'memory-usage', 'cpu-usage'], keywords: ['health', 'memory', 'cpu', 'disk', 'thresholds', 'top processes', 'resource usage', 'build', 'commit', 'running build', 'stale build', 'which code is running'] },
   { id: 'nav.system-resources.storage', path: '/system-resources/storage', label: 'Storage Report', section: 'Dev Tools', aliases: ['disk-usage', 'storage-report', 'disk-cleanup'], keywords: ['disk', 'storage', 'space', 'cleanup', 'cache', 'data usage', 'ai triage'] },
-  { id: 'nav.system-resources.models', path: '/system-resources/models', label: 'Model Resources', section: 'Dev Tools', aliases: ['model-resources', 'loaded-models', 'downloaded-models', 'model-memory'], keywords: ['ollama', 'lm studio', 'hugging face', 'lora', 'unload', 'delete model', 'vram'] },
   { id: 'nav.system-resources.queues', path: '/system-resources/queues', label: 'Active Queues', section: 'Dev Tools', aliases: ['active-queues', 'job-queues', 'pending-jobs', 'render-queue'], keywords: ['media jobs', 'agent tasks', 'pending', 'running', 'cancel', 'run now'] },
   { id: 'nav.cos.jobs', path: '/cos/jobs', label: 'System Tasks', section: 'Chief of Staff', aliases: ['cos-jobs', 'system-tasks'] },
   { id: 'nav.uploads', path: '/uploads', label: 'Uploads', section: 'Dev Tools', aliases: ['uploads'] },

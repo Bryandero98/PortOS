@@ -5,11 +5,11 @@ import toast from '../../ui/Toast';
 import BrailleSpinner from '../../BrailleSpinner';
 import CronInput from '../../CronInput';
 import ToggleSwitch from '../../ToggleSwitch';
-import ProviderModelSelector from '../../ProviderModelSelector';
+import AppProviderPin from '../../cos/AppProviderPin';
 import * as api from '../../../services/api';
-import { AGENT_OPTIONS, toggleAppMetadataOverride, agentOptionButtonClass } from '../../cos/constants';
+import { AGENT_OPTIONS, hasProviderPin, toggleAppMetadataOverride, agentOptionButtonClass } from '../../cos/constants';
 import { isCronExpression, describeCron } from '../../../utils/cronHelpers';
-import { PROVIDER_TYPES, filterSelectableModels } from '../../../utils/providers';
+import { PROVIDER_TYPES, providerDisplayName } from '../../../utils/providers';
 import CustomTasksSection from './CustomTasksSection';
 
 const RUNNABLE_PROVIDER_TYPES = Object.values(PROVIDER_TYPES);
@@ -136,29 +136,17 @@ export default function AutomationTab({ appId, appName }) {
     }));
   };
 
-  const handleProviderChange = async (taskType, newProviderId) => {
-    // Picking a new provider clears any pinned model so a stale model from the
-    // previous provider can't leak through. Empty → inherit the default.
-    const providerId = newProviderId || null;
-    await api.updateAppTaskTypeOverride(appId, taskType, { providerId, model: '' }, { silent: true }).catch(err => {
+  // One mutation for the whole pin — AppProviderPin hands back an already
+  // normalized { providerId, model }, so the clear rule lives in the control
+  // rather than being re-derived here (#4783).
+  const handlePinChange = async (taskType, patch) => {
+    await api.updateAppTaskTypeOverride(appId, taskType, patch, { silent: true }).catch(err => {
       toast.error(err.message);
       return null;
     });
     setOverrides(prev => ({
       ...prev,
-      [taskType]: { ...prev[taskType], providerId, model: '' }
-    }));
-  };
-
-  const handleModelChange = async (taskType, newModel) => {
-    const model = newModel || '';
-    await api.updateAppTaskTypeOverride(appId, taskType, { model }, { silent: true }).catch(err => {
-      toast.error(err.message);
-      return null;
-    });
-    setOverrides(prev => ({
-      ...prev,
-      [taskType]: { ...prev[taskType], model }
+      [taskType]: { ...prev[taskType], ...patch }
     }));
   };
 
@@ -250,20 +238,16 @@ export default function AutomationTab({ appId, appName }) {
               : overrideInterval || (globalConfig.type || 'rotation');
             const intervalSuffix = !overrideInterval && globalConfig.intervalMs ? ` (${Math.round(globalConfig.intervalMs / 3600000)}h)` : '';
             const isExpanded = expandedTaskType === taskType;
-            const overrideProviderId = override.providerId || '';
-            const overrideModel = override.model || '';
-            const selectedProvider = providers.find(p => p.id === overrideProviderId);
-            const availableModels = filterSelectableModels(selectedProvider?.models);
-            // Keep a pinned model visible even when it's not in the provider's
-            // fetched list (avoids a blanked select on a stale/custom model).
-            const modelOptions = overrideModel && !availableModels.includes(overrideModel)
-              ? [overrideModel, ...availableModels]
-              : availableModels;
-            const effectiveProviderId = override.providerId || globalConfig.providerId || null;
-            const effectiveProviderName = effectiveProviderId
-              ? (providers.find(p => p.id === effectiveProviderId)?.name || effectiveProviderId)
-              : 'default (active provider)';
             const isLayeredIntelligence = taskType === 'layered-intelligence';
+            // The per-app pin outranks the task's Schedule pin at spawn for EVERY
+            // task type (#4783), so it always counts toward "effective".
+            const hasProviderOverride = hasProviderPin(override);
+            const taskProviderName = globalConfig.providerId
+              ? providerDisplayName(providers, globalConfig.providerId)
+              : 'default (active provider)';
+            const effectiveProviderName = override.providerId
+              ? providerDisplayName(providers, override.providerId)
+              : taskProviderName;
 
             return (
               <div key={taskType} className="bg-port-card border border-port-border rounded-lg p-3 space-y-2">
@@ -366,22 +350,18 @@ export default function AutomationTab({ appId, appName }) {
                 {/* Expanded config: per-app provider/model override (+ LI behavior link) */}
                 {isExpanded && (
                   <div className="border-t border-port-border pt-3 space-y-3">
-                    <ProviderModelSelector
+                    <AppProviderPin
                       providers={providers}
-                      selectedProviderId={overrideProviderId}
-                      selectedModel={overrideModel}
-                      availableModels={modelOptions}
-                      onProviderChange={id => handleProviderChange(taskType, id)}
-                      onModelChange={model => handleModelChange(taskType, model)}
+                      providerId={override.providerId}
+                      model={override.model}
+                      onChange={patch => handlePinChange(taskType, patch)}
                       label="Provider override"
-                      emptyProviderOption="Use default provider"
-                      emptyModelOption="Default model"
-                      alwaysShowModel
+                      inheritLabel={`Inherit (${taskProviderName})`}
                       layout="stacked"
                     />
                     <p className="text-xs text-gray-500">
                       Effective provider: <span className="text-gray-300">{effectiveProviderName}</span>
-                      {override.providerId ? ' (app override)' : globalConfig.providerId ? ' (task default)' : ''}
+                      {hasProviderOverride ? ' (app override, wins over the task default)' : globalConfig.providerId ? ' (task default)' : ''}
                     </p>
                     {isLayeredIntelligence && (
                       <div className="pt-1">

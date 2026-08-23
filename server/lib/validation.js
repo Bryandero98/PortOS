@@ -13,7 +13,11 @@ import {
 import { PR_COMPLETION_VALUES } from './prDisposition.js';
 import { EFFORT_LEVELS } from './providerModels.js';
 import { MAX_TIMEOUT as AI_RUN_TIMEOUT_MAX_MS, MIN_TIMEOUT as AI_RUN_TIMEOUT_MIN_MS } from './aiToolkit/constants.js';
-import { isFederatedMediaAudioPrompt } from './federatedMediaWire.js';
+import {
+  FEDERATED_MEDIA_ASSET_MAX_COUNT,
+  federatedMediaInputAssetRefSchema,
+  isFederatedMediaAudioPrompt,
+} from './federatedMediaWire.js';
 import { isPlainObject } from './objects.js';
 
 // gpt-image-2 (codex backend) caps at 3840px per edge and 8,294,400 total
@@ -415,8 +419,20 @@ export const providerSchema = z.object({
   // Marks an OpenCode CLI/TUI wrapper for a separately started local llama.cpp
   // server (e.g. DFlash 2 speculative decoding).
   llamaBacked: z.boolean().optional(),
-  // Marks an OpenCode CLI/TUI wrapper for the OrcaRouter OpenAI-compatible
-  // gateway; the sibling API record owns its key.
+  // Marks an OpenCode CLI/TUI wrapper for a separately started local vLLM
+  // container (the Qwen3.8-27B DFlash 2 stack on an RTX 3090).
+  vllmBacked: z.boolean().optional(),
+  // Marks an OpenCode CLI/TUI wrapper for a separately started local SGLang
+  // container (Qwen3.8-27B on a Hopper/Blackwell card).
+  sglangBacked: z.boolean().optional(),
+  // Marks an OpenCode CLI/TUI wrapper for a hosted OpenAI-compatible gateway
+  // ('orcarouter', 'openrouter' — see server/lib/providerGateways.js). The
+  // sibling API record whose id equals this value owns the key.
+  gatewayBacked: z.string().optional(),
+  // Legacy per-gateway marker, superseded by `gatewayBacked`. Still accepted and
+  // still READ (providerGateways.js resolves it), because records written before
+  // the registry existed are never rewritten — installs upgrade on their own
+  // schedule.
   orcarouterBacked: z.boolean().optional(),
   // Explicit opt-in to attach the API key to an arbitrary (non-local,
   // non-allowlisted) endpoint — mirrors the aiToolkit providerSchema. Guards
@@ -773,10 +789,17 @@ export const federatedMediaJobRoutingSchema = z.object({
   durationMode: z.enum(['auto', 'manual']).optional(),
 }).strict();
 
-// Provider submissions intentionally accept model selection plus only the
-// canonical fixed-vocabulary instrumental prompt. Free-form prompt/lyrics can
-// contain PII and must remain on the consumer; URLs, paths, commands, provider
-// credentials, and unknown fields are excluded by the strict object as before.
+// Provider submissions accept model selection, the canonical fixed-vocabulary
+// instrumental prompt, and — since ADR
+// docs/decisions/2026-08-22-federated-media-input-assets.md rule 2 — free-form
+// lyrics. The asymmetry between the two text fields is deliberate rather than
+// inconsistent: a style/mood/instrument profile renders `prompt` with no
+// expressive loss, so the privacy-safe canonical form is required there; lyrics
+// ARE the words, so no alphabet encodes them without discarding them, and they
+// cross verbatim under the same submission-body rule image/video prompts do.
+// The provider still refuses them for a model whose capability reports
+// `lyrics: false`. URLs, paths, commands, provider credentials, and unknown
+// fields are excluded by the strict object as before.
 const federatedMediaAudioJobSubmissionSchema = federatedMediaJobRoutingSchema.extend({
   kind: z.literal('audio'),
   prompt: z.string().trim().min(1).max(8000),
@@ -789,13 +812,6 @@ const federatedMediaAudioJobSubmissionSchema = federatedMediaJobRoutingSchema.ex
       message: 'prompt must be rendered from a privacy-safe federated audio profile',
     });
   }
-  if (value.lyrics) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['lyrics'],
-      message: 'federated audio submissions are instrumental only',
-    });
-  }
 });
 
 // Image/video prompts cross as submitted, with no fixed-vocabulary rendering
@@ -803,9 +819,23 @@ const federatedMediaAudioJobSubmissionSchema = federatedMediaJobRoutingSchema.ex
 // the way audio has a finite style/mood/instrument alphabet. Why that does not
 // breach the "no PII on federation" rule — a submitted job body is not a status
 // payload, and status/capability payloads stay absolutely prompt-free — is
-// ADR docs/decisions/2026-08-20-federated-visual-prompts.md. Local input assets
-// (init/reference images, LoRAs) are refused by the routes, not here.
-export const federatedMediaImageJobSubmissionSchema = federatedMediaJobRoutingSchema.omit({
+// ADR docs/decisions/2026-08-20-federated-visual-prompts.md.
+//
+// Conditioning IMAGES ride the same rule (ADR
+// docs/decisions/2026-08-22-federated-media-input-assets.md rule 1), by id
+// rather than by value: the bytes went up through the authenticated,
+// digest-verified asset endpoint first. What is still refused here — and refused
+// by the routes, since neither has a field to name it — is a MODEL (LoRA
+// weights, rule 3) and multi-step CHAIN STATE (a video to extend, chained
+// chunks, IC-LoRA references, rule 4).
+// Exported UN-REFINED as well, and the split is load-bearing rather than
+// cosmetic. The cross-field rule below pairs `initImageStrength` with
+// `initImage` — but a conditioning image reaches the body as an asset id
+// resolved immediately BEFORE submission, so the persisted marker legitimately
+// carries the strength with no image beside it yet. The marker and the request
+// builder validate against the base; the provider route, which sees the fully
+// assembled body, validates against the refined schema.
+export const federatedMediaImageJobSubmissionBaseSchema = federatedMediaJobRoutingSchema.omit({
   durationSec: true, durationMode: true,
 }).extend({
   kind: z.literal('image'),
@@ -816,10 +846,30 @@ export const federatedMediaImageJobSubmissionSchema = federatedMediaJobRoutingSc
   steps: z.number().int().min(1).max(150).optional(),
   guidance: z.number().finite().min(0).max(30).optional(),
   seed: z.number().int().min(0).optional(),
-}).strict().refine(refineImagePixelCap, { message: PIXEL_CAP_MESSAGE, path: ['width'] });
+  initImage: federatedMediaInputAssetRefSchema.optional(),
+  initImageStrength: z.number().finite().min(0).max(1).optional(),
+  referenceImages: z.array(federatedMediaInputAssetRefSchema)
+    .max(FEDERATED_MEDIA_ASSET_MAX_COUNT).optional(),
+}).strict()
+  .refine(refineImagePixelCap, { message: PIXEL_CAP_MESSAGE, path: ['width'] });
 
-// Same boundary as the image schema above — see the ADR named there.
-export const federatedMediaVideoJobSubmissionSchema = federatedMediaJobRoutingSchema.omit({
+export const federatedMediaImageJobSubmissionSchema = federatedMediaImageJobSubmissionBaseSchema
+  // A strength with nothing to apply it to is a caller bug, not a default to
+  // guess at: silently ignoring it renders at full denoise, which is the
+  // opposite of what a low strength asked for.
+  .refine((value) => value.initImageStrength === undefined || value.initImage !== undefined, {
+    message: 'initImageStrength requires an initImage',
+    path: ['initImageStrength'],
+  });
+
+// Same boundary as the image schema above — see the ADRs named there.
+//
+// Exported UN-REFINED as well: `negotiateVideoConstraints` re-validates a
+// partially-negotiated body against `.partial()`, and Zod refuses `.partial()`
+// on a schema carrying refinements. Splitting the object from its cross-field
+// rule keeps both callers honest instead of dropping the rule to keep the
+// partial working.
+export const federatedMediaVideoJobSubmissionBaseSchema = federatedMediaJobRoutingSchema.omit({
   durationSec: true, durationMode: true,
 }).extend({
   kind: z.literal('video'),
@@ -832,7 +882,17 @@ export const federatedMediaVideoJobSubmissionSchema = federatedMediaJobRoutingSc
   steps: z.number().int().min(1).max(150).optional(),
   guidance: z.number().finite().min(0).max(30).optional(),
   seed: z.number().int().min(0).optional(),
+  sourceImage: federatedMediaInputAssetRefSchema.optional(),
+  lastImage: federatedMediaInputAssetRefSchema.optional(),
 }).strict();
+
+export const federatedMediaVideoJobSubmissionSchema = federatedMediaVideoJobSubmissionBaseSchema
+  // First-last-frame needs both ends. A lone end frame would render a plain
+  // text-to-video clip and quietly discard the frame the caller supplied.
+  .refine((value) => value.lastImage === undefined || value.sourceImage !== undefined, {
+    message: 'lastImage requires a sourceImage (first-last-frame needs both ends)',
+    path: ['lastImage'],
+  });
 
 // An already-shipped consumer's request body never carries `kind` — it only
 // knows the pre-existing audio-only shape. Defaulting the missing field to

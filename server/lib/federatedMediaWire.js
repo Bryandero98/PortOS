@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { isPlainObject } from './objects.js';
 
 export const FEDERATED_MEDIA_WIRE_VERSION = 1;
 export const FEDERATED_MEDIA_STALE_AFTER_MS = 60_000;
@@ -136,6 +138,122 @@ export function normalizeRequestedMediaKinds(raw) {
   return kinds.length ? kinds : ['audio'];
 }
 
+// ---------------------------------------------------------------------------
+// Input conditioning assets (ADR
+// docs/decisions/2026-08-22-federated-media-input-assets.md rule 1)
+//
+// A conditioning image is what the render is OF, so it crosses under the same
+// gate as the prompt — but as bytes rather than JSON, through a dedicated
+// authenticated endpoint that verifies the declared digest before storing.
+// Model weights (rule 3) and multi-step chain state (rule 4) are NOT
+// conditioning and never appear here.
+// ---------------------------------------------------------------------------
+
+// { mimeType -> extension }. One source, so the upload endpoint, the on-disk
+// staging name, and the provider's path resolver cannot drift on what an
+// acceptable conditioning image is.
+export const FEDERATED_MEDIA_ASSET_EXTENSION = Object.freeze({
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+});
+export const FEDERATED_MEDIA_ASSET_MIME_TYPES = Object.freeze(Object.keys(FEDERATED_MEDIA_ASSET_EXTENSION));
+
+// 32 MiB is generous for a conditioning image (a 4096² PNG lands well under it)
+// and small enough that an accidental video upload is refused by size before
+// it is refused by MIME.
+export const FEDERATED_MEDIA_ASSET_MAX_BYTES = 32 * 1024 * 1024;
+// How many assets one submission may reference. Bounded so a reference-image
+// array cannot become a bulk upload channel.
+export const FEDERATED_MEDIA_ASSET_MAX_COUNT = 8;
+// Staged bytes live long enough to survive a provider restart and a queue
+// backlog, and no longer. A reconcile past this simply re-uploads — the upload
+// is content-addressed and idempotent, so that costs one transfer, not a
+// duplicated render.
+export const FEDERATED_MEDIA_ASSET_TTL_MS = 6 * 60 * 60 * 1000;
+
+// Which conditioning slot an asset fills. Named for the submission field it
+// lands in so a capability's `roles` list reads as the set of fields a consumer
+// may send, with no second mapping to keep in sync.
+export const FEDERATED_MEDIA_INPUT_ROLES = Object.freeze([
+  'initImage', 'referenceImages', 'sourceImage', 'lastImage',
+]);
+
+// Which of those roles hold a LIST rather than a single slot. One home, because
+// both sides read it for opposite halves of the same fact: the consumer decides
+// whether to append or assign when building the body, the provider decides
+// whether to hand the runner an array or a scalar path. Disagreeing produces a
+// shape mismatch that surfaces only as a wrong render.
+export const FEDERATED_MEDIA_MULTI_INPUT_ROLES = Object.freeze(['referenceImages']);
+export const isMultiInputRole = (role) => FEDERATED_MEDIA_MULTI_INPUT_ROLES.includes(role);
+
+// `<callerHash>-<sha256>`. The caller half is derived from the AUTHENTICATED
+// caller id and re-checked provider-side on every reference, so an asset id is
+// unusable across callers even if it leaks.
+export const federatedMediaAssetIdSchema = z.string().trim().regex(
+  /^[a-f0-9]{16}-[a-f0-9]{64}$/,
+  'assetId must be a <callerHash>-<sha256> pair',
+);
+
+/**
+ * The caller half of an asset id.
+ *
+ * Lives in the WIRE module, not in the provider's store, because both sides need
+ * it and they must agree exactly: the provider derives it from the authenticated
+ * caller to scope what a peer may reference, and the consumer derives it from
+ * its own instance id so it can name an asset it already uploaded — which is
+ * what lets it check-then-skip instead of re-sending megabytes on every replay.
+ *
+ * @param {string} instanceId - the consumer's PortOS instance id
+ */
+export const federatedMediaAssetOwner = (instanceId) =>
+  createHash('sha256').update(String(instanceId)).digest('hex').slice(0, 16);
+
+/**
+ * The full, fully-derivable asset id for a caller's copy of some bytes. Content
+ * addressing is only useful if BOTH sides can compute the address; otherwise the
+ * consumer has to upload just to learn the name of what it uploaded.
+ *
+ * @param {string} instanceId
+ * @param {string} sha256 - hex digest of the asset bytes
+ */
+export const federatedMediaAssetId = (instanceId, sha256) =>
+  `${federatedMediaAssetOwner(instanceId)}-${sha256}`;
+
+// What a submission carries in place of the bytes. Deliberately just the id:
+// the id embeds the digest the provider verified at upload, so a second copy on
+// the wire would be a second source of truth for the same fact.
+export const federatedMediaInputAssetRefSchema = z.object({
+  assetId: federatedMediaAssetIdSchema,
+}).strict();
+
+// The provider's answer to "may I send conditioning, and of what shape?".
+// Optional and nullable, and **absent must read as unsupported** — a provider
+// predating this ADR omits the block entirely, and treating that as permission
+// would submit assets it refuses. Limits only: no filename, no digest, no
+// prompt (ADR 2026-08-20 rule 3 still governs the status payload).
+export const federatedMediaInputAssetsSchema = z.object({
+  maxBytes: z.number().int().positive().max(1_073_741_824),
+  maxCount: z.number().int().positive().max(64),
+  mimeTypes: z.array(z.enum(FEDERATED_MEDIA_ASSET_MIME_TYPES)).min(1).max(10),
+  roles: z.array(z.enum(FEDERATED_MEDIA_INPUT_ROLES)).min(1).max(FEDERATED_MEDIA_INPUT_ROLES.length),
+  // True for a model that cannot render text-only at all (an edit-only image
+  // model, a video model with no `text` mode). Such a model is federatable ONLY
+  // with conditioning, which is why it was unadvertised before this ADR.
+  required: z.boolean(),
+}).nullable().optional();
+
+// What the upload endpoint answers with, validated by the consumer before it
+// records the id on a job marker.
+export const federatedMediaAssetSchema = z.object({
+  wireVersion: z.literal(FEDERATED_MEDIA_WIRE_VERSION),
+  assetId: federatedMediaAssetIdSchema,
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  sizeBytes: z.number().int().positive().max(FEDERATED_MEDIA_ASSET_MAX_BYTES),
+  mimeType: z.enum(FEDERATED_MEDIA_ASSET_MIME_TYPES),
+  expiresAt: z.string().datetime(),
+});
+
 // { mimeType -> file extension } for the result Content-Disposition header
 // and any provider-side filename validation. One source so a new result kind
 // can't drift the two.
@@ -166,7 +284,20 @@ export const federatedMediaCapabilitySchema = z.object({
   minDurationSec: z.number().finite().positive().nullable(),
   maxDurationSec: z.number().finite().positive().nullable(),
   defaultDurationSec: z.number().finite().positive().nullable(),
+  // Does the MODEL sing? A property of the engine, and true on providers that
+  // predate lyrical federation entirely — which is why it cannot double as the
+  // consumer's permission to send words.
   lyrics: z.boolean(),
+  // SUPERSEDED by the status-root `features` list (#4826), and kept on the
+  // wire for one overlap release so a consumer on the previous build still
+  // reads this provider correctly. Emitted per-capability but never per-model:
+  // it always equalled `lyrics`, because the fact it carried was "does this
+  // BUILD carry lyrics on the wire", which is a property of the payload's
+  // sender rather than of any one engine. Read it only through
+  // `federatedMediaSupports`, never directly. Do not add a second field in
+  // this shape — a new per-field wire capability belongs in `features`.
+  // Retirement tracked in #4850.
+  acceptsLyrics: z.boolean().optional(),
   autoDuration: z.boolean(),
   frameStride: z.number().int().min(1).max(64).nullable().optional(),
   maxNumFrames: z.number().int().min(1).max(600).nullable().optional(),
@@ -177,6 +308,15 @@ export const federatedMediaCapabilitySchema = z.object({
     h: z.number().int().min(64).max(2048),
     label: z.string().trim().max(120).optional(),
   })).max(100).nullable().optional(),
+  inputAssets: federatedMediaInputAssetsSchema,
+});
+
+// Per-kind occupancy of the provider's own generation lanes. Counts only —
+// never a job id, an owner, or anything derived from a prompt (ADR
+// docs/decisions/2026-08-20-federated-visual-prompts.md rule 3).
+const federatedMediaKindOccupancySchema = z.object({
+  running: z.number().int().nonnegative(),
+  queued: z.number().int().nonnegative(),
 });
 
 const federatedMediaQueueStatusSchema = z.object({
@@ -186,7 +326,160 @@ const federatedMediaQueueStatusSchema = z.object({
   running: z.number().int().nonnegative(),
   maxQueuedJobs: z.number().int().positive(),
   accepting: z.boolean(),
+  // Both added after wire v1 shipped, so both are optional: an older provider
+  // omits them, and absent must read as UNKNOWN rather than zero. See "Drain
+  // rate and per-kind occupancy" in docs/FEDERATED_MEDIA_PROVIDERS.md for what
+  // they mean and why queue depth alone could not answer it.
+  //
+  // Bounded well above any lane width this build configures, so a provider with
+  // more or wider lanes than ours still validates.
+  concurrency: z.number().int().positive().max(64).nullable().optional(),
+  // Only the kinds actually holding a lane: with the block present, an absent
+  // kind is idle. `partialRecord`, not `record` — a Zod 4 record over an enum
+  // key is exhaustive, so the day a fourth kind joins KNOWN_MEDIA_KINDS every
+  // older provider's payload would fail validation on a newer consumer.
+  byKind: z.partialRecord(mediaKindSchema, federatedMediaKindOccupancySchema).optional(),
 });
+
+// What THIS BUILD speaks on the wire, beyond the wire-v1 baseline (#4826).
+//
+// A build-version probe, not a model capability: "does the sender carry lyrics
+// on the wire" is a property of the payload's sender, which is why it sits at
+// the status root rather than being stamped onto every capability. Emitted
+// verbatim by the provider — a feature is listed because the code that handles
+// it shipped, not because some allowlisted model happens to use it. Per-model
+// facts stay per-capability (`lyrics`, `inputAssets.roles`), and a consumer
+// must satisfy BOTH before it sends the field.
+//
+// Additive and optional in both directions, so no SCHEMA_VERSIONS bump: a
+// newer feature reaches an older consumer as an unmatched string, and an
+// absent list reads as the wire-v1 baseline (see federatedMediaSupports).
+export const FEDERATED_MEDIA_FEATURES = Object.freeze(['lyrics', 'inputAssets']);
+
+// A feature name is a short identifier token. Underscores and hyphens are in
+// the alphabet even though this build's own vocabulary is camelCase: the point
+// is to bound the shape so the field cannot smuggle free-form text (and
+// therefore PII) across the boundary, not to force a naming style on a peer
+// that may be several versions ahead of us.
+const FEDERATED_MEDIA_FEATURE_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+
+// FILTERS rather than validates, and deliberately NOT a z.enum over
+// FEDERATED_MEDIA_FEATURES. Either a strict enum or a strict element schema
+// would reject the WHOLE status payload over one string the consumer merely
+// does not recognize, so the day a provider ships a feature named outside our
+// expectations every older consumer would go from "ignores one feature" to
+// "cannot read this peer at all" — the same trap `byKind` avoids with
+// partialRecord, and the exact failure this list was introduced to prevent.
+//
+// Dropping an out-of-shape member is also what keeps the PII bound meaningful:
+// prose never reaches storage, instead of a prose-carrying payload being
+// rejected wholesale after we have already read it.
+const federatedMediaFeaturesSchema = z.array(z.unknown()).max(256)
+  .transform((features) => features.filter((feature) => typeof feature === 'string'
+    && FEDERATED_MEDIA_FEATURE_RE.test(feature)))
+  // `z.array(z.unknown())`, not `z.array(z.string())`: a strict element type
+  // fails before the transform runs, so ONE non-string member would collapse the
+  // whole list to absent — a peer reading as supporting nothing rather than
+  // losing one entry, which is the same cliff a strict schema creates at the
+  // payload level. Filtering keeps every well-formed feature its neighbours
+  // published.
+  //
+  // A `features` value that is not even a bounded array degrades to ABSENT — the
+  // undecidable wire-v1 baseline — rather than invalidating the status. Not
+  // `[]`: an empty list is a peer positively denying every feature, a stronger
+  // claim than a malformed field has earned.
+  .catch(() => undefined);
+
+// The ONE place the "absent reads as false" reasoning lives (#4826). Every
+// consumer gate — server route, consumer service, client panel — asks through
+// here rather than restating it.
+//
+// A provider built before a feature shipped omits it and then rejects the field
+// outright at submission, so treating an absent signal as consent would turn
+// every such render into a hard 400 the user cannot act on. Fail closed and the
+// consumer degrades to something it can explain instead.
+//
+// `capability` is the OVERLAP path only: for one release a provider on the
+// previous build advertises the same build-level fact per-capability. A
+// published list WINS over it outright rather than being OR'd with it — a peer
+// that told us its whole vocabulary and left this feature out has positively
+// denied it, and honoring a stale or contradictory per-capability field against
+// that would resurrect the very ambiguity the list replaced. The legacy tell is
+// consulted only when there is no list to read.
+// `decisive` records whether a FAILING legacy tell proves the peer's build is
+// old, and it differs per feature — which is why it belongs in the table rather
+// than in a comment at each call site (whoever adds the third feature would
+// otherwise inherit whichever policy they happened to read first):
+//
+//   lyrics      — the previous build stamped `acceptsLyrics` on EVERY audio
+//                 capability, so its absence can only mean an older build.
+//   inputAssets — the block is genuinely per-model, so its absence is ambiguous:
+//                 mid-overlap the peer may speak conditioning and simply have a
+//                 text-only model configured.
+//
+// Both gate identically; only a message that blames the BUILD may distinguish
+// them. See federatedMediaDeniesFeature.
+// `Object.create(null)`, not a bare literal: the lookup is keyed by a feature
+// name off the wire, and on a normal object `'constructor'` / `'toString'`
+// resolve to inherited values — truthy enough to defeat `?.` and then blow up
+// on `.tell`. A null prototype makes an unknown name simply absent, which is
+// also what keeps this end and the client mirror answering alike.
+const FEDERATED_MEDIA_LEGACY_FEATURE_TELL = Object.freeze(Object.assign(Object.create(null), {
+  lyrics: { tell: (capability) => capability?.acceptsLyrics === true, decisive: true },
+  // A build that predates conditioning omits the block entirely; one that
+  // speaks it advertises the block (possibly with no roles for this model).
+  // `isPlainObject`, not a bare `typeof === 'object'`: the client mirror uses
+  // its own array-excluding record guard, and a malformed `inputAssets: []`
+  // reading true here and false there is exactly the provider/consumer
+  // disagreement this helper exists to prevent.
+  inputAssets: { tell: (capability) => isPlainObject(capability?.inputAssets), decisive: false },
+}));
+
+/**
+ * Does the build that sent this status speak `feature`?
+ *
+ * @param {object|null} status - a validated provider status payload
+ * @param {string} feature - a FEDERATED_MEDIA_FEATURES member
+ * @param {object|null} [capability] - the capability being acted on, for the
+ *   overlap fallback against a provider that has not migrated yet
+ * @returns {boolean} false whenever the answer cannot be established
+ */
+export function federatedMediaSupports(status, feature, capability = null) {
+  if (federatedMediaDeclaresFeatures(status)) return status.features.includes(feature);
+  return FEDERATED_MEDIA_LEGACY_FEATURE_TELL[feature]?.tell(capability) === true;
+}
+
+/**
+ * Did this provider publish its feature vocabulary at all?
+ *
+ * @param {object|null} status - a validated provider status payload
+ * @returns {boolean}
+ */
+export function federatedMediaDeclaresFeatures(status) {
+  return Array.isArray(status?.features);
+}
+
+/**
+ * Is this a denial we can attribute to the peer's BUILD, rather than merely an
+ * answer we could not establish?
+ *
+ * `federatedMediaSupports` flattens two different "no"s, because both must gate
+ * the same way: a peer that published a list and left the feature out has
+ * POSITIVELY denied it, while a peer that published no list may simply predate
+ * the list — or, for an ambiguous feature, speak it and have nothing configured
+ * that uses it. Only a MESSAGE may distinguish them, and telling a healthy peer
+ * to update itself is worse than giving the generic remedy.
+ *
+ * @param {object|null} status - a validated provider status payload
+ * @param {string} feature - a FEDERATED_MEDIA_FEATURES member
+ * @param {object|null} [capability] - the capability being acted on
+ * @returns {boolean} true only when the peer's build is provably the reason
+ */
+export function federatedMediaDeniesFeature(status, feature, capability = null) {
+  if (federatedMediaSupports(status, feature, capability)) return false;
+  return federatedMediaDeclaresFeatures(status)
+    || FEDERATED_MEDIA_LEGACY_FEATURE_TELL[feature]?.decisive === true;
+}
 
 // Strip unknown fields from peer responses before persisting or exposing them
 // locally. Mixed-version compatibility lives in the versioned route and the
@@ -197,6 +490,10 @@ export const federatedMediaProviderStatusSchema = z.object({
   generatedAt: z.string().datetime(),
   staleAfterMs: z.number().int().positive().max(300_000),
   status: z.enum(['ready', 'busy', 'unavailable']),
+  // Optional and additive; **absent reads as the wire-v1 baseline** (no lyrics,
+  // no conditioning). Bounded well above this build's own vocabulary so a
+  // provider that speaks more than we do still validates.
+  features: federatedMediaFeaturesSchema.optional(),
   kinds: z.array(mediaKindSchema).max(KNOWN_MEDIA_KINDS.length),
   queue: federatedMediaQueueStatusSchema,
   capabilities: z.array(federatedMediaCapabilitySchema).max(300),

@@ -4,6 +4,7 @@ import { Link, useSearchParams } from 'react-router';
 import { ArrowLeft, ArrowRightLeft, Brain, Check, ChevronDown, Clock, Copy, Cpu, Gauge, MessageSquare, Play, RefreshCw, Send, TriangleAlert, X } from 'lucide-react';
 import BrailleSpinner from '../components/BrailleSpinner';
 import PlaygroundOutput from '../components/localLlm/PlaygroundOutput';
+import ModelsTabsHeader from '../components/models/ModelsTabsHeader';
 import toast from '../components/ui/Toast';
 import { copyToClipboard } from '../lib/clipboard';
 import { localLlmTargetKey } from '../lib/localLlmTargetKey';
@@ -451,7 +452,7 @@ export default function LocalLlmPlayground() {
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between gap-3 p-4 border-b border-port-border">
         <div className="flex items-center gap-3 min-w-0">
-          <Link to="/settings/local-llm" className="p-2 rounded-lg bg-port-card border border-port-border text-gray-400 hover:text-white" title="Back to Local LLMs">
+          <Link to="/models/llms" className="p-2 rounded-lg bg-port-card border border-port-border text-gray-400 hover:text-white" title="Back to Models → LLMs">
             <ArrowLeft size={16} />
           </Link>
           <div className="min-w-0">
@@ -468,6 +469,11 @@ export default function LocalLlmPlayground() {
           <RefreshCw size={16} className={loadingStatus ? 'animate-spin' : ''} />
         </button>
       </div>
+
+      {/* This page keeps its own `/local-llm/playground` path (it predates the
+          Models section and lives in ⌘K history), so without the section's tab
+          bar arriving here would strand the user outside it. */}
+      <ModelsTabsHeader activeTab="playground" />
 
       <div className="flex-1 overflow-auto p-4 space-y-4">
         <div className="grid grid-cols-1 xl:grid-cols-[320px_1fr] gap-4">

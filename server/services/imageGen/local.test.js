@@ -771,6 +771,100 @@ describe('imageGen local.buildSidecarMeta', () => {
     expect(meta.seed).toBeGreaterThanOrEqual(0);
     expect(meta.seed).toBeLessThan(2147483647);
   });
+
+  // --- LoRA trigger-word weaving (#4665) ---------------------------------
+  // `loraTriggerWords` is the sidecar map generateImage reads before calling
+  // in; the LoRA candidates go through the same prefix-check as every other
+  // test here (LORAS_ROOT + injected `loraExists`).
+
+  it('weaves a selected LoRA trigger word into the render prompt, keeping meta.prompt the user text', () => {
+    const { meta, renderPrompt, addedTriggerWords } = buildSidecarMeta({
+      ...baseMetaInput,
+      loraFilenames: ['aria.safetensors'],
+      loraTriggerWords: { 'aria.safetensors': ['aria_tok', 'portrait'] },
+    });
+    // What the runner renders.
+    expect(renderPrompt).toBe('a red cube, aria_tok');
+    expect(addedTriggerWords).toEqual(['aria_tok']);
+    // Provenance: the user's own text is what a Remix reads back.
+    expect(meta.prompt).toBe('a red cube');
+    expect(meta.renderPrompt).toBe('a red cube, aria_tok');
+    expect(meta.addedTriggerWords).toEqual(['aria_tok']);
+  });
+
+  it('uses only the FIRST trigger word of each LoRA, in selection order', () => {
+    const { renderPrompt } = buildSidecarMeta({
+      ...baseMetaInput,
+      loraFilenames: ['aria.safetensors', 'grain.safetensors'],
+      loraTriggerWords: {
+        'aria.safetensors': ['aria_tok', 'portrait', 'closeup'],
+        'grain.safetensors': ['rstgrm', 'film grain'],
+      },
+    });
+    expect(renderPrompt).toBe('a red cube, aria_tok, rstgrm');
+  });
+
+  it('does not weave a word the prompt already contains', () => {
+    const { meta, renderPrompt, addedTriggerWords } = buildSidecarMeta({
+      ...baseMetaInput,
+      prompt: 'aria_tok holding a red cube',
+      loraFilenames: ['aria.safetensors'],
+      loraTriggerWords: { 'aria.safetensors': ['aria_tok'] },
+    });
+    expect(renderPrompt).toBe('aria_tok holding a red cube');
+    expect(addedTriggerWords).toEqual([]);
+    // No provenance fields when nothing was woven — the sidecar stays
+    // byte-identical to every one written before this feature.
+    expect(meta.renderPrompt).toBeUndefined();
+    expect(meta.addedTriggerWords).toBeUndefined();
+  });
+
+  it('is a no-op when the render selected no LoRAs', () => {
+    const { meta, renderPrompt, addedTriggerWords } = buildSidecarMeta({ ...baseMetaInput });
+    expect(renderPrompt).toBe('a red cube');
+    expect(addedTriggerWords).toEqual([]);
+    expect(meta.renderPrompt).toBeUndefined();
+  });
+
+  it('skips a LoRA whose sidecar carries no trigger words (legacy / pre-Civitai)', () => {
+    const { renderPrompt, addedTriggerWords } = buildSidecarMeta({
+      ...baseMetaInput,
+      loraFilenames: ['legacy.safetensors', 'aria.safetensors'],
+      loraTriggerWords: { 'legacy.safetensors': [], 'aria.safetensors': ['aria_tok'] },
+    });
+    expect(renderPrompt).toBe('a red cube, aria_tok');
+    expect(addedTriggerWords).toEqual(['aria_tok']);
+  });
+
+  it('never weaves a trigger for a LoRA that failed the prefix/existence check', () => {
+    const { renderPrompt, addedTriggerWords } = buildSidecarMeta({
+      ...baseMetaInput,
+      loraFilenames: ['aria.safetensors'],
+      loraTriggerWords: { 'aria.safetensors': ['aria_tok'] },
+      loraExists: () => false,
+    });
+    expect(renderPrompt).toBe('a red cube');
+    expect(addedTriggerWords).toEqual([]);
+  });
+
+  it('adds nothing to a pipeline prompt that already carries the trigger in its own clause', () => {
+    // The comic/visual pipeline weaves its own "<Name> (<trigger>): <desc>" /
+    // "Featuring <Name> (<trigger>)" clause before enqueueing, using the SAME
+    // first-trigger-word token. Idempotence is what lets those renders share
+    // this weave instead of opting out — and opting out is what would have
+    // left a description-less character's LoRA inert, since comicPages drops
+    // any character with no description from its clause.
+    const { meta, renderPrompt, addedTriggerWords } = buildSidecarMeta({
+      ...baseMetaInput,
+      prompt: 'Aria (aria_tok): a tall figure in a red coat. A rooftop at dusk.',
+      loraFilenames: ['aria.safetensors'],
+      loraTriggerWords: { 'aria.safetensors': ['aria_tok'] },
+    });
+    expect(renderPrompt).toBe('Aria (aria_tok): a tall figure in a red coat. A rooftop at dusk.');
+    expect(addedTriggerWords).toEqual([]);
+    expect(meta.renderPrompt).toBeUndefined();
+  });
+
 });
 
 describe('imageGen local.resolveOutputPlacement (issue #2264 non-gallery render seam)', () => {

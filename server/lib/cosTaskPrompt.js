@@ -42,7 +42,7 @@ export const TASK_CONTEXT_KEY = 'context';
  * classified the other way by the migration.
  *
  * Note `''` is NOT a prompt: an intentionally-cleared note stays a note (the
- * absent-vs-present-but-empty rule in CLAUDE.md).
+ * absent-vs-present-but-empty rule in AGENTS.md).
  */
 export const isPromptPayload = (value) => typeof value === 'string' && value.includes('\n');
 

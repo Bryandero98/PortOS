@@ -373,8 +373,8 @@ export default function ReviewerPicker({
     // probe settled — before that, an empty list is "not fetched yet", not a fact.
     const emptyHint = (options.length === 0 && modelOptions?.loaded)
       ? (modelOptions?.unavailable?.[token]
-          ? `${subject} isn't reachable — start it from Settings → Local LLMs to list its models. You can still type an id.`
-          : `No ${subject} models listed — add one in Settings → Local LLMs, or type an id.`)
+          ? `${subject} isn't reachable — start it from Models → LLMs to list its models. You can still type an id.`
+          : `No ${subject} models listed — add one in Models → LLMs, or type an id.`)
       : null;
 
     if (!freeText) {
@@ -643,6 +643,7 @@ export default function ReviewerPicker({
             type="button"
             disabled={disabled || !usernameInput.trim() || atMaxUsernames}
             onClick={addUsername}
+            aria-label="Add reviewer username"
             className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-transparent border border-port-border rounded text-xs text-gray-400 hover:text-white hover:border-port-accent disabled:opacity-50"
           >
             <Plus size={11} />

@@ -14,7 +14,7 @@
  * so the store stays bounded — the same window the dedup guard already uses.
  *
  * Runs OUTSIDE the request lifecycle (scheduler tick / agent completion), so per
- * the CLAUDE.md no-try/catch rule the LI hooks own the async boundary; these
+ * the AGENTS.md no-try/catch rule the LI hooks own the async boundary; these
  * helpers stay defensive (a failed read/write degrades to a recorded no-op) and
  * are gated behind the `sources.outcomes` config toggle by their callers.
  */

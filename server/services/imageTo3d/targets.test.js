@@ -68,6 +68,21 @@ describe('image-to-3d target registry', () => {
       .toEqual(['facebook/dinov3-vitl16-pretrain-lvd1689m', 'briaai/RMBG-2.0']);
   });
 
+  it('registers the Apple Silicon Pixal3D port as a separate local-MPS target', () => {
+    expect(IMAGE_TO_3D_TARGET_IDS).toContain('pixal3dMps');
+    const t = getTarget('pixal3dMps');
+    expect(t).toMatchObject({
+      id: 'pixal3dMps',
+      label: 'Pixal3D (Apple Silicon)',
+      executionLane: EXECUTION_LANE.LOCAL_MPS,
+      outputKind: OUTPUT_KIND.GLB_MESH,
+      upstream: 'https://github.com/TencentARC/Pixal3D',
+      port: 'https://github.com/pawel-mazurkiewicz/Pixal3D-mac',
+    });
+    expect(t.requires).toMatchObject({ appleSilicon: true, minUnifiedMemoryGb: 24 });
+    expect(t.gatedRepos).toBeUndefined();
+  });
+
   it('leaves trellis2 (MPS) as the default target', () => {
     // Adding the CUDA lane must not change which target an unqualified request gets.
     expect(DEFAULT_IMAGE_TO_3D_TARGET).toBe('trellis2');
@@ -175,7 +190,7 @@ describe('listTargets', () => {
 
   it('hides a target blocked for hardware the host simply does not have', () => {
     // A Mac has no NVIDIA GPU and never will — a permanently-red CUDA card is noise.
-    expect(listTargets(APPLE_128GB).map((t) => t.id)).toEqual(['trellis2']);
+    expect(listTargets(APPLE_128GB).map((t) => t.id)).toEqual(['trellis2', 'pixal3dMps']);
   });
 
   it('applies that hiding symmetrically, not just to the newer lane', () => {
@@ -340,6 +355,10 @@ describe('renderOptionSupportFor', () => {
     // choice could hand a 12 GB card a config that OOMs mid-render.
     expect(renderOptionSupportFor('pixal3dCuda'))
       .toEqual({ steps: false, detail: false, alphaMode: false, normalMap: false });
+    // The Apple port has a shared 1024 default and no alpha/normal-map CLI controls;
+    // sampler steps remain supported and therefore are intentionally absent here.
+    expect(renderOptionSupportFor('pixal3dMps'))
+      .toEqual({ detail: false, alphaMode: false, normalMap: false });
     // Upstream's CUDA entrypoint takes no pipeline-type override at all.
     expect(renderOptionSupportFor('trellis2Cuda'))
       .toEqual({ detail: false, alphaMode: false, normalMap: false });

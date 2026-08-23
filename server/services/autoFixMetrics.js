@@ -10,7 +10,7 @@
  * (no I/O — trivially unit-testable); `getAutoFixMetrics` is the thin I/O shim
  * the route calls to load persisted tasks and hand them to the reducer.
  *
- * Sentinel discipline (per CLAUDE.md): a rate with no denominator and a
+ * Sentinel discipline (per AGENTS.md): a rate with no denominator and a
  * duration summary with no completed-with-timing samples return `null`, NOT a
  * fabricated 0 — "no data yet" must never read as "0% success" or "0ms
  * recovery".

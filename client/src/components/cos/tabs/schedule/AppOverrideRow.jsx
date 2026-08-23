@@ -2,12 +2,13 @@ import { useState, memo } from 'react';
 import AppIcon from '../../../AppIcon';
 import CronInput from '../../../CronInput';
 import { AGENT_OPTIONS, BRANCHES_PER_AGENT_DEFAULT, BRANCHES_PER_AGENT_OPTIONS, BRANCHES_PER_AGENT_TASK_TYPES, ISSUE_AUTHOR_FILTER_OPTIONS, ISSUE_AUTHOR_FILTER_TASK_TYPES, PR_COMPLETION_OPTIONS, pinnedPrCompletion, prCompletionOption, SWARM_COUNT_OPTIONS, SWARM_TASK_TYPES, toggleAppMetadataOverride, agentOptionButtonClass } from '../../constants';
+import AppProviderPin from '../../AppProviderPin';
 import { isCronExpression, describeCron } from '../../../../utils/cronHelpers';
 import ToggleSwitch from '../../../ToggleSwitch';
 import useFieldDraft from '../../../../hooks/useFieldDraft';
 import { INTERVAL_LABELS, setMetadataOverride } from './scheduleConstants';
 
-const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalIntervalType, globalTaskMetadata, managedAgentOptions, fileIssuesCapable, defaultFileIssues, override, onUpdate }) {
+const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalIntervalType, globalTaskMetadata, managedAgentOptions, fileIssuesCapable, defaultFileIssues, inheritedProviderText, providers, override, onUpdate }) {
   const [updating, setUpdating] = useState(false);
   const [cronEditing, setCronEditing] = useState(false);
   const isEnabled = override?.enabled === true;
@@ -16,6 +17,16 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
   // Same effective-value rule the AGENT_OPTIONS buttons use: this app's override
   // wins, else the global config. No PR, nothing to decide about one.
   const opensPR = (override?.taskMetadata?.openPR ?? globalTaskMetadata?.openPR) === true;
+
+  // A per-app provider/model pin OUTRANKS the task's own provider pin at spawn,
+  // for every task type (#4783) — so an app carrying one runs on a provider the
+  // card above never mentions. Edit it here, where the task provider is chosen,
+  // through the same control Edit App → Automation uses.
+  const handlePinChange = async (patch) => {
+    setUpdating(true);
+    await onUpdate(app.id, taskType, patch).catch(() => {});
+    setUpdating(false);
+  };
 
   const handleToggle = async () => {
     setUpdating(true);
@@ -183,6 +194,21 @@ const AppOverrideRow = memo(function AppOverrideRow({ app, taskType, globalInter
               </button>
             );
           })}
+        </div>
+
+        {/* Bounded so the two selects stay a row item next to the other per-app
+            knobs instead of stretching across the wrapped flex line. */}
+        <div className="w-full sm:w-auto sm:min-w-[240px] sm:max-w-[360px] sm:flex-1">
+          <AppProviderPin
+            providers={providers}
+            providerId={override?.providerId}
+            model={override?.model}
+            onChange={handlePinChange}
+            disabled={updating}
+            label={`Provider for ${app.name}`}
+            inheritLabel={`Inherit (${inheritedProviderText})`}
+            compact
+          />
         </div>
 
         {opensPR && (

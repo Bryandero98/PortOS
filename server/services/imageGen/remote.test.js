@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { federatedMediaAssetId } from '../../lib/federatedMediaWire.js';
 
 let tempImageDir;
 const transport = vi.hoisted(() => ({ fetch: vi.fn() }));
@@ -18,6 +19,15 @@ vi.mock('../../lib/fileUtils.js', async () => {
         return target[key];
       },
     }),
+    // The real resolver closes over fileUtils' OWN `PATHS` binding, not the
+    // proxy above, so it would validate a conditioning path against this
+    // machine's actual gallery. Anchor it at the temp gallery instead — its
+    // containment behavior is fileUtils' own suite's job; what matters here is
+    // that the executor resolves before uploading, and refuses when it cannot.
+    resolveImageInputPath: (raw) => {
+      const candidate = join(tempImageDir, raw.split('/').pop());
+      return existsSync(candidate) ? candidate : null;
+    },
   };
 });
 
@@ -31,6 +41,9 @@ vi.mock('../federatedMediaConsumer.js', () => ({
 
 vi.mock('../instances.js', () => ({
   getPeers: vi.fn(async () => federation.peers),
+  // Used to derive the consumer's own half of a content-addressed asset id, so it
+  // can ask the peer whether bytes are already staged before re-sending them.
+  getInstanceId: vi.fn(async () => 'consumer-instance'),
 }));
 
 import { imageGenEvents } from '../imageGenEvents.js';
@@ -200,6 +213,188 @@ describe('federated image consumer adapter', () => {
       seed: 42,
     });
     expect(submission[1].headers['Idempotency-Key']).toBe(LOCAL_JOB_ID);
+  });
+
+  // ADR docs/decisions/2026-08-22-federated-media-input-assets.md rule 1. The
+  // marker persists LOCAL paths; the ids are obtained immediately before
+  // submission. That ordering is the whole point — an id names a slot in the
+  // peer's TTL-swept staging area, so a marker holding one would reconcile after
+  // a restart into a confident reference to bytes that are gone.
+  describe('conditioning images', () => {
+    const png = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.from('init-image-bytes'),
+    ]);
+    const ASSET_ID = federatedMediaAssetId('consumer-instance', sha256(png));
+
+    const conditionedParams = () => {
+      writeFileSync(join(tempImageDir, 'init.png'), png);
+      const base = params();
+      return {
+        ...base,
+        remoteMedia: {
+          ...base.remoteMedia,
+          inputAssets: [{ role: 'initImage', path: 'init.png' }],
+        },
+      };
+    };
+
+    const respondWith = (onSubmit) => {
+      transport.fetch.mockImplementation(async (url, options) => {
+        if (url.endsWith('/assets') && options.method === 'POST') {
+          return jsonResponse({
+            wireVersion: 1,
+            assetId: ASSET_ID,
+            sha256: sha256(png),
+            sizeBytes: png.length,
+            mimeType: 'image/png',
+            expiresAt: '2026-08-22T18:00:00.000Z',
+          }, 201);
+        }
+        if (url.endsWith('/jobs') && options.method === 'POST') return onSubmit(options);
+        throw new Error(`Unexpected test URL: ${url}`);
+      });
+    };
+
+    it('uploads the bytes with their digest, then submits the id in their place', async () => {
+      respondWith(() => jsonResponse(providerJob('canceled'), 202));
+      const terminal = captureTerminal(LOCAL_JOB_ID);
+      await generateImage(conditionedParams()).catch(() => {});
+      await terminal;
+
+      const upload = transport.fetch.mock.calls.find(([url]) => url.endsWith('/assets'));
+      expect(upload[1].headers).toMatchObject({
+        'Content-Type': 'image/png',
+        'X-Content-SHA256': sha256(png),
+      });
+      expect(Buffer.from(upload[1].body)).toEqual(png);
+
+      const submission = transport.fetch.mock.calls
+        .find(([url, options]) => url.endsWith('/jobs') && options.method === 'POST');
+      expect(JSON.parse(submission[1].body).initImage).toEqual({ assetId: ASSET_ID });
+      // The local path is machine-local routing state and never crosses.
+      expect(submission[1].body).not.toContain('init.png');
+    });
+
+    // A render can legitimately name one file twice — two identical reference
+    // images, or a video source frame reused as the last frame. Every path is
+    // staged concurrently, so the per-run memo has to hold the in-flight upload
+    // rather than the finished id, or both copies transfer the same bytes.
+    it('stages a repeated conditioning path once', async () => {
+      writeFileSync(join(tempImageDir, 'init.png'), png);
+      transport.fetch.mockImplementation(async (url, options) => {
+        if (url.includes('/assets/')) return jsonResponse({ code: 'MEDIA_PROVIDER_ASSET_NOT_FOUND' }, 404);
+        if (url.endsWith('/assets') && options.method === 'POST') {
+          return jsonResponse({
+            wireVersion: 1,
+            assetId: ASSET_ID,
+            sha256: sha256(png),
+            sizeBytes: png.length,
+            mimeType: 'image/png',
+            expiresAt: '2026-08-22T18:00:00.000Z',
+          }, 201);
+        }
+        if (url.endsWith('/jobs') && options.method === 'POST') return jsonResponse(providerJob('canceled'), 202);
+        throw new Error(`Unexpected test URL: ${url}`);
+      });
+
+      const base = params();
+      const terminal = captureTerminal(LOCAL_JOB_ID);
+      await generateImage({
+        ...base,
+        remoteMedia: {
+          ...base.remoteMedia,
+          inputAssets: [
+            { role: 'referenceImages', path: 'init.png' },
+            { role: 'referenceImages', path: 'init.png' },
+          ],
+        },
+      }).catch(() => {});
+      await terminal;
+
+      const uploads = transport.fetch.mock.calls
+        .filter(([url, options]) => url.endsWith('/assets') && options.method === 'POST');
+      expect(uploads).toHaveLength(1);
+      // Both slots still resolve — deduping the transfer must not drop a ref.
+      const submission = transport.fetch.mock.calls
+        .find(([url, options]) => url.endsWith('/jobs') && options.method === 'POST');
+      expect(JSON.parse(submission[1].body).referenceImages)
+        .toEqual([{ assetId: ASSET_ID }, { assetId: ASSET_ID }]);
+    });
+
+    // Content addressing only pays off if BOTH sides can compute the address.
+    // The consumer derives the id from its own instance id and the file digest,
+    // asks, and sends nothing when the peer already has it — which is what makes
+    // a reconcile after a restart, or a second render from the same init image,
+    // cost one small GET instead of up to 32 MiB.
+    it('asks before sending, and skips the upload when the peer already has the bytes', async () => {
+      transport.fetch.mockImplementation(async (url, options) => {
+        if (url.includes('/assets/')) {
+          return jsonResponse({
+            wireVersion: 1,
+            assetId: ASSET_ID,
+            sha256: sha256(png),
+            sizeBytes: png.length,
+            mimeType: 'image/png',
+            expiresAt: '2026-08-22T18:00:00.000Z',
+          });
+        }
+        if (url.endsWith('/jobs') && options.method === 'POST') return jsonResponse(providerJob('canceled'), 202);
+        throw new Error(`Unexpected test URL: ${url}`);
+      });
+
+      const terminal = captureTerminal(LOCAL_JOB_ID);
+      await generateImage(conditionedParams()).catch(() => {});
+      await terminal;
+
+      expect(transport.fetch.mock.calls.some(([url, options]) =>
+        url.endsWith('/assets') && options?.method === 'POST')).toBe(false);
+      const submission = transport.fetch.mock.calls
+        .find(([url, options]) => url.endsWith('/jobs') && options.method === 'POST');
+      expect(JSON.parse(submission[1].body).initImage).toEqual({ assetId: ASSET_ID });
+    });
+
+    // A provider echoing back a digest that is not ours means the bytes it
+    // stored are not the bytes we sent; rendering from them would produce a
+    // plausible image of the wrong thing.
+    it('fails closed when the provider’s asset receipt does not match the sent bytes', async () => {
+      transport.fetch.mockImplementation(async (url) => {
+        if (!url.endsWith('/assets')) throw new Error(`Unexpected test URL: ${url}`);
+        return jsonResponse({
+          wireVersion: 1,
+          assetId: `${'0'.repeat(16)}-${'b'.repeat(64)}`,
+          sha256: 'b'.repeat(64),
+          sizeBytes: png.length,
+          mimeType: 'image/png',
+          expiresAt: '2026-08-22T18:00:00.000Z',
+        }, 201);
+      });
+
+      const terminal = captureTerminal(LOCAL_JOB_ID);
+      await generateImage(conditionedParams()).catch(() => {});
+      const outcome = await terminal;
+      expect(outcome.type).toBe('failed');
+      expect(transport.fetch.mock.calls.some(([url, options]) =>
+        url.endsWith('/jobs') && options?.method === 'POST')).toBe(false);
+    });
+
+    // The marker is persisted, user-editable queue state, so a path it names
+    // must still resolve inside the approved image roots at submit time.
+    it('refuses to submit when the conditioning image no longer resolves', async () => {
+      respondWith(() => jsonResponse(providerJob('queued'), 202));
+      const base = params();
+      const terminal = captureTerminal(LOCAL_JOB_ID);
+      await generateImage({
+        ...base,
+        remoteMedia: {
+          ...base.remoteMedia,
+          inputAssets: [{ role: 'initImage', path: 'vanished.png' }],
+        },
+      }).catch(() => {});
+      const outcome = await terminal;
+      expect(outcome.type).toBe('failed');
+      expect(transport.fetch).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects a provider response whose kind is not image', async () => {

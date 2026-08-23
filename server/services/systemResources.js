@@ -188,7 +188,7 @@ function downloadedModelInventory({
     sizeBytes: model.size,
     sizeIsEstimate: false,
     loaded: false,
-    managePath: '/media/models',
+    managePath: '/models/media',
     action: { type: 'hf-model', dirName: model.id },
   }));
   const loras = (loraStorage?.loras || []).map((model) => ({
@@ -201,7 +201,7 @@ function downloadedModelInventory({
     risk: 'high',
     cleanupReason: 'A trained or imported LoRA adapter may be the only copy and can take hours to reproduce.',
     loaded: false,
-    managePath: '/media/loras',
+    managePath: '/models/loras',
     action: { type: 'lora', filename: model.filename },
   }));
   const ollamaApi = new Map((ollamaStatus?.models || []).map((model) => [model.id, model]));
@@ -225,7 +225,7 @@ function downloadedModelInventory({
       loaded: !ollamaResidencyError && ollamaLoadedIds.has(stored.id),
       residencyUnknown: Boolean(ollamaResidencyError),
       inventoryUnknown: !Array.isArray(ollamaStored) || Boolean(stored.inventoryUnknown),
-      managePath: '/settings/local-llm',
+      managePath: '/models/llms',
       action: ollamaStatus?.available
         ? { type: 'local-model', backend: 'ollama', modelId: stored.id }
         : null,
@@ -276,7 +276,7 @@ function downloadedModelInventory({
       residencyUnknown: Boolean(lmStudioResidencyError),
       inventoryUnknown: !Array.isArray(lmStudioStored) || Boolean(stored.inventoryUnknown),
       cleanupReason: 'Deleting this entry removes the whole LM Studio model folder, including every downloaded quantization in it.',
-      managePath: '/settings/local-llm',
+      managePath: '/models/llms',
       action: { type: 'local-model', backend: 'lmstudio', modelId: stored.id },
     };
   });
@@ -436,25 +436,25 @@ export async function buildSystemResourceReport() {
     {
       id: 'huggingface', label: 'Hugging Face models', kind: 'model',
       sizeBytes: finiteOrNull(hf?.totalBytes), status: backendState(hf),
-      managePath: '/media/models', protected: false,
+      managePath: '/models/media', protected: false,
       note: 'Image, video, audio, and text-encoder weights in the shared Hub cache.',
     },
     {
       id: 'loras', label: 'LoRA adapters', kind: 'model',
       sizeBytes: finiteOrNull(loraStorage?.totalBytes), status: backendState(loraStorage),
-      managePath: '/media/loras', protected: false,
+      managePath: '/models/loras', protected: false,
       note: 'Fine-tuning adapters in PortOS data. This total also appears inside PortOS data.',
     },
     {
       id: 'ollama', label: 'Ollama models', kind: 'model',
       sizeBytes: finiteOrNull(ollamaBytes), status: backendState(ollamaBytes),
-      managePath: '/settings/local-llm', protected: false,
+      managePath: '/models/llms', protected: false,
       note: 'Local language-model manifests and shared blobs.',
     },
     {
       id: 'lmstudio', label: 'LM Studio models', kind: 'model',
       sizeBytes: finiteOrNull(lmStudioBytes), status: backendState(lmStudioBytes),
-      managePath: '/settings/local-llm', protected: false,
+      managePath: '/models/llms', protected: false,
       note: 'Downloaded GGUF or MLX model directories.',
     },
     {

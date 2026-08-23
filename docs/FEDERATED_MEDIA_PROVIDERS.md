@@ -89,7 +89,21 @@ An API caller deliberately selects remote execution on Music generation by sendi
 }
 ```
 
-`POST /api/music/generate` performs the fresh capacity preflight before returning the normal queued media-job response. Omitting `mediaProviderPeerId` keeps the existing local-engine behavior. The peer id and free-form `prompt` stay local. The worker renders the provider prompt only from the profile's enum values; non-empty remote lyrics are rejected so arbitrary personal text cannot cross the federation boundary.
+`POST /api/music/generate` performs the fresh capacity preflight before returning the normal queued media-job response. Omitting `mediaProviderPeerId` keeps the existing local-engine behavior. The peer id and free-form `prompt` stay local — the worker renders the provider prompt only from the profile's enum values.
+
+**Lyrics do cross**, and the asymmetry between the two text fields is deliberate. A style/mood/instrument profile renders the prompt at no expressive cost, so the privacy-safe canonical form is required there; lyrics *are* the words, so no alphabet encodes them without discarding them (ADR [conditioning crosses to an allowlisted peer](decisions/2026-08-22-federated-media-input-assets.md) rule 2). Add a `lyrics` field alongside the profile to condition a remote render.
+
+Sending them needs **two** signals to agree, and they live at different levels of the payload because they answer different questions:
+
+| Signal | Where | Means | Absent |
+|---|---|---|---|
+| `lyrics` | on the capability | the **model** sings | — (always present) |
+| the `lyrics` feature | `features` at the status root | **this provider's build** carries lyrics on the wire | reads as `false` |
+| `acceptsLyrics` | on the capability | superseded duplicate of the feature, kept for one overlap release | reads as `false` |
+
+A provider predating lyrical federation advertises `lyrics: true` for MiniMax Music 3 and then rejects the field at submission, so absence must fail closed or every remote lyrical render becomes a 400 the user cannot act on. When either half is missing, `POST /api/music/generate` refuses with `400 MEDIA_PROVIDER_LYRICS_UNSUPPORTED` naming which one, and Music Studio pins Instrumental only with the reason — it never silently renders a wordless take of a song the user wrote words for.
+
+Consumers ask through `federatedMediaSupports(status, feature, capability)` (`server/lib/federatedMediaWire.js`, mirrored in `client/src/lib/federatedMediaReadiness.js`) rather than reading either field directly, so the fail-closed reasoning lives in one place and the overlap fallback retires from one place.
 
 
 ### Remote image and video renders
@@ -113,19 +127,64 @@ queued media-job response, with `mode: null` (no local backend is rendering
 it) and the peer id echoed back as `mediaProviderPeerId`. Omitting
 `mediaProviderPeerId` keeps the existing local/cloud behavior byte for byte.
 
-Wire v1 is **text-to-image and text-to-video only**. A federated request that
-carries an init image, reference images, keyframes, a clip to extend, IC-LoRA
-references, LoRA weights, a chained (multi-chunk) render, or a non-`text` render
-mode is rejected with `400 MEDIA_PROVIDER_INPUT_UNSUPPORTED` naming what has to
-go. That is deliberate: silently dropping the source image a user pinned would
-return a plausible render of the wrong thing. Input-asset transfer is a later
-slice.
+**Conditioning images cross; models and chain state do not.** An init image,
+reference images, and a video start/end frame are what the render is *of*, so
+they travel with it (ADR [conditioning crosses to an allowlisted
+peer](./decisions/2026-08-22-federated-media-input-assets.md) rule 1) — see
+[Upload a conditioning image](#upload-a-conditioning-image) for the mechanism.
+Everything else is still rejected with `400 MEDIA_PROVIDER_INPUT_UNSUPPORTED`
+naming what has to go, and each refusal is a recorded decision rather than a
+missing feature:
+
+| Input | Crosses? | Why |
+|---|---|---|
+| init image, reference images, start/end frame | **yes**, when the model advertises the role | conditioning — the render is defined by it |
+| LoRA weights | no | a LoRA is a **model**; remote model installation is out of scope (rule 3) |
+| keyframes, clip to extend, IC-LoRA refs, chained chunks | no | multi-step **chain state** this machine sequences (rule 4) |
+| an uploaded (not gallery-saved) video frame | no | still in the multipart temp dir when the federated branch runs — save it to the gallery first |
+
+Refusing beats dropping throughout: silently discarding the source image a user
+pinned returns a plausible render of the wrong thing.
 
 Unlike audio, image and video prompts cross as submitted rather than being
 re-rendered from a fixed vocabulary. Why that is not a hole in the "no PII on
-federation" rule, what stays absolutely prompt-free, and what a future standing
+federation" rule, what stays absolutely prompt-free, and what a standing
 (unattended) route may not do are all decided in ADR
 [federated visual prompts](./decisions/2026-08-20-federated-visual-prompts.md).
+
+### Picking a target in the UI
+
+Image Gen, Video Gen and the Music Studio panel all carry the same
+**Generation target** dropdown — `This instance` plus every peer switched on
+as a media provider. Picking a peer swaps the local model dropdown for the
+peer's advertised models and replaces the local runtime gates with the peer's
+own readiness.
+
+One resolver answers "is this peer usable right now?" for all three surfaces
+(`client/src/hooks/useFederatedMediaTarget.js` over
+`client/src/lib/federatedMediaReadiness.js`), applying the same gates, in the
+same order, that `assertFederatedMediaProviderSelection` applies server-side.
+Two consequences worth knowing:
+
+- **Only the intersection is offered.** A model has to be on this machine’s
+  per-kind allowlist *and* advertised by the peer. An allowlisted model the
+  peer stops advertising, and a model the peer offers that was never
+  allowlisted here, are both un-pickable — with different remedies said out
+  loud, since the fixes are on different machines.
+- **The verdict is re-derived at submit time.** A capacity window expires on
+  the clock, not on a state change, so the reading behind an enabled Generate
+  can already be stale by the time it is clicked. The click re-runs the gates
+  and refuses locally rather than letting the peer reject work the user
+  already committed to.
+
+A form holding an input the **selected peer model** cannot take blocks Generate
+and names what has to be cleared — per role, against that model's advertised
+`inputAssets`, with an absent block reading as "accepts nothing" so a peer on an
+older build is never offered a render it would reject. The mirror case is
+handled too: a model that can only render FROM an image (an edit-only image
+model, a video model with no text mode) blocks until one is supplied. Nothing is
+cleared for you: the inputs stay filled, so switching the target back to
+`This instance` renders exactly what was set up.
 
 ### Video frame and canvas constraint negotiation
 
@@ -167,7 +226,31 @@ prevent. Their routing lives in this instance's own settings instead:
 
 Set it under **Instances → Unattended render routing**, which offers only
 (peer, model) pairs that are both locally allowlisted and currently advertised
-by that peer. A kind set to `null` (the default) renders locally.
+by that peer. A kind set to `null` (the default) renders locally. The card also
+reports what the routed peer is saying right now — readiness plus the shared
+queue occupancy — through the same `resolvePeerMediaReadiness` /
+`summarizePeerMediaQueue` helpers the Instances peer card, System Health and the
+interactive pickers read, so no surface can disagree with another.
+
+**The route is validated where it is SAVED, not only where it is used.**
+`PUT /api/settings` refuses a `federation.mediaRouting.<kind>` naming a peer that
+is unknown (`404 MEDIA_PROVIDER_PEER_NOT_FOUND`), switched off
+(`409 MEDIA_PROVIDER_PEER_DISABLED`), not enabled as a media provider
+(`409 MEDIA_PROVIDER_NOT_CONFIGURED`), not allowlisted for that exact
+engine/model pair (`403 MEDIA_PROVIDER_MODEL_NOT_ALLOWED`), or reachable outside
+the tailnet (`403 MEDIA_ROUTING_PEER_NOT_TAILNET`). None of those is a transient
+capacity problem — a route in any of those states can never run — and unattended
+work has no human at the moment it fails, so the refusal belongs at the save,
+where there is one (`server/services/federatedMedia/routingPolicy.js`).
+
+Only *durable configuration* is checked at save time. Live capacity is not: a
+provider is routinely asleep, busy, or mid-probe when its route is configured,
+and gating the save on a fresh snapshot would make the card unusable at exactly
+the moment someone sits down to set it up. Freshness, queue admission, and
+per-model readiness stay on the enqueue path, which re-checks all of them — and
+re-checks the tailnet gate per request, since a peer's host can be edited after
+the route is saved. **Clearing a route is always allowed**, whatever became of
+its peer, so a bad configuration can never become permanent.
 
 An unattended route inherits the same text-to-image/text-to-video boundary the
 interactive routes enforce. A job carrying an init image, reference images,
@@ -194,8 +277,9 @@ settles the scene through its normal failure path instead of leaving it stuck in
 `rendering`.
 
 **A standing route requires a Tailscale peer.** A non-tailnet peer is refused
-with `403 MEDIA_ROUTING_PEER_NOT_TAILNET`, and the Instances picker does not
-offer one. Interactive routing is unchanged — the difference is review cadence:
+with `403 MEDIA_ROUTING_PEER_NOT_TAILNET` — on save and again on every enqueue —
+and the Instances picker does not offer one. Interactive routing is unchanged
+— the difference is review cadence:
 a standing route exports every future prompt of its kind with nobody looking, so
 a misconfigured counterparty is a permanent leak rather than a one-time mistake,
 and `peerFetch`'s `rejectUnauthorized: false` leaves a plain-LAN or non-`.ts.net`
@@ -205,7 +289,8 @@ reads it before failing to answer. Required by ADR
 [federated visual prompts](./decisions/2026-08-20-federated-visual-prompts.md)
 (rule 5); the gate is its own fail-closed predicate (`server/lib/tailnetPeer.js`)
 rather than a re-export of the probe-deferral heuristic, so tuning that heuristic
-can never widen this boundary.
+can never widen this boundary. The browser ports it as `client/src/lib/tailnetPeer.js`
+only so the picker can explain an absent option; the server never trusts that copy.
 
 Three properties are worth stating explicitly:
 
@@ -263,7 +348,8 @@ An unreadable capacity report renders as unknown rather than as an idle machine.
 
 The **peer** half lists every peer enabled as a media provider with its
 readiness state, allowlisted kinds, the peer's own shared queue depth against its
-`maxQueuedJobs`, and how long ago it was probed — the same state vocabulary and
+`maxQueuedJobs`, how many of those jobs it runs in parallel, which kinds are
+occupying its lanes, and how long ago it was probed — the same state vocabulary and
 remedy text the Instances peer card uses, from one shared resolver
 (`client/src/lib/federatedMediaReadiness.js`), so the two screens cannot
 disagree.
@@ -310,11 +396,167 @@ All successful JSON responses include `wireVersion: 1`. The version is also fixe
 
 `GET /status` is computed live and carries `generatedAt` plus `staleAfterMs`. Consumers must stop assigning new work after that window instead of treating stale capacity as available. A provider timestamp more than 30 seconds in the future is also rejected as unknown clock state rather than extending capacity indefinitely.
 
+#### `features` — what the provider's BUILD speaks
+
+```jsonc
+{
+  "wireVersion": 1,
+  "features": ["lyrics", "inputAssets"],   // optional; absent = the wire-v1 baseline
+  "capabilities": [ /* … */ ]
+}
+```
+
+Some wire capabilities are properties of the **sender**, not of any one model:
+whether the payload can carry lyrics, or conditioning images, is a fact about
+the code the provider is running. Those live in one `features` list at the
+status root rather than as a boolean stamped onto every capability. Per-model
+facts stay on the capability (`lyrics` — does this engine sing; `inputAssets.roles`
+— which conditioning slots this model takes), and a consumer must satisfy
+**both** before it sends the field.
+
+The list is emitted verbatim from what the build implements — a feature is
+listed because the code shipped, never because a configured model happens to use
+it. That is what lets a consumer tell "this peer predates conditioning" apart
+from "this peer speaks conditioning but has only text-only models allowlisted",
+which a per-capability boolean could not: both looked like an absent field.
+
+`features` is optional and additive in both directions, so it needs no
+`SCHEMA_VERSIONS` bump. **Absent reads as the wire-v1 baseline** — no lyrics, no
+conditioning — for the same fail-closed reason `concurrency` and `byKind` read
+absent as unknown: a provider that never shipped the handling rejects the field
+at submission, so inferring consent from silence turns every such render into a
+400 the user cannot act on.
+
+A consumer **filters** this list rather than validating it, per member:
+
+- a feature name it does not recognize is carried through and simply never matched;
+- a member that is not a short identifier token — prose, a number, `null` — is dropped, and costs its neighbours nothing;
+- only a `features` value that is not a bounded array at all degrades to absent.
+
+None of those invalidate the status, and that matters more than it looks. A
+strict element schema fails before any filtering runs, so ONE bad string would
+take a peer's entire status offline — turning "ignores a feature we have not
+heard of" into "cannot read this peer", the failure this list was introduced to
+prevent. Degrading to absent rather than `[]` matters for the same reason: an
+empty list is a peer positively denying every feature, which is a stronger claim
+than a malformed field has earned.
+
+Consumers ask `federatedMediaSupports(status, feature, capability)` rather than
+testing the list inline, which is also where the overlap fallback to the legacy
+per-capability `acceptsLyrics` lives — one place to retire it from once no
+supported peer sends it (#4850).
+
 CUDA has three states: `available`, `absent`, and `unknown`. A CUDA model is ready only when the state is positively `available`; a failed or ambiguous probe blocks admission. Runtime, host-platform, exact fixed-checkpoint readiness, and queue capacity are similarly fail-closed.
 
 The configured `maxQueuedJobs` is conservative: all queued/running work that consumes this machine's media resources counts against it. Outgoing proxy jobs are excluded because they consume another peer's capacity; counting them could make two idle peers report busy while waiting on each other.
 
+### Drain rate and per-kind occupancy
+
+The queue block also reports how fast that backlog drains, because a depth alone
+cannot say:
+
+| Field | Meaning |
+|-------|---------|
+| `totalActive` | every queued/running local media job, including kinds this contract does not federate |
+| `providerActive` / `queued` / `running` | the subset owned by federated callers — a *share* of the above, never the whole picture |
+| `maxQueuedJobs` | the admission bound `accepting` is computed against |
+| `concurrency` | how many jobs run at once on the lane a federated submission lands on |
+| `byKind` | `{running, queued}` for each negotiated kind currently holding a lane |
+
+Two jobs ahead of a submission mean two renders' wait on a serialized lane and
+roughly none on a parallel one; `concurrency` is what tells those apart. It is
+the width of the one lane a federated job runs in, **not** a sum across lanes —
+the lanes are alternatives, so a machine with a wide parallel cloud-CLI lane
+must not claim that width for GPU work that serializes. Every job this contract
+carries is a local-engine render, so today that is the serialized GPU lane.
+
+`byKind` lists only the negotiated kinds currently holding a lane; with the
+block present, an absent kind is idle. It need not sum to `totalActive`, which
+also counts local work of kinds this contract does not federate (LoRA training)
+occupying the same lanes.
+
+`byKind` and `totalActive` describe the whole machine, while `running`/`queued`
+describe only the federated share of it — so the UI labels the federated
+numbers rather than rendering them bare. An unlabelled `0 running` beside
+`audio 1 running` would say the peer is simultaneously busy and idle.
+
+Both fields were added after wire v1 shipped, so both are optional: a provider
+on an older build omits them and a consumer must read that absence as
+**unknown**, never as zero. The UI drops the segment rather than rendering a
+lane as idle that the peer never reported on.
+
 Status never includes prompts, lyrics, credentials, local paths, commission records, or private creative metadata.
+
+### Upload a conditioning image
+
+Conditioning bytes go up **before** the job that references them, through their
+own endpoint — never inline in a job body, and never as a filesystem path (ADR
+[conditioning crosses to an allowlisted peer](./decisions/2026-08-22-federated-media-input-assets.md)
+rule 1):
+
+```
+POST /api/federation/media/v1/assets
+Content-Type: image/png            # png | jpeg | webp
+X-Content-SHA256: <hex digest of the body>
+<raw bytes>
+```
+
+The provider hashes the body itself and refuses a mismatch
+(`MEDIA_PROVIDER_ASSET_INTEGRITY`) — a truncated transfer must fail rather than
+render something subtly different. It also sniffs the magic bytes and refuses a
+body that contradicts its declared type, because the header is the caller's word
+for what this is while the bytes are what the generator will open. The reply is
+a receipt:
+
+```json
+{
+  "wireVersion": 1,
+  "assetId": "1f0c8a3b9d2e4a67-<sha256>",
+  "sha256": "<sha256>",
+  "sizeBytes": 284119,
+  "mimeType": "image/png",
+  "expiresAt": "2026-08-22T18:00:00.000Z"
+}
+```
+
+A job body then names `{ "assetId": "…" }` in `initImage`, `referenceImages`,
+`sourceImage`, or `lastImage` — only roles the capability's `inputAssets.roles`
+advertises, and at most `inputAssets.maxCount` of them. An id that is not staged
+(expired, swept, or never uploaded) fails the submission with
+`410 MEDIA_PROVIDER_ASSET_NOT_FOUND` **before** the job is queued, so the
+consumer can re-upload and retry rather than watching a job die minutes later.
+
+Four properties are worth knowing:
+
+- **Content-addressed, and the consumer asks first.** The id is
+  `<callerHash>-<sha256>`, derivable by BOTH sides — so before sending anything a
+  consumer computes the id from its own instance id plus a streamed file digest
+  and `GET`s it. A hit costs one small request instead of up to 32 MiB, which is
+  what makes a reconcile after a restart, or a second render from the same init
+  image, nearly free. On a miss it uploads; an identical re-upload refreshes the
+  expiry rather than rewriting the file.
+- **Caller-scoped.** The id's first half is derived from the *authenticated*
+  caller — re-derived on every reference, never parsed from the request — so one
+  peer cannot reach another's staged asset even given its exact id. Absent,
+  expired, and someone else's all answer the same 404.
+- **TTL-bounded, but never out from under a live job.** Staged bytes live 6
+  hours under `data/federated-media-inbox/`, swept opportunistically as work
+  arrives — except that the sweep first pins the conditioning of every queued or
+  running job. The age gate is a backstop; a job waiting behind a long render or
+  a first-run model download outlives it easily, and deleting its source image
+  would leave the runner unable to open a file the consumer is still waiting on.
+  The Data Manager purge for this category refuses on the same predicate, so it
+  can never be more permissive than the sweep. The directory sits outside every
+  media root the gallery and the sync layer read, and is excluded from backups —
+  it holds another machine's data, not this install's.
+- **Consumers persist paths, not ids.** A queued job's marker records the LOCAL
+  source paths; ids are obtained immediately before each submission. An id names
+  a slot in a TTL-swept area, so a marker holding one would reconcile into a
+  confident reference to bytes that are gone.
+
+A provider that predates this ADR omits `inputAssets` from its capabilities
+entirely, and **absence reads as unsupported** — a consumer refuses to send
+conditioning rather than discovering at submit time that the peer rejects it.
 
 ### Submit a job
 
@@ -330,11 +572,11 @@ Send a unique, stable `Idempotency-Key` header with the canonical instrumental r
 }
 ```
 
-Unknown fields, free-form prompts, and non-empty lyrics are rejected. The contract accepts no source URL, filesystem path, shell argument, provider credential, or arbitrary proxy target. Keeping the wire shape as prompt text lets an older wire-v1 provider accept a newer consumer, while the canonical grammar lets a newer provider fail closed on arbitrary text from an older consumer.
+Unknown fields and free-form style prompts are rejected. Lyrics are accepted for a model whose capability reports `lyrics: true`, and refused with `400 MEDIA_PROVIDER_LYRICS_UNSUPPORTED` otherwise — dropping them would render a plausible take of the wrong thing. The contract accepts no source URL, filesystem path, shell argument, provider credential, or arbitrary proxy target. Keeping the wire shape as prompt text lets an older wire-v1 provider accept a newer consumer, while the canonical grammar lets a newer provider fail closed on arbitrary text from an older consumer.
 
 Within the queue's retained job window, repeating the same caller/key/body returns the original job without enqueuing again. Reusing that key with a different body returns `409 MEDIA_PROVIDER_IDEMPOTENCY_CONFLICT`. Job lookup and cancellation return the same not-found response for an unknown id and another peer's id.
 
-The provider persists accepted work in the existing machine-local `data/media-jobs.json` queue. No commission, CoS, schedule, taste, Digital Twin record, free-form prompt, or lyrics are copied to the provider. Its queue contains only the canonical instrumental prompt derived from fixed musical descriptors.
+The provider persists accepted work in the existing machine-local `data/media-jobs.json` queue. No commission, CoS, schedule, taste, Digital Twin record, or free-form style prompt is copied to the provider — its queue holds the canonical prompt derived from fixed musical descriptors, plus the submitted lyrics when the caller sent them.
 
 ### Download and verify a result
 
@@ -360,8 +602,18 @@ Each kind then registers the render exactly as a local one would, which is what 
 
 The sidecar and history row record the render's provenance as `federatedPeerId` / `federatedJobId` — instance-level identifiers already shared across the federation, never a hostname, address, or credential.
 
-A remote job's conditioning prompt is persisted **only inside its versioned `remoteMedia` marker**, never in top-level job params. That is what makes a rolled-back install fail closed: an older build cannot route the marker, so it falls through to the local generator with an empty prompt and no configured runtime instead of quietly re-rendering the job on local hardware. The queue's public job projection rebuilds the prompt for display without exposing peer routing state.
+A remote job's conditioning — the prompt, and an audio job's lyrics — is persisted **only inside its versioned `remoteMedia` marker**, never in top-level job params. That is what makes a rolled-back install fail closed: an older build cannot route the marker, so it falls through to the local generator with an empty prompt and no configured runtime instead of quietly re-rendering the job on local hardware. The queue's public job projection rebuilds the prompt for display without exposing peer routing state.
 
 ## Current boundary
 
-Wire v1 carries instrumental audio, text-to-image, and text-to-video. Interactive remote selection is exposed through the Music Studio panel and the generation APIs rather than a peer picker on the Image Gen / Video Gen pages; unattended work routes through **Instances → Unattended render routing**. Still remaining from #4348: those Image Gen / Video Gen pickers, a privacy-preserving design for remote lyrical conditioning (which is also what keeps unattended audio local), input-asset transfer (init/reference images, LoRAs, chained renders), and multi-provider fairness/failover.
+Wire v1 carries lyrical and instrumental audio, and image/video renders both text-only and conditioned on an init, reference, or start/end frame. Interactive remote selection is exposed on the Image Gen, Video Gen and Music Studio surfaces; unattended work routes through **Instances → Unattended render routing**.
+
+The boundary's remaining edges are **decisions, not gaps** — see ADR [conditioning crosses to an allowlisted peer](decisions/2026-08-22-federated-media-input-assets.md):
+
+- **LoRA weights never cross** (rule 3). A LoRA is a model, not conditioning, and remote model installation is out of scope for federation. Install it on the provider and allowlist a model that uses it.
+- **Multi-step chain state never crosses** (rule 4) — a source video to extend, chained chunks, IC-LoRA references. The consumer sequences the chain; a provider holding one step of it cannot see the rest.
+- **No automatic fairness or failover** (rule 5). A job that silently re-targets another peer has changed both where the data went and which model produced the result.
+
+- **No fixed-vocabulary "visual profile"** (rule 6). Any enum small enough to be privacy-safe cannot express what the user asked for; it would not protect the prompt so much as discard it.
+
+The first two are refused with `400 MEDIA_PROVIDER_INPUT_UNSUPPORTED` naming what has to go. Changing any of them needs a new ADR saying what changed about the reason — not a reading of the existing one.

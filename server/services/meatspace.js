@@ -282,7 +282,7 @@ export async function getBirthDate() {
 }
 
 // Like getBirthDate, but reports whether the config read was TRUSTWORTHY (see
-// readJSONFileStrict / CLAUDE.md's "Sentinel + validate" rule). A corrupt/unreadable
+// readJSONFileStrict / AGENTS.md's "Sentinel + validate" rule). A corrupt/unreadable
 // config.json yields `{ birthDate: null, readable: false }` — distinct from a genuinely
 // unset date (`readable: true`) — so consumers (the character enrichment, #2757) can tell a
 // user "your birth date is unreadable, fix it" instead of "set your birth date". An ENOENT

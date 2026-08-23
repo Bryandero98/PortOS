@@ -229,7 +229,7 @@ export async function callProviderAISimple(provider, model, prompt, { temperatur
 // EXPORTED FUNCTIONS
 // =============================================================================
 //
-// LLM TRIGGER CONTRACT (no-cold-bootstrap policy — see CLAUDE.md "AI Provider
+// LLM TRIGGER CONTRACT (no-cold-bootstrap policy — see AGENTS.md "AI Provider
 // Usage Policy"). The insights source data (genome, blood tests, taste profile,
 // Apple Health) is sensitive, so provider calls must be *explicitly* user-driven:
 //

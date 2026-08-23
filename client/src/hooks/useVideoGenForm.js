@@ -56,8 +56,14 @@ const editableRemixModel = (models, defaultModelId) => {
  *   - `availableLoras` — the installed LoRA library, for name resolution.
  *   - `grokEnabled` — the Settings → Image Gen toggle that reveals the
  *     Local/Grok backend switch.
+ *   - `remoteSubmissionFields` — `{ mediaProviderPeerId, mediaProviderEngine,
+ *     modelId }` from `useFederatedMediaTarget` when the user picked a peer as
+ *     the render target (#4348), else null. Present, it makes
+ *     `buildGeneratePayload()` emit the text-to-video-only shape the federated
+ *     wire accepts — kept here rather than in the page so there stays exactly
+ *     one builder for what `server/routes/videoGen.js` validates.
  */
-export function useVideoGenForm({ models, status, availableLoras, grokEnabled }) {
+export function useVideoGenForm({ models, status, availableLoras, grokEnabled, remoteSubmissionFields = null }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const incomingSourceImage = searchParams.get('sourceImageFile');
   const incomingAudioFilename = searchParams.get('audioFilename');
@@ -338,7 +344,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   }, [sourceImageFile, sourceUploadUrl, modelId, models]);
 
   // ?lora=<filename> preselects a video LoRA when the user clicks "Test" on a
-  // video LoRA card in /media/loras. Mirrors the ImageGen ?lora= handoff:
+  // video LoRA card in /models/loras. Mirrors the ImageGen ?lora= handoff:
   // defer until the library has loaded (for name/scale/triggers), append the
   // LoRA's trigger words, then strip the param so a refresh doesn't re-add it.
   useEffect(() => {
@@ -355,7 +361,7 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
       // ltx2 model is compatible, so the modelId-validation effect won't undo
       // this. A non-video LoRA needs no switch (the image picker tolerates it).
       // Family-agnostic on BOTH sides: an incoming H3 LoRA must be recognized as
-      // video (else the Test handoff from /media/loras lands in the no-op
+      // video (else the Test handoff from /models/loras lands in the no-op
       // branch), and the model it switches to must be one whose family matches,
       // not an ltx2 model that would reject it.
       const incomingFamily = loraFamilyOf(match);
@@ -1220,25 +1226,31 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
   // inline Generate button and by enqueue, so the two paths stay in lockstep.
   const isGrok = grokEnabled && backend === 'grok';
 
+  // A hidden mute checkbox from a prior model must not suppress H3's visible
+  // prompt-audio steering. Treat mute as effective only on a model that can
+  // actually disable its generated audio track.
+  const effectiveDisableAudio = supportsVideoAudioControls(currentModel) && disableAudio;
+  // The style preset and the no-music constraint are ENVELOPE, not content —
+  // they have to wrap a per-chunk beat exactly as they wrap the main prompt.
+  // Shipping a beat raw would render the chunks the user steered in a
+  // different style (and with the soundtrack they disabled) than the chunks
+  // that fall back to the main prompt — a visible change at every seam, which
+  // is the artifact chaining exists to avoid.
+  // Idempotent on "no music": if the text already says it, don't double-append.
+  //
+  // Hoisted out of buildGeneratePayload so the LoRA picker's trigger-word hint
+  // (#4665) can be judged against the EXACT text the render will receive. The
+  // server weaves against the enveloped prompt; a hint reading the raw textarea
+  // would contradict it whenever the envelope already supplies the token.
+  const withEnvelope = (text) => {
+    const c = composeStyledPrompt(text, negativePrompt, stylePreset);
+    return (supportsVideoAudioPromptControls(currentModel) && noMusic && !effectiveDisableAudio && !/no music/i.test(c.prompt))
+      ? `${c.prompt}\n\nno music, no soundtrack`
+      : c.prompt;
+  };
+
   const buildGeneratePayload = () => {
     const composed = composeStyledPrompt(prompt, negativePrompt, stylePreset);
-    // A hidden mute checkbox from a prior model must not suppress H3's visible
-    // prompt-audio steering. Treat mute as effective only on a model that can
-    // actually disable its generated audio track.
-    const effectiveDisableAudio = supportsVideoAudioControls(currentModel) && disableAudio;
-    // The style preset and the no-music constraint are ENVELOPE, not content —
-    // they have to wrap a per-chunk beat exactly as they wrap the main prompt.
-    // Shipping a beat raw would render the chunks the user steered in a
-    // different style (and with the soundtrack they disabled) than the chunks
-    // that fall back to the main prompt — a visible change at every seam, which
-    // is the artifact chaining exists to avoid.
-    // Idempotent on "no music": if the text already says it, don't double-append.
-    const withEnvelope = (text) => {
-      const c = composeStyledPrompt(text, negativePrompt, stylePreset);
-      return (supportsVideoAudioPromptControls(currentModel) && noMusic && !effectiveDisableAudio && !/no music/i.test(c.prompt))
-        ? `${c.prompt}\n\nno music, no soundtrack`
-        : c.prompt;
-    };
     // Beats for the LIVE chunks only — the backing array is never truncated on
     // a chunk-count change, so slicing here is what keeps a stale tail off the
     // wire. A short list is fine: the server falls back to the main prompt for
@@ -1260,6 +1272,30 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
         mode: mode === 'image' ? 'image' : 'text',
         sourceImageFile: mode === 'image' ? (sourceImageFile || '') : '',
         sourceImage: mode === 'image' ? (sourceImageUpload || '') : '',
+      };
+    }
+    if (remoteSubmissionFields) {
+      // Text-to-video only: the wire carries no source/end frame, keyframes,
+      // source clip, audio track, IC references or LoRA weights, and the page
+      // blocks submission while any of those are set rather than dropping them
+      // here. `mode` and `backend` are pinned to the only combination the
+      // provider route accepts, so a stale mode cannot ride along and 400.
+      // The peer negotiates frames/fps/canvas against its own capability
+      // (negotiateVideoConstraints), so these go as requested, not pre-snapped
+      // to a LOCAL model this render never touches.
+      return {
+        backend: 'local',
+        mode: 'text',
+        prompt: composed.prompt,
+        negativePrompt: composed.negativePrompt,
+        width: clampImageEdge(width, VIDEO_EDGE_BOUNDS),
+        height: clampImageEdge(height, VIDEO_EDGE_BOUNDS),
+        numFrames,
+        fps,
+        steps: steps || '',
+        guidanceScale: guidanceScale || '',
+        seed: seed || '',
+        ...remoteSubmissionFields,
       };
     }
     // Append "no music, no soundtrack" only when the toggle is on AND audio
@@ -1363,6 +1399,10 @@ export function useVideoGenForm({ models, status, availableLoras, grokEnabled })
     mode, handleModeChange,
     // Prompt + style
     prompt, setPrompt,
+    // The exact prompt a render would be submitted with right now (style preset
+    // + no-music envelope). The LoRA picker's #4665 trigger hint reads THIS, not
+    // the raw textarea, so it can never disagree with the server-side weave.
+    envelopedPrompt: withEnvelope(prompt),
     negativePrompt, setNegativePrompt,
     stylePreset, setStylePreset,
     remixModelFallback,

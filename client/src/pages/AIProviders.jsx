@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Gauge } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
-import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isGrokBuildCli, isLocalEndpoint, isLocalInstanceProvider, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, isOrcaRouterBackedProvider, providerRuntimeKey, providerCardState, PROVIDER_CARD_STATE } from '../utils/providers';
+import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isGrokBuildCli, isLocalEndpoint, isLocalInstanceProvider, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, gatewayForProvider, isClaudeCommandProvider, generationControlsFor, providerRuntimeKey, providerCardState, PROVIDER_CARD_STATE } from '../utils/providers';
 import useLocalModels from '../hooks/useLocalModels';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import BrailleSpinner from '../components/BrailleSpinner';
@@ -25,11 +25,11 @@ import useDrawerTab from '../hooks/useDrawerTab';
 import { FormField } from '../components/ui/FormField';
 import RuntimeInstallModal from '../components/install/RuntimeInstallModal';
 import ProviderCard from '../components/providers/ProviderCard';
-import { GrokUploadWarning, OrcaRouterKeyHint } from '../components/providers/ProviderNotices';
+import { GrokUploadWarning, GatewayKeyHint } from '../components/providers/ProviderNotices';
 import CollapsibleSection from '../components/ui/CollapsibleSection';
 
 // The two local apps an API provider can front. Their installer lives on the
-// Local LLM settings tab (it starts the service too), so the provider card
+// Models → LLMs page (it starts the service too), so the provider card
 // links there instead of offering an install of its own.
 const LOCAL_APP_LABELS = { ollama: 'Ollama', lmstudio: 'LM Studio' };
 
@@ -82,6 +82,7 @@ const PROVIDER_FIELD_RANGES = {
   contextWindow: { min: 512, max: 2097152 },
   numCtx: { min: 512, max: 1048576 },
   temperature: { min: 0, max: 2 },
+  topP: { min: 0, max: 1 },
 };
 
 const rangeMessage = (label, { min, max }, unit = '') =>
@@ -127,6 +128,10 @@ export default function AIProviders() {
   // streams from a different endpoint and is keyed by the PROVIDER whose
   // endpoint the daemon must come up on.
   const [settingUpRuntime, setSettingUpRuntime] = useState(null);
+  // Provider ids whose local daemon is mid-relaunch onto the model id they send
+  // (the "Serve as …" fix). A relaunch reloads the weights, so the button has to
+  // stay disabled for the tens of seconds a large GGUF takes to come back.
+  const [servingModel, setServingModel] = useState({});
   // Ollama / LM Studio install state (and the model lists the editor's pickers
   // fold in) — fetched once here rather than inside ProviderForm so opening the
   // editor doesn't re-request it.
@@ -222,7 +227,7 @@ export default function AIProviders() {
   // Local-daemon readiness (is llama-server / Ollama actually up and serving the
   // model this provider names?). Off the critical path like the runtime probes,
   // and re-polled on the same cadence as the status map so starting a daemon
-  // from the Local LLM tab clears the card's checklist on its own.
+  // from the Models → LLMs page clears the card's checklist on its own.
   const loadReadiness = useCallback(async () => {
     const data = await api.getProviderReadiness({ silent: true }).catch(() => null);
     setReadiness(data?.readiness && typeof data.readiness === 'object' ? data.readiness : {});
@@ -271,6 +276,48 @@ export default function AIProviders() {
     loadData();
   };
 
+  // llama.cpp (and similar local daemons) answer as a single model id — the
+  // server's `--alias`, not the preset name on this card. Matching the
+  // provider's default to what is actually served is the in-place fix for the
+  // "model X available — serving Y" checklist, so the user never has to open
+  // the editor or leave the page.
+  const handleUseServedModel = async (provider, modelId) => {
+    if (!provider?.id || typeof modelId !== 'string' || modelId.trim() === '') return;
+    const defaultModel = modelId.trim();
+    const models = Array.isArray(provider.models) ? [...provider.models] : [];
+    const updates = { defaultModel };
+    if (!models.includes(defaultModel)) updates.models = [defaultModel, ...models];
+    const updated = await api.updateProvider(provider.id, updates).catch(() => null);
+    if (!updated) return;
+    setProviders((prev) => prev.map((entry) => (
+      entry.id === provider.id ? { ...entry, ...updates } : entry
+    )));
+    toast.success(`Default model set to ${defaultModel}`);
+    loadReadiness();
+  };
+
+  // The mirror of `handleUseServedModel`: instead of moving the provider onto
+  // whatever the daemon answers as, relaunch the daemon under the id the
+  // provider sends. llama.cpp serves one model per process under its `--alias`,
+  // so this keeps the loaded weights and only changes the name — no download.
+  const handleServeWantedModel = async (provider) => {
+    if (!provider?.id || servingModel[provider.id]) return;
+    setServingModel((prev) => ({ ...prev, [provider.id]: true }));
+    // `silent` so the 409 refusal (an externally-started daemon) reads as one
+    // toast naming the fix rather than the helper's generic error on top of it.
+    const result = await api.serveProviderModel(provider.id, { silent: true })
+      .catch((err) => ({ error: err?.message || 'The relaunch failed.' }));
+    setServingModel((prev) => ({ ...prev, [provider.id]: false }));
+    if (!result?.success) {
+      toast.error(result?.error || 'Could not relaunch the local server under that model id.');
+      loadReadiness();
+      return;
+    }
+    toast.success(result.relaunched
+      ? `Local server restarted — now serving ${result.model}`
+      : `Local server already serves ${result.model}`);
+    loadReadiness();
+  };
 
   const handleRefreshModels = async (id) => {
     setRefreshing(prev => ({ ...prev, [id]: true }));
@@ -404,7 +451,7 @@ export default function AIProviders() {
     const installed = localModels.installed?.[backend];
     // `null` = status not fetched — never offer an install from an unknown state.
     if (typeof installed !== 'boolean') return null;
-    return { id: backend, label: LOCAL_APP_LABELS[backend], installed, installable: false, manageUrl: '/settings/local-llm' };
+    return { id: backend, label: LOCAL_APP_LABELS[backend], installed, installable: false, manageUrl: '/models/llms' };
   }, [runtimes, localModels.installed, readiness]);
 
   // Everything the cards are derived from, in one pass: each provider's runtime,
@@ -491,6 +538,12 @@ export default function AIProviders() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <h1 className="text-2xl font-bold text-white">AI Providers</h1>
         <div className="flex flex-wrap gap-2">
+          <Link
+            to="/models/performance"
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-port-border hover:bg-port-border/80 text-white rounded-lg transition-colors text-sm sm:text-base"
+          >
+            <Gauge size={15} /> Compare local models
+          </Link>
           <button
             onClick={() => setShowRunPanel(!showRunPanel)}
             className="px-4 py-2 bg-port-accent hover:bg-port-accent/80 text-white rounded-lg transition-colors text-sm sm:text-base"
@@ -557,6 +610,16 @@ export default function AIProviders() {
                       {provider.llamaBacked && (
                         <span className="text-xs px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">
                           LLAMA.CPP / DFLASH
+                        </span>
+                      )}
+                      {provider.vllmBacked && (
+                        <span className="text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          vLLM / DFLASH2
+                        </span>
+                      )}
+                      {provider.sglangBacked && (
+                        <span className="text-xs px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          SGLANG
                         </span>
                       )}
                       {provider.mtplxBacked && (
@@ -742,6 +805,9 @@ export default function AIProviders() {
                       onRecover={handleRecover}
                       onInstallRuntime={setInstallingRuntime}
                       onAutoSetupRuntime={setSettingUpRuntime}
+                      onUseServedModel={handleUseServedModel}
+                      onServeWantedModel={handleServeWantedModel}
+                      servingModel={Boolean(servingModel[provider.id])}
                     />
                   ))}
                 </CollapsibleSection>
@@ -802,13 +868,15 @@ export default function AIProviders() {
         runtime={settingUpRuntime?.runtime}
         label={settingUpRuntime?.label}
         title={settingUpRuntime?.actionLabel}
-        params={settingUpRuntime ? { provider: settingUpRuntime.providerId } : undefined}
+        params={settingUpRuntime ? { provider: settingUpRuntime.providerId, action: settingUpRuntime.action } : undefined}
         onClose={() => setSettingUpRuntime(null)}
         onComplete={handleRuntimeSetupComplete}
         installUrlBase="/api/providers/readiness/setup"
         streamMethod="POST"
         flushMs={250}
-        description={`${settingUpRuntime?.actionLabel || 'Setting up'} — this can take several minutes on a first install.`}
+        description={settingUpRuntime?.action === 'pull-start'
+          ? `${settingUpRuntime.actionLabel} — model weights are a multi-gigabyte download, so this can run for a long time.`
+          : `${settingUpRuntime?.actionLabel || 'Setting up'} — this can take several minutes on a first install.`}
       />
       </div>
     </div>
@@ -833,8 +901,12 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
     fallbackProvider: provider?.fallbackProvider || '',
     fallbackModel: provider?.fallbackModel || '',
     numCtx: provider?.numCtx ?? '',
-    temperature: provider?.temperature ?? 0.6,
-    thinking: provider?.thinking ?? true,
+    // All three seed from the record ONLY. Seeding a value the provider does not
+    // have would let an unrelated Save pin it — the editor must be able to leave
+    // "unset" alone, since unset is what lets each backend keep its own default.
+    temperature: provider?.temperature ?? '',
+    topP: provider?.topP ?? '',
+    thinking: provider?.thinking === true ? 'true' : provider?.thinking === false ? 'false' : '',
     contextWindow: provider?.contextWindow ?? '',
     timeout: provider?.timeout || 300000,
     enabled: provider?.enabled !== false,
@@ -872,7 +944,7 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
   // and render blank — reading as "no model configured" when one is.
   const configuredDefault = configuredDefaultIn(mergedModels);
   // The markers that identify a backed provider (`ollamaBacked`, `llamaBacked`,
-  // `orcarouterBacked`) are NOT form fields, so a shape built from `formData`
+  // `gatewayBacked`) are NOT form fields, so a shape built from `formData`
   // alone loses them — which hid the effort ladder on the OpenCode-Ollama
   // providers, whose ladder is keyed on `ollamaBacked`. Merge the live edits
   // over the stored record instead, so edits to command/endpoint/envVars count
@@ -916,6 +988,11 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
   // `ollamaBacked` marker that identifies opencode-ollama (whose envVars carry
   // no ANTHROPIC_BASE_URL) is not a form field.
   const showsNumCtx = formData.type === 'api' || isOllamaBackedProvider(capabilityProvider);
+  // Default sampling/reasoning controls, offered only for the backends PortOS
+  // actually forwards them to (see `generationControlsFor`). Reads
+  // `capabilityProvider` for the same reason `showsNumCtx` does: `llamaBacked`
+  // and friends are record markers, not form fields.
+  const generationControls = generationControlsFor(capabilityProvider);
   const parseOptionalIntField = (value) => {
     const input = String(value ?? '').trim();
     if (!input) return null;
@@ -968,13 +1045,14 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
     if (outOfRange(formData.contextWindow, PROVIDER_FIELD_RANGES.contextWindow)) {
       return { tab: 'generation', message: rangeMessage('Planning Window', PROVIDER_FIELD_RANGES.contextWindow, 'tokens') };
     }
-    if (showsNumCtx) {
-      if (outOfRange(formData.numCtx, PROVIDER_FIELD_RANGES.numCtx)) {
-        return { tab: 'generation', message: rangeMessage('Local num_ctx', PROVIDER_FIELD_RANGES.numCtx, 'tokens') };
-      }
-      if (outOfRange(formData.temperature, PROVIDER_FIELD_RANGES.temperature)) {
-        return { tab: 'generation', message: rangeMessage('Temperature', PROVIDER_FIELD_RANGES.temperature) };
-      }
+    if (showsNumCtx && outOfRange(formData.numCtx, PROVIDER_FIELD_RANGES.numCtx)) {
+      return { tab: 'generation', message: rangeMessage('Local num_ctx', PROVIDER_FIELD_RANGES.numCtx, 'tokens') };
+    }
+    if (generationControls?.temperature && outOfRange(formData.temperature, PROVIDER_FIELD_RANGES.temperature)) {
+      return { tab: 'generation', message: rangeMessage('Temperature', PROVIDER_FIELD_RANGES.temperature) };
+    }
+    if (generationControls?.topP && outOfRange(formData.topP, PROVIDER_FIELD_RANGES.topP)) {
+      return { tab: 'generation', message: rangeMessage('Top-P', PROVIDER_FIELD_RANGES.topP) };
     }
     return null;
   };
@@ -1003,8 +1081,23 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
       headlessArgs: formData.headlessArgs ? formData.headlessArgs.split(' ').filter(Boolean) : [],
       contextWindow: parseOptionalIntField(formData.contextWindow),
       numCtx: showsNumCtx ? parseOptionalIntField(formData.numCtx) : null,
-      ...(showsNumCtx ? { temperature: parseNumberField(formData.temperature), thinking: formData.thinking } : {}),
+      // A blank generation field clears back to "let the backend pick" — `null`
+      // rather than `undefined`, which the server's spread-merge would read as
+      // "unchanged" and leave the old pin in place.
+      ...(generationControls?.temperature ? { temperature: parseNumberField(formData.temperature) ?? null } : {}),
+      ...(generationControls?.topP ? { topP: parseNumberField(formData.topP) ?? null } : {}),
+      ...(generationControls?.thinking
+        ? { thinking: formData.thinking === '' ? null : formData.thinking === 'true' }
+        : {}),
     };
+    // `data` opens as a spread of the WHOLE form, so a control this provider
+    // doesn't offer rides along regardless of the branches above — and a blank
+    // field is `''`, which is not a number (or a boolean) the server schema
+    // accepts. Drop what can't be used; the server merges by spread, so
+    // anything already stored is left alone.
+    if (!generationControls?.temperature) delete data.temperature;
+    if (!generationControls?.topP) delete data.topP;
+    if (!generationControls?.thinking) delete data.thinking;
     // The generation/fallback pickers filter out embedding-only models, so a
     // stored embedding (from an older config) would be hidden in the UI yet
     // still spread into `data` and silently persisted on an unrelated edit.
@@ -1131,6 +1224,52 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                     />
                   </FormField>
 
+                  {/* The CLI/TUI backends that can authenticate: the vLLM compose
+                      stack is started with VLLM_API_KEY, so without this field
+                      there is nowhere to put it and the container 401s every
+                      model refresh and every run. Reads `capabilityProvider`
+                      because `vllmBacked` is a stored marker, not a form field.
+                      SGLang has its own field below — its key is OPTIONAL (only
+                      set when the operator ran `--api-key`), so the two cannot
+                      share one placeholder without telling half the operators to
+                      paste a secret that does not exist. */}
+                  {capabilityProvider?.vllmBacked && (
+                    <FormField label="API Key">
+                      <input
+                        type="password"
+                        value={formData.apiKey}
+                        onChange={(e) => setFormData(prev => ({ ...prev, apiKey: e.target.value }))}
+                        placeholder={provider?.hasApiKey ? 'Key set — leave blank to keep' : 'Paste VLLM_API_KEY from the stack’s .env'}
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        The <code>VLLM_API_KEY</code> your compose stack was started with. PortOS puts it on the
+                        spawned OpenCode provider and on the model-refresh probe; the container rejects both without it.
+                      </p>
+                    </FormField>
+                  )}
+
+                  {capabilityProvider?.sglangBacked && (
+                    <FormField label="API Key (optional)">
+                      <input
+                        type="password"
+                        value={formData.apiKey}
+                        onChange={(e) => setFormData(prev => ({ ...prev, apiKey: e.target.value }))}
+                        placeholder={provider?.hasApiKey ? 'Key set — leave blank to keep' : 'Only if you started SGLang with --api-key'}
+                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        SGLang serves unauthenticated unless you started it with <code>--api-key</code>. Leave this
+                        blank in that case — PortOS attaches a key only when one is set.
+                        {isClaudeCommandProvider(capabilityProvider)
+                          ? <> This <strong>Claude</strong> harness reads it for the model-refresh probe only; the
+                            credential its runs authenticate with is <code>ANTHROPIC_AUTH_TOKEN</code> under
+                            Environment Variables, so set that to the same key too.</>
+                          : <> It rides both the spawned OpenCode provider and the model-refresh probe.</>}
+                      </p>
+                    </FormField>
+                  )}
+
                   {formData.type === 'cli' && (
                     <FormField label="Headless Args (for simple prompt tasks)">
                       <input
@@ -1194,7 +1333,7 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                     <p className="text-xs text-gray-500 mt-1">
                       This field is the only place API providers read a key from — it's stored on this
                       provider and sent as an <code>Authorization: Bearer</code> header on every request.
-                      No environment variable is involved. Hosted APIs (Cerebras, Grok, NVIDIA, OrcaRouter, …) require
+                      No environment variable is involved. Hosted APIs (Cerebras, Grok, NVIDIA, OrcaRouter, OpenRouter, …) require
                       one; local backends (Ollama, LM Studio) don't.
                     </p>
                   </FormField>
@@ -1230,9 +1369,10 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
 
               {isGrokBuildCli({ type: formData.type, command: formData.command }) && <GrokUploadWarning />}
 
-              {isOrcaRouterBackedProvider(provider) && (
-                <OrcaRouterKeyHint
-                  sibling={allProviders.find(p => p.id === 'orcarouter')}
+              {gatewayForProvider(provider) && (
+                <GatewayKeyHint
+                  gateway={gatewayForProvider(provider)}
+                  sibling={allProviders.find(p => p.id === gatewayForProvider(provider).id)}
                   onEdit={onEditProvider}
                 />
               )}
@@ -1430,7 +1570,7 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                 value={formData.effort}
                 onChange={(effort) => setFormData(prev => ({ ...prev, effort }))}
                 label="Default Effort"
-                hint={showsNumCtx
+                hint={generationControls
                   ? 'Reasoning effort used when a run does not specify one — passed to the local model as reasoningEffort.'
                   : 'Reasoning effort used when a run does not specify one.'}
               />
@@ -1501,40 +1641,69 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                 </div>
               </div>
 
-              {showsNumCtx && (
+              {generationControls && (
                 <div className="border-t border-port-border pt-4 mt-4">
-                  <h4 className="text-sm font-medium text-gray-300 mb-3">Ollama Generation</h4>
+                  <h4 className="text-sm font-medium text-gray-300 mb-3">Generation Defaults</h4>
+                  <p className="text-xs text-gray-500 mb-3">
+                    Applied to every run this provider starts — HTTP, CLI, and TUI alike. OpenCode wrappers
+                    receive them as its <code className="text-gray-400">agent.build</code> options; a task can
+                    still override temperature and thinking for one run. Every field left blank is simply not
+                    sent, so the backend keeps its own default.
+                  </p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <FormField label="Temperature">
-                      <input
-                        type="number"
-                        min={PROVIDER_FIELD_RANGES.temperature.min}
-                        max={PROVIDER_FIELD_RANGES.temperature.max}
-                        step="0.1"
-                        value={formData.temperature}
-                        onChange={(e) => setFormData(prev => ({ ...prev, temperature: e.target.value }))}
-                        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
-                      />
-                      <p className="text-xs text-gray-500 mt-1">Defaults to 0.6 for local Ollama agent runs.</p>
-                    </FormField>
-                    {/* Hand-rolled rather than FormField: the control is a
-                        checkbox inside its own <label>, so FormField's
-                        "bind the label to the first child" rule would point
-                        htmlFor at that <label> instead of the input. */}
-                    <div>
-                      <span className="block text-sm text-gray-400 mb-1">Thinking mode</span>
-                      <label htmlFor="provider-thinking" className="flex items-center gap-2 min-h-10 text-sm text-gray-300">
+                    {generationControls.temperature && (
+                      <FormField label="Temperature">
                         <input
-                          id="provider-thinking"
-                          type="checkbox"
-                          checked={formData.thinking}
-                          onChange={(e) => setFormData(prev => ({ ...prev, thinking: e.target.checked }))}
-                          className="w-4 h-4 rounded border-port-border bg-port-bg"
+                          type="number"
+                          min={PROVIDER_FIELD_RANGES.temperature.min}
+                          max={PROVIDER_FIELD_RANGES.temperature.max}
+                          step="0.1"
+                          value={formData.temperature}
+                          onChange={(e) => setFormData(prev => ({ ...prev, temperature: e.target.value }))}
+                          placeholder="Backend default"
+                          className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                         />
-                        Enable model reasoning
-                      </label>
-                      <p className="text-xs text-gray-500 mt-1">Sent to thinking-capable Ollama models; unsupported models ignore it.</p>
-                    </div>
+                        <p className="text-xs text-gray-500 mt-1">Local Ollama agent runs fall back to 0.6 when this is blank.</p>
+                      </FormField>
+                    )}
+                    {generationControls.topP && (
+                      <FormField label="Top-P">
+                        <input
+                          type="number"
+                          min={PROVIDER_FIELD_RANGES.topP.min}
+                          max={PROVIDER_FIELD_RANGES.topP.max}
+                          step="0.05"
+                          value={formData.topP}
+                          onChange={(e) => setFormData(prev => ({ ...prev, topP: e.target.value }))}
+                          placeholder="Backend default"
+                          className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">Nucleus sampling. Leave blank to send no top_p at all.</p>
+                      </FormField>
+                    )}
+                    {generationControls.thinking && (
+                      /* Tri-state rather than a checkbox: a checkbox cannot say
+                         "leave the model's own reasoning mode alone", so it
+                         forced a pin onto every provider the moment anyone
+                         pressed Save. */
+                      <FormField label="Thinking mode">
+                        <select
+                          value={formData.thinking}
+                          onChange={(e) => setFormData(prev => ({ ...prev, thinking: e.target.value }))}
+                          className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+                        >
+                          <option value="">Model default</option>
+                          <option value="true">Enabled</option>
+                          <option value="false">Disabled</option>
+                        </select>
+                        <p className="text-xs text-gray-500 mt-1">
+                          Ollama receives its native <code className="text-gray-400">think</code> flag; llama.cpp and
+                          MTPLX get <code className="text-gray-400">enable_thinking</code> through the chat template;
+                          a Claude harness on Ollama gets <code className="text-gray-400">MAX_THINKING_TOKENS</code>.
+                          Models without a reasoning mode ignore it.
+                        </p>
+                      </FormField>
+                    )}
                   </div>
                 </div>
               )}

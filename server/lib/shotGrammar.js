@@ -13,7 +13,7 @@
  *
  * Both fields default to null ("not captured") everywhere so an older outline or
  * a shot the extractor didn't tag is treated as ABSENT (skipped by the continuity
- * check) rather than mis-classified — the absent-vs-empty rule from CLAUDE.md.
+ * check) rather than mis-classified — the absent-vs-empty rule from AGENTS.md.
  */
 
 // Camera framing / size. Ordered loosely widest→tightest; the continuity check

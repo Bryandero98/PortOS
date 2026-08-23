@@ -13,6 +13,12 @@
  *   - `reachable: false`             — nothing is serving here (with `error` naming why)
  *   - `reachable: true, models: null`— it answered, but the listing was unreadable
  *   - `reachable: true, models: []`  — it is up and genuinely serving nothing
+ *
+ * A daemon started behind an API key (vLLM's compose stack sets `VLLM_API_KEY`)
+ * answers 401/403 to an unauthenticated probe. That is a REACHABLE server whose
+ * listing we cannot read — reporting it as unreachable would tell the user to
+ * start a container that is already running. Pass `apiKey` to read the listing
+ * too.
  */
 
 import { fetchWithTimeout } from './fetchWithTimeout.js';
@@ -37,12 +43,13 @@ function shortFailureReason(err) {
 
 /**
  * @param {string} baseUrl - an OpenAI-compatible base (…/v1); trailing slashes tolerated
- * @param {{timeoutMs?: number}} [opts]
+ * @param {{timeoutMs?: number, apiKey?: string}} [opts]
  * @returns {Promise<{reachable:boolean, models:string[]|null, error:string|null}>}
  */
-export async function probeOpenAiModels(baseUrl, { timeoutMs = 2_000 } = {}) {
+export async function probeOpenAiModels(baseUrl, { timeoutMs = 2_000, apiKey = '' } = {}) {
   const url = `${String(baseUrl || '').replace(/\/+$/, '')}/models`;
-  const res = await fetchWithTimeout(url, { method: 'GET' }, timeoutMs)
+  const init = { method: 'GET', ...(apiKey ? { headers: { Authorization: `Bearer ${apiKey}` } } : {}) };
+  const res = await fetchWithTimeout(url, init, timeoutMs)
     // undici reports every network failure as a bare `TypeError: fetch failed`;
     // the real reason (ECONNREFUSED vs. ETIMEDOUT — "nothing is listening" vs.
     // "the host is wedged", two different fixes for the user) lives in the
@@ -54,6 +61,12 @@ export async function probeOpenAiModels(baseUrl, { timeoutMs = 2_000 } = {}) {
     // Undici holds the socket until an unread body is consumed; an endpoint
     // answering 404 on every poll would otherwise leak one each time.
     await res.body?.cancel().catch(() => {});
+    // 401/403 is the ONE failure status that proves a daemon is up: something
+    // read the request and refused it. Collapsing that into "nothing answered"
+    // sends the user off to start a server that is already serving.
+    if (res.status === 401 || res.status === 403) {
+      return { reachable: true, models: null, error: 'authentication required' };
+    }
     return { reachable: false, models: null, error: `HTTP ${res.status}` };
   }
 

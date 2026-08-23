@@ -35,6 +35,8 @@ const AutomationTab = (await import('./AutomationTab')).default;
 
 const SCHEDULE = {
   tasks: {
+    // Every row honors a per-app provider/model pin (#4783); the task's own pin
+    // is what a row inherits when the app pins nothing.
     'layered-intelligence': { type: 'daily', taskMetadata: {}, providerId: 'global-claude' },
     'app-improvement': { type: 'rotation', taskMetadata: {} },
     security: { type: 'weekly', taskMetadata: { fileIssues: false }, fileIssuesCapable: true, defaultFileIssues: false },
@@ -87,7 +89,7 @@ describe('AutomationTab per-app overrides', () => {
 
   it('changing the provider PATCHes updateAppTaskTypeOverride with providerId + cleared model', async () => {
     await renderTab();
-    const row = rowFor('app-improvement');
+    const row = rowFor('layered-intelligence');
     fireEvent.click(within(row).getByRole('button', { name: /show provider and model overrides/i }));
 
     const providerSelect = within(row).getByLabelText('Provider override');
@@ -96,30 +98,30 @@ describe('AutomationTab per-app overrides', () => {
     await waitFor(() => expect(api.updateAppTaskTypeOverride).toHaveBeenCalled());
     expect(api.updateAppTaskTypeOverride).toHaveBeenCalledWith(
       'app-1',
-      'app-improvement',
-      { providerId: 'claude-cli', model: '' },
+      'layered-intelligence',
+      { providerId: 'claude-cli', model: null },
       { silent: true }
     );
   });
 
   it('changing the model PATCHes updateAppTaskTypeOverride with the model', async () => {
-    await renderTab({ 'app-improvement': { providerId: 'claude-cli' } });
-    const row = rowFor('app-improvement');
+    await renderTab({ 'layered-intelligence': { providerId: 'claude-cli' } });
+    const row = rowFor('layered-intelligence');
     fireEvent.click(within(row).getByRole('button', { name: /show provider and model overrides/i }));
 
     fireEvent.change(within(row).getByLabelText('Model'), { target: { value: 'sonnet' } });
 
     await waitFor(() => expect(api.updateAppTaskTypeOverride).toHaveBeenCalledWith(
       'app-1',
-      'app-improvement',
-      { model: 'sonnet' },
+      'layered-intelligence',
+      { providerId: 'claude-cli', model: 'sonnet' },
       { silent: true }
     ));
   });
 
   it('excludes disabled providers from the picker', async () => {
     await renderTab();
-    const row = rowFor('app-improvement');
+    const row = rowFor('layered-intelligence');
     fireEvent.click(within(row).getByRole('button', { name: /show provider and model overrides/i }));
     const providerSelect = within(row).getByLabelText('Provider override');
     expect(within(providerSelect).queryByText('Disabled')).toBeNull();
@@ -136,11 +138,27 @@ describe('AutomationTab per-app overrides', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/apps/app-1?edit=1&appTab=intelligence');
   });
 
-  it('non-LI row does not show the behavior link', async () => {
+  // The pin reaches the spawn for EVERY task type now (#4783), so the picker is
+  // offered on every row rather than only where a buildTaskInput hook read it.
+  it('offers the same provider picker on a task type with no hook', async () => {
     await renderTab();
     const row = rowFor('app-improvement');
     fireEvent.click(within(row).getByRole('button', { name: /show provider and model overrides/i }));
-    expect(within(row).queryByRole('button', { name: /configure behavior/i })).toBeNull();
+    expect(within(row).getByLabelText('Provider override')).toBeInTheDocument();
+  });
+
+  it('clearing the provider sends explicit nulls, matching the other pin surfaces', async () => {
+    await renderTab({ 'app-improvement': { providerId: 'claude-cli', model: 'opus' } });
+    const row = rowFor('app-improvement');
+    fireEvent.click(within(row).getByRole('button', { name: /show provider and model overrides/i }));
+
+    fireEvent.change(within(row).getByLabelText('Provider override'), { target: { value: '' } });
+    await waitFor(() => expect(api.updateAppTaskTypeOverride).toHaveBeenCalledWith(
+      'app-1',
+      'app-improvement',
+      { providerId: null, model: null },
+      { silent: true }
+    ));
   });
 
   it('Iss toggle PATCHes fileIssues on and forces the no-code posture', async () => {

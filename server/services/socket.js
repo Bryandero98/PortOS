@@ -66,7 +66,7 @@ const streamKey = (socketId, processName) => `${socketId}:${processName}`;
 // bails and its client waits forever for `logs:subscribed`. Every claim and
 // release bumps this counter and a handler only resumes while its own generation
 // is current — the server-side mirror of the `{ target, generation }`
-// pending-request convention in CLAUDE.md.
+// pending-request convention in AGENTS.md.
 const streamGenerations = new Map();
 const bumpStreamGeneration = (key) => {
   const next = (streamGenerations.get(key) || 0) + 1;
@@ -208,6 +208,13 @@ export function initSocket(io) {
     // to its own embedded <meta name="portos-build-id"> value; a mismatch
     // means the tab is running stale code against a freshly-rebuilt server
     // and the user is offered a reload.
+    //
+    // The bundle HASH is safe to push to every socket. The git identity is
+    // deliberately NOT here: `connection` fires for every socket, and
+    // `peerSocketRelay.js` connects PortOS installs to each other over
+    // Socket.IO, so anything pushed here reaches other people's machines. The
+    // client reads the commit from `GET /api/system/build` instead — see that
+    // route in routes/systemHealth.js for the full reasoning (#4694).
     socket.emit('build:id', { buildId: getBuildId() });
 
     // Replay the in-flight importer analyze snapshot ON DEMAND so a tab that

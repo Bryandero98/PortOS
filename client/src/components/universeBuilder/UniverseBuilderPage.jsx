@@ -191,7 +191,7 @@ export default function UniverseBuilder() {
     clearPendingCanonAdditions,
     setRenderOpts,
   });
-  // URL-driven tab + bucket state (per CLAUDE.md "Linkable routes for all
+  // URL-driven tab + bucket state (per AGENTS.md "Linkable routes for all
   // views"), including the self-healing effects that strip a `?tab=`/`?bucket=`
   // the current categories no longer support.
   const {

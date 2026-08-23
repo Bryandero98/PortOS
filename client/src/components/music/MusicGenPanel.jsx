@@ -30,9 +30,11 @@ import toast from '../ui/Toast';
 import { analyzeMusicLyrics } from '../../lib/musicDuration.js';
 import { formatDurationSec } from '../../utils/formatters.js';
 import {
-  listMusicEngines, getInstances, generateMusic, installAudioModel, removeAudioModel, getActiveProcessing, getMediaJob, getTrack, cancelMediaJob,
+  listMusicEngines, generateMusic, installAudioModel, removeAudioModel, getActiveProcessing, getMediaJob, getTrack, cancelMediaJob,
 } from '../../services/api';
 import { formatDownloadGb } from '../../utils/formatters';
+import { useFederatedMediaTarget } from '../../hooks/useFederatedMediaTarget.js';
+import RemoteMediaTargetPicker from '../federatedMedia/RemoteMediaTargetPicker';
 import RuntimeInstallModal from '../install/RuntimeInstallModal';
 
 /**
@@ -110,22 +112,15 @@ const DEFAULT_REMOTE_PROFILE = Object.freeze({
 
 const formatRemoteOption = (value) => value.replaceAll('-', ' ');
 
-function remoteModelsForPeer(peer) {
-  const allowed = new Set((peer?.mediaProvider?.audioModels || [])
-    .filter((model) => model?.engine && model?.modelId)
-    .map((model) => `${model.engine}\u0000${model.modelId}`));
-  return (peer?.mediaProviderStatus?.snapshot?.capabilities || [])
-    .filter((model) => model?.kind === 'audio' && allowed.has(`${model.engine}\u0000${model.modelId}`));
-}
-
 export default function MusicGenPanel({ track, title = '', artistId = '', artist = '', albumId = '', prompt, lyrics, onGenerated, remix }) {
   const [engines, setEngines] = useState([]);
-  const [peers, setPeers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [engineId, setEngineId] = useState('');
   const [modelId, setModelId] = useState('');
-  const [mediaProviderPeerId, setMediaProviderPeerId] = useState('');
-  const [remoteModelKey, setRemoteModelKey] = useState('');
+  // Peer list, per-kind allowlist intersection, readiness verdict and the
+  // submit-time re-check all live in the shared hook (#4348), so this panel,
+  // Image Gen and Video Gen cannot read the same peer three different ways.
+  const remoteTarget = useFederatedMediaTarget('audio');
   const [remoteProfile, setRemoteProfile] = useState(() => ({ ...DEFAULT_REMOTE_PROFILE }));
   const [durationSec, setDurationSec] = useState(null);
   const [durationMode, setDurationMode] = useState('auto');
@@ -217,14 +212,6 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   useEffect(() => { loadEngines(); }, []);
 
   useEffect(() => {
-    let canceled = false;
-    getInstances({ silent: true }).then((data) => {
-      if (!canceled && Array.isArray(data?.peers)) setPeers(data.peers);
-    }).catch(() => {});
-    return () => { canceled = true; };
-  }, []);
-
-  useEffect(() => {
     if (!isGenerating) return undefined;
     const startedAt = activeJob?.startedAt ? Date.parse(activeJob.startedAt) : Date.now();
     setGenerationElapsedSec(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
@@ -243,13 +230,9 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   // engine's default id. Use that effective option for readiness and generation
   // too, so the first paint cannot briefly disable an otherwise ready engine.
   const selectedModelId = selectedModel?.id || modelId;
-  const selectedRemotePeer = useMemo(
-    () => peers.find((peer) => peer.id === mediaProviderPeerId) || null,
-    [mediaProviderPeerId, peers],
-  );
-  const remoteModels = useMemo(() => remoteModelsForPeer(selectedRemotePeer), [selectedRemotePeer]);
-  const selectedRemoteModel = remoteModels.find((model) => `${model.engine}\u0000${model.modelId}` === remoteModelKey) || remoteModels[0] || null;
-  const isRemote = Boolean(selectedRemotePeer);
+  const selectedRemotePeer = remoteTarget.peer;
+  const selectedRemoteModel = remoteTarget.model;
+  const isRemote = remoteTarget.isRemote;
   const generationEngine = isRemote ? selectedRemoteModel : engine;
   const selectedModelReady = !engine?.fixedModelInstall
     ? true
@@ -258,17 +241,28 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
       : engine.modelReady === true;
   const autoDurationAvailable = supportsAutoDuration(generationEngine);
   const hasLyrics = typeof lyrics === 'string' && lyrics.trim().length > 0;
-  const conditioningLyrics = generationEngine?.lyrics && !instrumentalOnly && !isRemote ? lyrics : '';
+  // Two independent facts, and the server refuses the combination where they
+  // disagree (ADR docs/decisions/2026-08-22-federated-media-input-assets.md
+  // rule 2): `lyrics` is the model's own capability, while the `lyrics` FEATURE
+  // is whether the peer's BUILD carries the words at all. Why an absent feature
+  // must read as false lives in `federatedMediaSupports`, not here.
+  const remoteLyricsAvailable = isRemote
+    && generationEngine?.lyrics === true
+    && remoteTarget.supports('lyrics');
+  // Remote renders that cannot carry lyrics are instrumental by construction,
+  // not by choice — the checkbox reflects that rather than pretending the user
+  // picked it. Where the peer CAN sing, it is an ordinary choice again.
+  const forcedInstrumental = isRemote && !remoteLyricsAvailable;
+  const effectiveInstrumentalOnly = forcedInstrumental || instrumentalOnly;
+  const lyricsCondition = !isRemote || remoteLyricsAvailable;
+  const conditioningLyrics = generationEngine?.lyrics && !effectiveInstrumentalOnly && lyricsCondition
+    ? lyrics
+    : '';
   const lyricDuration = useMemo(() => analyzeMusicLyrics(conditioningLyrics, {
     minDurationSec: Math.max(60, generationEngine?.defaultDurationSec || 60),
     maxDurationSec: generationEngine?.maxDurationSec || 300,
   }), [conditioningLyrics, generationEngine?.defaultDurationSec, generationEngine?.maxDurationSec]);
   const usingAutoDuration = autoDurationAvailable && durationMode === 'auto';
-
-  useEffect(() => {
-    const next = remoteModels[0];
-    setRemoteModelKey(next ? `${next.engine}\u0000${next.modelId}` : '');
-  }, [selectedRemotePeer?.id, remoteModels]);
 
   useEffect(() => {
     if (!selectedRemoteModel) return;
@@ -311,19 +305,21 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   // NOT clobber a freshly-selected model — it stays selected because it's now in
   // the list. Switching to a different engine still resets (the old model isn't
   // in the new engine's list). Duration seeds once.
+  // Functional updater, not a read of `modelId`: this effect is keyed on the
+  // ENGINE, so the `modelId` its closure captured is whatever the render that
+  // queued it saw. React drains passive effects on its own scheduler task, so a
+  // pick made after that commit but before the drain would be read as absent
+  // and silently reset to the engine default — reverting a selection the user
+  // had already made and quietly re-enabling every gate hanging off it. Reading
+  // the value at flush time cannot go stale. (#4348 / PR #4819 CI failure.)
   useEffect(() => {
     if (!engine) return;
     const ids = (engine.models || []).map((m) => m.id);
-    if (!ids.includes(modelId)) setModelId(engine.defaultModelId || ids[0] || '');
+    setModelId((current) => (ids.includes(current) ? current : (engine.defaultModelId || ids[0] || '')));
     setDurationSec((d) => (d == null ? engine.defaultDurationSec : d));
   }, [engine?.id, engine?.models]);
 
-  const remoteReady = isRemote
-    && selectedRemotePeer?.status === 'online'
-    && selectedRemotePeer?.mediaProviderStatus?.state === 'ready'
-    && selectedRemotePeer?.mediaProviderStatus?.snapshot?.queue?.accepting === true
-    && selectedRemoteModel?.ready === true;
-  const canGenerate = (isRemote ? remoteReady : !!engine?.ready && selectedModelReady)
+  const canGenerate = (isRemote ? remoteTarget.canSubmit : !!engine?.ready && selectedModelReady)
     && !!prompt?.trim() && !isGenerating;
   const selectedModelSizeGb = engine?.modelSizeGbById?.[selectedModelId] ?? null;
   const setup = isRemote ? null : engineSetupState(engine, selectedModelReady, selectedModelSizeGb);
@@ -386,16 +382,28 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
   const handleGenerate = async () => {
     if (!generationEngine) return;
     if (!prompt?.trim()) { toast.error('Add a generation prompt first'); return; }
+    // The button's own reading is as old as the last render, and a capacity
+    // window expires on the clock rather than on a state change — so between
+    // polls an enabled button can already be pointing at a stale peer. Re-derive
+    // now, and say so here instead of letting the server reject a submission the
+    // user just committed to.
+    if (isRemote) {
+      const fresh = remoteTarget.verify();
+      if (!fresh.ok) { toast.error(fresh.message); return; }
+    }
     setGenerating(true);
     const body = {
       prompt: prompt.trim(),
       engine: generationEngine.id || generationEngine.engine,
       modelId: isRemote ? generationEngine.modelId : selectedModelId,
-      instrumentalOnly: isRemote ? true : instrumentalOnly,
+      instrumentalOnly: effectiveInstrumentalOnly,
     };
     if (isRemote) {
       body.mediaProviderPeerId = selectedRemotePeer.id;
       body.remoteMusicProfile = remoteProfile;
+      // Only when the resolved capability says the peer carries them. Sending
+      // otherwise is the 400 `forcedInstrumental` exists to avoid.
+      if (remoteLyricsAvailable) body.lyrics = lyrics || '';
     } else if (engine.lyrics) {
       // Keep authored lyrics available to the track record even when the server
       // deliberately excludes them from this render's engine conditioning.
@@ -479,7 +487,6 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
 
   const selectedUserModel = engine?.models?.find((m) => m.id === modelId && m.userAdded);
   const showRuntimeInstallHint = !isRemote && !!engine && (!engine.ready || !selectedModelReady) && (!!prompt?.trim() || userSelectedEngine);
-  const remoteStatus = selectedRemotePeer?.mediaProviderStatus;
 
   return (
     <div className="space-y-2 border border-port-border rounded-lg p-3 bg-port-bg/40">
@@ -487,65 +494,35 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
         <Wand2 size={14} className="text-port-accent" /> Generate audio on-device
       </div>
 
-      <label className="block">
-        <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Generation target</span>
-        <select
-          aria-label="Generation target"
-          value={mediaProviderPeerId}
-          onChange={(e) => setMediaProviderPeerId(e.target.value)}
-          className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
-        >
-          <option value="">This instance</option>
-          {peers.filter((peer) => peer.mediaProvider?.enabled === true).map((peer) => {
-            const status = peer.mediaProviderStatus;
-            const suffix = status?.state === 'ready' ? '' : ` (${status?.state || 'checking'})`;
-            return <option key={peer.id} value={peer.id}>{peer.name || peer.address || 'Federated peer'}{suffix}</option>;
-          })}
-        </select>
-      </label>
-
-      {isRemote ? (
-        <div className="space-y-2 rounded-lg border border-port-accent/30 bg-port-accent/5 p-2">
-          <label className="block">
-            <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Remote audio model</span>
-            <select
-              aria-label="Remote audio model"
-              value={selectedRemoteModel ? `${selectedRemoteModel.engine}\u0000${selectedRemoteModel.modelId}` : ''}
-              onChange={(e) => setRemoteModelKey(e.target.value)}
-              className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
-            >
-              {remoteModels.length === 0 ? <option value="">No allowlisted models discovered</option> : remoteModels.map((model) => (
-                <option key={`${model.engine}\u0000${model.modelId}`} value={`${model.engine}\u0000${model.modelId}`}>
-                  {model.modelName} — {model.ready ? 'ready' : model.unavailableReason || 'unavailable'}
-                </option>
-              ))}
-            </select>
-          </label>
-          <p className="text-[11px] text-gray-400">
-            {remoteStatus?.state === 'ready' && remoteStatus.snapshot?.queue
-              ? `${remoteStatus.snapshot.queue.running} running · ${remoteStatus.snapshot.queue.queued} queued`
-              : remoteStatus?.state === 'stale'
-                ? 'Capacity is stale; remote generation is blocked until the peer reports fresh status.'
-                : 'Remote generation requires a ready, authenticated peer with fresh capacity.'}
-          </p>
-          <div className="grid grid-cols-2 gap-2">
-            {(['style', 'mood', 'tempo', 'energy']).map((field) => (
-              <label key={field} className="block">
-                <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">{field}</span>
-                <select
-                  aria-label={`Remote ${field}`}
-                  value={remoteProfile[field]}
-                  onChange={(e) => setRemoteProfile((current) => ({ ...current, [field]: e.target.value }))}
-                  className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
-                >
-                  {REMOTE_AUDIO_OPTIONS[field].map((option) => <option key={option} value={option}>{formatRemoteOption(option)}</option>)}
-                </select>
-              </label>
-            ))}
-          </div>
-          <p className="text-[10px] text-gray-500">Only this fixed musical profile crosses the peer boundary; your prompt and lyrics remain on this instance.</p>
+      <RemoteMediaTargetPicker target={remoteTarget} kind="audio">
+        {/* Audio's fixed-vocabulary conditioning profile — the only musical
+            direction allowed across the peer boundary (ADR
+            docs/decisions/2026-08-20-federated-visual-prompts.md). Rendered as
+            the picker's children so it sits inside the remote block without
+            the shared component knowing anything about audio. */}
+        <div className="grid grid-cols-2 gap-2">
+          {(['style', 'mood', 'tempo', 'energy']).map((field) => (
+            <label key={field} className="block">
+              <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">{field}</span>
+              <select
+                aria-label={`Remote ${field}`}
+                value={remoteProfile[field]}
+                onChange={(e) => setRemoteProfile((current) => ({ ...current, [field]: e.target.value }))}
+                className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
+              >
+                {REMOTE_AUDIO_OPTIONS[field].map((option) => <option key={option} value={option}>{formatRemoteOption(option)}</option>)}
+              </select>
+            </label>
+          ))}
         </div>
-      ) : (
+        <p className="text-[10px] text-gray-500">
+          {remoteLyricsAvailable
+            ? 'This fixed musical profile crosses the peer boundary in place of your prompt, which stays on this instance. Lyrics are sent as written — they are the words the model sings.'
+            : 'Only this fixed musical profile crosses the peer boundary; your prompt and lyrics remain on this instance.'}
+        </p>
+      </RemoteMediaTargetPicker>
+
+      {!isRemote && (
         <div className="grid grid-cols-2 gap-2">
           <label className="block">
             <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Engine</span>
@@ -564,8 +541,13 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
           </label>
           <label className="block">
             <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Model</span>
+            {/* The EFFECTIVE id, not the raw state. `modelId` is '' until the
+                engine-defaults effect drains, and React leaves a select alone
+                when no option matches its value — so the raw state would let
+                the control display one snapshot while every readiness gate
+                below reads another, for as long as that gap lasts. */}
             <select
-              value={modelId}
+              value={selectedModelId}
               onChange={(e) => setModelId(e.target.value)}
               className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
             >
@@ -675,9 +657,9 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
           <input
             id="musicgen-instrumental-only"
             type="checkbox"
-            checked={isRemote || instrumentalOnly}
+            checked={effectiveInstrumentalOnly}
             onChange={(event) => setInstrumentalOnly(event.target.checked)}
-            disabled={isGenerating || isRemote}
+            disabled={isGenerating || forcedInstrumental}
             aria-describedby="musicgen-instrumental-only-hint"
             className="h-4 w-4 accent-port-accent"
           />
@@ -686,12 +668,16 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
           </label>
         </div>
         <p id="musicgen-instrumental-only-hint" className="mt-1 text-[11px] text-gray-500">
-          {isRemote
-            ? 'Remote audio is instrumental-only; your prompt and lyrics remain on this instance.'
-            : instrumentalOnly
+          {forcedInstrumental
+            ? generationEngine?.lyrics
+              ? 'This peer runs a PortOS build that cannot carry lyrics, so this render is instrumental. Your prompt and lyrics stay on this instance.'
+              : 'The selected remote model is instrumental-only. Your prompt and lyrics stay on this instance.'
+            : effectiveInstrumentalOnly
             ? `An explicit no-vocals instruction will be added${hasLyrics ? '; saved lyrics will not condition this render' : ''}.`
             : generationEngine?.lyrics && hasLyrics
-              ? 'This engine will use the track’s lyrics as conditioning.'
+              ? isRemote
+                ? 'The track’s lyrics will be sent to this peer as conditioning; your prompt stays on this instance.'
+                : 'This engine will use the track’s lyrics as conditioning.'
               : 'No lyric text will condition this render, but vocals may still follow the prompt unless instrumental mode is enabled.'}
         </p>
       </div>
@@ -701,7 +687,7 @@ export default function MusicGenPanel({ track, title = '', artistId = '', artist
           type="button"
           onClick={handleGenerate}
           disabled={!canGenerate}
-          title={!prompt?.trim() ? 'Add a generation prompt' : isRemote && !remoteReady ? 'Wait for the remote peer to report ready capacity' : !isRemote && !engine?.ready ? 'Complete engine setup first' : !isRemote && !selectedModelReady ? 'Install the selected model first' : track?.id ? 'Generate audio' : 'Generate and create a standalone track'}
+          title={!prompt?.trim() ? 'Add a generation prompt' : isRemote && !remoteTarget.canSubmit ? (remoteTarget.blockedReason || 'Wait for the remote peer to report ready capacity') : !isRemote && !engine?.ready ? 'Complete engine setup first' : !isRemote && !selectedModelReady ? 'Install the selected model first' : track?.id ? 'Generate audio' : 'Generate and create a standalone track'}
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
         >
           {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}

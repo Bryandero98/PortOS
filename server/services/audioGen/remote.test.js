@@ -31,6 +31,9 @@ vi.mock('../federatedMediaConsumer.js', () => ({
 
 vi.mock('../instances.js', () => ({
   getPeers: vi.fn(async () => federation.peers),
+  // Used to derive the consumer's own half of a content-addressed asset id, so it
+  // can ask the peer whether bytes are already staged before re-sending them.
+  getInstanceId: vi.fn(async () => 'consumer-instance'),
 }));
 
 import { audioGenEvents } from './events.js';
@@ -202,6 +205,38 @@ describe('federated audio consumer adapter', () => {
       modelId: 'example/model',
       prompt: SAFE_PROMPT,
       durationSec: 30,
+    });
+  });
+
+  // ADR docs/decisions/2026-08-22-federated-media-input-assets.md rule 2. The
+  // two text fields travel opposite ways on purpose: `prompt` is re-rendered
+  // from the fixed profile so hand-edited queue state cannot smuggle prose onto
+  // the wire, while `lyrics` are submitted verbatim because they ARE the
+  // conditioning. A marker with no lyrics must omit the field entirely, so an
+  // instrumental job hashes to what a pre-lyrics build submitted.
+  it('submits marker lyrics verbatim while still rendering the prompt from the profile', async () => {
+    transport.fetch.mockImplementation(async (url, options) => {
+      if (url.endsWith('/jobs') && options.method === 'POST') return jsonResponse(providerJob('canceled'), 202);
+      if (url.endsWith(`/jobs/${REMOTE_JOB_ID}`)) return jsonResponse(providerJob('canceled'));
+      throw new Error(`Unexpected test URL: ${url}`);
+    });
+
+    const terminal = captureTerminal(LOCAL_JOB_ID);
+    const base = params();
+    await generateAudio({
+      ...base,
+      remoteMedia: { ...base.remoteMedia, lyrics: '[verse]\nremote words' },
+    }).catch(() => {});
+    await terminal;
+
+    const submission = transport.fetch.mock.calls.find(([url, options]) =>
+      url.endsWith('/jobs') && options.method === 'POST');
+    expect(JSON.parse(submission[1].body)).toEqual({
+      engine: 'remote-audio',
+      modelId: 'example/model',
+      prompt: SAFE_PROMPT,
+      durationSec: 30,
+      lyrics: '[verse]\nremote words',
     });
   });
 

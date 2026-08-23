@@ -6,7 +6,7 @@ or more PortOS instances across a Tailscale tailnet.
 
 > **Scope.** This documents the **PortOS-side** contract only. The iOS app itself
 > (Swift/SwiftUI, Keychain, iCloud store, UI) lives in its own repository per the
-> Scope Boundary rule in `CLAUDE.md` — its code, plan, and docs never land in this
+> Scope Boundary rule in `AGENTS.md` — its code, plan, and docs never land in this
 > repo. Everything below already exists in PortOS today unless explicitly marked.
 
 ## Deployment shape the app targets

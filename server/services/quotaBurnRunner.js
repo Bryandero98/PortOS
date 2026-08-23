@@ -25,7 +25,7 @@
  * resetting in 2h beat an `agy` window resetting in 21h on every single tick, so
  * the agy plan sat at "93% left · 0/5 used" indefinitely.
  *
- * AI-policy posture (CLAUDE.md): this is a sanctioned scheduled automation —
+ * AI-policy posture (AGENTS.md): this is a sanctioned scheduled automation —
  * disabled by default, armed only by an explicit opt-in on the Quota Burn page,
  * where the family, provider, model, and work are all named before anything
  * runs. Boot ARMS the interval; it never dispatches. With `enabled: false` the

@@ -5,7 +5,9 @@ import { execFile } from '../lib/childProcess.js';
 import { promisify } from 'util';
 import { PATHS, ensureDir, isTopLevelEntryName } from '../lib/fileUtils.js';
 import { ServerError } from '../lib/errorHandler.js';
-import { imageCleanTmpBusy, trainingRunsBusy, updateDetachedBusy } from './dataManagerBusy.js';
+import {
+  federatedMediaInboxBusy, imageCleanTmpBusy, trainingRunsBusy, updateDetachedBusy,
+} from './dataManagerBusy.js';
 
 const execFileAsync = promisify(execFile);
 const DATA_DIR = PATHS.data;
@@ -64,6 +66,14 @@ export const CATEGORIES = {
   'creative-commissions': { label: 'Creative Commissions', description: 'Commission records (file mirror of the Postgres store)', archivable: true, deletable: false },
   'db-dumps': { label: 'DB Dumps', description: 'PostgreSQL database backups', archivable: true, deletable: true, purgeScope: 'category' },
   'digital-twin': { label: 'Digital Twin', description: 'Identity, goals, character data', archivable: true, deletable: false },
+  'fableloom': { label: 'FableLoom', description: 'Branching-narrative records (file mirror of the Postgres store)', archivable: true, deletable: false },
+  // Another machine's conditioning images, staged for one federated render and
+  // swept on a TTL (#4348). Not archivable for the same reason it is excluded
+  // from backups: none of it is this install's data, and a restored entry is
+  // either already expired or already rendered. Purgeable as a category —
+  // deleting a staged asset only forces the peer that owns it to re-upload,
+  // which is one transfer, not lost work.
+  'federated-media-inbox': { label: 'Federated Media Inbox', description: 'Source images peers uploaded for federated renders — expire automatically, safe to purge when no federated render is in flight', archivable: false, deletable: true, purgeScope: 'category', busyCheck: federatedMediaInboxBusy },
   'games': { label: 'Games', description: 'Game project records and assets', archivable: true, deletable: false },
   'health': { label: 'Apple Health', description: 'Daily health JSON snapshots', archivable: true, deletable: false },
   'image-clean-tmp': { label: 'Image Cleaner Scratch', description: 'Ephemeral working files for Image Cleaner renders — swept automatically, safe to purge when no render is in flight', archivable: false, deletable: true, purgeScope: 'category', busyCheck: imageCleanTmpBusy },
@@ -84,6 +94,7 @@ export const CATEGORIES = {
   'media-sketches': { label: 'Media Sketches', description: 'Saved sketch canvases used as render inputs', archivable: true, deletable: false },
   'messages': { label: 'Messages', description: 'Email and messaging data', archivable: true, deletable: true, purgeScope: 'category' },
   'model-personality': { label: 'Model Personality', description: 'Model personality probe results and settings', archivable: true, deletable: false },
+  'model-tests': { label: 'Model Capability Tests', description: 'Throwaway agent sandboxes from the capability test suite — recreated per run, safe to purge', archivable: false, deletable: true, purgeScope: 'category' },
   'music': { label: 'Music', description: 'Uploaded and generated background tracks', archivable: true, deletable: false },
   'openclaw': { label: 'OpenClaw', description: 'OpenClaw integration config', archivable: true, deletable: false },
   'pipeline-comparative-rank': { label: 'Comparative Rank', description: 'Cached comparative issue rankings — re-running them costs LLM calls', archivable: true, deletable: false },

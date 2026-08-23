@@ -11,7 +11,7 @@
  *
  * `applyFilename(currentStage, parsed, job, filename)` returns either
  *   { patch, label }  → stage gets the patch; label is logged
- * or `null` to skip (e.g. stale jobId after a re-render — see CLAUDE.md
+ * or `null` to skip (e.g. stale jobId after a re-render — see AGENTS.md
  * "Pending socket-request tracking" for the same generation-aware idea).
  *
  * Optional `onStamped({ parsed, job, filename, label })` fires once *after*

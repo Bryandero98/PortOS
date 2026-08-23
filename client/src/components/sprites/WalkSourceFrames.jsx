@@ -121,7 +121,7 @@ function WalkSourceFrames({ recordId, runId, onSaved = () => {} }) {
   const [confirming, setConfirming] = useState(false);
   // The cycle target's PUT is its own request; the re-derive below reads the
   // target server-side, so it must not fire against a value the server has not
-  // persisted yet (CLAUDE.md: "in-flight saves must gate dependent actions").
+  // persisted yet (AGENTS.md: "in-flight saves must gate dependent actions").
   const [targetSaving, setTargetSaving] = useState(false);
 
   const load = useCallback(async () => {

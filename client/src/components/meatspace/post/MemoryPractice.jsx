@@ -5,7 +5,10 @@ import ProgressBar from '../../ui/ProgressBar';
 import PostCompletionActions from './PostCompletionActions';
 import { startRetryableSave } from './completionSave';
 
-const MODES = [
+// Exported so the Practice Library (practiceCatalog.js) derives its study-mode
+// rows from this list rather than re-typing them — a new mode shows up in the
+// catalog for free, which is the whole point of that page.
+export const MODES = [
   { id: 'learn', label: 'Learn', desc: 'Progressive reveal — read and absorb line by line' },
   { id: 'fill-blank', label: 'Fill in the Blank', desc: 'Fill missing words in partially shown lines' },
   { id: 'sequence', label: 'Sequence Recall', desc: 'Given a line, type what comes next' },
@@ -23,7 +26,7 @@ export const MEMORY_PRACTICE_MODE_IDS = MODES.map(m => m.id);
  * practice runner. `item` is an optional seed the caller already has in hand (a
  * fresh navigation from the list) — a cold deep link has none, so the item is
  * fetched. An id that doesn't resolve renders a not-found fallback rather than a
- * blank panel, per the deep-link contract in CLAUDE.md.
+ * blank panel, per the deep-link contract in AGENTS.md.
  */
 export default function MemoryPractice({ itemId, item: seedItem, mode, onSelectMode, onExitMode, onBack, onContinue }) {
   const [loadedItem, setLoadedItem] = useState(null);

@@ -2,6 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { Bot } from 'lucide-react';
 import toast from '../ui/Toast';
 import { getSettings, updateSettings } from '../../services/api';
+import {
+  federatedMediaModelsForPeer,
+  peerMediaProviderConfig,
+  resolvePeerMediaReadiness,
+  summarizePeerMediaQueue,
+} from '../../lib/federatedMediaReadiness.js';
+import { isTailnetPeer } from '../../lib/tailnetPeer.js';
 
 // Only the visual kinds route. A federated audio submission may carry nothing
 // but a canonical prompt rendered from a fixed enum profile (free-form music
@@ -9,34 +16,33 @@ import { getSettings, updateSettings } from '../../services/api';
 // free-form by construction — so audio stays local rather than being silently
 // rewritten into a profile the user never picked.
 const KINDS = Object.freeze([
-  { kind: 'image', label: 'Image', field: 'imageModels' },
-  { kind: 'video', label: 'Video', field: 'videoModels' },
+  { kind: 'image', label: 'Image' },
+  { kind: 'video', label: 'Video' },
 ]);
 
 const isRecord = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const optionValue = ({ peerId, engine, modelId }) => JSON.stringify([peerId, engine, modelId]);
-const modelKey = ({ engine, modelId }) => `${engine}\u0000${modelId}`;
 
-// Mirrors the server's fail-closed `isTailnetPeer` gate (server/lib/tailnetPeer.js).
-// A standing route exports every future prompt of its kind unreviewed, so ADR
-// 2026-08-20-federated-visual-prompts (rule 5) refuses a non-tailnet peer. The
-// server is authoritative; this only keeps the UI from offering a choice it
-// would reject on the first job.
-const isTailnetPeer = (peer) => {
-  const host = typeof peer?.host === 'string' ? peer.host.trim() : '';
-  if (host) return /\.ts\.net$/i.test(host);
-  const address = (typeof peer?.address === 'string' ? peer.address : '').trim().replace(/^\[|\]$/g, '');
-  if (!address) return false;
-  if (/\.ts\.net$/i.test(address) || /^fd7a:115c:a1e0:/i.test(address)) return true;
-  const v4 = address.match(/^100\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
-  return !!v4 && Number(v4[1]) >= 64 && Number(v4[1]) <= 127;
+const TONE_CLASS = {
+  success: 'text-port-success',
+  warning: 'text-port-warning',
+  note: 'text-gray-400',
+  muted: 'text-gray-500',
 };
 
 // One option per (peer, allowlisted model) pair that the peer currently
 // advertises as a capability. A model the user allowlisted but the peer no
 // longer advertises is deliberately absent: routing unattended work at it would
 // fail the server's capacity preflight on every single job.
-function routeOptions(peers, kind, field) {
+//
+// The two hard filters below are DURABLE configuration, which is why they can
+// gate the option list: a peer switched off or not enabled as a provider stays
+// that way until someone changes it. Live capacity deliberately does NOT gate —
+// a provider is routinely asleep when its route is configured, and hiding it
+// then would make the card unusable at exactly the moment it is being set up.
+// Current state is reported as a caption instead, and the server re-checks
+// everything at enqueue.
+function routeOptions(peers, kind) {
   const options = [];
   for (const peer of peers) {
     // Both switches matter. `peer.enabled === false` disables the peer wholesale
@@ -44,16 +50,12 @@ function routeOptions(peers, kind, field) {
     // it here would save a route whose every job dies on
     // MEDIA_PROVIDER_PEER_DISABLED.
     if (peer?.enabled === false) continue;
-    if (peer?.mediaProvider?.enabled !== true) continue;
-    // Offering a non-tailnet peer here would save a route the server refuses on
-    // every job with MEDIA_ROUTING_PEER_NOT_TAILNET.
+    if (!peerMediaProviderConfig(peer).enabled) continue;
+    // Offering a non-tailnet peer here would save a route the server refuses,
+    // now at save time and again on every job, with
+    // MEDIA_ROUTING_PEER_NOT_TAILNET.
     if (!isTailnetPeer(peer)) continue;
-    const allowed = new Set((peer.mediaProvider[field] || [])
-      .filter((model) => model?.engine && model?.modelId)
-      .map(modelKey));
-    for (const capability of peer.mediaProviderStatus?.snapshot?.capabilities || []) {
-      if (capability?.kind !== kind) continue;
-      if (!allowed.has(modelKey(capability))) continue;
+    for (const capability of federatedMediaModelsForPeer(peer, kind)) {
       options.push({
         peerId: peer.id,
         engine: capability.engine,
@@ -64,6 +66,29 @@ function routeOptions(peers, kind, field) {
     }
   }
   return options;
+}
+
+/**
+ * What the peer behind a saved route is reporting right now.
+ *
+ * Read through the same `resolvePeerMediaReadiness` the Instances card, System
+ * Health, and the interactive pickers use, so this card cannot become a fourth
+ * surface with its own opinion — the reason it is advisory here and blocking
+ * there is the standing-vs-interactive distinction, not a different verdict.
+ */
+function routeStatus(peers, route) {
+  if (!route) return null;
+  const peer = peers.find((candidate) => candidate.id === route.peerId);
+  if (!peer) {
+    return { tone: 'warning', label: 'peer not registered', help: null, segments: [] };
+  }
+  const readiness = resolvePeerMediaReadiness(peer);
+  return {
+    tone: readiness.tone,
+    label: readiness.label,
+    help: readiness.help,
+    segments: summarizePeerMediaQueue(readiness.queue),
+  };
 }
 
 /**
@@ -93,7 +118,7 @@ export default function UnattendedRenderRouting({ peers }) {
   }, []);
 
   const optionsByKind = useMemo(
-    () => Object.fromEntries(KINDS.map(({ kind, field }) => [kind, routeOptions(peers, kind, field)])),
+    () => Object.fromEntries(KINDS.map(({ kind }) => [kind, routeOptions(peers, kind)])),
     [peers],
   );
 
@@ -122,18 +147,22 @@ export default function UnattendedRenderRouting({ peers }) {
     const base = isRecord(fresh.federation) ? fresh.federation : {};
     const baseRouting = isRecord(base.mediaRouting) ? base.mediaRouting : routing;
     const nextRouting = { ...baseRouting, [kind]: route };
-    const merged = await updateSettings(
+    const outcome = await updateSettings(
       { federation: { mediaRouting: nextRouting } },
       { silent: true },
-    ).catch(() => null);
+    ).then((merged) => ({ merged }), (error) => ({ error }));
     setSaving(false);
-    if (!merged) {
+    if (outcome.error) {
       // The select is controlled off `routing`, so a failed save silently snaps
-      // it back to the old value. Say why, or it reads as the click not landing.
-      toast.error('Failed to save unattended render routing');
+      // it back to the old value. Say why, or it reads as the click not landing
+      // — and the server's own reason is the useful half now that it refuses a
+      // route that could never run (unknown/disabled/un-allowlisted/non-tailnet
+      // peer) instead of storing it to fail on every future render.
+      toast.error(outcome.error.message || 'Failed to save unattended render routing');
       return;
     }
-    setRouting(isRecord(merged.federation?.mediaRouting) ? merged.federation.mediaRouting : nextRouting);
+    const { merged } = outcome;
+    setRouting(isRecord(merged?.federation?.mediaRouting) ? merged.federation.mediaRouting : nextRouting);
   };
 
   const savedRoute = (kind) => (isRecord(routing?.[kind]) ? routing[kind] : null);
@@ -173,35 +202,54 @@ export default function UnattendedRenderRouting({ peers }) {
         {KINDS.map(({ kind, label }) => {
           const options = optionsByKind[kind];
           const current = savedRoute(kind);
+          const status = routeStatus(peers, current);
           const selectId = `unattended-routing-${kind}`;
+          const statusId = `${selectId}-status`;
           return (
-            <label key={kind} className="block" htmlFor={selectId}>
-              <span className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">{label}</span>
-              <select
-                id={selectId}
-                value={current ? optionValue(current) : ''}
-                // Enabled whenever there is something to choose OR something to
-                // clear; only a kind with neither is inert.
-                disabled={saving || (options.length === 0 && !current)}
-                onChange={(event) => save(kind, event.target.value
-                  ? (([peerId, engine, modelId]) => ({ peerId, engine, modelId }))(JSON.parse(event.target.value))
-                  : null)}
-                className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
-              >
-                <option value="">This instance</option>
-                {options.map((option) => (
-                  <option key={optionValue(option)} value={optionValue(option)}>
-                    {option.label}{option.ready ? '' : ' (not ready)'}
-                  </option>
-                ))}
-                {/* A route saved against a model no longer advertised must stay
-                    selectable, or the control would silently show "This
-                    instance" while the server still routes every job. */}
-                {current && !options.some((option) => optionValue(option) === optionValue(current)) && (
-                  <option value={optionValue(current)}>{current.modelId} (unavailable)</option>
-                )}
-              </select>
-            </label>
+            <div key={kind}>
+              <label className="block" htmlFor={selectId}>
+                <span className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">{label}</span>
+                <select
+                  id={selectId}
+                  // The caption below reports the routed peer's live state; tie
+                  // it to the control so it is announced with it rather than
+                  // read as unrelated text after it.
+                  aria-describedby={status ? statusId : undefined}
+                  value={current ? optionValue(current) : ''}
+                  // Enabled whenever there is something to choose OR something to
+                  // clear; only a kind with neither is inert.
+                  disabled={saving || (options.length === 0 && !current)}
+                  onChange={(event) => save(kind, event.target.value
+                    ? (([peerId, engine, modelId]) => ({ peerId, engine, modelId }))(JSON.parse(event.target.value))
+                    : null)}
+                  className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
+                >
+                  <option value="">This instance</option>
+                  {options.map((option) => (
+                    <option key={optionValue(option)} value={optionValue(option)}>
+                      {option.label}{option.ready ? '' : ' (not ready)'}
+                    </option>
+                  ))}
+                  {/* A route saved against a model no longer advertised must stay
+                      selectable, or the control would silently show "This
+                      instance" while the server still routes every job. */}
+                  {current && !options.some((option) => optionValue(option) === optionValue(current)) && (
+                    <option value={optionValue(current)}>{current.modelId} (unavailable)</option>
+                  )}
+                </select>
+              </label>
+              {/* Capacity messaging for a routed kind. Advisory, not a gate:
+                  what it answers is "will the next unattended render actually
+                  run, or queue behind something?" — which the select alone
+                  cannot say, and which nobody is watching for at enqueue time. */}
+              {status && (
+                <p id={statusId} className={`mt-1 text-[10px] ${TONE_CLASS[status.tone] || TONE_CLASS.muted}`}>
+                  {status.label}
+                  {status.segments.length > 0 && ` · ${status.segments.join(' · ')}`}
+                  {status.help && <span className="block text-gray-500">{status.help}</span>}
+                </p>
+              )}
+            </div>
           );
         })}
       </div>

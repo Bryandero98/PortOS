@@ -26,6 +26,39 @@ const isSystemAgent = (agent) =>
 // on top of that is redundant nagging, not a useful signal.
 const isManualUserAgent = (agent) => agent.metadata?.taskType === 'user';
 
+const FEEDBACK_RATINGS = new Set(['positive', 'negative', 'neutral']);
+const ARCHIVE_READ_BATCH_SIZE = 50;
+
+const hasValidFeedback = (agent) => FEEDBACK_RATINGS.has(agent?.feedback?.rating);
+
+// Completed agents are written to their date-bucket archive before they age out
+// of live state. Feedback statistics therefore have to read both stores and
+// de-duplicate by agent id; reading state alone makes almost all historical
+// ratings disappear from the learning view as soon as normal retention runs.
+async function loadArchivedAgentsWithFeedback() {
+  const idx = await loadAgentIndex();
+  const entries = [...idx.entries()];
+  const agents = [];
+
+  // Match the archive reader's bounded fan-out so a long-lived install does not
+  // open every metadata file at once.
+  for (let i = 0; i < entries.length; i += ARCHIVE_READ_BATCH_SIZE) {
+    const batch = entries.slice(i, i + ARCHIVE_READ_BATCH_SIZE);
+    const reads = batch.map(async ([agentId, dateBucket]) => {
+      const content = await tryReadFile(join(getAgentDir(agentId, dateBucket), 'metadata.json'));
+      if (!content) return null;
+      const raw = safeJSONParse(content, null);
+      return hasValidFeedback(raw) ? { ...raw, id: raw.id || raw.agentId || agentId } : null;
+    });
+    const settled = await Promise.allSettled(reads);
+    for (const result of settled) {
+      if (result.status === 'fulfilled' && result.value) agents.push(result.value);
+    }
+  }
+
+  return agents;
+}
+
 // Count completed user-facing agents that are still retained in live CoS state
 // and have not received a rating. Archived history is intentionally excluded:
 // actionable insights refresh every 30s, so this remains a cheap, exact count
@@ -104,9 +137,17 @@ export async function submitAgentFeedback(agentId, feedback) {
 // Get aggregated feedback statistics
 export async function getFeedbackStats() {
   const state = await loadState();
-  const agents = Object.values(state.agents);
+  const archived = await loadArchivedAgentsWithFeedback();
+  const byAgentId = new Map(archived.map(agent => [agent.id, agent]));
 
-  const withFeedback = agents.filter(a => a.feedback);
+  // Live state is freshest, but only overwrite an archived rating when the live
+  // record actually carries valid feedback. This preserves a durable rating if
+  // a prior best-effort live-state update did not make it into both stores.
+  for (const [agentId, agent] of Object.entries(state.agents)) {
+    if (hasValidFeedback(agent)) byAgentId.set(agent.id || agentId, agent);
+  }
+
+  const withFeedback = [...byAgentId.values()];
   const positive = withFeedback.filter(a => a.feedback.rating === 'positive').length;
   const negative = withFeedback.filter(a => a.feedback.rating === 'negative').length;
   const neutral = withFeedback.filter(a => a.feedback.rating === 'neutral').length;

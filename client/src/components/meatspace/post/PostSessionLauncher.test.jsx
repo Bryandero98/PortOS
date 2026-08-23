@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
 // Mock the API surface the launcher touches on mount (providers + review reps +
@@ -20,6 +20,7 @@ vi.mock('../../../services/api', () => ({
   getMorseProgress: vi.fn().mockResolvedValue({ settings: { wpm: 18, farnsworthWpm: 12 } }),
   getPostProgress: vi.fn().mockResolvedValue({ series: { byDay: [] } }),
   getMemoryItems: vi.fn().mockResolvedValue([{ id: 'example-memory' }]),
+  getPostCognitiveProgress: vi.fn().mockResolvedValue({}),
   getPostBenchmarkProtocol: vi.fn().mockResolvedValue({
     protocolId: 'post-foundation-battery',
     protocolVersion: 1,
@@ -36,7 +37,8 @@ vi.mock('../../../services/api', () => ({
 }));
 
 import PostSessionLauncher, { buildCleanConditions, cognitiveSummary, interleaveByDomain } from './PostSessionLauncher';
-import { getPostRecommendations, getMorseProgress, getPostProgress, getPostReviewReps, getPostBenchmarkProtocol, getMemoryItems, updatePostConfig } from '../../../services/api';
+import { otherPostSections, TOPIC_SURFACE_SECTIONS } from './practiceCatalog';
+import { getPostRecommendations, getMorseProgress, getPostProgress, getPostReviewReps, getPostBenchmarkProtocol, getMemoryItems, updatePostConfig, getPostCognitiveProgress } from '../../../services/api';
 
 // Pure-function tests for PostSessionLauncher's pre-submit helpers (issue
 // #2102 gap #10; structured conditions issue #4442). Both were lifted from
@@ -160,10 +162,6 @@ describe('PostSessionLauncher render (issue #2100)', () => {
         stats={stats}
         statsWeek={{ sessionCount: 2 }}
         onStart={vi.fn()}
-        onViewHistory={vi.fn()}
-        onViewConfig={vi.fn()}
-        onViewMemory={vi.fn()}
-        onViewMorse={vi.fn()}
         {...props}
       />
     </MemoryRouter>,
@@ -175,6 +173,7 @@ describe('PostSessionLauncher render (issue #2100)', () => {
     getPostReviewReps.mockResolvedValue({ reps: [] });
     getMorseProgress.mockResolvedValue({ settings: { wpm: 18, farnsworthWpm: 12 } });
     getPostProgress.mockResolvedValue({ series: { byDay: [] } });
+    getPostCognitiveProgress.mockResolvedValue({});
     getPostBenchmarkProtocol.mockResolvedValue({
       protocolId: 'post-foundation-battery',
       protocolVersion: 1,
@@ -425,6 +424,57 @@ describe('PostSessionLauncher render (issue #2100)', () => {
     });
     expect(await screen.findByText('system default')).toBeInTheDocument();
   });
+
+  // Issue #4732 — the drill's first-run how-to card is one-shot per type, so the
+  // sidebar row is the way back to it from the screen you launch a session from.
+  it('re-opens a cognitive drill\'s how-to card from the sidebar without starting a run', async () => {
+    const onStart = vi.fn();
+    renderLauncher({
+      onStart,
+      config: {
+        ...baseConfig,
+        // progressive:false → the stored knobs are what the drill runs with.
+        cognitive: { enabled: true, drillTypes: { 'n-back': { enabled: true, n: 3, progressive: false } } },
+      },
+    });
+    await waitFor(() => expect(getPostRecommendations).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'How N-Back works' }));
+    // The card reads against the CONFIGURED lag, not a hardcoded default.
+    expect(screen.getByText(/catch when one repeats from 3 steps earlier/i)).toBeTruthy();
+    expect(screen.getByRole('list', { name: /example letter stream/i })).toBeTruthy();
+    // Reading the rules must never start (or count toward) a scored session.
+    expect(onStart).not.toHaveBeenCalled();
+    // Nothing to resolve → no ladder fetch on an all-manual cognitive config.
+    expect(getPostCognitiveProgress).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /got it/i }));
+    expect(screen.queryByText(/catch when one repeats from 3 steps earlier/i)).toBeNull();
+  });
+
+  // The DEFAULT: progressive on, so the server swaps in the ladder rung's config
+  // at generation time and the stored knobs never reach the drill. Digit-span is
+  // the sharpest case — the ladder flips recall to BACKWARD at rung 3, and a card
+  // built from the stored config would teach forward recall for a backward run.
+  it('teaches the ladder rung for a progressive drill, not the stored knobs', async () => {
+    getPostCognitiveProgress.mockResolvedValue({
+      'digit-span': {
+        type: 'digit-span', level: 3, label: 'backward 4–6', levels: [],
+        config: { direction: 'backward', startLength: 4, maxLength: 6 },
+      },
+    });
+    renderLauncher({
+      config: {
+        ...baseConfig,
+        cognitive: { enabled: true, drillTypes: { 'digit-span': { enabled: true, direction: 'forward' } } },
+      },
+    });
+    await waitFor(() => expect(getPostCognitiveProgress).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'How Digit Span works' }));
+    expect(screen.getByText(/then type them in reverse/i)).toBeTruthy();
+    expect(screen.queryByText(/then type them back in order/i)).toBeNull();
+  });
 });
 
 // The launcher is the entry point to a DAILY habit, so the actions that start a
@@ -451,10 +501,6 @@ describe('PostSessionLauncher — Start card (issue #3249)', () => {
         stats={stats}
         statsWeek={{ sessionCount: 2 }}
         onStart={vi.fn()}
-        onViewHistory={vi.fn()}
-        onViewConfig={vi.fn()}
-        onViewMemory={vi.fn()}
-        onViewMorse={vi.fn()}
         {...props}
       />
     </MemoryRouter>,
@@ -466,6 +512,7 @@ describe('PostSessionLauncher — Start card (issue #3249)', () => {
     getPostReviewReps.mockResolvedValue({ reps: [] });
     getMorseProgress.mockResolvedValue({ settings: { wpm: 18, farnsworthWpm: 12 } });
     getPostProgress.mockResolvedValue({ series: { byDay: [] } });
+    getPostCognitiveProgress.mockResolvedValue({});
   });
 
   it('puts the session starts ahead of status, goals, Up next and the analytics block', async () => {
@@ -572,10 +619,6 @@ describe('PostSessionLauncher topic gating (issue #3252)', () => {
         stats={{ sessionCount: 1, overall: 70, currentStreak: 1, longestStreak: 1, byDrill: {} }}
         statsWeek={{ sessionCount: 1 }}
         onStart={onStart}
-        onViewHistory={vi.fn()}
-        onViewConfig={vi.fn()}
-        onViewMemory={vi.fn()}
-        onViewMorse={vi.fn()}
       />
     </MemoryRouter>,
   );
@@ -586,6 +629,7 @@ describe('PostSessionLauncher topic gating (issue #3252)', () => {
     getPostReviewReps.mockResolvedValue({ reps: [] });
     getMorseProgress.mockResolvedValue({ settings: { wpm: 18, farnsworthWpm: 12 } });
     getPostProgress.mockResolvedValue({ series: { byDay: [] } });
+    getPostCognitiveProgress.mockResolvedValue({});
   });
 
   it('composes every llm-drills topic when no topics key is set (legacy config)', async () => {
@@ -651,10 +695,6 @@ describe('PostSessionLauncher review-rep topic gating (issue #3252)', () => {
         stats={{ sessionCount: 1, overall: 70, currentStreak: 1, longestStreak: 1, byDrill: {} }}
         statsWeek={{ sessionCount: 1 }}
         onStart={onStart}
-        onViewHistory={vi.fn()}
-        onViewConfig={vi.fn()}
-        onViewMemory={vi.fn()}
-        onViewMorse={vi.fn()}
       />
     </MemoryRouter>,
   );
@@ -667,6 +707,7 @@ describe('PostSessionLauncher review-rep topic gating (issue #3252)', () => {
     ] });
     getMorseProgress.mockResolvedValue({ settings: { wpm: 18, farnsworthWpm: 12 } });
     getPostProgress.mockResolvedValue({ series: { byDay: [] } });
+    getPostCognitiveProgress.mockResolvedValue({});
   });
 
   it('mixes a review rep into a Quick session while its topic is on', async () => {
@@ -701,6 +742,7 @@ describe('PostSessionLauncher honors the mentalMath module flag (issue #3252)', 
     getPostReviewReps.mockResolvedValue({ reps: [] });
     getMorseProgress.mockResolvedValue({ settings: { wpm: 18, farnsworthWpm: 12 } });
     getPostProgress.mockResolvedValue({ series: { byDay: [] } });
+    getPostCognitiveProgress.mockResolvedValue({});
   });
 
   it('composes no math drills when mentalMath.enabled is false', async () => {
@@ -717,10 +759,6 @@ describe('PostSessionLauncher honors the mentalMath module flag (issue #3252)', 
           stats={{ sessionCount: 1, overall: 70, currentStreak: 1, longestStreak: 1, byDrill: {} }}
           statsWeek={{ sessionCount: 1 }}
           onStart={onStart}
-          onViewHistory={vi.fn()}
-          onViewConfig={vi.fn()}
-          onViewMemory={vi.fn()}
-          onViewMorse={vi.fn()}
         />
       </MemoryRouter>,
     );
@@ -756,10 +794,6 @@ describe('PostSessionLauncher composed memory drills (issue #3254)', () => {
         stats={{ sessionCount: 1, overall: 70, currentStreak: 1, longestStreak: 1, byDrill: {} }}
         statsWeek={{ sessionCount: 1 }}
         onStart={onStart}
-        onViewHistory={vi.fn()}
-        onViewConfig={vi.fn()}
-        onViewMemory={vi.fn()}
-        onViewMorse={vi.fn()}
       />
     </MemoryRouter>,
   );
@@ -900,5 +934,60 @@ describe('PostSessionLauncher composed memory drills (issue #3254)', () => {
         config: { count: 4, memoryItemId: 'runnable' },
       }),
     ]));
+  });
+});
+
+describe('PostSessionLauncher — POST section discoverability', () => {
+  const config = {
+    mentalMath: { enabled: true, drillTypes: { multiplication: { enabled: true } } },
+    llmDrills: { enabled: false, drillTypes: {} },
+    cognitive: { enabled: false, drillTypes: {} },
+  };
+
+  const hrefs = (root) => [...root.querySelectorAll('a')].map(a => a.getAttribute('href'));
+
+  const renderIt = (props = {}) => render(
+    <MemoryRouter>
+      <PostSessionLauncher
+        config={config}
+        recentSessions={[]}
+        stats={null}
+        statsWeek={null}
+        onStart={vi.fn()}
+        {...props}
+      />
+    </MemoryRouter>,
+  );
+
+  it('links to every other POST section and every topic tab from the header', async () => {
+    renderIt();
+    // The launcher fetches providers/recs/progress on mount; settle them so the
+    // resulting state updates land inside act().
+    await act(async () => {});
+    const links = hrefs(screen.getByLabelText('POST sections'));
+    // Derived from the shared registries, not re-listed here: a POST page or a
+    // topic tab added to the catalog must show up in the header, and the
+    // launcher must not link at itself.
+    const expected = [
+      ...otherPostSections('launcher').map(s => s.to),
+      ...TOPIC_SURFACE_SECTIONS.map(s => s.to),
+    ];
+    expect(links.filter(to => !expected.includes(to))).toEqual([]);
+    expect(expected.filter(to => !links.includes(to))).toEqual([]);
+    expect(links).not.toContain('/post/launcher');
+    // Explore is the primary action, so it leads.
+    expect(links[0]).toBe('/post/explore');
+  });
+
+  it('offers the catalog alongside the enabled-drill summaries', async () => {
+    const { container } = renderIt();
+    await waitFor(() => expect(hrefs(container)).toContain('/post/explore'));
+    expect(screen.getByText('Browse every test type')).toBeInTheDocument();
+  });
+
+  it('points an install with nothing enabled at the catalog, not just Config', async () => {
+    const { container } = renderIt({ config: { mentalMath: { drillTypes: {} }, llmDrills: { drillTypes: {} }, cognitive: { drillTypes: {} } } });
+    await waitFor(() => expect(screen.getByText('No drills enabled yet.')).toBeInTheDocument());
+    expect(hrefs(container)).toEqual(expect.arrayContaining(['/post/explore', '/post/plan']));
   });
 });

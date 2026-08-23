@@ -3,8 +3,14 @@ import {
   FEDERATED_MEDIA_KINDS,
   FEDERATED_MEDIA_STATE_HELP,
   federatedMediaModelKey,
+  federatedMediaModelsForPeer,
+  federatedMediaSupports,
   peerMediaProviderConfig,
+  peerMediaProviderSnapshot,
+  peerModelAcceptsInput,
+  peerModelRequiresInput,
   resolvePeerMediaReadiness,
+  summarizePeerMediaQueue,
 } from './federatedMediaReadiness.js';
 
 const NOW = Date.parse('2026-08-20T12:00:00.000Z');
@@ -184,5 +190,250 @@ describe('federatedMediaModelKey', () => {
     expect(federatedMediaModelKey({ engine: 'local', modelId: 'ltx2' })).toBe('local\u0000ltx2');
     expect(federatedMediaModelKey({ engine: 'a', modelId: 'b-c' }))
       .not.toBe(federatedMediaModelKey({ engine: 'a-b', modelId: 'c' }));
+  });
+});
+
+describe('resolvePeerMediaReadiness usable', () => {
+  const freshReady = (overrides = {}) => ({
+    id: 'peer-1',
+    enabled: true,
+    status: 'online',
+    mediaProvider: { enabled: true, audioModels: [{ engine: 'e', modelId: 'm' }] },
+    mediaProviderStatus: {
+      state: 'ready',
+      checkedAt: iso(-1_000),
+      freshUntil: iso(60_000),
+      snapshot: { queue: { running: 0, queued: 0, totalActive: 0, maxQueuedJobs: 4, accepting: true }, capabilities: [] },
+    },
+    ...overrides,
+  });
+
+  it('is true only for an enabled, online, opted-in peer with a fresh ready snapshot', () => {
+    expect(resolvePeerMediaReadiness(freshReady(), { now: NOW }).usable).toBe(true);
+  });
+
+  // `state` is the provider's verdict on its own surface and says nothing about
+  // reachability, so a caller gating on it alone would enable work against a
+  // peer that is switched off or gone.
+  it('is false for a peer that is switched off, offline, or not opted in, however fresh its snapshot', () => {
+    for (const overrides of [
+      { enabled: false },
+      { status: 'offline' },
+      { mediaProvider: { enabled: false, audioModels: [] } },
+    ]) {
+      const readiness = resolvePeerMediaReadiness(freshReady(overrides), { now: NOW });
+      expect(readiness.state).toBe('ready');
+      expect(readiness.usable).toBe(false);
+    }
+  });
+
+  it('is false once the capacity window has expired', () => {
+    const stale = freshReady();
+    stale.mediaProviderStatus.freshUntil = iso(-1_000);
+    expect(resolvePeerMediaReadiness(stale, { now: NOW }).usable).toBe(false);
+  });
+});
+
+describe('summarizePeerMediaQueue', () => {
+  const queue = (overrides = {}) => ({
+    totalActive: 2, providerActive: 1, queued: 1, running: 1, maxQueuedJobs: 4, accepting: true, ...overrides,
+  });
+
+  it('renders shared slots, drain rate, per-kind load, and the federated share', () => {
+    expect(summarizePeerMediaQueue(queue({
+      concurrency: 2,
+      byKind: { audio: { running: 1, queued: 1 }, image: { running: 0, queued: 1 } },
+    }))).toEqual([
+      '2/4 shared slots active',
+      'runs 2 at a time',
+      'audio 1 running, 1 queued',
+      'image 1 queued',
+      'federated 1 running, 1 queued',
+    ]);
+  });
+
+  // byKind is machine-wide while running/queued are the federated share, so an
+  // unlabelled "0 running" beside "audio 1 running" would claim the peer is
+  // both busy and idle.
+  it('labels the federated share so it cannot be read as the whole machine', () => {
+    expect(summarizePeerMediaQueue({
+      totalActive: 1, providerActive: 0, queued: 0, running: 0, maxQueuedJobs: 2, accepting: true,
+      byKind: { audio: { running: 1, queued: 0 } },
+    })).toEqual(['1/2 shared slots active', 'audio 1 running']);
+  });
+
+  // An older provider sends neither new field. Rendering the absence as a zero
+  // would claim idle lanes the peer never reported on.
+  it('drops the segments an older provider never sent instead of showing zeroes', () => {
+    expect(summarizePeerMediaQueue(queue())).toEqual([
+      '2/4 shared slots active',
+      'federated 1 running, 1 queued',
+    ]);
+  });
+
+  it('drops a concurrency that claims no capacity', () => {
+    expect(summarizePeerMediaQueue(queue({ concurrency: 0 })))
+      .not.toContain('runs 0 at a time');
+  });
+
+  // The provider omits an idle kind, but a build that sent one must not add a
+  // segment saying nothing.
+  // Asserted as an exact array: `toContain` on an array is element identity,
+  // not substring, so `.not.toContain('audio')` would pass against a segment
+  // reading 'audio 0 running' and verify nothing.
+  it('omits a kind reporting no work', () => {
+    expect(summarizePeerMediaQueue(queue({
+      byKind: { audio: { running: 0, queued: 0 }, image: { running: 2, queued: 0 } },
+    }))).toEqual([
+      '2/4 shared slots active',
+      'image 2 running',
+      'federated 1 running, 1 queued',
+    ]);
+  });
+
+  it('reports nothing at all when the queue block is missing', () => {
+    for (const bad of [null, undefined, 'busy']) expect(summarizePeerMediaQueue(bad)).toEqual([]);
+  });
+});
+
+describe('federatedMediaModelsForPeer', () => {
+  const withCapabilities = (capabilities, allowlist) => peer({
+    mediaProvider: { enabled: true, audioModels: allowlist },
+    mediaProviderStatus: { checkedAt: iso(-1000), freshUntil: iso(60_000), state: 'ready', snapshot: { capabilities } },
+  });
+  const capability = (overrides) => ({
+    kind: 'audio', engine: 'minimax', engineName: 'MiniMax', modelId: 'music-3',
+    modelName: 'MiniMax Music 3', ready: true, unavailableReason: null, ...overrides,
+  });
+
+  // The allowlist is what the SERVER checks on submit; the capabilities are the
+  // only thing carrying readiness. Either list alone would offer a model that
+  // gets refused, or hide why a listed one cannot run.
+  it('returns only the models present in both the allowlist and the capabilities', () => {
+    const result = federatedMediaModelsForPeer(withCapabilities(
+      [capability(), capability({ modelId: 'other', modelName: 'Other' })],
+      [{ engine: 'minimax', modelId: 'music-3' }],
+    ), 'audio');
+    expect(result.map((entry) => entry.modelId)).toEqual(['music-3']);
+  });
+
+  // Same model id under a different engine is a different entry on the server's
+  // allowlist, so matching on the id alone would offer work the peer refuses.
+  it('keys the match on the engine/model PAIR, not the model id', () => {
+    const result = federatedMediaModelsForPeer(withCapabilities(
+      [capability({ engine: 'other-engine' })],
+      [{ engine: 'minimax', modelId: 'music-3' }],
+    ), 'audio');
+    expect(result).toEqual([]);
+  });
+
+  it('keeps an unadvertised kind, an unknown kind and a missing snapshot all empty', () => {
+    const allowed = [{ engine: 'minimax', modelId: 'music-3' }];
+    expect(federatedMediaModelsForPeer(withCapabilities([capability()], allowed), 'image')).toEqual([]);
+    expect(federatedMediaModelsForPeer(withCapabilities([capability()], allowed), 'hologram')).toEqual([]);
+    expect(federatedMediaModelsForPeer(withCapabilities(undefined, allowed), 'audio')).toEqual([]);
+    expect(federatedMediaModelsForPeer(null, 'audio')).toEqual([]);
+  });
+
+  // Callers memoize on this result; a fresh [] per call would defeat that memo
+  // for exactly the peers with nothing to recompute.
+  it('returns one shared array identity when there is nothing to offer', () => {
+    const empty = federatedMediaModelsForPeer(null, 'audio');
+    expect(federatedMediaModelsForPeer(withCapabilities([], []), 'audio')).toBe(empty);
+  });
+});
+
+// ADR docs/decisions/2026-08-22-federated-media-input-assets.md rule 1. The
+// fail-closed reading is the whole point: a provider built before that ADR
+// advertises no `inputAssets` block AND rejects the fields, so an absent block
+// read as "unrestricted" would offer a render the peer answers with a 400.
+describe('peerModelAcceptsInput / peerModelRequiresInput', () => {
+  const withInput = (inputAssets) => ({ modelName: 'Example', inputAssets });
+
+  it('accepts only the roles the capability actually advertises', () => {
+    const model = withInput({ roles: ['initImage'], required: false, maxCount: 8 });
+    expect(peerModelAcceptsInput(model, 'initImage')).toBe(true);
+    expect(peerModelAcceptsInput(model, 'referenceImages')).toBe(false);
+  });
+
+  it('needs the BUILD to speak conditioning as well as the model to advertise the role', () => {
+    // Both halves, and neither alone: the root feature says the peer's code can
+    // carry a conditioning image at all, the roles array says this model takes
+    // one in that slot. A peer on the previous build sends no `features` and is
+    // read through the block it does send, which is why an empty list is not
+    // treated as a denial.
+    const model = withInput({ roles: ['initImage'], required: false, maxCount: 8 });
+    expect(peerModelAcceptsInput(model, 'initImage', { features: ['inputAssets'] })).toBe(true);
+    // A peer that published its vocabulary and left conditioning out has said
+    // no, and its capability block does not get to overrule that.
+    expect(peerModelAcceptsInput(model, 'initImage', { features: ['lyrics'] })).toBe(false);
+    // A peer that published no list at all is read through the block it did
+    // send, which is how the pre-migration build keeps working.
+    expect(peerModelAcceptsInput(model, 'initImage', {})).toBe(true);
+    // The build speaks it; this model simply takes nothing.
+    expect(peerModelAcceptsInput(withInput(null), 'initImage', { features: ['inputAssets'] })).toBe(false);
+  });
+
+  it.each([
+    ['an absent block (a provider predating the ADR)', undefined],
+    ['an explicit null', null],
+    ['a block with no roles array', { required: false }],
+    ['a malformed roles value', { roles: 'initImage' }],
+  ])('reads %s as accepting nothing', (_name, inputAssets) => {
+    expect(peerModelAcceptsInput(withInput(inputAssets), 'initImage')).toBe(false);
+    expect(peerModelRequiresInput(withInput(inputAssets))).toBe(false);
+  });
+
+  it('reports a model that cannot render without conditioning', () => {
+    expect(peerModelRequiresInput(withInput({ roles: ['initImage'], required: true }))).toBe(true);
+    expect(peerModelRequiresInput(withInput({ roles: ['initImage'], required: false }))).toBe(false);
+  });
+
+  it('tolerates a null capability rather than throwing on an unpicked model', () => {
+    expect(peerModelAcceptsInput(null, 'initImage')).toBe(false);
+    expect(peerModelRequiresInput(null)).toBe(false);
+  });
+});
+
+// Mirrors server/lib/federatedMediaWire.js — the two must agree, or a surface
+// offers a render the route then refuses.
+describe('federatedMediaSupports / peerMediaProviderSnapshot', () => {
+  const capability = { kind: 'audio', lyrics: true };
+
+  it('reads an absent features list as the wire-v1 baseline', () => {
+    expect(federatedMediaSupports(null, 'lyrics')).toBe(false);
+    expect(federatedMediaSupports({ features: [] }, 'lyrics', capability)).toBe(false);
+    expect(federatedMediaSupports({ features: 'lyrics' }, 'lyrics')).toBe(false);
+  });
+
+  it('reads the status-root list, and falls back to the legacy per-capability field', () => {
+    expect(federatedMediaSupports({ features: ['lyrics'] }, 'lyrics')).toBe(true);
+    expect(federatedMediaSupports({}, 'lyrics', { ...capability, acceptsLyrics: true })).toBe(true);
+    // List wins: a published vocabulary that omits the feature overrules the
+    // legacy field rather than being OR'd with it.
+    expect(federatedMediaSupports({ features: [] }, 'lyrics', { ...capability, acceptsLyrics: true })).toBe(false);
+    expect(federatedMediaSupports({}, 'inputAssets', { inputAssets: { roles: [] } })).toBe(true);
+    expect(federatedMediaSupports({}, 'inputAssets', { inputAssets: null })).toBe(false);
+    // Pinned identically in server/lib/federatedMediaWire.test.js: an array is
+    // not a block, and the two ends must not disagree on a malformed one.
+    expect(federatedMediaSupports({}, 'inputAssets', { inputAssets: [] })).toBe(false);
+  });
+
+  // Mirrors the server guard: a feature name off the wire can collide with an
+  // Object.prototype key, and both ends must answer alike rather than one
+  // returning false while the other throws.
+  it.each(['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__'])(
+    'answers false for the inherited key %s instead of throwing',
+    (feature) => {
+      expect(federatedMediaSupports({}, feature, capability)).toBe(false);
+      expect(federatedMediaSupports(null, feature)).toBe(false);
+    },
+  );
+
+  it('returns the peer snapshot only when one is actually stored', () => {
+    expect(peerMediaProviderSnapshot(null)).toBeNull();
+    expect(peerMediaProviderSnapshot({ mediaProviderStatus: {} })).toBeNull();
+    expect(peerMediaProviderSnapshot({ mediaProviderStatus: { snapshot: { features: ['lyrics'] } } }))
+      .toEqual({ features: ['lyrics'] });
   });
 });

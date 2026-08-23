@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const spawned = vi.hoisted(() => ({ bufferedSpawn: vi.fn() }));
-vi.mock('./bufferedSpawn.js', () => spawned);
+// Partial mock: only the spawn is faked — `spawnFailureDetail` is the real pure
+// helper, so the failure sentence this asserts on is the shipped one.
+vi.mock('./bufferedSpawn.js', async (importOriginal) => ({ ...(await importOriginal()), ...spawned }));
 
 const pathLookup = vi.hoisted(() => ({ findCommandOnPath: vi.fn(() => '/opt/homebrew/bin/mtplx') }));
 vi.mock('./processEnv.js', () => pathLookup);
 
-import { listMtplxCachedModels, pickMtplxCachedModel } from './mtplxModels.js';
+import { describeMtplxCache, listMtplxCachedModels, pickMtplxCachedModel } from './mtplxModels.js';
 
 const ok = (stdout) => ({ success: true, code: 0, signal: null, stdout, stderr: '', timedOut: false });
 
@@ -95,5 +97,31 @@ describe('pickMtplxCachedModel', () => {
     expect(pickMtplxCachedModel([])).toBeNull();
     expect(pickMtplxCachedModel(null)).toBeNull();
     expect(pickMtplxCachedModel([{ path: '/cache/broken' }])).toBeNull();
+  });
+});
+
+describe('describeMtplxCache', () => {
+  it('reports a servable cache with the model a start would use', () => {
+    expect(describeMtplxCache({
+      models: [{ repo_id: 'Example/Plain', validation: { ok: true } }, { repo_id: 'Example/Verified', has_runtime_contract: true, validation: { ok: true } }],
+      error: null,
+    })).toEqual({ state: 'ready', model: 'Example/Verified', count: 2, error: null });
+  });
+
+  it('separates a cache nobody pulled into from one holding a half-finished pull', () => {
+    // Different sentences on the checklist: "no weights cached" vs "only an
+    // unfinished download". Both block a start; only the second implies a retry
+    // of something the user already began.
+    expect(describeMtplxCache({ models: [], error: null })).toEqual({ state: 'empty', model: null, count: 0, error: null });
+    expect(describeMtplxCache({ models: [{ repo_id: 'Example/Partial', validation: { ok: false } }], error: null }))
+      .toEqual({ state: 'partial', model: null, count: 1, error: null });
+  });
+
+  it('never calls an UNREADABLE cache empty — that would claim a fact PortOS lacks', () => {
+    // The whole point of `models: null`: an empty cache blocks a start, an
+    // unreadable one must not.
+    expect(describeMtplxCache({ models: null, error: '`mtplx models` timed out' }))
+      .toEqual({ state: 'unknown', model: null, count: 0, error: '`mtplx models` timed out' });
+    expect(describeMtplxCache()).toMatchObject({ state: 'unknown', error: null });
   });
 });

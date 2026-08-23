@@ -63,7 +63,7 @@ export function prorateMonthlyCost(monthlyCost, days) {
  * Percent of the API bill a subscription avoided, or null when there is no API
  * bill to compare against. Null rather than 0 or 100 on purpose: "we cannot
  * express this as a percentage" is not "you saved nothing" (see the
- * sentinel-vs-empty convention in CLAUDE.md), and a UI that prints 0% for an
+ * sentinel-vs-empty convention in AGENTS.md), and a UI that prints 0% for an
  * unused-but-paid-for plan is stating a falsehood about the plan.
  */
 export function savingsPercent(apiCost, savings) {

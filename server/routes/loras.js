@@ -1,7 +1,7 @@
 /**
  * LoRA management routes.
  *
- * REST surface for the new `/media/loras` manager UI. The legacy delete
+ * REST surface for the `/models/loras` manager UI. The legacy delete
  * endpoint at `DELETE /api/image-video/models/lora/:filename` is kept for
  * backward compat (the Models page still calls it); the new manager uses
  * these endpoints exclusively so it can also surface Civitai metadata.
@@ -57,7 +57,7 @@ router.get('/suggestions', asyncHandler(async (req, res) => {
 }));
 
 // Live keyword search + cursor pagination within one runner family. Backs the
-// per-category search box and "Load more" button on /media/loras. Uncached —
+// per-category search box and "Load more" button on /models/loras. Uncached —
 // results are query/cursor-specific. `query` blank = top ranking for that
 // family (so "Load more" with no keyword just pages the leaderboard).
 const searchQuerySchema = z.object({

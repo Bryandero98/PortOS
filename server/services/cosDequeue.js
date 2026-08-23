@@ -34,37 +34,115 @@
  * against both the global slots and the budget. A task with no `metadata.app`
  * buckets into the `_self` project key (PortOS-on-itself work) so app-less tasks
  * can't bypass the per-project cap.
+ *
+ * The THIRD cap is per local inference endpoint (issue #4834): a single GPU
+ * can't hold N model contexts at once, so agents whose provider resolves to the
+ * same local endpoint dispatch `localEndpointLimit` at a time and the rest stay
+ * queued. Callers supply the already-resolved pieces — `localEndpointCounts`
+ * (endpoint → running agents) and `resolveLocalEndpoint(task)` (which endpoint a
+ * candidate would land on, built by cosLocalEndpointSlots.js) — so this module
+ * stays pure and dependency-free. A task resolving to `null` (cloud provider, or
+ * a TUI provider with no recorded endpoint) is ungated. `onLocalEndpointHold`
+ * fires on a denial so the scheduler can log queued-no-slot without this module
+ * importing the event bus.
+ *
+ * `canSpawnCommitted` opts a tier out of that third cap. Three tiers use it,
+ * because a denial there is DESTRUCTIVE rather than a defer — each has already
+ * committed side effects by the time `canSpawn` runs, and none of them persists
+ * the task, so `false` discards the only copy:
+ *
+ *   - Priority 0 has cleared the on-demand request and bound the app-review
+ *     marker — a denial silently swallows the user's explicit "Run".
+ *   - Priority 3 has flipped the mission sub-task to `in_progress` and saved the
+ *     mission; `generateMissionTask` only ever re-picks `pending` sub-tasks, and
+ *     the emitted object is the only copy (holdTask reverts the flip — #4858).
+ *   - Priority 4 has bound the app-review marker and advanced the 30-minute
+ *     review cooldown (issue #978's failure mode).
+ *
+ * Emitting instead is strictly better — the authoritative cap at subAgentSpawner's
+ * `task:ready` chokepoint HOLDS the task (still `pending`, marker released, job
+ * reservation freed), which is exactly the outcome these tiers cannot produce.
+ * The global/per-project caps carry the same hazard here; that is pre-existing.
  */
-export function createDequeueCapacity(state, { agentsByProject = {} } = {}) {
+export function createDequeueCapacity(state, {
+  agentsByProject = {},
+  localEndpointCounts = {},
+  localEndpointLimit = Infinity,
+  resolveLocalEndpoint = () => null,
+  onLocalEndpointHold = null,
+} = {}) {
   const runningAgents = Object.values(state.agents).filter(a => a.status === 'running').length;
   const availableSlots = state.config.maxConcurrentAgents - runningAgents;
   const perProjectLimit = state.config.maxConcurrentAgentsPerProject || state.config.maxConcurrentAgents;
+  // A caller passing 0/NaN would wedge every local-endpoint task forever; floor
+  // at 1 so the cap degrades to "serialize", never to "never dispatch".
+  // `Infinity` (the no-cap default) passes through unchanged.
+  const localSlotLimit = Math.max(1, Number(localEndpointLimit) || 1);
 
   const spawnProjectCounts = { ...agentsByProject };
+  const spawnLocalEndpointCounts = { ...localEndpointCounts };
   let spawned = 0;
 
-  const canSpawn = (task, ceiling = availableSlots) => {
+  const admit = (task, ceiling, gateLocalEndpoint) => {
     if (spawned >= ceiling) return false;
     const project = task.metadata?.app || '_self';
-    return (spawnProjectCounts[project] || 0) < perProjectLimit;
+    if ((spawnProjectCounts[project] || 0) >= perProjectLimit) return false;
+    const endpoint = gateLocalEndpoint ? resolveLocalEndpoint(task) : null;
+    if (endpoint) {
+      const running = spawnLocalEndpointCounts[endpoint] || 0;
+      if (running >= localSlotLimit) {
+        onLocalEndpointHold?.(task, endpoint, running);
+        return false;
+      }
+    }
+    return true;
   };
+
+  const canSpawn = (task, ceiling = availableSlots) => admit(task, ceiling, true);
+  // For a COMMITTED tier — one that has already taken side effects and does not
+  // persist the task, so a denial would discard it rather than defer it. Skips
+  // only the local-endpoint cap; see the header for which tiers qualify and why.
+  const canSpawnCommitted = (task, ceiling = availableSlots) => admit(task, ceiling, false);
 
   const trackSpawn = (task) => {
     const project = task.metadata?.app || '_self';
     spawnProjectCounts[project] = (spawnProjectCounts[project] || 0) + 1;
+    const endpoint = resolveLocalEndpoint(task);
+    if (endpoint) spawnLocalEndpointCounts[endpoint] = (spawnLocalEndpointCounts[endpoint] || 0) + 1;
     spawned++;
   };
 
   return {
     availableSlots,
     perProjectLimit,
+    localEndpointLimit: localSlotLimit,
     spawnProjectCounts,
+    spawnLocalEndpointCounts,
     canSpawn,
+    canSpawnCommitted,
     trackSpawn,
     // Live read of the running spawn count — a getter so callers always see the
     // current total after trackSpawn mutations rather than a stale snapshot.
     get spawned() { return spawned; },
   };
+}
+
+/**
+ * Count running agents grouped by the local inference endpoint they occupy
+ * (issue #4834). `endpointForAgent` maps a running agent to its local endpoint
+ * or null — supplied by cosLocalEndpointSlots.js so this stays pure. Agents on
+ * cloud providers (and TUI providers with no recorded endpoint) resolve to null
+ * and are not counted, mirroring the ungated path in `createDequeueCapacity`.
+ */
+export function countRunningAgentsByLocalEndpoint(agents, endpointForAgent) {
+  const counts = {};
+  for (const agent of Object.values(agents || {})) {
+    if (agent.status !== 'running') continue;
+    const endpoint = endpointForAgent(agent);
+    if (!endpoint) continue;
+    counts[endpoint] = (counts[endpoint] || 0) + 1;
+  }
+  return counts;
 }
 
 /**

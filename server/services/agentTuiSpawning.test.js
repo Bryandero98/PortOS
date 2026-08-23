@@ -230,6 +230,11 @@ import * as gitService from './git.js';
 import { activeAgents, userTerminatedAgents } from './agentState.js';
 import {
   SELF_CLEARING_RESUBMIT_INTERVAL_MS,
+  OOM_NUDGE_SETTLE_MS,
+  OOM_NUDGE_ARM_WINDOW_MS,
+  OOM_NUDGE_COOLDOWN_MS,
+  OOM_NUDGE_MAX_ATTEMPTS,
+  OOM_NUDGE_TEXT,
 } from '../lib/tuiHandshake.js';
 // Real module, not a mock: the flag is a plain process-local boolean, so driving
 // it directly exercises the same code path production does.
@@ -1123,6 +1128,41 @@ describe('spawnTuiAgent runtime', () => {
     expect(pasteCount()).toBe(1);
   });
 
+  // Regression (agent-671af38f, 2026-08-21): codex takes the idle/deadline path,
+  // and its first-run directory-trust dialog paints and then goes SILENT — which
+  // that path read as "ready". The task went into the menu, all three paste
+  // retries with it, and the run died `paste-not-rendered`. Creative-director
+  // tasks run in a fresh per-agent temp cwd, so codex asked on every single run.
+  it('codex folder-trust gate: confirms it before the idle heuristic can paste', async () => {
+    runSpawn();
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from(
+      'You are in /tmp/portos-cd-cwd/agent-1\n'
+      + 'Do you trust the contents of this directory? Working with untrusted contents comes with'
+      + ' higher risk of prompt injection.\n'
+      + '› 1. Yes, continue\n'
+      + '2. No, quit\n'
+      + 'Press enter to continue\n',
+    ));
+    await flushMicrotasks();
+    // Past the 1200ms idle threshold — the window in which the prompt used to go
+    // into the dialog.
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+
+    // A bare Enter takes the highlighted "1. Yes, continue" — sent ONCE, not on
+    // every poll tick — and nothing pasted.
+    expect(vi.mocked(shellService.writeToSession).mock.calls.filter(([, d]) => d === '\r').length).toBe(1);
+    expect(pasteCount()).toBe(0);
+
+    // Trust accepted → codex paints its composer → the ordinary idle path pastes.
+    await capturedOnData(Buffer.from('OpenAI Codex ready\n'));
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    expect(pasteCount()).toBe(1);
+  });
+
   it('tui-not-ready: claude that never shows an input prompt finalizes failure without pasting', async () => {
     let resolveComplete;
     const completeDone = new Promise((r) => { resolveComplete = r; });
@@ -1365,6 +1405,97 @@ describe('spawnTuiAgent runtime', () => {
         success: false,
         completionReason: 'fallback-signal',
         error: expect.stringContaining('account eligibility')
+      })
+    );
+  });
+
+  // ── Local-runtime GPU OOM: a nudge, not a verdict ──────────────────────────
+  // MLX/MTPLX kills a turn the server had already accepted, so unlike agy's
+  // banner the session still holds the whole conversation and the prompt must
+  // NOT be re-sent — a one-word `continue` resumes it, which is exactly what a
+  // human typed to rescue agent-011d0c27 on 2026-08-22.
+  const OOM_BOX = '│  {"message":"[METAL] Command buffer execution failed: Insufficient Memory\n'
+    + '│  (00000008: kIOGPUCommandBufferCallbackErrorOutOfMemory).","type":"server_error"}';
+
+  // Long enough for the arm's silence test AND the 5s provider-signal poll that
+  // acts on it.
+  const PAST_SETTLE_MS = OOM_NUDGE_SETTLE_MS + 10000;
+
+  it('nudges a session a local-GPU OOM left parked, without re-sending the prompt', async () => {
+    await driveAgyToSubmittedPrompt();
+    vi.mocked(shellService.pasteToSession).mockClear();
+
+    await capturedOnData(Buffer.from(OOM_BOX));
+    await flushMicrotasks();
+    // The error box is still repainting — nudging into that lands on chrome,
+    // not on an idle composer.
+    await vi.advanceTimersByTimeAsync(5000);
+    await flushMicrotasks();
+    expect(shellService.pasteToSession).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(PAST_SETTLE_MS);
+    await flushMicrotasks();
+    expect(shellService.pasteToSession).toHaveBeenCalledWith(
+      SESSION_ID,
+      OOM_NUDGE_TEXT,
+      expect.objectContaining({ label: expect.stringContaining('OOM') }),
+    );
+    // Exactly one nudge, and the run is left alone to carry on.
+    expect(shellService.pasteToSession).toHaveBeenCalledTimes(1);
+    expect(agentLifecycle.finalizeAgent).not.toHaveBeenCalled();
+  });
+
+  it('leaves a session that kept working after the OOM alone', async () => {
+    await driveAgyToSubmittedPrompt();
+    vi.mocked(shellService.pasteToSession).mockClear();
+
+    await capturedOnData(Buffer.from(OOM_BOX));
+    await flushMicrotasks();
+    // The TUI never goes quiet — it recovered on its own — so the arm has to
+    // expire rather than wait around to fire into the next quiet stretch.
+    for (let elapsed = 0; elapsed <= OOM_NUDGE_ARM_WINDOW_MS; elapsed += 5000) {
+      await capturedOnData(Buffer.from('still working\n'));
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(5000);
+      await flushMicrotasks();
+    }
+    await vi.advanceTimersByTimeAsync(PAST_SETTLE_MS);
+    await flushMicrotasks();
+
+    expect(shellService.pasteToSession).not.toHaveBeenCalled();
+  });
+
+  it('falls back once the OOM outlasts every nudge', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    await driveAgyToSubmittedPrompt();
+    vi.mocked(shellService.pasteToSession).mockClear();
+
+    for (let i = 0; i < OOM_NUDGE_MAX_ATTEMPTS; i += 1) {
+      await capturedOnData(Buffer.from(OOM_BOX));
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(PAST_SETTLE_MS);
+      await flushMicrotasks();
+      // Clear the dedupe cooldown so the next box reads as a NEW OOM rather
+      // than a repaint of the one just nudged.
+      await vi.advanceTimersByTimeAsync(OOM_NUDGE_COOLDOWN_MS);
+      await flushMicrotasks();
+    }
+    expect(shellService.pasteToSession).toHaveBeenCalledTimes(OOM_NUDGE_MAX_ATTEMPTS);
+
+    // The budget is spent and it OOM'd again: the conversation no longer fits
+    // this device, so the task goes to a fallback provider.
+    await capturedOnData(Buffer.from(OOM_BOX));
+    vi.useRealTimers();
+    await completeDone;
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success: false,
+        completionReason: 'fallback-signal',
+        error: expect.stringContaining('GPU memory'),
       })
     );
   });

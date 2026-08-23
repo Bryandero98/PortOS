@@ -3,8 +3,9 @@ import {ChevronLeft, ChevronRight} from 'lucide-react';
 import * as api from '../../services/api';
 import socket from '../../services/socket';
 import EventDetail from './EventDetail';
-import { buildSubcalendarColorMap } from './calendarUtils';
+import { buildSubcalendarColorMap, eventChipStyle } from './calendarUtils';
 import BrailleSpinner from '../BrailleSpinner';
+import { useThemeContext } from '../ThemeContext';
 import { formatMonthYear, formatTimeOfDay } from '../../utils/formatters';
 import useUrlParams from '../../hooks/useUrlParams';
 
@@ -41,6 +42,7 @@ export default function MonthView({ accounts }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchParams, updateParams] = useUrlParams();
+  const { theme } = useThemeContext();
 
   const cells = getMonthGrid(year, month);
   const monthLabel = formatMonthYear(new Date(year, month));
@@ -151,10 +153,7 @@ export default function MonthView({ accounts }) {
                           key={`${event.accountId}-${event.id}`}
                           onClick={() => updateParams({ event: `${event.accountId}:${event.id}` })}
                           className="w-full text-left px-1 py-0.5 rounded text-[10px] truncate transition-colors hover:brightness-125"
-                          style={{
-                            backgroundColor: evColor ? `${evColor}20` : 'rgb(59 130 246 / 0.15)',
-                            color: evColor || 'var(--port-accent, #3b82f6)'
-                          }}
+                          style={eventChipStyle(evColor, theme?.mode)}
                         >
                           {!event.isAllDay && (
                             <span className="text-gray-500 mr-1">

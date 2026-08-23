@@ -810,6 +810,424 @@ describe('ollamaManager context window', () => {
 
 })
 
+describe('ollamaManager.restartWithEnv', () => {
+  let restorePlatform = null
+  afterEach(() => { vi.unstubAllGlobals(); restorePlatform?.(); restorePlatform = null })
+
+  // Reachability is a mutable flag so a test can model the daemon going down and
+  // coming back — `restartWithEnv` reads it before and after every step.
+  // A homebrew-managed, launch-at-login Ollama that answers every command the
+  // set and clear paths issue. `calls` collects the command lines for assertion.
+  const brewServiceImpl = (calls) => (cmd, args, opts, cb) => {
+    const a = (args || []).join(' ')
+    calls.push(`${cmd} ${a}`)
+    if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
+    if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
+    if (cmd === 'ps') return cb(null, { stdout: '101 /usr/local/bin/ollama serve\n', stderr: '' })
+    if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
+    if (cmd === 'brew' && a === 'services restart ollama') return cb(null, { stdout: '', stderr: '' })
+    return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+  }
+
+  function stubReachable(state) {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (!state.reachable) throw new Error('ECONNREFUSED')
+      const body = String(url).endsWith('/api/ps') ? { models: [] } : { version: '0.32.13' }
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
+    }))
+  }
+
+  // `null`, not `false`: nothing was refused. The daemon already runs on its
+  // ambient environment, which is exactly what an untuned assessment claims to
+  // be measuring.
+  it('does nothing when the tuning names no environment and PortOS applied none', async () => {
+    stubReachable({ reachable: true })
+    const { restartWithEnv } = await loadManager()
+    expect(await restartWithEnv({})).toEqual({ applied: null, reason: 'already-untuned' })
+  })
+
+  // The bug: an untuned run following a tuned one sampled a daemon still
+  // carrying `OLLAMA_FLASH_ATTENTION=1` and filed the reading as "Backend
+  // defaults" — a record describing a configuration that never ran.
+  // A stop-then-start clear, with no launch-at-login service in the way. The
+  // daemon has to go DOWN between the two, so reachability is scripted: the
+  // clear's own probe and stopServer's see it up, the stop's wait sees it gone,
+  // and the fresh spawn brings it back. `pid: null` keeps
+  // `terminateManagedProcess` from signalling a real process id.
+  function stubSpawnRestart(state) {
+    execMock.impl = (cmd, args, opts, cb) => cb(new Error(`no service manager: ${cmd}`))
+    return import('../lib/childProcess.js').then(({ spawn }) => {
+      spawn.mockReset().mockImplementation(() => {
+        state.up = true
+        return { pid: null, stderr: { on: () => {} }, on: () => {}, unref: () => {} }
+      })
+      return spawn
+    })
+  }
+
+  it('restarts without the launch env it applied earlier', async () => {
+    const state = { up: false, probesBeforeStop: 0 }
+    stubReachable({ get reachable() { return state.up || state.probesBeforeStop-- > 0 } })
+    const spawn = await stubSpawnRestart(state)
+    const { restartWithEnv } = await loadManager()
+    await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1' })
+
+    // Model the daemon the tuned start left running, then let the stop take it
+    // down: two probes answer "up" (the clear's check and stopServer's), the
+    // third answers "gone".
+    state.up = false
+    state.probesBeforeStop = 2
+    const cleared = await restartWithEnv({})
+
+    expect(cleared).toMatchObject({ applied: null, reason: 'restarted-untuned' })
+    const [, , options] = spawn.mock.calls[spawn.mock.calls.length - 1]
+    expect(options.env.OLLAMA_FLASH_ATTENTION).toBeUndefined()
+  })
+
+  it('restarts nothing for a second clear once the daemon is already untuned', async () => {
+    const state = { up: false, probesBeforeStop: 0 }
+    stubReachable({ get reachable() { return state.up || state.probesBeforeStop-- > 0 } })
+    const spawn = await stubSpawnRestart(state)
+    const { restartWithEnv } = await loadManager()
+    await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1' })
+    state.up = false
+    state.probesBeforeStop = 2
+    await restartWithEnv({})
+    const spawnsBefore = spawn.mock.calls.length
+
+    expect(await restartWithEnv({})).toEqual({ applied: null, reason: 'already-untuned' })
+    expect(spawn.mock.calls.length).toBe(spawnsBefore)
+  })
+
+  // `launchctl setenv` writes into the launchd domain, which outlives the daemon
+  // that read it. Omitting the variable from the next restart is NOT clearing
+  // it — every job launched afterwards would still inherit the tuning.
+  it('unsets the launchd variables it exported before bouncing a homebrew service', async () => {
+    restorePlatform = pinPlatform('darwin')
+    stubReachable({ reachable: true })
+    const calls = []
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      calls.push(`${cmd} ${a}`)
+      if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
+      if (cmd === 'ps') return cb(null, { stdout: '101 /usr/local/bin/ollama serve\n', stderr: '' })
+      if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
+      if (cmd === 'brew' && a === 'services restart ollama') return cb(null, { stdout: '', stderr: '' })
+      return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+    }
+
+    const { restartWithEnv } = await loadManager()
+    await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1', OLLAMA_KV_CACHE_TYPE: 'q4_0' })
+    const cleared = await restartWithEnv({})
+
+    expect(cleared).toMatchObject({ applied: null, reason: 'service-restarted-untuned' })
+    expect(calls).toContain('launchctl unsetenv OLLAMA_FLASH_ATTENTION')
+    expect(calls).toContain('launchctl unsetenv OLLAMA_KV_CACHE_TYPE')
+    expect(calls.filter((c) => c === 'brew services restart ollama')).toHaveLength(2)
+  })
+
+  // `launchctl setenv` is domain-wide, so a key the previous tuning exported and
+  // this one does not name is STILL set. Leaving it there measures the second
+  // tuning against half of the first one.
+  it('unsets a launchd variable the next tuning stops naming', async () => {
+    restorePlatform = pinPlatform('darwin')
+    stubReachable({ reachable: true })
+    const calls = []
+    execMock.impl = brewServiceImpl(calls)
+
+    const { restartWithEnv } = await loadManager()
+    await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1', OLLAMA_KV_CACHE_TYPE: 'q4_0' })
+    calls.length = 0
+    await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1' })
+
+    expect(calls).toContain('launchctl unsetenv OLLAMA_KV_CACHE_TYPE')
+    expect(calls).not.toContain('launchctl unsetenv OLLAMA_FLASH_ATTENTION')
+  })
+
+  // The variables are in the domain the moment `setenv` returns. Recording them
+  // only after a successful bounce leaves a failed restart with exported
+  // variables nothing knows to clear — and the next untuned run reports
+  // "backend defaults" over them.
+  it('still clears variables it exported before a failed restart', async () => {
+    restorePlatform = pinPlatform('darwin')
+    stubReachable({ reachable: true })
+    const calls = []
+    let restartFails = true
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      calls.push(`${cmd} ${a}`)
+      if (cmd === 'brew' && a === 'services restart ollama' && restartFails) {
+        return cb(Object.assign(new Error('restart failed'), { stderr: 'brew: restart failed' }))
+      }
+      return brewServiceImpl([])(cmd, args, opts, cb)
+    }
+
+    const { restartWithEnv } = await loadManager()
+    expect(await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1' })).toMatchObject({ reason: 'restart-failed' })
+    restartFails = false
+    calls.length = 0
+
+    expect(await restartWithEnv({})).toMatchObject({ applied: null })
+    expect(calls).toContain('launchctl unsetenv OLLAMA_FLASH_ATTENTION')
+    // Unsetting the domain is not enough. The variable was in it, so whatever
+    // daemon is up inherited it and holds it in its OWN process environment —
+    // that one has to be restarted too, or this run measures a tuned daemon and
+    // records it as backend defaults.
+    expect(calls).toContain('brew services restart ollama')
+  })
+
+  // A key PortOS could not set is not PortOS's to unset: the name may belong to
+  // a variable the user exported themselves.
+  it('does not claim a launchd variable whose setenv failed', async () => {
+    restorePlatform = pinPlatform('darwin')
+    stubReachable({ reachable: true })
+    const calls = []
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      calls.push(`${cmd} ${a}`)
+      if (cmd === 'launchctl' && a.startsWith('setenv')) return cb(new Error('setenv refused'))
+      return brewServiceImpl([])(cmd, args, opts, cb)
+    }
+
+    const { restartWithEnv } = await loadManager()
+    expect(await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1' })).toMatchObject({ reason: 'setenv-failed' })
+    calls.length = 0
+
+    expect(await restartWithEnv({})).toEqual({ applied: null, reason: 'already-untuned' })
+    expect(calls).toEqual([])
+  })
+
+  // A daemon PortOS just started carries exactly what it was handed, so a later
+  // untuned run has nothing to undo — and must not bounce it (and cold-load the
+  // model) to prove it. Same guarantee `llamaServerManager` gives.
+  it('drops the baseline when a fresh daemon is started over a tuned one', async () => {
+    const state = { up: false, probesBeforeStop: 0 }
+    stubReachable({ get reachable() { return state.up || state.probesBeforeStop-- > 0 } })
+    const spawn = await stubSpawnRestart(state)
+    const { restartWithEnv, startServer, stopServer } = await loadManager()
+    await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1' })
+
+    // The user stops and restarts Ollama themselves — the daemon that comes back
+    // was never handed a tuning.
+    state.up = false
+    state.probesBeforeStop = 1
+    await stopServer()
+    state.up = false
+    await startServer()
+    const spawnsBefore = spawn.mock.calls.length
+
+    expect(await restartWithEnv({})).toEqual({ applied: null, reason: 'already-untuned' })
+    expect(spawn.mock.calls.length).toBe(spawnsBefore)
+  })
+
+  // `stopServer` has three ways to bring the daemon down. A tuning outstanding
+  // when it goes down the `pkill` fallback (the daemon was not PortOS-spawned)
+  // must drop the baseline just the same, or the next untuned run kills the
+  // user's daemon and cold-loads the model to "restore" a tuning already gone.
+  it('drops the baseline however the daemon was stopped', async () => {
+    const state = { up: false, probesBeforeStop: 0 }
+    stubReachable({ get reachable() { return state.up || state.probesBeforeStop-- > 0 } })
+    const spawn = await stubSpawnRestart(state)
+    const { restartWithEnv, stopServer } = await loadManager()
+    await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1' })
+
+    // The managed-process path fails to take it down, so the pkill fallback does.
+    execMock.impl = (cmd, args, opts, cb) => (cmd === 'pkill'
+      ? cb(null, { stdout: '', stderr: '' })
+      : cb(new Error(`no service manager: ${cmd}`)))
+    state.up = false
+    state.probesBeforeStop = 1
+    expect(await stopServer()).toMatchObject({ success: true })
+    const spawnsBefore = spawn.mock.calls.length
+
+    expect(await restartWithEnv({})).toEqual({ applied: null, reason: 'already-untuned' })
+    expect(spawn.mock.calls.length).toBe(spawnsBefore)
+  })
+
+  // `ensureContextWindow` puts the user's configured agent window on the same
+  // OLLAMA_CONTEXT_LENGTH a tuning uses. Tearing the launch env down to nothing
+  // in the name of measuring "backend defaults" would silently undo a setting
+  // they chose on the LLMs page — the baseline is what the install runs by
+  // default, not an empty environment.
+  it('restores the pre-tuning env rather than stripping it', async () => {
+    const state = { up: false, probesBeforeStop: 0 }
+    stubReachable({ get reachable() { return state.up || state.probesBeforeStop-- > 0 } })
+    const spawn = await stubSpawnRestart(state)
+    const { ensureContextWindow, restartWithEnv } = await loadManager()
+    await ensureContextWindow(131072)
+    state.up = false
+    state.probesBeforeStop = 2
+    await restartWithEnv({ OLLAMA_CONTEXT_LENGTH: '131072', OLLAMA_FLASH_ATTENTION: '1' })
+    state.up = false
+    state.probesBeforeStop = 2
+
+    expect(await restartWithEnv({})).toMatchObject({ applied: null })
+
+    const [, , options] = spawn.mock.calls[spawn.mock.calls.length - 1]
+    expect(options.env.OLLAMA_FLASH_ATTENTION).toBeUndefined()
+    expect(options.env.OLLAMA_CONTEXT_LENGTH).toBe('131072')
+  })
+
+  // The domain outlives the daemon, so a stopped Ollama is no reason to leave
+  // the variables in it — the next login-launched one would inherit them.
+  it('unsets exported variables even when Ollama is already down', async () => {
+    restorePlatform = pinPlatform('darwin')
+    const state = { reachable: true }
+    stubReachable(state)
+    const calls = []
+    execMock.impl = brewServiceImpl(calls)
+
+    const { restartWithEnv } = await loadManager()
+    await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1' })
+    state.reachable = false
+    calls.length = 0
+
+    expect(await restartWithEnv({})).toMatchObject({ applied: null, reason: 'not-running' })
+    expect(calls).toContain('launchctl unsetenv OLLAMA_FLASH_ATTENTION')
+    expect(calls).not.toContain('brew services restart ollama')
+  })
+
+  // The knobs only reach Ollama through the process environment, so the whole
+  // point is that they land on the child `ollama serve` — not merely that the
+  // daemon came back up.
+  it('hands the knobs to the daemon it starts when Ollama is down', async () => {
+    const state = { reachable: false }
+    stubReachable(state)
+    const { spawn } = await import('../lib/childProcess.js')
+    spawn.mockReset().mockImplementation(() => {
+      state.reachable = true
+      return { pid: 4242, stderr: { on: () => {} }, on: () => {}, unref: () => {} }
+    })
+
+    const { restartWithEnv } = await loadManager()
+    const result = await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1', OLLAMA_KV_CACHE_TYPE: 'q8_0' })
+
+    expect(result).toEqual({ applied: true, reason: 'started' })
+    const [, args, options] = spawn.mock.calls[0]
+    expect(args).toEqual(['serve'])
+    expect(options.env).toMatchObject({ OLLAMA_FLASH_ATTENTION: '1', OLLAMA_KV_CACHE_TYPE: 'q8_0' })
+  })
+
+  // Same rule as the context-window path: raising a knob must never cost the
+  // user their launch-at-login registration.
+  it('restarts a homebrew service in place rather than un-registering it', async () => {
+    restorePlatform = pinPlatform('darwin')
+    stubReachable({ reachable: true })
+    const calls = []
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      calls.push(`${cmd} ${a}`)
+      if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
+      if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
+      if (cmd === 'brew' && a === 'services restart ollama') return cb(null, { stdout: '', stderr: '' })
+      return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+    }
+
+    const { restartWithEnv } = await loadManager()
+    const result = await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1', OLLAMA_KV_CACHE_TYPE: 'q4_0' })
+
+    expect(result).toMatchObject({ applied: true, reason: 'service-restarted' })
+    expect(calls).toContain('launchctl setenv OLLAMA_FLASH_ATTENTION 1')
+    expect(calls).toContain('launchctl setenv OLLAMA_KV_CACHE_TYPE q4_0')
+    expect(calls).toContain('brew services restart ollama')
+    expect(calls.some((c) => c.includes('services stop'))).toBe(false)
+  })
+
+  // A restart that named no window leaves the daemon on its VRAM auto-pick. The
+  // latch has to forget the old process's window, or the next agent spawn is
+  // credited with a window nothing is holding.
+  it('clears the context latch when the restart did not name a window', async () => {
+    restorePlatform = pinPlatform('darwin')
+    stubReachable({ reachable: true })
+    let restarts = 0
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
+      if (cmd === 'ps') return cb(null, { stdout: '101 /usr/local/bin/ollama serve\n', stderr: '' })
+      if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
+      if (cmd === 'brew' && a === 'services restart ollama') { restarts++; return cb(null, { stdout: '', stderr: '' }) }
+      return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+    }
+
+    const { ensureContextWindow, restartWithEnv } = await loadManager()
+    await ensureContextWindow(131072)
+    await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1' })
+    // Without the latch clear this returns 'already-applied' and never restarts.
+    expect(await ensureContextWindow(131072)).toMatchObject({ applied: true, reason: 'service-restarted' })
+    expect(restarts).toBe(3)
+  })
+
+  // A sweep measures every model under ONE tuning. Restarting per model would
+  // cold-load each one and time the page-in as the model's throughput.
+  it('does not restart again for a tuning the live daemon already holds', async () => {
+    restorePlatform = pinPlatform('darwin')
+    stubReachable({ reachable: true })
+    let restarts = 0
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
+      if (cmd === 'ps') return cb(null, { stdout: '101 /usr/local/bin/ollama serve\n', stderr: '' })
+      if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
+      if (cmd === 'brew' && a === 'services restart ollama') { restarts++; return cb(null, { stdout: '', stderr: '' }) }
+      return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+    }
+
+    const { restartWithEnv } = await loadManager()
+    const env = { OLLAMA_FLASH_ATTENTION: '1', OLLAMA_KV_CACHE_TYPE: 'q8_0' }
+    await restartWithEnv(env)
+    const second = await restartWithEnv({ OLLAMA_KV_CACHE_TYPE: 'q8_0', OLLAMA_FLASH_ATTENTION: '1' })
+
+    // `applied: true` — the tuning IS in effect, which is what the caller records.
+    expect(second).toEqual({ applied: true, reason: 'already-applied' })
+    expect(restarts).toBe(1)
+  })
+
+  it('restarts again when the tuning differs by a single knob', async () => {
+    restorePlatform = pinPlatform('darwin')
+    stubReachable({ reachable: true })
+    let restarts = 0
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      if (cmd === 'brew' && a === '--version') return cb(null, { stdout: 'Homebrew 4.0.0', stderr: '' })
+      if (cmd === 'brew' && a === 'services list') return cb(null, { stdout: 'ollama started testuser plist\n', stderr: '' })
+      if (cmd === 'ps') return cb(null, { stdout: '101 /usr/local/bin/ollama serve\n', stderr: '' })
+      if (cmd === 'launchctl') return cb(null, { stdout: '', stderr: '' })
+      if (cmd === 'brew' && a === 'services restart ollama') { restarts++; return cb(null, { stdout: '', stderr: '' }) }
+      return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+    }
+
+    const { restartWithEnv } = await loadManager()
+    await restartWithEnv({ OLLAMA_KV_CACHE_TYPE: 'q8_0' })
+    await restartWithEnv({ OLLAMA_KV_CACHE_TYPE: 'q4_0' })
+    expect(restarts).toBe(2)
+  })
+
+  // systemd needs root for the equivalent drop-in. Reporting the exact edit beats
+  // tearing the unit down to work around it.
+  it('refuses a service manager it cannot hand environment to, naming the fix', async () => {
+    restorePlatform = pinPlatform('linux')
+    stubReachable({ reachable: true })
+    execMock.impl = (cmd, args, opts, cb) => {
+      const a = (args || []).join(' ')
+      if (cmd === 'systemctl' && a === '--version') return cb(null, { stdout: 'systemd 250', stderr: '' })
+      if (cmd === 'systemctl' && a.startsWith('is-enabled')) return cb(null, { stdout: 'enabled\n', stderr: '' })
+      if (cmd === 'systemctl' && a.startsWith('is-active')) return cb(null, { stdout: 'active\n', stderr: '' })
+      return cb(new Error(`unexpected exec: ${cmd} ${a}`))
+    }
+
+    const { restartWithEnv } = await loadManager()
+    const result = await restartWithEnv({ OLLAMA_FLASH_ATTENTION: '1' })
+
+    expect(result.applied).toBe(false)
+    expect(result.reason).toBe('service-managed')
+    expect(result.error).toContain('Environment="OLLAMA_FLASH_ATTENTION=1"')
+  })
+})
+
 describe('ollamaManager context window — launch-at-login daemons', () => {
   let restorePlatform = null
   afterEach(() => { vi.unstubAllGlobals(); restorePlatform?.(); restorePlatform = null })

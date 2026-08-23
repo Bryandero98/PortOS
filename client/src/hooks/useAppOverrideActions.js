@@ -13,8 +13,12 @@ import * as api from '../services/api';
  * to `PerAppOverrideList`'s `onUpdateOverride` / `onBulkToggleOverride` props.
  */
 export function useAppOverrideActions(apps, refetch) {
-  const handleUpdateOverride = useCallback(async (appId, taskType, { enabled, interval, taskMetadata }) => {
-    const result = await api.updateAppTaskTypeOverride(appId, taskType, { enabled, interval, taskMetadata }, { silent: true }).catch(err => {
+  // The patch is forwarded whole rather than re-listed field by field: the hook
+  // is a toast + refetch wrapper, not a field filter, and re-listing silently
+  // dropped every field it hadn't been taught about (intervalMs, providerId,
+  // model) — the route then 400s on the resulting empty body.
+  const handleUpdateOverride = useCallback(async (appId, taskType, patch) => {
+    const result = await api.updateAppTaskTypeOverride(appId, taskType, patch, { silent: true }).catch(err => {
       toast.error(err.message);
       return null;
     });

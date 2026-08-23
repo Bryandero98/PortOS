@@ -3,7 +3,7 @@
  *
  * A toolkit-local twin of `commandBasename` in server/lib/providerModels.js —
  * the vendored toolkit may not import out to sibling PortOS modules (see
- * ../CLAUDE.md), and this rule was previously inlined once per vendor predicate
+ * ../AGENTS.md), and this rule was previously inlined once per vendor predicate
  * inside `internal/`. One copy inside the boundary is unavoidable; two were not.
  *
  * Strips the directory, lowercases, and drops a Windows `.exe` suffix so a

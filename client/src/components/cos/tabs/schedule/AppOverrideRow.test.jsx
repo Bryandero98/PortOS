@@ -12,6 +12,8 @@ function renderRow({
   taskType = 'feature-ideas',
   fileIssuesCapable,
   defaultFileIssues,
+  inheritedProviderText,
+  providers,
 } = {}) {
   render(
     <AppOverrideRow
@@ -22,6 +24,8 @@ function renderRow({
       managedAgentOptions={[]}
       fileIssuesCapable={fileIssuesCapable}
       defaultFileIssues={defaultFileIssues}
+      inheritedProviderText={inheritedProviderText}
+      providers={providers}
       override={override}
       onUpdate={onUpdate}
     />
@@ -197,5 +201,61 @@ describe('AppOverrideRow — branch-reconcile batch size', () => {
     expect(select).toHaveValue('2');
     await act(async () => { fireEvent.change(select, { target: { value: '' } }); });
     expect(onUpdate).toHaveBeenCalledWith('app-1', 'branch-reconcile', { taskMetadata: null });
+  });
+});
+
+// The per-app provider/model pin beats the task's own pin at spawn for EVERY task
+// type (#4783) — so the Schedule page, where that task pin is chosen, both shows
+// what an app is running on and lets it be changed there.
+describe('AppOverrideRow — per-app provider pin', () => {
+  const PROVIDERS = [
+    { id: 'opencode-llama-tui', name: 'OpenCode (llama)', models: ['qwen-a'] },
+    { id: 'claude-ollama-tui', name: 'Claude (ollama)', models: ['qwen-b'] },
+  ];
+  const INHERITED = 'OpenCode (llama) / qwen-a';
+  const pinSelect = () => screen.getByLabelText('Provider for Acme');
+
+  it('renders the app pin, on a task type with no buildTaskInput hook', () => {
+    renderRow({
+      taskType: 'feature-ideas',
+      inheritedProviderText: INHERITED,
+      providers: PROVIDERS,
+      override: { enabled: true, providerId: 'claude-ollama-tui', model: 'qwen-b' },
+    });
+    expect(pinSelect()).toHaveValue('claude-ollama-tui');
+    expect(screen.getByLabelText('Model')).toHaveValue('qwen-b');
+  });
+
+  it('names the task pin on the Inherit option when the app pins nothing', () => {
+    renderRow({
+      taskType: 'layered-intelligence',
+      inheritedProviderText: INHERITED,
+      providers: PROVIDERS,
+      override: { enabled: true },
+    });
+    expect(pinSelect()).toHaveValue('');
+    expect(screen.getByRole('option', { name: `Inherit (${INHERITED})` })).toBeInTheDocument();
+  });
+
+  it('clearing the provider sends explicit nulls so the app falls back to the task pin', async () => {
+    const onUpdate = renderRow({
+      taskType: 'layered-intelligence',
+      inheritedProviderText: INHERITED,
+      providers: PROVIDERS,
+      override: { enabled: true, providerId: 'claude-ollama-tui', model: 'qwen-b' },
+    });
+    await act(async () => { fireEvent.change(pinSelect(), { target: { value: '' } }); });
+    expect(onUpdate).toHaveBeenCalledWith('app-1', 'layered-intelligence', { providerId: null, model: null });
+  });
+
+  it('switching providers drops the model pinned for the previous one', async () => {
+    const onUpdate = renderRow({
+      taskType: 'ux',
+      inheritedProviderText: INHERITED,
+      providers: PROVIDERS,
+      override: { enabled: true, providerId: 'claude-ollama-tui', model: 'qwen-b' },
+    });
+    await act(async () => { fireEvent.change(pinSelect(), { target: { value: 'opencode-llama-tui' } }); });
+    expect(onUpdate).toHaveBeenCalledWith('app-1', 'ux', { providerId: 'opencode-llama-tui', model: null });
   });
 });

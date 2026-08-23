@@ -18,10 +18,13 @@
  * `provider.<local-backend>.models` with bare ids.
  */
 
-import { getOpencodeLocalProviderNamespace, isOpencodeCommand } from './providerModels.js';
+import { getOpencodeLocalProviderNamespace, isOpencodeCommand, prefixOpencodeModel } from './providerModels.js';
+import { PROVIDER_GATEWAYS, PROVIDER_GATEWAY_IDS, gatewayById, isGatewayNamespace } from './providerGateways.js';
 import { PORTS } from './ports.js';
 
 const LLAMA_SERVER_BASE_URL = `http://127.0.0.1:${PORTS.LLAMA_SERVER}/v1`;
+const VLLM_QWEN_BASE_URL = `http://127.0.0.1:${PORTS.VLLM_QWEN}/v1`;
+const SGLANG_QWEN_BASE_URL = `http://127.0.0.1:${PORTS.SGLANG_QWEN}/v1`;
 
 /**
  * Base OpenCode provider entries for the local OpenAI-compatible daemons.
@@ -44,11 +47,24 @@ const OPENCODE_LOCAL_BASE_PROVIDERS = {
     name: 'llama.cpp (local)',
     options: { baseURL: LLAMA_SERVER_BASE_URL },
   },
-  orcarouter: {
+  vllm: {
     npm: '@ai-sdk/openai-compatible',
-    name: 'OrcaRouter',
-    options: { baseURL: 'https://api.orcarouter.ai/v1' },
+    name: 'vLLM Qwen3.8-27B (local)',
+    options: { baseURL: VLLM_QWEN_BASE_URL },
   },
+  sglang: {
+    npm: '@ai-sdk/openai-compatible',
+    name: 'SGLang Qwen3.8-27B (local)',
+    options: { baseURL: SGLANG_QWEN_BASE_URL },
+  },
+  // Every hosted gateway (`providerGateways.js`) declares the same
+  // OpenAI-compatible shape, so the rows are generated rather than hand-listed —
+  // a new gateway is one registry row, not an edit here.
+  ...Object.fromEntries(PROVIDER_GATEWAYS.map((gateway) => [gateway.id, {
+    npm: '@ai-sdk/openai-compatible',
+    name: gateway.label,
+    options: { baseURL: gateway.baseURL },
+  }])),
 };
 
 /**
@@ -56,11 +72,18 @@ const OPENCODE_LOCAL_BASE_PROVIDERS = {
  * — what a spawned OpenCode talks to when the provider stores no config of its
  * own. Read by `lib/localProviderRuntime.js` so the readiness probe and the
  * spawn agree on the endpoint instead of keeping two copies of these ports.
- * @param {'ollama'|'mtplx'|'llama'|'orcarouter'} providerKey
+ * @param {'ollama'|'mtplx'|'llama'|'vllm'|'sglang'|string} providerKey
  * @returns {string|null}
  */
 export const opencodeLocalBaseUrl = (providerKey) =>
   OPENCODE_LOCAL_BASE_PROVIDERS[providerKey]?.options?.baseURL || null;
+
+/**
+ * OpenCode local namespaces whose backend authenticates the request. Everything
+ * else here is an unauthenticated loopback daemon, and attaching a key to those
+ * would put a secret into a config file that never needed one.
+ */
+const KEY_BEARING_NAMESPACES = new Set(['vllm', 'sglang', ...PROVIDER_GATEWAY_IDS]);
 
 const localProviderBase = (providerKey) => {
   if (!Object.hasOwn(OPENCODE_LOCAL_BASE_PROVIDERS, providerKey)) {
@@ -72,8 +95,11 @@ const localProviderBase = (providerKey) => {
 // Strip the selected provider namespace so a model id can key that provider's
 // config `models` map. Idempotent for an already-bare id. A slash-bearing model
 // id (`hf.co/user/model:tag`) retains every slash after the leading namespace.
+// A hosted gateway's model ids are already `vendor/model` and are NEVER
+// namespace-prefixed in storage, so stripping would eat a real id segment
+// (`anthropic/claude-sonnet-4` is the key, not `claude-sonnet-4`).
 const stripProviderPrefix = (id, providerKey) =>
-  providerKey === 'orcarouter' ? id :
+  isGatewayNamespace(providerKey) ? id :
   typeof id === 'string' && id.startsWith(`${providerKey}/`)
     ? id.slice(providerKey.length + 1)
     : id;
@@ -82,7 +108,7 @@ const stripProviderPrefix = (id, providerKey) =>
  * Normalize an id or list of ids to the unique, non-empty, prefix-stripped bare
  * model ids that key the OpenCode `models` map.
  * @param {string|string[]|null|undefined} models
- * @param {'ollama'|'mtplx'|'llama'|'orcarouter'} [providerKey='ollama']
+ * @param {'ollama'|'mtplx'|'llama'|'vllm'|'sglang'|string} [providerKey='ollama']
  * @returns {string[]}
  */
 export function toBareModelIds(models, providerKey = 'ollama') {
@@ -94,6 +120,97 @@ export function toBareModelIds(models, providerKey = 'ollama') {
       .map((id) => stripProviderPrefix(id, providerKey))
       .filter((m) => typeof m === 'string' && m.length > 0),
   )];
+}
+
+/**
+ * How each local OpenCode provider entry carries a "thinking" toggle.
+ *
+ * `temperature`, `topP` and `reasoningEffort` are portable — every daemon behind
+ * these entries speaks the OpenAI chat-completions shape, so they are emitted
+ * for all of them. The thinking toggle is NOT: Ollama takes its own native
+ * `think` boolean, while a llama.cpp / MTPLX / vLLM OpenAI endpoint routes it
+ * through the chat template (`chat_template_kwargs.enable_thinking`). A hosted
+ * gateway fronts cloud models that own their reasoning switch upstream, so it
+ * gets no toggle at all and the editor hides the checkbox for it. MIRROR of
+ * `generationControlsFor` in `client/src/utils/providers.js`; keep in lockstep.
+ *
+ * A missing entry is not a missing checkbox — `buildAgentGeneration` bails on it
+ * and drops temperature / topP / reasoningEffort along with the toggle, which is
+ * how vLLM shipped with no generation controls at all (#4765). Every local
+ * runtime OpenCode can be pointed at needs a row here; `opencodeConfig.test.js`
+ * walks `LOCAL_RUNTIMES` to make a missing one fail.
+ * @type {Record<string, 'think'|'chatTemplate'|null>}
+ */
+const THINKING_STYLE = {
+  ollama: 'think',
+  mtplx: 'chatTemplate',
+  llama: 'chatTemplate',
+  // vLLM routes it through the chat template exactly as MTPLX and llama.cpp do
+  // — see `server/services/voice/llm.js` for the same body shape on the HTTP side.
+  vllm: 'chatTemplate',
+  // SGLang serves Qwen3.8-27B with thinking ON by default, disabled per request
+  // through the same `chat_template_kwargs.enable_thinking` the other local
+  // OpenAI endpoints take. CoS coding wants it OFF (that is what keeps the
+  // tool-call format reliable), so the control has to exist for the operator to
+  // set — but nothing here SEEDS `thinking: false`, per #4716.
+  sglang: 'chatTemplate',
+  // Every hosted gateway fronts cloud models that own their reasoning switch
+  // upstream, so none of them gets a toggle — the editor hides the checkbox for
+  // them (`generationControlsFor` in client/src/utils/providers.js).
+  ...Object.fromEntries(PROVIDER_GATEWAY_IDS.map((id) => [id, null])),
+};
+
+const numberInRange = (value, min, max) => {
+  if (value === null || value === undefined || value === '') return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= min && n <= max ? n : undefined;
+};
+
+// TASKS.md metadata is text, so a persisted task re-enters the lifecycle as
+// `'true'`/`'false'`. Accept both wire forms without treating an absent or
+// malformed value as an intentional override.
+const readBoolean = (value) =>
+  value === true || value === 'true'
+    ? true
+    : value === false || value === 'false'
+      ? false
+      : undefined;
+
+/**
+ * The `agent.build` generation overrides for one local OpenCode provider entry,
+ * or null when nothing is configured. OpenCode applies generation controls to
+ * agents, not provider definitions; `build` is its primary coding agent for both
+ * `opencode run` and the TUI, and unknown agent options are passed through to
+ * the provider.
+ *
+ * @param {{temperature?:unknown, topP?:unknown, thinking?:unknown, effort?:unknown}|null|undefined} generation
+ * @param {'ollama'|'mtplx'|'llama'|'vllm'|'sglang'|string} providerKey
+ * @returns {object|null}
+ */
+export function buildAgentGeneration(generation, providerKey) {
+  if (!generation || !Object.hasOwn(THINKING_STYLE, providerKey)) return null;
+  // Ollama agent runs have defaulted to 0.6 since this control shipped. The
+  // other backends keep their own server-side default until the user sets one,
+  // so opening the editor up to them changes nothing on its own.
+  const temperature = numberInRange(generation.temperature, 0, 2)
+    ?? (providerKey === 'ollama' ? 0.6 : undefined);
+  const topP = numberInRange(generation.topP, 0, 1);
+  const thinking = readBoolean(generation.thinking);
+  const thinkingStyle = THINKING_STYLE[providerKey];
+  const effort = typeof generation.effort === 'string' && generation.effort.trim()
+    ? generation.effort.trim()
+    : undefined;
+  const build = {
+    ...(temperature === undefined ? {} : { temperature }),
+    ...(topP === undefined ? {} : { topP }),
+    ...(thinking === undefined || thinkingStyle === null
+      ? {}
+      : thinkingStyle === 'think'
+        ? { think: thinking }
+        : { chat_template_kwargs: { enable_thinking: thinking } }),
+    ...(effort === undefined ? {} : { reasoningEffort: effort }),
+  };
+  return Object.keys(build).length > 0 ? build : null;
 }
 
 /**
@@ -109,9 +226,13 @@ export function toBareModelIds(models, providerKey = 'ollama') {
  * is invented), identical to the shipped base. When `base` is absent/unusable,
  * the canonical endpoint for the selected local runtime is used.
  *
+ * NOT the whole config: `small_model` is applied downstream by
+ * `buildOpencodeEnvVars`, which is the only caller that knows THIS run's single
+ * model (this one takes a list). A config built here alone is unpinned.
+ *
  * @param {string|string[]|null|undefined} models
  * @param {object|null} [base] - existing config to merge into (a fresh clone is made)
- * @param {'ollama'|'mtplx'|'llama'|'orcarouter'} [providerKey='ollama']
+ * @param {'ollama'|'mtplx'|'llama'|'vllm'|'sglang'|string} [providerKey='ollama']
  * @returns {object} OpenCode config object
  */
 export function buildOpencodeConfig(models, base = null, providerKey = 'ollama', generation = null) {
@@ -132,29 +253,12 @@ export function buildOpencodeConfig(models, base = null, providerKey = 'ollama',
       ...Object.fromEntries(bareIds.map((id) => [id, { name: id, tool_call: true }])),
     };
   }
-  // OpenCode applies generation controls to agents, not provider definitions.
-  // `build` is its primary coding agent for both `opencode run` and the TUI;
-  // unknown agent options are passed through to the provider, including
-  // Ollama's native `think` flag.
-  if (generation && providerKey === 'ollama') {
-    const temperature = Number.isFinite(Number(generation.temperature)) ? Number(generation.temperature) : 0.6;
-    // TASKS.md metadata is text, so a persisted task re-enters the lifecycle as
-    // `'true'`/`'false'`. Accept both wire forms without treating an absent or
-    // malformed value as an intentional override.
-    const thinking = generation.thinking === true || generation.thinking === 'true'
-      ? true
-      : generation.thinking === false || generation.thinking === 'false'
-        ? false
-        : undefined;
-    const effort = typeof generation.effort === 'string' && generation.effort.trim()
-      ? generation.effort.trim()
-      : undefined;
+  const build = buildAgentGeneration(generation, providerKey);
+  if (build) {
     config.agent = { ...(config.agent && typeof config.agent === 'object' ? config.agent : {}) };
     config.agent.build = {
       ...(config.agent.build && typeof config.agent.build === 'object' ? config.agent.build : {}),
-      temperature,
-      ...(thinking === undefined ? {} : { think: thinking }),
-      ...(effort === undefined ? {} : { reasoningEffort: effort }),
+      ...build,
     };
   }
   return config;
@@ -167,7 +271,7 @@ export function buildOpencodeConfig(models, base = null, providerKey = 'ollama',
  *
  * @param {string|string[]|null|undefined} models
  * @param {object|null} [base] - existing config to merge into
- * @param {'ollama'|'mtplx'|'llama'|'orcarouter'} [providerKey='ollama']
+ * @param {'ollama'|'mtplx'|'llama'|'vllm'|'sglang'|string} [providerKey='ollama']
  * @returns {string} JSON string for OPENCODE_CONFIG_CONTENT
  */
 export function buildOpencodeConfigContent(models, base = null, providerKey = 'ollama', generation = null) {
@@ -177,7 +281,7 @@ export function buildOpencodeConfigContent(models, base = null, providerKey = 'o
 /**
  * Build dynamic env vars for an OpenCode local-provider spawn. Returns an
  * object with `OPENCODE_CONFIG_CONTENT` (models map declared) for Ollama-,
- * MTPLX-, Llama-, or OrcaRouter-backed OpenCode providers, otherwise an empty object (caller keeps
+ * MTPLX-, Llama-, vLLM-, or OrcaRouter-backed OpenCode providers, otherwise an empty object (caller keeps
  * existing env).
  *
  * The provider's already-stored `OPENCODE_CONFIG_CONTENT` is used as the base and
@@ -187,7 +291,7 @@ export function buildOpencodeConfigContent(models, base = null, providerKey = 'o
  * model, and the model being run this invocation — so whichever namespaced
  * `--model` the spawner passes is always accepted.
  *
- * @param {{command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean, llamaBacked?:boolean, orcarouterBacked?:boolean, models?:string[], defaultModel?:string|null, apiKey?:string, orcarouterApiKey?:string, envVars?:object}} provider
+ * @param {{command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean, llamaBacked?:boolean, vllmBacked?:boolean, sglangBacked?:boolean, gatewayBacked?:string, orcarouterBacked?:boolean, models?:string[], defaultModel?:string|null, apiKey?:string, orcarouterApiKey?:string, envVars?:object}} provider
  * @param {string|null|undefined} model - the model being run (may differ from defaultModel)
  * @returns {{OPENCODE_CONFIG_CONTENT?: string}} env vars to merge
  */
@@ -214,15 +318,45 @@ export function buildOpencodeEnvVars(provider, model) {
     model,
   ];
   const config = buildOpencodeConfig(ids, base, providerKey, provider);
-  const apiKey = providerKey === 'orcarouter' ? (provider?.apiKey || provider?.orcarouterApiKey) : null;
+  // Pin the auxiliary model OpenCode uses for its OWN side work (session titles,
+  // summarization). Left unset it falls back to its built-in default, which is a
+  // real hosted model nobody here chose — an OpenRouter run on the free
+  // `stealth/ox-alpha` otherwise emits paid `google/gemini-3.7-flash` calls
+  // alongside it, and a local run on a box carrying an `ANTHROPIC_API_KEY` /
+  // `OPENAI_API_KEY` (spawns inherit `process.env`, see `cliChildEnv.js`) can
+  // reach a cloud provider the operator never opted into — exactly the
+  // unrequested provider call the root AGENTS.md's AI Provider Usage Policy
+  // forbids.
+  //
+  // So this is unconditional, not gateway-only: the invariant is that a run stays
+  // on the model it was dispatched with, and it holds for every namespace. The
+  // run model is always in the declared models map above, so it always resolves.
+  // A stored config that already pins `small_model` wins — same
+  // customization-preserving contract as the base merge above.
+  if (!config.small_model && model) {
+    config.small_model = prefixOpencodeModel(provider, model);
+  }
+  // Every key-bearing namespace reads the SAME `provider.apiKey` field; a
+  // gateway's `legacyApiKeyField` (`orcarouterApiKey`) is an older alias kept
+  // readable forever. vLLM's compose stack is started with `VLLM_API_KEY`, so a
+  // wrapper pointed at it needs the key on `options.apiKey` exactly the way a
+  // hosted gateway does — the endpoint is loopback, but the server still 401s
+  // without it.
+  // Keyed off the RESOLVED namespace, not the record's marker: a malformed
+  // record carrying both a local marker and a gateway marker resolves to the
+  // local namespace above, and must not then export a gateway key env var.
+  const gateway = gatewayById(providerKey);
+  const apiKey = KEY_BEARING_NAMESPACES.has(providerKey)
+    ? (provider?.apiKey || (gateway?.legacyApiKeyField ? provider?.[gateway.legacyApiKeyField] : null))
+    : null;
   if (apiKey) {
-    config.provider.orcarouter.options = {
-      ...config.provider.orcarouter.options,
+    config.provider[providerKey].options = {
+      ...config.provider[providerKey].options,
       apiKey,
     };
   }
   return {
     OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
-    ...(apiKey ? { ORCAROUTER_API_KEY: apiKey } : {}),
+    ...(apiKey && gateway ? { [gateway.apiKeyEnv]: apiKey } : {}),
   };
 }

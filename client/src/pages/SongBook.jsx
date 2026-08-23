@@ -66,7 +66,7 @@ export default function SongBook() {
     setLoading(true);
     setLoadError(null);
     // The banner below owns the error UI, so the request stays silent — one
-    // error layer only (client/src/CLAUDE.md "custom catch ⇒ silent: true").
+    // error layer only (client/src/AGENTS.md "custom catch ⇒ silent: true").
     listSongs({ silent: true })
       .then((data) => {
         if (cancelled) return;

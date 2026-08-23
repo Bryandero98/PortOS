@@ -1260,7 +1260,7 @@ Forgets the budget and recommends lodging that exceeds it.
       expect(formats).toHaveLength(5);
       const ids = formats.map(f => f.id);
       expect(ids).toContain('system_prompt');
-      expect(ids).toContain('claude_md');
+      expect(ids).toContain('agents_md');
       expect(ids).toContain('json');
       expect(ids).toContain('individual');
       expect(ids).toContain('legacy_portrait');
@@ -1298,12 +1298,23 @@ Forgets the budget and recommends lodging that exceeds it.
       expect(result.tokenEstimate).toBeGreaterThan(0);
     });
 
-    it('should export as claude_md format', async () => {
+    it('should export as agents_md format', async () => {
       await setupExportMeta();
-      const result = await exportDigitalTwin('claude_md');
-      expect(result.format).toBe('claude_md');
+      const result = await exportDigitalTwin('agents_md');
+      expect(result.format).toBe('agents_md');
       expect(result.content).toContain('## Soul');
       expect(result.content).toContain('## Values');
+    });
+
+    it('still resolves the pre-#4852 claude_md id to the same export', async () => {
+      // A persisted `format: 'claude_md'` on an existing install must keep
+      // working — an alias, not a rename that throws 'Unknown export format'.
+      await setupExportMeta();
+      const legacy = await exportDigitalTwin('claude_md');
+      await setupExportMeta();
+      const current = await exportDigitalTwin('agents_md');
+      expect(legacy.content).toBe(current.content);
+      expect(legacy.format).toBe('agents_md');
     });
 
     it('should export as json format', async () => {

@@ -159,7 +159,7 @@ const addSettingsEntries = async (entries) => {
     providerOptions: embeddingProviders,
     providerTypes: [],
     notes: 'Powers semantic search, including Chief of Staff memory retrieval.',
-    link: '/settings/embeddings',
+    link: '/models/embeddings',
   }));
 
   for (const [key, label] of [

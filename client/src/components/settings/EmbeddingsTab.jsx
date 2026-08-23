@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router';
 import { Boxes, RefreshCw, AlertTriangle, Check } from 'lucide-react';
 import BrailleSpinner from '../BrailleSpinner';
 import toast from '../ui/Toast';
@@ -160,8 +161,9 @@ export default function EmbeddingsTab() {
             <div className="flex items-start gap-2 text-xs text-amber-400">
               <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
               <span>
-                No installed embedding models detected on {provider}. Install one in Local LLMs
-                (e.g. <code className="text-amber-300">nomic-embed-text</code> on Ollama).
+                No installed embedding models detected on {provider}. Install one in{' '}
+                <Link to="/models/llms" className="underline hover:text-amber-300">LLMs</Link>
+                {' '}(e.g. <code className="text-amber-300">nomic-embed-text</code> on Ollama).
               </span>
             </div>
           )}

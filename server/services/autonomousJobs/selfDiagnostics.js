@@ -106,7 +106,7 @@ export function formatDurationShort(ms) {
 
 /**
  * Structured single-line log entry for one failing category. Pure — the handler
- * emits it via console so logs stay single-line + emoji-prefixed (CLAUDE.md).
+ * emits it via console so logs stay single-line + emoji-prefixed (AGENTS.md).
  */
 export function formatCategoryLogLine(c) {
   return `🩺 ${c.slug}: ${c.failed}/${c.total} recent failed (${c.successRate}% success) · ` +

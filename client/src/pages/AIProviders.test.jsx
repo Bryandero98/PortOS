@@ -39,8 +39,10 @@ vi.mock('../components/settings/SettingsTabsHeader', () => ({
   default: () => <div data-testid="settings-tabs-header" />,
 }));
 vi.mock('../components/install/RuntimeInstallModal', () => ({
-  default: ({ open, runtime, streamMethod, flushMs }) => open
-    ? <div data-testid="runtime-install-modal" data-runtime={runtime} data-stream-method={streamMethod} data-flush-ms={flushMs} />
+  // `params` becomes the setup request's query string, so the test can assert
+  // WHICH setup step the clicked button asked for.
+  default: ({ open, runtime, streamMethod, flushMs, params }) => open
+    ? <div data-testid="runtime-install-modal" data-runtime={runtime} data-stream-method={streamMethod} data-flush-ms={flushMs} data-params={JSON.stringify(params || {})} />
     : null,
 }));
 
@@ -159,7 +161,7 @@ describe('AIProviders page load error handling', () => {
     expect(screen.getByRole('link', { name: /Install instructions/ })).toHaveAttribute('href', 'https://opencode.ai/docs');
   });
 
-  // Ollama / LM Studio keep their real installer on the Local LLM tab, so the
+  // Ollama / LM Studio keep their real installer on the Models → LLMs page, so the
   // provider card links there instead of streaming an install of its own — and
   // reads their state from the local-LLM status, which counts an installed app
   // with no CLI shim on PATH.
@@ -172,7 +174,7 @@ describe('AIProviders page load error handling', () => {
 
     renderPage();
 
-    expect(await screen.findByRole('link', { name: /Install LM Studio/ })).toHaveAttribute('href', '/settings/local-llm');
+    expect(await screen.findByRole('link', { name: /Install LM Studio/ })).toHaveAttribute('href', '/models/llms');
   });
 
   // `null` means the local-LLM status has not answered yet — offering an
@@ -213,6 +215,7 @@ describe('AIProviders page load error handling', () => {
     renderPage();
 
     expect(await screen.findByText('OpenAI')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Compare local models/ })).toHaveAttribute('href', '/models/performance');
     expect(screen.queryByText('No providers configured')).not.toBeInTheDocument();
     expect(screen.queryByText('Failed to load AI providers')).not.toBeInTheDocument();
   });
@@ -304,11 +307,11 @@ describe('local-daemon readiness on the provider card', () => {
           kind: 'llama',
           label: 'llama.cpp',
           endpoint: 'http://127.0.0.1:5568/v1',
-          manageUrl: '/settings/local-llm',
+          manageUrl: '/models/llms',
           docsUrl: 'https://example.com/docs',
           ready: false,
           checks: [
-            { id: 'runtime', label: 'llama.cpp installed', ok: false, detail: 'not found', fixHint: 'Install llama.cpp from Settings → Local LLM.' },
+            { id: 'runtime', label: 'llama.cpp installed', ok: false, detail: 'not found', fixHint: 'Install llama.cpp from Models → LLMs.' },
             { id: 'server', label: 'llama.cpp server responding', ok: false, detail: 'nothing answered', fixHint: 'Install llama.cpp first, then start it.' },
           ],
         },
@@ -318,7 +321,86 @@ describe('local-daemon readiness on the provider card', () => {
     renderPage();
 
     expect(await screen.findByText(/llama\.cpp setup incomplete/)).toBeInTheDocument();
-    expect(screen.getByText(/Install llama\.cpp from Settings/)).toBeInTheDocument();
+    expect(screen.getByText(/Install llama\.cpp from Models/)).toBeInTheDocument();
+    expect(screen.queryByText(/setup docs/i)).not.toBeInTheDocument();
+  });
+
+  it('sends the weights-download action when the checklist offers it', async () => {
+    // MTPLX installed, nothing cached: the button is the download, and the
+    // action has to reach the setup request — sending the default would run a
+    // plain start, which is the failure this whole path exists to avoid.
+    api.getProviderReadiness.mockResolvedValue({
+      readiness: {
+        'opencode-llama-tui': {
+          kind: 'mtplx',
+          label: 'MTPLX',
+          endpoint: 'http://127.0.0.1:8000/v1',
+          manageUrl: null,
+          ready: false,
+          setup: { runtime: 'mtplx', label: 'MTPLX', action: 'pull-start', actionLabel: 'Download the default model & start MTPLX', blockedReason: null },
+          checks: [
+            { id: 'runtime', label: 'MTPLX installed', ok: true, detail: 'on PATH', fixHint: null },
+            { id: 'server', label: 'MTPLX server responding', ok: false, detail: 'MTPLX has no model weights cached, so its server exits before it binds a port.', fixHint: 'Use “Download the default model & start MTPLX” below — PortOS does this for you.' },
+          ],
+        },
+      },
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Download the default model & start MTPLX/ }));
+    const modal = await screen.findByTestId('runtime-install-modal');
+    expect(JSON.parse(modal.getAttribute('data-params'))).toEqual({ provider: 'opencode-llama-tui', action: 'pull-start' });
+    expect(modal.getAttribute('data-runtime')).toBe('mtplx');
+  });
+
+  it('lets the user match this provider to the model llama.cpp is actually serving', async () => {
+    api.updateProvider.mockResolvedValue({ id: 'opencode-llama-tui', defaultModel: 'dflash' });
+    api.getProviderReadiness.mockResolvedValue({
+      readiness: {
+        'opencode-llama-tui': {
+          kind: 'llama',
+          label: 'llama.cpp',
+          endpoint: 'http://127.0.0.1:5568/v1',
+          manageUrl: '/models/llms',
+          ready: false,
+          checks: [
+            { id: 'runtime', label: 'llama.cpp installed', ok: true, detail: 'on PATH', fixHint: null },
+            { id: 'server', label: 'llama.cpp server responding', ok: true, detail: 'answered', fixHint: null },
+            {
+              id: 'model',
+              label: 'Model `qwen3.8-27b-dflash2` available',
+              ok: false,
+              detail: 'llama.cpp is serving `dflash`.',
+              fixHint: 'This provider will send `qwen3.8-27b-dflash2`, but the running server only accepts `dflash`.',
+              servedModels: ['dflash'],
+            },
+          ],
+        },
+      },
+    });
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'opencode-llama-tui',
+        name: 'OpenCode llama TUI',
+        type: 'tui',
+        command: 'opencode',
+        args: [],
+        enabled: true,
+        endpoint: 'http://127.0.0.1:5568/v1',
+        llamaBacked: true,
+        models: ['dflash', 'qwen3.8-27b-dflash2'],
+        defaultModel: 'qwen3.8-27b-dflash2',
+      }],
+      activeProvider: null,
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Use dflash as default/ }));
+    await waitFor(() => {
+      expect(api.updateProvider).toHaveBeenCalledWith('opencode-llama-tui', { defaultModel: 'dflash' });
+    });
   });
 
   it('renders no checklist for a provider the server reports nothing about', async () => {
@@ -613,15 +695,157 @@ describe('provider reasoning defaults', () => {
     const effort = await screen.findByLabelText('Default Effort');
     fireEvent.change(effort, { target: { value: 'high' } });
 
-    const thinking = screen.getByLabelText('Enable model reasoning');
-    expect(thinking).toBeChecked();
-    fireEvent.click(thinking);
+    const thinking = screen.getByLabelText('Thinking mode');
+    expect(thinking).toHaveValue('true');
+    fireEvent.change(thinking, { target: { value: 'false' } });
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(api.updateProvider).toHaveBeenCalledWith(
       'opencode-ollama',
       expect.objectContaining({ effort: 'high', thinking: false }),
     ));
+  });
+
+  // The OpenCode llama TUI is the headline case: `llamaBacked` is a record
+  // marker, not a form field, and the block used to be gated on the Ollama
+  // check alone — so the provider that most needs a temperature had none.
+  it('offers effort, temperature, top-p and thinking on a llama.cpp-backed OpenCode TUI', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'opencode-llama-tui',
+        name: 'OpenCode llama TUI',
+        type: 'tui',
+        command: 'opencode',
+        args: [],
+        enabled: true,
+        llamaBacked: true,
+        models: ['qwen3.8-27b'],
+        defaultModel: 'qwen3.8-27b',
+        effort: '',
+        thinking: true,
+        envVars: {},
+      }],
+      activeProvider: 'opencode-llama-tui',
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await openEditorTab('Generation');
+
+    fireEvent.change(await screen.findByLabelText('Default Effort'), { target: { value: 'high' } });
+    fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '0.2' } });
+    fireEvent.change(screen.getByLabelText('Top-P'), { target: { value: '0.9' } });
+    expect(screen.getByLabelText('Thinking mode')).toHaveValue('true');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.updateProvider).toHaveBeenCalledWith(
+      'opencode-llama-tui',
+      expect.objectContaining({ effort: 'high', temperature: 0.2, topP: 0.9, thinking: true }),
+    ));
+  });
+
+  // The editor must be able to leave "unset" alone: seeding a default would let
+  // an unrelated Save pin a temperature/thinking mode the backend never had, and
+  // only Ollama has a documented server-side fallback to pin back to.
+  it('saves an untouched llama.cpp provider without pinning any generation default', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'opencode-llama-tui',
+        name: 'OpenCode llama TUI',
+        type: 'tui',
+        command: 'opencode',
+        args: [],
+        enabled: true,
+        llamaBacked: true,
+        models: ['qwen3.8-27b'],
+        defaultModel: 'qwen3.8-27b',
+        envVars: {},
+      }],
+      activeProvider: 'opencode-llama-tui',
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await openEditorTab('Generation');
+
+    expect(await screen.findByLabelText('Temperature')).toHaveValue(null);
+    expect(screen.getByLabelText('Thinking mode')).toHaveValue('');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.updateProvider).toHaveBeenCalled());
+    expect(api.updateProvider.mock.calls[0][1]).toMatchObject({ temperature: null, topP: null, thinking: null });
+  });
+
+  // A Claude harness on Ollama is forwarded only MAX_THINKING_TOKENS
+  // (server/lib/cliChildEnv.js) — it owns its own sampling, so offering a
+  // temperature there would be a control that silently does nothing.
+  it('offers only the thinking control on a Claude/Ollama provider', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'claude-ollama-tui',
+        name: 'Claude Ollama TUI',
+        type: 'tui',
+        command: 'claude',
+        args: [],
+        enabled: true,
+        ollamaBacked: true,
+        models: ['qwen3:32b'],
+        defaultModel: 'qwen3:32b',
+        envVars: {},
+      }],
+      activeProvider: 'claude-ollama-tui',
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await openEditorTab('Generation');
+
+    expect(await screen.findByLabelText('Thinking mode')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Temperature')).toBeNull();
+    expect(screen.queryByLabelText('Top-P')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.updateProvider).toHaveBeenCalled());
+    const payload = api.updateProvider.mock.calls[0][1];
+    expect(payload).not.toHaveProperty('temperature');
+    expect(payload).not.toHaveProperty('topP');
+  });
+
+  // A stored default PortOS never forwards is a control that lies. The editor
+  // hides the block for cloud providers, and the payload must not carry the
+  // form's seeded values either (`topP: ''` isn't even a valid number).
+  it('sends no generation defaults for a cloud API provider', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [{
+        id: 'anthropic',
+        name: 'Anthropic',
+        type: 'api',
+        endpoint: 'https://api.anthropic.com/v1',
+        enabled: true,
+        models: ['claude-opus-5'],
+        defaultModel: 'claude-opus-5',
+        envVars: {},
+      }],
+      activeProvider: 'anthropic',
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await openEditorTab('Generation');
+
+    expect(screen.queryByLabelText('Temperature')).toBeNull();
+    expect(screen.queryByLabelText('Thinking mode')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.updateProvider).toHaveBeenCalled());
+    const payload = api.updateProvider.mock.calls[0][1];
+    expect(payload).not.toHaveProperty('temperature');
+    expect(payload).not.toHaveProperty('topP');
+    expect(payload).not.toHaveProperty('thinking');
   });
 });
 
@@ -1120,5 +1344,63 @@ describe('provider card layout', () => {
     expect(headerRow.textContent).toContain('OpenCode llama TUI');
     expect(headerRow.textContent).not.toContain('Command:');
     expect(headerRow.textContent).not.toContain('Default:');
+  });
+});
+
+describe('vLLM-backed TUI provider', () => {
+  const vllmTui = (overrides = {}) => ({
+    id: 'opencode-vllm-tui',
+    name: 'OpenCode vLLM TUI (Qwen3.8-27B)',
+    type: 'tui',
+    command: 'opencode',
+    args: [],
+    enabled: true,
+    endpoint: 'http://127.0.0.1:18020/v1',
+    models: ['qwen3.8-27b'],
+    defaultModel: 'qwen3.8-27b',
+    vllmBacked: true,
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getApps.mockResolvedValue([]);
+    api.getProviderStatuses.mockResolvedValue({ providers: {} });
+    api.getProviderRuntimes.mockResolvedValue({ runtimes: {} });
+    api.getProviderReadiness.mockResolvedValue({ readiness: {} });
+    localModels.value = { ctxById: {}, installed: { ollama: null, lmstudio: null } };
+  });
+
+  it('badges the card so the GPU-exclusive backend is visible at a glance', async () => {
+    api.getProviders.mockResolvedValue({ providers: [vllmTui()], activeProvider: null });
+    renderPage();
+    expect(await screen.findByText('vLLM / DFLASH2')).toBeInTheDocument();
+  });
+
+  it('offers an API Key field on a TUI provider — the container is key-gated', async () => {
+    api.getProviders.mockResolvedValue({ providers: [vllmTui()], activeProvider: null });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    const key = await screen.findByLabelText('API Key');
+    fireEvent.change(key, { target: { value: 'vllm-key-example' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.updateProvider).toHaveBeenCalledWith(
+      'opencode-vllm-tui',
+      expect.objectContaining({ apiKey: 'vllm-key-example' }),
+    ));
+  });
+
+  it('keeps the field off an unauthenticated local TUI backend', async () => {
+    api.getProviders.mockResolvedValue({
+      providers: [vllmTui({ id: 'opencode-mtplx-tui', name: 'OpenCode MTPLX TUI', vllmBacked: undefined, mtplxBacked: true })],
+      activeProvider: null,
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    await screen.findByDisplayValue('opencode');
+    expect(screen.queryByLabelText('API Key')).toBeNull();
   });
 });

@@ -35,8 +35,8 @@ import { expandHome } from './fileUtils.js';
  * Creative Director treatment/plan/evaluate tasks are HTTP-PATCH deliverables
  * (`noCodeOutput`) and never asked for a worktree. Spawning them with
  * `cwd = PATHS.root` lets Claude Code / Codex natively discover the PortOS
- * repo's CLAUDE.md files — the same dev-convention bloat the API path already
- * skips via `skipClaudeMd`. A per-agent scratch dir with no CLAUDE.md in its
+ * repo's AGENTS.md files — the same dev-convention bloat the API path already
+ * skips via `skipClaudeMd`. A per-agent scratch dir with no AGENTS.md in its
  * tree is the provider-agnostic fix (#4650).
  *
  * `useWorktree: true` keeps the worktree: an explicit isolation request still
@@ -52,7 +52,7 @@ export function usesCreativeDirectorScratchCwd(task) {
  * Isolated cwd for a CD-marked CLI/TUI run. Lives under the OS temp dir — NOT
  * under the PortOS checkout (`data/cos/agents` is still inside the git tree,
  * so Claude Code / Codex walking parent directories would still find the repo
- * CLAUDE.md). `agentId` is required — a missing id would collapse every CD run
+ * AGENTS.md). `agentId` is required — a missing id would collapse every CD run
  * onto one shared folder.
  */
 export function creativeDirectorScratchCwd(agentId) {

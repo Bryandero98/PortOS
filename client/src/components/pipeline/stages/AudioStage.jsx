@@ -64,7 +64,7 @@ export default function AudioStage({ issue, onStageUpdate }) {
   // even though we PATCH only on blur (or before render).
   const [drafts, setDrafts] = useState({});
   // Pending PATCH promises by line index so handleRender can await every
-  // outstanding save before kicking off the synth (CLAUDE.md "In-flight
+  // outstanding save before kicking off the synth (AGENTS.md "In-flight
   // saves must gate dependent actions"). Refs not state — we never
   // re-render because of this and we want the latest value inside async
   // handlers. Stored as `Map<lineIdx, Set<Promise>>` because a single
@@ -94,7 +94,7 @@ export default function AudioStage({ issue, onStageUpdate }) {
   // behind an install hint so a 503 never surprises them mid-prompt.
   const [genPanelOpen, setGenPanelOpen] = useState(false);
   const [generators, setGenerators] = useState(null);
-  // Sentinel discipline (CLAUDE.md "distinguish not-fetched from failed"):
+  // Sentinel discipline (AGENTS.md "distinguish not-fetched from failed"):
   // generators === null is "not fetched yet"; generatorsError !== null means a
   // fetch failed, so the cue panel can offer a Retry instead of showing a
   // perpetual "Checking engine…" that never resolves.
@@ -129,7 +129,7 @@ export default function AudioStage({ issue, onStageUpdate }) {
 
   // Whole-episode audio mode (#863). Persists via the existing PATCH /issues/:id
   // route. `audioModeSaving` gates the mode-dependent cue actions while the
-  // PATCH is in flight (CLAUDE.md "in-flight saves must gate dependent actions").
+  // PATCH is in flight (AGENTS.md "in-flight saves must gate dependent actions").
   const [audioModeSaving, setAudioModeSaving] = useState(false);
   // Generated-cue state: deriving the list, rendering each / all cues, and
   // per-cue prompt drafts (committed on blur via the cue write queue below).
@@ -437,7 +437,7 @@ export default function AudioStage({ issue, onStageUpdate }) {
     if (!file) return;
     setMusicUploading(true);
     // Owns its own error UI (toast.error below) so suppress the helper's toast
-    // — per CLAUDE.md "custom catch ⇒ silent: true" convention.
+    // — per AGENTS.md "custom catch ⇒ silent: true" convention.
     const result = await uploadPipelineMusicTrack(issue.id, file, {}, { silent: true }).catch((err) => {
       toast.error(err.message || 'Upload failed');
       return null;

@@ -315,6 +315,44 @@ async function generateMissionTask(missionId) {
 }
 
 /**
+ * Return a sub-task `generateMissionTask` claimed as `in_progress` to `pending`.
+ *
+ * Mission tasks are never written to `COS-TASKS.md` — the in-memory object
+ * `generateMissionTask` emits as `task:ready` is the only copy. The flip it
+ * saves first exists purely to stop the next generation cycle re-picking the
+ * same sub-task, so any path that declines to spawn the emitted task strands it:
+ * the object is gone, and `generateMissionTask` only ever selects `pending`
+ * sub-tasks, so nothing re-picks it. The mission silently stops advancing, one
+ * sub-task burned per occurrence (issue #4858).
+ *
+ * Reverting the flip is what makes the dispatch holds mean for a mission task
+ * what they already mean for a persisted task: still queued, re-picked when the
+ * condition clears. The caller is `holdTask` in `subAgentSpawner.js`, the one
+ * chokepoint every hold funnels through.
+ *
+ * A sub-task that is no longer `in_progress` is left alone — `completeSubTask`
+ * may have landed a real result between dispatch and release, and resurrecting
+ * that as pending work would re-run finished work.
+ *
+ * @param {string} missionId - Mission ID
+ * @param {string} subTaskId - Sub-task ID
+ * @returns {Promise<Object|null>} - Updated mission, or null when nothing was released
+ */
+async function releaseMissionSubTask(missionId, subTaskId) {
+  const mission = await getMission(missionId)
+  if (!mission) return null
+
+  const subTask = mission.subTasks.find(t => t.id === subTaskId)
+  if (!subTask || subTask.status !== 'in_progress') return null
+
+  subTask.status = 'pending'
+  mission.updatedAt = new Date().toISOString()
+  await saveMission(mission)
+
+  return mission
+}
+
+/**
  * Generate proactive tasks from all active missions
  * @param {Object} options - Generation options
  * @returns {Promise<Array>} - Generated tasks
@@ -448,6 +486,7 @@ export {
   addSubTask,
   completeSubTask,
   generateMissionTask,
+  releaseMissionSubTask,
   generateProactiveTasks,
   recordMissionReview,
   getStats,

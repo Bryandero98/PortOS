@@ -8,7 +8,7 @@
  * so the wiring is unit-testable **without** downloading the ~15 GB model or running
  * a live GPU render. `runTrellis2Generate` is the one real-subprocess boundary and
  * NEVER auto-runs — it throws unless the model is installed and is only reached from
- * an explicit user action (CLAUDE.md no-cold-bootstrap policy). The exact wording of
+ * an explicit user action (AGENTS.md no-cold-bootstrap policy). The exact wording of
  * `generate.py`'s progress output is refined during hands-on validation, so the
  * parser keys on format-agnostic signals (a percentage, a `.glb` path) rather than
  * guessing internal stage names.
@@ -32,6 +32,7 @@ import {
   probePythonModules,
 } from './laneRunner.js';
 import { renderOptionArgs } from './renderOptions.js';
+import { appendMissingModules } from './degradedInstall.js';
 import {
   selectTrellis2DecimationTarget,
   trellis2MeshQualityArgs,
@@ -148,7 +149,7 @@ export const TRELLIS2_FALLBACK_BAKE_HELP = 'TRELLIS.2 is installed, but its Meta
  * confetti surface described in `TRELLIS2_FALLBACK_BAKE_HELP`), or `'unknown'` when
  * the probe itself could not run — deliberately distinct from `'fallback'` so a
  * broken probe never renders a scary warning about a possibly-fine install
- * (CLAUDE.md sentinel rule: "failed to determine" ≠ "determined to be bad").
+ * (AGENTS.md sentinel rule: "failed to determine" ≠ "determined to be bad").
  *
  * @param {{base?: string, execFileImpl?: Function, exists?: (p: string) => boolean}} [opts]
  * @returns {Promise<{quality: 'metal'|'fallback'|'unknown', modules: Record<string, boolean>,
@@ -189,6 +190,31 @@ export async function probeTrellis2TextureBake({
 }
 
 /**
+ * Which remedy a degraded texture bake actually has, given the host's toolchain state.
+ *
+ * A `quality: 'fallback'` bake has two very different fixes and only one of them applies
+ * on a given host: when the Xcode Metal Toolchain is merely missing, Repair install
+ * fetches it and rebuilds (#3041); when only the Command Line Tools are active there is
+ * nothing PortOS can run, so the remedy is to install Xcode and no Repair button is
+ * offered at all. Both server lanes that report a degraded bake resolve it HERE — the
+ * card/short-circuit projection in `adapters.js`, and the install's own `verify` frame —
+ * so the two cannot promise different fixes for the same host state (#4742). Same
+ * one-place-only reasoning as `degradedInstall.js`, which fixed the module-name half
+ * of that parity.
+ *
+ * @param {{quality?: string, help?: string}} bake a result from `probeTrellis2TextureBake`
+ * @param {{blocker?: string, hint?: string}|null} [toolchain] a result from `probeMetalToolchain`
+ * @returns {{help?: string, repairable: boolean, blocker?: string}|null} `null` when the
+ *          bake is not degraded, i.e. there is no remedy to name
+ */
+export function resolveDegradedBakeRemedy(bake, toolchain) {
+  if (bake?.quality !== 'fallback') return null;
+  return toolchain?.blocker
+    ? { help: toolchain.hint, repairable: false, blocker: toolchain.blocker }
+    : { help: bake.help, repairable: true };
+}
+
+/**
  * Whether the Xcode Metal Toolchain is present — the prerequisite `setup.sh`
  * documents for building `mtldiffrast`/`mtlbvh`/`mtlgemm`. Checked BEFORE a ~15 GB
  * install so the user can fix it first, instead of discovering an hour later that
@@ -215,7 +241,7 @@ export async function probeMetalToolchain({
 } = {}) {
   if (platformImpl() !== 'darwin') return { available: null };
   // Subprocess boundary outside the request lifecycle — every outcome resolves,
-  // nothing throws into the route (CLAUDE.md child-process exception).
+  // nothing throws into the route (AGENTS.md child-process exception).
   const run = (command, args) => new Promise((resolve) => {
     execFileImpl(command, args, { timeout: 15000 }, (err, stdout) => {
       resolve(err ? null : String(stdout ?? ''));
@@ -698,7 +724,8 @@ export const isTransientInstallError = textMatcher([
  *
  * @param {{base?: string, onEvent?: (ev: object) => void, spawnImpl?: Function,
  *          maxRetries?: number, sleep?: (ms: number) => Promise<void>,
- *          env?: NodeJS.ProcessEnv, probeBake?: Function, installMetalToolchain?: boolean}} [opts]
+ *          env?: NodeJS.ProcessEnv, probeBake?: Function, probeToolchain?: Function,
+ *          installMetalToolchain?: boolean}} [opts]
  * @returns {{promise: Promise<{ok: true}>, kill: () => void}}
  */
 export function installTrellis2({
@@ -710,6 +737,7 @@ export function installTrellis2({
   exists = existsSync,
   env,
   probeBake = probeTrellis2TextureBake,
+  probeToolchain = probeMetalToolchain,
   installMetalToolchain = false,
 } = {}) {
   // `exists` lets the clone step self-skip when the repo is already on disk (resume
@@ -732,7 +760,24 @@ export function installTrellis2({
     verify: async (emit) => {
       const bake = await probeBake({ base });
       if (bake.quality === 'fallback') {
-        emit({ type: 'log', stage: 'verify', message: `⚠️ ${bake.help}` });
+        // WHICH remedy applies depends on the host, and the card already resolves that
+        // the same way: a toolchain `blocker` host gets no Repair button, so promising
+        // "Repair install fetches the missing build dependencies" here would name a fix
+        // the UI has deliberately withheld (#4742). One shared resolver, probed only on
+        // the degraded path so a healthy install still spawns nothing extra. Probing now
+        // rather than reusing the caller's preflight result matters: the Metal Toolchain
+        // step may have installed it in between.
+        const remedy = resolveDegradedBakeRemedy(bake, await probeToolchain());
+        // Name the culprits. The help text says which remedy to run, but not what is
+        // actually missing — and `apple-deps` (the install's only gitlab.com fetch, and
+        // an `optional` step) fails with one line that scrolls past inside a ~15 GB log.
+        // Without the module names a user whose Repair keeps failing has nothing to go
+        // on and reruns the same generic remedy forever (#4636).
+        emit({
+          type: 'log',
+          stage: 'verify',
+          message: `⚠️ ${appendMissingModules(remedy.help, bake.missing)}`,
+        });
       } else if (bake.quality === 'metal') {
         emit({ type: 'log', stage: 'verify', message: '✅ Metal texture baking is available.' });
       }
@@ -875,7 +920,7 @@ export const TRELLIS2_WATCHDOG_HELP = 'The macOS GPU watchdog stopped this rende
  *    "run nothing"**. That is not incidental: a parameter default only applies to
  *    `undefined`, so `null` already meant this before the fallback became computed,
  *    and using `??` here would quietly turn it back into force-opaque — absent vs.
- *    explicitly-empty, per CLAUDE.md.
+ *    explicitly-empty, per AGENTS.md.
  *  - Otherwise force-opaque applies unless the caller asked the exporter for a
  *    transparent material. The rewrite still defaults on because an older o_voxel
  *    promoted to BLEND off a single low-alpha texel, which is what it was written for.

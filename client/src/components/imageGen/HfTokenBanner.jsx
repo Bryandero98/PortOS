@@ -5,7 +5,7 @@
  * settings.json (which the local-image worker reads when spawning mflux /
  * flux2_macos.py).
  *
- * Single-user app behind Tailscale — see CLAUDE.md security model — so a
+ * Single-user app behind Tailscale — see AGENTS.md security model — so a
  * plaintext settings entry is the appropriate trade-off vs. a separate
  * keystore.
  */

@@ -8,7 +8,7 @@
 // MAINTENANCE RULE: any new module added to server/lib/ MUST be re-exported
 // here AND get a one-line entry in README.md. The same rule applies to
 // client/src/lib/, client/src/hooks/, and client/src/services/. See
-// CLAUDE.md "Module organization" for the full convention.
+// AGENTS.md "Module organization" for the full convention.
 
 // === Validation (Zod schemas + validators) ===
 // Domain-prefixed validators are namespace-exported so generic names that
@@ -25,6 +25,7 @@ export * as cosValidation from './cosValidation.js';
 export * as creativeCommissionValidation from './creativeCommissionValidation.js';
 export * as creativeDirectorValidation from './creativeDirectorValidation.js';
 export * as digitalTwinValidation from './digitalTwinValidation.js';
+export * as fableLoomValidation from './fableLoomValidation.js';
 export * as genomeValidation from './genomeValidation.js';
 export * as identityValidation from './identityValidation.js';
 export * as meatspaceValidation from './meatspaceValidation.js';
@@ -70,10 +71,12 @@ export * from './comicScriptParser.js';
 export * from './composeStyledPrompt.js';
 export * from './creativeDirectorPresets.js';
 export * from './creativeDirectorPrompts.js';
+export * from './creativeLatitude.js';
 // Namespaced: the editorial-check registry (#1284) lives in the editorial/
 // subdir with its own barrel — surface it under `editorial.*` so the root
 // discovery surface reaches EDITORIAL_CHECKS + the lookup helpers.
 export * as editorial from './editorial/index.js';
+export * from './fableLoomGraph.js';
 export * from './sceneExtractor.js';
 export * from './scenePrompt.js';
 export * from './proseExportSettings.js';
@@ -81,6 +84,7 @@ export * from './shotGrammar.js';
 export * from './storyboardScenes.js';
 export * from './seasonStructure.js';
 export * from './seriesCharacterArc.js';
+export * from './llmRoutePin.js';
 export * from './seriesLlmOverride.js';
 export * from './storyArc.js';
 export * from './styleGuide.js';
@@ -153,7 +157,14 @@ export * from './quotaWindows.js';
 export * from './opencodeConfig.js';
 export * from './localProviderRuntime.js';
 export * from './mtplxModels.js';
+export * from './managedDaemon.js';
+export * from './vllmQwenProject.js';
+export * from './qwenAgentParsers.js';
+export * from './vllmQwenProvision.js';
+export * from './sglangQwenProject.js';
+export * from './sglangQwenRecipe.js';
 export * from './openAiModelsProbe.js';
+export * from './openAiChatStream.js';
 // `runners.js` re-defines `isFlux2`/`isZImage`/`isErnie` that also live in
 // mediaModels.js — namespace it so the barrel surface is unambiguous.
 export * as runners from './runners.js';
@@ -173,6 +184,7 @@ export * from './conflictJournal.js';
 export * from './createKeyCachedQueue.js';
 export * from './createNewestWinsGuard.js';
 export * from './dataRoot.js';
+export * from './agentInstructionsFile.js';
 export * from './fileUtils.js';
 export * from './fileWriteQueue.js';
 export * from './icloudFile.js';
@@ -290,8 +302,12 @@ export * from './localLlmDisk.js';
 export * from './specDecodePresets.js';
 export * from './localModelHeuristics.js';
 export * from './localModelAssessment.js';
+export * from './localModelTuning.js';
+export * from './modelCapabilityTests.js';
+export * from './opencodeStream.js';
 export * from './ollamaContext.js';
 export * from './loraDataset.js';
+export * from './loraTriggers.js';
 export * from './issueLength.js';
 export * from './musicDuration.js';
 export * from './investigationTasks.js';
@@ -303,6 +319,7 @@ export * from './navManifest.js';
 export * from './usageRange.js';
 export * from './subscriptionSavings.js';
 export * from './providerFamilies.js';
+export * from './providerGateways.js';
 export * from './personaTraitBlend.js';
 export * from './pipelineIssueOrder.js';
 export * from './postAdaptive.js';
@@ -327,6 +344,7 @@ export * from './vaultCrypto.js';
 // === Model & config ===
 export * from './browserConfig.js';
 export * from './buildId.js';
+export * from './buildIdentity.js';
 export * from './condaEnv.js';
 export * from './cudaCapability.js';
 export * from './db.js';

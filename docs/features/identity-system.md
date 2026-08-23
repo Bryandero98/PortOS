@@ -608,7 +608,7 @@ CoS injects identity context into agent briefings when relevant
 
 1. **Separate data files per section** (not one giant file) -- each section has independent update cadence and the genome file (82KB) is already large
 2. **Derivation over duplication** -- chronotype reads from genome.json at query time rather than copying marker data. Identity service is the join layer
-3. **Progressive disclosure** -- Identity tab shows summary cards; deep dives are sub-routes, not modals (per CLAUDE.md: all views must be deep-linkable)
+3. **Progressive disclosure** -- Identity tab shows summary cards; deep dives are sub-routes, not modals (per AGENTS.md: all views must be deep-linkable)
 4. **LLM-assisted but user-confirmed** -- aesthetic themes extracted by LLM from media lists are suggestions, not gospel. User confirms/edits
 5. **No new dependencies** -- uses existing Zod, Express, React, Lucide stack
 6. **Genome data stays read-only** -- identity service reads genome markers but never writes to genome.json

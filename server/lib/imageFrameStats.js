@@ -21,7 +21,7 @@
  *    far under anything an encoder can represent as signal precisely so that a
  *    real frame can never trip them.
  *
- * 2. **Sentinel correctness** (root CLAUDE.md): "could not compute stats" must
+ * 2. **Sentinel correctness** (root AGENTS.md): "could not compute stats" must
  *    NOT collapse into "degenerate". `ok` is three-valued —
  *      `true`  = measured, has content
  *      `false` = measured, degenerate (`reason` names which)

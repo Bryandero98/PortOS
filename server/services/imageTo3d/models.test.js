@@ -51,8 +51,9 @@ const { claimRelease } = vi.hoisted(() => ({ claimRelease: vi.fn(async () => {})
 vi.mock('../../lib/heavyJobClaim.js', () => ({
   claimHeavyLocalJob: vi.fn(async () => ({ ok: true, holder: {}, release: claimRelease })),
 }));
-vi.mock('../../lib/localMemory.js', () => ({
-  prepareLocalMemory: vi.fn(async () => ({ unloaded: [], availableGb: 64, totalGb: 64, budgetGb: 64 })),
+vi.mock('../../lib/localMemory.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  prepareLocalMemory: vi.fn(async () => ({ unloaded: [], availableGb: 64, totalGb: 64, budgetGb: 64, blockers: [] })),
 }));
 
 vi.mock('./db.js', () => ({
@@ -189,7 +190,7 @@ describe('image-to-3D model orchestration', () => {
     const result = await recoverInterruptedModels();
     expect(result).toEqual({ recovered: 2 });
     // The whole point of boot recovery: mark interrupted renders failed-retryable
-    // WITHOUT relaunching any GPU work (CLAUDE.md no-cold-bootstrap policy).
+    // WITHOUT relaunching any GPU work (AGENTS.md no-cold-bootstrap policy).
     expect(runTrellis2Generate).not.toHaveBeenCalled();
   });
 

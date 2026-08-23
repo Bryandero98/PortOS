@@ -25,12 +25,26 @@ import {
   localLlmCompareSchema,
   localLlmAssessmentRunSchema,
   localLlmAssessmentIntentSchema,
+  localLlmAgentBenchmarkSchema,
   localLlmAssessmentDeleteSchema,
+  localLlmAssessmentSweepSchema,
+  localLlmCapabilityTestSchema,
+  localLlmCapabilityTestRunSchema,
+  localLlmCapabilityTestDeleteSchema,
   localLlmLlamaServerStartSchema,
+  localLlmLmStudioServiceSchema,
+  localLlmMtplxStartSchema,
+  localLlmMtplxSearchSchema,
+  localLlmMtplxPullSchema,
+  localLlmMtplxRemoveSchema,
   localLlmSpecModelDownloadSchema
 } from '../lib/validation.js'
 import { getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer } from '../services/llamaServerManager.js'
+import { getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx } from '../services/mtplxServerManager.js'
+import { searchMtplxCatalog, pullMtplxModel, removeMtplxModel } from '../services/mtplxModelManager.js'
+import { saveProcessList } from '../services/pm2.js'
 import { getSpecDecodePresetStatus, downloadSpecDecodeModel } from '../services/specDecodeModels.js'
+import { SPEC_TYPE_SUGGESTIONS } from '../lib/specDecodePresets.js'
 import { resetProviderReadinessCache } from '../services/providerReadiness.js'
 import { getCatalog, searchCatalog, isBackend } from '../lib/localLlmCatalog.js'
 import { isAppleSilicon } from '../lib/platform.js'
@@ -43,6 +57,10 @@ import {
 import { getSettings } from '../services/settings.js'
 import { runLocalLlmTest, compareLocalLlmModels } from '../services/localLlmPlayground.js'
 import { getAssessmentReport, runAssessment, deleteAssessment } from '../services/localModelAssessments.js'
+import { startSweep, getSweepStatus, cancelSweep } from '../services/localModelAssessmentSweep.js'
+import { runOpenCodeAgentBenchmark } from '../services/localModelAgentBenchmark.js'
+import { getCapabilityTestReport, getCapabilityTestResult, runCapabilityTest } from '../services/modelCapabilityTests.js'
+import { deleteResult as deleteCapabilityTestResult } from '../services/modelCapabilityTestStore.js'
 import { listUserModels } from '../services/audioModels.js'
 import { ENGINES } from '../services/pipeline/musicGen.js'
 import { abortSignalFromResponse } from '../lib/requestAbort.js'
@@ -53,6 +71,7 @@ import {
   unloadModel as unloadOllamaModel,
 } from '../services/ollamaManager.js'
 import {
+  controlLmStudioServer,
   getLastLoadedModelsError as getLmStudioResidencyError,
   getLoadedModels as getLoadedLmStudioModels,
 } from '../services/lmStudioManager.js'
@@ -208,6 +227,26 @@ router.post('/ollama-service', asyncHandler(async (req, res) => {
     disable: 'Ollama background service disabled'
   }[action]
   emit('complete', completeLabel)
+  res.json(result)
+}))
+
+// POST /api/local-llm/lmstudio-service — start/stop LM Studio's local server
+// via its own `lms` CLI. No enable/disable counterpart: launch-at-login belongs
+// to the LM Studio app, not to `lms`.
+router.post('/lmstudio-service', asyncHandler(async (req, res) => {
+  const { action } = validateRequest(localLlmLmStudioServiceSchema, req.body)
+  const emit = emitter(req)
+  emit('start', action === 'start' ? 'Starting the LM Studio server…' : 'Stopping the LM Studio server…')
+  const result = await controlLmStudioServer(action).catch((err) => {
+    emit('error', `LM Studio ${action} failed: ${err.message}`)
+    throw err
+  })
+  if (!result.success) {
+    emit('error', result.error || `LM Studio ${action} failed`)
+    throw new ServerError(result.error || `LM Studio ${action} failed`, { status: 502 })
+  }
+  resetProviderReadinessCache()
+  emit('complete', action === 'start' ? 'LM Studio server is running' : 'LM Studio server stopped')
   res.json(result)
 }))
 
@@ -427,7 +466,7 @@ router.post('/compare', asyncHandler(async (req, res) => {
 // endpoints back the measured alternative: run a model at several context sizes
 // and rank installed models on the evidence.
 //
-// The read/run split is the AI Provider Usage Policy boundary (root CLAUDE.md):
+// The read/run split is the AI Provider Usage Policy boundary (root AGENTS.md):
 // GET touches disk only and is safe to poll; POST /run is the ONLY path that
 // reaches a provider, and it fires solely from a deliberate user action whose
 // UI names the backend, model, and run count first. Do not add a boot hook, a
@@ -445,24 +484,133 @@ router.get('/assessments', asyncHandler(async (req, res) => {
 // Long-running by nature (one bounded generation per context size), so the
 // client's abort signal is threaded through to stop mid-run on disconnect.
 router.post('/assessments/run', asyncHandler(async (req, res) => {
-  const { backend, modelId, contextTokens } = validateRequest(localLlmAssessmentRunSchema, req.body)
+  const { backend, modelId, contextTokens, tuning } = validateRequest(localLlmAssessmentRunSchema, req.body)
   const io = req.app.get('io')
   // Same `localLlm:progress` channel the pull/migrate paths use, so one banner
   // renders every long local-LLM operation. The extra fields (`scope`, `backend`,
   // `modelId`, `sampleIndex`/`sampleCount`) let a listener tell an assessment
   // frame from a model pull streaming on the same event.
   const onProgress = (frame) => io?.emit('localLlm:progress', frame)
-  res.json(await runAssessment({ backend, modelId, contextTokens, signal: abortSignalFromResponse(res), onProgress }))
+  res.json(await runAssessment({ backend, modelId, contextTokens, tuning, signal: abortSignalFromResponse(res), onProgress }))
+}))
+
+// POST /api/local-llm/assessments/agent-benchmark — run one explicit,
+// disposable local-TUI task through a configured local provider. This is
+// deliberately separate from `/run`: it measures task-loop completion, not just
+// decoder speed, and never runs from a read/poll/bootstrap path.
+router.post('/assessments/agent-benchmark', asyncHandler(async (req, res) => {
+  const { backend, modelId, timeoutMs } = validateRequest(localLlmAgentBenchmarkSchema, req.body)
+  res.json(await runOpenCodeAgentBenchmark({ backend, modelId, timeoutMs }))
+}))
+
+// POST /api/local-llm/assessments/sweep — measure EVERY model the scope covers,
+// or (with `tunings: true` plus a backend/modelId) ONE model across the tuning
+// grid its runtime declares.
+// User-triggered only, same as the single-model run: the UI names the model and
+// generation count before this fires.
+//
+// Unlike /run this returns immediately and the queue keeps going server-side —
+// a full sweep is hours of work started at the end of the day, so it must not
+// depend on the browser tab staying open. Progress rides the same
+// `localLlm:progress` socket event under `scope: 'assessment-sweep'`, and the
+// GET below is the reload-safe source of truth.
+router.post('/assessments/sweep', asyncHandler(async (req, res) => {
+  const { scope, contextTokens, backend, modelId, tunings } = validateRequest(localLlmAssessmentSweepSchema, req.body)
+  const io = req.app.get('io')
+  // `tunings` is the ASK, not the grid: the client says "sweep this model's
+  // tunings" and the service decides which knob sets that means. A client that
+  // could post the grid could post an arbitrary batch of provider calls, and the
+  // count the consent gate named would stop being the count that runs.
+  const status = await startSweep({
+    scope, contextTokens, backend, modelId, tunings,
+    onProgress: (frame) => io?.emit('localLlm:progress', frame),
+  })
+  // A refused start (one already running, or nothing to measure) is a 409, not a
+  // silent no-op that would leave the page waiting for progress that never comes.
+  if (status.rejected) throw new ServerError(status.rejected, { status: 409, context: { scope } })
+  res.json(status)
+}))
+
+// GET /api/local-llm/assessments/sweep — queue status. Module state only, zero
+// LLM calls, so the page can poll it and a reload can pick a running sweep back up.
+router.get('/assessments/sweep', asyncHandler(async (_req, res) => {
+  res.json(getSweepStatus())
+}))
+
+// POST /api/local-llm/assessments/sweep/cancel — stop the queue and the model in
+// flight. Everything already measured stays on disk.
+router.post('/assessments/sweep/cancel', asyncHandler(async (_req, res) => {
+  res.json(cancelSweep())
 }))
 
 // POST /api/local-llm/assessments/delete — drop one stale measurement (e.g. after
 // a RAM upgrade or a backend update makes the recorded evidence misleading).
 // 404s when nothing was removed rather than reporting a phantom success.
 router.post('/assessments/delete', asyncHandler(async (req, res) => {
-  const { backend, modelId } = validateRequest(localLlmAssessmentDeleteSchema, req.body)
-  const result = await deleteAssessment(backend, modelId)
-  if (!result.deleted) throw new ServerError('No assessment recorded for that model', { status: 404, context: { backend, modelId } })
-  res.json({ success: true, backend, modelId })
+  const { backend, modelId, tuningKey } = validateRequest(localLlmAssessmentDeleteSchema, req.body)
+  const result = await deleteAssessment(backend, modelId, tuningKey)
+  if (!result.deleted) throw new ServerError('No assessment recorded for that model', { status: 404, context: { backend, modelId, tuningKey } })
+  res.json({ success: true, backend, modelId, tuningKey })
+}))
+
+// === Capability tests ========================================================
+// The assessments above answer "how fast is this model here". These answer the
+// question speed cannot: can it do what its badges claim? One test per
+// capability — tool use (repair a module in a sandbox, driven through the
+// configured OpenCode task driver), vision (describe a fixture image, scored on
+// required and bonus keywords), and chat/reasoning (a twelve-beat story outline
+// plus a fiction scene, scored on structural signals). Every run keeps the
+// model's full output.
+//
+// Same read/run split as the assessments, and for the same reason: GET touches
+// disk only; POST /run is the ONLY path that reaches a model, and it fires from
+// one deliberate click whose gate names the runtime, model and tests first.
+// There is deliberately no sweep and no scheduled entry point here — a
+// capability run is a manual act.
+
+// GET /api/local-llm/capability-tests — what each installed model claims, which
+// tests apply, and what each one proved last time. Zero LLM calls.
+router.get('/capability-tests', asyncHandler(async (_req, res) => {
+  res.json(await getCapabilityTestReport())
+}))
+
+// POST /api/local-llm/capability-tests/run — run ONE test against ONE model.
+// Long-running (a sandbox repair is an agent loop), so the client's abort signal
+// is threaded through to stop mid-run on disconnect.
+router.post('/capability-tests/run', asyncHandler(async (req, res) => {
+  const { backend, modelId, testId } = validateRequest(localLlmCapabilityTestRunSchema, req.body)
+  const io = req.app.get('io')
+  // Same `localLlm:progress` channel every long local-LLM operation uses. The
+  // `scope: 'capability-test'` field plus backend/model/test is what lets a
+  // listener tell these frames from a model pull streaming on the same event —
+  // and the `output` frames are what render the agent transcript live.
+  const onProgress = (frame) => io?.emit('localLlm:progress', frame)
+  res.json(await runCapabilityTest({
+    backend, modelId, testId, onProgress, signal: abortSignalFromResponse(res),
+  }))
+}))
+
+// GET /api/local-llm/capability-tests/result — ONE stored result in full,
+// including the model's output and the agent transcript.
+//
+// Split from the report on purpose: those two fields are the bulk of a record
+// and are read only when the drawer opens one pairing, so the report ships
+// summaries and this fills in the rest. Query params rather than a path because
+// a model id is not one — it carries `/` and `:` (`hf.co/org/repo:Q4_K_M`).
+router.get('/capability-tests/result', asyncHandler(async (req, res) => {
+  const { backend, modelId, testId } = validateRequest(localLlmCapabilityTestSchema, req.query)
+  const result = await getCapabilityTestResult(backend, modelId, testId)
+  if (!result) throw new ServerError('No capability test result recorded for that model', { status: 404, context: { backend, modelId, testId } })
+  res.json(result)
+}))
+
+// POST /api/local-llm/capability-tests/delete — drop one recorded result.
+// 404s when nothing was removed rather than reporting a phantom success.
+router.post('/capability-tests/delete', asyncHandler(async (req, res) => {
+  const { backend, modelId, testId } = validateRequest(localLlmCapabilityTestDeleteSchema, req.body)
+  const result = await deleteCapabilityTestResult(backend, modelId, testId)
+  if (!result.deleted) throw new ServerError('No capability test result recorded for that model', { status: 404, context: { backend, modelId, testId } })
+  res.json({ success: true, backend, modelId, testId })
 }))
 
 // === llama-server (DFlash 2 / Speculative Decoding) ==========================
@@ -473,7 +621,9 @@ router.post('/assessments/delete', asyncHandler(async (req, res) => {
 // Start to discover a missing file. Disk-only: no Hugging Face call here.
 router.get('/llama-server/status', asyncHandler(async (_req, res) => {
   const [status, presets] = await Promise.all([getLlamaServerStatus(), getSpecDecodePresetStatus()])
-  res.json({ ...status, presets })
+  // Spec-type suggestions ride along for the same reason the presets do: the
+  // card renders the server's list instead of keeping a copy that can rot.
+  res.json({ ...status, presets, specTypes: SPEC_TYPE_SUGGESTIONS })
 }))
 
 // POST /api/local-llm/llama-server/download-model — fetch one preset's GGUF from
@@ -518,6 +668,97 @@ router.post('/llama-server/install', asyncHandler(async (req, res) => {
   const result = await installLlamaServer({ onProgress })
   resetProviderReadinessCache()
   res.json(result)
+}))
+
+// === MTPLX (native-MTP Qwen on Apple Silicon) ================================
+// Managed exactly like llama-server: a PM2 process (`portos-mtplx`) PortOS can
+// start, stop, log, and — via /save-startup below — persist across a reboot.
+// PortOS never downloads MTPLX weights; `serve` runs on a checkpoint already in
+// MTPLX's own cache. See docs/features/mtplx.md.
+
+// GET /api/local-llm/mtplx/status — binary availability, process state, the
+// endpoint it serves on, its cached checkpoints, and recent logs. Disk + a
+// loopback probe only.
+router.get('/mtplx/status', asyncHandler(async (_req, res) => {
+  res.json(await getMtplxServerStatus())
+}))
+
+// POST /api/local-llm/mtplx/start — launch `mtplx serve` under PM2
+router.post('/mtplx/start', asyncHandler(async (req, res) => {
+  const options = validateRequest(localLlmMtplxStartSchema, req.body)
+  const emit = emitter(req)
+  emit('start', 'Starting MTPLX…')
+  const result = await startMtplxServer({ ...options, onProgress: (line) => emit('start', line) })
+    .catch((err) => {
+      emit('error', err.message)
+      throw err
+    })
+  resetProviderReadinessCache()
+  emit('complete', `MTPLX is running at ${result.endpoint}`)
+  res.json(result)
+}))
+
+// POST /api/local-llm/mtplx/stop — stop the managed MTPLX process
+router.post('/mtplx/stop', asyncHandler(async (_req, res) => {
+  const result = await stopMtplxServer()
+  resetProviderReadinessCache()
+  res.json(result)
+}))
+
+// POST /api/local-llm/mtplx/install — install MTPLX (Homebrew tap, pip fallback)
+router.post('/mtplx/install', asyncHandler(async (req, res) => {
+  const emit = emitter(req)
+  const result = await installMtplx({ onProgress: ({ event, message }) => emit(event, message) })
+    .catch((err) => {
+      emit('error', `Install failed: ${err.message}`)
+      throw err
+    })
+  resetProviderReadinessCache()
+  emit('complete', 'MTPLX installed')
+  res.json(result)
+}))
+
+// --- MTPLX model catalog ----------------------------------------------------
+// Search / download / remove MTP checkpoints without leaving PortOS. Before
+// these existed the card told the user to run `mtplx pull` in a terminal, which
+// is a dead end inside an app that manages the runtime everywhere else.
+
+// GET /api/local-llm/mtplx/models/search — MTPLX-branded checkpoints on
+// Hugging Face (`mtplx forge discover`). Network call; no download.
+router.get('/mtplx/models/search', asyncHandler(async (req, res) => {
+  const params = validateRequest(localLlmMtplxSearchSchema, req.query)
+  res.json(await searchMtplxCatalog(params))
+}))
+
+// POST /api/local-llm/mtplx/models/pull — download one checkpoint into MTPLX's
+// cache. Byte progress streams over `mtplx:download`; the card renders it as a
+// bar on the row that started it. Omitting `model` fetches MTPLX's own verified
+// default, the same checkpoint the provider-readiness checklist pulls.
+router.post('/mtplx/models/pull', asyncHandler(async (req, res) => {
+  const { model } = validateRequest(localLlmMtplxPullSchema, req.body)
+  const io = req.app.get('io')
+  const result = await pullMtplxModel({ model, onProgress: (frame) => io?.emit('mtplx:download', frame) })
+  // A cache that just went from empty to servable is exactly what the readiness
+  // probes remember as "MTPLX setup incomplete".
+  if (result.success) resetProviderReadinessCache()
+  res.json(result)
+}))
+
+// POST /api/local-llm/mtplx/models/remove — delete one checkpoint from the cache
+router.post('/mtplx/models/remove', asyncHandler(async (req, res) => {
+  const { model } = validateRequest(localLlmMtplxRemoveSchema, req.body)
+  const result = await removeMtplxModel(model)
+  resetProviderReadinessCache()
+  res.json(result)
+}))
+
+// POST /api/local-llm/save-startup — `pm2 save`, so the PM2-managed local
+// runtime servers currently running (llama-server, MTPLX, PortOS itself) are in
+// the dump a boot-time `pm2 resurrect` replays. The privileged half — `pm2
+// startup`, which writes the launchd/systemd unit — is deliberately blocked and
+// stays a one-time operator command.
+router.post('/save-startup', asyncHandler(async (_req, res) => {
+  res.json(await saveProcessList())
 }))
 
 export default router

@@ -1,6 +1,6 @@
 // Barrel for client/src/hooks/ — discovery surface, not a forced import path.
 // See client/src/hooks/README.md for the human-readable catalog and
-// CLAUDE.md "Module organization" for the maintenance convention.
+// AGENTS.md "Module organization" for the maintenance convention.
 //
 // Hooks export shape: most are named exports (`export function useX`), but a
 // handful default-export (`export default function useX`). The barrel
@@ -45,6 +45,7 @@ export { default as useRoundViewParams } from './useRoundViewParams.js';
 export { default as useSongTraining } from './useSongTraining.js';
 export { default as useMediaPreviewActions } from './useMediaPreviewActions.js';
 export { default as useKeyboardControls } from './useKeyboardControls.js';
+export { default as useKeyCapture } from './useKeyCapture.js';
 export { default as useKeyboardShortcuts } from './useKeyboardShortcuts.js';
 export * from './useKeyboardShortcuts.js';
 export { default as useMediaJobProgress } from './useMediaJobProgress.js';
@@ -122,6 +123,7 @@ export * from './useOpenClawStream.js';
 export * from './usePipelineProgress.js';
 export * from './useReaderPanel.js';
 export * from './useSeriesEditorial.js';
+export * from './useImageTo3dTargets.js';
 export * from './useSseProgress.js';
 export * from './useStoryStepRuns.jsx';
 export * from './useModelDownloadStatus.js';
@@ -189,12 +191,14 @@ export * from './useOpenWorldPlayback.js';
 export { default as useOpenWorldViewport } from './useOpenWorldViewport.js';
 export * from './useOpenWorldViewport.js';
 export * from './useDeathClock.js';
+export * from './useFederatedMediaTarget.js';
 export * from './useGoalDetail.js';
 export * from './usePostSession.js';
 export * from './useRecordMerge.js';
 export * from './useRenderJobQueue.js';
 export * from './useRepoIntake.js';
 export * from './useSyncIntegrity.js';
+export * from './useSystemResourceReport.js';
 export * from './useTwinEvaluationSuite.js';
 export * from './useUniverseNav.js';
 export * from './useVideoFileSrc.js';

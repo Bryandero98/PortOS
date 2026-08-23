@@ -127,7 +127,7 @@ router.get('/hf-token-status', asyncHandler(async (_req, res) => {
 }));
 
 // Save the HF token from the inline form on the Image Gen page. settings.json
-// is the canonical location (single-user app behind Tailscale — see CLAUDE.md).
+// is the canonical location (single-user app behind Tailscale — see AGENTS.md).
 // Same endpoint serves FLUX.2 and legacy mflux gated models — the token is
 // global (HF_TOKEN env in spawn).
 const hfTokenSchema = z.object({

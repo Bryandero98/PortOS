@@ -14,7 +14,7 @@ vi.mock('../../ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn() }
 
 import PostDrillConfig from './PostDrillConfig';
 import { updatePostConfig, getProviders, getPostAdaptivePreview, getPostMultiplicationProgress, getPostPowersProgress, getPostCognitiveProgress, getMemoryItems } from '../../../services/api';
-import { LLM_DRILL_TYPES, DRILL_LABELS } from './constants';
+import { LLM_DRILL_TYPES, DRILL_LABELS, COGNITIVE_DRILL_TYPES, COGNITIVE_LADDER_TYPES } from './constants';
 
 // The generatable LLM drill types + labels, imported from the canonical
 // client constant (mirrors server LLM_DRILL_TYPES in meatspacePostLlm.js) —
@@ -374,6 +374,74 @@ describe('PostDrillConfig', () => {
     const cognitive = updatePostConfig.mock.calls[0][0].cognitive.drillTypes;
     expect(cognitive.stroop).toMatchObject({ progressive: false, incongruentPct: 75 });
     expect(cognitive['mental-rotation']).toMatchObject({ progressive: false, rotationComplexity: 3, optionCount: 4 });
+  });
+
+  // Issue #4732 — the first-run how-to card is one-shot per drill type, so the
+  // config grid is the durable way back to it (and the only surface that offers
+  // one for a drill that is currently switched OFF).
+  describe('cognitive "How it works" preview', () => {
+    it('offers the preview for every cognitive drill type, enabled or not', async () => {
+      const noCognitive = { ...config, cognitive: { enabled: true, drillTypes: { 'n-back': { enabled: false } } } };
+      await renderConfig(<PostDrillConfig config={noCognitive} onSaved={vi.fn()} onBack={vi.fn()} />);
+      expect(screen.getByRole('switch', { name: 'N-Back' }).getAttribute('aria-checked')).toBe('false');
+      // Type list from the canonical constant, not a hardcoded copy — a new
+      // cognitive drill must not be able to ship without a way to read its rules.
+      for (const type of COGNITIVE_DRILL_TYPES) {
+        expect(screen.getByRole('button', { name: `How ${DRILL_LABELS[type]} works` })).toBeTruthy();
+      }
+    });
+
+    // Drift guard for the COGNITIVE_LADDER_TYPES mirror in constants.js: the
+    // launcher's fetch gate and `cognitiveRungPending` both key on it, so if it
+    // and this file's per-drill `progressive` flags ever disagree, the how-to
+    // card silently goes back to describing the stored knobs.
+    it('COGNITIVE_LADDER_TYPES matches exactly the drills that expose a Progressive toggle', async () => {
+      // Every cognitive drill switched ON — the three executive-control drills
+      // ship disabled, and the Progressive toggle only renders on an enabled card.
+      const allOn = {
+        ...config,
+        cognitive: {
+          enabled: true,
+          drillTypes: Object.fromEntries(COGNITIVE_DRILL_TYPES.map(t => [t, { enabled: true }])),
+        },
+      };
+      await renderConfig(<PostDrillConfig config={allOn} onSaved={vi.fn()} onBack={vi.fn()} />);
+      const laddered = COGNITIVE_DRILL_TYPES.filter(type =>
+        screen.queryByRole('switch', { name: `Progressive difficulty — ${DRILL_LABELS[type]}` }) != null);
+      expect(laddered.sort()).toEqual([...COGNITIVE_LADDER_TYPES].sort());
+    });
+
+    // The DEFAULT configuration: progressive is on, so the server runs the
+    // ladder rung's config and IGNORES the stored knobs. The card has to teach
+    // the rung, or it explains a different drill than the one about to run.
+    it('teaches the progressive ladder rung, not the stored knobs', async () => {
+      getPostCognitiveProgress.mockResolvedValue({
+        'n-back': { type: 'n-back', level: 2, label: '3-back @ 2500ms', levels: [], config: { n: 3, stimulusMs: 2500 } },
+      });
+      // Stored `n` is 1; the rung says 3. The card must say 3.
+      const laggedConfig = { ...config, cognitive: { enabled: true, drillTypes: { 'n-back': { enabled: true, n: 1 } } } };
+      await renderConfig(<PostDrillConfig config={laggedConfig} onSaved={vi.fn()} onBack={vi.fn()} />);
+      await waitFor(() => expect(getPostCognitiveProgress).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByRole('button', { name: 'How N-Back works' }));
+      expect(screen.getByText(/catch when one repeats from 3 steps earlier/i)).toBeTruthy();
+      expect(screen.queryByText(/repeats from 1 step earlier/i)).toBeNull();
+    });
+
+    it('opens the how-to card with the drill\'s CURRENT draft config once progressive is off, and closes again', async () => {
+      await renderConfig(<PostDrillConfig config={config} onSaved={vi.fn()} onBack={vi.fn()} />);
+      // Progressive off → the ladder no longer applies and the manual lag knob wins.
+      fireEvent.click(screen.getByRole('switch', { name: 'Progressive difficulty — N-Back' }));
+      fireEvent.change(screen.getByLabelText('N (steps back)'), { target: { value: '4' } });
+
+      fireEvent.click(screen.getByRole('button', { name: 'How N-Back works' }));
+      expect(screen.getByText(/catch when one repeats from 4 steps earlier/i)).toBeTruthy();
+      // Preview only: the card is open but no drill runner exists behind it.
+      expect(screen.queryByRole('button', { name: /start drill/i })).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: /got it/i }));
+      expect(screen.queryByText(/catch when one repeats from 4 steps earlier/i)).toBeNull();
+    });
   });
 
   it('toggling Adaptive on persists enabled=true', async () => {

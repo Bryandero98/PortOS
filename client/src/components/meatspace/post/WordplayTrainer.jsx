@@ -9,7 +9,7 @@ import ProviderModelSelector from '../../ProviderModelSelector';
 import Modal from '../../ui/Modal';
 import toast from '../../ui/Toast';
 import { AILoadingIndicator, MissedExamplesDisplay, CompoundChainUI, BridgeWordUI, DoubleMeaningUI, IdiomTwistUI, ProgressBar, scoreWordplayResponse } from './WordplayDrillUI';
-import { countLlmCorrect, LLM_TRAINING_CORRECT_THRESHOLD } from './constants';
+import { countLlmCorrect, DRILL_DESCRIPTIONS, LLM_TRAINING_CORRECT_THRESHOLD } from './constants';
 import PostCompletionActions from './PostCompletionActions';
 import { startRetryableSave } from './completionSave';
 
@@ -23,14 +23,20 @@ const TRAINING_MODULE = 'llm-drills';
 // standalone tab has no session-configured timeLimitSec of its own.
 const SCORE_TIMEOUT_MS = 120000;
 
-const GAME_MODES = [
+// Exported so the nav-manifest contract test (server/lib/navManifest.test.js)
+// can assert one `/post/wordplay/:mode` nav command per game mode — the same
+// guard Morse MODES and Elements PRACTICE_MODES already carry.
+//
+// Mode ids ARE drill types here, so the blurb comes from DRILL_DESCRIPTIONS
+// rather than a second copy: Drill Config, the Practice Library, and this grid
+// previously described the same drill three different ways.
+export const GAME_MODES = [
   {
     id: 'compound-chain',
     label: 'Compound Chain',
     icon: Link,
     color: 'text-purple-400',
     bgColor: 'bg-purple-500/20',
-    description: 'List compound words using a root word',
     example: 'fire → firehouse, firewall, campfire...',
   },
   {
@@ -39,7 +45,6 @@ const GAME_MODES = [
     icon: Puzzle,
     color: 'text-cyan-400',
     bgColor: 'bg-cyan-500/20',
-    description: 'Find the word connecting multiple phrases',
     example: 'news___, ___back, ___weight → paper',
   },
   {
@@ -48,7 +53,6 @@ const GAME_MODES = [
     icon: BookOpen,
     color: 'text-amber-400',
     bgColor: 'bg-amber-500/20',
-    description: 'Use both meanings of a word in one sentence',
     example: 'bark: tree covering + dog sound',
   },
   {
@@ -57,7 +61,6 @@ const GAME_MODES = [
     icon: Shuffle,
     color: 'text-green-400',
     bgColor: 'bg-green-500/20',
-    description: 'Adapt idioms to new domains with wordplay',
     example: '"Don\'t put all eggs in one basket" → programming',
   },
 ];
@@ -70,7 +73,7 @@ export default function WordplayTrainer({ onBack, onContinue, config, onConfigUp
   // Which mode we've already kicked off generation for, so the URL-driven
   // effect below doesn't regenerate on every render.
   const initiatedRef = useRef(null);
-  // Per-run generation token (CLAUDE.md's {target, generation} pattern). Every
+  // Per-run generation token (AGENTS.md's {target, generation} pattern). Every
   // generation start bumps it; a completing runMode aborts unless its captured
   // token is still current — so a superseded run (re-enter the same mode, or a
   // direct mode→mode URL change mid-generation) can't land a stale drill or
@@ -441,7 +444,7 @@ export default function WordplayTrainer({ onBack, onContinue, config, onConfigUp
                   <span className="text-white font-medium group-hover:text-port-accent transition-colors">{mode.label}</span>
                   <ChevronRight size={16} className="text-gray-600 ml-auto group-hover:text-port-accent transition-colors" />
                 </div>
-                <p className="text-sm text-gray-400 mb-1">{mode.description}</p>
+                <p className="text-sm text-gray-400 mb-1">{DRILL_DESCRIPTIONS[mode.id]}</p>
                 <p className="text-xs text-gray-600 font-mono">{mode.example}</p>
               </button>
             );

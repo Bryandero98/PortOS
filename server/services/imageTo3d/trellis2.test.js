@@ -28,6 +28,7 @@ import {
   TRELLIS2_METAL_BAKE_MODULES,
   TRELLIS2_BAKE_QUALITY_MODULES,
   TRELLIS2_FALLBACK_BAKE_HELP,
+  resolveDegradedBakeRemedy,
   TRELLIS2_METAL_TOOLCHAIN_HINT,
   TRELLIS2_REQUIRES_XCODE_HINT,
   TRELLIS2_DEFAULT_TEXTURE_SIZE,
@@ -391,6 +392,47 @@ describe('probeTrellis2TextureBake', () => {
       base: BASE, exists: () => true, execFileImpl: fakeExec({ ...allPresent, flex_gemm: false }),
     }),
   ).resolves.toMatchObject({ quality: 'metal', degradedQuality: ['flex_gemm'] }));
+
+  // #4742: one resolver decides WHICH remedy a degraded bake has, so the card and the
+  // install's verify frame cannot promise different fixes for the same host.
+  describe('resolveDegradedBakeRemedy', () => {
+    const fallbackBake = { quality: 'fallback', help: TRELLIS2_FALLBACK_BAKE_HELP, missing: ['o_voxel'] };
+
+    it('names Xcode and withholds Repair on a Command-Line-Tools-only host', () => expect(
+      resolveDegradedBakeRemedy(fallbackBake, {
+        available: false, installable: false, blocker: 'requires-xcode', hint: TRELLIS2_REQUIRES_XCODE_HINT,
+      }),
+    ).toEqual({ help: TRELLIS2_REQUIRES_XCODE_HINT, repairable: false, blocker: 'requires-xcode' }));
+
+    it('keeps the Repair remedy when the toolchain is merely missing-but-fetchable', () => expect(
+      resolveDegradedBakeRemedy(fallbackBake, { available: false, installable: true, hint: TRELLIS2_METAL_TOOLCHAIN_HINT }),
+    ).toEqual({ help: TRELLIS2_FALLBACK_BAKE_HELP, repairable: true }));
+
+    it('keeps the Repair remedy when the toolchain state is unknown or absent', () => {
+      expect(resolveDegradedBakeRemedy(fallbackBake, null))
+        .toEqual({ help: TRELLIS2_FALLBACK_BAKE_HELP, repairable: true });
+      expect(resolveDegradedBakeRemedy(fallbackBake, undefined))
+        .toEqual({ help: TRELLIS2_FALLBACK_BAKE_HELP, repairable: true });
+    });
+
+    // `null` (not an empty remedy) so callers can spread it away entirely — a healthy
+    // bake must not gain a `repairable` key it never had.
+    it('has no remedy to name for a healthy or undetermined bake', () => {
+      expect(resolveDegradedBakeRemedy({ quality: 'metal' }, { blocker: 'requires-xcode' })).toBeNull();
+      expect(resolveDegradedBakeRemedy({ quality: 'unknown' }, null)).toBeNull();
+      expect(resolveDegradedBakeRemedy(undefined, null)).toBeNull();
+    });
+  });
+  // `flex_gemm` lowers bake quality without forcing the fallback baker, so it must not
+  // reach `missing` — naming it there would blame it for the confetti surface it does
+  // not cause (#4636). The wording of the label itself is `degradedInstall.test.js`'s.
+  it('does not conflate degradedQuality with missing', async () => {
+    const result = await probeTrellis2TextureBake({
+      base: BASE, exists: () => true, execFileImpl: fakeExec({ ...allPresent, flex_gemm: false }),
+    });
+    expect(result.missing).toEqual([]);
+    expect(result.degradedQuality).toEqual(['flex_gemm']);
+  });
 
   it('reports unknown — NOT fallback — when the probe itself fails', async () => {
     // A broken probe must never render a scary "degraded" warning about an install
@@ -1056,12 +1098,19 @@ describe('installTrellis2', () => {
   // `setup.sh` swallows a failed Metal-backend build and still exits 0, so the
   // install must verify what landed and report it BEFORE the terminal `complete`
   // frame — which closes the client's EventSource (#2952).
-  const runToCompletion = async (probeBake) => {
+  // `probeToolchain` is injected on EVERY call: the degraded branch resolves which
+  // remedy applies from the host toolchain (#4742), and the suite must never spawn
+  // `xcrun`/`xcode-select` against the developer machine to find out.
+  const runToCompletion = async (probeBake, probeToolchain = async () => ({ available: true })) => {
     const children = CHILD_POOL();
     let i = 0;
     const events = [];
     const { promise } = installTrellis2({
-      base: BASE, spawnImpl: () => children[i++], onEvent: (e) => events.push(e), probeBake,
+      base: BASE,
+      spawnImpl: () => children[i++],
+      onEvent: (e) => events.push(e),
+      probeBake,
+      probeToolchain,
     });
     children[0].emit('close', 0); // clone
     await flush();
@@ -1112,6 +1161,7 @@ describe('installTrellis2', () => {
       onEvent: (e) => events.push(e),
       installMetalToolchain: true,
       probeBake: async () => ({ quality: 'fallback', missing: ['mtldiffrast'], help: 'degraded' }),
+      probeToolchain: async () => ({ available: true }),
     });
     children[0].emit('close', 1); // toolchain download failed
     await flush();
@@ -1140,6 +1190,7 @@ describe('installTrellis2', () => {
       maxRetries: 1,
       sleep: async () => {},
       probeBake: async () => ({ quality: 'fallback', missing: ['mtldiffrast'], help: 'degraded' }),
+      probeToolchain: async () => ({ available: true }),
     });
     children[0].stderr.emit('data', 'fatal: early EOF');
     children[0].emit('close', 128);
@@ -1182,6 +1233,64 @@ describe('installTrellis2', () => {
     expect(events[verifyIdx].message).toContain(TRELLIS2_FALLBACK_BAKE_HELP);
   });
 
+  // #4636: the help text says which remedy to run but not what is broken, so a Repair
+  // that keeps failing reprints the same sentence forever. The frame must name the
+  // module — and must leave the help constant itself byte-identical, since it is a
+  // shared constant other assertions key on.
+  it('names the missing bake modules in the degraded verify frame', async () => {
+    const events = await runToCompletion(async () => ({
+      quality: 'fallback', missing: ['o_voxel', 'mtlbvh'], help: TRELLIS2_FALLBACK_BAKE_HELP,
+    }));
+    const message = events.find((e) => e.stage === 'verify').message;
+    expect(message).toContain(TRELLIS2_FALLBACK_BAKE_HELP);
+    expect(message).toContain('Missing: o_voxel, mtlbvh.');
+  });
+
+  // A `fallback` verdict with an empty culprit list is not a shape the probe produces,
+  // but a defensive one: an empty label must never render as a bare "Missing:" with
+  // nothing after it.
+  it('omits the missing-module label when a degraded probe named nothing', async () => {
+    const events = await runToCompletion(async () => ({
+      quality: 'fallback', missing: [], help: TRELLIS2_FALLBACK_BAKE_HELP,
+    }));
+    expect(events.find((e) => e.stage === 'verify').message).not.toContain('Missing');
+  });
+
+
+  // #4742: the card hides Repair on a `blocker` host, so the frame that finishes the
+  // install must not tell the user to run it. Same state, same remedy, both lanes.
+  it('names the Xcode remedy — not Repair — in the degraded frame on a blocker host', async () => {
+    const events = await runToCompletion(
+      async () => ({ quality: 'fallback', missing: ['o_voxel'], help: TRELLIS2_FALLBACK_BAKE_HELP }),
+      async () => ({ available: false, installable: false, blocker: 'requires-xcode', hint: TRELLIS2_REQUIRES_XCODE_HINT }),
+    );
+    const message = events.find((e) => e.stage === 'verify').message;
+    // Whole sentence, not a substring: the module names are the useful half on this
+    // path too (#4636), and the adapter lane asserts the same shape verbatim so the
+    // two frames cannot drift.
+    expect(message).toBe(`⚠️ ${TRELLIS2_REQUIRES_XCODE_HINT} Missing: o_voxel.`);
+    expect(message).not.toContain(TRELLIS2_FALLBACK_BAKE_HELP);
+  });
+
+  it('keeps the Repair remedy on a degraded host whose toolchain is merely fetchable', async () => {
+    const events = await runToCompletion(
+      async () => ({ quality: 'fallback', missing: ['o_voxel'], help: TRELLIS2_FALLBACK_BAKE_HELP }),
+      async () => ({ available: false, installable: true, hint: TRELLIS2_METAL_TOOLCHAIN_HINT }),
+    );
+    const message = events.find((e) => e.stage === 'verify').message;
+    expect(message).toContain(TRELLIS2_FALLBACK_BAKE_HELP);
+    expect(message).not.toContain(TRELLIS2_REQUIRES_XCODE_HINT);
+  });
+
+  // Resolving the remedy costs two subprocess spawns; a healthy or undetermined bake
+  // has no remedy to resolve, so it must not pay for one.
+  it('spawns no toolchain probe unless the bake actually came out degraded', async () => {
+    const probeToolchain = vi.fn(async () => ({ available: true }));
+    await runToCompletion(async () => ({ quality: 'metal', missing: [] }), probeToolchain);
+    expect(probeToolchain).not.toHaveBeenCalled();
+    await runToCompletion(async () => ({ quality: 'unknown', missing: [] }), probeToolchain);
+    expect(probeToolchain).not.toHaveBeenCalled();
+  });
   it('confirms a healthy Metal bake on a good install', async () => {
     const events = await runToCompletion(async () => ({ quality: 'metal', missing: [] }));
     expect(events.find((e) => e.stage === 'verify')?.message).toMatch(/Metal texture baking is available/);

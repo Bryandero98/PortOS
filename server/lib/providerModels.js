@@ -3,6 +3,8 @@
  * Mirrors the constants in client/src/utils/providers.js — keep in sync.
  */
 
+import { gatewayIdForProvider, isGatewayNamespace } from './providerGateways.js';
+
 export const CODEX_CONFIGURED_DEFAULT = 'codex-configured-default';
 export const ANTIGRAVITY_CONFIGURED_DEFAULT = 'antigravity-configured-default';
 // Grok Build CLI/TUI: PortOS does not select a model — the local `grok` binary
@@ -87,8 +89,9 @@ export const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhi
 export const CODEX_EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 export const ANTIGRAVITY_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 // OpenCode forwards this narrow OpenAI-compatible ladder as `reasoningEffort`
-// to a local Ollama model. Keep it separate from vendor-CLI-only levels.
-export const OPENCODE_OLLAMA_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
+// to whichever local backend it is wired to (Ollama, llama.cpp, MTPLX,
+// OrcaRouter). Keep it separate from vendor-CLI-only levels.
+export const OPENCODE_LOCAL_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high']);
 // Cursor Agent's ladder. Cursor has NO `--effort` flag — the level is a
 // parameter of the model id itself (`gpt-5[effort=max]`), folded in by
 // `foldCursorEffortIntoModel` — so `buildEffortArgs` deliberately emits nothing
@@ -101,7 +104,7 @@ export const CURSOR_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhi
 
 // Effort values no CLI ladder accepts any more, kept ACCEPTED as stored/API
 // input so records saved under an older ladder still validate after an install
-// updates (see the distribution model in CLAUDE.md — installs update
+// updates (see the distribution model in AGENTS.md — installs update
 // independently). `resolveCliEffort` clamps them to a level the target CLI
 // really takes, so none of these ever reaches a CLI verbatim.
 const LEGACY_EFFORT_LEVELS = Object.freeze(['ultra']);
@@ -351,7 +354,7 @@ export function foldCursorEffortIntoModel(model, effort) {
  */
 export function effortLevelsForProvider(provider, model = null) {
   if (!provider) return null;
-  if (isOpencodeProvider(provider) && provider.ollamaBacked === true) return OPENCODE_OLLAMA_EFFORT_LEVELS;
+  if (isOpencodeProvider(provider) && getOpencodeLocalProviderNamespace(provider)) return OPENCODE_LOCAL_EFFORT_LEVELS;
   if (isCodexProvider(provider)) return CODEX_EFFORT_LEVELS;
   if (isAntigravityProvider(provider)) {
     const perModel = model ? antigravityModelEffortLevels(model, provider.models) : null;
@@ -555,7 +558,7 @@ export function isOpencodeCommand(command) {
  * already-qualified id (`openai/gpt-4o`, `anthropic/claude-sonnet`), and blindly
  * prefixing `ollama/` would route it to the wrong backend. No-op for
  * non-local / non-OpenCode providers and empty models.
- * @param {{command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean, llamaBacked?:boolean, orcarouterBacked?:boolean}} provider
+ * @param {{command?:string, ollamaBacked?:boolean, mtplxBacked?:boolean, llamaBacked?:boolean, vllmBacked?:boolean, sglangBacked?:boolean, orcarouterBacked?:boolean}} provider
  * @param {string|null|undefined} model
  * @returns {string|null|undefined}
  */
@@ -563,8 +566,16 @@ export function prefixOpencodeModel(provider, model) {
   const namespace = getOpencodeLocalProviderNamespace(provider);
   if (!isOpencodeCommand(provider?.command) || !namespace || !model) return model;
   const id = String(model);
-  if (namespace === 'orcarouter') {
-    return id.startsWith('orcarouter/orcarouter/') ? id : `orcarouter/${id}`;
+  if (isGatewayNamespace(namespace)) {
+    // A gateway model id is ALREADY `vendor/model` (`anthropic/claude-sonnet-4`,
+    // `orcarouter/auto`), and OpenCode splits provider/model on the FIRST slash
+    // only — so the namespaced form is legitimately doubled
+    // (`openrouter/anthropic/claude-sonnet-4`, `openrouter/openrouter/auto`).
+    // Guard on the DOUBLED prefix, never the single one: a single-prefix check
+    // would read OpenRouter's own auto-router id `openrouter/auto` as
+    // already-namespaced and emit it unchanged, which OpenCode resolves to the
+    // model `auto` — a model that does not exist.
+    return id.startsWith(`${namespace}/${namespace}/`) ? id : `${namespace}/${id}`;
   }
   return id.startsWith(`${namespace}/`) ? id : `${namespace}/${id}`;
 }
@@ -574,15 +585,19 @@ export function prefixOpencodeModel(provider, model) {
  * opted into one. Structural markers avoid deriving a backend from an editable
  * display name or endpoint and preserve the legacy Ollama outcome if a malformed
  * record carries both markers.
- * @param {{ollamaBacked?:boolean, mtplxBacked?:boolean, llamaBacked?:boolean, orcarouterBacked?:boolean}|null|undefined} provider
- * @returns {'ollama'|'mtplx'|'llama'|'orcarouter'|null}
+ * @param {{ollamaBacked?:boolean, mtplxBacked?:boolean, llamaBacked?:boolean, vllmBacked?:boolean, sglangBacked?:boolean, gatewayBacked?:string, orcarouterBacked?:boolean}|null|undefined} provider
+ * @returns {'ollama'|'mtplx'|'llama'|'vllm'|'sglang'|string|null}
  */
 export function getOpencodeLocalProviderNamespace(provider) {
   if (provider?.ollamaBacked === true) return 'ollama';
   if (provider?.mtplxBacked === true) return 'mtplx';
   if (provider?.llamaBacked === true) return 'llama';
-  if (provider?.orcarouterBacked === true) return 'orcarouter';
-  return null;
+  if (provider?.vllmBacked === true) return 'vllm';
+  if (provider?.sglangBacked === true) return 'sglang';
+  // Hosted gateways (`providerGateways.js`) come LAST so a malformed record
+  // carrying both a local marker and a gateway marker keeps its legacy local
+  // outcome, exactly as the old if-chain did with `orcarouterBacked`.
+  return gatewayIdForProvider(provider);
 }
 
 /**
@@ -819,7 +834,7 @@ export function isClaudeCommand(command) {
  * True for an Ollama-backed provider that launches the Claude Code binary
  * (`claude-ollama` / `claude-ollama-tui`). These sessions run a small local
  * model that drowns in Claude Code's full personal environment — hooks,
- * plugins, MCP servers, global CLAUDE.md — so the spawners put them in lean
+ * plugins, MCP servers, the global ~/.claude/CLAUDE.md — so the spawners put them in lean
  * mode (see `applyLeanClaudeArgs`). Keyed on the `ollamaBacked` marker + the
  * launch command, not provider ids, so renamed/custom local providers get the
  * same treatment.
@@ -849,7 +864,7 @@ export function providerSuppliesGithubToken(provider) {
 
 /**
  * Lean-context flags for local-model Claude Code sessions:
- * - `--bare` — skip hooks, plugin sync, auto-memory, and CLAUDE.md
+ * - `--bare` — skip hooks, plugin sync, auto-memory, and AGENTS.md
  *   auto-discovery (the user's personal environment derails small models).
  * - `--strict-mcp-config` — with no `--mcp-config` given, load zero MCP
  *   servers (their tool schemas alone can blow a small Ollama context).

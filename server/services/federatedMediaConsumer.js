@@ -23,7 +23,10 @@ export const DEFAULT_FEDERATED_MEDIA_PEER_CONFIG = Object.freeze({
 });
 
 const isRecord = (value) => value && typeof value === 'object' && !Array.isArray(value);
-const modelKey = ({ engine, modelId }) => `${engine}\u0000${modelId}`;
+// Exported so the standing-route save gate (federatedMedia/routingPolicy.js)
+// compares an allowlist entry to a requested pair the same way this module
+// does — the two must never disagree about what "allowlisted" means.
+export const modelKey = ({ engine, modelId }) => `${engine}\u0000${modelId}`;
 
 function sanitizeModels(models, { preserveUnknown = false } = {}) {
   if (!Array.isArray(models)) return [];

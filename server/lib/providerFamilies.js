@@ -18,7 +18,7 @@ import { isGrokCommand } from './grok.js';
 /**
  * A provider config belongs to at most one family. CLI/TUI commands are matched
  * by binary basename; the Grok/Kimi-style API providers by id or endpoint.
- * Local-runtime CLI wrappers (Ollama or MTPLX) are local/free and have no
+ * Local-runtime CLI wrappers (Ollama, MTPLX, llama.cpp, vLLM) are local/free and have no
  * subscription quota, so they map to no family (see `familyForProvider`).
  */
 export const PROVIDER_FAMILIES = [
@@ -57,6 +57,6 @@ export const familyLabel = (id) => PROVIDER_FAMILIES.find((f) => f.id === id)?.l
  * provider's spend to the subscription that actually covered it.
  */
 export function familyForProvider(provider) {
-  if (!provider || provider.ollamaBacked === true || provider.mtplxBacked === true || provider.llamaBacked === true) return null;
+  if (!provider || provider.ollamaBacked === true || provider.mtplxBacked === true || provider.llamaBacked === true || provider.vllmBacked === true || provider.sglangBacked === true) return null;
   return PROVIDER_FAMILIES.find((f) => f.matches(provider))?.id ?? null;
 }

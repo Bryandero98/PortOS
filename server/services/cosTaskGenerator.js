@@ -22,7 +22,7 @@
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, normalizeReviewers, resolveReviewUsernames, resolveOptionalReviewers, resolveReviewerMaxRounds, resolveReviewerPins, buildReviewerEffortNote, buildReviewersCsv, LOCAL_LLM_REVIEWERS, SWARM_COUNT_MIN, ISSUE_AUTHOR_FILTERS, CLAIM_OVERRIDE_CONTEXT_MAX_CHARS } from '../lib/validation.js';
+import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, resolveClaimReviewerConfig, reviewerConfigMetadata, buildReviewerEffortNote, LOCAL_LLM_REVIEWERS, SWARM_COUNT_MIN, ISSUE_AUTHOR_FILTERS, CLAIM_OVERRIDE_CONTEXT_MAX_CHARS } from '../lib/validation.js';
 import { isPlainObject } from '../lib/objects.js';
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, diagnoseUnpickablePlan } from '../lib/planIds.js';
 import { loadState, saveState, withStateLock, isImprovementEnabled, isDaemonRunning } from './cosState.js';
@@ -34,6 +34,7 @@ import { addTask, updateTask, reviveBlockedTask, getAllTasks, getCosTasks, first
 import { recordDecision, DECISION_TYPES } from './decisionLog.js';
 import { isAppOnCooldown, markAppReviewCooldown, bindAppReviewAgent, markIdleReviewStarted, getNextAppForReview, loadAppActivity, isAppActivityOnCooldown } from './appActivity.js';
 import { getActiveApps, getAppTaskTypeOverrides } from './apps.js';
+import { resolveAgentProviderPin } from './appTaskProviderPin.js';
 import { getTaskTypeConfidence } from './taskLearning.js';
 import { classifySafetyKind, requiresSafetyApproval } from './taskLearning/safetyKind.js';
 import { generateProactiveTasks as generateMissionTasks } from './missions.js';
@@ -485,33 +486,28 @@ export async function buildClaimWorkTask(app, {
 
   const resolvedAuthorFilter = resolveClaimAuthorFilter(issueAuthorFilter, metadata);
 
-  // Reviewers: explicit option wins; otherwise mirror the scheduler. Local-LLM
-  // reviewers stay in the operative list; an appended procedure below tells the
-  // claim agent how to invoke PortOS's review service instead of silently replacing
-  // the user's configured reviewer.
-  const reviewersList = reviewers !== undefined
-    ? normalizeClaimReviewers({ reviewers: Array.isArray(reviewers) ? reviewers : [reviewers] }, codeReviewDefaults?.reviewers)
-    : normalizeClaimReviewers(metadata, codeReviewDefaults?.reviewers);
-  // Arbitrary GitHub reviewer usernames appended as `@user` tokens so the
-  // claim prompt's `/do:next --review-with` gates the merge on them too. An
-  // explicit option wins, then a task-level list, then the Code Review Defaults.
-  const promptUsernames = resolveReviewUsernames(usernames ?? metadata.usernames, codeReviewDefaults?.usernames);
-  const promptOptionalReviewers = resolveOptionalReviewers(optionalReviewers ?? metadata.optionalReviewers, codeReviewDefaults?.optionalReviewers);
-  // Per-reviewer `~max=<n>` round caps ride the same explicit-option → task
-  // metadata → Code Review Defaults precedence.
-  const promptReviewerMaxRounds = resolveReviewerMaxRounds(reviewerMaxRounds ?? metadata.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds);
-  // Per-reviewer model pins (slashdo's `[<model>]` bracket) and reasoning efforts
-  // ride the same explicit-option → task metadata → Code Review Defaults
-  // precedence, and resolve together so the two describe one invocation (an agy
-  // model id can carry its effort as a suffix). The claim prompt runs its
-  // reviewers by hand rather than through `--review-with`, so the effort also
-  // lands as an appended instruction below — the CSV's `~effort=` suffix is
-  // slashdo grammar nothing in this flow parses.
-  const { reviewerModels: promptReviewerModels, reviewerEfforts: promptReviewerEfforts } = resolveReviewerPins({
+  // Reviewers: an explicit option wins per field, then the app's configured
+  // claim-work metadata, then the Code Review Defaults. One resolver for the
+  // whole bundle (list + usernames + `~opt` set + the three keyed pins), so the
+  // CSV the prompt names and the `reviewers` this task PERSISTS below cannot
+  // disagree. Local-LLM reviewers stay in the operative list; an appended
+  // procedure below tells the claim agent how to invoke PortOS's review service
+  // instead of silently replacing the user's configured reviewer.
+  const claimReviewers = resolveClaimReviewerConfig({
+    ...metadata,
+    reviewers: reviewers !== undefined ? (Array.isArray(reviewers) ? reviewers : [reviewers]) : metadata.reviewers,
+    usernames: usernames ?? metadata.usernames,
+    optionalReviewers: optionalReviewers ?? metadata.optionalReviewers,
+    reviewerMaxRounds: reviewerMaxRounds ?? metadata.reviewerMaxRounds,
     reviewerModels: reviewerModels ?? metadata.reviewerModels,
-    reviewerEfforts: reviewerEfforts ?? metadata.reviewerEfforts,
-  }, codeReviewDefaults);
-  const reviewersCsv = buildReviewersCsv(reviewersList, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels, promptReviewerEfforts);
+    reviewerEfforts: reviewerEfforts ?? metadata.reviewerEfforts
+  }, codeReviewDefaults, codeReviewDefaults?.reviewers);
+  const {
+    reviewers: reviewersList,
+    reviewerModels: promptReviewerModels,
+    reviewerEfforts: promptReviewerEfforts,
+    csv: reviewersCsv
+  } = claimReviewers;
   const issueAuthorFilterBlock = resolveIssueAuthorFilterBlock(promptTaskType, resolvedAuthorFilter);
   const issueExcludeLabelsBlock = resolveIssueExcludeLabelsBlock(metadata.issueExcludeLabels);
   // Swarm mode (`/do:next --swarm`) is prepended (not an in-template
@@ -540,8 +536,11 @@ export async function buildClaimWorkTask(app, {
 
   // Mirror the scheduler: inherit the delegated flow's isolation posture so the
   // JIRA route runs in a CoS-managed worktree rather than the live checkout.
+  // The resolved reviewer bundle rides along so the prompt builder's
+  // `resolveReviewerConfig(task.metadata, …)` reads back the list this prompt
+  // names — the reviewer pin is emitted once from there (#4770).
   const delegatedMeta = taskSchedule.DEFAULT_TASK_INTERVALS[promptTaskType]?.taskMetadata || {};
-  const taskMetadata = { claimFlow: true };
+  const taskMetadata = { ...reviewerConfigMetadata(claimReviewers), claimFlow: true };
   if ('useWorktree' in delegatedMeta) taskMetadata.useWorktree = delegatedMeta.useWorktree;
   if ('openPR' in delegatedMeta) taskMetadata.openPR = delegatedMeta.openPR;
 
@@ -554,24 +553,24 @@ export async function buildClaimWorkTask(app, {
  * scheduled claim-work resolution so the JIRA play button honors the user's
  * reviewer choice.
  *
- * Returns BOTH pieces because the two travel differently: `csv` fills the
- * template's `{reviewers}` placeholder, while `effortBlock` is appended prose —
- * the claim agent spawns each reviewer CLI itself, so no `--review-with` parser
- * ever reads the CSV's `~effort=` suffix.
+ * Returns each piece separately because they travel differently: `csv` fills the
+ * template's `{reviewers}` placeholder, `effortBlock` is appended prose (the
+ * claim agent spawns each reviewer CLI itself, so no `--review-with` parser ever
+ * reads the CSV's `~effort=` suffix), and `taskMetadata` is PERSISTED so the
+ * prompt builder resolves the same list back off the task record (#4770).
  */
 async function resolveClaimReviewerPrompt() {
   const codeReviewDefaults = await getCodeReviewDefaults().catch(() => null);
-  const list = normalizeClaimReviewers({}, codeReviewDefaults?.reviewers);
-  // Arbitrary GitHub reviewer usernames from the Code Review Defaults, appended
-  // as `@user` tokens so the play button's claim gates the merge on them too.
-  // Optional-reviewer set rides along so a `~opt` reviewer stays non-blocking,
-  // as do the per-reviewer `~max=<n>` round caps.
-  // Model + effort resolve together (an agy model id can carry its effort as a
-  // suffix), so the bracket and the appended instruction can't describe different
-  // invocations.
-  const { reviewerModels, reviewerEfforts } = resolveReviewerPins(null, codeReviewDefaults);
+  // No task record exists yet for the play button, so the whole bundle resolves
+  // from the Code Review Defaults: the reviewer list, the `@user` tokens that
+  // gate the merge, the `~opt` set, the `~max=<n>` caps, and the model/effort
+  // pins (which resolve together — an agy model id can carry its effort as a
+  // suffix, so the bracket and the appended instruction can't disagree).
+  const config = resolveClaimReviewerConfig({}, codeReviewDefaults, codeReviewDefaults?.reviewers);
+  const { reviewers: list, reviewerModels, reviewerEfforts, csv } = config;
   return {
-    csv: buildReviewersCsv(list, codeReviewDefaults?.usernames, codeReviewDefaults?.optionalReviewers, codeReviewDefaults?.reviewerMaxRounds, reviewerModels, reviewerEfforts),
+    csv,
+    taskMetadata: reviewerConfigMetadata(config),
     effortBlock: appendReviewerEffortBlock(list, reviewerEfforts, reviewerModels),
     localReviewerBlock: buildLocalReviewerInstructions(list, reviewerModels, reviewerEfforts),
   };
@@ -696,11 +695,12 @@ ${body || '(empty)'}
 </portos-prefetched-issue>`;
 }
 
-/** The same block with the leading blank-line separator used by prompt appends. */
-const appendPrefetchedIssueContext = (promptTaskType, target, issueContext) => {
-  const block = buildPrefetchedIssueContextBlock(promptTaskType, target, issueContext);
-  return block ? `\n\n${block}` : '';
-};
+// Every prompt-append helper below joins its block onto the prompt with the same
+// blank-line separator, and renders nothing when the block is empty.
+const appendBlock = (block) => (block ? `\n\n${block}` : '');
+
+const appendPrefetchedIssueContext = (promptTaskType, target, issueContext) =>
+  appendBlock(buildPrefetchedIssueContextBlock(promptTaskType, target, issueContext));
 
 /**
  * Render optional guidance entered by the user on the managed-app Issues tab.
@@ -723,16 +723,10 @@ ${context}
 </portos-claim-override>`;
 }
 
-const appendClaimOverrideContext = (overrideContext) => {
-  const block = buildClaimOverrideContextBlock(overrideContext);
-  return block ? `\n\n${block}` : '';
-};
+const appendClaimOverrideContext = (overrideContext) => appendBlock(buildClaimOverrideContextBlock(overrideContext));
 
-/** The same block with the leading blank-line separator a prompt append needs. */
-const appendTargetWorkItemBlock = (promptTaskType, ref, excludeLabelsBlock = '') => {
-  const block = buildTargetWorkItemBlock(promptTaskType, ref, excludeLabelsBlock);
-  return block ? `\n\n${block}` : '';
-};
+const appendTargetWorkItemBlock = (promptTaskType, ref, excludeLabelsBlock = '') =>
+  appendBlock(buildTargetWorkItemBlock(promptTaskType, ref, excludeLabelsBlock));
 
 /**
  * The per-reviewer reasoning-effort instruction, appended to a claim prompt with
@@ -747,10 +741,15 @@ const appendTargetWorkItemBlock = (promptTaskType, ref, excludeLabelsBlock = '')
  * rather than a flag — without them a pinned `cursor[<id>]~effort=<level>` would
  * have no invocation to name here at all.
  */
-const appendReviewerEffortBlock = (reviewers, reviewerEfforts, reviewerModels) => {
-  const note = buildReviewerEffortNote(reviewers, reviewerEfforts, { reviewerModels });
-  return note ? `\n\n${note}` : '';
-};
+const appendReviewerEffortBlock = (reviewers, reviewerEfforts, reviewerModels) =>
+  appendBlock(buildReviewerEffortNote(reviewers, reviewerEfforts, { reviewerModels }));
+
+// The reviewer pin (`buildReviewerPinNote`) is deliberately NOT appended here.
+// Each claim generator instead persists its resolved reviewer bundle onto the
+// task (`reviewerConfigMetadata`), and `buildClaimFlowCompletionSection` in
+// agentPromptBuilder.js emits the pin once from that record — covering all five
+// claim task types regardless of which generator built the body, instead of
+// three prose appends that must be kept in lockstep (#4770).
 
 /**
  * Append the invocation contract for claim reviewers that have no CLI binary.
@@ -817,7 +816,9 @@ export function buildLocalReviewerInstructions(reviewers, reviewerModels = {}, r
  * lifecycle ownership while `useWorktree/openPR` stay `false/false` so CoS does
  * not provision a nested worktree.
  *
- * @returns {Promise<{ ticketKey: string, prompt: string, taskMetadata: { useWorktree: boolean, openPR: boolean, claimFlow: boolean } }>}
+ * @returns {Promise<{ ticketKey: string, prompt: string, taskMetadata: { useWorktree: boolean, openPR: boolean, claimFlow: boolean } }>} —
+ *   `taskMetadata` also carries the resolved reviewer bundle so the prompt
+ *   builder's reviewer pin names this prompt's list (#4770).
  */
 export async function buildJiraTicketTask(app, ticketKey) {
   const { getTaskPrompt } = await import('./taskPromptService.js');
@@ -827,7 +828,7 @@ export async function buildJiraTicketTask(app, ticketKey) {
   const key = normalizeWorkItemRef(ticketKey);
 
   // Independent reads (prompt body + Code Review Defaults) — fetch concurrently.
-  const [template, { csv: reviewersCsv, effortBlock, localReviewerBlock }] = await Promise.all([
+  const [template, { csv: reviewersCsv, taskMetadata: reviewerMetadata, effortBlock, localReviewerBlock }] = await Promise.all([
     getTaskPrompt('claim-issue-jira'),
     resolveClaimReviewerPrompt(),
   ]);
@@ -842,7 +843,7 @@ export async function buildJiraTicketTask(app, ticketKey) {
     + effortBlock
     + localReviewerBlock;
 
-  return { ticketKey: key, prompt, taskMetadata: { useWorktree: false, openPR: false, claimFlow: true } };
+  return { ticketKey: key, prompt, taskMetadata: { ...reviewerMetadata, useWorktree: false, openPR: false, claimFlow: true } };
 }
 
 /**
@@ -2340,11 +2341,13 @@ export async function emitOnDemandEmpty({ taskScheduleMod, request, targetApp, t
 
 /**
  * Assemble the base improvement-task metadata and layer the sanitized global
- * (schedule interval) + per-app taskMetadata overrides on top. Per-app strips
+ * (schedule interval) + per-app taskMetadata overrides on top. `appOverride` is
+ * this app's stored entry for `taskType` (loaded once by the caller, which also
+ * reads its provider/model pin). Per-app strips
  * managed-agent fields first (see the sibling generateManagedAppTask path for
  * the rationale). Pure assembly — no gating, no early return.
  */
-async function buildImprovementTaskMetadata(taskType, app, interval, taskSchedule) {
+function buildImprovementTaskMetadata(taskType, app, interval, taskSchedule, appOverride) {
   const metadata = {
     app: app.id,
     appName: app.name,
@@ -2361,9 +2364,8 @@ async function buildImprovementTaskMetadata(taskType, app, interval, taskSchedul
   }
 
   // Apply sanitized per-app taskMetadata overrides (merge on top of global).
-  const appOverrides = await getAppTaskTypeOverrides(app.id);
   const strippedAppOverride = taskSchedule.stripManagedAgentOptionsFromOverride(
-    taskType, appOverrides[taskType]?.taskMetadata
+    taskType, appOverride?.taskMetadata
   );
   const sanitizedAppMeta = sanitizeTaskMetadata(strippedAppOverride);
   if (sanitizedAppMeta) {
@@ -2868,7 +2870,9 @@ async function resolvePrWatcherBlock(app, taskType, metadata, taskSchedule) {
  * then render every token in the prompt template. `blocks` carries the
  * dynamically-assembled Markdown chunks produced by the deterministic
  * pre-steps above (reference-watch, pr-watcher, branch-/issue-reconcile,
- * PLAN gating). Pure string work — no gating, no early return.
+ * PLAN gating). String work plus ONE mutation: a template that drives its own
+ * reviewers stamps the resolved bundle back onto `metadata` (see below), the
+ * same way `applyPlanIdMetadata` writes `planId`.
  */
 async function buildImprovementTaskDescription({ promptTemplate, app, promptTaskType, metadata, blocks }) {
   // Resolve the `{reviewers}` the agent is told to run. When the task itself
@@ -2878,23 +2882,19 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
   // loop directly, would always tell the agent to use Copilot regardless of the
   // user's configured reviewers. Settings I/O failures degrade to the hardcoded
   // default inside normalizeReviewers, so a read error never blocks dispatch.
+  //
+  // One resolver for the whole bundle (list + usernames + `~opt` set + the three
+  // keyed pins). Local-LLM reviewers stay in the operative list; their service
+  // invocation contract is appended after rendering so customized legacy prompts
+  // receive it without needing a new placeholder.
   const codeReviewDefaults = await getCodeReviewDefaults().catch(() => null);
-  // Keep local-LLM reviewers in the operative list. Their service invocation
-  // contract is appended after rendering so customized legacy prompts receive
-  // it without needing a new placeholder.
-  const promptReviewers = normalizeClaimReviewers(metadata, codeReviewDefaults?.reviewers);
-  // Arbitrary GitHub reviewer usernames appended as `@user` tokens so the claim
-  // prompt's `/do:next --review-with` gates the merge on them too. A task-level
-  // list overrides the Code Review Defaults; forge-agnostic, so not filtered.
-  const promptUsernames = resolveReviewUsernames(metadata.usernames, codeReviewDefaults?.usernames);
-  const promptOptionalReviewers = resolveOptionalReviewers(metadata.optionalReviewers, codeReviewDefaults?.optionalReviewers);
-  const promptReviewerMaxRounds = resolveReviewerMaxRounds(metadata.reviewerMaxRounds, codeReviewDefaults?.reviewerMaxRounds);
-  // Per-reviewer model pins ride the same precedence, emitted as slashdo's
-  // `[<model>]` bracket. Efforts resolve in the same call and are appended as an
-  // instruction after the substitutions below.
-  const { reviewerModels: promptReviewerModels, reviewerEfforts: promptReviewerEfforts } =
-    resolveReviewerPins(metadata, codeReviewDefaults);
-  const reviewersCsv = buildReviewersCsv(promptReviewers, promptUsernames, promptOptionalReviewers, promptReviewerMaxRounds, promptReviewerModels, promptReviewerEfforts);
+  const claimReviewers = resolveClaimReviewerConfig(metadata, codeReviewDefaults, codeReviewDefaults?.reviewers);
+  const {
+    reviewers: promptReviewers,
+    reviewerModels: promptReviewerModels,
+    reviewerEfforts: promptReviewerEfforts,
+    csv: reviewersCsv
+  } = claimReviewers;
   // {issueAuthorFilter} directive — the filter was already merged (global →
   // per-app override) and value-constrained by sanitizeTaskMetadata, so read it
   // from `metadata` (default 'self', the slashdo `/do:next --self` security
@@ -2908,6 +2908,14 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
   // sanitizeTaskMetadata, so read it from `metadata`. Empty for non-issue
   // trackers and when swarm is off.
   const swarmBlock = resolveSwarmBlock(promptTaskType, metadata.swarmCount);
+  // Does this template drive its own reviewers? Gates the two reviewer blocks
+  // appended after the substitutions below, and the persisted bundle.
+  const rendersReviewers = /\{reviewers\}/.test(promptTemplate);
+  // Persist what the prompt just named, so `resolveReviewerConfig(task.metadata, …)`
+  // at spawn time reads back THIS list instead of re-deriving the install-wide
+  // Code Review Defaults — that is what lets the reviewer pin be emitted once,
+  // from the completion section, for every claim task type (#4770).
+  if (rendersReviewers) Object.assign(metadata, reviewerConfigMetadata(claimReviewers));
 
   return `${swarmBlock}${promptTemplate}`
     // {modeInstructions} before {trackerInstructions}: the file-issues mode
@@ -2938,41 +2946,83 @@ async function buildImprovementTaskDescription({ promptTemplate, app, promptTask
     .replace(/\{repoFullName\}/g, () => blocks.repoFullName)
     .replace(/\{defaultBranch\}/g, () => blocks.defaultBranch)
     .replace(/\{planConstraint\}/g, () => blocks.planConstraint)
-    // The effort note accompanies the reviewer CSV, so it's only appended when this
-    // template actually carries one. A task type whose prompt does NOT drive its own
-    // reviewers gets its PR reviewed by the completion workflow instead, and
-    // `buildCliCompletionSection` already states the effort next to that `/do:pr`
-    // step — appending here too would print the same sentence twice and give one
-    // instruction two owners to drift apart.
-    + (/\{reviewers\}/.test(promptTemplate)
+    // The effort note and the local-reviewer procedure accompany the reviewer
+    // CSV, so they are appended only when this template actually carries one. A
+    // task type whose prompt does NOT drive its own reviewers gets its PR
+    // reviewed by the completion workflow instead, and `buildCliCompletionSection`
+    // already emits `--review-with` (and states the effort) next to that
+    // `/do:pr` step — appending here too would print the same instruction twice
+    // and give it two owners to drift apart.
+    + (rendersReviewers
         ? appendReviewerEffortBlock(promptReviewers, promptReviewerEfforts, promptReviewerModels)
-        : '')
-    + (/\{reviewers\}/.test(promptTemplate)
-        ? buildLocalReviewerInstructions(promptReviewers, promptReviewerModels, promptReviewerEfforts)
+          + buildLocalReviewerInstructions(promptReviewers, promptReviewerModels, promptReviewerEfforts)
         : '');
 }
 
+const EMPTY_PROVIDER_PIN = Object.freeze({ providerId: null, model: null });
+
 /**
- * Layer the provider/model/effort pins onto `metadata`: the global schedule
- * interval first, then a buildTaskInput hook's per-app override (the more
- * specific choice wins, so it is applied last). A model is only ever pinned
- * when explicitly configured — otherwise it stays unset so selectModelForTask
- * resolves the active provider's tier/default model at spawn time (see the
- * note in generateSelfImprovementTaskForType).
+ * The app's per-app provider/model pin for this task type, as an overlay to apply
+ * over the global Schedule pin. Runs the shared harness guard
+ * (`resolveAgentProviderPin`) so an api-typed per-app pin — which has no
+ * file-writing harness and could only ever fail at spawn — falls back to the
+ * Schedule pin rather than reaching the agent.
+ *
+ * Returns an EMPTY overlay when nothing resolvable is harness-capable: the
+ * Schedule pin then stands untouched and agentProviderResolution reports its
+ * actionable permanent error, which beats silently rerouting the run onto a
+ * provider the user never chose.
  */
-function applyProviderModelPins(metadata, interval, hookOverride) {
-  if (interval.providerId) {
-    metadata.provider = interval.providerId;
-    metadata.providerId = interval.providerId;
+async function resolveAppProviderPin({ app, taskType, appOverride, interval }) {
+  if (!appOverride?.providerId && !appOverride?.model) return EMPTY_PROVIDER_PIN;
+  const { providerId, model, skipReason } = await resolveAgentProviderPin({
+    appPin: { providerId: appOverride.providerId || null, model: appOverride.model ?? null },
+    readSchedulePin: () => interval,
+    taskType,
+    appName: app.name
+  });
+  return skipReason ? EMPTY_PROVIDER_PIN : { providerId, model };
+}
+
+/**
+ * Layer the provider/model/effort pins onto `metadata`, least specific first:
+ * the global schedule interval, then the app's own per-app pin, then a
+ * buildTaskInput hook's fully-resolved choice. A model is only ever pinned when
+ * explicitly configured — otherwise it stays unset so selectModelForTask resolves
+ * the active provider's tier/default model at spawn time (see the note in
+ * generateSelfImprovementTaskForType).
+ */
+function applyOneProviderPin(metadata, pin) {
+  // A model pinned with no provider REFINES the layer below (the user picked a
+  // model for the provider that layer resolved), so it applies on its own.
+  if (!pin?.providerId) {
+    if (pin?.model) metadata.model = pin.model;
+    return;
   }
-  if (interval.model) {
-    metadata.model = interval.model;
-  }
+  metadata.provider = pin.providerId;
+  metadata.providerId = pin.providerId;
+  // A model is PROVIDER-SCOPED: one chosen for the layer below is not something
+  // the provider that just replaced it can necessarily run, and
+  // agentProviderResolution honors an explicit `metadata.model` as a CLI
+  // pass-through rather than dropping it — so a leaked model ships to the wrong
+  // CLI (`claude --model gemini-…`) and fails on every retry until the task
+  // blocks. Take this layer's model, or none and let selectModelForTask resolve
+  // the new provider's own default.
+  if (pin.model) metadata.model = pin.model;
+  else delete metadata.model;
+}
+
+function applyProviderModelPins(metadata, interval, appPin, hookOverride) {
+  // Least specific first: the task's global Schedule pin. Then the app's own
+  // per-app pin, which is the more specific choice — honored for EVERY task type
+  // (#4783), not just the one whose buildTaskInput hook read it. Then a
+  // buildTaskInput hook's fully-resolved choice, which wins outright.
+  applyOneProviderPin(metadata, { providerId: interval.providerId || null, model: interval.model || null });
   if (interval.effort) {
     metadata.effort = interval.effort;
   }
-  if (hookOverride.providerId) { metadata.provider = hookOverride.providerId; metadata.providerId = hookOverride.providerId; }
-  if (hookOverride.model) { metadata.model = hookOverride.model; }
+  applyOneProviderPin(metadata, appPin);
+  applyOneProviderPin(metadata, hookOverride);
 }
 
 export async function generateManagedAppImprovementTaskForType(taskType, app, state, { skipPreconditions = false, ignoreTaskId = null } = {}) {
@@ -2995,9 +3045,15 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   // task means rotation advanced; a `return null` short-circuit means it
   // didn't.
 
-  // Get interval settings to determine provider/model and pipeline config
-  const interval = await taskSchedule.getTaskInterval(taskType);
-  const metadata = await buildImprovementTaskMetadata(taskType, app, interval, taskSchedule);
+  // Get interval settings to determine provider/model and pipeline config.
+  // The per-app override entry is loaded ONCE here: it carries both the
+  // taskMetadata merged below and the provider/model pin applied further down.
+  const [interval, appOverrides] = await Promise.all([
+    taskSchedule.getTaskInterval(taskType),
+    getAppTaskTypeOverrides(app.id)
+  ]);
+  const appOverride = appOverrides[taskType] || null;
+  const metadata = buildImprovementTaskMetadata(taskType, app, interval, taskSchedule, appOverride);
 
   initializePipelineMetadata(metadata);
   if (!skipPreconditions && shouldSkipForPrecondition(metadata, app, taskType)) return null;
@@ -3131,7 +3187,15 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
     metadata.openPR = false;
     metadata.simplify = false;
   }
-  applyProviderModelPins(metadata, interval, hookOverride);
+  // The app's per-app provider/model pin (#4783). Resolved through the shared
+  // harness guard, so an api-typed pin falls back to the Schedule pin instead of
+  // reaching the spawn as a permanent provider failure. Skipped when a
+  // buildTaskInput hook already resolved the provider — its return wins anyway, so
+  // re-deriving here would only duplicate the fallback log line.
+  const appPin = hookOverride.providerId
+    ? EMPTY_PROVIDER_PIN
+    : await resolveAppProviderPin({ app, taskType, appOverride, interval });
+  applyProviderModelPins(metadata, interval, appPin, hookOverride);
 
   const approval = await resolveConfidenceApproval(state, `app-improve:${taskType}`, `Task app-improve:${taskType} for ${app.name}`, metadata);
   stampApprovalReason(metadata, approval);
@@ -3185,13 +3249,7 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
 
   return task;
 }
-const CLAIM_REVIEWER_FALLBACK = ['codex'];
-
-/** Claim workflows are unattended and must use an invokable reviewer. */
-export function normalizeClaimReviewers(metadata, configuredReviewers) {
-  const fallback = Array.isArray(configuredReviewers) && configuredReviewers.length
-    ? configuredReviewers
-    : CLAIM_REVIEWER_FALLBACK;
-  const reviewers = normalizeReviewers(metadata, fallback).filter((reviewer) => reviewer !== 'copilot');
-  return reviewers.length ? reviewers : [...CLAIM_REVIEWER_FALLBACK];
-}
+// `normalizeClaimReviewers` moved to server/lib/cosValidation.js (#4770): the
+// prompt builder needs the same copilot guard when it re-resolves reviewers off
+// a persisted claim task, and a service-level definition would have meant a
+// second copy there.

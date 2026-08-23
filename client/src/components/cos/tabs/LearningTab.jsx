@@ -25,6 +25,7 @@ import {
   ShieldCheck,
   ShieldAlert,
   ShieldQuestion,
+  MessageSquare,
   X,
   Undo2
 } from 'lucide-react';
@@ -42,6 +43,54 @@ export const runsLabel = (item, noun = 'runs') =>
     ? `${item.windowedCompleted} recent ${noun}`
     : `${item?.completed} ${noun}`;
 
+export function FeedbackSummary({ feedback }) {
+  if (!feedback?.total) return null;
+
+  const satisfaction = feedback.satisfactionRate ?? 0;
+  const satisfactionClass = satisfaction >= 80
+    ? 'text-port-success'
+    : satisfaction >= 60
+      ? 'text-port-warning'
+      : 'text-port-error';
+
+  return (
+    <div className="bg-port-card border border-port-border rounded-lg p-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <MessageSquare size={16} className="text-port-accent" />
+            <h4 className="text-sm font-medium text-white">User Feedback</h4>
+          </div>
+          <p className="text-xs text-gray-500 mt-1">
+            Durable ratings across live and archived agent runs
+          </p>
+        </div>
+        <div className="grid grid-cols-4 gap-4 sm:gap-6 text-center">
+          <div>
+            <div className={`text-lg font-bold ${satisfactionClass}`}>{satisfaction}%</div>
+            <div className="text-[11px] text-gray-500">helpful</div>
+          </div>
+          <div>
+            <div className="text-lg font-bold text-port-success">{feedback.positive}</div>
+            <div className="text-[11px] text-gray-500">positive</div>
+          </div>
+          <div>
+            <div className="text-lg font-bold text-gray-300">{feedback.neutral}</div>
+            <div className="text-[11px] text-gray-500">neutral</div>
+          </div>
+          <div>
+            <div className="text-lg font-bold text-port-error">{feedback.negative}</div>
+            <div className="text-[11px] text-gray-500">negative</div>
+          </div>
+        </div>
+      </div>
+      <div className="text-xs text-gray-500 mt-3 pt-3 border-t border-port-border">
+        {feedback.total} rated run{feedback.total === 1 ? '' : 's'} retained in the current archive window
+      </div>
+    </div>
+  );
+}
+
 export default function LearningTab() {
   const [learning, setLearning] = useState(null);
   const [performance, setPerformance] = useState(null);
@@ -49,6 +98,7 @@ export default function LearningTab() {
   const [durations, setDurations] = useState(null);
   const [routing, setRouting] = useState(null);
   const [confidence, setConfidence] = useState(null);
+  const [feedback, setFeedback] = useState(null);
   const [dismissed, setDismissed] = useState([]);
   const [showDismissed, setShowDismissed] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -67,13 +117,14 @@ export default function LearningTab() {
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [learningData, performanceData, skippedData, durationsData, routingData, confidenceData, dismissedData] = await Promise.all([
+    const [learningData, performanceData, skippedData, durationsData, routingData, confidenceData, feedbackData, dismissedData] = await Promise.all([
       api.getCosLearning().catch(() => null),
       api.getCosLearningPerformance().catch(() => null),
       api.getCosLearningSkipped().catch(() => null),
       api.getCosLearningDurations().catch(() => null),
       api.getCosLearningRouting().catch(() => null),
       api.getCosLearningConfidence().catch(() => null),
+      api.getCosFeedbackStats({ silent: true }).catch(() => null),
       api.getDismissedCosRecommendations().catch(() => null)
     ]);
     setLearning(learningData);
@@ -82,6 +133,7 @@ export default function LearningTab() {
     setDurations(durationsData);
     setRouting(routingData);
     setConfidence(confidenceData);
+    setFeedback(feedbackData);
     setDismissed(dismissedData?.dismissed || []);
     setLoading(false);
   }, []);
@@ -263,6 +315,8 @@ export default function LearningTab() {
               <div className="text-xs text-gray-500">due to low success</div>
             </div>
           </div>
+
+          <FeedbackSummary feedback={feedback} />
 
           {/* Recommendations */}
           {(learning.recommendations?.length > 0 || dismissed.length > 0) && (

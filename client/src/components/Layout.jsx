@@ -15,6 +15,9 @@ import {
   Activity,
   BarChart3,
   Cpu,
+  Gauge,
+  FlaskConical,
+  Braces,
   Wrench,
   ExternalLink,
   Crown,
@@ -54,6 +57,7 @@ import {
   ClipboardList,
   ListChecks,
   Compass,
+  Feather,
   Scale,
   LayoutDashboard,
   Lightbulb,
@@ -99,12 +103,14 @@ import {
   Box,
   Boxes,
   Gamepad2,
+  Waypoints,
   AtSign
 } from 'lucide-react';
 // `__APP_VERSION__` is a Vite build-time define (see vite.config.js). Biome does
 // not honour ESLint-style "global" block comments, so it is declared in
 // biome.jsonc's `javascript.globals` instead.
 import { safeReadStorage, safeWriteStorage } from '../lib/safeStorage';
+import { TRUSTED_BUNDLE_STAMP, describeBuild } from '../lib/buildStamp.js';
 import Logo from './Logo';
 import { useErrorNotifications } from '../hooks/useErrorNotifications';
 import { useNotifications } from '../hooks/useNotifications';
@@ -114,6 +120,7 @@ import { useSharingNotifications } from '../hooks/useSharingNotifications';
 import UpdateBanners from './UpdateBanners';
 import { useAIStatusNotifications } from '../hooks/useAIStatusNotifications';
 import { useNavWorkingSet } from '../hooks/useNavWorkingSet.js';
+import { migrateLegacyNavPath } from '../utils/navWorkingSet.js';
 import { useSidebarApps } from '../hooks/useSidebarApps.js';
 import { useSidebarSeries } from '../hooks/useSidebarSeries.js';
 import { useSidebarUniverses } from '../hooks/useSidebarUniverses.js';
@@ -236,6 +243,7 @@ const navItems = [
       { to: '/creative-commission', label: 'Creative Commissions', icon: CalendarClock },
       { to: '/creative-director', label: 'Creative Director', icon: Clapperboard },
       { to: '/pipeline/editorial-checks', label: 'Editorial Checks', icon: ListChecks },
+      { to: '/fableloom', label: 'FableLoom', icon: Waypoints },
       { to: '/game', label: 'Game', icon: Gamepad2 },
       { to: '/importer', label: 'Importer', icon: FileInput },
       { to: '/media', label: 'Media Gen', icon: Layers },
@@ -304,6 +312,22 @@ const navItems = [
     ],
   },
   {
+    label: 'Models',
+    icon: Cpu,
+    defaultTo: '/models/performance',
+    children: [
+      { to: '/models/3d', label: '3D', icon: Boxes },
+      { to: '/models/embeddings', label: 'Embeddings', icon: Braces },
+      { to: '/models/llms', label: 'LLMs', icon: Cpu },
+      { to: '/models/loras', label: 'LoRAs', icon: Sparkles },
+      { to: '/models/media', label: 'Media', icon: HardDrive },
+      { to: '/models/performance', label: 'Performance', icon: Gauge },
+      { to: '/local-llm/playground', label: 'Playground', icon: FlaskConical },
+      { to: '/models/status', label: 'Status', icon: Activity },
+      { to: '/models/training', label: 'Training', icon: GraduationCap },
+    ],
+  },
+  {
     label: 'Settings',
     icon: Settings,
     defaultTo: '/settings/general',
@@ -314,7 +338,6 @@ const navItems = [
       { to: '/settings/code-reviewers', label: 'Code Reviewers', icon: ShieldCheck },
       { to: '/settings/database', label: 'Database', icon: Database },
       { to: '/settings/general', label: 'General', icon: Settings },
-      { to: '/settings/local-llm', label: 'Local LLMs', icon: Cpu },
       { to: '/settings/mortalloom', label: 'MortalLoom', icon: Activity },
       { to: '/openclaw', label: 'OpenClaw', icon: MessagesSquare },
       { to: '/prompts', label: 'Prompts', icon: FileText },
@@ -355,12 +378,14 @@ const navItems = [
     defaultTo: '/post/launcher',
     children: [
       { to: '/post/config', label: 'Config', icon: Settings },
+      { to: '/post/explore', label: 'Explore', icon: Compass },
       { to: '/post/history', label: 'History', icon: History },
       { to: '/post/launcher', label: 'Launcher', icon: Play },
       { to: '/post/memory', label: 'Memory', icon: Brain },
       { to: '/post/morse', label: 'Morse', icon: Radio },
       { to: '/post/plan', label: 'Practice Plan', icon: ListChecks },
       { to: '/post/progress', label: 'Progress', icon: TrendingUp },
+      { to: '/post/rhetoric', label: 'Rhetoric', icon: Feather },
       { to: '/post/wordplay', label: 'Wordplay', icon: MessageCircle },
     ],
   },
@@ -531,6 +556,10 @@ const FULL_WIDTH_PATH_PREFIXES = [
   '/pipeline/issues/',
   '/pipeline/series/',
   '/post',
+  // Models mirrors Settings: PageHeader + TabPills over a `flex-1 overflow-auto`
+  // body, so the page owns its own scroll. Without this it nests inside the
+  // padded scrolling main and the inner `h-full` clips below the fold.
+  '/models',
   '/settings',
   // Round EDITOR (/rounds/:id) and the Learning Guide (/rounds/guide)
   // are full-width and own their own scroll; the bare /rounds index
@@ -546,6 +575,10 @@ const FULL_WIDTH_PATH_PREFIXES = [
   // stepper that owns its own scroll; the bare /story-builder index
   // (list + create form) takes the normal padded+scrolling main.
   '/story-builder/',
+  // FableLoom EDITOR (/fableloom/:loomId/...) is a full-width canvas that
+  // owns its own scroll; the bare /fableloom index takes the normal
+  // padded+scrolling main.
+  '/fableloom/',
   // The AI Providers editor is a drawer over the same page (/ai/new,
   // /ai/:providerId), so its sub-routes need the bare full-width main the
   // bare /ai index gets from EXACT_FULL_WIDTH_PATHS above — without it the
@@ -771,9 +804,23 @@ export default function Layout() {
     return map;
   }, [resolvedNavItems]);
 
+  // Stored Pinned/Recent paths outlive the routes they were saved from. When a
+  // page MOVES, its old path stops matching anything here and the row silently
+  // renders nothing — so a miss falls back through the manifest's `previousPaths`
+  // to where the page lives now, and the entry carries that CURRENT path so the
+  // row navigates (and unpins) by it. Resolution is where this belongs rather
+  // than a rewrite-on-read: a path that resolves to nothing is left untouched,
+  // which matters because the dynamic app/series/universe rows load async and
+  // "unresolvable" is a normal transient state during boot.
   const resolveNavEntry = useCallback(
-    (path) => navEntryByPath.get(path) || manifestEntryByPath.get(path) || null,
-    [navEntryByPath, manifestEntryByPath],
+    (path) => {
+      const direct = navEntryByPath.get(path) || manifestEntryByPath.get(path);
+      if (direct) return direct;
+      const current = migrateLegacyNavPath(path, manifestNav);
+      if (current === path) return null;
+      return navEntryByPath.get(current) || manifestEntryByPath.get(current) || null;
+    },
+    [navEntryByPath, manifestEntryByPath, manifestNav],
   );
 
   const { pinned, recent, pin, unpin, isPinned } = useNavWorkingSet(resolveNavEntry);
@@ -1176,7 +1223,18 @@ export default function Layout() {
         {/* Footer with version and notifications */}
         <div className={`border-t border-port-border ${collapsed ? 'lg:flex lg:justify-center lg:p-2 p-4' : 'p-4'}`}>
           <div className={`flex flex-col items-center gap-2 sm:flex-row sm:gap-0 ${collapsed ? 'lg:flex-col lg:justify-center lg:gap-1' : 'sm:justify-between'}`}>
-            <span className={`text-sm text-gray-500 ${collapsed ? 'lg:hidden' : ''}`}>
+            <span
+              className={`text-sm text-gray-500 ${collapsed ? 'lg:hidden' : ''}`}
+              // The version is identical across every development commit (it
+              // reflects the last RELEASE), so hovering it gives the one fact it
+              // cannot carry: which commit is actually running (#4694). This is
+              // the zero-navigation surface — the full read-out, including
+              // bundle/server drift, is on /system-resources/overview.
+              // TRUSTED_, not BUNDLE_: under `npm run dev` the Vite define is
+              // frozen at dev-server start while HMR serves every commit since,
+              // so a tooltip there would confidently report the wrong commit.
+              title={TRUSTED_BUNDLE_STAMP ? `v${__APP_VERSION__} · ${describeBuild(TRUSTED_BUNDLE_STAMP) ?? 'commit unknown'}` : undefined}
+            >
               v{__APP_VERSION__}
             </span>
             <div className={`flex items-center gap-1 ${collapsed ? 'lg:flex-col' : ''}`}>

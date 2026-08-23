@@ -15,6 +15,8 @@ vi.mock('../services/apiBrain.js', () => ({
   cancelYoutubeIngest: vi.fn(),
   youtubeIngestEventsUrl: (jobId) => `/api/brain/youtube/ingest/${jobId}/events`,
 }));
+const clipboard = vi.hoisted(() => ({ readClipboard: vi.fn() }));
+vi.mock('../lib/clipboard', () => clipboard);
 vi.mock('./ui/Toast', () => ({
   default: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
 }));
@@ -328,6 +330,37 @@ describe('QuickBrainCapture', () => {
       fireEvent.click(screen.getByLabelText('Capture'));
       expect(startYoutubeIngest).not.toHaveBeenCalled();
       expect(toast.error).toHaveBeenCalledWith('Pick at least one of transcript, video, or audio');
+    });
+  });
+
+  describe('paste button', () => {
+    it('fills the input from the clipboard without focusing it first', async () => {
+      clipboard.readClipboard.mockResolvedValue('  https://example.com/post  ');
+      renderWidget();
+      fireEvent.click(screen.getByLabelText('Paste from clipboard'));
+      await waitFor(() =>
+        expect(screen.getByPlaceholderText(PLACEHOLDER)).toHaveValue('https://example.com/post'));
+      fireEvent.click(screen.getByLabelText('Capture'));
+      await waitFor(() => expect(captureBrainThought).toHaveBeenCalled());
+      expect(captureBrainThought.mock.calls[0][0]).toBe('https://example.com/post');
+    });
+
+    it('reports an unreadable clipboard and leaves what was typed alone', async () => {
+      clipboard.readClipboard.mockResolvedValue(null);
+      renderWidget();
+      type('half a thought');
+      fireEvent.click(screen.getByLabelText('Paste from clipboard'));
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith('Clipboard unavailable — paste into the box instead'));
+      expect(screen.getByPlaceholderText(PLACEHOLDER)).toHaveValue('half a thought');
+    });
+
+    it('distinguishes an empty clipboard from an unreadable one', async () => {
+      clipboard.readClipboard.mockResolvedValue('   ');
+      renderWidget();
+      fireEvent.click(screen.getByLabelText('Paste from clipboard'));
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Clipboard is empty'));
+      expect(screen.getByPlaceholderText(PLACEHOLDER)).toHaveValue('');
     });
   });
 });

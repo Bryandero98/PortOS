@@ -12,7 +12,7 @@ import { upsertByIdPrepend } from '../lib/upsertByIdPrepend';
 // would warp it for almost no shared scaffolding.
 //
 // `action(capturedId)` must pass `{ silent: true }` to its API helper so
-// toasts only fire from this hook (per CLAUDE.md "Custom catch ⇒ silent").
+// toasts only fire from this hook (per AGENTS.md "Custom catch ⇒ silent").
 // `onFreshResult(result, { capturedId })` runs only when the user is still
 // on the same universe; return a string to use as the success toast.
 // `preflight()` runs AFTER the ref/savedId guards (so duplicate clicks short-

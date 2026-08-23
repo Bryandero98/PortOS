@@ -14,7 +14,7 @@
  * `autoSubscribeRecordToAllPeers` early-returns the moment the target list is
  * empty, before any `subscribePeer`/HTTP work — so even a *registered* real
  * adapter issues no network calls.  A suite only needs the additional
- * `peerSync.js` mock (per the CLAUDE.md convention) when it imports the
+ * `peerSync.js` mock (per the AGENTS.md convention) when it imports the
  * peer-sync graph and wants to keep the registration side effect out
  * entirely; suites that never load `peerSync.js` get a no-op adapter for free.
  *

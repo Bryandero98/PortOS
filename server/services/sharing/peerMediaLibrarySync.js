@@ -76,7 +76,7 @@ const MEDIA_LIBRARY_KIND_DIRNAMES = Object.freeze({
 
 // Cap so a pathologically large library can't build an unbounded manifest. 100k
 // assets is far beyond any realistic single-user library; when exceeded we LOG
-// and truncate (per CLAUDE.md "no silent caps") rather than ship an open-ended
+// and truncate (per AGENTS.md "no silent caps") rather than ship an open-ended
 // list. Pagination is a clean follow-up if ever hit. Kept in sync with the
 // `assets` array cap in peerLibraryManifestSchema.
 const MEDIA_LIBRARY_MANIFEST_CAP = 100_000;

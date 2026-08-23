@@ -150,15 +150,32 @@ describe('UnattendedRenderRouting — failure and staleness handling', () => {
     }, { silent: true }));
   });
 
-  it('tells the user when a route save fails instead of silently reverting', async () => {
-    updateSettings.mockRejectedValue(new Error('nope'));
+  // The server refuses a route that could never run (#4348) with a named
+  // reason. Reporting a generic failure instead would leave the user re-picking
+  // the same unrunnable option, since the select just snaps back either way.
+  it('surfaces the server\u2019s reason when a route save is refused', async () => {
+    updateSettings.mockRejectedValue(Object.assign(
+      new Error('Unattended image routing requires a Tailscale peer'),
+      { code: 'MEDIA_ROUTING_PEER_NOT_TAILNET', status: 403 },
+    ));
+    render(<UnattendedRenderRouting peers={[peerWith()]} />);
+
+    const select = await screen.findByLabelText('Image');
+    fireEvent.change(select, { target: { value: JSON.stringify(['peer-1', 'comfy', 'sdxl-base']) } });
+
+    await waitFor(() => expect(toast.error)
+      .toHaveBeenCalledWith('Unattended image routing requires a Tailscale peer'));
+    expect(select.value).toBe('');
+  });
+
+  it('falls back to a generic message when the failure carries none', async () => {
+    updateSettings.mockRejectedValue(new Error(''));
     render(<UnattendedRenderRouting peers={[peerWith()]} />);
 
     const select = await screen.findByLabelText('Image');
     fireEvent.change(select, { target: { value: JSON.stringify(['peer-1', 'comfy', 'sdxl-base']) } });
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Failed to save unattended render routing'));
-    expect(select.value).toBe('');
   });
 });
 
@@ -207,6 +224,66 @@ describe('UnattendedRenderRouting — a failed read is not an empty configuratio
     getSettings.mockRejectedValue(new Error('offline'));
     render(<UnattendedRenderRouting peers={[]} />);
     expect(await screen.findByText(/could not load this instance/i)).toBeInTheDocument();
+  });
+});
+
+// #4348 — item 6 asks for provider/model selection AND capacity messaging on
+// the Creative Commission flow, which this card is. It reads through the same
+// shared readiness lib the Instances card, System Health, and the interactive
+// pickers use, so this cannot become a fourth surface with its own verdict.
+describe('UnattendedRenderRouting — capacity messaging', () => {
+  const routed = { federation: { mediaRouting: { image: { peerId: 'peer-1', engine: 'comfy', modelId: 'sdxl-base' } } } };
+
+  it('reports the routed peer\u2019s readiness and queue occupancy', async () => {
+    getSettings.mockResolvedValue(routed);
+    const peer = peerWith({
+      status: 'online',
+      mediaProviderStatus: {
+        state: 'ready',
+        freshUntil: new Date(Date.now() + 60_000).toISOString(),
+        snapshot: {
+          capabilities: [capability({
+            kind: 'image', engine: 'comfy', engineName: 'ComfyUI',
+            modelId: 'sdxl-base', modelName: 'SDXL Base',
+          })],
+          queue: { totalActive: 1, maxQueuedJobs: 4, concurrency: 2, running: 0, queued: 0 },
+        },
+      },
+    });
+    render(<UnattendedRenderRouting peers={[peer]} />);
+
+    expect(await screen.findByText(/1\/4 shared slots active/)).toBeInTheDocument();
+    expect(screen.getByText(/runs 2 at a time/)).toBeInTheDocument();
+  });
+
+  // A snapshot probed as `ready` keeps SAYING ready long after the server would
+  // refuse to submit against it; the shared lib re-derives that at render time.
+  it('reads an expired snapshot as stale rather than repeating its own ready', async () => {
+    getSettings.mockResolvedValue(routed);
+    const peer = peerWith({
+      status: 'online',
+      mediaProviderStatus: {
+        state: 'ready',
+        freshUntil: new Date(Date.now() - 60_000).toISOString(),
+        snapshot: { capabilities: [] },
+      },
+    });
+    render(<UnattendedRenderRouting peers={[peer]} />);
+
+    expect(await screen.findByText('stale')).toBeInTheDocument();
+  });
+
+  it('says so when the routed peer is no longer registered here', async () => {
+    getSettings.mockResolvedValue(routed);
+    render(<UnattendedRenderRouting peers={[]} />);
+    expect(await screen.findByText('peer not registered')).toBeInTheDocument();
+  });
+
+  it('reports nothing for a kind that renders locally', async () => {
+    getSettings.mockResolvedValue({ federation: {} });
+    render(<UnattendedRenderRouting peers={[peerWith()]} />);
+    await screen.findByLabelText('Image');
+    expect(screen.queryByText(/shared slots active/)).not.toBeInTheDocument();
   });
 });
 

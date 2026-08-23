@@ -92,4 +92,22 @@ export const pipelineDdl = [
     // mutation epoch. The only thing that stays on disk is the draft prose body
     // (drafts/<draftId>.md, file-primary); its metadata is the draft_versions row.
 
+    // FableLoom branching narratives. One row per loom (a branching-narrative
+    // story), the full sanitized record (episodes, scene-node graphs, intent
+    // transitions) in `data` JSONB. `universe_id`/`series_id` are soft refs
+    // mirrored for relationship queries only. Machine-local like Writers Room —
+    // no dataSync category, no sync cursor, no tombstones; deletes are hard
+    // deletes (games precedent). Mirrors init-db.sql.
+    `CREATE TABLE IF NOT EXISTS fableloom_stories (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      universe_id TEXT,
+      series_id TEXT,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_fableloom_universe ON fableloom_stories (universe_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_fableloom_updated ON fableloom_stories (updated_at)`,
+
 ];

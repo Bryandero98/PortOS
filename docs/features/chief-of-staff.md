@@ -21,7 +21,7 @@ Autonomous agent manager that watches task files, spawns sub-agents, and maintai
 6. **Self-Improvement**: Can analyze performance and suggest prompt/config improvements
 7. **Script Generation**: Creates automation scripts for repetitive tasks
 8. **Report Generation**: Daily summaries of completed work
-9. **Durable Agent Feedback**: Completion notifications accept quick ratings, while the Agents tab keeps a filterable queue of loaded runs that still need feedback after a notification expires. Recent unrated completed runs are also surfaced as a CoS insight that links directly to the URL-backed review filter. Feedback details can be attached to helpful, unhelpful, or neutral ratings so learning has actionable context.
+9. **Durable Agent Feedback**: Completion notifications accept quick ratings, while the Agents tab keeps a filterable queue of loaded runs that still need feedback after a notification expires. Recent unrated completed runs are also surfaced as a CoS insight that links directly to the URL-backed review filter. Feedback details can be attached to helpful, unhelpful, or neutral ratings so learning has actionable context. The Learning tab aggregates ratings from both live state and date-bucketed agent archives, de-duplicating runs that are still present in both stores so historical feedback remains visible for the archive retention window.
 10. **Learning-Aligned ETAs**: Pending tasks and active agents resolve their estimates from the same metadata-first task-learning bucket that records outcomes, including archived scheduled-agent metadata, instead of inferring a potentially different category from task text.
 
 ## Task File Format
@@ -100,6 +100,7 @@ The `selectModelForTask` function routes tasks to appropriate model tiers:
 | POST /api/cos/health/check | Run health check |
 | GET /api/cos/agents | List agents |
 | POST /api/cos/agents/:id/terminate | Terminate agent |
+| GET /api/cos/feedback/stats | Aggregate live and archived agent ratings |
 | GET /api/cos/reports | List reports |
 | GET /api/cos/learning | Get learning insights |
 | GET /api/cos/digest | Get weekly digest |

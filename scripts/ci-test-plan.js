@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { appendFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { resolve } from 'path';
+import { writeStepOutput } from './lib/githubOutput.js';
 
 const TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/i;
 const CLIENT_LINT_RE = /^client\/src\/.*\.(?:js|jsx)$/i;
@@ -26,14 +26,16 @@ const FULL_TRIGGER_RULES = [
   { re: /^server\/index\.js$/, reason: 'server composition root changed' },
   { re: /^client\/src\/App\.jsx$/, reason: 'client composition root changed' },
   { re: /^server\/lib\/(?:schemaVersions|validation)\.js$/, reason: 'shared server contract changed' },
-  { re: /^scripts\/ci-test-plan(?:\.test)?\.js$/, reason: 'CI impact planner changed' },
-  { re: /^scripts\/run-ci-(?:lint|tests)(?:\.test)?\.js$/, reason: 'CI runner changed' },
+  // The scripts that decide what CI runs, run it, and gate the release on it.
+  // A bug in any of them can make a scoped plan silently test nothing, so they
+  // prove themselves against the complete suite rather than their own scope.
+  { re: /^scripts\/(?:lib\/githubOutput|ci-base-sha|ci-test-plan|run-ci-(?:lint|tests)|verify-ci-status)(?:\.test)?\.js$/, reason: 'CI pipeline script changed' },
 ];
 
 // Files whose Windows behavior is not faithfully exercised by pinPlatform()
 // stubs on Linux: real .cmd spawn, PowerShell BOM, PTY wrap, path.basename
 // on backslashes. A PR that does not touch these still gets a full Windows
-// run on main / nightly / release.
+// run nightly, on the main -> release PR, and on release.
 const WINDOWS_RISK_RULES = [
   /\.(?:ps1|cmd|bat)$/i,
   /^scripts\/fix-windows-console(?:\.test)?\.js$/,
@@ -97,7 +99,7 @@ export const WINDOWS_CONTRACT_TESTS = [
 
 // Contract guards that run on EVERY plan, whatever the impact scope selects.
 // `taskPromptDefaults.test.js` pins the cross-install prompt-upgrade contract
-// (CLAUDE.md "Distribution model"): edit a preserved historical default and
+// (AGENTS.md "Distribution model"): edit a preserved historical default and
 // other installs stop recognizing their stored prompt, so they are treated as
 // having customized it and stay on it forever. Nothing else in the suite
 // notices, and neither can a scoped run that happens not to select this file —
@@ -248,14 +250,18 @@ const skippedRunner = () => ({ mode: 'skip', files: [] });
  * Flat/shared files fall back to Vitest's import-graph-aware "related" mode,
  * while composition roots and test configuration force the complete suite.
  */
-export function buildCiTestPlan(changedFiles, { trackedFiles = [], forceFull = false } = {}) {
+export function buildCiTestPlan(changedFiles, {
+  trackedFiles = [],
+  forceFull = false,
+  forceFullReason = 'full CI requested',
+} = {}) {
   const changed = uniqueSorted(changedFiles.filter(Boolean));
   const trackedSet = new Set(trackedFiles);
 
   if (forceFull) {
     return {
       full: true,
-      reason: 'full CI requested',
+      reason: forceFullReason,
       changedFiles: changed,
       server: { mode: 'full', files: [] },
       client: { mode: 'full', files: [] },
@@ -266,7 +272,6 @@ export function buildCiTestPlan(changedFiles, { trackedFiles = [], forceFull = f
       windows: true,
       windowsMode: 'full',
       windowsFiles: [],
-      serverNative: true,
     };
   }
 
@@ -297,7 +302,6 @@ export function buildCiTestPlan(changedFiles, { trackedFiles = [], forceFull = f
       windows: false,
       windowsMode: 'skip',
       windowsFiles: [],
-      serverNative: false,
     };
   }
 
@@ -381,14 +385,7 @@ export function buildCiTestPlan(changedFiles, { trackedFiles = [], forceFull = f
     windows,
     windowsMode: windows ? 'related' : 'skip',
     windowsFiles: windows ? windowsContractTests(trackedSet) : [],
-    serverNative: needsServerNative(server),
   };
-}
-
-function needsServerNative(server) {
-  if (server.mode === 'skip') return false;
-  if (server.mode !== 'files') return true;
-  return server.files.some((path) => !ALWAYS_RUN_TESTS.includes(path));
 }
 
 function fullPlan(changedFiles, reason) {
@@ -405,7 +402,6 @@ function fullPlan(changedFiles, reason) {
     windows: true,
     windowsMode: 'full',
     windowsFiles: [],
-    serverNative: true,
   };
 }
 
@@ -413,12 +409,6 @@ const gitLines = (args) => execFileSync('git', args, { encoding: 'utf8' })
   .split('\n')
   .map((line) => line.trim())
   .filter(Boolean);
-
-const writeOutput = (name, value) => {
-  const outputPath = process.env.GITHUB_OUTPUT;
-  if (!outputPath) return;
-  appendFileSync(outputPath, `${name}=${String(value)}\n`);
-};
 
 export function emitGitHubPlan(plan) {
   const outputs = {
@@ -436,25 +426,44 @@ export function emitGitHubPlan(plan) {
     windows: plan.windows,
     windows_mode: plan.windowsMode,
     windows_files: JSON.stringify(plan.windowsFiles),
-    server_native: plan.serverNative,
   };
 
-  Object.entries(outputs).forEach(([name, value]) => writeOutput(name, value));
+  Object.entries(outputs).forEach(([name, value]) => writeStepOutput(name, value));
   console.log(JSON.stringify({ ...outputs, changed_files: plan.changedFiles }, null, 2));
 }
 
+/**
+ * Why this run cannot be scoped, or null when it can be.
+ *
+ * A pull request into `release` is the single gate a release ships behind —
+ * release.yml skips its own suite on the strength of it — so it always runs
+ * complete, whatever its diff touches.
+ */
+export function forceFullReasonFor({ forceFull, baseRef }) {
+  if (forceFull) return 'full CI requested';
+  if (baseRef === 'release') return 'release gate: pull request into release';
+  return null;
+}
+
 function main() {
-  const forceFull = process.env.CI_FORCE_FULL === 'true';
+  const forceFullReason = forceFullReasonFor({
+    forceFull: process.env.CI_FORCE_FULL === 'true',
+    baseRef: process.env.CI_BASE_REF,
+  });
+  const forceFull = Boolean(forceFullReason);
+  // scripts/ci-base-sha.js exports this from the checkout: on a pull request
+  // HEAD is the merge ref and CI_BASE_SHA is its first parent, so the
+  // three-dot diff below resolves against a commit git already has. That is
+  // what lets every job clone at depth 2 instead of full history.
   const base = process.env.CI_BASE_SHA;
-  const head = process.env.CI_HEAD_SHA || 'HEAD';
   if (!forceFull && !base) {
-    throw new Error('CI_BASE_SHA is required unless CI_FORCE_FULL=true.');
+    throw new Error('CI_BASE_SHA is required unless the run is forced full (CI_FORCE_FULL=true or CI_BASE_REF=release).');
   }
   const changedFiles = forceFull
     ? []
-    : gitLines(['diff', '--name-only', '--diff-filter=ACMRD', `${base}...${head}`]);
+    : gitLines(['diff', '--name-only', '--diff-filter=ACMRD', `${base}...HEAD`]);
   const trackedFiles = gitLines(['ls-files']);
-  emitGitHubPlan(buildCiTestPlan(changedFiles, { trackedFiles, forceFull }));
+  emitGitHubPlan(buildCiTestPlan(changedFiles, { trackedFiles, forceFull, forceFullReason }));
 }
 
 const isMain = process.argv[1]

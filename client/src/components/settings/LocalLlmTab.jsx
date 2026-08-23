@@ -1,22 +1,25 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Square, Power, PowerOff, Eye, Wrench, Brain, Code2, MessageSquare, Boxes, AlertTriangle, FlaskConical, Music, ArrowUpCircle, Zap, ChevronDown, ChevronUp, Terminal } from 'lucide-react';
+import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Power, PowerOff, AlertTriangle, FlaskConical, ArrowUpCircle, Zap, ChevronDown, ChevronUp, Terminal } from 'lucide-react';
 import toast from '../ui/Toast';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import BrailleSpinner from '../BrailleSpinner';
-import { formatBytes, formatContextLength, timeAgo, recommendedRamGb, formatDateNumeric } from '../../utils/formatters';
+import { formatAgeDays, formatBytes, formatContextLength, timeAgo, recommendedRamGb, formatDateNumeric } from '../../utils/formatters';
 import { localLlmTargetKey } from '../../lib/localLlmTargetKey';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import {
   getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
   deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService,
   installAudioModel, patchSettingsSlice, getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer,
-  downloadSpecDecodeModel
+  downloadSpecDecodeModel, controlLmStudioService, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx,
+  searchMtplxModels, pullMtplxModel, removeMtplxModel,
+  saveRuntimeStartupList
 } from '../../services/api';
 import socket from '../../services/socket';
-import MemoryManagement from './MemoryManagement.jsx';
-import LocalModelAssessments from './LocalModelAssessments.jsx';
+import CapabilityBadges from '../models/CapabilityBadges.jsx';
 import SpecDecodeWeightRow from './SpecDecodeWeightRow.jsx';
+import RuntimeServersCard from './RuntimeServersCard.jsx';
+import MtplxServerCard from './MtplxServerCard.jsx';
 
 const BACKENDS = [
   { id: 'ollama', label: 'Ollama', icon: Cpu },
@@ -54,7 +57,13 @@ const specWeightEntries = (preset) => [preset?.model, preset?.draftModel].filter
 // Keep the launcher default aligned with server/lib/ports.js. 8080 is a common
 // IPFS / Tomcat / local-dashboard port and is not a safe default for a managed
 // daemon.
-const LLAMA_NUMBER_DEFAULTS = { port: 5568, ctxSize: 32768, nGpuLayers: 99 };
+const LLAMA_NUMBER_DEFAULTS = { port: 5568, ctxSize: 32768, nGpuLayers: 99, parallel: 1 };
+// Optional llama.cpp tuning flags — unlike the fields above these have NO
+// PortOS default: an untouched one is stripped from the launch payload so
+// llama.cpp applies its own. Mirrors `server/lib/localModelTuning.js`.
+const LLAMA_TUNING_FIELDS = ['batchSize', 'ubatchSize', 'threads', 'cacheTypeK', 'cacheTypeV'];
+// KV-cache types llama.cpp accepts for --cache-type-k/-v; '' means "leave it off".
+const LLAMA_CACHE_TYPES = ['f16', 'q8_0', 'q4_0'];
 
 const btnClass = 'flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded transition-colors disabled:opacity-50';
 
@@ -64,12 +73,13 @@ const CATEGORY_LABELS = {
   reasoning: 'Reasoning & analysis',
   vision: 'Image Analysis',
   chat: 'Chat & voice',
+  writing: 'Fiction & writing',
   audio: 'Audio & Music',
   embedding: 'Text Embeddings',
   lightweight: 'Small & Fast',
   multilingual: 'Multilingual'
 };
-const CATEGORY_ORDER = ['general', 'coding', 'reasoning', 'vision', 'chat', 'lightweight', 'multilingual', 'embedding', 'audio'];
+const CATEGORY_ORDER = ['general', 'coding', 'writing', 'reasoning', 'vision', 'chat', 'lightweight', 'multilingual', 'embedding', 'audio'];
 const categoryLabel = (id) => CATEGORY_LABELS[id] || id;
 const primaryCategoryFor = (model) => model?.category || 'general';
 const recommendationCategoriesFor = (model) => {
@@ -77,18 +87,6 @@ const recommendationCategoriesFor = (model) => {
   return Array.isArray(categories) && categories.length ? categories : [primaryCategoryFor(model)];
 };
 const isRecommendedForCategory = (model, category) => recommendationCategoriesFor(model).includes(category);
-
-// Render model capabilities as colored icons (LM Studio style) instead of text.
-// `cls` is the icon color; the bordered chip uses the same hue at low opacity.
-const CAPABILITY_META = {
-  chat: { Icon: MessageSquare, label: 'Chat', cls: 'text-gray-400 border-gray-500/50' },
-  code: { Icon: Code2, label: 'Code', cls: 'text-sky-400 border-sky-400/50' },
-  reasoning: { Icon: Brain, label: 'Reasoning', cls: 'text-emerald-400 border-emerald-400/50' },
-  vision: { Icon: Eye, label: 'Vision', cls: 'text-amber-400 border-amber-400/50' },
-  embeddings: { Icon: Boxes, label: 'Embeddings', cls: 'text-violet-400 border-violet-400/50' },
-  tools: { Icon: Wrench, label: 'Tool use', cls: 'text-blue-400 border-blue-400/50' },
-  audio: { Icon: Music, label: 'Audio generation', cls: 'text-pink-400 border-pink-400/50' },
-};
 
 // A model suited to AGENT / CoS tasks (coding agents, the Creative Director
 // treatment/plan agents) needs BOTH native tool calling AND enough coding /
@@ -160,35 +158,11 @@ function summarizeMigrate(r) {
   return `${labelFor(r.from)} → ${labelFor(r.to)}: ${parts.join(', ') || 'nothing to move'}`;
 }
 
-// Shared capability-icon row for both catalog/search-result cards and the
-// installed-models list, so the two surfaces render the same badges the same way.
-function CapabilityBadges({ capabilities }) {
-  return (capabilities || []).map((capability) => {
-    const meta = CAPABILITY_META[capability];
-    if (!meta) {
-      return <span key={capability} className="px-1.5 py-0.5 bg-port-border/60 rounded">{capability}</span>;
-    }
-    const Icon = meta.Icon;
-    return (
-      <span
-        key={capability}
-        title={meta.label}
-        aria-label={meta.label}
-        className={`inline-flex items-center justify-center w-5 h-5 rounded border ${meta.cls}`}
-      >
-        <Icon size={12} />
-      </span>
-    );
-  });
-}
-
 function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAction, setConfirmAction }) {
   const data = status?.[backend.id];
   const Icon = backend.icon;
   const other = backend.id === 'ollama' ? 'lmstudio' : 'ollama';
   const otherData = status?.[other];
-  const statusLabel = data?.disabled ? 'Disabled' : data?.available ? 'Running' : data?.installed ? 'Installed (stopped)' : 'Not installed';
-  const statusColor = data?.disabled ? 'bg-gray-600' : data?.available ? 'bg-port-success' : data?.installed ? 'bg-port-warning' : 'bg-gray-600';
   const startupService = backend.id === 'ollama' ? data?.service : null;
   const runsAtStartup = Boolean(startupService?.runAtStartup);
   // The window resident models were ACTUALLY loaded at — Ollama picks it from
@@ -210,16 +184,14 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
           {isDefault && (
             <span
               className="text-xs px-1.5 py-0.5 bg-port-accent/20 text-port-accent rounded"
-              title="PortOS routes local-LLM runs here by default. This is independent of whether the server is running (see the status dot)."
+              title="PortOS routes local-LLM runs here by default. This is independent of whether the server is running — see Local Runtime Servers above."
             >
               Default
             </span>
           )}
-          <span className={`w-2 h-2 rounded-full ${statusColor}`} title={statusLabel} />
         </div>
       </div>
 
-      <div className="text-sm text-white">{statusLabel}</div>
       <div className="text-xs text-gray-400">
         {data?.modelCount ?? 0} model{(data?.modelCount ?? 0) === 1 ? '' : 's'} installed
         {data?.version && <> · v{data.version}</>}
@@ -241,55 +213,8 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
         )}
       </div>
 
-      {!data?.installed && (
-        <div className="flex flex-wrap gap-1.5 pt-1 border-t border-port-border/50">
-          {data?.canAutoInstall ? (
-            <button
-              onClick={() => runAction(
-                `install-backend-${backend.id}`,
-                () => installLocalLlmBackend(backend.id),
-                (r) => r?.note ? `Installed ${backend.label} — ${r.note}` : `Installed ${backend.label}`
-              )}
-              disabled={busy}
-              className={`${btnClass} bg-port-accent/20 hover:bg-port-accent/30 text-port-accent`}
-              title="Install via Homebrew (macOS) / official installer (Linux)"
-            >
-              {actionInProgress === `install-backend-${backend.id}` ? <BrailleSpinner /> : <Download size={12} />}
-              Install {backend.label}
-            </button>
-          ) : (
-            <a
-              href={data?.downloadUrl}
-              target="_blank"
-              rel="noreferrer"
-              className={`${btnClass} bg-port-border hover:bg-port-border/70 text-white no-underline`}
-            >
-              <ExternalLink size={12} />
-              Get {backend.label}
-            </a>
-          )}
-        </div>
-      )}
-
       {data?.installed && (
         <div className="flex flex-wrap gap-1.5 pt-1 border-t border-port-border/50">
-          {backend.id === 'ollama' && data?.canControl && (
-            <button
-              onClick={() => runAction(
-                `ollama-service-${data.available ? 'stop' : 'start'}`,
-                () => controlOllamaService(data.available ? 'stop' : 'start'),
-                data.available ? 'Ollama stopped' : 'Ollama is running'
-              )}
-              disabled={busy}
-              className={`${btnClass} ${data.available ? 'bg-port-warning/20 hover:bg-port-warning/30 text-port-warning' : 'bg-port-accent/20 hover:bg-port-accent/30 text-port-accent'}`}
-              title={data.available ? 'Stop the local Ollama server' : 'Start the local Ollama server'}
-            >
-              {actionInProgress === `ollama-service-${data.available ? 'stop' : 'start'}`
-                ? <BrailleSpinner />
-                : data.available ? <Square size={12} /> : <Play size={12} />}
-              {data.available ? 'Stop' : 'Start'} Ollama
-            </button>
-          )}
           {backend.id === 'ollama' && data?.updateAvailable && (
             data?.canUpgrade ? (
               <button
@@ -317,23 +242,6 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
                 Update available
               </a>
             )
-          )}
-          {backend.id === 'ollama' && startupService?.supported && (
-            <button
-              onClick={() => runAction(
-                `ollama-service-${runsAtStartup ? 'disable' : 'enable'}`,
-                () => controlOllamaService(runsAtStartup ? 'disable' : 'enable'),
-                runsAtStartup ? 'Ollama background service disabled' : 'Ollama will run at login'
-              )}
-              disabled={busy}
-              className={`${btnClass} ${runsAtStartup ? 'bg-port-warning/20 hover:bg-port-warning/30 text-port-warning' : 'bg-port-accent/20 hover:bg-port-accent/30 text-port-accent'}`}
-              title={runsAtStartup ? 'Stop the Homebrew service and remove the launch-at-login registration' : 'Start Ollama with Homebrew services so it runs in the background at login'}
-            >
-              {actionInProgress === `ollama-service-${runsAtStartup ? 'disable' : 'enable'}`
-                ? <BrailleSpinner />
-                : runsAtStartup ? <PowerOff size={12} /> : <Power size={12} />}
-              {runsAtStartup ? 'Disable Startup' : 'Run at Startup'}
-            </button>
           )}
           {!isDefault && (
             <button
@@ -417,7 +325,16 @@ export function LocalLlmTab() {
   const selectedInitialized = useRef(false);
 
   const [llamaStatus, setLlamaStatus] = useState(null);
+  const [mtplxStatus, setMtplxStatus] = useState(null);
+  // Live byte progress for an in-flight `mtplx pull`, driven by the socket. One
+  // at a time on purpose: a checkpoint is tens of gigabytes, so two concurrent
+  // pulls just make both slower.
+  const [mtplxDownload, setMtplxDownload] = useState(null);
   const [llamaLoading, setLlamaLoading] = useState(false);
+  // Anchor for the unified server card's "Configure" action — llama-server needs
+  // a model path, so its Start lives in the launcher rather than in that row.
+  const llamaSectionRef = useRef(null);
+  const mtplxSectionRef = useRef(null);
   const [llamaPresetId, setLlamaPresetId] = useState(DEFAULT_SPEC_PRESET_ID);
   const [llamaForm, setLlamaForm] = useState({
     model: '',
@@ -428,6 +345,20 @@ export function LocalLlmTab() {
     ctxSize: 32768,
     nGpuLayers: 99,
     alias: 'dflash',
+    // Always sent — llama-server's own default is often 4 slots, which divides
+    // the context window and spends VRAM a TUI agent never uses.
+    parallel: 1,
+    // Performance tuning (`server/lib/localModelTuning.js`). Empty = NOT SET:
+    // the flag is left off the launch line entirely so llama.cpp applies its own
+    // default. A number here would silently pin a value the user never chose and
+    // make two "default" launches incomparable. Measure the effect of a change
+    // on Models → Performance.
+    batchSize: '',
+    ubatchSize: '',
+    threads: '',
+    flashAttn: false,
+    cacheTypeK: '',
+    cacheTypeV: '',
   });
   // Byte progress for downloads STARTED HERE, keyed `presetId:role`. A transfer
   // another tab started still renders — the server reports it on the entry —
@@ -446,10 +377,20 @@ export function LocalLlmTab() {
       .catch(() => null);
   }, []);
 
+  const loadMtplxStatus = useCallback(() => (
+    getMtplxServerStatus({ silent: true })
+      .then((res) => {
+        if (res) setMtplxStatus(res);
+        return res;
+      })
+      .catch(() => null)
+  ), []);
+
   const loadStatus = useCallback(() => {
     const requestId = ++statusRequestId.current;
     setLoading(true);
     loadLlamaStatus();
+    loadMtplxStatus();
     return getLocalLlmStatus({ silent: true })
       .then((s) => {
         if (requestId !== statusRequestId.current) return;
@@ -466,7 +407,7 @@ export function LocalLlmTab() {
       .finally(() => {
         if (requestId === statusRequestId.current) setLoading(false);
       });
-  }, [loadLlamaStatus]);
+  }, [loadLlamaStatus, loadMtplxStatus]);
 
   // `source` and `category` are required rather than defaulted from state: a
   // state default would put them in the dep list, so `loadCatalog`'s identity
@@ -547,6 +488,31 @@ export function LocalLlmTab() {
     socket.on('llamaServer:download', handleDownloadProgress);
     return () => socket.off('llamaServer:download', handleDownloadProgress);
   }, [loadLlamaStatus]);
+
+  // MTPLX checkpoint download progress. A pull can run for hours, so the socket
+  // — not the still-open HTTP request — is what the UI trusts: a terminal frame
+  // clears the bar AND re-reads the cache, so the list is right even if the
+  // request itself never comes back.
+  useEffect(() => {
+    const handleMtplxDownload = (frame) => {
+      if (!frame) return;
+      if (frame.event === 'complete' || frame.event === 'error' || frame.event === 'cancelled') {
+        setMtplxDownload(null);
+        loadMtplxStatus();
+        return;
+      }
+      setMtplxDownload((prev) => ({
+        model: frame.model || prev?.model || null,
+        // A frame without byte counters (`resolving`, `verifying`) must not
+        // reset a bar that already has them — keep the last known numbers.
+        received: Number.isFinite(frame.received) ? frame.received : (prev?.received ?? 0),
+        total: Number.isFinite(frame.total) ? frame.total : (prev?.total ?? 0),
+        message: frame.message || prev?.message || null,
+      }));
+    };
+    socket.on('mtplx:download', handleMtplxDownload);
+    return () => socket.off('mtplx:download', handleMtplxDownload);
+  }, [loadMtplxStatus]);
   // Debounce so typing in the search box doesn't fire a request per keystroke.
   //
   // `activeCategory` is a trigger for the Hugging Face source ONLY — the live
@@ -570,6 +536,13 @@ export function LocalLlmTab() {
 
   useEffect(() => {
     const handleProgress = (data) => {
+      // `localLlm:progress` is a shared channel. Measurement frames (`assessment`,
+      // `assessment-sweep`) belong to the Performance tab and say nothing about
+      // what is installed here — and an overnight sweep emits a `complete` frame
+      // per model, so answering them would reload the status AND re-query the
+      // Hugging Face catalog once per measured model, all night. This tab owns
+      // the unscoped install/migrate/upgrade frames only.
+      if (data?.scope === 'assessment' || data?.scope === 'assessment-sweep') return;
       clearTimeout(progressTimer.current);
       setProgressMsg(data.message || '');
       if (data.event === 'complete') {
@@ -589,13 +562,18 @@ export function LocalLlmTab() {
   }, [loadStatus, loadCatalog, selected, query, catalogSource, activeCategory]);
 
   const runAction = useCallback((key, fn, successMsg, options = {}) => {
-    const { onError, clearConfirm = true } = options;
+    const { onError, clearConfirm = true, ollamaService = false } = options;
     if (clearConfirm) setConfirmAction(null);
     setActionInProgress(key);
     return fn()
       .then((result) => {
         if (successMsg) toast.success(typeof successMsg === 'function' ? successMsg(result) : successMsg);
-        if (typeof result?.running === 'boolean') {
+        // Optimistic repaint for the Ollama service controls only. Every runtime
+        // start/stop result carries `running` — llama-server's and MTPLX's too —
+        // so the CALLER declares this, rather than it being inferred from the
+        // response shape; otherwise stopping MTPLX would paint Ollama as stopped
+        // until the refetch lands.
+        if (ollamaService && typeof result?.running === 'boolean') {
           setStatus((prev) => prev ? ({
             ...prev,
             ollama: {
@@ -620,6 +598,94 @@ export function LocalLlmTab() {
   }, [loadStatus, loadCatalog, selected, query, catalogSource, activeCategory]);
 
   const busy = actionInProgress != null;
+
+  // === Unified runtime-server controls ======================================
+  // Every handler routes through `runAction` so one busy/spinner/refresh path
+  // covers all four runtimes. The `runtime-<verb>-<id>` keys are what
+  // `RuntimeServersCard` matches to place its spinner.
+  const controlOllama = (action) => runAction(
+    action === 'enable' || action === 'disable' ? 'runtime-startup-ollama' : `runtime-${action}-ollama`,
+    () => controlOllamaService(action),
+    { start: 'Ollama is running', stop: 'Ollama stopped', enable: 'Ollama will run at login', disable: 'Ollama background service disabled' }[action],
+    { ollamaService: true }
+  );
+  const controlLmStudio = (action) => runAction(
+    `runtime-${action}-lmstudio`,
+    () => controlLmStudioService(action),
+    action === 'start' ? 'LM Studio server is running' : 'LM Studio server stopped'
+  );
+  const installRuntimeBackend = (backend) => runAction(
+    `runtime-install-${backend}`,
+    () => installLocalLlmBackend(backend),
+    (r) => r?.note ? `Installed ${labelFor(backend)} — ${r.note}` : `Installed ${labelFor(backend)}`
+  );
+  const runtimeInstallLlama = () => runAction(
+    'runtime-install-llama',
+    () => installLlamaServer(),
+    'llama.cpp installed'
+  ).then(loadLlamaStatus);
+  const runtimeStopLlama = () => runAction(
+    'runtime-stop-llama',
+    () => stopLlamaServer(),
+    (r) => r?.message || 'llama-server stopped'
+  ).then(loadLlamaStatus);
+  const runtimeInstallMtplx = () => runAction(
+    'runtime-install-mtplx',
+    () => installMtplx(),
+    'MTPLX installed'
+  ).then(loadMtplxStatus);
+  const runtimeStartMtplx = (config = {}) => runAction(
+    'runtime-start-mtplx',
+    () => startMtplxServer(config),
+    // `online: false` is "started, still loading its checkpoint" — not a
+    // failure. Saying "running" there would be wrong the moment the user checks.
+    (r) => (r?.online
+      ? `MTPLX is running at ${r?.endpoint || 'its endpoint'}`
+      : 'MTPLX started — it\'s loading its checkpoint, refresh in a moment')
+  ).then(loadMtplxStatus);
+  const runtimeStopMtplx = () => runAction(
+    'runtime-stop-mtplx',
+    () => stopMtplxServer(),
+    (r) => r?.message || 'MTPLX stopped'
+  ).then(loadMtplxStatus);
+  // Checkpoint management (search / download / remove), owned by the MTPLX card.
+  //
+  // `mtplxSearch` keeps a stable identity because the checkpoint panel keys its
+  // one-time initial load on it, and the status poll re-renders this component
+  // every few seconds. It resolves its own failures into the `{models, error}`
+  // shape the panel renders inline, so it is `silent` — no toast.
+  const mtplxSearch = useCallback((params) => searchMtplxModels(params, { silent: true })
+    .catch((err) => ({ models: [], error: err?.message || 'Search failed' })), []);
+  // The pull resolves only when the weights are on disk; byte progress arrives
+  // on `mtplx:download` (subscribed above), so the button spinner is not the
+  // only sign of life during a multi-gigabyte transfer.
+  const mtplxPull = (model) => runAction(
+    model ? `mtplx-pull-${model}` : 'mtplx-pull',
+    // A failed download RESOLVES `{success: false, error}` rather than throwing
+    // (its progress already streamed), so convert it to the rejection
+    // `runAction` routes to `onError` — otherwise the success formatter runs on
+    // a failure and toasts an empty success next to the error.
+    () => pullMtplxModel(model).then((r) => {
+      if (r?.success === false) throw new Error(r.error || 'Download failed');
+      return r;
+    }),
+    (r) => `${r?.model || 'Default checkpoint'} downloaded`,
+    { onError: (err) => toast.error(`MTPLX download failed: ${err.message}`) },
+  ).then(() => {
+    setMtplxDownload(null);
+    return loadMtplxStatus();
+  });
+  const mtplxRemove = (model) => runAction(
+    `mtplx-remove-${model}`,
+    () => removeMtplxModel(model),
+    (r) => `${r?.model || model} removed${r?.bytesFreed ? ` — ${formatBytes(r.bytesFreed)} freed` : ''}`,
+  ).then(loadMtplxStatus);
+  const saveRuntimeStartup = () => runAction(
+    'runtime-save-startup',
+    () => saveRuntimeStartupList(),
+    'Saved — the PM2 processes running now will come back after a reboot'
+  ).then(() => { loadLlamaStatus(); loadMtplxStatus(); });
+  const scrollTo = (ref) => ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   const selectedData = status?.[selected];
   const selectedOllamaStartupAction = selectedData?.service?.supported ? 'enable' : 'start';
   const selectedOllamaStartupLabel = selectedData?.service?.supported ? 'Run at Startup' : 'Start Ollama';
@@ -808,8 +874,29 @@ export function LocalLlmTab() {
     return Boolean(entry?.path && !entry.exists && entry.path === (field || '').trim());
   };
   const baseWeightMissing = missingWeight('model');
-  const draftWeightMissing = missingWeight('draftModel');
+  // Rendered from the server's list (status payload) so the card never carries a
+  // second copy of the llama.cpp vocabulary.
+  const specTypeSuggestions = llamaStatus?.specTypes || [];
+  // MIRROR of `parseSpecTypes` / `isDraftSpecType` in
+  // server/lib/specDecodePresets.js, and of how `startLlamaServer` resolves the
+  // two fields against each other. An EMPTY spec type still drafts (llama.cpp
+  // speculates off a bare `--model-draft`), so it counts as using the drafter.
+  const requestedSpecTypes = String(llamaForm.specType || '').split(',').map((t) => t.trim()).filter(Boolean);
+  const draftSpecTypes = requestedSpecTypes.filter((t) => t.startsWith('draft-'));
+  const drafterInUse = requestedSpecTypes.length === 0 || draftSpecTypes.length > 0;
+  const drafterConfigured = Boolean((llamaForm.draftModel || '').trim());
+  // Only block Start on a missing drafter GGUF when the launch would actually
+  // load one — an `ngram-*` run needs no drafter, so a preset's undownloaded
+  // drafter path must not hold it hostage.
+  const draftWeightMissing = drafterInUse && missingWeight('draftModel');
   const llamaStartBlocked = llamaModelMissing || baseWeightMissing || draftWeightMissing;
+  // Say what the launcher will do with a mismatched pair rather than letting the
+  // server quietly rewrite the launch line the user thought they were starting.
+  const specTypeNotice = !drafterConfigured && draftSpecTypes.length > 0
+    ? `${draftSpecTypes.join(', ')} will be skipped until a Drafter Model is set.`
+    : drafterConfigured && !drafterInUse
+      ? 'The Drafter Model will be ignored — none of these spec types use one.'
+      : '';
   const llamaStartBlockedReason = llamaModelMissing
     ? 'Enter a Target Base Model path to enable Start'
     : baseWeightMissing
@@ -869,6 +956,12 @@ export function LocalLlmTab() {
     const config = { ...llamaForm };
     for (const [field, fallback] of Object.entries(LLAMA_NUMBER_DEFAULTS)) {
       if (!Number.isFinite(config[field])) config[field] = fallback;
+    }
+    // An untouched tuning field means "llama.cpp's default", which is NOT a
+    // value we can name — drop it so the server leaves the flag off the launch
+    // line instead of receiving an empty string it would coerce to 0.
+    for (const field of LLAMA_TUNING_FIELDS) {
+      if (config[field] === '' || config[field] === null) delete config[field];
     }
     try {
       const res = await startLlamaServer(config);
@@ -935,9 +1028,29 @@ export function LocalLlmTab() {
 
   return (
     <div className="space-y-4">
-      <MemoryManagement />
-      <LocalModelAssessments />
-      {/* Backends — status + switch/migrate */}
+      {/* One start/stop/install surface for every local server PortOS can run */}
+      <RuntimeServersCard
+        status={status}
+        llamaStatus={llamaStatus}
+        mtplxStatus={mtplxStatus}
+        loading={loading}
+        busy={busy}
+        actionInProgress={actionInProgress}
+        onRefresh={loadStatus}
+        onControlOllama={controlOllama}
+        onControlLmStudio={controlLmStudio}
+        onInstallBackend={installRuntimeBackend}
+        onInstallLlama={runtimeInstallLlama}
+        onStopLlama={runtimeStopLlama}
+        onConfigureLlama={() => scrollTo(llamaSectionRef)}
+        onConfigureMtplx={() => scrollTo(mtplxSectionRef)}
+        onInstallMtplx={runtimeInstallMtplx}
+        onStartMtplx={runtimeStartMtplx}
+        onStopMtplx={runtimeStopMtplx}
+        onSaveStartup={saveRuntimeStartup}
+      />
+
+      {/* Backends — model catalog, default marker, cross-backend import */}
       <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-medium text-gray-300">Local LLM Backends</h2>
@@ -946,10 +1059,10 @@ export function LocalLlmTab() {
           </button>
         </div>
         <p className="text-xs text-gray-500">
-          Both backends can be installed and running at the same time — <span className="text-gray-400">Default</span> just sets which one PortOS routes local-LLM runs to. Use <span className="text-gray-400">Import from…</span> to copy or link models between them without re-downloading.
+          Ollama and LM Studio are the two backends PortOS keeps a model catalog for — both can be installed and running at once, and <span className="text-gray-400">Default</span> just sets which one PortOS routes local-LLM runs to. Use <span className="text-gray-400">Import from…</span> to copy or link models between them without re-downloading. Start and stop them (and llama.cpp and MTPLX) from <span className="text-gray-400">Local Runtime Servers</span> above.
         </p>
         <p className="text-xs text-gray-500">
-          For Ollama coding agents, configure the shared <Link to="/ai" className="text-port-accent hover:underline">temperature and thinking defaults in AI Providers</Link>. Native Ollama and OpenCode receive both controls; Claude/Ollama honors the thinking toggle. New local providers start at temperature 0.6.
+          For local coding agents, configure the shared <Link to="/ai" className="text-port-accent hover:underline">temperature, top-p and thinking defaults in AI Providers</Link>. Every local OpenAI-compatible backend receives them — Ollama, llama.cpp and MTPLX, whether reached directly or through an OpenCode CLI/TUI wrapper. Every control left blank is simply not sent, so the backend keeps its own default — Ollama agent runs fall back to temperature 0.6.
         </p>
 
         {loading && !status ? (
@@ -1041,34 +1154,30 @@ export function LocalLlmTab() {
         )}
       </div>
 
+      {/* MTPLX — PM2-managed native-MTP runtime (Apple Silicon) */}
+      <div ref={mtplxSectionRef}>
+        <MtplxServerCard
+          status={mtplxStatus}
+          loading={loading}
+          busy={busy}
+          actionInProgress={actionInProgress}
+          onRefresh={loadMtplxStatus}
+          onStart={runtimeStartMtplx}
+          onStop={runtimeStopMtplx}
+          onInstall={runtimeInstallMtplx}
+          onSearchModels={mtplxSearch}
+          onPullModel={mtplxPull}
+          onRemoveModel={mtplxRemove}
+          download={mtplxDownload}
+        />
+      </div>
+
       {/* Speculative Decoding & Custom Runtimes (DFlash 2 / llama.cpp) */}
-      <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-4">
+      <div ref={llamaSectionRef} className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <Zap size={16} className="text-port-accent" />
             <h2 className="text-sm font-medium text-gray-300">Speculative Decoding & Custom Runtimes (DFlash 2 / llama.cpp)</h2>
-            {llamaStatus?.running && llamaStatus?.managed && (
-              <span className="px-2 py-0.5 text-xs rounded bg-port-success/20 text-port-success flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-port-success animate-pulse" />
-                Running (PID {llamaStatus.pid})
-              </span>
-            )}
-            {llamaStatus?.running && !llamaStatus?.managed && (
-              <span className="px-2 py-0.5 text-xs rounded bg-blue-500/20 text-blue-300 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-blue-400" />
-                Active on {llamaStatus.endpoint} (External)
-              </span>
-            )}
-            {!llamaStatus?.running && llamaStatus?.installed && (
-              <span className="px-2 py-0.5 text-xs rounded bg-gray-500/20 text-gray-400">
-                Stopped
-              </span>
-            )}
-            {!llamaStatus?.installed && (
-              <span className="px-2 py-0.5 text-xs rounded bg-port-warning/20 text-port-warning" title="Install via Homebrew: brew install llama.cpp or compile with DFlash2 support">
-                llama-server not found on PATH
-              </span>
-            )}
           </div>
           <div className="flex items-center gap-3">
             <button
@@ -1090,7 +1199,7 @@ export function LocalLlmTab() {
         </div>
 
         <p className="text-xs text-gray-400 leading-relaxed">
-          Speculative decoding pairs a small drafter with your target model for 2–3× faster generation at identical output. You can launch and manage a local <code className="text-gray-300">llama-server</code> from PortOS and connect using the <strong className="text-white">OpenCode llama TUI</strong> provider. <strong className="text-white">DSpark</strong> (<code className="text-gray-300">draft-dspark</code>) works on a stock <code className="text-gray-300">brew install llama.cpp</code>; the DFlash 2 presets need a from-source build of an unmerged llama.cpp branch.
+          Speculative decoding pairs a small drafter with your target model for 2–3× faster generation at identical output. You can launch and manage a local <code className="text-gray-300">llama-server</code> from PortOS and connect using the <strong className="text-white">OpenCode llama TUI</strong> provider. <strong className="text-white">DSpark</strong> (<code className="text-gray-300">draft-dspark</code>) works on a stock <code className="text-gray-300">brew install llama.cpp</code>; the DFlash 2 presets need a from-source build of an unmerged llama.cpp branch. No drafter GGUF to hand? The <code className="text-gray-300">ngram-*</code> spec types under Advanced options draft from the context window alone.
         </p>
 
         {llamaStatus?.running ? (
@@ -1102,10 +1211,32 @@ export function LocalLlmTab() {
                   <p><span className="text-gray-500">Base Model:</span> <code className="text-gray-300">{llamaStatus.config.model}</code></p>
                 )}
                 {llamaStatus.config?.draftModel && (
-                  <p><span className="text-gray-500">Drafter:</span> <code className="text-port-accent">{llamaStatus.config.draftModel}</code> ({llamaStatus.config.specType || 'draft-dflash'})</p>
+                  <p><span className="text-gray-500">Drafter:</span> <code className="text-port-accent">{llamaStatus.config.draftModel}</code></p>
                 )}
+                {llamaStatus.config && (
+                  <p>
+                    <span className="text-gray-500">Model id:</span>{' '}
+                    <code className="text-port-accent">{llamaStatus.config.alias || 'dflash'}</code>
+                    {' '}— Providers must send this name. Change it under Advanced options before starting.
+                  </p>
+                )}
+                {/* Split out from the Drafter line: an `ngram-*` launch runs
+                    speculative decoding with no drafter at all, so hanging the
+                    spec type off that line hid it exactly when it was the only
+                    thing configured. */}
+                <p>
+                  <span className="text-gray-500">Spec Type:</span>{' '}
+                  {llamaStatus.config?.specType
+                    ? <code className="text-port-accent">{llamaStatus.config.specType}</code>
+                    : <span className="text-gray-500">none — speculative decoding off</span>}
+                </p>
               </div>
-              {llamaStatus.managed ? (
+              {/* `managed` is a THREE-state field: `true` ours, `false`
+                  somebody else's, `null` PM2 could not be read. A plain
+                  truthiness test told a user whose own daemon PortOS had merely
+                  failed to read that they had started it in a terminal — and
+                  hid the Stop button for a server PortOS does own. */}
+              {llamaStatus.managed === true ? (
                 <button
                   onClick={handleStopLlama}
                   disabled={llamaLoading}
@@ -1114,9 +1245,13 @@ export function LocalLlmTab() {
                   {llamaLoading ? <BrailleSpinner /> : <PowerOff size={13} />}
                   Stop Server
                 </button>
-              ) : (
+              ) : llamaStatus.managed === false ? (
                 <span className="text-xs text-gray-500 italic">
                   Running as external process
+                </span>
+              ) : (
+                <span className="text-xs text-gray-500 italic">
+                  PM2 status could not be read — this may not be an external server
                 </span>
               )}
             </div>
@@ -1222,16 +1357,140 @@ export function LocalLlmTab() {
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
                 </div>
-                <div>
+                <div className="col-span-2">
+                  <label htmlFor="llama-parallel" className="text-[11px] text-gray-400 block mb-1">Parallel slots</label>
+                  <input
+                    id="llama-parallel"
+                    aria-label="Parallel slots"
+                    type="number"
+                    min={1}
+                    max={16}
+                    value={llamaForm.parallel}
+                    onChange={(e) => setLlamaNumber('parallel', e.target.value)}
+                    className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
+                  />
+                  <p className="text-[11px] text-gray-500 mt-1">
+                    llama.cpp divides context across this many request slots. 1 is right for a TUI agent.
+                  </p>
+                </div>
+                <div className="col-span-2 sm:col-span-4">
                   <label htmlFor="llama-spec-type" className="text-[11px] text-gray-400 block mb-1">Spec Type</label>
                   <input
                     id="llama-spec-type"
                     aria-label="Spec Type"
                     type="text"
+                    list="llama-spec-type-options"
                     value={llamaForm.specType}
                     onChange={(e) => setLlamaField('specType', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
+                  <datalist id="llama-spec-type-options">
+                    {specTypeSuggestions.map((entry) => (
+                      <option key={entry.id} value={entry.id}>{entry.note}</option>
+                    ))}
+                  </datalist>
+                  <p className="text-[11px] text-gray-500 mt-1">
+                    Comma-separate to run several at once, e.g. <code className="text-gray-400">draft-dflash,ngram-map-k</code>.
+                    Only <code className="text-gray-400">draft-*</code> types need a drafter GGUF — the{' '}
+                    <code className="text-gray-400">ngram-*</code> ones speculate from the tokens already in context, so they run
+                    with the Drafter field empty.
+                  </p>
+                  {specTypeNotice && (
+                    <p className="text-[11px] text-port-warning mt-1">{specTypeNotice}</p>
+                  )}
+                </div>
+                <div>
+                  <label htmlFor="llama-alias" className="text-[11px] text-gray-400 block mb-1">Model id (alias)</label>
+                  <input
+                    id="llama-alias"
+                    aria-label="Model id (alias)"
+                    type="text"
+                    value={llamaForm.alias}
+                    onChange={(e) => setLlamaForm((prev) => ({ ...prev, alias: e.target.value }))}
+                    className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
+                  />
+                </div>
+
+                {/* Performance tuning. Unlike the fields above, these have no
+                    PortOS default — an empty one is stripped from the launch
+                    line so llama.cpp applies its own. Measure what a change
+                    actually bought on Models → Performance. */}
+                <p className="col-span-2 sm:col-span-4 text-[11px] text-gray-500 pt-1 border-t border-port-border/40">
+                  Performance tuning — leave a field empty for llama.cpp&apos;s own default.{' '}
+                  <Link to="/models/performance" className="text-port-accent hover:underline">Measure the difference</Link>{' '}
+                  after changing one.
+                </p>
+                <div>
+                  <label htmlFor="llama-batch-size" className="text-[11px] text-gray-400 block mb-1">Batch size (-b)</label>
+                  <input
+                    id="llama-batch-size"
+                    aria-label="Batch size (-b)"
+                    type="number"
+                    placeholder="default"
+                    value={llamaForm.batchSize}
+                    onChange={(e) => setLlamaNumber('batchSize', e.target.value)}
+                    className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="llama-ubatch-size" className="text-[11px] text-gray-400 block mb-1">Micro-batch (-ub)</label>
+                  <input
+                    id="llama-ubatch-size"
+                    aria-label="Micro-batch (-ub)"
+                    type="number"
+                    placeholder="default"
+                    value={llamaForm.ubatchSize}
+                    onChange={(e) => setLlamaNumber('ubatchSize', e.target.value)}
+                    className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="llama-threads" className="text-[11px] text-gray-400 block mb-1">CPU threads (-t)</label>
+                  <input
+                    id="llama-threads"
+                    aria-label="CPU threads (-t)"
+                    type="number"
+                    placeholder="default"
+                    value={llamaForm.threads}
+                    onChange={(e) => setLlamaNumber('threads', e.target.value)}
+                    className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
+                  />
+                </div>
+                <div className="flex items-end gap-2 pb-1">
+                  <input
+                    id="llama-flash-attn"
+                    type="checkbox"
+                    checked={llamaForm.flashAttn}
+                    onChange={(e) => setLlamaForm((prev) => ({ ...prev, flashAttn: e.target.checked }))}
+                    className="accent-port-accent"
+                  />
+                  <label htmlFor="llama-flash-attn" className="text-[11px] text-gray-400">Flash attention</label>
+                </div>
+                <div>
+                  <label htmlFor="llama-cache-type-k" className="text-[11px] text-gray-400 block mb-1">KV cache K</label>
+                  <select
+                    id="llama-cache-type-k"
+                    aria-label="KV cache K"
+                    value={llamaForm.cacheTypeK}
+                    onChange={(e) => setLlamaField('cacheTypeK', e.target.value)}
+                    className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
+                  >
+                    <option value="">default</option>
+                    {LLAMA_CACHE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="llama-cache-type-v" className="text-[11px] text-gray-400 block mb-1">KV cache V</label>
+                  <select
+                    id="llama-cache-type-v"
+                    aria-label="KV cache V"
+                    value={llamaForm.cacheTypeV}
+                    onChange={(e) => setLlamaField('cacheTypeV', e.target.value)}
+                    className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
+                  >
+                    <option value="">default</option>
+                    {LLAMA_CACHE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
                 </div>
               </div>
             )}
@@ -1243,7 +1502,7 @@ export function LocalLlmTab() {
                 className="text-[11px] text-gray-500 hover:text-gray-300 flex items-center gap-1"
               >
                 {showLlamaAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                {showLlamaAdvanced ? 'Hide options' : 'Advanced options (port, ctx, GPU layers)'}
+                {showLlamaAdvanced ? 'Hide options' : 'Advanced options (port, ctx, GPU layers, parallel slots, model id, spec type, performance tuning)'}
               </button>
               <div className="flex items-center gap-2">
                 {llamaStartBlocked && (
@@ -1340,14 +1599,15 @@ export function LocalLlmTab() {
             <span>
               {labelFor(selected)} isn't running — {selectedData.installed
                 ? (selected === 'ollama' ? 'use the controls to start it or keep it running at login.' : 'launch the app and enable the local server.')
-                : 'install it first (Settings → Local LLMs prompts at setup, or run `npm run setup:llm`).'}
+                : 'install it first (Models → LLMs prompts at setup, or run `npm run setup:llm`).'}
             </span>
             {selected === 'ollama' && selectedData.installed && selectedData.canControl && (
               <button
                 onClick={() => runAction(
                   `ollama-service-${selectedOllamaStartupAction}-models`,
                   () => controlOllamaService(selectedOllamaStartupAction),
-                  selectedOllamaStartupAction === 'enable' ? 'Ollama will run at login' : 'Ollama is running'
+                  selectedOllamaStartupAction === 'enable' ? 'Ollama will run at login' : 'Ollama is running',
+                  { ollamaService: true }
                 )}
                 disabled={busy}
                 className={`${btnClass} bg-port-accent/20 hover:bg-port-accent/30 text-port-accent`}
@@ -1571,7 +1831,7 @@ export function LocalLlmTab() {
                           <span
                             title={`Published ${formatDateNumeric(createdMs)}${Number.isFinite(updatedMs) ? ` · updated ${timeAgo(m.updatedAt)}` : ''}`}
                           >
-                            published {timeAgo(m.createdAt)}
+                            published {formatAgeDays(m.createdAt)}
                           </span>
                         )}
                         {isHf && m.license && <span>{m.license}</span>}

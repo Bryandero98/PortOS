@@ -31,7 +31,7 @@ Fail-fast guards at module load catch missing fields, non-slash paths, and dupli
 
 ## Also required for a new page
 
-See `client/src/CLAUDE.md` for the two client-side rules that go with this:
+See `client/src/AGENTS.md` for the two client-side rules that go with this:
 
 - **ID-based deep linking** — any selection lives in the URL via a route param, never in local `useState`.
 - **Layout scroll mode** — decide whether the route belongs in `Layout.jsx`'s `isFullWidth` list (page owns its own `overflow-y-auto`) or takes the default scrolling+padded `<main>`.

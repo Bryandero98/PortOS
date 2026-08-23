@@ -11,6 +11,9 @@ import {
   scoreAssessment,
   scoreForIntent,
   summarizePerformance,
+  buildThroughputReport,
+  selectSweepTargets,
+  summarizeSweepScopes,
   compareEnvironments,
   describeStaleness,
   measuredFitVerdict,
@@ -228,6 +231,72 @@ describe('explainAssessment', () => {
   });
 });
 
+// The tuning IS the row's identity when a model holds several measurements. The
+// consumer keys the row on it, deletes THIS measurement with it, and pre-fills a
+// re-measure from it — so a projection that drops it collapses every variant
+// onto the backend-defaults record (wrong row deleted, re-measure loses its
+// settings, duplicate React keys).
+describe('rankByIntent — tuning identity', () => {
+  const tuned = (tuningKey, tuning, tuningLabel, charsPerSecond) => ({
+    backend: 'llama',
+    modelId: 'example-7b',
+    verdict: 'fits',
+    params: '7B',
+    tuningKey,
+    tuning,
+    tuningLabel,
+    performance: { meanCharsPerSecond: charsPerSecond, contextDegradation: 0.9, maxWorkingContextTokens: 16384 },
+    environment: { memoryBudgetGb: 64 },
+    residentGb: 5,
+  });
+
+  it('carries the tuning through to every ranked row', () => {
+    const { ranked } = rankByIntent([
+      tuned('', {}, null, 90),
+      tuned('ubatchSize=512', { ubatchSize: 512 }, 'Micro-batch size 512', 120),
+    ], 'fastest');
+    expect(ranked).toHaveLength(2);
+    expect(ranked.map((r) => r.tuningKey).sort()).toEqual(['', 'ubatchSize=512']);
+    const fastest = ranked[0];
+    expect(fastest.tuningKey).toBe('ubatchSize=512');
+    expect(fastest.tuning).toEqual({ ubatchSize: 512 });
+    expect(fastest.tuningLabel).toBe('Micro-batch size 512');
+  });
+
+  it('gives two tunings of one model distinct identities, not one collapsed row', () => {
+    const { ranked } = rankByIntent([
+      tuned('', {}, null, 90),
+      tuned('ubatchSize=512', { ubatchSize: 512 }, 'Micro-batch size 512', 120),
+    ], 'fastest');
+    const keys = ranked.map((r) => `${r.backend}:${r.modelId}@${r.tuningKey}`);
+    expect(new Set(keys).size).toBe(2);
+  });
+
+  it('reports that a tuning was not applied so the row can say the numbers are another config', () => {
+    const entry = tuned('ubatchSize=512', { ubatchSize: 512 }, 'Micro-batch size 512', 120);
+    const { ranked } = rankByIntent([
+      { ...entry, tuningApplied: false, tuningNotApplied: 'llama-server is not running' },
+    ], 'fastest');
+    expect(ranked[0].tuningApplied).toBe(false);
+    expect(ranked[0].tuningNotApplied).toBe('llama-server is not running');
+  });
+
+  it('breaks a model-id tie on the tuning so the order is stable across reloads', () => {
+    const a = tuned('a=1', {}, 'A', 100);
+    const b = tuned('b=2', { }, 'B', 100);
+    expect(rankByIntent([b, a], 'fastest').ranked.map((r) => r.tuningKey)).toEqual(['a=1', 'b=2']);
+    expect(rankByIntent([a, b], 'fastest').ranked.map((r) => r.tuningKey)).toEqual(['a=1', 'b=2']);
+  });
+
+  it('carries the tuning onto an excluded row too, so variants stay distinguishable there', () => {
+    const { excluded } = rankByIntent([
+      { ...tuned('ubatchSize=512', { ubatchSize: 512 }, 'Micro-batch size 512', 120), verdict: 'does-not-fit' },
+    ], 'fastest');
+    expect(excluded[0].tuningKey).toBe('ubatchSize=512');
+    expect(excluded[0].tuningLabel).toBe('Micro-batch size 512');
+  });
+});
+
 describe('rankByIntent', () => {
   const assessment = (modelId, verdict, performance, extra = {}) => ({
     backend: 'ollama',
@@ -263,7 +332,7 @@ describe('rankByIntent', () => {
     const { ranked, excluded } = rankByIntent(models, 'balanced');
     expect(ranked.map((r) => r.modelId)).toEqual(['example-model:7b']);
     expect(excluded).toEqual([
-      { backend: 'ollama', modelId: 'example-model:70b', verdict: 'does-not-fit', reason: 'out of memory' },
+      { backend: 'ollama', modelId: 'example-model:70b', tuningKey: '', tuningLabel: null, verdict: 'does-not-fit', reason: 'out of memory' },
     ]);
   });
 
@@ -468,5 +537,282 @@ describe('rankByIntent staleness', () => {
       assessment('fresh:14b', 20, { comparable: true, stale: false, changes: [] }),
     ], 'fastest');
     expect(ranked[0].modelId).toBe('unannotated:14b');
+  });
+});
+
+// ---- tokens per second -------------------------------------------------------
+
+const tokenSample = (contextTokens, tokensPerSecond, { estimated = false, promptRate = null } = {}) => ({
+  ...okSample(contextTokens, 200),
+  tokensPerSecond,
+  promptTokensPerSecond: promptRate,
+  completionTokens: 96,
+  tokensEstimated: estimated,
+});
+
+describe('summarizePerformance — token throughput', () => {
+  it('averages the measured tokens/s alongside chars/s', () => {
+    const perf = summarizePerformance([tokenSample(512, 40), tokenSample(4096, 20)]);
+    expect(perf.meanTokensPerSecond).toBe(30);
+    expect(perf.peakTokensPerSecond).toBe(40);
+    expect(perf.tokensEstimated).toBe(false);
+  });
+
+  // A runtime that reports no usage block must not have a tokens/s figure
+  // invented from its character count.
+  it('reports null token rates when no sample carried one', () => {
+    const perf = summarizePerformance([okSample(512, 200), okSample(4096, 100)]);
+    expect(perf.meanTokensPerSecond).toBeNull();
+    expect(perf.peakTokensPerSecond).toBeNull();
+    expect(perf.tokensEstimated).toBeNull();
+    expect(perf.meanCharsPerSecond).toBe(150);
+  });
+
+  it('marks the mean as estimated when ANY contributing sample was frame-counted', () => {
+    const perf = summarizePerformance([tokenSample(512, 40), tokenSample(4096, 20, { estimated: true })]);
+    expect(perf.tokensEstimated).toBe(true);
+  });
+});
+
+describe('explainAssessment — throughput clause', () => {
+  it('leads with tokens/s when it was measured', () => {
+    const text = explainAssessment({ performance: summarizePerformance([tokenSample(512, 40)]) }, 'fastest');
+    expect(text).toContain('40 tok/s');
+    expect(text).not.toContain('chars/s');
+  });
+
+  it('falls back to chars/s, and never reports both', () => {
+    const text = explainAssessment({ performance: summarizePerformance([okSample(512, 200)]) }, 'fastest');
+    expect(text).toContain('200 chars/s');
+    expect(text).not.toContain('tok/s');
+  });
+});
+
+describe('buildThroughputReport', () => {
+  const record = (modelId, rates) => ({
+    backend: 'ollama',
+    modelId,
+    tuningKey: '',
+    verdict: 'fits',
+    samples: rates.map(([context, rate]) => tokenSample(context, rate)),
+    performance: summarizePerformance(rates.map(([context, rate]) => tokenSample(context, rate))),
+  });
+
+  it('sorts fastest first and collects every sampled context as a column', () => {
+    const report = buildThroughputReport([
+      record('slow-model', [[512, 10], [4096, 8]]),
+      record('fast-model', [[512, 60], [4096, 40]]),
+    ]);
+    expect(report.rows.map((r) => r.modelId)).toEqual(['fast-model', 'slow-model']);
+    expect(report.contexts).toEqual([512, 4096]);
+    expect(report.rows[0].points.map((p) => p.tokensPerSecond)).toEqual([60, 40]);
+    expect(report.rows[0].points.map((p) => p.totalMs)).toEqual([1000, 1000]);
+    expect(report.modelsWithTokenRates).toBe(2);
+  });
+
+  // Unmeasured is not slow. A runtime that reports no token counts still gets a
+  // row — dropping it would make the table look complete when it isn't.
+  it('keeps a row with no token rate, and sorts it last rather than as zero', () => {
+    const quiet = {
+      backend: 'llama',
+      modelId: 'quiet-model',
+      verdict: 'fits',
+      samples: [okSample(512, 300)],
+      performance: summarizePerformance([okSample(512, 300)]),
+    };
+    const report = buildThroughputReport([quiet, record('fast-model', [[512, 5]])]);
+    expect(report.rows.map((r) => r.modelId)).toEqual(['fast-model', 'quiet-model']);
+    expect(report.rows[1].meanTokensPerSecond).toBeNull();
+    expect(report.rows[1].meanCharsPerSecond).toBe(300);
+    expect(report.modelsWithTokenRates).toBe(1);
+  });
+
+  it('carries a failed sample as failed rather than dropping the context', () => {
+    const report = buildThroughputReport([{
+      backend: 'ollama',
+      modelId: 'big-model',
+      verdict: 'fits',
+      samples: [tokenSample(512, 12), failSample(16384, 'out of memory')],
+      performance: summarizePerformance([tokenSample(512, 12), failSample(16384, 'out of memory')]),
+    }]);
+    expect(report.contexts).toEqual([512, 16384]);
+    const failed = report.rows[0].points.find((p) => p.contextTokens === 16384);
+    expect(failed.ok).toBe(false);
+    expect(failed.tokensPerSecond).toBeNull();
+    expect(failed.error).toBe('out of memory');
+  });
+
+  it('returns an empty report for no assessments rather than throwing', () => {
+    expect(buildThroughputReport(null)).toEqual({ rows: [], contexts: [], modelsWithTokenRates: 0 });
+  });
+});
+
+// ---- sweep target selection --------------------------------------------------
+
+describe('selectSweepTargets', () => {
+  const stale = {
+    backend: 'ollama', modelId: 'stale-model', tuningKey: 'ctx=8192', tuningLabel: '8k context',
+    tuning: { numCtx: 8192 }, staleness: { stale: true },
+  };
+  const fresh = {
+    backend: 'ollama', modelId: 'fresh-model', tuningKey: '', tuningLabel: null,
+    tuning: {}, staleness: { stale: false },
+  };
+  const unassessed = [{ backend: 'lmstudio', modelId: 'new-model' }];
+
+  it('queues only never-measured models for the unmeasured scope', () => {
+    const targets = selectSweepTargets({ assessments: [stale, fresh], unassessed, scope: 'unmeasured' });
+    expect(targets.map((t) => t.modelId)).toEqual(['new-model']);
+  });
+
+  it('queues only stale readings for the stale scope', () => {
+    const targets = selectSweepTargets({ assessments: [stale, fresh], unassessed, scope: 'stale' });
+    expect(targets.map((t) => t.modelId)).toEqual(['stale-model']);
+  });
+
+  // A re-measure has to reproduce the configuration that produced the record, or
+  // the sweep quietly replaces every tuned reading with a defaults one.
+  it('re-uses each record\'s tuning so a re-measure reproduces its configuration', () => {
+    const [target] = selectSweepTargets({ assessments: [stale], unassessed: [], scope: 'stale' });
+    expect(target.tuning).toEqual({ numCtx: 8192 });
+    expect(target.tuningKey).toBe('ctx=8192');
+  });
+
+  it('covers unmeasured models FIRST in the all scope, so a cut-short run got the unknowns', () => {
+    const targets = selectSweepTargets({ assessments: [stale, fresh], unassessed, scope: 'all' });
+    expect(targets.map((t) => t.modelId)).toEqual(['new-model', 'stale-model', 'fresh-model']);
+  });
+
+  it('never queues the same model+tuning twice', () => {
+    const targets = selectSweepTargets({
+      assessments: [fresh, fresh],
+      unassessed: [{ backend: 'ollama', modelId: 'fresh-model' }],
+      scope: 'all',
+    });
+    expect(targets).toHaveLength(1);
+  });
+
+  it('falls back to the unmeasured scope for an unrecognized scope', () => {
+    const targets = selectSweepTargets({ assessments: [stale], unassessed, scope: 'everything-please' });
+    expect(targets.map((t) => t.modelId)).toEqual(['new-model']);
+  });
+
+  // ---- the second dimension ------------------------------------------------
+  // `tunings` is what makes a TUNING sweep a case of this selector rather than a
+  // queue of its own: same dedupe, same ordering, same consent-count guarantee.
+  const grid = [
+    { tuning: {}, key: '', label: null },
+    { tuning: { flashAttn: true }, key: 'flashAttn=true', label: 'Flash attention on' },
+  ];
+
+  it('restricts the queue to the named model, whatever the scope would have picked', () => {
+    const targets = selectSweepTargets({
+      assessments: [stale, fresh], unassessed, scope: 'unmeasured',
+      only: { backend: 'ollama', modelId: 'fresh-model' },
+    });
+    expect(targets.map((t) => t.modelId)).toEqual(['fresh-model']);
+  });
+
+  it('returns nothing for a model no record or listing names', () => {
+    const targets = selectSweepTargets({
+      assessments: [stale], unassessed, scope: 'all',
+      only: { backend: 'ollama', modelId: 'ghost' },
+    });
+    expect(targets).toEqual([]);
+  });
+
+  it('crosses every selected model with the grid, one measurement per pair', () => {
+    const targets = selectSweepTargets({ assessments: [], unassessed, scope: 'unmeasured', tunings: grid });
+    expect(targets.map((t) => `${t.modelId}@${t.tuningKey}`))
+      .toEqual(['new-model@', 'new-model@flashAttn=true']);
+  });
+
+  // The grid REPLACES each record's own tuning — that is the whole point of the
+  // dimension. Keeping the stored tuning would measure the same configuration
+  // under every variant's label.
+  it('replaces a record\'s stored tuning with the grid variant', () => {
+    const [baseline, variant] = selectSweepTargets({
+      assessments: [stale], unassessed: [], scope: 'stale', tunings: grid,
+    });
+    expect(baseline.tuning).toEqual({});
+    expect(baseline.tuningLabel).toBeNull();
+    expect(variant.tuning).toEqual({ flashAttn: true });
+    expect(variant.tuningLabel).toBe('Flash attention on');
+  });
+
+  // A model that reached the cross under two stored tunings is still ONE model:
+  // measuring each variant twice would put the same configuration on both sides
+  // of the comparison table.
+  it('crosses a model held under several stored tunings only once', () => {
+    const other = { ...stale, tuningKey: 'ctx=4096', tuning: { numCtx: 4096 } };
+    const targets = selectSweepTargets({
+      assessments: [stale, other], unassessed: [], scope: 'stale', tunings: grid,
+    });
+    expect(targets).toHaveLength(2);
+  });
+
+  it('leaves the queue alone for an empty grid rather than emptying it', () => {
+    const targets = selectSweepTargets({ assessments: [], unassessed, scope: 'unmeasured', tunings: [] });
+    expect(targets.map((t) => t.modelId)).toEqual(['new-model']);
+  });
+
+  // ---- embedding models are not assessable ---------------------------------
+  // An assessment measures a model by GENERATING with it. Ollama answers every
+  // sample aimed at an embedding-only model with
+  // `400 "<model>" does not support chat`, so the whole measurement is doomed
+  // from the model id alone — and each doomed sample raised an AI-provider
+  // investigation task and briefly benched the provider.
+  it('never queues an embedding model for the unmeasured scope', () => {
+    const targets = selectSweepTargets({
+      assessments: [],
+      unassessed: [
+        { backend: 'ollama', modelId: 'all-minilm:latest' },
+        { backend: 'ollama', modelId: 'nomic-embed-text:latest' },
+        { backend: 'ollama', modelId: 'qwen3.6:35b' },
+      ],
+      scope: 'unmeasured',
+    });
+    expect(targets.map((t) => t.modelId)).toEqual(['qwen3.6:35b']);
+  });
+
+  // A bogus record written before the filter existed must not be re-queued
+  // forever by the scopes that re-measure stored readings.
+  it('never re-queues a stored embedding-model reading', () => {
+    const embedRecord = {
+      backend: 'ollama', modelId: 'all-minilm:latest', tuningKey: '', tuningLabel: null,
+      tuning: {}, staleness: { stale: true },
+    };
+    expect(selectSweepTargets({ assessments: [embedRecord], unassessed: [], scope: 'stale' })).toEqual([]);
+    expect(selectSweepTargets({ assessments: [embedRecord], unassessed: [], scope: 'all' })).toEqual([]);
+  });
+
+  it('refuses a named embedding model even though naming one implies the all scope', () => {
+    const targets = selectSweepTargets({
+      assessments: [], unassessed: [{ backend: 'ollama', modelId: 'all-minilm:latest' }],
+      scope: 'unmeasured', only: { backend: 'ollama', modelId: 'all-minilm:latest' },
+    });
+    expect(targets).toEqual([]);
+  });
+
+  it('keeps an embedding model out of the tuning cross too', () => {
+    const targets = selectSweepTargets({
+      assessments: [], unassessed: [
+        { backend: 'ollama', modelId: 'all-minilm:latest' },
+        { backend: 'ollama', modelId: 'qwen3.6:35b' },
+      ],
+      scope: 'unmeasured', tunings: grid,
+    });
+    expect(targets.map((t) => `${t.modelId}@${t.tuningKey}`))
+      .toEqual(['qwen3.6:35b@', 'qwen3.6:35b@flashAttn=true']);
+  });
+});
+
+describe('summarizeSweepScopes', () => {
+  it('counts exactly what each scope would run', () => {
+    const counts = summarizeSweepScopes({
+      assessments: [{ backend: 'ollama', modelId: 'a', staleness: { stale: true } }],
+      unassessed: [{ backend: 'ollama', modelId: 'b' }, { backend: 'ollama', modelId: 'c' }],
+    });
+    expect(counts).toEqual({ unmeasured: 2, stale: 1, all: 3 });
   });
 });

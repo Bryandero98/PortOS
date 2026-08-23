@@ -1,6 +1,6 @@
 // Barrel for client/src/lib/ — discovery surface, not a forced import path.
 // See client/src/lib/README.md for the human-readable catalog and
-// CLAUDE.md "Module organization" for the maintenance convention.
+// AGENTS.md "Module organization" for the maintenance convention.
 
 // === Prompt & rendering (mirror server/lib/ — keep byte-for-byte in sync) ===
 export * from './canonPrompt.js';
@@ -37,6 +37,7 @@ export * as imageGenModes from './imageGenModes.js';
 export * from './imageGenDefaults.js';
 export * from './imageGenResolutions.js';
 export * from './imageTo3dReasons.js';
+export * from './imageTo3dTargetFixture.js';
 export * from './imageTo3dRenderOptions.js';
 export * from './importerDeepLink.js';
 export * from './letteringDensity.js';
@@ -47,6 +48,7 @@ export * from './pipelineImageDefaults.js';
 export * from './reverseOutlineGrid.js';
 export * from './reviewerModels.js';
 export * from './reviewerPins.js';
+export * from './loraTriggers.js';
 export * from './runnerFamilies.js';
 export * from './slashdoCatalog.js';
 export * from './videoFinish.js';
@@ -66,9 +68,12 @@ export * from './goalFeatureMap.js';
 export * from './a11yKeyboard.js';
 export * from './appIdentity.js';
 export * from './applyManuscriptEdits.js';
+export * from './assessmentTuningNotice.js';
 export * from './audioRecorder.js';
 export * from './bareUrl.js';
 export * from './boundedMap.js';
+export * from './buildStamp.js';
+export * from './chipContrast.js';
 export * from './clientErrorReporter.js';
 export * from './clinicianReport.js';
 export * from './clipboard.js';
@@ -86,6 +91,7 @@ export * from './healthProvenance.js';
 export * from './joinInfluenceList.js';
 export * from './kanbanColumns.js';
 export * from './localLlmTargetKey.js';
+export * from './loomLayout.js';
 export * from './loopbackHost.js';
 export * from './manuscriptAnchors.js';
 export * from './manuscriptFormat.js';
@@ -146,6 +152,7 @@ export * from './spriteWalkUnlock.js';
 export * from './streakGlyph.js';
 export * from './syncCounts.js';
 export * from './tabNotation.js';
+export * from './tailnetPeer.js';
 export * from './terminalDictation.js';
 export * from './terminalScroll.js';
 export * from './terminalTheme.js';

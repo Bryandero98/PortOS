@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, within } from '@testing-library/react';
+import { installVoiceHotkeySpy } from '../../../test/voiceHotkeySpy';
 import PostCognitiveDrillRunner, {
   localAccuracyScore,
   localSchulteMetrics,
@@ -15,10 +16,10 @@ import PostCognitiveDrillRunner, {
   localTaskSwitchMetrics,
   localGoNoGoMetrics,
   localFlankerMetrics,
-  getDrillTutorial,
-  hasSeenDrillTutorial,
-  markDrillTutorialSeen,
 } from './PostCognitiveDrillRunner';
+// The how-to card itself is covered by CognitiveDrillTutorial.test.jsx; the
+// runner suite reaches for it only to drive (and assert) its first-run gate.
+import { hasSeenDrillTutorial, markDrillTutorialSeen, buildNBackExample } from './CognitiveDrillTutorial';
 
 // Result-assembly tests for PostCognitiveDrillRunner's `finish()` builders.
 // The server rescores each drill deterministically from `drillData`/`questions`
@@ -599,35 +600,6 @@ describe('ReactionTimeRunner race-condition guards', () => {
   });
 });
 
-describe('getDrillTutorial', () => {
-  it('interpolates the n-back lag into the copy (plural)', () => {
-    const t = getDrillTutorial({ type: 'n-back', config: { n: 3 } });
-    expect(t.goal).toContain('3 steps');
-    expect(t.steps.join(' ')).toContain('3 steps');
-  });
-
-  it('uses the singular "step" for a 1-back', () => {
-    const t = getDrillTutorial({ type: 'n-back', config: { n: 1 } });
-    expect(t.goal).toContain('1 step ');
-    expect(t.goal).not.toContain('1 steps');
-  });
-
-  it('gives reversed-recall copy for backward digit-span', () => {
-    expect(getDrillTutorial({ type: 'digit-span', config: { direction: 'backward' } }).goal).toContain('reverse');
-    expect(getDrillTutorial({ type: 'digit-span', config: { direction: 'forward' } }).goal).toContain('order');
-  });
-
-  it('gives choice-mode reaction-time copy that mentions the lit box', () => {
-    const t = getDrillTutorial({ type: 'reaction-time', config: { mode: 'choice' } });
-    expect(t.steps.join(' ')).toMatch(/box/i);
-  });
-
-  it('returns null for an unknown or missing drill type', () => {
-    expect(getDrillTutorial({ type: 'not-a-drill' })).toBeNull();
-    expect(getDrillTutorial(null)).toBeNull();
-  });
-});
-
 // First-run tutorial gate: the timed cognitive drills flash a stimulus the
 // instant they mount, so the first encounter of each type is held behind a
 // how-to card and the runner (and its timers) only start on "Start drill".
@@ -754,5 +726,141 @@ describe('executive-control runners', () => {
     act(() => vi.advanceTimersByTime(250));
     expect(resumed).toHaveBeenCalledTimes(1);
     expect(resumed.mock.calls[0][0].questions).toHaveLength(1);
+  });
+});
+
+describe('n-back tutorial card', () => {
+  beforeEach(() => window.localStorage.clear());
+  afterEach(() => window.localStorage.clear());
+
+  it('renders the worked example stream with the match called out', () => {
+    const drill = { type: 'n-back', config: { n: 2, stimulusMs: 1000 }, sequence: ['A', 'B', 'A'] };
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={vi.fn()} isTraining={false} />,
+    );
+    const { sequence } = buildNBackExample(2);
+    expect(screen.getByText(/example — 2-back/i)).toBeInTheDocument();
+    expect(screen.getByText('Match!')).toBeInTheDocument();
+    expect(screen.getByText('2 steps back')).toBeInTheDocument();
+    // Every example letter is on screen, in order.
+    const strip = within(screen.getByRole('list', { name: /example letter stream/i }));
+    const chips = strip.getAllByRole('listitem').map(li => li.textContent);
+    expect(chips.map(text => text[0])).toEqual(sequence);
+  });
+});
+
+// The voice widget binds a GLOBAL push-to-talk hotkey that defaults to Space —
+// the same key these drills use to respond. Each Space-driven runner claims the
+// key in the capture phase so the mic never opens mid-drill. Stand in for the
+// widget with a bubble-phase window listener and assert it stays silent.
+describe('Space-driven drills do not leak the key to the global voice hotkey', () => {
+  const voiceHotkey = installVoiceHotkeySpy();
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    markDrillTutorialSeen('n-back');
+    markDrillTutorialSeen('go-no-go');
+    markDrillTutorialSeen('reaction-time');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    window.localStorage.clear();
+  });
+
+  it('n-back swallows Space and still records the match', () => {
+    const onComplete = vi.fn();
+    const drill = { type: 'n-back', config: { n: 1, stimulusMs: 1000 }, sequence: ['A', 'A'] };
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={onComplete} isTraining={false} />,
+    );
+    act(() => { vi.advanceTimersByTime(1900); }); // 800ms pre-roll + into the 2nd stimulus
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
+    act(() => { vi.advanceTimersByTime(1000); });
+
+    expect(voiceHotkey()).not.toHaveBeenCalled();
+    expect(onComplete.mock.calls[0][0].questions).toEqual([
+      expect.objectContaining({ index: 1, answered: 'match', correct: true }),
+    ]);
+  });
+
+  it('go-no-go swallows Space and still records the go press', () => {
+    const onComplete = vi.fn();
+    const drill = {
+      type: 'go-no-go',
+      config: { stimulusMs: 200, responseDeadlineMs: 800 },
+      trials: [{ kind: 'go', symbol: '●', tone: 'green' }],
+    };
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={onComplete} isTraining={false} />,
+    );
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
+    act(() => { vi.advanceTimersByTime(250); });
+
+    expect(voiceHotkey()).not.toHaveBeenCalled();
+    expect(onComplete.mock.calls[0][0].questions).toHaveLength(1);
+  });
+
+  it('simple reaction-time swallows Space and still records the response', () => {
+    const onComplete = vi.fn();
+    const drill = makeSimpleDrill({ count: 1, delayMs: 100 });
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={onComplete} isTraining={false} />,
+    );
+    act(() => { vi.advanceTimersByTime(100); });
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
+    act(() => { vi.advanceTimersByTime(500); });
+
+    expect(voiceHotkey()).not.toHaveBeenCalled();
+    expect(onComplete.mock.calls[0][0].questions).toHaveLength(1);
+  });
+
+  it('reaction-time keeps claiming Space through the between-trials result phase', () => {
+    const onComplete = vi.fn();
+    const drill = makeSimpleDrill({ count: 2, delayMs: 100 });
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={2} onComplete={onComplete} isTraining={false} />,
+    );
+    act(() => { vi.advanceTimersByTime(100); });
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); }); // records trial 1
+    // Now in the 500ms result phase: a second press must NOT record anything,
+    // and must NOT reach the voice hotkey either.
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
+    expect(voiceHotkey()).not.toHaveBeenCalled();
+
+    act(() => { vi.advanceTimersByTime(600); });
+    act(() => { fireEvent.keyDown(document.body, { code: 'Space', key: ' ' }); });
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(voiceHotkey()).not.toHaveBeenCalled();
+    expect(onComplete.mock.calls[0][0].questions).toHaveLength(2);
+  });
+
+  // Space on a focused button belongs to the browser (#4748), so a mouse click
+  // that parked focus on the on-screen response button would take the drill's
+  // key over — and native activation fires on keyUP, inflating a scored
+  // reaction time. The runner therefore refuses pointer focus for every button
+  // on the surface. jsdom doesn't implement click-to-focus, so the cancelled
+  // mousedown (which is what suppresses the focus in a real browser) is the
+  // observable here.
+  it('refuses pointer focus on the on-screen Match button, so Space stays the scored path', () => {
+    const drill = { type: 'n-back', config: { n: 1, stimulusMs: 1000 }, sequence: ['A', 'A'] };
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={vi.fn()} isTraining={false} />,
+    );
+    act(() => { vi.advanceTimersByTime(1900); }); // into the 2nd stimulus, so Match is enabled
+    const match = screen.getByRole('button', { name: 'Match' });
+    expect(match).toBeEnabled();
+
+    // fireEvent returns false when the event was canceled.
+    expect(fireEvent.mouseDown(match)).toBe(false);
+  });
+
+  it('lets an unrelated key through — this is not a blanket keyboard trap', () => {
+    const drill = { type: 'n-back', config: { n: 1, stimulusMs: 1000 }, sequence: ['A', 'A'] };
+    render(
+      <PostCognitiveDrillRunner drill={drill} drillIndex={0} drillCount={1} onComplete={vi.fn()} isTraining={false} />,
+    );
+    act(() => { fireEvent.keyDown(document.body, { code: 'KeyJ', key: 'j' }); });
+    expect(voiceHotkey()).toHaveBeenCalledTimes(1);
   });
 });

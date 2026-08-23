@@ -18,7 +18,7 @@ import {
   effectiveModelContextWindow,
   isApiProvider,
   isGrokBuildCli,
-  isOrcaRouterBackedProvider,
+  gatewayForProvider,
   isPrivateNetworkEndpoint,
   isProcessProvider,
   isRunnerAllowedCommand,
@@ -29,7 +29,7 @@ import {
 import { formatContextLength } from '../../utils/formatters';
 import ProviderRuntimeStatus from './ProviderRuntimeStatus';
 import ProviderReadiness from './ProviderReadiness';
-import { GrokUploadWarning, OrcaRouterKeyHint } from './ProviderNotices';
+import { GrokUploadWarning, GatewayKeyHint } from './ProviderNotices';
 
 // One phrasing for "this command isn't on the CoS Agent Runner's allowlist".
 // The editor states the same thing in its own inline banner, in prose.
@@ -90,6 +90,9 @@ export default function ProviderCard({
   onRecover,
   onInstallRuntime,
   onAutoSetupRuntime,
+  onUseServedModel,
+  onServeWantedModel,
+  servingModel = false,
 }) {
   const style = CARD_STATE_STYLES[cardState.state];
   return (
@@ -120,6 +123,16 @@ export default function ProviderCard({
           {provider.llamaBacked && (
             <span className="text-xs px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">
               LLAMA.CPP / DFLASH
+            </span>
+          )}
+          {provider.vllmBacked && (
+            <span className="text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+              vLLM / DFLASH2
+            </span>
+          )}
+          {provider.sglangBacked && (
+            <span className="text-xs px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+              SGLANG
             </span>
           )}
           {provider.mtplxBacked && (
@@ -257,6 +270,9 @@ export default function ProviderCard({
           className="max-w-3xl"
           readiness={daemonReadiness}
           onAutoSetup={(setup) => onAutoSetupRuntime?.({ ...setup, providerId: provider.id })}
+          onUseServedModel={(modelId) => onUseServedModel?.(provider, modelId)}
+          onServeWantedModel={onServeWantedModel ? () => onServeWantedModel(provider) : undefined}
+          serving={servingModel}
         />
 
         {provider.enabled && status?.available === false && (
@@ -284,6 +300,16 @@ export default function ProviderCard({
           {provider.llamaBacked && (
             <p className="text-xs text-purple-300/90">
               Local llama.cpp / llama-server harness (endpoint: <code className="text-purple-200">{provider.endpoint}</code>) — supports DFlash 2 speculative drafting.
+            </p>
+          )}
+          {provider.vllmBacked && (
+            <p className="text-xs text-emerald-300/90">
+              Local vLLM container (endpoint: <code className="text-emerald-200">{provider.endpoint}</code>) — Qwen3.8-27B with DFlash 2 drafting. It holds the whole GPU, so stop it before running local image/video generation.
+            </p>
+          )}
+          {provider.sglangBacked && (
+            <p className="text-xs text-amber-300/90">
+              Local SGLang container (endpoint: <code className="text-amber-200">{provider.endpoint}</code>) — Qwen3.8-27B on a Hopper or Blackwell card. It holds the whole GPU, so stop it before running local image/video generation.
             </p>
           )}
           {isProcessProvider(provider) && (
@@ -367,9 +393,10 @@ export default function ProviderCard({
 
         {isGrokBuildCli(provider) && <GrokUploadWarning className="max-w-3xl" />}
 
-        {isOrcaRouterBackedProvider(provider) && (
-          <OrcaRouterKeyHint
-            sibling={providersById.orcarouter}
+        {gatewayForProvider(provider) && (
+          <GatewayKeyHint
+            gateway={gatewayForProvider(provider)}
+            sibling={providersById[gatewayForProvider(provider).id]}
             onEdit={onEdit}
             className="max-w-3xl"
           />

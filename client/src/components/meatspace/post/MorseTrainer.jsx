@@ -2,12 +2,15 @@ import { useState, useEffect, useRef, useCallback, useId } from 'react';
 import { ArrowLeft, Radio, Headphones, Hand, EyeOff, CheckCircle, XCircle, Play, RefreshCw, Volume2, GitBranch, List as ListIcon, Ruler, Eraser } from 'lucide-react';
 import useDrawerTab from '../../../hooks/useDrawerTab';
 import useAudioSessionClaim from '../../../hooks/useAudioSessionClaim.js';
+import useKeyCapture from '../../../hooks/useKeyCapture';
 import { submitTrainingEntry, getTrainingStats, submitMorseRound, getMorseProgress, updateMorseLevel } from '../../../services/api';
+import { DRILL_DESCRIPTIONS } from './constants';
 import MorseProgressPanel from './MorseProgressPanel';
 import { streakGlyph } from '../../../lib/streakGlyph.js';
 import { safeReadJsonStorage, safeWriteStorage } from '../../../lib/safeStorage';
 import { resumeAudioContext } from '../../../lib/audioContext.js';
 import { MORSE_MATERIAL_MODES, canAdvanceMorseLevel, selectMorsePrompt } from '../../../lib/morsePractice.js';
+import { isPressKey, noPointerFocusSurfaceProps } from '../../../lib/a11yKeyboard.js';
 import PostCompletionActions from './PostCompletionActions';
 import { startRetryableSaves } from './completionSave';
 
@@ -104,6 +107,8 @@ const DEFAULT_PREFS = { wpm: 18, effectiveWpm: 18, hz: 700, kochLevel: DEFAULT_K
 const RAMP_SEC = 0.005;
 const TONE_GAIN = 0.25;
 
+// Mode ids map to the `morse-<id>` drill types, so the blurb lives once in
+// DRILL_DESCRIPTIONS (constants.js) and is read below — no second copy here.
 export const MODES = [
   {
     id: 'copy',
@@ -111,7 +116,6 @@ export const MODES = [
     icon: Headphones,
     color: 'text-cyan-400',
     bgColor: 'bg-cyan-500/20',
-    description: 'Listen to Morse, type what you hear',
     example: 'Koch progression: K, M → add letters as you hit 90%',
   },
   {
@@ -120,7 +124,6 @@ export const MODES = [
     icon: EyeOff,
     color: 'text-purple-400',
     bgColor: 'bg-purple-500/20',
-    description: 'Audio-only — no on-screen code hints or cheat sheet',
     example: 'Same Koch pool, pure recall — nothing to look at',
   },
   {
@@ -129,7 +132,6 @@ export const MODES = [
     icon: Hand,
     color: 'text-amber-400',
     bgColor: 'bg-amber-500/20',
-    description: 'Hold spacebar (or tap) to key dits & dahs',
     example: 'Tap short for ·, hold long for —',
   },
 ];
@@ -253,9 +255,7 @@ function useKeyingDecoder({ unitMs, hz, ensureCtx, claimSession, releaseSession,
   // per-character response time (inter-letter delta) for the round it submits.
   const letterLogRef = useRef([]);
   // Mirror of `pressing` state read by beginPress/endPress so those callbacks
-  // stay referentially stable — the global keydown/keyup listener effect
-  // depends on them, and re-running per keystroke would tear down the
-  // just-scheduled flush timers and cut off the active tone mid-press.
+  // don't have to re-derive it from state that lags a keystroke behind.
   const pressingRef = useRef(false);
   // Bumped once per beginPress so a startTone whose resume await settles after a
   // newer press started can tell it's been superseded and bail.
@@ -394,35 +394,28 @@ function useKeyingDecoder({ unitMs, hz, ensureCtx, claimSession, releaseSession,
     setDecoded('');
   }, [stopTone]);
 
-  // Capture-phase listener with stopImmediatePropagation prevents other global
-  // spacebar handlers (notably the voice widget's push-to-talk hotkey) from
-  // firing while the user is keying morse. This only suppresses spacebar; the
-  // voice widget's hotkey works normally everywhere else in the app.
+  // The keyer OWNS the spacebar while Send mode is up: useKeyCapture claims it
+  // in the capture phase, so other global spacebar handlers (notably the voice
+  // widget's push-to-talk hotkey) never fire mid-transmission. Only spacebar is
+  // claimed; the voice hotkey works normally everywhere else in the app.
+  useKeyCapture({
+    enabled,
+    onKeyDown: (e) => {
+      if (e.code !== 'Space') return false;
+      if (!e.repeat) beginPress();
+      return true;
+    },
+    onKeyUp: (e) => {
+      if (e.code !== 'Space') return false;
+      endPress();
+      return true;
+    },
+  });
+
+  // Tear down the tone and the pending flush timers when Send mode goes away.
   useEffect(() => {
     if (!enabled) return undefined;
-    function consume(e) {
-      if (e.code !== 'Space') return false;
-      const tag = (e.target && e.target.tagName) || '';
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return false;
-      if (e.target && e.target.isContentEditable) return false;
-      e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation();
-      return true;
-    }
-    function onKeyDown(e) {
-      if (!consume(e) || e.repeat) return;
-      beginPress();
-    }
-    function onKeyUp(e) {
-      if (!consume(e)) return;
-      endPress();
-    }
-    window.addEventListener('keydown', onKeyDown, true);
-    window.addEventListener('keyup', onKeyUp, true);
     return () => {
-      window.removeEventListener('keydown', onKeyDown, true);
-      window.removeEventListener('keyup', onKeyUp, true);
       if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
       if (wordTimerRef.current) clearTimeout(wordTimerRef.current);
       stopTone();
@@ -432,7 +425,7 @@ function useKeyingDecoder({ unitMs, hz, ensureCtx, claimSession, releaseSession,
       pressingRef.current = false;
       setPressing(false);
     };
-  }, [beginPress, endPress, stopTone, enabled]);
+  }, [enabled, stopTone]);
 
   // getLetterLog exposes the ref's current array without making it reactive —
   // SendDrill reads it once at check time, so a ref (no re-render) is correct.
@@ -567,7 +560,14 @@ export default function MorseTrainer({ mode = null, onSelectMode, onExitMode, on
         </div>
       </div>
 
-      <div className={`grid grid-cols-1 ${showReference ? 'xl:grid-cols-[minmax(0,1fr)_24rem]' : ''} gap-6`}>
+      {/* In send mode the keyer owns the spacebar across BOTH columns — the
+          drill on the left and the practice key / reference tabs on the right —
+          so the guard belongs on the grid that holds them, not on either one.
+          Off send mode nothing owns Space and this is inert. */}
+      <div
+        className={`grid grid-cols-1 ${showReference ? 'xl:grid-cols-[minmax(0,1fr)_24rem]' : ''} gap-6`}
+        {...(mode === 'send' ? noPointerFocusSurfaceProps : null)}
+      >
         <div className="space-y-6 min-w-0 max-w-2xl">
           <SettingsPanel prefs={prefs} updatePrefs={updatePrefs} onResetProgress={resetProgress} trainingStats={trainingStats} progress={morseProgress} />
           {!mode && <ModeGrid onPick={onSelectMode} />}
@@ -694,7 +694,9 @@ function SliderRow({ label, value, min, max, step = 1, onChange, suffix = '', hi
   );
 }
 
-const REFERENCE_VIEWS = [
+// Exported for the same reason as MODES above: the Practice Library lists the
+// `?ref=` reference charts and must not keep its own copy of this list.
+export const REFERENCE_VIEWS = [
   { id: 'tree', label: 'Tree', icon: GitBranch },
   { id: 'length', label: 'Length', icon: Ruler },
   { id: 'list', label: 'List', icon: ListIcon },
@@ -857,7 +859,7 @@ function ListView({ currentPath }) {
   );
 }
 
-function KeyPad({ keying }) {
+export function KeyPad({ keying }) {
   return (
     <div className="bg-port-card border border-port-border rounded-lg p-4 space-y-3">
       <div className="flex items-center justify-between">
@@ -869,12 +871,29 @@ function KeyPad({ keying }) {
           <Eraser size={11} /> Clear
         </button>
       </div>
+      {/* Space on a focused button belongs to the browser (useKeyCapture stands
+          down for it), so the pad has to key on its OWN key events — otherwise
+          tapping it once with the mouse would leave focus here and make the
+          spacebar dead, on the very control labelled "TAP / HOLD SPACE".
+          preventDefault suppresses the native click-on-keyup too, so one press
+          is one press. */}
       <button
+        type="button"
         onMouseDown={keying.beginPress}
         onMouseUp={keying.endPress}
         onMouseLeave={keying.endPress}
         onTouchStart={(e) => { e.preventDefault(); keying.beginPress(); }}
         onTouchEnd={(e) => { e.preventDefault(); keying.endPress(); }}
+        onKeyDown={(e) => {
+          if (!isPressKey(e)) return;
+          e.preventDefault();
+          if (!e.repeat) keying.beginPress();
+        }}
+        onKeyUp={(e) => {
+          if (!isPressKey(e)) return;
+          e.preventDefault();
+          keying.endPress();
+        }}
         className={`w-full select-none py-6 rounded-lg border-2 font-mono text-base transition-colors ${
           keying.pressing ? 'border-port-accent bg-port-accent/20 text-port-accent' : 'border-port-border bg-port-bg text-gray-400 hover:border-port-accent'
         }`}
@@ -903,7 +922,7 @@ function ModeGrid({ onPick }) {
               <Icon size={18} className={m.color} />
             </div>
             <div className="text-white font-medium">{m.label}</div>
-            <div className="text-xs text-gray-400 mt-1">{m.description}</div>
+            <div className="text-xs text-gray-400 mt-1">{DRILL_DESCRIPTIONS[`morse-${m.id}`]}</div>
             <div className="text-[11px] text-gray-500 mt-2 font-mono">{m.example}</div>
           </button>
         );

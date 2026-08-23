@@ -129,6 +129,70 @@ describe('AI Toolkit runner service', () => {
     expect(JSON.parse(fetch.mock.calls[0][1].body)).toMatchObject({ temperature: 0.6, think: false });
   });
 
+  it('sends llama.cpp its temperature/top_p and routes thinking through the chat template', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
+    tempDirs.push(dataDir);
+    const fetch = stubStreamingFetch();
+    const runner = createRunnerService({ dataDir, hooks: { ensureProviderReady: async () => ({ success: true }) } });
+    let done;
+    const completed = new Promise((resolve) => { done = resolve; });
+    await runner.executeApiRun({
+      runId: 'run-llama-options',
+      // A llama.cpp endpoint, so the ollama-shaped `think` flag would be dropped.
+      provider: runReady({ id: 'llama', endpoint: 'http://127.0.0.1:5568/v1', llamaBacked: true, temperature: 0.2, topP: 0.9, thinking: true }),
+      model: null, prompt: 'hi', workspacePath: process.cwd(), screenshots: [], onData: undefined, onComplete: () => done(),
+    });
+    await completed;
+
+    const body = JSON.parse(fetch.mock.calls[0][1].body);
+    expect(body).toMatchObject({ temperature: 0.2, top_p: 0.9, chat_template_kwargs: { enable_thinking: true } });
+    expect(body.think).toBeUndefined();
+  });
+
+  it('sends a vLLM endpoint its temperature/top_p and routes thinking through the chat template', async () => {
+    // No vLLM `api` preset ships (the container is reached through the OpenCode
+    // wrappers), but the guard here mirrors `generationControlsFor` on the
+    // client — which now offers the controls — so a hand-built endpoint record
+    // must not be the one place they are silently dropped again (#4765).
+    const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
+    tempDirs.push(dataDir);
+    const fetch = stubStreamingFetch();
+    const runner = createRunnerService({ dataDir, hooks: { ensureProviderReady: async () => ({ success: true }) } });
+    let done;
+    const completed = new Promise((resolve) => { done = resolve; });
+    await runner.executeApiRun({
+      runId: 'run-vllm-options',
+      provider: runReady({ id: 'vllm', endpoint: 'http://127.0.0.1:18020/v1', vllmBacked: true, temperature: 0.7, topP: 0.9, thinking: false }),
+      model: null, prompt: 'hi', workspacePath: process.cwd(), screenshots: [], onData: undefined, onComplete: () => done(),
+    });
+    await completed;
+
+    const body = JSON.parse(fetch.mock.calls[0][1].body);
+    expect(body).toMatchObject({ temperature: 0.7, top_p: 0.9, chat_template_kwargs: { enable_thinking: false } });
+    expect(body.think).toBeUndefined();
+  });
+
+  it('sends a cloud provider no sampling fields at all', async () => {
+    // Widening the editor must not start re-shaping hosted models' output.
+    const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
+    tempDirs.push(dataDir);
+    const fetch = stubStreamingFetch();
+    const runner = createRunnerService({ dataDir, hooks: { ensureProviderReady: async () => ({ success: true }) } });
+    let done;
+    const completed = new Promise((resolve) => { done = resolve; });
+    await runner.executeApiRun({
+      runId: 'run-cloud-options',
+      provider: runReady({ id: 'openai', endpoint: 'https://api.example.com/v1', temperature: 0.6, topP: 0.9, thinking: true }),
+      model: null, prompt: 'hi', workspacePath: process.cwd(), screenshots: [], onData: undefined, onComplete: () => done(),
+    });
+    await completed;
+
+    const body = JSON.parse(fetch.mock.calls[0][1].body);
+    expect(body.temperature).toBeUndefined();
+    expect(body.top_p).toBeUndefined();
+    expect(body.think).toBeUndefined();
+  });
+
   it('omits num_ctx when the provider does not set it', async () => {
     const dataDir = await mkdtemp(join(tmpdir(), 'ai-toolkit-runner-'));
     tempDirs.push(dataDir);
@@ -388,7 +452,7 @@ describe('AI Toolkit runner — built-in executeCliRun spawn (#1865)', () => {
   // Mirrors server/services/runner.test.js's equivalent assertion — this is
   // the toolkit's OWN spawn path (inert in PortOS, which always registers a
   // host CLI runner via setCliRunner, but must stay behaviorally in sync per
-  // the override-consistency contract in ./CLAUDE.md).
+  // the override-consistency contract in ./AGENTS.md).
   function makeChild() {
     const child = new EventEmitter();
     child.stdout = new EventEmitter();

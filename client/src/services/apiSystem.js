@@ -24,6 +24,9 @@ export const getCharacter = ({ skills = true, metrics = true, ...options } = {})
 // Health
 export const checkHealth = (options) => request('/system/health', options);
 export const getSystemHealth = (options) => request('/system/health/details', options);
+// Its own route, not a field on health/details — peers scrape that payload and
+// persist it verbatim, and the build stamp must stay machine-local (#4694).
+export const getSystemBuild = (options) => request('/system/build', options);
 export const runSystemResourceReport = (options = {}) => request('/system-resources/report', {
   method: 'POST',
   ...options,

@@ -143,7 +143,7 @@ An identity scaffolding system for building a quantified AI representation of yo
 - **Personas** — Named variants of the twin (work voice, public voice) that can be swapped into any prompt or test run
 - **Avatar Bio** — Generated headshot + bio pair for wherever the twin needs a face and a paragraph
 - **Accounts** — Aggregate external accounts (Spotify, Google, etc.) that feed identity signals
-- **Import/Export** — Import from Spotify and other sources; export as system prompt, CLAUDE.md, JSON, or individual files
+- **Import/Export** — Import from Spotify and other sources; export as system prompt, AGENTS.md, JSON, or individual files
 - **Legacy Bundle** — Package the twin and its supporting documents into a single archive to hand forward
 - **Creation Wizard** — 5-step guided setup for building a new digital twin from scratch
 
@@ -430,7 +430,7 @@ Full catalog (including design plans, ADRs, and research notes): [docs/README.md
 - [Claude on Ollama](./docs/features/claude-ollama.md) — Run agent tasks on a local model
 - [CoS Agent Runner](./docs/features/cos-agent-runner.md) — Isolated agent process architecture
 - [CoS Enhancement](./docs/features/cos-enhancement.md) — Hybrid search, proactive execution, error recovery
-- [MTPLX](./docs/features/mtplx.md) — Multiplexed agent execution and terminal streaming
+- [MTPLX](./docs/features/mtplx.md) — Native multi-token-prediction Qwen runtime on Apple Silicon, managed as a PM2 process from Models → LLMs
 - [Memory System](./docs/features/memory-system.md) — Semantic memory with vector search and importance decay
 - [Digital Twin](./docs/features/digital-twin.md) — Genome, chronotype, taste, and mortality-aware goals
 - [Identity System](./docs/features/identity-system.md) — Extended identity modeling (P1-P3)
@@ -459,8 +459,8 @@ Pull requests are welcome. This is a personal project, so:
 
 - **Breakage happens.** Major version bumps (e.g. v2.0.0) may rename pages, reorganize data directories, or change schemas in ways that require a migration pass on your local data. Check the relevant `.changelog/vX.Y.Z.md` for what changed.
 - **Data migration.** If something stops working after an update, the fastest fix is to point your coding agent at the changelog: `"Read .changelog/vX.Y.Z.md and fix any migration issues in my PortOS data/ directory."` Most data issues are trivially auto-fixable this way.
-- **Opinionated by design.** Architecture decisions (single-user, auth optional and off by default, PostgreSQL + flat files over a heavy ORM, Tailscale-only networking) are intentional and will not change. PRs that add multi-user support or general-purpose hardening — CORS restrictions, rate limiting, request-level concurrency controls — will not be merged. See the Security Model section of [CLAUDE.md](./CLAUDE.md) for what that trust model does and does not assume.
-- **Style.** Match the existing conventions in [CLAUDE.md](./CLAUDE.md) before opening a PR — especially the no-try/catch route convention, emoji-prefixed logging, and Zod validation on all inputs.
+- **Opinionated by design.** Architecture decisions (single-user, auth optional and off by default, PostgreSQL + flat files over a heavy ORM, Tailscale-only networking) are intentional and will not change. PRs that add multi-user support or general-purpose hardening — CORS restrictions, rate limiting, request-level concurrency controls — will not be merged. See the Security Model section of [AGENTS.md](./AGENTS.md) for what that trust model does and does not assume.
+- **Style.** Match the existing conventions in [AGENTS.md](./AGENTS.md) before opening a PR — especially the no-try/catch route convention, emoji-prefixed logging, and Zod validation on all inputs.
 
 ## License
 

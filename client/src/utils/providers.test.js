@@ -38,13 +38,15 @@ import {
   isPrivateNetworkEndpoint,
   PROVIDER_CARD_STATE,
   isOllamaBackedProvider,
-  isOrcaRouterBackedProvider,
+  gatewayForProvider,
+  isGatewayBackedProvider,
   isGrokBuildCli,
   isKimiProvider,
   isCodexProvider,
   supportsModelRefresh,
   isAntigravityProvider,
   effortLevelsForProvider,
+  generationControlsFor,
   resolveCliEffort,
   CLAUDE_EFFORT_LEVELS,
   CODEX_EFFORT_LEVELS,
@@ -123,6 +125,13 @@ describe('effortLevelsForProvider (server mirror)', () => {
     ['claude code', { id: 'claude-code', command: 'claude' }, CLAUDE_EFFORT_LEVELS],
     ['codex', { id: 'codex', command: 'codex' }, CODEX_EFFORT_LEVELS],
     ['OpenCode Ollama', { id: 'opencode-ollama', command: 'opencode', ollamaBacked: true }, ['low', 'medium', 'high']],
+    // OpenCode forwards `reasoningEffort` to whichever local backend it is wired
+    // to, so the ladder belongs to every local namespace, not just Ollama.
+    ['OpenCode llama TUI', { id: 'opencode-llama-tui', command: 'opencode', llamaBacked: true }, ['low', 'medium', 'high']],
+    ['OpenCode MTPLX', { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true }, ['low', 'medium', 'high']],
+    ['OpenCode vLLM TUI', { id: 'opencode-vllm-tui', command: 'opencode', vllmBacked: true }, ['low', 'medium', 'high']],
+    ['OpenCode SGLang TUI', { id: 'opencode-sglang-tui', command: 'opencode', sglangBacked: true }, ['low', 'medium', 'high']],
+    ['OpenCode with no local backend', { id: 'opencode', command: 'opencode' }, null],
     ['grok (no effort control)', { id: 'grok-cli', command: 'grok' }, null],
     ['blank command is not claude', { id: 'ollama' }, null],
   ];
@@ -130,6 +139,45 @@ describe('effortLevelsForProvider (server mirror)', () => {
   it.each(CASES)('%s', (_label, provider, expected) => {
     expect(effortLevelsForProvider(provider)).toEqual(expected);
     expect(serverEffortLevelsForProvider(provider)).toEqual(expected);
+  });
+});
+
+// Which providers the Generation Defaults block is offered for. The rule has to
+// match what the server actually forwards, or the editor advertises a control
+// that does nothing: `buildAgentGeneration` (server/lib/opencodeConfig.js) for
+// the OpenCode wrappers, `apiGenerationOptions`
+// (server/lib/aiToolkit/internal/generationOptions.js) for HTTP runs.
+describe('generationControlsFor', () => {
+  it.each([
+    ['OpenCode llama TUI', { id: 'opencode-llama-tui', command: 'opencode', llamaBacked: true }, { temperature: true, topP: true, thinking: true }],
+    ['OpenCode MTPLX', { id: 'opencode-mtplx', command: 'opencode', mtplxBacked: true }, { temperature: true, topP: true, thinking: true }],
+    // vLLM routes the thinking toggle through the chat template like the other
+    // two. Both sides were written before `vllmBacked` existed, so the editor
+    // hid the whole block while the server discarded every control anyway
+    // (#4765).
+    ['OpenCode vLLM TUI', { id: 'opencode-vllm-tui', command: 'opencode', vllmBacked: true }, { temperature: true, topP: true, thinking: true }],
+    // SGLang takes the same chat-template thinking toggle, and shipped with the
+    // controls wired from day one so it never repeated vLLM's hole.
+    ['OpenCode SGLang TUI', { id: 'opencode-sglang-tui', command: 'opencode', sglangBacked: true }, { temperature: true, topP: true, thinking: true }],
+    // A Claude harness on Ollama is forwarded only MAX_THINKING_TOKENS
+    // (server/lib/cliChildEnv.js) — it owns its own sampling.
+    ['Claude Ollama TUI', { id: 'claude-ollama-tui', command: 'claude', ollamaBacked: true }, { temperature: false, topP: false, thinking: true }],
+    // ...but a Claude harness on ANY OTHER local backend gets no control at all.
+    // MAX_THINKING_TOKENS is the harness's only thinking lever, and it means
+    // "off" solely on Ollama; SGLang takes `chat_template_kwargs.enable_thinking`,
+    // which the Anthropic wire cannot carry, so the toggle would pin a value
+    // nothing reads. Sampling was never forwardable on a Claude harness either,
+    // which would have left the block rendering one inert select.
+    ['Claude SGLang TUI', { id: 'claude-sglang-tui', command: 'claude', sglangBacked: true }, null],
+    ['native Ollama API', { id: 'ollama', type: 'api', endpoint: 'http://localhost:11434/v1' }, { temperature: true, topP: true, thinking: true }],
+    // OrcaRouter proxies cloud models that own their own reasoning switch.
+    ['OpenCode OrcaRouter', { id: 'opencode-orcarouter', command: 'opencode', orcarouterBacked: true }, { temperature: true, topP: true, thinking: false }],
+    // Same posture for every gateway: upstream models own their reasoning switch.
+    ['OpenCode OpenRouter', { id: 'opencode-openrouter', command: 'opencode', gatewayBacked: 'openrouter' }, { temperature: true, topP: true, thinking: false }],
+    ['cloud API provider', { id: 'anthropic', type: 'api', endpoint: 'https://api.anthropic.com/v1' }, null],
+    ['vendor CLI', { id: 'claude-code', command: 'claude' }, null],
+  ])('%s', (_label, provider, expected) => {
+    expect(generationControlsFor(provider)).toEqual(expected);
   });
 });
 
@@ -434,17 +482,23 @@ describe('provider type predicates', () => {
     expect(isProcessProvider(api)).toBe(false);
   });
 
-  it('isOrcaRouterBackedProvider matches only the orcarouterBacked marker', () => {
-    expect(isOrcaRouterBackedProvider({ id: 'opencode-orcarouter', orcarouterBacked: true })).toBe(true);
-    expect(isOrcaRouterBackedProvider({ id: 'opencode-orcarouter-tui', orcarouterBacked: true })).toBe(true);
+  it('gatewayForProvider matches the generic marker and the legacy boolean', () => {
+    // The legacy per-gateway boolean, which stored records still carry.
+    expect(gatewayForProvider({ id: 'opencode-orcarouter', orcarouterBacked: true }).id).toBe('orcarouter');
+    expect(gatewayForProvider({ id: 'opencode-orcarouter-tui', orcarouterBacked: true }).id).toBe('orcarouter');
+    // The generic marker every new gateway wrapper ships with.
+    expect(gatewayForProvider({ id: 'opencode-openrouter', gatewayBacked: 'openrouter' }).id).toBe('openrouter');
+    expect(gatewayForProvider({ id: 'opencode-openrouter-tui', gatewayBacked: 'openrouter' }).label).toBe('OpenRouter');
     // A renamed wrapper that keeps the marker still inherits the sibling key.
-    expect(isOrcaRouterBackedProvider({ id: 'my-orca', orcarouterBacked: true })).toBe(true);
-    // The sibling API provider itself is NOT orcarouter-backed (it owns the key).
-    expect(isOrcaRouterBackedProvider({ id: 'orcarouter', type: 'api' })).toBe(false);
+    expect(isGatewayBackedProvider({ id: 'my-orca', orcarouterBacked: true })).toBe(true);
+    // The sibling API provider itself is NOT gateway-backed (it owns the key).
+    expect(isGatewayBackedProvider({ id: 'orcarouter', type: 'api' })).toBe(false);
+    expect(isGatewayBackedProvider({ id: 'openrouter', type: 'api' })).toBe(false);
     // An ollama-backed OpenCode wrapper shares the form shape but not the marker.
-    expect(isOrcaRouterBackedProvider({ id: 'opencode-ollama', ollamaBacked: true })).toBe(false);
-    expect(isOrcaRouterBackedProvider(null)).toBe(false);
-    expect(isOrcaRouterBackedProvider(undefined)).toBe(false);
+    expect(isGatewayBackedProvider({ id: 'opencode-ollama', ollamaBacked: true })).toBe(false);
+    expect(isGatewayBackedProvider({ id: 'x', gatewayBacked: 'not-a-gateway' })).toBe(false);
+    expect(isGatewayBackedProvider(null)).toBe(false);
+    expect(isGatewayBackedProvider(undefined)).toBe(false);
    });
 
   it('isOllamaBackedProvider matches the marker or an Ollama base URL', () => {
@@ -619,10 +673,20 @@ describe('isEmbeddingModel / filterGenerationModels', () => {
     expect(isEmbeddingModel('')).toBe(false);
   });
 
+  // These name no `embed` marker at all, so the anchored markers miss them and
+  // they read as chat models — the picker would offer `all-minilm`, and the
+  // daemon answers `400 "all-minilm:latest" does not support chat`.
+  it('flags embedding models whose id carries no embed marker', () => {
+    expect(isEmbeddingModel('all-minilm:latest')).toBe(true);
+    expect(isEmbeddingModel('all-minilm:33m')).toBe(true);
+    expect(isEmbeddingModel('paraphrase-multilingual:latest')).toBe(true);
+  });
+
   it('drops sentinels and embedding models from generation lists', () => {
     expect(filterGenerationModels([
       CODEX_CONFIGURED_DEFAULT,
       'nomic-embed-text:latest',
+      'all-minilm:latest',
       'qwen3.6:35b',
       'llama3.2:latest',
     ])).toEqual(['qwen3.6:35b', 'llama3.2:latest']);
@@ -897,12 +961,16 @@ describe('supportsModelRefresh', () => {
     // have a usable fetcher or stay out of this list.
     expect(withButton).toEqual([
       'antigravity-cli', 'antigravity-tui', 'cerebras', 'claude-code',
-      'claude-code-bedrock', 'claude-ollama', 'claude-ollama-tui', 'cursor-cli',
+      'claude-code-bedrock', 'claude-ollama', 'claude-ollama-tui',
+      'claude-sglang', 'claude-sglang-tui', 'cursor-cli',
       'cursor-tui', 'grok', 'lmstudio', 'mtplx', 'nvidia-kimi', 'ollama',
       'opencode-llama-tui',
       'opencode-mtplx', 'opencode-mtplx-tui', 'opencode-ollama',
-      'opencode-ollama-tui', 'opencode-orcarouter', 'opencode-orcarouter-tui',
-      'orcarouter',
+      'opencode-ollama-tui', 'opencode-openrouter', 'opencode-openrouter-tui',
+      'opencode-orcarouter', 'opencode-orcarouter-tui',
+      'opencode-sglang', 'opencode-sglang-tui',
+      'opencode-vllm', 'opencode-vllm-tui',
+      'openrouter', 'orcarouter',
     ]);
   });
 });
@@ -1221,9 +1289,11 @@ describe('credentialSource', () => {
       .toEqual({ kind: 'none', ref: null });
   });
 
-  it('identifies an inherited OrcaRouter key', () => {
+  it('identifies an inherited gateway key, pointing at the sibling of that gateway', () => {
     expect(credentialSource({ id: 'opencode-orcarouter', type: 'cli', orcarouterBacked: true }))
       .toEqual({ kind: 'inherited', ref: 'orcarouter' });
+    expect(credentialSource({ id: 'opencode-openrouter', type: 'cli', gatewayBacked: 'openrouter' }))
+      .toEqual({ kind: 'inherited', ref: 'openrouter' });
   });
 
   it('identifies env credentials from explicit metadata and conventional names', () => {
@@ -1333,6 +1403,16 @@ describe('providerCardState', () => {
       .toEqual([{ code: 'inheritedApiKey', label: 'OrcaRouter API provider has no API key' }]);
     // Sibling absent from the list = unknown, which must not accuse the wrapper.
     expect(providerCardState(wrapper, { keySetFor: () => null }).state).toBe(PROVIDER_CARD_STATE.READY);
+    expect(providerCardState(wrapper, { keySetFor: () => true }).state).toBe(PROVIDER_CARD_STATE.READY);
+  });
+
+  it('blocks an OpenRouter wrapper against its OWN sibling, naming that gateway', () => {
+    const wrapper = cli({ id: 'opencode-openrouter', gatewayBacked: 'openrouter' });
+    expect(providerCardState(wrapper, { keySetFor: id => id === 'openrouter' ? false : null }).missing)
+      .toEqual([{ code: 'inheritedApiKey', label: 'OpenRouter API provider has no API key' }]);
+    // An OrcaRouter key must never satisfy an OpenRouter wrapper.
+    expect(providerCardState(wrapper, { keySetFor: id => id === 'orcarouter' }).missing)
+      .toEqual([{ code: 'inheritedApiKey', label: 'OpenRouter API provider has no API key' }]);
     expect(providerCardState(wrapper, { keySetFor: () => true }).state).toBe(PROVIDER_CARD_STATE.READY);
   });
 

@@ -55,7 +55,7 @@
  * `agentManagement.terminateAgent` runs the real signal sequence. That collision
  * is the most confusing thing in the cluster, so the facade renames the
  * request-side one to `requestAgentTermination` and lets the process-side one
- * keep its name, symmetric with its sibling `killAgent`. CLAUDE.md resolves
+ * keep its name, symmetric with its sibling `killAgent`. AGENTS.md resolves
  * same-name collisions with `export * as <namespace>`, but namespacing here
  * would spell the call `agentOrchestrator.agentManagement.terminateAgent` —
  * re-exposing the very leaf module the facade exists to hide — so this one

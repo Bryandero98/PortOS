@@ -1,8 +1,16 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Brain, Check, X, BookOpen, Play } from 'lucide-react';
+import { Brain, Check, X, Play } from 'lucide-react';
 import { DRILL_LABELS, nBackBalancedAccuracy } from './constants';
-import { safeReadJsonStorage, safeWriteStorage } from '../../../lib/safeStorage.js';
 import useMounted from '../../../hooks/useMounted';
+import useKeyCapture from '../../../hooks/useKeyCapture';
+import { isPressKey, noPointerFocusSurfaceProps } from '../../../lib/a11yKeyboard.js';
+import {
+  CognitiveDrillTutorial,
+  getDrillTutorial,
+  hasDrillTutorial,
+  hasSeenDrillTutorial,
+  markDrillTutorialSeen,
+} from './CognitiveDrillTutorial';
 
 /**
  * Interactive runner for deterministic cognitive drills (n-back, digit-span,
@@ -30,6 +38,10 @@ export default function PostCognitiveDrillRunner({ drill, drillIndex, drillCount
   // (and each runner's `startedAtRef`) don't start until the user taps Start.
   // Keyed by drill.type so each new type in a session re-evaluates cleanly.
   return (
+    // These drills are scored on the keydown, and native button activation fires
+    // on the keyup — so a click that parked focus on a response button would
+    // silently inflate every later reaction time.
+    <div {...noPointerFocusSurfaceProps}>
     <DrillTutorialGate
       key={drill.type}
       drill={drill}
@@ -39,6 +51,7 @@ export default function PostCognitiveDrillRunner({ drill, drillIndex, drillCount
     >
       {renderCognitiveDrill(shared)}
     </DrillTutorialGate>
+    </div>
   );
 }
 
@@ -71,205 +84,27 @@ function renderCognitiveDrill(shared) {
 }
 
 // =============================================================================
-// FIRST-RUN TUTORIAL — a how-to card shown the first time each cognitive drill
-// type is encountered, then never again (per-type flag in localStorage).
+// FIRST-RUN TUTORIAL GATE — holds the runner until the how-to card (if the type
+// has one) is dismissed. Only the GATE lives here: the card itself, its copy and
+// its standalone preview are in CognitiveDrillTutorial.jsx, so the settings and
+// launcher surfaces can reach the help text without importing a drill runner.
 // =============================================================================
 
-// One JSON blob keyed by drill type. Reads/writes go through the shared
-// safeStorage helpers so a missing/blocked/corrupt store (SSR, Safari private
-// mode) can never crash the `useState` initializer that reads it — a storage
-// failure just means the tutorial shows again.
-const DRILL_TUTORIAL_SEEN_KEY = 'portos.post.drillTutorialSeen';
-
-function loadSeenTutorials() {
-  const parsed = safeReadJsonStorage(DRILL_TUTORIAL_SEEN_KEY, {});
-  return parsed && typeof parsed === 'object' ? parsed : {};
-}
-
-export function hasSeenDrillTutorial(type) {
-  return loadSeenTutorials()[type] === true;
-}
-
-export function markDrillTutorialSeen(type) {
-  const seen = loadSeenTutorials();
-  if (seen[type]) return;
-  seen[type] = true;
-  safeWriteStorage(DRILL_TUTORIAL_SEEN_KEY, JSON.stringify(seen));
-}
-
-// Per-type how-to content. A pure function of the drill so config-dependent
-// copy (n-back lag, digit-span direction, reaction-time mode) reads correctly.
-// Returns null for types with no tutorial (which skip the gate entirely).
-export function getDrillTutorial(drill) {
-  const cfg = drill?.config || {};
-  switch (drill?.type) {
-    case 'n-back': {
-      const n = cfg.n ?? 2;
-      const step = `${n} step${n !== 1 ? 's' : ''}`;
-      return {
-        goal: `Watch a stream of letters and catch when one repeats from ${step} earlier.`,
-        steps: [
-          'Letters appear one at a time, then vanish.',
-          `Compare each letter to the one ${step} back in the stream.`,
-          'When they match, hit Match right away. If it doesn’t match, do nothing.',
-        ],
-        controls: 'Tap Match, or press Space / Enter.',
-      };
-    }
-    case 'digit-span': {
-      const backward = cfg.direction === 'backward';
-      return {
-        goal: `Memorize a run of digits, then type them ${backward ? 'in reverse' : 'back in order'}.`,
-        steps: [
-          'Digits flash one at a time, then the sequence ends.',
-          `Type the digits ${backward ? 'in reverse order — last shown first' : 'in the order they appeared'}.`,
-          'Each round adds one more digit. Submit with Enter.',
-        ],
-        controls: 'Type the digits and press Enter (or Skip to pass).',
-      };
-    }
-    case 'stroop':
-      return {
-        goal: 'Name the ink color of a word — not what the word says.',
-        steps: [
-          'A color word appears, printed in some ink color.',
-          'Pick the button matching the INK color, ignoring the word itself.',
-          'Move fast, but let the color win over the reading reflex.',
-        ],
-        controls: 'Tap a color, or press its number key (1–4).',
-      };
-    case 'schulte-table':
-      return {
-        goal: 'Find the numbers in ascending order across a shuffled grid.',
-        steps: [
-          'A grid of scrambled numbers appears.',
-          'Tap 1, then 2, then 3… in order.',
-          'Keep your gaze near the center and scan — speed is the point.',
-        ],
-        controls: 'Tap each number in sequence.',
-      };
-    case 'mental-rotation':
-      return {
-        goal: 'Spot the shape that is the same as the target, just rotated.',
-        steps: [
-          'A target shape is shown up top.',
-          'One option below is that shape turned to a new angle; the rest are mirrored or different.',
-          'Pick the pure rotation — not a mirror image.',
-        ],
-        controls: 'Tap an option, or press its number key (1–4).',
-      };
-    case 'reaction-time': {
-      const choice = cfg.mode === 'choice';
-      return {
-        goal: choice ? 'React to the box that lights up — as fast as you can.' : 'React the instant the signal fires.',
-        steps: choice
-          ? [
-            'Wait while the boxes stay dim.',
-            'At a random moment, one box lights up green.',
-            'Press that box’s number immediately — don’t jump early or it counts as a false start.',
-          ]
-          : [
-            'Wait while the circle stays gray.',
-            'At a random moment it turns green and reads “GO!”.',
-            'Press Space (or tap) the instant it does — don’t jump early or it counts as a false start.',
-          ],
-        controls: choice ? 'Number keys, or tap the lit box.' : 'Space / Enter, or tap.',
-      };
-    }
-    case 'task-switching':
-      return {
-        goal: 'Use the rule cue to classify each stimulus, switching rules when the cue changes.',
-        steps: [
-          'Read the rule cue first: color, shape, or fill.',
-          'When the stimulus appears, answer using only that rule and ignore its other attributes.',
-          'Rule changes and conflicting attributes are deliberate — accuracy comes before speed.',
-        ],
-        controls: 'Tap Left / Right, or press the Left / Right arrow key.',
-      };
-    case 'go-no-go':
-      return {
-        goal: 'Respond to go signals and withhold your response to no-go lures.',
-        steps: [
-          'A symbol appears briefly on every trial.',
-          'Tap or press Space for the filled-circle go signal.',
-          'Do nothing for a square or ringed-circle lure; the next trial advances at the deadline.',
-        ],
-        controls: 'Tap the signal, or press Space / Enter. Withhold on no-go.',
-      };
-    case 'flanker':
-      return {
-        goal: 'Report the center arrow while ignoring the surrounding arrows.',
-        steps: [
-          'A row of arrows appears.',
-          'Answer the direction of the center arrow only.',
-          'The outer arrows may agree or conflict; keep attention on the center.',
-        ],
-        controls: 'Tap Left / Right, or press the Left / Right arrow key.',
-      };
-    default:
-      return null;
-  }
-}
-
-// Holds the runner until the first-run tutorial (if any) is dismissed.
 function DrillTutorialGate({ drill, isTraining, drillIndex, drillCount, children }) {
   const [showTutorial, setShowTutorial] = useState(
-    () => getDrillTutorial(drill) != null && !hasSeenDrillTutorial(drill.type),
+    () => hasDrillTutorial(drill.type) && !hasSeenDrillTutorial(drill.type),
   );
   if (!showTutorial) return children;
   return (
     <CognitiveDrillTutorial
       drill={drill}
-      isTraining={isTraining}
-      drillIndex={drillIndex}
-      drillCount={drillCount}
-      onStart={() => { markDrillTutorialSeen(drill.type); setShowTutorial(false); }}
+      tut={getDrillTutorial(drill)}
+      header={<DrillHeader type={drill.type} isTraining={isTraining} drillIndex={drillIndex} drillCount={drillCount} />}
+      onAction={() => { markDrillTutorialSeen(drill.type); setShowTutorial(false); }}
+      actionLabel="Start drill"
+      ActionIcon={Play}
+      footNote="You’ll only see this the first time for each drill type. Reopen it any time from the launcher or Config."
     />
-  );
-}
-
-function CognitiveDrillTutorial({ drill, isTraining, drillIndex, drillCount, onStart }) {
-  const tut = getDrillTutorial(drill);
-  return (
-    <div className="max-w-lg mx-auto space-y-6">
-      <DrillHeader type={drill.type} isTraining={isTraining} drillIndex={drillIndex} drillCount={drillCount} />
-
-      <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-5 space-y-4">
-        <div className="flex items-center gap-2 text-rose-300">
-          <BookOpen size={18} />
-          <h3 className="text-lg font-semibold">{DRILL_LABELS[drill.type] || drill.type}</h3>
-          <span className="ml-auto text-[0.65rem] uppercase tracking-wide text-rose-400/70">How it works</span>
-        </div>
-
-        <p className="text-sm text-gray-300">{tut.goal}</p>
-
-        <ol className="space-y-2">
-          {tut.steps.map((stepText, i) => (
-            <li key={i} className="flex gap-3 text-sm text-gray-300">
-              <span className="flex-shrink-0 w-5 h-5 rounded-full bg-rose-500/20 text-rose-300 text-xs font-semibold flex items-center justify-center">
-                {i + 1}
-              </span>
-              <span>{stepText}</span>
-            </li>
-          ))}
-        </ol>
-
-        <p className="text-xs text-gray-500">
-          <span className="text-gray-400 font-medium">Controls:</span> {tut.controls}
-        </p>
-      </div>
-
-      <button
-        type="button"
-        onClick={onStart}
-        autoFocus
-        className="w-full px-6 py-4 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-500/40 font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
-      >
-        <Play size={18} /> Start drill
-      </button>
-
-      <p className="text-center text-xs text-gray-600">You&rsquo;ll only see this the first time for each drill type.</p>
-    </div>
   );
 }
 
@@ -688,17 +523,16 @@ function NBackRunner({ drill, drillIndex, drillCount, onComplete, isTraining }) 
     });
   }, [n]);
 
-  // Spacebar / Enter registers a match for the current stimulus.
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.code === 'Space' || e.key === ' ' || e.key === 'Enter') {
-        e.preventDefault();
-        registerMatch();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [registerMatch]);
+  // Spacebar / Enter registers a match for the current stimulus. Claimed in the
+  // capture phase so the voice widget's global push-to-talk hotkey (Space by
+  // default) can't open the mic on every match press.
+  useKeyCapture({
+    onKeyDown: (e) => {
+      if (!isPressKey(e)) return false;
+      registerMatch();
+      return true;
+    },
+  });
 
   const decisionTotal = Math.max(0, seq.length - n);
   const decisionDone = pos >= n ? pos - n : 0;
@@ -1364,19 +1198,19 @@ function ReactionTimeRunner({ drill, drillIndex, drillCount, onComplete, isTrain
   }, [mode, trialIdx, trials, recordAndAdvance]);
 
   // Space (simple mode) or number keys 1..N (choice mode) register a response.
-  useEffect(() => {
-    const onKey = (e) => {
-      if (phase === 'result') return;
-      if (mode === 'simple') {
-        if (e.code === 'Space' || e.key === ' ' || e.key === 'Enter') { e.preventDefault(); respond(0); }
-      } else {
-        const idx = parseInt(e.key, 10) - 1;
-        if (Number.isInteger(idx) && idx >= 0 && idx < choices) { e.preventDefault(); respond(idx); }
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [phase, mode, choices, respond]);
+  // Claimed in the capture phase so the voice widget's global push-to-talk
+  // hotkey (Space by default) can't open the mic on every reaction press.
+  useKeyCapture({
+    onKeyDown: (e) => {
+      const idx = mode === 'simple' ? (isPressKey(e) ? 0 : -1) : parseInt(e.key, 10) - 1;
+      if (!Number.isInteger(idx) || idx < 0 || idx >= (mode === 'simple' ? 1 : choices)) return false;
+      // Claim the key through the between-trials result phase too, so a user
+      // still tapping after the trial ended doesn't leak the press to the voice
+      // hotkey — just don't record it against the trial that already resolved.
+      if (phase !== 'result') respond(idx);
+      return true;
+    },
+  });
 
   const progressPct = trials.length > 0 ? (trialIdx / trials.length) * 100 : 0;
 
@@ -1692,16 +1526,15 @@ function GoNoGoRunner({ drill, drillIndex, drillCount, onComplete, isTraining })
     };
   }, [deadlineMs, stimulusMs, trialIdx, trials]);
 
-  useEffect(() => {
-    const onKey = (event) => {
-      if (event.code === 'Space' || event.key === ' ' || event.key === 'Enter') {
-        event.preventDefault();
-        recordRef.current(true);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  // Claimed in the capture phase so the voice widget's global push-to-talk
+  // hotkey (Space by default) can't open the mic on every go press.
+  useKeyCapture({
+    onKeyDown: (event) => {
+      if (!isPressKey(event)) return false;
+      recordRef.current(true);
+      return true;
+    },
+  });
 
   const trial = trials[trialIdx];
   const symbolLabel = { '●': 'filled circle', '◉': 'ringed circle', '■': 'filled square' }[trial?.symbol] || 'signal';

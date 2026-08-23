@@ -14,7 +14,7 @@ import {
 } from '../lib/universeBuilderShared';
 
 /**
- * URL-driven tab + bucket state for the Universe Builder (per CLAUDE.md
+ * URL-driven tab + bucket state for the Universe Builder (per AGENTS.md
  * "Linkable routes for all views"). `?tab=cast&bucket=heroes` deep-links into
  * a sub-bucket; both fall back to bible / "" (All) on first load. Existing
  * params (e.g. `?series=` on the embedded Canon section) are forwarded

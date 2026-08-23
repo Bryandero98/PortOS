@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Play, Pause, RotateCcw, Rewind, FastForward, X, Zap } from 'lucide-react';
 import Modal from './ui/Modal';
+import useKeyCapture from '../hooks/useKeyCapture';
+import { noPointerFocusSurfaceProps } from '../lib/a11yKeyboard';
 
 // Optimal Recognition Point — the focal letter the eye lands on. Spritz-style:
 // shorter words use a left-shifted ORP, longer words shift right. Returns the
@@ -53,6 +55,7 @@ export default function RapidReader({
   focalColor = '#ef4444',
   autoPlay = false,
   compact = false,
+  inDialog = false,
   onClose,
   onComplete
 }) {
@@ -98,15 +101,13 @@ export default function RapidReader({
     return () => clearTimeout(timeoutRef.current);
   }, [playing, idx, total, current, delayFor, onComplete]);
 
-  // Keyboard controls — only active when this component is mounted.
-  // Registered in the capture phase so we run before bubble-phase window
-  // listeners (notably VoiceWidget's hotkey, which also claims Space). When
-  // we handle a key we call stopImmediatePropagation so the voice agent
-  // doesn't toggle its mic on the same press.
-  useEffect(() => {
-    const onKey = (e) => {
-      const tag = e.target?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return;
+  // Keyboard controls — only active while this component is mounted. Claimed in
+  // the capture phase so a handled key never reaches a bubble-phase window
+  // listener (notably VoiceWidget's hotkey, which also binds Space); keys we
+  // do not handle pass through untouched.
+  useKeyCapture({
+    enabledInDialog: inDialog,
+    onKeyDown: (e) => {
       if (e.key === ' ') setPlaying((p) => !p);
       else if (e.key === 'ArrowLeft') setIdx((i) => Math.max(0, i - 1));
       else if (e.key === 'ArrowRight') setIdx((i) => Math.min(total - 1, i + 1));
@@ -114,13 +115,10 @@ export default function RapidReader({
       else if (e.key === '+' || e.key === '=') setWpm((w) => Math.min(1200, w + 25));
       else if (e.key === '-' || e.key === '_') setWpm((w) => Math.max(100, w - 25));
       else if (e.key === 'Escape' && onClose) onClose();
-      else return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, [total, onClose]);
+      else return false;
+      return true;
+    },
+  });
 
   const restart = () => { setIdx(0); setPlaying(true); };
   const togglePlay = () => {
@@ -143,7 +141,9 @@ export default function RapidReader({
   }
 
   return (
-    <div className="bg-port-card border border-port-border rounded-lg overflow-hidden">
+    // The reader owns Space, the arrows and +/- while it is mounted, so no click
+    // inside it may park focus on a button and take those keys over.
+    <div className="bg-port-card border border-port-border rounded-lg overflow-hidden" {...noPointerFocusSurfaceProps}>
       {/* Reader display */}
       <div className={`relative bg-port-bg flex items-center justify-center ${compact ? 'py-10' : 'py-16 sm:py-24'}`}>
         {/* Center alignment guide — vertical line at the focal point */}
@@ -298,15 +298,16 @@ function FocalSlot({ chunk, focalColor }) {
 }
 
 // Modal wrapper — full-screen overlay so any page can pop the reader without
-// leaving its context. Closes on Esc or backdrop click. The inner RapidReader
-// registers a capture-phase window keydown listener (so Space / arrow keys
-// can be claimed before VoiceWidget sees them) that, on Esc, calls onClose
-// and then preventDefault() + stopImmediatePropagation(). Modal's window
-// listener is bubble-phase, so it never even reaches the same event — the
-// capture-phase stopImmediatePropagation cancels propagation entirely; even
-// if it did reach Modal, `defaultPrevented` would suppress the close
-// dispatch. RapidReader owns Esc unilaterally inside this wrapper.
+// leaving its context. `inDialog` is what lets the reader keep its keys in here:
+// its useKeyCapture claim otherwise stands down while an aria-modal layer is open,
+// and Modal IS that layer. The claim runs in the capture phase, so Esc reaches
+// onClose and never Modal's own bubble-phase close — the reader owns Esc here.
 export function RapidReaderModal({ open, text, title, onClose, ...readerProps }) {
+  // Aim the dialog's initial focus at the header ROW, not at the Close button
+  // inside it. Focus otherwise lands on the first focusable descendant, and
+  // Space on a focused button belongs to the browser — so the reader's own
+  // Space (play/pause) would have dismissed the reader instead.
+  const headerRef = useRef(null);
   return (
     <Modal
       open={open}
@@ -314,8 +315,9 @@ export function RapidReaderModal({ open, text, title, onClose, ...readerProps })
       size="xl"
       ariaLabel={title || 'Rapid Reader'}
       panelClassName="bg-port-card border border-port-border rounded-xl shadow-2xl"
+      initialFocusRef={headerRef}
     >
-      <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-port-border">
+      <div ref={headerRef} tabIndex={-1} className="flex items-center justify-between gap-2 px-4 py-2 border-b border-port-border">
         <div className="flex items-center gap-2 text-sm text-gray-300 truncate">
           <Zap size={14} className="text-port-accent shrink-0" />
           <span className="truncate">{title || 'Rapid Reader'}</span>
@@ -323,13 +325,14 @@ export function RapidReaderModal({ open, text, title, onClose, ...readerProps })
         <button
           type="button"
           onClick={onClose}
+         
           className="min-h-[44px] min-w-[44px] flex items-center justify-center text-gray-400 hover:text-white"
           aria-label="Close rapid reader"
         >
           <X size={18} />
         </button>
       </div>
-      <RapidReader text={text} onClose={onClose} autoPlay {...readerProps} />
+      <RapidReader text={text} onClose={onClose} autoPlay inDialog {...readerProps} />
     </Modal>
   );
 }

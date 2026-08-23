@@ -6,13 +6,13 @@ import { join, extname, basename, isAbsolute, delimiter } from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { randomUUID } from 'crypto';
 import { analyzeError, analyzeHttpError, ERROR_CATEGORIES } from './errorDetection.js';
-import { isOllamaBackedProvider } from './internal/ollamaBacked.js';
+import { apiGenerationOptions } from './internal/generationOptions.js';
 
 // npm-installed CLI providers (claude, codex, opencode, …) are .cmd/.bat
 // shims on Windows; Node's spawn() can't execute those without going through
 // cmd.exe. Mirrors `server/lib/bufferedSpawn.js`'s IS_WIN32/killProcessTree/
 // resolveWindowsExecutable pattern — duplicated rather than imported, since
-// this directory must stay self-contained (see ./CLAUDE.md).
+// this directory must stay self-contained (see ./AGENTS.md).
 const IS_WIN32 = process.platform === 'win32';
 
 // Extensions Windows can launch directly, checked in cmd.exe's own resolution
@@ -158,7 +158,7 @@ export function createRunnerService(config = {}) {
   // from server/index.js, the host registers them via setCliRunner/setTuiRunner.
   // Externally-spawned runs (the host owns their child process / pty) are tracked
   // in `externalRuns` so the toolkit's stopRun/isRunActive/deleteRun see them.
-  // See server/lib/aiToolkit/CLAUDE.md (override contract).
+  // See server/lib/aiToolkit/AGENTS.md (override contract).
   let cliRunnerOverride = null;
   const externalRuns = new Map();
   // A host runner sees only the child/PTY exit event. Remember when that exit
@@ -651,12 +651,7 @@ export function createRunnerService(config = {}) {
               model: model || provider.defaultModel,
               messages: [{ role: 'user', content: messageContent }],
               stream: true,
-              ...(isOllamaBackedProvider(provider)
-                ? {
-                    temperature: Number.isFinite(Number(provider.temperature)) ? Number(provider.temperature) : 0.6,
-                    ...(typeof provider.thinking === 'boolean' ? { think: provider.thinking } : {})
-                  }
-                : {}),
+              ...apiGenerationOptions(provider),
               // Ollama's OpenAI-compatible endpoint defaults to a ~4K context
               // window and silently truncates longer prompts. A top-level
               // num_ctx lifts it (honored by Ollama, ignored by other

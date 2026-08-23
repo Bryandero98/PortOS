@@ -4,8 +4,10 @@ import { ensureBackendProvider } from './localLlm.js';
 import { getProviderById } from './providers.js';
 import { markProviderAvailable } from './providerStatus.js';
 import { ensureProviderReady as ensureOllamaProviderReady } from './ollamaManager.js';
-import { readResponseJson } from '../lib/readResponseJson.js';
 import { anyAbortSignal } from '../lib/requestAbort.js';
+// The SSE read loop lives in `lib/openAiChatStream.js` so the assessments
+// service can measure a bare loopback daemon that has no provider record.
+import { buildMessages, streamOllamaChat, streamOpenAiChat } from '../lib/openAiChatStream.js';
 import { assertSecretEndpoint } from '../lib/aiToolkit/internal/endpointGuard.js';
 
 const PROVIDER_BY_BACKEND = { ollama: 'ollama', lmstudio: 'lmstudio' };
@@ -20,13 +22,51 @@ export function buildPrompt({ systemPrompt, prompt }) {
   return `System instructions:\n${system}\n\nUser prompt:\n${prompt}`;
 }
 
-export function summarizeTimings({ startedAt, firstChunkAt, endedAt, text }) {
+/**
+ * Collapse one generation's clock readings (and, when the daemon reported them,
+ * its token counts) into the numbers PortOS records.
+ *
+ * ## Why tokens/s is decode-only
+ *
+ * `tokensPerSecond` divides the completion tokens by the time spent GENERATING
+ * them — wall clock minus time-to-first-token — because that is what "tokens per
+ * second" means everywhere else in the local-LLM world (llama.cpp's `eval time`,
+ * Ollama's `eval_count / eval_duration`). Including prefill would make the same
+ * model look several times slower at 16k context than at 512 for a reason that
+ * has nothing to do with its decode speed, and TTFT is already reported beside
+ * it. Prefill gets its own honest number, `promptTokensPerSecond`.
+ *
+ * @param {{ completionTokens: number|null, promptTokens: number|null, estimated: boolean }} [usage]
+ *   token counts from `streamOpenAiChat`'s `onStats`. Absent entirely for a
+ *   caller that does not track usage, which records `null` — not zero.
+ * @param {number|null} [streamChunks] number of non-empty streamed chunks
+ */
+export function summarizeTimings({ startedAt, firstChunkAt, endedAt, text, usage, streamChunks = null }) {
   const totalMs = endedAt - startedAt;
   const ttftMs = firstChunkAt ? firstChunkAt - startedAt : null;
   const chars = text.length;
   // A sub-millisecond total makes a rate meaningless — report n/a (null)
   // rather than `chars`, which would surface the char COUNT as a chars/sec rate.
   const charsPerSecond = totalMs > 0 ? Number((chars / (totalMs / 1000)).toFixed(2)) : null;
+
+  const completionTokens = Number.isFinite(usage?.completionTokens) ? usage.completionTokens : null;
+  const promptTokens = Number.isFinite(usage?.promptTokens) ? usage.promptTokens : null;
+  // Decode window: everything after the first token arrived. Falls back to the
+  // full wall clock when TTFT was never observed (a non-streamed response), which
+  // understates the rate rather than inventing a prefill split that wasn't seen.
+  const reportedDecodeMs = Number.isFinite(usage?.completionMs) && usage.completionMs > 0
+    ? usage.completionMs
+    : null;
+  const reportedPromptMs = Number.isFinite(usage?.promptMs) && usage.promptMs > 0
+    ? usage.promptMs
+    : null;
+  const observedDecodeMs = (streamChunks === null || streamChunks > 1) && Number.isFinite(ttftMs)
+    ? totalMs - ttftMs
+    : totalMs;
+  const decodeMs = reportedDecodeMs ?? observedDecodeMs;
+  const rate = (tokens, ms) =>
+    (Number.isFinite(tokens) && tokens > 0 && ms > 0 ? Number((tokens / (ms / 1000)).toFixed(2)) : null);
+
   return {
     startedAt: new Date(startedAt).toISOString(),
     endedAt: new Date(endedAt).toISOString(),
@@ -34,46 +74,34 @@ export function summarizeTimings({ startedAt, firstChunkAt, endedAt, text }) {
     totalMs,
     chars,
     charsPerSecond,
+    // `null` throughout = the daemon reported no usage and nothing streamed to
+    // count. Never 0, which a reader would take for a measured standstill.
+    completionTokens,
+    promptTokens,
+    tokensPerSecond: rate(completionTokens, decodeMs),
+    // Prompt processing (prefill) speed: how fast the daemon chewed through the
+    // context before the first token. Needs BOTH a prompt-token count and a
+    // measured TTFT, so it is null on a non-streamed response.
+    promptTokensPerSecond: reportedPromptMs
+      ? rate(promptTokens, reportedPromptMs)
+      : (Number.isFinite(ttftMs) ? rate(promptTokens, ttftMs) : null),
+    // Native Ollama reports these directly. Keeping them in the sample makes
+    // the report auditable and avoids forcing readers to reverse the rates.
+    decodeMs: reportedDecodeMs,
+    promptMs: reportedPromptMs,
+    // Runtime timings are authoritative. When they are absent, a response
+    // delivered in multiple chunks has an observable decode window; a single
+    // chunk does not, so its token rate uses end-to-end wall time rather than
+    // subtracting TTFT from a near-zero remainder.
+    timingSource: reportedDecodeMs
+      ? 'runtime'
+      : (streamChunks !== null && streamChunks <= 1 ? 'wall-clock' : 'stream-window'),
+    // Whether the token count came from the daemon's own tokenizer (`false`) or
+    // from counting streamed frames (`true`). `null` = no token count at all.
+    // A consumer must label an estimate as one — PortOS has no tokenizer, and
+    // presenting a frame count as a measurement is the thing this flag prevents.
+    tokensEstimated: completionTokens === null ? null : Boolean(usage?.estimated),
   };
-}
-
-// Parse one OpenAI-style SSE `data:` line into its content/reasoning delta.
-// Returns null for non-data lines, the [DONE]/✅ sentinels, or a malformed
-// frame: a single bad frame must SKIP, not abort the stream — one non-JSON
-// keep-alive would otherwise throw out of the read loop and discard every
-// token already received.
-export function extractStreamDelta(rawLine) {
-  const line = rawLine.trim();
-  if (!line.startsWith('data: ')) return null;
-  const data = line.slice(6).trim();
-  if (!data || data === '[DONE]' || data === '✅') return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(data);
-  } catch {
-    return null;
-  }
-  const delta = parsed?.choices?.[0]?.delta;
-  return { content: delta?.content || '', reasoning: delta?.reasoning || '' };
-}
-
-export function buildMessages({ systemPrompt, prompt }) {
-  const system = String(systemPrompt || '').trim();
-  return [
-    ...(system ? [{ role: 'system', content: system }] : []),
-    { role: 'user', content: prompt },
-  ];
-}
-
-// Resolve the text to surface from a (possibly interrupted) stream: prefer the
-// visible content, fall back to reasoning when no content arrived (some models
-// emit only a reasoning channel), and '' when neither did. Used on both the
-// normal-finish path and the partial-output-on-throw path so a timed-out run
-// still shows what streamed before the abort.
-export function resolvePartialOutput({ output = '', reasoning = '' }) {
-  if (output.trim()) return output;
-  if (reasoning.trim()) return reasoning;
-  return '';
 }
 
 async function resolveLocalProvider(backend) {
@@ -94,7 +122,7 @@ async function resolveLocalProvider(backend) {
   return provider;
 }
 
-async function streamChatCompletion({ provider, backend, modelId, prompt, systemPrompt, temperature, maxTokens, signal, onChunk }) {
+async function streamChatCompletion({ provider, backend, modelId, prompt, systemPrompt, images, temperature, maxTokens, extraBody = {}, signal, onChunk, onStats, nativeOllamaUsage = false }) {
   if (backend === 'ollama') {
     const ready = await ensureOllamaProviderReady(provider).catch((err) => ({ success: false, error: err.message }));
     if (!ready.success) {
@@ -110,92 +138,26 @@ async function streamChatCompletion({ provider, backend, modelId, prompt, system
     allowCustomEndpoint: provider.allowCustomEndpoint === true,
   });
 
-  const headers = { 'Content-Type': 'application/json' };
-  if (provider.apiKey) headers.Authorization = `Bearer ${provider.apiKey}`;
-
-  const response = await fetch(`${provider.endpoint}/chat/completions`, {
-    method: 'POST',
-    headers,
+  const stream = backend === 'ollama' && nativeOllamaUsage ? streamOllamaChat : streamOpenAiChat;
+  return stream({
+    endpoint: provider.endpoint,
+    apiKey: provider.apiKey,
+    model: modelId,
+    messages: buildMessages({ systemPrompt, prompt, images }),
+    temperature,
+    maxTokens,
+    // The caller's knobs win over the provider default, so a caller measuring a
+    // specific value is never silently run at the provider's. (Ollama is not one
+    // of those callers: its OpenAI-compatible endpoint drops unknown body fields,
+    // so its context window is a daemon-restart knob — see the transport rule in
+    // `lib/localModelTuning.js` and `ollamaManager.ensureContextWindow`.)
+    extraBody: { ...(Number(provider.numCtx) > 0 ? { num_ctx: Number(provider.numCtx) } : {}), ...extraBody },
     signal,
-    body: JSON.stringify({
-      model: modelId,
-      messages: buildMessages({ systemPrompt, prompt }),
-      stream: true,
-      temperature,
-      max_tokens: maxTokens,
-      ...(Number(provider.numCtx) > 0 ? { num_ctx: Number(provider.numCtx) } : {}),
-    }),
-  }).catch((err) => ({ ok: false, status: 0, error: err.message }));
-
-  if (!response.ok) {
-    const body = response.text ? await response.text().catch(() => '') : response.error || '';
-    throw new Error(`Provider returned ${response.status || 0}: ${body || response.error || response.statusText || 'request failed'}`);
-  }
-
-  if (!response.body?.getReader) {
-    // Sentinel fallback: a non-JSON/blank 200 body must throw (caught by
-    // runLocalLlmTest → finalizeRunRecord success:false), not return '' — which
-    // line 205 would persist as a successful empty run. Mirrors the pre-helper
-    // response.json() throw; a valid body with empty content is unchanged.
-    const data = await readResponseJson(response, { fallback: null, emptyValue: null });
-    if (!data) {
-      throw new Error(`Provider returned a non-JSON response (${response.status})`);
-    }
-    const text = data.choices?.[0]?.message?.content || '';
-    if (text) await onChunk(text, 'content');
-    return text;
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let output = '';
-  let reasoning = '';
-
-  const consumeLine = async (rawLine) => {
-    const delta = extractStreamDelta(rawLine);
-    if (!delta) return;
-    if (delta.content) {
-      output += delta.content;
-      await onChunk(delta.content, 'content');
-    }
-    // Stream reasoning live too, on its own channel, so a reasoning-only model
-    // (deepseek-r1, qwq, …) renders its chain-of-thought as it arrives instead
-    // of sitting on "Waiting for the first token…" until the whole run lands.
-    // Kept distinct from content so the live panel can label it and so the
-    // final content-only `text` doesn't inherit reasoning prose.
-    if (delta.reasoning) {
-      reasoning += delta.reasoning;
-      await onChunk(delta.reasoning, 'reasoning');
-    }
-  };
-
-  // Always release the reader (and tear down the socket) on every exit path —
-  // a normal finish, an abort via the timeout signal, or a throw mid-stream.
-  // On a throw (e.g. an AbortError from the timeout) surface the tokens already
-  // streamed by attaching them to the error, so runLocalLlmTest can render the
-  // partial output alongside the timeout message instead of discarding it.
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) await consumeLine(line);
-    }
-    if (buffer.trim()) await consumeLine(buffer);
-  } catch (err) {
-    err.partialOutput = resolvePartialOutput({ output, reasoning });
-    throw err;
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-
-  // Both channels already streamed live via onChunk, so there's no end-of-stream
-  // re-emit here — re-pushing `resolved` would double the reasoning-only output
-  // the client just received. We only resolve the final text for the result record.
-  return resolvePartialOutput({ output, reasoning });
+    onChunk,
+    // Registering `onStats` is what asks the daemon for token counts; a runtime
+    // that does not support the ask is handled inside `streamOpenAiChat`.
+    onStats,
+  });
 }
 
 export async function runLocalLlmTest({
@@ -203,9 +165,16 @@ export async function runLocalLlmTest({
   modelId,
   prompt,
   systemPrompt = '',
+  // Base64 data URLs sent alongside the prompt as `image_url` parts — how the
+  // vision capability test asks a model to look at the fixture. Empty for every
+  // text-only caller, which keeps the plain string `content` shape.
+  images,
   temperature = 0.3,
   maxTokens = 1000,
   timeoutMs = 300000,
+  // Backend-specific request knobs merged into the chat-completions body (see
+  // `lib/localModelTuning.js#requestBody`). Empty for a plain playground run.
+  extraBody = {},
   signal: clientSignal,
   // Optional per-token callback `onToken(delta, kind)` where kind is 'content'
   // or 'reasoning'. When provided (streaming route), each delta is forwarded as
@@ -213,12 +182,22 @@ export async function runLocalLlmTest({
   // channel). The returned result is unchanged, so non-streaming callers ignore
   // this entirely.
   onToken,
+  // The Performance page opts into Ollama's native API so exact eval counts and
+  // decode/prefill durations survive. Normal playground runs stay on the same
+  // OpenAI-compatible path OpenCode uses.
+  nativeOllamaUsage = false,
 }) {
   const provider = await resolveLocalProvider(backend);
   const fullPrompt = buildPrompt({ systemPrompt, prompt });
   const startedAt = Date.now();
   let firstChunkAt = null;
   let runId = null;
+  // Filled by the stream's terminal usage frame (or the frame-count fallback).
+  // Stays null until then so a run that died before any frame records "no token
+  // count" rather than a fabricated zero.
+  let usage = null;
+  let streamChunks = 0;
+  const onStats = (stats) => { usage = stats; };
 
   try {
     const run = await createRun({
@@ -247,15 +226,20 @@ export async function runLocalLlmTest({
       modelId,
       prompt,
       systemPrompt,
+      images,
       temperature,
       maxTokens,
+      extraBody,
       signal,
+      nativeOllamaUsage,
+      onStats,
       onChunk: (chunk, kind = 'content') => {
         // First token of EITHER channel marks TTFT: for a reasoning model the
         // first thing it emits is reasoning, so timing it from that chunk is the
         // honest time-to-first-token (previously reasoning-only runs reported a
         // null TTFT because reasoning never reached this callback).
         if (!firstChunkAt && chunk) firstChunkAt = Date.now();
+        if (chunk) streamChunks += 1;
         // Await the consumer so socket backpressure from the streaming route
         // propagates back up to the upstream read loop (pauses reading until the
         // client drains). Non-streaming callers pass no onToken, so this no-ops.
@@ -272,8 +256,8 @@ export async function runLocalLlmTest({
       providerId: provider.id,
       runId,
       text,
-      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt, text }),
-      options: { temperature, maxTokens, timeoutMs },
+      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt, text, usage, streamChunks }),
+      options: { temperature, maxTokens, timeoutMs, nativeOllamaUsage },
     };
   } catch (err) {
     const endedAt = Date.now();
@@ -301,7 +285,89 @@ export async function runLocalLlmTest({
       runId,
       error,
       text: partialText,
-      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt, text: partialText }),
+      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt, text: partialText, usage, streamChunks }),
+      options: { temperature, maxTokens, timeoutMs, nativeOllamaUsage },
+    };
+  }
+}
+
+/**
+ * Measure one generation against a bare OpenAI-compatible loopback daemon —
+ * llama.cpp, MTPLX, or vLLM — that PortOS does NOT hold a provider record for.
+ *
+ * Returns the same shape as `runLocalLlmTest` (text / error / timings) so the
+ * assessment sampler treats every runtime identically. What it deliberately
+ * does NOT do is create a `/runs` record: `createRun` resolves a configured
+ * provider, and inventing one for a daemon the user started outside PortOS
+ * would put a phantom provider in the runs history.
+ *
+ * @param {object} options
+ * @param {string} options.runtime runtime id, echoed back on the result
+ * @param {string} options.endpoint OpenAI-compatible base ending in `/v1`
+ */
+export async function runEndpointLlmTest({
+  runtime,
+  endpoint,
+  // Empty for the usual unauthenticated loopback daemon; set for a vLLM
+  // container started behind `VLLM_API_KEY`, which 401s without it.
+  apiKey = '',
+  modelId,
+  prompt,
+  systemPrompt = '',
+  // See `runLocalLlmTest` — base64 data URLs for a vision request.
+  images,
+  temperature = 0.3,
+  maxTokens = 1000,
+  timeoutMs = 300000,
+  extraBody = {},
+  signal: clientSignal,
+  onToken,
+}) {
+  const startedAt = Date.now();
+  let firstChunkAt = null;
+  let usage = null;
+  let streamChunks = 0;
+  const timeoutController = new AbortController();
+  const timeoutHandle = setTimeout(() => timeoutController.abort(), timeoutMs);
+  const signal = anyAbortSignal([clientSignal, timeoutController.signal]);
+
+  try {
+    const text = await streamOpenAiChat({
+      endpoint,
+      apiKey,
+      model: modelId,
+      messages: buildMessages({ systemPrompt, prompt, images }),
+      temperature,
+      maxTokens,
+      extraBody,
+      signal,
+      onStats: (stats) => { usage = stats; },
+      onChunk: (chunk, kind = 'content') => {
+        if (!firstChunkAt && chunk) firstChunkAt = Date.now();
+        if (chunk) streamChunks += 1;
+        if (chunk) return onToken?.(chunk, kind);
+        return undefined;
+      },
+    }).finally(() => clearTimeout(timeoutHandle));
+    return {
+      backend: runtime,
+      modelId,
+      endpoint,
+      text,
+      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt: Date.now(), text, usage, streamChunks }),
+      options: { temperature, maxTokens, timeoutMs },
+    };
+  } catch (err) {
+    clearTimeout(timeoutHandle);
+    const error = err?.name === 'AbortError' ? `Timed out after ${timeoutMs}ms` : err?.message || 'Local LLM test failed';
+    const partialText = typeof err?.partialOutput === 'string' ? err.partialOutput : '';
+    return {
+      backend: runtime,
+      modelId,
+      endpoint,
+      error,
+      text: partialText,
+      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt: Date.now(), text: partialText, usage, streamChunks }),
       options: { temperature, maxTokens, timeoutMs },
     };
   }

@@ -35,7 +35,7 @@ accessibility). Feature-specific components live under their own feature directo
 | `ProvenanceChip` | Chip + popover showing where a generated value came from. |
 | `SideBySideDiff` | Columnar word-level diff — old left, new right. |
 | `Skeleton` | Loading-placeholder primitives (`SkeletonBlock` / `Lines` / `Card` / `Rows` / `Region`) — what `PageSkeleton` is built from, and what a sub-region loader should reserve its shape with instead of a bare spinner. |
-| `TabPills` | Shared tab nav — `underline` / `pills` families, with a mobile `<select>` fallback. |
+| `TabPills` | Shared tab nav — `underline` / `pills` / `filter` (toggle chips) families, with a mobile `<select>` fallback. |
 | `Toast` | Toast notification system (`toast()`, `.success()`, `.error()`, `.loading()`, `<Toaster />`). |
 | `ToggleChip` | Checkbox styled as a pill — the "pick some of these" affordance. |
 | `ToolUseWarning` | The "this model can't call tools" warning every agent/model picker shows. |
@@ -43,7 +43,7 @@ accessibility). Feature-specific components live under their own feature directo
 
 There is no `index.js` barrel here — components are imported by path
 (`import ProgressBar from '../ui/ProgressBar'`), matching the rest of `components/`. The
-barrel + README rule in the root `CLAUDE.md` covers `lib/`, `hooks/`, `utils/`, and
+barrel + README rule in the root `AGENTS.md` covers `lib/`, `hooks/`, `utils/`, and
 `services/`; this catalog exists for discovery only. **Adding a primitive here means
 adding its row above** — a catalog nobody updates is the reason six copies of the
 progress meter existed in the first place.

@@ -275,11 +275,12 @@ export function killProcessTree(child, signal = 'SIGTERM', { processGroup = fals
  * @param {string[]} args
  * @param {object} options
  * @param {string} [options.cwd]
+ * @param {NodeJS.ProcessEnv} [options.env] - complete child environment
  * @param {number} [options.timeoutMs] - kill + resolve as timed-out after this
  * @param {boolean} [options.shell] - defaults to `needsShell(cmd)`
  * @returns {Promise<object>} structured result (never rejects)
  */
-export function bufferedSpawn(cmd, args, { cwd, timeoutMs, shell } = {}) {
+export function bufferedSpawn(cmd, args, { cwd, env = process.env, timeoutMs, shell } = {}) {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, {
       cwd,
@@ -288,7 +289,7 @@ export function bufferedSpawn(cmd, args, { cwd, timeoutMs, shell } = {}) {
       // bufferedSpawn user inherits it; `withSpawnCwdEnv` returns an unchanged
       // copy of process.env when no cwd was given, matching the previous
       // implicit-inherit behavior exactly.
-      env: withSpawnCwdEnv(process.env, cwd),
+      env: withSpawnCwdEnv(env, cwd),
       shell: shell === undefined ? needsShell(cmd) : shell,
     });
     let stdout = '';
@@ -354,4 +355,27 @@ export async function bufferedSpawnOrThrow(cmd, args, options = {}) {
     throw new Error(result.stderr.trim() || `${cmd} exited with code ${result.code}`);
   }
   return { stdout: result.stdout, stderr: result.stderr };
+}
+
+/**
+ * The most useful sentence from a FAILED `bufferedSpawn` result.
+ *
+ * Callers of a `--json` CLI need this rather than a bare exit code, and the
+ * naive "last line of stderr, else stdout" walk gets it wrong for exactly those
+ * tools: they print their payload to stdout even when they exit non-zero, so the
+ * last stdout line is a closing `}` or `]`. Prefers the spawn error, then a
+ * stderr line, then a stdout line that isn't just JSON punctuation.
+ *
+ * @param {{error?: Error, stderr?: string, stdout?: string}} result - a `bufferedSpawn` result
+ * @param {string} fallback - used when the command failed without saying anything
+ * @returns {string}
+ */
+export function spawnFailureDetail(result, fallback) {
+  if (result?.error?.message) return result.error.message;
+  const lastLine = (text) => String(text || '').trim().split(/\r?\n/).filter(Boolean).pop();
+  const stderrTail = lastLine(result?.stderr);
+  if (stderrTail) return stderrTail;
+  const stdoutTail = lastLine(result?.stdout);
+  if (stdoutTail && !/^[}\]]+,?$/.test(stdoutTail)) return stdoutTail;
+  return fallback;
 }

@@ -17,6 +17,7 @@ const {
   isQuotaTrackedImageMode,
   initImageGenQuotaHook,
   __resetImageGenQuotaHookForTests,
+  __drainImageGenQuotaHookForTests,
 } = await import('./imageGenQuota.js');
 const { imageGenEvents } = await import('./imageGenEvents.js');
 const { checkFabrication } = await import('./imageGen/fabricationGuard.js');
@@ -140,12 +141,19 @@ describe('isQuotaTrackedImageMode', () => {
 describe('initImageGenQuotaHook', () => {
   // The recorder rides the imageGenEvents bus rather than provider finalizers,
   // so a backend that emits on the bus is tracked without touching its code.
-  const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
+  // An emitter cannot await its listeners, so the assertions below have to wait
+  // for the recorder's write by asking the hook when it is done. Sleeping a
+  // fixed 20ms instead is what made this suite flake on the Windows runner
+  // (#4788): the write is real disk I/O, and `atomicWrite` sleeps between
+  // rename retries there when the destination is briefly locked, so it can
+  // easily outlast any constant a test picks.
+  const flush = () => __drainImageGenQuotaHookForTests();
 
   // The bus handler stamps its own `Date.now()`, so unlike the `getImageGenQuota`
   // suite below there is no `now` to thread in — freeze the clock instead.
-  // `shouldAdvanceTime` keeps `flush()`'s real 20ms timer working under the fake
-  // clock; without it the flush promise never settles and the test times out.
+  // `shouldAdvanceTime` keeps the real timers the write path itself may use
+  // (`atomicWrite`'s Windows rename-retry sleep) advancing under the fake clock;
+  // without it such a write would never settle and the drain would hang.
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(FIXTURE_NOW);

@@ -31,7 +31,9 @@ export const valuesTestResultEnum = z.enum(['aligned', 'partial', 'misaligned', 
 export const adversarialTestResultEnum = z.enum(['held', 'partial', 'breached', 'pending']);
 
 // Export format enum
-export const exportFormatEnum = z.enum(['system_prompt', 'claude_md', 'json', 'individual']);
+// 'claude_md' is the pre-#4852 alias of 'agents_md' — kept so a persisted
+// preference on an existing install still validates.
+export const exportFormatEnum = z.enum(['system_prompt', 'agents_md', 'claude_md', 'json', 'individual']);
 
 // Enrichment category enum
 export const enrichmentCategoryEnum = z.enum([

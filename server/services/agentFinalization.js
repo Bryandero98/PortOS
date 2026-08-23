@@ -72,7 +72,7 @@ export function releaseAgentLane({ agentId, success, duration, exitCode, executi
  *
  * That probe replaced a task-id commit-marker grep in #3637. NOTHING ever
  * emitted that marker — no prompt, template, or slashdo command asked an agent
- * to stamp a task id into a commit subject, and the root CLAUDE.md forbids
+ * to stamp a task id into a commit subject, and the root AGENTS.md forbids
  * exactly that shape of subject line — so the criterion was unsatisfiable and
  * stamped `validationPassed: false` on every ordinary code-editing run,
  * poisoning the task-learning buckets it feeds.
@@ -957,7 +957,7 @@ const TRANSCRIPT_RESCUE_TAIL_BYTES = 256 * 1024;
  */
 async function rescueTranscriptPayload({ agentId, taskType }) {
   if (!agentId || !isProgrammaticIoTaskType(taskType)) return null;
-  // Sanctioned try/catch (see CLAUDE.md — this runs outside the request
+  // Sanctioned try/catch (see AGENTS.md — this runs outside the request
   // lifecycle): a best-effort salvage must never be able to make the outcome
   // WORSE than not attempting it. A hook whose own shape predicate throws would
   // otherwise abort the dispatch and skip the hook entirely, turning "we

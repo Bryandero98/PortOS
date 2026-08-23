@@ -7,6 +7,8 @@ import { listModels, listVisionModels, listToolUseModels, installModel } from '.
 import { enrichCatalogWithVariants, applyMeasuredFit } from '../services/huggingFaceCatalog.js';
 import { getMeasuredFits } from '../services/localModelAssessmentStore.js';
 import { runAssessment } from '../services/localModelAssessments.js';
+import { startSweep, getSweepStatus, cancelSweep } from '../services/localModelAssessmentSweep.js';
+import { runOpenCodeAgentBenchmark } from '../services/localModelAgentBenchmark.js';
 import { getLoadedModels, unloadModel } from '../services/ollamaManager.js';
 import { getLoadedModels as getLoadedLmStudioModels, getLastLoadedModelsError as getLmStudioResidencyError } from '../services/lmStudioManager.js';
 import { getSettings } from '../services/settings.js';
@@ -69,6 +71,18 @@ vi.mock('../services/localModelAssessments.js', () => ({
   getAssessmentReport: vi.fn(async () => ({ ranked: [], excluded: [] })),
   runAssessment: vi.fn(async () => ({ verdict: 'fits' })),
   deleteAssessment: vi.fn(async () => ({ deleted: true })),
+}));
+
+vi.mock('../services/localModelAssessmentSweep.js', () => ({
+  startSweep: vi.fn(async () => ({ status: 'running', total: 3, completed: 0 })),
+  getSweepStatus: vi.fn(() => ({ status: 'idle', total: 0, completed: 0, results: [] })),
+  cancelSweep: vi.fn(() => ({ status: 'cancelled', total: 3, completed: 1, results: [] })),
+}));
+
+vi.mock('../services/localModelAgentBenchmark.js', () => ({
+  runOpenCodeAgentBenchmark: vi.fn(async ({ backend, modelId, timeoutMs }) => ({
+    backend, modelId, timeoutMs, completed: true, taskCharsPerSecond: 100,
+  })),
 }));
 
 vi.mock('../services/llamaServerManager.js', () => ({
@@ -505,17 +519,166 @@ describe('measured assessments wiring', () => {
       scope: 'assessment', backend: 'ollama', modelId: 'example-model:14b', event: 'start', sampleIndex: 1, sampleCount: 3,
     });
   });
+
+  it('runs the explicit OpenCode agent benchmark with a bounded timeout', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/assessments/agent-benchmark')
+      .send({ backend: 'ollama', modelId: 'qwen3.8:27b-mlx', timeoutMs: 120000 });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      backend: 'ollama', modelId: 'qwen3.8:27b-mlx', timeoutMs: 120000, completed: true,
+    });
+    expect(runOpenCodeAgentBenchmark).toHaveBeenCalledWith({
+      backend: 'ollama', modelId: 'qwen3.8:27b-mlx', timeoutMs: 120000,
+    });
+  });
+
+  it('rejects an agent benchmark backend outside the configured local targets', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/assessments/agent-benchmark')
+      .send({ backend: 'vllm', modelId: 'qwen3.8-27b-dflash2' });
+
+    expect(res.status).toBe(400);
+    expect(runOpenCodeAgentBenchmark).not.toHaveBeenCalled();
+  });
+
+  // The sweep is the overnight path: it must return as soon as the queue exists,
+  // because the run outlives the request that started it.
+  it('POST /assessments/sweep starts a queue and returns its snapshot', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/assessments/sweep')
+      .send({ scope: 'all' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: 'running', total: 3 });
+    expect(startSweep).toHaveBeenCalledWith(expect.objectContaining({ scope: 'all' }));
+  });
+
+  it('POST /assessments/sweep defaults to the unmeasured scope', async () => {
+    const res = await request(makeApp()).post('/api/local-llm/assessments/sweep').send({});
+    expect(res.status).toBe(200);
+    expect(startSweep).toHaveBeenCalledWith(expect.objectContaining({ scope: 'unmeasured' }));
+  });
+
+  it('POST /assessments/sweep rejects an unknown scope rather than silently narrowing it', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/assessments/sweep')
+      .send({ scope: 'everything-please' });
+
+    expect(res.status).toBe(400);
+    expect(startSweep).not.toHaveBeenCalled();
+  });
+
+  // A refused start has to be visible: a 200 with no queue behind it would leave
+  // the page waiting on progress that never comes.
+  it('POST /assessments/sweep 409s when the service refuses to start', async () => {
+    startSweep.mockResolvedValueOnce({ status: 'running', rejected: 'a sweep is already running' });
+    const res = await request(makeApp()).post('/api/local-llm/assessments/sweep').send({ scope: 'all' });
+    expect(res.status).toBe(409);
+  });
+
+  it('forwards sweep progress to the shared localLlm:progress socket event', async () => {
+    startSweep.mockImplementation(async ({ onProgress }) => {
+      onProgress({ scope: 'assessment-sweep', event: 'start', total: 2, completed: 0 });
+      return { status: 'running', total: 2, completed: 0 };
+    });
+    const app = makeApp();
+    await request(app).post('/api/local-llm/assessments/sweep').send({ scope: 'unmeasured' });
+
+    expect(app.get('io').emit).toHaveBeenCalledWith('localLlm:progress', {
+      scope: 'assessment-sweep', event: 'start', total: 2, completed: 0,
+    });
+  });
+
+  // `tunings` is the ASK, not the grid — the service decides which knob sets a
+  // "tuning sweep of this model" means. A client that could post the grid could
+  // ask for an arbitrary batch of provider calls.
+  it('POST /assessments/sweep forwards a tuning-sweep request without a grid', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/assessments/sweep')
+      .send({ backend: 'llama', modelId: 'example-model.gguf', tunings: true });
+
+    expect(res.status).toBe(200);
+    expect(startSweep).toHaveBeenCalledWith(expect.objectContaining({
+      backend: 'llama', modelId: 'example-model.gguf', tunings: true,
+    }));
+  });
+
+  // The service's refusals ride the existing rejected → 409 path rather than a
+  // second, hand-rolled one in the handler.
+  it('POST /assessments/sweep 409s when the service refuses the tuning grid', async () => {
+    startSweep.mockResolvedValueOnce({ status: 'idle', rejected: 'mtplx has no tuning knobs PortOS can sweep' });
+    const res = await request(makeApp())
+      .post('/api/local-llm/assessments/sweep')
+      .send({ backend: 'mtplx', modelId: 'example-model', tunings: true });
+
+    expect(res.status).toBe(409);
+  });
+
+  // Half a model reference would fall through to the scope and measure every
+  // installed model — hours of work nobody asked for.
+  it('POST /assessments/sweep rejects a backend with no modelId', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/assessments/sweep')
+      .send({ backend: 'llama', tunings: true });
+
+    expect(res.status).toBe(400);
+    expect(startSweep).not.toHaveBeenCalled();
+  });
+
+  // No wire knob shrinks the grid: the consent gate names its count from the
+  // report's grid, so a request that could shrink it would run a different
+  // number than the user agreed to.
+  it('POST /assessments/sweep rejects an attempt to size the grid from the wire', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/assessments/sweep')
+      .send({ backend: 'llama', modelId: 'example-model.gguf', tunings: true, maxVariants: 2 });
+
+    expect(res.status).toBe(200);
+    expect(startSweep.mock.calls[0][0].maxVariants).toBeUndefined();
+  });
+
+  it('POST /assessments/sweep leaves a plain model sweep untuned', async () => {
+    await request(makeApp()).post('/api/local-llm/assessments/sweep').send({ scope: 'all' });
+    expect(startSweep.mock.calls[0][0].tunings).toBe(false);
+  });
+
+  it('GET /assessments/sweep reports the queue without touching a provider', async () => {
+    const res = await request(makeApp()).get('/api/local-llm/assessments/sweep');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: 'idle' });
+    expect(getSweepStatus).toHaveBeenCalled();
+    expect(startSweep).not.toHaveBeenCalled();
+  });
+
+  it('POST /assessments/sweep/cancel stops the queue', async () => {
+    const res = await request(makeApp()).post('/api/local-llm/assessments/sweep/cancel');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: 'cancelled', completed: 1 });
+    expect(cancelSweep).toHaveBeenCalled();
+  });
 });
 
 describe('llama-server routes', () => {
   it('GET /api/local-llm/llama-server/status returns status with the weight presets', async () => {
     const res = await request(makeApp()).get('/api/local-llm/llama-server/status');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({
+    expect(res.body).toMatchObject({
       installed: true,
       running: false,
       presets: [{ id: 'test-preset', label: 'Test', specType: 'draft-dspark', model: null, draftModel: null }],
     });
+  });
+
+  it('GET /api/local-llm/llama-server/status publishes the drafter-free spec types', async () => {
+    // The card renders the picker from this list, so a launch with no drafter
+    // GGUF (`ngram-map-k`) has to be reachable without the user knowing the
+    // llama.cpp vocabulary by heart.
+    const res = await request(makeApp()).get('/api/local-llm/llama-server/status');
+    expect(res.body.specTypes.map((entry) => entry.id)).toEqual(
+      expect.arrayContaining(['ngram-map-k', 'draft-dflash', 'none']),
+    );
   });
 
   it('POST /api/local-llm/llama-server/download-model fetches one preset GGUF', async () => {

@@ -21,6 +21,17 @@ const SHIPPED_REFRESHABLE = [
   'opencode-llama-tui',
   'opencode-mtplx', 'opencode-mtplx-tui', 'opencode-ollama', 'opencode-ollama-tui',
   'opencode-orcarouter', 'opencode-orcarouter-tui', 'orcarouter',
+  // Every hosted gateway refreshes through the same sibling `/models` probe —
+  // one MODEL_FETCHERS row covers all of them (internal/gateways.js).
+  'opencode-openrouter', 'opencode-openrouter-tui', 'openrouter',
+  'opencode-vllm', 'opencode-vllm-tui',
+  // SGLang publishes its served catalog through the same OpenAI-compatible
+  // `/v1/models` contract as the vLLM pair, so its wrappers refresh too.
+  'opencode-sglang', 'opencode-sglang-tui',
+  // The Claude Code pair points at the SAME container through its Anthropic
+  // `/v1/messages` endpoint, but the catalog still comes from the OpenAI-side
+  // listing — the `sglangBacked` marker selects that fetcher, not the command.
+  'claude-sglang', 'claude-sglang-tui',
 ];
 const SHIPPED_NOT_REFRESHABLE = [
   'claude-code-tui', 'claude-code-tui-bedrock', 'codex', 'codex-tui',

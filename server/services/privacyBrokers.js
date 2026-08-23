@@ -10,7 +10,7 @@
  * ledger is additionally single-writer — two peers working the same broker
  * would double-submit opt-outs against it.
  *
- * Boot policy (CLAUDE.md — no cold-bootstrap network/LLM): NOTHING here runs at
+ * Boot policy (AGENTS.md — no cold-bootstrap network/LLM): NOTHING here runs at
  * server boot. The curated seed is loaded LAZILY from
  * data.reference/privacy/brokers.json on first read (`ensureSeeded`); the
  * `refreshBrokers()` network pull is user-triggered ONLY. Curated rows

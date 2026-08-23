@@ -91,7 +91,38 @@ describe('MediaCapacityPanel', () => {
     renderPanel();
     expect(await screen.findByText('render-box')).toBeInTheDocument();
     expect(screen.getByText('ready')).toBeInTheDocument();
-    expect(screen.getByText('1 running · 0 queued · 1/4 slots')).toBeInTheDocument();
+    expect(screen.getByText('1/4 shared slots active · federated 1 running')).toBeInTheDocument();
+  });
+
+  // The local lanes above already show running/limit; a peer row that could only
+  // report depth left the two halves of this card answering different questions.
+  it('reports a peer’s drain rate and busy kinds beside its queue depth', async () => {
+    api.getInstances.mockResolvedValue({ peers: [providerPeer({
+      mediaProviderStatus: {
+        checkedAt: new Date().toISOString(),
+        state: 'ready',
+        freshUntil: new Date(Date.now() + 60_000).toISOString(),
+        snapshot: {
+          queue: {
+            running: 1, queued: 0, totalActive: 1, maxQueuedJobs: 4, accepting: true,
+            concurrency: 4,
+            byKind: { audio: { running: 1, queued: 0 } },
+          },
+          capabilities: [],
+        },
+      },
+    })] });
+    renderPanel();
+    expect(await screen.findByText(/runs 4 at a time · audio 1 running · federated 1 running/)).toBeInTheDocument();
+  });
+
+  // An older provider sends neither field. The row drops the segments rather
+  // than reporting lanes as idle that the peer never told us about.
+  it('omits the drain rate for a peer on a build that does not report one', async () => {
+    api.getInstances.mockResolvedValue({ peers: [providerPeer()] });
+    renderPanel();
+    expect(await screen.findByText('render-box')).toBeInTheDocument();
+    expect(screen.queryByText(/\d+ at a time/)).not.toBeInTheDocument();
   });
 
   it('shows an expired snapshot as stale with its remedy, not as ready', async () => {

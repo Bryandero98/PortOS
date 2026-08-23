@@ -56,8 +56,29 @@ export const SPEC_DECODE_PRESETS = Object.freeze([
     },
   },
   {
+    // analogalok's Q2_K DFlash 2 drafter (~700 MB) matches official Q4_K_M
+    // acceptance (~93.7%) and returns ~450 MB of VRAM to the KV cache — the
+    // difference between a 170k and a 250k window on a 24 GB card once
+    // llama-server is also pinned to `--parallel 1`. Pairs with any Qwen3.8-27B
+    // target quant, including Unsloth UD-Q4_K_XL.
+    // https://huggingface.co/analogalok/Qwen3.8-27B-DFlash2-Q2_K-GGUF
+    id: 'qwen3.8-27b-dflash2-q2k',
+    label: 'Qwen 3.8 27B + DFlash 2 Q2_K Drafter (max context — needs llama.cpp PR #27342)',
+    specType: 'draft-dflash',
+    model: {
+      path: 'models/Qwen3.8-27B-Q4_K_M.gguf',
+      repo: 'ggml-org/Qwen3.8-27B-GGUF',
+      quant: 'Q4_K_M',
+    },
+    draftModel: {
+      path: 'models/Qwen3.8-27B-DFlash2-Q2_K.gguf',
+      repo: 'analogalok/Qwen3.8-27B-DFlash2-Q2_K-GGUF',
+      quant: 'Q2_K',
+    },
+  },
+  {
     id: 'qwen3.8-27b',
-    label: 'Qwen 3.8 27B + DFlash 2 Drafter (needs llama.cpp PR #27342 build)',
+    label: 'Qwen 3.8 27B + DFlash 2 Q4_K_M Drafter (needs llama.cpp PR #27342 build)',
     specType: 'draft-dflash',
     model: {
       path: 'models/Qwen3.8-27B-Q4_K_M.gguf',
@@ -97,6 +118,54 @@ export const SPEC_DECODE_PRESETS = Object.freeze([
     draftModel: { path: '' },
   },
 ]);
+
+/**
+ * `--spec-type` implementations worth suggesting in the launcher, each with the
+ * one-line note the picker shows. Surfaced on the llama-server status payload so
+ * the client renders this list rather than keeping a copy that can rot.
+ *
+ * Deliberately a SUGGESTION list, not a vocabulary: `draft-dflash` /
+ * `draft-dspark` exist only in particular builds (see the note above the
+ * presets), and a from-source llama.cpp can carry implementations that never
+ * land upstream. The field therefore stays free text — what PortOS actually
+ * reasons about is the `draft-` prefix, which is what decides whether a drafter
+ * GGUF is required. Reference: llama.cpp `docs/speculative.md`.
+ */
+export const SPEC_TYPE_SUGGESTIONS = Object.freeze([
+  { id: 'none', note: 'Speculative decoding off' },
+  { id: 'draft-dspark', note: 'DSpark drafter — needs a drafter GGUF' },
+  { id: 'draft-dflash', note: 'DFlash drafter — needs a drafter GGUF' },
+  { id: 'draft-simple', note: 'Any smaller model as drafter — needs a drafter GGUF' },
+  { id: 'draft-mtp', note: 'Multi-token-prediction drafter — needs a drafter GGUF' },
+  { id: 'ngram-map-k', note: 'Drafts from repeated n-grams already in context — no drafter' },
+  { id: 'ngram-map-k4v', note: '4-token-key n-gram map — no drafter' },
+  { id: 'ngram-simple', note: 'Longest-match n-gram lookup — no drafter' },
+  { id: 'ngram-mod', note: 'Modulo-hashed n-gram lookup — no drafter' },
+  { id: 'ngram-cache', note: 'Persistent n-gram cache — no drafter' },
+]);
+
+/**
+ * Split a `--spec-type` field into its implementations. llama.cpp accepts a
+ * comma-separated list and runs them together — mixing a drafter-based entry
+ * with a drafter-free one (`draft-dflash,ngram-map-k`) is the documented way to
+ * cover both patterns in one server.
+ * @param {string|null|undefined} value
+ * @returns {string[]}
+ */
+export const parseSpecTypes = (value) =>
+  String(value ?? '').split(',').map((type) => type.trim()).filter(Boolean);
+
+/**
+ * Whether one implementation needs a `--model-draft` GGUF.
+ *
+ * The `draft-` prefix is llama.cpp's own naming split: `draft-*` speculates with
+ * a second model, every `ngram-*` speculates by pattern-matching the tokens
+ * already in the context window and needs no weights at all. Keyed on the prefix
+ * rather than a fixed list so a fork's new drafter type is classified correctly
+ * without a PortOS release.
+ * @param {string} type
+ */
+export const isDraftSpecType = (type) => String(type).startsWith('draft-');
 
 // The preset the launcher mounts on, and the roles a download request may name.
 export const DEFAULT_SPEC_PRESET_ID = 'qwen3.8-27b-dspark';

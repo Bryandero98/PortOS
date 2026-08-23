@@ -119,6 +119,41 @@ export const IMAGE_TO_3D_TARGETS = Object.freeze({
       }),
     ]),
   }),
+  pixal3dMps: Object.freeze({
+    id: 'pixal3dMps',
+    label: 'Pixal3D (Apple Silicon)',
+    description:
+      'TencentARC Pixal3D — pixel-aligned single image to a textured GLB mesh, run '
+      + 'locally through the community Apple Silicon MPS/Metal port.',
+    executionLane: EXECUTION_LANE.LOCAL_MPS,
+    outputKind: OUTPUT_KIND.GLB_MESH,
+    // The Mac port is designed for Apple Silicon and uses the same conservative
+    // 24 GB floor as the existing TRELLIS.2 MPS lane. Its 1024 cascade is the safe
+    // PortOS default; the native port also has a slower 1536 cascade for direct use.
+    requires: Object.freeze({
+      appleSilicon: true,
+      minUnifiedMemoryGb: 24,
+      diskGb: 40,
+      python: '3.10',
+    }),
+    // PortOS starts the fork at its 1024 cascade. The 1536 cascade is intentionally
+    // not exposed through the shared detail control yet: the community port documents
+    // runs that can take up to roughly an hour on a high-memory Mac, and the shared
+    // labels describe TRELLIS.2's different tier vocabulary.
+    supportsRenderOptions: Object.freeze({ detail: false, alphaMode: false, normalMap: false }),
+    upstream: 'https://github.com/TencentARC/Pixal3D',
+    port: 'https://github.com/pawel-mazurkiewicz/Pixal3D-mac',
+    weightsRepo: 'TencentARC/Pixal3D',
+    installNotes:
+      'Cloning the Apple Silicon Pixal3D port and creating its isolated Python 3.10 '
+      + 'environment, then compiling the vendored Metal mesh, sparse-GEMM, rasterizer, '
+      + 'BVH and neighborhood-attention packages. The first render downloads the model '
+      + 'weights from Hugging Face; budget roughly 40 GB of disk and several minutes per '
+      + '1024-cascade render.',
+    // The Mac port uses public mirrors for its DINOv3 and MoGe dependencies. A token is
+    // still passed to the child for Hugging Face rate-limit headroom, but no terms need
+    // to be accepted in the install card.
+  }),
   trellis2Cuda: Object.freeze({
     id: 'trellis2Cuda',
     label: 'TRELLIS.2 (CUDA)',
@@ -260,7 +295,7 @@ export function unavailableReason(target, caps = {}) {
     // told the one thing it can actually act on.
     if (!caps.cuda) {
       // "The probe couldn't run" is not "there is no GPU" — never report absent
-      // hardware we failed to look for (CLAUDE.md sentinel rule).
+      // hardware we failed to look for (AGENTS.md sentinel rule).
       return caps.cudaProbe === 'unknown' ? 'cuda-probe-failed' : 'requires-cuda';
     }
     if (req.linuxHost && !caps.linuxHost) return 'requires-linux-host';

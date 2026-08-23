@@ -1,10 +1,13 @@
 name: CI
 
 on:
+  # No push trigger. Every change reaches `main` through a pull request whose
+  # own CI gate must be green, so re-running the suite on the merge commit only
+  # repeats work. The nightly schedule below is the main-branch health signal,
+  # and the main -> release pull request runs the complete suite before a
+  # release ships.
   pull_request:
     branches: [main, release]
-  push:
-    branches: [main]
   schedule:
     - cron: '17 9 * * *'
   workflow_dispatch:
@@ -27,6 +30,8 @@ jobs:
   impact:
     name: Plan test impact
     runs-on: ubuntu-latest
+    # Still live despite the removed push trigger: a called workflow inherits
+    # the caller's event, and release.yml calls this one from a push.
     if: github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip ci]')
     outputs:
       full: ${{ steps.plan.outputs.full }}
@@ -43,18 +48,32 @@ jobs:
       windows: ${{ steps.plan.outputs.windows }}
       windows_mode: ${{ steps.plan.outputs.windows_mode }}
       windows_files: ${{ steps.plan.outputs.windows_files }}
-      server_native: ${{ steps.plan.outputs.server_native }}
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          # Depth 2, not full history: a pull_request checkout is the merge ref,
+          # so depth 2 carries both of its parents — which is everything the
+          # planner (a three-dot diff against the base parent) and `git
+          # ls-files` need. Cloning every commit in the repo buys nothing more.
+          fetch-depth: 2
+
+      # Reads the base commit off HEAD^1 rather than the event payload, so a
+      # depth-2 clone is enough for every three-dot diff downstream. Exports
+      # CI_BASE_SHA to the rest of the job.
+      - name: Resolve the pull-request diff base
+        run: node scripts/ci-base-sha.js
 
       - name: Select affected test surfaces
         id: plan
         env:
-          CI_FORCE_FULL: ${{ github.event_name != 'pull_request' || inputs.full }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # `inputs.full` is only decisive for a caller that invokes this
+          # reusable workflow from a pull_request-triggered workflow — every
+          # call site in this repo comes from a push, which the first clause
+          # already covers. It stays honored so the declared input is real.
+          CI_FORCE_FULL: ${{ github.event_name != 'pull_request' || inputs.full == true }}
+          # The planner turns a PR into `release` into a full plan: that PR is
+          # the single gate a release ships behind, so it never runs scoped.
+          CI_BASE_REF: ${{ github.base_ref }}
         run: node scripts/ci-test-plan.js
 
       - name: Publish plan summary
@@ -68,7 +87,6 @@ jobs:
           SMOKE_MODE: ${{ steps.plan.outputs.smoke }}
           WINDOWS_MODE: ${{ steps.plan.outputs.windows }}
           WINDOWS_TEST_MODE: ${{ steps.plan.outputs.windows_mode }}
-          SERVER_NATIVE: ${{ steps.plan.outputs.server_native }}
         run: |
           {
             echo "### CI impact plan"
@@ -81,20 +99,22 @@ jobs:
             echo "- Client build: \`${BUILD_MODE}\`"
             echo "- Server smoke: \`${SMOKE_MODE}\`"
             echo "- Windows server tests: \`${WINDOWS_MODE}\` (\`${WINDOWS_TEST_MODE}\`)"
-            echo "- Server native rebuild: \`${SERVER_NATIVE}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   server:
-    # Preserve the historical required-check context while branch protection
-    # transitions to the stable aggregate "CI Gate" check.
-    name: test (24.x)
+    name: Server tests
     needs: impact
     if: needs.impact.outputs.server_mode != 'skip'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          # See the impact job: depth 2 is the whole PR merge ref, which is all
+          # Vitest's `--changed <sha>` three-dot diff reads.
+          fetch-depth: 2
+
+      - name: Resolve the pull-request diff base
+        run: node scripts/ci-base-sha.js
 
       - name: Use Node.js 24.x
         uses: actions/setup-node@v7
@@ -103,14 +123,95 @@ jobs:
           cache: npm
           cache-dependency-path: server/package-lock.json
 
+      # setup-node's npm cache only preserves ~/.npm, the tarball cache: `npm ci`
+      # still wipes and repopulates a 570 MB node_modules on all three server
+      # jobs. Cache the installed tree instead and skip the install on a hit.
+      #
+      # No restore-keys. The install below is skipped on a hit, so a near-miss
+      # restore would silently ship a node_modules built from a different
+      # lockfile. Exact key or nothing. package.json is in the hash alongside
+      # the lockfile so that skipping `npm ci` does not also skip its
+      # manifest-vs-lockfile check, and the key carries the Node *major* rather
+      # than the resolved patch, because NODE_MODULE_VERSION is stable across
+      # patches and keying on the patch would discard the entry on every Node
+      # 24.x release. The transform-artifact cache below keeps its own key and
+      # its own restore-keys; this one is about dependencies.
+      #
+      # Hit rate comes from the nightly full run: there is no push trigger on
+      # `main`, so the 09:17 UTC schedule is what seeds these caches on the
+      # default branch, which is the only scope every PR branch can read.
+      # See docs/GITHUB_ACTIONS.md.
+      - name: Cache server node_modules
+        id: server-modules
+        uses: actions/cache@v6
+        with:
+          path: server/node_modules
+          key: server-modules-${{ runner.os }}-${{ runner.arch }}-node24-${{ hashFiles('server/package-lock.json', 'server/package.json', 'server/.npmrc', 'scripts/trusted-rebuilds.js') }}
+
+      # A restored tree is only reusable if it was rebuilt before it was saved,
+      # and that is not answerable by looking at the tree — with today's
+      # versions the rebuild is nearly a no-op, so every allowlisted package
+      # imports fine on a never-rebuilt one. The rebuild step below leaves an
+      # explicit mark; this reads it back.
+      #
+      # `continue-on-error` on purpose: a bad entry must not wedge every PR
+      # until a human clears the cache by hand. It fails, the two steps below
+      # see a non-success outcome, and the job builds the tree it needs. It does
+      # not *replace* the bad entry — cache keys are immutable and actions/cache
+      # skips the save on an exact hit — so that entry keeps costing each run a
+      # reinstall until the key moves or it ages out. That is precisely the
+      # pre-cache cost: the worst case degrades to the old behaviour, never to a
+      # red repo.
+      #
+      # `outcome != 'success'` covers all three cases in one expression: on a
+      # cache miss this step is skipped (outcome `skipped`), on a hit it is
+      # `success` or `failure`.
+      - name: Check the restored node_modules was rebuilt
+        id: server-modules-usable
+        if: steps.server-modules.outputs.cache-hit == 'true'
+        continue-on-error: true
+        run: node scripts/trusted-rebuild-stamp.js check server
+
       - name: Install server dependencies
+        if: steps.server-modules-usable.outcome != 'success'
         run: npm ci --prefix server
 
-      # After npm ci: it wipes node_modules, so a pre-install restore is lost.
-      # Vite/Vitest write transform artifacts under node_modules/.vite (and
-      # historically .vitest). Reusing them skips re-transforming unchanged files.
+      # server/.npmrc pins ignore-scripts=true, so the allowlisted packages need
+      # this explicit rebuild. Same condition as the install: whenever this job
+      # builds the tree it will cache, it must build a rebuilt one — and the
+      # mark is written in the same block, so a failed rebuild cannot leave one
+      # behind for a later job to trust.
+      #
+      # `shell: bash` is load-bearing, not style. windows-server would default
+      # to pwsh, where a *native* command's non-zero exit neither throws nor
+      # stops the block (`$PSNativeCommandUseErrorActionPreference` is false)
+      # and only the last command's code becomes the step result — so a failed
+      # rebuild would run the mark anyway, reset the exit code to 0, and publish
+      # a green, marked, un-rebuilt tree. Under `bash -e` the block stops at
+      # the rebuild, the job fails, and actions/cache (`post-if: success()`)
+      # never saves it.
+      - name: Rebuild trusted native dependencies
+        if: steps.server-modules-usable.outcome != 'success'
+        shell: bash
+        env:
+          # Skip onnxruntime-node's CUDA execution provider. Its postinstall
+          # downloads it on linux-x64 whenever the .so is absent — several
+          # hundred MB, on two jobs, every run — and no hosted runner has an
+          # NVIDIA GPU to use it with. The CPU binaries ship in the tarball, so
+          # inference still works; this is the single largest cost in the job.
+          ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+        run: |
+          node scripts/trusted-rebuilds.js server
+          node scripts/trusted-rebuild-stamp.js write server
+
+      # After the install: `npm ci` wipes node_modules, so a restore ordered
+      # ahead of it is lost. Vite/Vitest write transform artifacts under
+      # node_modules/.vite (and historically .vitest); reusing them skips
+      # re-transforming unchanged files. Separate from the cache above, and
+      # deliberately: this is where a near miss is safe, so this is the entry
+      # that keeps restore-keys and stays warm across a lockfile bump.
       - name: Cache Vitest transform artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             server/node_modules/.vite
@@ -120,14 +221,6 @@ jobs:
             vitest-server-${{ runner.os }}-${{ hashFiles('server/package-lock.json') }}-
             vitest-server-${{ runner.os }}-
 
-      # server/.npmrc pins ignore-scripts=true, so the native deps npm skipped
-      # need the explicit allowlist rebuild to be usable (node-pty et al).
-      # Always-run-only plans (prompt-upgrade + changelog fragment guards)
-      # import no native addons, so skip the rebuild there.
-      - name: Rebuild trusted native dependencies
-        if: needs.impact.outputs.server_native == 'true'
-        run: node scripts/trusted-rebuilds.js server
-
       - name: Check server entry-point syntax
         run: node --check server/index.js
 
@@ -136,7 +229,6 @@ jobs:
         env:
           CI_TEST_MODE: ${{ needs.impact.outputs.server_mode }}
           CI_TEST_FILES: ${{ needs.impact.outputs.server_files }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node scripts/run-ci-tests.js server
 
       # Smoke-boot does not need Postgres: NODE_ENV=test selects the file
@@ -154,7 +246,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          # See the impact job: depth 2 is the whole PR merge ref, which is all
+          # Vitest's `--changed <sha>` three-dot diff reads.
+          fetch-depth: 2
+
+      - name: Resolve the pull-request diff base
+        run: node scripts/ci-base-sha.js
 
       - name: Use Node.js 24.x
         uses: actions/setup-node@v7
@@ -167,7 +264,7 @@ jobs:
         run: npm ci --prefix client
 
       - name: Cache Vitest transform artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             client/node_modules/.vite
@@ -189,7 +286,6 @@ jobs:
         env:
           CI_TEST_MODE: ${{ needs.impact.outputs.client_mode }}
           CI_TEST_FILES: ${{ needs.impact.outputs.client_files }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node scripts/run-ci-tests.js client
 
       - name: Build client
@@ -230,11 +326,80 @@ jobs:
           cache: npm
           cache-dependency-path: server/package-lock.json
 
+      # Same entry and same contract as the server job — see it for the key, and
+      # for why the install and rebuild below are gated on the mark rather than
+      # on the cache hit.
+      - name: Cache server node_modules
+        id: server-modules
+        uses: actions/cache@v6
+        with:
+          path: server/node_modules
+          key: server-modules-${{ runner.os }}-${{ runner.arch }}-node24-${{ hashFiles('server/package-lock.json', 'server/package.json', 'server/.npmrc', 'scripts/trusted-rebuilds.js') }}
+
+      # A restored tree is only reusable if it was rebuilt before it was saved,
+      # and that is not answerable by looking at the tree — with today's
+      # versions the rebuild is nearly a no-op, so every allowlisted package
+      # imports fine on a never-rebuilt one. The rebuild step below leaves an
+      # explicit mark; this reads it back.
+      #
+      # `continue-on-error` on purpose: a bad entry must not wedge every PR
+      # until a human clears the cache by hand. It fails, the two steps below
+      # see a non-success outcome, and the job builds the tree it needs. It does
+      # not *replace* the bad entry — cache keys are immutable and actions/cache
+      # skips the save on an exact hit — so that entry keeps costing each run a
+      # reinstall until the key moves or it ages out. That is precisely the
+      # pre-cache cost: the worst case degrades to the old behaviour, never to a
+      # red repo.
+      #
+      # `outcome != 'success'` covers all three cases in one expression: on a
+      # cache miss this step is skipped (outcome `skipped`), on a hit it is
+      # `success` or `failure`.
+      - name: Check the restored node_modules was rebuilt
+        id: server-modules-usable
+        if: steps.server-modules.outputs.cache-hit == 'true'
+        continue-on-error: true
+        run: node scripts/trusted-rebuild-stamp.js check server
+
       - name: Install server dependencies
+        if: steps.server-modules-usable.outcome != 'success'
         run: npm ci --prefix server
 
+      # server/.npmrc pins ignore-scripts=true, so the allowlisted packages need
+      # this explicit rebuild. Same condition as the install: whenever this job
+      # builds the tree it will cache, it must build a rebuilt one — and the
+      # mark is written in the same block, so a failed rebuild cannot leave one
+      # behind for a later job to trust.
+      #
+      # `shell: bash` is load-bearing, not style. windows-server would default
+      # to pwsh, where a *native* command's non-zero exit neither throws nor
+      # stops the block (`$PSNativeCommandUseErrorActionPreference` is false)
+      # and only the last command's code becomes the step result — so a failed
+      # rebuild would run the mark anyway, reset the exit code to 0, and publish
+      # a green, marked, un-rebuilt tree. Under `bash -e` the block stops at
+      # the rebuild, the job fails, and actions/cache (`post-if: success()`)
+      # never saves it.
+      - name: Rebuild trusted native dependencies
+        if: steps.server-modules-usable.outcome != 'success'
+        shell: bash
+        env:
+          # Skip onnxruntime-node's CUDA execution provider. Its postinstall
+          # downloads it on linux-x64 whenever the .so is absent — several
+          # hundred MB, on two jobs, every run — and no hosted runner has an
+          # NVIDIA GPU to use it with. The CPU binaries ship in the tarball, so
+          # inference still works; this is the single largest cost in the job.
+          ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+        run: |
+          node scripts/trusted-rebuilds.js server
+          node scripts/trusted-rebuild-stamp.js write server
+
+      # After the install: `npm ci` wipes node_modules, so a restore ordered
+      # ahead of it is lost. Vite/Vitest write transform artifacts under
+      # node_modules/.vite (and historically .vitest); reusing them skips
+      # re-transforming unchanged files. Separate from the cache above, and
+      # deliberately: this is where a near miss is safe, so this is the entry
+      # that keeps restore-keys and stays warm across a lockfile bump.
       - name: Cache Vitest transform artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             server/node_modules/.vite
@@ -243,11 +408,6 @@ jobs:
           restore-keys: |
             vitest-server-${{ runner.os }}-${{ hashFiles('server/package-lock.json') }}-
             vitest-server-${{ runner.os }}-
-
-      # server/.npmrc pins ignore-scripts=true — DB suites that touch sharp /
-      # node-pty still need the explicit allowlist rebuild.
-      - name: Rebuild trusted native dependencies
-        run: node scripts/trusted-rebuilds.js server
 
       - name: Provision test database (portos_test)
         run: npm run setup:db:test --prefix server
@@ -264,29 +424,6 @@ jobs:
         env:
           PGDATABASE: portos_test
 
-  lint:
-    # Historical required-check name. Lint itself now runs inside the client
-    # job so we do not pay a second `npm ci --prefix client`. This job only
-    # mirrors that result so branch protection can keep requiring "lint".
-    name: lint
-    needs: [impact, client]
-    if: always() && needs.impact.result == 'success'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require client-job lint when it was selected
-        if: needs.impact.outputs.lint_mode != 'skip'
-        env:
-          CLIENT_RESULT: ${{ needs.client.result }}
-        run: |
-          if [ "$CLIENT_RESULT" != "success" ]; then
-            echo "Lint ran inside the client job, which did not succeed ($CLIENT_RESULT)."
-            exit 1
-          fi
-
-      - name: Lint not selected
-        if: needs.impact.outputs.lint_mode == 'skip'
-        run: echo "Lint skipped by impact plan"
-
   windows-server:
     name: Windows server unit tests
     needs: impact
@@ -295,7 +432,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          # See the impact job: depth 2 is the whole PR merge ref, which is all
+          # Vitest's `--changed <sha>` three-dot diff reads.
+          fetch-depth: 2
+
+      - name: Resolve the pull-request diff base
+        run: node scripts/ci-base-sha.js
 
       - name: Use Node.js 24.x
         uses: actions/setup-node@v7
@@ -304,11 +446,80 @@ jobs:
           cache: npm
           cache-dependency-path: server/package-lock.json
 
+      # Same entry and same contract as the server job — see it for the key, and
+      # for why the install and rebuild below are gated on the mark rather than
+      # on the cache hit.
+      - name: Cache server node_modules
+        id: server-modules
+        uses: actions/cache@v6
+        with:
+          path: server/node_modules
+          key: server-modules-${{ runner.os }}-${{ runner.arch }}-node24-${{ hashFiles('server/package-lock.json', 'server/package.json', 'server/.npmrc', 'scripts/trusted-rebuilds.js') }}
+
+      # A restored tree is only reusable if it was rebuilt before it was saved,
+      # and that is not answerable by looking at the tree — with today's
+      # versions the rebuild is nearly a no-op, so every allowlisted package
+      # imports fine on a never-rebuilt one. The rebuild step below leaves an
+      # explicit mark; this reads it back.
+      #
+      # `continue-on-error` on purpose: a bad entry must not wedge every PR
+      # until a human clears the cache by hand. It fails, the two steps below
+      # see a non-success outcome, and the job builds the tree it needs. It does
+      # not *replace* the bad entry — cache keys are immutable and actions/cache
+      # skips the save on an exact hit — so that entry keeps costing each run a
+      # reinstall until the key moves or it ages out. That is precisely the
+      # pre-cache cost: the worst case degrades to the old behaviour, never to a
+      # red repo.
+      #
+      # `outcome != 'success'` covers all three cases in one expression: on a
+      # cache miss this step is skipped (outcome `skipped`), on a hit it is
+      # `success` or `failure`.
+      - name: Check the restored node_modules was rebuilt
+        id: server-modules-usable
+        if: steps.server-modules.outputs.cache-hit == 'true'
+        continue-on-error: true
+        run: node scripts/trusted-rebuild-stamp.js check server
+
       - name: Install server dependencies
+        if: steps.server-modules-usable.outcome != 'success'
         run: npm ci --prefix server
 
+      # server/.npmrc pins ignore-scripts=true, so the allowlisted packages need
+      # this explicit rebuild. Same condition as the install: whenever this job
+      # builds the tree it will cache, it must build a rebuilt one — and the
+      # mark is written in the same block, so a failed rebuild cannot leave one
+      # behind for a later job to trust.
+      #
+      # `shell: bash` is load-bearing, not style. windows-server would default
+      # to pwsh, where a *native* command's non-zero exit neither throws nor
+      # stops the block (`$PSNativeCommandUseErrorActionPreference` is false)
+      # and only the last command's code becomes the step result — so a failed
+      # rebuild would run the mark anyway, reset the exit code to 0, and publish
+      # a green, marked, un-rebuilt tree. Under `bash -e` the block stops at
+      # the rebuild, the job fails, and actions/cache (`post-if: success()`)
+      # never saves it.
+      - name: Rebuild trusted native dependencies
+        if: steps.server-modules-usable.outcome != 'success'
+        shell: bash
+        env:
+          # Skip onnxruntime-node's CUDA execution provider. Its postinstall
+          # downloads it on linux-x64 whenever the .so is absent — several
+          # hundred MB, on two jobs, every run — and no hosted runner has an
+          # NVIDIA GPU to use it with. The CPU binaries ship in the tarball, so
+          # inference still works; this is the single largest cost in the job.
+          ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+        run: |
+          node scripts/trusted-rebuilds.js server
+          node scripts/trusted-rebuild-stamp.js write server
+
+      # After the install: `npm ci` wipes node_modules, so a restore ordered
+      # ahead of it is lost. Vite/Vitest write transform artifacts under
+      # node_modules/.vite (and historically .vitest); reusing them skips
+      # re-transforming unchanged files. Separate from the cache above, and
+      # deliberately: this is where a near miss is safe, so this is the entry
+      # that keeps restore-keys and stays warm across a lockfile bump.
       - name: Cache Vitest transform artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             server/node_modules/.vite
@@ -318,9 +529,6 @@ jobs:
             vitest-server-${{ runner.os }}-${{ hashFiles('server/package-lock.json') }}-
             vitest-server-${{ runner.os }}-
 
-      - name: Rebuild trusted native dependencies
-        run: node scripts/trusted-rebuilds.js server
-
       - name: Check server entry-point syntax
         run: node --check server/index.js
 
@@ -328,13 +536,12 @@ jobs:
         env:
           CI_TEST_MODE: ${{ needs.impact.outputs.windows_mode }}
           CI_TEST_FILES: ${{ needs.impact.outputs.windows_files }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node scripts/run-ci-tests.js server
 
   gate:
     name: CI Gate
     if: always()
-    needs: [impact, server, client, database, lint, windows-server]
+    needs: [impact, server, client, database, windows-server]
     runs-on: ubuntu-latest
     steps:
       - name: Require every selected job to pass
@@ -343,7 +550,6 @@ jobs:
           SERVER_RESULT: ${{ needs.server.result }}
           CLIENT_RESULT: ${{ needs.client.result }}
           DATABASE_RESULT: ${{ needs.database.result }}
-          LINT_RESULT: ${{ needs.lint.result }}
           WINDOWS_SERVER_RESULT: ${{ needs.windows-server.result }}
         run: |
           node -e '
@@ -352,7 +558,6 @@ jobs:
               server: process.env.SERVER_RESULT,
               client: process.env.CLIENT_RESULT,
               database: process.env.DATABASE_RESULT,
-              lint: process.env.LINT_RESULT,
               windows_server: process.env.WINDOWS_SERVER_RESULT,
             };
             const failed = Object.entries(results)
@@ -363,3 +568,25 @@ jobs:
             }
             console.log("CI gate passed:", results);
           '
+
+  full-gate:
+    # A second check run published ONLY when the impact plan chose the complete
+    # suite. release.yml keys on this name to skip re-running CI on the push to
+    # `release`; the aggregate "CI Gate" above cannot serve that purpose,
+    # because an impact-scoped PR run publishes a green "CI Gate" too.
+    # It mirrors the aggregate gate rather than re-aggregating every job, so it
+    # costs one comparison instead of a second fan-in.
+    name: Full CI Gate
+    if: always() && needs.impact.outputs.full == 'true'
+    needs: [impact, gate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the aggregate gate to have passed
+        env:
+          GATE_RESULT: ${{ needs.gate.result }}
+        run: |
+          if [ "$GATE_RESULT" != "success" ]; then
+            echo "The complete suite ran but CI Gate did not pass ($GATE_RESULT)."
+            exit 1
+          fi
+          echo "Complete suite passed — this tree does not need re-testing on release."

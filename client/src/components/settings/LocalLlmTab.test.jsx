@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
 vi.mock('../../services/api', () => ({
@@ -13,6 +13,16 @@ vi.mock('../../services/api', () => ({
   installLocalLlmBackend: vi.fn(),
   upgradeLocalLlmBackend: vi.fn(),
   controlOllamaService: vi.fn(),
+  controlLmStudioService: vi.fn(),
+  getMtplxServerStatus: vi.fn().mockResolvedValue({ installed: false, running: false, supported: true, cachedModels: [] }),
+  startMtplxServer: vi.fn(),
+  stopMtplxServer: vi.fn(),
+  installMtplx: vi.fn(),
+  // The MTPLX card's checkpoint panel loads upstream's default listing on mount.
+  searchMtplxModels: vi.fn().mockResolvedValue({ models: [], error: null }),
+  pullMtplxModel: vi.fn(),
+  removeMtplxModel: vi.fn(),
+  saveRuntimeStartupList: vi.fn(),
   installAudioModel: vi.fn(),
   patchSettingsSlice: vi.fn(),
   getLlamaServerStatus: vi.fn().mockResolvedValue({ installed: false, running: false }),
@@ -24,16 +34,12 @@ vi.mock('../../services/api', () => ({
 vi.mock('../../services/socket', () => ({
   default: { on: vi.fn(), off: vi.fn() },
 }));
-// The memory panel owns its own 5s poll + voice/TTS endpoints — irrelevant here.
-vi.mock('./MemoryManagement.jsx', () => ({ default: () => <div data-testid="memory-management" /> }));
-// Same for the assessments panel — it fetches its own report on mount and is
-// covered by LocalModelAssessments.test.jsx.
-vi.mock('./LocalModelAssessments.jsx', () => ({ default: () => <div data-testid="local-model-assessments" /> }));
 vi.mock('../ui/Toast', () => ({
   default: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
 }));
 
 import { getLocalLlmStatus, getLocalLlmCatalog, patchSettingsSlice, installLocalLlmModel } from '../../services/api';
+import socket from '../../services/socket';
 import { LocalLlmTab } from './LocalLlmTab';
 
 // A realistically long HF model id — the shape that got ellipsised to
@@ -47,6 +53,11 @@ const renderTab = async () => {
     </MemoryRouter>,
   );
   await waitFor(() => expect(screen.getByText(/Installed on Ollama/)).toBeTruthy());
+  // The MTPLX checkpoint panel only mounts once the MTPLX status resolves, and
+  // it then fetches its default listing — two chained awaits, so flush twice so
+  // both state updates land inside act().
+  await act(async () => {});
+  await act(async () => {});
 };
 
 beforeEach(() => {
@@ -98,10 +109,77 @@ describe('LocalLlmTab backend disable state', () => {
   });
 });
 
-describe('LocalLlmTab installed models', () => {
-  it('links to the shared Ollama generation controls', async () => {
+describe('LocalLlmTab runtime servers', () => {
+  it('mounts one control surface covering every local runtime, not just the catalog backends', async () => {
     await renderTab();
-    expect(screen.getByRole('link', { name: /temperature and thinking defaults/i }).getAttribute('href')).toBe('/ai');
+    const card = screen.getByRole('heading', { name: 'Local Runtime Servers' }).closest('div.bg-port-card');
+    for (const label of ['Ollama', 'LM Studio', 'llama.cpp', 'MTPLX']) {
+      expect(within(card).getByText(label)).toBeInTheDocument();
+    }
+  });
+
+  it('starts MTPLX from that surface', async () => {
+    const { getMtplxServerStatus, startMtplxServer } = await import('../../services/api');
+    getMtplxServerStatus.mockResolvedValue({
+      installed: true, running: false, supported: true, cachedModels: ['Example/Qwen-MTP'], endpoint: 'http://127.0.0.1:8000/v1',
+    });
+    startMtplxServer.mockResolvedValue({ success: true, online: true, endpoint: 'http://127.0.0.1:8000/v1' });
+
+    await renderTab();
+    const card = screen.getByRole('heading', { name: 'Local Runtime Servers' }).closest('div.bg-port-card');
+    const mtplxRow = within(card).getByText('MTPLX').closest('div.flex.flex-col');
+    fireEvent.click(within(mtplxRow).getByRole('button', { name: /^Start/ }));
+
+    await waitFor(() => expect(startMtplxServer).toHaveBeenCalled());
+  });
+
+  it('reports a failed checkpoint download as one error, not an empty success', async () => {
+    // `pullMtplxModel` RESOLVES `{success: false}` for a failed download (its
+    // progress already streamed), so a formatter-only success message would fire
+    // an empty success toast alongside the real reason.
+    const { getMtplxServerStatus, pullMtplxModel } = await import('../../services/api');
+    const toast = (await import('../ui/Toast')).default;
+    getMtplxServerStatus.mockResolvedValue({
+      installed: true, running: false, supported: true, cachedModels: [], cacheError: null,
+    });
+    pullMtplxModel.mockResolvedValue({ success: false, model: null, error: 'no space left on device' });
+
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: /Download default checkpoint/ }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/no space left on device/)));
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('downloads MTPLX\'s own default checkpoint when the cache is empty', async () => {
+    const { getMtplxServerStatus, pullMtplxModel } = await import('../../services/api');
+    getMtplxServerStatus.mockResolvedValue({
+      installed: true, running: false, supported: true, cachedModels: [], cacheError: null,
+    });
+    pullMtplxModel.mockResolvedValue({ success: true, model: null, cachedModels: ['Example/Qwen-MTP'] });
+
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: /Download default checkpoint/ }));
+
+    // `null` (not a repo id the card invented) = MTPLX's own verified default.
+    await waitFor(() => expect(pullMtplxModel).toHaveBeenCalledWith(null));
+  });
+
+  it('saves the PM2 process list so the managed daemons survive a reboot', async () => {
+    const { saveRuntimeStartupList } = await import('../../services/api');
+    saveRuntimeStartupList.mockResolvedValue({ success: true });
+
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: /Save PM2 list for reboot/ }));
+
+    await waitFor(() => expect(saveRuntimeStartupList).toHaveBeenCalled());
+  });
+});
+
+describe('LocalLlmTab installed models', () => {
+  it('links to the shared local generation controls', async () => {
+    await renderTab();
+    expect(screen.getByRole('link', { name: /temperature, top-p and thinking defaults/i }).getAttribute('href')).toBe('/ai');
   });
 
   it('lets a long model id wrap instead of truncating it', async () => {
@@ -223,8 +301,8 @@ describe('LocalLlmTab recommendations', () => {
         category: 'general',
         recommendedFor: ['general', 'coding', 'reasoning', 'vision', 'multilingual'],
         featured: {
-          label: 'Best overall',
-          description: 'Flagship local pick for general work, coding and agents, reasoning, and image analysis.',
+          label: 'Best Qwen3.8 path',
+          description: 'For Qwen3.8 CoS tasks, use MTPLX + OpenCode MTPLX TUI; use native MLX when isolated decoder throughput or vision is the priority.',
         },
         params: '27B',
         size: '16.5 GB',
@@ -237,7 +315,7 @@ describe('LocalLlmTab recommendations', () => {
 
     await renderTab();
 
-    expect(await screen.findByText('Best overall')).toBeTruthy();
+    expect(await screen.findByText('Best Qwen3.8 path')).toBeTruthy();
     expect(screen.getAllByText('General purpose').length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole('button', { name: 'Coding & agents (1)' }));
@@ -456,6 +534,51 @@ describe('LocalLlmTab llama-server management', () => {
     });
   });
 
+  it('sends --parallel 1 by default and honours an edited slot count', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
+    startLlamaServer.mockResolvedValueOnce({ success: true, pid: 99 });
+
+    await renderTab();
+    await screen.findByText(/Launch Speculative Decoding Server/);
+    await waitFor(() => expect(screen.queryByText(/Enter a Target Base Model path to enable Start/)).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: /Advanced options/ }));
+    fireEvent.change(screen.getByLabelText('Parallel slots'), { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: /Start Speculative Server/ }));
+
+    await waitFor(() => expect(startLlamaServer).toHaveBeenCalled());
+    expect(startLlamaServer.mock.calls[0][0].parallel).toBe(2);
+  });
+
+  // An untouched tuning field means "llama.cpp's default", which is not a value
+  // PortOS can name. Sending `''` (which the server coerces to 0) or a made-up
+  // number would pin a setting the user never chose and make two "default"
+  // launches incomparable.
+  it('omits an untouched tuning flag from the launch payload entirely', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
+    startLlamaServer.mockResolvedValueOnce({ success: true, pid: 99 });
+
+    await renderTab();
+    await screen.findByText(/Launch Speculative Decoding Server/);
+    await waitFor(() => expect(screen.queryByText(/Enter a Target Base Model path to enable Start/)).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: /Advanced options/ }));
+    fireEvent.change(screen.getByLabelText('Micro-batch (-ub)'), { target: { value: '512' } });
+    fireEvent.click(screen.getByRole('button', { name: /Start Speculative Server/ }));
+
+    await waitFor(() => expect(startLlamaServer).toHaveBeenCalled());
+    const payload = startLlamaServer.mock.calls[0][0];
+    expect(payload.ubatchSize).toBe(512);
+    for (const untouched of ['batchSize', 'threads', 'cacheTypeK', 'cacheTypeV']) {
+      expect(payload, untouched).not.toHaveProperty(untouched);
+    }
+    // A boolean has no "unset" spelling, so it does travel — as `false`, which
+    // is what leaves `--flash-attn` off the line.
+    expect(payload.flashAttn).toBe(false);
+  });
+
   // The preset select mounts pre-selected, so the form must mount pre-filled too —
   // otherwise Start is disabled while the UI reads as fully configured.
   it('seeds the form from the mounted preset so Start is immediately usable', async () => {
@@ -479,6 +602,7 @@ describe('LocalLlmTab llama-server management', () => {
         model: 'models/Qwen3.8-27B-Instruct-Q4_K_M.gguf',
         draftModel: 'models/Qwen3.8-27B-DSpark-bf16.gguf',
         specType: 'draft-dspark',
+        parallel: 1,
       }));
     });
   });
@@ -555,6 +679,22 @@ describe('LocalLlmTab llama-server management', () => {
 
     await waitFor(() => {
       expect(startLlamaServer).toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: 0 }));
+    });
+  });
+
+  it('lets the user set the model id llama.cpp will answer as', async () => {
+    const { getLlamaServerStatus, startLlamaServer } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue(llamaReady());
+    startLlamaServer.mockResolvedValueOnce({ success: true, pid: 23 });
+
+    await renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Advanced options/ }));
+    fireEvent.change(screen.getByLabelText(/Model id \(alias\)/), { target: { value: 'dspark' } });
+    fireEvent.click(screen.getByRole('button', { name: /Start Speculative Server/ }));
+
+    await waitFor(() => {
+      expect(startLlamaServer).toHaveBeenCalledWith(expect.objectContaining({ alias: 'dspark' }));
     });
   });
 
@@ -677,18 +817,70 @@ describe('LocalLlmTab llama-server management', () => {
       presets: specPresets(),
       pid: 9999,
       endpoint: 'http://127.0.0.1:5568/v1',
-      config: { model: 'models/base.gguf', draftModel: 'models/draft.gguf', specType: 'draft-dflash' },
+      config: { model: 'models/base.gguf', draftModel: 'models/draft.gguf', specType: 'draft-dflash', alias: 'dflash' },
     });
     stopLlamaServer.mockResolvedValueOnce({ success: true });
 
     await renderTab();
 
     expect(await screen.findByText(/Running \(PID 9999\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Providers must send/)).toBeInTheDocument();
+    expect(screen.getByText('dflash')).toBeInTheDocument();
     const stopBtn = screen.getByRole('button', { name: /Stop Server/ });
     fireEvent.click(stopBtn);
 
     await waitFor(() => {
       expect(stopLlamaServer).toHaveBeenCalled();
+    });
+  });
+
+  // `managed` has three states: `true` ours, `false` somebody else's, `null`
+  // PM2 could not be read. A truthiness test told a user whose own daemon
+  // PortOS had merely failed to read that they had started it in a terminal.
+  it('does not call a server external when PM2 could not be read', async () => {
+    const { getLlamaServerStatus } = await import('../../services/api');
+    getLlamaServerStatus.mockResolvedValue({
+      installed: true,
+      running: true,
+      managed: null,
+      presets: specPresets(),
+      pid: null,
+      endpoint: 'http://127.0.0.1:5568/v1',
+      config: { model: 'models/base.gguf', specType: 'draft-dflash', alias: 'dflash' },
+    });
+
+    await renderTab();
+
+    expect(await screen.findByText(/PM2 status could not be read/)).toBeInTheDocument();
+    expect(screen.queryByText(/Running as external process/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Stop Server/ })).not.toBeInTheDocument();
+  });
+
+  // `localLlm:progress` is shared with the measurement paths, and an overnight
+  // sweep emits a `complete` frame PER MODEL. Answering those here would reload
+  // the status and re-query the Hugging Face catalog once per measured model,
+  // all night, and paint sweep text into the install banner.
+  describe('shared progress channel', () => {
+    const fireFrame = async (frame) => {
+      const handler = socket.on.mock.calls.find(([event]) => event === 'localLlm:progress')?.[1];
+      await act(async () => handler(frame));
+    };
+
+    it('ignores assessment and sweep frames on the shared progress event', async () => {
+      await renderTab();
+      const catalogCalls = getLocalLlmCatalog.mock.calls.length;
+
+      await fireFrame({ scope: 'assessment', event: 'complete', message: 'example-model: fits' });
+      await fireFrame({ scope: 'assessment-sweep', event: 'complete', message: 'Sweep complete: 30/30 measured' });
+
+      expect(getLocalLlmCatalog.mock.calls.length).toBe(catalogCalls);
+      expect(screen.queryByText(/Sweep complete/)).not.toBeInTheDocument();
+    });
+
+    it('still answers the install frames this tab owns', async () => {
+      await renderTab();
+      await fireFrame({ event: 'progress', message: 'pulling manifest' });
+      expect(await screen.findByText(/pulling manifest/)).toBeInTheDocument();
     });
   });
 });

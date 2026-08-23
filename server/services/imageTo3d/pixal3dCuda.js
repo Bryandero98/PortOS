@@ -12,7 +12,7 @@
  * Everything is either pure or exercised through injectable `exists`/`spawnImpl`, so
  * the wiring is unit-testable WITHOUT an NVIDIA box, a ~40 GB install, or a live
  * render. `runPixal3dCudaGenerate` is the one real subprocess boundary and NEVER
- * auto-runs (CLAUDE.md no-cold-bootstrap policy).
+ * auto-runs (AGENTS.md no-cold-bootstrap policy).
  *
  * **Four things differ from the TRELLIS.2 CUDA lane, and each drives the design:**
  *
@@ -53,6 +53,7 @@ import { cpus, homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from '../../lib/childProcess.js';
 import { resolveCondaEnvPython } from '../../lib/condaEnv.js';
+import { appendMissingModules } from './degradedInstall.js';
 import { rewriteGlbMaterialsOpaque } from './glbMaterials.js';
 import {
   hfGatedRepoHelp,
@@ -260,7 +261,7 @@ const [PIXAL3D_RES_FLOOR, PIXAL3D_RES_FULL] = PIXAL3D_RESOLUTIONS;
  *  - otherwise → the floor resolution with `--low_vram`, the least this lane supports.
  *
  * An unknown/unparseable VRAM reading degrades to the floor rather than overcommitting
- * a card we failed to size (CLAUDE.md sentinel rule).
+ * a card we failed to size (AGENTS.md sentinel rule).
  *
  * @param {number|null} vramGb
  * @returns {{lowVram: boolean, resolution: number}}
@@ -382,6 +383,16 @@ export const PIXAL3D_REQUIRED_MODULES = ['o_voxel', 'flex_gemm'];
 /** NATTEN backs the NAF upsampler. Absent ⇒ renders take upstream's fallback path. */
 export const PIXAL3D_NAF_MODULES = ['natten'];
 
+/**
+ * The remedy for a REQUIRED extension that did not build — and only the remedy: which
+ * extensions failed rides the `degraded.detail` line the adapter builds (#4741). Lives
+ * next to its NAF sibling rather than inlined at the registry so both readings of a
+ * half-built install come from one place.
+ */
+export const PIXAL3D_INCOMPLETE_INSTALL_HELP = 'Pixal3D is installed but not every required '
+  + 'CUDA extension built, so renders will fail in the mesh exporter. Repair install '
+  + 'rebuilds the CUDA extensions; your downloaded models are kept.';
+
 export const PIXAL3D_NAF_FALLBACK_HELP = 'Pixal3D is installed, but NATTEN is missing, '
   + 'so its NAF refinement step falls back to DINO projection features — slower, and '
   + 'geometry/texture detail is a notch lower than upstream. Repair install rebuilds '
@@ -399,7 +410,7 @@ export const PIXAL3D_NAF_FALLBACK_HELP = 'Pixal3D is installed, but NATTEN is mi
  * `isPixal3dNafError` classifies the failure into an actionable message. Reported as
  * `'unknown'` when the probe itself could not run — deliberately distinct from
  * `'unavailable'`, so a broken probe never renders a warning about a fine install
- * (CLAUDE.md sentinel rule: "failed to determine" ≠ "determined to be bad").
+ * (AGENTS.md sentinel rule: "failed to determine" ≠ "determined to be bad").
  *
  * @param {{execFileImpl?: Function, exists?: (p: string) => boolean,
  *          env?: NodeJS.ProcessEnv}} [opts]
@@ -464,10 +475,18 @@ const CUDA_OOM_HELP = 'The GPU ran out of memory during this render. Close other
  * `detectCudaComputeCapability`) rather than probed here, keeping this function's
  * inputs explicit and its steps deterministic in tests.
  *
+ * **Post-install verification.** `setup.sh` is SOURCED and exits 0 even when a CUDA
+ * extension failed to compile, so the env and the checkout can both be on disk while
+ * `o_voxel` never built. After the presence check the install therefore runs the same
+ * module probe the card uses (`probeModules`, injectable so the suite never spawns a
+ * Python against the developer machine) and reports a half-built install BEFORE the
+ * terminal `complete` frame — otherwise a user watching the install finish sees a clean
+ * success and only learns it is incomplete on a later visit to the card (#4741).
+ *
  * @param {{base?: string, onEvent?: (ev: object) => void, spawnImpl?: Function,
  *          maxRetries?: number, sleep?: (ms: number) => Promise<void>,
  *          exists?: (p: string) => boolean, env?: NodeJS.ProcessEnv,
- *          computeCap?: string|null}} [opts]
+ *          computeCap?: string|null, probeModules?: Function}} [opts]
  * @returns {{promise: Promise<{ok: true}>, kill: () => void}}
  */
 export function installPixal3dCuda({
@@ -479,6 +498,7 @@ export function installPixal3dCuda({
   exists = existsSync,
   env,
   computeCap = null,
+  probeModules = probePixal3dModules,
 } = {}) {
   return runInstallSteps({
     steps: buildPixal3dInstallSteps(base, { exists, env, computeCap }),
@@ -492,7 +512,7 @@ export function installPixal3dCuda({
     env,
     // Steps can leave a usable env behind while a build failed, so confirm what
     // actually landed rather than trusting exit 0 (#2952's lesson).
-    verify: (emit) => {
+    verify: async (emit) => {
       if (!isPixal3dCudaInstalled({ base, exists, env })) {
         const err = new Error(
           `${LABEL} setup finished but its conda environment or the Pixal3D checkout is `
@@ -502,7 +522,26 @@ export function installPixal3dCuda({
         err.stage = 'verify';
         throw err;
       }
-      emit({ type: 'log', stage: 'verify', message: '✅ Pixal3D CUDA environment is present.' });
+      // Present ≠ complete. A missing REQUIRED extension is a `⚠️`, not a throw: the
+      // install genuinely produced a usable env for everything but the mesh exporter,
+      // and the card's Repair action is the remedy — failing the whole ~40 GB run would
+      // discard work the user can keep. Same reading, and the same precedence
+      // (incomplete outranks the NAF fallback), as the card's `describeInstallState`.
+      // A probe that could not RUN (`naf: 'unknown'`, nothing missing) still reports the
+      // clean line: "failed to determine" must never render as "determined to be bad".
+      const probe = await probeModules({ exists, env });
+      if (probe.missing?.length) {
+        emit({
+          type: 'log',
+          stage: 'verify',
+          message: `⚠️ ${appendMissingModules(PIXAL3D_INCOMPLETE_INSTALL_HELP, probe.missing)}`,
+        });
+      } else if (probe.naf === 'unavailable') {
+        // Nothing to name — NATTEN is absent as a whole, not half-built.
+        emit({ type: 'log', stage: 'verify', message: `⚠️ ${PIXAL3D_NAF_FALLBACK_HELP}` });
+      } else {
+        emit({ type: 'log', stage: 'verify', message: '✅ Pixal3D CUDA environment is present.' });
+      }
     },
   });
 }

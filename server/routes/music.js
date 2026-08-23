@@ -43,6 +43,8 @@ import { getCudaCapability } from '../lib/cudaCapability.js';
 import {
   FEDERATED_MEDIA_WIRE_VERSION,
   federatedMediaAudioProfileSchema,
+  federatedMediaDeniesFeature,
+  federatedMediaSupports,
 } from '../lib/federatedMediaWire.js';
 import { enqueueJob, listJobs } from '../services/mediaJobQueue/index.js';
 import { resolveFederatedMediaProvider } from '../services/federatedMediaConsumer.js';
@@ -383,13 +385,11 @@ const generateSchema = z.object({
   if (!value.remoteMusicProfile) {
     ctx.addIssue({ code: 'custom', path: ['remoteMusicProfile'], message: 'remoteMusicProfile is required for a remote media provider' });
   }
-  if (value.lyrics) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['lyrics'],
-      message: 'Remote media generation is instrumental only so personal lyrics stay machine-local',
-    });
-  }
+  // Lyrics used to be refused outright here. They now cross to an allowlisted
+  // peer (ADR docs/decisions/2026-08-22-federated-media-input-assets.md rule 2),
+  // but only when the resolved capability says the model sings AND the peer's
+  // build accepts them on the wire — neither of which this schema can see.
+  // The check moved into the handler, below the capability resolve.
 });
 
 const INSTRUMENTAL_ONLY_GUIDANCE = 'Instrumental only. Do not include sung, spoken, chanted, choir, or background vocals. Carry the lead melody with the described instruments or textures.';
@@ -454,9 +454,40 @@ router.post('/generate', asyncHandler(async (req, res) => {
         },
       });
     }
+    // Two independent facts, and conflating them is how a lyrical render
+    // silently comes back instrumental: `capability.lyrics` says the MODEL
+    // sings — the same check the provider's own admission gate makes — while
+    // the `lyrics` FEATURE says this PEER'S BUILD carries the words at all.
+    // Each failure gets its own message, so a caller who actually sent words is
+    // told which half is missing rather than getting a plausible render of the
+    // wrong thing. Why absent fails closed lives in federatedMediaSupports.
+    if (body.lyrics && !body.instrumentalOnly) {
+      if (!capability.lyrics) {
+        throw new ServerError(
+          'The selected remote model renders instrumental audio only. Pick a lyric-capable model, or render this track locally.',
+          { status: 400, code: 'MEDIA_PROVIDER_LYRICS_UNSUPPORTED' },
+        );
+      }
+      if (!federatedMediaSupports(resolved.status, 'lyrics', capability)) {
+        // Blaming the peer's build is safe for THIS feature — the previous
+        // build stamped the legacy tell on every audio capability, so its
+        // absence can only mean an older one. `federatedMediaDeniesFeature`
+        // is what records that, per feature, rather than this call site.
+        throw new ServerError(
+          federatedMediaDeniesFeature(resolved.status, 'lyrics', capability)
+            ? 'The selected peer runs a PortOS build that cannot carry lyrics to its provider. Update the peer, or render this track locally.'
+            : 'The selected peer is not reporting that it can carry lyrics to its provider. Render this track locally, or pick a lyric-capable peer.',
+          { status: 400, code: 'MEDIA_PROVIDER_LYRICS_UNSUPPORTED' },
+        );
+      }
+    }
     engine = {
       id: capability.engine,
       name: capability.engineName,
+      // The model's own capability, not the wire's: this drives the render
+      // snapshot (`lyricsEnabled`), which records what the engine is, and the
+      // guard above already refused the one combination where the two disagree
+      // in a way that would change the audio.
       lyrics: capability.lyrics,
     };
     remoteMedia = {
@@ -503,6 +534,12 @@ router.post('/generate', asyncHandler(async (req, res) => {
     : body.prompt;
   const usedLyrics = engine.lyrics && !body.instrumentalOnly ? (body.lyrics ?? '') : '';
   if (remoteMedia) {
+    // Lyrics ride the marker, not the top-level params, for the same reason the
+    // profile does: `params.lyrics` stays blank so a build rolled back past
+    // `remoteMedia` fails closed instead of re-rendering locally (#4683).
+    // Omitted when empty so an instrumental remote render submits — and
+    // idempotency-hashes — exactly the body a pre-lyrics build did.
+    if (usedLyrics) remoteMedia.lyrics = usedLyrics;
     remoteMedia.request = {
       engine: engine.id,
       modelId: body.modelId,

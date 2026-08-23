@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { searchHuggingFaceModels, enrichCatalogWithVariants, applyMeasuredFit } from './huggingFaceCatalog.js'
+import { searchHuggingFaceModels, enrichCatalogWithVariants, applyMeasuredFit, fetchRepoPublishedDates } from './huggingFaceCatalog.js'
 import { __resetOllamaRegistryCache } from './ollamaRegistryCatalog.js'
 
 // The disk cache resolves its file from the REAL PATHS.data, and fetchRepoModel
 // consults it before the network — so without this mock these tests read the
 // developer's live `data/cache/huggingface-repos.json`. The fixtures below use
 // real repo ids (bartowski/…, facebook/musicgen-small, nomic-ai/…) that this very
-// feature caches the moment anyone opens Settings → Local LLM, so a cached record
+// feature caches the moment anyone opens Models → LLMs, so a cached record
 // would bypass the `fetch` mock entirely and fail assertions locally while CI —
 // with no cache file — stayed green. Mocking also keeps the debounced writer from
 // ever persisting these fabricated records (a 13 GB `Qwen3.6-35B`, `burst-pub/…`)
@@ -1309,6 +1309,55 @@ describe('huggingFaceCatalog', () => {
       expect(blobCalls).toBe(1)
       expect(catalogs.every((c) => c[0].format === 'gguf')).toBe(true)
     })
+  })
+})
+
+describe('fetchRepoPublishedDates', () => {
+  beforeEach(() => { vi.stubGlobal('fetch', vi.fn()) })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('returns each repo\'s publish date, and null for one the Hub cannot answer for', async () => {
+    fetch.mockImplementation(async (url) => (
+      String(url).includes('pub-owner/Dated')
+        ? response({ modelId: 'pub-owner/Dated', createdAt: '2026-01-02T00:00:00.000Z' })
+        : { ok: false, status: 404, json: vi.fn(async () => null), text: vi.fn(async () => 'not found') }
+    ))
+
+    expect(await fetchRepoPublishedDates(['pub-owner/Dated', 'pub-owner/Gone'])).toEqual({
+      'pub-owner/Dated': '2026-01-02T00:00:00.000Z',
+      'pub-owner/Gone': null
+    })
+  })
+
+  it('returns the dates that arrived in time rather than hanging the caller when the Hub stalls', async () => {
+    // A listing of two dozen repos is several rounds through the shared gate, so an
+    // unresponsive Hub must not hold the search open. What matters is that the repos
+    // that DID answer keep their dates — dropping them on timeout would leave a whole
+    // page of rows ageless because one repo hung.
+    fetch.mockImplementation(async (url) => (
+      String(url).includes('pub-owner/Fast')
+        ? response({ modelId: 'pub-owner/Fast', createdAt: '2026-01-02T00:00:00.000Z' })
+        : new Promise(() => {})
+    ))
+
+    expect(await fetchRepoPublishedDates(['pub-owner/Fast', 'pub-owner/Slow'], { timeoutMs: 50 }))
+      .toEqual({ 'pub-owner/Fast': '2026-01-02T00:00:00.000Z', 'pub-owner/Slow': null })
+  })
+
+  it('caps the fan-out so one oversized page cannot flood the shared Hub gate', async () => {
+    fetch.mockImplementation(async () => response({ createdAt: '2026-01-02T00:00:00.000Z' }))
+    const repos = Array.from({ length: 40 }, (_, i) => `pub-owner/Repo${i}`)
+
+    const dates = await fetchRepoPublishedDates(repos)
+
+    // 24 probed; the rest are simply absent rather than queued behind the gate.
+    expect(Object.keys(dates)).toHaveLength(24)
+    expect(fetch).toHaveBeenCalledTimes(24)
+  })
+
+  it('ignores ids that are not owner/name rather than asking the Hub about them', async () => {
+    expect(await fetchRepoPublishedDates(['not-a-repo', null, 42])).toEqual({})
+    expect(fetch).not.toHaveBeenCalled()
   })
 })
 

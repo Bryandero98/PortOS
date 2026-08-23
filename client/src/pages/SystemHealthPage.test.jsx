@@ -31,6 +31,9 @@ vi.mock('../services/api', () => ({
   // provider readiness (#4348). No peers keeps this page's assertions about
   // local metrics unaffected.
   getInstances: vi.fn(() => Promise.resolve({ peers: [] })),
+  // The overview's build-stamp panel fetches its own route (#4694) — the stamp
+  // deliberately does not ride the peer-scraped health payload.
+  getSystemBuild: vi.fn(() => Promise.resolve({ commit: null, shortCommit: null, branch: null, dirty: null })),
 }));
 
 vi.mock('../hooks/useProviderModels', () => ({

@@ -105,7 +105,7 @@ export default function CreativeCommissionDetail() {
         if (cancelled) return;
         // Only a real 404 means the commission is gone. A transient failure
         // (network, 5xx, auth) must NOT be misreported as "deleted" — surface it
-        // as a retryable error instead (absent-vs-unreachable, per CLAUDE.md).
+        // as a retryable error instead (absent-vs-unreachable, per AGENTS.md).
         if (err?.status === 404) { setNotFound(true); setLoadError(null); }
         else setLoadError(err?.message || 'Failed to load commission');
       })

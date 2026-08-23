@@ -22,7 +22,7 @@ import {
 
 export default function PracticeLogger({ song, onLogged, className = '' }) {
   // `useAsyncAction` owns the error toast, so the request itself stays silent —
-  // one error layer only (client/src/CLAUDE.md).
+  // one error layer only (client/src/AGENTS.md).
   const [logPractice, logging] = useAsyncAction(async (quality) => {
     const updated = await practiceSong(song.id, quality, { silent: true });
     onLogged?.(updated);

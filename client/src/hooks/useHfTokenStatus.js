@@ -10,7 +10,7 @@
  * `present` is deliberately tri-state: `null` means "not fetched yet or the fetch
  * failed", NOT "absent". Callers must branch on all three, or a slow status call
  * flashes "add a token" at a user who already has one (the absent-vs-unknown rule in
- * CLAUDE.md). A surface that would rather offer the paste form on a failed fetch opts
+ * AGENTS.md). A surface that would rather offer the paste form on a failed fetch opts
  * in explicitly with `errorAs: 'absent'`.
  */
 

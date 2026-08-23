@@ -129,3 +129,26 @@ describe('TabPills — trailing slot', () => {
     expect(within(screen.getByRole('tab', { name: /B/i })).getByTestId('dot-b')).toBeInTheDocument();
   });
 });
+
+describe('TabPills — filter variant', () => {
+  it('emits toggle-button semantics instead of tab/tablist', () => {
+    // A filter chip row narrows rows in place; it never swaps a panel, so
+    // promising `role="tab"` (and an aria-controls target that does not exist)
+    // misdescribes the control to a screen reader.
+    render(<TabPills variant="filter" tabs={sampleTabs} activeTab="cast" onChange={() => {}} ariaLabel="Filter by kind" />);
+    expect(screen.queryAllByRole('tab')).toHaveLength(0);
+    const group = screen.getByRole('group', { name: 'Filter by kind' });
+    expect(within(group).getAllByRole('button')).toHaveLength(3);
+    expect(screen.getByRole('button', { name: /Cast/i })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: /Places/i })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('keeps the pills styling and count badges, and reports clicks by id', async () => {
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+    render(<TabPills variant="filter" tabs={sampleTabs} activeTab="cast" onChange={onChange} />);
+    expect(screen.getByRole('button', { name: /Cast/i })).toHaveTextContent('3');
+    await user.click(screen.getByRole('button', { name: /Objects/i }));
+    expect(onChange).toHaveBeenCalledWith('objects');
+  });
+});

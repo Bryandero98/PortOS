@@ -36,7 +36,7 @@ let mediaLibraryKickoff = null;
 
 function startMediaLibrarySweep() {
   // Timer callbacks run OUTSIDE the request lifecycle — an uncaught throw here
-  // crashes the process (CLAUDE.md). Each sweep already catches per-peer; this
+  // crashes the process (AGENTS.md). Each sweep already catches per-peer; this
   // guards a synchronous throw before the awaits begin.
   const tick = () => {
     try {

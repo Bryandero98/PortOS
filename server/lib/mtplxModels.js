@@ -15,12 +15,13 @@
  *
  * So PortOS asks first. `mtplx models --json` is a local directory listing (no
  * network, no model load), and naming a cached repo on the command line is the
- * difference between a server that comes up and one that cannot. PortOS still
+ * difference between a server that comes up and one that cannot. A start still
  * never downloads weights — a multi-gigabyte pull stays the user's decision,
- * exactly as `docs/features/mtplx.md` promises.
+ * made on a button that says so (`services/localRuntimeSetup.js`'s `pull-start`
+ * action), exactly as `docs/features/mtplx.md` promises.
  */
 
-import { bufferedSpawn } from './bufferedSpawn.js';
+import { bufferedSpawn, spawnFailureDetail } from './bufferedSpawn.js';
 import { safeJSONParse } from './fileUtils.js';
 import { findCommandOnPath } from './processEnv.js';
 
@@ -50,8 +51,7 @@ export async function listMtplxCachedModels({ command = 'mtplx' } = {}) {
     // A spawn failure (EACCES, ENOENT on a dangling symlink) reports nothing on
     // either stream — its reason lives on `error`, and dropping it would leave
     // the user with a bare exit code for a fixable permissions problem.
-    const detail = result.error?.message || String(result.stderr || result.stdout || '').trim().split(/\r?\n/).pop();
-    return { models: null, error: detail || `\`${command} models\` exited with code ${result.code}` };
+    return { models: null, error: spawnFailureDetail(result, `\`${command} models\` exited with code ${result.code}`) };
   }
 
   // Parse from the first brace: MTPLX writes the JSON alone today, but a banner
@@ -85,4 +85,32 @@ export function pickMtplxCachedModel(models) {
   const usable = models.filter((row) => typeof row?.repo_id === 'string' && row.repo_id !== '' && row?.validation?.ok !== false);
   const verified = usable.find((row) => row.has_runtime_contract === true);
   return (verified || usable[0])?.repo_id ?? null;
+}
+
+/**
+ * The one value the readiness checklist and the setup button both key on:
+ * can MTPLX serve anything right now, and if not, why not.
+ *
+ * The checklist used to answer "MTPLX installed ✓ / server not responding ✗ —
+ * use Start MTPLX, PortOS does this for you", and Start then failed with "no
+ * model weights are cached". Both statements were true and the pair was a
+ * catch-22: the blocking fact (an empty cache) was only discoverable by
+ * clicking the button that could not work. Reading it up front is what lets the
+ * checklist say what is missing and offer the download instead of the start.
+ *
+ * States are deliberately four, not two — `unknown` (the cache could not be
+ * read) must not read as `empty` (read, and nothing is there), for the same
+ * reason `listMtplxCachedModels` distinguishes `null` from `[]`; and `partial`
+ * (an interrupted `mtplx pull`) needs a different sentence than a cache nobody
+ * has ever pulled into.
+ *
+ * @param {{models: object[]|null, error: string|null}} [cache] - a
+ *   `listMtplxCachedModels` result
+ * @returns {{state: 'unknown'|'empty'|'partial'|'ready', model: string|null, count: number, error: string|null}}
+ */
+export function describeMtplxCache({ models, error } = {}) {
+  if (!Array.isArray(models)) return { state: 'unknown', model: null, count: 0, error: error || null };
+  const model = pickMtplxCachedModel(models);
+  if (model) return { state: 'ready', model, count: models.length, error: null };
+  return { state: models.length === 0 ? 'empty' : 'partial', model: null, count: models.length, error: null };
 }

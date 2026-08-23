@@ -56,6 +56,7 @@ Reused verbatim (condensed to objective statements) from [GOALS.md](./GOALS.md)'
 | FR-2 | The system MUST manage PM2-backed app lifecycle actions (start/stop/restart/update/build/status/logs). | Must | Each lifecycle action returns success/failure state and streams logs for the target app within its running duration. |
 | FR-3 | The system MUST detect port conflicts against the canonical `PORTS` registry before allocation. | Must | Requesting a port already claimed by another app returns a conflict, not a silent overwrite. |
 | FR-4 | The system SHOULD expose configurable system-health thresholds. | Should | `PUT /api/system/health/thresholds` persists new thresholds and subsequent `GET /api/system/health` checks use them. |
+| FR-59 | The system MUST provide in-app UI for the full lifecycle of every local runtime it supports and every model that runtime needs — install/uninstall the runtime, search a catalog, download a model, and remove a downloaded model — with progress surfaced live. A user MUST never be told to run a shell command to complete one of these steps. | Must | For each supported local runtime (Ollama, LM Studio, llama.cpp, MTPLX), the UI offers install, start/stop, model search, model download with byte progress, and model removal; no user-facing empty/blocked state names a terminal command as its remedy. |
 
 ### AI Agent Orchestration (CoS)
 
@@ -190,6 +191,7 @@ Reused verbatim (condensed to objective statements) from [GOALS.md](./GOALS.md)'
 | NFR-13 | Compatibility | PostgreSQL (with pgvector) MUST be treated as a mandatory dependency for every install and federated peer — the file-backed memory mode MUST remain a test-only escape hatch, never a supported deployment fallback. |
 | NFR-14 | Compatibility | The system MUST run correctly across independently-upgrading installs and forks — no feature may assume all peers are on the same code version. |
 | NFR-15 | Cost | The system MUST be operable primarily on flat-rate AI provider subscriptions rather than requiring metered per-token billing for normal (non-power-user) operation, consistent with the project's stated cost philosophy. |
+| NFR-16 | Usability | Any operation PortOS is capable of performing on the user's behalf MUST be reachable from the UI. When a state blocks a workflow (a missing binary, an empty model cache, an unprovisioned dependency), the message MUST name the in-app control that resolves it — never a command for the user to type. |
 
 ---
 
@@ -205,6 +207,7 @@ Reused verbatim (condensed to objective statements) from [GOALS.md](./GOALS.md)'
 | NR-6 | The system MUST NOT add CORS restrictions, request-level rate limiting, or cross-actor concurrency defenses (mutex/atomic-write races) as protection against competing human actors within one install. | The trust model is one human per install on a private Tailnet — these defenses solve a problem PortOS doesn't have and add maintenance surface. |
 | NR-7 | The system MUST NOT treat leakage of a free, non-monetary third-party API key (e.g. CivitAI) to an unintended host as a security finding requiring host-allowlisting or key-stripping. | Won't-fix precedent (#2200): worst case is quota abuse against a free service, borne by that service — no monetary loss or meaningful security consequence. Does not extend to paid/quota-billed providers or money-bearing/destructive-action keys, which retain full hardening requirements. |
 | NR-8 | The system MUST NOT send an AI-drafted outbound message (email, social post) without explicit user review-and-approve, regardless of how confident the draft is. | Full digital autonomy (Goal 8) extends to task execution, not to irreversible outward-facing communication acting under the user's identity without a human gate. |
+| NR-9 | The system MUST NOT instruct the user to run a shell/terminal command in order to complete a workflow PortOS can perform itself — including installing or removing a runtime, and searching for, downloading, or deleting a model. Blocked-state copy points at the in-app control, not at a command line. | PortOS is the control surface for the machine; sending the user to a terminal for one step of an otherwise-managed lifecycle is a dead end that breaks remote/mobile use (Anywhere Access) and leaves the app's own state stale. **Carve-out:** genuinely privileged one-time host setup PortOS deliberately refuses to perform (`pm2 startup`, `sudo` fan-control helpers, `gcloud auth login`) may be named as an operator step — the refusal must be deliberate and documented, not a gap in the UI. |
 
 ---
 

@@ -12,7 +12,7 @@
  * series folder on share/sync without bloating the LWW-merged series
  * `index.json` (the review is an independent, larger document with its own
  * write cadence). Writes serialize on a per-series tail (single tail per shared
- * file, per CLAUDE.md).
+ * file, per AGENTS.md).
  */
 
 import { join } from 'path';

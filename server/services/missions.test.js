@@ -43,6 +43,7 @@ const {
   addSubTask,
   completeSubTask,
   generateMissionTask,
+  releaseMissionSubTask,
   generateProactiveTasks,
   recordMissionReview,
   getStats,
@@ -282,6 +283,80 @@ describe('Missions Service', () => {
       expect(task).toBeNull();
 
       await deleteMission('test-no-pending-mission');
+    });
+  });
+
+  // Issue #4858: `generateMissionTask` saves the `in_progress` flip before it
+  // returns, but the task it returns is never persisted. Any dispatch path that
+  // declines to spawn it must hand the sub-task back, or generation — which only
+  // selects `pending` — never sees it again.
+  describe('releaseMissionSubTask', () => {
+    const seedGenerated = async (id) => {
+      await createMission({ id, appId: 'test-app', name: 'Release Test' });
+      await addSubTask(id, { description: 'Held task', priority: 'high' });
+      const task = await generateMissionTask(id);
+      return task.metadata.subTaskId;
+    };
+
+    it('returns an in_progress sub-task to pending', async () => {
+      const subTaskId = await seedGenerated('test-release-mission');
+
+      const mission = await releaseMissionSubTask('test-release-mission', subTaskId);
+
+      expect(mission.subTasks.find(t => t.id === subTaskId).status).toBe('pending');
+
+      await deleteMission('test-release-mission');
+    });
+
+    // The acceptance criterion the whole fix exists for: the next generation
+    // cycle re-picks it, so the mission keeps advancing after the hold clears.
+    it('makes the sub-task re-generatable, so the mission resumes', async () => {
+      const subTaskId = await seedGenerated('test-regenerate-mission');
+      // Already claimed — generation correctly refuses to hand it out twice.
+      expect(await generateMissionTask('test-regenerate-mission')).toBeNull();
+
+      await releaseMissionSubTask('test-regenerate-mission', subTaskId);
+      const task = await generateMissionTask('test-regenerate-mission');
+
+      expect(task).not.toBeNull();
+      expect(task.metadata.subTaskId).toBe(subTaskId);
+
+      await deleteMission('test-regenerate-mission');
+    });
+
+    // A release that lands after the agent finished must not resurrect the
+    // sub-task and re-run completed work.
+    it('leaves a completed sub-task alone', async () => {
+      const subTaskId = await seedGenerated('test-release-completed');
+      await completeSubTask('test-release-completed', subTaskId, { success: true });
+
+      expect(await releaseMissionSubTask('test-release-completed', subTaskId)).toBeNull();
+
+      const mission = await getMission('test-release-completed');
+      expect(mission.subTasks.find(t => t.id === subTaskId).status).toBe('completed');
+
+      await deleteMission('test-release-completed');
+    });
+
+    it('leaves a failed sub-task alone', async () => {
+      const subTaskId = await seedGenerated('test-release-failed');
+      await completeSubTask('test-release-failed', subTaskId, { success: false });
+
+      expect(await releaseMissionSubTask('test-release-failed', subTaskId)).toBeNull();
+
+      const mission = await getMission('test-release-failed');
+      expect(mission.subTasks.find(t => t.id === subTaskId).status).toBe('failed');
+
+      await deleteMission('test-release-failed');
+    });
+
+    it('returns null for an unknown mission or sub-task', async () => {
+      await createMission({ id: 'test-release-unknown', appId: 'test-app', name: 'Unknown Test' });
+
+      expect(await releaseMissionSubTask('no-such-mission', 'sub-1')).toBeNull();
+      expect(await releaseMissionSubTask('test-release-unknown', 'no-such-sub')).toBeNull();
+
+      await deleteMission('test-release-unknown');
     });
   });
 

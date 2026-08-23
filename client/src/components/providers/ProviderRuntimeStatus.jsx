@@ -54,7 +54,7 @@ export default function ProviderRuntimeStatus({ runtime, onInstall, className = 
           Install {label}
         </button>
       ) : manageUrl ? (
-        <Link to={manageUrl} className={ACTION_CLASS} title={`Install ${label} from Settings → Local LLM`}>
+        <Link to={manageUrl} className={ACTION_CLASS} title={`Install ${label} from Models → LLMs`}>
           <Download size={12} />
           Install {label}
         </Link>

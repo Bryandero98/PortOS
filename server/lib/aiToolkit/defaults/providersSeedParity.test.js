@@ -16,7 +16,7 @@
  * default, PortOS's seed is tuned for this install.
  *
  * This reads both files as JSON — it does NOT import out of the vendored
- * aiToolkit directory into PortOS (see server/lib/aiToolkit/CLAUDE.md), so the
+ * aiToolkit directory into PortOS (see server/lib/aiToolkit/AGENTS.md), so the
  * self-contained rule is preserved. If an upstream toolkit sync ever diverges
  * the sample, this test makes that visible instead of silent.
  */

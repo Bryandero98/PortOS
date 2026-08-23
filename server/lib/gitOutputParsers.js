@@ -209,7 +209,7 @@ function sameObject(a, b) {
  * a busy repo (agents pushing branches) every attempt can lose the same race and
  * surface a red error for a fetch that actually succeeded. Callers treat a true
  * return as success instead. Distinguishing "already applied by another writer"
- * from "failed" is the sentinel-and-validate rule in CLAUDE.md.
+ * from "failed" is the sentinel-and-validate rule in AGENTS.md.
  *
  * Deliberately strict — it returns false, leaving the existing retry/throw path
  * in charge, when:

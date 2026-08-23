@@ -22,6 +22,9 @@ vi.mock('./notifications.js', () => ({ notificationEvents: { on: vi.fn() } }));
 vi.mock('./agentPersonalities.js', () => ({ agentPersonalityEvents: { on: vi.fn() } }));
 vi.mock('./platformAccounts.js', () => ({ platformAccountEvents: { on: vi.fn() } }));
 vi.mock('./updateChecker.js', () => ({ updateEvents: { on: vi.fn() } }));
+// Pin the bundle hash so the assertion does not depend on whether a dist
+// happens to exist in the checkout the suite runs from.
+vi.mock('../lib/buildId.js', () => ({ getBuildId: vi.fn(() => 'test-build-id') }));
 vi.mock('./automationScheduler.js', () => ({ scheduleEvents: { on: vi.fn() } }));
 vi.mock('./agentActivity.js', () => ({ activityEvents: { on: vi.fn() } }));
 vi.mock('./brainStorage.js', () => ({ brainEvents: { on: vi.fn() } }));
@@ -132,6 +135,28 @@ describe('socket.js — initSocket', () => {
   // ===========================================================================
   // cos:subscribe — socket joins cosSubscribers, receives cos:subscribed ack
   // ===========================================================================
+  it('pushes only the bundle id at connection time, never the git identity (#4694)', async () => {
+    // THE federation boundary for the socket half. `connection` fires for every
+    // socket, and peerSocketRelay.js opens a Socket.IO CLIENT to every online
+    // peer — so this handler runs for other installs' relays too, and anything
+    // pushed here leaves the machine. The commit is served over the API instead
+    // (GET /api/system/build), which peers do not call.
+    const socket = makeSocket('build-push');
+    createdSockets.push(socket);
+    io.connect(socket);
+    await Promise.resolve();
+
+    const pushed = socket.emitted.filter(([ev]) => ev === 'build:id');
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0][1]).toEqual({ buildId: 'test-build-id' });
+
+    // No commit, branch, or dirty flag anywhere in what this socket received,
+    // and no handler a peer could call to ask for one.
+    expect(JSON.stringify(socket.emitted)).not.toContain('main');
+    expect(JSON.stringify(socket.emitted)).not.toContain('abc1234');
+    expect(Object.keys(socket.handlers)).not.toContain('build:identity');
+  });
+
   it('socket receives cos:subscribed ack after emitting cos:subscribe', () => {
     const socket = makeSocket('sub-1');
     io.connect(socket);

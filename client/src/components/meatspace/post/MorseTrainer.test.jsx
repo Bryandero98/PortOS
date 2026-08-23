@@ -22,7 +22,7 @@ vi.mock('../../../services/api', () => ({
   updateMorseLevel: vi.fn(() => Promise.resolve({ kochLevel: 2, kochLevelSet: true, adopted: false, settings: null })),
 }));
 
-import MorseTrainer, { MODES, MORSE_MODE_IDS, MORSE_TABLE, isNodeOnPath, resultsToItems } from './MorseTrainer';
+import MorseTrainer, { MODES, MORSE_MODE_IDS, MORSE_TABLE, KeyPad, isNodeOnPath, resultsToItems } from './MorseTrainer';
 import { submitTrainingEntry, getTrainingStats, submitMorseRound, getMorseProgress, updateMorseLevel } from '../../../services/api';
 
 // Minimal Web Audio mock so CopyDrill's round flow (which calls ensureCtx →
@@ -609,5 +609,57 @@ describe('MorseTrainer iOS audio session', () => {
     expect(navigator.audioSession.type).toBe('auto');
     await act(async () => { unlock(); });
     expect(navigator.audioSession.type).toBe('auto');
+  });
+});
+
+// The practice key is the on-screen twin of the spacebar, and both must work
+// after the other has been used. Space on a focused button belongs to the
+// browser (useKeyCapture stands down for it, #4748), so once a mouse tap parks
+// focus on this pad the global claim no longer fires — the pad has to key on
+// its own key events or the spacebar goes dead on the control labelled
+// "TAP / HOLD SPACE".
+describe('MorseTrainer practice key — keyboard parity with the spacebar', () => {
+  const makeKeying = () => ({
+    beginPress: vi.fn(), endPress: vi.fn(), clear: vi.fn(), pressing: false,
+  });
+  const pad = () => screen.getByRole('button', { name: /TAP \/ HOLD SPACE/i });
+
+  it('keys on Space while focused, and does not double-fire via the native click', () => {
+    const keying = makeKeying();
+    render(<KeyPad keying={keying} />);
+    const button = pad();
+    button.focus();
+    expect(document.activeElement).toBe(button);
+
+    fireEvent.keyDown(button, { key: ' ', code: 'Space' });
+    expect(keying.beginPress).toHaveBeenCalledTimes(1);
+    expect(keying.endPress).not.toHaveBeenCalled();
+
+    fireEvent.keyUp(button, { key: ' ', code: 'Space' });
+    expect(keying.endPress).toHaveBeenCalledTimes(1);
+    // The keydown preventDefaults, so the browser never synthesizes the click
+    // that would key a second time.
+    expect(keying.beginPress).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats an auto-repeat keydown as one continuous press, not a re-key', () => {
+    const keying = makeKeying();
+    render(<KeyPad keying={keying} />);
+    const button = pad();
+
+    fireEvent.keyDown(button, { key: ' ', code: 'Space' });
+    fireEvent.keyDown(button, { key: ' ', code: 'Space', repeat: true });
+    fireEvent.keyDown(button, { key: ' ', code: 'Space', repeat: true });
+
+    expect(keying.beginPress).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores keys that are not a press', () => {
+    const keying = makeKeying();
+    render(<KeyPad keying={keying} />);
+
+    fireEvent.keyDown(pad(), { key: 'a', code: 'KeyA' });
+
+    expect(keying.beginPress).not.toHaveBeenCalled();
   });
 });

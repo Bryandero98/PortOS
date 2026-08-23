@@ -120,7 +120,7 @@ export default function SyncToPeerButton({
     const existing = subscriptionForPeer(peer.instanceId);
     if (existing) {
       // silent:true — the catch below already owns the error toast, so the
-      // apiCore helper must not fire its own (per CLAUDE.md "Custom catch ⇒
+      // apiCore helper must not fire its own (per AGENTS.md "Custom catch ⇒
       // silent: true" rule). Otherwise the user sees two toasts on failure.
       const ok = await unsubscribeFromPeer(existing.id, { silent: true }).catch((err) => {
         toast.error(err.message || `Unsync from ${peer.name} failed`);

@@ -11,7 +11,7 @@ import PinToMoodBoardMenu from './PinToMoodBoardMenu';
 import MediaImage from '../MediaImage';
 import { useScrollLock } from '../../hooks/useScrollLock';
 import { useSwipeNav } from '../../hooks/useSwipeNav';
-import { isEditableTarget } from '../../hooks/useKeyboardShortcuts';
+import { isEditableTarget } from '../../lib/a11yKeyboard';
 import useFocusTrap from '../../hooks/useFocusTrap.js';
 import { copyToClipboard } from '../../lib/clipboard';
 import { IMAGE_GEN_MODE } from '../../lib/imageGenBackends';
@@ -737,7 +737,7 @@ function SettingsPane({
           <button
             type="button"
             onClick={() => closeThenRun(onSendTo3d)}
-            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-purple-600/80 text-white hover:opacity-90 rounded"
+            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-accent-2 text-port-on-accent-2 hover:opacity-90 rounded"
           >
             <Box className="w-3.5 h-3.5" /> Send to 3D
           </button>

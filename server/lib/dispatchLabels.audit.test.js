@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-const SCAN_ROOTS = ['server', 'CLAUDE.md', '.claude/skills'];
+const SCAN_ROOTS = ['server', 'AGENTS.md', '.claude/skills'];
 const SKIP_DIR = new Set(['node_modules', 'data']);
 const SKIP_FILE = [
   /previousDefaults\.js$/,

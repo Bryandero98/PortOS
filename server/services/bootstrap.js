@@ -18,7 +18,7 @@
  * database. This file supplies the real implementations; that file decides when
  * each one runs and which are awaited. Read both before reordering anything.
  *
- * NOTE (CLAUDE.md "No cold-bootstrap LLM calls"): nothing in this file may
+ * NOTE (AGENTS.md "No cold-bootstrap LLM calls"): nothing in this file may
  * queue an AI provider call. Boot only loads on-disk state and ARMS schedulers;
  * every scheduler here is off by default or user-configured.
  */
@@ -26,6 +26,7 @@ import { join } from 'path';
 import { resolveInstallRoot } from '../lib/dataRoot.js';
 import { PORTS } from '../lib/ports.js';
 import { getSelfHost } from '../lib/peerSelfHost.js';
+import { getBuildIdentity, getCachedBuildIdentity, formatBuildIdentity } from '../lib/buildIdentity.js';
 import { setupProcessErrorHandlers, asyncHandler, ServerError, errorEvents } from '../lib/errorHandler.js';
 import { ERROR_CATEGORIES } from '../lib/aiToolkit/errorDetection.js';
 import { createAIToolkit } from '../lib/aiToolkit/index.js';
@@ -116,6 +117,7 @@ import { initMortalLoomStore } from './mortalLoomStore.js';
 import { initUniverseBuilderCollectionHook } from './universeBuilderCollectionHook.js';
 import { initCatalogImageAttachHook } from './catalogImageAttachHook.js';
 import { initWritersRoomSceneImageHook } from './writersRoomSceneImageHook.js';
+import { initFableLoomSceneImageHook } from './fableLoomSceneImageHook.js';
 import { initMusicVideoSceneImageHook } from './musicVideoSceneImageHook.js';
 import { initMusicVideoSceneVideoHook } from './musicVideoSceneVideoHook.js';
 import { initCreativeDirectorMusicBedHook } from './creativeDirectorMusicBedHook.js';
@@ -138,6 +140,7 @@ import { commissionStore, backfillAllCommissionFeedback } from './creativeCommis
 import { backfillProjectCommissionIds } from './creativeCommissions/projectControl.js';
 import { outcomesStore as liOutcomesStore } from './layeredIntelligenceOutcomes.js';
 import * as gameStore from './games/store.js';
+import * as fableLoomStore from './fableLoom/store.js';
 import { prerequisitesMetForRouting } from './providerPrerequisites.js';
 
 /**
@@ -218,10 +221,10 @@ export const bootstrapServices = async ({ io, dataDir, dataReferenceDir, serverD
     // Verify every registered collection's on-disk type-level schemaVersion
     // matches what the code expects. Mismatches mean a migration didn't run (or
     // the user rolled the code back below a forward-only migration) — log loudly
-    // but DO NOT crash the server. PortOS is single-user (CLAUDE.md "Security
+    // but DO NOT crash the server. PortOS is single-user (AGENTS.md "Security
     // Model"); a hard exit on startup is worse than a noisy log the user can act
     // on. Returns per-store statuses for downstream telemetry; we discard them.
-    verifyCollections: () => verifyCollectionVersions([universeStore(), seriesStore(), issueStore(), conflictJournalStore(), storyBuilderStore(), mediaCollectionStore(), loraDatasetStore, liOutcomesStore(), commissionStore(), gameStore, ...brainCollectionStores()]),
+    verifyCollections: () => verifyCollectionVersions([universeStore(), seriesStore(), issueStore(), conflictJournalStore(), storyBuilderStore(), mediaCollectionStore(), loraDatasetStore, liOutcomesStore(), commissionStore(), gameStore, fableLoomStore, ...brainCollectionStores()]),
 
     createToolkit: () => createAIToolkit({
       dataDir,
@@ -476,6 +479,9 @@ const initMediaJobDependentHooks = () => {
   // Writers-Room scene-image hook — durably files a queued storyboard render
   // onto its analysis snapshot + work collection on completion (#1363).
   initWritersRoomSceneImageHook();
+  // FableLoom scene-image hook — durably files a queued scene render onto its
+  // loom episode's node on completion, even if the editor unmounted mid-render.
+  initFableLoomSceneImageHook();
   // Music Video scene-image hook — durably files a queued reference-frame
   // render onto its project scene's `referenceImageId` on completion, even if
   // the director board unmounted mid-render (#1760 Phase 1b).
@@ -624,6 +630,36 @@ const announceListening = ({ io, httpServer, localHttpServer, httpsEnabled, port
   // (HTTP or HTTPS), :PORTOS_HTTP_PORT (default 5553) is the loopback HTTP
   // mirror that only spawns when HTTPS is active. See docs/PORTS.md.
   console.log(`🚀 PortOS listening on :${port} (${httpsEnabled ? 'https' : 'http'})`);
+  // Which code is up. One PM2-managed portos-server serves :5555 for the whole
+  // machine while any number of worktrees hold different code, so `pm2 logs
+  // portos-server` should answer "which commit is this?" without a request
+  // (#4694). Logged here rather than fire-and-forget at module scope so it
+  // lands at a DETERMINISTIC position in the banner instead of racing it.
+  // Read synchronously from the cache primed at boot: this function's caller
+  // does not await it, so an await here would let the lines below print around
+  // the yield and scramble the banner. In the normal case boot (migrations, DB)
+  // far outlasts one git call, so the value is ready and lands in place.
+  //
+  // If it is NOT ready — a git wedged on a locked index or a slow network mount
+  // — defer rather than printing `unknown`, which would be a permanent lie: the
+  // probe resolves moments later and every other consumer reports it correctly.
+  // Losing banner adjacency beats logging a wrong answer that never updates.
+  const identity = getCachedBuildIdentity();
+  if (identity) {
+    console.log(`   🧬 build ${formatBuildIdentity(identity)}`);
+  } else {
+    getBuildIdentity()
+      .then((late) => {
+        // Only print once there is something true to print. A failed probe
+        // resolves to an all-null tuple, and formatting THAT would claim "no git
+        // metadata" — the wrong reason, permanently, about a checkout that is
+        // fine. Say the probe did not finish instead; the API and the UI report
+        // the real value as soon as a retry succeeds.
+        if (late?.shortCommit) console.log(`   🧬 build ${formatBuildIdentity(late)}`);
+        else console.log(`   🧬 build — git probe did not finish in time; /api/system/build will report it`);
+      })
+      .catch((err) => console.error(`❌ Build identity probe failed: ${err.message}`));
+  }
   if (!httpsEnabled) {
     console.log(`   🌐 http://localhost:${port}`);
     console.log(`⚠️  HTTP only — getUserMedia (mic) won't work over Tailscale IP. Run "npm run setup:cert" to enable HTTPS.`);

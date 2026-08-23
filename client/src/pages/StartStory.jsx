@@ -52,7 +52,7 @@ export default function StartStory() {
 
   useEffect(() => {
     let cancelled = false;
-    // silent: the custom catch below owns the toast (CLAUDE.md). A failed load
+    // silent: the custom catch below owns the toast (AGENTS.md). A failed load
     // just leaves the "use an existing universe" option empty — the onramp
     // still works in "start fresh" mode.
     listUniverses({ silent: true })

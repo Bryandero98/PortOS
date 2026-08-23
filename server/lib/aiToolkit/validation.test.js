@@ -74,6 +74,8 @@ describe('providerSchema', () => {
   it('accepts the explicit MTPLX marker and rejects a non-boolean value', () => {
     expect(providerSchema.safeParse({ ...minimalProvider, mtplxBacked: true }).success).toBe(true);
     expect(providerSchema.safeParse({ ...minimalProvider, mtplxBacked: 'true' }).success).toBe(false);
+    expect(providerSchema.safeParse({ ...minimalProvider, vllmBacked: true }).success).toBe(true);
+    expect(providerSchema.safeParse({ ...minimalProvider, vllmBacked: 'true' }).success).toBe(false);
   });
 
   it('accepts the explicit OrcaRouter marker and rejects a non-boolean value', () => {

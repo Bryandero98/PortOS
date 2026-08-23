@@ -50,14 +50,10 @@ const MediaCollections = lazyWithReload(() => import('./pages/MediaCollections')
 const MediaCollectionDetail = lazyWithReload(() => import('./pages/MediaCollectionDetail'));
 const MediaCollectionSyncView = lazyWithReload(() => import('./pages/MediaCollectionSyncView'));
 const SyncView = lazyWithReload(() => import('./pages/SyncView'));
-const MediaModels = lazyWithReload(() => import('./pages/MediaModels'));
 const ThreejsModels = lazyWithReload(() => import('./pages/ThreejsModels'));
 const Media3D = lazyWithReload(() => import('./pages/Media3D'));
 const Media3DDetail = lazyWithReload(() => import('./pages/Media3DDetail'));
 const ThreejsModelDetail = lazyWithReload(() => import('./pages/ThreejsModelDetail'));
-const Loras = lazyWithReload(() => import('./pages/Loras'));
-const LoraTraining = lazyWithReload(() => import('./pages/LoraTraining'));
-const LoraDatasetDetail = lazyWithReload(() => import('./pages/LoraDatasetDetail'));
 const UniverseBuilder = lazyWithReload(() => import('./pages/UniverseBuilder'));
 const Universes = lazyWithReload(() => import('./pages/Universes'));
 const Authors = lazyWithReload(() => import('./pages/Authors'));
@@ -94,6 +90,7 @@ const Agents = lazyWithReload(() => import('./pages/Agents'));
 const Uploads = lazyWithReload(() => import('./pages/Uploads'));
 const Settings = lazyWithReload(() => import('./pages/Settings'));
 const LocalLlmPlayground = lazyWithReload(() => import('./pages/LocalLlmPlayground'));
+const Models = lazyWithReload(() => import('./pages/Models'));
 const Shell = lazyWithReload(() => import('./pages/Shell'));
 const BrowserPage = lazyWithReload(() => import('./pages/Browser'));
 const Jira = lazyWithReload(() => import('./pages/Jira'));
@@ -116,6 +113,8 @@ const WritersRoomGuide = lazyWithReload(() => import('./pages/WritersRoomGuide')
 const Pipeline = lazyWithReload(() => import('./pages/Pipeline'));
 const Sharing = lazyWithReload(() => import('./pages/Sharing'));
 const Importer = lazyWithReload(() => import('./pages/Importer'));
+const FableLoom = lazyWithReload(() => import('./pages/FableLoom'));
+const FableLoomStory = lazyWithReload(() => import('./pages/FableLoomStory'));
 const StartStory = lazyWithReload(() => import('./pages/StartStory'));
 const StoryBuilder = lazyWithReload(() => import('./pages/StoryBuilder'));
 const PipelineSeries = lazyWithReload(() => import('./pages/PipelineSeries'));
@@ -164,12 +163,12 @@ function CanonRedirect() {
 // when the list/table index landed). Both keep old bookmarks + in-app
 // deep-links alive. The canon variant forces `#canon` to scroll the embedded
 // canon section; non-canon preserves whatever hash the user had.
-function UniverseRouteRedirect({ fromPrefix, canon = false }) {
+function UniverseRouteRedirect({ fromPrefix, to, canon = false }) {
   const { pathname, search, hash } = useLocation();
   const rest = pathname.replace(fromPrefix, '');
   const target = canon
-    ? `/universes${rest.replace(/\/canon\/?$/, '')}${search}#canon`
-    : `/universes${rest}${search}${hash}`;
+    ? `${to}${rest.replace(/\/canon\/?$/, '')}${search}#canon`
+    : `${to}${rest}${search}${hash}`;
   return <Navigate to={target} replace />;
 }
 
@@ -190,6 +189,7 @@ const MEDIA_CREATIVE_DIRECTOR_PREFIX = /^\/media\/creative-director/;
 const MEDIA_SPRITES_PREFIX = /^\/media\/sprites/;
 const MEDIA_MUSIC_VIDEO_PREFIX = /^\/media\/music-video/;
 const MEDIA_3D_PREFIX = /^\/media\/3d/;
+const MEDIA_TRAINING_PREFIX = /^\/media\/training/;
 // The annotator lives under the Media shell (/media/annotate). A bare /annotate
 // is what a bookmark, a typed URL, or a half-remembered path lands on — alias it
 // rather than letting the catch-all swallow it (issue #3793).
@@ -309,7 +309,19 @@ export default function App() {
           <Route path="settings" element={<Navigate to="/settings/backup" replace />} />
           {/* Legacy /settings/contacts → Comms Messages → Contacts tab */}
           <Route path="settings/contacts" element={<Navigate to="/messages/contacts" replace />} />
+          {/* Local LLM management moved out of Settings into its own top-level
+              Models section (#4736). Bookmarks and stale ⌘K history keep working. */}
+          <Route path="settings/local-llm" element={<Navigate to="/models/llms" replace />} />
+          {/* Embeddings moved into Models with the rest of the model management
+              (#4728) — it picks a model, not a preference. */}
+          <Route path="settings/embeddings" element={<Navigate to="/models/embeddings" replace />} />
           <Route path="settings/:tab" element={<Settings />} />
+          <Route path="models" element={<Navigate to="/models/performance" replace />} />
+          {/* A tab's drill-down (today: the LoRA dataset workbench) renders through
+              Models itself, so it keeps the section header and tab bar — see
+              TAB_DETAIL there. */}
+          <Route path="models/:tab" element={<Models />} />
+          <Route path="models/:tab/:recordId" element={<Models />} />
           <Route path="local-llm/playground" element={<LocalLlmPlayground />} />
           <Route path="uploads" element={<Uploads />} />
           <Route path="shell" element={<Shell />} />
@@ -322,6 +334,9 @@ export default function App() {
           <Route path="workspace-contexts/:appId" element={<WorkspaceContexts />} />
           <Route path="system-health" element={<Navigate to="/system-resources/overview" replace />} />
           <Route path="system-resources" element={<Navigate to="/system-resources/overview" replace />} />
+          {/* The downloaded-model inventory folded into Models → Status (#4728),
+              which already answered "what is resident right now". */}
+          <Route path="system-resources/models" element={<Navigate to="/models/status" replace />} />
           <Route path="system-resources/:tab" element={<SystemHealthPage />} />
           <Route path="capabilities" element={<CapabilityMap />} />
           <Route path="loops" element={<Loops />} />
@@ -395,7 +410,10 @@ export default function App() {
             <Route path="sprites/:id" element={<PrefixRedirect from={MEDIA_SPRITES_PREFIX} to="/sprites" />} />
             <Route path="timeline" element={<VideoTimeline />} />
             <Route path="timeline/:projectId" element={<VideoTimelineEditor />} />
-            <Route path="models" element={<MediaModels />} />
+            {/* Media models, LoRAs and LoRA training moved into the Models
+                section (#4728). Redirects keep legacy /media/* bookmarks and
+                stale ⌘K history working. */}
+            <Route path="models" element={<RedirectWithSearch to="/models/media" />} />
             <Route path="threejs" element={<ThreejsModels />} />
             <Route path="threejs/:id" element={<ThreejsModelDetail />} />
             {/* 3D moved to the top-level /3d route (Create sidebar link). These
@@ -403,15 +421,15 @@ export default function App() {
                 working. */}
             <Route path="3d" element={<PrefixRedirect from={MEDIA_3D_PREFIX} to="/3d" />} />
             <Route path="3d/:id" element={<PrefixRedirect from={MEDIA_3D_PREFIX} to="/3d" />} />
-            <Route path="loras" element={<Loras />} />
-            <Route path="training" element={<LoraTraining />} />
-            <Route path="training/:datasetId" element={<LoraDatasetDetail />} />
+            <Route path="loras" element={<RedirectWithSearch to="/models/loras" />} />
+            <Route path="training" element={<PrefixRedirect from={MEDIA_TRAINING_PREFIX} to="/models/training" />} />
+            <Route path="training/:datasetId" element={<PrefixRedirect from={MEDIA_TRAINING_PREFIX} to="/models/training" />} />
             {/* Universes live at /universes (Create sidebar link). These
                 redirects keep legacy /media/universe-builder bookmarks working
                 after the MediaGen tab was removed. */}
             <Route path="universe-builder" element={<RedirectWithSearch to="/universes" />} />
-            <Route path="universe-builder/:universeId" element={<UniverseRouteRedirect fromPrefix={/^\/media\/universe-builder/} />} />
-            <Route path="universe-builder/:universeId/canon" element={<UniverseRouteRedirect fromPrefix={/^\/media\/universe-builder/} canon />} />
+            <Route path="universe-builder/:universeId" element={<UniverseRouteRedirect fromPrefix={/^\/media\/universe-builder/} to="/universes" />} />
+            <Route path="universe-builder/:universeId/canon" element={<UniverseRouteRedirect fromPrefix={/^\/media\/universe-builder/} to="/universes" canon />} />
           </Route>
           {/* Sprite Manager — a top-level Create page (moved out of the Media
               Gen tabs). The record id is the URL, per the ID-based deep-linking
@@ -448,7 +466,7 @@ export default function App() {
           <Route path="image-gen" element={<RedirectWithSearch to="/media/image" />} />
           <Route path="video-gen" element={<RedirectWithSearch to="/media/video" />} />
           <Route path="media-history" element={<RedirectWithSearch to="/media/history" />} />
-          <Route path="media-models" element={<RedirectWithSearch to="/media/models" />} />
+          <Route path="media-models" element={<RedirectWithSearch to="/models/media" />} />
           <Route path="wiki" element={<RedirectWithSearch to="/wiki/overview" />} />
           <Route path="wiki/:tab" element={<Wiki />} />
           <Route path="rapid-reader" element={<RapidReaderPage />} />
@@ -477,8 +495,8 @@ export default function App() {
           {/* Legacy /universe-builder* → /universes* (route renamed when the
               index landed). Keeps old bookmarks + in-app deep-links working. */}
           <Route path="universe-builder" element={<RedirectWithSearch to="/universes" />} />
-          <Route path="universe-builder/:universeId/canon" element={<UniverseRouteRedirect fromPrefix={/^\/universe-builder/} canon />} />
-          <Route path="universe-builder/:universeId" element={<UniverseRouteRedirect fromPrefix={/^\/universe-builder/} />} />
+          <Route path="universe-builder/:universeId/canon" element={<UniverseRouteRedirect fromPrefix={/^\/universe-builder/} to="/universes" canon />} />
+          <Route path="universe-builder/:universeId" element={<UniverseRouteRedirect fromPrefix={/^\/universe-builder/} to="/universes" />} />
           <Route path="universe-builder/new" element={<RedirectWithSearch to="/universes/new" />} />
           <Route path="writers-room" element={<WritersRoom />} />
           <Route path="writers-room/guide" element={<WritersRoomGuide />} />
@@ -486,6 +504,10 @@ export default function App() {
           <Route path="sharing/:section" element={<Sharing />} />
           <Route path="sharing/:section/:bucketId" element={<Sharing />} />
           <Route path="importer" element={<Importer />} />
+          <Route path="fableloom" element={<FableLoom />} />
+          <Route path="fableloom/:loomId" element={<FableLoomStory />} />
+          <Route path="fableloom/:loomId/:episodeId" element={<FableLoomStory />} />
+          <Route path="fableloom/:loomId/:episodeId/:nodeId" element={<FableLoomStory />} />
           <Route path="start-story" element={<StartStory />} />
           <Route path="story-builder" element={<StoryBuilder />} />
           <Route path="story-builder/:storyId" element={<Navigate to="idea" replace />} />

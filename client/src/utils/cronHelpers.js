@@ -93,9 +93,10 @@ export function describeCron(expr) {
   const [min, hour, dom, mon, dow] = parts;
   const segments = [];
   if (/^\d{1,2}$/.test(min) && /^\d{1,2}$/.test(hour)) {
-    if (dow === '1-5') segments.push('Weekdays');
-    else if (dow === '0,6' || dow === '6,0') segments.push('Weekends');
-    else if (dow !== '*') segments.push(dow.split(',').map(d => DOW_MAP[d] || d).join(', '));
+    const normalizedDow = dow.split(',').sort().join(',');
+    if (dow === '1-5' || normalizedDow === '1,2,3,4,5') segments.push('Weekdays');
+    else if (dow === '0,6' || dow === '6,0' || normalizedDow === '0,6' || dow === '0,7' || dow === '7,0') segments.push('Weekends');
+    else if (dow !== '*' && normalizedDow !== '0,1,2,3,4,5,6') segments.push(dow.split(',').map(d => DOW_MAP[d] || d).join(', '));
     if (dom !== '*') segments.push(`day ${dom}`);
     if (mon !== '*') segments.push(`month ${mon}`);
     segments.push(`at ${hour.padStart(2, '0')}:${min.padStart(2, '0')}`);

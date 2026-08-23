@@ -1382,6 +1382,33 @@ describe('taskSchedule', () => {
       expect(status.tasks['data-safety'].fileIssuesCapable).toBe(true)
       expect(status.tasks['claim-issue'].fileIssuesCapable).toBeUndefined()
     })
+
+    // A per-app provider/model pin outranks the task's own pin at spawn for EVERY
+    // task type (#4783). The Schedule page needs to show what each app pinned, on
+    // every row, or it advertises a provider the run never used. The retired
+    // `providerOverrideCapable` stamp must not come back — it existed only while
+    // the generic spawn path declined to read the pin.
+    it('carries each app\'s provider/model pin into appOverrides, with no capability stamp', async () => {
+      mockSchedule()
+      const apps = await import('./apps.js')
+      apps.getActiveApps.mockResolvedValueOnce([{ id: 'app-1', name: 'Acme' }])
+      apps.getAppTaskTypeOverrides.mockResolvedValue({
+        'layered-intelligence': { enabled: true, providerId: 'claude-ollama-tui', model: 'qwen-b' },
+        security: { enabled: true }
+      })
+      const status = await getScheduleStatus()
+      expect(status.tasks['layered-intelligence'].appOverrides['app-1']).toMatchObject({
+        providerId: 'claude-ollama-tui',
+        model: 'qwen-b'
+      })
+      // A non-LI type surfaces the SAME pin — the capability flag is gone.
+      expect(status.tasks['layered-intelligence']).not.toHaveProperty('providerOverrideCapable')
+      expect(status.tasks['security']).not.toHaveProperty('providerOverrideCapable')
+      // An app that pinned nothing carries no provider keys at all — absent must
+      // stay distinguishable from "explicitly pinned".
+      expect(status.tasks['security'].appOverrides['app-1']).not.toHaveProperty('providerId')
+      apps.getAppTaskTypeOverrides.mockResolvedValue({})
+    })
   })
 
   describe('resetExecutionHistory', () => {

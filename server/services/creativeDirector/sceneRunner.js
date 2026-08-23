@@ -410,7 +410,7 @@ async function handleRenderCompleted(projectId, sceneId, jobId, opts = {}) {
     return [];
   });
   // Re-check immediately before the agent-task enqueue. Single-user
-  // single-instance app per CLAUDE.md, but pause IS a real user action
+  // single-instance app per AGENTS.md, but pause IS a real user action
   // and the API roundtrip can land between this read and the enqueue
   // below. The cost of one extra read is trivial vs. spending an agent
   // run on work the user explicitly canceled.

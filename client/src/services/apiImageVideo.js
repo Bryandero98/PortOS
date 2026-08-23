@@ -436,7 +436,7 @@ export const removeCustomMediaModel = (id, { silent = false } = {}) => request(`
 
 // LoRA manager — Civitai-aware list/install/patch/delete. Reads sidecar
 // metadata so the manager UI can show trigger words, base model, recommended
-// scale, preview thumbnail. Used by /media/loras and the Image Gen LoRA picker.
+// scale, preview thumbnail. Used by /models/loras and the Image Gen LoRA picker.
 export const listLorasFull = (options = {}) => request('/loras', options);
 // `silent: true` suppresses the auto-toast in apiCore so the page can route
 // CIVITAI_AUTH errors into the in-UI key prompt instead of a fire-and-forget
@@ -539,7 +539,7 @@ export const getCivitaiSuggestions = ({ force = false } = {}, options = {}) =>
   request(`/loras/suggestions${force ? '?force=1' : ''}`, options);
 
 // Live keyword search + cursor pagination within one runner family. Backs the
-// per-category search box and "Load more" button on /media/loras. `query`
+// per-category search box and "Load more" button on /models/loras. `query`
 // blank pages the plain top-ranking; pass the previous response's `nextCursor`
 // to load the next page. Returns `{ runnerFamily, query, items, nextCursor }`.
 // `silent` defaults true because the caller (SuggestionsSection.fetchPage) owns

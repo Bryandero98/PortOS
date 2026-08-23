@@ -2,6 +2,7 @@ import { useRef, useEffect, useCallback, useMemo, Suspense } from 'react';
 import { useThree, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import PlayerAvatar from './PlayerAvatar';
+import useKeyCapture from '../../hooks/useKeyCapture';
 import ErrorBoundary from '../ErrorBoundary';
 import {
   THIRD_PERSON, EYE_HEIGHT, DEFAULT_SPAWN_Z,
@@ -312,33 +313,23 @@ export default function PlayerController({
     };
   }, [interact, playerActionRef]);
 
-  // In exploration mode, Space is the jump key — capture it before it bubbles to the
-  // global voice push-to-talk hotkey (VoiceWidget listens for the same key on `window`).
-  useEffect(() => {
-    if (!active) return undefined;
-    const isTypingTarget = (el) => {
-      if (!el) return false;
-      const tag = el.tagName;
-      return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
-    };
-    const onKeyDownCapture = (e) => {
-      if (e.code !== 'Space' || isTypingTarget(document.activeElement)) return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
+  // In exploration mode, Space is the jump key — claim it in the capture phase so it
+  // never reaches the global voice push-to-talk hotkey (VoiceWidget listens for the
+  // same key on `window`). Claiming the keydown is also what stops useKeyboardControls
+  // from recording the hold, hence the manual add here; the release needs no handler,
+  // because that keyup is NOT claimed and useKeyboardControls clears the key itself.
+  useKeyCapture({
+    enabled: active,
+    onKeyDown: (e) => {
+      if (e.code !== 'Space') return false;
       keysRef.current.add(' ');
-    };
-    const onKeyUpCapture = (e) => {
-      if (e.code !== 'Space') return;
-      keysRef.current.delete(' ');
-    };
-    window.addEventListener('keydown', onKeyDownCapture, true);
-    window.addEventListener('keyup', onKeyUpCapture, true);
-    return () => {
-      window.removeEventListener('keydown', onKeyDownCapture, true);
-      window.removeEventListener('keyup', onKeyUpCapture, true);
-      keysRef.current.delete(' ');
-    };
-  }, [active, keysRef]);
+      return true;
+    },
+  });
+
+  // Drop a held jump when exploration mode ends — the keyup that would have cleared it
+  // can land after the mode switch, and the rig would resume mid-jump on re-entry.
+  useEffect(() => () => { keysRef.current.delete(' '); }, [active, keysRef]);
 
   useFrame((_, delta) => {
     if (!active) return;

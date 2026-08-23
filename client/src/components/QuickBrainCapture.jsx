@@ -1,10 +1,11 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { Link } from 'react-router';
-import { ChevronDown, Film, Send, Sliders, Sparkles, X } from 'lucide-react';
+import { ChevronDown, ClipboardPaste, Film, Send, Sliders, Sparkles, X } from 'lucide-react';
 import toast from './ui/Toast';
 import * as api from '../services/api';
 import { useLocalStorageBool, useRepoIntake, useYoutubeIngest } from '../hooks';
 import { parseBareUrl } from '../lib/bareUrl';
+import { readClipboard } from '../lib/clipboard';
 import { INGEST_OPTIONS, defaultIngestOptions, ingestOptionsFromSettings, isYoutubeVideoUrl } from '../lib/youtubeUrl';
 import RepoIntakeOptions from './brain/RepoIntakeOptions';
 import ToggleChip from './ui/ToggleChip';
@@ -13,6 +14,7 @@ export default function QuickBrainCapture() {
   const [input, setInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
+  const inputRef = useRef(null);
   // Sticky "Creative" flag (shared key with the Inbox capture toggle) so a
   // creative thought captured here is flagged for the catalog the same way.
   const [creative, setCreative] = useLocalStorageBool('brain.captureCreative', false);
@@ -110,6 +112,27 @@ export default function QuickBrainCapture() {
     setIsSubmitting(false);
   };
 
+  // Paste without having to click into the box first — the usual flow here is
+  // "copy a link somewhere else, come back, capture". Clipboard text replaces the
+  // field: this widget captures one item at a time and clears itself on submit.
+  const handlePaste = async () => {
+    const text = await readClipboard();
+    // null = clipboard unreadable (insecure origin, denied permission); '' = an
+    // empty clipboard. Different problems, different fixes for the user.
+    if (text === null) {
+      toast.error('Clipboard unavailable — paste into the box instead');
+      inputRef.current?.focus();
+      return;
+    }
+    const trimmed = text.trim();
+    if (!trimmed) {
+      toast.error('Clipboard is empty');
+      return;
+    }
+    setInput(trimmed);
+    inputRef.current?.focus();
+  };
+
   const toggleOption = (key) => setIngestOpts((prev) => ({ ...prev, [key]: !prev[key] }));
 
   return (
@@ -124,12 +147,22 @@ export default function QuickBrainCapture() {
         <label htmlFor="quick-brain-input" className="sr-only">Capture a thought or URL</label>
         <input
           id="quick-brain-input"
+          ref={inputRef}
           type="text"
           placeholder="Thought, URL, or YouTube link..."
           value={input}
           onChange={e => setInput(e.target.value)}
           className="flex-1 min-w-0 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
         />
+        <button
+          type="button"
+          onClick={handlePaste}
+          aria-label="Paste from clipboard"
+          title="Paste from clipboard"
+          className="flex items-center px-2.5 py-2 rounded-lg border border-port-border bg-port-bg text-gray-400 hover:text-gray-200 text-sm transition-colors min-h-[40px]"
+        >
+          <ClipboardPaste size={14} />
+        </button>
         {isYoutube ? (
           <button
             type="button"

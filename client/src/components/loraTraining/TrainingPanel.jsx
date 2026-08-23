@@ -228,7 +228,7 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
               <span className="text-gray-300">
                 Last run completed
                 {lastRun.output?.loraFilename && (
-                  <> — <Link to="/media/loras" className="text-port-accent hover:underline inline-flex items-center gap-1"><Sparkles className="w-3 h-3" />{lastRun.output.loraFilename}</Link></>
+                  <> — <Link to="/models/loras" className="text-port-accent hover:underline inline-flex items-center gap-1"><Sparkles className="w-3 h-3" />{lastRun.output.loraFilename}</Link></>
                 )}
               </span>
             </>
