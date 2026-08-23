@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  FEDERATED_MEDIA_FEATURES,
   federatedMediaAudioProfileSchema,
   federatedMediaCapabilitySchema,
   federatedMediaProviderStatusSchema,
   federatedMediaProviderJobSchema,
   effectiveJobPrompt,
   isFederatedMediaAudioPrompt,
+  federatedMediaSupports,
   normalizeRequestedMediaKinds,
   renderFederatedMediaAudioPrompt,
 } from './federatedMediaWire.js';
@@ -217,7 +219,32 @@ describe('federated media status kind projection', () => {
     expect(bad({ holo: { running: 1, queued: 0 } })).toBe(false);
   });
 
-  it('rejects a concurrency that claims no capacity at all', () => {
+  it('validates a features list and drops the field entirely when a provider omits it', () => {
+    expect(federatedMediaProviderStatusSchema.parse(status({ features: ['lyrics'] })).features)
+      .toEqual(['lyrics']);
+    expect(federatedMediaProviderStatusSchema.parse(status()).features).toBeUndefined();
+  });
+
+  // The byKind lesson applied to features: a Zod enum would reject the ENTIRE
+  // payload on an unrecognized member, so the day a provider ships a fourth
+  // feature every older consumer would stop reading its status at all instead
+  // of ignoring one string.
+  it('accepts a feature this build does not recognize rather than failing the payload', () => {
+    const parsed = federatedMediaProviderStatusSchema
+      .safeParse(status({ features: ['lyrics', 'holoProjection'] }));
+    expect(parsed.success).toBe(true);
+    expect(federatedMediaSupports(parsed.data, 'holoProjection')).toBe(true);
+  });
+
+  it('rejects a features entry shaped like free-form text', () => {
+    const bad = (features) => federatedMediaProviderStatusSchema
+      .safeParse(status({ features })).success;
+    expect(bad(['a private note about the user'])).toBe(false);
+    expect(bad([''])).toBe(false);
+    expect(bad(['x'.repeat(41)])).toBe(false);
+  });
+
+    it('rejects a concurrency that claims no capacity at all', () => {
     expect(federatedMediaProviderStatusSchema.safeParse(status({
       queue: { ...status().queue, concurrency: 0 },
     })).success).toBe(false);
@@ -297,5 +324,39 @@ describe('effectiveJobPrompt', () => {
     // An img2img render genuinely has no text — that is an empty string, not
     // "nothing was recorded".
     expect(effectiveJobPrompt({ kind: 'image', params: { prompt: '' } })).toBe('');
+  });
+});
+
+describe('federatedMediaSupports', () => {
+  const capability = (overrides = {}) => ({ kind: 'audio', lyrics: true, ...overrides });
+
+  it('reads an absent features list as the wire-v1 baseline', () => {
+    expect(federatedMediaSupports(null, 'lyrics')).toBe(false);
+    expect(federatedMediaSupports({}, 'lyrics', capability())).toBe(false);
+    expect(federatedMediaSupports({ features: [] }, 'inputAssets')).toBe(false);
+    // A model that sings is not, on its own, a build that carries the words.
+    expect(federatedMediaSupports({ features: [] }, 'lyrics', capability({ lyrics: true }))).toBe(false);
+  });
+
+  it('reads the status-root list without needing a capability', () => {
+    expect(federatedMediaSupports({ features: ['lyrics'] }, 'lyrics')).toBe(true);
+    expect(federatedMediaSupports({ features: ['lyrics'] }, 'inputAssets')).toBe(false);
+  });
+
+  // The overlap release: a peer on the previous build sends the per-capability
+  // field and no root list, and must keep working unchanged.
+  it('falls back to the legacy per-capability field', () => {
+    expect(federatedMediaSupports({}, 'lyrics', capability({ acceptsLyrics: true }))).toBe(true);
+    expect(federatedMediaSupports({}, 'lyrics', capability({ acceptsLyrics: false }))).toBe(false);
+    expect(federatedMediaSupports({}, 'inputAssets', capability({ inputAssets: { roles: ['initImage'] } }))).toBe(true);
+    expect(federatedMediaSupports({}, 'inputAssets', capability({ inputAssets: null }))).toBe(false);
+  });
+
+  it('exposes every feature this build emits, and answers false for anything else', () => {
+    expect([...FEDERATED_MEDIA_FEATURES]).toEqual(['lyrics', 'inputAssets']);
+    for (const feature of FEDERATED_MEDIA_FEATURES) {
+      expect(federatedMediaSupports({ features: [...FEDERATED_MEDIA_FEATURES] }, feature)).toBe(true);
+    }
+    expect(federatedMediaSupports({ features: ['lyrics'] }, 'constructor', capability())).toBe(false);
   });
 });

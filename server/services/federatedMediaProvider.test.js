@@ -295,6 +295,24 @@ describe('federated media provider capacity and idempotency', () => {
   // ADR docs/decisions/2026-08-22-federated-media-input-assets.md rule 2: lyrics
   // cross to an allowlisted peer because no fixed vocabulary encodes them
   // without discarding them — but only into a model that sings.
+  it('advertises what this BUILD speaks in a status-root features list', async () => {
+    // Emitted verbatim from what the build implements, NOT derived from the
+    // configured models — that is the whole point of moving it off the
+    // capability: a peer with only instrumental models allowlisted must still
+    // be distinguishable from a peer whose code predates lyrical federation.
+    state.capabilities.engines = [readyEngine({ lyrics: false })];
+    const status = await getFederatedMediaProviderStatus(config());
+    expect(status.features).toEqual(['lyrics', 'inputAssets']);
+    expect(status.capabilities[0].lyrics).toBe(false);
+  });
+
+  it('emits a features copy a consumer cannot mutate back into the module constant', async () => {
+    const status = await getFederatedMediaProviderStatus(config());
+    status.features.push('holoProjection');
+    expect((await getFederatedMediaProviderStatus(config())).features)
+      .toEqual(['lyrics', 'inputAssets']);
+  });
+
   it('renders lyrics on a lyric-capable model and advertises that its wire accepts them', async () => {
     await submitFederatedMediaJob({
       callerId: 'peer-example', config: config(),

@@ -4,7 +4,9 @@ import {
   FEDERATED_MEDIA_STATE_HELP,
   federatedMediaModelKey,
   federatedMediaModelsForPeer,
+  federatedMediaSupports,
   peerMediaProviderConfig,
+  peerMediaProviderSnapshot,
   peerModelAcceptsInput,
   peerModelRequiresInput,
   resolvePeerMediaReadiness,
@@ -354,6 +356,19 @@ describe('peerModelAcceptsInput / peerModelRequiresInput', () => {
     expect(peerModelAcceptsInput(model, 'referenceImages')).toBe(false);
   });
 
+  it('needs the BUILD to speak conditioning as well as the model to advertise the role', () => {
+    // Both halves, and neither alone: the root feature says the peer's code can
+    // carry a conditioning image at all, the roles array says this model takes
+    // one in that slot. A peer on the previous build sends no `features` and is
+    // read through the block it does send, which is why an empty list is not
+    // treated as a denial.
+    const model = withInput({ roles: ['initImage'], required: false, maxCount: 8 });
+    expect(peerModelAcceptsInput(model, 'initImage', { features: ['inputAssets'] })).toBe(true);
+    expect(peerModelAcceptsInput(model, 'initImage', {})).toBe(true);
+    // The build speaks it; this model simply takes nothing.
+    expect(peerModelAcceptsInput(withInput(null), 'initImage', { features: ['inputAssets'] })).toBe(false);
+  });
+
   it.each([
     ['an absent block (a provider predating the ADR)', undefined],
     ['an explicit null', null],
@@ -372,5 +387,31 @@ describe('peerModelAcceptsInput / peerModelRequiresInput', () => {
   it('tolerates a null capability rather than throwing on an unpicked model', () => {
     expect(peerModelAcceptsInput(null, 'initImage')).toBe(false);
     expect(peerModelRequiresInput(null)).toBe(false);
+  });
+});
+
+// Mirrors server/lib/federatedMediaWire.js — the two must agree, or a surface
+// offers a render the route then refuses.
+describe('federatedMediaSupports / peerMediaProviderSnapshot', () => {
+  const capability = { kind: 'audio', lyrics: true };
+
+  it('reads an absent features list as the wire-v1 baseline', () => {
+    expect(federatedMediaSupports(null, 'lyrics')).toBe(false);
+    expect(federatedMediaSupports({ features: [] }, 'lyrics', capability)).toBe(false);
+    expect(federatedMediaSupports({ features: 'lyrics' }, 'lyrics')).toBe(false);
+  });
+
+  it('reads the status-root list, and falls back to the legacy per-capability field', () => {
+    expect(federatedMediaSupports({ features: ['lyrics'] }, 'lyrics')).toBe(true);
+    expect(federatedMediaSupports({}, 'lyrics', { ...capability, acceptsLyrics: true })).toBe(true);
+    expect(federatedMediaSupports({}, 'inputAssets', { inputAssets: { roles: [] } })).toBe(true);
+    expect(federatedMediaSupports({}, 'inputAssets', { inputAssets: null })).toBe(false);
+  });
+
+  it('returns the peer snapshot only when one is actually stored', () => {
+    expect(peerMediaProviderSnapshot(null)).toBeNull();
+    expect(peerMediaProviderSnapshot({ mediaProviderStatus: {} })).toBeNull();
+    expect(peerMediaProviderSnapshot({ mediaProviderStatus: { snapshot: { features: ['lyrics'] } } }))
+      .toEqual({ features: ['lyrics'] });
   });
 });

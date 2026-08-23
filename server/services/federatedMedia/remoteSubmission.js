@@ -201,7 +201,7 @@ export async function prepareRemoteMediaJob({ peerId, kind, request, inputAssets
       code: 'MEDIA_PROVIDER_PEER_NOT_FOUND',
     });
   }
-  const { capability } = await resolveFederatedMediaProvider(peer, {
+  const { capability, status } = await resolveFederatedMediaProvider(peer, {
     kind,
     engine: request.engine,
     modelId: request.modelId,
@@ -209,7 +209,7 @@ export async function prepareRemoteMediaJob({ peerId, kind, request, inputAssets
   // Advisory, like every other check here — the provider re-validates at
   // admission. Doing it now turns "the peer 400s after the user committed" into
   // a message on the Generate button naming the input to clear.
-  const rejection = inputAssetRejection(capability, inputAssets);
+  const rejection = inputAssetRejection(capability, inputAssets, status);
   if (rejection) {
     throw new ServerError(rejection, { status: 400, code: 'MEDIA_PROVIDER_INPUT_UNSUPPORTED' });
   }

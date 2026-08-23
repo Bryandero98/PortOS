@@ -33,6 +33,7 @@ import {
   FEDERATED_MEDIA_INPUT_ROLES,
   federatedMediaAssetId,
   federatedMediaAssetSchema,
+  federatedMediaSupports,
   isMultiInputRole,
 } from '../../lib/federatedMediaWire.js';
 import { detectImageFormat, resolveImageInputPath, sha256File } from '../../lib/fileUtils.js';
@@ -82,12 +83,23 @@ export const remoteInputAssetsSchema = z.array(remoteInputAssetSchema)
  * preflight only — the provider re-checks everything at admission — but it
  * turns "the peer 400s after you commit" into "Generate tells you why".
  *
- * Absent `inputAssets` reads as UNSUPPORTED, never as unrestricted: a provider
- * predating this ADR omits the block and rejects the fields.
+ * Absent support reads as UNSUPPORTED, never as unrestricted: a provider
+ * predating this ADR omits the block and rejects the fields (see
+ * `federatedMediaSupports`).
  *
+ * The two ways that can fail get separate remedies, because the block's absence
+ * conflated them: a peer whose BUILD predates conditioning needs updating,
+ * while a peer that speaks it and simply allowlisted a text-only model needs a
+ * different model picked. A status-root `features` list (#4826) is what tells
+ * them apart; a peer that published no list is undecidable and keeps the older,
+ * merged message.
+ *
+ * @param {object|null} capability - the resolved provider capability
+ * @param {Array<{role: string}>} [assets]
+ * @param {object|null} [status] - the provider status the capability came from
  * @returns {string|null} a human-facing reason, or null when acceptable
  */
-export function inputAssetRejection(capability, assets = []) {
+export function inputAssetRejection(capability, assets = [], status = null) {
   const limits = capability?.inputAssets;
   const model = capability?.modelName || 'The selected model';
   // The remedy names the kind the caller is actually rendering. Saying
@@ -100,7 +112,14 @@ export function inputAssetRejection(capability, assets = []) {
       : null;
   }
   if (!limits) {
-    return `${model} on this peer does not accept source or reference images. Render locally, or pick a peer model that does.`;
+    // The build-level remedy fires only when the peer POSITIVELY published its
+    // vocabulary and this feature is not in it. A peer that sent no list at all
+    // is undecidable — mid-overlap it may speak conditioning and simply have
+    // only text-only models allowlisted — so it keeps the merged message rather
+    // than being accused of running an old build on no evidence.
+    return Array.isArray(status?.features) && !federatedMediaSupports(status, 'inputAssets', capability)
+      ? 'The selected peer runs a PortOS build that cannot carry conditioning images. Update the peer, or render locally.'
+      : `${model} on this peer does not accept source or reference images. Render locally, or pick a peer model that does.`;
   }
   const roles = [...new Set(assets.map((asset) => asset.role))];
   for (const pair of REQUIRED_PAIRS) {

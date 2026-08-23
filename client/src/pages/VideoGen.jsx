@@ -206,8 +206,8 @@ export default function VideoGen() {
       // mode can be set before that input is filled — so gate the mode too
       // rather than letting an a2v render reach the peer as plain text-to-video.
       [`${mode} mode`, ![undefined, 'text', 'image', 'fflf'].includes(mode)],
-      ['a source image', !!sourceImageFile && !peerModelAcceptsInput(model, 'sourceImage')],
-      ['an end frame', !!lastImageFile && !peerModelAcceptsInput(model, 'lastImage')],
+      ['a source image', !!sourceImageFile && !peerModelAcceptsInput(model, 'sourceImage', remoteTarget.snapshot)],
+      ['an end frame', !!lastImageFile && !peerModelAcceptsInput(model, 'lastImage', remoteTarget.snapshot)],
       ['an uploaded frame (save it to the gallery first)', !!sourceImageUpload || !!lastImageUpload],
       ['keyframes', keyframesActive],
       ['a source clip to extend', !!extendFromVideoId],
@@ -228,7 +228,7 @@ export default function VideoGen() {
       return `${model?.modelName || 'The selected peer model'} renders only from a source image — add a start frame, or pick a text-to-video model.`;
     }
     return null;
-  }, [remoteTarget.isRemote, remoteTarget.model, isGrok, mode, sourceImageFile, sourceImageUpload,
+  }, [remoteTarget.isRemote, remoteTarget.model, remoteTarget.snapshot, isGrok, mode, sourceImageFile, sourceImageUpload,
     lastImageFile, lastImageUpload, keyframesActive, extendFromVideoId, audioFile, icReferenceFile,
     icReferenceVideoId, icReferenceImageFiles, selectedLoras, chunks]);
   // One reading for the Generate button, the enqueue guard and the caption.

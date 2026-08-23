@@ -287,15 +287,14 @@ export const federatedMediaCapabilitySchema = z.object({
   // predate lyrical federation entirely — which is why it cannot double as the
   // consumer's permission to send words.
   lyrics: z.boolean(),
-  // Does THIS PROVIDER's wire accept lyrics for this capability? Added after
-  // wire v1 shipped (ADR
-  // docs/decisions/2026-08-22-federated-media-input-assets.md rule 2), so it is
-  // optional and **absent must read as false**: a provider built before that
-  // ADR advertises `lyrics: true` for MiniMax Music 3 and then rejects the
-  // lyrics field outright at submission. Treating the older signal as consent
-  // would turn every remote lyrical render into a hard 400 the user cannot act
-  // on. Fail closed here and the consumer degrades to an instrumental render it
-  // can explain instead.
+  // SUPERSEDED by the status-root `features` list (#4826), and kept on the
+  // wire for one overlap release so a consumer on the previous build still
+  // reads this provider correctly. Emitted per-capability but never per-model:
+  // it always equalled `lyrics`, because the fact it carried was "does this
+  // BUILD carry lyrics on the wire", which is a property of the payload's
+  // sender rather than of any one engine. Read it only through
+  // `federatedMediaSupports`, never directly. Do not add a second field in
+  // this shape — a new per-field wire capability belongs in `features`.
   acceptsLyrics: z.boolean().optional(),
   autoDuration: z.boolean(),
   frameStride: z.number().int().min(1).max(64).nullable().optional(),
@@ -340,6 +339,62 @@ const federatedMediaQueueStatusSchema = z.object({
   byKind: z.partialRecord(mediaKindSchema, federatedMediaKindOccupancySchema).optional(),
 });
 
+// What THIS BUILD speaks on the wire, beyond the wire-v1 baseline (#4826).
+//
+// A build-version probe, not a model capability: "does the sender carry lyrics
+// on the wire" is a property of the payload's sender, which is why it sits at
+// the status root rather than being stamped onto every capability. Emitted
+// verbatim by the provider — a feature is listed because the code that handles
+// it shipped, not because some allowlisted model happens to use it. Per-model
+// facts stay per-capability (`lyrics`, `inputAssets.roles`), and a consumer
+// must satisfy BOTH before it sends the field.
+//
+// Additive and optional in both directions, so no SCHEMA_VERSIONS bump: a
+// newer feature reaches an older consumer as an unmatched string, and an
+// absent list reads as the wire-v1 baseline (see federatedMediaSupports).
+export const FEDERATED_MEDIA_FEATURES = Object.freeze(['lyrics', 'inputAssets']);
+
+// Deliberately NOT a z.enum over FEDERATED_MEDIA_FEATURES: a Zod enum rejects
+// the whole payload on an unknown member, so the day a provider adds a fourth
+// feature every older consumer would fail to parse its entire status rather
+// than ignoring one string it does not recognize — the same trap `byKind`
+// avoids with partialRecord. The pattern still bounds the shape so the field
+// cannot smuggle free-form text (and therefore PII) across the boundary.
+const federatedMediaFeatureSchema = z.string().regex(/^[a-zA-Z][a-zA-Z0-9]{0,39}$/);
+
+// The ONE place the "absent reads as false" reasoning lives (#4826). Every
+// consumer gate — server route, consumer service, client panel — asks through
+// here rather than restating it.
+//
+// A provider built before a feature shipped omits it and then rejects the field
+// outright at submission, so treating an absent signal as consent would turn
+// every such render into a hard 400 the user cannot act on. Fail closed and the
+// consumer degrades to something it can explain instead.
+//
+// `capability` is the OVERLAP path only: for one release a provider on the
+// previous build advertises the same build-level fact per-capability, so a
+// consumer reads the root list first and falls back to the legacy field.
+const FEDERATED_MEDIA_LEGACY_FEATURE_TELL = Object.freeze({
+  lyrics: (capability) => capability?.acceptsLyrics === true,
+  // A build that predates conditioning omits the block entirely; one that
+  // speaks it advertises the block (possibly with no roles for this model).
+  inputAssets: (capability) => !!capability?.inputAssets && typeof capability.inputAssets === 'object',
+});
+
+/**
+ * Does the build that sent this status speak `feature`?
+ *
+ * @param {object|null} status - a validated provider status payload
+ * @param {string} feature - a FEDERATED_MEDIA_FEATURES member
+ * @param {object|null} [capability] - the capability being acted on, for the
+ *   overlap fallback against a provider that has not migrated yet
+ * @returns {boolean} false whenever the answer cannot be established
+ */
+export function federatedMediaSupports(status, feature, capability = null) {
+  if (Array.isArray(status?.features) && status.features.includes(feature)) return true;
+  return FEDERATED_MEDIA_LEGACY_FEATURE_TELL[feature]?.(capability) === true;
+}
+
 // Strip unknown fields from peer responses before persisting or exposing them
 // locally. Mixed-version compatibility lives in the versioned route and the
 // known-field schema; an older consumer must not relay an unreviewed future
@@ -349,6 +404,10 @@ export const federatedMediaProviderStatusSchema = z.object({
   generatedAt: z.string().datetime(),
   staleAfterMs: z.number().int().positive().max(300_000),
   status: z.enum(['ready', 'busy', 'unavailable']),
+  // Optional and additive; **absent reads as the wire-v1 baseline** (no lyrics,
+  // no conditioning). Bounded well above this build's own vocabulary so a
+  // provider that speaks more than we do still validates.
+  features: z.array(federatedMediaFeatureSchema).max(32).optional(),
   kinds: z.array(mediaKindSchema).max(KNOWN_MEDIA_KINDS.length),
   queue: federatedMediaQueueStatusSchema,
   capabilities: z.array(federatedMediaCapabilitySchema).max(300),

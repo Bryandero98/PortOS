@@ -21,7 +21,9 @@ import { getInstances } from '../services/api';
 import {
   federatedMediaModelKey,
   federatedMediaModelsForPeer,
+  federatedMediaSupports,
   peerMediaProviderConfig,
+  peerMediaProviderSnapshot,
   resolvePeerMediaReadiness,
   summarizePeerMediaQueue,
 } from '../lib/federatedMediaReadiness.js';
@@ -70,6 +72,7 @@ function blockingReason({ peer, models, model, kind, now }) {
  *   peers: object[], peer: object|null, peerId: string, setPeerId: (id: string) => void,
  *   models: object[], model: object|null, modelKey: string, setModelKey: (key: string) => void,
  *   isRemote: boolean, readiness: object|null, queueSegments: string[],
+ *   snapshot: object|null, supports: (feature: string) => boolean,
  *   canSubmit: boolean, blockedReason: string|null,
  *   submissionFields: object|null, verify: () => {ok: boolean, message?: string},
  * }}
@@ -112,6 +115,16 @@ export function useFederatedMediaTarget(kind) {
   }, [peer?.id, models]);
 
   const readiness = useMemo(() => (peer ? resolvePeerMediaReadiness(peer) : null), [peer]);
+  // The peer's own status payload, exposed so a form can ask what the peer's
+  // BUILD speaks rather than re-deriving it from a per-capability field (#4826).
+  const snapshot = useMemo(() => peerMediaProviderSnapshot(peer), [peer]);
+  // Bound to the selected model so callers ask one question instead of two: the
+  // root feature list, with the overlap fallback against a peer still on the
+  // previous build. Fails closed on an absent status, like every gate here.
+  const supports = useCallback(
+    (feature) => federatedMediaSupports(snapshot, feature, model),
+    [snapshot, model],
+  );
   const queueSegments = useMemo(
     () => (readiness ? summarizePeerMediaQueue(readiness.queue) : NO_SEGMENTS),
     [readiness],
@@ -147,6 +160,8 @@ export function useFederatedMediaTarget(kind) {
     isRemote: Boolean(peer),
     readiness,
     queueSegments,
+    snapshot,
+    supports,
     canSubmit: Boolean(peer) && blockedReason === null,
     blockedReason,
     submissionFields,
