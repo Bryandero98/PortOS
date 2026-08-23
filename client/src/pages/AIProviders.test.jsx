@@ -1089,7 +1089,7 @@ describe('OpenCode OrcaRouter key hint', () => {
     expect(screen.getByText(/ORCAROUTER_API_KEY/)).toBeInTheDocument();
   });
 
-  it('reports the inherited key as set when the sibling API provider has one', async () => {
+  it('collapses to a one-line confirmation when the sibling API provider has the key', async () => {
     api.getProviders.mockResolvedValue({
       providers: [
         {
@@ -1109,8 +1109,11 @@ describe('OpenCode OrcaRouter key hint', () => {
 
     renderPage();
 
-    expect(await screen.findByText(/API key is inherited from/)).toBeInTheDocument();
-    expect(screen.getByText('OrcaRouter key: set')).toBeInTheDocument();
+    // Configured providers state the fact and keep the link; the "where does
+    // the key go?" explanation is only shown while it is still unanswered.
+    expect(await screen.findByText('OrcaRouter API key configured')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit OrcaRouter API provider' })).toBeInTheDocument();
+    expect(screen.queryByText(/API key is inherited from/)).not.toBeInTheDocument();
    });
 
   // A non-orcarouter-backed provider must never see the inheritance hint.

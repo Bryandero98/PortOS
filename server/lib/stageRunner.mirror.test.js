@@ -40,6 +40,10 @@ const MIRRORED_NAMES = [
   'GROK_CONTEXT_WINDOW',
   'KIMI_CONTEXT_WINDOW',
   'KNOWN_MODEL_CONTEXT_WINDOWS',
+  // The catalog rung sits ABOVE the table in both ladders, so a divergence here
+  // is the same silent ~8x disagreement the table's parity closes. Both copies
+  // are declared `function` precisely so this comparison can be made.
+  'catalogModelContextWindow',
 ];
 
 describe('stageRunner↔client providers context-window mirror parity', () => {

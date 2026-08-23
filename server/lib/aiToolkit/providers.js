@@ -23,6 +23,7 @@ import {
 import { isOllamaBackedProvider, ollamaBaseFromProvider } from './internal/ollamaBacked.js';
 import { gatewayForProvider, isGatewayBackedProvider } from './internal/gateways.js';
 import { canRefreshModels, ollamaRefreshGroupKey, resolveModelFetcher } from './internal/modelFetchers.js';
+import { modelCatalogUpdate, modelContextWindowPatch, parseModelCatalog, toModelCatalog } from './internal/modelCatalog.js';
 
 // Re-exported (rather than defined here) so the model-fetcher table can key its
 // ollama row on the same predicate without importing back into this module.
@@ -603,6 +604,9 @@ export function createProviderService(config = {}) {
         topP: providerData.topP,
         thinking: providerData.thinking,
         contextWindow: providerData.contextWindow || null,
+        // Per-model windows learned from the provider's own /models catalog.
+        // Same non-empty rule the refresh path uses, from one implementation.
+        ...modelContextWindowPatch(providerData.modelContextWindows),
         timeout: providerData.timeout || 300000,
         enabled: providerData.enabled !== false,
         // Claude Ollama marker — preserve so adopting the sample via POST drives
@@ -815,10 +819,17 @@ export function createProviderService(config = {}) {
      * Same contract as `refreshProviderModels` minus the write: `null` means
      * ONLY "no such provider"; every other failure throws (with `.status`).
      *
+     * Answers the CATALOG shape: the id list plus, for the fetchers whose
+     * upstream declares it, each model's real context window. A fetcher with no
+     * window information yields `contextWindows: {}` — which means "unknown",
+     * never "these models have no window", so the caller must not persist it
+     * over what a previous refresh learned. {@link fetchProviderModels} is the
+     * id-list-only view for callers that don't care.
+     *
      * @param {string} id
-     * @returns {Promise<string[]|null>}
+     * @returns {Promise<{models: string[], contextWindows: Record<string, number>}|null>}
      */
-    async fetchProviderModels(id) {
+    async fetchProviderModelCatalog(id) {
       const data = await loadProviders();
       const provider = withGatewayApiKey(data.providers[id], data.providers);
 
@@ -827,13 +838,13 @@ export function createProviderService(config = {}) {
       }
 
       // `null` = no refreshable branch matched below (provider type/shape isn't
-      // refreshable — the pre-existing no-op case); an array = a completed
+      // refreshable — the pre-existing no-op case); a result = a completed
       // fetch, which may legitimately be empty (e.g. an Ollama-backed provider
       // whose only installed model was just deleted). Only the `null` sentinel
       // means "nothing to persist" — a `.length === 0` check here would also
       // swallow that legitimate empty result and leave a deleted model stuck
       // in the provider's persisted list.
-      let models = null;
+      let fetched = null;
 
       try {
         // A TUI provider's model is normally fixed by its CLI/config, so only
@@ -845,15 +856,15 @@ export function createProviderService(config = {}) {
         const tuiFetcher = provider.type === 'tui' ? resolveModelFetcher(provider) : null;
 
         if (provider.type === 'api') {
-          models = await this._refreshAPIProviderModels(provider);
+          fetched = await this._refreshAPIProviderModels(provider);
         } else if (provider.type === 'cli') {
-          models = await this._refreshCLIProviderModels(provider);
+          fetched = await this._refreshCLIProviderModels(provider);
         } else if (tuiFetcher) {
-          models = await this[tuiFetcher.fetch](provider);
+          fetched = await this[tuiFetcher.fetch](provider);
         } else {
           // No branch matched — this provider type/shape has no fetcher. Say so,
           // the same 400 the CLI arm's own fall-through throws. Previously this
-          // fell out as `models === null` and the route rendered it as
+          // fell out as `fetched === null` and the route rendered it as
           // `404 Provider not found or not an API type`, which is exactly the
           // false message the rethrow above set out to stop showing: a plain
           // `codex-tui`/`grok-tui` provider exists and its type is fine, it just
@@ -881,30 +892,47 @@ export function createProviderService(config = {}) {
         throw error;
       }
 
-      // Belt-and-braces: every branch above returns an array or throws, so this
-      // is unreachable today — but a future fetcher that returns null must not
-      // persist `models: null` over the user's list. Throws rather than
+      // Belt-and-braces: every branch above returns a list (or a catalog) or
+      // throws, so this is unreachable today — but a future fetcher that
+      // returns null must not persist `models: null` over the user's list. Throws rather than
       // returning null so `null` keeps exactly ONE meaning out of this function:
       // the provider does not exist. That is what lets the route's 404 say
       // plainly "Provider not found" instead of guessing at a reason.
-      if (models === null) {
+      const catalog = toModelCatalog(fetched);
+      if (catalog === null) {
         const unsupported = new Error(`Model refresh returned nothing for provider '${provider.id}'`);
         unsupported.status = 400;
         throw unsupported;
       }
 
-      return models;
+      return catalog;
+    },
+
+    /**
+     * The id-list-only view of {@link fetchProviderModelCatalog}, kept as the
+     * historical `string[] | null` contract. Nothing in PortOS calls it today
+     * (the post-install Ollama fan-out goes through `refreshProviderModelsBatch`);
+     * it stays because this directory is vendored and its method surface is the
+     * contract an upstream sync merges against — see ../AGENTS.md.
+     *
+     * @param {string} id
+     * @returns {Promise<string[]|null>}
+     */
+    async fetchProviderModels(id) {
+      const catalog = await this.fetchProviderModelCatalog(id);
+      return catalog === null ? null : catalog.models;
     },
 
     /**
      * Probe AND persist a provider's model list. Thin composition of
-     * {@link fetchProviderModels} + `updateProvider` — keep it that way so the
-     * two halves can't drift.
+     * {@link fetchProviderModelCatalog} + `updateProvider` — keep it that way so
+     * the two halves can't drift.
      */
     async refreshProviderModels(id) {
-      const models = await this.fetchProviderModels(id);
-      if (models === null) return null;
-      return this.updateProvider(id, { models });
+      const catalog = await this.fetchProviderModelCatalog(id);
+      if (catalog === null) return null;
+      const previous = (await this.getProviderById(id))?.modelContextWindows;
+      return this.updateProvider(id, modelCatalogUpdate(catalog, previous));
     },
 
     /**
@@ -933,16 +961,17 @@ export function createProviderService(config = {}) {
      * outcome so the host can log group-level context (one line per group, not
      * one per member) and decide what a failure means.
      *
-     * - `updated` — probed successfully; `models` was applied to every member
-     *   still present at save time. `[]` is a real answer (the user deleted
-     *   their last model) and IS persisted; only the two statuses below skip.
+     * - `updated` — probed successfully; the group's `catalog` was applied to
+     *   every member still present at save time. An empty model list is a real
+     *   answer (the user deleted their last model) and IS persisted; only the
+     *   two statuses below skip.
      * - `failed` — the probe threw; `error` carries it. The stored lists are
      *   left untouched.
      * - `missing` — no such provider, or the lead was deleted between the
      *   grouping read and its probe.
      *
      * @param {string[]} ids
-     * @returns {Promise<Array<{ ids: string[], leadId: string, status: 'updated'|'failed'|'missing', models?: string[], error?: Error }>>}
+     * @returns {Promise<Array<{ ids: string[], leadId: string, status: 'updated'|'failed'|'missing', catalog?: {models: string[], contextWindows: Record<string, number>}, error?: Error }>>}
      */
     async refreshProviderModelsBatch(ids) {
       const requested = [...new Set(Array.isArray(ids) ? ids : [])];
@@ -978,8 +1007,8 @@ export function createProviderService(config = {}) {
       // install/delete, so nothing is waiting on the wall clock.
       for (const group of groups) {
         if (!data.providers[group.leadId]) continue;
-        const probed = await this.fetchProviderModels(group.leadId).then(
-          (models) => ({ models }),
+        const probed = await this.fetchProviderModelCatalog(group.leadId).then(
+          (catalog) => ({ catalog }),
           (error) => ({ error })
         );
         if (probed.error) {
@@ -987,16 +1016,13 @@ export function createProviderService(config = {}) {
           group.error = probed.error;
           continue;
         }
-        // `null` here means the lead vanished mid-probe — the same `missing`
-        // the group already carries, so leave the status alone. Validated as an
-        // ARRAY rather than compared to `null`: `fetchProviderModels` promises
-        // an array or a throw, but a future fetcher that leaks `undefined` must
-        // land on `missing` too, not be persisted as an "updated" catalog (and
-        // then crash the whole batch on the spread below). `[]` is an array, so
-        // a legitimately empty catalog still passes.
-        if (!Array.isArray(probed.models)) continue;
+        // A falsy catalog means the lead vanished mid-probe — the same
+        // `missing` the group already carries, so leave the status alone.
+        // Anything truthy has been through `toModelCatalog`, so its shape is
+        // already guaranteed; a legitimately empty catalog still passes.
+        if (!probed.catalog) continue;
         group.status = 'updated';
-        group.models = probed.models;
+        group.catalog = probed.catalog;
       }
 
       const updated = groups.filter((g) => g.status === 'updated');
@@ -1014,9 +1040,14 @@ export function createProviderService(config = {}) {
           // Deleted between the grouping read and now — nothing to write, and
           // re-adding it here would resurrect a provider the user removed.
           if (!provider) continue;
-          // Copy the list per provider so members of one group don't end up
-          // sharing (and later mutating) a single array instance.
-          fresh.providers[id] = { ...provider, models: [...group.models], id };
+          // Built per member rather than once per group: `modelCatalogUpdate`
+          // merges against THAT provider's previously-learned windows, and it
+          // copies the list, so members never share a mutable instance.
+          fresh.providers[id] = {
+            ...provider,
+            ...modelCatalogUpdate(group.catalog, provider.modelContextWindows),
+            id,
+          };
           changed = true;
         }
       }
@@ -1025,6 +1056,14 @@ export function createProviderService(config = {}) {
       return groups;
     },
 
+    /**
+     * Probe an OpenAI-compatible `/models` endpoint.
+     *
+     * Returns the CATALOG shape (`{ models, contextWindows }`) rather than a
+     * bare id list — see internal/modelCatalog.js. The Ollama `/api/tags`
+     * short-circuit below still answers with a plain array; `toModelCatalog`
+     * normalizes both at the `fetchProviderModelCatalog` boundary.
+     */
     async _refreshAPIProviderModels(provider) {
       if (provider.endpoint?.includes('ollama') || provider.endpoint?.includes(':11434')) {
         const ollamaUrl = `${provider.endpoint}/api/tags`;
@@ -1080,16 +1119,11 @@ export function createProviderService(config = {}) {
       // a plausible-looking, entirely unusable catalog. Anything that still
       // resolves to nothing means the shape isn't one we understand, so throw
       // rather than save it, same posture as the unparseable-body case above.
-      const toModelIds = (entries, key) => {
-        const ids = entries.map(m => (typeof m === 'string' ? m : (m?.id || m?.name || m?.model)));
-        if (ids.some(id => typeof id !== 'string' || !id)) {
-          throw new Error(`Model list response had "${key}" entries with no usable model id`);
-        }
-        return ids;
-      };
-
-      if (Array.isArray(responseData.data)) return toModelIds(responseData.data, 'data');
-      if (Array.isArray(responseData.models)) return toModelIds(responseData.models, 'models');
+      // `parseModelCatalog` also harvests each entry's declared context window
+      // (internal/modelCatalog.js) — the only source that knows a hosted
+      // gateway's model really has a 1M window rather than the assumed 128K.
+      if (Array.isArray(responseData.data)) return parseModelCatalog(responseData.data, 'data');
+      if (Array.isArray(responseData.models)) return parseModelCatalog(responseData.models, 'models');
 
       throw new Error('Model list response had no recognizable "data" or "models" array');
     },

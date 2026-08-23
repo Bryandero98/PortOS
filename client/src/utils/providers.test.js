@@ -25,7 +25,10 @@ import {
   GROK_CONTEXT_WINDOW,
   KIMI_CONTEXT_WINDOW,
   KIMI_CONFIGURED_DEFAULT,
+  CONTEXT_WINDOW_SOURCE,
+  catalogModelContextWindow,
   effectiveModelContextWindow,
+  resolveModelContextWindow,
   mergeModelLists,
   modelOptionLabel,
   isTuiProvider,
@@ -1037,6 +1040,44 @@ describe('effectiveModelContextWindow', () => {
     expect(effectiveModelContextWindow({ type: 'api', endpoint: 'http://localhost:8000/v1' }, 'unknown')).toBeNull();
     expect(effectiveModelContextWindow({ type: 'api', endpoint: 'http://127.0.0.1:8000/v1' }, 'unknown')).toBeNull();
     expect(effectiveModelContextWindow({ type: 'api', endpoint: 'https://api.example.test/v1' }, 'unknown')).toBe(128_000);
+  });
+
+  it('prefers the window the provider catalog reported for that model', () => {
+    // Mirrors the server ladder in stageRunner.js: catalog beats the regex
+    // table, and both beat the blanket 128K assumption that made a 1M-context
+    // model look capped.
+    const wrapper = { id: 'opencode-openrouter-tui', type: 'tui', command: 'opencode', modelContextWindows: { 'stealth/ox-alpha': 1_000_000 } };
+    expect(effectiveModelContextWindow(wrapper, 'stealth/ox-alpha')).toBe(1_000_000);
+    expect(effectiveModelContextWindow(wrapper, 'openrouter/auto')).toBe(128_000);
+    expect(effectiveModelContextWindow(
+      { type: 'api', endpoint: 'https://api.example.test/v1', modelContextWindows: { 'claude-sonnet-4-6': 200_000 } },
+      'claude-sonnet-4-6'
+    )).toBe(200_000);
+    expect(catalogModelContextWindow({ modelContextWindows: { m: 0 } }, 'm')).toBeNull();
+    expect(catalogModelContextWindow({ modelContextWindows: { m: 1_000 } }, 'other')).toBeNull();
+  });
+
+  it('separates a reported window from a guessed one so the UI can flag it', () => {
+    const src = (p, m) => resolveModelContextWindow(p, m).source;
+    expect(src({ type: 'tui', contextWindow: 64_000 }, 'm')).toBe(CONTEXT_WINDOW_SOURCE.OVERRIDE);
+    // Every rung that reports a REAL window reads the same to the UI.
+    expect(src({ type: 'tui', modelContextWindows: { m: 1_000_000 } }, 'm')).toBe(CONTEXT_WINDOW_SOURCE.REPORTED);
+    expect(src({ type: 'tui' }, 'claude-opus-5')).toBe(CONTEXT_WINDOW_SOURCE.REPORTED);
+    expect(src({ id: 'codex-tui', type: 'tui', command: 'codex' }, CODEX_CONFIGURED_DEFAULT)).toBe(CONTEXT_WINDOW_SOURCE.REPORTED);
+    expect(src({ type: 'api', endpoint: 'http://localhost:11434/v1', numCtx: 32_768 }, 'unknown')).toBe(CONTEXT_WINDOW_SOURCE.REPORTED);
+    // The only rung that is a guess rather than a report.
+    expect(src({ type: 'tui', command: 'opencode' }, 'unknown')).toBe(CONTEXT_WINDOW_SOURCE.ASSUMED);
+    expect(src({ type: 'api', endpoint: 'http://localhost:8000/v1' }, 'unknown')).toBeNull();
+  });
+
+  it('labels an option from the catalog, without stamping the assumed window on every option', () => {
+    const provider = { type: 'tui', command: 'opencode', modelContextWindows: { 'stealth/ox-alpha': 1_000_000 } };
+    expect(modelOptionLabel('stealth/ox-alpha', undefined, provider)).toBe('stealth/ox-alpha (1M ctx)');
+    // The provider-level/assumed rungs are deliberately excluded — they would
+    // annotate every option with the same guess.
+    expect(modelOptionLabel('openrouter/auto', undefined, provider)).toBe('openrouter/auto');
+    // A live local probe still wins: it is the window the model is loaded at.
+    expect(modelOptionLabel('stealth/ox-alpha', { 'stealth/ox-alpha': 32768 }, provider)).toBe('stealth/ox-alpha (32K ctx)');
   });
 
   it('uses explicit contextWindow and numCtx with server precedence', () => {

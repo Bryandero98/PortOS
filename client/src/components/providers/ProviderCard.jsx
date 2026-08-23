@@ -14,8 +14,8 @@
 import { Link } from 'react-router';
 import { Terminal } from 'lucide-react';
 import {
+  CONTEXT_WINDOW_SOURCE,
   PROVIDER_CARD_STATE,
-  effectiveModelContextWindow,
   isApiProvider,
   isGrokBuildCli,
   gatewayForProvider,
@@ -25,6 +25,7 @@ import {
   isTuiProvider,
   isLaunchableTuiProvider,
   providerTypeClass,
+  resolveModelContextWindow,
   supportsModelRefresh,
 } from '../../utils/providers';
 import { formatContextLength } from '../../utils/formatters';
@@ -346,13 +347,36 @@ export default function ProviderCard({
             <p className="break-words">Default effort: <code className="text-gray-300">{provider.effort}</code></p>
           )}
           {(() => {
-            const windowLabel = formatContextLength(effectiveModelContextWindow(provider, provider.defaultModel));
-            return windowLabel ? (
+            // The window AND where it came from: the last rung of the ladder is
+            // a blanket 128K guess, and printing that bare made a 1M-context
+            // model look like PortOS had capped it. A reported window prints
+            // plain; a guess says so and names the way to replace it.
+            const { tokens, source } = resolveModelContextWindow(provider, provider.defaultModel);
+            const windowLabel = formatContextLength(tokens);
+            if (!windowLabel) return null;
+            // Only offer Refresh Models when this card HAS that button —
+            // `assumed` is reached by every process provider with an
+            // unrecognized model, including ones with no model-list capability
+            // at all, and pointing those at a button that is not on screen is
+            // worse than saying nothing.
+            const assumed = source === CONTEXT_WINDOW_SOURCE.ASSUMED;
+            const assumedFix = supportsModelRefresh(provider)
+              ? 'assumed — Refresh Models to read the real one'
+              : 'assumed — set a context window when editing this provider';
+            return (
               <p className="text-xs">
                 Context: <span className="text-gray-300">{windowLabel}</span>
-                {provider.contextWindow ? <span className="text-gray-500"> override</span> : null}
+                {source === CONTEXT_WINDOW_SOURCE.OVERRIDE && <span className="text-gray-500"> override</span>}
+                {assumed && (
+                  <span
+                    className="text-gray-500"
+                    title="PortOS has not been told this model’s real window, so prompt budgeting assumes a conservative 128K rather than the model’s own ceiling."
+                  >
+                    {" "}{assumedFix}
+                  </span>
+                )}
               </p>
-            ) : null;
+            );
           })()}
           {(provider.lightModel || provider.mediumModel || provider.heavyModel) && (
             <p className="text-xs">
