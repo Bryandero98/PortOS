@@ -32,7 +32,7 @@ import { getRecord, updateRecord } from './records.js';
 import {
   spriteDir, resolveSpriteAssetPath, toRecordRelativeAssetPath, altRunLayoutPath,
   runDirOfPath, resolveDriftTolerantRel, isSourcePipelinePath, SOURCE_CLIP_NAME,
-  rawFramesRelOf, RAW_FRAME_NAME,
+  rawFramesRelOf, RAW_FRAME_NAME, runRelPath, RUN_RECORD_NAME,
 } from './paths.js';
 import {
   requireCharacter, loadManifest,
@@ -57,10 +57,15 @@ import { resolveGrokDuration } from '../../lib/grokVideoClip.js';
 import {
   withAnimationWriteTail, resolveChromaKey, lockedAnchorFor,
   GROK_TUI_IDLE_MS, GROK_TUI_TIMEOUT_MS, grokTuiProvider, buildGrokI2vTask,
+  resolveAnimationProvider, isLocalProviderRun, runCreatedAtMs,
 } from './animationWorkflow.js';
 import {
   SCANNER_TRACK, sourceReferenceFor,
 } from './animationTracks.js';
+import {
+  planLocalAnimationRender, enqueueLocalAnimationRender, localRenderManifest,
+  normalizeStaleAnimationRun,
+} from './localAnimationRender.js';
 // #3152 — the anchor-invalidation sweep below must cover a USER-DEFINED track too:
 // a stored row seeded from a directional anchor holds approvals descended from the
 // same reference, and sweeping only the compiled table would leave them standing
@@ -89,7 +94,6 @@ export const walkSetRelPath = (id) => `walk/${id}-walk-set-v1.json`;
 // the historical `grok/<runId>/` layout into this one; the reader still scans
 // `grok/` too (RUN_SCAN_DIRS) for pre-migration installs and forks, and
 // RUN_DIR_MATCH (paths.js) still accepts both prefixes.
-const runRelPath = (runId) => `runs/${runId}`;
 // The two on-disk homes a run can be found in: the neutral `runs/` layout (all
 // new generations, post-migration) and `grok/` — both a straggler on an
 // un-migrated install/fork AND where a source-pipeline import lands whenever its
@@ -98,7 +102,6 @@ const runRelPath = (runId) => `runs/${runId}`;
 // through their selection entry, so the scan covers unapproved candidates plus
 // any run whose entry has been dropped by an unlock/reopen.
 const RUN_SCAN_DIRS = ['runs', 'grok'];
-const RUN_RECORD_NAME = 'animation-run.json';
 
 // Serialize walk-state read-modify-writes per record (run records, the
 // selection file, the walk set, and trim versioning share one lifecycle) —
@@ -268,16 +271,6 @@ async function requireUnfinalized(recordId) {
   if (await loadWalkSet(recordId)) throw walkSetFinalError();
 }
 
-// PortOS stamps createdAt as an ISO string (Date.parse handles it); imported
-// source-pipeline run records (issue #2895 importer) stamp it as a Python
-// time.time() epoch-seconds float instead — .localeCompare on that throws
-// and 500s the whole detail endpoint. Normalize both to comparable ms.
-function runCreatedAtMs(createdAt) {
-  if (typeof createdAt === 'number') return createdAt * 1000;
-  const ms = Date.parse(createdAt);
-  return Number.isNaN(ms) ? 0 : ms;
-}
-
 // A 'rendering' run's status is flipped to a terminal state by attachTuiWalkResult
 // when executeTuiRun settles — including on grok's 30-min hard timeout. So a run
 // still 'rendering' well past that cap can only be stranded: the server process
@@ -285,12 +278,13 @@ function runCreatedAtMs(createdAt) {
 // Present it as an error at read time — never persisted — so the UI stops polling
 // forever, surfaces regenerate, and the in-flight guard in startWalkGeneration
 // stops treating it as live. RENDER_STALE_MS is the hard cap plus a buffer.
-const RENDER_STALE_MS = WALK_TUI_TIMEOUT_MS + 60_000;
-function normalizeStaleRendering(run) {
-  if (run?.status !== 'rendering') return run;
-  if (Date.now() - runCreatedAtMs(run.createdAt) <= RENDER_STALE_MS) return run;
-  return { ...run, status: 'error', postprocessError: 'Walk render was interrupted (server restart or timeout) — regenerate to retry.' };
-}
+// Which lane a run came from, for logs shared by both.
+const runProviderLabel = (run) => (isLocalProviderRun(run) ? 'local' : 'grok-tui');
+const STALE_RENDER_ERROR = 'Walk render was interrupted (server restart or timeout) — regenerate to retry.';
+// Both lanes' staleness rules live in one place (localAnimationRender.js) so the
+// walk and non-walk tracks cannot drift on when a render counts as stranded —
+// only the user-facing wording differs.
+const normalizeStaleRendering = (run) => normalizeStaleAnimationRun(run, STALE_RENDER_ERROR);
 
 // PortOS's own postprocess stamps `stripPreview.stripPath` record-relative
 // (walkPostprocess.js). The imported source pipeline stamps the same field
@@ -702,7 +696,7 @@ export async function getWalkState(recordId) {
         return loadRunRecordAt(recordId, runDirRel)
           .then((run) => (run ? normalizeRunRecord(recordId, run, runDirRel) : null));
       }),
-  )).filter(isWalkRun)
+  )).filter((run) => run && isWalkRun(run))
     // Second pass: a record whose own `id` differs from its directory name is
     // already covered by an entry that named it by id. Dedupe on id too, so a
     // run that somehow exists under both scan roots surfaces once.
@@ -1000,6 +994,24 @@ async function startWalkGenerationImpl(recordId, body) {
     throw new ServerError('Locked anchor file is missing on disk', { status: 500, code: 'ANCHOR_MISSING' });
   }
 
+  // WHICH lane renders the clip (#4876). Absent → grok, so every pre-existing
+  // client, persisted retry, and test renders exactly where it did before the
+  // local lane existed.
+  const provider = resolveAnimationProvider(body.provider);
+  // Clip length grok will actually deliver — a request it does not offer falls
+  // back to its shortest (see lib/grokVideoClip.js). The walk's look comes from
+  // frameCount/fps below, not from how much footage the packer had to pick from.
+  // The local lane snaps the same request onto H3's 17n+5 frame grid instead,
+  // which is why `duration` stays the shared unit rather than a grok-only field.
+  const duration = resolveGrokDuration(body.duration);
+  // Resolved BEFORE the run directory is created, not just before the run
+  // record: an install with no runnable local model must leave NOTHING behind.
+  // An empty run directory is not inert — the run scan reads it back, finds no
+  // record, and (before this) took getWalkState down with it.
+  const localPlan = provider === 'local'
+    ? await planLocalAnimationRender({ durationSeconds: duration })
+    : null;
+
   const runId = `walk-${direction}-${randomUUID().slice(0, 8)}`;
   const runRel = runRelPath(runId);
   const runAbs = join(spriteDir(recordId), runRel);
@@ -1012,16 +1024,12 @@ async function startWalkGenerationImpl(recordId, body) {
   // prepareWalkAnchorChromaInput). Saved without mutating the locked anchor.
   // Overlap the input prep with the (independent) settings read.
   const inputAbs = join(generatedAbs, 'input-anchor-chroma.png');
-  const [{ preparation, sha256: inputSha256 }, settings] = await Promise.all([
-    prepareWalkAnchorChromaInput(anchorAbs, inputAbs, chromaKey),
+  const [{ preparation, sha256: inputSha256, canvas }, settings] = await Promise.all([
+    prepareWalkAnchorChromaInput(anchorAbs, inputAbs, chromaKey, localPlan?.chooseCanvas || null),
     getSettings(),
   ]);
-  // Clip length grok will actually deliver — a request it doesn't offer falls
-  // back to its shortest (see lib/grokVideoClip.js). The walk's look comes from
-  // frameCount/fps below, not from how much footage the packer had to pick from.
-  const duration = resolveGrokDuration(body.duration);
   // Frame count + playback fps are the deterministic-postprocess knobs, not the
-  // grok clip's — grok animates the same clip regardless, and the packer
+  // clip's — the provider animates the same clip regardless, and the packer
   // resamples/labels the cycle afterward. Resolved from the set target above and
   // stored on the run so the completion hook's packageRun (and any later
   // reprocess) applies exactly what the set is pinned to.
@@ -1033,16 +1041,19 @@ async function startWalkGenerationImpl(recordId, body) {
   const prompt = buildWalkVideoPrompt({ name: record.name, direction, chromaKey, correctionPrompt });
   const videoAbs = join(generatedAbs, 'source-video.mp4');
   const grokPath = settings.imageGen?.grok?.grokPath;
-
-  // Run record BEFORE the render starts: a crash between the two leaves an inert
-  // 'rendering' run (harmless, regenerable) rather than a session the attach
-  // can't file. `shellSession` is the id the walk card deep-links to.
+  // Run record BEFORE the job is queued: the completion hook finds the run by
+  // `runId` out of the job's own params, so the record must already exist when
+  // the job can first settle. (The grok lane persists first for the mirror
+  // reason — a crash between the two leaves an inert 'rendering' run rather
+  // than a session the attach can't file.) `shellSession` is the id the walk
+  // card deep-links to; a local render is a queued media job, not a PTY, so it
+  // carries `jobId` instead — the two are mutually exclusive on purpose.
   const now = new Date().toISOString();
   const run = {
     schemaVersion: 1,
     kind: 'grok-game-animation-frames-run',
-    // Vendor recorded as metadata, not baked into the storage path — a future
-    // non-grok source stamps its own provider and stores under the same runs/ tree.
+    // Vendor recorded as metadata, not baked into the storage path — the local
+    // lane stamps its own provider and stores under the same runs/ tree.
     provider: GROK_TUI_ID,
     status: 'rendering',
     id: runId,
@@ -1062,8 +1073,28 @@ async function startWalkGenerationImpl(recordId, body) {
     animationInputPreparation: preparation,
     ...(correctionPrompt ? { correctionPrompt } : {}),
     createdAt: now,
+    // Spread LAST so the local lane's provider/geometry provenance overrides the
+    // grok defaults above rather than being silently overwritten by them.
+    ...(localPlan ? { ...localRenderManifest(localPlan, canvas), shellSession: null } : {}),
   };
   await saveRunRecord(recordId, run);
+
+  if (localPlan) {
+    // Queued AFTER the record is durable. Nothing here awaits the render: the
+    // boot-registered completion hook stages the clip and runs the attach, which
+    // is what lets a render outlive this request, the client, and a restart.
+    const jobId = enqueueLocalAnimationRender({
+      plan: localPlan, canvas, prompt, inputAbs, recordId, runId, track: WALK_TRACK, direction,
+    });
+    // Stamped in a SECOND write so a failure here cannot strand the job: the
+    // hook already has everything it needs from the job's own params, and a run
+    // that misses this only degrades `localRunLiveness` to `unknown`, whose
+    // wall-clock fallback still resolves it.
+    run.jobId = jobId;
+    await saveRunRecord(recordId, run);
+    console.log(`🚶 sprite walk local render started ${recordId}/${runId} (job ${jobId.slice(0, 8)}, ${localPlan.numFrames}f @ ${localPlan.fps}fps)`);
+    return { runId, direction, duration, provider: 'local', jobId };
+  }
 
   // Fire the observable grok-tui render fire-and-forget (do NOT await — this
   // impl holds the per-record write tail, which a ~10-min render must not).
@@ -1075,7 +1106,7 @@ async function startWalkGenerationImpl(recordId, body) {
   }).catch((err) => console.error(`❌ sprite walk grok-tui render crashed ${recordId}/${runId}: ${err?.message || err}`));
 
   console.log(`🚶 sprite walk grok-tui render started ${recordId}/${runId} (shell session ${runId})`);
-  return { runId, direction, duration, shellSession: runId };
+  return { runId, direction, duration, provider: 'grok', shellSession: runId };
 }
 
 /**
@@ -1101,10 +1132,12 @@ async function runWalkTuiRender(recordId, { runId, direction, grokPath, task, ge
 }
 
 /**
- * Attach the finished grok-tui clip and run the deterministic postprocess.
- * Guards against overwriting frozen evidence (finalized set / already-approved
- * run); the source video is already at its final path (grok wrote it there
- * directly), so there's no copy — unlike a queued-job attach.
+ * Attach the finished clip and run the deterministic postprocess — shared by
+ * BOTH render lanes, because everything downstream of `source-video.mp4` is
+ * provider-agnostic. Guards against overwriting frozen evidence (finalized set /
+ * already-approved run). The source video is already at its final path by the
+ * time this runs (grok writes it there directly; the local lane copies it out of
+ * the media-job output), so there is no copy here either way.
  */
 export async function attachTuiWalkResult(recordId, runId, videoAbs) {
   const run = await loadRunRecord(recordId, runId);
@@ -1123,18 +1156,25 @@ export async function attachTuiWalkResult(recordId, runId, videoAbs) {
   }
   if (!await pathExists(videoAbs)) {
     run.status = 'error';
-    run.postprocessError = 'Grok finished without writing the walk video — check the shell session output';
+    run.postprocessError = isLocalProviderRun(run)
+      ? 'The local render produced no walk video — check the Render Queue for the failed job'
+      : 'Grok finished without writing the walk video — check the shell session output';
     run.completedAt = new Date().toISOString();
     await saveRunRecord(recordId, run);
-    console.error(`❌ sprite walk grok-tui produced no video ${recordId}/${runId}`);
+    console.error(`❌ sprite walk ${runProviderLabel(run)} produced no video ${recordId}/${runId}`);
     return;
   }
   run.sourceVideoSha256 = await sha256File(videoAbs);
   run.status = 'postprocessing';
+  // Anchors the packaging staleness window (normalizeStaleAnimationRun). It MUST
+  // be measured from here rather than from `createdAt`: a local render can have
+  // been queued hours before packaging starts, so a createdAt-anchored window
+  // reports every healthy local run as interrupted the moment it begins to pack.
+  run.postprocessingStartedAt = new Date().toISOString();
   await saveRunRecord(recordId, run);
   await packageRun(recordId, run);
   await saveRunRecord(recordId, run);
-  console.log(`🚶 sprite walk grok-tui run ${recordId}/${runId} → ${run.status}`);
+  console.log(`🚶 sprite walk ${runProviderLabel(run)} run ${recordId}/${runId} → ${run.status}`);
 }
 
 /**
@@ -1160,8 +1200,8 @@ async function packageRun(recordId, run, overrides = {}, location = {}) {
   run.frameCount = frameCount;
   run.fps = fps;
   // Record-relative path to the raw clip, stamped BEFORE the (possibly failing)
-  // postprocess so a run that errors in packaging still surfaces the video grok
-  // actually produced in the UI, not just the error text. Set here (shared by
+  // postprocess so a run that errors in packaging still surfaces the video the
+  // provider actually produced in the UI, not just the error text. Set here (shared by
   // attach + rerun) so a retry backfills it onto an older run too — and for an
   // imported run that means persisting the record-relative form in place of the
   // source-repo anchor its manifest was copied with.
@@ -1172,8 +1212,9 @@ async function packageRun(recordId, run, overrides = {}, location = {}) {
     // failure is CAPTURED onto the run record — a throw escaping here would
     // strand an attach at 'postprocessing' with no error text.
     const videoAbs = resolveSpriteAssetPath(recordId, run.sourceVideoPath);
-    // What grok DELIVERED, as opposed to what `run.duration` asked for — the
-    // requested length is not a promise (see lib/grokVideoClip.js). Stamped
+    // What the provider DELIVERED, as opposed to what `run.duration` asked for —
+    // the requested length is not a promise on either lane (grok picks from its
+    // own menu, see lib/grokVideoClip.js; H3 snaps to its 17n+5 grid). Stamped
     // here, shared by attach + rerun, so a reprocess backfills it onto an older
     // run. Overlap the probe with the (independent) manifest read.
     //

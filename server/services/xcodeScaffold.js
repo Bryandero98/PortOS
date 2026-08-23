@@ -8,7 +8,7 @@ import {
   XCODE_TEAM_ID, XCODE_BUNDLE_PREFIX, XCODE_ENV_EXAMPLE,
   toBundleId, toTargetName,
   generateDeployScript, generateScreenshotScript, generateMacScreenshotScript
-} from '../services/xcodeScripts.js';
+} from './xcodeScripts.js';
 
 const execAsync = promisify(exec);
 

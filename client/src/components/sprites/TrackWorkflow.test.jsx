@@ -147,6 +147,34 @@ describe.each(TRACKS)('TrackWorkflow renders the $definition.id track from its d
   });
 });
 
+describe.each(TRACKS)('render-lane picker on the $definition.id track (#4876)', ({ definition }) => {
+  const PROVIDERS = [
+    { id: 'grok', label: 'Grok (cloud)', ready: true, reason: null },
+    { id: 'local', label: 'Local (MiniMax H3)', ready: true, reason: null },
+  ];
+
+  it('offers the picker and reports the chosen lane', () => {
+    const onProviderChange = vi.fn();
+    renderTrack(definition, {}, { providers: PROVIDERS, provider: 'grok', onProviderChange });
+    fireEvent.change(screen.getByLabelText(/Render on/), { target: { value: 'local' } });
+    expect(onProviderChange).toHaveBeenCalledWith('local');
+  });
+
+  it('shows no picker when the page never learned about a second lane', () => {
+    renderTrack(definition);
+    expect(screen.queryByLabelText(/Render on/)).toBeNull();
+  });
+
+  it('names the SELECTED lane in the caption instead of hardcoding Grok', () => {
+    // The caption read "directly requested Grok render" unconditionally, which
+    // became a lie the moment a local render was picked.
+    renderTrack(definition, {}, { providers: PROVIDERS, provider: 'local', onProviderChange: vi.fn() });
+    expect(screen.getByText(/directly requested local render/)).toBeInTheDocument();
+    renderTrack(definition, {}, { providers: PROVIDERS, provider: 'grok', onProviderChange: vi.fn() });
+    expect(screen.getAllByText(/directly requested Grok render/).length).toBeGreaterThan(0);
+  });
+});
+
 describe('a track this client build has never heard of (#3136)', () => {
   // The acceptance criterion for the epic: a user-defined track renders with no
   // client change at all, because every track-specific string and count is read

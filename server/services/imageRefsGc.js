@@ -32,14 +32,14 @@
  * reference sheets (`universe-…`, `sheet-…`) and any other file in the dir are
  * never matched.
  *
- * Runs OUTSIDE the Express request lifecycle (a `setInterval` from index.js),
- * so this module wraps its sweep in try/catch and logs single-line per the repo
- * logging convention — an uncaught throw here would crash the process.
+ * Runs OUTSIDE the Express request lifecycle through eventScheduler, which
+ * catches handler failures and records them in scheduler history.
  */
 
 import { readdir, stat, unlink } from 'fs/promises';
 import { join, basename } from 'path';
 import { PATHS, tryReadFile, safeJSONParse } from '../lib/fileUtils.js';
+import { createSweepScheduler } from './sweepScheduler.js';
 
 // `init-<uuid>` / `ref-<uuid>` with a decodable image extension — the exact
 // staged-upload discriminator migration 085 uses. The UUID shape is loose on
@@ -55,9 +55,6 @@ export const ORPHAN_REF_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 // How often the sweep runs once started. These files are cheap to leave around,
 // so a slow cadence is fine — daily keeps `data/image-refs` bounded without churn.
 const SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-let sweepTimer = null;
-let initialSweepTimer = null;
 
 /**
  * Scan every gallery sidecar and collect the set of `data/image-refs` basenames
@@ -140,40 +137,22 @@ export async function sweepOrphanRefImages({
 }
 
 /**
- * Start the periodic sweep. Fires once on a short delay after boot (so a long
- * grace window doesn't mean accumulation waits a full day after a restart) then
- * on SWEEP_INTERVAL_MS. Idempotent — a second call is a no-op.
+ * Log the domain summary for one scheduler-owned sweep.
  */
-export function startImageRefsGc() {
-  if (sweepTimer) return;
-
-  const runSweep = () => {
-    sweepOrphanRefImages()
-      .then(({ deleted }) => {
-        if (deleted > 0) {
-          console.log(`🧹 Image-refs GC: removed ${deleted} orphan staged upload(s)`);
-        }
-      })
-      .catch((err) => console.error(`❌ Image-refs GC sweep failed: ${err.message}`));
-  };
-
-  // Initial pass ~5 min after boot — off the startup hot path, but soon enough
-  // that a restart doesn't reset the cleanup clock. Keep the handle so
-  // stopImageRefsGc() can cancel it if shutdown lands inside the window.
-  initialSweepTimer = setTimeout(() => { initialSweepTimer = null; runSweep(); }, 5 * 60 * 1000);
-  initialSweepTimer.unref?.();
-  sweepTimer = setInterval(runSweep, SWEEP_INTERVAL_MS);
-  sweepTimer.unref?.();
-}
-
-/** Stop the periodic sweep (used by tests / graceful shutdown). */
-export function stopImageRefsGc() {
-  if (initialSweepTimer) {
-    clearTimeout(initialSweepTimer);
-    initialSweepTimer = null;
+const runSweep = async () => {
+  const { deleted } = await sweepOrphanRefImages();
+  if (deleted > 0) {
+    console.log(`🧹 Image-refs GC: removed ${deleted} orphan staged upload(s)`);
   }
-  if (sweepTimer) {
-    clearInterval(sweepTimer);
-    sweepTimer = null;
-  }
-}
+};
+
+export const {
+  start: startImageRefsGc,
+  stop: stopImageRefsGc,
+} = createSweepScheduler({
+  id: 'image-refs-gc',
+  intervalMs: SWEEP_INTERVAL_MS,
+  initialDelayMs: 5 * 60 * 1000,
+  handler: runSweep,
+  source: 'imageRefsGc',
+});
