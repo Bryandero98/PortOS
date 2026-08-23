@@ -8,7 +8,7 @@
  * each into the dataset (independent of the gallery original).
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Search, X, RefreshCw, Loader2, Check } from 'lucide-react';
 import Modal from '../ui/Modal';
 import MediaCard from '../media/MediaCard';
@@ -49,7 +49,7 @@ export default function ImportGalleryDialog({ dataset, onClose, onImported }) {
     [items, haystacks, tokens],
   );
 
-  const toggle = (filename) => {
+  const toggle = useCallback((filename) => {
     setSelected((prev) => {
       if (prev.includes(filename)) return prev.filter((f) => f !== filename);
       if (prev.length >= MAX_IMPORT) {
@@ -58,7 +58,8 @@ export default function ImportGalleryDialog({ dataset, onClose, onImported }) {
       }
       return [...prev, filename];
     });
-  };
+  }, []);
+  const handleToggleCard = useCallback((item) => toggle(item.filename), [toggle]);
 
   const doImport = async () => {
     if (!selected.length) return;
@@ -138,7 +139,7 @@ export default function ImportGalleryDialog({ dataset, onClose, onImported }) {
                   showCollectionMenu={false}
                   selected={idx !== -1}
                   selectionLabel={idx !== -1 ? String(idx + 1) : null}
-                  onClick={() => toggle(item.filename)}
+                  onClick={handleToggleCard}
                 />
               );
             })}

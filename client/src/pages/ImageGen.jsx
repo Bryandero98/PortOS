@@ -172,6 +172,8 @@ export default function ImageGen() {
   // carries `name` (basename from URL param). Coupled lifetime — always replace
   // the whole object so previewUrl can never out-live its file/name.
   const [initImage, setInitImage] = useState({ source: null, file: null, name: null, previewUrl: null });
+  const initImagePreviewRef = useRef(initImage.previewUrl);
+  initImagePreviewRef.current = initImage.previewUrl;
   const [initImageStrength, setInitImageStrength] = useState(0.4);
   // Visual gallery picker target: null (closed), { kind: 'init' }, or
   // { kind: 'reference', slot: i }. The search/browse alternative to the plain
@@ -519,7 +521,7 @@ export default function ImageGen() {
     const raw = e.target.files?.[0];
     if (!raw) return;
     const file = await normalizeImageOrientation(raw);
-    revokeIfBlob(initImage.previewUrl);
+    revokeIfBlob(initImagePreviewRef.current);
     setInitImage({ source: 'upload', file, name: file.name, previewUrl: URL.createObjectURL(file) });
     // Default the output resolution to the uploaded image's dimensions, clamped
     // to the server's edge/pixel caps so a large phone photo doesn't 400 on Generate.
@@ -805,10 +807,12 @@ export default function ImageGen() {
     const isStarred = (img) => !!annotations[normalizeImage(img).key]?.starred;
     return { visibleGallery: visible.filter(isStarred), hiddenGallery: hidden.filter(isStarred) };
   }, [gallery, favoritesOnly, annotations]);
+  const visibleGalleryItems = useMemo(() => visibleGallery.map(normalizeImage), [visibleGallery]);
+  const hiddenGalleryItems = useMemo(() => hiddenGallery.map(normalizeImage), [hiddenGallery]);
   const previewItems = useMemo(() => [
-    ...visibleGallery.map(normalizeImage),
-    ...(showHidden ? hiddenGallery.map(normalizeImage) : []),
-  ], [visibleGallery, hiddenGallery, showHidden]);
+    ...visibleGalleryItems,
+    ...(showHidden ? hiddenGalleryItems : []),
+  ], [visibleGalleryItems, hiddenGalleryItems, showHidden]);
   const [preview, setPreview] = usePreviewRoute(previewItems);
 
   // Snapshots current form state into a server payload + POSTs it to the
@@ -1037,12 +1041,15 @@ export default function ImageGen() {
     setStatusMsg('Cancelled');
   };
 
-  const handleDelete = async (filename) => {
+  const handleDelete = useCallback(async (item) => {
+    const filename = item?.filename;
+    if (!filename) return;
     await deleteImage(filename).catch(() => {});
     setGallery((g) => g.filter((img) => img.filename !== filename));
-  };
+  }, []);
 
-  const handleToggleHidden = async (img) => {
+  const handleToggleHidden = useCallback(async (item) => {
+    const img = item?.raw || item;
     const nextHidden = !img.hidden;
     setGallery((g) => g.map((x) => (x.filename === img.filename ? { ...x, hidden: nextHidden } : x)));
     const result = await setImageHidden(img.filename, nextHidden, { silent: true }).catch((err) => {
@@ -1051,7 +1058,7 @@ export default function ImageGen() {
       return null;
     });
     if (result) toast.success(nextHidden ? 'Image hidden' : 'Image unhidden');
-  };
+  }, []);
 
   const handleClean = async (img) => {
     if (!img?.filename) throw new Error('Missing filename');
@@ -1102,7 +1109,8 @@ export default function ImageGen() {
     toast.success('Regenerating — the new image will appear when it finishes');
   };
 
-  const sendToVideo = (img) => {
+  const sendToVideo = useCallback((item) => {
+    const img = item?.raw || item;
     if (!img?.filename) return;
     const params = new URLSearchParams({ sourceImageFile: img.filename });
     const srcPrompt = img.prompt || img.metadata?.prompt;
@@ -1110,14 +1118,15 @@ export default function ImageGen() {
     if (srcPrompt) params.set('prompt', srcPrompt);
     if (srcNegative) params.set('negativePrompt', srcNegative);
     navigate(`/media/video?${params}`);
-  };
+  }, [navigate]);
 
   // applyModel=false skips restoring the source's modelId — used by the i2i
   // paths, which are image-driven: switching to the source's model can flip the
   // active family (e.g. away from FLUX.2), silently unmounting the reference
   // picker and dropping staged reference slots. Mirrors the cross-page
   // handleSendToImage, which drops modelId from the nav params for the same reason.
-  const handleRemix = (img, { applyModel = true } = {}) => {
+  const handleRemix = useCallback((item, { applyModel = true } = {}) => {
+    const img = item?.raw || item;
     // Preset was already folded into the recorded prompt at submit time;
     // clear the picker so the user sees what actually produced the image.
     setStylePreset(null);
@@ -1145,7 +1154,7 @@ export default function ImageGen() {
       setSelectedLoras(restored);
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  }, [availableLoras, models]);
 
   // The i2i init image only applies on an i2i-capable backend (local or codex).
   // Switch to one now if installed; otherwise flag the deferred effect to retry
@@ -1162,24 +1171,26 @@ export default function ImageGen() {
 
   // Send to image-to-image (in-page): reuse the remix settings AND queue this
   // image as the i2i source on an i2i-capable backend.
-  const handleSendToImage = (img) => {
+  const handleSendToImage = useCallback((item) => {
+    const img = item?.raw || item;
     if (!img?.filename) return;
     handleRemix(img, { applyModel: false });
     // i2i is source-authoritative: an empty source prompt must clear the form, not
     // leave stale text conditioning the render (handleRemix only sets when truthy).
     setPrompt(img.prompt || '');
     ensureI2iCapableMode();
-    revokeIfBlob(initImage.previewUrl);
+    revokeIfBlob(initImagePreviewRef.current);
     setInitImage({ source: 'gallery', file: null, name: img.filename, previewUrl: `/data/images/${img.filename}` });
     setInitImageStrength(0.4);
-  };
+  }, [ensureI2iCapableMode, handleRemix]);
 
   // "Send to 3D" opens the image-to-3D workspace (/3d) with this render as
   // the source image — deep-linked via ?image= (URL is the source of truth).
-  const handleSendTo3d = (img) => {
+  const handleSendTo3d = useCallback((item) => {
+    const img = item?.raw || item;
     if (!img?.filename) return;
     navigate(`/3d?image=${encodeURIComponent(img.filename)}`);
-  };
+  }, [navigate]);
 
   const notConnected = status && status.connected === false;
 
@@ -1618,23 +1629,20 @@ export default function ImageGen() {
             <div className="text-xs text-gray-500 py-3">No favorited images yet.</div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-              {visibleGallery.slice(0, 5).map((img) => {
-                const item = normalizeImage(img);
-                return (
+              {visibleGalleryItems.slice(0, 5).map((item) => (
                   <MediaCard
                     key={item.key}
                     item={item}
-                    onPreview={() => setPreview(item)}
-                    onRemix={() => handleRemix(img)}
-                    onSendToImage={() => handleSendToImage(img)}
-                    onSendToVideo={() => sendToVideo(img)}
-                    onSendTo3d={() => handleSendTo3d(img)}
-                    onDelete={() => handleDelete(img.filename)}
-                    onToggleHidden={() => handleToggleHidden(item)}
+                    onPreview={setPreview}
+                    onRemix={handleRemix}
+                    onSendToImage={handleSendToImage}
+                    onSendToVideo={sendToVideo}
+                    onSendTo3d={handleSendTo3d}
+                    onDelete={handleDelete}
+                    onToggleHidden={handleToggleHidden}
                     {...getCardProps(item.key)}
                   />
-                );
-              })}
+              ))}
             </div>
           )}
         </div>
@@ -1652,23 +1660,20 @@ export default function ImageGen() {
           </button>
           {showHidden && (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-              {hiddenGallery.map((img) => {
-                const item = normalizeImage(img);
-                return (
+              {hiddenGalleryItems.map((item) => (
                   <MediaCard
                     key={item.key}
                     item={item}
-                    onPreview={() => setPreview(item)}
-                    onRemix={() => handleRemix(img)}
-                    onSendToImage={() => handleSendToImage(img)}
-                    onSendToVideo={() => sendToVideo(img)}
-                    onSendTo3d={() => handleSendTo3d(img)}
-                    onDelete={() => handleDelete(img.filename)}
-                    onToggleHidden={() => handleToggleHidden(item)}
+                    onPreview={setPreview}
+                    onRemix={handleRemix}
+                    onSendToImage={handleSendToImage}
+                    onSendToVideo={sendToVideo}
+                    onSendTo3d={handleSendTo3d}
+                    onDelete={handleDelete}
+                    onToggleHidden={handleToggleHidden}
                     {...getCardProps(item.key)}
                   />
-                );
-              })}
+              ))}
             </div>
           )}
         </div>
