@@ -183,6 +183,7 @@ export function getRenderConfigForItem(item) {
       seed: raw.seed,
       tiling: raw.tiling,
       disableAudio: raw.disableAudio ?? raw.disable_audio,
+      textEncoderId: raw.textEncoderId,
       loraFilenames: pickLoraFilenames(raw),
       loraScales: raw.loraScales ?? raw.lora_scales,
     };

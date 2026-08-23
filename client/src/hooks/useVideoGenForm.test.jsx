@@ -672,7 +672,7 @@ describe('useVideoGenForm', () => {
     expect(payload.loraScales).toEqual([0.8]);
   });
 
-  it('applyRemix restores the render params and clears stale conditioning inputs', async () => {
+  it('applyRemix restores a stitched chain\'s render params and clears stale conditioning inputs', async () => {
     const { result } = render();
     act(() => result.current.handleModeChange('image'));
     act(() => result.current.pickSourceImage('old.png'));
@@ -681,17 +681,28 @@ describe('useVideoGenForm', () => {
     act(() => result.current.applyRemix({
       prompt: 'remixed', negativePrompt: 'blurry', modelId: LTX2.id,
       width: 1024, height: 576, numFrames: 49, fps: 30, seed: 7,
-      steps: 20, guidanceScale: 0, tiling: 'both', disableAudio: true,
+      steps: 20, guidanceScale: 0, tiling: 'spatial', disableAudio: true,
+      imageStrength: 0.35, chainedFrom: ['chunk-a', 'chunk-b'],
+      chunkPrompts: ['opening beat', 'closing beat'],
       loraFilenames: ['v.safetensors'], loraScales: [0.5],
     }));
 
     expect(result.current.prompt).toBe('remixed');
     expect(result.current.negativePrompt).toBe('blurry');
+    expect(result.current.modelId).toBe(LTX2.id);
+    expect(result.current.width).toBe(1024);
+    expect(result.current.height).toBe(576);
+    expect(result.current.numFrames).toBe(49);
+    expect(result.current.fps).toBe(30);
     expect(result.current.seed).toBe('7');
     expect(result.current.steps).toBe('20');
     // guidanceScale 0 (CFG off) must survive the round-trip as "0", not "".
     expect(result.current.guidanceScale).toBe('0');
+    expect(result.current.tiling).toBe('spatial');
     expect(result.current.disableAudio).toBe(true);
+    expect(result.current.imageStrength).toBe('0.35');
+    expect(result.current.chunks).toBe(2);
+    expect(result.current.chunkPrompts).toEqual(['opening beat', 'closing beat']);
     expect(result.current.mode).toBe('text');
     expect(result.current.sourceImageFile).toBeNull();
     expect(result.current.selectedLoras).toEqual([

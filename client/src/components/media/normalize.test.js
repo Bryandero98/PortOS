@@ -214,11 +214,12 @@ describe('normalize loraNames - snake_case sidecar coverage', () => {
 });
 
 describe('getRenderConfigForItem - video', () => {
-  it('reads camelCase sidecar fields directly', () => {
+  it('round-trips a stitched chain\'s inherited camelCase render fields', () => {
     const video = normalizeVideo({
       id: 'v1',
       filename: 'a.mp4',
       prompt: 'pan',
+      chainedFrom: ['chunk-a', 'chunk-b'],
       width: 720,
       height: 480,
       numFrames: 64,
@@ -230,6 +231,7 @@ describe('getRenderConfigForItem - video', () => {
       seed: 100,
       tiling: true,
       disableAudio: false,
+      textEncoderId: 'example-encoder',
       loraFilenames: ['lora-cinematic.safetensors'],
       loraScales: [0.9],
     });
@@ -246,6 +248,7 @@ describe('getRenderConfigForItem - video', () => {
       seed: 100,
       tiling: true,
       disableAudio: false,
+      textEncoderId: 'example-encoder',
       loraFilenames: ['lora-cinematic.safetensors'],
       loraScales: [0.9],
     });
