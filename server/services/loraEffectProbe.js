@@ -122,7 +122,7 @@ const runProbeOnce = async (bin, filePath) => {
 // The measurement proper — everything after the cache miss. Split out so the
 // never-fatal guarantee is one `.catch` at the single call site below rather
 // than a defensive wrapper around each step.
-const measureLoraEffect = async (filename, filePath, sizeBytes) => {
+const measureLoraEffect = async (filename, filePath, { sizeBytes, mtimeMs }) => {
   const candidates = await probeInterpreterCandidates();
   if (!candidates.length) {
     return unmeasurable('no Python interpreter with numpy is installed — set up a Video Gen or Image Gen runtime first');
@@ -142,7 +142,7 @@ const measureLoraEffect = async (filename, filePath, sizeBytes) => {
     console.log(`⚠️ LoRA effect probe unavailable for ${filename}: ${last.reason || 'unknown'}`);
     return last;
   }
-  const report = normalizeLoraEffectReport(last, { sizeBytes, measuredAt: new Date().toISOString() });
+  const report = normalizeLoraEffectReport(last, { sizeBytes, mtimeMs, measuredAt: new Date().toISOString() });
   console.log(`🔬 LoRA effect ${filename}: ${report.status} (${report.measured}/${report.modules} modules)`);
   // Best-effort cache — a sidecar we can't write is a slower diagnostic, not a
   // failed one.
@@ -166,10 +166,12 @@ export const probeLoraEffect = async (filename, { force = false } = {}) => {
   if (!fileStat || !fileStat.isFile()) {
     return unmeasurable(`LoRA "${filename}" is not a regular file on disk`);
   }
-  const sizeBytes = fileStat.size;
+  // The cache key: both stamps come from the stat we already did, so verifying a
+  // stored report costs nothing and a same-size rewrite still invalidates it.
+  const stamps = { sizeBytes: fileStat.size, mtimeMs: fileStat.mtimeMs };
 
   if (!force) {
-    const cached = readCachedLoraEffectReport((await readSidecar(filename))?.effectReport, sizeBytes);
+    const cached = readCachedLoraEffectReport((await readSidecar(filename))?.effectReport, stamps);
     if (cached) return cached;
   }
 
@@ -178,7 +180,7 @@ export const probeLoraEffect = async (filename, { force = false } = {}) => {
   // rejects in an unmodelled way, anything. `assertSafeLoraFilename` above is
   // deliberately OUTSIDE it — a path-traversal attempt is a caller bug that
   // must still surface as a 400, not be swallowed into a soft verdict.
-  return inFlight.run(filePath, () => measureLoraEffect(filename, filePath, sizeBytes)
+  return inFlight.run(filePath, () => measureLoraEffect(filename, filePath, stamps)
     .catch((err) => {
       console.log(`⚠️ LoRA effect probe failed for ${filename}: ${err?.message || err}`);
       return unmeasurable(`the effect probe failed unexpectedly (${err?.message || err})`);

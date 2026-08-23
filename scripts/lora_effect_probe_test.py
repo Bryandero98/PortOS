@@ -231,6 +231,81 @@ def run(tmp):
     report = measure_lora_effect(truncated)
     check("a truncated payload is skipped, not measured as garbage", report["measured"] == 0)
 
+    # --- the zero verdict must mean the WHOLE adapter is inert ---------------
+    # `zero` is the only status that refuses a render, so it may not be reached
+    # from a subset: a module we skipped could carry all the effect.
+    zero_plus_skipped = tmp / "zero_plus_conv.safetensors"
+    write_safetensors(zero_plus_skipped, {
+        **bare_pair("flat", rng.normal(size=(8, 64)).astype(np.float32), np.zeros((64, 8), np.float32)),
+        **bare_pair("conv", np.ones((2, 4, 1, 1), np.float32), np.ones((4, 2, 1, 1), np.float32)),
+    })
+    report = measure_lora_effect(zero_plus_skipped)
+    check("a zero module alongside an UNSUPPORTED one does not refuse",
+          report["status"] == "ok" and report["skippedUnsupported"] == 1 and report["zeroModules"] == 1)
+
+    zero_plus_nan = tmp / "zero_plus_nan.safetensors"
+    write_safetensors(zero_plus_nan, {
+        **bare_pair("flat", rng.normal(size=(8, 64)).astype(np.float32), np.zeros((64, 8), np.float32)),
+        **bare_pair("bad", rng.normal(size=(8, 64)).astype(np.float32), np.full((64, 8), np.nan, np.float32)),
+    })
+    report = measure_lora_effect(zero_plus_nan)
+    check("a zero module alongside a NON-FINITE one does not refuse",
+          report["status"] == "ok" and report["skippedNonFinite"] == 1)
+
+    # --- kohya alpha edge cases ---------------------------------------------
+    neg_alpha = tmp / "kohya_negative_alpha.safetensors"
+    write_safetensors(neg_alpha, {
+        "m.lora_down.weight": k_down,
+        "m.lora_up.weight": k_up,
+        "m.alpha": np.asarray(-4.0, np.float32),
+    })
+    neg_rms = measure_lora_effect(neg_alpha)["maxRms"]
+    check("a negative alpha yields a magnitude, never a negative RMS",
+          neg_rms > 0 and math.isclose(neg_rms, alpha_rms, rel_tol=1e-6))
+
+    nan_alpha = tmp / "kohya_nan_alpha.safetensors"
+    write_safetensors(nan_alpha, {
+        "m.lora_down.weight": k_down,
+        "m.lora_up.weight": k_up,
+        "m.alpha": np.asarray(np.nan, np.float32),
+    })
+    report = measure_lora_effect(nan_alpha)
+    check("a non-finite alpha makes the module non-finite, not a scale-1.0 guess",
+          report["status"] == "nonfinite" and report["skippedNonFinite"] == 1)
+
+    # --- case-insensitive pairing (server/lib/safetensors.js uses /i) --------
+    lower = tmp / "lowercase.safetensors"
+    write_safetensors(lower, {
+        "blocks.0.lora_a.weight": rng.normal(size=(8, 64)).astype(np.float32),
+        "blocks.0.lora_b.weight": rng.normal(size=(64, 8)).astype(np.float32),
+    })
+    report = measure_lora_effect(lower)
+    check("lowercase lora_a/lora_b pairs are measured, not called unreadable",
+          report["status"] == "ok" and report["measured"] == 1)
+
+    # --- hostile byte ranges -------------------------------------------------
+    # A negative start would seek BACK into the header and measure it as weights.
+    negative = tmp / "negative_offset.safetensors"
+    header = {
+        "m.lora_A.weight": {"dtype": "F32", "shape": [2, 4], "data_offsets": [-32, 0]},
+        "m.lora_B.weight": {"dtype": "F32", "shape": [4, 2], "data_offsets": [0, 32]},
+    }
+    blob = json.dumps(header).encode("utf-8")
+    negative.write_bytes(struct.pack("<Q", len(blob)) + blob + b"\0" * 32)
+    check("a negative data_offset is refused, never read from the header",
+          measure_lora_effect(negative)["measured"] == 0)
+
+    # A range past EOF must not be handed to read() as a giant allocation.
+    oversized = tmp / "oversized_offset.safetensors"
+    header = {
+        "m.lora_A.weight": {"dtype": "F32", "shape": [1, 2_000_000_000], "data_offsets": [0, 8_000_000_000]},
+        "m.lora_B.weight": {"dtype": "F32", "shape": [4, 2], "data_offsets": [0, 32]},
+    }
+    blob = json.dumps(header).encode("utf-8")
+    oversized.write_bytes(struct.pack("<Q", len(blob)) + blob + b"\0" * 32)
+    check("a byte range past EOF is refused before any read",
+          measure_lora_effect(oversized)["measured"] == 0)
+
     # --- formatting ---------------------------------------------------------
     summary = format_effect(measure_lora_effect(healthy))
     check("format_effect names the statistics", "median RMS" in summary and "module(s)" in summary)

@@ -207,26 +207,34 @@ describe('listLoras', () => {
 // it surfaces only what the explicit probe already measured, and only while
 // that measurement still describes the file on disk.
 describe('listLoras — cached adapter-effect report', () => {
-  const writeLora = async (filename, bytes, sidecar) => {
+  const report = (over = {}) => ({
+    probeVersion: 1, status: 'ok', modules: 8, measured: 8, skippedNonFinite: 0,
+    skippedUnsupported: 0, zeroModules: 0, medianRms: 0.004, maxRms: 0.02,
+    reason: null, measuredAt: '2026-08-23T00:00:00.000Z', ...over,
+  });
+  // The cache key is the file's real size + mtime, so the sidecar has to be
+  // written from the file that actually landed on disk — `stamp` overrides let a
+  // test deliberately mismatch one of them.
+  const writeLora = async (filename, bytes, effectReport, stamp = {}) => {
     const fs = await import('fs/promises');
     await fs.mkdir(tmpLoras, { recursive: true });
-    await fs.writeFile(join(tmpLoras, filename), Buffer.alloc(bytes, 1));
+    const path = join(tmpLoras, filename);
+    await fs.writeFile(path, Buffer.alloc(bytes, 1));
+    const s = await fs.stat(path);
+    const sidecar = effectReport
+      ? { effectReport: { ...effectReport, sizeBytes: s.size, mtimeMs: s.mtimeMs, ...stamp } }
+      : { name: 'Unmeasured' };
     await fs.writeFile(join(tmpLoras, `${filename}.metadata.json`), JSON.stringify({ filename, ...sidecar }));
   };
-  const freshReport = (sizeBytes) => ({
-    probeVersion: 1, status: 'ok', modules: 8, measured: 8, skippedNonFinite: 0,
-    skippedUnsupported: 0, zeroModules: 0, medianRms: 0.004, maxRms: 0.02, minRms: 0.001,
-    reason: null, sizeBytes, measuredAt: '2026-08-23T00:00:00.000Z',
-  });
 
-  it('surfaces a stored report whose size still matches the file', async () => {
-    await writeLora('measured.safetensors', 512, { effectReport: freshReport(512) });
+  it('surfaces a stored report whose size and mtime still match the file', async () => {
+    await writeLora('measured.safetensors', 512, report());
     const [lora] = await lorasService.listLoras();
     expect(lora.effectReport).toMatchObject({ status: 'ok', measured: 8, medianRms: 0.004, sizeBytes: 512 });
   });
 
   it('reports null when the LoRA was never measured', async () => {
-    await writeLora('unmeasured.safetensors', 512, { name: 'Unmeasured' });
+    await writeLora('unmeasured.safetensors', 512, null);
     const [lora] = await lorasService.listLoras();
     expect(lora.effectReport).toBeNull();
   });
@@ -234,23 +242,35 @@ describe('listLoras — cached adapter-effect report', () => {
   it('drops a stored report once the file has been replaced under the same name', async () => {
     // A different size is a different adapter. Surfacing the old verdict would
     // badge a freshly-installed LoRA with the previous file's measurement.
-    await writeLora('swapped.safetensors', 1024, { effectReport: freshReport(512) });
+    await writeLora('swapped.safetensors', 1024, report(), { sizeBytes: 512 });
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toBeNull();
+  });
+
+  it('drops a stored report when the file was rewritten at the SAME size', async () => {
+    await writeLora('rewritten.safetensors', 512, report(), { mtimeMs: 1 });
     const [lora] = await lorasService.listLoras();
     expect(lora.effectReport).toBeNull();
   });
 
   it('drops a stored report written by a different probe version', async () => {
-    await writeLora('old.safetensors', 512, { effectReport: { ...freshReport(512), probeVersion: 99 } });
+    await writeLora('old.safetensors', 512, report({ probeVersion: 99 }));
     const [lora] = await lorasService.listLoras();
     expect(lora.effectReport).toBeNull();
   });
 
   it('normalizes a hand-edited sidecar rather than trusting it', async () => {
-    await writeLora('edited.safetensors', 512, {
-      effectReport: { ...freshReport(512), status: 'catastrophic', medianRms: 'lots', maxRms: null },
-    });
+    await writeLora('edited.safetensors', 512, report({ status: 'catastrophic', medianRms: 'lots', maxRms: null }));
     const [lora] = await lorasService.listLoras();
     expect(lora.effectReport).toMatchObject({ status: 'unmeasurable', medianRms: null, maxRms: null });
+  });
+
+  it('will not surface a "zero" verdict that no measurement backs', async () => {
+    // Refusing a render is the one thing a stale/edited sidecar must never be
+    // able to cause on its own.
+    await writeLora('bogus-zero.safetensors', 512, report({ status: 'zero', measured: 0, zeroModules: 0 }));
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport.status).toBe('unmeasurable');
   });
 });
 

@@ -13,7 +13,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const MOCK_LORAS_DIR = '/mock/loras';
 
 const state = vi.hoisted(() => ({
-  statResult: { size: 4096, isFile: () => true },
+  statResult: { size: 4096, mtimeMs: 1_700_000_000_000, isFile: () => true },
   statThrows: false,
   sidecar: null,
   patched: [],
@@ -75,7 +75,7 @@ let LORA_EFFECT_PROBE_SCRIPT;
 
 beforeEach(async () => {
   vi.resetModules();
-  state.statResult = { size: 4096, isFile: () => true };
+  state.statResult = { size: 4096, mtimeMs: 1_700_000_000_000, isFile: () => true };
   state.statThrows = false;
   state.sidecar = null;
   state.patched = [];
@@ -99,32 +99,42 @@ describe('probeLoraEffect — happy path', () => {
     expect(report.measuredAt).toEqual(expect.any(String));
   });
 
-  it('caches the measurement into the sidecar keyed by the file size', async () => {
+  it('caches the measurement into the sidecar keyed by the file size and mtime', async () => {
     state.responses = [{ ok: true, stdout: resultLine(OK_PAYLOAD) }];
     await probeLoraEffect('style.safetensors');
     expect(state.patched).toHaveLength(1);
     expect(state.patched[0]).toMatchObject({
       filename: 'style.safetensors',
-      patch: { effectReport: expect.objectContaining({ status: 'ok', sizeBytes: 4096 }) },
+      patch: { effectReport: expect.objectContaining({ status: 'ok', sizeBytes: 4096, mtimeMs: 1_700_000_000_000 }) },
     });
   });
 
   it('returns the cached report without spawning anything', async () => {
-    state.sidecar = { effectReport: { ...OK_PAYLOAD, sizeBytes: 4096, measuredAt: '2026-08-23T00:00:00.000Z' } };
+    state.sidecar = { effectReport: { ...OK_PAYLOAD, sizeBytes: 4096, mtimeMs: 1_700_000_000_000, measuredAt: '2026-08-23T00:00:00.000Z' } };
     const report = await probeLoraEffect('style.safetensors');
     expect(state.runs).toHaveLength(0);
     expect(report).toMatchObject({ status: 'ok', measuredAt: '2026-08-23T00:00:00.000Z' });
   });
 
   it('re-measures a cached report when the file size changed underneath it', async () => {
-    state.sidecar = { effectReport: { ...OK_PAYLOAD, sizeBytes: 999, measuredAt: '2026-08-23T00:00:00.000Z' } };
+    state.sidecar = { effectReport: { ...OK_PAYLOAD, sizeBytes: 999, mtimeMs: 1_700_000_000_000, measuredAt: '2026-08-23T00:00:00.000Z' } };
+    state.responses = [{ ok: true, stdout: resultLine(OK_PAYLOAD) }];
+    await probeLoraEffect('style.safetensors');
+    expect(state.runs).toHaveLength(1);
+  });
+
+  it('re-measures when the file was rewritten at the same size', async () => {
+    // Same bytes-count, different mtime: a re-download of a sibling adapter.
+    // Trusting the old report here would attach the previous verdict to
+    // different weights.
+    state.sidecar = { effectReport: { ...OK_PAYLOAD, sizeBytes: 4096, mtimeMs: 1_699_999_000_000, measuredAt: '2026-08-23T00:00:00.000Z' } };
     state.responses = [{ ok: true, stdout: resultLine(OK_PAYLOAD) }];
     await probeLoraEffect('style.safetensors');
     expect(state.runs).toHaveLength(1);
   });
 
   it('re-measures on force even when a fresh cached report exists', async () => {
-    state.sidecar = { effectReport: { ...OK_PAYLOAD, sizeBytes: 4096, measuredAt: '2026-08-23T00:00:00.000Z' } };
+    state.sidecar = { effectReport: { ...OK_PAYLOAD, sizeBytes: 4096, mtimeMs: 1_700_000_000_000, measuredAt: '2026-08-23T00:00:00.000Z' } };
     state.responses = [{ ok: true, stdout: resultLine({ ...OK_PAYLOAD, status: 'zero', zeroModules: 4, medianRms: 0, maxRms: 0 }) }];
     const report = await probeLoraEffect('style.safetensors', { force: true });
     expect(state.runs).toHaveLength(1);
@@ -205,7 +215,7 @@ describe('probeLoraEffect — never fatal, never a false verdict', () => {
     state.statThrows = true;
     await expect(probeLoraEffect('gone.safetensors')).resolves.toMatchObject({ status: 'unmeasurable' });
     state.statThrows = false;
-    state.statResult = { size: 0, isFile: () => false };
+    state.statResult = { size: 0, mtimeMs: 0, isFile: () => false };
     await expect(probeLoraEffect('dir.safetensors')).resolves.toMatchObject({ status: 'unmeasurable' });
     expect(state.runs).toHaveLength(0);
   });

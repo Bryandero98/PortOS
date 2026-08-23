@@ -69,14 +69,23 @@ const nonNegativeInt = (value) => {
  * all; anything else yields a report — an unrecognized `status` degrades to
  * `unmeasurable` rather than propagating a word nothing downstream understands.
  *
- * `sizeBytes` / `measuredAt` are stamped by the caller (the probe measures the
- * file, it doesn't own the cache key) and are what makes a cached report
- * verifiable later.
+ * `sizeBytes` / `mtimeMs` / `measuredAt` are stamped by the caller (the probe
+ * measures the file, it doesn't own the cache key) and are what makes a cached
+ * report verifiable later.
  */
-export const normalizeLoraEffectReport = (raw, { sizeBytes = null, measuredAt = null } = {}) => {
+export const normalizeLoraEffectReport = (raw, { sizeBytes = null, mtimeMs = null, measuredAt = null } = {}) => {
   if (!isPlainObject(raw)) return null;
-  const status = isKnownLoraEffectStatus(raw.status) ? raw.status : LORA_EFFECT_STATUSES.UNMEASURABLE;
+  const declared = isKnownLoraEffectStatus(raw.status) ? raw.status : LORA_EFFECT_STATUSES.UNMEASURABLE;
   const measured = nonNegativeInt(raw.measured);
+  const zeroModules = nonNegativeInt(raw.zeroModules);
+  // `zero` is the only status that refuses a render, so it is the only one whose
+  // internal consistency is worth checking: it must be backed by at least one
+  // measurement, and by EVERY measurement being zero. A payload claiming `zero`
+  // with nothing measured (a hand-edited sidecar, a future probe that redefines
+  // the word) would otherwise block a render on no evidence at all.
+  const status = declared === LORA_EFFECT_STATUSES.ZERO && !(measured > 0 && zeroModules === measured)
+    ? LORA_EFFECT_STATUSES.UNMEASURABLE
+    : declared;
   // Statistics only exist alongside a measurement. Dropping them when
   // `measured` is 0 keeps "no data" from ever reading as "measured 0.0", which
   // is the exact confusion that would turn an unmeasurable adapter into a
@@ -89,11 +98,12 @@ export const normalizeLoraEffectReport = (raw, { sizeBytes = null, measuredAt = 
     measured,
     skippedNonFinite: nonNegativeInt(raw.skippedNonFinite),
     skippedUnsupported: nonNegativeInt(raw.skippedUnsupported),
-    zeroModules: nonNegativeInt(raw.zeroModules),
+    zeroModules,
     medianRms: stat(raw.medianRms),
     maxRms: stat(raw.maxRms),
     reason: typeof raw.reason === 'string' && raw.reason ? raw.reason : null,
     sizeBytes: finiteOrNull(sizeBytes),
+    mtimeMs: finiteOrNull(mtimeMs),
     measuredAt: typeof measuredAt === 'string' && measuredAt ? measuredAt : null,
   };
 };
@@ -103,20 +113,27 @@ export const normalizeLoraEffectReport = (raw, { sizeBytes = null, measuredAt = 
  * `readCachedLoraEffectReport` below is the only way to ask, so no caller can
  * accidentally trust a report without normalizing it first.
  *
- * The cache key is the probe version plus the file size: a LoRA replaced in
- * place under the same name is a different adapter, and re-probing a 500 MB
- * file on every list would defeat the "never measure on a passive read" rule
- * that this cache exists to serve. Size is not a hash — it will not catch an
- * edit that preserves byte count — but the alternative (sha256 of every LoRA
- * on every list) costs orders of magnitude more for a diagnostic the user can
- * always re-run explicitly.
+ * The cache key is the probe version plus the file's size AND mtime — both from
+ * the `stat` the caller already had, so verifying costs nothing. Size alone
+ * would miss a same-size replacement (a re-download of a sibling adapter, an
+ * in-place edit), leaving the old verdict — possibly a `zero` that blocks
+ * renders — attached to different weights. mtime closes that: anything that
+ * rewrites the file moves it.
+ *
+ * Still not a hash. A restore that deliberately preserves both stamps keeps the
+ * report, which is the correct answer for an rsync of the same bytes; and the
+ * user can always force a re-measure. Hashing every LoRA on every list would
+ * cost orders of magnitude more than the diagnostic is worth.
  */
-const isLoraEffectReportFresh = (report, { sizeBytes } = {}) => {
+const isLoraEffectReportFresh = (report, { sizeBytes, mtimeMs } = {}) => {
   if (!isPlainObject(report)) return false;
   if (report.probeVersion !== LORA_EFFECT_PROBE_VERSION) return false;
-  const cached = finiteOrNull(report.sizeBytes);
-  const actual = finiteOrNull(sizeBytes);
-  return cached != null && actual != null && cached === actual;
+  const matches = (cached, actual) => {
+    const a = finiteOrNull(cached);
+    const b = finiteOrNull(actual);
+    return a != null && b != null && a === b;
+  };
+  return matches(report.sizeBytes, sizeBytes) && matches(report.mtimeMs, mtimeMs);
 };
 
 /**
@@ -124,9 +141,13 @@ const isLoraEffectReportFresh = (report, { sizeBytes } = {}) => {
  * or `null`. Never probes — `listLoras()` calls this per entry, and a library
  * page must not fan out into one Python child per installed adapter.
  */
-export const readCachedLoraEffectReport = (raw, sizeBytes) => {
-  const report = normalizeLoraEffectReport(raw, { sizeBytes: raw?.sizeBytes, measuredAt: raw?.measuredAt });
-  return isLoraEffectReportFresh(report, { sizeBytes }) ? report : null;
+export const readCachedLoraEffectReport = (raw, { sizeBytes, mtimeMs } = {}) => {
+  const report = normalizeLoraEffectReport(raw, {
+    sizeBytes: raw?.sizeBytes,
+    mtimeMs: raw?.mtimeMs,
+    measuredAt: raw?.measuredAt,
+  });
+  return isLoraEffectReportFresh(report, { sizeBytes, mtimeMs }) ? report : null;
 };
 
 /**

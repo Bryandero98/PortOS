@@ -38,11 +38,11 @@ describe('normalizeLoraEffectReport', () => {
   });
 
   it('carries a well-formed payload through and stamps the cache key', () => {
-    const report = normalizeLoraEffectReport(okPayload, { sizeBytes: 4096, measuredAt: '2026-08-23T00:00:00.000Z' });
+    const report = normalizeLoraEffectReport(okPayload, { sizeBytes: 4096, mtimeMs: 111, measuredAt: '2026-08-23T00:00:00.000Z' });
     expect(report).toMatchObject({
       status: 'ok', modules: 12, measured: 10, skippedNonFinite: 2, zeroModules: 1,
       medianRms: 0.0031, maxRms: 0.0184,
-      sizeBytes: 4096, measuredAt: '2026-08-23T00:00:00.000Z',
+      sizeBytes: 4096, mtimeMs: 111, measuredAt: '2026-08-23T00:00:00.000Z',
     });
   });
 
@@ -101,28 +101,38 @@ describe('isKnownLoraEffectStatus', () => {
 });
 
 describe('readCachedLoraEffectReport', () => {
-  const cached = { ...okPayload, sizeBytes: 4096, measuredAt: '2026-08-23T00:00:00.000Z' };
+  const cached = { ...okPayload, sizeBytes: 4096, mtimeMs: 1_700_000_000_000, measuredAt: '2026-08-23T00:00:00.000Z' };
+  const onDisk = { sizeBytes: 4096, mtimeMs: 1_700_000_000_000 };
 
-  it('accepts a report measured against the same file size at the same probe version', () => {
-    expect(readCachedLoraEffectReport(cached, 4096)).toMatchObject({ status: 'ok', sizeBytes: 4096 });
+  it('accepts a report measured against the same file at the same probe version', () => {
+    expect(readCachedLoraEffectReport(cached, onDisk)).toMatchObject({ status: 'ok', sizeBytes: 4096 });
   });
 
   it('drops a report whose file has changed size underneath it', () => {
-    expect(readCachedLoraEffectReport(cached, 8192)).toBeNull();
+    expect(readCachedLoraEffectReport(cached, { ...onDisk, sizeBytes: 8192 })).toBeNull();
+  });
+
+  it('drops a report whose file was rewritten at the SAME size', () => {
+    // Size alone would keep the old verdict attached to different weights — and
+    // a stale `zero` blocks renders of an adapter that may be fine.
+    expect(readCachedLoraEffectReport(cached, { ...onDisk, mtimeMs: 1_700_000_009_999 })).toBeNull();
   });
 
   it('drops a report from a different probe version', () => {
-    expect(readCachedLoraEffectReport({ ...cached, probeVersion: LORA_EFFECT_PROBE_VERSION + 1 }, 4096)).toBeNull();
-    expect(readCachedLoraEffectReport({ ...cached, probeVersion: undefined }, 4096)).toBeNull();
+    expect(readCachedLoraEffectReport({ ...cached, probeVersion: LORA_EFFECT_PROBE_VERSION + 1 }, onDisk)).toBeNull();
+    expect(readCachedLoraEffectReport({ ...cached, probeVersion: undefined }, onDisk)).toBeNull();
   });
 
-  it('drops a report that never recorded a size, and never treats a missing size as a match', () => {
-    expect(readCachedLoraEffectReport({ ...cached, sizeBytes: undefined }, 4096)).toBeNull();
-    expect(readCachedLoraEffectReport(cached, undefined)).toBeNull();
+  it('never treats a missing stamp on either side as a match', () => {
+    expect(readCachedLoraEffectReport({ ...cached, sizeBytes: undefined }, onDisk)).toBeNull();
+    expect(readCachedLoraEffectReport({ ...cached, mtimeMs: undefined }, onDisk)).toBeNull();
+    expect(readCachedLoraEffectReport(cached, { sizeBytes: 4096 })).toBeNull();
+    expect(readCachedLoraEffectReport(cached, { mtimeMs: 1_700_000_000_000 })).toBeNull();
+    expect(readCachedLoraEffectReport(cached, {})).toBeNull();
   });
 
   it('returns null for a missing sidecar field rather than a hollow report', () => {
-    expect(readCachedLoraEffectReport(undefined, 4096)).toBeNull();
+    expect(readCachedLoraEffectReport(undefined, onDisk)).toBeNull();
   });
 });
 
@@ -137,6 +147,29 @@ describe('loraEffectIssue', () => {
 
   it('still refuses a zero verdict that arrived without a reason', () => {
     expect(loraEffectIssue({ status: 'zero' })).toMatch(/zero effect/);
+  });
+
+  it('will not refuse on a "zero" payload that no measurement backs', () => {
+    // A hand-edited sidecar (or a future probe that redefines the word) claiming
+    // `zero` with nothing measured must not block a render on no evidence.
+    // normalizeLoraEffectReport downgrades it before the verdict is ever asked.
+    for (const bogus of [
+      { ...okPayload, status: 'zero', measured: 0, zeroModules: 0 },
+      { ...okPayload, status: 'zero', measured: 0, zeroModules: 4 },
+      { ...okPayload, status: 'zero', measured: 6, zeroModules: 3 },
+    ]) {
+      const report = normalizeLoraEffectReport(bogus);
+      expect(report.status).toBe('unmeasurable');
+      expect(loraEffectIssue(report)).toBeNull();
+    }
+  });
+
+  it('keeps a zero verdict that every measurement backs', () => {
+    const report = normalizeLoraEffectReport({
+      ...okPayload, status: 'zero', measured: 4, zeroModules: 4, medianRms: 0, maxRms: 0,
+    });
+    expect(report.status).toBe('zero');
+    expect(loraEffectIssue(report)).not.toBeNull();
   });
 
   it('refuses NOTHING else — an unrunnable probe must never block a render', () => {

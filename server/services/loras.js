@@ -230,7 +230,7 @@ export const listLoras = async () => {
         // the file has changed size underneath it. `null` = never measured (or
         // measured against a different file), which the UI shows as an offer to
         // run the check, not as a verdict.
-        effectReport: readCachedLoraEffectReport(sidecar?.effectReport, s.size),
+        effectReport: readCachedLoraEffectReport(sidecar?.effectReport, { sizeBytes: s.size, mtimeMs: s.mtimeMs }),
       };
     },
   });

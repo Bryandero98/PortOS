@@ -86,8 +86,9 @@ EXIT_NO_NUMPY = 3
 
 # Longest first: "foo.lora_A.weight" ends with both ".weight" forms and the bare
 # ".lora_A", and a shorter match would strip the wrong number of characters.
-_DOWN_SUFFIXES = ("lora_A.weight", "lora_down.weight", "lora_A", "lora_down")
-_UP_SUFFIXES = ("lora_B.weight", "lora_up.weight", "lora_B", "lora_up")
+# Lowercase: _split_suffix matches against a lowercased name (see there).
+_DOWN_SUFFIXES = ("lora_a.weight", "lora_down.weight", "lora_a", "lora_down")
+_UP_SUFFIXES = ("lora_b.weight", "lora_up.weight", "lora_b", "lora_up")
 
 # dtype tag -> (numpy dtype string, bytes per element). BF16 has no numpy dtype;
 # it is widened to float32 by shifting the 16 stored bits into the high half of
@@ -125,12 +126,20 @@ def read_header(path: Path) -> tuple[dict | None, int]:
 
 
 def _split_suffix(name: str) -> tuple[str, str] | None:
-    """Map a tensor name to ``(module_prefix, 'down'|'up')``, or None."""
+    """Map a tensor name to ``(module_prefix, 'down'|'up')``, or None.
+
+    Matched case-INSENSITIVELY, because server/lib/safetensors.js classifies with
+    ``/i`` regexes: a file naming its pair ``lora_a``/``lora_b`` passes the key-layout
+    gate as a fusable LoRA, so a case-sensitive probe would call the very same
+    file unreadable. The prefix is sliced off the ORIGINAL name — it is the key
+    the header is looked up by.
+    """
+    lowered = name.lower()
     for suffix in _DOWN_SUFFIXES:
-        if name.endswith(suffix):
+        if lowered.endswith(suffix):
             return name[: -len(suffix)].rstrip("."), "down"
     for suffix in _UP_SUFFIXES:
-        if name.endswith(suffix):
+        if lowered.endswith(suffix):
             return name[: -len(suffix)].rstrip("."), "up"
     return None
 
@@ -148,7 +157,7 @@ def pair_lora_modules(header: dict) -> dict[str, dict[str, str]]:
     for name in header:
         if name == "__metadata__":
             continue
-        if name.endswith(".alpha") or name == "alpha":
+        if name.lower().endswith(".alpha") or name.lower() == "alpha":
             # setdefault, so an alpha listed BEFORE its pair still lands on the
             # right module; the completeness filter below drops an alpha whose
             # pair never showed up.
@@ -163,7 +172,7 @@ def pair_lora_modules(header: dict) -> dict[str, dict[str, str]]:
     return {k: v for k, v in modules.items() if "down" in v and "up" in v}
 
 
-def _read_tensor(np, handle, payload_offset: int, desc, *, allow_scalar: bool = False):
+def _read_tensor(np, handle, payload_offset: int, desc, file_size: int, *, allow_scalar: bool = False):
     """Read one tensor as float32, or None when it is not something we can measure.
 
     Rejects (rather than guesses at) unsupported dtypes, non-2-D shapes (conv
@@ -187,6 +196,12 @@ def _read_tensor(np, handle, payload_offset: int, desc, *, allow_scalar: bool = 
     start, end = offsets
     if not isinstance(start, int) or not isinstance(end, int) or end < start:
         return None
+    # The range must lie inside the payload. Without the lower bound a crafted
+    # ``data_offsets: [-4, 0]`` seeks BACK into the header and measures it as
+    # tensor data; without the upper bound an absurd declared length asks
+    # ``read()`` for gigabytes the file does not contain.
+    if start < 0 or payload_offset + end > file_size:
+        return None
     count = math.prod(shape) if shape else 1
     if (end - start) != count * spec[1]:
         return None
@@ -204,7 +219,10 @@ def _read_tensor(np, handle, payload_offset: int, desc, *, allow_scalar: bool = 
         # full-size temporaries per module instead of one.
         widened = np.zeros((len(buf) // 2, 2), dtype="<u2")
         widened[:, 1] = np.frombuffer(buf, dtype="<u2")
-        arr = widened.view(np.float32).reshape(-1)
+        # '<f4', not np.float32: the pair array is little-endian by
+        # construction, and viewing it through the NATIVE float32 would read the
+        # bytes backwards on a big-endian host.
+        arr = widened.view("<f4").astype(np.float32, copy=False).reshape(-1)
     else:
         # copy=False: an F32 adapter is already the target dtype on a
         # little-endian host, and the read-only frombuffer view is all the two
@@ -241,7 +259,10 @@ def _module_rms(np, down, up, scale: float) -> float:
     elements = out_features * in_features
     if elements <= 0:
         return math.nan
-    return scale * math.sqrt(total) / math.sqrt(elements)
+    # abs(scale): a kohya file may carry a NEGATIVE alpha, and a magnitude is
+    # never negative. Without this a negative alpha yields a negative "RMS",
+    # which sorts below zero and would make max/median meaningless.
+    return abs(scale) * math.sqrt(total) / math.sqrt(elements)
 
 
 def measure_lora_effect(path) -> dict:
@@ -284,14 +305,15 @@ def measure_lora_effect(path) -> dict:
 
     values: list[float] = []
     try:
+        file_size = path.stat().st_size
         handle = open(path, "rb")
     except OSError as err:
         report["reason"] = f"{path.name} could not be opened: {err}"
         return report
     with handle:
         for names in modules.values():
-            down = _read_tensor(np, handle, payload_offset, header.get(names["down"]))
-            up = _read_tensor(np, handle, payload_offset, header.get(names["up"]))
+            down = _read_tensor(np, handle, payload_offset, header.get(names["down"]), file_size)
+            up = _read_tensor(np, handle, payload_offset, header.get(names["up"]), file_size)
             # Shapes must chain as (out, rank) @ (rank, in). Anything else is a
             # layout this probe does not understand — skipping is honest, and
             # transposing on a hunch would invent a measurement.
@@ -301,12 +323,20 @@ def measure_lora_effect(path) -> dict:
             scale = 1.0
             alpha_name = names.get("alpha")
             if alpha_name is not None:
-                alpha = _read_tensor(np, handle, payload_offset, header.get(alpha_name), allow_scalar=True)
+                alpha = _read_tensor(
+                    np, handle, payload_offset, header.get(alpha_name), file_size, allow_scalar=True
+                )
                 rank = up.shape[1]
                 if alpha is not None and alpha.size == 1 and rank > 0:
                     alpha_value = float(alpha.reshape(-1)[0])
-                    if math.isfinite(alpha_value):
-                        scale = alpha_value / rank
+                    if not math.isfinite(alpha_value):
+                        # A NaN/Inf alpha makes this module's delta non-finite —
+                        # count it as such. Falling back to scale 1.0 would
+                        # report a plausible magnitude for a module that has
+                        # none, which is the opposite of finite-safe.
+                        report["skippedNonFinite"] += 1
+                        continue
+                    scale = alpha_value / rank
             rms = _module_rms(np, down, up, scale)
             if not math.isfinite(rms):
                 report["skippedNonFinite"] += 1
@@ -331,7 +361,14 @@ def measure_lora_effect(path) -> dict:
     report["zeroModules"] = sum(1 for v in values if v == 0.0)
     report["medianRms"] = float(statistics.median(values))
     report["maxRms"] = float(max(values))
-    if report["zeroModules"] == len(values):
+    skipped = report["skippedNonFinite"] + report["skippedUnsupported"]
+    # ``zero`` is the ONE verdict that refuses a render, so it has to mean the
+    # whole adapter is provably inert — not merely that the subset we could
+    # measure was. A file with one zero pair plus a conv-shaped or diverged pair
+    # we skipped may still carry real effect through the module we never read,
+    # and refusing it would block a working LoRA. Report the zero count and let
+    # it render.
+    if report["zeroModules"] == len(values) and skipped == 0:
         report["status"] = "zero"
         report["reason"] = (
             f"all {len(values)} measurable LoRA module(s) have exactly zero effect "
