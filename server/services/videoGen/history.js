@@ -3,7 +3,8 @@
  *
  * The render history (`data/video-history.json`) is the flat list the Media
  * History page grid-views. This module owns the read/write primitives; the
- * generation and post-processing code in local.js loads/saves through them.
+ * generation and post-processing modules load/save through these primitives;
+ * local.js re-exports them as part of the stable provider surface.
  */
 
 import { join } from 'path';
