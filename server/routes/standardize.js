@@ -63,7 +63,11 @@ async function resolveStandardizeTarget({ repoPath, appId }) {
     });
   }
 
-  return realTarget;
+  // Keep the registered/requested spelling after checking its canonical target.
+  // analyzeApp uses the stored repoPath for managed-app identity (including its
+  // own-port exemption), so replacing a symlinked path with realTarget would
+  // make that app look unrelated and unnecessarily reassign its ports.
+  return target;
 }
 
 // POST /api/standardize/analyze - Analyze app and generate standardization plan
@@ -87,10 +91,9 @@ router.post('/analyze', asyncHandler(async (req, res) => {
 
 // POST /api/standardize/apply - Apply standardization changes
 router.post('/apply', asyncHandler(async (req, res) => {
-  const { repoPath, appId } = req.body;
+  const { repoPath, appId, plan, overwriteEcosystem } = validateRequest(standardizeApplySchema, req.body);
 
   const path = await resolveStandardizeTarget({ repoPath, appId });
-  const { plan, overwriteEcosystem } = validateRequest(standardizeApplySchema, req.body);
 
   console.log(`🔧 Applying PM2 standardization to: ${path}`);
 

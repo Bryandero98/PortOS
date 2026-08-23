@@ -32,6 +32,7 @@ import { errorMiddleware } from '../lib/errorHandler.js';
 import { standardizeRefusalFor, analyzeApp, applyStandardization, createGitBackup } from '../services/pm2Standardizer.js';
 import { getAppById, updateApp } from '../services/apps.js';
 import { isWithinAllowedRoots } from '../lib/workspaceRoots.js';
+import { realpath } from 'fs/promises';
 
 function makeApp() {
   const app = express();
@@ -63,6 +64,7 @@ describe('standardize routes — target resolution and the refusal gate', () => 
     vi.clearAllMocks();
     vi.mocked(standardizeRefusalFor).mockReturnValue(null);
     vi.mocked(isWithinAllowedRoots).mockReturnValue(true);
+    vi.mocked(realpath).mockImplementation(async (path) => path);
     vi.mocked(applyStandardization).mockResolvedValue({ success: true, filesModified: [], backupBranch: null });
   });
 
@@ -93,7 +95,7 @@ describe('standardize routes — target resolution and the refusal gate', () => 
 
     const res = await request(makeApp())
       .post('/api/standardize/apply')
-      .send({ appId: 'app-ios', repoPath: '/srv/somewhere-else', plan: {} });
+      .send({ appId: 'app-ios', repoPath: '/srv/somewhere-else', plan: validPlan() });
 
     expect(res.status).toBe(400);
     expect(res.body.error?.code ?? res.body.code).toBe('NOT_STANDARDIZABLE');
@@ -112,6 +114,17 @@ describe('standardize routes — target resolution and the refusal gate', () => 
 
     expect(res.status).toBe(200);
     expect(analyzeApp).toHaveBeenCalledWith('/srv/example-app', undefined);
+  });
+
+  it('preserves a symlinked app path after checking its canonical target', async () => {
+    vi.mocked(getAppById).mockResolvedValue({ id: 'app-1', type: 'vite+express', repoPath: '/tmp/example-app' });
+    vi.mocked(realpath).mockResolvedValue('/private/tmp/example-app');
+
+    const res = await request(makeApp()).post('/api/standardize/analyze').send({ appId: 'app-1' });
+
+    expect(res.status).toBe(200);
+    expect(isWithinAllowedRoots).toHaveBeenCalledWith('/private/tmp/example-app');
+    expect(analyzeApp).toHaveBeenCalledWith('/tmp/example-app', undefined);
   });
 
   it('404s an appId with no app record', async () => {
@@ -177,6 +190,17 @@ describe('standardize routes — target resolution and the refusal gate', () => 
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('VALIDATION_ERROR');
+    expect(applyStandardization).not.toHaveBeenCalled();
+  });
+
+  it('validates malformed target types before resolving filesystem paths', async () => {
+    const res = await request(makeApp())
+      .post('/api/standardize/apply')
+      .send({ repoPath: [], plan: validPlan() });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('VALIDATION_ERROR');
+    expect(realpath).not.toHaveBeenCalled();
     expect(applyStandardization).not.toHaveBeenCalled();
   });
 
