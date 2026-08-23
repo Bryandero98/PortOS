@@ -4,6 +4,8 @@
 // zero-padded `HHMM_STRICT_RE`. Keep the two literals in sync (parity-tested
 // in timeWindow.test.js and timezone.test.js).
 
+import { localDateKey } from './formatters.js';
+
 export const TIME_STRING_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 export function isValidTimeString(s) {
@@ -38,12 +40,6 @@ export const MORNING_DEFAULT_WINDOW = Object.freeze({ start: '06:00', end: '11:0
 // localStorage key per-day so each new day clears the user's daily lock and
 // a window-layout can auto-activate again.
 const USER_PICK_KEY_PREFIX = 'dashboard:userPick:';
-const localDateKey = (now = new Date()) => {
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-};
 const userPickKey = (now = new Date()) => `${USER_PICK_KEY_PREFIX}${localDateKey(now)}`;
 
 // Drop stale `dashboard:userPick:*` keys older than today so the key count

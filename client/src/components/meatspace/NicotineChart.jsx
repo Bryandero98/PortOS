@@ -5,7 +5,7 @@ import {
 import * as api from '../../services/api';
 import BrailleSpinner from '../BrailleSpinner';
 import useChartColors from '../../hooks/useChartColors.js';
-import { localDateStr } from './constants';
+import { localDateKey } from '../../utils/formatters';
 
 const VIEWS = [
   { id: '7d', label: '7 Days', days: 7 },
@@ -36,8 +36,8 @@ export default function NicotineChart({ onRefreshKey, onViewChange }) {
     const days = VIEWS.find(v => v.id === view)?.days || 30;
     const from = new Date();
     from.setDate(from.getDate() - days);
-    const fromStr = localDateStr(from);
-    const toStr = localDateStr();
+    const fromStr = localDateKey(from);
+    const toStr = localDateKey();
 
     const entries = await api.getDailyNicotine(fromStr, toStr).catch(() => []);
 
@@ -48,7 +48,7 @@ export default function NicotineChart({ onRefreshKey, onViewChange }) {
     }
 
     const cursor = new Date(from);
-    let dateStr = localDateStr(cursor);
+    let dateStr = localDateKey(cursor);
     while (dateStr <= toStr) {
       const mg = dateMap[dateStr] || 0;
       chartData.push({
@@ -57,7 +57,7 @@ export default function NicotineChart({ onRefreshKey, onViewChange }) {
         mg
       });
       cursor.setDate(cursor.getDate() + 1);
-      dateStr = localDateStr(cursor);
+      dateStr = localDateKey(cursor);
     }
 
     setData(chartData);
