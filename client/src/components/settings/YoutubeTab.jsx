@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Save, Loader2, MonitorPlay, RefreshCw, CheckCircle2, AlertCircle, ShieldQuestion } from 'lucide-react';
 import toast from '../ui/Toast';
+import FormField from '../ui/FormField';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatDateTime } from '../../utils/formatters';
 import { useSyncSourceSettings } from '../../hooks/useSyncSourceSettings';
@@ -113,10 +114,10 @@ export function YoutubeTab() {
             Enable scheduled YouTube scrape
           </label>
 
-          <div>
-            <label htmlFor="youtube-interval" className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
-              Scrape interval (minutes)
-            </label>
+          <FormField
+            label="Scrape interval (minutes)"
+            labelClassName="block text-xs uppercase tracking-wider text-gray-500 mb-1"
+          >
             <input
               id="youtube-interval"
               type="number"
@@ -129,7 +130,7 @@ export function YoutubeTab() {
             <p className="text-xs text-gray-500 mt-1">
               The history page only shows day-bucketed entries — a few times a day (e.g. 480 min) is plenty. Be a polite scraper.
             </p>
-          </div>
+          </FormField>
 
           <div className="flex flex-wrap gap-2 pt-1">
             <button
