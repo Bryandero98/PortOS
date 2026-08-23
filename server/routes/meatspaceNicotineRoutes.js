@@ -6,7 +6,7 @@
 
 import { Router } from 'express';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
-import { validateRequest } from '../lib/validation.js';
+import { parseIndexParam, validateRequest } from '../lib/validation.js';
 import {
   nicotineLogSchema,
   nicotineUpdateSchema,
@@ -56,10 +56,7 @@ router.post('/nicotine/log', asyncHandler(async (req, res) => {
 router.put('/nicotine/log/:date/:index', asyncHandler(async (req, res) => {
   const { date, index } = req.params;
   const data = validateRequest(nicotineUpdateSchema, req.body);
-  const parsedIndex = parseInt(index, 10);
-  if (!Number.isInteger(parsedIndex) || parsedIndex < 0) {
-    throw new ServerError('Invalid index', { status: 400, code: 'INVALID_INDEX' });
-  }
+  const parsedIndex = parseIndexParam(index);
   const result = await nicotineService.updateNicotine(date, parsedIndex, data);
   if (!result) {
     throw new ServerError('Nicotine entry not found', { status: 404, code: 'NOT_FOUND' });
@@ -73,10 +70,7 @@ router.put('/nicotine/log/:date/:index', asyncHandler(async (req, res) => {
  */
 router.delete('/nicotine/log/:date/:index', asyncHandler(async (req, res) => {
   const { date, index } = req.params;
-  const parsedIndex = parseInt(index, 10);
-  if (!Number.isInteger(parsedIndex) || parsedIndex < 0) {
-    throw new ServerError('Invalid index', { status: 400, code: 'INVALID_INDEX' });
-  }
+  const parsedIndex = parseIndexParam(index);
   const removed = await nicotineService.removeNicotine(date, parsedIndex);
   if (!removed) {
     throw new ServerError('Nicotine entry not found', { status: 404, code: 'NOT_FOUND' });
@@ -112,10 +106,7 @@ router.post('/nicotine/custom-products', asyncHandler(async (req, res) => {
  * Update a custom nicotine product button
  */
 router.put('/nicotine/custom-products/:index', asyncHandler(async (req, res) => {
-  const index = Number(req.params.index);
-  if (!Number.isInteger(index) || index < 0) {
-    throw new ServerError('Invalid index', { status: 400, code: 'INVALID_INDEX' });
-  }
+  const index = parseIndexParam(req.params.index);
   const data = validateRequest(customNicotineProductUpdateSchema, req.body);
   const product = await nicotineService.updateCustomProduct(index, data);
   if (!product) {
@@ -129,10 +120,7 @@ router.put('/nicotine/custom-products/:index', asyncHandler(async (req, res) => 
  * Remove a custom nicotine product button
  */
 router.delete('/nicotine/custom-products/:index', asyncHandler(async (req, res) => {
-  const index = Number(req.params.index);
-  if (!Number.isInteger(index) || index < 0) {
-    throw new ServerError('Invalid index', { status: 400, code: 'INVALID_INDEX' });
-  }
+  const index = parseIndexParam(req.params.index);
   const removed = await nicotineService.removeCustomProduct(index);
   if (!removed) {
     throw new ServerError('Custom product not found', { status: 404, code: 'NOT_FOUND' });
