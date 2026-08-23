@@ -21,8 +21,11 @@ vi.mock('../lib/ports.js', () => ({
 }));
 
 vi.mock('./taskSchedule.js', () => ({
-  SELF_IMPROVEMENT_TASK_TYPES: [],
   resetExecutionHistory: vi.fn().mockResolvedValue({ error: 'No execution history found' }),
+}));
+
+vi.mock('./taskScheduleRegistry.js', () => ({
+  SELF_IMPROVEMENT_TASK_TYPES: [],
 }));
 
 vi.mock('./pm2.js', () => ({

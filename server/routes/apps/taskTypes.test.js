@@ -3,7 +3,7 @@ import express from 'express';
 import { request } from '../../lib/testHelper.js';
 import taskTypeRoutes from './taskTypes.js';
 
-// Only the apps service is mocked; SELF_IMPROVEMENT_TASK_TYPES (taskSchedule) and
+// Only the apps service is mocked; SELF_IMPROVEMENT_TASK_TYPES (taskScheduleRegistry) and
 // parseCronToNextRun (eventScheduler) run for real, as do the sanitizeTaskMetadata
 // validators.
 vi.mock('../../services/apps.js', () => ({
