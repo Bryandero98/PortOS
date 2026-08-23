@@ -9,6 +9,7 @@
  * adapter, and that no failure path can throw into a render.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { posixPath } from '../lib/testHelper.js';
 
 const MOCK_LORAS_DIR = '/mock/loras';
 
@@ -99,10 +100,12 @@ describe('probeLoraEffect — happy path', () => {
   it('spawns the shared probe against the resolved LoRA path and returns a normalized report', async () => {
     state.responses = [{ ok: true, stdout: resultLine(OK_PAYLOAD) }];
     const report = await probeLoraEffect('style.safetensors');
-    expect(state.runs[0]).toEqual({
-      bin: '/venv/ltx2/bin/python3',
-      args: [LORA_EFFECT_PROBE_SCRIPT, `${MOCK_LORAS_DIR}/style.safetensors`],
-    });
+    // posixPath the RECEIVED path, never the expectation: `join` yields
+    // backslashes on Windows, and normalizing the expected side instead would
+    // hide a genuinely wrong path.
+    expect(state.runs[0].bin).toBe('/venv/ltx2/bin/python3');
+    expect(state.runs[0].args.map(posixPath))
+      .toEqual([posixPath(LORA_EFFECT_PROBE_SCRIPT), `${MOCK_LORAS_DIR}/style.safetensors`]);
     expect(report).toMatchObject({ status: 'ok', measured: 4, medianRms: 0.002, sizeBytes: 4096 });
     expect(report.measuredAt).toEqual(expect.any(String));
   });
