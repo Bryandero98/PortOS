@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
 const api = vi.hoisted(() => ({
@@ -170,6 +170,19 @@ describe('UsagePage per-provider refresh', () => {
     // The refreshed card updates; the untouched Claude card keeps its reading.
     expect(await screen.findByText('77% used')).toBeInTheDocument();
     expect(screen.getByText('10% used')).toBeInTheDocument();
+  });
+
+  it('keeps the four provider cards in a compact mobile grid', async () => {
+    api.getProviderUsage.mockResolvedValue({
+      providers: ['claude', 'agy', 'codex', 'grok'].map((family) => card(family, family, 20))
+    });
+    render(<MemoryRouter><UsagePage /></MemoryRouter>);
+
+    const providerGrid = await screen.findByLabelText('Subscription provider usage');
+    expect(providerGrid.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(['grid-cols-2', 'sm:grid-cols-1', 'lg:grid-cols-2'])
+    );
+    expect(within(providerGrid).getAllByRole('heading')).toHaveLength(4);
   });
 
   it('drops a card whose provider is no longer enabled', async () => {
