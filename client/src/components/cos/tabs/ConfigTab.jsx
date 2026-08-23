@@ -457,7 +457,7 @@ export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle })
           inputValue={formData.maxProcessMemoryMb}
           onChange={v => setFormData(f => ({ ...f, maxProcessMemoryMb: v }))}
           suffix="MB"
-          tooltip="Memory threshold for health alerts - processes exceeding this will be flagged"
+          tooltip="Memory threshold for health alerts - processes exceeding this will be flagged. The local model servers (llama-server, MTPLX) are exempt: their memory is the model they loaded"
         />
         <ConfigRow
           label="Auto Start"

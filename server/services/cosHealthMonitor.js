@@ -9,6 +9,7 @@
 import { execPm2 } from './pm2.js';
 import { safeJSONParse } from '../lib/fileUtils.js';
 import { getMemoryStats } from '../lib/memoryStats.js';
+import { isModelServerProcess } from '../lib/managedDaemon.js';
 import { loadState, saveState, withStateLock, isDaemonRunning } from './cosState.js';
 import { cosEvents, emitLog } from './cosEvents.js';
 import { annotateExpectedExit } from './apps.js';
@@ -117,8 +118,14 @@ export async function runHealthCheck() {
     }
   }
 
-  // Check memory usage per process
+  // Check memory usage per process. The local model servers are exempt: their
+  // resident size is the checkpoint they loaded, so a healthy llama-server or
+  // MTPLX sits tens of GB over any generic cap from the moment it starts, and
+  // the warning it raises can never be cleared. Host-wide pressure — where an
+  // oversized model actually matters — is reported by proactiveAlerts.js.
+  // Releasing that memory while nothing is using it is issue #4863.
   const highMemoryProcesses = pm2Processes.filter(p => {
+    if (isModelServerProcess(p?.name)) return false;
     const memMb = (p.monit?.memory || 0) / (1024 * 1024);
     return memMb > state.config.maxProcessMemoryMb;
   });

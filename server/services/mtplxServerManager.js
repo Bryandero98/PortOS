@@ -29,13 +29,13 @@ import { launchArgs, normalizeTuning, tuningSpecsFor } from '../lib/localModelTu
 import { LOCAL_RUNTIMES, localEndpointPort } from '../lib/localProviderRuntime.js';
 import { listMtplxCachedModels, pickMtplxCachedModel } from '../lib/mtplxModels.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
-import { createDaemonLogBuffer, pm2ArgValue } from '../lib/managedDaemon.js';
+import { createDaemonLogBuffer, pm2ArgValue, MTPLX_APP } from '../lib/managedDaemon.js';
 import { isAppleSilicon, isPortInUse } from '../lib/platform.js';
 import { findCommandOnPath } from '../lib/processEnv.js';
 import { runStreamingCommand } from '../lib/streamingSpawn.js';
 import { execPm2, getAppStatusStrict, clearJlistCache, getSavedProcessNames } from './pm2.js';
 
-export const MTPLX_APP = 'portos-mtplx';
+export { MTPLX_APP };
 
 const PROBE_TIMEOUT_MS = 1500;
 /**
