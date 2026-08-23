@@ -45,7 +45,16 @@ import { isProviderAvailable, getFallbackProvider } from './providerStatus.js';
  * `localEndpointPort` below, never by the provider's name or model id.
  */
 export function providerBaseUrl(provider) {
-  return localRuntimeForProvider(provider)?.endpoint || provider?.endpoint || null;
+  return localRuntimeForProvider(provider)?.endpoint
+    || provider?.endpoint
+    // Last resort, and REMOTE by construction — `localRuntimeForProvider` already
+    // took this value when it pointed at this box. It still has to be returned:
+    // an Ollama-backed CLI aimed at another host records its base ONLY here, and
+    // `endpointForAgent` treats an absent stamp as "re-resolve by id". Answering
+    // null would let that cloud agent start counting against a local endpoint the
+    // moment its provider record is re-pointed — the hole the stamp exists to close.
+    || provider?.envVars?.ANTHROPIC_BASE_URL
+    || null;
 }
 
 /**
@@ -164,33 +173,12 @@ export function createLocalEndpointSlotContext({
  * an uninitialized toolkit yields a null active provider — which resolves every
  * task to null (ungated) rather than stalling the queue.
  */
-// One dispatch consults this 2-3 times — the dequeue cycle, then the chokepoint
-// per emitted task (and "Run now" checks before emitting too). Each build costs
-// two provider reads plus a Map and an object over the whole catalog, so cache
-// the SNAPSHOT for a beat. Deliberately the same TTL the toolkit's own provider
-// cache uses: this adds no staleness the callers didn't already have.
-//
-// Only the provider LIST is cached. `isAvailable` and `resolveFallback` are read
-// live inside the returned closures, so a provider going unavailable still
-// changes the answer immediately — which is what the gate turns on.
-const SNAPSHOT_TTL_MS = 1000;
-let snapshot = null;
-let snapshotAt = 0;
-
-/** Test hook — drop the cached provider snapshot. */
-export function __resetLocalEndpointSlotCache() {
-  snapshot = null;
-  snapshotAt = 0;
-}
-
+// Deliberately NOT memoized. One dispatch builds this 2-3 times, but the
+// toolkit already caches the underlying provider read, so a local snapshot would
+// only save a Map and an object allocation — while adding a staleness window the
+// toolkit does not have: it invalidates on a provider edit, and nothing here can
+// observe that, so an edited endpoint would keep gating on its old value.
 export async function buildLocalEndpointSlotContext() {
-  if (snapshot && Date.now() - snapshotAt < SNAPSHOT_TTL_MS) return snapshot;
-  snapshot = await buildSlotContextUncached();
-  snapshotAt = Date.now();
-  return snapshot;
-}
-
-async function buildSlotContextUncached() {
   const providers = await listProviders();
   const activeProvider = await getActiveProvider().catch(() => null);
   return createLocalEndpointSlotContext({

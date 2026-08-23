@@ -40,6 +40,7 @@ import { createDequeueCapacity, countRunningAgentsByLocalEndpoint, isMissionTier
 import {
   createLocalEndpointSlotContext,
   localEndpointOfProvider,
+  providerBaseUrl,
   reserveLocalEndpointSpawn,
   pendingLocalEndpointSpawns,
   __resetLocalEndpointSpawnReservations,
@@ -1081,6 +1082,34 @@ describe('localEndpointOfProvider — Ollama-backed CLI/TUI providers (#4834)', 
       id: 'remote-claude-ollama', ollamaBacked: true,
       envVars: { ANTHROPIC_BASE_URL: 'http://192.0.2.10:11434' },
     })).toBeNull();
+  });
+});
+
+describe('providerBaseUrl — the stamp source (#4834)', () => {
+  it('returns the REMOTE base of an Ollama-backed CLI that has no endpoint', () => {
+    // `localRuntimeForProvider` answers null for it (correctly — it is not this
+    // box), and it records its daemon ONLY in envVars. Returning null here would
+    // stamp an absent endpoint, and `endpointForAgent` reads absent as
+    // "re-resolve by provider id" — so re-pointing that provider at a local URL
+    // mid-run would start counting a remote agent against the local GPU.
+    const remote = { id: 'remote-ollama-cli', ollamaBacked: true, envVars: { ANTHROPIC_BASE_URL: 'http://192.0.2.10:11434' } };
+    expect(providerBaseUrl(remote)).toBe('http://192.0.2.10:11434');
+    expect(localEndpointOfProvider(remote)).toBeNull();
+  });
+
+  it('prefers the resolved local runtime endpoint over the raw record', () => {
+    const local = { id: 'claude-ollama', ollamaBacked: true, envVars: { ANTHROPIC_BASE_URL: 'http://localhost:11434' } };
+    expect(localEndpointOfProvider(local)).toBe('localhost:11434');
+  });
+
+  it('is null only when the record names no base at all', () => {
+    expect(providerBaseUrl({ id: 'claude-cli', type: 'cli', endpoint: null })).toBeNull();
+    expect(providerBaseUrl(null)).toBeNull();
+  });
+
+  it('keeps a cloud base so its agent is never re-resolved', () => {
+    expect(providerBaseUrl(CLOUD_PROVIDER)).toBe('https://api.anthropic.com/v1');
+    expect(localEndpointOfProvider(CLOUD_PROVIDER)).toBeNull();
   });
 });
 
