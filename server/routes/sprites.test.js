@@ -23,6 +23,13 @@ vi.mock('../services/sprites/reference.js', () => ({
   forkSprite: vi.fn(async (sourceId, body) => ({ record: { id: 'pioneer-fork', kind: 'character', name: body.name }, jobId: 'j1', mode: 'codex', target: 'main', anchorId: 'walk-south' })),
 }));
 
+vi.mock('../services/sprites/localAnimationRender.js', () => ({
+  listAnimationProviders: vi.fn(async () => [
+    { id: 'grok', label: 'Grok (cloud)', ready: true, reason: null },
+    { id: 'local', label: 'Local (MiniMax H3)', ready: true, reason: null },
+  ]),
+}));
+
 vi.mock('../services/sprites/assetPrompt.js', () => ({
   resolveSpriteAssetPrompt: vi.fn(async () => ({ prompt: 'the built prompt', designPrompt: 'a knight', source: 'candidate' })),
 }));
@@ -115,6 +122,7 @@ vi.mock('../services/sprites/assets.js', () => ({
 import * as records from '../services/sprites/records.js';
 import * as importer from '../services/sprites/importer.js';
 import * as reference from '../services/sprites/reference.js';
+import * as localAnimationRender from '../services/sprites/localAnimationRender.js';
 import * as assetPrompt from '../services/sprites/assetPrompt.js';
 import * as walk from '../services/sprites/walk.js';
 import * as trackWorkflow from '../services/sprites/animationTrackWorkflow.js';
@@ -771,6 +779,46 @@ describe('sprites routes', () => {
     expect(props.body.tracks.ambient).toMatchObject({
       track: 'ambient', definition: { id: 'ambient', directional: false },
     });
+  });
+
+  it('GET /animation-providers reports each lane and why one is unusable', async () => {
+    localAnimationRender.listAnimationProviders.mockResolvedValueOnce([
+      { id: 'grok', label: 'Grok (cloud)', ready: true, reason: null },
+      { id: 'local', label: 'Local (MiniMax H3)', ready: false, reason: 'The MiniMax H3 MLX runtime is not installed — install it from Video Gen, then reload.' },
+    ]);
+    const r = await request(app).get('/api/sprites/animation-providers');
+    expect(r.status).toBe(200);
+    expect(r.body.providers.map((p) => p.id)).toEqual(['grok', 'local']);
+    expect(r.body.providers[1].reason).toMatch(/not installed/);
+  });
+
+  it('GET /animation-providers is not captured as a record id by GET /:id', async () => {
+    // The literal-segment routes must precede `GET /:id`; without that ordering
+    // this would 404 (or worse, look up a record named "animation-providers").
+    await request(app).get('/api/sprites/animation-providers');
+    expect(records.getRecordWithAssets).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/walk/generate forwards a valid provider and rejects an unknown one', async () => {
+    const ok = await request(app).post('/api/sprites/pioneer/walk/generate')
+      .send({ direction: 'east', provider: 'local' });
+    expect(ok.status).toBe(200);
+    expect(walk.startWalkGeneration).toHaveBeenCalledWith('pioneer', { direction: 'east', provider: 'local' });
+    const bad = await request(app).post('/api/sprites/pioneer/walk/generate')
+      .send({ direction: 'east', provider: 'minimax' });
+    expect(bad.status).toBe(400);
+  });
+
+  it('POST /:id/tracks/:trackId/generate forwards a valid provider and rejects an unknown one', async () => {
+    const ok = await request(app).post('/api/sprites/pioneer/tracks/scanner/generate')
+      .send({ direction: 'east', provider: 'local' });
+    expect(ok.status).toBe(200);
+    expect(trackWorkflow.startTrackGeneration).toHaveBeenCalledWith(
+      'scanner', 'pioneer', { direction: 'east', provider: 'local' },
+    );
+    const bad = await request(app).post('/api/sprites/pioneer/tracks/scanner/generate')
+      .send({ direction: 'east', provider: 'minimax' });
+    expect(bad.status).toBe(400);
   });
 
   it('POST /:id/walk/generate validates direction and duration', async () => {
