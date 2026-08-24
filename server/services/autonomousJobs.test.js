@@ -6,6 +6,7 @@ vi.mock('./cosEvents.js', () => ({
 }))
 
 vi.mock('../lib/fileUtils.js', () => ({
+sleep: vi.fn().mockResolvedValue(),
 tryReadFile: vi.fn().mockResolvedValue(null),
   // Strict twin (#4115) — `services/settings.js#readSettingsStrict` reads through
   // it, and this factory is exhaustive (no `importActual` spread), so an omitted

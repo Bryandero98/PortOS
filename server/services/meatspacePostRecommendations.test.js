@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const state = { sessions: [], training: [], memoryItems: [], reviewSchedule: { skills: {} }, morse: { kochLevel: null, settings: null, rounds: [] }, config: {} };
 
 vi.mock('../lib/fileUtils.js', () => ({
+  sleep: vi.fn().mockResolvedValue(undefined),
   atomicWrite: vi.fn().mockResolvedValue(undefined),
   PATHS: { data: '/tmp/test-data', meatspace: '/tmp/test-meatspace' },
   ensureDir: vi.fn().mockResolvedValue(undefined),

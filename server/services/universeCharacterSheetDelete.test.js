@@ -33,6 +33,7 @@ vi.mock('./universeBuilder.js', () => ({
 }));
 
 vi.mock('../lib/fileUtils.js', () => ({
+  sleep: vi.fn().mockResolvedValue(undefined),
   PATHS: { imageRefs: '/mock/data/image-refs', images: '/mock/data/images', data: '/mock/data' },
   ensureDir: vi.fn().mockResolvedValue(undefined),
   shortId: (id, n = 8) => (id == null ? '' : String(id).slice(0, n)),
