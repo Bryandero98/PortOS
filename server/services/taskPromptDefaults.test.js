@@ -598,6 +598,27 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(DEFAULT_TASK_PROMPTS['claim-issue']).toContain('--limit 500');
     expect(DEFAULT_TASK_PROMPTS['claim-issue']).not.toContain('--limit 100');
   });
+
+  it('claim flows retry self-assigned issues and release every open-claim marker', () => {
+    const github = DEFAULT_TASK_PROMPTS['claim-issue'];
+    const gitlab = DEFAULT_TASK_PROMPTS['claim-issue-gitlab'];
+
+    expect(PROMPT_VERSIONS['claim-issue']).toBe(20);
+    expect(PROMPT_VERSIONS['claim-issue-gitlab']).toBe(18);
+    expect(github).toContain('gh api --hostname "$GH_HOST" user -q .login');
+    expect(github).toContain('git remote get-url origin');
+    expect(github).toContain('if [ "$GH_HOST" = "ssh.github.com" ]');
+    expect(github).toContain('GH_HOST="github.com"');
+    expect(github).toContain('authenticated account remains eligible for a retry');
+    expect(github).toContain('at least one assignee\'s login matches `$ME`');
+    expect(github).toContain('--remove-assignee "${ASSIGNEES:-@me}"');
+    expect(gitlab).toContain('authenticated account remains eligible for a retry');
+    expect(gitlab).toContain('at least one assignee\'s username matches `$ME`');
+    expect(gitlab).toContain('--unassign --unlabel in-progress');
+    expect(gitlab).toContain('clears every current assignee');
+    expect(PREVIOUS_DEFAULT_PROMPTS['claim-issue'].some((prompt) => prompt.includes('It has NO assignees'))).toBe(true);
+    expect(PREVIOUS_DEFAULT_PROMPTS['claim-issue-gitlab'].some((prompt) => prompt.includes('It has NO assignees'))).toBe(true);
+  });
   // #4685: `glab issue list -F json` is accepted, IGNORED, and answers with the
   // human table at exit 0 (`-F` is `--output-format` there, a different flag from
   // `--output`), and `glab mr list --state <x>` does not exist at all. The tree

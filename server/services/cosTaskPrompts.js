@@ -23,7 +23,7 @@ const forgeIssueConstraint = (forge) => (ref, excludeLabelsBlock) => {
   const labels = excludeLabelsBlock || '`in-progress`, `blocked`, `needs-input`';
   return `## Target Issue Constraint
 
-The user explicitly selected ${forge} issue #${ref}. Override Phase 1 ("Pick the target issue"): do NOT pick a different issue and do NOT scan for the next eligible one — claim exactly #${ref}, and ignore the author filter above (an explicit selection overrides it). Still honor the safety checks: if #${ref} is already closed, already assigned, already carries any of ${labels}, is already on a \`claim/issue-${ref}\` (or \`cos/.../issue-${ref}/...\`) branch, is a tracking epic, or is stale (Phase 3), exit cleanly rather than forcing it. Otherwise run Phases 2–7 against #${ref}.`;
+The user explicitly selected ${forge} issue #${ref}. Override Phase 1 ("Pick the target issue"): do NOT pick a different issue and do NOT scan for the next eligible one — claim exactly #${ref}, ignore the author filter above, and ignore its current assignee (an explicit selection overrides both filters). Still honor the safety checks: if #${ref} is already closed, already carries any of ${labels}, is already on a \`claim/issue-${ref}\` (or \`cos/.../issue-${ref}/...\`) branch, is a tracking epic, or is stale (Phase 3), exit cleanly rather than forcing it. Otherwise run Phases 2–7 against #${ref}.`;
 };
 
 const TARGET_ITEM_BLOCKS = {

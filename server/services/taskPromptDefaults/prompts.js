@@ -22,6 +22,12 @@ items migrated from PLAN.md or GOALS.md and opportunity-scan suggestions. A
 proposal is valid only when it is useful to do now. A refactor is valid when current evidence shows it pays off now; a deferred possibility is not an issue.
 Return/drop it and let a later audit rediscover it when the evidence changes.`;
 
+// gh api defaults to github.com, even when the checked-out repository lives on
+// GitHub Enterprise. Resolve the origin host before identity probes so an
+// enterprise login cannot be mistaken for an unrelated github.com account.
+const GITHUB_HOST_SETUP = `GH_HOST="$(git remote get-url origin 2>/dev/null | sed -E -e 's#^[^:]+://([^@/]+@)?([^/:]+)(:[0-9]+)?/.*#\\2#' -e 's#^([^@]+@)?([^:]+):.*#\\2#')"
+if [ "$GH_HOST" = "ssh.github.com" ]; then GH_HOST="github.com"; fi`;
+
 // ============================================================
 // Unified DEFAULT_TASK_PROMPTS — one entry per scheduled task type / pipeline stage
 // All prompts use {appName} and {repoPath} template variables
@@ -847,7 +853,7 @@ Pick the next available unclaimed open GitHub issue, **create your own worktree 
 
 {issueAuthorFilter}
 
-**How claiming works.** An issue is "in flight" when its number appears as the issue-position segment in either a \`claim/issue-<num>\` ref (the human/TUI pattern) or a \`cos/<task>/issue-<num>/<agent>\` ref (the CoS sub-agent pattern) across local branches, remote branches, or open PR head refs — OR the issue is already assigned to someone OR carries an \`in-progress\` label. The \`claim/issue-<num>\` branch + the assignee/\`in-progress\` markers you set ARE the claim, visible to every other agent (including parallel machines) and to the human running \`/claim --issues\` in a TUI.
+**How claiming works.** An issue is "in flight" when its number appears as the issue-position segment in either a \`claim/issue-<num>\` ref (the human/TUI pattern) or a \`cos/<task>/issue-<num>/<agent>\` ref (the CoS sub-agent pattern) across local branches, remote branches, or open PR head refs — OR the issue is assigned to another account OR carries an \`in-progress\` label. An issue already assigned to the authenticated account remains eligible for a retry. The \`claim/issue-<num>\` branch + the assignee/\`in-progress\` markers you set ARE the claim, visible to every other agent (including parallel machines) and to the human running \`/claim --issues\` in a TUI.
 
 ## Phase 1 — Pick the target issue
 
@@ -864,6 +870,10 @@ Run steps 1–5 in order.
    #   --limit 500 (not 100): the blocking-label filter below runs on this
    #   fetched page, so a small cap risks missing eligible work further down
    #   a busy queue when the first page is full of excluded/in-flight issues.
+   # Keep an issue assigned to this authenticated account eligible for retry;
+   # if this lookup fails, leave ME empty and skip all assigned issues.
+   ${GITHUB_HOST_SETUP}
+   ME="$(gh api --hostname "$GH_HOST" user -q .login 2>/dev/null || true)"
    OWNER="$(gh repo view --json owner -q .owner.login)"
    gh issue list --state open --author "$OWNER" --search "sort:created-asc" --json number,title,author,assignees,labels,createdAt --limit 500
    #   Any-author mode: run the SAME command WITHOUT the --author "$OWNER" flag.
@@ -876,7 +886,7 @@ Run steps 1–5 in order.
    For each ref (after stripping any leading \`origin/\` / \`upstream/\` prefix), extract the issue number **only when the ref matches** \`claim/issue-<num>\` (number after \`claim/issue-\`) or \`cos/<task>/issue-<num>/<agent>\` (the \`issue-<num>\` third segment). Do NOT flag an issue just because its bare number appears elsewhere in a ref.
 4. **Pick the target issue:** walk the candidate list oldest-first and pick the FIRST issue where ALL of the following are true:
    - Its number is NOT in the in-flight set.
-   - It has NO assignees (an assignee means another machine/human already claimed it).
+   - It has no assignees, or at least one assignee's login matches \`$ME\` (an issue assigned only to another account is already claimed). If \`$ME\` is empty, skip every assigned issue.
    - It does NOT carry any of these blocking labels: {issueExcludeLabels}.
    - It is NOT a tracking/umbrella **epic** — recognized by an \`epic\` label, a title ending in "(epic)", OR a title beginning with an \`[epic]\` bracket or \`Epic:\` tag (e.g. "[Epic] …" / "Epic: …", case-insensitive). An epic needs per-slice partial-ship (each slice its own PR, \`Refs\` not \`Closes\`), so leave it for a human or \`/claim --issues\` to split — don't claim it wholesale here. **The bare \`plan\` label is NOT a skip signal.** \`do-replan --issues\` (and \`/do:replan --issues\`) labels EVERY migrated backlog item \`plan\` — atomic bug-fixes included — so \`plan\` marks the *claimable* queue exactly as \`/do:next --issues\` treats it (it is that flow's required candidate label). Skipping all \`plan\` issues would discard the entire actionable backlog and falsely report an empty queue.
 5. **If no eligible issue exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure.
@@ -980,7 +990,9 @@ If \`git branch -d\` refuses, fetch the default branch and re-check the PR's rem
 **Reconcile the issue — did this PR FULLY satisfy its scope?**
 - **Yes (full)** — the \`Closes #\${NUM}\` trailer already auto-closed it; if it's somehow still open, close it (\`gh issue close "\${NUM}"\`) and remove the label (\`gh issue edit "\${NUM}" --remove-label in-progress\`).
 - **No — the remainder is a clean, separable chunk** — close THIS issue with a summarizing comment (shipped ✓ / moved to #NEW), remove \`in-progress\`, and file ONE tightly-scoped follow-up for the remainder: \`gh issue create --title "…" --label plan [--label model:<tier>] [--label effort:<level>] [--label "good first issue"] [--label "help wanted"] --body "…\\n\\nRefs #\${NUM}"\` (carry over any \`area:*\` labels the issue had; choose the optional labels independently and only when justified — a leftover mechanical sweep is not a good first issue).
-- **No — the remainder is a continuation of the same scope** — keep the issue OPEN, post a \`Done ✓ / Remaining ▢\` comment, and release the claim so the queue re-picks it: \`gh issue edit "\${NUM}" --remove-label in-progress --remove-assignee @me\`.
+- **No — the remainder is a continuation of the same scope** — keep the issue OPEN, post a \`Done ✓ / Remaining ▢\` comment, and release the claim so the queue re-picks it. Remove the label and every current assignee, not only the authenticated account:
+  \`ASSIGNEES="$(gh issue view "\${NUM}" --json assignees -q '[.assignees[].login] | join(",")')"\`
+  \`gh issue edit "\${NUM}" --remove-label in-progress --remove-assignee "\${ASSIGNEES:-@me}"\`.
 
 NEVER leave the issue OPEN with \`in-progress\` still on it — that strands it as a zombie (the claim queue skips \`in-progress\`, so the remaining scope is never re-picked). **Do NOT \`git pull\`** from inside this phase — the work is already integrated on GitHub via \`gh pr merge\`; leave the user's working tree alone.`,
 
@@ -997,7 +1009,7 @@ Pick the next available unclaimed open GitLab issue, **create your own worktree 
 
 {issueAuthorFilter}
 
-**How claiming works.** An issue is "in flight" when its number appears as the issue-position segment in either a \`claim/issue-<num>\` ref (the human/TUI pattern) or a \`cos/<task>/issue-<num>/<agent>\` ref (the CoS sub-agent pattern) across local branches, remote branches, or open MR source-branch refs — OR the issue is already assigned to someone OR carries an \`in-progress\` label. The \`claim/issue-<num>\` branch + the assignee/\`in-progress\` markers you set ARE the claim, visible to every other agent (including parallel machines).
+**How claiming works.** An issue is "in flight" when its number appears as the issue-position segment in either a \`claim/issue-<num>\` ref (the human/TUI pattern) or a \`cos/<task>/issue-<num>/<agent>\` ref (the CoS sub-agent pattern) across local branches, remote branches, or open MR source-branch refs — OR the issue is assigned to another account OR carries an \`in-progress\` label. An issue already assigned to the authenticated account remains eligible for a retry. The \`claim/issue-<num>\` branch + the assignee/\`in-progress\` markers you set ARE the claim, visible to every other agent (including parallel machines).
 
 ## Phase 1 — Pick the target issue
 
@@ -1008,6 +1020,9 @@ Run steps 1–5 in order.
    \`\`\`bash
    git fetch --prune 2>/dev/null
    # Owner-only mode (default): add  --author <owner>  (resolve <owner> from the project namespace).
+   # Keep an issue assigned to this authenticated account eligible for retry;
+   # if this lookup fails, leave ME empty and skip all assigned issues.
+   ME="$(glab api user -q .username 2>/dev/null || true)"
    glab issue list --per-page 100 --output json
    # Any-author mode: run the SAME command WITHOUT --author.
    \`\`\`
@@ -1019,7 +1034,7 @@ Run steps 1–5 in order.
    For each ref (after stripping any leading \`origin/\` prefix), extract the issue number **only when the ref matches** \`claim/issue-<num>\` (number after \`claim/issue-\`) or \`cos/<task>/issue-<num>/<agent>\` (the \`issue-<num>\` third segment). Do NOT flag an issue just because its bare number appears elsewhere in a ref.
 4. **Pick the target issue:** walk the candidate list oldest-first and pick the FIRST issue where ALL of the following are true:
    - Its number (\`iid\`) is NOT in the in-flight set.
-   - It has NO assignees (an assignee means another machine/human already claimed it).
+   - It has no assignees, or at least one assignee's username matches \`$ME\` (an issue assigned only to another account is already claimed). If \`$ME\` is empty, skip every assigned issue.
    - It does NOT carry any of these blocking labels: {issueExcludeLabels}.
    - It is NOT a tracking/umbrella **epic** — recognized by an \`epic\` label, a title ending in "(epic)", OR a title beginning with an \`[epic]\` bracket or \`Epic:\` tag (e.g. "[Epic] …" / "Epic: …", case-insensitive). Leave epics for a human to split. **The bare \`plan\` label is NOT a skip signal** — it marks the claimable queue, not a blocker.
 5. **If no eligible issue exists**, exit cleanly — an empty actionable queue is a healthy state, not a failure.
@@ -1124,7 +1139,7 @@ If \`git branch -d\` refuses, fetch the default branch and re-check the MR's mer
 **Reconcile the issue — did this MR FULLY satisfy its scope?**
 - **Yes (full)** — the \`Closes #\${NUM}\` line already auto-closed it on merge to the default branch; if it's somehow still open, close it (\`glab issue close "\${NUM}"\`) and remove the label (\`glab issue update "\${NUM}" --unlabel in-progress\`).
 - **No — the remainder is a clean, separable chunk** — close THIS issue with a summarizing note (shipped ✓ / moved to #NEW), remove \`in-progress\`, and file ONE tightly-scoped follow-up for the remainder: \`glab issue create --title "…" --label plan [--label model:<tier>] [--label effort:<level>] [--label "good first issue"] [--label "help wanted"] --description "…\\n\\nRefs #\${NUM}"\` (carry over any \`area:*\` labels the issue had; choose the optional labels independently and only when justified — a leftover mechanical sweep is not a good first issue).
-- **No — the remainder is a continuation of the same scope** — keep the issue OPEN, post a \`Done ✓ / Remaining ▢\` note, and release the claim so the queue re-picks it: \`glab issue update "\${NUM}" --unassign --unlabel in-progress\`.
++ **No — the remainder is a continuation of the same scope** — keep the issue OPEN, post a \`Done ✓ / Remaining ▢\` note, and release the claim so the queue re-picks it: \`glab issue update "\${NUM}" --unassign --unlabel in-progress\` (\`--unassign\` clears every current assignee).
 
 NEVER leave the issue OPEN with \`in-progress\` still on it — that strands it as a zombie (the claim queue skips \`in-progress\`, so the remaining scope is never re-picked). **Do NOT \`git pull\`** from inside this phase — the work is already integrated on GitLab via \`glab mr merge\`; leave the user's working tree alone.`,
 

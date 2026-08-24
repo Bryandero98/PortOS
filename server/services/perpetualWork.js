@@ -29,6 +29,7 @@ import { emitLog } from './cosEvents.js';
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, extractSlugFromRef } from '../lib/planIds.js';
 import { readOriginRemoteUrl } from '../lib/gitRemote.js';
 import { withGlabJson } from '../lib/glabArgs.js';
+import { githubApiHost, hostFromOriginUrl } from '../lib/workTracker.js';
 
 // Labels that make a GitHub issue non-actionable for autonomous claiming. MUST
 // stay in sync with the claim-issue prompt's Phase 1 skip-list
@@ -186,10 +187,12 @@ export function titleMarksEpic(title) {
 }
 
 /**
- * Decide whether a single GitHub issue (as returned by `gh issue list --json`)
+ * Decide whether a single forge issue (as returned by `gh`/`glab` issue list)
  * is autonomously claimable. Mirrors the claim-issue prompt's Phase 1 step 4
- * predicate: no in-flight claim ref, no assignees, no blocking label, not an
- * epic. Exported for direct unit testing.
+ * predicate: no in-flight claim ref, no assignee belonging to another
+ * account, no blocking label, not an epic. An issue assigned to the current
+ * authenticated account remains claimable so a previous self-claim can be
+ * retried. Exported for direct unit testing.
  *
  * `excludeLabels` is the app's configured `issueExcludeLabels`
  * (`taskMetadata.issueExcludeLabels`) — extra labels a user wants left for
@@ -197,10 +200,21 @@ export function titleMarksEpic(title) {
  * `NON_ACTIONABLE_ISSUE_LABELS`, never replacing it: the base set is
  * structural (in-progress/blocked/etc.), not user-configurable.
  */
-export function isActionableIssue(issue, inFlight = new Set(), excludeLabels = null) {
+const normalizeLogin = (value) => (value == null ? '' : String(value)).trim().toLowerCase();
+
+const assigneeLogin = (assignee) => normalizeLogin(
+  typeof assignee === 'string' ? assignee : assignee?.login || assignee?.username
+);
+
+export function isActionableIssue(issue, inFlight = new Set(), excludeLabels = null, currentLogin = null) {
   if (!issue || typeof issue.number !== 'number') return false;
   if (inFlight.has(issue.number)) return false;
-  if (Array.isArray(issue.assignees) && issue.assignees.length > 0) return false;
+  const assignees = Array.isArray(issue.assignees) ? issue.assignees : [];
+  const normalizedCurrentLogin = normalizeLogin(currentLogin);
+  const hasOtherAssignee = assignees.length > 0 && (
+    !normalizedCurrentLogin || !assignees.some((assignee) => assigneeLogin(assignee) === normalizedCurrentLogin)
+  );
+  if (hasOtherAssignee) return false;
   const labels = (Array.isArray(issue.labels) ? issue.labels : [])
     .map((l) => (typeof l === 'string' ? l : l?.name) || '')
     .map((s) => s.toLowerCase());
@@ -216,8 +230,25 @@ export function isActionableIssue(issue, inFlight = new Set(), excludeLabels = n
  * `--author`-token lookup and BOTH forges' trusted-set seed, so the probe and
  * its `<cli>-unavailable` sentinel exist once.
  */
+async function resolveGithubHost(repoPath) {
+  const origin = await readOriginRemoteUrl(repoPath).catch(() => null);
+  // GitHub's public host remains the safe default for a checkout without a
+  // readable origin; managed GitHub apps normally provide one, and a parsed
+  // enterprise origin is always preferred so the identity probe cannot drift
+  // to github.com.
+  return githubApiHost(hostFromOriginUrl(origin)) || 'github.com';
+}
+
+const withGithubHost = async (args, repoPath) => [
+  args[0],
+  '--hostname',
+  await resolveGithubHost(repoPath),
+  ...args.slice(1)
+];
+
 async function resolveAuthenticatedLogin(cli, args, repoPath) {
-  const res = await runCli(cli, args, repoPath);
+  const probeArgs = cli === 'gh' ? await withGithubHost(args, repoPath) : args;
+  const res = await runCli(cli, probeArgs, repoPath);
   const login = (res.stdout || '').trim();
   return (res.code !== 0 || !login) ? { error: `${cli}-unavailable` } : { login };
 }
@@ -234,7 +265,10 @@ async function resolveAuthenticatedLogin(cli, args, repoPath) {
 async function resolveTrustedLogins(cfg, repoPath) {
   const { login, error } = await resolveAuthenticatedLogin(cfg.cli, cfg.selfLoginArgs, repoPath);
   if (error) return { error };
-  const res = await runCli(cfg.cli, cfg.membersArgs, repoPath);
+  const membersArgs = cfg.cli === 'gh'
+    ? await withGithubHost(cfg.membersArgs, repoPath)
+    : cfg.membersArgs;
+  const res = await runCli(cfg.cli, membersArgs, repoPath);
   if (res.code !== 0) return { error: cfg.membersFail, remedy: cfg.membersRemedy };
   const logins = new Set([login.toLowerCase()]);
   for (const line of (res.stdout || '').split('\n')) {
@@ -314,7 +348,9 @@ const FORGE_ISSUE_CONFIG = {
       return { owner, isOrg: parsed?.isInOrganization === true };
     },
     // `--self` mode: gh natively understands the `@me` token for `--author`, so
-    // no extra lookup is needed — the API resolves it to the authenticated user.
+    // no author-filter lookup is needed — the API resolves it to the authenticated
+    // user. `selfLoginArgs` still resolves that account when assigned issues need
+    // the self-assignee retry check (and seeds collaborator mode).
     resolveSelf: async () => ({ author: '@me' }),
     // `collaborators` mode: you + everyone with repo access. `{owner}`/`{repo}`
     // are gh's own placeholders, resolved from the checked-out remote. A 403 here
@@ -373,8 +409,9 @@ const FORGE_ISSUE_CONFIG = {
       return { owner: namespace, isOrg: probe.code === 0 };
     },
     // `--self` mode: glab's `--author` expects a username (no `@me` token), so
-    // resolve the authenticated account via the API; transient if glab is
-    // unauthenticated / unreachable.
+    // resolve the authenticated account via the API; the same lookup also powers
+    // the self-assignee retry check. It is transient if glab is unauthenticated
+    // or unreachable.
     resolveSelf: async (repoPath) => {
       const { login, error } = await resolveAuthenticatedLogin('glab', GLAB_SELF_LOGIN_ARGS, repoPath);
       return error ? { error } : { author: login };
@@ -567,7 +604,15 @@ async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self', is
     return parked('no-open-issues');
   }
 
-  const inFlight = await inFlightIssueNumbers(repoPath, cfg.inFlightForge);
+  const hasAssignedIssue = issues.some((issue) => Array.isArray(issue.assignees) && issue.assignees.length > 0);
+  const [inFlight, currentLoginResult] = await Promise.all([
+    inFlightIssueNumbers(repoPath, cfg.inFlightForge),
+    hasAssignedIssue
+      ? resolveAuthenticatedLogin(cfg.cli, cfg.selfLoginArgs, repoPath)
+      : Promise.resolve({ login: null })
+  ]);
+  if (currentLoginResult.error) return transient(currentLoginResult.error);
+  const currentLogin = currentLoginResult.login || null;
   const total = issues.length;
   // How many of the OPEN issues were skipped only because a claim/PR is already
   // in flight for them (stale post-merge branches count here). Surfacing this
@@ -578,7 +623,7 @@ async function detectForgeIssues(forgeKey, app, { issueAuthorFilter = 'self', is
   const excludeSet = Array.isArray(issueExcludeLabels) && issueExcludeLabels.length > 0
     ? new Set(issueExcludeLabels.map((l) => String(l).toLowerCase()))
     : null;
-  const actionable = issues.filter((issue) => isActionableIssue(issue, inFlight, excludeSet));
+  const actionable = issues.filter((issue) => isActionableIssue(issue, inFlight, excludeSet, currentLogin));
   const filteredCount = Math.max(0, total - actionable.length - inFlightCount);
   return {
     actionable: actionable.length > 0,
