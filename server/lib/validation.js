@@ -110,9 +110,9 @@ export const datadogInstanceRequestSchema = z.object({
 export const datadogSearchErrorsRequestSchema = z.object({
   serviceName: z.string().trim().min(1).max(256),
   environment: z.string().trim().max(128).optional(),
-  fromTime: z.string().trim().refine(value => !Number.isNaN(Date.parse(value)), {
+  fromTime: z.preprocess(emptyToUndefined, z.string().trim().refine(value => !Number.isNaN(Date.parse(value)), {
     message: 'fromTime must be a valid ISO 8601 date string',
-  }).optional(),
+  }).optional()),
 });
 
 // Reference-repo entry. Each app can list upstream repos it watches for

@@ -97,6 +97,10 @@ describe('validation.js', () => {
         environment: 'staging',
         fromTime: '2026-08-23T00:00:00.000Z',
       }).success).toBe(true);
+      expect(datadogSearchErrorsRequestSchema.parse({
+        serviceName: 'example-service',
+        fromTime: '',
+      }).fromTime).toBeUndefined();
     });
 
     it('rejects malformed upload and vision request bodies', () => {
