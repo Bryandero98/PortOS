@@ -96,7 +96,10 @@ export const datadogConfigSchema = z.object({
 // existing instance because the route preserves the stored secret in that
 // case.
 export const datadogInstanceRequestSchema = z.object({
-  id: z.string().trim().min(1).max(128),
+  // Preserve the exact key for updates. Older installs may have stored IDs
+  // outside the current preferred length/whitespace convention, and changing
+  // the lookup key here would make those instances impossible to edit.
+  id: z.string().min(1),
   name: z.string().trim().min(1).max(120),
   site: z.string().trim().min(1).max(253),
   apiKey: z.string().max(512).optional(),

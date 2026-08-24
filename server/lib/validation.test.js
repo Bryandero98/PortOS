@@ -87,6 +87,11 @@ describe('validation.js', () => {
         apiKey: '',
         appKey: 'example-app-key',
       }).success).toBe(true);
+      expect(datadogInstanceRequestSchema.safeParse({
+        id: ` ${'legacy-id-'.repeat(20)} `,
+        name: 'Legacy DataDog',
+        site: 'api.datadoghq.com',
+      }).data.id).toBe(` ${'legacy-id-'.repeat(20)} `);
       expect(datadogSearchErrorsRequestSchema.safeParse({
         serviceName: 'example-service',
         environment: 'staging',
