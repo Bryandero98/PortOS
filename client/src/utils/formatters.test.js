@@ -5,7 +5,25 @@ import {
   formatWeight, formatPercent, formatUsd, formatBytes,
   formatDateNumeric, formatTimeOfDaySeconds, formatClockTime, formatWeekdayDate,
   formatMonthDay, formatMonthYear, formatWeekdayShort, formatWeekdayTime, formatDateFull, formatDateShort, formatDateTime,
+  localDateKey, shiftISODate,
 } from './formatters.js';
+
+describe('calendar date keys', () => {
+  it('formats a Date using its local calendar fields', () => {
+    expect(localDateKey(new Date(2026, 0, 5, 23, 30))).toBe('2026-01-05');
+  });
+
+  it('shifts ISO dates across month, year, and leap-day boundaries', () => {
+    expect(shiftISODate('2025-12-31', 1)).toBe('2026-01-01');
+    expect(shiftISODate('2026-03-01', -1)).toBe('2026-02-28');
+    expect(shiftISODate('2028-02-28', 1)).toBe('2028-02-29');
+  });
+
+  it('shifts calendar days without DST-boundary drift', () => {
+    expect(shiftISODate('2026-03-08', 1)).toBe('2026-03-09');
+    expect(shiftISODate('2026-11-01', 1)).toBe('2026-11-02');
+  });
+});
 
 describe('clamp', () => {
   it('returns value unchanged when within [min, max]', () => {

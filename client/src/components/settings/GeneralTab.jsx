@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Save } from 'lucide-react';
 import toast from '../ui/Toast';
+import FormField from '../ui/FormField';
 import BrailleSpinner from '../BrailleSpinner';
 import ThemePickerPanel from '../ThemePickerPanel';
 import { getSettings, updateSettings } from '../../services/api';
@@ -117,8 +118,11 @@ export function GeneralTab() {
         <p className="text-sm text-gray-400 mb-4">
           Used for job scheduling (cron expressions & scheduled times) and briefing dates.
         </p>
-        <label htmlFor="timezone-input" className="sr-only">Timezone (IANA)</label>
-        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+        <FormField
+          label="Timezone (IANA)"
+          labelClassName="sr-only"
+          className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3"
+        >
           <input
             id="timezone-input"
             type="text"
@@ -146,7 +150,7 @@ export function GeneralTab() {
               <span className="truncate">Use detected: {detectedTz}</span>
             </button>
           )}
-        </div>
+        </FormField>
         {timezone && timezone !== detectedTz && (
           <p className="text-xs text-gray-500 mt-2 break-all">
             Browser detected: {detectedTz}
@@ -166,8 +170,11 @@ export function GeneralTab() {
           ask &ldquo;what&apos;s the weather?&rdquo; without naming a place. Leave both blank to use a default location.
         </p>
         <div className="flex flex-col sm:flex-row sm:items-end gap-2 sm:gap-3">
-          <div className="flex-1 sm:max-w-[10rem]">
-            <label htmlFor="loc-lat" className="block text-xs text-gray-400 mb-1">Latitude (-90 to 90)</label>
+          <FormField
+            label="Latitude (-90 to 90)"
+            className="flex-1 sm:max-w-[10rem]"
+            labelClassName="block text-xs text-gray-400 mb-1"
+          >
             <input
               id="loc-lat"
               type="text"
@@ -177,9 +184,12 @@ export function GeneralTab() {
               placeholder="37.7749"
               className="w-full min-w-0 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
             />
-          </div>
-          <div className="flex-1 sm:max-w-[10rem]">
-            <label htmlFor="loc-lon" className="block text-xs text-gray-400 mb-1">Longitude (-180 to 180)</label>
+          </FormField>
+          <FormField
+            label="Longitude (-180 to 180)"
+            className="flex-1 sm:max-w-[10rem]"
+            labelClassName="block text-xs text-gray-400 mb-1"
+          >
             <input
               id="loc-lon"
               type="text"
@@ -189,7 +199,7 @@ export function GeneralTab() {
               placeholder="-122.4194"
               className="w-full min-w-0 px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white text-sm"
             />
-          </div>
+          </FormField>
           <button
             onClick={handleSaveLocation}
             disabled={savingLocation}

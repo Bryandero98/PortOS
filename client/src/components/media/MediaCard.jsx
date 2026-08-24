@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { Trash2, Download, Film, Image as ImageIcon, Sparkles, Eye, EyeOff, Maximize2, Wand2, Star, MessageSquare, Pencil, Box } from 'lucide-react';
 import MediaImage from '../MediaImage';
 import AddToCollectionMenu from './AddToCollectionMenu';
@@ -15,7 +15,7 @@ import { loraDisplayName } from './normalize';
 // match. `onFinish` is passed only for a draft the caller already resolved a
 // delivery model for (see client/src/lib/videoFinish.js) — an image-conditioned
 // or legacy record gets no Finish button rather than a disabled one.
-export default function MediaCard({
+function MediaCard({
   item,
   onPreview,
   onClick, // overrides preview when set (e.g. stitch mode toggling selection)
@@ -264,3 +264,7 @@ export default function MediaCard({
     </div>
   );
 }
+
+// Gallery parents keep normalized item objects and action callbacks stable, so
+// React's shallow prop comparison can skip the expensive thumbnail/layout tree.
+export default memo(MediaCard);

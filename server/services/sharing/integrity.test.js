@@ -162,6 +162,17 @@ describe('getPeerIntegrity', () => {
     expect(result).toEqual({ available: false, reason: 'peer-unreachable', records: [] });
   });
 
+  it('passes a timeout signal to peerFetch', async () => {
+    const peer = makePeer('peer-x');
+    vi.mocked(getPeers).mockResolvedValue([peer]);
+    vi.mocked(peerFetch).mockResolvedValue({ ok: false, status: 503 });
+
+    await getPeerIntegrity({ peerId: 'peer-x', kind: 'mediaCollection' });
+
+    const [, options] = vi.mocked(peerFetch).mock.calls.at(-1);
+    expect(options.signal).toBeInstanceOf(AbortSignal);
+  });
+
   it('returns available:false with reason fetch-failed on non-404 error status', async () => {
     const peer = makePeer('peer-x');
     vi.mocked(getPeers).mockResolvedValue([peer]);
@@ -266,5 +277,19 @@ describe('getPeerIntegrity', () => {
     const result = await getPeerIntegrity({ peerId: 'peer-x', kind: 'mediaCollection' });
     expect(result.available).toBe(true);
     expect(result.records).toEqual([]);
+  });
+
+  it('returns an empty available result when peer json parsing fails', async () => {
+    const peer = makePeer('peer-x');
+    vi.mocked(getPeers).mockResolvedValue([peer]);
+    vi.mocked(listCollections).mockResolvedValue([]);
+    vi.mocked(peerFetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => { throw new Error('invalid json'); },
+    });
+
+    const result = await getPeerIntegrity({ peerId: 'peer-x', kind: 'mediaCollection' });
+    expect(result).toEqual({ available: true, records: [] });
   });
 });

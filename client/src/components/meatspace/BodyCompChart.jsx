@@ -5,7 +5,7 @@ import {
 import * as api from '../../services/api';
 import BrailleSpinner from '../BrailleSpinner';
 import useChartColors from '../../hooks/useChartColors.js';
-import { formatWeight, formatPercent } from '../../utils/formatters.js';
+import { formatMonthDay, formatPercent, formatWeight } from '../../utils/formatters.js';
 
 export default function BodyCompChart() {
   const chartColors = useChartColors();
@@ -16,7 +16,7 @@ export default function BodyCompChart() {
     const history = await api.getBodyHistory().catch(() => []);
     const chartData = history.map(entry => ({
       date: entry.date,
-      label: `${new Date(entry.date).getMonth() + 1}/${new Date(entry.date).getDate()}`,
+      label: formatMonthDay(entry.date),
       weight: entry.weightLbs || null,
       fatPct: entry.fatPct || null,
       musclePct: entry.musclePct || null
