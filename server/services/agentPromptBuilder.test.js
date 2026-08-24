@@ -92,7 +92,7 @@ vi.mock('./codeReview.js', () => ({
   getCodeReviewDefaults: vi.fn().mockResolvedValue({ reviewers: ['copilot'] }),
 }));
 
-import { buildLightContextPrompt, buildAgentPrompt, buildCompletionGuidelineBullet, reconcileSplitContext, buildReviewLoopFollowUpSection, getAppWorkspace, getAgentInstructionsContext, detectSkillTemplates, loadSkillTemplates, UNATTENDED_RUN_RULE } from './agentPromptBuilder.js';
+import { buildLightContextPrompt, buildAgentPrompt, buildCompletionGuidelineBullet, reconcileSplitContext, buildReviewLoopFollowUpSection, getAppWorkspace, getAgentInstructionsContext, detectSkillTemplates, loadSkillTemplates, UI_AUDIT_RUNTIME_RULE, UI_AUDIT_TASK_TYPES, UNATTENDED_RUN_RULE } from './agentPromptBuilder.js';
 import { getCodeReviewDefaults } from './codeReview.js'; // mocked above — control the configured default
 import { isTruthyMeta } from './agentState.js';
 import { buildPrompt } from './promptService.js'; // mocked above — inspect call args
@@ -370,6 +370,57 @@ describe('claim-flow completion handoff', () => {
 });
 
 describe('buildLightContextPrompt', () => {
+  describe('UI audit runtime context', () => {
+    it.each(UI_AUDIT_TASK_TYPES)('adds browser and local-system guidance to %s', (analysisType) => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { analysisType } }),
+        '/repo',
+        null,
+        isTruthyMeta,
+      );
+
+      expect(prompt).toContain(UI_AUDIT_RUNTIME_RULE);
+      expect(prompt).toContain('not browserless');
+      expect(prompt).toContain('127.0.0.1:5556');
+      expect(prompt).toContain('running local system');
+    });
+
+    it('adds the same guidance on the full API prompt path', async () => {
+      const prompt = await buildAgentPrompt(
+        makeTask({ metadata: { analysisType: 'ui-bugs' } }),
+        {},
+        '/repo',
+        null,
+        isTruthyMeta,
+        { providerType: 'api' },
+      );
+
+      expect(prompt).toContain(UI_AUDIT_RUNTIME_RULE);
+    });
+
+    it('recognizes the legacy self-improvement task marker', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { selfImprovementType: 'mobile-responsive' } }),
+        '/repo',
+        null,
+        isTruthyMeta,
+      );
+
+      expect(prompt).toContain(UI_AUDIT_RUNTIME_RULE);
+    });
+
+    it('does not add UI runtime guidance to a non-UI scheduled task', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: { analysisType: 'security' } }),
+        '/repo',
+        null,
+        isTruthyMeta,
+      );
+
+      expect(prompt).not.toContain('## UI Audit Runtime');
+    });
+  });
+
   describe('what it omits', () => {
     it('does NOT include the obsolete "# Chief of Staff Agent Briefing" header', () => {
       const prompt = buildLightContextPrompt(makeTask(), '/repo', null, isTruthyMeta);
