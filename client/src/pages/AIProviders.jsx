@@ -4,7 +4,7 @@ import { AlertTriangle, Gauge } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
-import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isGrokBuildCli, isLocalEndpoint, isLocalInstanceProvider, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, gatewayForProvider, isClaudeCommandProvider, generationControlsFor, providerRuntimeKey, providerCardState, PROVIDER_CARD_STATE } from '../utils/providers';
+import { filterHardwareCompatibleProviderModels, filterSelectableModels, filterGenerationModels, isEmbeddingModel, isProviderHardwareCompatible, isProviderModelHardwareCompatible, mergeModelLists, configuredDefaultIn, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isGrokBuildCli, isLocalEndpoint, isLocalInstanceProvider, effectiveModelContextWindow, isRunnerAllowedCommand, effortLevelsForProvider, isOllamaBackedProvider, gatewayForProvider, isClaudeCommandProvider, generationControlsFor, providerRuntimeKey, providerCardState, PROVIDER_CARD_STATE } from '../utils/providers';
 import useLocalModels from '../hooks/useLocalModels';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import BrailleSpinner from '../components/BrailleSpinner';
@@ -390,12 +390,13 @@ export default function AIProviders() {
   };
 
   const handleAddAllSamples = async () => {
-    if (sampleProviders.length === 0) return;
+    const compatibleSamples = sampleProviders.filter(isProviderHardwareCompatible);
+    if (compatibleSamples.length === 0) return;
 
     const succeededIds = [];
     const failedIds = [];
 
-    for (const provider of sampleProviders) {
+    for (const provider of compatibleSamples) {
       try {
         await api.createProvider(provider);
         succeededIds.push(provider.id);
@@ -571,12 +572,12 @@ export default function AIProviders() {
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold text-white">Sample Providers</h2>
             <div className="flex gap-2">
-              {sampleProviders.length > 1 && (
+              {sampleProviders.filter(isProviderHardwareCompatible).length > 1 && (
                 <button
                   onClick={handleAddAllSamples}
                   className="px-3 py-1.5 text-sm bg-port-accent hover:bg-port-accent/80 text-white rounded transition-colors"
                 >
-                  Add All ({sampleProviders.length})
+                  Add All ({sampleProviders.filter(isProviderHardwareCompatible).length})
                 </button>
               )}
               <button
@@ -646,6 +647,11 @@ export default function AIProviders() {
                       {filterSelectableModels(provider.models).length > 0 && (
                         <p>Models: {filterSelectableModels(provider.models).slice(0, 3).join(', ')}{filterSelectableModels(provider.models).length > 3 ? ` +${filterSelectableModels(provider.models).length - 3}` : ''}</p>
                       )}
+                      {!isProviderHardwareCompatible(provider) && (
+                        <p className="text-port-warning">
+                          Unavailable on this machine: {provider.hardwareCompatibility?.reasons?.join(' · ') || 'hardware requirements are not met'}
+                        </p>
+                      )}
                       {provider.envVars && Object.keys(provider.envVars).length > 0 && (
                         <div className="mt-0.5">
                           <span>Env:</span>
@@ -662,10 +668,10 @@ export default function AIProviders() {
                   </div>
                   <button
                     onClick={() => handleAddSample(provider)}
-                    disabled={addingSample[provider.id]}
+                    disabled={addingSample[provider.id] || !isProviderHardwareCompatible(provider)}
                     className="px-4 py-1.5 text-sm bg-port-success/20 text-port-success hover:bg-port-success/30 rounded transition-colors disabled:opacity-50 shrink-0"
                   >
-                    {addingSample[provider.id] ? 'Adding...' : 'Add'}
+                    {addingSample[provider.id] ? 'Adding...' : isProviderHardwareCompatible(provider) ? 'Add' : 'Unavailable'}
                   </button>
                 </div>
               ))}
@@ -684,7 +690,7 @@ export default function AIProviders() {
               className="px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white w-full sm:w-auto"
             >
               <option value="">Select Provider</option>
-              {providers.filter(p => p.enabled).map(p => (
+              {providers.filter(p => p.enabled && isProviderHardwareCompatible(p)).map(p => (
                 <option key={p.id} value={p.id}>{p.name}{isTuiProvider(p) ? ' (CoS TUI)' : ''}</option>
               ))}
             </select>
@@ -883,7 +889,7 @@ export default function AIProviders() {
   );
 }
 
-function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders = [], localModels = { ollama: [], lmstudio: [], ctxById: {} }, runnerAllowedCommands = null }) {
+function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders = [], localModels = { ollama: [], lmstudio: [], ctxById: {}, hardwareCompatibilityByBackend: {} }, runnerAllowedCommands = null }) {
   const [formData, setFormData] = useState({
     name: provider?.name || '',
     type: provider?.type || 'cli',
@@ -893,6 +899,8 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
     apiKey: '',
     allowCustomEndpoint: provider?.allowCustomEndpoint === true,
     models: provider?.models || [],
+    hardwareRequirements: provider?.hardwareRequirements,
+    modelHardwareRequirements: provider?.modelHardwareRequirements,
     defaultModel: provider?.defaultModel || '',
     effort: provider?.effort || '',
     lightModel: provider?.lightModel || '',
@@ -931,11 +939,41 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
     return backend ? localModels[backend] : [];
   };
 
+  const liveHardwareFor = (p) => {
+    const backend = localBackendForProvider(p);
+    return backend ? localModels.hardwareCompatibilityByBackend?.[backend] || {} : {};
+  };
+
   // Generation pickers (default + light/medium/heavy tiers) — drop embedding-only
   // models (and internal sentinels) so an embedding can't be chosen as a model
   // that runs prompts, consistent with the fallback picker below.
   const mergedModels = mergeModelLists(formData.models, liveModelsFor(formData));
-  const availableModels = filterGenerationModels(mergedModels);
+  // The server publishes compatibility for both the provider runtime and any
+  // explicitly annotated model. Unknown probe results stay in the list; only a
+  // definitive mismatch is hidden.
+  const capabilityProvider = {
+    ...provider,
+    ...formData,
+    id: provider?.id,
+    models: mergedModels,
+    modelHardwareCompatibility: {
+      ...provider?.modelHardwareCompatibility,
+      ...liveHardwareFor(formData),
+    },
+  };
+  const availableModels = filterHardwareCompatibleProviderModels(
+    filterGenerationModels(mergedModels),
+    capabilityProvider,
+  );
+  const configuredModels = [
+    formData.defaultModel,
+    formData.lightModel,
+    formData.mediumModel,
+    formData.heavyModel,
+  ].filter((model) => model
+    && !isEmbeddingModel(model)
+    && !availableModels.includes(model)
+    && !isProviderModelHardwareCompatible(capabilityProvider, model));
   // A provider can pin its tiers to the "use the CLI's own default" sentinel
   // while still publishing a real model catalog (Antigravity: `agy models`
   // lists real ids, but PortOS leaves the tiers on agy's own default). The
@@ -949,7 +987,6 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
   // providers, whose ladder is keyed on `ollamaBacked`. Merge the live edits
   // over the stored record instead, so edits to command/endpoint/envVars count
   // immediately while the markers survive.
-  const capabilityProvider = { ...provider, ...formData, id: provider?.id, models: mergedModels };
   // Shared option list for the Default Model + Light/Medium/Heavy tier selects,
   // so the sentinel option can't be added to some and missed on others.
   const modelSelectOptions = (
@@ -958,22 +995,44 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
       {configuredDefault && (
         <option value={configuredDefault}>Use the CLI&apos;s configured default</option>
       )}
-      {availableModels.map(model => (
-        <option key={model} value={model}>{modelOptionLabel(model, localModels.ctxById, capabilityProvider)}</option>
+      {[...new Set([...configuredModels, ...availableModels])].map(model => (
+        <option key={model} value={model} disabled={!availableModels.includes(model)}>
+          {modelOptionLabel(model, localModels.ctxById, capabilityProvider)}
+          {!availableModels.includes(model) ? ' (unavailable on this machine)' : ''}
+        </option>
       ))}
     </>
   );
 
   // Filter out current provider from fallback options (treat undefined enabled as enabled)
-  const fallbackOptions = allProviders.filter(p => p.id !== provider?.id && p.enabled !== false);
+  const fallbackOptions = allProviders.filter(p => p.id !== provider?.id
+    && p.enabled !== false
+    && (isProviderHardwareCompatible(p) || p.id === formData.fallbackProvider));
 
   // The fallback model is a model OF the selected fallback provider, so its
   // option list comes from that provider's `models` — merged with the live
   // installed list for local backends, and embedding-only models dropped (a
   // fallback runs prompts, so `nomic-embed-text` must never be selectable here).
   const selectedFallbackProvider = allProviders.find(p => p.id === formData.fallbackProvider);
+  const fallbackCapabilityProvider = selectedFallbackProvider && {
+    ...selectedFallbackProvider,
+    modelHardwareCompatibility: {
+      ...selectedFallbackProvider.modelHardwareCompatibility,
+      ...liveHardwareFor(selectedFallbackProvider),
+    },
+  };
   const fallbackModelOptions = filterGenerationModels(
     mergeModelLists(selectedFallbackProvider?.models, liveModelsFor(selectedFallbackProvider)),
+  );
+  const compatibleFallbackModelOptions = filterHardwareCompatibleProviderModels(
+    fallbackModelOptions,
+    fallbackCapabilityProvider,
+  );
+  const fallbackModelIsUnavailable = Boolean(
+    formData.fallbackModel
+    && !isEmbeddingModel(formData.fallbackModel)
+    && !compatibleFallbackModelOptions.includes(formData.fallbackModel)
+    && !isProviderModelHardwareCompatible(fallbackCapabilityProvider, formData.fallbackModel)
   );
   // `capabilityProvider`, not `formData`: the per-model windows model refresh
   // recorded (`modelContextWindows`) live on the RECORD and are not form fields,
@@ -1165,6 +1224,14 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
             mutable state (formData and the new-env-var row) therefore lives in
             this component, above the Drawer — never inside the panels below. */}
         <form onSubmit={handleSubmit} className="space-y-4">
+          {provider?.hardwareCompatibility?.state === 'unavailable' && (
+            <Banner tone="warning" icon={AlertTriangle}>
+              <p>
+                This provider is unavailable on this machine: {provider.hardwareCompatibility.reasons?.join(' · ') || 'hardware requirements are not met'}.
+                Its models are hidden from selection until the host matches those requirements.
+              </p>
+            </Banner>
+          )}
           {activeTab === 'connection' && (
             <div className="space-y-4">
               <FormField label="Name *">
@@ -1527,7 +1594,9 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                 >
                   <option value="">None (use system default)</option>
                   {fallbackOptions.map(p => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
+                    <option key={p.id} value={p.id} disabled={!isProviderHardwareCompatible(p)}>
+                      {p.name}{!isProviderHardwareCompatible(p) ? ' (unavailable on this machine)' : ''}
+                    </option>
                   ))}
                 </select>
                 <p className="text-xs text-gray-500 mt-1">
@@ -1537,14 +1606,19 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
 
                 {formData.fallbackProvider && (
                   <FormField label="Fallback Model" className="mt-3">
-                    {fallbackModelOptions.length > 0 ? (
+                    {compatibleFallbackModelOptions.length > 0 ? (
                       <select
                         value={formData.fallbackModel}
                         onChange={(e) => setFormData(prev => ({ ...prev, fallbackModel: e.target.value }))}
                         className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
                       >
                         <option value="">Use fallback provider's default</option>
-                        {fallbackModelOptions.map(model => (
+                        {fallbackModelIsUnavailable && (
+                          <option value={formData.fallbackModel} disabled>
+                            {modelOptionLabel(formData.fallbackModel, localModels.ctxById, selectedFallbackProvider)} (unavailable on this machine)
+                          </option>
+                        )}
+                        {compatibleFallbackModelOptions.map(model => (
                           <option key={model} value={model}>{modelOptionLabel(model, localModels.ctxById, selectedFallbackProvider)}</option>
                         ))}
                       </select>

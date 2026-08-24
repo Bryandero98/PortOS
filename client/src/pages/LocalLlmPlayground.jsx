@@ -9,6 +9,7 @@ import toast from '../components/ui/Toast';
 import { copyToClipboard } from '../lib/clipboard';
 import { localLlmTargetKey } from '../lib/localLlmTargetKey';
 import { formatBytes, recommendedRamGb, timeUntil } from '../utils/formatters';
+import { filterHardwareCompatibleModels } from '../utils/systemCapabilities';
 import { compareLocalLlmModels, getLoadedLlmModels, getLocalLlmCatalog, getLocalLlmStatus, streamLocalLlmTest } from '../services/api';
 
 const BACKEND_LABEL = { ollama: 'Ollama', lmstudio: 'LM Studio' };
@@ -316,7 +317,7 @@ export default function LocalLlmPlayground() {
     const models = [];
     for (const backend of ['ollama', 'lmstudio']) {
       const catalogById = new Map((catalogByBackend[backend] || []).map((entry) => [normalizeCatalogId(backend, entry.id), entry]));
-      for (const model of status?.[backend]?.models || []) {
+      for (const model of filterHardwareCompatibleModels(status?.[backend]?.models)) {
         models.push({
           backend,
           modelId: model.id,
@@ -344,6 +345,15 @@ export default function LocalLlmPlayground() {
     }
     return map;
   }, [loadedModels]);
+
+  useEffect(() => {
+    if (loadingStatus || status == null) return;
+    const installedKeys = new Set(installedTargets.map(localLlmTargetKey));
+    setSelectedTargets((previous) => {
+      const next = previous.filter((target) => installedKeys.has(localLlmTargetKey(target)));
+      return next.length === previous.length ? previous : next;
+    });
+  }, [installedTargets, loadingStatus, status]);
 
   useEffect(() => {
     if (selectedTargets.length > 0 || installedTargets.length === 0) return;

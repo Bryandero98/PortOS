@@ -24,6 +24,12 @@ import {
 import { videoGenEvents } from './events.js';
 import { broadcastSse, closeJobAfterDelay } from '../../lib/sseUtils.js';
 import { getVideoModels, getDefaultVideoModelId, getTextEncoderRepo } from '../../lib/mediaModels.js';
+import {
+  captureSystemCapabilities,
+  detectSystemCapabilities,
+  isHardwareCompatible,
+  withHardwareCompatibility,
+} from '../../lib/systemCapabilities.js';
 import { findFfmpeg } from '../../lib/ffmpeg.js';
 import { inspectModelCache, findCachedRepoFile, findCachedRepoFiles } from '../../lib/hfCache.js';
 import { safeChildProcessOptions } from '../../lib/processEnv.js';
@@ -119,9 +125,9 @@ export const resolveVideoModel = (modelId) =>
 
 export const listVideoModels = () => getVideoModels().map(decorateVideoModel);
 
-export const defaultVideoModelId = () => getDefaultVideoModelId();
+export const defaultVideoModelId = (capabilities) => getDefaultVideoModelId(capabilities);
 
-export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = null, height = null, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, i2vReferenceMode = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, textEncoderId = null, speedProfileId = null, hidden = false, jobId: providedJobId = null }) {
+export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId, width = null, height = null, numFrames = null, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, audioStartSec = null, mode = null, imageStrength = null, i2vReferenceMode = null, loras = null, icReferencePaths = null, icStrength = null, icAttentionStrength = null, icSkipStage2 = false, textEncoderId = null, speedProfileId = null, hidden = false, jobId: providedJobId = null }) {
   uploadedTempPaths = Array.isArray(uploadedTempPaths) ? uploadedTempPaths : [];
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   // Single-flight is now enforced by the mediaJobQueue worker upstream — only
@@ -129,8 +135,34 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // callers (legacy / tests) bypass the queue and would clobber the shared active process
   // on concurrent calls; that's an explicit "don't do that" contract.
 
-  const model = resolveVideoModel(modelId);
+  const needsCuda = (requirements) => requirements?.requiresNvidiaGpu
+    || requirements?.minVramGb != null
+    || requirements?.minCudaComputeCapability != null;
+  let capabilities = captureSystemCapabilities();
+  // `undefined`/empty means the caller omitted the field and may use the
+  // configured default. Explicit null is a routed-job sentinel and must remain
+  // an unknown model so an older dispatcher cannot render a remote job locally.
+  const modelWasOmitted = modelId === undefined || modelId === '';
+  let selectedModelId = modelWasOmitted ? defaultVideoModelId(capabilities) : modelId;
+  let resolvedModel = resolveVideoModel(selectedModelId);
+  if (needsCuda(resolvedModel?.hardwareRequirements)) {
+    capabilities = await detectSystemCapabilities();
+    if (modelWasOmitted) selectedModelId = defaultVideoModelId(capabilities);
+    resolvedModel = resolveVideoModel(selectedModelId);
+  }
+  modelId = selectedModelId;
+  const model = resolvedModel && withHardwareCompatibility(
+    resolvedModel,
+    capabilities,
+    resolvedModel.hardwareRequirements,
+  );
   if (!model) throw new ServerError(`Unknown video model: ${modelId}`, { status: 400, code: 'VALIDATION_ERROR' });
+  if (!isHardwareCompatible(model.hardwareCompatibility)) {
+    throw new ServerError(
+      `Video model "${modelId}" is unavailable on this machine: ${model.hardwareCompatibility.reasons.join(' · ')}`,
+      { status: 400, code: 'MODEL_HARDWARE_UNAVAILABLE' },
+    );
+  }
   // Validate the mode contract before cache lookups, image resize, or staging
   // work. Internal producers and persisted/retried jobs bypass route
   // preparation, so silently dropping one of these inputs here would render a

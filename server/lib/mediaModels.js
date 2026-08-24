@@ -8,7 +8,7 @@
  * cached at boot — there's no hot-reload).
  *
  * Schema (see seed defaults below for the full picture):
- *   - video.mlx[], video.cuda[]: { id, name, repo?, steps, guidance, broken?, disclosure? }
+ *   - video.mlx[], video.cuda[]: { id, name, repo?, steps, guidance, broken?, disclosure?, hardwareRequirements? }
  *       The two buckets split on RUNTIME FAMILY, not operating system: `mlx`
  *       holds the Apple-MLX runtimes, `cuda` the plain torch+CUDA ones (which
  *       run on Windows AND Linux). They were keyed `macos` / `windows` before
@@ -48,7 +48,7 @@
  *       as "supports everything". A declared list always wins.
  *   - video.defaultMlx / video.defaultCuda: id of the default model
  *     (legacy `defaultMacos` / `defaultWindows` still read)
- *   - image[]: { id, name, steps, guidance, broken? }
+ *   - image[]: { id, name, steps, guidance, broken?, hardwareRequirements? }
  *   - textEncoders[]: { id, label, repo, localPath? }
  *   - selectedTextEncoder: id of the active text encoder
  */
@@ -73,6 +73,12 @@ import { applyVideoDisclosures } from './videoDisclosure.js';
 import { applyVideoFinishProfiles, sanitizeFinishProfiles } from './videoFinishProfiles.js';
 import { applyVideoSpeedProfiles, sanitizeSpeedProfiles } from './videoSpeedProfiles.js';
 import { applyVideoSupportedModes } from './videoModeProfiles.js';
+import {
+  captureSystemCapabilities,
+  hardwareRequirementsForMediaModel,
+  isHardwareCompatible,
+  withHardwareCompatibility,
+} from './systemCapabilities.js';
 // fileUtils.ensureDir is async/Promise-returning; this module needs a
 // synchronous version because `loadMediaModels()` is called at import-time
 // from videoGen/imageGen modules, which can't await before exporting.
@@ -1428,11 +1434,19 @@ export const requiredModelCacheGroups = (model) => {
 
 export const getVideoModels = () => {
   const reg = loadMediaModels();
-  const list = readVideoBucket(reg.video, activeVideoBucket()) || [];
-  return applyVideoSupportedModes(list.filter((m) => !platformBroken(m.broken)));
+  const bucket = activeVideoBucket();
+  const capabilities = captureSystemCapabilities();
+  const list = readVideoBucket(reg.video, bucket) || [];
+  return applyVideoSupportedModes(list.filter((m) => !platformBroken(m.broken))).map((model) => (
+    withHardwareCompatibility(
+      model,
+      capabilities,
+      hardwareRequirementsForMediaModel(model, { kind: 'video', bucket }),
+    )
+  ));
 };
 
-export const getDefaultVideoModelId = () => {
+export const getDefaultVideoModelId = (capabilities = captureSystemCapabilities()) => {
   const reg = loadMediaModels();
   // Note: defaultMlx / defaultCuda may legitimately point at a model
   // flagged `deprecated: true` — the dgrauet (non-deprecated) runtime
@@ -1445,20 +1459,32 @@ export const getDefaultVideoModelId = () => {
   // Validate against the bucket's available (non-broken) list — a typo or
   // a model marked broken on this bucket would otherwise surface as
   // "Unknown video model" the first time the UI tries to use the default.
-  const available = getVideoModels();
-  if (available.some((m) => m.id === configuredId)) return configuredId;
-  const fallback = available[0]?.id;
+  const available = getVideoModels().map((model) => withHardwareCompatibility(
+    model,
+    capabilities,
+    model.hardwareRequirements,
+  ));
+  const compatible = available.filter((model) => isHardwareCompatible(model.hardwareCompatibility));
+  if (compatible.some((m) => m.id === configuredId)) return configuredId;
+  const fallback = compatible[0]?.id;
   if (fallback) {
-    console.log(`⚠️ Unknown default video model "${configuredId}" for ${bucket}; falling back to "${fallback}"`);
+    console.log(`⚠️ Default video model "${configuredId}" is unavailable or unknown for ${bucket}; falling back to "${fallback}"`);
     return fallback;
   }
-  console.log(`⚠️ Unknown default video model "${configuredId}" for ${bucket}; no available models to fall back to`);
+  console.log(`⚠️ Default video model "${configuredId}" is unavailable or unknown for ${bucket}; no available models to fall back to`);
   return configuredId;
 };
 
 export const getImageModels = () => {
   const reg = loadMediaModels();
-  return (reg.image || []).filter((m) => !platformBroken(m.broken));
+  const capabilities = captureSystemCapabilities();
+  return (reg.image || [])
+    .filter((m) => !platformBroken(m.broken))
+    .map((model) => withHardwareCompatibility(
+      model,
+      capabilities,
+      hardwareRequirementsForMediaModel(model, { kind: 'image' }),
+    ));
 };
 
 // Map a registry entry to the HuggingFace repo id whose weights need to be

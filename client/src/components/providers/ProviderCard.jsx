@@ -16,12 +16,14 @@ import { Terminal } from 'lucide-react';
 import {
   CONTEXT_WINDOW_SOURCE,
   PROVIDER_CARD_STATE,
+  filterHardwareCompatibleProviderModels,
   isApiProvider,
   isGrokBuildCli,
   gatewayForProvider,
   isPrivateNetworkEndpoint,
   isProcessProvider,
   isRunnerAllowedCommand,
+  isProviderHardwareCompatible,
   isTuiProvider,
   isLaunchableTuiProvider,
   providerTypeClass,
@@ -97,6 +99,7 @@ export default function ProviderCard({
   servingModel = false,
 }) {
   const style = CARD_STATE_STYLES[cardState.state];
+  const compatibleModels = filterHardwareCompatibleProviderModels(provider.models, provider);
   return (
     <div
       className={`@container bg-port-card border border-l-4 rounded-xl p-4 ${style.border} ${style.dim || ''} ${
@@ -175,6 +178,14 @@ export default function ProviderCard({
               title={RUNNER_NOT_ALLOWED_HINT}
             >
               NO AGENT RUNNER
+            </span>
+          )}
+          {!isProviderHardwareCompatible(provider) && (
+            <span
+              className="text-xs px-2 py-0.5 rounded bg-port-warning/20 text-port-warning"
+              title={provider.hardwareCompatibility?.reasons?.join(' · ')}
+            >
+              HARDWARE MISMATCH
             </span>
           )}
         </div>
@@ -298,6 +309,12 @@ export default function ProviderCard({
           </div>
         )}
 
+        {!isProviderHardwareCompatible(provider) && (
+          <div className="max-w-3xl text-xs rounded border border-port-warning/40 bg-port-warning/10 px-3 py-2 text-port-warning">
+            Hidden from provider/model pickers on this machine: {provider.hardwareCompatibility?.reasons?.join(' · ') || 'hardware requirements are not met'}.
+          </div>
+        )}
+
         <div className="text-sm text-gray-400 space-y-1">
           {provider.llamaBacked && (
             <p className="text-xs text-purple-300/90">
@@ -337,8 +354,8 @@ export default function ProviderCard({
               <p className="text-xs">API key: <span className="text-port-warning">not set — Edit this provider to paste one</span></p>
             )
           )}
-          {provider.models?.length > 0 && (
-            <p>Models: {provider.models.slice(0, 3).join(', ')}{provider.models.length > 3 ? ` +${provider.models.length - 3}` : ''}</p>
+          {compatibleModels.length > 0 && (
+            <p>Models: {compatibleModels.slice(0, 3).join(', ')}{compatibleModels.length > 3 ? ` +${compatibleModels.length - 3}` : ''}</p>
           )}
           {provider.defaultModel && (
             <p className="break-words">Default: <code className="text-gray-300 break-all">{provider.defaultModel}</code></p>

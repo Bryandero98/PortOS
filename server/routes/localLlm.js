@@ -48,6 +48,11 @@ import { SPEC_TYPE_SUGGESTIONS } from '../lib/specDecodePresets.js'
 import { resetProviderReadinessCache } from '../services/providerReadiness.js'
 import { getCatalog, searchCatalog, isBackend } from '../lib/localLlmCatalog.js'
 import { isAppleSilicon } from '../lib/platform.js'
+import {
+  captureSystemCapabilities,
+  isHardwareCompatible,
+  withHardwareCompatibility,
+} from '../lib/systemCapabilities.js'
 import { searchHuggingFaceModels, enrichCatalogWithVariants, applyMeasuredFit } from '../services/huggingFaceCatalog.js'
 import { getMeasuredFits } from '../services/localModelAssessmentStore.js'
 import {
@@ -125,16 +130,27 @@ router.get('/catalog', asyncHandler(async (req, res) => {
   const installedForVariants = installedModels.map((m) => (
     backend === 'lmstudio' && m.quantization ? `${m.id}@${m.quantization}` : m.id
   ))
+  // Total system memory drives both the hardware gate and the RAM-aware
+  // recommended quant. Unified memory on Apple Silicon also backs the GPU, so a
+  // big box can default to higher fidelity.
+  const systemMemoryBytes = os.totalmem()
+  const capabilities = captureSystemCapabilities({
+    appleSilicon: isAppleSilicon(),
+    totalMemoryBytes: systemMemoryBytes,
+  })
   // Native MLX entries are meaningful only on Apple Silicon. Keep this gate at
   // the route boundary so the pure catalog remains useful to tests and other
   // callers while the user-facing picker never offers an un-runnable format.
-  const catalogOptions = { appleSilicon: isAppleSilicon() }
-  const models = q
+  const catalogOptions = { appleSilicon: capabilities.appleSilicon }
+  const catalog = q
     ? searchCatalog(backend, q, installedRaw, catalogOptions)
     : getCatalog(backend, installedRaw, catalogOptions)
-  // Total system memory drives the RAM-aware recommended quant (unified memory on
-  // Apple Silicon also backs the GPU, so a big box can default to higher fidelity).
-  const systemMemoryBytes = os.totalmem()
+  // Keep the full compatibility fact on each visible row for callers that want
+  // to explain a recommendation, but hide only definitive mismatches. Unknown
+  // memory/probe states remain visible and fail open.
+  const models = catalog
+    .map((model) => withHardwareCompatibility(model, capabilities, model.hardwareRequirements))
+    .filter((model) => isHardwareCompatible(model.hardwareCompatibility))
   // Quant-variant enrichment probes Hugging Face per HF-backed entry, so it's
   // opt-in (`?variants=1`): the recommended-models picker requests it, but callers
   // that only need catalog metadata (e.g. the playground decorating installed

@@ -28,6 +28,7 @@ import { emptyToUndefined, validateRequest } from '../lib/validation.js';
 import { ADDABLE_IMAGE_RUNNERS, ADDABLE_VIDEO_RUNTIMES, searchHuggingfaceModels } from '../lib/huggingfaceModel.js';
 import { addModelFromHuggingface } from '../services/mediaModelInstall.js';
 import { getMediaModelStorage } from '../services/mediaModelStorage.js';
+import { detectSystemCapabilities, withHardwareCompatibility } from '../lib/systemCapabilities.js';
 
 const router = Router();
 
@@ -60,6 +61,8 @@ router.get('/registry', asyncHandler(async (_req, res) => {
       runner: m.runner || null,
       steps: m.steps ?? null,
       guidance: m.guidance ?? null,
+      hardwareRequirements: m.hardwareRequirements || {},
+      hardwareCompatibility: m.hardwareCompatibility || null,
       deprecated: !!m.deprecated,
       broken: m.broken ?? false,
       builtIn: !isUserModelEntry(m),
@@ -69,7 +72,12 @@ router.get('/registry', asyncHandler(async (_req, res) => {
   // One encoder can be offered by more than one model. Keep one management row
   // per encoder while retaining the model ids it is compatible with, rather
   // than rendering duplicate rows (or arbitrarily hiding one relationship).
-  const videoModels = getVideoModels();
+  const capabilities = await detectSystemCapabilities();
+  const videoModels = getVideoModels().map((model) => withHardwareCompatibility(
+    model,
+    capabilities,
+    model.hardwareRequirements,
+  ));
   const textEncoderMap = new Map();
   for (const model of videoModels) {
     for (const option of videoTextEncoderOptions(model)) {
@@ -91,7 +99,11 @@ router.get('/registry', asyncHandler(async (_req, res) => {
   // are single-list.
   res.json({
     video: flatten(videoModels, 'video'),
-    image: flatten(getImageModels(), 'image'),
+    image: flatten(getImageModels().map((model) => withHardwareCompatibility(
+      model,
+      capabilities,
+      model.hardwareRequirements,
+    )), 'image'),
     textEncoders: [...textEncoderMap.values()],
   });
 }));

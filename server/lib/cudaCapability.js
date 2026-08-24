@@ -310,6 +310,28 @@ export function resetCudaCapabilityCache() {
   cacheExpiresAt = Infinity;
 }
 
+// Compute capability is a separate nvidia-smi query because older drivers can
+// answer the VRAM query while rejecting the `compute_cap` column. Cache it with
+// the same three-state retry policy so provider responses do not spawn a second
+// process on every request.
+let cachedComputeProbe = null;
+let computeCacheExpiresAt = Infinity;
+
+export async function getCudaComputeCapability({ refresh = false, now = Date.now, ...probeOpts } = {}) {
+  if (!refresh && cachedComputeProbe && now() < computeCacheExpiresAt) return cachedComputeProbe;
+  const pending = detectCudaComputeCapability(probeOpts);
+  cachedComputeProbe = pending;
+  computeCacheExpiresAt = Infinity;
+  const result = await pending;
+  if (result.status === 'unknown') computeCacheExpiresAt = now() + CUDA_UNKNOWN_RETRY_MS;
+  return result;
+}
+
+export function resetCudaComputeCapabilityCache() {
+  cachedComputeProbe = null;
+  computeCacheExpiresAt = Infinity;
+}
+
 let cachedUtilization = null;
 let utilizationExpiresAt = 0;
 export const CUDA_UTILIZATION_TTL_MS = 4000;

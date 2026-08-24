@@ -18,6 +18,18 @@ const providerEffort = z.preprocess(
   z.enum(PROVIDER_EFFORT_LEVELS).nullable().optional()
 );
 
+// Hardware metadata is declarative and machine-local. Keep the shape bounded
+// so a provider record cannot turn into an unbounded arbitrary JSON payload.
+const providerHardwareRequirementsSchema = z.object({
+  platforms: z.array(z.string().trim().min(1).max(32)).min(1).max(8).optional(),
+  architectures: z.array(z.string().trim().min(1).max(32)).min(1).max(8).optional(),
+  requiresAppleSilicon: z.boolean().optional(),
+  requiresNvidiaGpu: z.boolean().optional(),
+  minMemoryGb: z.number().positive().max(4096).optional(),
+  minVramGb: z.number().positive().max(4096).optional(),
+  minCudaComputeCapability: z.number().positive().max(20).optional(),
+}).strict();
+
 /**
  * Sanitize the untrusted `screenshots[]` array from POST /api/runs into safe,
  * screenshots-dir-relative basenames. `screenshots[]` is unauthenticated user
@@ -73,6 +85,11 @@ export const providerSchema = z.object({
   ),
   apiKey: z.string().optional(),
   models: z.array(z.string()).optional(),
+  // Optional hardware gates for local providers. The PortOS host decorates
+  // responses with inferred runtime requirements as well, so old records do
+  // not need a migration to participate in filtering.
+  hardwareRequirements: providerHardwareRequirementsSchema.optional(),
+  modelHardwareRequirements: z.record(providerHardwareRequirementsSchema).optional(),
   defaultModel: z.string().nullable().optional(),
   // Empty string is the UI's "use the provider/CLI default" sentinel.
   effort: providerEffort,

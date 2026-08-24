@@ -27,6 +27,7 @@ export * from './urlNormalize.js';
 export * from './platform.js';
 export * from './navWorkingSet.js';
 export * from './providers.js';
+export * from './systemCapabilities.js';
 export * from './layeredIntelligenceReasons.js';
 
 // === Module loading / resilience ===

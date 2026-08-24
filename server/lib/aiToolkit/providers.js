@@ -592,6 +592,10 @@ export function createProviderService(config = {}) {
         endpoint: providerData.endpoint || null,
         apiKey: providerData.apiKey || '',
         models: providerData.models || [],
+        ...(providerData.hardwareRequirements ? { hardwareRequirements: providerData.hardwareRequirements } : {}),
+        ...(providerData.modelHardwareRequirements
+          ? { modelHardwareRequirements: providerData.modelHardwareRequirements }
+          : {}),
         defaultModel: providerData.defaultModel || null,
         effort: providerData.effort || null,
         lightModel: providerData.lightModel || null,

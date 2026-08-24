@@ -34,9 +34,10 @@ import { pipeline } from 'stream/promises'
 import { Readable } from 'stream'
 import { PATHS, atomicWrite, ensureDir, pathExists, sleep } from '../lib/fileUtils.js'
 import { compareSemver } from '../lib/versionUtils.js'
-import { isBackend, mapModelToBackend, getOllamaImportSpec } from '../lib/localLlmCatalog.js'
+import { getCatalog, isBackend, mapModelToBackend, getOllamaImportSpec } from '../lib/localLlmCatalog.js'
 import { sanitizeOllamaName } from '../lib/localLlmDisk.js'
 import { recommendEditorialModel, isVisionModel, isVisionCapableCliProvider, isToolUseModel } from '../lib/localModelHeuristics.js'
+import { captureSystemCapabilities, withHardwareCompatibility } from '../lib/systemCapabilities.js'
 // Disk-only read of the measured assessments (`localModelAssessmentStore.js` has no
 // path to a provider, so this cannot turn a status poll into an LLM call), and
 // no import cycle: the store deliberately does not import this module.
@@ -606,31 +607,44 @@ function lmStudioBadgeCapabilities(m) {
   return caps
 }
 
+/**
+ * Add catalog-derived hardware metadata to a live model when PortOS knows its
+ * identity. Unknown/custom models stay fail-open with an empty requirement set.
+ */
+function annotateInstalledModel(backend, rawModel, normalizedModel, capabilities) {
+  const catalogEntry = getCatalog(backend, [rawModel.id]).find((entry) => entry.installed)
+  return withHardwareCompatibility(
+    normalizedModel,
+    capabilities,
+    catalogEntry?.hardwareRequirements || rawModel.hardwareRequirements,
+  )
+}
+
 /** Normalize each backend's installed-model shape into one card shape. */
-function normalizeModels(backend, models) {
+function normalizeModels(backend, models, capabilities = captureSystemCapabilities()) {
   if (backend === 'ollama') {
-    return models.map((m) => ({
-      id: m.id, name: m.name, size: m.size ?? null,
-      params: m.params || null, quantization: m.quantization || null, family: m.family || null,
-      contextLength: m.contextLength ?? null,
-      // Ollama's /api/tags doesn't tag vision capability, but /api/show does —
-      // when the model has been enriched with a `capabilities` array (status
-      // path, or the listVisionModels enrichment below) prefer it; otherwise
-      // fall back to the id heuristic. Passing the object lets a vision-capable
-      // MoE like `qwen3.6:35b` (no `vl`/`vision` token in its id) resolve true.
-      vision: isVisionModel(Array.isArray(m.capabilities) ? { id: m.id, capabilities: m.capabilities } : m.id),
-      capabilities: ollamaBadgeCapabilities(m.capabilities)
-    }))
+    return models.map((m) => annotateInstalledModel(backend, m, {
+        id: m.id, name: m.name, size: m.size ?? null,
+        params: m.params || null, quantization: m.quantization || null, family: m.family || null,
+        contextLength: m.contextLength ?? null,
+        // Ollama's /api/tags doesn't tag vision capability, but /api/show does —
+        // when the model has been enriched with a `capabilities` array (status
+        // path, or the listVisionModels enrichment below) prefer it; otherwise
+        // fall back to the id heuristic. Passing the object lets a vision-capable
+        // MoE like `qwen3.6:35b` (no `vl`/`vision` token in its id) resolve true.
+        vision: isVisionModel(Array.isArray(m.capabilities) ? { id: m.id, capabilities: m.capabilities } : m.id),
+        capabilities: ollamaBadgeCapabilities(m.capabilities)
+      }, capabilities))
   }
-  return models.map((m) => ({
-    id: m.id, name: m.id, size: null,
-    params: null, quantization: m.quantization || null, family: m.arch || null,
-    contextLength: m.maxContextLength ?? null,
-    // LM Studio's native model list tags vision models `type: 'vlm'` — prefer
-    // that over the id regex.
-    vision: isVisionModel(m),
-    capabilities: lmStudioBadgeCapabilities(m)
-  }))
+  return models.map((m) => annotateInstalledModel(backend, m, {
+      id: m.id, name: m.id, size: null,
+      params: null, quantization: m.quantization || null, family: m.arch || null,
+      contextLength: m.maxContextLength ?? null,
+      // LM Studio's native model list tags vision models `type: 'vlm'` — prefer
+      // that over the id regex.
+      vision: isVisionModel(m),
+      capabilities: lmStudioBadgeCapabilities(m)
+    }, capabilities))
 }
 
 /**

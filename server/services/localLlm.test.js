@@ -627,6 +627,7 @@ describe('localLlm', () => {
       mocks.ollama.getInstalledModels.mockResolvedValueOnce([
         { id: 'qwen3.6:35b', name: 'qwen3.6:35b', capabilities: ['completion', 'tools', 'vision', 'thinking'] },
         { id: 'nomic-embed-text', name: 'nomic-embed-text', capabilities: ['embedding'] },
+        { id: 'gemma4:31b', name: 'gemma4:31b' },
         { id: 'legacy-model', name: 'legacy-model' },
       ]);
       const models = await svc.listModels('ollama');
@@ -639,6 +640,10 @@ describe('localLlm', () => {
       // untrue claim: it renders an empty badge row and makes every capability
       // test look inapplicable. Still no guessing (unlike the vision id heuristic).
       expect(models.find((m) => m.id === 'legacy-model').capabilities).toBeNull();
+      expect(models.find((m) => m.id === 'gemma4:31b')).toMatchObject({
+        hardwareRequirements: { minMemoryGb: 64 },
+        hardwareCompatibility: { state: expect.any(String) },
+      });
     });
 
     it('derives LM Studio badges from the native `type` field plus the shared tool-use id heuristic', async () => {
