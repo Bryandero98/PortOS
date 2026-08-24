@@ -32,6 +32,7 @@ vi.mock('../services/jiraReports.js', () => ({
 vi.mock('../services/apps.js', () => ({ getAppById: vi.fn() }));
 
 import * as jiraService from '../services/jira.js';
+import * as jiraReports from '../services/jiraReports.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
 import jiraRoutes from './jira.js';
 
@@ -42,6 +43,22 @@ function makeApp() {
   app.use(errorMiddleware);
   return app;
 }
+
+describe('GET /reports/:appId/:date', () => {
+  it('rejects unsafe path parameters before reading a report', async () => {
+    const response = await request(makeApp()).get('/api/jira/reports/bad@app/2026-01-01');
+
+    expect(response.status).toBe(400);
+    expect(jiraReports.getReport).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid dates before reading a report', async () => {
+    const response = await request(makeApp()).get('/api/jira/reports/example-app/not-a-date');
+
+    expect(response.status).toBe(400);
+    expect(jiraReports.getReport).not.toHaveBeenCalled();
+  });
+});
 
 describe('GET /instances/:instanceId/my-sprint-tickets/:projectKey', () => {
   let app;
