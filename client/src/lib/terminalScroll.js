@@ -31,6 +31,13 @@
 // sequence of page keys when a gesture has a very large delta.
 const MAX_SCROLL_STEPS = 64;
 
+// A short trackpad gesture can produce many pixel-mode wheel events. Four logical
+// lines is enough movement to make one page key useful without making each tiny
+// event jump the TUI by a full viewport.
+const WHEEL_PAGE_LINES = 4;
+const WHEEL_DELTA_MODE_LINE = 1;
+const WHEEL_DELTA_MODE_PAGE = 2;
+
 // Used when the terminal hasn't been laid out yet, so a swipe on a freshly-attached
 // session still scrolls instead of silently accumulating pixels forever.
 const FALLBACK_ROW_HEIGHT_PX = 18;
@@ -74,6 +81,12 @@ export const measureTerminalGeometry = (terminal) => {
 // same convention a normal terminal's Page Up/Down control uses.
 const terminalPageLines = (terminal) => Math.max(1, (terminal?.rows ?? 1) - 1);
 
+const wheelDeltaLines = (event, rowHeightPx) => {
+  if (event.deltaMode === WHEEL_DELTA_MODE_LINE) return event.deltaY;
+  if (event.deltaMode === WHEEL_DELTA_MODE_PAGE) return event.deltaY * WHEEL_PAGE_LINES;
+  return event.deltaY / rowHeightPx;
+};
+
 /**
  * Scroll the normal terminal buffer by `lines` (negative = toward older output).
  * Alternate-screen apps have no terminal scrollback, so each requested logical
@@ -114,13 +127,30 @@ export const attachTerminalWheelScroll = (terminal) => {
   const el = terminal?.element;
   if (!el?.addEventListener) return () => {};
 
+  let remainderLines = 0;
+  const rowHeightPx = measureTerminalGeometry(terminal).rowHeightPx;
+
   const onWheel = (event) => {
-    if (!isAltBuffer(terminal) || !event.deltaY || event.shiftKey) return;
-    if (!sendTerminalPageKey(terminal, event.deltaY < 0 ? -1 : 1)) return;
+    if (!isAltBuffer(terminal) || !event.deltaY || event.shiftKey) {
+      remainderLines = 0;
+      return;
+    }
+    // An app that enabled terminal mouse tracking owns this wheel event. In
+    // particular, do not turn Vim/htop/tmux mouse input into an extra page key.
+    if (terminal.modes?.mouseTrackingMode !== 'none') {
+      remainderLines = 0;
+      return;
+    }
+
+    const totalLines = remainderLines + wheelDeltaLines(event, rowHeightPx);
+    const pages = Math.trunc(totalLines / WHEEL_PAGE_LINES);
+    remainderLines = totalLines - pages * WHEEL_PAGE_LINES;
+    // xterm's alternate-buffer fallback sends cursor keys for this event. Swallow
+    // it even before a page threshold is reached so a small trackpad delta cannot
+    // leak an unsupported sequence into the TUI.
     if (event.cancelable) event.preventDefault();
-    // xterm's mouse listener is on the same terminal element. Stop it before it
-    // turns this wheel into an unsupported mouse report for the TUI.
     event.stopImmediatePropagation();
+    if (pages) scrollTerminalLines(terminal, pages);
   };
 
   el.addEventListener('wheel', onWheel, { capture: true, passive: false });

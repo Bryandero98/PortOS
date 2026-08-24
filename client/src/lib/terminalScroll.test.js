@@ -12,7 +12,7 @@ import {
 // A stand-in for the xterm instance carrying only what this module reads. The real
 // Terminal is not needed here: these tests pin the event ownership and key sequence
 // that the Shell's xterm instance exposes to the PTY.
-const makeTerminal = ({ alt = true, rows = 24, height = 480 } = {}) => {
+const makeTerminal = ({ alt = true, rows = 24, height = 480, mouseTrackingMode = 'none' } = {}) => {
   const el = document.createElement('div');
   const screen = document.createElement('div');
   screen.className = 'xterm-screen';
@@ -23,6 +23,7 @@ const makeTerminal = ({ alt = true, rows = 24, height = 480 } = {}) => {
     element: el,
     rows,
     buffer: { active: { type: alt ? 'alternate' : 'normal' } },
+    modes: { mouseTrackingMode },
     input: vi.fn(),
     scrollLines: vi.fn(),
   };
@@ -149,10 +150,29 @@ describe('attachTerminalWheelScroll', () => {
     detach();
   });
 
+  it('accumulates small pixel-mode deltas before sending a page key', () => {
+    const term = makeTerminal({ rows: 24, height: 480 }); // 20px rows, four-line threshold
+    const xtermListener = vi.fn();
+    term.element.addEventListener('wheel', xtermListener);
+    const detach = attachTerminalWheelScroll(term);
+
+    for (let i = 0; i < 3; i++) {
+      const event = new WheelEvent('wheel', { deltaY: -20, bubbles: true, cancelable: true });
+      term.element.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+    }
+    expect(term.input).not.toHaveBeenCalled();
+
+    term.element.dispatchEvent(new WheelEvent('wheel', { deltaY: -20, bubbles: true, cancelable: true }));
+    expect(term.input).toHaveBeenCalledWith('\x1b[5~', false);
+    expect(xtermListener).not.toHaveBeenCalled();
+    detach();
+  });
+
   it('maps a downward wheel to PageDown', () => {
     const term = makeTerminal();
     const detach = attachTerminalWheelScroll(term);
-    term.element.dispatchEvent(new WheelEvent('wheel', { deltaY: 1, bubbles: true, cancelable: true }));
+    term.element.dispatchEvent(new WheelEvent('wheel', { deltaY: 80, bubbles: true, cancelable: true }));
     expect(term.input).toHaveBeenCalledWith('\x1b[6~', false);
     detach();
   });
@@ -179,6 +199,21 @@ describe('attachTerminalWheelScroll', () => {
     term.element.dispatchEvent(event);
     expect(term.input).not.toHaveBeenCalled();
     expect(xtermListener).toHaveBeenCalledTimes(1);
+    detach();
+  });
+
+  it('leaves wheel input to xterm when the app enabled mouse tracking', () => {
+    const term = makeTerminal({ mouseTrackingMode: 'any' });
+    const xtermListener = vi.fn();
+    term.element.addEventListener('wheel', xtermListener);
+    const detach = attachTerminalWheelScroll(term);
+    const event = new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true });
+
+    term.element.dispatchEvent(event);
+
+    expect(term.input).not.toHaveBeenCalled();
+    expect(xtermListener).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(false);
     detach();
   });
 
