@@ -50,6 +50,31 @@ vi.mock('../services/settings.js', () => ({
   getSettings: vi.fn(async () => ({ imageGen: { mode: 'external' } })),
 }));
 
+// Route tests assert the historical local default (`dev`) and python setup
+// errors, not host admission. Use a stable capable host so those assertions
+// behave the same on macOS, Linux, and Windows runners.
+vi.mock('../lib/systemCapabilities.js', async () => {
+  const actual = await vi.importActual('../lib/systemCapabilities.js');
+  return {
+    ...actual,
+    captureSystemCapabilities: vi.fn(() => ({
+      version: actual.SYSTEM_CAPABILITIES_VERSION,
+      platform: 'darwin',
+      arch: 'arm64',
+      appleSilicon: true,
+      cpuCount: 8,
+      totalMemoryGb: 128,
+      cuda: {
+        status: 'absent',
+        gpus: [],
+        maxVramGb: null,
+        primaryComputeCap: null,
+        error: null,
+      },
+    })),
+  };
+});
+
 vi.mock('../services/mediaJobQueue/index.js', () => ({
   enqueueJob: vi.fn(({ kind }) => ({ jobId: `mock-${kind}-job`, position: 1, status: 'queued' })),
   attachSseClient: vi.fn(() => false),
