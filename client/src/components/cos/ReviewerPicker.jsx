@@ -57,8 +57,8 @@ const normalizeReviewerValue = (value) => normalizeReviewerSlug(value);
  * however it persists them.
  *
  * `modelOptions` is the resolved model-picker data, shaped like
- * `useReviewerModelOptions()`'s return: `{ optionsByReviewer, freeText,
- * unavailable, loaded }`. Callers keep owning their own
+ * `useReviewerModelOptions()`'s return: `{ optionsByReviewer, defaultModels,
+ * freeText, unavailable, loaded }`. Callers keep owning their own
  * `api.getLocalLlmStatus` / `api.getProviders` fetches (that's what the hook is
  * for) — passing nothing degrades every Model cell to a free-text input, which is
  * still fully usable, rather than hiding the column.
@@ -361,7 +361,9 @@ export default function ReviewerPicker({
   const renderModelCell = (token) => {
     if (!MODEL_SELECTABLE_REVIEWERS.includes(token)) return renderNoPinCell(`${reviewerLabel(token)} takes no model`);
     const subject = reviewerLabel(token);
-    const value = models.get(token) ?? '';
+    const pinnedValue = models.get(token);
+    const value = pinnedValue ?? '';
+    const defaultModel = modelOptions?.defaultModels?.[token] || '';
     const options = modelOptions?.optionsByReviewer?.[token] || [];
     const inputId = `${id}-model-${token}`;
     const listId = `${id}-modellist-${token}`;
@@ -380,12 +382,14 @@ export default function ReviewerPicker({
     if (!freeText) {
       return renderPinSelect({
         selectId: inputId,
-        value,
+        value: value || (defaultModel && options.includes(defaultModel) ? defaultModel : ''),
         options,
         onChange: (model) => setModel(token, model),
         ariaLabel: `Model for ${subject}`,
         title: value
           ? `${subject} reviews with ${value}. Choose "default" to let it pick.`
+          : defaultModel
+            ? `${subject} uses ${defaultModel} by default. Choose another model to pin it for this run.`
           : `${subject} uses the model configured for its backend. Pick one to pin it for this run.`,
         staleSuffix: '(not installed)',
         setClass: 'text-port-accent border-port-accent/50',
@@ -399,15 +403,17 @@ export default function ReviewerPicker({
           id={inputId}
           type="text"
           list={options.length ? listId : undefined}
-          value={value}
+          value={value || defaultModel}
           disabled={disabled}
           maxLength={MAX_REVIEWER_MODEL_LENGTH}
-          placeholder="default"
+          placeholder={defaultModel ? `${defaultModel} (default)` : 'default'}
           onChange={(e) => setModel(token, e.target.value)}
           aria-label={`Model for ${subject}`}
           title={value
             ? `${subject} reviews with ${value}. Clear to let it use its own default.`
-            : (emptyHint || `${subject} uses its own default model. Type or pick an id to pin one.`)}
+            : (defaultModel
+              ? `${subject} uses ${defaultModel} by default. Type or pick another id to pin one.`
+              : (emptyHint || `${subject} uses its own default model. Type or pick an id to pin one.`))}
           className={`w-full min-w-0 max-w-[190px] px-1.5 py-0.5 text-[11px] font-mono rounded border bg-port-bg min-h-[28px] disabled:opacity-40 focus:outline-none focus:border-port-accent ${value
             ? 'text-port-accent border-port-accent/50'
             : 'text-gray-500 border-port-border/60'}`}
@@ -466,14 +472,15 @@ export default function ReviewerPicker({
     emit({ reviewers: next });
   };
 
-  // Shared row grid. Desktop is a 5-column table (order · provider · model ·
-  // optional · max · remove); under `sm` it collapses to a stacked 2-column
-  // label/value block so a narrow screen never needs horizontal scrolling. The
-  // header row is desktop-only — on mobile each cell carries its own inline
-  // label, since a header far above a stacked row doesn't associate.
-  const ROW_CLASS = 'grid grid-cols-[auto_1fr] sm:grid-cols-[2.5rem_minmax(5rem,1fr)_minmax(0,2fr)_minmax(0,7rem)_auto_3.25rem_auto] items-center gap-x-2 gap-y-1 px-1.5 py-1.5 rounded border border-port-border bg-port-bg sm:border-transparent sm:bg-transparent sm:py-0.5 sm:rounded-none';
+  // Shared row grid. Desktop keeps minimum tracks for order, provider, model,
+  // effort, optional, max, and remove; under `sm` it collapses to a stacked
+  // 2-column label/value block so a narrow screen never needs horizontal
+  // scrolling. The header row is desktop-only — on mobile each cell carries
+  // its own inline label, since a header far above a stacked row doesn't
+  // associate.
+  const ROW_CLASS = 'grid grid-cols-[auto_1fr] sm:grid-cols-[2.5rem_minmax(5rem,1fr)_minmax(8rem,2fr)_minmax(7rem,1fr)_auto_3.25rem_auto] items-center gap-x-2 gap-y-1 px-1.5 py-1.5 rounded border border-port-border bg-port-bg sm:border-transparent sm:bg-transparent sm:py-0.5 sm:rounded-none';
   const CELL_LABEL_CLASS = 'sm:hidden text-[10px] uppercase tracking-wide text-gray-600';
-  const HEADER_CLASS = 'hidden sm:grid sm:grid-cols-[2.5rem_minmax(5rem,1fr)_minmax(0,2fr)_minmax(0,7rem)_auto_3.25rem_auto] items-center gap-x-2 px-1.5 text-[10px] uppercase tracking-wide text-gray-600';
+  const HEADER_CLASS = 'hidden sm:grid sm:grid-cols-[2.5rem_minmax(5rem,1fr)_minmax(8rem,2fr)_minmax(7rem,1fr)_auto_3.25rem_auto] items-center gap-x-2 px-1.5 text-[10px] uppercase tracking-wide text-gray-600';
 
   return (
     <div className="flex flex-col gap-2 w-full">
@@ -556,9 +563,12 @@ export default function ReviewerPicker({
       </div>
 
       {(selected.length > 0 || selectedUsernames.length > 0) && (
-        <span className="text-[11px] text-gray-600">
-          Tip: <span className="font-mono text-port-accent">Model</span> pins the model that reviewer runs (blank = its own default), and <span className="font-mono text-port-accent-2">Effort</span> pins how hard it reasons — higher is slower and pricier, and each reviewer only offers the tiers its own CLI accepts. The <span className="font-mono text-port-warning">~opt</span> badge marks a reviewer <em>non-blocking</em> — it still runs and its findings are still fixed, but an inconclusive verdict (timeout / no result) won't block the merge. A hard failure still does. <span className="font-mono text-port-accent-2">Max</span> caps that reviewer's review → fix → re-review rounds (blank = its built-in cap, <span className="font-mono">0</span> = loop until clean) — a small cap keeps a slow local model affordable.
-        </span>
+        <details className="text-[11px] text-gray-600">
+          <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-300">Tip: reviewer controls</summary>
+          <p className="mt-1">
+            <span className="font-mono text-port-accent">Model</span> pins the model that reviewer runs (the shown default is used when no override is saved), and <span className="font-mono text-port-accent-2">Effort</span> pins how hard it reasons — higher is slower and pricier, and each reviewer only offers the tiers its own CLI accepts. The <span className="font-mono text-port-warning">~opt</span> badge marks a reviewer <em>non-blocking</em> — it still runs and its findings are still fixed, but an inconclusive verdict (timeout / no result) won't block the merge. A hard failure still does. <span className="font-mono text-port-accent-2">Max</span> caps that reviewer's review → fix → re-review rounds (blank = its built-in cap, <span className="font-mono">0</span> = loop until clean) — a small cap keeps a slow local model affordable.
+          </p>
+        </details>
       )}
 
       {available.length > 0 && (

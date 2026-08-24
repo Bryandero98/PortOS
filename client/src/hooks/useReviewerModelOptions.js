@@ -38,7 +38,7 @@ import { reviewerEffortLevels, normalizeReviewerSlug } from '../lib/reviewerPins
  * reviewer returns its static ladder. Lives here rather than in the picker so the
  * picker keeps doing no fetching of its own.
  *
- * @returns {{ optionsByReviewer: Record<string, string[]>, freeText: Record<string, boolean>, unavailable: Record<string, boolean>, modelEffortLevels: (reviewer: string, model?: string|null) => readonly string[]|null, loaded: boolean, reviewers: string[] }}
+ * @returns {{ optionsByReviewer: Record<string, string[]>, defaultModels: Record<string, string|null>, freeText: Record<string, boolean>, unavailable: Record<string, boolean>, modelEffortLevels: (reviewer: string, model?: string|null) => readonly string[]|null, loaded: boolean, reviewers: string[] }}
  */
 export default function useReviewerModelOptions() {
   const [localStatus, setLocalStatus] = useState(null);
@@ -71,8 +71,11 @@ export default function useReviewerModelOptions() {
     // `grok` names one binary that ships as BOTH a `cli` and a `tui` provider, and
     // the reviewer is spawned non-interactively, so the CLI's catalog wins — the
     // broad predicate is the fallback for an install that only kept the TUI.
+    const providerFor = (...matchers) =>
+      matchers.reduce((found, match) => found || (providers || []).find(match), null);
+
     const providerTiers = (...matchers) => {
-      const provider = matchers.reduce((found, match) => found || (providers || []).find(match), null);
+      const provider = providerFor(...matchers);
       if (!provider) return [];
       // `models` may be empty on a CLI provider configured with only a
       // defaultModel — `[]` is truthy, so a bare `||` wouldn't fall through.
@@ -82,6 +85,25 @@ export default function useReviewerModelOptions() {
       // separate Effort cell stays the effort control). Going through it rather
       // than special-casing agy here keeps the rule in one place.
       return filterSelectableModels(selectableModelsForProvider(provider, models));
+    };
+
+    // Show the configured provider default in the picker even when the user has
+    // not saved a per-reviewer override. A concrete default is useful context;
+    // configured-default sentinels intentionally resolve to null because the CLI
+    // owns the choice and there is no model id PortOS can honestly display.
+    const providerDefault = (...matchers) => {
+      const provider = providerFor(...matchers);
+      if (!provider?.defaultModel) return null;
+      return filterSelectableModels(
+        selectableModelsForProvider(provider, [provider.defaultModel])
+      ).find(Boolean) || null;
+    };
+
+    // Local backend model lists come from the live runtime probe, so only show a
+    // provider default when it is present in that authoritative list.
+    const localDefault = (backend) => {
+      const candidate = providerFor((p) => p.id === backend)?.defaultModel;
+      return candidate && localIds(backend).includes(candidate) ? candidate : null;
     };
 
     const ollama = localIds('ollama');
@@ -99,6 +121,16 @@ export default function useReviewerModelOptions() {
       // regardless because grok, like every CLI reviewer, is free-text.
       grok: providerTiers((p) => p.id === 'grok-cli', isGrokBuildCli),
       cursor: providerTiers((p) => p.id === 'cursor-cli', (p) => p.id === 'cursor-tui'),
+    };
+
+    const defaultModels = {
+      lmstudio: localDefault('lmstudio'),
+      ollama: localDefault('ollama'),
+      codex: providerDefault((p) => p.id === 'codex'),
+      claude: providerDefault((p) => p.id === 'claude-code'),
+      antigravity: providerDefault(isAntigravityProvider),
+      grok: providerDefault((p) => p.id === 'grok-cli', isGrokBuildCli),
+      cursor: providerDefault((p) => p.id === 'cursor-cli', (p) => p.id === 'cursor-tui'),
     };
 
     // The agy provider's RAW catalog — one id per effort tier
@@ -121,6 +153,7 @@ export default function useReviewerModelOptions() {
 
     return {
       optionsByReviewer,
+      defaultModels,
       modelEffortLevels,
       // A local backend's id list is authoritative (we probed it), so keep those
       // pickers a closed `<select>`. Every CLI reviewer is free-text: `claude` for
