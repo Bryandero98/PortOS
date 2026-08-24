@@ -1,8 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import CronSchedulePicker from './CronSchedulePicker.jsx';
 
 describe('CronSchedulePicker', () => {
+  afterEach(() => vi.useRealTimers());
+
   it('edits an arbitrary weekly interval without losing the weekday', () => {
     const onChange = vi.fn();
     render(
@@ -51,5 +53,23 @@ describe('CronSchedulePicker', () => {
       kind: 'RECURRENCE',
       recurrence: expect.objectContaining({ frequency: 'weekly', interval: 2, weekdays: [1] }),
     }));
+  });
+
+  it('anchors new intervals in the configured timezone', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-31T00:30:00.000Z'));
+    const onChange = vi.fn();
+    render(
+      <CronSchedulePicker
+        value={{ frequency: 'weekly', interval: 1, weekdays: [0], time: '02:00' }}
+        valueShape="recurrence"
+        timezone="America/Los_Angeles"
+        onChange={onChange}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Repeat every number of weeks'), { target: { value: '2' } });
+
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ anchorDate: '2026-08-30' }));
   });
 });

@@ -110,5 +110,11 @@ describe('calendar recurrence helpers', () => {
     expect(buildCronFromRecurrence(rule)).toBe('');
     expect(describeRecurrence(rule)).toBe('Last Thu of every month at 19:00');
   });
+
+  it('keeps the interval in weekday-restricted daily descriptions', () => {
+    expect(describeRecurrence({
+      frequency: 'daily', interval: 2, weekdays: [1, 2, 3, 4, 5], time: '08:00'
+    })).toBe('Every 2 days on Mon, Tue, Wed, Thu, Fri at 08:00');
+  });
 });
 // @vitest-environment node

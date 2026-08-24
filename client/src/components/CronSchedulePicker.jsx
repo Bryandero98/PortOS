@@ -10,34 +10,38 @@ import {
   describeRecurrence,
   parseCronToRecurrence,
 } from '../utils/cronHelpers';
+import { shiftDayKey, todayKeyInTimezone } from '../utils/timezone.js';
 
 const WEEKDAY_SET = WEEKDAYS.filter(day => day.value >= 1 && day.value <= 5).map(day => day.value);
 
-const localDateKey = (date = new Date()) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-
-function nextWeekdayDate(days) {
-  const selected = Array.isArray(days) && days.length ? days : [1];
-  const date = new Date();
-  const today = date.getDay();
-  const delta = Math.min(...selected.map(day => (day - today + 7) % 7));
-  date.setDate(date.getDate() + delta);
-  return localDateKey(date);
+function dayOfWeekInTimezone(date, timezone) {
+  try {
+    const weekday = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone || undefined,
+      weekday: 'short',
+    }).format(date);
+    return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(weekday);
+  } catch {
+    return date.getDay();
+  }
 }
 
-function withAnchor(rule) {
+function nextWeekdayDate(days, timezone) {
+  const selected = Array.isArray(days) && days.length ? days : [1];
+  const today = dayOfWeekInTimezone(new Date(), timezone);
+  const delta = Math.min(...selected.map(day => (day - today + 7) % 7));
+  return shiftDayKey(todayKeyInTimezone(timezone), delta);
+}
+
+function withAnchor(rule, timezone) {
   if (rule.frequency === 'weekly' && Number(rule.interval) > 1 && !rule.anchorDate) {
-    return { ...rule, anchorDate: nextWeekdayDate(rule.weekdays) };
+    return { ...rule, anchorDate: nextWeekdayDate(rule.weekdays, timezone) };
   }
   if (rule.frequency.startsWith('monthly') && Number(rule.interval) > 1 && !rule.anchorDate) {
-    return { ...rule, anchorDate: localDateKey() };
+    return { ...rule, anchorDate: todayKeyInTimezone(timezone) };
   }
   if (rule.frequency === 'daily' && Number(rule.interval) > 1 && !rule.anchorDate) {
-    return { ...rule, anchorDate: localDateKey() };
+    return { ...rule, anchorDate: todayKeyInTimezone(timezone) };
   }
   return rule;
 }
@@ -72,7 +76,7 @@ function commissionToRule(schedule) {
   };
 }
 
-function ruleToCommission(rule, previous) {
+function ruleToCommission(rule, previous, timezone) {
   const preserved = previous?.timezone ? { timezone: previous.timezone } : {};
   if (rule.frequency === 'custom') return { ...preserved, kind: 'CUSTOM', cron: String(rule.cron || '').trim() };
 
@@ -84,12 +88,12 @@ function ruleToCommission(rule, previous) {
     return { ...preserved, kind: 'WEEKLY', weekday: days[0], atLocalTime: rule.time || DEFAULT_TIME };
   }
   if (rule.frequency === 'weekly' && days.length === 1) {
-    return { ...preserved, kind: 'RECURRENCE', recurrence: withAnchor({ ...rule, weekdays: days }) };
+    return { ...preserved, kind: 'RECURRENCE', recurrence: withAnchor({ ...rule, weekdays: days }, timezone) };
   }
   return {
     ...preserved,
     kind: 'RECURRENCE',
-    recurrence: withAnchor({ ...rule, weekdays: days }),
+    recurrence: withAnchor({ ...rule, weekdays: days }, timezone),
   };
 }
 
@@ -203,12 +207,12 @@ function CronExpressionPicker({ value, onChange, className, showAdvanced, showSu
   );
 }
 
-function RecurrenceRulePicker({ value, onChange, className, showAdvanced = true }) {
+function RecurrenceRulePicker({ value, onChange, className, showAdvanced = true, timezone }) {
   const [advanced, setAdvanced] = useState(showAdvanced);
   const customCronId = useId();
   const anchorDateId = useId();
   const rule = normalizeRule(value);
-  const update = (patch) => onChange(withAnchor({ ...rule, ...patch }));
+  const update = (patch) => onChange(withAnchor({ ...rule, ...patch }, timezone));
   const setFrequency = (frequency) => {
     const defaults = {
       daily: { frequency, interval: 1, weekdays: [], time: rule.time || DEFAULT_TIME },
@@ -217,7 +221,7 @@ function RecurrenceRulePicker({ value, onChange, className, showAdvanced = true 
       'monthly-weekday': { frequency, interval: 1, ordinal: 'first', weekday: 1, time: rule.time || DEFAULT_TIME },
       custom: { frequency, cron: buildCronFromRecurrence(rule) || DEFAULT_CRON },
     };
-    onChange(withAnchor(defaults[frequency]));
+    onChange(withAnchor(defaults[frequency], timezone));
   };
 
   return (
@@ -387,13 +391,14 @@ function RecurrenceRulePicker({ value, onChange, className, showAdvanced = true 
   );
 }
 
-function CommissionSchedulePicker({ value, onChange, className }) {
+function CommissionSchedulePicker({ value, onChange, className, timezone }) {
   const rule = commissionToRule(value);
   return (
     <RecurrenceRulePicker
       value={rule}
-      onChange={nextRule => onChange(ruleToCommission(nextRule, value))}
+      onChange={nextRule => onChange(ruleToCommission(nextRule, value, timezone))}
       className={className}
+      timezone={timezone}
       showAdvanced
     />
   );
@@ -407,8 +412,8 @@ function CommissionSchedulePicker({ value, onChange, className }) {
  * adapts that same editor to the commission's backwards-compatible schedule
  * descriptor, including DAILY/WEEKLY/CUSTOM records.
  */
-export default function CronSchedulePicker({ value, onChange, className = '', valueShape = 'cron', showAdvanced = true, showSummary = true, cronAriaLabel = 'Cron expression', onCronKeyDown }) {
-  if (valueShape === 'commission') return <CommissionSchedulePicker value={value} onChange={onChange} className={className} />;
-  if (valueShape === 'recurrence') return <RecurrenceRulePicker value={value} onChange={onChange} className={className} showAdvanced={showAdvanced} />;
+export default function CronSchedulePicker({ value, onChange, className = '', valueShape = 'cron', showAdvanced = true, showSummary = true, cronAriaLabel = 'Cron expression', onCronKeyDown, timezone }) {
+  if (valueShape === 'commission') return <CommissionSchedulePicker value={value} onChange={onChange} className={className} timezone={timezone} />;
+  if (valueShape === 'recurrence') return <RecurrenceRulePicker value={value} onChange={onChange} className={className} showAdvanced={showAdvanced} timezone={timezone} />;
   return <CronExpressionPicker value={value} onChange={onChange} className={className} showAdvanced={showAdvanced} showSummary={showSummary} cronAriaLabel={cronAriaLabel} onCronKeyDown={onCronKeyDown} />;
 }

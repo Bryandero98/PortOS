@@ -11,6 +11,7 @@ import EffortSelect from '../EffortSelect';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import FormField from '../../ui/FormField';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
+import useUserTimezone from '../../../hooks/useUserTimezone.js';
 
 const SCHEDULE_MODE_OPTIONS = [
   { value: 'interval', label: 'Interval' },
@@ -187,7 +188,7 @@ function normalizeJobPayload(formData) {
   return payload;
 }
 
-function ScheduleFields({ data, onChange }) {
+function ScheduleFields({ data, onChange, timezone }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
@@ -217,6 +218,7 @@ function ScheduleFields({ data, onChange }) {
           <CronSchedulePicker
             value={data.cronSchedule || data.cronExpression || DEFAULT_CRON}
             valueShape="recurrence"
+            timezone={timezone}
             onChange={rule => {
               onChange('cronSchedule', rule);
               const cron = buildCronFromRecurrence(rule);
@@ -272,7 +274,7 @@ function getJobTypeLabel(job) {
   return 'AI';
 }
 
-function JobCard({ job, apps, providers, onToggle, onTrigger, onDelete, onUpdate }) {
+function JobCard({ job, apps, providers, timezone, onToggle, onTrigger, onDelete, onUpdate }) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editData, setEditData] = useState({});
@@ -323,9 +325,9 @@ function JobCard({ job, apps, providers, onToggle, onTrigger, onDelete, onUpdate
     onUpdate();
   };
 
-  const isDue = job.enabled && (
-    !job.lastRun || (Date.now() - new Date(job.lastRun).getTime() >= job.intervalMs)
-  );
+  const isDue = job.enabled && (job.cronSchedule
+    ? (!job.lastRun || Boolean(job.nextRunAt && Date.now() >= new Date(job.nextRunAt).getTime()))
+    : (!job.lastRun || (Date.now() - new Date(job.lastRun).getTime() >= job.intervalMs)));
 
   return (
     <div className={`bg-port-card border rounded-lg transition-colors ${
@@ -480,7 +482,7 @@ function JobCard({ job, apps, providers, onToggle, onTrigger, onDelete, onUpdate
                   </select>
                 )}
               </div>
-              <ScheduleFields data={editData} onChange={(key, val) => setEditData(d => ({ ...d, [key]: val }))} />
+              <ScheduleFields data={editData} timezone={timezone} onChange={(key, val) => setEditData(d => ({ ...d, [key]: val }))} />
               {isAgentJobType(editData.type) && (
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-gray-400">App scope:</span>
@@ -626,6 +628,7 @@ function JobCard({ job, apps, providers, onToggle, onTrigger, onDelete, onUpdate
 }
 
 export default function JobsTab() {
+  const timezone = useUserTimezone();
   const [jobs, setJobs] = useState([]);
   const [apps, setApps] = useState([]);
   const [providers, setProviders] = useState([]);
@@ -838,7 +841,7 @@ export default function JobsTab() {
                 </select>
               )}
             </div>
-            <ScheduleFields data={newJob} onChange={(key, val) => setNewJob(j => ({ ...j, [key]: val }))} />
+            <ScheduleFields data={newJob} timezone={timezone} onChange={(key, val) => setNewJob(j => ({ ...j, [key]: val }))} />
             {isAgentJobType(newJob.type) && (
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-400">App scope:</span>
@@ -920,6 +923,7 @@ export default function JobsTab() {
               job={job}
               apps={apps}
               providers={providers}
+              timezone={timezone}
               onToggle={handleToggle}
               onTrigger={handleTrigger}
               onDelete={handleDelete}

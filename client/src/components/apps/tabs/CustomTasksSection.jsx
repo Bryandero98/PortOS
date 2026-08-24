@@ -5,6 +5,7 @@ import ToggleSwitch from '../../ToggleSwitch';
 import ConfirmButtonPair from '../../ui/ConfirmButtonPair';
 import FormField from '../../ui/FormField';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
+import useUserTimezone from '../../../hooks/useUserTimezone.js';
 import * as api from '../../../services/api';
 import { timeAgo } from '../../../utils/formatters';
 import { DEFAULT_CRON, describeCron, describeRecurrence, parseCronToRecurrence, buildCronFromRecurrence } from '../../../utils/cronHelpers';
@@ -98,7 +99,7 @@ function scheduleSummary(job) {
   return job.scheduledTime ? `${label} at ${job.scheduledTime}` : label;
 }
 
-function TaskForm({ form, setForm, onSave, onCancel, saveLabel }) {
+function TaskForm({ form, setForm, onSave, onCancel, saveLabel, timezone }) {
   const update = (key, val) => setForm(f => ({ ...f, [key]: val }));
   // Switching to cron seeds the expression with the default the picker displays
   // (07:00 daily) so an untouched picker is actually saveable — otherwise the
@@ -167,6 +168,7 @@ function TaskForm({ form, setForm, onSave, onCancel, saveLabel }) {
             <CronSchedulePicker
               value={form.cronSchedule || form.cronExpression || DEFAULT_CRON}
               valueShape="recurrence"
+              timezone={timezone}
               onChange={rule => {
                 update('cronSchedule', rule);
                 const cron = buildCronFromRecurrence(rule);
@@ -247,6 +249,7 @@ function TaskForm({ form, setForm, onSave, onCancel, saveLabel }) {
 }
 
 export default function CustomTasksSection({ appId, appName }) {
+  const timezone = useUserTimezone();
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -343,7 +346,7 @@ export default function CustomTasksSection({ appId, appName }) {
       </div>
 
       {showCreate && (
-        <TaskForm form={createForm} setForm={setCreateForm} onSave={handleCreate} onCancel={() => setShowCreate(false)} saveLabel="Create" />
+        <TaskForm form={createForm} setForm={setCreateForm} onSave={handleCreate} onCancel={() => setShowCreate(false)} saveLabel="Create" timezone={timezone} />
       )}
 
       {loading ? (
@@ -360,7 +363,7 @@ export default function CustomTasksSection({ appId, appName }) {
             <div key={job.id} className={`bg-port-card border rounded-lg ${job.enabled ? 'border-port-border' : 'border-port-border/50 opacity-70'}`}>
               {editingId === job.id ? (
                 <div className="p-3">
-                  <TaskForm form={editForm} setForm={setEditForm} onSave={handleEditSave} onCancel={() => setEditingId(null)} saveLabel="Save" />
+                  <TaskForm form={editForm} setForm={setEditForm} onSave={handleEditSave} onCancel={() => setEditingId(null)} saveLabel="Save" timezone={timezone} />
                 </div>
               ) : (
                 <div className="p-3 space-y-1">

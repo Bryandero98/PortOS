@@ -17,6 +17,7 @@ import { isProcessProvider } from '../../utils/providers';
 import { getProviders, getSettings, listImageModels, listVideoModels, listMusicEngines } from '../../services/api';
 import { deriveAvailableBackends } from '../../lib/imageGenBackends';
 import CronSchedulePicker from '../CronSchedulePicker';
+import useUserTimezone from '../../hooks/useUserTimezone.js';
 import {
   inputCls, labelCls,
   ABILITY_OPTIONS, GENERATION_FIELDS_BY_ABILITY, mergeGenerationForAbility,
@@ -31,6 +32,8 @@ Describe the cause, not the effect: physics and emotion, not adjectives.
 One causal beat per shot, in order. Diegetic audio only, no music.`;
 
 export default function CommissionConfigForm({ form, patchForm, saving, onSave, onCancel, saveLabel = 'Save' }) {
+  const userTimezone = useUserTimezone();
+
   return (
     <div className="space-y-5">
       {/* Identity */}
@@ -135,6 +138,7 @@ export default function CommissionConfigForm({ form, patchForm, saving, onSave, 
         <CronSchedulePicker
           value={form.schedule}
           valueShape="commission"
+          timezone={form.schedule.timezone || userTimezone}
           onChange={schedule => patchForm(['schedule'], schedule)}
         />
       </section>

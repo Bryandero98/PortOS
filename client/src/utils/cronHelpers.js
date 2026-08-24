@@ -200,7 +200,7 @@ export function describeRecurrence(rule) {
   const interval = Math.max(1, Number(rule.interval) || 1);
   if (rule.frequency === 'daily') {
     const weekdaysOnly = sortedUniqueDays(rule.weekdays).join(',') === '1,2,3,4,5';
-    if (weekdaysOnly) return `Weekdays at ${time}`;
+    if (weekdaysOnly && interval === 1) return `Weekdays at ${time}`;
     const days = sortedUniqueDays(rule.weekdays).map(day => WEEKDAYS[day]?.label || day).join(', ');
     const cadence = interval === 1 ? 'Daily' : `Every ${interval} days`;
     return `${cadence}${days ? ` on ${days}` : ''} at ${time}`;

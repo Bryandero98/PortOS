@@ -37,10 +37,20 @@ vi.mock('../services/eventScheduler.js', () => ({
   isValidRecurrence: vi.fn(() => true),
 }));
 
+vi.mock('../services/autonomousJobs/scheduler.js', () => ({
+  computeNextJobRun: vi.fn(),
+}));
+
+vi.mock('../lib/timezone.js', () => ({
+  getUserTimezone: vi.fn(),
+}));
+
 import * as cos from '../services/cos.js';
 import * as autonomousJobs from '../services/autonomousJobs.js';
 import { checkJobGate, hasGate, getRegisteredGates } from '../services/jobGates.js';
 import { parseCronToNextRun } from '../services/eventScheduler.js';
+import { computeNextJobRun } from '../services/autonomousJobs/scheduler.js';
+import { getUserTimezone } from '../lib/timezone.js';
 
 describe('CoS Job Routes', () => {
   let app;
@@ -56,9 +66,9 @@ describe('CoS Job Routes', () => {
   describe('GET /api/cos/jobs', () => {
     it('should return all jobs with gates and stats', async () => {
       autonomousJobs.getAllJobs.mockResolvedValue([{ id: 'j1', name: 'Review' }]);
-      autonomousJobs.getJobStats.mockResolvedValue({ total: 1 });
-      hasGate.mockReturnValue(false);
-      getRegisteredGates.mockReturnValue([]);
+    autonomousJobs.getJobStats.mockResolvedValue({ total: 1 });
+    hasGate.mockReturnValue(false);
+    getRegisteredGates.mockReturnValue([]);
 
       const response = await request(app).get('/api/cos/jobs');
 
@@ -66,6 +76,22 @@ describe('CoS Job Routes', () => {
       expect(response.body.jobs).toHaveLength(1);
       expect(response.body.jobs[0].hasGate).toBe(false);
       expect(response.body.stats).toHaveProperty('total');
+    });
+
+    it('projects the next run for rich recurrence jobs', async () => {
+      const cronSchedule = { frequency: 'weekly', interval: 2, weekdays: [1], time: '02:00', anchorDate: '2026-08-31' };
+      autonomousJobs.getAllJobs.mockResolvedValue([{ id: 'j1', name: 'Biweekly', cronSchedule }]);
+      autonomousJobs.getJobStats.mockResolvedValue({ total: 1 });
+      getUserTimezone.mockResolvedValue('UTC');
+      computeNextJobRun.mockReturnValue(Date.parse('2026-08-31T02:00:00.000Z'));
+      hasGate.mockReturnValue(false);
+      getRegisteredGates.mockReturnValue([]);
+
+      const response = await request(app).get('/api/cos/jobs');
+
+      expect(response.status).toBe(200);
+      expect(computeNextJobRun).toHaveBeenCalledWith(expect.objectContaining({ id: 'j1' }), 'UTC');
+      expect(response.body.jobs[0].nextRunAt).toBe('2026-08-31T02:00:00.000Z');
     });
   });
 

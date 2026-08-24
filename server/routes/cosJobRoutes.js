@@ -6,7 +6,9 @@ import { Router } from 'express';
 import * as cos from '../services/cos.js';
 import * as autonomousJobs from '../services/autonomousJobs.js';
 import { checkJobGate, hasGate, getRegisteredGates } from '../services/jobGates.js';
+import { computeNextJobRun } from '../services/autonomousJobs/scheduler.js';
 import { parseCronToNextRun, isValidRecurrence } from '../services/eventScheduler.js';
+import { getUserTimezone } from '../lib/timezone.js';
 import { asyncHandler, ServerError, failValidation } from '../lib/errorHandler.js';
 import { createCosJobSchema, updateCosJobSchema } from '../lib/validation.js';
 
@@ -40,7 +42,18 @@ function validateRecurrenceRule(rule) {
 router.get('/jobs', asyncHandler(async (req, res) => {
   const jobs = await autonomousJobs.getAllJobs();
   const stats = await autonomousJobs.getJobStats();
-  const jobsWithGates = jobs.map(j => ({ ...j, hasGate: hasGate(j.id) }));
+  const recurrenceJobs = jobs.filter(job => job.cronSchedule);
+  const timezone = recurrenceJobs.length ? await getUserTimezone() : null;
+  const jobsWithGates = jobs.map(j => {
+    const nextRun = j.cronSchedule && isValidRecurrence(j.cronSchedule)
+      ? computeNextJobRun(j, timezone)
+      : null;
+    return {
+      ...j,
+      hasGate: hasGate(j.id),
+      ...(j.cronSchedule ? { nextRunAt: Number.isFinite(nextRun) ? new Date(nextRun).toISOString() : null } : {})
+    };
+  });
   res.json({ jobs: jobsWithGates, stats, registeredGates: getRegisteredGates() });
 }));
 

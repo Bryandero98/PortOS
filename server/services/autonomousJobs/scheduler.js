@@ -99,6 +99,35 @@ async function getDueJobs() {
 }
 
 /**
+ * Compute one job's next scheduled timestamp.
+ * @param {Object} job
+ * @param {string} timezone
+ * @returns {number|null} UTC timestamp in milliseconds
+ */
+export function computeNextJobRun(job, timezone) {
+  if (job.cronSchedule || job.cronExpression) {
+    const from = job.lastRun ? new Date(job.lastRun) : new Date()
+    const next = job.cronSchedule
+      ? parseRecurrenceToNextRun(job.cronSchedule, from, timezone)
+      : parseCronToNextRun(job.cronExpression, from, timezone)
+    return next?.getTime() ?? null
+  }
+
+  const lastRun = job.lastRun ? new Date(job.lastRun).getTime() : 0
+  let nextDue = lastRun + job.intervalMs
+
+  if (job.scheduledTime) {
+    const match = String(job.scheduledTime).match(/^([01]\d|2[0-3]):([0-5]\d)$/)
+    if (match) {
+      const candidate = nextLocalTime(nextDue, Number(match[1]), Number(match[2]), timezone)
+      if (candidate > nextDue) nextDue = candidate
+    }
+  }
+
+  return Number.isFinite(nextDue) ? nextDue : null
+}
+
+/**
  * Get the next job that will be due
  * @returns {Promise<Object|null>}
  */
@@ -111,30 +140,8 @@ async function getNextDueJob() {
   let earliestTime = Infinity
 
   for (const job of enabledJobs) {
-    let nextDue
-
-    if (job.cronSchedule || job.cronExpression) {
-      // Cron-mode: derive next due from cron expression
-      const from = job.lastRun ? new Date(job.lastRun) : new Date()
-      const next = job.cronSchedule
-        ? parseRecurrenceToNextRun(job.cronSchedule, from, timezone)
-        : parseCronToNextRun(job.cronExpression, from, timezone)
-      if (!next) continue
-      nextDue = next.getTime()
-    } else {
-      // Interval-mode
-      const lastRun = job.lastRun ? new Date(job.lastRun).getTime() : 0
-      nextDue = lastRun + job.intervalMs
-
-      // If job has scheduledTime, find next occurrence in user's timezone
-      if (job.scheduledTime) {
-        const match = String(job.scheduledTime).match(/^([01]\d|2[0-3]):([0-5]\d)$/)
-        if (match) {
-          const candidate = nextLocalTime(nextDue, Number(match[1]), Number(match[2]), timezone)
-          if (candidate > nextDue) nextDue = candidate
-        }
-      }
-    }
+    const nextDue = computeNextJobRun(job, timezone)
+    if (nextDue == null) continue
 
     if (nextDue < earliestTime) {
       earliestTime = nextDue
