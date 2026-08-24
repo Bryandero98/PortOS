@@ -1421,140 +1421,39 @@ Repository: {repoPath}
 
 Repository: {repoPath}
 
-Check if {appName} has accumulated enough work for a release, following the project's own documented release process.
+This scheduled task is a thin coordinator for {appName}'s release. The bundled slashdo \`release\` workflow is the single source of truth for release mechanics. Do not duplicate its branch, version, changelog, readiness, test/build, PR, review, CI, merge, tag, or report steps here.
 
-## Step 0: Discover the Release Process
+## Step 0: Reconcile Missing Releases
 
-You need to determine these values (use angle-bracket names as placeholders in subsequent steps):
-- \`<SOURCE_BRANCH>\` — where development happens
-- \`<TARGET_BRANCH>\` — where releases go
-- Changelog format and location
-- Pre-release checks (tests, builds)
-- Push/rebase conventions
-
-First, extract \`<OWNER>\` and \`<REPO>\`:
+Before evaluating unreleased work, determine \`<OWNER>\`, \`<REPO>\`, and \`<TARGET_BRANCH>\` from the repository's AGENTS.md (or CLAUDE.md) and release documentation. If the project does not document a release flow, use the repository's default branch. Extract the GitHub project identity with:
 \`\`\`bash
 cd {repoPath} && gh repo view --json owner,name --jq '"OWNER=" + .owner.login + " REPO=" + .name'
 \`\`\`
 
-Then search for release documentation. Check your AGENTS.md (or CLAUDE.md) context (already provided above) for "Git Workflow", "Release", or "Changelog" sections. If the release process is not clear from those instructions, check these files in order (use whichever exist):
-1. \`cat {repoPath}/README.md\` — look for release/deployment/workflow sections
-2. \`cat {repoPath}/.changelog/README.md\` — changelog format and release conventions
-3. \`cat {repoPath}/CONTRIBUTING.md\` — contributing/release guidelines
-4. \`ls {repoPath}/docs/\` — look for release process docs (e.g., RELEASE.md, DEPLOY.md)
-5. \`ls {repoPath}/.github/workflows/\` — infer branch flow from CI workflow triggers
-6. \`gh api repos/<OWNER>/<REPO>/branches --jq '.[].name'\` — list branches to identify the flow
-
-If no documentation specifies a release flow, fall back to: source=dev, target=main.
-
-## Step 1: Reconcile Missing Releases
-
-BEFORE evaluating unreleased work, check for existing release tags that lack a corresponding GitHub Release:
+Check for existing release tags that lack a corresponding GitHub Release:
 1. \`git -C {repoPath} fetch --tags origin\`
-2. List all version tags (e.g., \`v*\`) on \`<TARGET_BRANCH>\` / \`origin\` and list published GitHub Releases:
+2. List version tags on \`<TARGET_BRANCH>\` / \`origin\` and published releases:
    \`\`\`bash
    gh release list --repo <OWNER>/<REPO> --limit 100
    \`\`\`
-3. Compare every release tag \`vX.Y.Z\` against published GitHub Releases. If a tag \`vX.Y.Z\` exists but has no corresponding GitHub Release:
-   - Report the missing release version explicitly: "Unpublished release detected: vX.Y.Z".
-   - Locate the changelog body for \`vX.Y.Z\` (e.g., \`.changelog/vX.Y.Z.md\` or \`.changelog/vX.Y.x.md\`).
-   - Check if a newer version tag or release exists.
-   - Publish the missing release using \`gh release create "vX.Y.Z"\`:
-     - Use \`.changelog/vX.Y.Z.md\` (or the assembled changelog for that version) as the release body (\`--notes-file\` or \`--body-file\`).
-     - Pass \`--latest=false\` if a newer version tag or release is already published, so backfilling an old version never displaces the current Latest release. Pass \`--latest\` only if \`vX.Y.Z\` is the newest version.
-4. Report any missing releases reconciled before proceeding to Step 2.
+3. Compare every \`vX.Y.Z\` tag with published releases. For each missing release:
+   - Report it explicitly as "Unpublished release detected: vX.Y.Z".
+   - Find its changelog body (for example, \`.changelog/vX.Y.Z.md\` or \`.changelog/vX.Y.x.md\`).
+   - Check whether a newer version exists.
+   - Publish it with \`gh release create "vX.Y.Z"\`, using \`--notes-file\` or \`--body-file\`; pass \`--latest=false\` when a newer release exists, and \`--latest\` only for the newest version.
+4. Report missing releases reconciled before continuing.
 
-## Step 2: Evaluate Readiness
+The canonical workflow owns readiness and should count both the current changelog and any uncollected per-branch fragments (for example, \`.changelog/next/\`) across the assembled notes. If the changelog README documents a preview/collect command, use only that documented command — Do NOT guess a command name. If fewer than two substantive entries remain, stop without creating a release PR.
 
-Using the changelog location discovered in Step 0:
-- Read the current changelog (e.g., \`.changelog/NEXT.md\` or \`.changelog/v*.x.md\`)
-- **Also read the entries not yet folded into that file.** Repos that collect per-branch fragments (e.g. \`.changelog/next/\`, so parallel agents don't conflict on a shared file) keep unreleased entries there until the release collects them, so the staged file alone under-counts the work. Read the fragment directory directly, and if the repo's changelog README documents a preview/collect command, use that to assemble the unreleased notes in one call. Do NOT guess a command name — only run one this repo actually documents.
-- Read the current version: \`node -p "require('{repoPath}/package.json').version"\` or equivalent
+If the release docs identify a separate database-backed test suite, the canonical workflow must first use the documented test-database provisioning/setup command and then run that suite against an isolated test database. The workflow must never substitute a production database; if the isolated setup cannot reach its documented service, report the environmental blocker and stop.
 
-Count substantive entries (lines starting with "###" or "- **" under Features, Fixes, Improvements sections) across the **assembled** unreleased notes — the staged file plus any uncollected fragments. If fewer than 2 substantive entries exist, stop and report: "Not enough work accumulated for a release." Do NOT create a PR.
+## Step 1: Run the canonical release workflow
 
-## Step 3: Verify Clean State
+The PortOS Code Review Defaults rendered into \`{reviewers}\` are authoritative for this run. Use exactly that reviewer list and no other. The task builder attaches the same list to the bundled slashdo invocation; do not invoke a bare workflow that falls back to saved slashdo defaults. PortOS-only configured reviewers still run through the Local Reviewer Procedure appended to this prompt. If the reviewer list is empty or unavailable, stop before creating or updating a release PR.
 
-Run these checks on \`<SOURCE_BRANCH>\` (stop if any fail):
-1. \`git -C {repoPath} fetch origin\` and ensure \`<SOURCE_BRANCH>\` is up to date
-2. Run the project's test suite (use the command from release docs). If the
-   release docs identify a separate database-backed test suite, first run the
-   documented test-database provisioning/setup command, then run that database
-   test command as well. Keep the database test target isolated from any real
-   user database; never substitute a production database just to make tests
-   pass. If setup cannot reach the documented database service, report the
-   environmental blocker and stop before creating the release PR.
-3. Run the project's build (use the command from release docs)
+Run the bundled \`/do:release\` workflow (or its equivalent \`release\` skill) exactly once, in autonomous mode with no \`--interactive\` flag. It owns release readiness, version/changelog finalization, tests/build, local review, PR creation, the configured reviewer loop, CI, merge, tagging, and the final report. If it cannot run or a configured reviewer is unavailable or inconclusive, stop and report instead of substituting another reviewer.
 
-## Step 4: Create or Find PR
-
-Check for existing PR: \`gh pr list --repo <OWNER>/<REPO> --base <TARGET_BRANCH> --head <SOURCE_BRANCH> --state open --json number,url\`
-
-If a PR exists, use it. If not, create one following the project's documented release PR conventions.
-
-Capture the PR number as \`<PR_NUM>\` and URL.
-
-## Step 5: Wait for Copilot Review
-
-Copilot review is triggered automatically on push. Poll every 15 seconds until the review appears:
-\`\`\`bash
-gh api repos/<OWNER>/<REPO>/pulls/<PR_NUM>/reviews --jq '.[] | select(.user.login == "copilot-pull-request-reviewer") | .state'
-\`\`\`
-
-Wait until you see APPROVED or CHANGES_REQUESTED. Timeout after 5 minutes of polling.
-
-## Step 6: Address Feedback Loop (max 5 iterations)
-
-### 6a. Fetch unresolved review threads
-
-Use gh api graphql (JSON input to avoid shell escaping issues with GraphQL variables):
-
-\`\`\`bash
-echo '{"query":"query{repository(owner:\\"<OWNER>\\",name:\\"<REPO>\\"){pullRequest(number:<PR_NUM>){reviewThreads(first:100){nodes{id,isResolved,comments(first:10){nodes{body,path,line,author{login}}}}}}}}"}' | gh api graphql --input -
-\`\`\`
-
-### 6b. If no unresolved threads: skip to Step 7 (Merge).
-
-### 6c. If unresolved threads exist, evaluate each one:
-
-For each comment, read the referenced file and critically evaluate the suggestion:
-- **If the suggestion is valid and improves the code**: apply the fix
-- **If the suggestion is a false positive, overly pedantic, or would make the code worse**: do NOT change the code
-
-Either way, resolve every thread — the goal is zero unresolved threads before merge.
-
-After evaluating all threads:
-- If any code changes were made: run the project's test suite to verify, then commit and push using \`/do:push\` (or manually: stage specific files, conventional commit prefix, \`git pull --rebase && git push\`)
-
-### 6d. Resolve ALL threads via GraphQL mutation (both fixed and dismissed):
-
-For each thread, use the thread node id from 5a:
-\`\`\`bash
-echo '{"query":"mutation{resolveReviewThread(input:{threadId:\\"THREAD_NODE_ID\\"}){thread{isResolved}}}"}' | gh api graphql --input -
-\`\`\`
-
-### 6e. Wait for new Copilot review if code was pushed (repeat Step 5)
-
-If you pushed changes in 6c, the push automatically triggers a new Copilot review. Poll for it, then loop back to 6a. If no code changes were made (all threads were false positives), skip straight to Step 7.
-
-If after 5 iterations there are still unresolved threads, stop and report what remains.
-
-## Step 7: Merge
-
-Only merge when Copilot's most recent review has NO unresolved threads:
-\`\`\`bash
-gh pr merge <PR_NUM> --merge
-\`\`\`
-
-If merge fails (e.g., branch protections), try: \`gh pr merge <PR_NUM> --merge --admin\`
-
-## Step 8: Report
-
-Summarize:
-- Version released
-- Key changes (from changelog)
-- Number of review iterations needed
-- Any unresolved issues`,
+The release workflow is attached to this task by metadata so every provider receives the same bundled body and reviewer pin. Do not reimplement any of its phases in this scheduled prompt.`,
 
   'stash-cleanup': `[Improvement: {appName}] Git Stash Cleanup
 

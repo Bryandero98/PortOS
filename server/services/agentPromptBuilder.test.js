@@ -2608,6 +2608,23 @@ describe('buildAgentPrompt — slashdo-backed tasks', () => {
     expect(prompt).toContain('/do:plan-task');
   });
 
+  it('pins the bundled release workflow to PortOS Code Review Defaults', async () => {
+    vi.mocked(getCodeReviewDefaults).mockResolvedValueOnce({ reviewers: ['codex'] });
+    vi.mocked(loadSlashdoFile).mockResolvedValueOnce('# Release\n\nCanonical release procedure.');
+    const prompt = await buildAgentPrompt(
+      makeTask({ description: 'Run the release check', metadata: { slashdoCommand: 'release' } }),
+      {}, '/r', null, isTruthyMeta,
+      { providerType: 'cli', providerId: 'codex' });
+
+    expect(prompt).toContain('do-release');
+    expect(prompt).toContain('--review-with codex');
+    expect(prompt).toContain('Canonical release procedure.');
+    expect(vi.mocked(loadSlashdoFile)).toHaveBeenCalledWith('release', {
+      stripFrontmatter: true,
+      skipIncludes: expect.arrayContaining(['copilot-review-loop']),
+    });
+  });
+
   it('uses explicit slashdoArgs when present', async () => {
     const prompt = await buildAgentPrompt(
       slashdoTask({ slashdoArgs: '--issues 42' }), {}, '/r', null, isTruthyMeta,
