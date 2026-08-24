@@ -101,6 +101,14 @@ describe('validation.js', () => {
         serviceName: 'example-service',
         fromTime: '',
       }).fromTime).toBeUndefined();
+      expect(providerVisionTestSchema.parse({
+        imagePath: 'example.png',
+        expectedContent: '',
+      }).expectedContent).toBeUndefined();
+      expect(uploadRequestSchema.safeParse({
+        data: 'aGVsbG8=',
+        filename: `${'a'.repeat(247)}.txt`,
+      }).success).toBe(false);
     });
 
     it('rejects malformed upload and vision request bodies', () => {

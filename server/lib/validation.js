@@ -513,10 +513,10 @@ export const providerSchema = z.object({
 export const providerVisionTestSchema = z.object({
   imagePath: z.string().trim().min(1).max(255),
   prompt: z.string().max(8_000).optional(),
-  expectedContent: z.union([
+  expectedContent: z.preprocess(emptyToUndefined, z.union([
     z.string().trim().min(1).max(128),
     z.array(z.string().trim().min(1).max(128)).max(50),
-  ]).optional(),
+  ]).optional()),
   model: z.preprocess(emptyToUndefined, z.string().trim().min(1).max(256).optional()),
 });
 
@@ -530,7 +530,8 @@ export const providerVisionSuiteSchema = z.object({
 // the JSON shape before the helper receives it.
 export const base64FileUploadSchema = z.object({
   data: z.string().trim().min(1, 'data is required (base64)').max(64 * 1024 * 1024),
-  filename: z.string().min(1, 'filename is required').max(255),
+  // The upload helper prefixes the sanitized name with a 9-byte UUID marker.
+  filename: z.string().min(1, 'filename is required').max(246),
 });
 
 export const uploadRequestSchema = base64FileUploadSchema;
