@@ -86,6 +86,7 @@ describe('TaskAddForm responsive layout', () => {
     render(<TaskAddForm providers={[]} apps={[]} onTaskAdded={vi.fn()} />);
 
     await user.type(screen.getByPlaceholderText('Task description *'), 'Add export filtering');
+    await waitFor(() => expect(planOnlyToggle()).toBeInTheDocument());
     await user.click(planOnlyToggle());
 
     expect(planOnlyToggle()).toBeChecked();

@@ -17,6 +17,7 @@ import EffortSelect from './EffortSelect';
 import useReviewerModelOptions from '../../hooks/useReviewerModelOptions';
 import useAssignableInstances from '../../hooks/useAssignableInstances';
 import { reviewerModelsFromDefaults, reviewerEffortsFromDefaults } from '../../lib/reviewerModels';
+import { PORTOS_APP_ID } from '../../lib/appIdentity';
 
 export default function TaskAddForm({ providers, apps, onTaskAdded, compact = false, defaultExpanded = false, defaultApp = '' }) {
   const [newTask, setNewTask] = useState({ description: '', model: '', provider: '', effort: '', temperature: '', thinking: '', app: defaultApp });
@@ -148,12 +149,12 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   // apps cannot queue an issue workflow their tracker does not support.
   useEffect(() => {
     const configuredTracker = selectedApp?.workTracker;
-    if (!selectedApp?.id || (configuredTracker && configuredTracker !== 'auto')) {
-      setResolvedWorkTracker({ appId: selectedApp?.id || null, tracker: null });
+    const appId = selectedApp?.id || PORTOS_APP_ID;
+    if (selectedApp && configuredTracker && configuredTracker !== 'auto') {
+      setResolvedWorkTracker({ appId, tracker: configuredTracker });
       return undefined;
     }
 
-    const appId = selectedApp.id;
     setResolvedWorkTracker({ appId, tracker: null });
     let cancelled = false;
     Promise.resolve(api.getAppWorkTracker(appId, { silent: true }))
@@ -167,11 +168,10 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   }, [selectedApp?.id, selectedApp?.workTracker]);
 
   const planOnlyTrackerStatus = useMemo(() => {
-    if (!selectedApp) return 'supported';
-    const configuredTracker = selectedApp.workTracker;
+    const configuredTracker = selectedApp?.workTracker;
     const tracker = configuredTracker && configuredTracker !== 'auto'
       ? configuredTracker
-      : resolvedWorkTracker.appId === selectedApp.id ? resolvedWorkTracker.tracker : null;
+      : resolvedWorkTracker.appId === (selectedApp?.id || PORTOS_APP_ID) ? resolvedWorkTracker.tracker : null;
     if (!tracker) return 'pending';
     return tracker === 'github' || tracker === 'gitlab' ? 'supported' : 'unsupported';
   }, [resolvedWorkTracker, selectedApp]);

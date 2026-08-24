@@ -169,6 +169,11 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
     throw new ServerError(`App not found: ${app}`, { status: 404, code: 'APP_NOT_FOUND' });
   }
 
+  // `plan-task` is also a plan-only quick action, so it must use the same
+  // forge-only gate as the general task endpoint rather than reaching
+  // `cos.addTask` through this separate route.
+  if (command === 'plan-task') await assertPlanOnlyTracker({ app });
+
   // Enforce the catalog's stack gate server-side. The Agent Operations panel only
   // offers the applicable one of `better` / `better-swift`, but the API must not
   // trust that — queuing a SwiftUI audit against a web app (or vice versa) burns
