@@ -2,16 +2,24 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { RefreshCw, Power, PowerOff, FolderOpen, ChevronDown, Bot, Maximize2, Minimize2 } from 'lucide-react';
 import * as api from '../services/api';
 import { readClipboard } from '../lib/clipboard';
+import useClickOutside from '../hooks/useClickOutside';
+import useEscapeKey from '../hooks/useEscapeKey';
 import { useShellSession, MAX_SESSIONS } from '../hooks/useShellSession';
 import TerminalHotKeys from '../components/shell/TerminalHotKeys';
 import ShellSessionTabs from '../components/shell/ShellSessionTabs';
+import ShellProviderLauncher from '../components/shell/ShellProviderLauncher';
 import InfoTooltip from '../components/ui/InfoTooltip';
 
+// Typed-into-the-current-session shortcuts only. The AI CLIs that used to sit
+// here as hardcoded buttons (claude / codex / agy / grok) now come from the
+// enabled TUI providers via ShellProviderLauncher — a dynamic list that scales
+// past a row of buttons and, unlike a typed command line, carries each
+// provider's own backend env.
+//
+// `openclaw` is the one holdout, because PortOS ships no provider record for it.
+// A new AI CLI belongs in `providers.sample.json` as a TUI provider, where the
+// launcher picks it up for free — do not grow this list back.
 const QUICK_COMMANDS = [
-  { label: 'claude', command: 'claude --dangerously-skip-permissions' },
-  { label: 'codex', command: 'codex --dangerously-bypass-approvals-and-sandbox' },
-  { label: 'agy', command: 'agy' },
-  { label: 'grok', command: 'grok' },
   { label: 'openclaw', command: 'openclaw tui' },
   // Claude Code slash-command shortcuts — typed + submitted into an interactive
   // `claude` session. The flags are double-dash (`--`); keep them verbatim.
@@ -25,6 +33,8 @@ export default function Shell() {
   // where the header/tabs/quick-commands otherwise eat most of the screen.
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [appFolders, setAppFolders] = useState([]);
+  const [providers, setProviders] = useState({ list: [], loading: false });
+  const providersRequestedRef = useRef(false);
   const [folderDropdownOpen, setFolderDropdownOpen] = useState(false);
   const [showPasteInput, setShowPasteInput] = useState(false);
   const pasteInputRef = useRef(null);
@@ -50,6 +60,7 @@ export default function Shell() {
     restartSession,
     stopSession,
     startNewSession,
+    launchProvider,
     switchToSession,
     killOtherSession,
   } = useShellSession({ isFullscreen });
@@ -66,16 +77,31 @@ export default function Shell() {
       .catch(err => console.warn('fetch app folders:', err?.message ?? String(err)));
   }, []);
 
-  // Close dropdown on outside click
-  useEffect(() => {
-    const handleClickOutside = (e) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
-        setFolderDropdownOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+  // The launch menu's source of truth, loaded on the first open rather than at
+  // mount: `/api/providers` is the biggest payload this page could pull and most
+  // Shell visits are plain terminal work that never opens the menu. State lives
+  // on the page, not in the launcher, because the launcher unmounts on every
+  // fullscreen toggle and would otherwise refetch each time.
+  //
+  // `silent` — the page is usable without it; the menu just says there's nothing
+  // to launch, and a toast would land on top of the terminal.
+  const loadProviders = useCallback(() => {
+    if (providersRequestedRef.current) return;
+    providersRequestedRef.current = true;
+    setProviders(prev => ({ ...prev, loading: true }));
+    api.getProviders({ silent: true })
+      .then(res => setProviders({ list: res?.providers || [], loading: false }))
+      .catch(err => {
+        console.warn('fetch providers:', err?.message ?? String(err));
+        // Re-armed, so the next open retries rather than showing an empty menu forever.
+        providersRequestedRef.current = false;
+        setProviders({ list: [], loading: false });
+      });
   }, []);
+
+  const closeFolderDropdown = useCallback(() => setFolderDropdownOpen(false), []);
+  useClickOutside(dropdownRef, folderDropdownOpen, closeFolderDropdown);
+  useEscapeKey(folderDropdownOpen, closeFolderDropdown);
 
   const handlePaste = useCallback(async () => {
     const text = await readClipboard();
@@ -93,6 +119,14 @@ export default function Shell() {
   useEffect(() => {
     if (showPasteInput) pasteInputRef.current?.focus();
   }, [showPasteInput]);
+
+  // The two toolbars render the same hot-key strip with the same ten props and
+  // differ only in which way its popover opens; spread one object so a new prop
+  // reaches both.
+  const hotKeyProps = {
+    sendCtrlB, sendCtrlC, handlePaste, sendNavKey, scrollPage,
+    showPasteInput, setShowPasteInput, pasteInputRef, handlePasteInputEvent, sendImage,
+  };
 
   const statusLabel = connected ? 'Connected' : 'Disconnected';
 
@@ -201,23 +235,19 @@ export default function Shell() {
       {/* Quick commands toolbar — one horizontally-scrollable row rather than a
           wrapping grid, so it costs a fixed ~40px of vertical space no matter how
           many quick commands there are. The folder dropdown sits OUTSIDE the
-          scroller: an absolutely-positioned menu is clipped by `overflow-x-auto`. */}
+          scroller: an absolutely-positioned menu is clipped by `overflow-x-auto`.
+          The provider launcher portals its panel, so it rides inside. */}
       {!isFullscreen && connected && (
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-2 flex-1 min-w-0 overflow-x-auto scrollbar-hide touch-pan-x">
-            <TerminalHotKeys
-              sendCtrlB={sendCtrlB}
-              sendCtrlC={sendCtrlC}
-              handlePaste={handlePaste}
-              sendNavKey={sendNavKey}
-              scrollPage={scrollPage}
-              showPasteInput={showPasteInput}
-              setShowPasteInput={setShowPasteInput}
-              pasteInputRef={pasteInputRef}
-              handlePasteInputEvent={handlePasteInputEvent}
-              sendImage={sendImage}
-            />
+            <TerminalHotKeys {...hotKeyProps} />
             <div className="w-px h-6 bg-port-border shrink-0" />
+            <ShellProviderLauncher
+              providers={providers.list}
+              loading={providers.loading}
+              onOpen={loadProviders}
+              onLaunch={launchProvider}
+            />
             {QUICK_COMMANDS.map(({ label, command }) => (
               <button
                 key={label}
@@ -237,6 +267,8 @@ export default function Shell() {
               className="flex items-center gap-1.5 px-2.5 py-1.5 bg-port-card hover:bg-port-border text-gray-300 hover:text-white rounded text-xs transition-colors border border-port-border min-h-[40px]"
               title="cd to app folder"
               aria-label="cd to app folder"
+              aria-expanded={folderDropdownOpen}
+              aria-haspopup="menu"
             >
               <FolderOpen size={14} />
               <span className="hidden sm:inline">cd to app</span>
@@ -277,7 +309,7 @@ export default function Shell() {
       {/* Fullscreen control bar — compact, single-row, horizontally scrollable so
           the TUI-driving keys stay reachable by thumb without the stacked toolbars. */}
       {isFullscreen && (
-        <div className="flex items-center gap-1.5 mt-2 overflow-x-auto pb-1">
+        <div className="flex items-center gap-1.5 mt-2 overflow-x-auto scrollbar-hide touch-pan-x pb-1">
           <button
             onClick={() => setIsFullscreen(false)}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-port-card hover:bg-port-border text-gray-300 hover:text-white rounded text-xs transition-colors border border-port-border min-h-[40px] shrink-0"
@@ -289,20 +321,18 @@ export default function Shell() {
           </button>
           <div className="w-px h-6 bg-port-border shrink-0" />
           {connected && (
-            <TerminalHotKeys
-              sendCtrlB={sendCtrlB}
-              sendCtrlC={sendCtrlC}
-              handlePaste={handlePaste}
-              sendNavKey={sendNavKey}
-              scrollPage={scrollPage}
-              showPasteInput={showPasteInput}
-              setShowPasteInput={setShowPasteInput}
-              pasteInputRef={pasteInputRef}
-              handlePasteInputEvent={handlePasteInputEvent}
-              sendImage={sendImage}
-              /* Opens upward — this bar is pinned to the bottom of the viewport. */
-              popoverPlacement="above"
-            />
+            <>
+              {/* Both popovers open upward — this bar is pinned to the bottom of
+                  the viewport — and both portal out, so this scroller can't clip them. */}
+              <TerminalHotKeys {...hotKeyProps} popoverPlacement="above" />
+              <ShellProviderLauncher
+                providers={providers.list}
+                loading={providers.loading}
+                onOpen={loadProviders}
+                onLaunch={launchProvider}
+                placement="above"
+              />
+            </>
           )}
         </div>
       )}

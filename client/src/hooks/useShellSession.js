@@ -429,7 +429,12 @@ export function useShellSession({ isFullscreen } = {}) {
 
   // intent: 'push' arms the next activateSession to push a history entry. Only set AFTER the
   // socket-connected guard so a disconnected call doesn't leak the intent into a later auto-activation.
-  const startSession = useCallback(({ intent } = {}) => {
+  //
+  // `launch` ({ cwd?, cmd?, provider? }) is the in-page caller's version of what
+  // initialOptsRef carries for a `?cwd=/?cmd=/?provider=` deep link. Passing it
+  // as an argument rather than parking it in the ref is what keeps a start that
+  // never fires from arming the NEXT one with someone else's provider.
+  const startSession = useCallback(({ intent, launch } = {}) => {
     if (!socket?.connected) return;
     if (intent === 'push') pendingNavIntentRef.current = 'push';
     setPendingAttach('new');
@@ -445,7 +450,7 @@ export function useShellSession({ isFullscreen } = {}) {
       termInstanceRef.current.reset();
       termInstanceRef.current.writeln('\x1b[36mStarting shell session...\x1b[0m');
     }
-    const opts = initialOptsRef.current || {};
+    const opts = launch || initialOptsRef.current || {};
     const startOpts = {};
     if (opts.cwd) startOpts.cwd = opts.cwd;
     if (opts.cmd) startOpts.initialCommand = opts.cmd;
@@ -565,6 +570,18 @@ export function useShellSession({ isFullscreen } = {}) {
   // User clicked "New" button — push intent so back/forward can return to the prior session.
   const startNewSession = useCallback(() => {
     startSession({ intent: 'push' });
+  }, [startSession]);
+
+  // Launch a configured TUI provider from the Shell page's provider menu — the
+  // in-page twin of the AI Providers page's `?provider=` deep link. Always a NEW
+  // session, and always by ID rather than by command line; the reason is in
+  // `components/shell/ShellProviderLauncher.jsx`. The displayed session's cwd
+  // rides along so a launch lands in the folder the user already cd'd to rather
+  // than back at $HOME.
+  const launchProvider = useCallback((providerId) => {
+    if (!providerId) return;
+    const cwd = sessionsRef.current.find(s => s.sessionId === sessionIdRef.current)?.cwd;
+    startSession({ intent: 'push', launch: { provider: providerId, cwd } });
   }, [startSession]);
 
   // Handle socket connection and shell session events
@@ -904,6 +921,7 @@ export function useShellSession({ isFullscreen } = {}) {
     restartSession,
     stopSession,
     startNewSession,
+    launchProvider,
     switchToSession,
     killOtherSession,
   };

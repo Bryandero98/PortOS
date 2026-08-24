@@ -101,6 +101,14 @@ export const providerSchema = z.object({
   // this provider — distinct from numCtx (what we *ask Ollama for*). For cloud
   // providers numCtx stays null and this reflects the model's real ceiling.
   contextWindow: z.number().int().min(512).max(2097152).nullable().optional(),
+  // Per-model context windows READ FROM the provider's own `/models` catalog
+  // (OpenRouter's `context_length`, vLLM's `max_model_len`, …), keyed by model
+  // id. Written by model refresh, not typed by a human — it beats the hardcoded
+  // model table and loses to the explicit `contextWindow` override above.
+  // The ceiling is deliberately wider than `contextWindow`'s: that one bounds
+  // what a person can type, this one has to accept whatever a vendor declares,
+  // and rejecting a 10M-window model would 400 the whole provider write.
+  modelContextWindows: z.record(z.number().int().min(512).max(33554432)).optional(),
   timeout: z.number().int().min(MIN_TIMEOUT).max(MAX_TIMEOUT).optional(),
   enabled: z.boolean().optional(),
   // Marks a `claude` CLI/TUI provider whose ANTHROPIC_BASE_URL points at a

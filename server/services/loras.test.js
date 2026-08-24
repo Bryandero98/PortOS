@@ -202,6 +202,78 @@ describe('listLoras', () => {
   });
 });
 
+// Adapter-effect diagnostic (#4872). listLoras is a PASSIVE read — a library
+// page with 40 installed LoRAs must never fan out into 40 Python children — so
+// it surfaces only what the explicit probe already measured, and only while
+// that measurement still describes the file on disk.
+describe('listLoras — cached adapter-effect report', () => {
+  const report = (over = {}) => ({
+    probeVersion: 1, status: 'ok', modules: 8, measured: 8, skippedNonFinite: 0,
+    skippedUnsupported: 0, zeroModules: 0, medianRms: 0.004, maxRms: 0.02,
+    reason: null, measuredAt: '2026-08-23T00:00:00.000Z', ...over,
+  });
+  // The cache key is the file's real size + mtime, so the sidecar has to be
+  // written from the file that actually landed on disk — `stamp` overrides let a
+  // test deliberately mismatch one of them.
+  const writeLora = async (filename, bytes, effectReport, stamp = {}) => {
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    const path = join(tmpLoras, filename);
+    await fs.writeFile(path, Buffer.alloc(bytes, 1));
+    const s = await fs.stat(path);
+    const sidecar = effectReport
+      ? { effectReport: { ...effectReport, sizeBytes: s.size, mtimeMs: s.mtimeMs, ...stamp } }
+      : { name: 'Unmeasured' };
+    await fs.writeFile(join(tmpLoras, `${filename}.metadata.json`), JSON.stringify({ filename, ...sidecar }));
+  };
+
+  it('surfaces a stored report whose size and mtime still match the file', async () => {
+    await writeLora('measured.safetensors', 512, report());
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toMatchObject({ status: 'ok', measured: 8, medianRms: 0.004, sizeBytes: 512 });
+  });
+
+  it('reports null when the LoRA was never measured', async () => {
+    await writeLora('unmeasured.safetensors', 512, null);
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toBeNull();
+  });
+
+  it('drops a stored report once the file has been replaced under the same name', async () => {
+    // A different size is a different adapter. Surfacing the old verdict would
+    // badge a freshly-installed LoRA with the previous file's measurement.
+    await writeLora('swapped.safetensors', 1024, report(), { sizeBytes: 512 });
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toBeNull();
+  });
+
+  it('drops a stored report when the file was rewritten at the SAME size', async () => {
+    await writeLora('rewritten.safetensors', 512, report(), { mtimeMs: 1 });
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toBeNull();
+  });
+
+  it('drops a stored report written by a different probe version', async () => {
+    await writeLora('old.safetensors', 512, report({ probeVersion: 99 }));
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toBeNull();
+  });
+
+  it('normalizes a hand-edited sidecar rather than trusting it', async () => {
+    await writeLora('edited.safetensors', 512, report({ status: 'catastrophic', medianRms: 'lots', maxRms: null }));
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport).toMatchObject({ status: 'unmeasurable', medianRms: null, maxRms: null });
+  });
+
+  it('will not surface a "zero" verdict that no measurement backs', async () => {
+    // Refusing a render is the one thing a stale/edited sidecar must never be
+    // able to cause on its own.
+    await writeLora('bogus-zero.safetensors', 512, report({ status: 'zero', measured: 0, zeroModules: 0 }));
+    const [lora] = await lorasService.listLoras();
+    expect(lora.effectReport.status).toBe('unmeasurable');
+  });
+});
+
 describe('deleteLora', () => {
   it('removes file + sidecar', async () => {
     const fs = await import('fs/promises');
@@ -264,6 +336,45 @@ describe('patchLoraSidecar', () => {
   });
 });
 
+// The sidecar is one JSON document with several writers — the manager renaming a
+// LoRA, listLoras() healing keyLayout on read, and the effect probe caching its
+// measurement. Each patch is a read-modify-write of the WHOLE file, so
+// interleaved cycles let the last writer silently drop the other's field.
+describe('patchLoraSidecar — concurrent patches', () => {
+  it('merges every field when two patches race, rather than last-write-wins', async () => {
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    await fs.writeFile(join(tmpLoras, 'shared.safetensors'), 'weights');
+    await fs.writeFile(join(tmpLoras, 'shared.safetensors.metadata.json'), JSON.stringify({
+      filename: 'shared.safetensors', name: 'Original',
+    }));
+
+    await Promise.all([
+      lorasService.patchLoraSidecar('shared.safetensors', { name: 'Renamed' }),
+      lorasService.patchLoraSidecar('shared.safetensors', { effectReport: { status: 'ok', measured: 4 } }),
+      lorasService.patchLoraSidecar('shared.safetensors', { keyLayout: 'comfyui' }),
+    ]);
+
+    const written = JSON.parse(await fs.readFile(join(tmpLoras, 'shared.safetensors.metadata.json'), 'utf-8'));
+    expect(written.name).toBe('Renamed');
+    expect(written.keyLayout).toBe('comfyui');
+    expect(written.effectReport).toMatchObject({ status: 'ok', measured: 4 });
+  });
+
+  it('does not serialize patches to DIFFERENT LoRAs behind each other', async () => {
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    for (const name of ['a.safetensors', 'b.safetensors']) {
+      await fs.writeFile(join(tmpLoras, name), 'weights');
+    }
+    const [a, b] = await Promise.all([
+      lorasService.patchLoraSidecar('a.safetensors', { name: 'A' }),
+      lorasService.patchLoraSidecar('b.safetensors', { name: 'B' }),
+    ]);
+    expect([a.name, b.name]).toEqual(['A', 'B']);
+  });
+});
+
 describe('installFromCivitai', () => {
   // Build a fake Civitai model JSON we can hand to the fetchImpl.
   const FAKE_MODEL = {
@@ -323,6 +434,106 @@ describe('installFromCivitai', () => {
     expect(JSON.parse(readFileSync(sidecarPath, 'utf-8')).civitai.modelId).toBe(2600698);
     // Two HTTP calls — metadata + download
     expect(calls).toHaveLength(2);
+  });
+
+  it('shares one in-flight install between duplicate model submissions', async () => {
+    const downloadedBytes = validSafetensors();
+    let releaseMetadata;
+    let metadataCalls = 0;
+    let downloadCalls = 0;
+    const fetchImpl = async (url) => {
+      if (url.startsWith('https://civitai.com/api/v1/models/2600698')) {
+        metadataCalls += 1;
+        return new Promise((resolve) => {
+          releaseMetadata = () => resolve(mockJsonResponse(FAKE_MODEL));
+        });
+      }
+      if (url.startsWith('https://civitai.com/api/download/models/7')) {
+        downloadCalls += 1;
+        const stream = new ReadableStream({
+          start(c) { c.enqueue(new Uint8Array(downloadedBytes)); c.close(); },
+        });
+        return { ok: true, status: 200, body: stream };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    };
+
+    const first = lorasService.installFromCivitai({ url: 'https://civitai.com/models/2600698' }, { fetchImpl });
+    await vi.waitFor(() => expect(releaseMetadata).toBeTypeOf('function'));
+    const second = lorasService.installFromCivitai({ url: 'https://civitai.com/models/2600698' }, { fetchImpl });
+
+    releaseMetadata();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(secondResult).toEqual(firstResult);
+    expect(metadataCalls).toBe(1);
+    expect(downloadCalls).toBe(1);
+  });
+
+  it('keeps concurrent installs for different versions of one model independent', async () => {
+    const downloadedBytes = validSafetensors();
+    const model = {
+      ...FAKE_MODEL,
+      modelVersions: [
+        ...FAKE_MODEL.modelVersions,
+        {
+          ...FAKE_MODEL.modelVersions[0],
+          id: 8,
+          files: [{
+            ...FAKE_MODEL.modelVersions[0].files[0],
+            downloadUrl: 'https://civitai.com/api/download/models/8',
+          }],
+        },
+      ],
+    };
+    let releaseMetadata;
+    const metadataGate = new Promise((resolve) => { releaseMetadata = resolve; });
+    let metadataCalls = 0;
+    let downloadCalls = 0;
+    const fetchImpl = async (url) => {
+      if (url.startsWith('https://civitai.com/api/v1/models/2600698')) {
+        metadataCalls += 1;
+        await metadataGate;
+        return mockJsonResponse(model);
+      }
+      if (url.startsWith('https://civitai.com/api/download/models/')) {
+        downloadCalls += 1;
+        const stream = new ReadableStream({
+          start(c) { c.enqueue(new Uint8Array(downloadedBytes)); c.close(); },
+        });
+        return { ok: true, status: 200, body: stream };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    };
+
+    const version7 = lorasService.installFromCivitai({
+      url: 'https://civitai.com/models/2600698?modelVersionId=7',
+    }, { fetchImpl });
+    const version8 = lorasService.installFromCivitai({
+      url: 'https://civitai.com/models/2600698?modelVersionId=8',
+    }, { fetchImpl });
+
+    await vi.waitFor(() => expect(metadataCalls).toBe(2));
+    releaseMetadata();
+    const results = await Promise.all([version7, version8]);
+    expect(results.map((result) => result.civitai.versionId)).toEqual([7, 8]);
+    expect(downloadCalls).toBe(2);
+  });
+
+  it('releases the in-flight slot after a failed install so retry can proceed', async () => {
+    let metadataCalls = 0;
+    const fetchImpl = async () => {
+      metadataCalls += 1;
+      if (metadataCalls === 1) throw new Error('metadata unavailable');
+      return mockJsonResponse({ ...FAKE_MODEL, type: 'Checkpoint' });
+    };
+
+    await expect(
+      lorasService.installFromCivitai({ url: 'https://civitai.com/models/2600698' }, { fetchImpl }),
+    ).rejects.toThrow(/metadata unavailable/);
+    await expect(
+      lorasService.installFromCivitai({ url: 'https://civitai.com/models/2600698' }, { fetchImpl }),
+    ).rejects.toThrow(/not a LoRA/);
+    expect(metadataCalls).toBe(2);
   });
 
   it('refuses to install non-LoRA model types', async () => {

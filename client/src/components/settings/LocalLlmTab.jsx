@@ -1,17 +1,17 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Power, PowerOff, AlertTriangle, FlaskConical, ArrowUpCircle, Zap, ChevronDown, ChevronUp, Terminal } from 'lucide-react';
+import { Cpu, Box, Download, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Power, PowerOff, AlertTriangle, Zap, ChevronDown, ChevronUp, Terminal } from 'lucide-react';
 import toast from '../ui/Toast';
-import ConfirmButtonPair from '../ui/ConfirmButtonPair';
+import FormField from '../ui/FormField';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatAgeDays, formatBytes, formatContextLength, timeAgo, recommendedRamGb, formatDateNumeric } from '../../utils/formatters';
 import { localLlmTargetKey } from '../../lib/localLlmTargetKey';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import {
   getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
-  deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService,
+  deleteLocalLlmModel, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService,
   installAudioModel, patchSettingsSlice, getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer,
-  downloadSpecDecodeModel, controlLmStudioService, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx,
+  downloadSpecDecodeModel, cancelSpecDecodeModelDownload, controlLmStudioService, getMtplxServerStatus, stopMtplxServer, installMtplx,
   searchMtplxModels, pullMtplxModel, removeMtplxModel,
   saveRuntimeStartupList
 } from '../../services/api';
@@ -20,24 +20,14 @@ import CapabilityBadges from '../models/CapabilityBadges.jsx';
 import SpecDecodeWeightRow from './SpecDecodeWeightRow.jsx';
 import RuntimeServersCard from './RuntimeServersCard.jsx';
 import MtplxServerCard from './MtplxServerCard.jsx';
+import LocalLlmBackendCard from './LocalLlmBackendCard.jsx';
+import LocalLlmInstalledModels from './LocalLlmInstalledModels.jsx';
 
 const BACKENDS = [
   { id: 'ollama', label: 'Ollama', icon: Cpu },
   { id: 'lmstudio', label: 'LM Studio', icon: Box }
 ];
 const labelFor = (id) => BACKENDS.find((b) => b.id === id)?.label || id;
-
-// LM Studio's installed list is folder-scoped (`publisher/repo`) plus a separate
-// `quantization` field. A force redownload has to target a tagged id so the
-// server evicts that GGUF instead of no-op'ing on a bare repo.
-const redownloadInstallId = (model, backend) => {
-  if (backend !== 'lmstudio') return model.id;
-  if (/@/.test(model.id || '')) return model.id;
-  if (model?.quantization) return `${model.id}@${model.quantization}`;
-  // /v1/models fallback has no quantization — a bare repo force-redownload
-  // would skip existing GGUFs and still toast success.
-  return null;
-};
 
 // The speculative-decoding presets come from the server
 // (`server/lib/specDecodePresets.js`, surfaced on the llama-server status
@@ -124,7 +114,7 @@ function fitTitle(source, entry) {
       : '';
     return `Estimated fit on this machine — model weights + ~20% overhead vs. usable memory.${stale}`;
   }
-  const measuredAt = entry?.assessedAt ? ` on ${new Date(entry.assessedAt).toLocaleDateString()}` : '';
+  const measuredAt = entry?.assessedAt ? ` on ${formatDateNumeric(entry.assessedAt)}` : '';
   const disagree = entry?.disagrees
     ? ` The size estimate said "${FIT_META[entry.estimatedFit]?.label || entry.estimatedFit}".`
     : '';
@@ -156,142 +146,6 @@ function summarizeMigrate(r) {
     c.skipped && `${c.skipped} skipped`
   ].filter(Boolean);
   return `${labelFor(r.from)} → ${labelFor(r.to)}: ${parts.join(', ') || 'nothing to move'}`;
-}
-
-function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAction, setConfirmAction }) {
-  const data = status?.[backend.id];
-  const Icon = backend.icon;
-  const other = backend.id === 'ollama' ? 'lmstudio' : 'ollama';
-  const otherData = status?.[other];
-  const startupService = backend.id === 'ollama' ? data?.service : null;
-  const runsAtStartup = Boolean(startupService?.runAtStartup);
-  // The window resident models were ACTUALLY loaded at — Ollama picks it from
-  // VRAM (4K/32K/256K), and an agent harness that overruns it dies mid-task with
-  // a 400. Null while nothing is resident, since Ollama hasn't committed yet.
-  const runtimeContext = backend.id === 'ollama' ? data?.contextLength?.runtime ?? null : null;
-  const runtimeContextLabel = formatContextLength(runtimeContext);
-  const contextBelowAgentFloor = runtimeContext != null
-    && runtimeContext < (data?.contextLength?.agentMinimum ?? 0);
-
-  return (
-    <div className="bg-port-bg border border-port-border rounded-lg p-3 space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-sm text-gray-400">
-          <Icon size={14} />
-          {backend.label}
-        </div>
-        <div className="flex items-center gap-1.5">
-          {isDefault && (
-            <span
-              className="text-xs px-1.5 py-0.5 bg-port-accent/20 text-port-accent rounded"
-              title="PortOS routes local-LLM runs here by default. This is independent of whether the server is running — see Local Runtime Servers above."
-            >
-              Default
-            </span>
-          )}
-        </div>
-      </div>
-
-      <div className="text-xs text-gray-400">
-        {data?.modelCount ?? 0} model{(data?.modelCount ?? 0) === 1 ? '' : 's'} installed
-        {data?.version && <> · v{data.version}</>}
-        {backend.id === 'ollama' && data?.updateAvailable && data?.latestVersion && (
-          <span className="text-port-warning" title={`Ollama v${data.latestVersion} is available (you have v${data.version})`}>
-            {' · '}v{data.latestVersion} available
-          </span>
-        )}
-        {startupService?.supported && <> · {runsAtStartup ? 'runs at login' : 'startup off'}</>}
-        {runtimeContextLabel && (
-          <span
-            className={contextBelowAgentFloor ? 'text-port-warning' : undefined}
-            title={contextBelowAgentFloor
-              ? `Loaded models are running at ${runtimeContextLabel} — below what an agent harness (Claude Ollama / OpenCode Ollama) usually needs. Set "Local num_ctx" on that provider in AI Providers to reload Ollama at a larger window.`
-              : `Loaded models are running at ${runtimeContextLabel}`}
-          >
-            {' · '}{runtimeContextLabel}
-          </span>
-        )}
-      </div>
-
-      {data?.installed && (
-        <div className="flex flex-wrap gap-1.5 pt-1 border-t border-port-border/50">
-          {backend.id === 'ollama' && data?.updateAvailable && (
-            data?.canUpgrade ? (
-              <button
-                onClick={() => runAction(
-                  'upgrade-ollama',
-                  () => upgradeLocalLlmBackend('ollama'),
-                  (r) => r?.note ? `Ollama updated — ${r.note}` : `Ollama updated to v${data.latestVersion}`
-                )}
-                disabled={busy}
-                className={`${btnClass} bg-port-success/20 hover:bg-port-success/30 text-port-success`}
-                title={`Update Ollama from v${data.version} to v${data.latestVersion} in place (downloads the latest release and restarts it)`}
-              >
-                {actionInProgress === 'upgrade-ollama' ? <BrailleSpinner /> : <ArrowUpCircle size={12} />}
-                Update to v{data.latestVersion}
-              </button>
-            ) : (
-              <a
-                href={data.downloadUrl}
-                target="_blank"
-                rel="noreferrer"
-                className={`${btnClass} bg-port-warning/20 hover:bg-port-warning/30 text-port-warning no-underline`}
-                title={`Ollama v${data.latestVersion} is available — automatic updates aren't supported on this platform`}
-              >
-                <ArrowUpCircle size={12} />
-                Update available
-              </a>
-            )
-          )}
-          {!isDefault && (
-            <button
-              onClick={() => runAction(`switch-${backend.id}`, () => switchLocalLlmBackend(backend.id), `${backend.label} is now the default backend`)}
-              disabled={busy}
-              className={`${btnClass} bg-port-border hover:bg-port-border/70 text-white`}
-              title="Route PortOS local-LLM runs here by default — doesn't move any models or stop the other backend"
-            >
-              {actionInProgress === `switch-${backend.id}` ? <BrailleSpinner /> : <Star size={12} />}
-              Set as Default
-            </button>
-          )}
-          {otherData?.available && (
-            <button
-              onClick={() => setConfirmAction({
-                type: 'migrate',
-                to: backend.id,
-                from: other,
-                label: `Bring ${labelFor(other)}'s models onto ${backend.label}?`,
-                detail: `Provisions the ${otherData.modelCount ?? 0} model${(otherData.modelCount ?? 0) === 1 ? '' : 's'} on ${labelFor(other)} onto ${backend.label} — your default backend is unchanged. Link shares each GGUF on disk (no extra space, falls back to a copy across filesystems); Copy makes an independent duplicate. Portable single-file GGUF models move with no re-download; MLX-format, sharded, or multimodal models that can't be shared/copied are re-pulled.`
-              })}
-              disabled={busy}
-              className={`${btnClass} bg-port-accent/20 hover:bg-port-accent/30 text-port-accent`}
-              title={`Copy or link the models installed on ${labelFor(other)} onto ${backend.label}`}
-            >
-              <ArrowRightLeft size={12} />
-              Import from {labelFor(other)}
-            </button>
-          )}
-        </div>
-      )}
-
-      <div className="flex items-center justify-between gap-2 pt-1 border-t border-port-border/50">
-        <span className="text-xs text-gray-500">{data?.disabled ? 'PortOS will not expect this backend to be running.' : 'Show a warning when this backend is offline.'}</span>
-        <button
-          onClick={() => runAction(
-            `toggle-disabled-${backend.id}`,
-            () => patchSettingsSlice(`localLlm.${backend.id}`, { disabled: !data?.disabled }),
-            data?.disabled ? `${backend.label} enabled` : `${backend.label} marked as disabled`
-          )}
-          disabled={busy}
-          className={`${btnClass} ${data?.disabled ? 'bg-port-border hover:bg-port-border/70 text-white' : 'bg-port-warning/20 hover:bg-port-warning/30 text-port-warning'}`}
-          title={data?.disabled ? `Re-enable ${backend.label} availability warnings` : `Mark ${backend.label} as intentionally disabled`}
-        >
-          {actionInProgress === `toggle-disabled-${backend.id}` ? <BrailleSpinner /> : data?.disabled ? <Power size={12} /> : <PowerOff size={12} />}
-          {data?.disabled ? 'Enable warnings' : 'Mark disabled'}
-        </button>
-      </div>
-    </div>
-  );
 }
 
 export function LocalLlmTab() {
@@ -470,7 +324,7 @@ export function LocalLlmTab() {
     const handleDownloadProgress = (frame) => {
       if (!frame?.presetId || !frame?.role) return;
       const key = downloadKey(frame.presetId, frame.role);
-      if (frame.event === 'complete' || frame.event === 'error') {
+      if (frame.event === 'complete' || frame.event === 'error' || frame.event === 'cancelled') {
         setLlamaDownloads((prev) => {
           if (!prev[key]) return prev;
           const next = { ...prev };
@@ -634,15 +488,24 @@ export function LocalLlmTab() {
     () => installMtplx(),
     'MTPLX installed'
   ).then(loadMtplxStatus);
-  const runtimeStartMtplx = (config = {}) => runAction(
-    'runtime-start-mtplx',
-    () => startMtplxServer(config),
-    // `online: false` is "started, still loading its checkpoint" — not a
-    // failure. Saying "running" there would be wrong the moment the user checks.
-    (r) => (r?.online
-      ? `MTPLX is running at ${r?.endpoint || 'its endpoint'}`
-      : 'MTPLX started — it\'s loading its checkpoint, refresh in a moment')
+  // MTPLX has no Start action: the first PortOS request routed to it starts it.
+  // What the card saves is the launch line that on-demand start will replay.
+  const saveMtplxLaunch = (launch) => runAction(
+    'runtime-save-mtplx-launch',
+    () => patchSettingsSlice('localLlm.mtplx', { launch }),
+    'Saved — MTPLX will start on these options when a request needs it'
   ).then(loadMtplxStatus);
+
+  // The idle window is a plain settings write for both daemons; only what
+  // happens when it elapses differs (llama.cpp unloads in place on its next
+  // start, MTPLX is stopped and lazily restarted).
+  const saveIdleWindow = (runtime, minutes) => runAction(
+    `runtime-idle-${runtime}`,
+    () => patchSettingsSlice(`localLlm.${runtime}`, { idleMinutes: minutes }),
+    minutes === 0
+      ? `${runtime === 'llama' ? 'llama.cpp' : 'MTPLX'} will stay loaded while idle`
+      : `${runtime === 'llama' ? 'llama.cpp' : 'MTPLX'} releases its model after ${minutes} idle minute${minutes === 1 ? '' : 's'}`
+  ).then(runtime === 'llama' ? loadLlamaStatus : loadMtplxStatus);
   const runtimeStopMtplx = () => runAction(
     'runtime-stop-mtplx',
     () => stopMtplxServer(),
@@ -690,7 +553,6 @@ export function LocalLlmTab() {
   const selectedOllamaStartupAction = selectedData?.service?.supported ? 'enable' : 'start';
   const selectedOllamaStartupLabel = selectedData?.service?.supported ? 'Run at Startup' : 'Start Ollama';
   const installedModels = selectedData?.models || [];
-  const compareTargetKeys = useMemo(() => new Set(compareTargets.map(localLlmTargetKey)), [compareTargets]);
   const catalogCategories = useMemo(() => {
     const counts = new Map();
     for (const model of catalog) {
@@ -926,7 +788,9 @@ export function LocalLlmTab() {
       const status = await loadLlamaStatus();
       const stillRunning = status?.presets
         ?.find((p) => p.id === presetId)?.[role]?.downloading;
-      if (stillRunning) {
+      if (err?.code === 'SPEC_DOWNLOAD_CANCELLED') {
+        toast.info('Download cancelled');
+      } else if (stillRunning) {
         toast.warning('Download still running in the background — this page lost the request, not the transfer.');
       } else {
         toast.error(err?.message || 'Download failed');
@@ -937,6 +801,17 @@ export function LocalLlmTab() {
         delete next[key];
         return next;
       });
+      loadLlamaStatus();
+    }
+  };
+
+  const handleCancelSpecModelDownload = async (role) => {
+    try {
+      const res = await cancelSpecDecodeModelDownload(llamaPresetId, role, { silent: true });
+      if (res.cancelled) toast.info('Cancelling model download…');
+    } catch (err) {
+      toast.error(err?.message || 'Could not cancel the model download');
+    } finally {
       loadLlamaStatus();
     }
   };
@@ -1045,9 +920,9 @@ export function LocalLlmTab() {
         onConfigureLlama={() => scrollTo(llamaSectionRef)}
         onConfigureMtplx={() => scrollTo(mtplxSectionRef)}
         onInstallMtplx={runtimeInstallMtplx}
-        onStartMtplx={runtimeStartMtplx}
         onStopMtplx={runtimeStopMtplx}
         onSaveStartup={saveRuntimeStartup}
+        onSaveIdleWindow={saveIdleWindow}
       />
 
       {/* Backends — model catalog, default marker, cross-backend import */}
@@ -1071,7 +946,7 @@ export function LocalLlmTab() {
           <>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {BACKENDS.map((b) => (
-                <BackendCard
+                <LocalLlmBackendCard
                   key={b.id} backend={b} status={status} isDefault={status.backend === b.id}
                   busy={busy} actionInProgress={actionInProgress}
                   runAction={runAction} setConfirmAction={setConfirmAction}
@@ -1162,7 +1037,7 @@ export function LocalLlmTab() {
           busy={busy}
           actionInProgress={actionInProgress}
           onRefresh={loadMtplxStatus}
-          onStart={runtimeStartMtplx}
+          onSaveLaunch={saveMtplxLaunch}
           onStop={runtimeStopMtplx}
           onInstall={runtimeInstallMtplx}
           onSearchModels={mtplxSearch}
@@ -1261,26 +1136,26 @@ export function LocalLlmTab() {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <span className="text-xs font-medium text-gray-300">Launch Speculative Decoding Server</span>
               <div className="flex items-center gap-1.5">
-                <label htmlFor="llama-preset-select" className="text-[11px] text-gray-500">Preset:</label>
-                <select
-                  id="llama-preset-select"
-                  aria-label="Preset"
-                  onChange={(e) => handlePresetSelect(e.target.value)}
-                  value={llamaPresetId}
-                  className="bg-port-card border border-port-border rounded px-2 py-1 text-xs text-port-accent focus:outline-none"
-                >
-                  {specPresets.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
+                <FormField label="Preset" labelClassName="text-[11px] text-gray-500" className="flex items-center gap-1.5">
+                  <select
+                    id="llama-preset-select"
+                    aria-label="Preset"
+                    onChange={(e) => handlePresetSelect(e.target.value)}
+                    value={llamaPresetId}
+                    className="bg-port-card border border-port-border rounded px-2 py-1 text-xs text-port-accent focus:outline-none"
+                  >
+                    {specPresets.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </FormField>
               </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <div>
-                <label htmlFor="llama-base-model" className="text-[11px] text-gray-400 block mb-1">Target Base Model (GGUF Path) *</label>
+              <FormField label="Target Base Model (GGUF Path) *" labelClassName="text-[11px] text-gray-400 block mb-1">
                 <input
                   id="llama-base-model"
                   aria-label="Target Base Model (GGUF Path)"
@@ -1290,9 +1165,8 @@ export function LocalLlmTab() {
                   placeholder={activeSpecPreset?.model?.path || 'models/your-target-Q4_K_M.gguf'}
                   className="w-full bg-port-card border border-port-border rounded px-2.5 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
                 />
-              </div>
-              <div>
-                <label htmlFor="llama-draft-model" className="text-[11px] text-gray-400 block mb-1">Draft Model (Optional)</label>
+              </FormField>
+              <FormField label="Draft Model (Optional)" labelClassName="text-[11px] text-gray-400 block mb-1">
                 <input
                   id="llama-draft-model"
                   aria-label="Draft Model (Optional)"
@@ -1302,7 +1176,7 @@ export function LocalLlmTab() {
                   placeholder={activeSpecPreset?.draftModel?.path || 'models/your-drafter.gguf'}
                   className="w-full bg-port-card border border-port-border rounded px-2.5 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
                 />
-              </div>
+              </FormField>
             </div>
 
             {activeSpecWeights.length > 0 && (
@@ -1316,6 +1190,7 @@ export function LocalLlmTab() {
                     entry={entry}
                     progress={llamaDownloads[downloadKey(llamaPresetId, entry.role)]}
                     onDownload={handleDownloadSpecModel}
+                    onCancel={handleCancelSpecModelDownload}
                     disabled={llamaLoading}
                   />
                 ))}
@@ -1324,8 +1199,7 @@ export function LocalLlmTab() {
 
             {showLlamaAdvanced && (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 border-t border-port-border/40 text-xs">
-                <div>
-                  <label htmlFor="llama-port" className="text-[11px] text-gray-400 block mb-1">Port</label>
+                <FormField label="Port" labelClassName="text-[11px] text-gray-400 block mb-1">
                   <input
                     id="llama-port"
                     aria-label="Port"
@@ -1334,9 +1208,8 @@ export function LocalLlmTab() {
                     onChange={(e) => setLlamaNumber('port', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
-                </div>
-                <div>
-                  <label htmlFor="llama-ctx-size" className="text-[11px] text-gray-400 block mb-1">Context Size</label>
+                </FormField>
+                <FormField label="Context Size" labelClassName="text-[11px] text-gray-400 block mb-1">
                   <input
                     id="llama-ctx-size"
                     aria-label="Context Size"
@@ -1345,9 +1218,8 @@ export function LocalLlmTab() {
                     onChange={(e) => setLlamaNumber('ctxSize', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
-                </div>
-                <div>
-                  <label htmlFor="llama-gpu-layers" className="text-[11px] text-gray-400 block mb-1">GPU Layers (-ngl)</label>
+                </FormField>
+                <FormField label="GPU Layers (-ngl)" labelClassName="text-[11px] text-gray-400 block mb-1">
                   <input
                     id="llama-gpu-layers"
                     aria-label="GPU Layers (-ngl)"
@@ -1356,9 +1228,8 @@ export function LocalLlmTab() {
                     onChange={(e) => setLlamaNumber('nGpuLayers', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
-                </div>
-                <div className="col-span-2">
-                  <label htmlFor="llama-parallel" className="text-[11px] text-gray-400 block mb-1">Parallel slots</label>
+                </FormField>
+                <FormField label="Parallel slots" labelClassName="text-[11px] text-gray-400 block mb-1" className="col-span-2">
                   <input
                     id="llama-parallel"
                     aria-label="Parallel slots"
@@ -1372,9 +1243,8 @@ export function LocalLlmTab() {
                   <p className="text-[11px] text-gray-500 mt-1">
                     llama.cpp divides context across this many request slots. 1 is right for a TUI agent.
                   </p>
-                </div>
-                <div className="col-span-2 sm:col-span-4">
-                  <label htmlFor="llama-spec-type" className="text-[11px] text-gray-400 block mb-1">Spec Type</label>
+                </FormField>
+                <FormField label="Spec Type" labelClassName="text-[11px] text-gray-400 block mb-1" className="col-span-2 sm:col-span-4">
                   <input
                     id="llama-spec-type"
                     aria-label="Spec Type"
@@ -1398,9 +1268,8 @@ export function LocalLlmTab() {
                   {specTypeNotice && (
                     <p className="text-[11px] text-port-warning mt-1">{specTypeNotice}</p>
                   )}
-                </div>
-                <div>
-                  <label htmlFor="llama-alias" className="text-[11px] text-gray-400 block mb-1">Model id (alias)</label>
+                </FormField>
+                <FormField label="Model id (alias)" labelClassName="text-[11px] text-gray-400 block mb-1">
                   <input
                     id="llama-alias"
                     aria-label="Model id (alias)"
@@ -1409,7 +1278,7 @@ export function LocalLlmTab() {
                     onChange={(e) => setLlamaForm((prev) => ({ ...prev, alias: e.target.value }))}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
-                </div>
+                </FormField>
 
                 {/* Performance tuning. Unlike the fields above, these have no
                     PortOS default — an empty one is stripped from the launch
@@ -1420,8 +1289,7 @@ export function LocalLlmTab() {
                   <Link to="/models/performance" className="text-port-accent hover:underline">Measure the difference</Link>{' '}
                   after changing one.
                 </p>
-                <div>
-                  <label htmlFor="llama-batch-size" className="text-[11px] text-gray-400 block mb-1">Batch size (-b)</label>
+                <FormField label="Batch size (-b)" labelClassName="text-[11px] text-gray-400 block mb-1">
                   <input
                     id="llama-batch-size"
                     aria-label="Batch size (-b)"
@@ -1431,9 +1299,8 @@ export function LocalLlmTab() {
                     onChange={(e) => setLlamaNumber('batchSize', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
-                </div>
-                <div>
-                  <label htmlFor="llama-ubatch-size" className="text-[11px] text-gray-400 block mb-1">Micro-batch (-ub)</label>
+                </FormField>
+                <FormField label="Micro-batch (-ub)" labelClassName="text-[11px] text-gray-400 block mb-1">
                   <input
                     id="llama-ubatch-size"
                     aria-label="Micro-batch (-ub)"
@@ -1443,9 +1310,8 @@ export function LocalLlmTab() {
                     onChange={(e) => setLlamaNumber('ubatchSize', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
-                </div>
-                <div>
-                  <label htmlFor="llama-threads" className="text-[11px] text-gray-400 block mb-1">CPU threads (-t)</label>
+                </FormField>
+                <FormField label="CPU threads (-t)" labelClassName="text-[11px] text-gray-400 block mb-1">
                   <input
                     id="llama-threads"
                     aria-label="CPU threads (-t)"
@@ -1455,7 +1321,7 @@ export function LocalLlmTab() {
                     onChange={(e) => setLlamaNumber('threads', e.target.value)}
                     className="w-full bg-port-card border border-port-border rounded px-2 py-1 text-xs text-white"
                   />
-                </div>
+                </FormField>
                 <div className="flex items-end gap-2 pb-1">
                   <input
                     id="llama-flash-attn"
@@ -1466,8 +1332,7 @@ export function LocalLlmTab() {
                   />
                   <label htmlFor="llama-flash-attn" className="text-[11px] text-gray-400">Flash attention</label>
                 </div>
-                <div>
-                  <label htmlFor="llama-cache-type-k" className="text-[11px] text-gray-400 block mb-1">KV cache K</label>
+                <FormField label="KV cache K" labelClassName="text-[11px] text-gray-400 block mb-1">
                   <select
                     id="llama-cache-type-k"
                     aria-label="KV cache K"
@@ -1478,9 +1343,8 @@ export function LocalLlmTab() {
                     <option value="">default</option>
                     {LLAMA_CACHE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                   </select>
-                </div>
-                <div>
-                  <label htmlFor="llama-cache-type-v" className="text-[11px] text-gray-400 block mb-1">KV cache V</label>
+                </FormField>
+                <FormField label="KV cache V" labelClassName="text-[11px] text-gray-400 block mb-1">
                   <select
                     id="llama-cache-type-v"
                     aria-label="KV cache V"
@@ -1491,7 +1355,7 @@ export function LocalLlmTab() {
                     <option value="">default</option>
                     {LLAMA_CACHE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                   </select>
-                </div>
+                </FormField>
               </div>
             )}
 
@@ -1628,24 +1492,26 @@ export function LocalLlmTab() {
         <div className="flex flex-col sm:flex-row gap-2">
           <div className="flex-1 flex items-center gap-2 bg-port-bg border border-port-border rounded-lg px-3 focus-within:border-port-accent">
             <Search size={14} className="text-gray-500" />
-            <label htmlFor="llm-catalog-search" className="sr-only">{`Search the ${labelFor(selected)} model catalog`}</label>
+            <FormField label={`Search the ${labelFor(selected)} model catalog`} labelClassName="sr-only" className="flex-1">
             <input
               id="llm-catalog-search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={catalogSource === 'huggingface' ? (activeCategory === 'audio' ? 'Search Hugging Face audio models…' : 'Search Hugging Face GGUF models…') : `Search the ${labelFor(selected)} catalog…`}
-              className="flex-1 bg-transparent py-2 text-sm text-white placeholder-gray-600 focus:outline-none"
+              className="w-full flex-1 bg-transparent py-2 text-sm text-white placeholder-gray-600 focus:outline-none"
             />
+            </FormField>
           </div>
           <div className="flex items-center gap-2">
-            <label htmlFor="llm-manual-install" className="sr-only">{`Install a ${labelFor(selected)} model by id`}</label>
+            <FormField label={`Install a ${labelFor(selected)} model by id`} labelClassName="sr-only" className="flex-1 sm:w-56">
             <input
               id="llm-manual-install"
               value={manualId}
               onChange={(e) => setManualId(e.target.value)}
               placeholder={selected === 'ollama' ? 'pull by name e.g. llama3.2' : 'publisher/Model-GGUF'}
-              className="flex-1 sm:w-56 bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
+              className="w-full flex-1 sm:w-56 bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
             />
+            </FormField>
             <button
               onClick={() => { const id = manualId.trim(); if (id) { install(id); setManualId(''); } }}
               disabled={busy || !manualId.trim()}
@@ -1785,8 +1651,7 @@ export function LocalLlmTab() {
                       )}
                       {m.note && <div className="text-[11px] text-port-warning/90 mt-0.5">{m.note}</div>}
                       {hasVariantPicker && (
-                        <div className="flex items-center gap-1.5 flex-wrap mt-1">
-                          <label htmlFor={`quant-${m.key}`} className="text-[11px] text-gray-500">Quant</label>
+                        <FormField label="Quant" labelClassName="text-[11px] text-gray-500" className="flex items-center gap-1.5 flex-wrap mt-1">
                           <select
                             id={`quant-${m.key}`}
                             value={chosenId}
@@ -1806,7 +1671,7 @@ export function LocalLlmTab() {
                               {fitMeta.label}{fitMeasured ? ' (measured)' : ''}
                             </span>
                           )}
-                        </div>
+                        </FormField>
                       )}
                       <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-gray-600 mt-1">
                         <span className="text-gray-500">{categoryLabel(m.category)}</span>
@@ -1904,105 +1769,21 @@ export function LocalLlmTab() {
           )}
         </div>
 
-        {/* Installed models */}
-        <div className="space-y-2 pt-2 border-t border-port-border/50">
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <h3 className="text-xs font-medium text-gray-400">Installed on {labelFor(selected)} ({installedModels.length})</h3>
-            {compareTargets.length > 0 && (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-500">{compareTargets.length} selected</span>
-                <button
-                  onClick={openCompare}
-                  disabled={compareTargets.length < 2}
-                  className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 flex items-center gap-1"
-                >
-                  <ArrowRightLeft size={12} />
-                  Compare selected
-                </button>
-              </div>
-            )}
-          </div>
-          {installedModels.length === 0 ? (
-            <p className="text-xs text-gray-500">No models installed yet.</p>
-          ) : installedModels.map((m) => (
-            // Mobile: identity stacks above the action row so the (often very
-            // long) `hf.co/…` model id gets the full row width and wraps instead
-            // of being ellipsised down to "hf.co/sja…". Desktop keeps the single
-            // line with actions trailing on the right.
-            <div key={m.id} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 bg-port-bg border border-port-border rounded-lg p-3">
-              <div className="flex items-start gap-3 min-w-0 flex-1">
-                <label className="shrink-0 flex items-center pt-0.5" title={`Include ${m.name || m.id} in a comparison`}>
-                  <input
-                    type="checkbox"
-                    checked={compareTargetKeys.has(localLlmTargetKey({ backend: selected, modelId: m.id }))}
-                    onChange={() => toggleCompareTarget(selected, m.id)}
-                    className="h-4 w-4 accent-port-accent"
-                    aria-label={`Select ${m.name || m.id} for comparison`}
-                  />
-                </label>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm text-white break-all">{m.name}</div>
-                  <div className="text-xs text-gray-500 break-words">
-                    {[
-                      m.params,
-                      m.quantization,
-                      m.family,
-                      formatContextLength(m.contextLength),
-                      m.size != null ? formatBytes(m.size) : null
-                    ].filter(Boolean).join(' · ')}
-                  </div>
-                  {(m.capabilities || []).length > 0 && (
-                    <div className="flex items-center gap-1 flex-wrap mt-1">
-                      <CapabilityBadges capabilities={m.capabilities} />
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-2 shrink-0 justify-end flex-wrap">
-                <Link
-                  to={`/local-llm/playground?backend=${encodeURIComponent(selected)}&model=${encodeURIComponent(m.id)}`}
-                  className="px-2.5 py-1 text-xs bg-port-accent-2/15 hover:bg-port-accent-2/25 text-port-accent-2 rounded flex items-center gap-1 shrink-0 no-underline"
-                  title={`Chat with ${m.name || m.id}`}
-                >
-                  <FlaskConical size={12} />
-                  Chat
-                </Link>
-                {redownloadInstallId(m, selected) && (
-                <button
-                  onClick={() => install(redownloadInstallId(m, selected), { force: true })}
-                  disabled={busy}
-                  title="Pull this build again. Updated GGUF files keep the same name, so an existing install will not refresh until you redownload."
-                  className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 flex items-center gap-1 shrink-0"
-                  aria-label={`Redownload ${m.name || m.id}`}
-                >
-                  {actionInProgress === `install-${redownloadInstallId(m, selected)}` ? <BrailleSpinner /> : <RefreshCw size={12} />}
-                  Redownload
-                </button>
-                )}
-                {isConfirmingDelete(m.id) ? (
-                  <ConfirmButtonPair
-                    prompt="Delete?"
-                    confirmIcon={Trash2}
-                    busy={busy}
-                    className="shrink-0"
-                    onConfirm={() => confirmDelete(() => remove(m.id))}
-                    onCancel={cancelDelete}
-                  />
-                ) : (
-                  <button
-                    onClick={() => requestDelete(m.id)}
-                    disabled={busy}
-                    className="px-2.5 py-1 text-xs bg-port-error/20 hover:bg-port-error/40 text-port-error rounded disabled:opacity-50 flex items-center gap-1 shrink-0"
-                    aria-label={`Delete ${m.name}`}
-                  >
-                    {actionInProgress === `delete-${m.id}` ? <BrailleSpinner /> : <Trash2 size={12} />}
-                    Delete
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
+        <LocalLlmInstalledModels
+          actionInProgress={actionInProgress}
+          backend={selected}
+          busy={busy}
+          cancelDelete={cancelDelete}
+          compareTargets={compareTargets}
+          confirmDelete={confirmDelete}
+          install={install}
+          isConfirmingDelete={isConfirmingDelete}
+          models={installedModels}
+          onCompare={openCompare}
+          onToggleCompare={toggleCompareTarget}
+          remove={remove}
+          requestDelete={requestDelete}
+        />
       </div>
     </div>
   );

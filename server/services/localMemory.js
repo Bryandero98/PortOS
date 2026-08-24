@@ -1,16 +1,16 @@
 /** Shared best-effort local-model memory reclamation and headroom reporting. */
 
-import { execFile } from './childProcess.js';
+import { execFile } from '../lib/childProcess.js';
 import { platform, freemem, totalmem } from 'os';
 import { promisify } from 'util';
-import { getLoadedModels as ollamaLoadedModels, unloadModel as ollamaUnload, getBaseUrl as ollamaBaseUrl } from '../services/ollamaManager.js';
-import { getLoadedModels as lmStudioLoadedModels, unloadModel as lmStudioUnload, getBaseUrl as lmStudioBaseUrl } from '../services/lmStudioManager.js';
-import { getAllProviders } from '../services/providers.js';
-import { probeOpenAiModels } from './openAiModelsProbe.js';
-import { getCudaCapability } from './cudaCapability.js';
-import { localRuntimeForProvider, LOCAL_RUNTIMES } from './localProviderRuntime.js';
-import { resolveVllmProjectDir } from './vllmQwenProject.js';
-import { resolveSglangProjectDir } from './sglangQwenProject.js';
+import { getLoadedModels as ollamaLoadedModels, unloadModel as ollamaUnload, getBaseUrl as ollamaBaseUrl } from './ollamaManager.js';
+import { getLoadedModels as lmStudioLoadedModels, unloadModel as lmStudioUnload, getBaseUrl as lmStudioBaseUrl } from './lmStudioManager.js';
+import { getAllProviders } from './providers.js';
+import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
+import { getCudaCapability } from '../lib/cudaCapability.js';
+import { localRuntimeForProvider, LOCAL_RUNTIMES } from '../lib/localProviderRuntime.js';
+import { resolveVllmProjectDir } from '../lib/vllmQwenProject.js';
+import { resolveSglangProjectDir } from '../lib/sglangQwenProject.js';
 
 const execFileAsync = promisify(execFile);
 const GB = 2 ** 30;

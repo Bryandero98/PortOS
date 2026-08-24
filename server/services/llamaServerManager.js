@@ -11,7 +11,8 @@ import { spawn } from '../lib/childProcess.js';
 import { commandExists } from '../lib/commandExists.js';
 import { findCommandOnPath, safeChildProcessEnv, safeChildProcessOptions } from '../lib/processEnv.js';
 import { expandHome, sleep } from '../lib/fileUtils.js';
-import { createDaemonLogBuffer, pm2ArgValue } from '../lib/managedDaemon.js';
+import { createDaemonWatcher, pm2ArgValue, LLAMA_APP } from '../lib/managedDaemon.js';
+import { execFile } from '../lib/childProcess.js';
 import { resolveSpecModelPath } from './specDecodeModels.js';
 import { parseSpecTypes, isDraftSpecType } from '../lib/specDecodePresets.js';
 import { probeOpenAiModels } from '../lib/openAiModelsProbe.js';
@@ -20,11 +21,27 @@ import { PORTS } from '../lib/ports.js';
 import { tuningSpecsFor } from '../lib/localModelTuning.js';
 import { ServerError } from '../lib/errorHandler.js';
 import { execPm2, getAppStatusStrict, clearJlistCache, getSavedProcessNames } from './pm2.js';
+// `settings.js` is lazy-imported at its call sites below, never statically: it
+// eagerly resolves `fileUtils.PATHS` at module load, which drags PATHS into the
+// module graph of every consumer of this manager and breaks the many suites that
+// partial-mock fileUtils without it. Same reason `lib/aiProvider.js` defers
+// `localModelHealing`.
 
-export const LLAMA_APP = 'portos-llama-server';
+
+export { LLAMA_APP };
 
 const PROBE_TIMEOUT_MS = 1500;
 const STARTUP_WAIT_TIMEOUT_MS = 4000;
+// `llama-server --help` is a fast local exec; this only bounds a wedged binary.
+const HELP_PROBE_TIMEOUT_MS = 5000;
+// llama.cpp's own in-place idle unload. See `supportsSleepIdle`.
+const SLEEP_IDLE_FLAG = '--sleep-idle-seconds';
+// binary path -> does it understand SLEEP_IDLE_FLAG. Keyed by path so a user who
+// swaps in a newer build at a different location is re-probed rather than
+// inheriting the old answer.
+const sleepIdleSupport = new Map();
+// See `configuredSleepIdleMinutes`. Only `_resetLlamaServerStateForTests` writes it.
+let sleepIdleMinutesOverride = null;
 // How long a relaunch waits for the kernel to release the old listener.
 const PORT_RELEASE_TIMEOUT_MS = 5000;
 // How long a relaunch waits for the new process to answer. `startLlamaServer`
@@ -60,8 +77,6 @@ let currentConfig = null;
 // cannot tell a PortOS tuning apart from the same flags typed by the user.
 let preTuningConfig = null;
 let lastExitError = null;
-const logs = createDaemonLogBuffer();
-const appendLog = logs.append;
 
 /**
  * Probes whether an OpenAI-compatible endpoint responds at the given host/port.
@@ -81,6 +96,61 @@ const probeEndpoint = async (endpoint) =>
  */
 function resolveLlamaServerBinary() {
   return findCommandOnPath('llama-server');
+}
+
+/**
+ * Does the installed `llama-server` understand `--sleep-idle-seconds`?
+ *
+ * That flag is how llama.cpp releases a checkpoint WITHOUT the process going
+ * away: after N idle seconds the server unloads the model and reloads it on the
+ * next request, keeping its PM2 entry, its port, and its launch line. Stopping
+ * the process instead would reclaim the same memory at the cost of a full cold
+ * start — which is why PortOS reaps MTPLX (it has no such flag) but not this.
+ *
+ * Probed rather than assumed because PortOS is distributed software: the flag
+ * landed in a recent llama.cpp, and every install upgrades on its own schedule.
+ * An older binary REJECTS an unknown flag and exits before it binds, so emitting
+ * it blind would break the start outright for anyone who hasn't upgraded.
+ *
+ * Cached per binary path — `--help` is a subprocess, and a start already pays
+ * for several. A probe that cannot run at all answers `false`: leaving the flag
+ * off costs the idle release, while guessing `true` costs the daemon.
+ *
+ * @param {string} binaryPath
+ * @returns {Promise<boolean>}
+ */
+async function supportsSleepIdle(binaryPath) {
+  if (sleepIdleSupport.has(binaryPath)) return sleepIdleSupport.get(binaryPath);
+  const help = await new Promise((resolve) => {
+    execFile(binaryPath, ['--help'], { timeout: HELP_PROBE_TIMEOUT_MS, ...safeChildProcessOptions() },
+      (err, stdout, stderr) => resolve(`${stdout || ''}${stderr || ''}`));
+  }).catch(() => '');
+  const supported = help.includes(SLEEP_IDLE_FLAG);
+  sleepIdleSupport.set(binaryPath, supported);
+  if (!supported) {
+    console.log(`🦙 llama-server at ${binaryPath} has no ${SLEEP_IDLE_FLAG} — idle unload unavailable on this build`);
+  }
+  return supported;
+}
+
+/**
+ * The configured idle window for llama-server, in minutes.
+ *
+ * `0` is a real choice ("keep the model resident", the behaviour every install
+ * had before this setting existed) and is the default, so an upgrade changes
+ * nothing until the user asks for it. An unreadable settings file degrades to
+ * the same `0` rather than to a window nobody chose.
+ *
+ * @returns {Promise<number>}
+ */
+async function configuredSleepIdleMinutes() {
+  // Test seam. Suites here assert EXACT launch lines, so reading the developer's
+  // real `data/settings.json` would make them pass or fail on whether that
+  // developer happens to use this feature. `null` (production) reads settings.
+  if (sleepIdleMinutesOverride !== null) return sleepIdleMinutesOverride;
+  const settings = await import('./settings.js').then((m) => m.getSettings()).catch(() => null);
+  const raw = Number(settings?.localLlm?.llama?.idleMinutes);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
 }
 
 /**
@@ -145,6 +215,12 @@ function parseConfigFromArgs(args) {
     // Current llama.cpp calls this `--spec-draft-n-max`; retain the older
     // spelling on read so a pre-upgrade PortOS launch line can still be captured
     // and restored without inventing a new value.
+    // Stored in MINUTES here, on the launch line in SECONDS — the flag's own
+    // unit. Absent means the daemon is running without idle unload, which is 0
+    // ("keep it resident"), not "unknown".
+    sleepIdleMinutes: getArg(SLEEP_IDLE_FLAG) !== null
+      ? Math.round(Number(getArg(SLEEP_IDLE_FLAG)) / 60)
+      : 0,
     draftMax: getArg('--spec-draft-n-max') !== null
       ? Number(getArg('--spec-draft-n-max'))
       : (getArg('--draft-max') !== null ? Number(getArg('--draft-max')) : null),
@@ -155,6 +231,25 @@ function parseConfigFromArgs(args) {
 // the two callers below can't drift on how host/port are defaulted.
 const endpointFor = (config) =>
   `http://${config?.host || '127.0.0.1'}:${config?.port ?? PORTS.LLAMA_SERVER}/v1`;
+
+const daemon = createDaemonWatcher({
+  appName: LLAMA_APP,
+  defaultPort: PORTS.LLAMA_SERVER,
+  endpointFor,
+  parseConfigFromArgs,
+  probe: probeEndpoint,
+  isPortInUse: (...args) => isPortInUse(...args),
+  sleep,
+  getConfig: () => currentConfig,
+  setConfig: (config) => { currentConfig = config; },
+  getLastExitError: () => lastExitError,
+  getAppStatus: (...args) => getAppStatusStrict(...args),
+  getSavedProcessNames: (...args) => getSavedProcessNames(...args),
+  execPm2: (...args) => execPm2(...args),
+  getPortReleaseTimeoutMs: () => PORT_RELEASE_TIMEOUT_MS,
+  preserveConfigOnReadFailure: true,
+});
+const appendLog = daemon.appendLog;
 
 /**
  * Just the base URL llama-server is serving on — no endpoint probe, no PM2 log
@@ -174,7 +269,7 @@ export async function getLlamaServerEndpoint() {
   // Reconstructs `currentConfig` from PM2's args as a side effect when PortOS
   // restarted under a still-running daemon — see `readLlamaServerLaunch`.
   if (!currentConfig) await readLlamaServerLaunch();
-  return endpointFor(currentConfig);
+  return daemon.endpoint();
 }
 
 /**
@@ -184,44 +279,12 @@ export async function getLlamaServerStatus() {
   const binaryPath = resolveLlamaServerBinary();
   const installed = Boolean(binaryPath);
 
-  const [pm2Status, savedApps] = await Promise.all([getAppStatusStrict(LLAMA_APP), getSavedProcessNames()]);
-  const isReadFailed = pm2Status === null;
-  const isManagedActive = Boolean(pm2Status && pm2Status.status === 'online');
-
-  if (!currentConfig && isManagedActive && pm2Status?.args) {
-    currentConfig = parseConfigFromArgs(pm2Status.args);
-  }
-
-  const host = currentConfig?.host || '127.0.0.1';
-  const port = currentConfig?.port ?? PORTS.LLAMA_SERVER;
-  const endpoint = endpointFor(currentConfig);
-
-  const reachable = await probeEndpoint(endpoint);
-
-  const pm2Logs = isManagedActive || (pm2Status && pm2Status.status !== 'not_found')
-    ? await execPm2(['logs', LLAMA_APP, '--nostream', '--lines', String(logs.maxLines)]).catch(() => null)
-    : null;
-
   return {
-    installed,
-    running: isManagedActive || reachable,
-    managed: isReadFailed ? null : isManagedActive,
-    pid: isManagedActive ? (pm2Status?.pid || null) : null,
-    host,
-    port,
-    endpoint,
-    // NOT nulled on a failed read. `currentConfig` is the launch line PortOS
-    // itself last started this daemon on, and a subprocess hiccup reading PM2 is
-    // no evidence it stopped serving it. Nulling it here collapsed `managed:
-    // null` ("could not tell") straight back into `managed: false` ("somebody
-    // else's daemon") for every caller guarding on `!managed || !config?.model`
-    // — defeating, one line later, the entire point of the null sentinel.
-    config: isManagedActive || isReadFailed ? currentConfig : null,
-    // Is this PM2 app in the saved dump `pm2 resurrect` replays at boot?
-    // `null` = the dump could not be read, which is not the same as "no".
-    runAtStartup: savedApps === null ? null : savedApps.includes(LLAMA_APP),
-    recentLogs: logs.withPm2Logs(`${pm2Logs?.stdout || ''}\n${pm2Logs?.stderr || ''}`),
-    lastExitError: isReadFailed ? 'Failed to read PM2 status' : lastExitError,
+    ...await daemon.getStatusBase({ installed }),
+    // The SAVED window, which is what the settings field edits. What the running
+    // process actually got is `config.sleepIdleMinutes` — they differ until the
+    // next start, because this is a launch flag.
+    idleMinutes: await configuredSleepIdleMinutes(),
   };
 }
 
@@ -286,6 +349,11 @@ export async function startLlamaServer(options = {}) {
     cacheTypeK = null,
     cacheTypeV = null,
     draftMax = null,
+    // Minutes of idleness after which llama.cpp unloads the checkpoint in place.
+    // `undefined` = not supplied, so fall through to the saved setting; an
+    // explicit number (including 0) is the caller's own choice and wins, which
+    // is what lets a relaunch replay exactly the line it captured.
+    sleepIdleMinutes = undefined,
   } = options;
 
   if (!model || typeof model !== 'string') {
@@ -361,8 +429,26 @@ export async function startLlamaServer(options = {}) {
   if (Number.isFinite(draftMax) && draftPath) args.push('--spec-draft-n-max', String(draftMax));
   if (alias) args.push('--alias', alias);
 
+  // llama.cpp's in-place idle unload. Resolved AFTER the rest of the line so a
+  // relaunch that carried an explicit value replays it verbatim, and only then
+  // falls back to the saved setting.
+  const requestedIdleMinutes = Number.isFinite(sleepIdleMinutes)
+    ? Math.max(0, Math.floor(sleepIdleMinutes))
+    : await configuredSleepIdleMinutes();
+  // A build without the flag gets the line it would have got before this
+  // feature existed — never a rejected launch. `effectiveIdleMinutes` is what
+  // actually reached the process, so the status card reports the truth rather
+  // than the request.
+  const effectiveIdleMinutes = requestedIdleMinutes > 0 && await supportsSleepIdle(binaryPath)
+    ? requestedIdleMinutes
+    : 0;
+  if (effectiveIdleMinutes > 0) args.push(SLEEP_IDLE_FLAG, String(effectiveIdleMinutes * 60));
+
   lastExitError = null;
-  logs.reset();
+  daemon.resetLogs();
+  if (requestedIdleMinutes > 0 && effectiveIdleMinutes === 0) {
+    appendLog(`This llama-server build has no ${SLEEP_IDLE_FLAG} — the model stays resident while idle`);
+  }
   if (droppedSpecTypes.length > 0) {
     appendLog(`Ignoring spec-type ${droppedSpecTypes.join(',')} — no drafter model is set`);
     console.log(`🦙 llama-server dropping drafter-based spec types ${droppedSpecTypes.join(',')} (no --model-draft configured)`);
@@ -399,6 +485,7 @@ export async function startLlamaServer(options = {}) {
     cacheTypeK,
     cacheTypeV,
     draftMax,
+    sleepIdleMinutes: effectiveIdleMinutes,
   };
 
   // Delete stale PM2 entry so our own previous instance doesn't count as a collision
@@ -435,7 +522,7 @@ export async function startLlamaServer(options = {}) {
     const exitLogs = await execPm2(['logs', LLAMA_APP, '--nostream', '--lines', '15']).catch(() => null);
     const lines = (exitLogs?.stderr || exitLogs?.stdout || '').trim().split('\n').map((l) => l.trimEnd()).filter(Boolean);
     for (const line of lines) appendLog(line);
-    const tail = (lines.length ? lines : logs.snapshot()).slice(-4).join(' | ');
+    const tail = (lines.length ? lines : daemon.snapshotLogs()).slice(-4).join(' | ');
 
     lastExitError = `PM2 status: ${currentProc.status}`;
 
@@ -505,10 +592,7 @@ export async function stopLlamaServer() {
  * loses a race with itself and reports "port already in use" for the server it
  * just stopped.
  */
-async function waitForPortRelease(port) {
-  const deadline = Date.now() + PORT_RELEASE_TIMEOUT_MS;
-  while (Date.now() < deadline && await isPortInUse(port)) await sleep(200);
-}
+const waitForPortRelease = daemon.waitForPortRelease;
 
 /**
  * Block until the endpoint answers, or the readiness budget elapses.
@@ -596,11 +680,7 @@ async function relaunchWithConfig(next, previous) {
  * @returns {Promise<{managed: boolean, config: object|null, readFailed: boolean}>}
  */
 export async function readLlamaServerLaunch() {
-  const pm2Status = await getAppStatusStrict(LLAMA_APP);
-  if (pm2Status === null) return { managed: false, config: null, readFailed: true };
-  if (pm2Status.status !== 'online') return { managed: false, config: null, readFailed: false };
-  if (!currentConfig && pm2Status.args) currentConfig = parseConfigFromArgs(pm2Status.args);
-  return { managed: true, config: currentConfig, readFailed: false };
+  return daemon.readLaunch();
 }
 
 /**
@@ -1059,10 +1139,13 @@ export async function installLlamaServer({ onProgress = () => {} } = {}) {
 /**
  * Clears in-memory test state (used by test suites).
  */
-export function _resetLlamaServerStateForTests({ relaunchReadyTimeout, pm2ReadRetryDelay } = {}) {
+export function _resetLlamaServerStateForTests({ relaunchReadyTimeout, pm2ReadRetryDelay, sleepIdleMinutes = 0 } = {}) {
+  sleepIdleSupport.clear();
+  // Pinned rather than read from disk — see `configuredSleepIdleMinutes`.
+  sleepIdleMinutesOverride = sleepIdleMinutes;
   currentConfig = null;
   preTuningConfig = null;
-  logs.reset();
+  daemon.resetLogs();
   lastExitError = null;
   // Restored to the production budget unless a suite asks for a shorter one.
   relaunchReadyTimeoutMs = Number.isFinite(relaunchReadyTimeout) ? relaunchReadyTimeout : 120000;

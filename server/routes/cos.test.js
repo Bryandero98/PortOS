@@ -100,7 +100,9 @@ vi.mock('../services/cosTaskGenerator.js', async (importActual) => ({
   buildClaimWorkTask: vi.fn()
 }));
 vi.mock('../services/apps.js', () => ({
-  getAppById: vi.fn()
+  getAppById: vi.fn(),
+  getAppWorkTracker: vi.fn(),
+  PORTOS_APP_ID: 'portos-default'
 }));
 
 // The per-ticket `/tasks/jira-ticket` route loads the claim-issue-jira prompt
@@ -121,7 +123,7 @@ import * as claudeChangelog from '../services/claudeChangelog.js';
 import { enhanceTaskPrompt } from '../services/taskEnhancer.js';
 import { loadSlashdoCommand } from '../services/subAgentSpawner.js';
 import { buildClaimWorkTask } from '../services/cosTaskGenerator.js';
-import { getAppById } from '../services/apps.js';
+import { getAppById, getAppWorkTracker } from '../services/apps.js';
 import { getTaskPrompt } from '../services/taskPromptService.js';
 import { getCodeReviewDefaults } from '../services/codeReview.js';
 
@@ -811,6 +813,13 @@ describe('CoS Routes', () => {
 
       expect(response.status).toBe(404);
     });
+
+    it('should reject malformed dates before reading the report', async () => {
+      const response = await request(app).get('/api/cos/reports/not-a-date');
+
+      expect(response.status).toBe(400);
+      expect(cos.getReport).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /api/cos/watcher', () => {
@@ -1007,6 +1016,19 @@ describe('CoS Routes', () => {
       expect(loadSlashdoCommand).not.toHaveBeenCalled();
     });
 
+    it('rejects plan-task for an app whose tracker cannot file forge issues', async () => {
+      getAppById.mockResolvedValue({ id: 'my-app', name: 'MyApp', type: 'web', repoPath: '/repo' });
+      getAppWorkTracker.mockResolvedValueOnce({ resolved: 'jira' });
+
+      const response = await request(app)
+        .post('/api/cos/tasks/slashdo')
+        .send({ command: 'plan-task', app: 'my-app' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.code).toBe('UNSUPPORTED_PLAN_ONLY_TRACKER');
+      expect(cos.addTask).not.toHaveBeenCalled();
+    });
+
     // #3636: the catalog posture's `worktreeChangesExpected` must reach the task,
     // or the TUI idle reaper scores a report-shaped run's clean tree as
     // `idle-no-changes` — exactly the failure the commit-probe widening left
@@ -1126,7 +1148,8 @@ describe('CoS Routes', () => {
           optionalReviewers: [],
           reviewerMaxRounds: { codex: 2 },
           reviewerModels: {},
-          reviewerEfforts: { codex: 'high' }
+          reviewerEfforts: { codex: 'high' },
+          swarmCount: 6
         }
       });
       cos.addTask.mockResolvedValue({ id: 'task-sd-next-reviewers', status: 'pending' });
@@ -1144,6 +1167,7 @@ describe('CoS Routes', () => {
         reviewerMaxRounds: { codex: 2 },
         reviewerModels: {},
         reviewerEfforts: { codex: 'high' },
+        swarmCount: 6,
         claimFlow: true
       });
       // `reviewLoop` stays off — the claim prompt owns its own review sequence.
@@ -1623,6 +1647,13 @@ describe('CoS Routes', () => {
       const response = await request(app).get('/api/cos/briefings/1999-01-01');
 
       expect(response.status).toBe(404);
+    });
+
+    it('should reject malformed dates before reading the briefing', async () => {
+      const response = await request(app).get('/api/cos/briefings/not-a-date');
+
+      expect(response.status).toBe(400);
+      expect(cos.getBriefing).not.toHaveBeenCalled();
     });
   });
 

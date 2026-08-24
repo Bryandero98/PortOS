@@ -276,6 +276,7 @@ describe('ReviewerPicker', () => {
         codex: ['gpt-tier-a', 'gpt-tier-b'],
         claude: ['claude-tier-a', 'qwen2.5-coder:32b'],
       },
+      defaultModels: { codex: 'gpt-tier-a' },
       freeText: { codex: true, claude: true, lmstudio: false, ollama: false },
       unavailable: { lmstudio: false, ollama: false },
       loaded: true,
@@ -287,6 +288,12 @@ describe('ReviewerPicker', () => {
       expect(screen.getByLabelText('Model for Codex')).toBeInTheDocument();
       // Copilot has no CLI and takes no model — no control, just the em dash.
       expect(screen.queryByLabelText('Model for Copilot')).not.toBeInTheDocument();
+    });
+
+    it('shows the provider default when no per-reviewer model pin exists', () => {
+      render(<ReviewerPicker reviewers={['codex']} modelOptions={modelOptions} onChange={() => {}} />);
+      expect(screen.getByLabelText('Model for Codex')).toHaveValue('gpt-tier-a');
+      expect(screen.getByLabelText('Model for Codex')).toHaveAttribute('title', expect.stringContaining('by default'));
     });
 
     it('does not render a Model control for a @username reviewer', () => {
@@ -546,4 +553,16 @@ describe('ReviewerPicker', () => {
         });
       });
     });
+
+  describe('help disclosure', () => {
+    it('keeps the reviewer tip collapsed until opened', async () => {
+      const user = userEvent.setup();
+      render(<ReviewerPicker reviewers={['codex']} onChange={() => {}} />);
+      const summary = screen.getByText('Tip: reviewer controls');
+      const details = summary.closest('details');
+      expect(details).not.toHaveAttribute('open');
+      await user.click(summary);
+      expect(details).toHaveAttribute('open');
+    });
+  });
 });

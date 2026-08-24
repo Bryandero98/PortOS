@@ -31,6 +31,7 @@ import { setupProcessErrorHandlers, asyncHandler, ServerError, errorEvents } fro
 import { ERROR_CATEGORIES } from '../lib/aiToolkit/errorDetection.js';
 import { createAIToolkit } from '../lib/aiToolkit/index.js';
 import { verifyCollectionVersions } from '../lib/collectionStore.js';
+import { startIdleReaper, stopIdleReaper } from '../lib/managedDaemon.js';
 import { conflictJournalStore } from '../lib/conflictJournal.js';
 import { markHostShuttingDown, writeHostShutdownMarker } from '../lib/hostShutdown.js';
 import { setUserCatalogTypes } from '../lib/catalogTypes.js';
@@ -111,6 +112,7 @@ import { initSyncLog } from './brainSyncLog.js';
 import { backfillOriginInstanceId, brainCollectionStores } from './brainStorage.js';
 import { initSyncOrchestrator } from './syncOrchestrator.js';
 import { initMediaJobQueue } from './mediaJobQueue/index.js';
+import { initSpriteLocalAnimationHook } from './sprites/localAnimationJobHook.js';
 import { initLoraTraining } from './loraTraining/index.js';
 import { initSharing } from './sharing/index.js';
 import { initMortalLoomStore } from './mortalLoomStore.js';
@@ -333,6 +335,11 @@ const startBackgroundServices = ({ spawnerReady }) => {
   // cold-bootstrap provider call.
   recoverInterruptedThreejsModels().catch(err => console.error(`❌ Three.js model recovery failed: ${err.message}`));
   recoverInterruptedImageTo3dModels().catch(err => console.error(`❌ Image-to-3D model recovery failed: ${err.message}`));
+  // Arm the managed-model-server idle reaper. Timer only — it reads timestamps
+  // and may stop a PM2 process, and makes no AI provider call, so it is safe
+  // under AGENTS.md's "No cold-bootstrap LLM calls". Off in practice until the
+  // user sets an idle window (0 = never, the default).
+  startIdleReaper();
   // Initialize brain scheduler for daily digests and weekly reviews
   startBrainScheduler();
   // Initialize activity-digest scheduler — OFF by default; drafts daily-log
@@ -472,6 +479,12 @@ const initMediaJobDependentHooks = () => {
   // Universe Builder needs the media job queue running before it can listen
   // for `completed` events — so initialize the hook here.
   initUniverseBuilderCollectionHook();
+  // Sprite local-render hook (#4876) — stages a finished MiniMax H3 clip into
+  // its animation run and files the outcome, for renders that outlive the
+  // request that started them. Its boot pass also reconciles jobs that settled
+  // while the server was down, which is the only thing that can rescue a
+  // multi-hour render interrupted by a restart.
+  initSpriteLocalAnimationHook();
   // Catalog image-attach hook — durably files a queued render onto its target
   // ingredient on completion, even if the editor page unmounted mid-render
   // (#1359).
@@ -816,6 +829,10 @@ export const registerShutdownHandlers = ({ io, httpServer, localHttpServer }) =>
     // microseconds from now — and its exit handler must already know the PTY
     // died because PortOS is going down, not because the agent finished (#3202).
     markHostShuttingDown();
+    // Disarm the idle reaper before anything awaits: a sweep that fires mid
+    // -shutdown would `pm2 stop` a model server the user never asked to lose,
+    // and PortOS is about to stop being the thing that could restart it.
+    stopIdleReaper();
     // Diagnostic context for the shutdown trigger. ppid tells us whether the
     // signal came from PM2 (parent is the PM2 god process), a TTY (parent is
     // the user's shell), or some external orchestrator. pm_* env vars are set

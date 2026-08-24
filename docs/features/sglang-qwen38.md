@@ -267,7 +267,7 @@ command, instead of spending minutes loading a model into VRAM they cannot have
 and dying with an OOM that names nothing. PortOS **detects and refuses; it never
 auto-stops** — nothing would restart the container, an attached CoS session dies
 with it, and a cold start is minutes. See `detectGpuBlockers` in
-`server/lib/localMemory.js`.
+`server/services/localMemory.js`.
 
 The probe is skipped entirely when no enabled `sglangBacked` provider exists, and
 again when the host reports no NVIDIA GPU at all.

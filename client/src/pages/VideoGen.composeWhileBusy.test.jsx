@@ -125,7 +125,9 @@ vi.mock('../components/media/PromptFromMedia', () => ({
 vi.mock('../components/Drawer', () => ({ default: () => null }));
 vi.mock('../components/settings/ImageGenTab', () => ({ ImageGenTab: () => null }));
 vi.mock('../components/settings/LocalSetupPanel', () => ({ default: () => null }));
-vi.mock('../components/install/RuntimeInstallModal', () => ({ default: () => null }));
+vi.mock('../components/install/RuntimeInstallModal', () => ({
+  default: ({ streamMethod }) => <div data-testid="runtime-install-modal" data-stream-method={streamMethod} />,
+}));
 vi.mock('../components/videoGen/FramePanel', () => ({ default: () => null }));
 vi.mock('../components/videoGen/KeyframePanel', () => ({ default: () => null }));
 vi.mock('../components/videoGen/AudioPanel', () => ({ default: () => null }));
@@ -149,6 +151,18 @@ describe('VideoGen compose-while-busy', () => {
     state.attach.mockReset().mockReturnValue(new Promise(() => {}));
     state.enqueue.mockReset();
     state.eventSourceRef.current = null;
+  });
+
+  it('starts runtime installation through the non-idempotent POST stream', async () => {
+    await act(async () => {
+      render(
+        <MemoryRouter initialEntries={['/media/video']}>
+          <VideoGen />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(screen.getByTestId('runtime-install-modal')).toHaveAttribute('data-stream-method', 'POST');
   });
 
   it('leaves Enhance with AI and Prompt from media usable so the next clip can be queued', async () => {

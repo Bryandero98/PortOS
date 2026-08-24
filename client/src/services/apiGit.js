@@ -73,6 +73,14 @@ export const deleteBranch = (path, branch, { local = false, remote = false } = {
     body: JSON.stringify({ path, branch, local, remote }),
     ...options
   });
+// Destructive: discards tracked changes and local commits on the default
+// branch. Resolves with `previousHead` — the pre-reset sha, so the caller can
+// show a recovery handle.
+export const resetToDefaultBranch = (path, options = {}) => request('/git/reset-to-default', {
+  method: 'POST',
+  body: JSON.stringify({ path }),
+  ...options
+});
 export const cleanupMergedBranches = (path, options = {}) => request('/git/cleanup-merged', {
   method: 'POST',
   body: JSON.stringify({ path }),

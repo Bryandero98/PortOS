@@ -166,6 +166,51 @@ describe('resolveTrackerFilingBlock — fileIssues audit types', () => {
   });
 });
 
+describe('formatTrackerInstructions — plan-feature preset', () => {
+  const planFeature = TRACKER_FILING_PRESETS['plan-feature'];
+
+  it('carries the plan-feature slug prefix + label into every tracker block', () => {
+    for (const tracker of ['plan', 'github', 'gitlab', 'jira']) {
+      const block = formatTrackerInstructions(tracker, planFeature);
+      expect(block).toContain('[plan-feature-…]');
+      expect(block).not.toContain('ref-watch');
+      expect(block).not.toContain('[ux-…]');
+    }
+  });
+
+  it('labels filed forge issues `plan-feature` (+ `plan`) and dedupes by the slug stem', () => {
+    const github = formatTrackerInstructions('github', planFeature);
+    expect(github).toContain('gh label create plan-feature --description "Feature plan filed by the plan-feature brainstorm" --force');
+    expect(github).toContain('--label plan-feature --label plan');
+    expect(github).toContain('--search "plan-feature in:title"');
+    const gitlab = formatTrackerInstructions('gitlab', planFeature);
+    expect(gitlab).toContain('glab issue list --label plan-feature');
+    expect(gitlab).toContain('--label plan-feature --label plan');
+  });
+
+  it('grounds the plan motivation in the PRD first, with goals or repo docs as fallbacks', () => {
+    expect(planFeature.bodyRequirements).toContain('PRD.md requirement or success criterion');
+    expect(planFeature.bodyRequirements).toContain('GOALS.md priority');
+    expect(planFeature.bodyRequirements).toContain('repository-documented user need');
+  });
+
+  it('keeps the read-only-on-source contract in every forge block', () => {
+    for (const tracker of ['github', 'gitlab', 'jira']) {
+      expect(formatTrackerInstructions(tracker, planFeature)).toContain('No source-code edits');
+    }
+  });
+
+  it('is an always-filing type: files without a fileIssues flag (unlike audit types)', async () => {
+    const { resolveTrackerFilingBlock } = await import('./workTracker.js');
+    const app = { repoPath: '/tmp/example-repo', workTracker: 'plan' };
+    const block = await resolveTrackerFilingBlock(app, 'plan-feature', { fileIssues: false });
+    expect(block.workTracker).toBe('plan');
+    // PLAN.md is a file tracker — committing checklist items is expected.
+    expect(block.worktreeChangesExpected).toBe(true);
+    expect(block.trackerInstructions).toContain('docs(plan-feature): file <N> feature plan(s)');
+  });
+});
+
 describe('formatTrackerInstructions — repo-study complete labels', () => {
   const repoStudy = TRACKER_FILING_PRESETS['repo-study'];
 

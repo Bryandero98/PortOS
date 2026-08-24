@@ -10,7 +10,7 @@
 
 import { rm } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { join, resolve, relative, isAbsolute } from 'path';
 import { ensureDir, ensureDirs, readJSONFile, atomicWrite, PATHS } from '../lib/fileUtils.js';
 import { createMutex } from '../lib/asyncMutex.js';
 
@@ -18,6 +18,7 @@ const MEMORY_DIR = PATHS.memory;
 const INDEX_FILE = join(MEMORY_DIR, 'index.json');
 const EMBEDDINGS_FILE = join(MEMORY_DIR, 'embeddings.json');
 const MEMORIES_DIR = join(MEMORY_DIR, 'memories');
+const MEMORY_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 
 // In-memory caches
 let indexCache = null;
@@ -107,7 +108,17 @@ export async function saveMemory(memory) {
  * Delete memory files
  */
 export async function deleteMemoryFiles(id) {
-  const memoryDir = join(MEMORIES_DIR, id);
+  if (typeof id !== 'string' || !MEMORY_ID_PATTERN.test(id)) {
+    throw new Error('Invalid memory id');
+  }
+
+  const memoriesRoot = resolve(MEMORIES_DIR);
+  const memoryDir = resolve(memoriesRoot, id);
+  const relativePath = relative(memoriesRoot, memoryDir);
+  if (!relativePath || relativePath.startsWith('..') || isAbsolute(relativePath)) {
+    throw new Error('Invalid memory path');
+  }
+
   if (existsSync(memoryDir)) {
     await rm(memoryDir, { recursive: true });
   }

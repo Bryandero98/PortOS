@@ -214,11 +214,12 @@ describe('normalize loraNames - snake_case sidecar coverage', () => {
 });
 
 describe('getRenderConfigForItem - video', () => {
-  it('reads camelCase sidecar fields directly', () => {
+  it('round-trips a stitched chain\'s inherited camelCase render fields', () => {
     const video = normalizeVideo({
       id: 'v1',
       filename: 'a.mp4',
       prompt: 'pan',
+      chainedFrom: ['chunk-a', 'chunk-b'],
       width: 720,
       height: 480,
       numFrames: 64,
@@ -230,6 +231,7 @@ describe('getRenderConfigForItem - video', () => {
       seed: 100,
       tiling: true,
       disableAudio: false,
+      textEncoderId: 'example-encoder',
       loraFilenames: ['lora-cinematic.safetensors'],
       loraScales: [0.9],
     });
@@ -246,6 +248,7 @@ describe('getRenderConfigForItem - video', () => {
       seed: 100,
       tiling: true,
       disableAudio: false,
+      textEncoderId: 'example-encoder',
       loraFilenames: ['lora-cinematic.safetensors'],
       loraScales: [0.9],
     });
@@ -269,6 +272,18 @@ describe('getRenderConfigForItem - video', () => {
     expect(cfg.disableAudio).toBe(true);
     expect(cfg.loraFilenames).toEqual(['lora-z.safetensors']);
     expect(cfg.loraScales).toEqual([0.5]);
+  });
+
+  // #4875 — a requeue must carry the named schedule, not just the steps/CFG it
+  // resolved to, or it silently re-renders without the profile's other levers.
+  it('carries a speed profile through a requeue, and omits it on a Quality record', () => {
+    const withProfile = normalizeVideo({
+      id: 'v4', filename: 'd.mp4', prompt: '', modelId: 'ltx25_mlx_q8',
+      steps: 8, guidanceScale: 1, speedProfileId: 'fast',
+    });
+    expect(getRenderConfigForItem(withProfile).speedProfileId).toBe('fast');
+    const quality = normalizeVideo({ id: 'v5', filename: 'e.mp4', prompt: '', modelId: 'ltx25_mlx_q8', steps: 8 });
+    expect(getRenderConfigForItem(quality).speedProfileId).toBeUndefined();
   });
 
   it('preserves a deliberate guidanceScale of 0', () => {

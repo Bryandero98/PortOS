@@ -28,6 +28,9 @@ import { ServerError } from '../lib/errorHandler.js';
 import { atomicWrite, assertSafeFilename, ensureDir, listDirectoryByExtension, sha256File, PATHS } from '../lib/fileUtils.js';
 import { verifySafetensorsStructure } from '../lib/hfCache.js';
 import { isPlainObject } from '../lib/objects.js';
+import { readCachedLoraEffectReport } from '../lib/loraEffect.js';
+import { createKeyedFileWriteQueue } from '../lib/fileWriteQueue.js';
+import { createSingleFlight } from '../lib/singleFlight.js';
 import {
   applyDownloadToken,
   baseModelToRunner,
@@ -64,6 +67,11 @@ import { getHfToken } from '../lib/hfToken.js';
 import { getSettings } from './settings.js';
 
 const SIDECAR_SUFFIX = '.metadata.json';
+
+// One install attempt per requested Civitai model version at a time. A duplicate
+// submit shares the original result instead of racing it to the same destination
+// files, while two explicitly different versions remain independent.
+const civitaiInstalls = createSingleFlight();
 
 const sidecarPath = (loraFilename) => join(PATHS.loras, `${loraFilename}${SIDECAR_SUFFIX}`);
 
@@ -223,6 +231,13 @@ export const listLoras = async () => {
         source: sidecar?.source || null,
         character: sidecar?.character || null,
         trainedFromDatasetId: sidecar?.datasetId || null,
+        // Adapter-effect diagnostic (#4872). CACHED ONLY — listing the library
+        // must never fan out into one Python child per installed LoRA, so this
+        // surfaces whatever the explicit probe last measured and drops it when
+        // the file has changed size underneath it. `null` = never measured (or
+        // measured against a different file), which the UI shows as an offer to
+        // run the check, not as a verdict.
+        effectReport: readCachedLoraEffectReport(sidecar?.effectReport, { sizeBytes: s.size, mtimeMs: s.mtimeMs }),
       };
     },
   });
@@ -262,7 +277,7 @@ export const deleteLora = async (filename) => {
     );
   }
   await rm(filePath, { force: true });
-  await rm(sidecarPath(filename), { force: true });
+  await removeSidecar(filename);
   console.log(`🗑️ Deleted LoRA: ${filename}`);
   return { ok: true, filename };
 };
@@ -270,6 +285,27 @@ export const deleteLora = async (filename) => {
 // Patch the sidecar with user-editable fields (name, recommendedScale, notes).
 // Civitai-derived fields are passed through but the route layer scopes the
 // patch so callers can't trample those.
+// One sidecar write at a time per LoRA. A patch is a read-modify-write of a
+// whole JSON document, and there are several writers: the user renaming a LoRA
+// in the manager, listLoras() healing keyLayout/fluxVariant on read, the effect
+// probe caching its measurement when it finishes, and the two installers
+// replacing the sidecar wholesale. Interleaved, the last write wins the whole
+// file and silently drops the other's field — a re-install over an existing
+// filename could have its fresh civitai block overwritten by a patch that read
+// the pre-install sidecar. EVERY writer goes through here, not just patches, or
+// the serialization is a half-measure. Keyed, so different LoRAs still run in
+// parallel.
+const queueSidecarWrite = createKeyedFileWriteQueue();
+
+// Replace a sidecar wholesale (the install paths), serialized against patches.
+const writeSidecar = (filename, sidecar) => queueSidecarWrite(filename, () =>
+  atomicWrite(sidecarPath(filename), JSON.stringify(sidecar, null, 2) + '\n'));
+
+// Remove a sidecar, serialized so a queued patch can't recreate it after the
+// LoRA is gone.
+const removeSidecar = (filename) => queueSidecarWrite(filename, () =>
+  rm(sidecarPath(filename), { force: true }));
+
 export const patchLoraSidecar = async (filename, patch) => {
   assertSafeLoraFilename(filename);
   const filePath = join(PATHS.loras, filename);
@@ -286,10 +322,14 @@ export const patchLoraSidecar = async (filename, patch) => {
       { status: 400, code: 'INVALID_LORA_FILE' },
     );
   }
-  const current = (await readSidecar(filename)) || { filename };
-  const next = { ...current, ...patch, filename };
-  await atomicWrite(sidecarPath(filename), JSON.stringify(next, null, 2) + '\n');
-  return next;
+  // The read has to be INSIDE the queued cycle — reading before joining the
+  // queue would merge against a snapshot the previous write already superseded.
+  return queueSidecarWrite(filename, async () => {
+    const current = (await readSidecar(filename)) || { filename };
+    const next = { ...current, ...patch, filename };
+    await atomicWrite(sidecarPath(filename), JSON.stringify(next, null, 2) + '\n');
+    return next;
+  });
 };
 
 // Stamp the classified safetensors key layout onto a freshly-built sidecar so
@@ -483,8 +523,7 @@ const verifyDownloadedLora = async (destPath, { expectedSha256 = null, source = 
 
 // Install a LoRA from a Civitai URL. Returns the new sidecar JSON so the
 // client can render it immediately without a second list round-trip.
-export const installFromCivitai = async (input, { fetchImpl = fetch } = {}) => {
-  const { modelId, versionId } = parseCivitaiUrl(input?.url);
+const performCivitaiInstall = async (input, { modelId, versionId, fetchImpl }) => {
   const apiKey = (typeof input?.apiKey === 'string' && input.apiKey.trim()) || (await resolveCivitaiKey());
   const model = await fetchCivitaiModel(modelId, { apiKey, fetchImpl });
   const version = pickVersion(model, versionId);
@@ -552,9 +591,18 @@ export const installFromCivitai = async (input, { fetchImpl = fetch } = {}) => {
   await verifyDownloadedLora(destPath, { expectedSha256: file?.hashes?.SHA256 || null, source: 'civitai' });
 
   const sidecar = await withKeyLayout(buildSidecar({ model, version, file, filename }), destPath);
-  await atomicWrite(sidecarPath(filename), JSON.stringify(sidecar, null, 2) + '\n');
+  await writeSidecar(filename, sidecar);
   console.log(`✅ Installed Civitai LoRA: ${filename} [layout=${sidecar.keyLayout || 'unknown'}]`);
   return sidecar;
+};
+
+export const installFromCivitai = async (input, { fetchImpl = fetch } = {}) => {
+  const { modelId, versionId } = parseCivitaiUrl(input?.url);
+  const installKey = `${modelId}:${versionId ?? 'latest'}`;
+  return civitaiInstalls.run(
+    installKey,
+    () => performCivitaiInstall(input, { modelId, versionId, fetchImpl }),
+  );
 };
 
 // Set of recognized LoRA families an HF import may target (image runners +
@@ -651,7 +699,7 @@ export const installFromHuggingface = async (input, { fetchImpl = fetch, onProgr
     buildHfLoraSidecar({ repo, revision, file, model, family, filename, fluxVariant }),
     destPath,
   );
-  await atomicWrite(sidecarPath(filename), JSON.stringify(sidecar, null, 2) + '\n');
+  await writeSidecar(filename, sidecar);
   console.log(`✅ Installed HuggingFace LoRA: ${filename} [layout=${sidecar.keyLayout || 'unknown'}]`);
   return sidecar;
 };

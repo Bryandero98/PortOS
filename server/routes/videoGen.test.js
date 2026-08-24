@@ -36,8 +36,17 @@ vi.mock('../lib/childProcess.js', async (importOriginal) => ({
 // child as a clean exit, i.e. "capable". Pin the verdict explicitly so each
 // test states the capability it is exercising.
 const loraCapability = vi.hoisted(() => ({ capable: false }));
+const runtimeProbes = vi.hoisted(() => ({
+  isByovRuntimeInstalled: vi.fn(() => false),
+  isByovRuntimeReady: vi.fn(async () => false),
+  isByovRuntimeCurrent: vi.fn(async () => false),
+  invalidateByovReadyCache: vi.fn(),
+  invalidateByovLoraCapabilityCache: vi.fn(),
+  invalidateRuntimeFingerprintCache: vi.fn(),
+}));
 vi.mock('../services/videoGen/runtimes.js', async (importOriginal) => ({
   ...(await importOriginal()),
+  ...runtimeProbes,
   resolveByovRuntimeLoraCapable: vi.fn(async (runtime) => runtime === 'minimax_h3' && loraCapability.capable),
 }));
 
@@ -116,12 +125,7 @@ vi.mock('../services/videoGen/local.js', () => ({
     },
     hunyuan: { id: 'hunyuan', label: 'HunyuanVideo MLX', venvPython: '/tmp/hunyuan.py', installEnvVar: 'INSTALL_HUNYUAN', repoUrl: 'x', repoDir: '/tmp' },
   },
-  isByovRuntimeInstalled: vi.fn(() => false),
-  isByovRuntimeReady: vi.fn(async () => false),
-  isByovRuntimeCurrent: vi.fn(async () => false),
-  invalidateByovReadyCache: vi.fn(),
-  invalidateByovLoraCapabilityCache: vi.fn(),
-  invalidateRuntimeFingerprintCache: vi.fn(),
+  ...runtimeProbes,
   // /status now surfaces a runtime block (host chip/os + per-runtime versions).
   // Mock returns a fixed shape so the status test can assert it's wired through.
   resolveRuntimeFingerprint: vi.fn(async () => ({
@@ -301,6 +305,9 @@ describe('videoGen routes', () => {
     // bailed before the route consumed it can't leak into the next test.
     pendingUpload.current = null;
     installProcess.spawn.mockReset().mockImplementation(() => installProcess.makeChild());
+    runtimeProbes.isByovRuntimeInstalled.mockReturnValue(false);
+    runtimeProbes.isByovRuntimeReady.mockResolvedValue(false);
+    runtimeProbes.isByovRuntimeCurrent.mockResolvedValue(false);
   });
 
   describe('GET /status', () => {
@@ -429,12 +436,22 @@ describe('videoGen routes', () => {
     });
   });
 
-  describe('GET /setup/runtime-install', () => {
+  describe('/setup/runtime-install', () => {
+    it('keeps GET read-only and returns the current runtime status', async () => {
+      const r = await request(app).get('/api/video-gen/setup/runtime-install?runtime=wan22');
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({
+        runtime: 'wan22', installed: false, binaryPresent: false,
+        packagesReady: false, current: false,
+      });
+      expect(installProcess.spawn).not.toHaveBeenCalled();
+    });
+
     it('short-circuits only when the runtime packages and pinned revision are current', async () => {
       videoGenService.isByovRuntimeInstalled.mockReturnValueOnce(true);
       videoGenService.isByovRuntimeReady.mockResolvedValueOnce(true);
       videoGenService.isByovRuntimeCurrent.mockResolvedValueOnce(true);
-      const r = await request(app).get('/api/video-gen/setup/runtime-install?runtime=wan22');
+      const r = await request(app).post('/api/video-gen/setup/runtime-install?runtime=wan22');
       expect(r.status).toBe(200);
       expect(r.text).toContain('"type":"complete"');
       expect(r.text).toContain('Already installed');
@@ -451,7 +468,7 @@ describe('videoGen routes', () => {
       videoGenService.isByovRuntimeCurrent
         .mockResolvedValueOnce(false)
         .mockResolvedValueOnce(true);
-      const r = await request(app).get('/api/video-gen/setup/runtime-install?runtime=wan22');
+      const r = await request(app).post('/api/video-gen/setup/runtime-install?runtime=wan22');
       expect(r.status).toBe(200);
       expect(r.text).toContain('"type":"complete"');
       expect(r.text).toContain('Wan 2.2 MLX ready');
@@ -710,11 +727,17 @@ describe('videoGen routes', () => {
         'guidanceScale',
         'seed',
         'imageStrength',
+        // Not in the it.each table above: a non-default value is only legal on
+        // an image-mode request with a source image, so the generic
+        // prompt-only round-trip would 400 rather than assert anything. Its
+        // own case is below.
+        'i2vReferenceMode',
         'tiling',
         // Not in the it.each table above: the route deliberately DROPS the
-        // stock value from persisted params, so the generic round-trip
-        // assertion can't cover it. Its own case is below.
+        // stock/default value from persisted params, so the generic round-trip
+        // assertion can't cover either. Their own cases are below.
         'textEncoderId',
+        'speedProfileId',
       ]);
       const { getSettings } = await import('../services/settings.js');
       getSettings.mockResolvedValueOnce({ imageGen: grokReady, videoGen: { mode: 'grok' } });
@@ -738,6 +761,45 @@ describe('videoGen routes', () => {
       const [call] = mediaJobQueue.enqueueJob.mock.calls;
       expect(call[0].params.mode).not.toBe('grok');
       expect(call[0].params.textEncoderId).toBeUndefined();
+    });
+
+    // grok's image_to_video always anchors, so naming a reference mode must keep
+    // the render local — including the default, which the route then drops from
+    // persisted params so an anchored render's job params stay byte-identical to
+    // a request that never sent the field. Both halves matter: keeping it local
+    // without dropping it would persist a knob that never applied.
+    it('keeps i2vReferenceMode on the local path under a grok pin, without persisting the default', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({ imageGen: grokReady, videoGen: { mode: 'grok' } });
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox', i2vReferenceMode: 'anchor' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+      expect(call[0].params.i2vReferenceMode).toBeUndefined();
+    });
+
+    // Same two halves for the speed profile (#4875): naming one keeps the
+    // render local (grok has no sampler-schedule knob), and the default
+    // 'quality' value is dropped from persisted params so a default render's
+    // job params stay byte-identical to a request that never sent the field.
+    it('keeps speedProfileId on the local path under a grok pin, without persisting the default value', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({ imageGen: grokReady, videoGen: { mode: 'grok' } });
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox', speedProfileId: 'quality' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+      expect(call[0].params.speedProfileId).toBeUndefined();
+    });
+
+    it('persists a non-default speedProfileId on the local path under a grok pin', async () => {
+      const { getSettings } = await import('../services/settings.js');
+      getSettings.mockResolvedValueOnce({ imageGen: grokReady, videoGen: { mode: 'grok' } });
+      const r = await request(app).post('/api/video-gen/').send({ prompt: 'a fox', speedProfileId: 'fast' });
+      expect(r.status).toBe(200);
+      const [call] = mediaJobQueue.enqueueJob.mock.calls;
+      expect(call[0].params.mode).not.toBe('grok');
+      expect(call[0].params.speedProfileId).toBe('fast');
     });
 
     it('a grok pin degrades to local when the request carries local-only machinery', async () => {
@@ -2401,6 +2463,43 @@ describe('videoGen routes', () => {
       expect(r.body.error).toMatch(/LoRA weights/);
       expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
       expect(prepareRemoteMediaJob).not.toHaveBeenCalled();
+    });
+
+    // A loose reference (#4874) is a per-runtime capability this side cannot
+    // verify on the peer — and an older peer's wire schema strips the field
+    // outright. Shipping it would return an anchored clip under an Inspire
+    // label, so the request is refused rather than silently downgraded.
+    it('refuses a federated render that asks for a loose reference mode', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a slow pan across a harbour',
+        modelId: 'ltx2',
+        mode: 'image',
+        sourceImageFile: 'frame.png',
+        i2vReferenceMode: 'inspire',
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(r.status).toBe(400);
+      expect(r.body.code).toBe('MEDIA_PROVIDER_INPUT_UNSUPPORTED');
+      expect(r.body.error).toMatch(/loose reference mode/);
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
+      expect(prepareRemoteMediaJob).not.toHaveBeenCalled();
+    });
+
+    // The default is not a capability claim, so it must NOT block a federated
+    // render — an over-broad guard here would refuse every ordinary i2v submit.
+    it('still routes a federated i2v render that leaves the reference mode at the default', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a slow pan across a harbour',
+        modelId: 'ltx2',
+        mode: 'image',
+        sourceImageFile: 'frame.png',
+        i2vReferenceMode: 'anchor',
+        mediaProviderPeerId: federatedPeerId,
+      });
+
+      expect(r.status).toBe(200);
+      expect(prepareRemoteMediaJob).toHaveBeenCalled();
     });
 
     it('refuses a federated chained render rather than shipping one unchained clip', async () => {

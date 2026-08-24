@@ -7,7 +7,6 @@
  */
 
 import { Router } from 'express';
-import { existsSync } from 'fs';
 import { basename } from 'path';
 import os from 'os';
 import { z } from 'zod';
@@ -18,6 +17,7 @@ import {
 } from '../lib/validation.js';
 import { grokVideoDurationSchema } from '../lib/sharedSchemas.js';
 import { MIN_CONTEXT_FRAMES, MAX_CONTEXT_FRAMES } from '../lib/videoContinuity.js';
+import { I2V_REFERENCE_MODES, isDefaultI2vReferenceMode } from '../lib/videoReferenceModes.js';
 import {
   VIDEO_BACKEND_DISCLOSURES, acceptedVideoModelTerms,
   videoModelTermsGateId,
@@ -25,18 +25,11 @@ import {
 import { IMAGE_GEN_MODE } from '../services/imageGen/modes.js';
 import { getSettings, updateSettingsWith } from '../services/settings.js';
 import { checkPackages, isAllowedPython } from '../lib/pythonSetup.js';
-import { createLineReader } from '../lib/streamLines.js';
-import { SETUP_IMAGE_VIDEO_SCRIPT, spawnSetupScript, stopSetupScript } from '../lib/setupScriptRunner.js';
 import {
   listVideoModels,
   defaultVideoModelId,
   BYOV_RUNTIME_INFO,
-  isByovRuntimeInstalled,
   isByovRuntimeReady,
-  isByovRuntimeCurrent,
-  invalidateByovReadyCache,
-  invalidateByovLoraCapabilityCache,
-  invalidateRuntimeFingerprintCache,
   resolveRuntimeFingerprint,
   loadHistory,
   getHistoryItem,
@@ -59,6 +52,7 @@ import {
   downloadableVideoTextEncoders, downloadableVideoTextEncoder, publicTextEncoderOption,
   isStockTextEncoder,
 } from '../lib/videoTextEncoders.js';
+import { isDefaultSpeedProfile } from '../lib/videoSpeedProfiles.js';
 import {
   inspectModelCache, verifyModelCache, repairModelCache, repairCachedFile,
   verifyCachedRepoFiles, repairCachedRepoFiles, summarizeVerify, aggregateVerifies,
@@ -67,12 +61,15 @@ import {
 import { startHfDownloadStream, openSseStream } from '../lib/sseDownload.js';
 import { saveUploadedGalleryVideo } from '../services/videoUpload.js';
 import { JSON_BODY_LIMIT_BYTES } from '../lib/uploadLimits.js';
-import { createInstallLogger } from '../lib/installLogger.js';
 import { prepareRemoteMediaJob } from '../services/federatedMedia/remoteSubmission.js';
 import { collectRemoteInputAssets } from '../services/federatedMedia/inputAssets.js';
 import { effectiveJobPrompt } from '../lib/federatedMediaWire.js';
 import { isRemoteMediaJob } from '../services/mediaJobQueue/remoteMediaJob.js';
 import { buildFederatedMediaRequest } from '../lib/federatedMediaRequest.js';
+import {
+  getVideoRuntimeStatus,
+  streamVideoRuntimeInstall,
+} from '../services/videoGen/runtimeInstaller.js';
 
 const router = Router();
 
@@ -170,12 +167,29 @@ export const LOCAL_ONLY_VIDEO_PARAMS = Object.freeze({
   guidanceScale: optionalNum(0, 30, 'guidanceScale'),
   seed: optionalNum(0, Number.MAX_SAFE_INTEGER, 'seed'),
   imageStrength: optionalNum(0, 1, 'imageStrength'),
+  // What the conditioning image PROMISES (#4874) — 'anchor' (default) pins it as
+  // frame one, 'inspire' conditions loosely for subject/style. Local-only by
+  // construction: grok's image_to_video always anchors, so a request that names a
+  // mode is not grok-deliverable and must stay on the local lane rather than be
+  // rerouted into a render that silently ignores it. Preprocessed like the numeric
+  // knobs because a multipart body sends an unset select as ''.
+  i2vReferenceMode: z.preprocess(
+    (v) => (v == null || v === '' ? undefined : v),
+    z.enum(I2V_REFERENCE_MODES).optional(),
+  ),
   tiling: z.enum(['auto', 'none', 'spatial', 'temporal']).optional(),
   // Which prompt conditioner reads the prompt (lib/videoTextEncoders.js).
   // Validated loosely here and resolved against the MODEL's own option list in
   // the service — the set is per-runtime, so a route-level enum would either
   // have to enumerate every runtime's options or reject a legitimate one.
   textEncoderId: z.string().min(1).max(64).optional(),
+  // Named sampler schedule to render with (lib/videoSpeedProfiles.js). Loosely
+  // validated here for the same reason as textEncoderId — the option list is
+  // per-MODEL. Deliberately never rejected downstream either: an id this model
+  // doesn't offer (or a mode the profile isn't validated for) falls back to the
+  // model's own sampler with the reason logged, because a knob that only makes
+  // a render faster must degrade rather than 400 a submitted job.
+  speedProfileId: z.string().min(1).max(64).optional(),
 });
 
 const generateBodySchema = z.object({
@@ -421,172 +435,26 @@ router.post('/model-terms', asyncHandler(async (req, res) => {
 // alone is too permissive: a partial install (clone done, `uv pip install`
 // aborted) leaves a venv directory present but no torch, which would
 // hide the banner and make every render fail with a deep ImportError.
-router.get('/setup/runtime-status', asyncHandler(async (req, res) => {
+const sendRuntimeStatus = async (req, res) => {
   const runtime = String(req.query?.runtime || '');
-  const info = BYOV_RUNTIME_INFO[runtime];
-  if (!info) {
-    // `failValidation` only accepts a Zod safeParse result — calling it with
-    // (res, string) would TypeError on `parsed.error.issues.map(...)` and
-    // bubble as a 500 instead of the intended 400.
-    throw new ServerError(
-      `Unknown runtime: ${runtime}. Expected one of: ${Object.keys(BYOV_RUNTIME_INFO).join(', ')}`,
-      { status: 400, code: 'UNKNOWN_BYOV_RUNTIME' },
-    );
-  }
-  const binaryPresent = isByovRuntimeInstalled(info.id);
-  // Check the immutable source pin before the import probe. Source-only
-  // runtimes execute checkout code while importing, so an outdated or dirty
-  // checkout must surface Upgrade / Repair without being loaded first.
-  const current = binaryPresent ? await isByovRuntimeCurrent(info.id) : false;
-  const packagesReady = current ? await isByovRuntimeReady(info.id) : false;
-  res.json({
-    runtime: info.id,
-    label: info.label,
-    installed: binaryPresent && packagesReady && current,
-    binaryPresent,
-    packagesReady,
-    current,
-    upgradeAvailable: binaryPresent && !current,
-    venvPath: info.venvPython,
-    repoDir: info.repoDir,
-    repoUrl: info.repoUrl,
-    installSourceLabel: info.installSourceLabel,
-    installEnvVar: info.installEnvVar,
-  });
-}));
+  res.json(await getVideoRuntimeStatus(runtime));
+};
 
-// In-flight singleton per runtime. A rapid double-click of the install
-// button would otherwise race two `bash setup-image-video.sh` processes
-// against the same target dir, both trying to git-clone or pip-install at
-// once. Existing existsSync gate doesn't help — the install hasn't created
-// the venv yet on the second click.
-const runtimeInstallInFlight = new Map();
+router.get('/setup/runtime-status', asyncHandler(sendRuntimeStatus));
 
-// Shells out to scripts/setup-image-video.sh with the runtime's INSTALL_X
-// env pre-set, so the in-app installer and the README's terminal recipe
-// invoke the exact same install path — no parallel Node-side implementation
-// per runtime to keep in sync.
-router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
-  const runtime = String(req.query?.runtime || '');
-  const info = BYOV_RUNTIME_INFO[runtime];
+// Backward-compatible read surface for stale clients or status pollers. GET
+// never installs; host mutation is restricted to the POST route below.
+router.get('/setup/runtime-install', asyncHandler(sendRuntimeStatus));
+
+router.post('/setup/runtime-install', asyncHandler(async (req, res) => {
   const { send, safeEnd } = openSseStream(res);
-  let child = null;
-  let aborted = false;
-
-  // Register disconnect handling before any readiness/revision await. Those
-  // probes can take tens of seconds on a damaged venv; closing the modal during
-  // that window must prevent the large installer from starting unattended.
-  res.on('close', () => {
-    if (res.writableEnded) return;
-    aborted = true;
-    if (info && runtimeInstallInFlight.get(info.id) === null) {
-      runtimeInstallInFlight.delete(info.id);
-    }
-    stopSetupScript(child);
+  await streamVideoRuntimeInstall({
+    runtime: String(req.query?.runtime || ''),
+    send,
+    safeEnd,
+    onDisconnect: (handler) => res.on('close', handler),
+    isResponseEnded: () => res.writableEnded,
   });
-
-  if (!info) {
-    send({ type: 'error', message: `Unknown runtime: ${runtime}` });
-    return safeEnd();
-  }
-  // Claim the in-flight slot SYNCHRONOUSLY, before any await. Two near-
-  // simultaneous SSE requests would otherwise both reach the readiness await
-  // on line below, both observe `!ready`, and both spawn `setup-image-video.sh`
-  // against the same target dir — racing two git clones / pip installs.
-  // Placeholder (`null`) gets replaced with the real child handle once spawned;
-  // every early-return path below releases the slot.
-  if (runtimeInstallInFlight.has(info.id)) {
-    send({ type: 'error', message: `Another ${info.label} install is already running. Wait for it to finish or restart PortOS.` });
-    return safeEnd();
-  }
-  runtimeInstallInFlight.set(info.id, null);
-  // Skip ONLY when the binary, import probe, AND immutable revision all pass.
-  // A partial install needs Repair, while a healthy checkout on an older pin
-  // needs Upgrade; treating either as "already installed" strands the user
-  // behind a button that can never perform the action it advertises.
-  const alreadyInstalled = isByovRuntimeInstalled(info.id);
-  const alreadyCurrent = alreadyInstalled && await isByovRuntimeCurrent(info.id);
-  if (aborted) return safeEnd();
-  const alreadyReady = alreadyCurrent && await isByovRuntimeReady(info.id);
-  if (aborted) return safeEnd();
-  if (alreadyInstalled && alreadyReady && alreadyCurrent) {
-    runtimeInstallInFlight.delete(info.id);
-    send({ type: 'log', message: `${info.label} already installed at ${info.venvPython}` });
-    send({ type: 'complete', message: 'Already installed — nothing to do.' });
-    return safeEnd();
-  }
-  // The install may add/remove packages; drop any cached "ready" so the
-  // post-install /runtime-status response reflects the new state instead of
-  // a stale "true" from before a deliberate cleanup. Same for the cached
-  // runtime fingerprint — a reinstall can bump ltx/mlx/torch versions.
-  invalidateByovReadyCache(info.id);
-  invalidateByovLoraCapabilityCache(info.id);
-  invalidateRuntimeFingerprintCache(info.id);
-
-  if (!existsSync(SETUP_IMAGE_VIDEO_SCRIPT)) {
-    runtimeInstallInFlight.delete(info.id);
-    send({ type: 'error', message: `Installer script not found at ${SETUP_IMAGE_VIDEO_SCRIPT}` });
-    return safeEnd();
-  }
-
-  send({ type: 'log', message: `▸ Starting ${info.label} install via ${info.installEnvVar}=1 bash scripts/setup-image-video.sh` });
-  // Server-console visibility for the multi-GB install (start / heartbeat /
-  // outcome) — the SSE stream otherwise surfaces progress only in the browser.
-  const installLog = createInstallLogger({ installer: info.label, target: info.venvPython });
-  const emit = (ev) => { installLog.onEvent(ev); send(ev); };
-  installLog.start();
-  const installEnv = {
-    [info.installEnvVar]: '1',
-    ...(info.pinEnvVar && info.expectedRevision ? { [info.pinEnvVar]: info.expectedRevision } : {}),
-  };
-  // spawnSetupScript owns the interpreter / path / process-group details that a
-  // cancel and a Windows box each depend on — see lib/setupScriptRunner.js.
-  child = spawnSetupScript(installEnv);
-  runtimeInstallInFlight.set(info.id, child);
-
-  // `splitRe: /[\r\n]+/` so a bash/pip/tqdm progress bar that redraws with a
-  // bare `\r` surfaces each redraw as its own log line; the carry buffer
-  // stitches a line split across chunk boundaries (flushed on close).
-  const onLine = (line) => {
-    const t = line.trimEnd();
-    if (t) emit({ type: 'log', message: t });
-  };
-  const stdoutReader = createLineReader(onLine, { splitRe: /[\r\n]+/ });
-  const stderrReader = createLineReader(onLine, { splitRe: /[\r\n]+/ });
-  child.stdout.on('data', stdoutReader.push);
-  child.stderr.on('data', stderrReader.push);
-  child.on('error', (err) => {
-    runtimeInstallInFlight.delete(info.id);
-    emit({ type: 'error', message: `Installer failed to spawn: ${err.message}` });
-    safeEnd();
-  });
-  child.on('close', async (code) => {
-    stdoutReader.flush();
-    stderrReader.flush();
-    runtimeInstallInFlight.delete(info.id);
-    // Re-probe rather than trusting exit code alone — partial installs
-    // (network drop mid-clone, missing requirements file, ctrl-c via
-    // SIGTERM) can exit 0 but leave the venv unable to import its core
-    // packages. Probe both the binary AND the import surface so the
-    // success message can't lie. The banner gate uses the same probe.
-    const binaryPresent = isByovRuntimeInstalled(info.id);
-    const current = binaryPresent && await isByovRuntimeCurrent(info.id);
-    const packagesReady = current && await isByovRuntimeReady(info.id);
-    if (code === 0 && binaryPresent && packagesReady && current) {
-      emit({ type: 'complete', message: `${info.label} ready: ${info.venvPython}` });
-    } else if (code === 0 && !binaryPresent) {
-      emit({ type: 'error', message: `Installer exited 0 but the runtime is still missing. Review the log above, then use Repair in this panel.` });
-    } else if (code === 0) {
-      emit({ type: 'error', message: packagesReady
-        ? 'Installer exited 0 but the runtime is still on an outdated revision. Review the source-update log above, then use Repair in this panel.'
-        : `Installer exited 0 but the runtime can't import its core packages. Review the package errors above, then use Repair in this panel.` });
-    } else {
-      emit({ type: 'error', message: `Installer exited with code ${code}.` });
-    }
-    safeEnd();
-  });
-
-  res.on('close', () => { if (!res.writableEnded) installLog.cancel(); });
 }));
 
 async function resolveLocalPythonHealth(py) {
@@ -1036,6 +904,14 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
       ['LoRA weights', body.loraFilenames?.length],
       ['chained chunks', body.chunks > 1],
       ['the Grok backend', body.backend === 'grok'],
+      // A loose reference (#4874) is a per-runtime CAPABILITY, and this side
+      // cannot see which runtime the peer will pick — nor can an older peer even
+      // parse the field, which its wire schema would strip on the way in. Sending
+      // it would hand back an anchored clip under an Inspire label, which is the
+      // one outcome the contract exists to make impossible. Refuse instead: the
+      // user renders locally, or switches to Anchor and gets exactly what a peer
+      // can actually deliver.
+      ['a loose reference mode', !isDefaultI2vReferenceMode(body.i2vReferenceMode)],
       // A director-board render is image-to-video by construction (its scene
       // reference frame conditions the shot), and its project/scene ids are
       // validated inside prepareVideoGenParams, which this branch bypasses.
@@ -1176,6 +1052,11 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     // resumed/remixed render carry a knob that never applied — and would differ
     // from what the service records in history for the same render.
     ...(isStockTextEncoder(body.textEncoderId) ? {} : { textEncoderId: body.textEncoderId }),
+    // Same "absence IS the default" rule as textEncoderId: an explicit
+    // 'quality' is semantically identical to omitting the field, so persisting
+    // it would leave a resumed/remixed render carrying a knob that never
+    // applied and differing from what the service records in history.
+    ...(isDefaultSpeedProfile(body.speedProfileId) ? {} : { speedProfileId: body.speedProfileId }),
     disableAudio: body.disableAudio === true || body.disableAudio === 'true',
     sourceImagePath,
     audioFilePath,
@@ -1187,6 +1068,11 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     extendFromVideoPath,
     mode,
     imageStrength: body.imageStrength,
+    // Persisted only when it is NOT the default, exactly like textEncoderId above:
+    // storing an explicit 'anchor' would make a resumed/remixed render carry a knob
+    // that changed nothing, and would differ from what the service records in
+    // history for the same render.
+    ...(isDefaultI2vReferenceMode(body.i2vReferenceMode) ? {} : { i2vReferenceMode: body.i2vReferenceMode }),
     chunks: effectiveChunks,
     // Undefined when the request doesn't chain (or every beat was blank) — the
     // key is simply absent from job.params then, so a resumed form restores no
@@ -1231,9 +1117,15 @@ const ACTIVE_JOB_PARAM_FIELDS = [
   'width', 'height', 'numFrames', 'fps',
   'steps', 'guidanceScale', 'seed',
   'tiling', 'disableAudio', 'mode', 'chunks', 'chunkPrompts', 'contextFrames', 'imageStrength',
+  // Plain enum, no path — safe to echo so a reloading page restores the promise the
+  // in-flight render is actually keeping.
+  'i2vReferenceMode',
   // A registry id, not a path — safe to echo so a reloading page restores the
   // conditioner the in-flight render is actually using.
   'textEncoderId',
+  // Likewise a registry id — the sampler schedule the in-flight render picked,
+  // so a reloading page restores the picker instead of snapping back to Quality.
+  'speedProfileId',
   'audioStartSec',
   // Grok jobs (#2859 phase 2): the semantic t2v/i2v mode ('mode' holds the
   // 'grok' discriminator for them) and the clip duration — both plain

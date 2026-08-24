@@ -14,10 +14,10 @@ import { formatDurationMs } from '../../../utils/formatters';
 // fallback-tier breakdown, and median time-to-recovery.
 
 const TIER_COLORS = {
-  1: '#22c55e', // port-success — config/env (cheapest fix)
-  2: '#3b82f6', // port-accent  — schema/type
-  3: '#f59e0b', // port-warning — constrained-agent-retry
-  4: '#ef4444', // port-error   — escalate
+  1: 'rgb(var(--port-success))', // config/env (cheapest fix)
+  2: 'rgb(var(--port-accent))', // schema/type
+  3: 'rgb(var(--port-warning))', // constrained-agent-retry
+  4: 'rgb(var(--port-error))', // escalate
 };
 
 // Render a rate in [0,1] as a percent string, or an em dash for the null
@@ -68,12 +68,12 @@ function TrendSparkline({ trend }) {
       <polyline
         points={coords.join(' ')}
         fill="none"
-        stroke="#3b82f6"
+        style={{ stroke: 'rgb(var(--port-accent))' }}
         strokeWidth="1.5"
         strokeLinejoin="round"
         strokeLinecap="round"
       />
-      <circle cx={lastX} cy={lastY} r="2" fill="#3b82f6" />
+      <circle cx={lastX} cy={lastY} r="2" style={{ fill: 'rgb(var(--port-accent))' }} />
     </svg>
   );
 }
@@ -147,7 +147,7 @@ function AutoFixMetricsWidget() {
           <div key={t.tier} className="flex items-center gap-2 text-xs">
             <span
               className="inline-block w-2 h-2 rounded-full shrink-0"
-              style={{ backgroundColor: TIER_COLORS[t.tier] || '#6b7280' }}
+              style={{ backgroundColor: TIER_COLORS[t.tier] || 'rgb(var(--port-text-muted))' }}
               aria-hidden="true"
             />
             <span className="text-gray-300 flex-1 truncate" title={t.label}>

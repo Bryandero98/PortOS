@@ -9,6 +9,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { basename, join } from 'path';
 import { tmpdir, totalmem } from 'os';
 import { randomUUID } from 'crypto';
+// Pure table, no mocking involved — a static import survives vi.resetModules().
+import { INSPIRE_DEFAULT_IMAGE_STRENGTH } from '../../lib/videoReferenceModes.js';
 
 const { heavyClaimRelease, heavyClaimHandoff, mockPrepareLocalMemory } = vi.hoisted(() => ({
   heavyClaimRelease: vi.fn(async () => {}),
@@ -23,7 +25,7 @@ vi.mock('../../lib/heavyJobClaim.js', () => ({
     ok: true, holder: {}, release: heavyClaimRelease, handoffTo: heavyClaimHandoff,
   })),
 }));
-vi.mock('../../lib/localMemory.js', async (importOriginal) => ({
+vi.mock('../localMemory.js', async (importOriginal) => ({
   ...(await importOriginal()),
   prepareLocalMemory: mockPrepareLocalMemory,
 }));
@@ -88,8 +90,14 @@ vi.mock('../settings.js', () => ({
   getSettings: vi.fn(async () => ({ videoGen: { acceptedModelTerms: [...settingsState.acceptedModelTerms] } })),
 }));
 
-vi.mock('../../lib/mediaModels.js', () => ({
-  getVideoModels: vi.fn(() => [
+// The SHIPPED speed-profile decorator runs over this fixture rather than the
+// profiles being hand-copied onto the ltx25 entry: the mock carries the real
+// repo + revision, so the pin guard is exercised and the fixture cannot drift
+// from server/lib/videoSpeedProfiles.js.
+vi.mock('../../lib/mediaModels.js', async () => {
+  const { applyVideoSpeedProfiles } = await import('../../lib/videoSpeedProfiles.js');
+  return ({
+  getVideoModels: vi.fn(() => applyVideoSpeedProfiles([
     { id: 'ltx2_unified', name: 'LTX-2 Unified', runtime: 'ltx2', repo: 'Lightricks/LTX-Video', steps: 30, guidance: 3.5 },
     {
       id: 'ltx25_mlx_q8', name: 'LTX-2.5 MLX Q8', runtime: 'ltx25',
@@ -169,10 +177,11 @@ vi.mock('../../lib/mediaModels.js', () => ({
         targetRoles: ['high_noise_transformer', 'low_noise_transformer'],
       }],
     },
-  ]),
+  ])),
   getDefaultVideoModelId: vi.fn(() => 'ltx2_unified'),
   getTextEncoderRepo: vi.fn(() => 'some/text-encoder'),
-}));
+});
+});
 
 vi.mock('../../lib/sseUtils.js', () => ({
   broadcastSse: vi.fn(),
@@ -305,6 +314,18 @@ vi.mock('../loras.js', () => ({
   )),
 }));
 
+// Adapter-effect gate (#4872). generateVideo opts every render into the probe,
+// so it has to be stubbed here — the shared child_process mock resolves every
+// spawn successfully, which would report a fabricated measurement. Default
+// verdict is 'unmeasurable' (the permissive one: no interpreter on the box),
+// so every pre-existing LoRA render test reaches the spawn path unchanged; the
+// gate's own tests set a status explicitly.
+const loraEffectState = vi.hoisted(() => ({ reportByFilename: {}, defaultReport: { status: 'unmeasurable', measured: 0, reason: 'no numpy' } }));
+vi.mock('../loraEffectProbe.js', () => ({
+  LORA_EFFECT_PROBE_BUDGET_MS: 300_000,
+  probeLoraEffect: vi.fn(async (filename) => loraEffectState.reportByFilename[filename] || loraEffectState.defaultReport),
+}));
+
 vi.mock('fs/promises', () => ({
   unlink: vi.fn(async () => {}),
   writeFile: vi.fn(async () => {}),
@@ -369,12 +390,13 @@ let updateHistoryItemPrompt;
 let generateChainedVideo;
 let generateVideo;
 let extractLastFrame;
+let stitchVideos;
 let videoGenEvents;
 
 beforeEach(async () => {
   vi.resetModules();
   // Re-import fresh copies so mock reset above applies cleanly
-  ({ generateChainedVideo, generateVideo, extractLastFrame, updateHistoryItemPrompt } = await import('./local.js'));
+  ({ generateChainedVideo, generateVideo, extractLastFrame, stitchVideos, updateHistoryItemPrompt } = await import('./local.js'));
   ({ videoGenEvents } = await import('./events.js'));
 });
 
@@ -385,6 +407,68 @@ afterEach(() => {
   spawnState.nextExitCode = null;
   anchorPick.best = null;
   vi.clearAllMocks();
+});
+
+describe('stitchVideos — history provenance', () => {
+  const renderFields = [
+    'steps',
+    'guidanceScale',
+    'tiling',
+    'disableAudio',
+    'mode',
+    'textEncoderId',
+    'imageStrength',
+    'i2vReferenceMode',
+    'conditioning',
+    'renderInputsVersion',
+  ];
+
+  const stitchHistory = async (firstChunkFields = {}) => {
+    const { readJSONFile } = await import('../../lib/fileUtils.js');
+    const chunkIds = ['chunk-a', 'chunk-b'];
+    vi.mocked(readJSONFile).mockResolvedValue([
+      {
+        id: chunkIds[0], filename: 'chunk-a.mp4', prompt: 'first beat',
+        modelId: 'ltx2_unified', seed: 42, width: 768, height: 512,
+        numFrames: 49, fps: 24, ...firstChunkFields,
+      },
+      {
+        id: chunkIds[1], filename: 'chunk-b.mp4', prompt: 'second beat',
+        modelId: 'ltx2_unified', seed: 43, width: 768, height: 512,
+        numFrames: 49, fps: 24,
+      },
+    ]);
+    return stitchVideos(chunkIds, {
+      id: randomUUID(),
+      filenamePrefix: 'chained',
+      historyKey: 'chainedFrom',
+    });
+  };
+
+  it('inherits every render dial and provenance field from the first chunk', async () => {
+    const chunkRenderConfig = {
+      steps: 20,
+      guidanceScale: 0,
+      tiling: 'none',
+      disableAudio: false,
+      mode: 'image',
+      textEncoderId: 'example-encoder',
+      imageStrength: 0,
+      i2vReferenceMode: 'inspire',
+      conditioning: [],
+      renderInputsVersion: 1,
+    };
+
+    const stitched = await stitchHistory(chunkRenderConfig);
+
+    expect(stitched).toMatchObject(chunkRenderConfig);
+  });
+
+  it('does not stamp absent render fields onto a legacy stitched entry', async () => {
+    const stitched = await stitchHistory();
+
+    for (const field of renderFields) expect(stitched).not.toHaveProperty(field);
+  });
 });
 
 describe('extractLastFrame — anchor selection', () => {
@@ -1122,6 +1206,41 @@ describe('generateChainedVideo — continuation strategy (context window vs last
     // that's what kept the chain from growing a copy of itself per hop.
     expect(flagValue(renders[1], '--extend-from-video'))
       .toBe(join(tmpdir(), `chaincontext-${innerJobIds[0]}.mp4`));
+  });
+
+  // #4875 — a chained render is ONE clip, so a speed profile applies to every
+  // chunk or to none. Chunks 1+ re-enter as `extend` on a window-continuity
+  // chain (the default), and no two-stage profile is validated for that
+  // pipeline; applying it per chunk would render chunk 0 fast and the rest at
+  // the model default, stitching a visible seam mid-clip.
+  it('declines a speed profile for the whole chain when continuation runs as extend', async () => {
+    const { renders } = await runChain(
+      { modelId: 'ltx25_mlx_q8', contextFrames: 22, speedProfileId: 'fast' }, 2,
+    );
+    expect(renders).toHaveLength(2);
+    for (const args of renders) {
+      expect(args).not.toContain('--speed-profile');
+      expect(args).not.toContain('--teacache');
+      // Every chunk on the model's own sampler — no seam.
+      expect(flagValue(args, '--steps')).toBe('8');
+      expect(flagValue(args, '--cfg-scale')).toBe('3');
+    }
+  });
+
+  it('applies a speed profile to every chunk of a frame-hop chain, where all modes qualify', async () => {
+    // contextFrames: 0 → frame hop → chunks 1+ are `image`, which the profile
+    // IS validated for, so the whole chain takes it.
+    const { renders } = await runChain(
+      { modelId: 'ltx25_mlx_q8', contextFrames: 0, speedProfileId: 'fast' }, 2,
+    );
+    expect(renders).toHaveLength(2);
+    for (const args of renders) {
+      expect(flagValue(args, '--speed-profile')).toBe('fast');
+      expect(args).toContain('--teacache');
+      expect(flagValue(args, '--steps')).toBe('8');
+      expect(flagValue(args, '--cfg-scale')).toBe('1');
+      expect(flagValue(args, '--stage2-steps')).toBe('3');
+    }
   });
 });
 
@@ -4240,6 +4359,85 @@ describe('resolveVideoLoras — safetensors key-layout gate', () => {
   });
 });
 
+describe('resolveVideoLoras — adapter-effect gate (#4872)', () => {
+  let resolveVideoLoras;
+  let probeLoraEffect;
+  beforeEach(async () => {
+    vi.resetModules();
+    loraLayoutState.layout = 'comfyui';
+    loraEffectState.reportByFilename = {};
+    loraEffectState.defaultReport = { status: 'unmeasurable', measured: 0, reason: 'no numpy' };
+    ({ resolveVideoLoras } = await import('./local.js'));
+    ({ probeLoraEffect } = await import('../loraEffectProbe.js'));
+    vi.mocked(probeLoraEffect).mockClear();
+  });
+  afterEach(() => {
+    loraLayoutState.layout = null;
+    loraEffectState.reportByFilename = {};
+  });
+
+  it('does NOT probe unless the caller opts in — a passive resolve stays free', async () => {
+    await resolveVideoLoras([{ filename: 'style.safetensors' }]);
+    expect(probeLoraEffect).not.toHaveBeenCalled();
+  });
+
+  it('probes every selected LoRA once the caller opts in', async () => {
+    await resolveVideoLoras(
+      [{ filename: 'a.safetensors' }, { filename: 'b.safetensors' }],
+      { probeEffect: true },
+    );
+    expect(vi.mocked(probeLoraEffect).mock.calls.map(([f]) => f)).toEqual(['a.safetensors', 'b.safetensors']);
+  });
+
+  it('refuses a measured entirely-zero adapter with an actionable 400', async () => {
+    loraEffectState.reportByFilename['dead.safetensors'] = {
+      status: 'zero', measured: 6, zeroModules: 6,
+      reason: 'all 6 measurable LoRA module(s) have exactly zero effect — fusing it would change nothing',
+    };
+    await expect(resolveVideoLoras([{ filename: 'dead.safetensors' }], { probeEffect: true }))
+      .rejects.toMatchObject({ status: 400, code: 'LORA_EFFECT_ZERO' });
+    await expect(resolveVideoLoras([{ filename: 'dead.safetensors' }], { probeEffect: true }))
+      .rejects.toThrow(/dead\.safetensors.*zero effect/s);
+  });
+
+  it('refuses the whole render when ANY selected LoRA measures zero', async () => {
+    loraEffectState.reportByFilename = {
+      'ok.safetensors': { status: 'ok', measured: 4, medianRms: 0.01, maxRms: 0.02 },
+      'dead.safetensors': { status: 'zero', measured: 4, zeroModules: 4, reason: 'zero effect' },
+    };
+    await expect(resolveVideoLoras(
+      [{ filename: 'ok.safetensors' }, { filename: 'dead.safetensors' }],
+      { probeEffect: true },
+    )).rejects.toMatchObject({ code: 'LORA_EFFECT_ZERO' });
+  });
+
+  it('lets every other verdict through — the probe is a diagnostic, not a second gate', async () => {
+    // A machine with no numpy, an adapter the probe cannot parse, and one whose
+    // modules all diverged must all render exactly as they did before this
+    // existed. Refusing on anything we did not positively measure would turn a
+    // missing dependency into an un-renderable install.
+    for (const report of [
+      { status: 'unmeasurable', measured: 0, reason: 'numpy is not installed' },
+      { status: 'unreadable', measured: 0, reason: 'no lora_A/lora_B pairs' },
+      { status: 'nonfinite', measured: 0, skippedNonFinite: 8, reason: 'every module measured NaN' },
+      { status: 'ok', measured: 8, medianRms: 1e-9, maxRms: 1e-8 },
+      null,
+    ]) {
+      loraEffectState.defaultReport = report;
+      const resolved = await resolveVideoLoras([{ filename: 'x.safetensors', scale: 0.6 }], { probeEffect: true });
+      expect(resolved).toEqual([
+        { path: join(MOCK_PATHS.loras, 'x.safetensors'), strength: 0.6, filename: 'x.safetensors' },
+      ]);
+    }
+  });
+
+  it('never probes a LoRA the key-layout gate already refused', async () => {
+    loraLayoutState.layout = 'kohya';
+    await expect(resolveVideoLoras([{ filename: 'style.safetensors' }], { probeEffect: true })).rejects.toThrow();
+    expect(probeLoraEffect).not.toHaveBeenCalled();
+  });
+});
+
 describe('generateVideo — MiniMax H3 CUDA contract', () => {
   // Same license gate as the MLX entry: it is the same weights under the same
   // terms, so acceptance is recorded once and honored by both runtimes.
@@ -4989,5 +5187,281 @@ describe('updateHistoryItemPrompt — trigger-weave provenance (#4665)', () => {
     await updateHistoryItemPrompt('plain-1', 'a beach');
     const item = written();
     expect(item).toEqual({ id: 'plain-1', prompt: 'a beach', seed: 42 });
+  });
+});
+
+// #4875 — the user-facing speed profile. Three things must hold end to end:
+// the profile's schedule and levers reach the helper's argv; an incompatible
+// request degrades to the model's own sampler instead of half-applying; and a
+// Quality render builds byte-identical argv to one from before the feature
+// existed (the default-preservation contract).
+describe('generateVideo — LTX-2.5 speed profile (#4875)', () => {
+  const renderArgs = async ({ jobId, modelId = 'ltx25_mlx_q8', ...rest }) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    await generateVideo({
+      jobId,
+      pythonPath: '/usr/bin/python3',
+      modelId,
+      prompt: 'a quiet street at dusk',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      ...rest,
+    });
+    const call = spawnMock.mock.calls.find(
+      ([bin, args]) => (isLtx25Python(bin) || isLtx2Python(bin))
+        && Array.isArray(args) && args.includes('--mode'),
+    );
+    expect(call).toBeTruthy();
+    return call[1];
+  };
+
+  const valueAfter = (args, flag) => args[args.indexOf(flag) + 1];
+
+  it('threads the profile schedule and its levers into the helper argv', async () => {
+    const args = await renderArgs({ jobId: 'sp-fast', mode: 'text', speedProfileId: 'fast' });
+    expect(valueAfter(args, '--steps')).toBe('8');
+    expect(valueAfter(args, '--stage2-steps')).toBe('3');
+    expect(valueAfter(args, '--cfg-scale')).toBe('1');
+    expect(valueAfter(args, '--speed-profile')).toBe('fast');
+    expect(args).toContain('--teacache');
+    expect(valueAfter(args, '--require-adapter')).toBe('ltx-2.5-22b-distilled-lora-450.safetensors');
+    // The profile declares no threshold override, so the pin's calibrated
+    // default must be left alone rather than pinned to a literal here.
+    expect(args).not.toContain('--teacache-thresh');
+  });
+
+  it('applies on image mode too — the other mode the schedule was validated for', async () => {
+    const args = await renderArgs({ jobId: 'sp-image', mode: 'image', sourceImagePath: '/mock/first.png', speedProfileId: 'fast' });
+    expect(valueAfter(args, '--speed-profile')).toBe('fast');
+    expect(valueAfter(args, '--steps')).toBe('8');
+  });
+
+  // DEFAULT PRESERVATION: the whole point of 'quality' being a no-op.
+  it.each([
+    ['omitted', 'omitted', undefined],
+    ['the explicit default id', 'explicit', 'quality'],
+    ['an empty string', 'empty', ''],
+  ])('leaves a render with %s byte-identical to the pre-feature argv', async (_name, label, speedProfileId) => {
+    // Pin the seed and strip the per-job output path so the comparison is of
+    // the SCHEDULE, not of the two values that are per-render by design.
+    const strip = (a) => a.map((v) => String(v).replace(/sp-[a-z-]+\.mp4$/, "<job>.mp4"));
+    const baseline = strip(await renderArgs({ jobId: `sp-base-${label}`, mode: 'text', seed: 7 }));
+    const args = strip(await renderArgs({ jobId: `sp-default-${label}`, mode: 'text', seed: 7, speedProfileId }));
+    expect(args).toEqual(baseline);
+    expect(args.filter((a) => String(a).startsWith('--speed-profile')
+      || String(a).startsWith('--teacache') || String(a).startsWith('--require-adapter'))).toEqual([]);
+    expect(args).not.toContain('--stage2-steps');
+    expect(valueAfter(args, '--steps')).toBe('8');
+    expect(valueAfter(args, '--cfg-scale')).toBe('3');
+  });
+
+  it('declines on a mode the profile was never validated for, keeping the model sampler', async () => {
+    const args = await renderArgs({
+      jobId: 'sp-extend-declines',
+      mode: 'extend',
+      extendFromVideoPath: '/mock/source.mp4',
+      speedProfileId: 'fast',
+    });
+    expect(args).not.toContain('--speed-profile');
+    expect(args).not.toContain('--teacache');
+    expect(valueAfter(args, '--steps')).toBe('8');
+    expect(valueAfter(args, '--cfg-scale')).toBe('3');
+  });
+
+  // MODEL PIN COMPATIBILITY: the 2.3 entry points at different weights, so it
+  // declares no profiles — asking for one must degrade, not half-apply.
+  it('declines on a model that declares no profiles', async () => {
+    const args = await renderArgs({ jobId: 'sp-wrong-model', modelId: 'ltx2_unified', mode: 'text', speedProfileId: 'fast' });
+    expect(args).not.toContain('--speed-profile');
+    expect(valueAfter(args, '--steps')).toBe('30');
+    expect(valueAfter(args, '--cfg-scale')).toBe('3.5');
+  });
+
+  it('declines an id no model offers', async () => {
+    const args = await renderArgs({ jobId: 'sp-unknown-id', mode: 'text', speedProfileId: 'turbo' });
+    expect(args).not.toContain('--speed-profile');
+    expect(valueAfter(args, '--steps')).toBe('8');
+    expect(valueAfter(args, '--cfg-scale')).toBe('3');
+  });
+
+  // The profile owns steps AND CFG together — a half-override would give the
+  // user neither the profile's speed nor their own setting.
+  it('overrides explicit steps and CFG rather than blending with them', async () => {
+    const args = await renderArgs({ jobId: 'sp-overrides-user', mode: 'text', speedProfileId: 'fast', steps: 30, guidanceScale: 7 });
+    expect(valueAfter(args, '--steps')).toBe('8');
+    expect(valueAfter(args, '--cfg-scale')).toBe('1');
+  });
+
+  describe('history metadata', () => {
+    const metaFor = async (jobId, extra) => {
+      let started = null;
+      const onStarted = (e) => { if (e.generationId === jobId) started = e; };
+      videoGenEvents.on('started', onStarted);
+      await generateVideo({
+        jobId,
+        pythonPath: '/usr/bin/python3',
+        modelId: 'ltx25_mlx_q8',
+        prompt: 'a quiet street at dusk',
+        width: 512, height: 512, numFrames: 25, fps: 24,
+        mode: 'text',
+        ...extra,
+      });
+      videoGenEvents.off('started', onStarted);
+      expect(started).toBeTruthy();
+      return started;
+    };
+
+    it('stamps the REQUESTED profile id and the effective schedule', async () => {
+      const meta = await metaFor('sp-meta-fast', { speedProfileId: 'fast' });
+      expect(meta.speedProfileId).toBe('fast');
+      expect(meta.stage2Steps).toBe(3);
+      expect(meta.steps).toBe(8);
+      expect(meta.guidanceScale).toBe(1);
+    });
+
+    // The ETA estimator buckets on this field, so a Quality render must carry
+    // NO key at all — an explicit 'quality' would be a second spelling of the
+    // default and would not match pre-feature history.
+    it('stamps nothing on a default render', async () => {
+      const meta = await metaFor('sp-meta-default', {});
+      expect(meta.speedProfileId).toBeUndefined();
+      expect(meta.stage2Steps).toBeUndefined();
+    });
+
+    it('stamps nothing when the profile was declined', async () => {
+      const meta = await metaFor('sp-meta-declined', { speedProfileId: 'turbo' });
+      expect(meta.speedProfileId).toBeUndefined();
+    });
+  });
+});
+
+// #4875 — the chunk entries of a chain are written `hidden: true`, so the
+// STITCHED record is the only one the user ever sees. Without inheriting the
+// profile there, a chained render's lightbox shows no "Speed profile" row at
+// all — including for a chain whose TeaCache or adapter was unavailable, which
+// is exactly the silent speed claim the feature exists to prevent — and a Remix
+// of the clip quietly reverts to Quality.
+describe('stitchVideos — speed-profile inheritance (#4875)', () => {
+  const chunk = (id, extra = {}) => ({
+    id, filename: `${id}.mp4`, prompt: 'a shot', modelId: 'ltx25_mlx_q8',
+    width: 512, height: 512, fps: 24, numFrames: 25, seed: 7, ...extra,
+  });
+
+  const stitchOf = async (entries) => {
+    const { readJSONFile, atomicWrite } = await import('../../lib/fileUtils.js');
+    const { probeFrameCount } = await import('../../lib/ffmpeg.js');
+    vi.mocked(atomicWrite).mockClear();
+    vi.mocked(probeFrameCount).mockImplementation(async () => 25);
+    vi.mocked(readJSONFile).mockImplementation(async () => entries);
+    return stitchVideos(entries.map((e) => e.id));
+  };
+
+  it('carries the requested profile and the runner outcome from the first chunk', async () => {
+    const applied = { id: 'fast', teacache: false, degraded: ['teacache'] };
+    const stitched = await stitchOf([
+      chunk('c1', { speedProfileId: 'fast', speedProfileApplied: applied }),
+      chunk('c2', { speedProfileId: 'fast', speedProfileApplied: applied }),
+    ]);
+    // Both halves: the REQUEST (what Remix round-trips, what the ETA buckets
+    // on) and the OUTCOME (what stops a degraded run reading as a full one).
+    expect(stitched.speedProfileId).toBe('fast');
+    expect(stitched.speedProfileApplied).toEqual(applied);
+  });
+
+  it('stamps neither field for a Quality chain, so the record stays pre-feature shaped', async () => {
+    const stitched = await stitchOf([chunk('c1'), chunk('c2')]);
+    expect('speedProfileId' in stitched).toBe(false);
+    expect('speedProfileApplied' in stitched).toBe(false);
+  });
+
+  it('carries the id alone when the runner reported no outcome', async () => {
+    const stitched = await stitchOf([
+      chunk('c1', { speedProfileId: 'fast' }), chunk('c2', { speedProfileId: 'fast' }),
+    ]);
+    expect(stitched.speedProfileId).toBe('fast');
+    expect('speedProfileApplied' in stitched).toBe(false);
+  });
+});
+
+// The reference-mode promise (#4874) at the RENDER boundary. The route gates it
+// too, but persisted-queue replays, retries and internal producers all reach
+// generateVideo directly — a hole here means a clip anchored under an Inspire
+// label, which is precisely the lie the contract exists to prevent.
+describe('generateVideo — i2v reference mode (#4874)', () => {
+  const renderWithReference = async ({ jobId, modelId = 'ltx25_mlx_q8', i2vReferenceMode, imageStrength, mode = 'image' }) => {
+    const { spawnDetached } = await import('../../lib/detachedSpawn.js');
+    const spawnMock = vi.mocked(spawnDetached);
+    spawnMock.mockClear();
+    let startedMeta = null;
+    const onStarted = (e) => { if (e.generationId === jobId) startedMeta = e; };
+    videoGenEvents.on('started', onStarted);
+    await generateVideo({
+      jobId,
+      pythonPath: '/usr/bin/python3',
+      modelId,
+      prompt: 'a fox in the rain',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      mode,
+      sourceImagePath: mode === 'image' ? '/mock/uploads/start.png' : null,
+      i2vReferenceMode,
+      imageStrength,
+    });
+    videoGenEvents.off('started', onStarted);
+    const call = spawnMock.mock.calls.find(([, args]) => Array.isArray(args) && args.includes('--mode'));
+    return { args: call?.[1] || [], startedMeta };
+  };
+
+  const valueAfter = (args, flag) => args[args.indexOf(flag) + 1];
+
+  it('emits no reference-mode argv for a default (anchored) render', async () => {
+    // An anchored render's argv must stay byte-identical to what it was before
+    // the flag existed, so an older helper pin can still run it.
+    const { args, startedMeta } = await renderWithReference({ jobId: 'ref-anchor-default' });
+    expect(args).not.toContain('--i2v-reference-mode');
+    expect(args).not.toContain('--image-strength');
+    expect(startedMeta.i2vReferenceMode).toBeUndefined();
+    expect(startedMeta.imageStrength).toBeUndefined();
+  });
+
+  it('emits the flag AND a resolved strength for a loose reference on LTX-2.5', async () => {
+    const { args, startedMeta } = await renderWithReference({
+      jobId: 'ref-inspire', i2vReferenceMode: 'inspire',
+    });
+    expect(valueAfter(args, '--i2v-reference-mode')).toBe('inspire');
+    // "Unset" under Inspire cannot mean "let the pipeline decide" — that would
+    // anchor. The contract's low default is substituted instead.
+    expect(Number(valueAfter(args, '--image-strength'))).toBe(INSPIRE_DEFAULT_IMAGE_STRENGTH);
+    // History provenance, so Remix and the gallery can describe the promise.
+    expect(startedMeta.i2vReferenceMode).toBe('inspire');
+    expect(startedMeta.imageStrength).toBe(INSPIRE_DEFAULT_IMAGE_STRENGTH);
+  });
+
+  it('honors an explicit strength under a loose reference', async () => {
+    const { args, startedMeta } = await renderWithReference({
+      jobId: 'ref-inspire-explicit', i2vReferenceMode: 'inspire', imageStrength: 0.8,
+    });
+    expect(Number(valueAfter(args, '--image-strength'))).toBe(0.8);
+    expect(startedMeta.imageStrength).toBe(0.8);
+  });
+
+  it('rejects a loose reference on the 2.3 pin rather than silently anchoring', async () => {
+    // ltx2 and ltx25 share the family predicate but not the per-image
+    // conditioning API — waving this through would deliver an anchored clip.
+    await expect(renderWithReference({
+      jobId: 'ref-inspire-ltx2', modelId: 'ltx2_unified', i2vReferenceMode: 'inspire',
+    })).rejects.toMatchObject({ status: 400, code: 'I2V_REFERENCE_MODE_UNSUPPORTED' });
+  });
+
+  it('rejects a loose reference outside image mode', async () => {
+    await expect(renderWithReference({
+      jobId: 'ref-inspire-text', i2vReferenceMode: 'inspire', mode: 'text',
+    })).rejects.toMatchObject({ status: 400, code: 'I2V_REFERENCE_MODE_REQUIRES_IMAGE' });
+  });
+
+  it('rejects an unknown reference mode instead of collapsing it to anchor', async () => {
+    await expect(renderWithReference({
+      jobId: 'ref-bogus', i2vReferenceMode: 'inspiration',
+    })).rejects.toMatchObject({ status: 400, code: 'I2V_REFERENCE_MODE_UNKNOWN' });
   });
 });

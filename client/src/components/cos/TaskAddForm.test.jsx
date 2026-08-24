@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   // Back the reviewer table's Model column (useReviewerModelOptions).
   getLocalLlmStatus: vi.fn(),
   getProviders: vi.fn(),
+  getAppWorkTracker: vi.fn(),
   applyCosTaskTemplate: vi.fn(),
   addCosTask: vi.fn()
 }));
@@ -21,6 +22,7 @@ vi.mock('../../services/api', () => api);
 
 const worktreeToggle = () => screen.getByTitle(/isolated git worktree/i).closest('label').querySelector('input');
 const openPrToggle = () => screen.getByTitle(/Open a pull request/i).closest('label').querySelector('input');
+const planOnlyToggle = () => screen.getByLabelText(/Plan & file issue/i);
 
 describe('TaskAddForm responsive layout', () => {
   beforeEach(() => {
@@ -29,6 +31,7 @@ describe('TaskAddForm responsive layout', () => {
     api.getCodeReviewDefaults.mockResolvedValue(null);
     api.getLocalLlmStatus.mockResolvedValue({ ollama: { models: [] }, lmstudio: { models: [] } });
     api.getProviders.mockResolvedValue({ providers: [] });
+    api.getAppWorkTracker.mockResolvedValue({ resolved: 'github' });
     api.applyCosTaskTemplate.mockResolvedValue({ success: true });
     apiSystem.getAssignableInstances.mockResolvedValue({ instances: [] });
   });
@@ -76,6 +79,65 @@ describe('TaskAddForm responsive layout', () => {
       provider: 'opencode-ollama', effort: 'high', thinking: false, temperature: 0.25,
     });
   });
+
+  it('queues plan-and-file mode without implementation delivery controls', async () => {
+    const user = userEvent.setup();
+    api.addCosTask.mockResolvedValue({ success: true });
+    render(<TaskAddForm providers={[]} apps={[]} onTaskAdded={vi.fn()} />);
+
+    await user.type(screen.getByPlaceholderText('Task description *'), 'Add export filtering');
+    await waitFor(() => expect(planOnlyToggle()).toBeInTheDocument());
+    await user.click(planOnlyToggle());
+
+    expect(planOnlyToggle()).toBeChecked();
+    expect(screen.queryByTitle(/isolated git worktree/i)).toBeNull();
+    expect(screen.queryByTitle(/Open a pull request/i)).toBeNull();
+    expect(screen.queryByText('Simplify')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Plan & File Issue' }));
+    await waitFor(() => expect(api.addCosTask).toHaveBeenCalled());
+    expect(api.addCosTask.mock.calls.at(-1)[0]).toMatchObject({
+      planOnly: true,
+      slashdoCommand: 'plan-task',
+      slashdoArgs: '--yes',
+      useWorktree: false,
+      openPR: false,
+      simplify: false,
+      worktreeChangesExpected: false,
+      createJiraTicket: false,
+    });
+
+    await user.click(planOnlyToggle());
+    await waitFor(() => {
+      expect(planOnlyToggle()).not.toBeChecked();
+      expect(worktreeToggle()).toBeChecked();
+      expect(openPrToggle()).toBeChecked();
+    });
+  });
+
+  it.each([
+    ['PLAN.md', 'plan', 'plan'],
+    ['JIRA', 'jira', 'jira'],
+    ['auto-resolved JIRA', 'auto', 'jira'],
+  ])('does not offer plan-and-file mode for %s apps', async (_label, workTracker, resolvedTracker) => {
+    api.getAppWorkTracker.mockResolvedValue({ resolved: resolvedTracker });
+    render(
+      <TaskAddForm
+        providers={[]}
+        apps={[{
+          id: 'tracker-app',
+          name: 'Tracker App',
+          repoPath: 'example.com/repo',
+          workTracker,
+        }]}
+        defaultApp="tracker-app"
+        onTaskAdded={vi.fn()}
+      />
+    );
+
+    await waitFor(() => expect(screen.getByText(/Plan & file issue is available for GitHub or GitLab/i)).toBeInTheDocument());
+    expect(screen.queryByLabelText(/Plan & file issue/i)).toBeNull();
+  });
 });
 
 // A slashdo quick-template carries the run shape its workflow implies (#3089).
@@ -90,7 +152,7 @@ describe('TaskAddForm quick templates', () => {
   const renderForm = () => render(
     <TaskAddForm
       providers={[]}
-      apps={[{ id: 'example-app', name: 'Example App', repoPath: 'example.com/repo', defaultOpenPR: true, defaultUseWorktree: true }]}
+      apps={[{ id: 'example-app', name: 'Example App', repoPath: 'example.com/repo', workTracker: 'github', defaultOpenPR: true, defaultUseWorktree: true }]}
       defaultApp="example-app"
       onTaskAdded={vi.fn()}
     />
@@ -101,6 +163,7 @@ describe('TaskAddForm quick templates', () => {
     api.getCodeReviewDefaults.mockResolvedValue(null);
     api.getLocalLlmStatus.mockResolvedValue({ ollama: { models: [] }, lmstudio: { models: [] } });
     api.getProviders.mockResolvedValue({ providers: [] });
+    api.getAppWorkTracker.mockResolvedValue({ resolved: 'github' });
     api.applyCosTaskTemplate.mockResolvedValue({ success: true });
   });
 
@@ -121,11 +184,13 @@ describe('TaskAddForm quick templates', () => {
     renderForm();
     await openTemplates(user);
 
-    // The app defaults turned the worktree on; the template turns it back off.
+    // The app defaults turned the worktree on; plan-only hides implementation
+    // delivery controls rather than leaving an unchecked worktree control.
     expect(worktreeToggle()).toBeChecked();
     await user.click(screen.getByText('Plan a Task'));
 
-    await waitFor(() => expect(worktreeToggle()).not.toBeChecked());
+    await waitFor(() => expect(planOnlyToggle()).toBeChecked());
+    expect(screen.queryByTitle(/isolated git worktree/i)).toBeNull();
     expect(screen.getByPlaceholderText('Task description *')).toHaveValue('Investigate and file an issue for: ');
     expect(api.applyCosTaskTemplate).toHaveBeenCalledWith('builtin-do-plan-task');
   });

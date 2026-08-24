@@ -97,6 +97,7 @@ vi.mock('../services/llamaServerManager.js', () => ({
 vi.mock('../services/specDecodeModels.js', () => ({
   getSpecDecodePresetStatus: vi.fn(async () => ([{ id: 'test-preset', label: 'Test', specType: 'draft-dspark', model: null, draftModel: null }])),
   downloadSpecDecodeModel: vi.fn(async () => ({ success: true, path: 'models/base.gguf', file: 'base.gguf' })),
+  cancelSpecDecodeModelDownload: vi.fn(() => true),
 }));
 
 // /loaded reads getSettings() to honor a user's intentionally-disabled backends,
@@ -698,6 +699,17 @@ describe('llama-server routes', () => {
       .send({ presetId: 'test-preset', role: 'sneaky' });
 
     expect(res.status).toBe(400);
+  });
+
+  it('POST /api/local-llm/llama-server/download-model/cancel cancels one active preset download', async () => {
+    const { cancelSpecDecodeModelDownload } = await import('../services/specDecodeModels.js');
+    const res = await request(makeApp())
+      .post('/api/local-llm/llama-server/download-model/cancel')
+      .send({ presetId: 'test-preset', role: 'model' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, cancelled: true });
+    expect(cancelSpecDecodeModelDownload).toHaveBeenCalledWith({ presetId: 'test-preset', role: 'model' });
   });
 
   it('POST /api/local-llm/llama-server/start launches server with valid payload', async () => {

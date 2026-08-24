@@ -9,7 +9,8 @@ import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
 import AlcoholChart from '../AlcoholChart';
 import AlcoholHrvCorrelation from '../AlcoholHrvCorrelation';
 import StandardDrinkCalculator from '../StandardDrinkCalculator';
-import { dayOfWeek, localDateStr } from '../constants';
+import { dayOfWeek } from '../constants';
+import { localDateKey } from '../../../utils/formatters';
 
 const ML_PER_OZ = 29.5735;
 
@@ -63,7 +64,7 @@ export default function AlcoholTab() {
   const [oz, setOz] = useState('');
   const [abv, setAbv] = useState('');
   const [count, setCount] = useState(1);
-  const [date, setDate] = useState(localDateStr());
+  const [date, setDate] = useState(localDateKey());
   const [volumeUnit, setVolumeUnit] = useState('oz');
 
   // Inline edit state
@@ -107,7 +108,7 @@ export default function AlcoholTab() {
     const days = { '7d': 7, '30d': 30, '90d': 90 }[chartView] || 30;
     const d = new Date();
     d.setDate(d.getDate() - days);
-    return { correlationFrom: localDateStr(d), correlationTo: localDateStr() };
+    return { correlationFrom: localDateKey(d), correlationTo: localDateKey() };
   }, [chartView]);
 
   useEffect(() => {

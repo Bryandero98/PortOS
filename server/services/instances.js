@@ -655,8 +655,12 @@ export async function probePeer(peer) {
       ? `?forPeer=${encodeURIComponent(ourInstanceId)}`
       : '';
     // Fetch health details, apps, sync status, and opted-in media capacity in
-    // parallel under the same bounded probe budget. Older/unconfigured peers
-    // incur no fourth request.
+    // parallel under the same bounded probe budget. The first three paths are
+    // the frozen peer-probe contract documented in docs/API.md: deployed peers
+    // call them across independently upgraded installs, so remove/rename or
+    // incompatible response changes require a versioned replacement rather
+    // than a silent change here. Older/unconfigured peers incur no fourth
+    // request.
     const [healthRes, appsRes, syncRes, mediaProviderStatus] = await Promise.all([
       peerFetch(`${baseUrl}/api/system/health/details`, { signal }, peer),
       peerFetch(`${baseUrl}/api/apps`, { signal }, peer).catch(() => null),

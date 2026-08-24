@@ -11,6 +11,7 @@
 import { Router } from 'express';
 import { spawn } from '../../lib/childProcess.js';
 import { basename, join } from 'path';
+import { DANGEROUS_SHELL_CHARS } from '../../lib/commandSecurity.js';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
 import { deriveProjectInfo } from '../../services/xcodeScripts.js';
 import { loadApp, pathExists } from './shared.js';
@@ -93,9 +94,8 @@ router.post('/:id/open-editor', loadApp, asyncHandler(async (req, res) => {
   }
 
   // Security: Validate args don't contain shell metacharacters
-  const DANGEROUS_CHARS = /[;|&`$(){}[\]<>\\!#*?~]/;
   for (const arg of args) {
-    if (DANGEROUS_CHARS.test(arg)) {
+    if (DANGEROUS_SHELL_CHARS.test(arg)) {
       throw new ServerError('Editor arguments contain disallowed characters', {
         status: 400,
         code: 'INVALID_EDITOR_ARGS'

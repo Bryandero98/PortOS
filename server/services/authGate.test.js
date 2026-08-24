@@ -1,8 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
-import { mockPathsDataRoot } from './mockPathsDataRoot.js';
-import { bindSettingsFile } from './settingsTestUtil.js';
+import { mockPathsDataRoot } from '../lib/mockPathsDataRoot.js';
+import { bindSettingsFile } from '../lib/settingsTestUtil.js';
 
 const { tempRoot, makeProxy, cleanup } = mockPathsDataRoot({ prefix: 'portos-authgate-' });
 
@@ -73,7 +73,7 @@ describe('authGate middleware', () => {
   });
 
   it('passes /api/auth/login through even when auth is enabled', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, { path: '/api/auth/login', headers: {} });
@@ -104,7 +104,7 @@ describe('authGate middleware', () => {
     // broadcast the corrupt file as {} and prime the auth cache to disabled — that
     // would reopen the gate (fail open) and stick, since the cache is no longer null.
     writeFileSync(join(tempRoot, 'settings.json'), '{ corrupt snapshot');
-    const { reloadSettings } = await import('../services/settings.js');
+    const { reloadSettings } = await import('./settings.js');
     const { authGate } = await import('./authGate.js');
 
     await reloadSettings();
@@ -127,7 +127,7 @@ describe('authGate middleware', () => {
   });
 
   it('blocks /api routes with no token', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, { path: '/api/cos', headers: {} });
@@ -137,7 +137,7 @@ describe('authGate middleware', () => {
   });
 
   it('allows /api routes when the cookie token is valid', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, {
@@ -148,7 +148,7 @@ describe('authGate middleware', () => {
   });
 
   it('allows /api routes when the Authorization Bearer token is valid', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, {
@@ -159,7 +159,7 @@ describe('authGate middleware', () => {
   });
 
   it('lets static client paths through when auth is on', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, { path: '/assets/index.js', headers: {} });
@@ -167,7 +167,7 @@ describe('authGate middleware', () => {
   });
 
   it('returns plain-text 401 for blocked /data/* asset requests', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, { path: '/data/images/foo.png', headers: {} });
@@ -177,7 +177,7 @@ describe('authGate middleware', () => {
   });
 
   it('gates the /sdapi/* AUTOMATIC1111-compatible surface', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, { path: '/sdapi/v1/sd-models', headers: {} });
@@ -187,7 +187,7 @@ describe('authGate middleware', () => {
   });
 
   it('treats a malformed cookie value as no token (clean 401, not 500)', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     // %E0 is a partial percent-escape — decodeURIComponent throws URIError.
@@ -198,7 +198,7 @@ describe('authGate middleware', () => {
   });
 
   it('rejects cross-origin requests with 403 before consulting the session', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     // Even a VALID session cookie can't rescue a cross-origin request —
@@ -218,7 +218,7 @@ describe('authGate middleware', () => {
   });
 
   it('allows same-origin requests when Origin matches Host', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, {
@@ -233,7 +233,7 @@ describe('authGate middleware', () => {
   });
 
   it('allows requests without an Origin header (curl, server-to-server)', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, {
@@ -247,7 +247,7 @@ describe('authGate middleware', () => {
   });
 
   it('allows mixed-case same-origin hostnames (RFC 3986 case-insensitive)', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, {
@@ -262,7 +262,7 @@ describe('authGate middleware', () => {
   });
 
   it('allows loopback↔loopback cross-port (Vite dev proxy)', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, {
@@ -277,7 +277,7 @@ describe('authGate middleware', () => {
   });
 
   it('rejects a cross-origin logout (public path still gets the CSRF check)', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, {
@@ -293,7 +293,7 @@ describe('authGate middleware', () => {
   });
 
   it('treats a malformed Origin header as cross-origin', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, {
@@ -310,7 +310,7 @@ describe('authGate middleware', () => {
 
 describe('authGate per-API public registry (apiAccess)', () => {
   it('opens /api/voice/public/* when voice is exposed + passwordless', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     await writeApiAccess({ voice: { exposed: true, requireAuth: false } });
     const { authGate } = await import('./authGate.js');
@@ -323,7 +323,7 @@ describe('authGate per-API public registry (apiAccess)', () => {
   it('KEEPS mutation routes gated even when voice is exposed + passwordless', async () => {
     // The key safety invariant: exposing the public surface must NOT open the
     // config / process-control routes on the main /api/voice router.
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     await writeApiAccess({ voice: { exposed: true, requireAuth: false } });
     const { authGate } = await import('./authGate.js');
@@ -335,7 +335,7 @@ describe('authGate per-API public registry (apiAccess)', () => {
   });
 
   it('gates the public surface when exposed but requireAuth is true', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     await writeApiAccess({ voice: { exposed: true, requireAuth: true } });
     const { authGate } = await import('./authGate.js');
@@ -345,7 +345,7 @@ describe('authGate per-API public registry (apiAccess)', () => {
   });
 
   it('gates the public surface when not exposed', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     await writeApiAccess({ voice: { exposed: false, requireAuth: false } });
     const { authGate } = await import('./authGate.js');
@@ -355,7 +355,7 @@ describe('authGate per-API public registry (apiAccess)', () => {
   });
 
   it('opens /sdapi/* when sdapi is exposed + passwordless', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     await writeApiAccess({ sdapi: { exposed: true, requireAuth: false } });
     const { authGate } = await import('./authGate.js');
@@ -364,7 +364,7 @@ describe('authGate per-API public registry (apiAccess)', () => {
   });
 
   it('still applies the CSRF cross-origin guard to an exposed public path', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     await writeApiAccess({ voice: { exposed: true, requireAuth: false } });
     const { authGate } = await import('./authGate.js');
@@ -391,7 +391,7 @@ describe('authGate HTTP Basic auth (peer federation)', () => {
     `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
 
   it('allows /api routes when Authorization: Basic carries the correct password', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'peer-secret' });
     const { authGate } = await import('./authGate.js');
     const req = {
@@ -404,7 +404,7 @@ describe('authGate HTTP Basic auth (peer federation)', () => {
   });
 
   it('also works with a non-empty username (username is ignored)', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'peer-secret' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, {
@@ -415,7 +415,7 @@ describe('authGate HTTP Basic auth (peer federation)', () => {
   });
 
   it('rejects Basic auth with a wrong password', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'peer-secret' });
     const { authGate } = await import('./authGate.js');
     const result = await runGate(authGate, {
@@ -437,7 +437,7 @@ describe('socketAuthGate middleware', () => {
   });
 
   it('rejects an unauthenticated handshake when auth is on', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'correct-horse' });
     const { socketAuthGate } = await import('./authGate.js');
     const err = await new Promise((resolve) => {
@@ -448,7 +448,7 @@ describe('socketAuthGate middleware', () => {
   });
 
   it('accepts a handshake with a valid cookie', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
     const { socketAuthGate } = await import('./authGate.js');
     const err = await new Promise((resolve) => {
@@ -458,7 +458,7 @@ describe('socketAuthGate middleware', () => {
   });
 
   it('accepts a peer relay handshake with correct Basic auth', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     await auth.setPassword({ newPassword: 'peer-secret' });
     const { socketAuthGate } = await import('./authGate.js');
     const header = `Basic ${Buffer.from(':peer-secret').toString('base64')}`;
@@ -469,7 +469,7 @@ describe('socketAuthGate middleware', () => {
   });
 
   it('rejects a cross-origin handshake', async () => {
-    const auth = await import('../services/auth.js');
+    const auth = await import('./auth.js');
     const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
     const { socketAuthGate } = await import('./authGate.js');
     const err = await new Promise((resolve) => {

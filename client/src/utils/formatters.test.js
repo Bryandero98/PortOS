@@ -5,7 +5,25 @@ import {
   formatWeight, formatPercent, formatUsd, formatBytes,
   formatDateNumeric, formatTimeOfDaySeconds, formatClockTime, formatWeekdayDate,
   formatMonthDay, formatMonthYear, formatWeekdayShort, formatWeekdayTime, formatDateFull, formatDateShort, formatDateTime,
+  localDateKey, shiftISODate,
 } from './formatters.js';
+
+describe('calendar date keys', () => {
+  it('formats a Date using its local calendar fields', () => {
+    expect(localDateKey(new Date(2026, 0, 5, 23, 30))).toBe('2026-01-05');
+  });
+
+  it('shifts ISO dates across month, year, and leap-day boundaries', () => {
+    expect(shiftISODate('2025-12-31', 1)).toBe('2026-01-01');
+    expect(shiftISODate('2026-03-01', -1)).toBe('2026-02-28');
+    expect(shiftISODate('2028-02-28', 1)).toBe('2028-02-29');
+  });
+
+  it('shifts calendar days without DST-boundary drift', () => {
+    expect(shiftISODate('2026-03-08', 1)).toBe('2026-03-09');
+    expect(shiftISODate('2026-11-01', 1)).toBe('2026-11-02');
+  });
+});
 
 describe('clamp', () => {
   it('returns value unchanged when within [min, max]', () => {
@@ -152,6 +170,19 @@ describe('formatContextLength', () => {
     expect(formatContextLength(32768)).toBe('32K ctx');
     expect(formatContextLength(131072)).toBe('128K ctx');
     expect(formatContextLength(1048576)).toBe('1M ctx');
+  });
+
+  // Cloud vendors quote DECIMAL windows; local runtimes report BINARY ones.
+  // Dividing a decimal window by 1024 is what printed a 128,000-token provider
+  // as "125K ctx" — a number no vendor publishes, which reads as a PortOS cap.
+  it('formats decimal-quoted windows in decimal units', () => {
+    expect(formatContextLength(128000)).toBe('128K ctx');
+    expect(formatContextLength(200000)).toBe('200K ctx');
+    expect(formatContextLength(256000)).toBe('256K ctx');
+    expect(formatContextLength(400000)).toBe('400K ctx');
+    expect(formatContextLength(1000000)).toBe('1M ctx');
+    expect(formatContextLength(2000000)).toBe('2M ctx');
+    expect(formatContextLength(1500000)).toBe('1.5M ctx');
   });
 
   // Callers whose surrounding prose already says "tokens of context" drop the

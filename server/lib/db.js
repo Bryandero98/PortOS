@@ -251,18 +251,19 @@ export async function withTransaction(fn) {
   // client.query accepts either a SQL string or a { text, values } config —
   // GUARDED_CLIENT_HANDLER reads the SQL out of both.
   const guardedClient = new Proxy(client, GUARDED_CLIENT_HANDLER);
-  await client.query('BEGIN');
-  let result;
+  let began = false;
   try {
-    result = await fn(guardedClient);
+    await client.query('BEGIN');
+    began = true;
+    const result = await fn(guardedClient);
     await client.query('COMMIT');
+    return result;
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (began) await client.query('ROLLBACK');
     throw err;
   } finally {
     client.release();
   }
-  return result;
 }
 
 /**
@@ -358,7 +359,7 @@ async function ensureSchemaImpl() {
   //   withTransaction() block, so CREATE INDEX CONCURRENTLY CANNOT run there
   //   either — it must be issued from a dedicated non-transactional path (a
   //   standalone maintenance script / manual step run outside any transaction).
-  //   See docs/STORAGE.md ("Boot schema upgrades & the CREATE INDEX lock window").
+  //   See docs/STORAGE.md ("Boot schema upgrades & lock windows").
   const upgrades = buildUpgradeDdl();
   for (const sql of upgrades) {
     await pool.query(sql);

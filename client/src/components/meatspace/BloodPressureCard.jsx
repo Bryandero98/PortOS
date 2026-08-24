@@ -6,6 +6,7 @@ import { HeartPulse, Plus, X, Check, TrendingUp, TrendingDown } from 'lucide-rea
 import * as api from '../../services/api';
 import BrailleSpinner from '../BrailleSpinner';
 import useChartColors from '../../hooks/useChartColors.js';
+import { formatMonthDay } from '../../utils/formatters.js';
 import { classifyBP, bpLongevityImpact, BP_CATEGORIES } from './bpClassification';
 
 // Stage 1 hypertension reference line sits between the warning (elevated) and
@@ -62,7 +63,7 @@ export default function BloodPressureCard() {
 
   const chartData = readings.map(r => ({
     date: r.date,
-    label: `${new Date(r.date).getMonth() + 1}/${new Date(r.date).getDate()}`,
+    label: formatMonthDay(r.date),
     systolic: r.systolic,
     diastolic: r.diastolic
   }));

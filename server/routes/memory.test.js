@@ -45,7 +45,7 @@ vi.mock('../services/memorySync.js', () => ({
   applyRemoteChanges: vi.fn()
 }));
 
-import { ensureBackend, getMemories, getTimeline } from '../services/memoryBackend.js';
+import { ensureBackend, getMemories, getTimeline, deleteMemory } from '../services/memoryBackend.js';
 import { checkHealth } from '../lib/db.js';
 import * as memorySync from '../services/memorySync.js';
 
@@ -57,6 +57,35 @@ describe('Memory Routes', () => {
     app.use(express.json());
     app.use('/api/memory', memoryRoutes);
     vi.clearAllMocks();
+  });
+
+  describe('DELETE /api/memory/:id', () => {
+    it.each([
+      ['../outside', 404],
+      ['%2Ftmp', 400],
+      ['nested%2Fmemory', 400],
+    ])('rejects unsafe memory id %j', async (id, status) => {
+      const response = await request(app).delete(`/api/memory/${id}`);
+
+      expect(response.status).toBe(status);
+      expect(deleteMemory).not.toHaveBeenCalled();
+    });
+
+    it('does not route an empty memory id to deletion', async () => {
+      const response = await request(app).delete('/api/memory/');
+
+      expect(response.status).toBe(404);
+      expect(deleteMemory).not.toHaveBeenCalled();
+    });
+
+    it('deletes a valid memory id', async () => {
+      deleteMemory.mockResolvedValue({ success: true });
+
+      const response = await request(app).delete('/api/memory/mem-42?hard=true');
+
+      expect(response.status).toBe(200);
+      expect(deleteMemory).toHaveBeenCalledWith('mem-42', true);
+    });
   });
 
   // ===========================================================================

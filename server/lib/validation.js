@@ -92,6 +92,31 @@ export const datadogConfigSchema = z.object({
   environment: z.string().optional()
 });
 
+// POST /api/datadog/instances. API keys may be empty when updating an
+// existing instance because the route preserves the stored secret in that
+// case.
+export const datadogInstanceRequestSchema = z.object({
+  // Preserve the exact key for updates. Older installs may have stored IDs
+  // outside the current preferred length/whitespace convention, and changing
+  // the lookup key here would make those instances impossible to edit.
+  id: z.string().min(1),
+  // Existing installs may have stored names longer than the current preferred
+  // display length, and updates should not make those records uneditable.
+  name: z.string().trim().min(1),
+  site: z.string().trim().min(1).max(253),
+  apiKey: z.string().max(512).optional(),
+  appKey: z.string().max(512).optional(),
+});
+
+// POST /api/datadog/instances/:id/search-errors.
+export const datadogSearchErrorsRequestSchema = z.object({
+  serviceName: z.string().trim().min(1),
+  environment: z.string().trim().optional(),
+  fromTime: z.preprocess(emptyToUndefined, z.string().trim().refine(value => !Number.isNaN(Date.parse(value)), {
+    message: 'fromTime must be a valid ISO 8601 date string',
+  }).optional()),
+});
+
 // Reference-repo entry. Each app can list upstream repos it watches for
 // clean-room reimplementation;
 // the `reference-watch` scheduled task fetches each one, finds commits since
@@ -310,6 +335,46 @@ export const referenceRepoUpdateSchema = z.object({
 // either — all ref CRUD goes through /api/apps/:appId/reference-repos.
 export const appUpdateSchema = partialWithoutDefaults(appSchema);
 
+const standardizePlanFileSchema = z.string().trim().min(1).max(500)
+  .refine((file) => {
+    const segments = file.split(/[/\\]/);
+    return !file.startsWith('/')
+      && !file.startsWith('\\')
+      && !/^[A-Za-z]:/.test(file)
+      && !segments.includes('..');
+  }, { message: 'file must be a repo-relative path without parent traversal' });
+
+const standardizePlanProcessSchema = z.object({
+  name: z.string().trim().min(1).max(120)
+}).passthrough();
+
+const standardizePlanStrayPortSchema = z.object({
+  file: standardizePlanFileSchema,
+  variable: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(120),
+  value: z.number().int().min(1).max(65535),
+  line: z.number().int().positive(),
+  action: z.enum(['remove', 'keep'])
+}).passthrough();
+
+export const standardizePlanSchema = z.object({
+  currentState: z.object({
+    hasGit: z.boolean()
+  }).passthrough(),
+  proposedChanges: z.object({
+    createEcosystem: z.boolean(),
+    ecosystemContent: z.string().min(1).max(1_000_000),
+    processes: z.array(standardizePlanProcessSchema).max(100),
+    strayPorts: z.array(standardizePlanStrayPortSchema).max(500)
+  }).passthrough()
+}).passthrough();
+
+export const standardizeApplySchema = z.object({
+  repoPath: z.string().trim().min(1).max(4096).optional(),
+  appId: z.string().trim().min(1).max(200).optional(),
+  plan: standardizePlanSchema,
+  overwriteEcosystem: z.boolean().optional().default(false)
+});
+
 // Game studio (#3177): managed-app binding, reusable asset bindings, bundle
 // compile, and user-triggered AI feedback.
 const gameNameSchema = z.string().trim().min(1).max(120);
@@ -443,6 +508,34 @@ export const providerSchema = z.object({
   tuiPromptDelayMs: z.number().int().min(250).max(60000).optional(),
   tuiIdleTimeoutMs: z.number().int().min(1000).max(86400000).optional()
 });
+
+// POST /api/providers/:id/test-vision.
+export const providerVisionTestSchema = z.object({
+  imagePath: z.string().trim().min(1).max(255),
+  prompt: z.string().max(8_000).optional(),
+  expectedContent: z.preprocess(emptyToUndefined, z.union([
+    z.string().trim().min(1).max(128),
+    z.array(z.string().trim().min(1).max(128)).max(50),
+  ]).optional()),
+  model: z.preprocess(emptyToUndefined, z.string().trim().min(1).max(256).optional()),
+});
+
+// POST /api/providers/:id/vision-suite.
+export const providerVisionSuiteSchema = z.object({
+  model: z.preprocess(emptyToUndefined, z.string().trim().min(1).max(256).optional()),
+});
+
+// POST /api/uploads and POST /api/attachments. The shared upload helper
+// enforces decoded-byte limits and extension allowlists; this schema bounds
+// the JSON shape before the helper receives it.
+export const base64FileUploadSchema = z.object({
+  data: z.string().trim().min(1, 'data is required (base64)').max(64 * 1024 * 1024),
+  // The upload helper prefixes the sanitized name with a 9-byte UUID marker.
+  filename: z.string().min(1, 'filename is required').max(246),
+});
+
+export const uploadRequestSchema = base64FileUploadSchema;
+export const attachmentUploadRequestSchema = base64FileUploadSchema;
 
 // Run command schema
 export const runSchema = z.object({
@@ -1188,6 +1281,19 @@ export const clientErrorReportSchema = z.object({
 // =============================================================================
 
 /**
+ * Parse a zero-based array index from an Express route parameter.
+ * @param {unknown} raw - Route parameter value
+ * @returns {number}
+ */
+export function parseIndexParam(raw) {
+  const index = Number(raw);
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw) || !Number.isSafeInteger(index)) {
+    throw new ServerError('Invalid index', { status: 400, code: 'INVALID_INDEX' });
+  }
+  return index;
+}
+
+/**
  * Parse limit/offset pagination from query params with defaults and clamping.
  * @param {object} query - req.query object
  * @param {object} options - { defaultLimit, maxLimit }
@@ -1388,6 +1494,23 @@ export const settingsEmbeddingsSchema = z.object({
 export const localLlmSettingsSchema = z.object({
   ollama: z.object({ disabled: z.boolean().optional() }).strict().optional(),
   lmstudio: z.object({ disabled: z.boolean().optional() }).strict().optional(),
+  // Idle windows for the two PM2-managed model servers, in minutes. `0` = never
+  // release the model, which is what every install did before this setting
+  // existed and stays the default. Capped at a day: a longer window is
+  // indistinguishable from "never" and is far likelier a units mix-up.
+  llama: z.object({ idleMinutes: z.number().int().min(0).max(1440).optional() }).strict().optional(),
+  mtplx: z.object({
+    idleMinutes: z.number().int().min(0).max(1440).optional(),
+    // The launch line a lazy start replays. MTPLX has no Start button any more —
+    // the first request that needs it brings it up — so the checkpoint and port
+    // the user chose have to outlive the process, or an on-demand start would
+    // fall back to "first verified checkpoint in the cache" and quietly serve
+    // something they didn't pick.
+    launch: z.object({
+      model: z.string().trim().max(300).nullable().optional(),
+      port: z.number().int().min(1).max(65535).optional(),
+    }).strict().optional(),
+  }).strict().optional(),
 }).strict();
 
 // =============================================================================

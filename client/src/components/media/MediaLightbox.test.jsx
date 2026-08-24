@@ -192,3 +192,39 @@ describe('MediaLightbox route-changing actions', () => {
     expect(calls).toEqual(['close', 'send']);
   });
 });
+
+// The conditioning promise (#4874) is provenance: a clip whose opening frame was
+// GENERATED rather than reproduced has to say so where the render is inspected.
+// The Image Strength number alone never carried that distinction.
+describe('MediaLightbox — i2v reference provenance (#4874)', () => {
+  // jsdom has no HTMLMediaElement.play; the lightbox calls it on mount for a
+  // video item, so stub it here the way the playback suite above does.
+  beforeEach(() => { HTMLMediaElement.prototype.play = vi.fn(() => Promise.resolve()); });
+  afterEach(() => { delete HTMLMediaElement.prototype.play; });
+
+  const videoItem = (raw) => ({
+    kind: 'video',
+    key: 'video:ref-1',
+    id: 'ref-1',
+    filename: 'ref-1.mp4',
+    downloadUrl: '/data/videos/ref-1.mp4',
+    prompt: 'a fox in the rain',
+    modelId: 'ltx25_mlx_q8',
+    numFrames: 121,
+    fps: 24,
+    createdAt: '2026-08-23T10:00:00.000Z',
+    raw,
+  });
+
+  it('names the promise and the strength that delivered it', () => {
+    render(<MediaLightbox item={videoItem({ i2vReferenceMode: 'inspire', imageStrength: 0.35 })} onClose={() => {}} />);
+    expect(screen.getByText('Reference')).toBeTruthy();
+    expect(screen.getByText('Inspire')).toBeTruthy();
+    expect(screen.getByText('Image strength')).toBeTruthy();
+  });
+
+  it('shows no Reference row for an anchored render, so the row means something', () => {
+    render(<MediaLightbox item={videoItem({})} onClose={() => {}} />);
+    expect(screen.queryByText('Reference')).toBeNull();
+  });
+});

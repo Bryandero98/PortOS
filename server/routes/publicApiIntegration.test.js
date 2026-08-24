@@ -49,7 +49,7 @@ const resetSettings = (extra = {}) => {
 const setApiAccess = (apiAccess) => mergeSettingsFile({ apiAccess });
 
 const buildApp = async () => {
-  const { authGate } = await import('../lib/authGate.js');
+  const { authGate } = await import('../services/authGate.js');
   const voicePublicRoutes = (await import('./voicePublic.js')).default;
   const voiceRoutes = (await import('./voice.js')).default;
   const app = express();

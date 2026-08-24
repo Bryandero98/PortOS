@@ -24,6 +24,7 @@
  *   - `catalogDB/refs.js`        — source links, external refs, relations, roles
  *   - `catalogDB/media.js`       — media attachments + integrity surface
  *   - `catalogDB/tags.js`        — tag taxonomy / normalization
+ *   - `catalogDB/commit.js`      — atomic scrap extraction commits
  *   - `catalogDB/sync.js`        — peer-sync change feeds + upserts
  *   - `catalogDB/facets.js`      — export slice / sync bundle / stats / facets
  *
@@ -40,5 +41,6 @@ export * from './catalogDB/ingredients.js';
 export * from './catalogDB/refs.js';
 export * from './catalogDB/media.js';
 export * from './catalogDB/tags.js';
+export * from './catalogDB/commit.js';
 export * from './catalogDB/sync.js';
 export * from './catalogDB/facets.js';

@@ -5,6 +5,7 @@ import { join } from 'path';
 import { makePathsProxy } from '../lib/mockPathsDataRoot.js';
 
 const TEST_DATA_ROOT = mkdtempSync(join(tmpdir(), 'calendar-accounts-test-'));
+const { getAuthStatus } = vi.hoisted(() => ({ getAuthStatus: vi.fn() }));
 
 vi.mock('../lib/fileUtils.js', async (importOriginal) =>
   makePathsProxy(await importOriginal(), { dataRoot: TEST_DATA_ROOT }));
@@ -12,6 +13,8 @@ vi.mock('../lib/fileUtils.js', async (importOriginal) =>
 vi.mock('../lib/uuid.js', () => ({
   v4: vi.fn().mockReturnValue('test-uuid-1234'),
 }));
+
+vi.mock('./googleAuth.js', () => ({ getAuthStatus }));
 
 const calendarAccounts = await import('./calendarAccounts.js');
 
@@ -21,6 +24,7 @@ describe('calendarAccounts', () => {
   beforeEach(() => {
     rmSync(TEST_DATA_ROOT, { recursive: true, force: true });
     mkdirSync(TEST_DATA_ROOT, { recursive: true });
+    getAuthStatus.mockResolvedValue({ hasTokens: false });
   });
 
   describe('createAccount', () => {
@@ -50,6 +54,24 @@ describe('calendarAccounts', () => {
         type: 'outlook-calendar',
       });
       expect(acc.email).toBe('');
+    });
+
+    it.each([
+      [{ hasTokens: true }, 'google-api'],
+      [{ hasTokens: false }, 'claude-mcp'],
+    ])('uses %o OAuth status to select %s for Google accounts', async (authStatus, syncMethod) => {
+      getAuthStatus.mockResolvedValue(authStatus);
+
+      const account = await calendarAccounts.createAccount({
+        name: 'Google',
+        type: 'google-calendar',
+        subcalendars: [{ calendarId: 'primary', name: 'Primary' }],
+      });
+
+      expect(account.syncMethod).toBe(syncMethod);
+      expect(account.subcalendars).toEqual([expect.objectContaining({
+        calendarId: 'primary', name: 'Primary', enabled: true, dormant: false, goalIds: [],
+      })]);
     });
   });
 
@@ -97,6 +119,59 @@ describe('calendarAccounts', () => {
     it('returns null for an absent account id', async () => {
       const result = await calendarAccounts.updateSyncStatus('absent-id', 'ok');
       expect(result).toBeNull();
+    });
+
+    it('preserves a concurrent account edit', async () => {
+      await calendarAccounts.createAccount({ name: 'Sync Test', type: 'outlook-calendar' });
+
+      await Promise.all([
+        calendarAccounts.updateAccount('test-uuid-1234', { name: 'Renamed' }),
+        calendarAccounts.updateSyncStatus('test-uuid-1234', 'success'),
+      ]);
+
+      const account = await calendarAccounts.getAccount('test-uuid-1234');
+      expect(account).toMatchObject({ name: 'Renamed', lastSyncStatus: 'success' });
+      expect(account.lastSyncAt).toBeTruthy();
+    });
+  });
+
+  describe('updateSubcalendars', () => {
+    it.each([
+      [{ calendarId: 'primary', name: 'Primary' }, {
+        calendarId: 'primary', name: 'Primary', color: '', enabled: true, dormant: false, goalIds: [],
+      }],
+      [{ calendarId: 'team', name: 'Team', color: '#123456', enabled: false, dormant: true, goalIds: ['goal-1'], addedAt: '2026-01-01T00:00:00.000Z' }, {
+        calendarId: 'team', name: 'Team', color: '#123456', enabled: false, dormant: true, goalIds: ['goal-1'], addedAt: '2026-01-01T00:00:00.000Z',
+      }],
+    ])('normalizes subcalendar input %#', async (input, expected) => {
+      await calendarAccounts.createAccount({ name: 'Google', type: 'google-calendar' });
+
+      const account = await calendarAccounts.updateSubcalendars('test-uuid-1234', [input]);
+
+      expect(account.subcalendars[0]).toMatchObject(expected);
+      expect(account.updatedAt).toBeTruthy();
+    });
+
+    it('returns null for an absent account id', async () => {
+      await expect(calendarAccounts.updateSubcalendars('absent-id', [])).resolves.toBeNull();
+    });
+  });
+
+  describe('mergeDiscoveredSubcalendars', () => {
+    it.each([
+      [[], [{ id: 'primary', name: 'Primary', color: '#abcdef' }], [{
+        calendarId: 'primary', name: 'Primary', color: '#abcdef', enabled: false, dormant: false, goalIds: [],
+      }]],
+      [[{ calendarId: 'team', name: 'Old name', color: '#111111', enabled: true, dormant: true, goalIds: ['goal-1'], addedAt: '2026-01-01T00:00:00.000Z' }], [{ id: 'team', name: 'New name' }], [{
+        calendarId: 'team', name: 'New name', color: '#111111', enabled: true, dormant: true, goalIds: ['goal-1'], addedAt: '2026-01-01T00:00:00.000Z',
+      }]],
+      [[{ calendarId: 'hidden', name: 'Hidden' }], [{ id: 'primary' }], [{
+        calendarId: 'primary', name: 'primary', color: '', enabled: false, dormant: false, goalIds: [],
+      }]],
+    ])('merges discovered calendars without retaining removed entries %#', (existing, discovered, expected) => {
+      expect(calendarAccounts.mergeDiscoveredSubcalendars(existing, discovered)).toEqual(
+        expected.map(calendar => expect.objectContaining(calendar)),
+      );
     });
   });
 });

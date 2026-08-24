@@ -3,7 +3,7 @@
  * are usable as externally-callable HTTP APIs.
  *
  * One declaration here drives THREE consumers, so they can never drift:
- *   1. `authGate` (server/lib/authGate.js) — when the PortOS password is on, an
+ *   1. `authGate` (server/services/authGate.js) — when the PortOS password is on, an
  *      entry that is `exposed && !requireAuth` re-opens ONLY its `publicPrefixes`
  *      so external callers can reach it without a session.
  *   2. The Settings UI (VoiceTab + the API Access page) — renders the per-API

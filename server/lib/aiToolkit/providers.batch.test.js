@@ -217,15 +217,15 @@ describe('refreshProviderModelsBatch — one providers.json write per fan-out', 
   });
 
   it('treats a probe that answers with no array as missing, not as an update', async () => {
-    // `fetchProviderModels` promises an array or a throw, so this is a guard
-    // against a future fetcher rather than a reachable path today — but the
-    // failure mode it prevents is the whole batch dying on `[...undefined]`,
-    // taking the healthy groups' write down with it.
+    // `fetchProviderModelCatalog` promises a catalog or a throw, so this is a
+    // guard against a future fetcher rather than a reachable path today — but
+    // the failure mode it prevents is the whole batch dying on
+    // `[...undefined]`, taking the healthy groups' write down with it.
     stubOllama({ [LOCAL]: ['qwen2.5:7b'] });
     const broken = await providerService.createProvider(ollamaProvider('Broken', { base: REMOTE }));
     const healthy = await providerService.createProvider(ollamaProvider('Local One'));
-    vi.spyOn(providerService, 'fetchProviderModels').mockImplementation(async (id) => (
-      id === broken.id ? undefined : ['qwen2.5:7b']
+    vi.spyOn(providerService, 'fetchProviderModelCatalog').mockImplementation(async (id) => (
+      id === broken.id ? undefined : { models: ['qwen2.5:7b'], contextWindows: {} }
     ));
     atomicWrite.mockClear();
 

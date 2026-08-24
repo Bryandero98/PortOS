@@ -324,6 +324,151 @@ def _teacache_thresh_label(thresh: float | None) -> str:
     return f"{thresh}" if thresh is not None else "upstream default 0.5"
 
 
+# ---------------------------------------------------------------------------
+# Speed profiles (#4875)
+#
+# PortOS picks a named schedule declaratively (server/lib/videoSpeedProfiles.js)
+# and hands it here as ordinary --steps/--stage2-steps/--cfg-scale plus the
+# levers only this process can check: is the pinned two-stage pipeline new
+# enough to accept `enable_teacache`, and is the distilled adapter the schedule
+# was measured with actually inside the model pack?
+#
+# Neither question is fatal. A profile whose TeaCache is unavailable still
+# renders at its step schedule — it is just slower than the label promises, and
+# THAT is the thing the user must be told rather than left to infer from a
+# stopwatch. So each unavailable lever is recorded in `degraded`, announced as a
+# STATUS line, and reported to PortOS on a single SPEEDPROFILE: line that the
+# history record keeps beside the requested profile id.
+# ---------------------------------------------------------------------------
+
+_SPEED_PROFILE_REPORT: dict = {}
+
+
+def _accepts_kwarg(fn, name: str) -> bool:
+    """Does `fn` declare an EXPLICIT keyword parameter called `name`?
+
+    Used to probe the pinned pipeline rather than assume a version.
+
+    Deliberately strict in both directions:
+      - a signature that can't be read at all is False, since a wrong True
+        means a TypeError mid-render rather than a slow one;
+      - a bare `**kwargs` is ALSO False. Such a wrapper would accept the
+        argument without erroring, but nothing says it forwards it — and
+        reporting `teacache: true` for a render that got no acceleration is
+        exactly the misleading speed claim this feature exists to prevent.
+        Degrading on an un-introspectable wrapper costs a real speed-up only
+        in a case we cannot verify anyway.
+
+    The KIND is checked, not just the name: a positional-only parameter (or a
+    `**name` catch-all that happens to be spelled the same) matches by name but
+    cannot be passed by keyword, so accepting it would raise TypeError at the
+    call — the very outcome the probe exists to avoid.
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    param = params.get(name)
+    return param is not None and param.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    )
+
+
+def speed_profile_begin(args: argparse.Namespace) -> None:
+    """Start a speed-profile report for this render. No-op without a profile."""
+    global _SPEED_PROFILE_REPORT
+    if not args.speed_profile:
+        _SPEED_PROFILE_REPORT = {}
+        return
+    _SPEED_PROFILE_REPORT = {
+        "id": args.speed_profile,
+        "steps": args.steps,
+        "stage2Steps": args.stage2_steps,
+        "cfgScale": args.cfg_scale,
+        "teacache": False,
+        "teacacheThresh": args.teacache_thresh,
+        "adapter": None,
+        "degraded": [],
+    }
+
+
+def speed_profile_degrade(lever: str, message: str) -> None:
+    """Record a lever this render could not apply, and say so out loud."""
+    if not _SPEED_PROFILE_REPORT:
+        return
+    if lever not in _SPEED_PROFILE_REPORT["degraded"]:
+        _SPEED_PROFILE_REPORT["degraded"].append(lever)
+    emit_status(message)
+
+
+def speed_profile_applied(**fields) -> None:
+    """Record levers that DID apply (teacache=True, adapter=<filename>, …)."""
+    if not _SPEED_PROFILE_REPORT:
+        return
+    _SPEED_PROFILE_REPORT.update(fields)
+
+
+def speed_profile_emit() -> None:
+    """Emit the SPEEDPROFILE: line PortOS stamps onto the history record.
+
+    Best-effort, exactly like emit_runtime_fingerprint: a reporting failure
+    must never abort a render that is otherwise fine.
+    """
+    if not _SPEED_PROFILE_REPORT:
+        return
+    try:
+        print(f"SPEEDPROFILE:{json.dumps(_SPEED_PROFILE_REPORT)}", file=sys.stderr, flush=True)
+    except Exception as err:  # pragma: no cover - defensive
+        print(f"⚠️ speed profile report failed: {err}", file=sys.stderr, flush=True)
+
+
+def _two_stage_teacache_kwargs(generate_and_save, args: argparse.Namespace) -> dict:
+    """TeaCache kwargs for the two-stage pipeline, or {} when unavailable.
+
+    `enable_teacache` landed on `TI2VidTwoStagesPipeline.generate_and_save`
+    after the pipelines were renamed; a pre-rename pin has the two-stage path
+    but not the kwarg, and passing it there is a TypeError, not a slow render.
+    """
+    if not args.teacache:
+        return {}
+    if not _accepts_kwarg(generate_and_save, "enable_teacache"):
+        speed_profile_degrade(
+            "teacache",
+            "TeaCache unavailable at this ltx-2-mlx pin — rendering the profile's "
+            "step schedule without cache acceleration (slower than the profile's estimate).",
+        )
+        return {}
+    kwargs = {"enable_teacache": True}
+    # `teacache_thresh` is probed SEPARATELY rather than assumed to ride along
+    # with `enable_teacache`. A pin that carries one but not the other would
+    # raise TypeError on the call — turning a lever we could not apply into a
+    # failed render, which is the one outcome this whole path exists to avoid.
+    #
+    # When the profile declares NO override there is nothing to lose: the kwarg
+    # is omitted and the pin applies its own calibrated default (0.5), which is
+    # exactly what the profile wanted. But when the profile named a specific
+    # threshold and the pin cannot take it, the render samples at a DIFFERENT
+    # threshold than the schedule specifies — a partly-applied profile, so it
+    # is recorded as degraded rather than reported as a clean full run.
+    if args.teacache_thresh is not None:
+        if _accepts_kwarg(generate_and_save, "teacache_thresh"):
+            kwargs["teacache_thresh"] = args.teacache_thresh
+        else:
+            speed_profile_applied(teacacheThresh=None)
+            speed_profile_degrade(
+                "teacacheThresh",
+                f"This ltx-2-mlx pin takes no TeaCache threshold override, so the "
+                f"profile's {args.teacache_thresh} is not in effect — sampling at the "
+                "pin's own calibrated default instead.",
+            )
+    speed_profile_applied(teacache=True)
+    emit_status(
+        f"TeaCache active on Stage 1 (thresh={_teacache_thresh_label(kwargs.get('teacache_thresh'))})"
+    )
+    return kwargs
+
+
 def configure_negative_prompt(negative_prompt: str) -> None:
     """Thread PortOS' negative prompt into ltx-2-mlx's CFG encoder.
 
@@ -464,6 +609,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cfg-scale", type=float, default=None)
     p.add_argument("--image-strength", type=float, default=None,
                    help="First-frame conditioning strength for image mode (0.0-1.0).")
+    p.add_argument("--i2v-reference-mode", choices=["anchor", "inspire"], default="anchor",
+                   help="What --image PROMISES in image mode. 'anchor' (default) pins it as "
+                        "frame one, reproducing those pixels; 'inspire' conditions loosely so "
+                        "the reference guides subject/style while frame one is generated. "
+                        "'inspire' needs a pin whose generate_and_save accepts "
+                        "images=[ImageConditioningInput(...)]; the run FAILS rather than "
+                        "silently anchoring when it does not.")
     p.add_argument("--dev-transformer", default=None,
                    help="Filename of the non-distilled (dev) transformer inside the model repo. "
                         "Required for fflf mode — KeyframeInterpolationPipeline rejects pure-distilled "
@@ -538,9 +690,25 @@ def parse_args() -> argparse.Namespace:
                    help="Disable TeaCache acceleration for supported LTX-2 denoise loops "
                         "(extend and a2v Stage 1).")
     p.add_argument("--teacache-thresh", type=float, default=None,
-                   help="rel_l1_thresh for TeaCache on extend/a2v Stage 1. Higher = more "
+                   help="rel_l1_thresh for TeaCache on extend/a2v Stage 1, and on the "
+                        "two-stage T2V/I2V Stage 1 when --teacache is passed. Higher = more "
                         "skipping = faster but lower fidelity (~1.2x at 0.5, up to ~3x at 1.5). "
                         "Omit to use the pipeline default (0.5).")
+    p.add_argument("--speed-profile", default=None,
+                   help="Name of the PortOS speed profile driving this render "
+                        "(server/lib/videoSpeedProfiles.js). Purely a label: the schedule "
+                        "itself arrives as --steps/--stage2-steps/--cfg-scale. Enables the "
+                        "SPEEDPROFILE: report naming which levers actually applied.")
+    p.add_argument("--teacache", action="store_true",
+                   help="Request TeaCache on the two-stage T2V/I2V Stage 1 denoise loop. "
+                        "Off by default there (unlike extend/a2v, where it is on unless "
+                        "--no-teacache). Degrades with an explicit status when the pinned "
+                        "pipeline predates the enable_teacache kwarg.")
+    p.add_argument("--require-adapter", default=None,
+                   help="Distilled adapter filename this render's speed profile was "
+                        "measured with. Reported as degraded (never fatal) when the model "
+                        "pack does not carry it, so a slower render is never presented as "
+                        "the profile's validated speed.")
     p.add_argument("--gemma-max-length", type=int, default=None,
                    help="Gemma prompt-encode sequence length (LTX2_GEMMA_MAX_LENGTH; "
                         "upstream default 1024). PortOS lowers this on its one-shot "
@@ -563,6 +731,22 @@ def parse_text_encoder_config_overrides(raw: str | None) -> dict:
             f"--text-encoder-config-json must be a JSON object; got {type(parsed).__name__}."
         )
     return parsed
+
+
+def validate_reference_mode_args(args: argparse.Namespace) -> None:
+    """Reject a loose reference on a mode that cannot express one, before any load.
+
+    A loose ("inspire") reference is an image-mode promise. Every other mode pins
+    its conditioning by construction — fflf keyframes, extend latents, a2v audio,
+    an IC reference clip — so the flag has nothing to loosen there, and accepting
+    it would render an anchored clip under a loose-reference label. PortOS gates
+    this server-side too; this covers a direct CLI caller.
+    """
+    if args.i2v_reference_mode != "anchor" and args.mode != "image":
+        raise SystemExit(
+            f"--i2v-reference-mode {args.i2v_reference_mode} applies to --mode image only; "
+            f"got --mode {args.mode}."
+        )
 
 
 def validate_text_encoder_args(args: argparse.Namespace) -> None:
@@ -935,12 +1119,31 @@ def _apply_legacy_image_strength(image_strength: float) -> bool:
     return True
 
 
+# Conditioning strength applied to a loose ("inspire") reference when the caller
+# passes no --image-strength. PortOS resolves the same default server-side and
+# always sends an explicit value (see lib/videoReferenceModes.js —
+# INSPIRE_DEFAULT_IMAGE_STRENGTH is authoritative), so this only covers a direct
+# CLI invocation of this script.
+INSPIRE_DEFAULT_IMAGE_STRENGTH = 0.35
+
+
 def _image_conditioning_kwargs(generate_and_save, image: str | None,
-                               image_strength: float | None) -> dict:
+                               image_strength: float | None,
+                               reference_mode: str = "anchor") -> dict:
     """I2V image kwarg(s) for generate_and_save, honoring --image-strength on both pins.
 
-    Returns {} when there's no source image. With no strength override we pass a
-    bare `image=` on every pin — unchanged behavior. With a strength override:
+    `reference_mode` is what the image PROMISES (#4874). "anchor" is the historical
+    behavior: the reference is frame one. "inspire" conditions the same frame-0 slot
+    at a deliberately low strength so the reference steers subject/style while the
+    opening frame is re-generated — the only loose-reference mechanism the MLX
+    pipelines expose. Because that mechanism IS the per-image strength field, a pin
+    without it cannot honor "inspire" at all; this raises there instead of falling
+    back to a bare `image=`, which would anchor the render the user asked NOT to be
+    anchored. "anchor" keeps its existing graceful degradation.
+
+    Returns {} when there's no source image. With no strength override and an
+    anchored reference we pass a bare `image=` on every pin — unchanged behavior.
+    With a strength override (or any loose reference, which always resolves one):
 
       - v0.14.x carries per-image strength as a first-class field on
         ImageConditioningInput passed through `images=[...]` (passing
@@ -957,21 +1160,29 @@ def _image_conditioning_kwargs(generate_and_save, image: str | None,
     """
     if not image:
         return {}
-    if image_strength is None:
+    loose = reference_mode == "inspire"
+    if image_strength is None and not loose:
         return {"image": image}
-    if image_strength < 0.0 or image_strength > 1.0:
+    if image_strength is not None and (image_strength < 0.0 or image_strength > 1.0):
         raise SystemExit("--image-strength must be between 0.0 and 1.0")
+    strength = INSPIRE_DEFAULT_IMAGE_STRENGTH if image_strength is None else image_strength
 
     ImageConditioningInput = _import_image_conditioning_input()
     if ImageConditioningInput is not None and \
             "images" in inspect.signature(generate_and_save).parameters:
-        emit_status(f"Using image strength {image_strength:g}")
+        emit_status(f"Using {reference_mode} reference at image strength {strength:g}")
         return {"images": [ImageConditioningInput(
-            path=image, frame_idx=0, strength=image_strength,
+            path=image, frame_idx=0, strength=strength,
         )]}
 
-    if _apply_legacy_image_strength(image_strength):
-        emit_status(f"Using image strength {image_strength:g}")
+    if loose:
+        raise SystemExit(
+            "--i2v-reference-mode inspire needs per-image conditioning strength "
+            "(ImageConditioningInput), which this ltx-2-mlx pin does not expose. "
+            "Re-run with --i2v-reference-mode anchor, or select an LTX-2.5 model."
+        )
+    if _apply_legacy_image_strength(strength):
+        emit_status(f"Using image strength {strength:g}")
     else:
         emit_status(
             "--image-strength not supported at this ltx-2-mlx pin "
@@ -1001,7 +1212,7 @@ def _one_stage_kwargs(args: argparse.Namespace, **extra) -> dict:
     return kwargs
 
 
-def _prefer_distilled_lora(pipe, requested: str | None) -> str:
+def _prefer_distilled_lora(pipe, requested: str | None, required: str | None = None) -> str:
     """Select the newest compatible distilled adapter already in model_dir.
 
     BasePipeline resolves a HuggingFace repo ID to its cached snapshot during
@@ -1009,6 +1220,11 @@ def _prefer_distilled_lora(pipe, requested: str | None) -> str:
     That gives the bridge a safe point to prefer the 1.1 adapter without
     making a separate Hub metadata request. Repositories that do not carry 1.1
     keep using the legacy file; an explicit CLI value always wins.
+
+    `required` is the adapter a speed profile's schedule was measured against
+    (--require-adapter). Its absence from the pack is NOT fatal — the render
+    proceeds on whatever adapter is there — but it is reported as a degraded
+    lever so the profile's speed claim isn't presented as if it held.
     """
     selected = requested
     if selected is None:
@@ -1022,6 +1238,15 @@ def _prefer_distilled_lora(pipe, requested: str | None) -> str:
         )
     pipe._distilled_lora = selected
     emit_status(f"Using distilled adapter {selected}")
+    if required and selected != required:
+        speed_profile_degrade(
+            "adapter",
+            f"Speed profile expects the {required} adapter, which this model pack "
+            f"does not carry — rendering with {selected} instead (slower than the "
+            "profile's estimate).",
+        )
+    else:
+        speed_profile_applied(adapter=selected)
     return selected
 
 
@@ -1044,11 +1269,16 @@ def run_two_stage(args: argparse.Namespace, image: str | None = None) -> str:
         distilled_lora_strength=args.lora_strength,
         **_gemma_kwargs(args),
     )
-    _prefer_distilled_lora(pipe, args.distilled_lora)
+    _prefer_distilled_lora(pipe, args.distilled_lora, args.require_adapter)
     _apply_user_loras(pipe, args.user_lora_specs)
     bind_output_fps(pipe, args.fps)
     emit_stage(1, 1, 1, "Loaded")
     emit_status("Generating with CFG…")
+    # Speed-profile TeaCache. Probed against THIS pin's signature rather than
+    # assumed, and reported as degraded when the kwarg isn't there — see
+    # _two_stage_teacache_kwargs. {} on every non-profile render, so a quality
+    # render calls generate_and_save with exactly the arguments it always did.
+    teacache_kwargs = _two_stage_teacache_kwargs(pipe.generate_and_save, args)
     return _run_with_ltx_stepwise_preview(pipe, args, lambda: pipe.generate_and_save(
         prompt=args.prompt,
         output_path=args.output,
@@ -1059,7 +1289,9 @@ def run_two_stage(args: argparse.Namespace, image: str | None = None) -> str:
         stage1_steps=args.steps if args.steps is not None else 30,
         stage2_steps=args.stage2_steps,
         cfg_scale=args.cfg_scale if args.cfg_scale is not None else 3.0,
-        **_image_conditioning_kwargs(pipe.generate_and_save, image, args.image_strength),
+        **teacache_kwargs,
+        **_image_conditioning_kwargs(pipe.generate_and_save, image, args.image_strength,
+                                     args.i2v_reference_mode),
         **_rate_kwargs(pipe.generate_and_save, args.fps),
     ))
 
@@ -1098,7 +1330,7 @@ def run_image(args: argparse.Namespace) -> str:
     emit_stage(1, 1, 1, "Loaded")
     emit_status("Generating I2V…")
     image_kwargs = _image_conditioning_kwargs(
-        pipe.generate_and_save, args.image, args.image_strength
+        pipe.generate_and_save, args.image, args.image_strength, args.i2v_reference_mode
     )
     return _run_with_ltx_stepwise_preview(pipe, args, lambda: pipe.generate_and_save(
         **_one_stage_kwargs(args, **image_kwargs),
@@ -1438,6 +1670,7 @@ def maybe_strip_audio(output_path: str) -> None:
 def main() -> NoReturn:
     args = parse_args()
     validate_text_encoder_args(args)
+    validate_reference_mode_args(args)
     # One-line runtime fingerprint at startup — captured by PortOS onto the
     # render record so garbled output can be tied to a specific ltx/mlx stack.
     emit_runtime_fingerprint("ltx2", ["ltx_pipelines_mlx", "ltx_core_mlx", "mlx", "mlx_metal"])
@@ -1473,7 +1706,22 @@ def main() -> NoReturn:
         "ic": run_ic_lora,
     }
     runner = runners[args.mode]
+    # Opens the speed-profile report (no-op without --speed-profile); the
+    # runner fills in which levers applied, and the reconcile below catches the
+    # case where the chosen pipeline path never reached the lever at all — e.g.
+    # a caller that omitted --cfg-scale, so `text` took the one-stage pipeline
+    # that has no Stage-1 TeaCache to enable. Reported as degraded rather than
+    # left silently absent, which would read back as "the profile applied".
+    speed_profile_begin(args)
     saved_path = runner(args)
+    if args.teacache and not _SPEED_PROFILE_REPORT.get("teacache") \
+            and "teacache" not in _SPEED_PROFILE_REPORT.get("degraded", []):
+        speed_profile_degrade(
+            "teacache",
+            f"TeaCache was requested but the {args.mode} render did not route through a "
+            "pipeline that supports it — rendering without cache acceleration.",
+        )
+    speed_profile_emit()
     if args.no_audio:
         maybe_strip_audio(saved_path)
 

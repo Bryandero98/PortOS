@@ -11,7 +11,7 @@ import { onVoiceEvent, sendText, setDictation as setVoiceDictation } from '../..
 import BrailleSpinner from '../../BrailleSpinner';
 import useMounted from '../../../hooks/useMounted';
 import { useVisibilityEvent } from '../../../hooks/useVisibilityEvent';
-import { formatDateFull } from '../../../utils/formatters';
+import { formatDateFull, localDateKey, shiftISODate } from '../../../utils/formatters';
 
 // Autosave cadence. The debounce keeps us from PUTting on every keystroke;
 // the max-wait ceiling exists because a pure debounce never fires at all
@@ -42,21 +42,6 @@ const upsertHistory = (prev, entry) => {
 // value before the backend responds with its canonical "today" (which honors
 // the user's configured timezone, so remote/VPN access doesn't desync the
 // day). Replaced on mount via a GET /daily-log/today.
-const localToday = () => {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-};
-
-const shiftDate = (iso, days) => {
-  const [y, m, d] = iso.split('-').map(Number);
-  const date = new Date(Date.UTC(y, m - 1, d));
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-};
-
 // Append a dictated/typed segment to free-form journal text. Idempotent when
 // the segment text is already present (socket replay / double-fire). Shared by
 // the live socket path and the 409-retry merge so both stay byte-identical.
@@ -92,11 +77,11 @@ export const mergeMissingVoiceSegments = (localContent, serverEntry) => {
 const STALE_JOURNAL_MAX_ATTEMPTS = 3;
 
 export default function DailyLogTab() {
-  const [date, setDate] = useState(localToday());
+  const [date, setDate] = useState(localDateKey());
   // Backend today — resolved via GET /daily-log/today on mount so the
   // "Today" button, disabled-forward-nav check, and isToday chip all match
-  // the server's timezone. Falls back to localToday() until fetched.
-  const [serverToday, setServerToday] = useState(localToday());
+  // the server's timezone. Falls back to localDateKey() until fetched.
+  const [serverToday, setServerToday] = useState(localDateKey());
   const [entry, setEntry] = useState(null);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
@@ -202,7 +187,7 @@ export default function DailyLogTab() {
       if (cancelled || !res?.date) return;
       setServerToday(res.date);
       // If we initialized with a wrong local date, hop to the real one.
-      if (date === localToday() && res.date !== date) setDate(res.date);
+      if (date === localDateKey() && res.date !== date) setDate(res.date);
     }).catch(() => null);
     return () => { cancelled = true; };
     // Only on mount — we intentionally don't re-run when date changes.
@@ -780,7 +765,7 @@ export default function DailyLogTab() {
               <Menu size={16} />
             </button>
             <button
-              onClick={() => setDate(shiftDate(date, -1))}
+              onClick={() => setDate(shiftISODate(date, -1))}
               className="min-h-[44px] min-w-[44px] sm:min-h-[40px] sm:min-w-[40px] flex items-center justify-center rounded hover:bg-port-card text-gray-400 hover:text-white"
               title="Previous day" aria-label="Previous day"
             >
@@ -794,7 +779,7 @@ export default function DailyLogTab() {
               className="min-w-0 bg-port-bg border border-port-border rounded px-2 min-h-[44px] sm:min-h-[40px] text-sm text-white"
             />
             <button
-              onClick={() => setDate(shiftDate(date, 1))}
+              onClick={() => setDate(shiftISODate(date, 1))}
               disabled={date >= serverToday}
               className="min-h-[44px] min-w-[44px] sm:min-h-[40px] sm:min-w-[40px] flex items-center justify-center rounded hover:bg-port-card text-gray-400 hover:text-white disabled:opacity-30"
               title="Next day" aria-label="Next day"

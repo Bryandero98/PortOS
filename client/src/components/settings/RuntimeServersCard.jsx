@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { Cpu, Box, Zap, Gauge, Play, Square, Download, Power, PowerOff, RefreshCw, Save, Settings2, ExternalLink } from 'lucide-react';
 import BrailleSpinner from '../BrailleSpinner';
@@ -86,6 +87,62 @@ function pm2Row({ id, label, icon, status, platformReason, onStart, onStop, onIn
     startBlockedReason: status?.installed && !status?.running ? startBlockedReason : null,
     onStop: !external && status?.running ? onStop : null,
   };
+}
+
+/**
+ * The per-daemon "release the model when nothing is using it" window.
+ *
+ * The two daemons honour this the same way from the user's side and in two very
+ * different ways underneath, which is why the copy is per-row rather than shared:
+ * llama.cpp unloads the checkpoint IN PLACE (`--sleep-idle-seconds`) and reloads
+ * it on the next request without the process ever going away, while MTPLX — which
+ * cannot unload anything but its retrieval models — is stopped outright and
+ * started again by the next request that needs it.
+ *
+ * `0` means never release, which is what every install did before this setting
+ * existed and is still the default.
+ *
+ * Committed on blur/Enter rather than per keystroke: each save is a settings
+ * PATCH, and a three-digit window would otherwise write three times.
+ */
+function IdleWindowField({ id, value, onSave, busy, note }) {
+  const [draft, setDraft] = useState(String(value ?? 0));
+  // Re-sync when the saved value changes underneath (a refresh, another tab) —
+  // but never while the field is being edited, which would fight the typist.
+  useEffect(() => { setDraft(String(value ?? 0)); }, [value]);
+
+  const commit = () => {
+    const next = Number(draft);
+    if (!Number.isFinite(next) || next < 0) { setDraft(String(value ?? 0)); return; }
+    const clamped = Math.min(1440, Math.floor(next));
+    setDraft(String(clamped));
+    if (clamped !== (value ?? 0)) onSave(clamped);
+  };
+
+  const fieldId = `idle-window-${id}`;
+  return (
+    <div className="flex items-center gap-1.5">
+      <label htmlFor={fieldId} className="text-xs text-gray-500 whitespace-nowrap">
+        Idle release
+      </label>
+      <input
+        id={fieldId}
+        type="number"
+        min="0"
+        max="1440"
+        value={draft}
+        disabled={busy}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+        className="w-16 px-1.5 py-1 text-xs bg-port-bg border border-port-border rounded text-white disabled:opacity-50"
+        title={note}
+      />
+      <span className="text-xs text-gray-500 whitespace-nowrap" title={note}>
+        min {Number(draft) === 0 ? '(never)' : ''}
+      </span>
+    </div>
+  );
 }
 
 /**
@@ -189,10 +246,14 @@ export default function RuntimeServersCard({
   onConfigureLlama,
   onConfigureMtplx,
   onInstallMtplx,
-  onStartMtplx,
   onStopMtplx,
   onSaveStartup,
+  onSaveIdleWindow,
 }) {
+  // Read off each daemon's own status payload — the same place `runAtStartup`
+  // and Ollama's `disabled` come from — so there is no second settings fetch on
+  // this tab to keep in sync.
+  const idleWindows = { llama: llamaStatus?.idleMinutes ?? 0, mtplx: mtplxStatus?.idleMinutes ?? 0 };
   const ollamaService = status?.ollama?.service;
   const ollamaRunsAtStartup = Boolean(ollamaService?.runAtStartup);
 
@@ -234,14 +295,17 @@ export default function RuntimeServersCard({
       status: mtplxStatus,
       platformReason: mtplxStatus?.supported === false ? 'macOS with Apple Silicon only' : null,
       onInstall: onInstallMtplx,
-      onStart: onStartMtplx,
+      // No Start button by design. MTPLX is lazily started by the first PortOS
+      // request routed to it and stopped again once its idle window elapses, so
+      // a manual Start would only pin 20GB ahead of a request that may never
+      // come. Install and Configure (download a checkpoint, set the launch
+      // options) are the two things that still need a human.
+      onStart: null,
       onStop: onStopMtplx,
-      // MTPLX weights are a multi-gigabyte download no Start button runs on its
-      // own. An installed MTPLX with an empty cache exits before it binds, so
-      // point at the card that downloads one rather than offering a Start that
-      // cannot work.
-      startBlockedReason: mtplxStatus?.installed && mtplxStatus?.cachedModels?.length === 0 && !mtplxStatus?.cacheError
-        ? 'No checkpoint yet — use Configure to download one'
+      startBlockedReason: mtplxStatus?.installed && !mtplxStatus?.running
+        ? (mtplxStatus?.cachedModels?.length === 0 && !mtplxStatus?.cacheError
+          ? 'No checkpoint yet — use Configure to download one'
+          : 'Starts on demand')
         : null,
       detail: mtplxStatus?.cachedModels?.length
         ? `${mtplxStatus.cachedModels.length} checkpoint${mtplxStatus.cachedModels.length === 1 ? '' : 's'} cached`
@@ -283,6 +347,17 @@ export default function RuntimeServersCard({
                 {ollamaRunsAtStartup ? 'Disable at login' : 'Run at login'}
               </button>
             )}
+            {(row.id === 'llama' || row.id === 'mtplx') && row.state !== 'unsupported' && row.state !== 'missing' && (
+              <IdleWindowField
+                id={row.id}
+                value={idleWindows[row.id] ?? 0}
+                busy={busy}
+                onSave={(minutes) => onSaveIdleWindow?.(row.id, minutes)}
+                note={row.id === 'llama'
+                  ? 'Minutes of PortOS inactivity after which llama.cpp unloads the model in place and reloads it on the next request. 0 = keep it resident. Applies from the next start.'
+                  : 'Minutes of PortOS inactivity after which MTPLX is stopped. The next PortOS request starts it again on the same checkpoint. 0 = keep it running.'}
+              />
+            )}
             {(row.id === 'llama' || row.id === 'mtplx') && row.state !== 'unsupported' && (
               <button
                 onClick={row.id === 'llama' ? onConfigureLlama : onConfigureMtplx}
@@ -297,13 +372,17 @@ export default function RuntimeServersCard({
         ))}
       </div>
 
+      <p className="text-xs text-gray-500">
+        <span className="text-gray-400">Idle release</span> puts a model down when nothing has used it for that many minutes — llama.cpp unloads it in place and reloads it on the next request; MTPLX is stopped and restarted on demand. <span className="text-gray-400">Only PortOS traffic counts.</span> A client hitting these ports directly is invisible to the timer and cannot lazily start a stopped server, so set <code className="text-gray-400">0</code> for a daemon you drive from outside PortOS.
+      </p>
+
       <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-1">
         <button onClick={onSaveStartup} disabled={busy} className={accentBtn} title="Run `pm2 save` so the running PM2 processes are in the list a reboot resurrects">
           {actionInProgress === 'runtime-save-startup' ? <BrailleSpinner /> : <Save size={12} />}
           Save PM2 list for reboot
         </button>
         <p className="text-xs text-gray-500">
-          llama.cpp and MTPLX run as PM2 processes (<code className="text-gray-400">portos-llama-server</code>, <code className="text-gray-400">portos-mtplx</code>). Saving snapshots what is running now so it comes back after a reboot — this needs <code className="text-gray-400">pm2 startup</code> to have been run once in a terminal, which is a privileged one-time step PortOS deliberately leaves to you. Ollama and LM Studio manage their own launch-at-login.
+          llama.cpp and MTPLX run as PM2 processes (<code className="text-gray-400">portos-llama-server</code>, <code className="text-gray-400">portos-mtplx</code>). Saving snapshots what is running now so it comes back after a reboot — this needs <code className="text-gray-400">pm2 startup</code> to have been run once in a terminal, which is a privileged one-time step PortOS deliberately leaves to you. <span className="text-gray-400">MTPLX is deliberately left out of that snapshot</span>: it starts on demand when a request needs it, so resurrecting it at boot would only pin its checkpoint on an idle machine. Ollama and LM Studio manage their own launch-at-login.
         </p>
       </div>
     </div>

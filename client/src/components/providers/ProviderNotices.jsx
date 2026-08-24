@@ -34,8 +34,33 @@ disable_codebase_upload = true`}</pre>
 export function GatewayKeyHint({ gateway, sibling, className = '', onEdit }) {
   if (!gateway) return null;
   const hasKey = Boolean(sibling?.hasApiKey);
+  const shellClass = `text-xs rounded-md border border-port-border bg-port-bg/60 px-2.5 py-2 leading-relaxed ${className}`;
+  const editLink = sibling && onEdit && (
+    <button
+      type="button"
+      onClick={() => onEdit(sibling)}
+      className="text-port-accent hover:text-port-accent/80 underline underline-offset-2"
+    >
+      Edit {gateway.label} API provider
+    </button>
+  );
+
+  // Once the key is there, the three paragraphs explaining WHERE to put it are
+  // answering a question the user no longer has — they read as an unresolved
+  // setup step on a provider that is fully configured. Collapse to the status
+  // plus the same edit link, which is the only part still worth acting on.
+  if (hasKey) {
+    return (
+      <div className={`${shellClass} flex flex-wrap items-center gap-2`}>
+        <span className="text-port-success">{gateway.label} API key configured</span>
+        <span className="text-gray-500">— inherited by this wrapper at run time</span>
+        {editLink}
+      </div>
+    );
+  }
+
   return (
-    <div className={`text-xs rounded-md border border-port-border bg-port-bg/60 px-2.5 py-2 leading-relaxed ${className}`}>
+    <div className={shellClass}>
       <span className="text-gray-300">
         API key is inherited from the <code className="font-mono">{gateway.label}</code> API provider
         {" "}at run time — this wrapper has no key field of its own.
@@ -45,20 +70,8 @@ export function GatewayKeyHint({ gateway, sibling, className = '', onEdit }) {
         <code className="font-mono">{gateway.apiKeyEnv}</code> to OpenCode automatically.
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        {hasKey ? (
-          <span className="text-port-success">{gateway.label} key: set</span>
-        ) : (
-          <span className="text-port-warning">{gateway.label} key: not set</span>
-        )}
-        {sibling && onEdit && (
-          <button
-            type="button"
-            onClick={() => onEdit(sibling)}
-            className="text-port-accent hover:text-port-accent/80 underline underline-offset-2"
-          >
-            Edit {gateway.label} API provider
-          </button>
-        )}
+        <span className="text-port-warning">{gateway.label} key: not set</span>
+        {editLink}
       </div>
     </div>
    );

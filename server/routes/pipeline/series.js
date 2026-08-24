@@ -7,7 +7,9 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
-import { validateRequest, optionalBooleanMap, llmSchema } from '../../lib/validation.js';
+import {
+  validateRequest, optionalBooleanMap, llmSchema, isPaginationRequested, paginateArray,
+} from '../../lib/validation.js';
 import { recordRenderPinFields } from '../../lib/sharedSchemas.js';
 import * as seriesSvc from '../../services/pipeline/series.js';
 import { TRIM_SIZES, INTERIOR_FONTS } from '../../lib/proseExportSettings.js';
@@ -344,8 +346,10 @@ const issueCreateSchema = z.object({
 // Series routes
 // =====================
 
-router.get('/series', asyncHandler(async (_req, res) => {
-  res.json(await seriesSvc.listSeries());
+router.get('/series', asyncHandler(async (req, res) => {
+  const series = await seriesSvc.listSeries();
+  if (!isPaginationRequested(req.query)) return res.json(series);
+  res.json(paginateArray(series, req.query, { defaultLimit: 50, maxLimit: 500 }));
 }));
 
 router.post('/series', asyncHandler(async (req, res) => {

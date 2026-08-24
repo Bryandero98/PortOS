@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import Loras from './Loras';
-import { listLorasFull, deleteLoraFull, installLoraFromHuggingfaceStream } from '../services/api';
+import { listLorasFull, deleteLoraFull, installLoraFromHuggingfaceStream, probeLoraEffect } from '../services/api';
 
 vi.mock('../services/api', () => ({
   listLorasFull: vi.fn(),
@@ -19,6 +19,7 @@ vi.mock('../services/api', () => ({
   clearCivitaiAuth: vi.fn(),
   getCivitaiSuggestions: vi.fn(async () => ({ runners: {}, video: [], fetchedAt: null })),
   searchCivitaiLoras: vi.fn(),
+  probeLoraEffect: vi.fn(),
 }));
 
 vi.mock('../components/ui/Toast', () => ({
@@ -131,5 +132,68 @@ describe('Loras HuggingFace family picker', () => {
     expect(screen.getByRole('button', { name: 'Install as Flux 1' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Install as LTX-Video' })).toBeInTheDocument();
     expect(screen.queryByText(/Install it as an LTX-Video LoRA/)).not.toBeInTheDocument();
+  });
+});
+
+// Adapter-effect diagnostic (#4872). The card seeds from the server's CACHED
+// report and re-measures on demand; only a measured all-zero adapter is the
+// alarming one, and the badge must never echo itself when there is no summary.
+describe('Loras adapter-effect check', () => {
+  const withEffect = (effectReport) => ({ ...LORA, effectReport });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    deleteLoraFull.mockResolvedValue({});
+  });
+
+  it('renders the cached report without asking the server to re-measure', async () => {
+    listLorasFull.mockResolvedValue([withEffect({
+      status: 'ok', measured: 8, medianRms: 0.004, maxRms: 0.02,
+      skippedNonFinite: 0, skippedUnsupported: 0, zeroModules: 0, reason: null,
+    })]);
+    renderPage();
+    expect(await screen.findByText('Active')).toBeInTheDocument();
+    expect(screen.getByText(/median RMS 4.00e-3, max 2.00e-2, across 8 module\(s\)/)).toBeInTheDocument();
+    expect(probeLoraEffect).not.toHaveBeenCalled();
+  });
+
+  it('shows no effect row at all for a LoRA that was never measured', async () => {
+    listLorasFull.mockResolvedValue([withEffect(null)]);
+    renderPage();
+    await screen.findByText('Example LoRA');
+    expect(screen.queryByText('Active')).not.toBeInTheDocument();
+    expect(screen.queryByText('Not measurable')).not.toBeInTheDocument();
+  });
+
+  it('force-re-measures on click and swaps the badge in place', async () => {
+    listLorasFull.mockResolvedValue([withEffect(null)]);
+    probeLoraEffect.mockResolvedValue({
+      status: 'zero', measured: 6, medianRms: 0, maxRms: 0,
+      skippedNonFinite: 0, skippedUnsupported: 0, zeroModules: 6,
+      reason: 'all 6 measurable LoRA module(s) have exactly zero effect',
+    });
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Check effect of Example LoRA' }));
+    expect(probeLoraEffect).toHaveBeenCalledWith('example-lora.safetensors', { force: true, silent: true });
+    expect(await screen.findByText('No effect')).toBeInTheDocument();
+  });
+
+  it('renders the badge alone — never echoed — when there is nothing to add', async () => {
+    listLorasFull.mockResolvedValue([withEffect({
+      status: 'unreadable', measured: 0, medianRms: null, maxRms: null,
+      skippedNonFinite: 0, skippedUnsupported: 0, zeroModules: 0, reason: null,
+    })]);
+    renderPage();
+    expect(await screen.findByText('Unreadable')).toBeInTheDocument();
+    expect(screen.queryByText(/Unreadable — Unreadable/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the card usable when the probe request fails', async () => {
+    listLorasFull.mockResolvedValue([withEffect(null)]);
+    probeLoraEffect.mockRejectedValue(new Error('probe exploded'));
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Check effect of Example LoRA' }));
+    await waitFor(() => expect(probeLoraEffect).toHaveBeenCalled());
+    expect(await screen.findByRole('button', { name: 'Check effect of Example LoRA' })).toBeEnabled();
   });
 });

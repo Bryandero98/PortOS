@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Save, Loader2, MonitorPlay, RefreshCw, CheckCircle2, AlertCircle, ShieldQuestion } from 'lucide-react';
 import toast from '../ui/Toast';
+import FormField from '../ui/FormField';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatDateTime } from '../../utils/formatters';
+import { useSyncSourceSettings } from '../../hooks/useSyncSourceSettings';
 import {
-  getSettings,
-  updateSettings,
   getYoutubeStatus,
   getYoutubeSetupCheck,
   syncYoutube,
@@ -17,47 +17,16 @@ import {
 // Requires being logged into YouTube there; the Takeout backfill on the Timeline
 // page is the reliable historical path.
 export function YoutubeTab() {
-  const [loading, setLoading] = useState(true);
-  const [enabled, setEnabled] = useState(false);
-  const [intervalMinutes, setIntervalMinutes] = useState(480);
-  const [savedEnabled, setSavedEnabled] = useState(false);
-  const [savedInterval, setSavedInterval] = useState(480);
-  const [saving, setSaving] = useState(false);
-
-  const [status, setStatus] = useState(null);
+  const {
+    loading, enabled, setEnabled, intervalMinutes, setIntervalMinutes, saving,
+    status, setStatus, dirty, save,
+  } = useSyncSourceSettings({ domain: 'youtube', defaultInterval: 480, getStatus: getYoutubeStatus });
   const [syncing, setSyncing] = useState(false);
   const [checking, setChecking] = useState(false);
   const [setup, setSetup] = useState(null);
 
-  useEffect(() => {
-    Promise.all([
-      getSettings({ silent: true }).catch(() => ({})),
-      getYoutubeStatus({ silent: true }).catch(() => null),
-    ])
-      .then(([settings, st]) => {
-        const c = settings?.youtube || {};
-        const en = typeof c.enabled === 'boolean' ? c.enabled : false;
-        const iv = Number.isFinite(c.intervalMinutes) ? c.intervalMinutes : 480;
-        setEnabled(en);
-        setIntervalMinutes(iv);
-        setSavedEnabled(en);
-        setSavedInterval(iv);
-        setStatus(st);
-      })
-      .finally(() => setLoading(false));
-  }, []);
-
-  const dirty = enabled !== savedEnabled || Number(intervalMinutes) !== Number(savedInterval);
-
   const handleSave = async () => {
-    const iv = Math.max(1, Math.min(1440, Math.floor(Number(intervalMinutes) || 480)));
-    setSaving(true);
-    const merged = await updateSettings({ youtube: { enabled, intervalMinutes: iv } }).catch(() => null);
-    setSaving(false);
-    if (!merged) return;
-    setIntervalMinutes(iv);
-    setSavedEnabled(enabled);
-    setSavedInterval(iv);
+    if (!await save()) return;
     toast.success('Saved — scheduler applies on next server restart');
   };
 
@@ -145,10 +114,10 @@ export function YoutubeTab() {
             Enable scheduled YouTube scrape
           </label>
 
-          <div>
-            <label htmlFor="youtube-interval" className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
-              Scrape interval (minutes)
-            </label>
+          <FormField
+            label="Scrape interval (minutes)"
+            labelClassName="block text-xs uppercase tracking-wider text-gray-500 mb-1"
+          >
             <input
               id="youtube-interval"
               type="number"
@@ -161,7 +130,7 @@ export function YoutubeTab() {
             <p className="text-xs text-gray-500 mt-1">
               The history page only shows day-bucketed entries — a few times a day (e.g. 480 min) is plenty. Be a polite scraper.
             </p>
-          </div>
+          </FormField>
 
           <div className="flex flex-wrap gap-2 pt-1">
             <button

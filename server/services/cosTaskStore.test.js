@@ -495,6 +495,41 @@ describe('cosTaskStore.addTask', () => {
     expect(tasks.find(t => t.id === created.id).metadata.slashdoCommand).toBe('plan-task');
   });
 
+  it('normalizes plan-only tasks to the issue-filing, no-delivery posture', async () => {
+    const created = await addTask({
+      description: 'Plan the widget API',
+      planOnly: true,
+      slashdoCommand: 'review',
+      slashdoArgs: '--label plan',
+      createJiraTicket: true,
+      useWorktree: true,
+      openPR: true,
+      simplify: true,
+      reviewLoop: true,
+      reviewers: ['codex'],
+      worktreeChangesExpected: true,
+    }, 'user');
+
+    expect(created.metadata).toMatchObject({
+      planOnly: true,
+      slashdoCommand: 'plan-task',
+      slashdoArgs: '--yes',
+      readOnly: true,
+      noCodeOutput: true,
+      useWorktree: false,
+      openPR: false,
+      simplify: false,
+      reviewLoop: false,
+      worktreeChangesExpected: false,
+    });
+    expect(created.metadata.createJiraTicket).toBeUndefined();
+    expect(created.metadata.prCompletion).toBeUndefined();
+    expect(created.metadata.reviewers).toBeUndefined();
+
+    const { tasks } = await getUserTasks();
+    expect(tasks.find(t => t.id === created.id).metadata.slashdoCommand).toBe('plan-task');
+  });
+
   it('persists a pinned claim target through the task markdown round-trip', async () => {
     const created = await addTask({
       description: 'Claim GitHub issue 42 for Example App',
@@ -505,6 +540,25 @@ describe('cosTaskStore.addTask', () => {
     expect(created.metadata.claimTarget).toBe('42');
     const { tasks } = await getUserTasks();
     expect(tasks.find(t => t.id === created.id).metadata.claimTarget).toBe('42');
+  });
+
+  it('persists a manual claim swarm count through the task markdown round-trip', async () => {
+    const created = await addTask({
+      description: 'Claim six independent GitHub issues for Example App',
+      app: 'example-app',
+      swarmCount: 6,
+    }, 'user');
+
+    expect(created.metadata.swarmCount).toBe(6);
+    const { tasks } = await getUserTasks();
+    // Scalar task metadata parses from markdown as text; the lifecycle resolver
+    // normalizes it with Number() before applying the bounded thread override.
+    expect(Number(tasks.find(t => t.id === created.id).metadata.swarmCount)).toBe(6);
+  });
+
+  it('drops an out-of-range manual claim swarm count', async () => {
+    const created = await addTask({ description: 'Invalid claim swarm', swarmCount: 7 }, 'user');
+    expect(created.metadata.swarmCount).toBeUndefined();
   });
 
   it('persists malware scan report ownership through the task markdown round-trip', async () => {

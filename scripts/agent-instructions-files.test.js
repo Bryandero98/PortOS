@@ -55,8 +55,8 @@ const EXCLUDED_PREFIXES = [
 // and this test. Everywhere else, a bare `CLAUDE.md` must be paired with
 // `AGENTS.md` on the same line.
 const DUAL_NAME_IMPLEMENTATION = [
-  'server/services/agentPromptBuilder.js',
   'server/services/agentPromptBuilder.test.js',
+  'server/services/promptSections/instructions.js',
   'server/lib/agentInstructionsFile.js',
   'server/lib/agentInstructionsFile.test.js',
   'scripts/agent-instructions-files.test.js',
@@ -118,6 +118,6 @@ describe('agent-instructions files (#4852)', () => {
       .filter((file) => !EXCLUDED_PREFIXES.some((prefix) => file.startsWith(prefix)));
 
     expect(scanned).toContain('AGENTS.md');
-    expect(scanned).toContain('server/services/agentPromptBuilder.js');
+    expect(scanned).toContain('server/services/promptSections/instructions.js');
   });
 });

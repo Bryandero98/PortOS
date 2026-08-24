@@ -23,6 +23,7 @@
  */
 
 import { LOCAL_LLM_MAX_CONCURRENCY } from '../lib/promptRunner.js';
+import { SWARM_COUNT_MAX, SWARM_COUNT_MIN } from '../lib/validation.js';
 import { localRuntimeForProvider, localEndpointPort, normalizeOpenAiBaseUrl } from '../lib/localProviderRuntime.js';
 import { listProviders, getActiveProvider } from './providers.js';
 import { isProviderAvailable, getFallbackProvider } from './providerStatus.js';
@@ -72,6 +73,18 @@ export function providerBaseUrl(provider) {
  */
 export function localEndpointOfProvider(provider) {
   return localSlotKey(providerBaseUrl(provider));
+}
+
+/**
+ * Codex's multi-agent limit includes the root orchestrator. Cloud claim swarms
+ * therefore need `workers + 1` session threads to honor the configured worker
+ * count. A provider on this machine deliberately gets no override: local
+ * inference remains governed by its bounded GPU concurrency posture.
+ */
+export function cloudSwarmThreadCapacity(provider, swarmCount) {
+  const workers = Number(swarmCount);
+  if (!Number.isSafeInteger(workers) || workers < SWARM_COUNT_MIN || workers > SWARM_COUNT_MAX) return null;
+  return localEndpointOfProvider(provider) ? null : workers + 1;
 }
 
 // Normalize first so a schemeless value still parses — `localEndpointPort` goes

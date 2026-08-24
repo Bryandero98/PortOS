@@ -165,6 +165,14 @@ export const reopenSpriteTrack = (id, trackId, body = {}, options = {}) => reque
 // they all pass `{ silent: true }`.
 export const listSpriteAnimationTracks = (options = {}) => request('/sprites/animation-tracks', options);
 
+// Which engines can render an animation clip on THIS install (#4876) —
+// `{ providers: [{ id, label, ready, reason, … }] }`. `ready: false` always
+// carries a `reason` naming the one thing to fix, which the workflow surfaces
+// beside the disabled option rather than making the user discover it by
+// clicking Generate and reading a 409.
+export const listSpriteAnimationProviders = (options = {}) => request('/sprites/animation-providers', options);
+
+
 export const createSpriteAnimationTrack = (body, options = {}) => request('/sprites/animation-tracks', {
   method: 'POST', body: JSON.stringify(body), ...options,
 });

@@ -457,6 +457,25 @@ export function buildEffortArgs(effort, provider, existingArgs = [], model = nul
 // update check. Kept as a named constant so a codex-side rename is a one-line
 // edit rather than a four-builder grep.
 export const CODEX_UPDATE_CHECK_KEY = 'check_for_update_on_startup';
+export const CODEX_AGENT_THREADS_KEY = 'agents.max_concurrent_threads_per_session';
+
+/**
+ * Give a Codex swarm enough session threads for its root orchestrator plus
+ * every configured worker. The CLI counts the root against this limit, so a
+ * six-worker claim run needs seven threads rather than six.
+ *
+ * Callers deliberately supply this only for cloud-backed Codex agents. Local
+ * inference stays bounded by its runtime-specific concurrency posture instead
+ * of turning one CoS task into an unbounded fan-out against a single GPU.
+ *
+ * @param {unknown} maxConcurrentThreads
+ * @returns {string[]}
+ */
+export function buildCodexAgentThreadArgs(maxConcurrentThreads) {
+  const limit = Number(maxConcurrentThreads);
+  if (!Number.isSafeInteger(limit) || limit < 1) return [];
+  return ['-c', `${CODEX_AGENT_THREADS_KEY}=${limit}`];
+}
 
 /**
  * True when the codex argv already pins the startup-update-check config, so a
@@ -514,7 +533,11 @@ export function buildCodexStartupArgs(existingArgs = []) {
  * of the same CLI had written a variant the CLI on PATH rejects into the shared
  * config file.
  */
-export const PORTOS_CLI_CONFIG_KEYS = Object.freeze([CODEX_EFFORT_KEY, CODEX_UPDATE_CHECK_KEY]);
+export const PORTOS_CLI_CONFIG_KEYS = Object.freeze([
+  CODEX_AGENT_THREADS_KEY,
+  CODEX_EFFORT_KEY,
+  CODEX_UPDATE_CHECK_KEY,
+]);
 
 /**
  * True when `key` is a config key PortOS supplies via `-c` (see

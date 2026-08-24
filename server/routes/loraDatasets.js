@@ -11,7 +11,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
-import { validateRequest } from '../lib/validation.js';
+import { validateRequest, isPaginationRequested, paginateArray } from '../lib/validation.js';
 import { uploadFields } from '../lib/multipart.js';
 import {
   addUploadedImage,
@@ -44,7 +44,9 @@ const listQuerySchema = z.object({
 });
 router.get('/', asyncHandler(async (req, res) => {
   const filters = validateRequest(listQuerySchema, req.query);
-  res.json(await listDatasets(filters));
+  const datasets = await listDatasets(filters);
+  if (!isPaginationRequested(req.query)) return res.json(datasets);
+  res.json(paginateArray(datasets, req.query, { defaultLimit: 50, maxLimit: 500 }));
 }));
 
 const createSchema = z.object({

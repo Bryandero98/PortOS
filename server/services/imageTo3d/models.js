@@ -21,7 +21,7 @@ import { rm, access } from 'node:fs/promises';
 import { ServerError } from '../../lib/errorHandler.js';
 import { PATHS, resolveGalleryImage, ensureDir } from '../../lib/fileUtils.js';
 import { claimHeavyLocalJob } from '../../lib/heavyJobClaim.js';
-import { prepareLocalMemory, gpuBlockersMessage } from '../../lib/localMemory.js';
+import { prepareLocalMemory, gpuBlockersMessage } from '../localMemory.js';
 import { slugifyForFilename } from '../../lib/civitai.js';
 import {
   detectHostCapabilities, resolveTarget, renderOptionSupportFor, DEFAULT_IMAGE_TO_3D_TARGET,

@@ -15,6 +15,68 @@ import {
   z,
 } from '../checkInfra.js';
 
+const isNonMale = (gender) => gender === 'female' || gender === 'nonbinary';
+
+const findTopSpeaker = (byOwner) => [...byOwner].reduce(
+  (top, [key, count]) => (count > top.count ? { key, count } : top),
+  { key: null, count: 0 }
+);
+
+const hasNonMaleCopresence = (scene, identityByKey, identities, genderByKey) => {
+  const keys = sceneCastKeys(scene, identityByKey, identities);
+  return [...keys].filter((key) => isNonMale(genderByKey.get(key))).length >= 2;
+};
+
+const collectDialogueDistributionFindings = ({
+  attributed,
+  byOwner,
+  identities,
+  nameByKey,
+  appearingKeys,
+  config,
+  severityDefault,
+}) => {
+  const findings = [];
+  const { maxDialogueShare, maxMinorShare, minMajorShare } = config;
+  const flag = ({ severity, location, problem, suggestion }) =>
+    findings.push({ severity, category: 'casting', location, problem, suggestion, anchorQuote: '', issueNumber: null });
+
+  const { key: topKey, count: topCount } = findTopSpeaker(byOwner);
+  const topShare = topCount / attributed;
+  if (maxDialogueShare < 1 && byOwner.size >= 2 && topKey && topShare > maxDialogueShare) {
+    const pct = Math.round(topShare * 100);
+    flag({
+      severity: escalateSeverity(severityDefault, topShare >= 0.8 ? 1 : 0),
+      location: 'Series dialogue',
+      problem: `"${nameByKey.get(topKey)}" speaks about ${pct}% of the attributed dialogue (${topCount} of ${attributed} lines across ${byOwner.size} speaking characters) — one voice dominating the page can flatten the rest of the cast.`,
+      suggestion: `Give other characters more of the conversation, or let scenes play out from a viewpoint where ${nameByKey.get(topKey)} isn't the one talking.`,
+    });
+  }
+
+  for (const id of identities) {
+    const count = byOwner.get(id.key) || 0;
+    const share = count / attributed;
+    if (maxMinorShare < 1 && id.roleTier === 'minor' && share > maxMinorShare) {
+      const pct = Math.round(share * 100);
+      flag({
+        severity: escalateSeverity(severityDefault, share >= 0.5 ? 1 : 0),
+        location: 'Series dialogue',
+        problem: `"${id.name}" reads as a minor character (canon role) yet speaks about ${pct}% of the attributed dialogue (${count} of ${attributed} lines) — a walk-on dominating the conversation usually means the cast hierarchy on the page doesn't match the bible.`,
+        suggestion: `Either give ${id.name} a larger stated role to match the page time, or shift dialogue to the characters the story is actually about.`,
+      });
+    }
+    if (minMajorShare <= 0 || id.roleTier !== 'major' || !appearingKeys?.has(id.key) || share >= minMajorShare) continue;
+    const pct = Math.round(share * 100);
+    flag({
+      severity: escalateSeverity(severityDefault, count === 0 ? 1 : 0),
+      location: 'Series dialogue',
+      problem: `"${id.name}" reads as a major character (canon role) and appears in the prose, yet speaks only about ${pct}% of the attributed dialogue (${count} of ${attributed} lines) — a lead who is on the page but barely talks can feel like a passenger in their own story.`,
+      suggestion: `Give ${id.name} more of the conversation in the scenes they appear in, or reconsider whether the stated major role matches their actual presence.`,
+    });
+  }
+  return findings;
+};
+
 export const castChecks = [
   {
     id: 'roster.economy',
@@ -404,59 +466,21 @@ export const castChecks = [
           // appears yet never speaks while a single other voice carries the scene is
           // their STRONGEST case — gating those on size >= 2 would skip exactly the
           // imbalance they exist to catch.
-          if (wantShare && byOwner.size >= 2) {
-            let topKey = null;
-            let topCount = 0;
-            for (const [key, count] of byOwner) {
-              if (count > topCount) { topCount = count; topKey = key; }
-            }
-            const share = topCount / attributed;
-            if (topKey && share > maxDialogueShare) {
-              const pct = Math.round(share * 100);
-              // Escalate above the low floor when one voice utterly dominates (≥80%).
-              flag({
-                severity: escalateSeverity(ctx.severityDefault, share >= 0.8 ? 1 : 0),
-                location: 'Series dialogue',
-                problem: `"${nameByKey.get(topKey)}" speaks about ${pct}% of the attributed dialogue (${topCount} of ${attributed} lines across ${byOwner.size} speaking characters) — one voice dominating the page can flatten the rest of the cast.`,
-                suggestion: `Give other characters more of the conversation, or let scenes play out from a viewpoint where ${nameByKey.get(topKey)} isn't the one talking.`,
-              });
-            }
-          }
-
           // Role-relative distribution. Silent-major is gated on prose appearance
           // (a major who never appears is just absent — a different signal — not
           // "oddly silent"); the appearing-cast scan is skipped entirely unless the
           // signal is enabled AND there's a major-tier character to score.
-          if (wantMinorDom || wantSilentMajor) {
-            const hasMajor = identities.some((id) => id.roleTier === 'major');
-            const appearingKeys = wantSilentMajor && hasMajor ? buildAppearingKeys(ctx) : null;
-            for (const id of identities) {
-              const count = byOwner.get(id.key) || 0;
-              const share = count / attributed;
-              if (wantMinorDom && id.roleTier === 'minor' && share > maxMinorShare) {
-                const pct = Math.round(share * 100);
-                flag({
-                  // A walk-on taking over the conversation is a stronger signal the
-                  // higher the share climbs — escalate past the low floor at ≥50%.
-                  severity: escalateSeverity(ctx.severityDefault, share >= 0.5 ? 1 : 0),
-                  location: 'Series dialogue',
-                  problem: `"${id.name}" reads as a minor character (canon role) yet speaks about ${pct}% of the attributed dialogue (${count} of ${attributed} lines) — a walk-on dominating the conversation usually means the cast hierarchy on the page doesn't match the bible.`,
-                  suggestion: `Either give ${id.name} a larger stated role to match the page time, or shift dialogue to the characters the story is actually about.`,
-                });
-              }
-              if (wantSilentMajor && id.roleTier === 'major' && appearingKeys.has(id.key) && share < minMajorShare) {
-                const pct = Math.round(share * 100);
-                flag({
-                  // A major who appears but never says a word (0%) is the strongest
-                  // form — escalate past the low floor for the silent case.
-                  severity: escalateSeverity(ctx.severityDefault, count === 0 ? 1 : 0),
-                  location: 'Series dialogue',
-                  problem: `"${id.name}" reads as a major character (canon role) and appears in the prose, yet speaks only about ${pct}% of the attributed dialogue (${count} of ${attributed} lines) — a lead who is on the page but barely talks can feel like a passenger in their own story.`,
-                  suggestion: `Give ${id.name} more of the conversation in the scenes they appear in, or reconsider whether the stated major role matches their actual presence.`,
-                });
-              }
-            }
-          }
+          const hasMajor = wantSilentMajor && identities.some((id) => id.roleTier === 'major');
+          const appearingKeys = hasMajor ? buildAppearingKeys(ctx) : null;
+          findings.push(...collectDialogueDistributionFindings({
+            attributed,
+            byOwner,
+            identities,
+            nameByKey,
+            appearingKeys,
+            config: { maxDialogueShare, maxMinorShare, minMajorShare },
+            severityDefault: ctx.severityDefault,
+          }));
         }
       }
 
@@ -471,21 +495,14 @@ export const castChecks = [
         const scenesWithPresence = scenes.filter(
           (s) => Array.isArray(s?.charactersPresent) && s.charactersPresent.length > 0
         );
-        const haveNonMaleKnown = identities.some((id) => id.gender === 'female' || id.gender === 'nonbinary');
+        const haveNonMaleKnown = identities.some((id) => isNonMale(id.gender));
         // Only meaningful when the outline records presence AND the cast has at
         // least one known non-male character (otherwise "absent" is just unknown
         // gender, not a representation gap).
         if (scenesWithPresence.length > 0 && haveNonMaleKnown) {
-          const anyCopresent = scenesWithPresence.some((scene) => {
-            const keys = sceneCastKeys(scene, identityByKey, identities);
-            let nonMale = 0;
-            for (const k of keys) {
-              const g = genderByKey.get(k);
-              if (g === 'female' || g === 'nonbinary') nonMale += 1;
-              if (nonMale >= 2) return true;
-            }
-            return false;
-          });
+          const anyCopresent = scenesWithPresence.some((scene) =>
+            hasNonMaleCopresence(scene, identityByKey, identities, genderByKey)
+          );
           if (!anyCopresent) {
             flag({
               severity: ctx.severityDefault,

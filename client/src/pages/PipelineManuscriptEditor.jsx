@@ -920,7 +920,7 @@ export default function PipelineManuscriptEditor() {
                   onChange={(e) => setOverrideModel(e.target.value)}
                   className="flex-1 min-w-0 px-2 py-1.5 bg-port-bg border border-port-border rounded text-sm text-white"
                 >
-                  {overrideModels.map((m) => <option key={m} value={m}>{modelOptionLabel(m, localModels.ctxById)}</option>)}
+                  {overrideModels.map((m) => <option key={m} value={m}>{modelOptionLabel(m, localModels.ctxById, overrideProvider)}</option>)}
                 </select>
               ) : null}
             </div>

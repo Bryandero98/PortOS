@@ -14,6 +14,7 @@ const resolveGalleryImageMock = vi.fn((filename) => (
   typeof filename === 'string' && !filename.includes('missing') ? `/mock/data/images/${filename}` : null
 ));
 vi.mock('../../lib/fileUtils.js', () => ({
+sleep: vi.fn().mockResolvedValue(undefined),
 tryReadFile: vi.fn().mockResolvedValue(null),
   PATHS: { data: '/mock/data', screenshots: '/mock/data/screenshots', images: '/mock/data/images' },
   ensureDir: vi.fn().mockResolvedValue(undefined),

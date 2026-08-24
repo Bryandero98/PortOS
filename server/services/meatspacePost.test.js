@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // route responses by path substring so both modules' reads/writes are covered
 // without depending on call order.
 vi.mock('../lib/fileUtils.js', () => ({
+  sleep: vi.fn().mockResolvedValue(undefined),
   atomicWrite: vi.fn().mockResolvedValue(undefined),
   // `data` is needed too — postValidation.js transitively imports
   // meatspacePostDrillCache.js, which builds a path off PATHS.data at module load.

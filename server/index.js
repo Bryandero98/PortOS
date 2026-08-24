@@ -105,7 +105,7 @@ import reviewRoutes from './routes/review.js';
 import githubRoutes from './routes/github.js';
 import settingsRoutes from './routes/settings.js';
 import authRoutes from './routes/auth.js';
-import { authGate, socketAuthGate } from './lib/authGate.js';
+import { authGate, socketAuthGate } from './services/authGate.js';
 import telegramRoutes from './routes/telegram.js';
 import updateRoutes from './routes/update.js';
 import loopsRoutes from './routes/loops.js';
@@ -223,7 +223,7 @@ app.set('io', io);
 // Public routes (login, status, health) still need a parsed body / no body,
 // and they flow through to the parsers below normally. When
 // settings.secrets.auth.enabled is true the gate returns 401 for everything
-// except the small public set in lib/authGate.js (auth status/whoami/login/
+// except the small public set in services/authGate.js (auth status/whoami/login/
 // logout + /api/system/health). No-op when auth is off.
 app.use(authGate);
 

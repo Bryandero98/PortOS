@@ -82,6 +82,7 @@ import * as shellService from './shell.js';
 import { getProviderById } from './providers.js';
 import { updateApp as runAppUpdate } from './appUpdater.js';
 import { analyzeApp, standardizeRefusalFor } from './pm2Standardizer.js';
+import { registerVoiceHandlers } from '../sockets/voice.js';
 
 // Build a minimal fake socket with per-event handler capture
 function makeSocket(id = 'sock-1') {
@@ -128,8 +129,50 @@ describe('socket.js — initSocket', () => {
 
   beforeEach(() => {
     vi.mocked(detachSocketSessions).mockClear();
+    vi.mocked(registerVoiceHandlers).mockClear();
     io = makeIo();
     initSocket(io);
+  });
+
+  it('composes every per-feature handler registrar for a connected socket', () => {
+    const socket = makeSocket('registrars');
+    createdSockets.push(socket);
+    io.connect(socket);
+
+    expect(registerVoiceHandlers).toHaveBeenCalledWith(socket, io);
+    expect(Object.keys(socket.handlers)).toEqual(expect.arrayContaining([
+      'importer:progress:replay',
+      'detect:start',
+      'standardize:start',
+      'logs:subscribe',
+      'logs:unsubscribe',
+      'cos:subscribe',
+      'cos:unsubscribe',
+      'errors:subscribe',
+      'errors:unsubscribe',
+      'notifications:subscribe',
+      'notifications:unsubscribe',
+      'agents:subscribe',
+      'agents:unsubscribe',
+      'instances:subscribe',
+      'instances:unsubscribe',
+      'loops:subscribe',
+      'loops:unsubscribe',
+      'error:recover',
+      'app:update',
+      'app:standardize',
+      'app:operations:list',
+      'app:deploy',
+      'shell:start',
+      'shell:attach',
+      'shell:list',
+      'shell:input',
+      'shell:cd',
+      'shell:resize',
+      'shell:stop',
+      'shell:release-views',
+      'disconnect'
+    ]));
   });
 
   // ===========================================================================

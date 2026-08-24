@@ -7,6 +7,9 @@ import {
   supportsVideoAudioControls, supportsVideoAudioPromptControls,
   IC_LORA_MODES, IC_LORA_MODE_VALUES, isIcLoraMode, icLoraSpecForMode,
   icResolutionIssue,
+  DEFAULT_SPEED_PROFILE_ID, isDefaultSpeedProfileId, speedProfilesForModel,
+  speedProfilesForMode, normalizeSpeedProfileForModel,
+  speedProfileIdFromRecord, selectedSpeedProfile, videoChainChunkModes,
 } from './videoGenParams.js';
 
 describe('videoModelMemoryGb', () => {
@@ -186,4 +189,154 @@ describe('IC-LoRA remix modes (#3100)', () => {
     expect(icLoraSpecForMode('ic-colorize').uploadLabel).toMatch(/B&W/);
   });
 });
+
+// Speed profiles (#4875) — the client-side half of the sentinel + option list.
+// Cross-package agreement with the server is pinned separately by
+// server/lib/videoSpeedProfiles.parity.test.js.
+describe('speed profiles', () => {
+  const FAST = { id: 'fast', name: 'Fast', steps: 8, guidance: 1.0, modes: ['text', 'image'] };
+  const model = { runtime: 'ltx25', speedProfiles: [FAST] };
+
+  it('reads the server-decorated list and tolerates a model without one', () => {
+    expect(speedProfilesForModel(model)).toEqual([FAST]);
+    expect(speedProfilesForModel({})).toEqual([]);
+    expect(speedProfilesForModel(null)).toEqual([]);
+    // A malformed entry must not reach the <option> map as a keyless row.
+    expect(speedProfilesForModel({ speedProfiles: [FAST, {}, null] })).toEqual([FAST]);
+  });
+
+  it('snaps an unknown or stale selection back to the default', () => {
+    expect(normalizeSpeedProfileForModel('fast', model)).toBe('fast');
+    expect(normalizeSpeedProfileForModel('turbo', model)).toBe(DEFAULT_SPEED_PROFILE_ID);
+    // The case that matters: switching to a model that declares nothing.
+    expect(normalizeSpeedProfileForModel('fast', {})).toBe(DEFAULT_SPEED_PROFILE_ID);
+  });
+
+  it('reads a record back, treating absence as the default', () => {
+    expect(speedProfileIdFromRecord('fast')).toBe('fast');
+    for (const v of [undefined, null, '', 7]) {
+      expect(speedProfileIdFromRecord(v)).toBe(DEFAULT_SPEED_PROFILE_ID);
+    }
+  });
+
+  it('treats absence, empty string and the default id as one request', () => {
+    for (const v of [undefined, null, '', DEFAULT_SPEED_PROFILE_ID]) {
+      expect(isDefaultSpeedProfileId(v)).toBe(true);
+    }
+    expect(isDefaultSpeedProfileId('fast')).toBe(false);
+  });
+
+  // The mode filter is what keeps the picker from offering — and the Steps/CFG
+  // lock from honoring — a profile the server would decline.
+  it('offers a profile only for the modes it declares', () => {
+    expect(speedProfilesForMode(model, 'text')).toEqual([FAST]);
+    expect(speedProfilesForMode(model, 'image')).toEqual([FAST]);
+    expect(speedProfilesForMode(model, 'fflf')).toEqual([]);
+    expect(speedProfilesForMode(model, 'extend')).toEqual([]);
+    // An absent mode is the default text render.
+    expect(speedProfilesForMode(model, null)).toEqual([FAST]);
+    // A profile with no declared modes falls back to the two-stage set, NOT to
+    // "unrestricted" — the server's decline check applies exactly that
+    // fallback, and reading it permissively here would offer a profile on fflf
+    // that the server then declines.
+    const noModes = { speedProfiles: [{ id: 'any' }] };
+    expect(speedProfilesForMode(noModes, 'text')).toEqual([{ id: 'any' }]);
+    expect(speedProfilesForMode(noModes, 'image')).toEqual([{ id: 'any' }]);
+    expect(speedProfilesForMode(noModes, 'fflf')).toEqual([]);
+  });
+
+  // The bug this guards: with TWO profiles, resolving the selection against the
+  // unfiltered list would lock Steps/CFG to one this mode declines.
+  it('resolves the active profile against the mode-filtered set', () => {
+    const twoProfiles = { speedProfiles: [FAST, { id: 'blitz', steps: 4, guidance: 1, modes: ['fflf'] }] };
+    expect(selectedSpeedProfile('blitz', twoProfiles, 'fflf')?.id).toBe('blitz');
+    expect(selectedSpeedProfile('blitz', twoProfiles, 'text')).toBeNull();
+    expect(selectedSpeedProfile('fast', twoProfiles, 'text')?.id).toBe('fast');
+  });
+
+  // Mirrors the server's own inference for an absent mode
+  // (`rest.mode || (rest.sourceImagePath ? 'image' : 'text')`) — the two must
+  // not disagree the moment a profile ships supporting 'text' but not 'image'.
+  it('infers the first chunk mode exactly as the server does when mode is absent', () => {
+    const ltx = { runtime: 'ltx25' };
+    const modes = (o) => videoChainChunkModes({ model: ltx, chaining: false, ...o });
+    expect(modes({ mode: null })).toEqual(['text']);
+    expect(modes({ mode: null, hasSourceImage: true })).toEqual(['image']);
+    // An explicit mode always wins over the inference.
+    expect(modes({ mode: 'fflf', hasSourceImage: true })).toEqual(['fflf']);
+  });
+
+  it('derives the chunk modes a chain will actually run in', () => {
+    const ltx = { runtime: 'ltx25' };
+    const nonLtx = { runtime: 'wan22' };
+    // Window continuity needs BOTH a positive window and an extend pipeline.
+    expect(videoChainChunkModes({ model: ltx, mode: 'text', chaining: true, contextFrames: 22 }))
+      .toEqual(['text', 'extend']);
+    expect(videoChainChunkModes({ model: ltx, mode: 'text', chaining: true, contextFrames: 0 }))
+      .toEqual(['text', 'image']);
+    expect(videoChainChunkModes({ model: nonLtx, mode: 'text', chaining: true, contextFrames: 22 }))
+      .toEqual(['text', 'image']);
+    // Not chaining → one chunk, whatever the continuity setting says.
+    expect(videoChainChunkModes({ model: ltx, mode: 'text', chaining: false, contextFrames: 22 }))
+      .toEqual(['text']);
+  });
+
+  // resolveContextFrames reads absent / '' / non-finite as the 22-frame
+  // DEFAULT, not as zero. Reading it as a frame hop here would show the Fast
+  // picker (and grey out Steps/CFG) for a chain the server declines wholesale.
+  it('treats an omitted contextFrames as the windowed default, exactly as the server does', () => {
+    const ltx = { runtime: 'ltx25' };
+    const modes = (contextFrames) => videoChainChunkModes({ model: ltx, mode: 'text', chaining: true, contextFrames });
+    for (const absent of [undefined, null, '', Number.NaN, 'nonsense']) {
+      expect(modes(absent)).toEqual(['text', 'extend']);
+    }
+    // An explicit 0 is a REAL value — it opts back into last-frame chaining.
+    expect(modes(0)).toEqual(['text', 'image']);
+    expect(modes('0')).toEqual(['text', 'image']);
+    expect(modes(22)).toEqual(['text', 'extend']);
+  });
+
+  // The exact expression the submit builder uses
+  // (`selectedSpeedProfile(id, model, videoChainChunkModes(...))?.id`). It must
+  // agree with the PICKER's gate, or the form posts a schedule it already
+  // decided doesn't apply — which the route then persists, echoes back on
+  // reload, and seeds into a Retry as a profile the render never used.
+  describe('submit gate matches the picker gate', () => {
+    const model = { runtime: 'ltx25', speedProfiles: [FAST] };
+    const submitted = (ctx) => selectedSpeedProfile(
+      ctx.speedProfileId, model, videoChainChunkModes({ model, ...ctx }),
+    )?.id;
+
+    it('posts the profile for a request it really applies to', () => {
+      expect(submitted({ speedProfileId: 'fast', mode: 'text', chaining: false })).toBe('fast');
+      expect(submitted({ speedProfileId: 'fast', mode: 'image', chaining: false })).toBe('fast');
+    });
+
+    it('drops a stale selection after the user switches to an unsupported mode', () => {
+      // The picker hides and Steps/CFG unlock, but state still holds 'fast'.
+      expect(submitted({ speedProfileId: 'fast', mode: 'fflf', chaining: false })).toBeUndefined();
+      expect(submitted({ speedProfileId: 'fast', mode: 'extend', chaining: false })).toBeUndefined();
+    });
+
+    it('drops it after the user raises Chunks onto a window-continuity chain', () => {
+      expect(submitted({ speedProfileId: 'fast', mode: 'text', chaining: true, contextFrames: 22 }))
+        .toBeUndefined();
+      // …but keeps it on a frame hop, where every chunk qualifies.
+      expect(submitted({ speedProfileId: 'fast', mode: 'text', chaining: true, contextFrames: 0 }))
+        .toBe('fast');
+    });
+
+    it('posts nothing for the default profile', () => {
+      expect(submitted({ speedProfileId: DEFAULT_SPEED_PROFILE_ID, mode: 'text', chaining: false }))
+        .toBeUndefined();
+    });
+  });
+
+  it('resolves the selected profile object, or null for the default', () => {
+    expect(selectedSpeedProfile('fast', model, 'text')).toBe(FAST);
+    expect(selectedSpeedProfile(DEFAULT_SPEED_PROFILE_ID, model, 'text')).toBeNull();
+    expect(selectedSpeedProfile('fast', {}, 'text')).toBeNull();
+  });
+});
+
 // @vitest-environment node

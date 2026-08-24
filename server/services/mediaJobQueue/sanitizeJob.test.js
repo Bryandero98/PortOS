@@ -10,6 +10,7 @@ describe('sanitizeJob', () => {
       params: {
         modelId: 'example-video-model',
         textEncoderId: 'example-encoder',
+        speedProfileId: 'fast',
         chunks: 2,
         chunkPrompts: ['opening', 'climax'],
         contextFrames: 12,
@@ -21,6 +22,10 @@ describe('sanitizeJob', () => {
     expect(sanitized.params).toEqual({
       modelId: 'example-video-model',
       textEncoderId: 'example-encoder',
+      // #4875 — a profile OUTRANKS steps/CFG, so a queue row that hid it would
+      // display an unused `steps` value and the retry editor would have no way
+      // to see (or drop) the schedule actually driving the render.
+      speedProfileId: 'fast',
       chunks: 2,
       chunkPrompts: ['opening', 'climax'],
       contextFrames: 12,

@@ -190,3 +190,262 @@ describe('AdvancedParamsPanel', () => {
     });
   });
 });
+
+// What the source image PROMISES (#4874). The panel is the surface that states
+// the promise, so a wrong option list here is a lie the user acts on.
+describe('AdvancedParamsPanel — i2v reference mode (#4874)', () => {
+  const LTX25 = { runtime: 'ltx25', name: 'LTX-2.5 MLX Q8', supportedModes: MLX_MODES };
+  const withReference = (props = {}) => renderPanel({
+    mode: 'image',
+    currentModel: LTX25,
+    i2vReferenceMode: 'anchor',
+    onI2vReferenceModeChange: vi.fn(),
+    ...props,
+  });
+
+  it('offers both promises on a runtime that can keep them, and prints the active one', () => {
+    withReference();
+    const select = screen.getByLabelText('Reference mode');
+    expect([...select.options].map((o) => o.value)).toEqual(['anchor', 'inspire']);
+    expect(select.disabled).toBe(false);
+    expect(screen.getByText(/reference is frame one/i)).toBeTruthy();
+  });
+
+  it('states the Inspire promise when Inspire is selected', () => {
+    withReference({ i2vReferenceMode: 'inspire' });
+    expect(screen.getByText(/without reproducing it/i)).toBeTruthy();
+  });
+
+  it('offers only Anchor — locked, and explains why — on a runtime that pins frame one', () => {
+    withReference({ currentModel: { runtime: 'ltx2', name: 'LTX-2 Unified', supportedModes: MLX_MODES } });
+    const select = screen.getByLabelText('Reference mode');
+    expect([...select.options].map((o) => o.value)).toEqual(['anchor']);
+    expect(select.disabled).toBe(true);
+    expect(screen.getByText(/Pick an LTX-2\.5 model to loosen it/i)).toBeTruthy();
+  });
+
+  it.each(['text', 'fflf', 'extend', 'a2v'])('hides the picker in %s mode', (mode) => {
+    withReference({ mode });
+    expect(screen.queryByLabelText('Reference mode')).toBeNull();
+  });
+
+  it('hides the picker when no handler is wired, rather than rendering a dead control', () => {
+    renderPanel({ mode: 'image', currentModel: LTX25 });
+    expect(screen.queryByLabelText('Reference mode')).toBeNull();
+  });
+
+  it('reports the change up', () => {
+    const onI2vReferenceModeChange = vi.fn();
+    withReference({ onI2vReferenceModeChange });
+    fireEvent.change(screen.getByLabelText('Reference mode'), { target: { value: 'inspire' } });
+    expect(onI2vReferenceModeChange).toHaveBeenCalledWith('inspire');
+  });
+
+  it('shows the strength the render will ACTUALLY use, not the pipeline default', () => {
+    // An untouched slider under Inspire resolves to the contract's low default;
+    // printing "1.0" there would describe an anchored render.
+    withReference({ i2vReferenceMode: 'inspire', imageStrength: '', effectiveImageStrength: 0.35 });
+    expect(screen.getByText('0.35')).toBeTruthy();
+  });
+});
+
+// `0` is a legal image strength ("ignore the source entirely"), and the Render
+// Queue's retry editor hands it over as a NUMBER. A truthiness fallback rendered
+// the control at 1 while the form still submitted 0 — the control lying about
+// the render it would produce.
+describe('AdvancedParamsPanel — image strength presence vs zero', () => {
+  const inImageMode = (props) => renderPanel({ mode: 'image', ...props });
+
+  it.each([
+    ['a numeric 0 from the retry editor', 0],
+    ['a string "0"', '0'],
+  ])('shows %s as 0, not the 1.0 default', (_label, imageStrength) => {
+    inImageMode({ imageStrength });
+    expect(screen.getByLabelText('Image Strength').value).toBe('0');
+    expect(screen.getByText('0')).toBeTruthy();
+  });
+
+  it('falls back to the pipeline default only when nothing was set', () => {
+    inImageMode({ imageStrength: '' });
+    expect(screen.getByLabelText('Image Strength').value).toBe('1');
+    expect(screen.getByText('1.0')).toBeTruthy();
+  });
+
+  it('prefers an explicit value over the resolved loose default', () => {
+    inImageMode({ imageStrength: 0, effectiveImageStrength: 0.35 });
+    expect(screen.getByLabelText('Image Strength').value).toBe('0');
+  });
+});
+
+// The picker must not contradict the state it renders. The form's snap-back
+// deliberately defers clearing an Inspire pick until the model catalog resolves,
+// so a picker that reads an unresolved model as "anchor only" would disable
+// itself, drop the selected option, and claim something about a model nobody has
+// seen yet — on exactly the resume/retry path this feature hardened.
+describe('AdvancedParamsPanel — reference mode before the model catalog loads', () => {
+  const beforeLoad = (props) => renderPanel({
+    mode: 'image',
+    currentModel: undefined,
+    i2vReferenceMode: 'inspire',
+    onI2vReferenceModeChange: vi.fn(),
+    ...props,
+  });
+
+  it('keeps the selected promise listed and the control usable', () => {
+    beforeLoad();
+    const select = screen.getByLabelText('Reference mode');
+    expect(select.value).toBe('inspire');
+    expect([...select.options].map((o) => o.value)).toEqual(['anchor', 'inspire']);
+    expect(select.disabled).toBe(false);
+  });
+
+  it('makes no claim about a model it has not seen', () => {
+    beforeLoad();
+    expect(screen.queryByText(/can only anchor a reference/i)).toBeNull();
+  });
+
+  it('never renders a controlled value with no matching option, even mid-switch', () => {
+    // The render between "model switched to one that pins frame one" and "the
+    // snap-back effect ran" still holds `inspire`; it stays listed so the select
+    // is not silently blank, while the option list is already narrowed.
+    renderPanel({
+      mode: 'image',
+      currentModel: { runtime: 'ltx2', name: 'LTX-2 Unified', supportedModes: MLX_MODES },
+      i2vReferenceMode: 'inspire',
+      onI2vReferenceModeChange: vi.fn(),
+    });
+    const select = screen.getByLabelText('Reference mode');
+    expect(select.value).toBe('inspire');
+    expect([...select.options].map((o) => o.value)).toContain('inspire');
+    // The model genuinely cannot loosen a reference, so the control still locks
+    // and still says why.
+    expect(select.disabled).toBe(true);
+    expect(screen.getByText(/can only anchor a reference/i)).toBeTruthy();
+  });
+});
+
+// Speed profiles (#4875). The picker exists so a validated fast schedule is
+// reachable without hand-tuning steps/CFG — and so it is NEVER offered where
+// the server would decline it, which would be a dead speed affordance.
+describe('AdvancedParamsPanel — speed profiles', () => {
+  const FAST = {
+    id: 'fast',
+    name: 'Fast',
+    description: 'Validated 8+3-step two-stage schedule at CFG 1.0.',
+    speedupLabel: '~2× faster',
+    steps: 8,
+    stage2Steps: 3,
+    guidance: 1.0,
+    modes: ['text', 'image'],
+  };
+  const ltx25 = (extra = {}) => ({
+    steps: 8, guidance: 3.0, runtime: 'ltx25',
+    supportedModes: ['text', 'image', 'fflf', 'extend'],
+    speedProfiles: [FAST],
+    ...extra,
+  });
+
+  it('is hidden on a model that declares no profiles', () => {
+    renderPanel();
+    expect(screen.queryByLabelText('Speed')).toBeNull();
+  });
+
+  it('offers Quality plus each profile validated for the current mode', () => {
+    renderPanel({ currentModel: ltx25() });
+    const select = screen.getByLabelText('Speed');
+    expect([...select.options].map((o) => o.value)).toEqual(['quality', 'fast']);
+    expect([...select.options].map((o) => o.text)).toEqual(['Quality · default', 'Fast · ~2× faster']);
+  });
+
+  // The whole reason the picker filters by mode: on fflf/extend the server
+  // declines the profile, so offering it would promise a speed-up the render
+  // silently doesn't take.
+  it.each(['fflf', 'extend'])('is hidden on %s, where the profile is not validated', (mode) => {
+    renderPanel({ currentModel: ltx25(), mode });
+    expect(screen.queryByLabelText('Speed')).toBeNull();
+  });
+
+  it('is hidden on a samplerLocked model, whose own schedule is the authority', () => {
+    renderPanel({ currentModel: ltx25({ samplerLocked: true }) });
+    expect(screen.queryByLabelText('Speed')).toBeNull();
+  });
+
+  // A chained render is ONE clip: the server applies a profile only when every
+  // chunk's mode accepts it. Chunks 1+ re-enter as `extend` on a
+  // window-continuity chain, so offering Fast there would grey out Steps/CFG
+  // and then quietly render the whole chain at the model default.
+  it('hides the picker on a window-continuity chain, where the server declines', () => {
+    renderPanel({ currentModel: ltx25(), chainingActive: true, chunks: 4, contextFrames: 22 });
+    expect(screen.queryByLabelText('Speed')).toBeNull();
+  });
+
+  it('keeps the picker on a frame-hop chain, where every chunk qualifies', () => {
+    // contextFrames 0 → frame hop → chunks 1+ are `image`, which Fast supports.
+    renderPanel({ currentModel: ltx25(), chainingActive: true, chunks: 4, contextFrames: 0 });
+    expect([...screen.getByLabelText('Speed').options].map((o) => o.value)).toEqual(['quality', 'fast']);
+  });
+
+  it('keeps the picker for a single-chunk render whatever the continuity setting', () => {
+    renderPanel({ currentModel: ltx25(), chainingActive: false, chunks: 1, contextFrames: 22 });
+    expect(screen.getByLabelText('Speed')).toBeTruthy();
+  });
+
+  it('leaves Steps and CFG editable when a chain declines the selected profile', () => {
+    renderPanel({
+      currentModel: ltx25(), chainingActive: true, chunks: 4, contextFrames: 22, speedProfileId: 'fast',
+    });
+    expect(screen.getByLabelText(/Steps/).disabled).toBe(false);
+    expect(screen.getByLabelText(/CFG Scale/).disabled).toBe(false);
+  });
+
+  it('propagates a selection to the page handler', () => {
+    const onSpeedProfileChange = vi.fn();
+    renderPanel({ currentModel: ltx25(), onSpeedProfileChange });
+    fireEvent.change(screen.getByLabelText('Speed'), { target: { value: 'fast' } });
+    expect(onSpeedProfileChange).toHaveBeenCalledWith('fast');
+  });
+
+  it('falls back to Quality when the selection is not offered by this model', () => {
+    // A model switch can leave a stale id in state before the reconcile effect
+    // runs; the <select> must not sit on a value with no matching <option>.
+    renderPanel({ currentModel: ltx25(), speedProfileId: 'turbo' });
+    expect(screen.getByLabelText('Speed').value).toBe('quality');
+  });
+
+  // With two profiles the picker is shown (one is valid here), so resolving
+  // the selection against the UNFILTERED list would lock Steps/CFG to the
+  // profile this mode declines — promising a schedule the render won't use.
+  it('ignores a selected profile that this mode does not support', () => {
+    const twoProfiles = ltx25({
+      speedProfiles: [FAST, { id: 'blitz', name: 'Blitz', steps: 4, guidance: 1.0, modes: ['fflf'] }],
+    });
+    renderPanel({ currentModel: twoProfiles, mode: 'text', speedProfileId: 'blitz' });
+    // 'blitz' isn't offered for text, so the picker falls back to Quality...
+    expect([...screen.getByLabelText('Speed').options].map((o) => o.value)).toEqual(['quality', 'fast']);
+    expect(screen.getByLabelText('Speed').value).toBe('quality');
+    // ...and the dials stay the user's to set.
+    expect(screen.getByLabelText(/Steps/).disabled).toBe(false);
+    expect(screen.getByLabelText(/CFG Scale/).disabled).toBe(false);
+  });
+
+  it('leaves Steps and CFG editable on Quality', () => {
+    renderPanel({ currentModel: ltx25(), speedProfileId: 'quality' });
+    expect(screen.getByLabelText(/Steps/).disabled).toBe(false);
+    expect(screen.getByLabelText(/CFG Scale/).disabled).toBe(false);
+  });
+
+  it('locks Steps and CFG to the profile while one is active', () => {
+    renderPanel({ currentModel: ltx25(), speedProfileId: 'fast', steps: '30', guidanceScale: '7' });
+    const steps = screen.getByLabelText(/Steps/);
+    const cfg = screen.getByLabelText(/CFG Scale/);
+    expect(steps.disabled).toBe(true);
+    expect(cfg.disabled).toBe(true);
+    // The profile's own numbers show as placeholders — a stale typed value
+    // must not read as if it were what the render will use.
+    expect(steps.value).toBe('');
+    expect(cfg.value).toBe('');
+    expect(steps.placeholder).toBe('8');
+    expect(cfg.placeholder).toBe('1');
+    expect(screen.getByText(/8\+3 steps, CFG 1/)).toBeTruthy();
+  });
+});

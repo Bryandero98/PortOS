@@ -1,4 +1,4 @@
-import { Check, Download, ExternalLink } from 'lucide-react';
+import { Check, Download, ExternalLink, X } from 'lucide-react';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatBytes } from '../../utils/formatters';
 
@@ -13,7 +13,7 @@ const ROLE_LABELS = { model: 'Target base model', draftModel: 'Drafter' };
  * this row is what turns "The base model was not found at `models/…`" into a
  * thing the user can act on without leaving the page.
  */
-export default function SpecDecodeWeightRow({ entry, progress, onDownload, disabled }) {
+export default function SpecDecodeWeightRow({ entry, progress, onDownload, onCancel, disabled }) {
   if (!entry?.path) return null;
   const label = ROLE_LABELS[entry.role] || entry.role;
   const downloading = Boolean(progress) || entry.downloading;
@@ -37,10 +37,21 @@ export default function SpecDecodeWeightRow({ entry, progress, onDownload, disab
               Downloaded{entry.sizeBytes ? ` (${formatBytes(entry.sizeBytes)})` : ''}
             </span>
           ) : downloading ? (
-            <span className="flex items-center gap-1.5 text-[11px] text-gray-400">
-              <BrailleSpinner />
-              {percent === null ? formatBytes(received) : `${percent}%`}
-            </span>
+            <>
+              <span className="flex items-center gap-1.5 text-[11px] text-gray-400">
+                <BrailleSpinner />
+                {percent === null ? formatBytes(received) : `${percent}%`}
+              </span>
+              <button
+                type="button"
+                onClick={() => onCancel(entry.role)}
+                className="flex items-center gap-1 px-2 py-1 text-[11px] text-port-warning hover:bg-port-warning/10 rounded transition-colors"
+                title={`Cancel download of ${label.toLowerCase()}`}
+              >
+                <X size={11} />
+                Cancel
+              </button>
+            </>
           ) : entry.downloadable ? (
             <>
               <a

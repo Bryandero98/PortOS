@@ -11,6 +11,10 @@ export const errorEvents = new EventEmitter();
 // Fields commonly attached to Node system errors (e.g. ECONNREFUSED, ENOTFOUND)
 // — preserved when unwrapping err.cause for diagnostic logging.
 const SYSTEM_ERROR_KEYS = ['code', 'errno', 'syscall', 'hostname', 'address', 'port'];
+const FILESYSTEM_ERROR_CODES = new Set(['ENOENT', 'EACCES', 'EISDIR', 'ENOTDIR', 'EPERM']);
+const FILESYSTEM_ERROR_MESSAGE = 'Filesystem operation failed';
+
+const errorMessage = (error) => error.originalMessage || error.message;
 
 const causeSuffix = (error) =>
   error.context?.causeChain ? ` ← ${error.context.causeChain}` : '';
@@ -122,7 +126,7 @@ export function asyncHandler(fn) {
       // Log the error (skip stack traces for upstream platform issues)
       const route = `${req.method} ${routePath(req)}`;
       const suffix = causeSuffix(error);
-      const logMsg = `❌ Route error [${route}]: ${error.message}${suffix}`;
+      const logMsg = `❌ Route error [${route}]: ${errorMessage(error)}${suffix}`;
       if (error.code === 'PLATFORM_UNAVAILABLE') {
         console.warn(`⚠️ Platform unavailable [${route}]: ${error.message}${suffix}`);
       } else if (error.severity === 'warning') {
@@ -211,6 +215,11 @@ function describeCauseChain(err) {
  */
 export function normalizeError(err) {
   if (err instanceof ServerError) {
+    if (FILESYSTEM_ERROR_CODES.has(err.code)) {
+      const originalMessage = err.message;
+      err.message = FILESYSTEM_ERROR_MESSAGE;
+      err.originalMessage = originalMessage;
+    }
     return err;
   }
 
@@ -218,7 +227,12 @@ export function normalizeError(err) {
     const status = err.status || 500;
     const code = err.code || getErrorCode(status);
     const context = { originalError: err.constructor.name, ...describeCauseChain(err) };
-    return new ServerError(err.message, { status, code, context });
+    const normalized = new ServerError(
+      FILESYSTEM_ERROR_CODES.has(err.code) ? FILESYSTEM_ERROR_MESSAGE : err.message,
+      { status, code, context },
+    );
+    if (normalized.message !== err.message) normalized.originalMessage = err.message;
+    return normalized;
   }
 
   // Handle string or other error types
@@ -323,7 +337,7 @@ export function errorMiddleware(err, req, res, next) {
 
   // Log the error
   const route = `${req.method} ${routePath(req)}`;
-  const logMsg = `❌ Server error [${route}]: ${error.message}${causeSuffix(error)}`;
+  const logMsg = `❌ Server error [${route}]: ${errorMessage(error)}${causeSuffix(error)}`;
   if (error.status >= 500) {
     console.error(logMsg);
     if (err.stack) console.error(err.stack);
@@ -353,7 +367,7 @@ export function setupProcessErrorHandlers(io) {
     const error = normalizeError(reason);
     error.severity = 'critical';
 
-    console.error(`❌ Unhandled Promise Rejection: ${error.message}${causeSuffix(error)}`);
+    console.error(`❌ Unhandled Promise Rejection: ${errorMessage(error)}${causeSuffix(error)}`);
     if (reason instanceof Error) {
       console.error(reason.stack);
     }
@@ -368,7 +382,7 @@ export function setupProcessErrorHandlers(io) {
     serverError.severity = 'critical';
     serverError.canAutoFix = true; // Could be auto-fixable
 
-    console.error(`💥 Uncaught Exception: ${serverError.message}`);
+    console.error(`💥 Uncaught Exception: ${errorMessage(serverError)}`);
     // Guard the raw-throw deref — a non-Error throw value (e.g. `throw null`)
     // has no `.stack`, and the safety net itself must never throw while handling
     // a failure (it would mask the original and skip the clean exit/flush below).

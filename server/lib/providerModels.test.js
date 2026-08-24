@@ -38,6 +38,7 @@ import {
   CODEX_EFFORT_KEY,
   CODEX_UPDATE_CHECK_KEY,
   PORTOS_CLI_CONFIG_KEYS,
+  CODEX_AGENT_THREADS_KEY,
   isPortosSuppliedConfigKey,
   hasCodexUpdateCheckConfig,
   buildCodexStartupArgs,
@@ -591,7 +592,11 @@ describe('providerModels', () => {
   // without a row here would be blamed on the user (incident 2026-08-18).
   describe('isPortosSuppliedConfigKey / PORTOS_CLI_CONFIG_KEYS', () => {
     it('covers exactly the keys the -c builders emit', () => {
-      expect([...PORTOS_CLI_CONFIG_KEYS].sort()).toEqual([CODEX_EFFORT_KEY, CODEX_UPDATE_CHECK_KEY].sort());
+      expect([...PORTOS_CLI_CONFIG_KEYS].sort()).toEqual([
+        CODEX_AGENT_THREADS_KEY,
+        CODEX_EFFORT_KEY,
+        CODEX_UPDATE_CHECK_KEY,
+      ].sort());
       // Guard against a third emitter appearing without a row: both builders
       // that produce `-c` are asserted to use a listed key.
       const emitted = [

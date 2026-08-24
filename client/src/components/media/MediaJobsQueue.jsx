@@ -9,6 +9,10 @@ import { listLoraTrainingCheckpoints } from '../../services/apiLoraTraining.js';
 import { isCloudCliMode, IMAGE_GEN_MODE, CODEX_IMAGEGEN_DEFAULT_EFFORT, supportsCloudModelOverride, modeLabel } from '../../lib/imageGenBackends';
 import { ANTIGRAVITY_CONFIGURED_DEFAULT, CODEX_EFFORT_LEVELS, isConfiguredDefaultModel } from '../../utils/providers';
 import { lossSparklineGeometry } from '../../lib/lossSparkline';
+import {
+  DEFAULT_I2V_REFERENCE_MODE, isDefaultI2vReferenceMode, normalizeI2vReferenceMode,
+  resolveI2vReferenceStrength, runtimeSupportsI2vReferenceMode,
+} from '../../lib/videoReferenceModes';
 import { useAutoRefetch } from '../../hooks/useAutoRefetch';
 import { useConfirmDelete } from '../../hooks/useConfirmDelete';
 import useMounted from '../../hooks/useMounted';
@@ -22,6 +26,7 @@ import { resolutionOptionsForModel } from '../../lib/videoGenResolutions';
 import {
   videoEdgeBoundsForModel, textEncoderOptionsForModel, STOCK_TEXT_ENCODER_ID,
   normalizeTextEncoderForModel,
+  DEFAULT_SPEED_PROFILE_ID, normalizeSpeedProfileForModel, speedProfileIdFromRecord,
 } from '../../lib/videoGenParams';
 import { loraFamilyOf, videoLoraFamily } from '../../lib/runnerFamilies';
 import LoraPicker from '../imageGen/LoraPicker';
@@ -699,9 +704,17 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
   const [steps, setSteps] = useState(p.steps ?? '');
   const [guidanceScale, setGuidanceScale] = useState(p.guidanceScale ?? '');
   const [imageStrength, setImageStrength] = useState(p.imageStrength ?? '');
+  // The conditioning promise rides the retry the same way the strength does — a
+  // retry that silently dropped it would re-render an anchored clip under the
+  // original job's Inspire label. Absent means the default.
+  const [i2vReferenceMode, setI2vReferenceMode] = useState(normalizeI2vReferenceMode(p.i2vReferenceMode));
   const [tiling, setTiling] = useState(p.tiling || 'auto');
   const [disableAudio, setDisableAudio] = useState(p.disableAudio === true);
   const [textEncoderId, setTextEncoderId] = useState(p.textEncoderId || STOCK_TEXT_ENCODER_ID);
+  // The failed job's sampler schedule (#4875). Seeded from its params so the
+  // picker reports what the render actually used rather than always reading
+  // "Quality", and so an unchanged retry re-submits the same schedule.
+  const [speedProfileId, setSpeedProfileId] = useState(speedProfileIdFromRecord(p.speedProfileId));
   const [availableLoras, setAvailableLoras] = useState([]);
   const [selectedLoras, setSelectedLoras] = useState(Array.isArray(p.loras) ? p.loras : []);
 
@@ -717,11 +730,33 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
   }, []);
 
   const currentModel = models.find((model) => model.id === modelId) || null;
+  // Switching the retry to a model that pins frame one has to clear the promise
+  // with it (#4874) — the picker offers only Anchor there, so leaving `inspire`
+  // in state would strand the form on a value the user cannot see or change and
+  // the server would reject on submit. Mirrors the same snap-back in
+  // useVideoGenForm — including the deferral: `models` loads async from
+  // getVideoGenStatus, so an unresolved `currentModel` means "not known yet",
+  // never "cannot honor it".
+  useEffect(() => {
+    if (isDefaultI2vReferenceMode(i2vReferenceMode)) return;
+    if (!currentModel) return;
+    if (runtimeSupportsI2vReferenceMode(currentModel.runtime, i2vReferenceMode)) return;
+    setI2vReferenceMode(DEFAULT_I2V_REFERENCE_MODE);
+  }, [currentModel, i2vReferenceMode]);
   const isGrok = p.mode === 'grok';
   const loraFamily = videoLoraFamily(currentModel);
   const videoLoras = loraFamily ? availableLoras.filter((lora) => loraFamilyOf(lora) === loraFamily) : [];
   const encoderOptions = textEncoderOptionsForModel(currentModel);
   const originalEncoder = normalizeTextEncoderForModel(p.textEncoderId || STOCK_TEXT_ENCODER_ID, currentModel);
+  const originalSpeedProfileForModel = normalizeSpeedProfileForModel(speedProfileIdFromRecord(p.speedProfileId), currentModel);
+  // Models arrive asynchronously, so the recorded profile can only be validated
+  // once the entry resolves. Until then state holds the raw recorded id; this
+  // snaps it to what the model actually declares, so an untouched form can't
+  // re-submit a schedule the registry no longer offers.
+  useEffect(() => {
+    if (!currentModel) return;
+    setSpeedProfileId((current) => normalizeSpeedProfileForModel(current, currentModel));
+  }, [currentModel]);
   // Multi-keyframe inputs are not exposed in the sanitized queue projection,
   // but FFLF is their persisted semantic mode. IC/a2v conditioning also pins
   // a single render, so keep the shared chaining controls consistent with the
@@ -732,6 +767,7 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
     const nextModel = models.find((model) => model.id === nextModelId) || null;
     setModelId(nextModelId);
     setTextEncoderId(normalizeTextEncoderForModel(textEncoderId, nextModel));
+    setSpeedProfileId(normalizeSpeedProfileForModel(speedProfileId, nextModel));
     if (videoLoraFamily(nextModel) !== loraFamily) setSelectedLoras([]);
   };
   const setChunkPromptAt = (index, value) => setChunkPrompts((prev) => {
@@ -771,12 +807,25 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
     setNumericOverride('steps', steps, p.steps, true);
     setNumericOverride('guidanceScale', guidanceScale, p.guidanceScale, true);
     setNumericOverride('imageStrength', imageStrength, p.imageStrength, true);
+    if (i2vReferenceMode !== normalizeI2vReferenceMode(p.i2vReferenceMode)) {
+      // `null` clears the persisted value, mirroring the numeric knobs above — an
+      // explicit 'anchor' would leave the retry carrying a knob that changed nothing.
+      overrides.i2vReferenceMode = isDefaultI2vReferenceMode(i2vReferenceMode) ? null : i2vReferenceMode;
+    }
     if (tiling !== (p.tiling || 'auto')) overrides.tiling = tiling;
     if (disableAudio !== (p.disableAudio === true)) overrides.disableAudio = disableAudio;
     // A model switch can normalize an inherited encoder to stock locally;
     // submit that reset explicitly so the retry does not retain the old,
     // incompatible encoder from the failed job.
     if (modelId !== p.modelId || textEncoderId !== originalEncoder) overrides.textEncoderId = textEncoderId;
+    // Same model-switch clause its sibling above carries: switching to a model
+    // that declares no profiles snaps BOTH the local value and
+    // its baseline to the default, so they compare equal and no
+    // override would be sent — leaving the old job's `speedProfileId` in the
+    // inherited params for the queue to echo as a profile the render never used.
+    if (modelId !== p.modelId || speedProfileId !== originalSpeedProfileForModel) {
+      overrides.speedProfileId = speedProfileId === DEFAULT_SPEED_PROFILE_ID ? null : speedProfileId;
+    }
     if (JSON.stringify(selectedLoras) !== JSON.stringify(p.loras || [])) overrides.loras = selectedLoras;
     onSubmit(Object.keys(overrides).length ? overrides : null);
   };
@@ -825,7 +874,10 @@ function VideoRetryForm({ job, onSubmit, onCancel }) {
           contextFrames={contextFrames} onContextFramesChange={setContextFrames}
           fps={displayedFps} onFpsChange={setFps} seed={seed} onSeedChange={setSeed} onRandomSeed={() => setSeed(Math.floor(Math.random() * 2147483647))}
           steps={steps} onStepsChange={setSteps} guidanceScale={guidanceScale} onGuidanceScaleChange={setGuidanceScale}
+          speedProfileId={speedProfileId} onSpeedProfileChange={setSpeedProfileId}
           imageStrength={imageStrength} onImageStrengthChange={setImageStrength} tiling={tiling} onTilingChange={setTiling}
+          i2vReferenceMode={i2vReferenceMode} onI2vReferenceModeChange={setI2vReferenceMode}
+          effectiveImageStrength={resolveI2vReferenceStrength(i2vReferenceMode, imageStrength)}
           disableAudio={disableAudio} onDisableAudioChange={setDisableAudio}
           idPrefix={`retry-video-${job.id}`}
         />

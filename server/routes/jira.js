@@ -35,6 +35,11 @@ const jiraTicketCreateSchema = z.object({
 
 const jiraTicketUpdateSchema = jiraTicketCreateSchema.partial();
 
+const reportParamsSchema = z.object({
+  appId: z.string().regex(/^[A-Za-z0-9._-]+$/, 'appId contains invalid characters'),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+});
+
 const router = express.Router();
 
 /**
@@ -353,7 +358,8 @@ router.get('/reports/:appId/latest', asyncHandler(async (req, res) => {
  * Get a specific report by app and date
  */
 router.get('/reports/:appId/:date', asyncHandler(async (req, res) => {
-  const report = await jiraReports.getReport(req.params.appId, req.params.date);
+  const { appId, date } = validateRequest(reportParamsSchema, req.params);
+  const report = await jiraReports.getReport(appId, date);
   if (!report) {
     throw new ServerError('Report not found', { status: 404, code: 'NOT_FOUND' });
   }

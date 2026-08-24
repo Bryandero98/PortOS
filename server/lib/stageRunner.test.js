@@ -34,6 +34,7 @@ const {
   GEMINI_CONTEXT_WINDOW,
   GROK_CONTEXT_WINDOW,
   KIMI_CONTEXT_WINDOW,
+  catalogModelContextWindow,
   effectiveContextWindow,
   knownModelContextWindow,
   knownProviderContextWindow,
@@ -141,6 +142,40 @@ describe('stageRunner — context windows', () => {
       { type: 'tui', contextWindow: 64_000 },
       'claude-opus-4-8'
     )).toBe(64_000);
+  });
+
+  it('uses the catalog window a model refresh recorded, above the regex table and the assumed default', () => {
+    // The OpenCode/OpenRouter wrapper case: a TUI provider matching no vendor
+    // row used to fall straight to the blanket 128K, so a 1M model was chunked
+    // at an eighth of its real window.
+    const wrapper = {
+      id: 'opencode-openrouter-tui',
+      type: 'tui',
+      command: 'opencode',
+      modelContextWindows: { 'stealth/ox-alpha': 1_000_000 },
+    };
+    expect(effectiveContextWindow(wrapper, 'stealth/ox-alpha')).toBe(1_000_000);
+    // A model the catalog never mentioned still takes the old ladder.
+    expect(effectiveContextWindow(wrapper, 'openrouter/auto')).toBe(DEFAULT_LARGE_CONTEXT_WINDOW);
+    // The catalog beats the hand-maintained model table — it is the serving
+    // side's own declaration of what THIS provider will accept.
+    expect(effectiveContextWindow(
+      { type: 'api', endpoint: 'https://api.example.test/v1', modelContextWindows: { 'claude-sonnet-4-6': 200_000 } },
+      'claude-sonnet-4-6'
+    )).toBe(200_000);
+    // …and loses to an explicit user override.
+    expect(effectiveContextWindow(
+      { type: 'tui', contextWindow: 64_000, modelContextWindows: { m: 1_000_000 } },
+      'm'
+    )).toBe(64_000);
+  });
+
+  it('ignores a malformed or unrelated catalog entry instead of budgeting from it', () => {
+    expect(catalogModelContextWindow({ modelContextWindows: { m: 0 } }, 'm')).toBeNull();
+    expect(catalogModelContextWindow({ modelContextWindows: { m: 'lots' } }, 'm')).toBeNull();
+    expect(catalogModelContextWindow({ modelContextWindows: { other: 1_000 } }, 'm')).toBeNull();
+    expect(catalogModelContextWindow({ modelContextWindows: null }, 'm')).toBeNull();
+    expect(catalogModelContextWindow({ modelContextWindows: { m: 1_000 } }, null)).toBeNull();
   });
 
   it('uses model and provider windows before provider numCtx', () => {

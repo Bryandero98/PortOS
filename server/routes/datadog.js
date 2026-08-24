@@ -5,6 +5,11 @@
 import express from 'express';
 import * as datadogService from '../services/datadog.js';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
+import {
+  validateRequest,
+  datadogInstanceRequestSchema,
+  datadogSearchErrorsRequestSchema,
+} from '../lib/validation.js';
 
 const router = express.Router();
 
@@ -41,14 +46,7 @@ router.get('/instances', asyncHandler(async (req, res) => {
  * Create or update DataDog instance
  */
 router.post('/instances', asyncHandler(async (req, res) => {
-  const { id, name, site, apiKey, appKey } = req.body;
-
-  if (!id || !name || !site) {
-    throw new ServerError('Missing required fields: id, name, site', {
-      status: 400,
-      code: 'INVALID_INPUT'
-    });
-  }
+  const { id, name, site, apiKey, appKey } = validateRequest(datadogInstanceRequestSchema, req.body);
 
   // For new instances, both keys are required
   const config = await datadogService.getInstances();
@@ -93,21 +91,7 @@ router.post('/instances/:id/test', asyncHandler(async (req, res) => {
  * Search for errors in DataDog logs
  */
 router.post('/instances/:id/search-errors', asyncHandler(async (req, res) => {
-  const { serviceName, environment, fromTime } = req.body;
-
-  if (!serviceName) {
-    throw new ServerError('serviceName is required', {
-      status: 400,
-      code: 'INVALID_INPUT'
-    });
-  }
-
-  if (fromTime && isNaN(Date.parse(fromTime))) {
-    throw new ServerError('fromTime must be a valid ISO 8601 date string', {
-      status: 400,
-      code: 'INVALID_INPUT'
-    });
-  }
+  const { serviceName, environment, fromTime } = validateRequest(datadogSearchErrorsRequestSchema, req.body);
 
   const result = await datadogService.searchErrors(
     req.params.id,

@@ -7,6 +7,7 @@
 
 import { join } from 'path';
 import { PATHS, atomicWrite, readJSONFile, ensureDir } from '../lib/fileUtils.js';
+import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { isValidKey } from '../lib/mediaItemKey.js';
 import { getInstanceId, UNKNOWN_INSTANCE_ID } from './instances.js';
 import { resolveLocalAuthorName } from './sharing/annotationIdentity.js';
@@ -19,6 +20,7 @@ const makeErr = (message, code) => Object.assign(new Error(message), { code });
 export const NOTE_MAX_LENGTH = 2000;
 
 const DEFAULT_STATE = { annotations: {} };
+const queueWrite = createFileWriteQueue();
 
 export { isValidKey };
 
@@ -172,14 +174,15 @@ export async function mergePeerAnnotations(payload) {
   // one — without this guard, every such peer would alias into the same
   // sentinel bucket and clobber each other on every merge.
   if (!peerInstanceId || peerInstanceId === UNKNOWN_INSTANCE_ID) return { changed: [], projections: new Map() };
-  const localInstanceId = await getInstanceId().catch(() => null);
-  if (peerInstanceId === localInstanceId) return { changed: [], projections: new Map() };
-  const incoming = payload.annotations && typeof payload.annotations === 'object'
-    ? payload.annotations : {};
-  const all = await readAll();
-  const changed = [];
-  const clampUpdatedAtTo = Date.now();
-  for (const [key, rawEntry] of Object.entries(incoming)) {
+  return queueWrite(async () => {
+    const localInstanceId = await getInstanceId().catch(() => null);
+    if (peerInstanceId === localInstanceId) return { changed: [], projections: new Map() };
+    const incoming = payload.annotations && typeof payload.annotations === 'object'
+      ? payload.annotations : {};
+    const all = await readAll();
+    const changed = [];
+    const clampUpdatedAtTo = Date.now();
+    for (const [key, rawEntry] of Object.entries(incoming)) {
     if (!isValidKey(key)) continue;
     // A malformed payload (missing/invalid updatedAt) must be ignored entirely
     // rather than falling through to the tombstone branch — `sanitize` returns
@@ -213,15 +216,16 @@ export async function mergePeerAnnotations(payload) {
     if (!all[key]) all[key] = { authors: {} };
     all[key].authors[peerInstanceId] = sane;
     changed.push(key);
-  }
-  if (changed.length > 0) {
-    await atomicWrite(STATE_PATH, { annotations: all });
-  }
-  const projections = new Map();
-  for (const key of changed) {
-    projections.set(key, projectForLocal(all[key]?.authors, localInstanceId));
-  }
-  return { changed, projections };
+    }
+    if (changed.length > 0) {
+      await atomicWrite(STATE_PATH, { annotations: all });
+    }
+    const projections = new Map();
+    for (const key of changed) {
+      projections.set(key, projectForLocal(all[key]?.authors, localInstanceId));
+    }
+    return { changed, projections };
+  });
 }
 
 
@@ -257,14 +261,15 @@ export async function setAnnotation(key, patch) {
     throw makeErr(`note exceeds max length (${NOTE_MAX_LENGTH})`, ERR_VALIDATION);
   }
 
-  const [all, localInstanceId, authorName] = await Promise.all([
-    readAll(),
-    getInstanceId(),
-    resolveLocalAuthorName().catch(() => ''),
-  ]);
-  if (!localInstanceId || localInstanceId === UNKNOWN_INSTANCE_ID) {
-    throw makeErr('Local instance identity not initialized', ERR_VALIDATION);
-  }
+  return queueWrite(async () => {
+    const [all, localInstanceId, authorName] = await Promise.all([
+      readAll(),
+      getInstanceId(),
+      resolveLocalAuthorName().catch(() => ''),
+    ]);
+    if (!localInstanceId || localInstanceId === UNKNOWN_INSTANCE_ID) {
+      throw makeErr('Local instance identity not initialized', ERR_VALIDATION);
+    }
 
   const priorAuthors = all[key]?.authors ?? {};
   const priorOwn = priorAuthors[localInstanceId] ?? { starred: false, note: '', updatedAt: null };
@@ -285,8 +290,9 @@ export async function setAnnotation(key, patch) {
   const next = { ...all };
   if (Object.keys(nextAuthors).length === 0) delete next[key];
   else next[key] = { authors: nextAuthors };
-  await atomicWrite(STATE_PATH, { annotations: next });
-  emitLocalChange(key);
+    await atomicWrite(STATE_PATH, { annotations: next });
+    emitLocalChange(key);
 
-  return projectForLocal(next[key]?.authors, localInstanceId);
+    return projectForLocal(next[key]?.authors, localInstanceId);
+  });
 }

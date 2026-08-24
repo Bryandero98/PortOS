@@ -84,9 +84,11 @@ describe('usePreviewRoute', () => {
 
   it('prev/next round-trip swaps the param on the URL', () => {
     const { result } = renderWithRouter([FOO, BAR], '/x?preview=foo.png');
+    const setPreview = result.current.pair[1];
     expect(result.current.pair[0]).toBe(FOO);
     act(() => result.current.pair[1](BAR));
     expect(result.current.location.search).toContain('preview=image%3Abar.png');
     expect(result.current.pair[0]).toBe(BAR);
+    expect(result.current.pair[1]).toBe(setPreview);
   });
 });

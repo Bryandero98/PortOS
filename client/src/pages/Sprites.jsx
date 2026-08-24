@@ -6,6 +6,7 @@ import toast from '../components/ui/Toast';
 import {
   listSpriteRecords, getSpriteRecord,
   generateSpriteWalk, generateSpriteTrack, generateSpriteReference, listSpriteThumbnails,
+  listSpriteAnimationProviders,
 } from '../services/apiSprites.js';
 import { getSettings } from '../services/apiSystem.js';
 import { deriveAvailableBackends, renderPinLadder } from '../lib/imageGenBackends.js';
@@ -200,6 +201,24 @@ export default function Sprites() {
   // is no longer showing.
   const [duration, setDuration] = useState(GROK_VIDEO_DEFAULT_DURATION);
 
+  // WHICH engine renders the clip (#4876) — the cloud grok lane or the local
+  // MiniMax H3 one. Page state for the same reason `duration` is: a Regenerate
+  // fired from an asset card must use the lane the user picked in the walk
+  // panel, not a second copy that drifted from it.
+  //
+  // `null` = not fetched yet, `[]` = fetched and this install offers none —
+  // distinct on purpose, so a failed fetch never renders as "grok is gone".
+  // The selection stays on the server's own default until the list arrives,
+  // which keeps the pre-#4876 behavior for the first paint and for any install
+  // whose readiness probe fails.
+  const [animationProviders, setAnimationProviders] = useState(null);
+  const [animationProvider, setAnimationProvider] = useState('grok');
+  useEffect(() => {
+    listSpriteAnimationProviders({ silent: true })
+      .then((res) => setAnimationProviders(Array.isArray(res?.providers) ? res.providers : []))
+      .catch(() => setAnimationProviders([]));
+  }, []);
+
   // Image-backend availability + the selected backend `mode` are page-owned
   // (#2938): both ReferenceWorkflow's picker and the asset collection's anchor
   // Regenerate must read ONE mode, or a card re-roll would use a different
@@ -303,6 +322,7 @@ export default function Sprites() {
     () => generateSpriteWalk(id, {
       direction,
       duration,
+      provider: animationProvider,
       ...correctionPromptPayload(corrections, walkCorrectionKey(direction)),
     }, { silent: true }),
     `Failed to queue ${direction} walk`,
@@ -311,7 +331,7 @@ export default function Sprites() {
     // button briefly re-enables and a second click would 409 the in-flight
     // render. The server guard is the real backstop; this closes the UI gap.
     onWorkflowChanged,
-  ), [id, duration, corrections, walkBegin, walkResolve, walkCancel, submitRender, onWorkflowChanged]);
+  ), [id, duration, animationProvider, corrections, walkBegin, walkResolve, walkCancel, submitRender, onWorkflowChanged]);
 
   // ONE submit path for every non-walk track (#3136) — the track id is a
   // parameter, so a user-defined track needs no new handler here.
@@ -332,13 +352,14 @@ export default function Sprites() {
     try {
       await generateSpriteTrack(id, trackId, {
         ...(direction ? { direction } : {}),
+        provider: animationProvider,
         ...correctionPromptPayload(corrections, correctionKey),
       }, { silent: true });
       onWorkflowChanged();
     } catch (err) {
       toast.error(err?.message || `Failed to queue the ${trackId} render`);
     }
-  }, [id, corrections, onWorkflowChanged]);
+  }, [id, animationProvider, corrections, onWorkflowChanged]);
 
   // The ambient main takes BOTH inputs: `designPrompt` replaces the design
   // outright, while the correction (#3134) keeps it and fixes one thing about
@@ -370,8 +391,14 @@ export default function Sprites() {
       onChanged={onWorkflowChanged}
       corrections={corrections}
       onCorrectionChange={setCorrections}
+      providers={animationProviders}
+      provider={animationProvider}
+      onProviderChange={setAnimationProvider}
     />
-  )), [detail?.tracks, detail?.record, detail?.reference, generateTrack, onWorkflowChanged, corrections]);
+  )), [
+    detail?.tracks, detail?.record, detail?.reference, generateTrack, onWorkflowChanged, corrections,
+    animationProviders, animationProvider,
+  ]);
 
 
   // `mode` is the workflow-selected backend, threaded from the asset card via
@@ -540,6 +567,9 @@ export default function Sprites() {
                         renders={walkRenders}
                         duration={duration}
                         onDurationChange={setDuration}
+                        providers={animationProviders}
+                        provider={animationProvider}
+                        onProviderChange={setAnimationProvider}
                         onGenerate={generateWalk}
                         onOpenTrimmer={openTrimmer}
                         onChanged={onWorkflowChanged}

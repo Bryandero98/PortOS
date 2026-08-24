@@ -1,11 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Save, Loader2, Lock, ShieldCheck, ShieldAlert, RefreshCw } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatDateTime } from '../../utils/formatters';
+import { useSyncSourceSettings } from '../../hooks/useSyncSourceSettings';
 import {
-  getSettings,
-  updateSettings,
   getSignalStatus,
   checkSignalSetup,
   syncSignal,
@@ -16,47 +15,16 @@ import {
 // timeline. OFF by default — reading the DB needs Signal's keychain-wrapped key.
 // Highest-fragility source: everything degrades gracefully to an actionable error.
 export function SignalTab() {
-  const [loading, setLoading] = useState(true);
-  const [enabled, setEnabled] = useState(false);
-  const [intervalMinutes, setIntervalMinutes] = useState(60);
-  const [savedEnabled, setSavedEnabled] = useState(false);
-  const [savedInterval, setSavedInterval] = useState(60);
-  const [saving, setSaving] = useState(false);
-
-  const [status, setStatus] = useState(null);
+  const {
+    loading, enabled, setEnabled, intervalMinutes, setIntervalMinutes, saving,
+    status, setStatus, dirty, save,
+  } = useSyncSourceSettings({ domain: 'signal', defaultInterval: 60, getStatus: getSignalStatus });
   const [setup, setSetup] = useState(null);
   const [checking, setChecking] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
-  useEffect(() => {
-    Promise.all([
-      getSettings({ silent: true }).catch(() => ({})),
-      getSignalStatus({ silent: true }).catch(() => null),
-    ])
-      .then(([settings, st]) => {
-        const c = settings?.signal || {};
-        const en = typeof c.enabled === 'boolean' ? c.enabled : false;
-        const iv = Number.isFinite(c.intervalMinutes) ? c.intervalMinutes : 60;
-        setEnabled(en);
-        setIntervalMinutes(iv);
-        setSavedEnabled(en);
-        setSavedInterval(iv);
-        setStatus(st);
-      })
-      .finally(() => setLoading(false));
-  }, []);
-
-  const dirty = enabled !== savedEnabled || Number(intervalMinutes) !== Number(savedInterval);
-
   const handleSave = async () => {
-    const iv = Math.max(1, Math.min(1440, Math.floor(Number(intervalMinutes) || 60)));
-    setSaving(true);
-    const merged = await updateSettings({ signal: { enabled, intervalMinutes: iv } }).catch(() => null);
-    setSaving(false);
-    if (!merged) return;
-    setIntervalMinutes(iv);
-    setSavedEnabled(enabled);
-    setSavedInterval(iv);
+    if (!await save()) return;
     toast.success('Saved — scheduler applies on next server restart');
   };
 

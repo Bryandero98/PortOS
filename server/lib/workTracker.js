@@ -210,6 +210,20 @@ export const TRACKER_FILING_PRESETS = {
     bodyRequirements: 'the provenance (the studied repo\'s owner/repo + its license + today\'s date), the 1–2 sentence rationale for {appName}, the `Fix:` line naming the {appName} files/functions to change, and the estimated scope',
     planCommitMessage: 'docs(repo-study): propose <N> item(s) from <owner/repo>',
   },
+  // The planning-only sibling of `feature-ideas`: brainstorms ONE feature and
+  // files its decision-complete plan as a tracker item instead of implementing
+  // anything. The claim flows (`claim-issue` / `plan-task` / `/claim`) pick the
+  // filed plan up later — that is why every recorded item carries the `plan`
+  // label alongside the category one.
+  'plan-feature': {
+    slugPrefix: 'plan-feature-',
+    label: 'plan-feature',
+    issueLabel: 'plan-feature',
+    labelDescription: 'Feature plan filed by the plan-feature brainstorm',
+    planItemBody: 'From the `plan-feature` brainstorm (<today\'s date>). <What the feature is and which user need or goal it serves, 1–2 sentences.> Approach: <the decided approach and the {appName} files/components it would touch>. Scope: <small/medium/large>.',
+    bodyRequirements: 'the motivation (which PRD.md requirement or success criterion, GOALS.md priority, or repository-documented user need this serves), the decided approach naming the {appName} files/components it would touch, an estimated scope, acceptance criteria another agent can verify cold, and any explicit non-goals',
+    planCommitMessage: 'docs(plan-feature): file <N> feature plan(s)',
+  },
 };
 
 /**

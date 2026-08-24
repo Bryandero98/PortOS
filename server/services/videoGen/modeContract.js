@@ -36,6 +36,7 @@
 
 import { ServerError } from '../../lib/errorHandler.js';
 import { VIDEO_RUNTIME_MODES, resolveVideoSupportedModes } from '../../lib/videoModeProfiles.js';
+import { i2vReferenceModeViolation } from '../../lib/videoReferenceModes.js';
 
 // H3's fl2va path conditions on up to two keyframes anchored at the first and
 // last latent frame — so text, image (first only) and FFLF (first + last) all
@@ -218,4 +219,25 @@ export const videoChainUnsupportedError = (model) => {
       code: VIDEO_MODE_CONTRACTS[model.runtime]?.chainCode || 'VIDEO_CHAIN_REQUIRES_IMAGE_MODE',
     },
   );
+};
+
+/**
+ * The i2v reference-mode gate (#4874) — is the promise this request makes about
+ * its conditioning image one the selected model can actually keep?
+ *
+ * Deliberately a SEPARATE rule from `videoModeContractError` above: that one is
+ * per-runtime mode/source pairing (which is why it returns null for a runtime
+ * with no row), while this axis is orthogonal and applies to EVERY runtime —
+ * `anchor` is the universal default, and any other value has to be earned. The
+ * rule itself is stated once, purely, in `lib/videoReferenceModes.js` so the
+ * client can preview the same verdict; this only wraps the verdict in the
+ * ServerError the route and the render boundary throw.
+ *
+ * @param {object} opts - see `i2vReferenceModeViolation`
+ * @returns {ServerError|null}
+ */
+export const videoReferenceModeError = (opts) => {
+  const violation = i2vReferenceModeViolation(opts);
+  if (!violation) return null;
+  return new ServerError(violation.message, { status: 400, code: violation.code });
 };

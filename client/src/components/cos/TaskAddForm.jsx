@@ -17,6 +17,7 @@ import EffortSelect from './EffortSelect';
 import useReviewerModelOptions from '../../hooks/useReviewerModelOptions';
 import useAssignableInstances from '../../hooks/useAssignableInstances';
 import { reviewerModelsFromDefaults, reviewerEffortsFromDefaults } from '../../lib/reviewerModels';
+import { PORTOS_APP_ID } from '../../lib/appIdentity';
 
 export default function TaskAddForm({ providers, apps, onTaskAdded, compact = false, defaultExpanded = false, defaultApp = '' }) {
   const [newTask, setNewTask] = useState({ description: '', model: '', provider: '', effort: '', temperature: '', thinking: '', app: defaultApp });
@@ -30,6 +31,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   const [useWorktree, setUseWorktree] = useState(true);
   const [openPR, setOpenPR] = useState(true);
   const [simplify, setSimplify] = useState(true);
+  const [planOnly, setPlanOnly] = useState(false);
   // Hidden run-shape state, never a user-facing toggle: the slashdo catalog's
   // deliverable posture (#3636/#3651). `undefined` = the form pins no opinion,
   // so the server keeps its own default. Only a slashdo-backed template sets it.
@@ -140,6 +142,51 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     [apps, newTask.app]
   );
   const appHasJira = selectedApp?.jira?.enabled;
+  const [resolvedWorkTracker, setResolvedWorkTracker] = useState({ appId: null, tracker: null });
+
+  // Plan-and-file uses the bundled issue-only `plan-task` command. Resolve an
+  // app's effective tracker before exposing the toggle so PLAN.md and JIRA
+  // apps cannot queue an issue workflow their tracker does not support.
+  useEffect(() => {
+    const configuredTracker = selectedApp?.workTracker;
+    const appId = selectedApp?.id || PORTOS_APP_ID;
+    if (selectedApp && configuredTracker && configuredTracker !== 'auto') {
+      setResolvedWorkTracker({ appId, tracker: configuredTracker });
+      return undefined;
+    }
+
+    setResolvedWorkTracker({ appId, tracker: null });
+    let cancelled = false;
+    Promise.resolve(api.getAppWorkTracker(appId, { silent: true }))
+      .then(info => {
+        if (!cancelled) setResolvedWorkTracker({ appId, tracker: info?.resolved || null });
+      })
+      .catch(() => {
+        if (!cancelled) setResolvedWorkTracker({ appId, tracker: null });
+      });
+    return () => { cancelled = true; };
+  }, [selectedApp?.id, selectedApp?.workTracker]);
+
+  const planOnlyTrackerStatus = useMemo(() => {
+    const configuredTracker = selectedApp?.workTracker;
+    const tracker = configuredTracker && configuredTracker !== 'auto'
+      ? configuredTracker
+      : resolvedWorkTracker.appId === (selectedApp?.id || PORTOS_APP_ID) ? resolvedWorkTracker.tracker : null;
+    if (!tracker) return 'pending';
+    return tracker === 'github' || tracker === 'gitlab' ? 'supported' : 'unsupported';
+  }, [resolvedWorkTracker, selectedApp]);
+  const planOnlySupported = planOnlyTrackerStatus === 'supported';
+
+  // Clear a template or an already-selected mode when an app resolves to a
+  // tracker that cannot receive the issue-only plan-task workflow.
+  useEffect(() => {
+    if (planOnlyTrackerStatus !== 'unsupported' || !planOnly) return;
+    setPlanOnly(false);
+    if (slashdoCommand === 'plan-task') {
+      setSlashdoCommand('');
+      setWorktreeChangesExpected(undefined);
+    }
+  }, [planOnly, planOnlyTrackerStatus, slashdoCommand]);
 
   // Gate on a content signature of the selected app's defaults (not the
   // `apps` array reference) so periodic re-fetches in the parent don't
@@ -157,6 +204,13 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     // the one run its own app change triggered.
     if (templateAppChangeRef.current) {
       templateAppChangeRef.current = false;
+      return;
+    }
+    if (planOnly) {
+      setCreateJiraTicket(false);
+      setUseWorktree(false);
+      setOpenPR(false);
+      setSimplify(false);
       return;
     }
     // Absent (app never configured, or no app selected) falls back to the
@@ -184,6 +238,29 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
     if (isCliProvider(selectedProvider)) return `${selectedProvider.name} uses its CLI configured default model.`;
     return 'No models are configured. PortOS will use the provider default.';
   })();
+
+  const handlePlanOnlyChange = (enabled) => {
+    if (enabled && !planOnlySupported) return;
+    setPlanOnly(enabled);
+    if (enabled) {
+      setSlashdoCommand('plan-task');
+      setCreateJiraTicket(false);
+      setUseWorktree(false);
+      setOpenPR(false);
+      setSimplify(false);
+      setWorktreeChangesExpected(false);
+    } else if (slashdoCommand === 'plan-task') {
+      setSlashdoCommand('');
+      setWorktreeChangesExpected(undefined);
+      const worktreeOptOut = selectedApp?.defaultUseWorktree === false;
+      const defaultOpenPR = selectedApp?.defaultOpenPR ?? !worktreeOptOut;
+      const defaultUseWorktree = (selectedApp?.defaultUseWorktree ?? true) || defaultOpenPR;
+      setUseWorktree(defaultUseWorktree);
+      setOpenPR(defaultOpenPR);
+      setSimplify(true);
+      setPrCompletion(selectedApp?.defaultPrCompletion || DEFAULT_PR_COMPLETION);
+    }
+  };
 
   // Apply template to form. A slashdo-backed template also pins the workflow
   // (`slashdoCommand`) and applies its implied run-shape `settings`.
@@ -214,7 +291,18 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
         ? { provider: template.provider, model: seeded.model, effort: seeded.effort }
         : {})
     }));
+    const templatePlanOnly = template.slashdoCommand === 'plan-task';
+    if (planOnly && !templatePlanOnly) {
+      const worktreeOptOut = selectedApp?.defaultUseWorktree === false;
+      const defaultOpenPR = selectedApp?.defaultOpenPR ?? !worktreeOptOut;
+      const defaultUseWorktree = (selectedApp?.defaultUseWorktree ?? true) || defaultOpenPR;
+      setUseWorktree(defaultUseWorktree);
+      setOpenPR(defaultOpenPR);
+      setSimplify(true);
+      setPrCompletion(selectedApp?.defaultPrCompletion || DEFAULT_PR_COMPLETION);
+    }
     setSlashdoCommand(template.slashdoCommand || '');
+    setPlanOnly(templatePlanOnly);
     // Hidden posture, so it follows `slashdoCommand` (set unconditionally above)
     // rather than the tri-state rule the three visible toggles use: with no UI
     // control to reveal or correct it, a posture left over from a previous
@@ -229,10 +317,17 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       if (settings.openPR !== undefined) setOpenPR(settings.openPR);
       if (settings.simplify !== undefined) setSimplify(settings.simplify);
     }
+    if (templatePlanOnly) {
+      setCreateJiraTicket(false);
+      setUseWorktree(false);
+      setOpenPR(false);
+      setSimplify(false);
+      setWorktreeChangesExpected(false);
+    }
     descriptionRef.current?.focus();
     await api.applyCosTaskTemplate(template.id).catch(() => {});
     toast.success(`Template applied: ${template.name}`);
-  }, [newTask.app, providers]);
+  }, [newTask.app, planOnly, providers, selectedApp]);
 
   // Save current form as template (inline input instead of window.prompt)
   const saveAsTemplate = useCallback(async () => {
@@ -258,7 +353,16 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       provider: newTask.provider,
       model: newTask.model,
       effort: newTask.effort,
-      app: newTask.app
+      app: newTask.app,
+      ...(planOnly ? {
+        slashdoCommand: 'plan-task',
+        settings: {
+          useWorktree: false,
+          openPR: false,
+          simplify: false,
+          worktreeChangesExpected: false,
+        },
+      } : {})
     }, { silent: true }).catch(err => {
       toast.error(err.message);
       return null;
@@ -272,7 +376,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
         .then(data => setTemplates(data.templates || []))
         .catch(err => console.warn('refresh templates:', err?.message ?? String(err)));
     }
-  }, [newTask, templateNameInput, showTemplateSave]);
+  }, [newTask, planOnly, templateNameInput, showTemplateSave]);
 
   // Delete a user template
   const deleteTemplate = useCallback(async (templateId, e) => {
@@ -352,18 +456,22 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
       thinking: newTask.thinking === '' ? undefined : newTask.thinking === 'true',
       app: newTask.app || undefined,
       targetInstanceId: targetInstanceId || undefined,
-      slashdoCommand: slashdoCommand || undefined,
-      createJiraTicket,
-      useWorktree,
-      openPR: useWorktree && openPR,
-      simplify,
+      planOnly,
+      slashdoCommand: planOnly ? 'plan-task' : (slashdoCommand || undefined),
+      slashdoArgs: planOnly ? '--yes' : undefined,
+      createJiraTicket: planOnly ? false : createJiraTicket,
+      useWorktree: planOnly ? false : useWorktree,
+      openPR: planOnly ? false : useWorktree && openPR,
+      simplify: planOnly ? false : simplify,
       // Omitted entirely when no template pinned a posture — sending `undefined`
       // would be indistinguishable from a deliberate `false` on the wire.
-      ...(worktreeChangesExpected !== undefined ? { worktreeChangesExpected } : {}),
-      prCompletion: useWorktree && openPR ? prCompletion : undefined,
+      ...(planOnly
+        ? { worktreeChangesExpected: false }
+        : worktreeChangesExpected !== undefined ? { worktreeChangesExpected } : {}),
+      prCompletion: !planOnly && useWorktree && openPR ? prCompletion : undefined,
       // One gate for every per-reviewer field: they only apply when this task
       // opens a PR that PortOS reviews before merging.
-      ...(openPR && prCompletion === 'review-then-merge' ? {
+      ...(!planOnly && openPR && prCompletion === 'review-then-merge' ? {
         reviewers,
         usernames: reviewUsernames,
         optionalReviewers,
@@ -395,13 +503,13 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
 
     // Only clear form inputs after successful submission
     setNewTask(t => ({ ...t, description: '' }));
-    setSlashdoCommand('');
+    setSlashdoCommand(planOnly ? 'plan-task' : '');
     // targetInstanceId deliberately SURVIVES the clear, like app/model/provider
     // and the worktree toggles: it is a run setting, and someone queueing work
     // onto the GPU box is usually queueing more than one item.
     // The posture belongs to the workflow the cleared template pinned, so it
     // must not survive into the next, template-less task.
-    setWorktreeChangesExpected(undefined);
+    setWorktreeChangesExpected(planOnly ? false : undefined);
     setScreenshots([]);
     setAttachments([]);
 
@@ -444,7 +552,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
               className="flex items-center gap-1 px-3 py-2 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded-lg text-sm transition-colors disabled:opacity-50 min-h-[44px]"
             >
               {(isSubmitting || isEnhancing) ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-              {isSubmitting ? 'Adding...' : 'Add'}
+              {isSubmitting ? (planOnly ? 'Planning...' : 'Adding...') : planOnly ? 'Plan & File' : 'Add'}
             </button>
           </div>
         </div>
@@ -573,105 +681,140 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
               Enhance
             </span>
           </label>
-          <label className="flex items-center gap-2 cursor-pointer select-none whitespace-nowrap py-1">
-            <input
-              type="checkbox"
-              checked={useWorktree}
-              onChange={(e) => {
-                // Enabling a worktree defaults "Open PR" on (safer than an
-                // unreviewed auto-merge to the default branch); the user can
-                // still uncheck it. Disabling forces it off (openPR is
-                // meaningless without a worktree).
-                setUseWorktree(e.target.checked);
-                setOpenPR(e.target.checked);
-              }}
-              className="w-4 h-4 rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent focus:ring-offset-0"
-            />
-            <span className="flex items-center gap-1.5 text-sm text-gray-400" title="Work in an isolated git worktree on a feature branch. If unchecked, commits directly to the default branch.">
-              <GitBranch size={14} className="text-emerald-400" />
-              Worktree
-            </span>
-          </label>
-          <label className="flex items-center gap-2 cursor-pointer select-none whitespace-nowrap py-1">
-            <input
-              type="checkbox"
-              checked={openPR}
-              disabled={!useWorktree}
-              onChange={(e) => setOpenPR(e.target.checked)}
-              className="w-4 h-4 rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent focus:ring-offset-0 disabled:opacity-40"
-            />
-            <span className={`flex items-center gap-1.5 text-sm ${useWorktree ? 'text-gray-400' : 'text-gray-600'}`} title="Open a pull request to the default branch. If unchecked with worktree enabled, auto-merges on completion.">
-              <GitPullRequest size={14} className={useWorktree ? 'text-port-accent' : 'text-gray-600'} />
-              Open PR
-            </span>
-          </label>
-          <label className="flex items-center gap-2 cursor-pointer select-none whitespace-nowrap py-1">
-            <input
-              type="checkbox"
-              checked={simplify}
-              onChange={(e) => setSimplify(e.target.checked)}
-              className="w-4 h-4 rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent focus:ring-offset-0"
-            />
-            <span className="flex items-center gap-1.5 text-sm text-gray-400">
-              <Wand2 size={14} className="text-port-accent-2" />
-              Simplify
-            </span>
-          </label>
-          {openPR && (
-            <label htmlFor="task-pr-completion" className="flex items-center gap-2 py-1 basis-full sm:basis-auto">
-              <span className="text-sm text-gray-400">After opening PR</span>
-              <select
-                id="task-pr-completion"
-                value={prCompletion}
-                title={prCompletionOption(prCompletion)?.description}
-                onChange={(e) => setPrCompletion(e.target.value)}
-                className="min-w-44 rounded border border-port-border bg-port-bg px-2 py-1 text-sm text-white focus:border-port-accent focus:outline-hidden"
-              >
-                {PR_COMPLETION_OPTIONS.map(option => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
-          )}
-          {openPR && prCompletion === 'review-then-merge' && (
-            <div className="basis-full mt-1">
-              <ReviewerPicker
-                reviewers={reviewers}
-                usernames={reviewUsernames}
-                optionalReviewers={optionalReviewers}
-                reviewerMaxRounds={reviewerMaxRounds}
-                reviewerModels={reviewerModels}
-                reviewerEfforts={reviewerEfforts}
-                modelOptions={reviewerModelOptions}
-                installed={reviewerCliInstalled}
-                stopMode={reviewStopMode}
-                reviewerApplies={reviewerApplies}
-                onChange={({ reviewers: r, usernames: u, optionalReviewers: o, reviewerMaxRounds: m, reviewerModels: rm, reviewerEfforts: re, stopMode, reviewerApplies: ra }) => {
-                  setReviewers(r);
-                  setReviewUsernames(u);
-                  setOptionalReviewers(o);
-                  setReviewerMaxRounds(m);
-                  setReviewerModels(rm);
-                  setReviewerEfforts(re);
-                  setReviewStopMode(stopMode);
-                  setReviewerApplies(ra);
-                }}
-              />
-            </div>
-          )}
-          {appHasJira && (
-            <label className="flex items-center gap-2 cursor-pointer select-none whitespace-nowrap py-1">
+          {planOnlyTrackerStatus !== 'unsupported' && (
+            <label htmlFor="task-plan-only" className="flex items-center gap-2 cursor-pointer select-none whitespace-nowrap py-1">
               <input
+                id="task-plan-only"
                 type="checkbox"
-                checked={createJiraTicket}
-                onChange={(e) => setCreateJiraTicket(e.target.checked)}
-                className="w-4 h-4 rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent focus:ring-offset-0"
+                checked={planOnly}
+                disabled={!planOnlySupported}
+                onChange={(e) => handlePlanOnlyChange(e.target.checked)}
+                className="w-4 h-4 rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent focus:ring-offset-0 disabled:opacity-40"
               />
-              <span className="flex items-center gap-1.5 text-sm text-gray-400">
-                <Ticket size={14} className="text-port-accent" />
-                JIRA ticket
+              <span className="flex items-center gap-1.5 text-sm text-gray-400" title="Read the codebase and file a GitHub or GitLab issue without implementing the task.">
+                <FileText size={14} className="text-port-accent" />
+                Plan &amp; file issue
               </span>
             </label>
+          )}
+          {planOnlyTrackerStatus === 'pending' && (
+            <p className="basis-full text-xs text-gray-500">
+              Checking the app&apos;s work tracker before enabling issue planning.
+            </p>
+          )}
+          {planOnlyTrackerStatus === 'unsupported' && (
+            <p className="basis-full text-xs text-gray-500">
+              Plan &amp; file issue is available for GitHub or GitLab issue trackers.
+            </p>
+          )}
+          {planOnly && (
+            <p className="basis-full text-xs text-gray-500">
+              Read-only planning: file the issue without code changes, a worktree, PR, simplify pass, or review.
+            </p>
+          )}
+          {!planOnly && (
+            <>
+              <label className="flex items-center gap-2 cursor-pointer select-none whitespace-nowrap py-1">
+                <input
+                  type="checkbox"
+                  checked={useWorktree}
+                  onChange={(e) => {
+                    // Enabling a worktree defaults "Open PR" on (safer than an
+                    // unreviewed auto-merge to the default branch); the user can
+                    // still uncheck it. Disabling forces it off (openPR is
+                    // meaningless without a worktree).
+                    setUseWorktree(e.target.checked);
+                    setOpenPR(e.target.checked);
+                  }}
+                  className="w-4 h-4 rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent focus:ring-offset-0"
+                />
+                <span className="flex items-center gap-1.5 text-sm text-gray-400" title="Work in an isolated git worktree on a feature branch. If unchecked, commits directly to the default branch.">
+                  <GitBranch size={14} className="text-emerald-400" />
+                  Worktree
+                </span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer select-none whitespace-nowrap py-1">
+                <input
+                  type="checkbox"
+                  checked={openPR}
+                  disabled={!useWorktree}
+                  onChange={(e) => setOpenPR(e.target.checked)}
+                  className="w-4 h-4 rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent focus:ring-offset-0 disabled:opacity-40"
+                />
+                <span className={`flex items-center gap-1.5 text-sm ${useWorktree ? 'text-gray-400' : 'text-gray-600'}`} title="Open a pull request to the default branch. If unchecked with worktree enabled, auto-merges on completion.">
+                  <GitPullRequest size={14} className={useWorktree ? 'text-port-accent' : 'text-gray-600'} />
+                  Open PR
+                </span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer select-none whitespace-nowrap py-1">
+                <input
+                  type="checkbox"
+                  checked={simplify}
+                  onChange={(e) => setSimplify(e.target.checked)}
+                  className="w-4 h-4 rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent focus:ring-offset-0"
+                />
+                <span className="flex items-center gap-1.5 text-sm text-gray-400">
+                  <Wand2 size={14} className="text-port-accent-2" />
+                  Simplify
+                </span>
+              </label>
+              {openPR && (
+                <label htmlFor="task-pr-completion" className="flex items-center gap-2 py-1 basis-full sm:basis-auto">
+                  <span className="text-sm text-gray-400">After opening PR</span>
+                  <select
+                    id="task-pr-completion"
+                    value={prCompletion}
+                    title={prCompletionOption(prCompletion)?.description}
+                    onChange={(e) => setPrCompletion(e.target.value)}
+                    className="min-w-44 rounded border border-port-border bg-port-bg px-2 py-1 text-sm text-white focus:border-port-accent focus:outline-hidden"
+                  >
+                    {PR_COMPLETION_OPTIONS.map(option => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {openPR && prCompletion === 'review-then-merge' && (
+                <div className="basis-full mt-1">
+                  <ReviewerPicker
+                    reviewers={reviewers}
+                    usernames={reviewUsernames}
+                    optionalReviewers={optionalReviewers}
+                    reviewerMaxRounds={reviewerMaxRounds}
+                    reviewerModels={reviewerModels}
+                    reviewerEfforts={reviewerEfforts}
+                    modelOptions={reviewerModelOptions}
+                    installed={reviewerCliInstalled}
+                    stopMode={reviewStopMode}
+                    reviewerApplies={reviewerApplies}
+                    onChange={({ reviewers: r, usernames: u, optionalReviewers: o, reviewerMaxRounds: m, reviewerModels: rm, reviewerEfforts: re, stopMode, reviewerApplies: ra }) => {
+                      setReviewers(r);
+                      setReviewUsernames(u);
+                      setOptionalReviewers(o);
+                      setReviewerMaxRounds(m);
+                      setReviewerModels(rm);
+                      setReviewerEfforts(re);
+                      setReviewStopMode(stopMode);
+                      setReviewerApplies(ra);
+                    }}
+                  />
+                </div>
+              )}
+              {appHasJira && (
+                <label className="flex items-center gap-2 cursor-pointer select-none whitespace-nowrap py-1">
+                  <input
+                    type="checkbox"
+                    checked={createJiraTicket}
+                    onChange={(e) => setCreateJiraTicket(e.target.checked)}
+                    className="w-4 h-4 rounded border-port-border bg-port-bg text-port-accent focus:ring-port-accent focus:ring-offset-0"
+                  />
+                  <span className="flex items-center gap-1.5 text-sm text-gray-400">
+                    <Ticket size={14} className="text-port-accent" />
+                    JIRA ticket
+                  </span>
+                </label>
+              )}
+            </>
           )}
         </div>
         <div className="flex flex-col sm:flex-row gap-3">
@@ -909,12 +1052,12 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
               {(isSubmitting || isEnhancing) ? (
                 <>
                   <Loader2 size={14} className="animate-spin" aria-hidden="true" />
-                  {isSubmitting ? 'Adding...' : 'Enhancing...'}
+                  {isSubmitting ? (planOnly ? 'Planning...' : 'Adding...') : planOnly ? 'Enhancing plan...' : 'Enhancing...'}
                 </>
               ) : (
                 <>
                   <Plus size={14} aria-hidden="true" />
-                  {enhancePrompt ? 'Enhance & Add' : 'Add'}
+                  {planOnly ? (enhancePrompt ? 'Enhance & Plan' : 'Plan & File Issue') : enhancePrompt ? 'Enhance & Add' : 'Add'}
                 </>
               )}
             </button>

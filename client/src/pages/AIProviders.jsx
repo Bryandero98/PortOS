@@ -959,7 +959,7 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
         <option value={configuredDefault}>Use the CLI&apos;s configured default</option>
       )}
       {availableModels.map(model => (
-        <option key={model} value={model}>{modelOptionLabel(model, localModels.ctxById)}</option>
+        <option key={model} value={model}>{modelOptionLabel(model, localModels.ctxById, capabilityProvider)}</option>
       ))}
     </>
   );
@@ -975,8 +975,12 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
   const fallbackModelOptions = filterGenerationModels(
     mergeModelLists(selectedFallbackProvider?.models, liveModelsFor(selectedFallbackProvider)),
   );
+  // `capabilityProvider`, not `formData`: the per-model windows model refresh
+  // recorded (`modelContextWindows`) live on the RECORD and are not form fields,
+  // so reading formData alone reported the assumed 128K for a model whose real
+  // window PortOS already knows.
   const plannedContextLabel = formatContextLength(
-    effectiveModelContextWindow(formData, formData.defaultModel)
+    effectiveModelContextWindow(capabilityProvider, formData.defaultModel)
   );
   // `num_ctx` is meaningful for any provider whose tokens come from Ollama, not
   // just `api` ones: an `api` provider sends it on every request, while an
@@ -1541,7 +1545,7 @@ function ProviderForm({ provider, onClose, onSave, onEditProvider, allProviders 
                       >
                         <option value="">Use fallback provider's default</option>
                         {fallbackModelOptions.map(model => (
-                          <option key={model} value={model}>{modelOptionLabel(model, localModels.ctxById)}</option>
+                          <option key={model} value={model}>{modelOptionLabel(model, localModels.ctxById, selectedFallbackProvider)}</option>
                         ))}
                       </select>
                     ) : (

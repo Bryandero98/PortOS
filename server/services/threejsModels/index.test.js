@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../lib/fileUtils.js', () => ({
+  sleep: vi.fn().mockResolvedValue(undefined),
   PATHS: { data: '/mock/data' },
   resolveGalleryImage: vi.fn((filename) => (
     filename === 'missing.png' ? null : `/mock/data/images/${filename}`

@@ -79,7 +79,7 @@ const loadRaw = async () => {
  * won't PARSE (truncated / corrupt JSON, or a non-object root). For feature
  * reads that collapse is fine, but for the auth-enabled decision it fails OPEN:
  * a corrupt settings.json makes `isAuthEnabled()` compute `false` over `{}` and
- * silently disables the password gate (see `server/lib/authGate.js`).
+ * silently disables the password gate (see `server/services/authGate.js`).
  *
  * This read preserves the distinction so a security caller can fail CLOSED on
  * the two failure modes while still treating a genuinely absent file as

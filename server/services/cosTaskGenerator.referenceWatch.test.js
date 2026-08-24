@@ -243,6 +243,58 @@ describe('scheduled ux prompt assembly (#3273)', () => {
   });
 });
 
+/**
+ * `plan-feature` is the THIRD tracker-filing task type: like reference-watch it
+ * is ALWAYS-filing (no fileIssues toggle — it is not an audit type), but worded
+ * from its own TRACKER_FILING_PRESETS entry. It brainstorms one feature and
+ * files its plan as a tracker item instead of implementing anything.
+ */
+describe('scheduled plan-feature prompt assembly', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    checkReferenceRepoMock.mockResolvedValue(SNAPSHOT);
+  });
+
+  const generatePlanFeature = (app) => generate(app, 'plan-feature');
+
+  it('injects the plan-feature-worded tracker block and expands its inner placeholders', async () => {
+    const app = makeApp({ workTracker: 'github' });
+    const task = await generatePlanFeature(app);
+    expect(task).not.toBeNull();
+    expect(task.description).not.toContain('{trackerInstructions}');
+    // plan-feature wording, not reference-watch's.
+    expect(task.description).toContain('[plan-feature-…]');
+    expect(task.description).toContain('gh label create plan-feature');
+    expect(task.description).not.toContain('ref-watch');
+    // Ordering guard: {trackerInstructions} expands BEFORE {appName}/{repoPath}.
+    expect(task.description).not.toContain('{appName}');
+    expect(task.description).not.toContain('{repoPath}');
+    expect(task.description).toContain(app.name);
+    expect(task.description).toContain(app.repoPath);
+  });
+
+  it.each([
+    ['github', false],
+    ['gitlab', false],
+    ['jira', false],
+    ['plan', true],
+  ])('stamps workTracker + worktreeChangesExpected off the same resolved tracker (%s → %s)', async (tracker, expected) => {
+    const task = await generatePlanFeature(makeApp({ workTracker: tracker }));
+    expect(task.metadata.workTracker).toBe(tracker);
+    expect(task.metadata.worktreeChangesExpected).toBe(expected);
+  });
+
+  it('never checks reference repos, files without a fileIssues flag, and takes no worktree/PR posture', async () => {
+    const task = await generatePlanFeature(makeApp({ referenceRepos: [] }));
+    expect(task).not.toBeNull();
+    expect(checkReferenceRepoMock).not.toHaveBeenCalled();
+    // Always-filing (non-audit): no mode banner, no audit toggle metadata.
+    expect(task.description).not.toContain('Mode: file issues, change nothing');
+    expect(task.metadata.fileIssues).toBeUndefined();
+    expect(task.metadata.noCodeOutput).toBeUndefined();
+  });
+});
+
 describe('audit fileIssues toggle', () => {
   beforeEach(() => {
     vi.clearAllMocks();

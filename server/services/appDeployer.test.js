@@ -1,5 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
-import { runDeployFlow } from './appDeployer.js';
+import { DEPLOY_FLAGS as sharedDeployFlags } from '../lib/appDeployFlags.js';
+import { DEPLOY_FLAGS, runDeployFlow } from './appDeployer.js';
+
+describe('deploy flag contract', () => {
+  it('preserves the service export as the shared lib allowlist', () => {
+    expect(DEPLOY_FLAGS).toBe(sharedDeployFlags);
+    expect(DEPLOY_FLAGS).toEqual(['--ios', '--macos', '--watch', '--all', '--skip-tests']);
+  });
+});
 
 describe('runDeployFlow', () => {
   const app = { id: 'app-1', name: 'MyApp', repoPath: '/repo', type: 'xcode' };

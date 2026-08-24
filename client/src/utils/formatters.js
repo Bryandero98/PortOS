@@ -24,6 +24,31 @@ export function formatTime(timestamp) {
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
+ * Format a Date as a browser-local YYYY-MM-DD calendar key.
+ * Unlike `toISOString()`, this preserves the user's local day near UTC boundaries.
+ * @param {Date} date
+ * @returns {string}
+ */
+export function localDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Shift a YYYY-MM-DD calendar key by whole days without local-time/DST drift.
+ * @param {string} dateKey
+ * @param {number} days
+ * @returns {string}
+ */
+export function shiftISODate(dateKey, days) {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  const shifted = new Date(Date.UTC(year, month - 1, day + days));
+  return shifted.toISOString().slice(0, 10);
+}
+
+/**
  * Coerce a Date / ISO timestamp / epoch ms into a Date for display.
  *
  * A bare calendar date ("2026-03-05") is parsed by `new Date(...)` as UTC
@@ -402,8 +427,17 @@ export function formatDownloadGb(gb) {
 
 /**
  * Format a model context window (in tokens) compactly, e.g. 32768 → "32K ctx",
- * 131072 → "128K ctx", 1048576 → "1M ctx". Returns null for missing/invalid
+ * 131072 → "128K ctx", 1000000 → "1M ctx". Returns null for missing/invalid
  * values so callers can omit the label entirely.
+ *
+ * Two unit systems, picked per value, because model context windows are quoted
+ * in both and neither divisor is right for the other: local runtimes report
+ * BINARY windows (131072, 32768 — "128K", "32K"), while cloud vendors quote
+ * DECIMAL ones (128000, 1000000 — "128K", "1M"). Dividing a decimal window by
+ * 1024 is what rendered a 128,000-token provider as "125K ctx", a number no
+ * vendor publishes and which reads as a PortOS-imposed cap rather than the
+ * model's own spec. So: a value that divides evenly by 1000 is decimal, and
+ * everything else is binary.
  *
  * `suffix` is what follows the number. The default reads as a standalone badge;
  * pass `''` when the surrounding prose already supplies the noun ("up to 32K
@@ -417,11 +451,12 @@ export function formatDownloadGb(gb) {
 export function formatContextLength(tokens, { suffix = ' ctx' } = {}) {
   const n = Number(tokens);
   if (!Number.isFinite(n) || n <= 0) return null;
-  if (n >= 1024 * 1024) {
-    const m = n / (1024 * 1024);
+  const k = n % 1000 === 0 ? 1000 : 1024;
+  if (n >= k * k) {
+    const m = n / (k * k);
     return `${parseFloat(m.toFixed(m % 1 ? 1 : 0))}M${suffix}`;
   }
-  if (n >= 1024) return `${Math.round(n / 1024)}K${suffix}`;
+  if (n >= k) return `${Math.round(n / k)}K${suffix}`;
   return `${n}${suffix}`;
 }
 
@@ -753,4 +788,3 @@ export function clamp(n, min, max) {
 export function capitalize(s) {
   return typeof s === 'string' && s.length ? s[0].toUpperCase() + s.slice(1) : s;
 }
-

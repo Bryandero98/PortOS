@@ -249,6 +249,17 @@ router.post('/checkout-remote', asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
+// POST /api/git/reset-to-default - Discard local changes and match origin's
+// default branch. Destructive on tracked files; untracked ones are kept, and
+// the response carries the pre-reset HEAD so the caller can offer a recovery
+// sha. See git.resetToDefaultBranch for the full contract.
+router.post('/reset-to-default', asyncHandler(async (req, res) => {
+  const { path } = req.body;
+  assertAllowedWorkspace(path);
+  const result = await git.resetToDefaultBranch(path);
+  res.json(result);
+}));
+
 // POST /api/git/cleanup-merged - Delete all merged branches (local + remote)
 router.post('/cleanup-merged', asyncHandler(async (req, res) => {
   const { path } = req.body;

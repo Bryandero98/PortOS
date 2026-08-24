@@ -52,7 +52,7 @@ vi.mock('../lib/workspaceRoots.js', () => ({
 vi.mock('./scaffoldVite.js', () => ({ scaffoldVite: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./scaffoldExpress.js', () => ({ scaffoldExpress: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./scaffoldIOS.js', () => ({ scaffoldIOS: vi.fn().mockResolvedValue(undefined) }));
-vi.mock('./scaffoldXcode.js', () => ({ scaffoldXcode: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../services/xcodeScaffold.js', () => ({ scaffoldXcode: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./scaffoldPortOS.js', () => ({ scaffoldPortOS: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../services/xcodeScripts.js', () => ({ toTargetName: vi.fn(() => 'TestApp') }));
 
@@ -63,6 +63,7 @@ import { spawn, exec } from '../lib/childProcess.js';
 import { createApp } from '../services/apps.js';
 import { scaffoldVite } from './scaffoldVite.js';
 import { scaffoldPortOS } from './scaffoldPortOS.js';
+import { scaffoldXcode } from '../services/xcodeScaffold.js';
 
 function makeApp() {
   const app = express();
@@ -191,5 +192,19 @@ describe('POST /api/scaffold — request validation before filesystem mutation (
       apiPort: 3101,
       addStep: expect.any(Function)
     }));
+  });
+
+  it('delegates Xcode project generation to the scaffold service', async () => {
+    const res = await request(app)
+      .post('/api/scaffold')
+      .send({ ...validBody, template: 'xcode-multiplatform' });
+
+    expect(res.status).toBe(200);
+    expect(scaffoldXcode).toHaveBeenCalledWith(
+      join('/tmp/workspace', 'my-app'),
+      'My App',
+      'my-app',
+      expect.any(Function)
+    );
   });
 });

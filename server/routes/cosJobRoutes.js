@@ -148,12 +148,8 @@ router.post('/jobs/:id/trigger', asyncHandler(async (req, res) => {
 
   // Shell jobs execute the command directly
   if (autonomousJobs.isShellJob(job)) {
-    const result = await autonomousJobs.executeShellJob(job).catch(err => ({
-      success: false,
-      exitCode: err.exitCode ?? 1,
-      output: err.message
-    }));
-    return res.json({ success: result.success !== false, type: 'shell', ...result });
+    const result = await autonomousJobs.executeShellJob(job);
+    return res.json({ success: result.success !== false, type: 'shell', status: 'completed', ...result });
   }
 
   // Script jobs run their built-in handler directly. This is the manual
@@ -161,11 +157,8 @@ router.post('/jobs/:id/trigger', asyncHandler(async (req, res) => {
   // (`manual: true`) and any fan-out handler reports failures individually
   // rather than coalescing them as unattended background work.
   if (autonomousJobs.isScriptJob(job)) {
-    const result = await autonomousJobs.executeScriptJob(job, { manual: true }).catch(err => ({
-      success: false,
-      error: err.message
-    }));
-    return res.json({ success: (result?.success ?? true) !== false, type: 'script', ...(result || {}) });
+    const result = await autonomousJobs.executeScriptJob(job, { manual: true });
+    return res.json({ success: (result?.success ?? true) !== false, type: 'script', status: 'completed', ...(result || {}) });
   }
 
   // Generate task and add to CoS internal task queue
@@ -193,7 +186,12 @@ router.post('/jobs/:id/trigger', asyncHandler(async (req, res) => {
   }, 'internal');
 
   if (!taskResult?.id) {
-    res.json({ success: false, type: 'agent', error: 'Task was not queued (may be duplicate or blocked)' });
+    res.json({
+      success: false,
+      type: 'agent',
+      status: 'skipped',
+      reason: 'Task was not queued (may be duplicate or blocked)'
+    });
     return;
   }
   if (taskResult.duplicate) {
@@ -202,13 +200,20 @@ router.post('/jobs/:id/trigger', asyncHandler(async (req, res) => {
     // at a task that will never run; an active twin is surfaced as-is.
     if (taskResult.status === 'blocked') {
       await cos.reviveBlockedTask(taskResult.id, { priority: task.priority, metadata: task.metadata }, 'internal');
-      res.json({ success: true, type: 'agent', taskId: taskResult.id, revived: true });
+      res.json({ success: true, type: 'agent', status: 'queued', taskId: taskResult.id, revived: true });
       return;
     }
-    res.json({ success: true, type: 'agent', taskId: taskResult.id, duplicate: true });
+    res.json({
+      success: true,
+      type: 'agent',
+      status: 'skipped',
+      reason: 'An equivalent task is already queued',
+      taskId: taskResult.id,
+      duplicate: true
+    });
     return;
   }
-  res.json({ success: true, type: 'agent', taskId: taskResult.id });
+  res.json({ success: true, type: 'agent', status: 'queued', taskId: taskResult.id });
 }));
 
 // DELETE /api/cos/jobs/:id - Delete a job

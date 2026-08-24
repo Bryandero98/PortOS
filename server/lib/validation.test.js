@@ -40,6 +40,7 @@ import {
   subdirFilterSchema,
   isPaginationRequested,
   paginateArray,
+  parseIndexParam,
   parsePagination,
   seriesAutopilotSettingsSchema,
   portsCheckSchema,
@@ -47,6 +48,12 @@ import {
   databaseSwitchSchema,
   databaseBackendSchema,
   databaseExportSchema,
+  datadogInstanceRequestSchema,
+  datadogSearchErrorsRequestSchema,
+  providerVisionTestSchema,
+  providerVisionSuiteSchema,
+  uploadRequestSchema,
+  attachmentUploadRequestSchema,
   spriteTrackFrameCountSchema,
   spriteTrackFpsSchema,
   spriteRuntimeContractSchema,
@@ -71,6 +78,84 @@ import {
 } from './brainValidation.js';
 
 describe('validation.js', () => {
+  describe('issue #4922 request schemas', () => {
+    it('accepts the DataDog instance and error-search request shapes', () => {
+      expect(datadogInstanceRequestSchema.safeParse({
+        id: 'example-datadog',
+        name: 'Example DataDog',
+        site: 'api.datadoghq.com',
+        apiKey: '',
+        appKey: 'example-app-key',
+      }).success).toBe(true);
+      expect(datadogInstanceRequestSchema.safeParse({
+        id: ` ${'legacy-id-'.repeat(20)} `,
+        name: ` ${'Legacy DataDog '.repeat(20)} `,
+        site: 'api.datadoghq.com',
+      }).data.id).toBe(` ${'legacy-id-'.repeat(20)} `);
+      expect(datadogSearchErrorsRequestSchema.safeParse({
+        serviceName: 'example-service',
+        environment: 'staging',
+        fromTime: '2026-08-23T00:00:00.000Z',
+      }).success).toBe(true);
+      expect(datadogSearchErrorsRequestSchema.parse({
+        serviceName: 'example-service',
+        fromTime: '',
+      }).fromTime).toBeUndefined();
+      expect(datadogSearchErrorsRequestSchema.safeParse({
+        serviceName: 's'.repeat(257),
+        environment: 'e'.repeat(129),
+      }).success).toBe(true);
+      expect(providerVisionTestSchema.parse({
+        imagePath: 'example.png',
+        expectedContent: '',
+      }).expectedContent).toBeUndefined();
+      expect(uploadRequestSchema.safeParse({
+        data: 'aGVsbG8=',
+        filename: `${'a'.repeat(247)}.txt`,
+      }).success).toBe(false);
+    });
+
+    it('rejects malformed upload and vision request bodies', () => {
+      expect(uploadRequestSchema.safeParse({ filename: 'example.txt' }).success).toBe(false);
+      expect(attachmentUploadRequestSchema.safeParse({ data: 123, filename: 'example.txt' }).success).toBe(false);
+      expect(datadogSearchErrorsRequestSchema.safeParse({
+        serviceName: 'example-service',
+        fromTime: 'not-a-date',
+      }).success).toBe(false);
+      expect(providerVisionTestSchema.safeParse({
+        imagePath: 'example.png',
+        expectedContent: [123],
+      }).success).toBe(false);
+    });
+
+    it('normalizes blank optional vision models to undefined', () => {
+      expect(providerVisionTestSchema.parse({ imagePath: 'example.png', model: '' }).model).toBeUndefined();
+      expect(providerVisionSuiteSchema.parse({ model: '' }).model).toBeUndefined();
+      expect(providerVisionTestSchema.parse({
+        imagePath: 'example.png',
+        expectedContent: ['button', 'text'],
+      }).expectedContent).toEqual(['button', 'text']);
+    });
+  });
+
+  describe('parseIndexParam', () => {
+    it('returns a non-negative integer route parameter', () => {
+      expect(parseIndexParam('0')).toBe(0);
+      expect(parseIndexParam('42')).toBe(42);
+    });
+
+    it.each(['', ' ', '-1', '1.5', '1abc', '1e2', 'abc', '9007199254740992'])(
+      'rejects invalid index %j',
+      (raw) => {
+        expect(() => parseIndexParam(raw)).toThrow(expect.objectContaining({
+          message: 'Invalid index',
+          status: 400,
+          code: 'INVALID_INDEX',
+        }));
+      },
+    );
+  });
+
   describe('isPaginationRequested', () => {
     it('is false when neither limit nor offset is present', () => {
       expect(isPaginationRequested({})).toBe(false);

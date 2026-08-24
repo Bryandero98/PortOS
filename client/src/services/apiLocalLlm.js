@@ -121,6 +121,13 @@ export const downloadSpecDecodeModel = (presetId, role, options) =>
     ...options,
   });
 
+export const cancelSpecDecodeModelDownload = (presetId, role, options) =>
+  request('/local-llm/llama-server/download-model/cancel', {
+    method: 'POST',
+    body: JSON.stringify({ presetId, role }),
+    ...options,
+  });
+
 // Set the default backend (which one PortOS routes local runs to) — does not move models.
 export const switchLocalLlmBackend = (to) =>
   request('/local-llm/switch', { method: 'POST', body: JSON.stringify({ to }) });

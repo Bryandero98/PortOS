@@ -1357,6 +1357,58 @@ describe('taskSchedule', () => {
     })
   })
 
+  describe('plan-feature defaults', () => {
+    it('is registered as a self-improvement task type with a description', () => {
+      expect(SELF_IMPROVEMENT_TASK_TYPES).toContain('plan-feature')
+      expect(TASK_TYPE_DESCRIPTIONS['plan-feature']).toBeTruthy()
+    })
+
+    it('defaults to weekly + disabled, grounded on do-replan, with no worktree/PR', () => {
+      const cfg = DEFAULT_TASK_INTERVALS['plan-feature']
+      expect(cfg.type).toBe(INTERVAL_TYPES.WEEKLY)
+      // Off by default — enabling it is the user's consent to scheduled LLM runs.
+      expect(cfg.enabled).toBe(false)
+      // Refresh the configured work tracker before filing a new proposal.
+      expect(cfg.runAfter).toEqual(['do-replan'])
+      expect(cfg.taskMetadata.useWorktree).toBe(false)
+      expect(cfg.taskMetadata.openPR).toBe(false)
+      // Writable: a file-based tracker path commits checklist items.
+      expect(cfg.taskMetadata.readOnly).toBe(false)
+      // Filing posture comes from TRACKER_FILING_PRESETS membership at dispatch,
+      // not a static lock.
+      expect(MANAGED_AGENT_OPTIONS['plan-feature']).toBeUndefined()
+    })
+
+    it('always files its plan via the tracker-filing machinery', async () => {
+      const { resolveTrackerFilingBlock } = await import('../lib/workTracker.js')
+      const app = { repoPath: '/tmp/example-repo', workTracker: 'github' }
+      const block = await resolveTrackerFilingBlock(app, 'plan-feature')
+      expect(block.workTracker).toBe('github')
+      expect(block.trackerInstructions).toContain('[plan-feature-…]')
+    })
+
+    it('ships a prompt that plans without implementing', async () => {
+      const prompt = await getTaskPrompt('plan-feature')
+      expect(prompt).toContain('{appName}')
+      expect(prompt).toContain('{repoPath}')
+      // The tracker block is injected at dispatch, so the token must survive here.
+      expect(prompt).toContain('{trackerInstructions}')
+      // Product intent is specific-first, with repository documentation as the
+      // fallback when a project has neither a PRD nor goals document.
+      expect(prompt).toContain('PRD.md')
+      expect(prompt).toContain('GOALS.md')
+      expect(prompt).toContain('README.md')
+      expect(prompt).toContain('docs/README.md')
+      expect(prompt).not.toContain('PLAN.md')
+      expect(prompt).not.toContain('REJECTED.md')
+      expect(prompt).toContain('closed-unmerged')
+      // Never implements — the plan IS the deliverable.
+      expect(prompt).toContain('no branches, no PRs')
+      expect(prompt).toContain('Acceptance criteria')
+      expect(prompt).toContain('Non-goals')
+    })
+  })
+
   describe('audit file-issues types', () => {
     it('registers data-safety and simplify as disabled weekly file-issues audits', () => {
       for (const taskType of ['data-safety', 'simplify']) {

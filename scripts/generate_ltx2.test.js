@@ -469,6 +469,97 @@ describe.skipIf(!pyBin)('generate_ltx2.py', () => {
     expect(output.trim()).toBe(expected);
   });
 
+  // The reference-mode promise (#4874). "inspire" is only expressible where the
+  // pin carries a per-image conditioning strength; everywhere else the helper has
+  // to FAIL, because falling back to a bare `image=` would anchor the very frame
+  // the user asked not to be anchored.
+  describe('i2v reference mode', () => {
+    // A fake generate_and_save whose signature decides which pin the helper sees:
+    // `images=` present is the v0.14.x API, absent is a pre-rename pin.
+    const condKwargs = ({ hasImagesParam, referenceMode, imageStrength }) => runPython(`${importRunner}\n${[
+      'import sys, types',
+      hasImagesParam
+        ? 'def gen(prompt=None, images=None, image=None): pass'
+        : 'def gen(prompt=None, image=None): pass',
+      // Stand in for the ltx wheel: the helper only needs a constructor whose
+      // instances it can hand back, and repr is what we assert against.
+      'class ICI:',
+      '    def __init__(self, path, frame_idx, strength):',
+      '        self.path, self.frame_idx, self.strength = path, frame_idx, strength',
+      '    def __repr__(self):',
+      '        return f"ICI({self.path},{self.frame_idx},{self.strength})"',
+      hasImagesParam
+        ? 'runner._import_image_conditioning_input = lambda: ICI'
+        : 'runner._import_image_conditioning_input = lambda: None',
+      // The legacy monkey-patch needs the real ltx modules; report "absent" so
+      // the anchored fallback path is exercised without them.
+      'runner._apply_legacy_image_strength = lambda strength: False',
+      'try:',
+      `    print(repr(runner._image_conditioning_kwargs(gen, "/tmp/ref.png", ${imageStrength === null ? 'None' : imageStrength}, "${referenceMode}")))`,
+      'except SystemExit as exc:',
+      '    print("SystemExit:", str(exc))',
+    ].join('\n')}`);
+
+    it('leaves an unset anchored reference exactly as it was before the flag existed', () => {
+      const out = condKwargs({ hasImagesParam: true, referenceMode: 'anchor', imageStrength: null });
+      expect(out.trim()).toBe("{'image': '/tmp/ref.png'}");
+    });
+
+    it('resolves the loose default when no strength was given', () => {
+      const out = condKwargs({ hasImagesParam: true, referenceMode: 'inspire', imageStrength: null });
+      expect(out).toMatch(/ICI\(\/tmp\/ref\.png,0,0\.35\)/);
+    });
+
+    it('honors an explicit strength under a loose reference', () => {
+      const out = condKwargs({ hasImagesParam: true, referenceMode: 'inspire', imageStrength: 0.8 });
+      expect(out).toMatch(/ICI\(\/tmp\/ref\.png,0,0\.8\)/);
+    });
+
+    it('FAILS rather than anchoring when the pin has no per-image strength', () => {
+      const out = condKwargs({ hasImagesParam: false, referenceMode: 'inspire', imageStrength: 0.5 });
+      expect(out).toMatch(/SystemExit:/);
+      expect(out).toMatch(/does not expose/i);
+    });
+
+    it('still degrades gracefully for an anchored reference on the same old pin', () => {
+      const out = condKwargs({ hasImagesParam: false, referenceMode: 'anchor', imageStrength: 0.5 });
+      expect(out.trim()).toContain("{'image': '/tmp/ref.png'}");
+    });
+
+    it.each(['text', 'fflf', 'extend', 'a2v', 'ic'])('rejects a loose reference in %s mode', (mode) => {
+      const out = runPython(`${importRunner}\n${[
+        'from types import SimpleNamespace',
+        `args = SimpleNamespace(i2v_reference_mode="inspire", mode="${mode}")`,
+        'try:',
+        '    runner.validate_reference_mode_args(args)',
+        'except SystemExit as exc:',
+        '    print(str(exc))',
+        'else:',
+        '    raise SystemExit("a loose reference was accepted outside image mode")',
+      ].join('\n')}`);
+      expect(out).toMatch(/applies to --mode image only/);
+    });
+
+    it('accepts a loose reference in image mode, and anchor anywhere', () => {
+      const out = runPython(`${importRunner}\n${[
+        'from types import SimpleNamespace',
+        'runner.validate_reference_mode_args(SimpleNamespace(i2v_reference_mode="inspire", mode="image"))',
+        'runner.validate_reference_mode_args(SimpleNamespace(i2v_reference_mode="anchor", mode="a2v"))',
+        'print("ok")',
+      ].join('\n')}`);
+      expect(out.trim()).toBe('ok');
+    });
+
+    it('defaults the flag to anchor and rejects an unknown value at the parser', () => {
+      const parsed = runPython(`${importRunner}\n${[
+        'import sys',
+        'sys.argv = ["generate_ltx2.py", "--mode", "image", "--prompt", "p", "--output", "/tmp/o.mp4", "--model", "m"]',
+        'print(runner.parse_args().i2v_reference_mode)',
+      ].join('\n')}`);
+      expect(parsed.trim()).toBe('anchor');
+    });
+  });
+
   it('parses the optional bounded preview directory', () => {
     const output = runPython(`${importRunner}\n${[
       'import sys',
@@ -476,5 +567,239 @@ describe.skipIf(!pyBin)('generate_ltx2.py', () => {
       'print(runner.parse_args().preview_dir)',
     ].join('\n')}`);
     expect(output.trim()).toBe('/tmp/previews');
+  });
+});
+
+// Speed profiles (#4875). The Node side decides the schedule declaratively;
+// this process owns the two questions only it can answer — is the pinned
+// pipeline new enough for `enable_teacache`, and is the required distilled
+// adapter in the pack — and reports both back on one SPEEDPROFILE: line. All
+// stdlib-only, so no mlx/ltx wheel is needed here.
+describe.skipIf(!pyBin)('generate_ltx2.py speed-profile reporting', () => {
+  const PROFILE_ARGS = [
+    'import argparse',
+    'def ns(**kw):',
+    "    d = dict(speed_profile='fast', steps=8, stage2_steps=3, cfg_scale=1.0,",
+    "             teacache=True, teacache_thresh=None, require_adapter='needed.safetensors', mode='text')",
+    '    d.update(kw)',
+    '    return argparse.Namespace(**d)',
+    // Capture the STATUS:/SPEEDPROFILE: lines the helper writes to stderr.
+    'import contextlib, io',
+    'ERR = io.StringIO()',
+  ].join('\n');
+
+  const runProfile = (body) => runPython(`${importRunner}\n${PROFILE_ARGS}\n${body}`);
+
+  // Python's print() ends lines with \r\n on Windows, so a plain split('\n')
+  // leaves a trailing \r that trim()-ing the whole output cannot reach.
+  const outLines = (out) => out.trim().split(/\r?\n/).map((l) => l.trimEnd());
+
+  // A pin that HAS the kwarg (the shipped one) vs a pre-rename pin that does
+  // not. The second case is the one that matters: passing the kwarg there is a
+  // TypeError mid-render, not a slow render.
+  const PIN_DEFS = [
+    'def modern(self, prompt, output_path, *, frame_rate, stage1_steps=None, enable_teacache=False, teacache_thresh=None): ...',
+    'def legacy(self, prompt, output_path, *, frame_rate, stage1_steps=None): ...',
+    'def kwargs_pin(self, prompt, output_path, **kw): ...',
+  ].join('\n');
+
+  it('passes the TeaCache kwargs through on a pin that accepts them', () => {
+    const out = runProfile([
+      PIN_DEFS,
+      'runner.speed_profile_begin(ns())',
+      'with contextlib.redirect_stderr(ERR):',
+      '    kw = runner._two_stage_teacache_kwargs(modern, ns())',
+      "print(sorted(kw.items()))",
+      "print(runner._SPEED_PROFILE_REPORT['teacache'], runner._SPEED_PROFILE_REPORT['degraded'])",
+    ].join('\n'));
+    // No threshold override declared, so the kwarg is omitted entirely and
+    // the pin applies its own calibrated default (0.5) — passing None would
+    // just re-state the default through an argument some pins don't have.
+    expect(out).toContain("[('enable_teacache', True)]");
+    expect(out).toContain('True []');
+  });
+
+  // A bare **kwargs wrapper ACCEPTS the argument without erroring, but nothing
+  // says it forwards it — so claiming the speed-up would be exactly the
+  // misleading claim this whole path exists to prevent. Degrade instead.
+  it('degrades on a bare **kwargs pin rather than claiming an unverifiable speed-up', () => {
+    const out = runProfile([
+      PIN_DEFS,
+      'runner.speed_profile_begin(ns())',
+      'with contextlib.redirect_stderr(ERR):',
+      '    kw = runner._two_stage_teacache_kwargs(kwargs_pin, ns())',
+      "print(kw, runner._SPEED_PROFILE_REPORT['teacache'], runner._SPEED_PROFILE_REPORT['degraded'])",
+    ].join('\n'));
+    expect(out.trim()).toBe("{} False ['teacache']");
+  });
+
+  // A pin carrying enable_teacache but NOT teacache_thresh must not be handed
+  // the second kwarg — that is a TypeError mid-render, i.e. a lever we could
+  // not apply turned into a failed render.
+  // A positional-only parameter (or a `**name` catch-all spelled the same)
+  // matches by NAME but cannot be passed by keyword — accepting it would raise
+  // TypeError at the call, the very outcome the probe exists to avoid.
+  it('rejects a same-named parameter that cannot actually be passed by keyword', () => {
+    const out = runProfile([
+      // positional-only (PEP 570) and a catch-all that happens to share the name
+      'def positional_only(self, enable_teacache=False, /, *, frame_rate=24): ...',
+      'def catch_all(self, *, frame_rate=24, **enable_teacache): ...',
+      'def keyword_ok(self, *, frame_rate=24, enable_teacache=False): ...',
+      "print(runner._accepts_kwarg(positional_only, 'enable_teacache'))",
+      "print(runner._accepts_kwarg(catch_all, 'enable_teacache'))",
+      "print(runner._accepts_kwarg(keyword_ok, 'enable_teacache'))",
+    ].join('\n'));
+    expect(outLines(out)).toEqual(['False', 'False', 'True']);
+  });
+
+  it('probes teacache_thresh separately from enable_teacache', () => {
+    const out = runProfile([
+      'def enable_only(self, prompt, output_path, *, frame_rate, stage1_steps=None, enable_teacache=False): ...',
+      'runner.speed_profile_begin(ns(teacache_thresh=0.8))',
+      'with contextlib.redirect_stderr(ERR):',
+      '    kw = runner._two_stage_teacache_kwargs(enable_only, ns(teacache_thresh=0.8))',
+      'print(sorted(kw.items()))',
+      // TeaCache itself applied, but the profile asked to sample at 0.8 and the
+      // render did not — a partly-applied profile, so it is recorded as such
+      // rather than reported as a clean full run.
+      "print(runner._SPEED_PROFILE_REPORT['teacache'], runner._SPEED_PROFILE_REPORT['degraded'])",
+      "print(runner._SPEED_PROFILE_REPORT['teacacheThresh'])",
+    ].join('\n'));
+    const [kw, state, thresh] = outLines(out);
+    expect(kw).toBe("[('enable_teacache', True)]");
+    expect(state).toBe("True ['teacacheThresh']");
+    expect(thresh).toBe('None');
+  });
+
+  // The mirror case: NO override declared means nothing was lost — the pin's
+  // own calibrated default is exactly what the profile wanted, so this must
+  // NOT be reported as degraded.
+  it('does not degrade when the profile declared no threshold to lose', () => {
+    const out = runProfile([
+      'def enable_only(self, prompt, output_path, *, frame_rate, stage1_steps=None, enable_teacache=False): ...',
+      'runner.speed_profile_begin(ns(teacache_thresh=None))',
+      'with contextlib.redirect_stderr(ERR):',
+      '    kw = runner._two_stage_teacache_kwargs(enable_only, ns(teacache_thresh=None))',
+      "print(sorted(kw.items()), runner._SPEED_PROFILE_REPORT['degraded'])",
+    ].join('\n'));
+    expect(out.trim()).toBe("[('enable_teacache', True)] []");
+  });
+
+  it('omits teacache_thresh entirely when the profile declares no override', () => {
+    const out = runProfile([
+      PIN_DEFS,
+      'runner.speed_profile_begin(ns())',
+      'with contextlib.redirect_stderr(ERR):',
+      '    kw = runner._two_stage_teacache_kwargs(modern, ns())',
+      "print(sorted(kw.items()))",
+    ].join('\n'));
+    expect(out.trim()).toBe("[('enable_teacache', True)]");
+  });
+
+  // The core honesty rule: an unavailable lever degrades LOUDLY. The render
+  // still happens at the profile's step schedule; it just isn't presented as
+  // the full speed-up.
+  it('degrades with an explicit status when the pin predates the kwarg', () => {
+    const out = runProfile([
+      PIN_DEFS,
+      'runner.speed_profile_begin(ns())',
+      'with contextlib.redirect_stderr(ERR):',
+      '    kw = runner._two_stage_teacache_kwargs(legacy, ns())',
+      'print(kw)',
+      "print(runner._SPEED_PROFILE_REPORT['degraded'])",
+      "print([l for l in ERR.getvalue().splitlines() if l.startswith('STATUS:')])",
+    ].join('\n'));
+    expect(out).toContain('{}');
+    expect(out).toContain("['teacache']");
+    expect(out).toMatch(/STATUS:TeaCache unavailable/);
+  });
+
+  it('passes an explicit threshold override through', () => {
+    const out = runProfile([
+      PIN_DEFS,
+      'runner.speed_profile_begin(ns(teacache_thresh=0.8))',
+      'with contextlib.redirect_stderr(ERR):',
+      '    kw = runner._two_stage_teacache_kwargs(modern, ns(teacache_thresh=0.8))',
+      "print(kw['teacache_thresh'])",
+    ].join('\n'));
+    expect(out.trim()).toBe('0.8');
+  });
+
+  // DEFAULT PRESERVATION: without --speed-profile the whole mechanism is inert.
+  it('is completely silent and emits nothing without a profile', () => {
+    const out = runProfile([
+      PIN_DEFS,
+      'runner.speed_profile_begin(ns(speed_profile=None))',
+      'with contextlib.redirect_stderr(ERR):',
+      '    kw = runner._two_stage_teacache_kwargs(modern, ns(speed_profile=None, teacache=False))',
+      "    runner.speed_profile_degrade('teacache', 'should not appear')",
+      '    runner.speed_profile_emit()',
+      'print(kw, runner._SPEED_PROFILE_REPORT, repr(ERR.getvalue()))',
+    ].join('\n'));
+    expect(out.trim()).toBe("{} {} ''");
+  });
+
+  it('never enables TeaCache when the profile did not ask for it', () => {
+    const out = runProfile([
+      PIN_DEFS,
+      'runner.speed_profile_begin(ns(teacache=False))',
+      'with contextlib.redirect_stderr(ERR):',
+      '    kw = runner._two_stage_teacache_kwargs(modern, ns(teacache=False))',
+      "print(kw, runner._SPEED_PROFILE_REPORT['degraded'])",
+    ].join('\n'));
+    expect(out.trim()).toBe('{} []');
+  });
+
+  it('emits a single parseable SPEEDPROFILE: line naming what applied', () => {
+    const out = runProfile([
+      PIN_DEFS,
+      'import json',
+      'runner.speed_profile_begin(ns())',
+      'with contextlib.redirect_stderr(ERR):',
+      '    runner._two_stage_teacache_kwargs(modern, ns())',
+      "    runner.speed_profile_applied(adapter='needed.safetensors')",
+      '    runner.speed_profile_emit()',
+      "lines = [l for l in ERR.getvalue().splitlines() if l.startswith('SPEEDPROFILE:')]",
+      'print(len(lines))',
+      "print(json.dumps(json.loads(lines[0][len('SPEEDPROFILE:'):]), sort_keys=True))",
+    ].join('\n'));
+    const [count, payload] = outLines(out);
+    expect(count).toBe('1');
+    expect(JSON.parse(payload)).toEqual({
+      id: 'fast',
+      steps: 8,
+      stage2Steps: 3,
+      cfgScale: 1.0,
+      teacache: true,
+      teacacheThresh: null,
+      adapter: 'needed.safetensors',
+      degraded: [],
+    });
+  });
+
+  it('does not repeat a lever already recorded as degraded', () => {
+    const out = runProfile([
+      'runner.speed_profile_begin(ns())',
+      'with contextlib.redirect_stderr(ERR):',
+      "    runner.speed_profile_degrade('teacache', 'first')",
+      "    runner.speed_profile_degrade('teacache', 'second')",
+      "print(runner._SPEED_PROFILE_REPORT['degraded'])",
+    ].join('\n'));
+    expect(out.trim()).toBe("['teacache']");
+  });
+
+  it.each([
+    ['omitted', [], ['None', 'False', 'None']],
+    ['given', ['--speed-profile', 'fast', '--teacache', '--require-adapter', 'a.safetensors'], ['fast', 'True', 'a.safetensors']],
+  ])('parses the speed-profile flags when %s', (_label, extra, expected) => {
+    const out = runPython(`${importRunner}\n${[
+      'import sys',
+      `sys.argv = ["generate_ltx2.py", "--mode", "text", "--prompt", "p", "--output", "/tmp/o.mp4", "--model", "m"] + ${JSON.stringify(extra)}`,
+      'a = runner.parse_args()',
+      'print(a.speed_profile)',
+      'print(a.teacache)',
+      'print(a.require_adapter)',
+    ].join('\n')}`);
+    expect(outLines(out)).toEqual(expected);
   });
 });

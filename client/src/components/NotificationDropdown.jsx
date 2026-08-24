@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router';
 import { Bell, X, CheckCheck, Trash2, Brain, ListTodo, AlertTriangle, Code, HelpCircle, BellRing, Sparkles } from 'lucide-react';
 import { timeAgo } from '../utils/formatters';
+import { isHttpUrl } from '../utils/urlNormalize';
 import { clickableProps } from '../lib/a11yKeyboard';
 import useClickOutside from '../hooks/useClickOutside.js';
 import usePopoverPosition, { VIEWPORT_PADDING } from '../hooks/usePopoverPosition.js';
@@ -112,7 +113,11 @@ export default function NotificationDropdown({
       onMarkAsRead(notification.id);
     }
     if (notification.link) {
-      navigate(notification.link);
+      if (isHttpUrl(notification.link)) {
+        window.open(notification.link, '_blank', 'noopener,noreferrer');
+      } else {
+        navigate(notification.link);
+      }
       setIsOpen(false);
     }
   };
