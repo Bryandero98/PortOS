@@ -25,7 +25,7 @@ vi.mock('../../lib/heavyJobClaim.js', () => ({
     ok: true, holder: {}, release: heavyClaimRelease, handoffTo: heavyClaimHandoff,
   })),
 }));
-vi.mock('../../lib/localMemory.js', async (importOriginal) => ({
+vi.mock('../localMemory.js', async (importOriginal) => ({
   ...(await importOriginal()),
   prepareLocalMemory: mockPrepareLocalMemory,
 }));

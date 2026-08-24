@@ -51,7 +51,7 @@ const { claimRelease } = vi.hoisted(() => ({ claimRelease: vi.fn(async () => {})
 vi.mock('../../lib/heavyJobClaim.js', () => ({
   claimHeavyLocalJob: vi.fn(async () => ({ ok: true, holder: {}, release: claimRelease })),
 }));
-vi.mock('../../lib/localMemory.js', async (importOriginal) => ({
+vi.mock('../localMemory.js', async (importOriginal) => ({
   ...(await importOriginal()),
   prepareLocalMemory: vi.fn(async () => ({ unloaded: [], availableGb: 64, totalGb: 64, budgetGb: 64, blockers: [] })),
 }));

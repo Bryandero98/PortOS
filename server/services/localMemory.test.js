@@ -10,17 +10,17 @@ const h = vi.hoisted(() => ({
   lmUnload: vi.fn(),
 }));
 
-vi.mock('../services/ollamaManager.js', () => ({
+vi.mock('./ollamaManager.js', () => ({
   getLoadedModels: vi.fn(async () => [{ name: 'llama3' }]),
   unloadModel: (...a) => h.ollamaUnload(...a),
   getBaseUrl: () => 'http://localhost:11434',
 }));
-vi.mock('../services/lmStudioManager.js', () => ({
+vi.mock('./lmStudioManager.js', () => ({
   getLoadedModels: vi.fn(async () => []),
   unloadModel: (...a) => h.lmUnload(...a),
   getBaseUrl: () => 'http://localhost:1234',
 }));
-vi.mock('../services/providers.js', () => ({
+vi.mock('./providers.js', () => ({
   getAllProviders: vi.fn(async () => {
     // The real one rejects when the AI toolkit was never initialized — the
     // failure mode this module must survive without blocking a job.
@@ -28,11 +28,11 @@ vi.mock('../services/providers.js', () => ({
     return h.providers;
   }),
 }));
-vi.mock('./cudaCapability.js', () => ({ getCudaCapability: vi.fn(async () => h.cuda) }));
-vi.mock('./openAiModelsProbe.js', () => ({ probeOpenAiModels: (...a) => h.probe(...a) }));
+vi.mock('../lib/cudaCapability.js', () => ({ getCudaCapability: vi.fn(async () => h.cuda) }));
+vi.mock('../lib/openAiModelsProbe.js', () => ({ probeOpenAiModels: (...a) => h.probe(...a) }));
 
 const { detectGpuBlockers, gpuBlockersMessage, prepareLocalMemory } = await import('./localMemory.js');
-const { getCudaCapability } = await import('./cudaCapability.js');
+const { getCudaCapability } = await import('../lib/cudaCapability.js');
 
 const VLLM_ENDPOINT = 'http://127.0.0.1:18020/v1';
 const vllmProvider = (over = {}) => ({
