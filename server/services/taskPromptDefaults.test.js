@@ -598,6 +598,23 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(DEFAULT_TASK_PROMPTS['claim-issue']).toContain('--limit 500');
     expect(DEFAULT_TASK_PROMPTS['claim-issue']).not.toContain('--limit 100');
   });
+
+  it('claim flows retry self-assigned issues and release every open-claim marker', () => {
+    const github = DEFAULT_TASK_PROMPTS['claim-issue'];
+    const gitlab = DEFAULT_TASK_PROMPTS['claim-issue-gitlab'];
+
+    expect(PROMPT_VERSIONS['claim-issue']).toBe(18);
+    expect(PROMPT_VERSIONS['claim-issue-gitlab']).toBe(18);
+    expect(github).toContain('authenticated account remains eligible for a retry');
+    expect(github).toContain('at least one assignee\'s login matches `$ME`');
+    expect(github).toContain('--remove-assignee "${ASSIGNEES:-@me}"');
+    expect(gitlab).toContain('authenticated account remains eligible for a retry');
+    expect(gitlab).toContain('at least one assignee\'s username matches `$ME`');
+    expect(gitlab).toContain('--unassign --unlabel in-progress');
+    expect(gitlab).toContain('clears every current assignee');
+    expect(PREVIOUS_DEFAULT_PROMPTS['claim-issue'].at(-1)).toContain('It has NO assignees');
+    expect(PREVIOUS_DEFAULT_PROMPTS['claim-issue-gitlab'].at(-1)).toContain('It has NO assignees');
+  });
   // #4685: `glab issue list -F json` is accepted, IGNORED, and answers with the
   // human table at exit 0 (`-F` is `--output-format` there, a different flag from
   // `--output`), and `glab mr list --state <x>` does not exist at all. The tree

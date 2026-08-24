@@ -60,6 +60,12 @@ describe('perpetualWork', () => {
       expect(isActionableIssue({ ...base, assignees: [{ login: 'someone' }] })).toBe(false);
     });
 
+    it('accepts an issue assigned to the authenticated account', () => {
+      expect(isActionableIssue({ ...base, assignees: [{ login: 'Alice' }] }, new Set(), null, 'alice')).toBe(true);
+      expect(isActionableIssue({ ...base, assignees: [{ username: 'ALICE' }] }, new Set(), null, 'alice')).toBe(true);
+      expect(isActionableIssue({ ...base, assignees: [{ login: 'bob' }] }, new Set(), null, 'alice')).toBe(false);
+    });
+
     it('rejects an in-flight issue number', () => {
       expect(isActionableIssue(base, new Set([7]))).toBe(false);
     });
@@ -244,6 +250,20 @@ describe('perpetualWork', () => {
       expect(out.total).toBe(7);
       expect(out.inFlightCount).toBe(0);
       expect(out.filteredCount).toBe(7); // the epic (#1) + 6 needs-input/blocked
+    });
+
+    it('keeps an issue assigned to the authenticated account claimable', async () => {
+      spawn.mockImplementation((cmd, args = []) => {
+        if (cmd === 'gh' && args[0] === 'api' && args.includes('user')) return fakeChild('alice\n');
+        if (cmd === 'gh' && args[0] === 'issue') return fakeChild(JSON.stringify([{
+          number: 3, title: 'retry my claim', assignees: [{ login: 'alice' }], labels: []
+        }]));
+        if (cmd === 'git' && args[0] === 'branch') return fakeChild('main\n');
+        if (cmd === 'gh' && args[0] === 'pr') return fakeChild('');
+        return fakeChild('');
+      });
+      const out = await detectGithubIssues(app, { issueAuthorFilter: 'any' });
+      expect(out).toMatchObject({ actionable: true, count: 1, sample: [3] });
     });
 
     it('reports the open/in-flight breakdown when nothing is claimable (the "40 open but parked" case)', async () => {
@@ -542,6 +562,17 @@ describe('perpetualWork', () => {
       expect(out.actionable).toBe(true);
       expect(out.count).toBe(1); // only #10 (#11 blocked label, #12 in-flight MR)
       expect(out.sample).toEqual([10]);
+    });
+
+    it('keeps an issue assigned to the authenticated account claimable', async () => {
+      routeSpawn({
+        'glab api': { stdout: 'octo\n' }, // glab api user -q .username
+        'glab issue': { stdout: JSON.stringify([{ iid: 10, title: 'retry my claim', assignees: [{ username: 'octo' }], labels: [] }]) },
+        'git branch': { stdout: 'main\n' },
+        'glab mr': { stdout: '[]' }
+      });
+      const out = await detectGitlabIssues(app, { issueAuthorFilter: 'any' });
+      expect(out).toMatchObject({ actionable: true, count: 1, sample: [10] });
     });
 
     it('reports a transient failure when glab exits non-zero', async () => {

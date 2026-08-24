@@ -579,6 +579,8 @@ describe('work-item target', () => {
     it('falls back to the fixed 3-label text when no excludeLabelsBlock is passed', () => {
       const block = buildTargetWorkItemBlock('claim-issue', '42');
       expect(block).toContain('already carries any of `in-progress`, `blocked`, `needs-input`');
+      expect(block).toContain('ignore its current assignee');
+      expect(block).not.toContain('already assigned');
     });
 
     it('re-checks the SAME resolved exclude-labels list Phase 1 uses, not just the fixed 3, so a pinned target can\'t bypass a configured exclusion (e.g. a stale picker selection that gained the label after being selected)', () => {
