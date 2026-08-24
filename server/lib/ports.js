@@ -30,6 +30,6 @@ export const resolvePostgresPort = (pgMode) =>
 
 export const DEFAULT_PEER_PORT = PORTS.API;
 export const PORTOS_UI_URL = process.env.PORTOS_UI_URL
-  || `http://${process.env.PORTOS_HOST || 'localhost'}:${process.env.PORT_UI || PORTS.UI}`;
+  || `http://${process.env.PORTOS_HOST || 'localhost'}:${PORTS.UI}`;
 export const PORTOS_API_URL = process.env.PORTOS_API_URL
   || `http://${process.env.PORTOS_HOST || 'localhost'}:${process.env.PORT || PORTS.API}`;
