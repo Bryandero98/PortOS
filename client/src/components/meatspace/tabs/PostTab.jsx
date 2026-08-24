@@ -297,6 +297,8 @@ export default function PostTab({ tab = 'launcher', subtab, mode }) {
     case 'rhetoric':
       return (
         <RhetoricTrainer
+          config={config}
+          onConfigUpdate={setConfig}
           mode={subtab}
           onSelectMode={(id) => navigate(`/post/rhetoric/${id}`)}
           onExitMode={() => navigate('/post/rhetoric')}

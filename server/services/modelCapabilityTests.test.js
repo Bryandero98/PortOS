@@ -61,6 +61,7 @@ const {
   resolveModelCapabilities, SANDBOX_FILES, __resetFixtureCaches,
 } = await import('./modelCapabilityTests.js');
 const { loadResults } = await import('./modelCapabilityTestStore.js');
+const { RHETORIC_REFERENCE_SET } = await import('../lib/postRhetoric.js');
 
 const OPENCODE_LLAMA = {
   id: 'opencode-llama-tui', name: 'OpenCode llama TUI', type: 'tui', command: 'opencode', args: [], llamaBacked: true,
@@ -226,6 +227,23 @@ describe('runCapabilityTest — fiction scene', () => {
     expect(record.detail.wordCount).toBeGreaterThan(0);
     expect(record.detail.hasDialogue).toBe(true);
     expect(record.verdict).toBe('partial');
+  });
+});
+
+describe('runCapabilityTest — rhetoric reference set', () => {
+  it('scores the evaluator against every committed gold label', async () => {
+    runLocalLlmTest.mockResolvedValue({
+      text: JSON.stringify({
+        evaluations: RHETORIC_REFERENCE_SET.map(({ id, expectedScore }) => ({ id, score: expectedScore })),
+      }),
+      timings: { totalMs: 900 },
+    });
+    const record = await runCapabilityTest({ backend: 'ollama', modelId: 'writer', testId: 'rhetoric-reference' });
+
+    expect(record.verdict).toBe('passed');
+    expect(record.detail.referenceCount).toBe(RHETORIC_REFERENCE_SET.length);
+    expect(record.detail.meanAbsoluteError).toBe(0);
+    expect(runLocalLlmTest.mock.calls[0][0].prompt).toContain('meter-01');
   });
 });
 

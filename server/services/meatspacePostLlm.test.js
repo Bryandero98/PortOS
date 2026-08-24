@@ -38,7 +38,8 @@ import {
   generateStoryPrompt,
   generateInventionPitch,
   generateReframe,
-  scoreLlmDrill
+  scoreLlmDrill,
+  callAI,
 } from './meatspacePostLlm.js';
 
 // Helper: mock an API provider that returns a given JSON string. Sets the
@@ -103,6 +104,17 @@ describe('LLM_DRILL_TYPES', () => {
       'invention-pitch',
       'reframe',
     ]);
+  });
+});
+
+describe('callAI', () => {
+  it('passes an explicit effort and source through the shared runner', async () => {
+    mockApiProvider({ ok: true });
+    await callAI('Evaluate this attempt.', 'test-provider', 'test-model', 'high', 'meatspace-post-rhetoric-evaluator');
+    expect(runPromptThroughProvider).toHaveBeenCalledWith(expect.objectContaining({
+      effort: 'high',
+      source: 'meatspace-post-rhetoric-evaluator',
+    }));
   });
 });
 

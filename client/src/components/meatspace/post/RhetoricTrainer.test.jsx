@@ -1,25 +1,29 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import RhetoricTrainer from './RhetoricTrainer';
+import { evaluateRhetoricAttempt, submitTrainingEntry } from '../../../services/api';
 
 vi.mock('../../../services/api', () => ({
+  evaluateRhetoricAttempt: vi.fn(),
+  getProviders: vi.fn(() => Promise.resolve({ providers: [] })),
   submitTrainingEntry: vi.fn(() => Promise.resolve()),
 }));
 
 describe('RhetoricTrainer', () => {
   const props = { onBack: vi.fn(), onSelectMode: vi.fn(), onExitMode: vi.fn(), onContinue: vi.fn() };
 
-  it('shows the rhetoric exercise choices', () => {
+  it('shows the rhetoric exercise choices', async () => {
     render(<RhetoricTrainer {...props} />);
-    expect(screen.getByText('Iambic Pentameter')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Iambic Pentameter')).toBeInTheDocument());
     expect(screen.getByText('Diacope')).toBeInTheDocument();
     expect(screen.getByText('Chiasmus')).toBeInTheDocument();
     expect(screen.getByText('Progressia')).toBeInTheDocument();
     expect(screen.getByText('Rhetorical Brainstorm')).toBeInTheDocument();
   });
 
-  it('requires an attempt and self-rating before advancing', () => {
+  it('requires an attempt and self-rating before advancing', async () => {
     render(<RhetoricTrainer {...props} mode="diacope" />);
+    await waitFor(() => expect(screen.getByText('Prompt 1')).toBeInTheDocument());
     const save = screen.getByRole('button', { name: /save attempt/i });
     expect(save).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Your attempt'), { target: { value: 'Stay, until the storm passes. Stay.' } });
@@ -29,10 +33,52 @@ describe('RhetoricTrainer', () => {
     expect(screen.getByText('Prompt 2')).toBeInTheDocument();
   });
 
-  it('offers a chiasmus prompt and craft checklist', () => {
+  it('offers a chiasmus prompt and craft checklist', async () => {
     render(<RhetoricTrainer {...props} mode="chiasmus" />);
+    await waitFor(() => expect(screen.getByText('Prompt 1')).toBeInTheDocument());
     expect(screen.getByText('Chiasmus')).toBeInTheDocument();
     expect(screen.getByText(/reverses its key terms/i)).toBeInTheDocument();
     expect(screen.getByText(/reverse order/i)).toBeInTheDocument();
+  });
+
+  it('advances while evaluations are pending and saves the completed report', async () => {
+    const deferred = Array.from({ length: 5 }, () => {
+      let resolve;
+      const promise = new Promise((finish) => { resolve = finish; });
+      return { promise, resolve };
+    });
+    let evaluationIndex = 0;
+    evaluateRhetoricAttempt.mockImplementation(() => deferred[evaluationIndex++].promise);
+    const evaluation = {
+      overallScore: 82,
+      dimensions: ['form', 'image', 'sound'].map((id) => ({ id, score: 82, feedback: 'Specific evidence.' })),
+      summary: 'A clear attempt with a deliberate image.',
+      provenance: { rubricVersion: 'rhetoric-evaluator-v1', providerId: 'example-provider', model: 'example-model', effort: 'high' },
+    };
+    const evaluatorConfig = {
+      rhetoricEvaluator: { enabled: true, providerId: 'example-provider', model: 'example-model', effort: 'high' },
+    };
+    render(<RhetoricTrainer {...props} mode="meter" config={evaluatorConfig} />);
+    await waitFor(() => expect(screen.getByText('Prompt 1')).toBeInTheDocument());
+
+    for (let index = 0; index < 5; index += 1) {
+      fireEvent.change(screen.getByLabelText('Your attempt'), { target: { value: `Attempt ${index + 1}` } });
+      fireEvent.click(screen.getByRole('button', { name: 'Rate 4 out of 5' }));
+      fireEvent.click(screen.getByRole('button', { name: /Save attempt & next/i }));
+      await waitFor(() => expect(evaluateRhetoricAttempt).toHaveBeenCalledTimes(index + 1));
+      if (index < 4) {
+        deferred[index].resolve({ evaluation });
+        await waitFor(() => expect(screen.getByText(`Prompt ${index + 2}`)).toBeInTheDocument());
+      }
+    }
+
+    expect(screen.getByRole('button', { name: 'Saving report…' })).toBeDisabled();
+    deferred[4].resolve({ evaluation });
+    await waitFor(() => expect(submitTrainingEntry).toHaveBeenCalledTimes(1));
+    const saved = submitTrainingEntry.mock.calls[0][0];
+    expect(saved.scorerProvenance).toBe('post-rhetoric-self+ai');
+    expect(saved.questions).toHaveLength(5);
+    expect(saved.questions.every((question) => question.evaluation?.overallScore === 82)).toBe(true);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue POST' })).not.toBeDisabled());
   });
 });

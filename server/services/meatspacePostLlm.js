@@ -43,7 +43,7 @@ export const LLM_DRILL_TYPES = [
 // AI CALLER (mirrors brain.js pattern)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function callAI(prompt, providerId, model) {
+export async function callAI(prompt, providerId, model, effort = null, source = 'meatspace-post-llm') {
   const provider = providerId
     ? await getProviderById(providerId)
     : await getActiveProvider();
@@ -53,7 +53,7 @@ async function callAI(prompt, providerId, model) {
   }
 
   const selectedModel = model || provider.defaultModel;
-  console.log(`🧪 POST LLM drill: ${provider.id} / ${selectedModel}`);
+  console.log(`🧪 POST LLM: ${provider.id} / ${selectedModel}`);
 
   // Append headlessArgs so claude-code's POST drills don't pollute the
   // user's session list. The clone leaves the saved provider config
@@ -64,7 +64,7 @@ async function callAI(prompt, providerId, model) {
     : provider;
 
   const result = await runPromptThroughProvider({
-    provider: providerForCall, prompt, source: 'meatspace-post-llm', model: selectedModel,
+    provider: providerForCall, prompt, source, model: selectedModel, effort,
     timeout: provider.timeout || 120000,
   });
   return {
@@ -74,7 +74,7 @@ async function callAI(prompt, providerId, model) {
   };
 }
 
-function parseJsonFromAI(content) {
+export function parseJsonFromAI(content) {
   if (!content || typeof content !== 'string') throw new Error('Empty AI response');
   let jsonStr = content.trim();
   // Strip fenced code blocks
