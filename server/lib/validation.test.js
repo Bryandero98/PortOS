@@ -89,7 +89,7 @@ describe('validation.js', () => {
       }).success).toBe(true);
       expect(datadogInstanceRequestSchema.safeParse({
         id: ` ${'legacy-id-'.repeat(20)} `,
-        name: 'Legacy DataDog',
+        name: ` ${'Legacy DataDog '.repeat(20)} `,
         site: 'api.datadoghq.com',
       }).data.id).toBe(` ${'legacy-id-'.repeat(20)} `);
       expect(datadogSearchErrorsRequestSchema.safeParse({

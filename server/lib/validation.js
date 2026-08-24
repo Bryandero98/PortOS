@@ -100,7 +100,9 @@ export const datadogInstanceRequestSchema = z.object({
   // outside the current preferred length/whitespace convention, and changing
   // the lookup key here would make those instances impossible to edit.
   id: z.string().min(1),
-  name: z.string().trim().min(1).max(120),
+  // Existing installs may have stored names longer than the current preferred
+  // display length, and updates should not make those records uneditable.
+  name: z.string().trim().min(1),
   site: z.string().trim().min(1).max(253),
   apiKey: z.string().max(512).optional(),
   appKey: z.string().max(512).optional(),
