@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DEPLOY_FLAGS } from './appDeployFlags.js';
 
 // =============================================================================
 // SOCKET EVENT SCHEMAS
@@ -94,7 +95,6 @@ export const appStandardizeSchema = z.object({
 });
 
 // app:deploy — app ID and optional flags for Xcode deploy
-import { DEPLOY_FLAGS } from '../services/appDeployer.js';
 const appDeployFlagSchema = z.enum(DEPLOY_FLAGS, {
   errorMap: () => ({ message: `flag must be one of: ${DEPLOY_FLAGS.join(', ')}` })
 });
