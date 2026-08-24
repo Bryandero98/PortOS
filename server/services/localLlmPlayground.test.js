@@ -287,6 +287,12 @@ describe('runLocalLlmTest timeout/abort contract', () => {
     expect(capturedSignal.aborted).toBe(true);
     // The cancel surfaces as the same partial-output-on-abort contract.
     expect(result.text).toBe('partial');
+    expect(result).toMatchObject({ canceled: true, error: 'Local LLM test canceled by client' });
+    expect(finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+      error: 'Local LLM test canceled by client',
+      exitCode: null,
+      extras: { canceled: true, completionReason: 'client-disconnect' },
+    }));
   });
 
   it('aborts the upstream fetch when the client signal fires mid-run', async () => {
