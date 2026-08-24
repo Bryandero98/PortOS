@@ -172,7 +172,7 @@ router.post('/tasks/slashdo', asyncHandler(async (req, res) => {
   // `plan-task` is also a plan-only quick action, so it must use the same
   // forge-only gate as the general task endpoint rather than reaching
   // `cos.addTask` through this separate route.
-  if (command === 'plan-task') await assertPlanOnlyTracker({ app });
+  if (command === 'plan-task') await assertPlanOnlyTracker({ app, slashdoCommand: command });
 
   // Enforce the catalog's stack gate server-side. The Agent Operations panel only
   // offers the applicable one of `better` / `better-swift`, but the API must not
