@@ -10,7 +10,7 @@ vi.mock('../services/api', () => ({
 }));
 
 const providers = [
-  { id: 'codex', models: ['gpt-5.6-sol', 'gpt-5.6-luna'] },
+  { id: 'codex', models: ['gpt-5.6-sol', 'gpt-5.6-luna'], defaultModel: 'gpt-5.6-sol' },
   { id: 'claude-code', models: ['claude-opus-5'] },
   // agy enumerates each effort tier as its own id; the reviewer row has a
   // separate Effort cell, so the picker must collapse them to base ids.
@@ -44,6 +44,13 @@ describe('useReviewerModelOptions', () => {
     for (const reviewer of MODEL_SELECTABLE_REVIEWERS) {
       expect(Array.isArray(result.current.optionsByReviewer[reviewer])).toBe(true);
     }
+  });
+
+  it('publishes concrete provider defaults without exposing configured-default sentinels', async () => {
+    const { result } = renderHook(() => useReviewerModelOptions());
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.defaultModels.codex).toBe('gpt-5.6-sol');
+    expect(result.current.defaultModels.antigravity).toBeNull();
   });
 
   // #3728: `agy --model <id>` is real, so the antigravity row gets a Model cell.
