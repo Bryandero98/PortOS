@@ -553,7 +553,6 @@ describe('ReviewerPicker', () => {
         });
       });
     });
-  });
 
   describe('help disclosure', () => {
     it('keeps the reviewer tip collapsed until opened', async () => {
