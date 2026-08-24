@@ -23,7 +23,7 @@
     "code-reviewer-implement": "2e10cac7c1e1cd021d06bfddb5c1eaf2",
     "error-handling": "9afba2e99b90a8d5771c75e7f0615d96",
     "typing": "1f2758ce0bb62d789a21aec241549531",
-    "release-check": "2d2a6700c23b73bf738c2aa915e37277",
+    "release-check": "64be10f6ac7bcf74d4fc257089fc179b",
     "stash-cleanup": "1c12bac5aac6bb27008c40981e7db08c",
     "jira-sprint-manager": "3e63c8a3bdf0d5a05a30faaa2dc07980",
     "do-replan": "35660eb7b43e4259a6a9253ed288a1db",
@@ -67,7 +67,7 @@
     "data-safety": 1,
     "simplify": 1,
     "stash-cleanup": 2,
-    "release-check": 10
+    "release-check": 11
   },
   "REFERENCE_WATCH_AUDITED_VERSION": 3,
   "PREVIOUS_DEFAULT_PROMPTS": {
@@ -201,7 +201,8 @@
       "8436a47b5b1c9b2a342795e5634552da",
       "746f11daaf721eae9e16845858ef55ee",
       "08c928e6f79f83535e40b6988ff6eae3",
-      "afa9039cfbff21d77d601dc74eb5b81f"
+      "afa9039cfbff21d77d601dc74eb5b81f",
+      "2d2a6700c23b73bf738c2aa915e37277"
     ],
     "branch-reconcile": [
       "7ef2b5f7d8f05937d4912b26ad45f42e",

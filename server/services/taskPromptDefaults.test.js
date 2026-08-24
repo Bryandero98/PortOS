@@ -500,9 +500,9 @@ describe('taskPromptDefaults integrity snapshot', () => {
   // release-check READS the changelog rather than writing it, so its fix is the
   // mirror image: an unreleased set that lives in uncollected fragments must not
   // read as "not enough work accumulated for a release".
-  it('release-check v9 reconciles missing releases before evaluating readiness, preserving the v8 default', () => {
+  it('release-check v11 delegates release mechanics and configured reviews, preserving v10', () => {
     const current = DEFAULT_TASK_PROMPTS['release-check'];
-    expect(PROMPT_VERSIONS['release-check']).toBeGreaterThanOrEqual(9);
+    expect(PROMPT_VERSIONS['release-check']).toBeGreaterThanOrEqual(11);
     expect(current).toContain('Reconcile Missing Releases');
     expect(current).toContain('Unpublished release detected');
     expect(current).toContain('--latest=false');
@@ -516,6 +516,11 @@ describe('taskPromptDefaults integrity snapshot', () => {
     expect(current).toContain('database-backed test suite');
     expect(current).toContain('test-database provisioning/setup command');
     expect(current).toContain('never substitute a production database');
+    expect(current).toContain('{reviewers}');
+    expect(current).toContain('/do:release');
+    expect(current).not.toMatch(/copilot/i);
+    expect(current).not.toContain('reviewThreads');
+    expect(current).not.toContain('copilot-pull-request-reviewer');
 
     // v8 is identified by content, not by position: later revisions append
     // their own outgoing bodies after it, so `last` stops meaning v8.
@@ -525,6 +530,9 @@ describe('taskPromptDefaults integrity snapshot', () => {
     );
     expect(v8Candidates).toHaveLength(1);
     expect(v8Candidates[0]).not.toBe(current);
+    const v10 = previous.find((prompt) => prompt.includes('copilot-pull-request-reviewer') && prompt.includes('AGENTS.md'));
+    expect(v10).toBeDefined();
+    expect(v10).not.toBe(current);
   });
 
   // refresh-local-llm-catalog is the one PortOS-ONLY prompt in this set (it

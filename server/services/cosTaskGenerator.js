@@ -1772,9 +1772,7 @@ export async function generateSelfImprovementTaskForType(taskType, state) {
   const taskSchedule = await import('./taskSchedule.js');
   const { getTaskPrompt } = await import('./taskPromptService.js');
   const interval = await taskSchedule.getTaskInterval(taskType);
-
-  // Get the effective prompt (custom or default)
-  const description = await getTaskPrompt(taskType);
+  let description = await getTaskPrompt(taskType);
 
   const metadata = {
     analysisType: taskType,
@@ -1808,6 +1806,20 @@ export async function generateSelfImprovementTaskForType(taskType, state) {
 
   const approval = await resolveConfidenceApproval(state, `self-improve:${taskType}`, `Task self-improve:${taskType}`, metadata);
   stampApprovalReason(metadata, approval);
+
+  // Self-improvement tasks do not pass through the managed-app prompt renderer,
+  // but release-check still names the install's configured reviewers explicitly.
+  // Resolve that token here so the global/on-demand path gets the same reviewer
+  // contract and local-review procedure as an app-scoped release task.
+  if (description.includes('{reviewers}')) {
+    const codeReviewDefaults = await getCodeReviewDefaults().catch(() => null);
+    const reviewers = resolveClaimReviewerConfig(metadata, codeReviewDefaults, codeReviewDefaults?.reviewers);
+    Object.assign(metadata, reviewerConfigMetadata(reviewers));
+    description = description
+      .replace(/\{reviewers\}/g, () => reviewers.csv)
+      + appendReviewerEffortBlock(reviewers.reviewers, reviewers.reviewerEfforts, reviewers.reviewerModels)
+      + buildLocalReviewerInstructions(reviewers.reviewers, reviewers.reviewerModels, reviewers.reviewerEfforts);
+  }
 
   const task = {
     id: `self-improve-${taskType}-${Date.now().toString(36)}`,

@@ -9002,7 +9002,8 @@ Use Playwright MCP to test PortOS at different viewport sizes:
 
 Focus on these routes: /cos, /cos/tasks, /devtools, /providers`,
   ],
-  'release-check': [
+  'release-check': (() => {
+    const history = [
     // prior default (pre-genericization / intermediate)
     `[Improvement: {appName}] Release Check
 
@@ -10003,7 +10004,17 @@ Summarize:
 - Key changes (from changelog)
 - Number of review iterations needed
 - Any unresolved issues`,
-  ],
+    ];
+    // v10 only changed the agent-instructions filename. Derive it from the
+    // already preserved v9 body so the outgoing default stays byte-identical
+    // without duplicating a 7 KB template in this history file.
+    const v10 = history.at(-1).replace(
+      'Then search for release documentation. Check your CLAUDE.md context (already provided above) for "Git Workflow", "Release", or "Changelog" sections. If the release process is not clear from CLAUDE.md, check these files in order (use whichever exist):',
+      'Then search for release documentation. Check your AGENTS.md (or CLAUDE.md) context (already provided above) for "Git Workflow", "Release", or "Changelog" sections. If the release process is not clear from those instructions, check these files in order (use whichever exist):'
+    );
+    if (v10 === history.at(-1)) throw new Error('release-check v10 historical prompt derivation did not match v9');
+    return [...history, v10];
+  })(),
   'branch-reconcile': [
     // v1 default — superseded by v2, whose Rules make "merged" (not "PR opened")
     // the terminal state for an auto-mergeable branch. v1's blanket "never merge
