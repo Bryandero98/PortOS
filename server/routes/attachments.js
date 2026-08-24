@@ -12,6 +12,7 @@ import {
   ATTACHMENT_ALLOWED_EXTENSIONS, isPathInsideDir, saveBase64Upload, serveLocalFile,
 } from '../lib/fileUtils.js';
 import { MAX_BASE64_UPLOAD_BYTES } from '../lib/uploadLimits.js';
+import { validateRequest, attachmentUploadRequestSchema } from '../lib/validation.js';
 
 const ATTACHMENTS_DIR = PATHS.cosAttachments;
 
@@ -23,15 +24,7 @@ const MAX_FILE_SIZE = MAX_BASE64_UPLOAD_BYTES;
 
 // POST /api/attachments - Upload a file attachment (base64)
 router.post('/', asyncHandler(async (req, res) => {
-  const { data, filename } = req.body;
-
-  if (!data) {
-    throw new ServerError('data is required (base64)', { status: 400, code: 'VALIDATION_ERROR' });
-  }
-
-  if (!filename) {
-    throw new ServerError('filename is required', { status: 400, code: 'VALIDATION_ERROR' });
-  }
+  const { data, filename } = validateRequest(attachmentUploadRequestSchema, req.body);
 
   // Shared pipeline: allowlist → decode → size cap → `<uuid8>-name` → write.
   const saved = await saveBase64Upload(ATTACHMENTS_DIR, { filename, data }, {

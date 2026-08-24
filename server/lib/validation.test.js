@@ -48,6 +48,12 @@ import {
   databaseSwitchSchema,
   databaseBackendSchema,
   databaseExportSchema,
+  datadogInstanceRequestSchema,
+  datadogSearchErrorsRequestSchema,
+  providerVisionTestSchema,
+  providerVisionSuiteSchema,
+  uploadRequestSchema,
+  attachmentUploadRequestSchema,
   spriteTrackFrameCountSchema,
   spriteTrackFpsSchema,
   spriteRuntimeContractSchema,
@@ -72,6 +78,45 @@ import {
 } from './brainValidation.js';
 
 describe('validation.js', () => {
+  describe('issue #4922 request schemas', () => {
+    it('accepts the DataDog instance and error-search request shapes', () => {
+      expect(datadogInstanceRequestSchema.safeParse({
+        id: 'example-datadog',
+        name: 'Example DataDog',
+        site: 'api.datadoghq.com',
+        apiKey: '',
+        appKey: 'example-app-key',
+      }).success).toBe(true);
+      expect(datadogSearchErrorsRequestSchema.safeParse({
+        serviceName: 'example-service',
+        environment: 'staging',
+        fromTime: '2026-08-23T00:00:00.000Z',
+      }).success).toBe(true);
+    });
+
+    it('rejects malformed upload and vision request bodies', () => {
+      expect(uploadRequestSchema.safeParse({ filename: 'example.txt' }).success).toBe(false);
+      expect(attachmentUploadRequestSchema.safeParse({ data: 123, filename: 'example.txt' }).success).toBe(false);
+      expect(datadogSearchErrorsRequestSchema.safeParse({
+        serviceName: 'example-service',
+        fromTime: 'not-a-date',
+      }).success).toBe(false);
+      expect(providerVisionTestSchema.safeParse({
+        imagePath: 'example.png',
+        expectedContent: [123],
+      }).success).toBe(false);
+    });
+
+    it('normalizes blank optional vision models to undefined', () => {
+      expect(providerVisionTestSchema.parse({ imagePath: 'example.png', model: '' }).model).toBeUndefined();
+      expect(providerVisionSuiteSchema.parse({ model: '' }).model).toBeUndefined();
+      expect(providerVisionTestSchema.parse({
+        imagePath: 'example.png',
+        expectedContent: ['button', 'text'],
+      }).expectedContent).toEqual(['button', 'text']);
+    });
+  });
+
   describe('parseIndexParam', () => {
     it('returns a non-negative integer route parameter', () => {
       expect(parseIndexParam('0')).toBe(0);

@@ -8,6 +8,11 @@ import { createLineReader } from '../lib/streamLines.js';
 import { onClientDisconnect, openSseStream } from '../lib/sseDownload.js';
 import { createInstallLogger } from '../lib/installLogger.js';
 import {
+  validateRequest,
+  providerVisionTestSchema,
+  providerVisionSuiteSchema,
+} from '../lib/validation.js';
+import {
   describeRuntimeInstall,
   getProviderRuntime,
   getProviderRuntimeStatus,
@@ -588,11 +593,7 @@ export function createPortOSProviderRoutes(aiToolkit) {
   }));
 
   router.post('/:id/test-vision', asyncHandler(async (req, res) => {
-    const { imagePath, prompt, expectedContent, model } = req.body;
-
-    if (!imagePath) {
-      throw new ServerError('imagePath is required', { status: 400, code: 'VALIDATION_ERROR' });
-    }
+    const { imagePath, prompt, expectedContent, model } = validateRequest(providerVisionTestSchema, req.body);
 
     const result = await testVision({
       imagePath,
@@ -606,7 +607,7 @@ export function createPortOSProviderRoutes(aiToolkit) {
   }));
 
   router.post('/:id/vision-suite', asyncHandler(async (req, res) => {
-    const { model } = req.body;
+    const { model } = validateRequest(providerVisionSuiteSchema, req.body);
     const result = await runVisionTestSuite(req.params.id, model);
     res.json(result);
   }));

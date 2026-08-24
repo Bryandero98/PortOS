@@ -92,6 +92,26 @@ export const datadogConfigSchema = z.object({
   environment: z.string().optional()
 });
 
+// POST /api/datadog/instances. API keys may be empty when updating an
+// existing instance because the route preserves the stored secret in that
+// case.
+export const datadogInstanceRequestSchema = z.object({
+  id: z.string().trim().min(1).max(128),
+  name: z.string().trim().min(1).max(120),
+  site: z.string().trim().min(1).max(253),
+  apiKey: z.string().max(512).optional(),
+  appKey: z.string().max(512).optional(),
+});
+
+// POST /api/datadog/instances/:id/search-errors.
+export const datadogSearchErrorsRequestSchema = z.object({
+  serviceName: z.string().trim().min(1).max(256),
+  environment: z.string().trim().max(128).optional(),
+  fromTime: z.string().trim().refine(value => !Number.isNaN(Date.parse(value)), {
+    message: 'fromTime must be a valid ISO 8601 date string',
+  }).optional(),
+});
+
 // Reference-repo entry. Each app can list upstream repos it watches for
 // clean-room reimplementation;
 // the `reference-watch` scheduled task fetches each one, finds commits since
@@ -483,6 +503,33 @@ export const providerSchema = z.object({
   tuiPromptDelayMs: z.number().int().min(250).max(60000).optional(),
   tuiIdleTimeoutMs: z.number().int().min(1000).max(86400000).optional()
 });
+
+// POST /api/providers/:id/test-vision.
+export const providerVisionTestSchema = z.object({
+  imagePath: z.string().trim().min(1).max(255),
+  prompt: z.string().max(8_000).optional(),
+  expectedContent: z.union([
+    z.string().trim().min(1).max(128),
+    z.array(z.string().trim().min(1).max(128)).max(50),
+  ]).optional(),
+  model: z.preprocess(emptyToUndefined, z.string().trim().min(1).max(256).optional()),
+});
+
+// POST /api/providers/:id/vision-suite.
+export const providerVisionSuiteSchema = z.object({
+  model: z.preprocess(emptyToUndefined, z.string().trim().min(1).max(256).optional()),
+});
+
+// POST /api/uploads and POST /api/attachments. The shared upload helper
+// enforces decoded-byte limits and extension allowlists; this schema bounds
+// the JSON shape before the helper receives it.
+export const base64FileUploadSchema = z.object({
+  data: z.string().trim().min(1, 'data is required (base64)').max(64 * 1024 * 1024),
+  filename: z.string().min(1, 'filename is required').max(255),
+});
+
+export const uploadRequestSchema = base64FileUploadSchema;
+export const attachmentUploadRequestSchema = base64FileUploadSchema;
 
 // Run command schema
 export const runSchema = z.object({
