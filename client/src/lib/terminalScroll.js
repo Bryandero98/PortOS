@@ -12,39 +12,43 @@
 //
 //   • The ALTERNATE screen buffer that a TUI takes (a watched `claude`/`codex` run,
 //     `vim`, `less`, `htop`) has no scrollback by construction: `ybase` stays 0, so
-//     `scrollLines()` and friends clamp to a no-op there. Scrolling an alt-screen
-//     app means handing the scroll to the APP, which owns its own scroll region.
+//     `scrollLines()` and friends clamp to a no-op there. OpenCode's TUI also does
+//     not use terminal mouse-wheel reports for its message viewport; its supported
+//     path is the terminal's PageUp/PageDown key bindings.
 //
-// The primitive is a synthesized wheel event on `terminal.element`. That is not a
-// shortcut around xterm — it is the only injection point xterm offers
-// (`attachCustomWheelEventHandler` intercepts wheels, it cannot inject one), and
-// going through it lets xterm's own decision table pick what to emit: an SGR mouse
-// report when the TUI enabled wheel tracking, a cursor key ("alternate scroll") when
-// it did not. Deciding that here would mean duplicating protocol state the public
-// API doesn't expose — `modes` reports `mouseTrackingMode`, but not the encoding.
-// The normal buffer is the one case driven directly, through the real `scrollLines()`.
+// Normal-buffer scroll stays inside xterm through `scrollLines()`. In an alternate
+// buffer, wheel events are captured before xterm's mouse protocol listener and
+// translated to PageUp/PageDown escape sequences through `terminal.input()`. That
+// keeps the event from becoming unsupported application mouse input while still
+// letting the TUI own its conversation scroll region. The page buttons and touch
+// gestures use the same key path.
 //
 // Scrolling back PAST a TUI, into what the shell printed before it started, stays
 // impossible while it holds the alternate screen. That is terminal semantics, not a
 // gap here.
 
-// One dispatched wheel event is one scroll step, whatever delta it carries: both of
-// xterm's alternate-buffer paths emit exactly one report (a mouse event, or a single
-// cursor key) per wheel event and ignore the magnitude. N lines therefore means N
-// events — bounded so a fling or a huge `rows` can't become an unbounded loop.
-const MAX_WHEEL_STEPS = 64;
+// Used to bound a touch drag or a synthetic request instead of emitting an unbounded
+// sequence of page keys when a gesture has a very large delta.
+const MAX_SCROLL_STEPS = 64;
 
 // Used when the terminal hasn't been laid out yet, so a swipe on a freshly-attached
 // session still scrolls instead of silently accumulating pixels forever.
 const FALLBACK_ROW_HEIGHT_PX = 18;
 
-// DOM_DELTA_LINE, not pixels: xterm's wheel accumulator divides a PIXEL delta by the
-// device cell height and additionally damps deltas under 50px, so a synthesized pixel
-// event is liable to round to zero steps and scroll nothing. A line delta is read as
-// whole lines with no accumulator.
-const WHEEL_DELTA_MODE_LINE = 1;
-
 const isAltBuffer = (terminal) => terminal?.buffer?.active?.type === 'alternate';
+
+// These are the standard xterm sequences OpenCode binds to its message page
+// commands. Sending them through Terminal#input makes them flow through xterm's
+// existing onData bridge to the PTY, without needing to know the server session id.
+const PAGE_UP_SEQUENCE = '\x1b[5~';
+const PAGE_DOWN_SEQUENCE = '\x1b[6~';
+
+/** Send one standard terminal PageUp/PageDown key to an alternate-screen app. */
+export const sendTerminalPageKey = (terminal, direction) => {
+  if (!terminal || !direction || typeof terminal.input !== 'function') return false;
+  terminal.input(direction < 0 ? PAGE_UP_SEQUENCE : PAGE_DOWN_SEQUENCE, false);
+  return true;
+};
 
 // `.xterm-screen` is the element that is exactly rows × cellHeight; the outer
 // `.xterm` container can carry padding that would skew a row height taken from it.
@@ -54,36 +58,28 @@ const screenElement = (terminal) => {
 };
 
 /**
- * Measure the terminal once per gesture: the row height that turns drag pixels into
- * lines, and the screen's centre, which a synthesized wheel needs because xterm
- * resolves the event to a cell and drops any mouse report landing outside the screen.
- *
- * Hoisted out of the per-move path deliberately — both are layout-forcing reads, and
- * PortOS runs xterm's DOM renderer, so during a live TUI run layout is dirty every
- * frame and a read per `touchmove` costs a full style+layout flush of the row grid at
- * touch frequency. Neither value can change inside a drag we are preventDefault-ing.
+ * Measure the terminal once per gesture. This is a layout-forcing read, and PortOS
+ * runs xterm's DOM renderer, so reading on every touchmove costs a style+layout flush
+ * at touch frequency. The row height cannot change inside a gesture we consume.
  */
 export const measureTerminalGeometry = (terminal) => {
   const rect = screenElement(terminal)?.getBoundingClientRect();
   const rows = terminal?.rows || 0;
   return {
     rowHeightPx: rect?.height > 0 && rows ? rect.height / rows : FALLBACK_ROW_HEIGHT_PX,
-    clientX: rect ? rect.left + rect.width / 2 : 0,
-    clientY: rect ? rect.top + rect.height / 2 : 0,
   };
 };
 
 // A screenful, minus one row of overlap so the reader keeps a line of context — the
-// same convention a pager uses for Page Up/Down.
+// same convention a normal terminal's Page Up/Down control uses.
 const terminalPageLines = (terminal) => Math.max(1, (terminal?.rows ?? 1) - 1);
 
 /**
- * Scroll the terminal by `lines` (negative = toward older output). Pass `geometry`
- * from `measureTerminalGeometry` to reuse a gesture's measurement; omit it for
- * one-shot calls. Returns the lines actually applied, signed — which is the clamp-
- * aware count, not the request.
+ * Scroll the normal terminal buffer by `lines` (negative = toward older output).
+ * Alternate-screen apps have no terminal scrollback, so each requested logical
+ * step becomes the app's supported PageUp/PageDown key instead.
  */
-export const scrollTerminalLines = (terminal, lines, geometry) => {
+export const scrollTerminalLines = (terminal, lines) => {
   const requested = Math.trunc(lines);
   if (!terminal || !requested) return 0;
 
@@ -94,26 +90,42 @@ export const scrollTerminalLines = (terminal, lines, geometry) => {
     return requested;
   }
 
-  const el = terminal.element;
-  if (!el?.dispatchEvent || typeof WheelEvent === 'undefined') return 0;
-  const up = requested < 0;
-  const steps = Math.min(Math.abs(requested), MAX_WHEEL_STEPS);
-  const { clientX, clientY } = geometry || measureTerminalGeometry(terminal);
-  const init = {
-    deltaY: up ? -1 : 1,
-    deltaMode: WHEEL_DELTA_MODE_LINE,
-    clientX,
-    clientY,
-    bubbles: true,
-    cancelable: true,
-  };
-  for (let i = 0; i < steps; i++) el.dispatchEvent(new WheelEvent('wheel', init));
-  return up ? -steps : steps;
+  const direction = requested < 0 ? -1 : 1;
+  const steps = Math.min(Math.abs(requested), MAX_SCROLL_STEPS);
+  let sent = 0;
+  while (sent < steps && sendTerminalPageKey(terminal, direction)) sent++;
+  return direction * sent;
 };
 
 /** Scroll one screenful. `direction` is -1 for up (older), 1 for down. */
-export const scrollTerminalPage = (terminal, direction) =>
-  scrollTerminalLines(terminal, terminalPageLines(terminal) * (direction < 0 ? -1 : 1));
+export const scrollTerminalPage = (terminal, direction) => {
+  if (isAltBuffer(terminal)) {
+    return sendTerminalPageKey(terminal, direction) ? (direction < 0 ? -1 : 1) : 0;
+  }
+  return scrollTerminalLines(terminal, terminalPageLines(terminal) * (direction < 0 ? -1 : 1));
+};
+
+/**
+ * Capture native wheel input for alternate-screen apps that expose scrolling as
+ * keybindings instead of terminal mouse reports. Normal shell scrollback is left
+ * entirely to xterm's own viewport listener.
+ */
+export const attachTerminalWheelScroll = (terminal) => {
+  const el = terminal?.element;
+  if (!el?.addEventListener) return () => {};
+
+  const onWheel = (event) => {
+    if (!isAltBuffer(terminal) || !event.deltaY || event.shiftKey) return;
+    if (!sendTerminalPageKey(terminal, event.deltaY < 0 ? -1 : 1)) return;
+    if (event.cancelable) event.preventDefault();
+    // xterm's mouse listener is on the same terminal element. Stop it before it
+    // turns this wheel into an unsupported mouse report for the TUI.
+    event.stopImmediatePropagation();
+  };
+
+  el.addEventListener('wheel', onWheel, { capture: true, passive: false });
+  return () => el.removeEventListener('wheel', onWheel, { capture: true });
+};
 
 /**
  * Convert accumulated drag distance into whole scroll steps, keeping the sub-row
@@ -130,9 +142,8 @@ export const planTouchScrollSteps = (accumPx, rowHeightPx) => {
 /**
  * Make a one-finger drag scroll the terminal. Returns a detach function.
  *
- * Buffer-agnostic on purpose: `scrollTerminalLines` already branches, and the gap
- * this closes (xterm 6 binds no touch handlers) is not specific to a TUI — an
- * ordinary shell's scrollback is just as unswipeable without it.
+ * Normal shell sessions scroll row-by-row. Alternate-screen TUIs use a half-viewport
+ * drag threshold because their PageUp/PageDown bindings move a page, not one row.
  */
 export const attachTerminalTouchScroll = (terminal) => {
   const el = terminal?.element;
@@ -158,13 +169,19 @@ export const attachTerminalTouchScroll = (terminal) => {
     const y = ev.touches[0].clientY;
     accumPx += lastY - y;
     lastY = y;
-    const { steps, remainderPx } = planTouchScrollSteps(accumPx, geometry.rowHeightPx);
+    // OpenCode's PageUp/PageDown bindings move the message viewport by a page,
+    // not by one terminal row. Wait for roughly half a viewport before sending a
+    // page key; normal shell scrollback remains row-granular.
+    const stepHeight = isAltBuffer(terminal)
+      ? Math.max(geometry.rowHeightPx, (terminal.rows || 1) * geometry.rowHeightPx / 2)
+      : geometry.rowHeightPx;
+    const { steps, remainderPx } = planTouchScrollSteps(accumPx, stepHeight);
     if (!steps) return;
     accumPx = remainderPx;
     // Swallow the gesture only once it has resolved into a scroll — before that it
     // may still be a tap, and a TUI with mouse tracking on wants the click.
     if (ev.cancelable) ev.preventDefault();
-    scrollTerminalLines(terminal, steps, geometry);
+    scrollTerminalLines(terminal, steps);
   };
 
   el.addEventListener('touchstart', onStart, { passive: true });

@@ -9,7 +9,7 @@ import { useSocket } from './useSocket';
 import { useThemeContext } from '../components/ThemeContext';
 import { buildTerminalTheme, parseCssColorToHex } from '../lib/terminalTheme';
 import { attachDictationBridge } from '../lib/terminalDictation';
-import { attachTerminalTouchScroll, scrollTerminalPage } from '../lib/terminalScroll';
+import { attachTerminalTouchScroll, attachTerminalWheelScroll, scrollTerminalPage } from '../lib/terminalScroll';
 import { readFileAsBase64 } from '../utils/fileUpload';
 import * as api from '../services/api';
 import toast from '../components/ui/Toast';
@@ -271,10 +271,14 @@ export function useShellSession({ isFullscreen } = {}) {
     term.open(terminalRef.current);
 
     // xterm binds no touch handlers of its own, so without this a swipe over the
-    // terminal does nothing — see lib/terminalScroll.js. Attached here rather than in
-    // its own effect: it has no reactive deps, so its lifetime is exactly the
-    // terminal instance's (unlike the dictation bridge, which needs emitShellInput).
+    // terminal does nothing. Alternate-screen TUIs need the matching wheel capture so
+    // OpenCode's supported PageUp/PageDown bindings receive scroll gestures instead
+    // of unsupported mouse reports. See lib/terminalScroll.js. Attached here rather
+    // than in its own effect: neither handler has reactive deps, so both lifetimes are
+    // exactly the terminal instance's (unlike the dictation bridge, which needs
+    // emitShellInput).
     const detachTouchScroll = attachTerminalTouchScroll(term);
+    const detachWheelScroll = attachTerminalWheelScroll(term);
 
     requestAnimationFrame(() => {
       fitAddon.fit();
@@ -285,6 +289,7 @@ export function useShellSession({ isFullscreen } = {}) {
 
     return () => {
       detachTouchScroll();
+      detachWheelScroll();
       term.dispose();
       termInstanceRef.current = null;
       fitAddonRef.current = null;
