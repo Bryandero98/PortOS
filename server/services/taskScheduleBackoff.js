@@ -23,7 +23,6 @@ export function computeFailureBackoffMs(consecutiveFailures, baseMs = FAILURE_BA
   if (n <= 0) return 0;
   return Math.min(baseMs * Math.pow(2, n), capMs);
 }
-
 const executionKey = (taskType) => taskType.startsWith('task:') ? taskType : `task:${taskType}`;
 
 const ensureExecutionRecord = (schedule, taskType, appId) => {
@@ -174,4 +173,3 @@ export async function clearTaskTypeFailurePark(taskType, appId = null) {
   if (wasParked) await clearTaskTypeFailureParkNotification(taskType, appId);
   return true;
 }
-

@@ -27,7 +27,6 @@ export async function addTemplateTask(template) {
   emitLog('info', `Added template task: ${newTemplate.name}`, { templateId: newTemplate.id }, '📅 TaskSchedule');
   return newTemplate;
 }
-
 export async function getTemplateTasks() {
   const schedule = await loadSchedule();
   return schedule.templates;
@@ -47,4 +46,3 @@ export async function deleteTemplateTask(templateId) {
   emitLog('info', `Deleted template task: ${deleted.name}`, { templateId }, '📅 TaskSchedule');
   return { success: true, deleted };
 }
-

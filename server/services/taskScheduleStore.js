@@ -45,7 +45,6 @@ async function ensureDataDir() {
     await ensureDir(DATA_DIR);
   }
 }
-
 /**
  * Migrate v1 schedule (selfImprovement + appImprovement) to v2 (unified tasks)
  */
@@ -269,4 +268,3 @@ export async function saveSchedule(schedule) {
   schedule.lastUpdated = new Date().toISOString();
   await atomicWrite(SCHEDULE_FILE, schedule);
 }
-
