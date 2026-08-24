@@ -276,4 +276,12 @@ describe('fetchHuggingfaceModel', () => {
     const fetchImpl = async () => ({ ok: true, text: async () => JSON.stringify(body) });
     await expect(fetchHuggingfaceModel('fal/x', { fetchImpl })).resolves.toEqual(body);
   });
+  it('forwards a caller cancellation signal to the metadata fetch', async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(async () => ({ ok: true, text: async () => '{}' }));
+
+    await fetchHuggingfaceModel('fal/x', { fetchImpl, signal: controller.signal });
+
+    expect(fetchImpl).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ signal: controller.signal }));
+  });
 });

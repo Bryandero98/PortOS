@@ -35,6 +35,15 @@ import {
 // socket with a frame per chunk.
 const PROGRESS_INTERVAL_MS = 250;
 
+// A download that is still receiving bytes may legitimately run for hours, but
+// a silent connection is never useful: it holds the one transfer slot and
+// leaves every later click permanently queued. Keep this intentionally
+// generous and configurable for slow Hugging Face/CDN handshakes.
+const IDLE_STALL_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.SPEC_DECODE_IDLE_STALL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 20 * 60 * 1000;
+})();
+
 // Downloads in flight, keyed by RESOLVED destination path (two presets can name
 // the same base model, and both must show the one transfer rather than starting
 // a second copy of it).
@@ -150,39 +159,80 @@ export function pickGgufSibling(model, { file, quant, repo }) {
   );
 }
 
-const streamToFile = async ({ url, headers, destPath, onBytes }) => {
-  const res = await fetch(url, { headers, redirect: 'follow' });
-  if (!res.ok || !res.body) {
-    if (res.status === 401 || res.status === 403) {
-      throw new ServerError(
-        `Hugging Face rejected the download (${res.status}) — this repo is gated. Accept its license on Hugging Face and add your HF token in Image Gen settings, then retry.`,
-        { status: res.status, code: 'HF_AUTH' },
-      );
+const streamToFile = async ({ url, headers, destPath, onBytes, signal, onIdleStall }) => {
+  let idleTimer = null;
+  const clearIdleTimer = () => {
+    if (!idleTimer) return;
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  };
+  const resetIdleTimer = () => {
+    clearIdleTimer();
+    idleTimer = setTimeout(() => {
+      // This callback is outside Express's error lifecycle, so never permit a
+      // timer failure to take down the server.
+      try {
+        onIdleStall();
+      } catch (err) {
+        console.error(`❌ Speculative-decoding download watchdog failed: ${err.message}`);
+      }
+    }, IDLE_STALL_TIMEOUT_MS);
+    idleTimer.unref?.();
+  };
+
+  resetIdleTimer();
+  try {
+    const res = await fetch(url, { headers, redirect: 'follow', signal });
+    if (!res.ok || !res.body) {
+      if (res.status === 401 || res.status === 403) {
+        throw new ServerError(
+          `Hugging Face rejected the download (${res.status}) — this repo is gated. Accept its license on Hugging Face and add your HF token in Image Gen settings, then retry.`,
+          { status: res.status, code: 'HF_AUTH' },
+        );
+      }
+      throw new ServerError(`Hugging Face download failed: ${res.status} ${res.statusText}`, { status: 502, code: 'HF_DOWNLOAD_FAILED' });
     }
-    throw new ServerError(`Hugging Face download failed: ${res.status} ${res.statusText}`, { status: 502, code: 'HF_DOWNLOAD_FAILED' });
+    const total = Number(res.headers?.get?.('content-length')) || 0;
+    // A random temp suffix keeps a crashed transfer's leftovers from being
+    // mistaken for this one's, and keeps the half-written file out of the
+    // launcher's existence check until it is complete.
+    const tmpPath = `${destPath}.${randomBytes(6).toString('hex')}.partial`;
+    await ensureDir(dirname(destPath));
+    let received = 0;
+    // Count bytes in a passthrough Transform, NOT a bare `.on('data')` listener —
+    // that flips the source into flowing mode and defeats pipeline backpressure.
+    const counter = new Transform({
+      transform(chunk, _enc, cb) {
+        received += chunk.length;
+        resetIdleTimer();
+        onBytes(received, total);
+        cb(null, chunk);
+      },
+    });
+    await pipeline(Readable.fromWeb(res.body), counter, createWriteStream(tmpPath)).catch(async (err) => {
+      await rm(tmpPath, { force: true }).catch(() => {});
+      throw err;
+    });
+    await rename(tmpPath, destPath);
+    return { bytes: received || total };
+  } finally {
+    clearIdleTimer();
   }
-  const total = Number(res.headers?.get?.('content-length')) || 0;
-  // A random temp suffix keeps a crashed transfer's leftovers from being
-  // mistaken for this one's, and keeps the half-written file out of the
-  // launcher's existence check until it is complete.
-  const tmpPath = `${destPath}.${randomBytes(6).toString('hex')}.partial`;
-  await ensureDir(dirname(destPath));
-  let received = 0;
-  // Count bytes in a passthrough Transform, NOT a bare `.on('data')` listener —
-  // that flips the source into flowing mode and defeats pipeline backpressure.
-  const counter = new Transform({
-    transform(chunk, _enc, cb) {
-      received += chunk.length;
-      onBytes(received, total);
-      cb(null, chunk);
-    },
-  });
-  await pipeline(Readable.fromWeb(res.body), counter, createWriteStream(tmpPath)).catch(async (err) => {
-    await rm(tmpPath, { force: true }).catch(() => {});
-    throw err;
-  });
-  await rename(tmpPath, destPath);
-  return { bytes: received || total };
+};
+
+const downloadAbortError = (state) => {
+  if (state.abortReason === 'cancelled') {
+    return new ServerError('Download cancelled', { status: 409, code: 'SPEC_DOWNLOAD_CANCELLED' });
+  }
+  const minutes = Math.round(IDLE_STALL_TIMEOUT_MS / 60000);
+  return new ServerError(
+    `Download stalled — no bytes received for ${minutes} minute${minutes === 1 ? '' : 's'}; cancelled so another model can download`,
+    { status: 504, code: 'SPEC_DOWNLOAD_STALLED' },
+  );
+};
+
+const throwIfAborted = (state) => {
+  if (state.controller.signal.aborted) throw downloadAbortError(state);
 };
 
 /**
@@ -215,21 +265,35 @@ export async function downloadSpecDecodeModel({ presetId, role, onProgress = () 
   // window would clear the check above and start a parallel multi-gigabyte
   // transfer of the same file. Everything after this point runs inside the
   // try/finally so the claim is always released.
-  const state = { presetId, role, received: 0, total: 0 };
+  const state = {
+    presetId,
+    role,
+    received: 0,
+    total: 0,
+    controller: new AbortController(),
+    abortReason: null,
+  };
   inFlight.set(destPath, state);
 
   let lastEmit = 0;
   try {
     const token = await getHfToken();
     const headers = buildHfAuthHeaders(token);
+    throwIfAborted(state);
     onProgress({ event: 'start', presetId, role, path: source.path, message: `Resolving ${source.repo} on Hugging Face…` });
-    const model = await fetchHuggingfaceModel(source.repo, { token });
+    const model = await fetchHuggingfaceModel(source.repo, { token, signal: state.controller.signal });
+    throwIfAborted(state);
     const file = pickGgufSibling(model, { file: source.file, quant: source.quant, repo: source.repo });
     console.log(`⬇️  Downloading speculative-decoding weights ${source.repo}/${file} → ${source.path}`);
     const { bytes } = await streamToFile({
       url: buildHfResolveUrl(source.repo, 'main', file),
       headers,
       destPath,
+      signal: state.controller.signal,
+      onIdleStall: () => {
+        state.abortReason = 'stalled';
+        state.controller.abort();
+      },
       onBytes: (received, total) => {
         state.received = received;
         state.total = total;
@@ -243,12 +307,32 @@ export async function downloadSpecDecodeModel({ presetId, role, onProgress = () 
     console.log(`✅ Speculative-decoding weights ready: ${source.path} (${bytes} bytes)`);
     return { success: true, path: source.path, repo: source.repo, file, sizeBytes: bytes };
   } catch (err) {
-    onProgress({ event: 'error', presetId, role, path: source.path, message: err.message });
-    console.error(`❌ Speculative-decoding download failed for ${source.path}: ${err.message}`);
-    throw err;
+    const error = state.abortReason ? downloadAbortError(state) : err;
+    const event = state.abortReason === 'cancelled' ? 'cancelled' : 'error';
+    onProgress({ event, presetId, role, path: source.path, message: error.message });
+    if (state.abortReason === 'cancelled') {
+      console.log(`⏹️ Speculative-decoding download cancelled: ${source.path}`);
+    } else {
+      console.error(`❌ Speculative-decoding download failed for ${source.path}: ${error.message}`);
+    }
+    throw error;
   } finally {
     inFlight.delete(destPath);
   }
+}
+
+/** Cancel one active curated GGUF download. Returns false when none is active. */
+export function cancelSpecDecodeModelDownload({ presetId, role }) {
+  if (!SPEC_MODEL_ROLES.includes(role)) {
+    throw new ServerError(`Unknown model role "${role}"`, { status: 400 });
+  }
+  const source = specDecodeSource(presetId, role);
+  if (!source) return false;
+  const state = inFlight.get(resolveSpecModelPath(source.path));
+  if (!state) return false;
+  state.abortReason = 'cancelled';
+  state.controller.abort();
+  return true;
 }
 
 /** Clears in-flight download bookkeeping (used by test suites). */

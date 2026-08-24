@@ -10,7 +10,7 @@ import {
   getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
   deleteLocalLlmModel, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService,
   installAudioModel, patchSettingsSlice, getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaServer,
-  downloadSpecDecodeModel, controlLmStudioService, getMtplxServerStatus, stopMtplxServer, installMtplx,
+  downloadSpecDecodeModel, cancelSpecDecodeModelDownload, controlLmStudioService, getMtplxServerStatus, stopMtplxServer, installMtplx,
   searchMtplxModels, pullMtplxModel, removeMtplxModel,
   saveRuntimeStartupList
 } from '../../services/api';
@@ -323,7 +323,7 @@ export function LocalLlmTab() {
     const handleDownloadProgress = (frame) => {
       if (!frame?.presetId || !frame?.role) return;
       const key = downloadKey(frame.presetId, frame.role);
-      if (frame.event === 'complete' || frame.event === 'error') {
+      if (frame.event === 'complete' || frame.event === 'error' || frame.event === 'cancelled') {
         setLlamaDownloads((prev) => {
           if (!prev[key]) return prev;
           const next = { ...prev };
@@ -787,7 +787,9 @@ export function LocalLlmTab() {
       const status = await loadLlamaStatus();
       const stillRunning = status?.presets
         ?.find((p) => p.id === presetId)?.[role]?.downloading;
-      if (stillRunning) {
+      if (err?.code === 'SPEC_DOWNLOAD_CANCELLED') {
+        toast.info('Download cancelled');
+      } else if (stillRunning) {
         toast.warning('Download still running in the background — this page lost the request, not the transfer.');
       } else {
         toast.error(err?.message || 'Download failed');
@@ -798,6 +800,17 @@ export function LocalLlmTab() {
         delete next[key];
         return next;
       });
+      loadLlamaStatus();
+    }
+  };
+
+  const handleCancelSpecModelDownload = async (role) => {
+    try {
+      const res = await cancelSpecDecodeModelDownload(llamaPresetId, role, { silent: true });
+      if (res.cancelled) toast.info('Cancelling model download…');
+    } catch (err) {
+      toast.error(err?.message || 'Could not cancel the model download');
+    } finally {
       loadLlamaStatus();
     }
   };
@@ -1177,6 +1190,7 @@ export function LocalLlmTab() {
                     entry={entry}
                     progress={llamaDownloads[downloadKey(llamaPresetId, entry.role)]}
                     onDownload={handleDownloadSpecModel}
+                    onCancel={handleCancelSpecModelDownload}
                     disabled={llamaLoading}
                   />
                 ))}

@@ -43,7 +43,7 @@ import { getLlamaServerStatus, startLlamaServer, stopLlamaServer, installLlamaSe
 import { MTPLX_APP, getMtplxServerStatus, startMtplxServer, stopMtplxServer, installMtplx } from '../services/mtplxServerManager.js'
 import { searchMtplxCatalog, pullMtplxModel, removeMtplxModel } from '../services/mtplxModelManager.js'
 import { saveProcessList } from '../services/pm2.js'
-import { getSpecDecodePresetStatus, downloadSpecDecodeModel } from '../services/specDecodeModels.js'
+import { getSpecDecodePresetStatus, downloadSpecDecodeModel, cancelSpecDecodeModelDownload } from '../services/specDecodeModels.js'
 import { SPEC_TYPE_SUGGESTIONS } from '../lib/specDecodePresets.js'
 import { resetProviderReadinessCache } from '../services/providerReadiness.js'
 import { getCatalog, searchCatalog, isBackend } from '../lib/localLlmCatalog.js'
@@ -639,6 +639,15 @@ router.post('/llama-server/download-model', asyncHandler(async (req, res) => {
     onProgress: (frame) => io?.emit('llamaServer:download', frame),
   })
   res.json(result)
+}))
+
+// POST /api/local-llm/llama-server/download-model/cancel — a download is
+// server-owned so it survives navigation, but must still be explicitly
+// stoppable to release its single transfer slot and remove its partial file.
+router.post('/llama-server/download-model/cancel', asyncHandler(async (req, res) => {
+  const { presetId, role } = validateRequest(localLlmSpecModelDownloadSchema, req.body)
+  const cancelled = cancelSpecDecodeModelDownload({ presetId, role })
+  res.json({ success: true, cancelled })
 }))
 
 // Each of the three actions below changes exactly what the provider-readiness
