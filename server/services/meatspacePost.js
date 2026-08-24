@@ -231,6 +231,15 @@ const DEFAULT_CONFIG = {
       'pun-wordplay': { enabled: true, count: 5, timeLimitSec: 120 }
     }
   },
+  // Optional AI judging for the standalone rhetoric trainer. It is explicitly
+  // off by default so loading POST or opening the practice page never queues a
+  // provider call without a user opting in and saving this block.
+  rhetoricEvaluator: {
+    enabled: false,
+    providerId: null,
+    model: null,
+    effort: null,
+  },
   // Deterministic cognitive drills (working-memory / attention / inhibition).
   // No provider calls — enabled by default since they're free to run. No
   // timeLimitSec — these drills are self-paced/stimulus-driven and never

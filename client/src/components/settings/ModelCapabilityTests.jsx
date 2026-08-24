@@ -46,6 +46,7 @@ const TEST_META = {
   'image-analysis': { Icon: Eye, cls: 'text-amber-400', border: 'border-amber-400/35' },
   'story-outline': { Icon: BookOpen, cls: 'text-port-accent-2', border: 'border-port-accent-2/35' },
   'fiction-scene': { Icon: BookOpen, cls: 'text-pink-400', border: 'border-pink-400/35' },
+  'rhetoric-reference': { Icon: BookOpen, cls: 'text-green-400', border: 'border-green-400/35' },
 };
 const testMeta = (id) => TEST_META[id] || { Icon: FlaskConical, cls: 'text-gray-400', border: 'border-port-border' };
 
@@ -87,6 +88,7 @@ const TASK_FILTERS = [
   // Older servers shipped only the outline proxy. Prefer the prose check when
   // present, but keep the filter useful during a rolling upgrade.
   { id: 'writing', label: 'Writing', testIds: ['fiction-scene', 'story-outline'] },
+  { id: 'rhetoric', label: 'Rhetoric', testIds: ['rhetoric-reference'] },
 ];
 
 const verdictRank = { passed: 2, partial: 1, failed: 0 };
@@ -111,6 +113,9 @@ const taskScore = (taskId, result) => {
       : 0;
     return detail.total ? beats : anchors * 0.7 + craft * 0.3;
   }
+  if (taskId === 'rhetoric' && Number.isFinite(detail.meanAbsoluteError)) {
+    return Math.max(0, 1 - detail.meanAbsoluteError / 100);
+  }
   return verdictRank[result.verdict] / 2;
 };
 
@@ -126,6 +131,7 @@ const specializationScore = (taskId, model) => {
   const id = String(model?.modelId || '').toLowerCase();
   if (taskId === 'coding') return /coder|code/.test(id) ? 2 : 0;
   if (taskId === 'writing') return /fable|fiction|writer|story/.test(id) ? 2 : 0;
+  if (taskId === 'rhetoric') return /writer|story|reason|instruct/.test(id) ? 2 : 0;
   return 0;
 };
 
@@ -355,10 +361,45 @@ function SandboxChecks({ detail }) {
   );
 }
 
+/** Calibration summary for the committed rhetoric reference corpus. */
+function RhetoricReferenceScore({ detail }) {
+  const worst = [...(detail.items || [])]
+    .sort((a, b) => b.absoluteError - a.absoluteError)
+    .slice(0, 5);
+  return (
+    <div className="space-y-3">
+      <p className="text-[11px] text-gray-500 leading-snug">
+        PortOS compares the model&rsquo;s scores with a fixed, fictional gold set. Lower error is better;
+        the verdict also requires broad agreement so a model cannot hide a few extreme misses behind an average.
+      </p>
+      <dl className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+        <div><dt className="text-gray-500">References</dt><dd className="text-gray-200">{detail.evaluatedCount ?? detail.referenceCount ?? '—'}</dd></div>
+        <div><dt className="text-gray-500">Mean error</dt><dd className="text-gray-200">{detail.meanAbsoluteError ?? '—'} pts</dd></div>
+        <div><dt className="text-gray-500">Within 10</dt><dd className="text-gray-200">{detail.within10Count ?? '—'}</dd></div>
+        <div><dt className="text-gray-500">Within 20</dt><dd className="text-gray-200">{detail.within20Count ?? '—'}</dd></div>
+      </dl>
+      {worst.length > 0 && (
+        <div>
+          <h4 className="text-xs font-medium text-gray-400 mb-1">Largest calibration gaps</h4>
+          {worst.map((item) => (
+            <div key={item.id} className="flex items-center gap-2 py-1.5 border-b border-port-border/50 last:border-b-0 text-xs">
+              <span className="font-mono text-gray-500">{item.id}</span>
+              <span className="ml-auto text-gray-400">gold {item.expected}</span>
+              <span className="text-gray-400">model {item.predicted}</span>
+              <span className="text-port-warning">Δ {item.absoluteError}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const SCORE_VIEWS = {
   'image-analysis': KeywordScore,
   'story-outline': BeatScore,
   'fiction-scene': FictionScore,
+  'rhetoric-reference': RhetoricReferenceScore,
   'sandbox-repair': SandboxChecks,
 };
 

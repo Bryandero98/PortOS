@@ -24,6 +24,12 @@
  */
 
 import { escapeRegExp } from './textUtils.js';
+import {
+  buildRhetoricReferencePrompt,
+  parseRhetoricJson,
+  RHETORIC_REFERENCE_SET,
+  scoreRhetoricReference,
+} from './postRhetoric.js';
 
 /** Verdicts every scorer returns. `partial` is real evidence, not a soft fail. */
 export const TEST_VERDICTS = Object.freeze(['passed', 'partial', 'failed']);
@@ -48,6 +54,7 @@ export const CAPABILITY_TEST_PROMPTS = Object.freeze({
     'Write a 350–500 word opening scene in close third person.',
     'Keep the prose concrete and sensory. Include one spoken line of dialogue, the oyster farmer taking a consequential action, and a final turn that makes the sea wall the source of the dying water.',
   ].join('\n'),
+  'rhetoric-reference': buildRhetoricReferencePrompt(),
 });
 
 /**
@@ -109,6 +116,15 @@ export const CAPABILITY_TESTS = Object.freeze([
     capabilities: Object.freeze(['chat']),
     prefers: Object.freeze(['reasoning']),
     blurb: 'Write a short opening scene from a fixed premise. Scored on required story facts plus minimum scene craft signals; read the saved prose for quality.',
+    driver: 'chat',
+  }),
+  Object.freeze({
+    id: 'rhetoric-reference',
+    label: 'Rhetoric evaluator',
+    kind: 'text',
+    capabilities: Object.freeze(['chat']),
+    prefers: Object.freeze(['reasoning']),
+    blurb: `Score ${RHETORIC_REFERENCE_SET.length} fictional, human-labelled rhetoric attempts. The result reports calibration error and agreement against the committed gold scores.`,
     driver: 'chat',
   }),
 ]);
