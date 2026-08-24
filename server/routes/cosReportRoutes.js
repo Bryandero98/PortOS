@@ -13,6 +13,10 @@ import { validateRequest } from '../lib/validation.js';
 
 const router = Router();
 
+const dateParamSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+});
+
 // The date is both a date-bucket key and the report's filename, so it must be a
 // bare YYYY-MM-DD day. A full ISO timestamp would match no bucket (and no
 // agent's `completedAt` prefix), silently writing an all-zero report under a
@@ -47,7 +51,8 @@ router.get('/reports/today', asyncHandler(async (req, res) => {
 
 // GET /api/cos/reports/:date - Get report by date
 router.get('/reports/:date', asyncHandler(async (req, res) => {
-  const report = await cos.getReport(req.params.date);
+  const { date } = validateRequest(dateParamSchema, req.params);
+  const report = await cos.getReport(date);
   if (!report) {
     throw new ServerError('Report not found', { status: 404, code: 'NOT_FOUND' });
   }
@@ -75,7 +80,8 @@ router.get('/briefings/latest', asyncHandler(async (req, res) => {
 
 // GET /api/cos/briefings/:date - Get briefing by date
 router.get('/briefings/:date', asyncHandler(async (req, res) => {
-  const briefing = await cos.getBriefing(req.params.date);
+  const { date } = validateRequest(dateParamSchema, req.params);
+  const briefing = await cos.getBriefing(date);
   if (!briefing) {
     throw new ServerError('Briefing not found', { status: 404, code: 'NOT_FOUND' });
   }
