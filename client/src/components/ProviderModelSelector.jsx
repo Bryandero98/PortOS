@@ -52,7 +52,16 @@
  *   their family.
  */
 import { useId } from 'react';
-import { effectiveModelFor, effortLevelsForProvider, effortSurvivingModel, localToolUseHint, withToolUseOptionLabel } from '../utils/providers.js';
+import {
+  effectiveModelFor,
+  effortLevelsForProvider,
+  effortSurvivingModel,
+  filterHardwareCompatibleProviderModels,
+  isProviderHardwareCompatible,
+  isProviderModelHardwareCompatible,
+  localToolUseHint,
+  withToolUseOptionLabel,
+} from '../utils/providers.js';
 import useToolUseModelIds from '../hooks/useToolUseModelIds.js';
 import EffortSelect from './cos/EffortSelect.jsx';
 import ToolUseWarning from './ui/ToolUseWarning.jsx';
@@ -125,9 +134,19 @@ export default function ProviderModelSelector({
   // silently blanking the select. This is the single DRY gate for every
   // provider→model picker; callers may also pre-filter, which is idempotent.
   const visibleProviders = providers.filter(
-    (p) => p.enabled !== false || p.id === selectedProviderId
+    (p) => (p.enabled !== false || p.id === selectedProviderId)
+      && (isProviderHardwareCompatible(p) || p.id === selectedProviderId)
   );
-  const showModel = alwaysShowModel || availableModels.length > 0;
+  const compatibleModels = filterHardwareCompatibleProviderModels(availableModels, selectedProvider);
+  const selectedModelIsUnavailable = Boolean(
+    selectedModel
+    && !isProviderModelHardwareCompatible(selectedProvider, selectedModel)
+  );
+  const modelOptions = selectedModelIsUnavailable
+    && !compatibleModels.some((model) => modelOption(model)?.value === selectedModel)
+    ? [selectedModel, ...compatibleModels]
+    : compatibleModels;
+  const showModel = alwaysShowModel || modelOptions.length > 0;
   // The effort select is opt-in (`onEffortChange`) AND self-hiding: EffortSelect
   // renders null for a provider with no effort control, so gate the label+wrapper
   // on the same predicate or a non-effort provider gets an orphaned label.
@@ -160,9 +179,14 @@ export default function ProviderModelSelector({
           className={SELECT_CLASS}
         >
           {emptyProviderOption != null && <option value="">{emptyProviderOption}</option>}
-          {visibleProviders.map(p => (
-            <option key={p.id} value={p.id}>{p.name}</option>
-          ))}
+          {visibleProviders.map((p) => {
+            const unavailable = !isProviderHardwareCompatible(p);
+            return (
+              <option key={p.id} value={p.id} disabled={unavailable}>
+                {p.name}{unavailable ? ' (unavailable on this machine)' : ''}
+              </option>
+            );
+          })}
         </select>
       </div>
       {showModel && (
@@ -178,13 +202,18 @@ export default function ProviderModelSelector({
             className={SELECT_CLASS}
           >
             {emptyModelOption != null && <option value="">{emptyModelOption}</option>}
-            {availableModels.map(m => {
+            {modelOptions.map(m => {
               const opt = modelOption(m);
               if (!opt) return null;
+              const unavailable = !isProviderModelHardwareCompatible(selectedProvider, opt.value);
               const label = annotateToolUse
                 ? withToolUseOptionLabel(opt.value, opt.label, selectedProvider, toolUseIdsByProvider)
                 : opt.label;
-              return <option key={opt.value} value={opt.value}>{label}</option>;
+              return (
+                <option key={opt.value} value={opt.value} disabled={unavailable}>
+                  {unavailable ? `${label} (unavailable on this machine)` : label}
+                </option>
+              );
             })}
           </select>
           {/* No remediation link: this selector renders in hosts that aren't

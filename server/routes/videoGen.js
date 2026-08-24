@@ -70,8 +70,21 @@ import {
   getVideoRuntimeStatus,
   streamVideoRuntimeInstall,
 } from '../services/videoGen/runtimeInstaller.js';
+import { detectSystemCapabilities, withHardwareCompatibility } from '../lib/systemCapabilities.js';
 
 const router = Router();
+
+const hardwareAwareVideoModels = async () => {
+  const capabilities = await detectSystemCapabilities();
+  return {
+    capabilities,
+    models: listVideoModels().map((model) => withHardwareCompatibility(
+      model,
+      capabilities,
+      model.hardwareRequirements,
+    )),
+  };
+};
 
 // M4A files are stored in an MP4 container. Browsers and OS file pickers
 // label them inconsistently: Safari uses `video/mp4`, Chrome/Firefox use
@@ -357,6 +370,7 @@ router.get('/status', asyncHandler(async (_req, res) => {
   const s = await getSettings();
   const py = s.imageGen?.local?.pythonPath || null;
   const { connected, reason, missing, pythonVersion } = await resolveLocalPythonHealth(py);
+  const { capabilities, models } = await hardwareAwareVideoModels();
   res.json({
     connected,
     pythonPath: py,
@@ -366,8 +380,8 @@ router.get('/status', asyncHandler(async (_req, res) => {
     // Each entry carries its optional `disclosure` block (provenance, weights/
     // runtime licenses, pinned-snapshot download size) straight off the
     // registry — absent for custom models, which the UI renders as Unknown.
-    models: listVideoModels(),
-    defaultModel: defaultVideoModelId(),
+    models,
+    defaultModel: defaultVideoModelId(capabilities),
     // Server-owned execution + policy scope per render backend (#3674). The
     // client renders these strings verbatim so the wording can't drift between
     // the two surfaces.
@@ -474,9 +488,10 @@ async function resolveLocalPythonHealth(py) {
   }
 }
 
-router.get('/models', (_req, res) => {
-  res.json(listVideoModels());
-});
+router.get('/models', asyncHandler(async (_req, res) => {
+  const { models } = await hardwareAwareVideoModels();
+  res.json(models);
+}));
 
 // Resolve the repo set an integrity scan should cover. A specific `modelId`
 // scopes to that model's repo; no modelId scans every model repo plus the

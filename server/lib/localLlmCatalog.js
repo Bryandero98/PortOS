@@ -14,6 +14,8 @@
 // imported anywhere. The installed-state overlay is applied by the caller
 // (server/services/localLlm.js) which knows what's actually on disk.
 
+import { hardwareRequirementsForLocalLlm } from './systemCapabilities.js';
+
 export const BACKENDS = ['ollama', 'lmstudio'];
 
 export const isBackend = (b) => BACKENDS.includes(b);
@@ -769,7 +771,7 @@ export function getOllamaImportSpec(modelId) {
  * @param {string} backend - 'ollama' | 'lmstudio'
  * @param {string[]} [installedIds] - ids currently installed on that backend
  * @param {{ appleSilicon?: boolean }} [options] - host capabilities used for platform-gated entries
- * @returns {Array<{ id, key, name, category, recommendedFor, featured, params, size, family, description, note, repository, gated, capabilities, format, contextLength, installed }>}
+ * @returns {Array<{ id, key, name, category, recommendedFor, featured, params, size, family, description, note, repository, gated, capabilities, format, hardwareRequirements, contextLength, installed }>}
  */
 export function getCatalog(backend, installedIds = [], { appleSilicon } = {}) {
   if (!isBackend(backend)) return [];
@@ -796,6 +798,7 @@ export function getCatalog(backend, installedIds = [], { appleSilicon } = {}) {
         gated: entry.gated === true,
         capabilities: entry.capabilities,
         format: entry.format || null,
+        hardwareRequirements: hardwareRequirementsForLocalLlm(entry),
         // Native context window (tokens), when it's a documented spec; null otherwise.
         contextLength: Number.isFinite(entry.context) ? entry.context : null,
         installed: entryIdsForBackend(entry, backend)

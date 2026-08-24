@@ -4,7 +4,9 @@ import {
   parseNvidiaSmiGpus,
   detectCudaGpus,
   getCudaCapability,
+  getCudaComputeCapability,
   resetCudaCapabilityCache,
+  resetCudaComputeCapabilityCache,
   CUDA_UNKNOWN_RETRY_MS,
   parseNvidiaSmiComputeCaps,
   detectCudaComputeCapability,
@@ -19,7 +21,10 @@ const RTX_3090 = 'NVIDIA GeForce RTX 3090, 24576\n';
 /** An execFile stub that invokes the callback with `(err, stdout)`. */
 const execStub = (err, stdout = '') => vi.fn((_cmd, _args, _opts, cb) => cb(err, stdout));
 
-beforeEach(() => resetCudaCapabilityCache());
+beforeEach(() => {
+  resetCudaCapabilityCache();
+  resetCudaComputeCapabilityCache();
+});
 
 describe('parseNvidiaSmiGpus', () => {
   it('parses a real single-GPU reading and rounds VRAM to whole GB', () => {
@@ -248,6 +253,15 @@ describe('detectCudaComputeCapability', () => {
   it('says absent on exit 0 with no rows', async () => {
     const res = await detectCudaComputeCapability({ execFileImpl: smi('\n') });
     expect(res).toMatchObject({ status: 'absent', primaryComputeCap: null });
+  });
+});
+
+describe('getCudaComputeCapability caching', () => {
+  it('probes once and serves the cached compute capability afterwards', async () => {
+    const execFileImpl = execStub(null, 'NVIDIA RTX 5090, 12.0, 32768\n');
+    await getCudaComputeCapability({ execFileImpl });
+    await getCudaComputeCapability({ execFileImpl });
+    expect(execFileImpl).toHaveBeenCalledTimes(1);
   });
 });
 

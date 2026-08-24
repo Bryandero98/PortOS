@@ -470,6 +470,16 @@ export const gameFeedbackSchema = z.object({
 }).strict();
 
 // Provider schema
+const providerHardwareRequirementsSchema = z.object({
+  platforms: z.array(z.string().trim().min(1).max(32)).min(1).max(8).optional(),
+  architectures: z.array(z.string().trim().min(1).max(32)).min(1).max(8).optional(),
+  requiresAppleSilicon: z.boolean().optional(),
+  requiresNvidiaGpu: z.boolean().optional(),
+  minMemoryGb: z.number().positive().max(4096).optional(),
+  minVramGb: z.number().positive().max(4096).optional(),
+  minCudaComputeCapability: z.number().positive().max(20).optional(),
+}).strict();
+
 export const providerSchema = z.object({
   name: z.string().min(1).max(100),
   type: z.enum(['cli', 'api', 'tui']),
@@ -478,6 +488,8 @@ export const providerSchema = z.object({
   endpoint: z.string().url().optional(),
   apiKey: z.string().optional(),
   models: z.array(z.string()).optional(),
+  hardwareRequirements: providerHardwareRequirementsSchema.optional(),
+  modelHardwareRequirements: z.record(providerHardwareRequirementsSchema).optional(),
   defaultModel: z.string().nullable().optional(),
   timeout: z.number().int().min(AI_RUN_TIMEOUT_MIN_MS).max(AI_RUN_TIMEOUT_MAX_MS).optional(),
   enabled: z.boolean().optional(),

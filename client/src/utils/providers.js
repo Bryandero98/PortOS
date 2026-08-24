@@ -1,4 +1,5 @@
 import { formatContextLength } from './formatters.js';
+import { isHardwareCompatible } from './systemCapabilities.js';
 
 /**
  * Sentinel value used by the Codex provider to indicate the model is configured
@@ -182,6 +183,24 @@ export const PROVIDER_TYPES = Object.freeze({
  */
 export const filterSelectableModels = (models) =>
   (models || []).filter(m => !isConfiguredDefaultModel(m));
+
+/**
+ * Server-side hardware metadata is advisory for unknown probe results and
+ * definitive only when `state` is `unavailable`. Keep this helper fail-open so
+ * older servers and custom providers remain selectable.
+ */
+export const isProviderHardwareCompatible = (provider) =>
+  isHardwareCompatible(provider?.hardwareCompatibility);
+
+export const isProviderModelHardwareCompatible = (provider, model) =>
+  isProviderHardwareCompatible(provider)
+  && isHardwareCompatible(provider?.modelHardwareCompatibility?.[model]);
+
+export const filterHardwareCompatibleProviderModels = (models, provider) =>
+  (models || []).filter((model) => {
+    const modelId = typeof model === 'string' ? model : model?.id;
+    return isProviderModelHardwareCompatible(provider, modelId);
+  });
 
 /**
  * Reasoning-effort levels per effort-capable CLI — MIRROR of

@@ -23,7 +23,11 @@ import { getLocalLlmStatus } from '../services/apiLocalLlm';
  * can tell "not fetched" from a confirmed `false` and never offers an install
  * for an app it simply hasn't heard about yet.
  *
- * @returns {{ ollama: string[], lmstudio: string[], installed: { ollama: boolean|null, lmstudio: boolean|null }, recommendations: { ollama: object|null, lmstudio: object|null }, ctxById: Record<string, number>, loading: boolean }}
+ * `hardwareCompatibilityByBackend` carries the server's definitive model
+ * compatibility verdicts into provider editors without changing the existing
+ * string-id API used by other consumers of this hook.
+ *
+ * @returns {{ ollama: string[], lmstudio: string[], installed: { ollama: boolean|null, lmstudio: boolean|null }, recommendations: { ollama: object|null, lmstudio: object|null }, ctxById: Record<string, number>, hardwareCompatibilityByBackend: { ollama: Record<string, object>, lmstudio: Record<string, object> }, loading: boolean }}
  */
 export default function useLocalModels() {
   const [state, setState] = useState({
@@ -32,6 +36,7 @@ export default function useLocalModels() {
     installed: { ollama: null, lmstudio: null },
     recommendations: { ollama: null, lmstudio: null },
     ctxById: {},
+    hardwareCompatibilityByBackend: { ollama: {}, lmstudio: {} },
     loading: true,
   });
 
@@ -43,9 +48,15 @@ export default function useLocalModels() {
         if (canceled) return;
         const ids = (list) => (list || []).map((m) => m.id || m.name).filter(Boolean);
         const ctxById = {};
-        for (const m of [...(status?.ollama?.models || []), ...(status?.lmstudio?.models || [])]) {
-          const id = m.id || m.name;
-          if (id && Number(m.contextLength) > 0) ctxById[id] = m.contextLength;
+        const hardwareCompatibilityByBackend = { ollama: {}, lmstudio: {} };
+        for (const backend of ['ollama', 'lmstudio']) {
+          for (const m of status?.[backend]?.models || []) {
+            const id = m.id || m.name;
+            if (id && m.hardwareCompatibility && typeof m.hardwareCompatibility === 'object') {
+              hardwareCompatibilityByBackend[backend][id] = m.hardwareCompatibility;
+            }
+            if (id && Number(m.contextLength) > 0) ctxById[id] = m.contextLength;
+          }
         }
         const installedFlag = (backend) => (
           typeof status?.[backend]?.installed === 'boolean' ? status[backend].installed : null
@@ -59,6 +70,7 @@ export default function useLocalModels() {
             lmstudio: status?.lmstudio?.recommendations?.editorial || null,
           },
           ctxById,
+          hardwareCompatibilityByBackend,
           loading: false,
         });
       })

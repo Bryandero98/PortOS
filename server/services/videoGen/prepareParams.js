@@ -55,6 +55,12 @@ import {
   loadHistory,
   DEFAULT_NUM_FRAMES,
 } from './local.js';
+import {
+  captureSystemCapabilities,
+  detectSystemCapabilities,
+  isHardwareCompatible,
+  withHardwareCompatibility,
+} from '../../lib/systemCapabilities.js';
 // Straight from the leaf, not through local.js: the suites that exercise this
 // module mock local.js wholesale, and a mocked rule table would assert nothing.
 import { videoModeContractError, videoChainUnsupportedError, videoReferenceModeError } from './modeContract.js';
@@ -64,10 +70,28 @@ import { resolveByovRuntimeLoraCapable, videoLoraUnsupportedError } from './runt
 // multipart preparation path. Keep the model/mode gates here so a model edit
 // cannot delete the original history row before the replacement is renderable.
 export async function validateVideoRetryParams(params = {}) {
-  const modelId = params.modelId || defaultVideoModelId();
-  const model = listVideoModels().find((entry) => entry.id === modelId);
+  const needsCuda = (requirements) => requirements?.requiresNvidiaGpu
+    || requirements?.minVramGb != null
+    || requirements?.minCudaComputeCapability != null;
+  let capabilities = captureSystemCapabilities();
+  const modelWasOmitted = params.modelId === undefined || params.modelId === '';
+  let modelId = modelWasOmitted ? defaultVideoModelId(capabilities) : params.modelId;
+  const knownModels = listVideoModels();
+  let model = knownModels.find((entry) => entry.id === modelId);
+  if (needsCuda(model?.hardwareRequirements)) {
+    capabilities = await detectSystemCapabilities();
+    if (modelWasOmitted) modelId = defaultVideoModelId(capabilities);
+    model = knownModels.find((entry) => entry.id === modelId);
+  }
+  model = model && withHardwareCompatibility(model, capabilities, model.hardwareRequirements);
   if (!model) {
     throw new ServerError(`Unknown modelId: ${modelId}`, { status: 400, code: 'VIDEO_GEN_UNKNOWN_MODEL' });
+  }
+  if (!isHardwareCompatible(model.hardwareCompatibility)) {
+    throw new ServerError(
+      `Video model "${modelId}" is unavailable on this machine: ${model.hardwareCompatibility.reasons.join(' · ')}`,
+      { status: 400, code: 'MODEL_HARDWARE_UNAVAILABLE' },
+    );
   }
   if (!isStockTextEncoder(params.textEncoderId)
     && !supportsVideoTextEncoder(model, params.textEncoderId)) {
@@ -252,16 +276,44 @@ export async function prepareVideoGenParams({ body, uploads, localOnlyParamKeys 
   // and listVideoModels() is the kind of thing test mocks easily get out
   // of sync if called twice.
   const knownModels = listVideoModels();
-  const effectiveModelId = body.modelId || defaultVideoModelId();
-  const effectiveModel = knownModels.find((m) => m.id === effectiveModelId);
-  // Validate modelId synchronously (when supplied). Without this the queue
+  const needsCuda = (requirements) => requirements?.requiresNvidiaGpu
+    || requirements?.minVramGb != null
+    || requirements?.minCudaComputeCapability != null;
+  let capabilities = captureSystemCapabilities();
+  // `undefined`/empty means the request omitted a model and may use the
+  // configured default. Explicit null is the routed-job sentinel and must
+  // remain unknown so a legacy local dispatcher cannot render a remote job
+  // locally.
+  const modelWasOmitted = body.modelId === undefined || body.modelId === '';
+  let effectiveModelId = modelWasOmitted ? defaultVideoModelId(capabilities) : body.modelId;
+  let effectiveModel = knownModels.find((m) => m.id === effectiveModelId);
+  if (needsCuda(effectiveModel?.hardwareRequirements)) {
+    capabilities = await detectSystemCapabilities();
+    if (modelWasOmitted) {
+      effectiveModelId = defaultVideoModelId(capabilities);
+      effectiveModel = knownModels.find((m) => m.id === effectiveModelId);
+    }
+  }
+  effectiveModel = effectiveModel && withHardwareCompatibility(
+    effectiveModel,
+    capabilities,
+    effectiveModel.hardwareRequirements,
+  );
+  // Validate modelId before staging (when supplied). Without this the queue
   // would happily accept a typo'd modelId and fail asynchronously inside
   // the worker — leaving a persisted, doomed queue entry.
-  if (body.modelId && !effectiveModel) {
+  if (body.modelId !== undefined && !effectiveModel) {
     await cleanupMultipartTemp(uploads);
     throw new ServerError(
       `Unknown modelId: ${body.modelId}`,
       { status: 400, code: 'VIDEO_GEN_UNKNOWN_MODEL' },
+    );
+  }
+  if (effectiveModel && !isHardwareCompatible(effectiveModel.hardwareCompatibility)) {
+    await cleanupMultipartTemp(uploads);
+    throw new ServerError(
+      `Video model "${effectiveModelId}" is unavailable on this machine: ${effectiveModel.hardwareCompatibility.reasons.join(' · ')}`,
+      { status: 400, code: 'MODEL_HARDWARE_UNAVAILABLE' },
     );
   }
   // Substituted prompt conditioner (#4081). A pure registry lookup with no
